@@ -1,0 +1,51 @@
+import * as fs from "node:fs";
+import * as net from "node:net";
+
+import { CopilotApiPaths } from "./paths.ts";
+
+export const COPILOT_API_PORT_DEFAULT: string = process.env.COPILOT_API_PORT_DEFAULT || "4141";
+
+export async function copilotApiPortAvailable(port: number): Promise<boolean> {
+  if (port < 1024 || port > 65535) {
+    return false;
+  }
+  return new Promise<boolean>((resolve) => {
+    const s = new net.Socket();
+    let settled = false;
+    const done = (available: boolean): void => {
+      if (settled) return;
+      settled = true;
+      s.destroy();
+      resolve(available);
+    };
+    s.once("connect", () => done(false));
+    s.once("error", () => done(true));
+    s.connect(port, "127.0.0.1");
+  });
+}
+
+export async function copilotApiFindPort(start: number): Promise<number> {
+  const maxAttempts = 50;
+  for (let port = start; port < Math.min(start + maxAttempts, 65536); port++) {
+    if (await copilotApiPortAvailable(port)) {
+      return port;
+    }
+  }
+  throw new Error(`no free port found in range ${start}-${start + maxAttempts}`);
+}
+
+export function copilotApiResolvePort(): string {
+  const portfile = new CopilotApiPaths().portFile;
+  let port = "";
+  if (fs.existsSync(portfile) && fs.statSync(portfile).isFile()) {
+    try {
+      port = fs.readFileSync(portfile, "utf8").trim();
+    } catch {
+      port = "";
+    }
+  }
+  if (!port) {
+    port = COPILOT_API_PORT_DEFAULT;
+  }
+  return port;
+}

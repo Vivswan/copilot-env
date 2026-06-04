@@ -1,0 +1,16 @@
+# Normalize all detected text files to LF in the repository.
+* text=auto eol=lf
+
+# Never apply text/EOL normalization to the CLAUDE.md symlink, so a Windows
+# checkout (core.symlinks=false) can't turn it into a modified regular file.
+CLAUDE.md -text
+
+# Keep binary assets byte-for-byte unchanged.
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.gif binary
+*.webp binary
+*.pdf binary
+*.zip binary

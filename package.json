@@ -1,0 +1,54 @@
+{
+  "name": "copilot-env",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local copilot-api gateway lifecycle + config helper (TypeScript port of the Python copilot-api helper).",
+  "bin": {
+    "copilot-api": "./bin/copilot-api",
+    "codex-home": "./bin/codex-home"
+  },
+  "scripts": {
+    "start": "bun run src/server.ts",
+    "codex-home": "bun run src/codex_home.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src bin",
+    "format": "biome format --write src bin",
+    "check": "biome check --write src bin",
+    "postinstall": "patch-package",
+    "prepare": "husky"
+  },
+  "dependencies": {
+    "@jeffreycao/copilot-api": "latest",
+    "citty": "^0.1.6",
+    "consola": "^3.4.2",
+    "execa": "^9.6.1",
+    "patch-package": "^8.0.0",
+    "ps-list": "^9.0.0",
+    "smol-toml": "^1.4.2",
+    "which": "^5.0.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.16",
+    "@types/bun": "^1.3.14",
+    "@types/node": "^24.0.0",
+    "@types/which": "^3.0.4",
+    "husky": "^9.1.7",
+    "lint-staged": "^17.0.7",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20",
+    "bun": ">=1.3.0"
+  },
+  "packageManager": "bun@1.3.14",
+  "trustedDependencies": [
+    "@biomejs/biome",
+    "patch-package"
+  ],
+  "lint-staged": {
+    "src/**/*.ts": "biome check --write --no-errors-on-unmatched",
+    "bin/**/*": "biome check --write --no-errors-on-unmatched",
+    "biome.json": "biome check --write --no-errors-on-unmatched"
+  }
+}

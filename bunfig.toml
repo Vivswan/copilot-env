@@ -1,0 +1,13 @@
+# Bun package-manager config for copilot-env.
+#
+# minimumReleaseAge enforces a supply-chain cooldown: bun will never resolve a
+# dependency to a version published more recently than this many seconds ago.
+# This is what makes `@jeffreycao/copilot-api: "latest"` safe to float — the
+# weekly overlay in src/bootstrap.ts (`bun add ... --no-save`) only ever adopts
+# a release that has been public for at least 7 days.
+#
+# It only affects *resolution*, so it's a no-op under `--frozen-lockfile` (the
+# reproducible baseline install) and bites only on the floating overlay.
+
+[install]
+minimumReleaseAge = 604800  # 7 days, in seconds

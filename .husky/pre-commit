@@ -1,2 +1,4 @@
 bunx lint-staged
 bun run typecheck
+bun run lint:shell
+bun run lint:ps

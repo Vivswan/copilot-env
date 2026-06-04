@@ -29,11 +29,10 @@ This project supports **Linux, macOS, and Windows**.
 - `bin/copilot-api`, `bin/codex-home` — POSIX self-bootstrapping launchers
 - `bin/copilot-api.ps1` — Windows equivalent of `copilot-api`
 - `bin/codex-home.ps1` — Windows equivalent of `codex-home` (self-bootstraps, reuses the cache, execs `src/codex_home.ts`)
-- `agents.bashrc` — sourced from your shell rc; defines the `agent` dispatcher (`agent start` lifecycle wrapper, else pass-through to the bin), plus `cl`, `co`, `cx`. Gateway-only — no Codex wiring.
-- `agents_codex.bashrc` — Codex `CODEX_HOME` wiring, kept separate as an optional add-on. Sourced *after* `agents.bashrc`; redefines `copilot-start` to also create/refresh a host-local `CODEX_HOME`, and eagerly exports it on shell startup when the host-local dir exists.
-- `agents.ps1` — PowerShell equivalent of `agents.bashrc`; dot-sourced from the user's `$PROFILE`. Delegates lifecycle wrappers to `bin/copilot-api.ps1`, prepends `~/.bun/bin` to PATH, and applies the session env via `copilot-api env --format powershell` + `Invoke-Expression` (no manual parsing). Unlike the POSIX split (where Codex wiring lives in the optional `agents_codex.bashrc`), `copilot-start` here also refreshes Codex: after the gateway is up it runs `bin/codex-home.ps1` to (re)write `config.toml`/`.env` into the default `~/.codex` (`%USERPROFILE%\.codex`). It does **not** set `CODEX_HOME` — Codex reads its default home natively; `CODEX_HOME` is only needed on Linux when the per-host symlink farm is used.
-- `install.sh` — POSIX shell-integration installer: adds a source block for `agents.bashrc` to `~/.bashrc` and/or `~/.zshrc`. `--codex` also sources `agents_codex.bashrc`.
-- `install.ps1` — Windows installer: installs prerequisites (Git, Node/npm, Bun, the agent CLIs), bootstraps copilot-env deps, and adds a dot-source block for `agents.ps1` to the PowerShell `$PROFILE` (`-AllHosts` targets the CurrentUserAllHosts profile).
+- `agents.bashrc` — sourced from your shell rc; defines the `agent` dispatcher (`agent start` launches the gateway + exports its env; `agent codex` (re)writes `~/.codex` via `bin/codex-home` so Codex routes through the gateway; everything else passes through to the bin), plus `cl`, `co`, `cx`. Pure runtime wiring — never installs anything; the launchers assert the agent CLI exists and point you at `install.sh` if not. Plain function defs (no `eval`); resolves its dir into `_COPILOT_AGENTS_DIR`.
+- `agents.ps1` — PowerShell equivalent of `agents.bashrc`; dot-sourced from the user's `$PROFILE`. Delegates lifecycle wrappers to `bin/copilot-api.ps1`, prepends `~/.bun/bin` to PATH, and applies the session env via `copilot-api env --format powershell` + `Invoke-Expression` (no manual parsing). Unlike POSIX (where Codex is wired on demand via `agent codex`), `copilot-start` here also refreshes Codex automatically: after the gateway is up it runs `bin/codex-home.ps1` to (re)write `config.toml`/`.env` into the default `~/.codex` (`%USERPROFILE%\.codex`). It does **not** set `CODEX_HOME` — Codex reads its default home natively; `CODEX_HOME` is only needed on Linux when the per-host symlink farm is used.
+- `install.sh` — POSIX installer (runs from a checkout or piped via `curl … | bash`). Ensures `git`, clones/updates the repo to `~/.copilot-env` (`COPILOT_ENV_DIR` override), installs Node via nvm + bun via its official installer + the agent CLIs (`claude`/`copilot`/`codex`) via npm, then adds a source block for `agents.bashrc` to `~/.bashrc` and/or `~/.zshrc`. Idempotent; curl-pipe-safe (no interactive prompts).
+- `install.ps1` — Windows installer (runs from a checkout or piped via `irm … | iex`). Installs prerequisites via `winget` (Git, Node/npm, Bun) + the agent CLIs, clones/updates the repo to `%USERPROFILE%\.copilot-env`, bootstraps copilot-env deps, and adds a dot-source block for `agents.ps1` to the PowerShell `$PROFILE` (`-AllHosts` targets the CurrentUserAllHosts profile).
 - `src/cache_setup.ts` — cross-platform per-user cache setup: on `start` wipes & recreates the whole cache, else reuses it; symlink manifest + sources into cache, frozen `bun install` when the lockfile changes, gateway float (`floatGateway`, honors `COPILOT_API_VERSION`), print cache path on stdout
 - `src/server.ts` — citty CLI for `start`/`stop`/`env`/`cost`. Holds the default config (smallModel, flags) written before launch; model aliases are not hardcoded — once the daemon is up it syncs catalog-derived aliases via the admin API and prints them grouped by target model. `env` prints shell-evaluable env assignments (`--format posix` default, `--format powershell` for `$env:` lines). `cost` reads every per-host usage DB and prints estimated spend.
 - `src/utils/admin.ts` — `CopilotAdminClient`: all REST communication with the local daemon (`getModels`, `getModelMappings`, `setModelMappings`) over a shared `request()` wrapper.
@@ -56,7 +55,7 @@ This project supports **Linux, macOS, and Windows**.
 - **Always quote object-literal keys.** Mixed quoted/unquoted keys in the same literal are inconsistent and easy to misread. Biome's `quoteProperties: "preserve"` keeps the quotes you write; never strip them.
 - **No new deps without an explicit reason.** Current deps: `citty` (CLI), `consola` (logging), `smol-toml` (TOML load-mutate-stringify), `@jeffreycao/copilot-api` (pinned gateway), `patch-package`.
 - **String literals are external contracts** — model ids, JSON keys, env var names, log strings: never rename them during refactors.
-- **bun for runtime, biome for format/lint, tsc for typecheck.** No webpack, no rollup, no bundler.
+- **bun for runtime, biome for format/lint (TS), tsc for typecheck, shellcheck for shell, PSScriptAnalyzer for PowerShell.** No webpack, no rollup, no bundler.
 - **Never add "Generated by", "Co-Authored-By", "claude", or "codex" lines in commits or PR descriptions.**
 
 ## Commands
@@ -65,9 +64,13 @@ This project supports **Linux, macOS, and Windows**.
 # from the project dir
 bun run typecheck          # tsc --noEmit
 bun run lint               # biome check src bin
+bun run lint:shell         # shellcheck (install.sh, agents.bashrc, bin/copilot-api, bin/codex-home)
+bun run lint:ps            # PSScriptAnalyzer (install.ps1, agents.ps1, bin/*.ps1)
 bun run format             # biome format --write
 bun run check              # biome check --write src bin
 ```
+
+The husky `pre-commit` hook runs `lint-staged` (biome) + `typecheck` + `lint:shell` + `lint:ps`. The shell/PowerShell linters are **skip-if-absent**: `lint:shell` no-ops when `shellcheck` isn't installed, `lint:ps` no-ops when `pwsh`/PSScriptAnalyzer isn't — so commits never break for lack of an optional linter. Both gate only on warnings+errors (style/info findings are ignored). Scripts live in `scripts/`.
 
 Direct CLI use:
 ```bash
@@ -78,13 +81,21 @@ Direct CLI use:
 ```
 On Windows, use the `.ps1` launchers (`powershell -ExecutionPolicy Bypass -File bin\copilot-api.ps1 ...`, `bin\codex-home.ps1`).
 
-Shell integration (one-time, sources the `agent`/`cl`/`co`/`cx` helpers on shell startup):
+Install (one-line — clones/updates to `~/.copilot-env`, installs prereqs + agent CLIs, wires the shell):
 ```bash
-./install.sh          # source agents.bashrc into ~/.bashrc / ~/.zshrc
-./install.sh --codex  # also source agents_codex.bashrc (Codex CODEX_HOME wiring)
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/Vivswan/copilot-env/main/install.sh | bash
 ```
 ```powershell
-# Windows: install prerequisites + dot-source agents.ps1 from $PROFILE
+# Windows
+irm https://raw.githubusercontent.com/Vivswan/copilot-env/main/install.ps1 | iex
+```
+
+From a checkout, `install.sh` / `install.ps1` do the same (idempotent):
+```bash
+./install.sh          # install prereqs + source agents.bashrc into ~/.bashrc / ~/.zshrc
+```
+```powershell
 powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 

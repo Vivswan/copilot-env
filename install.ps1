@@ -1,9 +1,16 @@
-# Install copilot-env and its Windows prerequisites, then add a dot-source block
-# to your PowerShell profile ($PROFILE).
+# Clone (or update) copilot-env, install its Windows prerequisites (Git, Node,
+# Bun) and the agent CLIs, then add a dot-source block to your PowerShell
+# profile ($PROFILE). Runs two ways:
 #
-# Usage:
-#   powershell -ExecutionPolicy Bypass -File install.ps1
-#   powershell -ExecutionPolicy Bypass -File install.ps1 -AllHosts   # write to the all-hosts profile
+#   # one-liner -- no local checkout needed:
+#   irm https://raw.githubusercontent.com/Vivswan/copilot-env/main/install.ps1 | iex
+#
+#   # from an existing checkout:
+#   powershell -ExecutionPolicy Bypass -File install.ps1            # current-host profile
+#   powershell -ExecutionPolicy Bypass -File install.ps1 -AllHosts  # all-hosts profile
+#
+# Env:
+#   COPILOT_ENV_DIR   clone target when fetching fresh (default %USERPROFILE%\.copilot-env)
 
 [CmdletBinding()]
 param(
@@ -13,8 +20,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$AgentsPs1 = Join-Path $ScriptDir 'agents.ps1'
+$RepoUrl = 'https://github.com/Vivswan/copilot-env.git'
+$InstallDir = if ($env:COPILOT_ENV_DIR) { $env:COPILOT_ENV_DIR } else { Join-Path $env:USERPROFILE '.copilot-env' }
+
+# When run via `irm ... | iex` there is no script file; $PSCommandPath is null,
+# so we clone. When run as -File install.ps1 from a checkout, reuse it.
+$SelfDir = if ($PSCommandPath) { Split-Path -Parent $PSCommandPath } else { $null }
 
 function Update-ProcessPath {
     $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
@@ -92,13 +103,27 @@ function Install-AgentCli {
     }
 }
 
-if (-not (Test-Path $AgentsPs1)) {
-    Write-Error "Could not find agents.ps1 at $AgentsPs1"
-    exit 1
-}
-
 Update-ProcessPath
 Install-WingetPackage -Command git -Name 'Git' -Id 'Git.Git'
+
+# Locate an existing checkout, or clone/update one to $InstallDir.
+if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'agents.ps1'))) {
+    $RepoDir = $SelfDir
+    Write-Host "Using existing checkout at $RepoDir"
+} else {
+    if (Test-Path (Join-Path $InstallDir '.git')) {
+        Write-Host "Updating copilot-env in $InstallDir ..."
+        & git -C $InstallDir pull --ff-only
+    } else {
+        Write-Host "Cloning copilot-env into $InstallDir ..."
+        & git clone $RepoUrl $InstallDir
+    }
+    if ($LASTEXITCODE -ne 0) { throw 'git clone/pull failed.' }
+    $RepoDir = $InstallDir
+}
+$AgentsPs1 = Join-Path $RepoDir 'agents.ps1'
+if (-not (Test-Path $AgentsPs1)) { Write-Error "Could not find agents.ps1 at $AgentsPs1"; exit 1 }
+
 Install-WingetPackage -Command npm.cmd -Name 'Node.js LTS and npm' -Id 'OpenJS.NodeJS.LTS'
 Install-WingetPackage -Command bun -Name 'Bun' -Id 'Oven-sh.Bun'
 
@@ -107,7 +132,7 @@ if (-not $npmGlobalBin) { throw 'Could not determine the npm global executable d
 Add-UserPath $npmGlobalBin
 
 Write-Host 'Bootstrapping copilot-env dependencies ...'
-& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir 'bin\copilot-api.ps1') env | Out-Null
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoDir 'bin\copilot-api.ps1') env | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'copilot-env dependency bootstrap failed.' }
 
 Install-AgentCli -Command claude -Name 'Claude Code CLI' -Package '@anthropic-ai/claude-code'

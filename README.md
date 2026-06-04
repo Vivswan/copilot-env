@@ -18,7 +18,8 @@ It is a TypeScript port of an original Python `copilot-api` helper, and runs on
 - **Model aliases** — once the daemon is up, catalog-derived aliases are synced
   live via the admin API and printed grouped by target model.
 - **Shell + Codex wiring** — `env` prints the variables to point your tools at the
-  local gateway; `codex-home` writes a host-local `CODEX_HOME`.
+  local gateway; `agent codex` writes your `~/.codex` config so Codex routes
+  through it too.
 - **Cost reporting** — `cost` reads the gateway's per-host usage databases and
   prints estimated spend using live OpenRouter pricing.
 - **Supply-chain hygiene** — the gateway dependency floats to `latest` but only
@@ -27,26 +28,36 @@ It is a TypeScript port of an original Python `copilot-api` helper, and runs on
 
 ## Requirements
 
-- [bun](https://bun.sh) `>=1.3.0` — the `bin/` launchers will install it for you
-  if absent.
-- Node.js `>=20` (used to run the gateway daemon).
+The installer sets up everything for you (Node via [nvm](https://github.com/nvm-sh/nvm),
+[bun](https://bun.sh), and the agent CLIs on macOS/Linux; Git, Node, Bun, and the
+agent CLIs via `winget` on Windows). `git` is the only thing you need up front on
+macOS/Linux — and the installer will attempt to install it via your system
+package manager if it is missing.
 
 ## Install
 
-Clone the repo and use the launchers in `bin/` directly:
+One line — clones into `~/.copilot-env` (override with `COPILOT_ENV_DIR`),
+installs prerequisites + the agent CLIs, and wires up your shell:
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/Vivswan/copilot-env/main/install.sh | bash
+```
+
+```powershell
+# Windows
+irm https://raw.githubusercontent.com/Vivswan/copilot-env/main/install.ps1 | iex
+```
+
+Re-running the same command later **updates** an existing checkout (`git pull`)
+and is otherwise idempotent.
+
+Prefer to drive the CLI directly from a manual checkout? That works too:
 
 ```bash
 git clone https://github.com/Vivswan/copilot-env.git
 cd copilot-env
-./bin/copilot-api --help
-```
-
-On Windows, use the PowerShell launcher instead of the POSIX shim:
-
-```powershell
-git clone https://github.com/Vivswan/copilot-env.git
-cd copilot-env
-powershell -ExecutionPolicy Bypass -File bin\copilot-api.ps1 --help
+./bin/copilot-api --help        # or: powershell -File bin\copilot-api.ps1 --help
 ```
 
 The first invocation bootstraps a per-user cache (dependencies + gateway) following
@@ -67,13 +78,14 @@ OS conventions:
 ./bin/copilot-api cost       # estimated token spend across all per-host usage DBs
 ./bin/copilot-api stop       # stop the daemon
 
-./bin/codex-home --base-url <url> --api-key <key>   # write a host-local CODEX_HOME
+./bin/codex-home --base-url <url> --api-key <key>   # write Codex config into ~/.codex
 ```
 
 On Windows, use the PowerShell launchers: `bin/copilot-api.ps1` and
 `bin/codex-home.ps1` (e.g. `powershell -ExecutionPolicy Bypass -File bin\codex-home.ps1`).
-`codex-home` writes config to `%USERPROFILE%\.codex\config.toml` by default;
-`--hostname-path` and `--symlink-farm` (the per-host symlink farm) are Linux-only.
+`codex-home` writes config to `~/.codex` (`%USERPROFILE%\.codex`) by default, which
+Codex reads natively; the `--hostname-path` / `--symlink-farm` per-host layout is
+Linux-only and rarely needed.
 
 ### Environment overrides
 
@@ -83,21 +95,19 @@ On Windows, use the PowerShell launchers: `bin/copilot-api.ps1` and
 
 ### Shell integration
 
-`agents.bashrc` defines an `agent` dispatcher plus `cl` / `co` / `cx` aliases, and
-`agents_codex.bashrc` adds Codex `CODEX_HOME` wiring. Source them from your shell
-rc to get the lifecycle wrappers on your `PATH`.
+The one-line installer above already wires this up — it adds a source block for
+`agents.bashrc` to `~/.bashrc` and/or `~/.zshrc` (or dot-sources `agents.ps1`
+from your PowerShell `$PROFILE` on Windows). `agents.bashrc` defines an `agent`
+dispatcher (`agent start` to launch the gateway, `agent codex` to wire Codex
+through it, anything else passed through to the CLI) plus `cl` / `co` / `cx`
+launchers.
 
-Run `install.sh` to add the source block to `~/.bashrc` and/or `~/.zshrc`
-automatically (idempotent — re-running skips files that already have it):
+From a manual checkout you can run the installer directly (idempotent —
+re-running skips files that already have the block, and updates the checkout):
 
 ```bash
-./install.sh          # source agents.bashrc
-./install.sh --codex  # also source agents_codex.bashrc (Codex CODEX_HOME wiring)
+./install.sh          # install prereqs + source agents.bashrc
 ```
-
-On Windows, `agents.ps1` is the PowerShell equivalent of `agents.bashrc`. Run the
-PowerShell installer to install Git, Node.js/npm, Bun, the agent CLIs, bootstrap
-copilot-env dependencies, and dot-source `agents.ps1` from your `$PROFILE`:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File install.ps1

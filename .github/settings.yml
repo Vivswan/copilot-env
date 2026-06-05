@@ -86,6 +86,9 @@ rulesets:
         parameters:
           review_on_push: true
           review_draft_pull_requests: true
+      - type: code_quality
+        parameters:
+          severity: warning
     bypass_actors:
       - actor_id: 5
         actor_type: RepositoryRole

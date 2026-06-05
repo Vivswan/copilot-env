@@ -17,6 +17,8 @@ repository:
   allow_rebase_merge: false
   delete_branch_on_merge: true
   allow_auto_merge: true
+  enable_vulnerability_alerts: true
+  enable_automated_security_fixes: true
 
 labels:
   - name: dependencies
@@ -48,6 +50,7 @@ rulesets:
     rules:
       - type: deletion
       - type: non_fast_forward
+      - type: required_linear_history
       - type: required_status_checks
         parameters:
           strict_required_status_checks_policy: false
@@ -56,6 +59,9 @@ rulesets:
             - context: ubuntu-latest
             - context: macos-latest
             - context: windows-latest
+            - context: "install.sh smoke (ubuntu-latest)"
+            - context: "install.sh smoke (macos-latest)"
+            - context: "install.ps1 smoke (windows-latest)"
             - context: actionlint
       - type: code_scanning
         parameters:

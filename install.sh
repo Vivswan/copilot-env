@@ -20,24 +20,91 @@ REPO_URL="https://github.com/Vivswan/copilot-env.git"
 INSTALL_DIR="${COPILOT_ENV_DIR:-$HOME/.copilot-env}"
 NVM_VERSION="v0.40.1"
 NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
+COOLDOWN_DEFAULT_DAYS=7   # matches bunfig.toml install.minimumReleaseAge (604800s)
+COOLDOWN_DAYS=""          # empty = disabled (install the npm `latest` tag)
+COOLDOWN_REPO_SHA=""      # set when --cooldown rolls the repo back to an aged commit
+# Repo cooldown floor / ceiling (parallels GATEWAY_MIN_VERSION / GATEWAY_MAX_VERSION
+# in src/user_cache.ts): never roll the checkout back before MIN -- a known-good
+# baseline that is always available even if it is younger than the cooldown -- and
+# never adopt past MAX (set it to hold below a known-bad commit; empty = no ceiling).
+COOLDOWN_REPO_MIN_SHA="e59d7ed"
+COOLDOWN_REPO_MAX_SHA=""
 
 usage() {
     cat <<'EOF'
-Usage: install.sh
+Usage: install.sh [--cooldown[=DAYS]]
 
 Installs Node (via nvm), bun, and the agent CLIs, clones/updates copilot-env,
 and adds its shell integration to ~/.bashrc / ~/.zshrc.
+
+Options:
+  --cooldown[=DAYS]   Supply-chain cooldown for the agent CLIs (claude / copilot
+                      / codex): instead of npm's `latest`, install the newest
+                      release that has been public for at least DAYS days, so a
+                      compromised just-published version has time to be caught
+                      and yanked before any user adopts it. Bare --cooldown uses
+                      7 days, matching the gateway's bunfig.toml cooldown.
 EOF
 }
 
 for arg in "$@"; do
     case "$arg" in
         -h|--help) usage; exit 0 ;;
+        --cooldown) COOLDOWN_DAYS="$COOLDOWN_DEFAULT_DAYS" ;;
+        --cooldown=*)
+            COOLDOWN_DAYS="${arg#*=}"
+            [ -n "$COOLDOWN_DAYS" ] || { echo "ERROR: --cooldown= needs a value, e.g. --cooldown=7." >&2; exit 2; } ;;
         *) echo "ERROR: unknown argument '$arg' (try --help)" >&2; exit 2 ;;
     esac
 done
 
+case "$COOLDOWN_DAYS" in
+    "") ;;            # disabled
+    *[!0-9]*) echo "ERROR: --cooldown expects a whole number of days (got '$COOLDOWN_DAYS')." >&2; exit 2 ;;
+esac
+
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# Resolve the copilot-env commit to pin under --cooldown: the newest commit on
+# origin/main that is >= <days> old, clamped to the [MIN, MAX] window above. A
+# MAX ceiling limits the search to that commit's ancestors; if nothing past the
+# floor has aged in yet, we pin MIN exactly (cooldown bypassed for the floor), so
+# the known-good baseline is always available. Mirrors floatGateway in user_cache.ts.
+# NOTE: `--before` filters on the *commit date*, which (unlike npm's registry
+# publish time) is advisory and can be backdated. The manually-vetted MIN floor is
+# therefore the hard anchor -- the cooldown only ever advances past it as commits
+# age in. Assumes a linear main (squash-only merges + required_linear_history), so
+# for ALL aged commits the floor fallback is exactly right.
+resolve_aged_commit() {  # <repo-dir> <days> -> prints a commit SHA on stdout
+    _repo="$1"; _days="$2"; _upper="origin/main"
+    if [ -n "$COOLDOWN_REPO_MAX_SHA" ]; then
+        git -C "$_repo" merge-base --is-ancestor "$COOLDOWN_REPO_MIN_SHA" "$COOLDOWN_REPO_MAX_SHA" 2>/dev/null \
+            || { echo "ERROR: COOLDOWN_REPO_MIN_SHA is not an ancestor of COOLDOWN_REPO_MAX_SHA." >&2; return 1; }
+        _upper="$COOLDOWN_REPO_MAX_SHA"
+    fi
+    _aged="$(git -C "$_repo" rev-list -1 --before="${_days} days ago" "$_upper" 2>/dev/null || true)"
+    # Floor: never older than MIN. If nothing past the floor has aged in, pin MIN.
+    if [ -z "$_aged" ] || ! git -C "$_repo" merge-base --is-ancestor "$COOLDOWN_REPO_MIN_SHA" "$_aged" 2>/dev/null; then
+        _aged="$(git -C "$_repo" rev-parse --verify --quiet "${COOLDOWN_REPO_MIN_SHA}^{commit}" || true)"
+        [ -n "$_aged" ] || { echo "ERROR: COOLDOWN_REPO_MIN_SHA (${COOLDOWN_REPO_MIN_SHA}) not found in copilot-env history." >&2; return 1; }
+    fi
+    printf '%s\n' "$_aged"
+}
+
+# Deferred repo-cooldown rollback, armed via an EXIT trap once the aged commit is
+# resolved: on ANY exit -- clean finish or a mid-install failure (npm/bun/bootstrap
+# error, interrupt) -- roll the installer-managed clone back to the aged commit, so
+# under --cooldown it is never left running on fresh origin/main. Preserves the
+# original exit status so failures still surface.
+apply_repo_cooldown() {
+    _rc=$?
+    trap - EXIT
+    if [ -n "$COOLDOWN_REPO_SHA" ]; then
+        echo "Cooldown: pinning copilot-env to ${COOLDOWN_REPO_SHA} (>=${COOLDOWN_DAYS}d old) ..."
+        git -C "$REPO_DIR" reset --hard "$COOLDOWN_REPO_SHA" || true
+    fi
+    exit "$_rc"
+}
 
 # --- git (needed to clone; the one prereq that may want the system pkg mgr) -
 as_root() {
@@ -86,6 +153,18 @@ else
         git clone "$REPO_URL" "$INSTALL_DIR"
     fi
     REPO_DIR="$INSTALL_DIR"
+    # With --cooldown, hold the copilot-env checkout itself back to the newest
+    # commit on main that is >= COOLDOWN_DAYS old (clamped to [MIN, MAX]) -- the
+    # same supply-chain delay we apply to npm packages, here defending against a
+    # compromised just-pushed commit to this very repo. We resolve the SHA now
+    # (off the fresh origin/main we just fetched) but defer the actual rollback to
+    # the end of the script: the steps below run from this checkout (e.g. the
+    # agent-CLI cooldown resolver in src/install/) and need not exist in that
+    # older commit.
+    if [ -n "$COOLDOWN_DAYS" ]; then
+        COOLDOWN_REPO_SHA="$(resolve_aged_commit "$INSTALL_DIR" "$COOLDOWN_DAYS")" || exit 1
+        trap apply_repo_cooldown EXIT
+    fi
 fi
 
 AGENTS_BASHRC="${REPO_DIR}/agents.bashrc"
@@ -136,10 +215,34 @@ esac
 export PATH
 
 # --- agent CLIs (npm global lands in nvm's prefix -- no sudo) --------------
+# With --cooldown, resolve the newest published release of <pkg> that is at
+# least COOLDOWN_DAYS old (excluding prereleases) and pin to it, instead of
+# trusting npm's `latest` tag -- the same supply-chain delay bunfig.toml gives
+# the gateway's deps. The resolution lives in src/install/aged-version.ts (shared
+# verbatim with install.ps1, and unit-tested) and runs under the bun we just
+# installed; here we only feed it `npm view <pkg> time`.
+resolve_aged_version() {  # <pkg> <days> -> prints a pinned version on stdout
+    npm view "$1" time --json 2>/dev/null \
+        | bun "${REPO_DIR}/src/install/aged-version.ts" --days "$2"
+}
+
 ensure_cli() {  # ensure_cli <command> <description> <npm-package>
+    # --cooldown governs FRESH installs only: an already-present CLI is left as-is
+    # (we never downgrade a CLI the user installed themselves). Re-run after
+    # uninstalling, or `npm i -g <pkg>@<version>` manually, to change a pinned one.
     if have "$1"; then echo "$2 already installed."; return 0; fi
-    echo "Installing $2 ..."
-    npm install -g "$3"
+    spec="$3"
+    if [ -n "$COOLDOWN_DAYS" ]; then
+        if ! ver="$(resolve_aged_version "$3" "$COOLDOWN_DAYS")" || [ -z "$ver" ]; then
+            echo "ERROR: no release of $3 is >=${COOLDOWN_DAYS} days old (or npm/registry unreachable)." >&2
+            return 1
+        fi
+        spec="$3@$ver"
+        echo "Installing $2 ($spec, cooled down >=${COOLDOWN_DAYS}d) ..."
+    else
+        echo "Installing $2 ..."
+    fi
+    npm install -g "$spec"
 }
 ensure_cli claude "Claude Code CLI" "@anthropic-ai/claude-code"
 ensure_cli copilot "GitHub Copilot CLI" "@github/copilot"
@@ -179,6 +282,15 @@ if [ "$installed" = false ]; then
     esac
     touch "$rc"
     install_to "$rc"
+fi
+
+# Clean-finish repo-cooldown rollback: disarm the failure trap and roll the
+# managed clone back to the aged commit now (before "Done"), so its output
+# doesn't trail the final message. The trap still covers any earlier failure.
+if [ -n "$COOLDOWN_REPO_SHA" ]; then
+    trap - EXIT
+    echo "Cooldown: pinning copilot-env to ${COOLDOWN_REPO_SHA} (>=${COOLDOWN_DAYS}d old) ..."
+    git -C "$REPO_DIR" reset --hard "$COOLDOWN_REPO_SHA"
 fi
 
 echo ""

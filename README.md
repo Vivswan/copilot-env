@@ -57,6 +57,29 @@ irm https://raw.githubusercontent.com/Vivswan/copilot-env/main/install.ps1 | iex
 Re-running the same command later **updates** an existing checkout (`git pull`)
 and is otherwise idempotent.
 
+For extra supply-chain safety, add `--cooldown`. It applies a delay to **both**
+the agent CLIs (`claude` / `copilot` / `codex`) **and** the copilot-env checkout
+itself (override the 7-day default with `--cooldown=DAYS`): each CLI installs the
+newest npm release whose **publish time** is ≥ 7 days ago instead of bleeding-edge
+`latest`, and the installer-managed clone is rolled back to the newest `main`
+commit **dated** ≥ 7 days ago, never below a manually-vetted known-good baseline
+commit. (The npm side uses the registry's publish timestamp; the repo side uses
+the commit date, which is advisory — the pinned baseline floor is the hard
+anchor.) The same delay the gateway's own dependencies already get, it defends
+against a compromised just-published npm release or just-pushed commit (note:
+`--cooldown` governs *fresh* CLI installs — an already-installed `claude` /
+`copilot` / `codex` is left untouched, never downgraded):
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/Vivswan/copilot-env/main/install.sh | bash -s -- --cooldown
+```
+
+```powershell
+# Windows (from a checkout; -CooldownDays N overrides the 7-day default)
+powershell -ExecutionPolicy Bypass -File install.ps1 -Cooldown
+```
+
 Prefer to drive the CLI directly from a manual checkout? That works too:
 
 ```bash

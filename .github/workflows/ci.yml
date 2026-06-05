@@ -70,6 +70,77 @@ jobs:
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
           bun run lint:ps
 
+  # Run the real install.sh end-to-end (Linux + macOS) so the whole installer
+  # stays working: nvm + Node, bun, the three agent CLIs (pinned through the
+  # --cooldown resolver, src/install/aged-version.ts), and the shell-rc wiring.
+  # It runs from the checkout (so it exercises THIS commit, not origin/main) and
+  # a non-zero exit -- or a missing CLI / unwired rc afterwards -- fails the job.
+  install-sh:
+    name: install.sh smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run install.sh --cooldown
+        run: bash install.sh --cooldown
+
+      - name: Verify agent CLIs + shell integration are wired
+        run: |
+          export NVM_DIR="$HOME/.nvm"
+          # shellcheck disable=SC1091
+          . "$NVM_DIR/nvm.sh"
+          for cli in claude copilot codex; do
+            command -v "$cli" >/dev/null || { echo "::error::$cli was not installed by install.sh"; exit 1; }
+            echo "found $cli -> $(command -v "$cli")"
+          done
+          grep -lF "copilot-env shell integration" "$HOME/.bashrc" "$HOME/.zshrc" 2>/dev/null \
+            || { echo "::error::shell integration block was not added to any rc file"; exit 1; }
+
+  # Windows parity of install-sh: run install.ps1 end-to-end. Git + Node/npm are
+  # preinstalled on windows-latest; we provide bun via setup-bun so the installer's
+  # winget prereq step is a no-op (winget is unreliable in CI) and the run exercises
+  # install.ps1's own logic: clone detection, the -Cooldown agent-CLI resolver, the
+  # npm CLI install, and PowerShell-$PROFILE wiring. Runs from the checkout.
+  install-ps1:
+    name: install.ps1 smoke (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Run install.ps1 -Cooldown
+        shell: pwsh
+        run: ./install.ps1 -Cooldown
+
+      - name: Verify agent CLIs + profile integration are wired
+        shell: pwsh
+        run: |
+          $bin = (& npm.cmd prefix -g).Trim()
+          foreach ($cli in 'claude', 'copilot', 'codex') {
+            $found = (Get-Command $cli -ErrorAction SilentlyContinue) `
+              -or (Test-Path (Join-Path $bin "$cli.cmd")) -or (Test-Path (Join-Path $bin $cli))
+            if (-not $found) { Write-Error "::error::$cli was not installed by install.ps1"; exit 1 }
+            Write-Host "found $cli"
+          }
+          $docs = [Environment]::GetFolderPath('MyDocuments')
+          $profiles = @(
+            (Join-Path $docs 'WindowsPowerShell\Microsoft.PowerShell_profile.ps1')
+            (Join-Path $docs 'PowerShell\Microsoft.PowerShell_profile.ps1')
+          )
+          if (-not ($profiles | Where-Object { (Test-Path $_) -and (Select-String -Path $_ -SimpleMatch 'agents.ps1' -Quiet) })) {
+            Write-Error "::error::shell integration block was not added to any PowerShell profile"; exit 1
+          }
+          Write-Host "profile wiring OK"
+
   actionlint:
     name: actionlint
     runs-on: ubuntu-latest

@@ -1,5 +1,7 @@
-# Local assistant/editor workspace state.
-.claude/
+# Local assistant/editor workspace state. `.claude/settings.json` IS committed
+# (shared hooks/config); personal overrides and Claude-created worktrees stay ignored.
+.claude/settings.local.json
+.claude/worktrees/
 .worktrees/
 
 # copilot-env in-place bootstrap artifacts (no-flag user_cache.ts installs +

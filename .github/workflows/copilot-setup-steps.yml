@@ -1,0 +1,36 @@
+# Provisions the ephemeral environment for the GitHub Copilot coding agent before
+# it starts a task: it runs the job named exactly `copilot-setup-steps` (a special
+# name GitHub recognizes) so the agent gets bun + the pinned project deps ready
+# (`bun run typecheck` / `bun test` / `biome` work out of the box). Mirrors the
+# `bun install --frozen-lockfile` baseline the CI `check` job uses.
+#
+# https://docs.github.com/en/copilot/customizing-copilot/customizing-the-development-environment-for-copilot-coding-agent
+name: Copilot setup steps
+
+on:
+  workflow_dispatch:
+  # Validate this file when it changes (it's invoked directly by the agent, not
+  # by these triggers, so there's no need to run it on every push).
+  push:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+  pull_request:
+    paths:
+      - .github/workflows/copilot-setup-steps.yml
+
+jobs:
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Initialize the environment
+        run: bash scripts/setup-env.sh
+        env:
+          HUSKY: "0"

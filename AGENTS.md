@@ -51,6 +51,11 @@ This project supports **Linux, macOS, and Windows**.
 - `patches/` — patch-package patches (applied via `postinstall`)
 - `test/**/*.test.ts` — `bun test` suites, centralized under `test/` (pure-logic units for `models.ts`/`pricing.ts`/`paths.ts`/`config.ts`/`usage.ts`/`install/aged-version.ts`, a `codex_config.ts` config test, the `aged-version.ts` resolver units + CLI smoke tests, and a `cli.ts --help` smoke test). They import the code under test via `../src/...`. `bun:test`/`bun:sqlite` are exempted from biome's `noUnresolvedImports` via a `*.test.ts` override in `biome.json`.
 - `scripts/lint-sh.sh` / `scripts/lint-ps.sh` — skip-if-absent shell/PowerShell linters used by pre-commit + CI
+- `scripts/setup-env.sh` / `scripts/setup-env.ps1` — the **single** environment/worktree init (`bun install --frozen-lockfile`, idempotent, bun + deps only). Shared by every agent/dev entry point so they can't drift (see "Agent & dev environment init" below).
+- `.github/workflows/copilot-setup-steps.yml` — provisions the GitHub **Copilot coding agent**'s ephemeral env before it starts a task: a single job named exactly `copilot-setup-steps` (the name GitHub recognizes) runs `setup-bun` (1.3.14) → `scripts/setup-env.sh` (`HUSKY=0`). `actionlint` lints it; it is not a required status check.
+- `.devcontainer/devcontainer.json` — Codespaces / VS Code Dev Containers: base ubuntu + node 20 feature, `postCreateCommand` installs `bun@1.3.14` then runs `scripts/setup-env.sh`; recommends the biome + bun VS Code extensions.
+- `.claude/settings.json` — Claude Code `SessionStart` hook that auto-inits a fresh worktree (`[ -d "$CLAUDE_PROJECT_DIR/node_modules" ] || bash "$CLAUDE_PROJECT_DIR/scripts/setup-env.sh"` — anchored on the project root so it works even when Claude is launched from a subdirectory) — a no-op in the main checkout, installs deps in a new worktree.
+- `.codex/hooks.json` — Codex CLI `SessionStart` hook (same pattern as `.claude/settings.json`): runs `scripts/setup-env.sh` on first startup when `node_modules` is missing. Project-scoped; Codex loads it when the project `.codex/` layer is trusted.
 - `.github/workflows/ci.yml` — CI: install/typecheck/lint/test **plus a start/stop daemon-lifecycle step** on a Linux+macOS+Windows matrix (shellcheck on Linux, PSScriptAnalyzer on Windows), **an `install-sh` job that runs the real `install.sh --cooldown` end-to-end on Linux+macOS and an `install-ps1` job that runs `install.ps1 -Cooldown` end-to-end on Windows** (prereqs + the agent CLIs + shell/profile wiring, asserting the CLIs and integration block land), + an `actionlint` job; the lifecycle step runs `cli.ts start`→`stop` against a fake gateway (`COPILOT_API_ENTRY` → `test/copilot-api-fake.mjs`, no auth needed); `concurrency` cancels superseded runs
 - `test/copilot-api-fake.mjs` — stand-in gateway for the start/stop check: binds the port, answers the admin endpoints, prints the `Listening on:` marker, stays alive until `SIGTERM`. Selected via the `COPILOT_API_ENTRY` override in `copilot_api/process.ts:resolveCopilotApiEntry`. Its name must contain `copilot-api` so `isCopilotApiPid`'s cmdline matcher recognizes the launched daemon (else `stop` won't signal it).
 - `.github/workflows/codeql.yml` — CodeQL code scanning (javascript-typescript) on push/PR + a weekly schedule
@@ -61,6 +66,25 @@ This project supports **Linux, macOS, and Windows**.
 - `.github/copilot-instructions.md` — symlink to `AGENTS.md` (GitHub Copilot reads repo instructions from here, mirroring the `CLAUDE.md` symlink)
 - `SECURITY.md` / `CONTRIBUTING.md` — security disclosure policy + contributor guide
 - `.github/ISSUE_TEMPLATE/` + `.github/PULL_REQUEST_TEMPLATE.md` — issue / PR templates
+
+## Agent & dev environment init
+
+Every agent/dev environment — and any fresh `git worktree` that Claude Code or
+Codex spins up — initializes through **one** idempotent script,
+`scripts/setup-env.sh` (`scripts/setup-env.ps1` on Windows), which runs
+`bun install --frozen-lockfile` (bun + deps only; no agent CLIs, no gateway). The
+single script keeps every entry point from drifting:
+
+- **GitHub Copilot coding agent** → `.github/workflows/copilot-setup-steps.yml` (job `copilot-setup-steps`) runs it automatically when provisioning the agent's env.
+- **Codespaces / VS Code Dev Containers** → `.devcontainer/devcontainer.json` `postCreateCommand` runs it on container create.
+- **Claude Code worktrees** → `.claude/settings.json` `SessionStart` hook runs it when `node_modules` is missing (no-op otherwise).
+- **Codex CLI worktrees** → `.codex/hooks.json` `SessionStart` hook runs `scripts/setup-env.sh` when `node_modules` is missing (no-op otherwise). The project `.codex/` layer must be trusted (Codex prompts on first use). For the **Codex app** (cloud/desktop), setup runs from an app-configured **Local Environment** (Codex app settings → Local Environments) that executes automatically on worktree creation (worktrees live under `$CODEX_HOME/worktrees`; the worktree path is `$CODEX_WORKTREE_PATH`). Recommended config:
+  - **Setup script** (runs at project root on worktree creation): `bash scripts/setup-env.sh` (Default/macOS/Linux); `pwsh scripts/setup-env.ps1` (Windows).
+  - **Cleanup script** (runs before worktree cleanup): `./bin/agent stop || true` (best-effort: stop the gateway daemon if this worktree started one).
+  - **Actions** (toolbar commands): `bun run typecheck`, `bun run lint`, `bun test`, `bun run check`, `./bin/agent start`, `./bin/agent stop`.
+
+  Once saved, Codex writes the project config under `.codex/` at the repo root — commit it to share the setup with the team.
+- **Humans** → just run `bash scripts/setup-env.sh` (or `bun install`).
 
 ## Conventions
 

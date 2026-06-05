@@ -151,12 +151,18 @@ to launch the gateway, or `cl` / `co` / `cx` to launch an agent.
 ## Development
 
 ```bash
+bash scripts/setup-env.sh  # one-shot env/worktree init (bun install --frozen-lockfile)
 bun install                # install dev/runtime deps
 bun run typecheck          # tsc --noEmit
 bun run lint               # biome check src bin
 bun run format             # biome format --write src bin
 bun run check              # biome check --write src bin
 ```
+
+`scripts/setup-env.sh` (`scripts/setup-env.ps1` on Windows) is the single
+environment initializer — the GitHub Copilot coding agent, Codespaces / Dev
+Containers, Claude Code worktrees, and Codex worktrees all run it so the env
+comes up ready (see [`AGENTS.md`](./AGENTS.md) → "Agent & dev environment init").
 
 Conventions, the gateway floating/cooldown model, and a file-by-file breakdown are
 documented in [`AGENTS.md`](./AGENTS.md).

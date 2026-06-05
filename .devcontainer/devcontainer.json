@@ -1,0 +1,15 @@
+{
+  "name": "copilot-env",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    }
+  },
+  "postCreateCommand": "npm install -g bun@1.3.14 && bash scripts/setup-env.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": ["biomejs.biome", "oven.bun-vscode"]
+    }
+  }
+}

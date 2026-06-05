@@ -59,13 +59,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: raven-actions/actionlint@v2
 
-  # Exercises the real Windows daemon lifecycle -- the one thing that can't be
-  # reasoned about statically: whether bun's detached spawn keeps the daemon
-  # alive after the launcher exits. `start` only exits 0 if the daemon is still
-  # alive ~1s later, so a green run proves detached-spawn survival on Windows.
-  # Informational for now (continue-on-error, not a required check) because the
-  # gateway may need GitHub Copilot auth that CI can't provide; promote it to a
-  # required check once it proves stable.
+  # Exercises whether bun's detached spawn keeps the daemon alive on Windows
+  # (the one thing that can't be reasoned about statically). Runs server.ts
+  # directly against root node_modules -- NOT via the bin/cache shim, which on
+  # Windows resolves the junction-mirrored src back to the source tree and can't
+  # find the cache's node_modules. `start` only exits 0 if the daemon is still
+  # alive ~1s later, so a green run proves detached-spawn survival. Informational
+  # (continue-on-error) -- the gateway may need Copilot auth CI can't provide.
   windows-start-stop:
     name: windows start/stop (smoke)
     runs-on: windows-latest
@@ -75,11 +75,15 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
-      - name: Launch via the PowerShell launcher, verify the daemon survives, then stop it
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          HUSKY: "0"
+      - name: Start the daemon, verify it survives, then stop it
         shell: pwsh
         run: |
-          powershell -ExecutionPolicy Bypass -File bin\copilot-api.ps1 start
+          bun src/server.ts start
           if ($LASTEXITCODE -ne 0) { Write-Error 'start failed: the detached daemon did not survive ~1s'; exit 1 }
-          powershell -ExecutionPolicy Bypass -File bin\copilot-api.ps1 stop
+          bun src/server.ts stop
           if ($LASTEXITCODE -ne 0) { Write-Error 'stop failed'; exit 1 }
           Write-Host 'start/stop OK on Windows'

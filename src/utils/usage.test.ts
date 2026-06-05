@@ -10,7 +10,13 @@ let dir = "";
 
 afterEach(() => {
   if (dir) {
-    rmSync(dir, { recursive: true, force: true });
+    // bun:sqlite can briefly hold the DB file on Windows after close() (EBUSY),
+    // so retry the cleanup; never let a temp-dir cleanup fail a passing test.
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch {
+      // leaked temp dir is harmless on CI runners
+    }
     dir = "";
   }
 });

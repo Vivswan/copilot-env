@@ -1,7 +1,7 @@
 # Repository settings managed by the Probot "Settings" GitHub App
 # (https://github.com/apps/settings). This file is inert unless that app is
-# installed on the repo. No branch protection is defined on purpose -- commits
-# land directly on main.
+# installed on the repo. The `rulesets` block below is an experimental upstream
+# feature (repository-settings/app) -- its schema may still change.
 
 repository:
   description: Local copilot-api gateway lifecycle + config helper (TypeScript).
@@ -31,3 +31,39 @@ labels:
   - name: fix-lint
     color: "fbca04"
     description: Lint / formatting fixes
+
+# Branch ruleset for the default branch. Admins (RepositoryRole id 5) are in the
+# bypass list, so direct pushes to main still work. Two newer rules -- "require
+# code quality results" and "automatically request Copilot review" -- aren't
+# expressible here yet; add those in the UI (Settings -> Rules -> Rulesets).
+rulesets:
+  - name: main
+    target: branch
+    enforcement: active
+    conditions:
+      ref_name:
+        include:
+          - "~DEFAULT_BRANCH"
+        exclude: []
+    rules:
+      - type: deletion
+      - type: non_fast_forward
+      - type: required_status_checks
+        parameters:
+          strict_required_status_checks_policy: false
+          do_not_enforce_on_create: true
+          required_status_checks:
+            - context: ubuntu-latest
+            - context: macos-latest
+            - context: windows-latest
+            - context: actionlint
+      - type: code_scanning
+        parameters:
+          code_scanning_tools:
+            - tool: CodeQL
+              security_alerts_threshold: high_or_higher
+              alerts_threshold: errors
+    bypass_actors:
+      - actor_id: 5
+        actor_type: RepositoryRole
+        bypass_mode: always

@@ -53,8 +53,7 @@ This project supports **Linux, macOS, and Windows**.
 - `.github/workflows/codeql.yml` — CodeQL code scanning (javascript-typescript) on push/PR + a weekly schedule
 - `.github/workflows/auto-assign.yml` — assigns new issues/PRs to the repo owner and labels same-repo PRs `fix-lint`
 - `.github/dependabot.yml` — monthly `github-actions` + `bun` updates (bun ecosystem is GA in Dependabot; 7-day cooldown mirroring `bunfig.toml`; floated gateway ignored)
-- `.github/settings.yml` — repo settings-as-code for the [Settings app](https://github.com/repository-settings/app) (squash-only merges, `allow_auto_merge`, wiki/projects off); inert unless that app is installed
-- `.github/rulesets/main.json` — importable branch ruleset for `main` (restrict deletions, block force-push, require CI + CodeQL; admin bypass). Not auto-applied — see `.github/rulesets/README.md` to import (+ two UI-only rules: code-quality results, auto Copilot review)
+- `.github/settings.yml` — repo settings-as-code for the [Settings app](https://github.com/repository-settings/app) (squash-only merges, `allow_auto_merge`, wiki/projects off) **plus an experimental `rulesets` block** for `main` (restrict deletions, block force-push, require CI + CodeQL, admin bypass). Inert unless that app is installed; two newer rules (code-quality results, auto Copilot review) must be enabled in the UI.
 - `.github/CODEOWNERS` — default owner `@Vivswan`
 - `.github/copilot-instructions.md` — symlink to `AGENTS.md` (GitHub Copilot reads repo instructions from here, mirroring the `CLAUDE.md` symlink)
 - `SECURITY.md` / `CONTRIBUTING.md` — security disclosure policy + contributor guide

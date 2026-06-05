@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@jeffreycao/copilot-api": "latest",
-    "citty": "^0.1.6",
+    "citty": "^0.2.2",
     "consola": "^3.4.2",
     "execa": "^9.6.1",
     "patch-package": "^8.0.0",

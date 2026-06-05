@@ -89,7 +89,7 @@ load_project_config() { # <repo-dir>
 # origin/main that is >= <days> old, clamped to the config [MIN, MAX] window. A
 # MAX ceiling limits the search to that commit's ancestors; if nothing past the
 # floor has aged in yet, we pin MIN exactly (cooldown bypassed for the floor), so
-# the known-good baseline is always available. Mirrors floatGateway in user_cache.ts.
+# the known-good baseline is always available. Mirrors floatGateway in src/gateway_float.ts.
 # NOTE: `--before` filters on the *commit date*, which (unlike npm's registry
 # publish time) is advisory and can be backdated. The manually-vetted MIN floor is
 # therefore the hard anchor -- the cooldown only ever advances past it as commits

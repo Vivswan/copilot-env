@@ -20,7 +20,7 @@ import {
 } from "../copilot_api/process.ts";
 import { CopilotApiState } from "../copilot_api/state.ts";
 import { readProjectConfig } from "../project_config.ts";
-import { moduleRoot } from "../utils/root.ts";
+import { PROJECT_ROOT } from "../utils/root.ts";
 import { versionLessThan } from "../utils/semver.ts";
 
 // --- Default config applied on every `start`. ---
@@ -181,7 +181,7 @@ function assertGatewayFloor(): void {
   }
   let floor: string;
   try {
-    floor = readProjectConfig(moduleRoot()).gatewayMinVersion;
+    floor = readProjectConfig(PROJECT_ROOT).gatewayMinVersion;
   } catch (e) {
     throw new Error(
       `could not read the gateway floor from copilot-env.config: ${e instanceof Error ? e.message : String(e)}`,
@@ -397,7 +397,7 @@ export async function runStart(args: { "dry-run"?: boolean }): Promise<void> {
       `   PID:    ${pid}`,
       `   Port:   ${port}`,
       `   SQLite: ${paths.sqliteDb}`,
-      `   Bun env: ${moduleRoot()}`,
+      `   Bun env: ${PROJECT_ROOT}`,
     ].join("\n"),
   );
 }

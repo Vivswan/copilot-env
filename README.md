@@ -17,8 +17,8 @@ It is a TypeScript port of an original Python `copilot-api` helper, and runs on
 - **Lifecycle** — `start` / `stop` the local gateway daemon with a single command.
 - **Zero-setup runtime** — the `bin/` launchers auto-install [bun](https://bun.sh)
   if it is missing, install dependencies + the gateway, and spawn the daemon
-  directly. No global installs to manage. By default deps go straight into the
-  checkout; `local_cache_start` opts into a separate per-user cache instead.
+  directly. No global installs to manage. Dependencies install straight into the
+  checkout (in-place, no cache).
 - **Model aliases** — once the daemon is up, catalog-derived aliases are synced
   live via the admin API and printed grouped by target model.
 - **Shell + Codex wiring** — `env` prints the variables to point your tools at the
@@ -89,22 +89,14 @@ cd copilot-env
 ./bin/agent --help        # or: powershell -File bin\agent.ps1 --help
 ```
 
-By default the first invocation installs dependencies + the gateway directly in
-the checkout and runs from there — no cache. `local_cache_start` instead builds a
-separate per-user cache, following OS conventions:
-
-| OS      | Cache directory                       |
-| ------- | ------------------------------------- |
-| Linux   | `~/.cache/copilot-env`                |
-| macOS   | `~/Library/Caches/copilot-env`        |
-| Windows | `%LOCALAPPDATA%\copilot-env\Cache`    |
+Every invocation installs dependencies + the gateway directly in the checkout
+(in-place) and runs from there — there is no separate cache.
 
 ## Usage
 
 ```bash
 ./bin/agent start      # install deps + gateway in-place, launch the daemon, sync aliases
 ./bin/agent start --dry-run  # preview the resolved start plan without runtime changes
-./bin/agent local_cache_start  # like start, but in a per-user cache (symlink on macOS/Linux, copy on Windows)
 ./bin/agent env        # print shell env vars pointing at the local gateway
 ./bin/agent cost       # estimated token spend across all per-host usage DBs
 ./bin/agent stop       # stop the daemon
@@ -163,9 +155,9 @@ to launch the gateway, or `cl` / `co` / `cx` to launch an agent.
 bash scripts/setup-env.sh  # one-shot env/worktree init (bun install --frozen-lockfile)
 bun install                # install dev/runtime deps
 bun run typecheck          # tsc --noEmit
-bun run lint               # biome check src bin
-bun run format             # biome format --write src bin
-bun run check              # biome check --write src bin
+bun run lint               # biome check src bin test scripts
+bun run format             # biome format --write src bin test scripts
+bun run check              # biome check --write src bin test scripts
 ```
 
 `scripts/setup-env.sh` (`scripts/setup-env.ps1` on Windows) is the single

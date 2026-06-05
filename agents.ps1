@@ -1,9 +1,10 @@
 # Agent commands (Windows / PowerShell) — dot-sourced from your PowerShell
 # $PROFILE. PowerShell equivalent of agents.bashrc.
 #
-# Thin wrapper over bin\agent.ps1 (which self-bootstraps bun, builds the per-user
-# cache, and dispatches). This file only adds what a subprocess can't do for the
-# session: eval the gateway env into the current shell after `start`.
+# Thin wrapper over bin\agent.ps1 (which self-bootstraps bun, installs
+# node_modules in-place in the checkout, and dispatches). This file only adds what
+# a subprocess can't do for the session: eval the gateway env into the current
+# shell after `start`.
 
 # Resolve this file's directory; bin\agent.ps1 lives alongside it.
 $script:AgentsDir = Split-Path -Parent $MyInvocation.MyCommand.Path

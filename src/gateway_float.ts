@@ -2,9 +2,8 @@
 // to releases >=7 days old by bunfig's minimumReleaseAge). This module IS the
 // `bun install` postinstall hook (package.json: "bun src/gateway_float.ts &&
 // patch-package"): main() — guarded by import.meta.main — floats the gateway in the
-// package root bun just installed into. src/user_cache.ts is independent: it only
-// mirrors caches and runs `bun install`, so the install is the sole handoff and
-// the two files never import each other.
+// package root bun just installed into. The bin shims run `bun install` in-place in
+// the checkout (no cache), so that install is the sole trigger for this float.
 //
 // Uses only node builtins (+ the dep-free ./project_config.ts), so it has no
 // install-order constraints and tests can import floatGateway directly without the
@@ -39,14 +38,14 @@ function fail(msg: string): never {
   throw new Error(msg);
 }
 
-function gatewayInstalled(cache: string): boolean {
-  return existsSync(join(cache, "node_modules", "@jeffreycao", "copilot-api", "package.json"));
+function gatewayInstalled(root: string): boolean {
+  return existsSync(join(root, "node_modules", "@jeffreycao", "copilot-api", "package.json"));
 }
 
 /** Installed gateway version (from its package.json), or null if unresolved. */
-function installedGatewayVersion(cache: string): string | null {
+function installedGatewayVersion(root: string): string | null {
   try {
-    const pkgPath = join(cache, "node_modules", "@jeffreycao", "copilot-api", "package.json");
+    const pkgPath = join(root, "node_modules", "@jeffreycao", "copilot-api", "package.json");
     const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version?: unknown };
     return typeof pkg.version === "string" ? pkg.version : null;
   } catch {
@@ -75,9 +74,9 @@ function withinGatewayWindow(v: string, config: ProjectConfig): boolean {
   return true;
 }
 
-function applyPatches(cache: string, bun: string): number {
-  const result = spawnSync(bun, [join(cache, "node_modules", "patch-package", "index.js")], {
-    cwd: cache,
+function applyPatches(root: string, bun: string): number {
+  const result = spawnSync(bun, [join(root, "node_modules", "patch-package", "index.js")], {
+    cwd: root,
     stdio: ["ignore", process.stderr, "inherit"],
   });
   return result.status ?? 1;
@@ -116,15 +115,15 @@ function applyPatches(cache: string, bun: string): number {
  * out-of-contract gateway.
  */
 export function floatGateway(
-  cache: string,
+  root: string,
   bun: string,
   force: boolean,
   config: ProjectConfig,
   cooldownSeconds: number | null,
   checkIntervalMs: number = GATEWAY_CHECK_INTERVAL_MS,
 ): void {
-  const stamp = join(cache, ".gateway-checked");
-  const present = gatewayInstalled(cache);
+  const stamp = join(root, ".gateway-checked");
+  const present = gatewayInstalled(root);
   const override = process.env[GATEWAY_VERSION_ENV]?.trim();
   // Display window for the "≥N-day-old" messages: the explicit cooldown-override
   // days when set, else bunfig's default (7).
@@ -154,10 +153,10 @@ export function floatGateway(
       args.push(`--minimum-release-age=${cooldownSeconds}`);
     }
     const result = spawnSync(bun, args, {
-      cwd: cache,
-      // Route bun's stdout to our stderr so it doesn't pollute the cache-path
-      // capture in the bin shims (`CACHE="$(...)"`). `quiet` captures stderr so
-      // an *expected* failure (e.g. the cooldown blocking the >=floor probe)
+      cwd: root,
+      // Route bun's stdout to our stderr so the float never writes to stdout —
+      // the bin shims keep `agent env` stdout eval-clean. `quiet` captures stderr
+      // so an *expected* failure (e.g. the cooldown blocking the >=floor probe)
       // stays silent; we re-emit it only when the error is unexpected.
       stdio: ["ignore", process.stderr, quiet ? "pipe" : "inherit"],
     });
@@ -170,12 +169,12 @@ export function floatGateway(
       }
     }
     const status = result.status ?? 1;
-    return status === 0 ? applyPatches(cache, bun) : status;
+    return status === 0 ? applyPatches(root, bun) : status;
   };
 
   if (override) {
     // An exact pin already installed is a no-op (dist-tags always re-resolve).
-    if (SEMVER_RE.test(override) && installedGatewayVersion(cache) === override) {
+    if (SEMVER_RE.test(override) && installedGatewayVersion(root) === override) {
       return;
     }
     process.stderr.write(`==> Pinning ${GATEWAY_PKG}@${override} (cooldown bypassed) ...\n`);
@@ -185,7 +184,7 @@ export function floatGateway(
     }
     if (code !== 0) {
       process.stderr.write(
-        `user-cache: WARNING: could not pin ${GATEWAY_PKG}@${override} (offline?); using installed version\n`,
+        `gateway-float: WARNING: could not pin ${GATEWAY_PKG}@${override} (offline?); using installed version\n`,
       );
     }
     return; // override never stamps — next unset run should re-check immediately
@@ -236,7 +235,7 @@ export function floatGateway(
       // Record the resolved version (content); mtime = now is the weekly
       // throttle. We hold this exact version until the next resolution.
       try {
-        writeFileSync(stamp, `${installedGatewayVersion(cache) ?? config.gatewayMinVersion}\n`);
+        writeFileSync(stamp, `${installedGatewayVersion(root) ?? config.gatewayMinVersion}\n`);
       } catch {
         // non-fatal; we just re-check on the next run
       }
@@ -247,14 +246,14 @@ export function floatGateway(
     // installed version is below the floor (or absent), fail loudly. Otherwise
     // keep the installed >=floor gateway; back off (re-stamp with it) when it's
     // in-window so we don't re-probe the registry on every bootstrap.
-    const installedOnFail = installedGatewayVersion(cache);
+    const installedOnFail = installedGatewayVersion(root);
     if (installedOnFail === null || versionLessThan(installedOnFail, config.gatewayMinVersion)) {
       fail(
         `could not install ${GATEWAY_PKG} ${rangeSpec} (offline?) and the installed version (${installedOnFail ?? "none"}) is below the ${config.gatewayMinVersion} floor`,
       );
     }
     process.stderr.write(
-      `user-cache: WARNING: could not refresh ${GATEWAY_PKG} (offline?); keeping installed ${installedOnFail}\n`,
+      `gateway-float: WARNING: could not refresh ${GATEWAY_PKG} (offline?); keeping installed ${installedOnFail}\n`,
     );
     if (withinGatewayWindow(installedOnFail, config)) {
       try {
@@ -270,7 +269,7 @@ export function floatGateway(
   // (e.g. a plain `bun install` pulled a different >=7-day-old release into the
   // same node_modules), pin that exact version back + repatch — no registry
   // round-trip, since `recorded` was already vetted by a prior resolution.
-  const installed = installedGatewayVersion(cache);
+  const installed = installedGatewayVersion(root);
   if (recorded !== null && installed !== recorded) {
     process.stderr.write(
       `==> Installed ${GATEWAY_PKG}@${installed ?? "none"} != pinned ${recorded}; reinstalling + repatching ...\n`,
@@ -282,7 +281,7 @@ export function floatGateway(
     if (code !== 0) {
       const subFloor = installed !== null && versionLessThan(installed, config.gatewayMinVersion);
       process.stderr.write(
-        `user-cache: WARNING: could not reinstall ${GATEWAY_PKG}@${recorded} (offline?); using installed ${installed ?? "none"}${subFloor ? ` — BELOW the ${config.gatewayMinVersion} floor` : ""}\n`,
+        `gateway-float: WARNING: could not reinstall ${GATEWAY_PKG}@${recorded} (offline?); using installed ${installed ?? "none"}${subFloor ? ` — BELOW the ${config.gatewayMinVersion} floor` : ""}\n`,
       );
     }
   }
@@ -290,10 +289,10 @@ export function floatGateway(
 
 // --- Postinstall entry --------------------------------------------------------
 // `bun install` runs this via the package.json "postinstall" hook, right after it
-// (re)lays node_modules. The float lives entirely here; src/user_cache.ts just
-// mirrors caches and runs `bun install`, so the two files are independent and only
-// meet through this hook. Best-effort: a registry/offline hiccup never fails the
-// install (runtime visibility comes from start.ts logging the resolved version).
+// (re)lays node_modules. The float lives entirely here; the bin shims just run
+// `bun install` in-place in the checkout, so the install is the only trigger.
+// Best-effort: a registry/offline hiccup never fails the install (runtime
+// visibility comes from start.ts logging the resolved version).
 //
 // The cooldown/cadence CLI flags were dropped in favor of env vars, inherited
 // straight through `bun install` (so `COPILOT_API_COOLDOWN_DAYS=14 ./bin/agent …`
@@ -320,7 +319,7 @@ function main(): void {
   if (process.env[NO_FLOAT_ENV]?.trim()) return; // float disabled via env
 
   // During a postinstall lifecycle script, cwd is the package root bun installed
-  // into — the runtime root (the checkout in-place, or a per-user cache).
+  // into — the in-place checkout (the runtime root).
   const root = process.cwd();
 
   try {
@@ -338,7 +337,7 @@ function main(): void {
   } catch (error) {
     // Best-effort: never fail `bun install` over the float.
     process.stderr.write(
-      `user-cache: WARNING: gateway float skipped: ${error instanceof Error ? error.message : String(error)}\n`,
+      `gateway-float: WARNING: gateway float skipped: ${error instanceof Error ? error.message : String(error)}\n`,
     );
   }
 }

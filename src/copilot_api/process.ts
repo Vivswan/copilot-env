@@ -7,19 +7,18 @@ import { join } from "node:path";
 import { consola } from "consola";
 import { execa } from "execa";
 import psList from "ps-list";
-import { moduleRoot } from "../utils/root.ts";
+import { PROJECT_ROOT } from "../utils/root.ts";
 
 const logger = consola;
 
-// Resolve the bundled copilot-api entry by anchoring node's module resolution
-// at the runtime root (see moduleRoot) — where bootstrap installs the pinned
-// dep + applies patches. An explicit path anchor (not import.meta) so a
-// symlinked cache resolves node_modules in the cache, not via the source's
-// realpath. Node walks up from the anchor looking for node_modules/.
-const cacheRequire = createRequire(join(moduleRoot(), "_anchor.js"));
+// Resolve the bundled copilot-api entry by anchoring node's module resolution at
+// the in-place checkout where bootstrap installs the pinned dep + applies
+// patches. An explicit path anchor (not import.meta) so node walks up from a
+// stable directory looking for node_modules/.
+const rootRequire = createRequire(join(PROJECT_ROOT, "_anchor.js"));
 
 function resolveCopilotApiEntry(): string {
-  // Escape hatch: an explicit entry path overrides cache resolution. CI uses
+  // Escape hatch: an explicit entry path overrides module resolution. CI uses
   // this to point `start` at a fake gateway so the daemon lifecycle can be
   // exercised without GitHub Copilot auth.
   const override = process.env.COPILOT_API_ENTRY?.trim();
@@ -27,10 +26,10 @@ function resolveCopilotApiEntry(): string {
     return override;
   }
   try {
-    return cacheRequire.resolve("@jeffreycao/copilot-api/dist/main.js");
+    return rootRequire.resolve("@jeffreycao/copilot-api/dist/main.js");
   } catch (e) {
     throw new Error(
-      `copilot-api not installed under ${moduleRoot()}; run the bootstrap step: ${
+      `copilot-api not installed under ${PROJECT_ROOT}; run the bootstrap step: ${
         e instanceof Error ? e.message : String(e)
       }`,
     );
@@ -40,7 +39,7 @@ function resolveCopilotApiEntry(): string {
 /** Read the installed gateway version from its package.json, or null if unresolved. */
 export function copilotApiVersion(): string | null {
   try {
-    const pkgPath = cacheRequire.resolve("@jeffreycao/copilot-api/package.json");
+    const pkgPath = rootRequire.resolve("@jeffreycao/copilot-api/package.json");
     const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version?: unknown };
     return typeof pkg.version === "string" ? pkg.version : null;
   } catch {

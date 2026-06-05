@@ -1,7 +1,7 @@
 import { consola } from "consola";
 import { isCopilotApiPid } from "../copilot_api/process.ts";
 import { CopilotApiState } from "../copilot_api/state.ts";
-import { moduleRoot } from "../utils/root.ts";
+import { PROJECT_ROOT } from "../utils/root.ts";
 
 /** `stop`: terminate the copilot-api daemon tracked on this host. */
 export async function runStop(): Promise<void> {
@@ -28,5 +28,5 @@ export async function runStop(): Promise<void> {
   process.kill(pid, "SIGTERM");
   state.set({ pid: null, port: null });
   consola.info(`Stopped copilot-api (PID ${pid})`);
-  consola.info(`   Bun env: ${moduleRoot()}`);
+  consola.info(`   Bun env: ${PROJECT_ROOT}`);
 }

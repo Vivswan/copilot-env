@@ -10,9 +10,9 @@ import { runCost } from "./usage/cost.ts";
 import { OPENROUTER_MODELS_URL } from "./usage/pricing.ts";
 
 // Thin citty wiring: each subcommand only declares its parameters and calls the
-// matching run function from src/commands/* or src/usage/*. The cache build
-// (user_cache.ts) runs in bin/agent before this, so it is not a
-// subcommand here.
+// matching run function from src/commands/* or src/usage/*. bin/agent runs
+// `bun install` (in-place, in the checkout) before this, so the install/float is
+// not a subcommand here.
 
 const start = defineCommand({
   meta: { name: "start", description: "Start copilot-api in the background, detached." },

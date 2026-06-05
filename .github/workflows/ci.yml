@@ -32,10 +32,19 @@ jobs:
         env:
           HUSKY: "0"
 
+      # Guard the postinstall gateway float: `bun install` above runs
+      # src/gateway_float.ts as its postinstall, which is best-effort (never
+      # fails the install). Without this check a silently broken float would slip
+      # through CI, since the start/stop lifecycle below uses a FAKE gateway
+      # (COPILOT_API_ENTRY) and never resolves the real one. This asserts the
+      # float actually installed @jeffreycao/copilot-api >= the floor, on every OS.
+      - name: Verify gateway float installed the gateway (>= floor)
+        run: bun scripts/verify-gateway-install.ts
+
       - name: Typecheck
         run: bun run typecheck
 
-      - name: Lint (biome)
+      - name: Lint + format (biome check)
         run: bun run lint
 
       - name: Test

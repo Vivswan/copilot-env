@@ -49,6 +49,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            Register-PSRepository -Default
+          }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
           bun run lint:ps
 

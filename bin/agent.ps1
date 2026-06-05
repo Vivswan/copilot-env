@@ -21,13 +21,15 @@ if (Test-Path $BunExe) {
 
 # Install node_modules in-place in the checkout. Scripts stay enabled so bun
 # install's postinstall gateway float (src/gateway_float.ts) fires every call;
-# HUSKY=0 keeps husky's `prepare` from reinstalling git hooks each time. Bun's
-# output goes to the host's stderr so it can't leak into the `agent env` stdout
-# the profile function evals.
+# HUSKY=0 keeps husky's `prepare` from reinstalling git hooks each time. Discard
+# bun's stdout (its install summary) so it can't be captured into the `agent env`
+# output the profile function evals — PowerShell can't merge stdout into stderr
+# (`1>&2` is reserved). bun's progress/errors and the float's messages go to
+# stderr, which stays visible (and the caller silences with `2>$null`).
 $env:HUSKY = '0'
 Push-Location $Snap
 try {
-    & bun install --frozen-lockfile 1>&2
+    & bun install --frozen-lockfile > $null
 } finally {
     Pop-Location
 }

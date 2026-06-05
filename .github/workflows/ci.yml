@@ -41,6 +41,20 @@ jobs:
       - name: Test
         run: bun test
 
+      # End-to-end daemon lifecycle on every OS: process.ts spawns a detached
+      # daemon, `start` waits for it to listen + syncs aliases, `stop` verifies
+      # the tracked pid is ours and signals it. COPILOT_API_ENTRY points at a
+      # fake gateway so no Copilot auth is needed. `shell: bash` runs on the
+      # Windows runner too (git-bash), and a non-zero start/stop fails the step.
+      - name: Start/stop lifecycle (fake gateway)
+        shell: bash
+        env:
+          COPILOT_API_ENTRY: ${{ github.workspace }}/test/copilot-api-fake.mjs
+        run: |
+          bun src/cli.ts start
+          bun src/cli.ts stop
+          echo "start/stop OK on ${{ runner.os }}"
+
       - name: Shell lint (shellcheck)
         if: runner.os == 'Linux'
         run: bun run lint:sh
@@ -62,29 +76,3 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: raven-actions/actionlint@v2
-
-  # End-to-end check of the Windows daemon lifecycle: server.ts spawns a detached
-  # daemon, waits for it to listen, syncs aliases, then stops it. COPILOT_API_ENTRY
-  # points at a fake gateway (test/fake-gateway.mjs) so this needs no Copilot auth.
-  windows-start-stop:
-    name: windows start/stop
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.14
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-        env:
-          HUSKY: "0"
-      - name: Start the daemon (fake gateway), verify it's up, then stop it
-        shell: pwsh
-        env:
-          COPILOT_API_ENTRY: ${{ github.workspace }}/test/fake-gateway.mjs
-        run: |
-          bun src/cli.ts start
-          if ($LASTEXITCODE -ne 0) { Write-Error 'start failed'; exit 1 }
-          bun src/cli.ts stop
-          if ($LASTEXITCODE -ne 0) { Write-Error 'stop failed'; exit 1 }
-          Write-Host 'start/stop OK on Windows'

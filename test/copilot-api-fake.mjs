@@ -1,11 +1,17 @@
 // Fake copilot-api gateway for CI / local lifecycle testing.
 //
-// Spawned by `server.ts` in place of the real gateway when COPILOT_API_ENTRY
-// points here. It binds the requested port, answers the admin endpoints that
-// `start` calls (so model-alias sync succeeds with an empty catalog), prints
-// the exact "Listening on:" marker that `server.ts` waits for in the daemon
-// log, and stays alive until killed -- exercising start -> wait-for-listen ->
-// stop without GitHub Copilot auth. Invoked as: bun fake-gateway.mjs start --port N
+// Spawned by the daemon launcher (copilot_api/process.ts) in place of the real
+// gateway when COPILOT_API_ENTRY points here. It binds the requested port,
+// answers the admin endpoints that `start` calls (so model-alias sync succeeds
+// with an empty catalog), prints the exact "Listening on:" marker that `start`
+// waits for in the daemon log, and stays alive until killed -- exercising
+// start -> wait-for-listen -> stop without GitHub Copilot auth. Invoked as:
+// bun copilot-api-fake.mjs start --port N
+//
+// The filename MUST contain "copilot-api": isCopilotApiPid (process.ts) matches
+// the daemon's command line against /copilot-api.*\bstart\b/, so `stop` only
+// recognizes (and signals) this process when its launch path includes that
+// substring. Do not rename it to something without "copilot-api".
 import { createServer } from "node:http";
 
 const portIdx = process.argv.indexOf("--port");

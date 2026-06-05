@@ -23,11 +23,7 @@ NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 COOLDOWN_DEFAULT_DAYS=7   # matches bunfig.toml install.minimumReleaseAge (604800s)
 COOLDOWN_DAYS=""          # empty = disabled (install the npm `latest` tag)
 COOLDOWN_REPO_SHA=""      # set when --cooldown rolls the repo back to an aged commit
-# Repo cooldown floor / ceiling (parallels GATEWAY_MIN_VERSION / GATEWAY_MAX_VERSION
-# in src/user_cache.ts): never roll the checkout back before MIN -- a known-good
-# baseline that is always available even if it is younger than the cooldown -- and
-# never adopt past MAX (set it to hold below a known-bad commit; empty = no ceiling).
-COOLDOWN_REPO_MIN_SHA="e59d7ed"
+COOLDOWN_REPO_MIN_SHA=""
 COOLDOWN_REPO_MAX_SHA=""
 
 usage() {
@@ -65,8 +61,32 @@ esac
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+load_project_config() { # <repo-dir>
+    _config="$1/copilot-env.config"
+    [ -f "$_config" ] || { echo "ERROR: missing project config at $_config" >&2; return 1; }
+
+    COOLDOWN_REPO_MIN_SHA=""
+    COOLDOWN_REPO_MAX_SHA=""
+    while IFS= read -r _line || [ -n "$_line" ]; do
+        case "$_line" in
+            ""|\#*) continue ;;
+        esac
+        _key="${_line%%=*}"
+        [ "$_key" != "$_line" ] || { echo "ERROR: $_config must use KEY=value lines." >&2; return 1; }
+        _value="${_line#*=}"
+        case "$_key" in
+            CooldownRepoMinSha) COOLDOWN_REPO_MIN_SHA="$_value" ;;
+            CooldownRepoMaxSha) COOLDOWN_REPO_MAX_SHA="$_value" ;;
+            GATEWAY_MIN_VERSION|GATEWAY_MAX_VERSION) ;;
+        esac
+    done < "$_config"
+
+    [ "$COOLDOWN_REPO_MAX_SHA" = "null" ] && COOLDOWN_REPO_MAX_SHA=""
+    [ -n "$COOLDOWN_REPO_MIN_SHA" ] || { echo "ERROR: CooldownRepoMinSha is required in $_config" >&2; return 1; }
+}
+
 # Resolve the copilot-env commit to pin under --cooldown: the newest commit on
-# origin/main that is >= <days> old, clamped to the [MIN, MAX] window above. A
+# origin/main that is >= <days> old, clamped to the config [MIN, MAX] window. A
 # MAX ceiling limits the search to that commit's ancestors; if nothing past the
 # floor has aged in yet, we pin MIN exactly (cooldown bypassed for the floor), so
 # the known-good baseline is always available. Mirrors floatGateway in user_cache.ts.
@@ -143,6 +163,7 @@ esac
 if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/agents.bashrc" ]; then
     REPO_DIR="$SELF_DIR"
     echo "Using existing checkout at $REPO_DIR"
+    load_project_config "$REPO_DIR" || exit 1
 else
     if [ -d "$INSTALL_DIR/.git" ]; then
         echo "Updating copilot-env in $INSTALL_DIR ..."
@@ -153,6 +174,7 @@ else
         git clone "$REPO_URL" "$INSTALL_DIR"
     fi
     REPO_DIR="$INSTALL_DIR"
+    load_project_config "$REPO_DIR" || exit 1
     # With --cooldown, hold the copilot-env checkout itself back to the newest
     # commit on main that is >= COOLDOWN_DAYS old (clamped to [MIN, MAX]) -- the
     # same supply-chain delay we apply to npm packages, here defending against a

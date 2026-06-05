@@ -49,10 +49,7 @@ if ($Cooldown -and $CooldownDays -lt 0) {
 
 $RepoUrl = 'https://github.com/Vivswan/copilot-env.git'
 $InstallDir = if ($env:COPILOT_ENV_DIR) { $env:COPILOT_ENV_DIR } else { Join-Path $env:USERPROFILE '.copilot-env' }
-# Repo cooldown floor / ceiling (parallels GATEWAY_MIN_VERSION / GATEWAY_MAX_VERSION
-# in src/user_cache.ts, and install.sh): never roll the checkout back before MIN (a
-# known-good baseline, always available), and never adopt past MAX (empty = none).
-$CooldownRepoMinSha = 'e59d7ed'
+$CooldownRepoMinSha = ''
 $CooldownRepoMaxSha = ''
 $CooldownRepoSha = $null   # set when -Cooldown rolls the repo back to an aged commit
 
@@ -102,6 +99,35 @@ function Test-ExternalCommand {
     } catch {
         return $false
     }
+}
+
+function Import-ProjectConfig {
+    param([Parameter(Mandatory)][string]$RepoPath)
+
+    $configPath = Join-Path $RepoPath 'copilot-env.config'
+    if (-not (Test-Path $configPath)) { throw "Missing project config at $configPath." }
+
+    $script:CooldownRepoMinSha = ''
+    $script:CooldownRepoMaxSha = ''
+    foreach ($line in Get-Content -Path $configPath) {
+        $trimmed = $line.Trim()
+        if (-not $trimmed -or $trimmed.StartsWith('#')) { continue }
+
+        $equals = $trimmed.IndexOf('=')
+        if ($equals -lt 0) { throw "$configPath must use KEY=value lines." }
+
+        $key = $trimmed.Substring(0, $equals).Trim()
+        $value = $trimmed.Substring($equals + 1).Trim()
+        switch ($key) {
+            'CooldownRepoMinSha' { $script:CooldownRepoMinSha = $value }
+            'CooldownRepoMaxSha' { $script:CooldownRepoMaxSha = $value }
+            'GATEWAY_MIN_VERSION' { }
+            'GATEWAY_MAX_VERSION' { }
+        }
+    }
+
+    if ($script:CooldownRepoMaxSha -eq 'null') { $script:CooldownRepoMaxSha = '' }
+    if (-not $script:CooldownRepoMinSha) { throw "CooldownRepoMinSha is required in $configPath." }
 }
 
 function Install-WingetPackage {
@@ -186,8 +212,8 @@ Update-ProcessPath
 Install-WingetPackage -Command git -Name 'Git' -Id 'Git.Git'
 
 # Resolve the copilot-env commit to pin under -Cooldown: the newest commit on
-# origin/main that is >= $Days old, clamped to the [$CooldownRepoMinSha,
-# $CooldownRepoMaxSha] window. A MAX ceiling limits the search to its ancestors;
+# origin/main that is >= $Days old, clamped to the config [MIN, MAX] window. A
+# MAX ceiling limits the search to its ancestors;
 # if nothing past the floor has aged in yet, we pin MIN exactly (cooldown bypassed
 # for the floor). Mirrors install.sh's resolve_aged_commit + floatGateway. NOTE:
 # --before filters on the commit date (advisory / can be backdated, unlike npm's
@@ -223,6 +249,7 @@ function Resolve-AgedCommit {
 if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'agents.ps1'))) {
     $RepoDir = $SelfDir
     Write-Host "Using existing checkout at $RepoDir"
+    Import-ProjectConfig -RepoPath $RepoDir
 } else {
     if (Test-Path (Join-Path $InstallDir '.git')) {
         Write-Host "Updating copilot-env in $InstallDir ..."
@@ -235,6 +262,7 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'agents.ps1'))) {
     }
     if ($LASTEXITCODE -ne 0) { throw 'git clone/pull failed.' }
     $RepoDir = $InstallDir
+    Import-ProjectConfig -RepoPath $RepoDir
     # With -Cooldown, hold the copilot-env checkout itself back to the newest
     # commit on main that is >= CooldownDays old (clamped to [MIN, MAX]) -- the
     # same supply-chain delay we apply to npm packages, here defending against a

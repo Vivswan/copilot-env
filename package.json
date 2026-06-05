@@ -16,7 +16,7 @@
     "lint:ps": "bash scripts/lint-ps.sh",
     "format": "biome format --write src bin test",
     "check": "biome check --write src bin test",
-    "postinstall": "patch-package",
+    "postinstall": "bun src/gateway_float.ts && patch-package",
     "prepare": "husky"
   },
   "dependencies": {

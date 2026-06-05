@@ -19,7 +19,9 @@ import {
   printLogTail,
 } from "../copilot_api/process.ts";
 import { CopilotApiState } from "../copilot_api/state.ts";
+import { readProjectConfig } from "../project_config.ts";
 import { moduleRoot } from "../utils/root.ts";
+import { versionLessThan } from "../utils/semver.ts";
 
 // --- Default config applied on every `start`. ---
 //
@@ -162,6 +164,38 @@ async function logGatewayVersion(): Promise<void> {
   consola.info(`   Gateway: @jeffreycao/copilot-api ${version}${published}`);
 }
 
+/**
+ * Refuse to launch on a gateway below the GATEWAY_MIN_VERSION floor. The float
+ * (`bun install`'s postinstall) is best-effort, so an offline/failed install can
+ * leave a sub-floor gateway in node_modules; the floor is a hard runtime contract,
+ * so we enforce it here — **fail-closed** and before disturbing any running daemon.
+ * An unresolvable gateway or unreadable copilot-env.config is itself fatal (we
+ * can't confirm the floor), so it throws rather than launching blind.
+ */
+function assertGatewayFloor(): void {
+  const version = copilotApiVersion();
+  if (version === null) {
+    throw new Error(
+      "@jeffreycao/copilot-api is not installed or its package.json is unreadable — run 'bun install' to (re)install the gateway.",
+    );
+  }
+  let floor: string;
+  try {
+    floor = readProjectConfig(moduleRoot()).gatewayMinVersion;
+  } catch (e) {
+    throw new Error(
+      `could not read the gateway floor from copilot-env.config: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+  if (versionLessThan(version, floor)) {
+    throw new Error(
+      `@jeffreycao/copilot-api ${version} is below the required ${floor} floor — the gateway ` +
+        `float (bun install postinstall) likely failed (offline?). Re-run 'bun install' online, ` +
+        `or set COPILOT_API_VERSION to a known-good release.`,
+    );
+  }
+}
+
 /** `start`: launch copilot-api detached, wait for readiness, sync aliases. */
 export async function runStart(args: { "dry-run"?: boolean }): Promise<void> {
   const paths = new CopilotApiPaths();
@@ -194,10 +228,13 @@ export async function runStart(args: { "dry-run"?: boolean }): Promise<void> {
     return;
   }
 
+  // Hard floor gate (before touching the running daemon): the postinstall float
+  // is best-effort, so never launch on a sub-floor gateway.
+  assertGatewayFloor();
+
   fs.mkdirSync(paths.home, { recursive: true });
   fs.mkdirSync(paths.runDir, { recursive: true });
   applyDefaultConfig(config);
-
   consola.info("==> Cleaning up existing copilot-api processes ...");
 
   const tracked = state.read().pid;

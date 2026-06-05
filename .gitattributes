@@ -1,9 +1,11 @@
 # Normalize all detected text files to LF in the repository.
 * text=auto eol=lf
 
-# Never apply text/EOL normalization to the CLAUDE.md symlink, so a Windows
-# checkout (core.symlinks=false) can't turn it into a modified regular file.
+# Never apply text/EOL normalization to the repo's symlinks, so a Windows
+# checkout (core.symlinks=false) can't turn them into modified regular files.
+# CLAUDE.md -> AGENTS.md ; .github/copilot-instructions.md -> ../AGENTS.md
 CLAUDE.md -text
+.github/copilot-instructions.md -text
 
 # Keep binary assets byte-for-byte unchanged.
 *.ico binary

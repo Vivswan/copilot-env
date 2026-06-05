@@ -65,10 +65,11 @@ newest npm release whose **publish time** is ≥ 7 days ago instead of bleeding-
 commit **dated** ≥ 7 days ago, never below a manually-vetted known-good baseline
 commit. (The npm side uses the registry's publish timestamp; the repo side uses
 the commit date, which is advisory — the pinned baseline floor is the hard
-anchor.) The same delay the gateway's own dependencies already get, it defends
-against a compromised just-published npm release or just-pushed commit (note:
-`--cooldown` governs *fresh* CLI installs — an already-installed `claude` /
-`copilot` / `codex` is left untouched, never downgraded):
+anchor.) The repo floor/ceiling and gateway floor/ceiling live in the top-level
+`copilot-env.config`. The same delay the gateway's own dependencies already get,
+it defends against a compromised just-published npm release or just-pushed
+commit (note: `--cooldown` governs *fresh* CLI installs — an already-installed
+`claude` / `copilot` / `codex` is left untouched, never downgraded):
 
 ```bash
 # macOS / Linux
@@ -121,9 +122,17 @@ rarely needed.
 
 ### Environment overrides
 
+The gateway float runs as `bun install`'s postinstall and reads these from the
+environment (inherited straight through, e.g. `COPILOT_API_COOLDOWN_DAYS=14 ./bin/agent start`):
+
 - `COPILOT_API_VERSION=<version|tag>` — pin the gateway to a specific release,
   bypassing both the compatibility floor and the 7-day cooldown. Unset = float to
   the newest release that is both ≥ the floor and ≥7 days old.
+- `COPILOT_API_COOLDOWN_DAYS=<n>` — override the float's release-age window (the
+  default 7-day supply-chain cooldown) for the newest-release probe.
+- `COPILOT_API_FLOAT_INTERVAL_DAYS=<n>` — override how often (default weekly) the
+  float re-resolves the newest release from the registry.
+- `COPILOT_API_NO_FLOAT=1` — skip the gateway float entirely.
 
 ### Shell integration
 

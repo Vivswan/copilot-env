@@ -41,7 +41,8 @@ package manager if it is missing.
 
 ## Install
 
-One line — clones into `~/.copilot-env` (override with `COPILOT_ENV_DIR`),
+One line — clones into `~/.copilot-env` (override with the `COPILOT_ENV_DIR` env
+var, or the `--dir DIR` / `-InstallDir DIR` flag, which takes precedence),
 installs prerequisites + the agent CLIs, and wires up your shell:
 
 ```bash

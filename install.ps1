@@ -10,6 +10,10 @@
 #   powershell -ExecutionPolicy Bypass -File install.ps1 -AllHosts  # all-hosts profile
 #
 # Options:
+#   -InstallDir DIR
+#       Clone target when fetching fresh (default %USERPROFILE%\.copilot-env).
+#       Takes precedence over $COPILOT_ENV_DIR. Ignored when run from an existing
+#       checkout (that checkout is reused).
 #   -Cooldown [-CooldownDays N]
 #       Supply-chain cooldown for the agent CLIs (claude / copilot / codex):
 #       install the newest release public for at least N days (default 7,
@@ -17,12 +21,17 @@
 #       just-published version has time to be caught and yanked before adoption.
 #
 # Env:
-#   COPILOT_ENV_DIR   clone target when fetching fresh (default %USERPROFILE%\.copilot-env)
+#   COPILOT_ENV_DIR   clone target when fetching fresh (default %USERPROFILE%\.copilot-env);
+#                     the -InstallDir parameter takes precedence over it.
 
 [CmdletBinding()]
 param(
     # Target the CurrentUserAllHosts profile instead of the current host's profile.
     [switch]$AllHosts,
+
+    # Clone target when fetching fresh (default %USERPROFILE%\.copilot-env). Takes
+    # precedence over $COPILOT_ENV_DIR. Ignored when run from an existing checkout.
+    [string]$InstallDir = '',
 
     # Supply-chain cooldown for the agent CLIs (claude / copilot / codex): install
     # the newest release that has been public for at least -CooldownDays days
@@ -48,7 +57,10 @@ if ($Cooldown -and $CooldownDays -lt 0) {
 }
 
 $RepoUrl = 'https://github.com/Vivswan/copilot-env.git'
-$InstallDir = if ($env:COPILOT_ENV_DIR) { $env:COPILOT_ENV_DIR } else { Join-Path $env:USERPROFILE '.copilot-env' }
+# Precedence: -InstallDir parameter > $COPILOT_ENV_DIR > default.
+if (-not $InstallDir) {
+    $InstallDir = if ($env:COPILOT_ENV_DIR) { $env:COPILOT_ENV_DIR } else { Join-Path $env:USERPROFILE '.copilot-env' }
+}
 $CooldownRepoMinSha = ''
 $CooldownRepoMaxSha = ''
 $CooldownRepoSha = $null   # set when -Cooldown rolls the repo back to an aged commit

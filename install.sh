@@ -12,12 +12,13 @@
 #   ./install.sh
 #
 # Env:
-#   COPILOT_ENV_DIR   clone target when fetching fresh (default ~/.copilot-env)
+#   COPILOT_ENV_DIR   clone target when fetching fresh (default ~/.copilot-env);
+#                     the --dir flag takes precedence over it.
 
 set -eu
 
 REPO_URL="https://github.com/Vivswan/copilot-env.git"
-INSTALL_DIR="${COPILOT_ENV_DIR:-$HOME/.copilot-env}"
+INSTALL_DIR_ARG=""        # set by --dir; takes precedence over $COPILOT_ENV_DIR
 NVM_VERSION="v0.40.1"
 NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 COOLDOWN_DEFAULT_DAYS=7   # matches bunfig.toml install.minimumReleaseAge (604800s)
@@ -28,12 +29,15 @@ COOLDOWN_REPO_MAX_SHA=""
 
 usage() {
     cat <<'EOF'
-Usage: install.sh [--cooldown[=DAYS]]
+Usage: install.sh [--dir DIR] [--cooldown[=DAYS]]
 
 Installs Node (via nvm), bun, and the agent CLIs, clones/updates copilot-env,
 and adds its shell integration to ~/.bashrc / ~/.zshrc.
 
 Options:
+  --dir DIR           Clone target when fetching fresh (default ~/.copilot-env).
+                      Takes precedence over $COPILOT_ENV_DIR. Ignored when run
+                      from an existing checkout (that checkout is reused).
   --cooldown[=DAYS]   Supply-chain cooldown for the agent CLIs (claude / copilot
                       / codex): instead of npm's `latest`, install the newest
                       release that has been public for at least DAYS days, so a
@@ -43,16 +47,27 @@ Options:
 EOF
 }
 
-for arg in "$@"; do
-    case "$arg" in
+while [ $# -gt 0 ]; do
+    case "$1" in
         -h|--help) usage; exit 0 ;;
         --cooldown) COOLDOWN_DAYS="$COOLDOWN_DEFAULT_DAYS" ;;
         --cooldown=*)
-            COOLDOWN_DAYS="${arg#*=}"
+            COOLDOWN_DAYS="${1#*=}"
             [ -n "$COOLDOWN_DAYS" ] || { echo "ERROR: --cooldown= needs a value, e.g. --cooldown=7." >&2; exit 2; } ;;
-        *) echo "ERROR: unknown argument '$arg' (try --help)" >&2; exit 2 ;;
+        --dir)
+            shift
+            [ $# -gt 0 ] || { echo "ERROR: --dir needs a directory argument." >&2; exit 2; }
+            INSTALL_DIR_ARG="$1" ;;
+        --dir=*)
+            INSTALL_DIR_ARG="${1#*=}"
+            [ -n "$INSTALL_DIR_ARG" ] || { echo "ERROR: --dir= needs a value, e.g. --dir=/opt/copilot-env." >&2; exit 2; } ;;
+        *) echo "ERROR: unknown argument '$1' (try --help)" >&2; exit 2 ;;
     esac
+    shift
 done
+
+# Precedence: --dir flag > $COPILOT_ENV_DIR > default.
+INSTALL_DIR="${INSTALL_DIR_ARG:-${COPILOT_ENV_DIR:-$HOME/.copilot-env}}"
 
 case "$COOLDOWN_DAYS" in
     "") ;;            # disabled

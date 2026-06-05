@@ -63,17 +63,12 @@ jobs:
       - uses: actions/checkout@v6
       - uses: raven-actions/actionlint@v2
 
-  # Exercises whether bun's detached spawn keeps the daemon alive on Windows
-  # (the one thing that can't be reasoned about statically). Runs server.ts
-  # directly against root node_modules -- NOT via the bin/cache shim, which on
-  # Windows resolves the junction-mirrored src back to the source tree and can't
-  # find the cache's node_modules. `start` only exits 0 if the daemon is still
-  # alive ~1s later, so a green run proves detached-spawn survival. Informational
-  # (continue-on-error) -- the gateway may need Copilot auth CI can't provide.
+  # End-to-end check of the Windows daemon lifecycle: server.ts spawns a detached
+  # daemon, waits for it to listen, syncs aliases, then stops it. COPILOT_API_ENTRY
+  # points at a fake gateway (test/fake-gateway.mjs) so this needs no Copilot auth.
   windows-start-stop:
-    name: windows start/stop (smoke)
+    name: windows start/stop
     runs-on: windows-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v6
       - uses: oven-sh/setup-bun@v2
@@ -83,11 +78,13 @@ jobs:
         run: bun install --frozen-lockfile
         env:
           HUSKY: "0"
-      - name: Start the daemon, verify it survives, then stop it
+      - name: Start the daemon (fake gateway), verify it's up, then stop it
         shell: pwsh
+        env:
+          COPILOT_API_ENTRY: ${{ github.workspace }}/test/fake-gateway.mjs
         run: |
           bun src/server.ts start
-          if ($LASTEXITCODE -ne 0) { Write-Error 'start failed: the detached daemon did not survive ~1s'; exit 1 }
+          if ($LASTEXITCODE -ne 0) { Write-Error 'start failed'; exit 1 }
           bun src/server.ts stop
           if ($LASTEXITCODE -ne 0) { Write-Error 'stop failed'; exit 1 }
           Write-Host 'start/stop OK on Windows'

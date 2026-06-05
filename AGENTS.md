@@ -49,7 +49,8 @@ This project supports **Linux, macOS, and Windows**.
 - `patches/` — patch-package patches (applied via `postinstall`)
 - `src/**/*.test.ts` — `bun test` suites (pure-logic units for `models.ts`/`pricing.ts`/`paths.ts` + a `server.ts --help` smoke test). `bun:test` is exempted from biome's `noUnresolvedImports` via a `*.test.ts` override in `biome.json`.
 - `scripts/lint-shell.sh` / `scripts/lint-powershell.sh` — skip-if-absent shell/PowerShell linters used by pre-commit + CI
-- `.github/workflows/ci.yml` — CI: install/typecheck/lint/test on a Linux+macOS+Windows matrix (shellcheck on Linux, PSScriptAnalyzer on Windows) + an `actionlint` job; `concurrency` cancels superseded runs
+- `.github/workflows/ci.yml` — CI: install/typecheck/lint/test on a Linux+macOS+Windows matrix (shellcheck on Linux, PSScriptAnalyzer on Windows) + an `actionlint` job + a `windows start/stop` job that exercises the daemon lifecycle against a fake gateway (`COPILOT_API_ENTRY` → `test/fake-gateway.mjs`, no auth needed); `concurrency` cancels superseded runs
+- `test/fake-gateway.mjs` — stand-in gateway for the start/stop check: binds the port, answers the admin endpoints, prints the `Listening on:` marker, stays alive until `SIGTERM`. Selected via the `COPILOT_API_ENTRY` override in `process.ts:resolveCopilotApiEntry`
 - `.github/workflows/codeql.yml` — CodeQL code scanning (javascript-typescript) on push/PR + a weekly schedule
 - `.github/workflows/auto-assign.yml` — assigns new issues/PRs to the repo owner and labels same-repo PRs `fix-lint`
 - `.github/dependabot.yml` — monthly `github-actions` + `bun` updates (bun ecosystem is GA in Dependabot; 7-day cooldown mirroring `bunfig.toml`; floated gateway ignored)

@@ -18,6 +18,13 @@ const logger = consola;
 const cacheRequire = createRequire(join(cacheDir(), "_anchor.js"));
 
 function resolveCopilotApiEntry(): string {
+  // Escape hatch: an explicit entry path overrides cache resolution. CI uses
+  // this to point `start` at a fake gateway so the daemon lifecycle can be
+  // exercised without GitHub Copilot auth.
+  const override = process.env.COPILOT_API_ENTRY?.trim();
+  if (override) {
+    return override;
+  }
   try {
     return cacheRequire.resolve("@jeffreycao/copilot-api/dist/main.js");
   } catch (e) {

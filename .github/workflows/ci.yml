@@ -98,8 +98,16 @@ jobs:
             command -v "$cli" >/dev/null || { echo "::error::$cli was not installed by install.sh"; exit 1; }
             echo "found $cli -> $(command -v "$cli")"
           done
-          grep -lF "copilot-env shell integration" "$HOME/.bashrc" "$HOME/.zshrc" 2>/dev/null \
-            || { echo "::error::shell integration block was not added to any rc file"; exit 1; }
+          # Only grep files that exist -- passing a missing rc to grep makes it
+          # exit non-zero even when the marker matched in the other file.
+          wired=
+          for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+            if [ -f "$rc" ] && grep -qF "copilot-env shell integration" "$rc"; then
+              wired=1
+              echo "shell integration found in $rc"
+            fi
+          done
+          [ -n "$wired" ] || { echo "::error::shell integration block was not added to any rc file"; exit 1; }
 
   # Windows parity of install-sh: run install.ps1 end-to-end. Git + Node/npm are
   # preinstalled on windows-latest; we provide bun via setup-bun so the installer's

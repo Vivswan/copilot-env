@@ -145,6 +145,8 @@ export function launchDaemon(
   const proc = spawn(process.execPath, [entry, "start", "--verbose", "--port", String(port)], {
     stdio: [devnull, logFd, logFd],
     detached: true,
+    // No console window on Windows (defensive; redirected stdio already avoids one).
+    windowsHide: true,
     env,
   });
   proc.unref();

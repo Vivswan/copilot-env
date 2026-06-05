@@ -714,9 +714,11 @@ const main = defineCommand({
   },
 });
 
-runMain(main).catch((err: unknown) => {
-  const msg = err instanceof Error ? err.message : String(err);
-  process.stderr.write(`Error: ${msg}\n`);
-  // Set exitCode (not process.exit) so pending stderr writes flush.
-  process.exitCode = 1;
-});
+if (import.meta.main) {
+  runMain(main).catch((err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`Error: ${msg}\n`);
+    // Set exitCode (not process.exit) so pending stderr writes flush.
+    process.exitCode = 1;
+  });
+}

@@ -12,6 +12,7 @@
     "start": "bun run src/server.ts",
     "codex-home": "bun run src/codex_home.ts",
     "typecheck": "tsc --noEmit",
+    "test": "bun test",
     "lint": "biome check src bin",
     "lint:shell": "bash scripts/lint-shell.sh",
     "lint:ps": "bash scripts/lint-powershell.sh",

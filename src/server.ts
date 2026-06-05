@@ -333,7 +333,7 @@ const start = defineCommand({
           throw new Error("could not find a free port after TOCTOU retry.");
         }
         fs.writeFileSync(logFile, "");
-        pid = launchDaemon(port, logFile);
+        pid = launchDaemon(port, logFile, daemonEnv);
         await sleep(1);
         if (!pidAlive(pid)) {
           printLogTail(logFile, 20);
@@ -454,6 +454,10 @@ const stop = defineCommand({
       throw new Error(`Process ${pid} is not running (stale PID file). Removed.`);
     }
 
+    // On Windows there are no POSIX signals: Node maps SIGTERM (and SIGKILL) to
+    // an unconditional TerminateProcess, so this is a hard kill with no graceful
+    // SQLite flush. SQLite's WAL recovery makes that safe; just don't expect
+    // clean teardown here on Windows.
     process.kill(pid, "SIGTERM");
     try {
       fs.unlinkSync(pidFile);
@@ -758,8 +762,10 @@ const cli = defineCommand({
   },
 });
 
-runMain(cli).catch((e: unknown) => {
-  consola.error(e instanceof Error ? e.message : String(e));
-  // Set exitCode (not process.exit) so pending stderr writes flush.
-  process.exitCode = 1;
-});
+if (import.meta.main) {
+  runMain(cli).catch((e: unknown) => {
+    consola.error(e instanceof Error ? e.message : String(e));
+    // Set exitCode (not process.exit) so pending stderr writes flush.
+    process.exitCode = 1;
+  });
+}

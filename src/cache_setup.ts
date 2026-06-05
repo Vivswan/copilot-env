@@ -257,10 +257,19 @@ function main(): void {
 
   if (subcommand === "start") {
     process.stderr.write("==> Refreshing gateway package ...\n");
-    rmSync(join(cache, "node_modules", "@jeffreycao", "copilot-api"), {
-      recursive: true,
-      force: true,
-    });
+    // Best-effort + retried: on Windows a file held open by a still-running
+    // daemon (or AV/indexer) can transiently block removal; don't abort the
+    // whole bootstrap over it. floatGateway re-installs the gateway either way.
+    try {
+      rmSync(join(cache, "node_modules", "@jeffreycao", "copilot-api"), {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      });
+    } catch {
+      // leave the existing copy in place; floatGateway will overlay it
+    }
     rmSync(join(cache, ".gateway-checked"), { force: true });
   }
 

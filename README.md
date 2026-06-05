@@ -1,5 +1,8 @@
 # copilot-env
 
+[![CI](https://github.com/Vivswan/copilot-env/actions/workflows/ci.yml/badge.svg)](https://github.com/Vivswan/copilot-env/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+
 A small, self-bootstrapping CLI that manages the lifecycle of a local
 [`@jeffreycao/copilot-api`](https://www.npmjs.com/package/@jeffreycao/copilot-api)
 gateway — starting and stopping the daemon, wiring up model aliases, exporting
@@ -18,8 +21,8 @@ It is a TypeScript port of an original Python `copilot-api` helper, and runs on
 - **Model aliases** — once the daemon is up, catalog-derived aliases are synced
   live via the admin API and printed grouped by target model.
 - **Shell + Codex wiring** — `env` prints the variables to point your tools at the
-  local gateway; `agent codex` writes your `~/.codex` config so Codex routes
-  through it too.
+  local gateway; `agent start` also wires Codex to it by default (writing your
+  `~/.codex` config), and `agent codex` re-runs that on demand.
 - **Cost reporting** — `cost` reads the gateway's per-host usage databases and
   prints estimated spend using live OpenRouter pricing.
 - **Supply-chain hygiene** — the gateway dependency floats to `latest` but only
@@ -98,9 +101,9 @@ Linux-only and rarely needed.
 The one-line installer above already wires this up — it adds a source block for
 `agents.bashrc` to `~/.bashrc` and/or `~/.zshrc` (or dot-sources `agents.ps1`
 from your PowerShell `$PROFILE` on Windows). `agents.bashrc` defines an `agent`
-dispatcher (`agent start` to launch the gateway, `agent codex` to wire Codex
-through it, anything else passed through to the CLI) plus `cl` / `co` / `cx`
-launchers.
+dispatcher (`agent start` launches the gateway and wires Codex to it by default,
+`agent codex` re-wires Codex on demand, anything else passes through to the CLI)
+plus `cl` / `co` / `cx` launchers.
 
 From a manual checkout you can run the installer directly (idempotent —
 re-running skips files that already have the block, and updates the checkout):

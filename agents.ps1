@@ -35,12 +35,11 @@ function Import-CopilotEnv {
     }
 }
 
-# Refresh Codex's config.toml/.env so it routes through the local gateway. On
-# Windows/macOS the config lives in the default ~/.codex (%USERPROFILE%\.codex),
-# which codex reads natively -- so we never set CODEX_HOME. CODEX_HOME is only
-# needed on Linux, and only when the per-host symlink farm is used (--symlink-farm).
-# Called from copilot-start (after the gateway is up); non-fatal -- a failure
-# here doesn't block gateway startup.
+# Default Codex wiring run by `agent start`: writes the standard ~/.codex
+# (%USERPROFILE%\.codex), which codex reads natively -- we never set CODEX_HOME
+# (the per-host symlink farm that needs it is Linux-only). Non-fatal -- a failure
+# here doesn't block startup. (`agent codex` calls the launcher directly so it
+# can forward flags and show output.)
 function Update-CodexConfig {
     if (-not (Test-Path $script:CodexHomePs1)) { return }
     & powershell -NoProfile -ExecutionPolicy Bypass -File $script:CodexHomePs1 | Out-Null
@@ -72,34 +71,51 @@ function Assert-AgentCli {
 
 # --- lifecycle -------------------------------------------------------------
 
-# Start the gateway and export its env into this session. Also refresh Codex's
-# config so it points at the freshly-started gateway. Host profiles sourced
-# after this file may redefine copilot-start to add host-specific wiring.
-function copilot-start {
-    Invoke-CopilotApi start @args
-    if ($LASTEXITCODE -ne 0) { return $LASTEXITCODE }
-    Import-CopilotEnv
-    Update-CodexConfig
-}
-
 # Ping the gateway before launching an agent; if it's down, offer to start it.
 function Confirm-CopilotServer {
     if (Test-CopilotServer) { return }
     $ans = Read-Host 'copilot gateway not running. Start it now? [Y/n]'
     switch -Regex ($ans) {
-        '^(|y|Y|yes|Yes)$' { copilot-start }
+        '^(|y|Y|yes|Yes)$' { agent start }
         default { Write-Host 'Continuing without starting the gateway.' }
     }
 }
 
-# Unified user-facing entry point. `agent start` runs the full lifecycle wrapper
-# (start + env export); every other subcommand passes straight through.
+# Unified user-facing entry point (mirrors the POSIX agents.bashrc `agent`).
+#   agent start         start the gateway + export env, then wire Codex (writes ~/.codex)
+#   agent start_only    start the gateway + export env only (no Codex wiring)
+#   agent codex         (re)write the default ~/.codex on demand (no restart)
+#   agent <subcommand>  everything else (stop, env, cost, ...) passes straight
+#                       through to the copilot-api bin
 function agent {
-    if ($args.Count -ge 1 -and $args[0] -eq 'start') {
-        copilot-start @($args | Select-Object -Skip 1)
-    } else {
-        Invoke-CopilotApi @args
+    if ($args.Count -ge 1) {
+        $rest = @($args | Select-Object -Skip 1)
+        switch ($args[0]) {
+            'start' {
+                Invoke-CopilotApi start @rest
+                if ($LASTEXITCODE -ne 0) { return }
+                Import-CopilotEnv
+                # Import-CopilotEnv leaves $LASTEXITCODE as the `env` call's exit;
+                # don't wire Codex if env export failed.
+                if ($LASTEXITCODE -ne 0) { return }
+                Update-CodexConfig
+                return
+            }
+            'start_only' {
+                Invoke-CopilotApi start @rest
+                if ($LASTEXITCODE -ne 0) { return }
+                Import-CopilotEnv
+                return
+            }
+            'codex' {
+                # Forward flags (e.g. --base-url/--api-key/--help) and show output,
+                # mirroring POSIX `agent codex "$@"`.
+                & powershell -NoProfile -ExecutionPolicy Bypass -File $script:CodexHomePs1 @rest
+                return
+            }
+        }
     }
+    Invoke-CopilotApi @args
 }
 
 # --- agent launchers -------------------------------------------------------

@@ -16,28 +16,46 @@ _COPILOT_AGENTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
 [ -x "$HOME/.bun/bin/bun" ] && case ":$PATH:" in *":$HOME/.bun/bin:"*) ;; *) export PATH="$HOME/.bun/bin:$PATH" ;; esac
 
 # Unified user-facing entry point.
-#   agent start             launch the gateway + export its env into this shell
-#   agent codex             (re)write the default ~/.codex so Codex routes through
-#                           the local gateway (codex-home resolves url/key itself)
-#   agent start_with_codex  agent start, then agent codex
-#   agent <subcommand>      everything else (stop, env, cost, ...) passes straight
-#                           through to the copilot-api bin
+#   agent start         start the gateway + export env, then wire Codex by
+#                       default (writes ~/.codex)
+#   agent start_only    start the gateway + export env only (no Codex wiring)
+#   agent codex [flags] (re)write the default ~/.codex on demand
+#   agent codex_host    build & export the per-host CODEX_HOME (symlink farm,
+#                       Linux-only); does not (re)start the gateway
+#   agent <subcommand>  everything else (stop, env, cost, ...) passes straight
+#                       through to the bin
 function agent {
     case "$1" in
         start)
             shift
-            "${_COPILOT_AGENTS_DIR}/bin/copilot-api" start "$@" \
-                && eval "$("${_COPILOT_AGENTS_DIR}/bin/copilot-api" env)" \
-                || return $?
+            "${_COPILOT_AGENTS_DIR}/bin/copilot-api" start "$@" || return $?
+            # Capture env first so a failing `env` aborts instead of being
+            # masked by eval (which only ever sees stdout).
+            _env="$("${_COPILOT_AGENTS_DIR}/bin/copilot-api" env)" || return $?
+            eval "$_env"
+            unset _env
+            # Wire Codex to the gateway by default (writes ~/.codex; non-fatal,
+            # path print silenced).
+            "${_COPILOT_AGENTS_DIR}/bin/codex-home" >/dev/null || true
+            ;;
+        start_only)
+            shift
+            "${_COPILOT_AGENTS_DIR}/bin/copilot-api" start "$@" || return $?
+            _env="$("${_COPILOT_AGENTS_DIR}/bin/copilot-api" env)" || return $?
+            eval "$_env"
+            unset _env
             ;;
         codex)
             shift
             "${_COPILOT_AGENTS_DIR}/bin/codex-home" "$@"
             ;;
-        start_with_codex)
+        codex_host)
             shift
-            agent start "$@" || return $?
-            agent codex
+            # Linux-only per-host CODEX_HOME (symlink farm). Build it and export
+            # the resolved path so Codex uses it for this session.
+            _codex_home="$("${_COPILOT_AGENTS_DIR}/bin/codex-home" --symlink-farm "$@")" || return $?
+            export CODEX_HOME="${_codex_home}"
+            unset _codex_home
             ;;
         *)
             "${_COPILOT_AGENTS_DIR}/bin/copilot-api" "$@"

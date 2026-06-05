@@ -67,7 +67,7 @@ export class CopilotApiConfig {
     try {
       const sorted = sortKeys(data);
       writeFileSync(tmp, `${JSON.stringify(sorted, null, 2)}\n`);
-      renameSync(tmp, this.path);
+      renameWithRetry(tmp, this.path);
     } catch (err) {
       try {
         rmSync(tmp, { force: true });
@@ -165,6 +165,33 @@ function isFile(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Rename with a short retry. A POSIX rename over an open destination always
+ * succeeds, but Windows can transiently throw EPERM/EBUSY/EACCES when another
+ * process (the daemon, antivirus, the search indexer) holds the file open.
+ * Retry briefly, then surface the original error.
+ */
+function renameWithRetry(from: string, to: string, attempts = 5): void {
+  for (let i = 0; i <= attempts; i++) {
+    try {
+      renameSync(from, to);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      const transient = code === "EPERM" || code === "EBUSY" || code === "EACCES";
+      if (i >= attempts || !transient) {
+        throw err;
+      }
+      sleepMs(50);
+    }
+  }
+}
+
+/** Block the current thread for `ms` (Atomics.wait on a throwaway buffer). */
+function sleepMs(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 /**

@@ -16,9 +16,9 @@ This project supports **Linux, macOS, and Windows**.
 
 - **node_modules lives in the per-user cache**, populated via symlinks (`src/cache_setup.ts`).
 - **bun runtime** — native TS support, ~170ms per CLI invocation vs tsx's ~750ms. Bin shims auto-install bun if missing.
-- **Floating `@jeffreycao/copilot-api`** — `package.json` tracks `"latest"`. A 7-day supply-chain cooldown (`bunfig.toml` `install.minimumReleaseAge = 604800`) means only releases public for ≥7 days are ever adopted. `src/cache_setup.ts` overlays the cache's `node_modules` with `bun add` (re-checked at most weekly via a `.gateway-checked` stamp), so the read-only committed `bun.lock` is never rewritten — every *other* dep stays pinned. The lock pins the reproducible baseline (used on cold start / offline). `process.ts:launchDaemon` resolves the entry through `createRequire` and spawns `node <dist/main.js>` directly — no `npx`. On start, `server.ts` logs the running gateway version + its npm publish date (`copilotApiVersion` + best-effort registry fetch).
+- **Floating `@jeffreycao/copilot-api`** — `package.json` tracks `"latest"`. A 7-day supply-chain cooldown (`bunfig.toml` `install.minimumReleaseAge = 604800`) means only releases public for ≥7 days are ever adopted. `src/cache_setup.ts` overlays the cache's `node_modules` with `bun add` (re-checked at most weekly via a `.gateway-checked` stamp), so the read-only committed `bun.lock` is never rewritten — every *other* dep stays pinned. The lock pins the reproducible baseline (used on cold start / offline). `process.ts:launchDaemon` resolves the entry through `createRequire` and spawns it via `process.execPath` (the running runtime, i.e. `bun`) directly — no `npx`, no separate `node`. On start, `server.ts` logs the running gateway version + its npm publish date (`copilotApiVersion` + best-effort registry fetch).
 - **Compatibility floor** (`GATEWAY_MIN_VERSION` in `cache_setup.ts`, currently `1.10.30`) — the minimum gateway version the wrapper code is known to work against; bump it when the wrapper starts relying on newer gateway behavior. The default float installs the newest release that is BOTH ≥ this floor AND ≥7 days old (`bun add @">=<floor>"`); if none has cleared the cooldown yet, it pins exactly the floor with the cooldown bypassed, so the floor is always available and never silently violated.
-- **Fresh cache on `start`** — the bin shims forward the subcommand to `cache_setup.ts`; on `start` it `rm -rf`s the entire per-user cache and rebuilds it (mirror + frozen install + gateway float) for a clean, reproducible environment each launch. Other subcommands (`env`, `cost`, `stop`, `codex-home`) reuse the cache so shell-open `env` calls stay fast.
+- **Gateway refresh on `start`** — the bin shims forward the subcommand to `cache_setup.ts`; on `start` it removes just the gateway package dir (`node_modules/@jeffreycao/copilot-api`) + the `.gateway-checked` stamp so `floatGateway` re-resolves it fresh, then mirrors + frozen-installs. It deliberately does **not** wipe the whole cache (a full wipe forces a slow byte-copy of all deps on network filesystems). Other subcommands (`env`, `cost`, `stop`, `codex-home`) reuse the cache so shell-open `env` calls stay fast.
 - **Version override** — set `COPILOT_API_VERSION=<version|tag>` to pin the gateway to a specific release, bypassing both the floor and the 7-day cooldown (`bun add --minimum-release-age=0`). Unset = float per the floor above.
 
 ## Files
@@ -29,8 +29,8 @@ This project supports **Linux, macOS, and Windows**.
 - `bin/copilot-api`, `bin/codex-home` — POSIX self-bootstrapping launchers
 - `bin/copilot-api.ps1` — Windows equivalent of `copilot-api`
 - `bin/codex-home.ps1` — Windows equivalent of `codex-home` (self-bootstraps, reuses the cache, execs `src/codex_home.ts`)
-- `agents.bashrc` — sourced from your shell rc; defines the `agent` dispatcher (`agent start` launches the gateway + exports its env; `agent codex` (re)writes `~/.codex` via `bin/codex-home` so Codex routes through the gateway; everything else passes through to the bin), plus `cl`, `co`, `cx`. Pure runtime wiring — never installs anything; the launchers assert the agent CLI exists and point you at `install.sh` if not. Plain function defs (no `eval`); resolves its dir into `_COPILOT_AGENTS_DIR`.
-- `agents.ps1` — PowerShell equivalent of `agents.bashrc`; dot-sourced from the user's `$PROFILE`. Delegates lifecycle wrappers to `bin/copilot-api.ps1`, prepends `~/.bun/bin` to PATH, and applies the session env via `copilot-api env --format powershell` + `Invoke-Expression` (no manual parsing). Unlike POSIX (where Codex is wired on demand via `agent codex`), `copilot-start` here also refreshes Codex automatically: after the gateway is up it runs `bin/codex-home.ps1` to (re)write `config.toml`/`.env` into the default `~/.codex` (`%USERPROFILE%\.codex`). It does **not** set `CODEX_HOME` — Codex reads its default home natively; `CODEX_HOME` is only needed on Linux when the per-host symlink farm is used.
+- `agents.bashrc` — sourced from your shell rc; defines the `agent` dispatcher (`agent start` launches the gateway, exports its env, **and wires Codex to it by default** via `bin/codex-home` — writing the standard `~/.codex`, non-fatal; `agent start_only` does the same **without** the Codex step; `agent codex` re-runs that on demand; `agent codex_host` builds & exports the Linux-only per-host symlink-farm `CODEX_HOME` (without restarting the gateway); everything else passes through to the bin), plus `cl`, `co`, `cx`. Pure runtime wiring — never installs anything; the launchers assert the agent CLI exists and point you at `install.sh` if not. Plain function defs (no `eval`); resolves its dir into `_COPILOT_AGENTS_DIR`.
+- `agents.ps1` — PowerShell equivalent of `agents.bashrc`; dot-sourced from the user's `$PROFILE`. Delegates lifecycle wrappers to `bin/copilot-api.ps1`, prepends `~/.bun/bin` to PATH, and applies the session env via `copilot-api env --format powershell` + `Invoke-Expression` (no manual parsing). Same dispatcher as POSIX: `agent start` wires Codex by default (runs `bin/codex-home.ps1` to (re)write `config.toml`/`.env` into the default `~/.codex` / `%USERPROFILE%\.codex`), `agent codex` does it on demand. It does **not** set `CODEX_HOME` — Codex reads its default home natively; `CODEX_HOME` and the per-host symlink farm are an opt-in, Linux-only extra (`bin/codex-home --symlink-farm`).
 - `install.sh` — POSIX installer (runs from a checkout or piped via `curl … | bash`). Ensures `git`, clones/updates the repo to `~/.copilot-env` (`COPILOT_ENV_DIR` override), installs Node via nvm + bun via its official installer + the agent CLIs (`claude`/`copilot`/`codex`) via npm, then adds a source block for `agents.bashrc` to `~/.bashrc` and/or `~/.zshrc`. Idempotent; curl-pipe-safe (no interactive prompts).
 - `install.ps1` — Windows installer (runs from a checkout or piped via `irm … | iex`). Installs prerequisites via `winget` (Git, Node/npm, Bun) + the agent CLIs, clones/updates the repo to `%USERPROFILE%\.copilot-env`, bootstraps copilot-env deps, and adds a dot-source block for `agents.ps1` to the PowerShell `$PROFILE` (`-AllHosts` targets the CurrentUserAllHosts profile).
 - `src/cache_setup.ts` — cross-platform per-user cache setup: on `start` wipes & recreates the whole cache, else reuses it; symlink manifest + sources into cache, frozen `bun install` when the lockfile changes, gateway float (`floatGateway`, honors `COPILOT_API_VERSION`), print cache path on stdout
@@ -47,6 +47,18 @@ This project supports **Linux, macOS, and Windows**.
 - `tsconfig.json` — strict + noUncheckedIndexedAccess
 - `.editorconfig` / `.gitattributes` — enforce UTF-8 + LF line endings (text normalized to LF, binary assets left untouched) so the cross-platform sources stay consistent
 - `patches/` — patch-package patches (applied via `postinstall`)
+- `src/**/*.test.ts` — `bun test` suites (pure-logic units for `models.ts`/`pricing.ts`/`paths.ts` + a `server.ts --help` smoke test). `bun:test` is exempted from biome's `noUnresolvedImports` via a `*.test.ts` override in `biome.json`.
+- `scripts/lint-shell.sh` / `scripts/lint-powershell.sh` — skip-if-absent shell/PowerShell linters used by pre-commit + CI
+- `.github/workflows/ci.yml` — CI: install/typecheck/lint/test on a Linux+macOS+Windows matrix (shellcheck on Linux, PSScriptAnalyzer on Windows) + an `actionlint` job; `concurrency` cancels superseded runs
+- `.github/workflows/codeql.yml` — CodeQL code scanning (javascript-typescript) on push/PR + a weekly schedule
+- `.github/workflows/auto-assign.yml` — assigns new issues/PRs to the repo owner and labels same-repo PRs `fix-lint`
+- `.github/dependabot.yml` — monthly `github-actions` + `bun` updates (bun ecosystem is GA in Dependabot; 7-day cooldown mirroring `bunfig.toml`; floated gateway ignored)
+- `.github/settings.yml` — repo settings-as-code for the [Settings app](https://github.com/repository-settings/app) (squash-only merges, `allow_auto_merge`, wiki/projects off); inert unless that app is installed
+- `.github/rulesets/main.json` — importable branch ruleset for `main` (restrict deletions, block force-push, require CI + CodeQL; admin bypass). Not auto-applied — see `.github/rulesets/README.md` to import (+ two UI-only rules: code-quality results, auto Copilot review)
+- `.github/CODEOWNERS` — default owner `@Vivswan`
+- `.github/copilot-instructions.md` — symlink to `AGENTS.md` (GitHub Copilot reads repo instructions from here, mirroring the `CLAUDE.md` symlink)
+- `SECURITY.md` / `CONTRIBUTING.md` — security disclosure policy + contributor guide
+- `.github/ISSUE_TEMPLATE/` + `.github/PULL_REQUEST_TEMPLATE.md` — issue / PR templates
 
 ## Conventions
 
@@ -63,6 +75,7 @@ This project supports **Linux, macOS, and Windows**.
 ```bash
 # from the project dir
 bun run typecheck          # tsc --noEmit
+bun test                   # bun's test runner (src/**/*.test.ts)
 bun run lint               # biome check src bin
 bun run lint:shell         # shellcheck (install.sh, agents.bashrc, bin/copilot-api, bin/codex-home)
 bun run lint:ps            # PSScriptAnalyzer (install.ps1, agents.ps1, bin/*.ps1)
@@ -70,7 +83,7 @@ bun run format             # biome format --write
 bun run check              # biome check --write src bin
 ```
 
-The husky `pre-commit` hook runs `lint-staged` (biome) + `typecheck` + `lint:shell` + `lint:ps`. The shell/PowerShell linters are **skip-if-absent**: `lint:shell` no-ops when `shellcheck` isn't installed, `lint:ps` no-ops when `pwsh`/PSScriptAnalyzer isn't — so commits never break for lack of an optional linter. Both gate only on warnings+errors (style/info findings are ignored). Scripts live in `scripts/`.
+The husky `pre-commit` hook runs `lint-staged` (biome) + `typecheck` + `bun test` + `lint:shell` + `lint:ps`. The shell/PowerShell linters are **skip-if-absent**: `lint:shell` no-ops when `shellcheck` isn't installed, `lint:ps` no-ops when `pwsh`/PSScriptAnalyzer isn't — so commits never break for lack of an optional linter. Both gate only on warnings+errors (style/info findings are ignored). Helper scripts live in `scripts/`. CI (`.github/workflows/ci.yml`) runs the same checks on a Linux/macOS/Windows matrix.
 
 Direct CLI use:
 ```bash

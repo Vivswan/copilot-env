@@ -10,6 +10,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { consola } from "consola";
 
 import { DEFAULT_HOME } from "./paths.ts";
@@ -98,7 +99,12 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
   for (const path of dbPaths) {
     let db: Database | undefined;
     try {
-      db = new Database(`file:${path}?immutable=1`, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI);
+      // Build a proper file URI (pathToFileURL handles Windows drive letters /
+      // backslashes); immutable=1 skips locking for this read-only snapshot.
+      db = new Database(
+        `${pathToFileURL(path).href}?immutable=1`,
+        SQLITE_OPEN_READONLY | SQLITE_OPEN_URI,
+      );
       const rows = db
         .query(
           `SELECT model,

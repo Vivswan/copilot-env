@@ -2,6 +2,7 @@
   "name": "copilot-env",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Local copilot-api gateway lifecycle + config helper (TypeScript port of the Python copilot-api helper).",
   "bin": {

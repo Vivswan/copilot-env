@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
 
-import { estimateCost, type PricingTier, resolvePricingId, type UsageTokens } from "./pricing.ts";
+import {
+  estimateCost,
+  type PricingTier,
+  resolvePricingId,
+  type UsageTokens,
+} from "../src/usage/pricing.ts";
 
 const CATALOG = new Set<string>([
   "anthropic/claude-opus-4.8",

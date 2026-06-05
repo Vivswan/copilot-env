@@ -2,6 +2,12 @@
 .claude/
 .worktrees/
 
+# copilot-env in-place bootstrap artifacts (no-flag user_cache.ts installs +
+# floats node_modules directly in the checkout and stamps these here).
+.installed-from-lock
+.gateway-checked
+.symlink-cache
+
 ## Bun
 # Logs
 logs

@@ -15,52 +15,19 @@ _COPILOT_AGENTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")" && pwd)"
 # Ensure bun is on PATH (its installer only patches ~/.zshrc by default).
 [ -x "$HOME/.bun/bin/bun" ] && case ":$PATH:" in *":$HOME/.bun/bin:"*) ;; *) export PATH="$HOME/.bun/bin:$PATH" ;; esac
 
-# Unified user-facing entry point.
-#   agent start         start the gateway + export env, then wire Codex by
-#                       default (writes ~/.codex)
-#   agent start_only    start the gateway + export env only (no Codex wiring)
-#   agent codex [flags] (re)write the default ~/.codex on demand
-#   agent codex_host    build & export the per-host CODEX_HOME (symlink farm,
-#                       Linux-only); does not (re)start the gateway
-#   agent <subcommand>  everything else (stop, env, cost, ...) passes straight
-#                       through to the bin
+# Uniform wrapper over bin/agent: run the requested command, then re-apply the
+# full session env from the single source of truth — `agent env`, which prints
+# ONLY `export KEY=val` lines (gateway vars, plus CODEX_HOME when a host farm is
+# active). There is no per-subcommand logic: adding a bin/agent subcommand never
+# touches this, and we only ever eval the dedicated, contract-stable `env`
+# output (never a command's incidental stdout).
 function agent {
-    case "$1" in
-        start)
-            shift
-            "${_COPILOT_AGENTS_DIR}/bin/copilot-api" start "$@" || return $?
-            # Capture env first so a failing `env` aborts instead of being
-            # masked by eval (which only ever sees stdout).
-            _env="$("${_COPILOT_AGENTS_DIR}/bin/copilot-api" env)" || return $?
-            eval "$_env"
-            unset _env
-            # Wire Codex to the gateway by default (writes ~/.codex; non-fatal,
-            # path print silenced).
-            "${_COPILOT_AGENTS_DIR}/bin/codex-home" >/dev/null || true
-            ;;
-        start_only)
-            shift
-            "${_COPILOT_AGENTS_DIR}/bin/copilot-api" start "$@" || return $?
-            _env="$("${_COPILOT_AGENTS_DIR}/bin/copilot-api" env)" || return $?
-            eval "$_env"
-            unset _env
-            ;;
-        codex)
-            shift
-            "${_COPILOT_AGENTS_DIR}/bin/codex-home" "$@"
-            ;;
-        codex_host)
-            shift
-            # Linux-only per-host CODEX_HOME (symlink farm). Build it and export
-            # the resolved path so Codex uses it for this session.
-            _codex_home="$("${_COPILOT_AGENTS_DIR}/bin/codex-home" --symlink-farm "$@")" || return $?
-            export CODEX_HOME="${_codex_home}"
-            unset _codex_home
-            ;;
-        *)
-            "${_COPILOT_AGENTS_DIR}/bin/copilot-api" "$@"
-            ;;
-    esac
+    "${_COPILOT_AGENTS_DIR}/bin/agent" "$@" || return $?
+    # Best-effort env refresh from the dedicated `env` command. Its stderr is NOT
+    # silenced so a genuine failure is visible (it stays non-fatal: the `&&`
+    # skips eval and the command's own exit status already returned above).
+    _env="$("${_COPILOT_AGENTS_DIR}/bin/agent" env)" && eval "${_env}"
+    unset _env
 }
 
 # Eagerly export ANTHROPIC_/OPENAI_ env vars for the current shell. Silence
@@ -68,29 +35,13 @@ function agent {
 # node_modules ...") doesn't break Powerlevel10k's instant-prompt guard on
 # first source. If env resolution fails, the next cl/co/cx call will surface
 # the error.
-eval "$("${_COPILOT_AGENTS_DIR}/bin/copilot-api" env "$@" 2>/dev/null)"
+eval "$("${_COPILOT_AGENTS_DIR}/bin/agent" env "$@" 2>/dev/null)"
 
-# Ping the gateway before launching an agent; if it's down, offer to start it.
-# The base URL is exported as ANTHROPIC_BASE_URL/OPENAI_BASE_URL at shell start
-# (it encodes the resolved port even when the daemon is down); fall back to the
-# default port if neither is set. Without curl we can't probe, so assume up and
-# don't block. `agent start` runs in the current shell, so its env exports
-# propagate to the agent we launch next.
+# Check the gateway before launching an agent; if it's down, offer to start it.
+# Uses `agent health` (HTTP-probes the gateway, exit 0 = up). `agent start` runs
+# in the current shell, so its env exports propagate to the agent we launch next.
 function _copilot_ensure_server {
-    _url="${ANTHROPIC_BASE_URL:-}"
-    [ -n "$_url" ] || { _url="${OPENAI_BASE_URL:-}"; _url="${_url%/v1}"; }
-    [ -n "$_url" ] || _url="http://localhost:${COPILOT_API_PORT_DEFAULT:-4141}"
-
-    # Probe: cap connect + total time at 2s so a stalled socket can't hang the
-    # launch. 7 = connection refused, 28 = timeout -> down; any other result
-    # (including no curl available) -> treat as up and don't block.
-    if command -v curl >/dev/null 2>&1; then
-        curl -s -o /dev/null --connect-timeout 2 --max-time 2 "$_url"
-        case "$?" in
-            7|28) ;;
-            *) return 0 ;;
-        esac
-    else
+    if "${_COPILOT_AGENTS_DIR}/bin/agent" health >/dev/null 2>&1; then
         return 0
     fi
 

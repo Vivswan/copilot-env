@@ -113,7 +113,8 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'agents.ps1'))) {
 } else {
     if (Test-Path (Join-Path $InstallDir '.git')) {
         Write-Host "Updating copilot-env in $InstallDir ..."
-        & git -C $InstallDir pull --ff-only
+        & git -C $InstallDir fetch origin main
+        & git -C $InstallDir reset --hard origin/main
     } else {
         Write-Host "Cloning copilot-env into $InstallDir ..."
         & git clone $RepoUrl $InstallDir
@@ -132,7 +133,7 @@ if (-not $npmGlobalBin) { throw 'Could not determine the npm global executable d
 Add-UserPath $npmGlobalBin
 
 Write-Host 'Bootstrapping copilot-env dependencies ...'
-& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoDir 'bin\copilot-api.ps1') env | Out-Null
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoDir 'bin\agent.ps1') env | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'copilot-env dependency bootstrap failed.' }
 
 Install-AgentCli -Command claude -Name 'Claude Code CLI' -Package '@anthropic-ai/claude-code'

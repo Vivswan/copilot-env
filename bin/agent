@@ -1,0 +1,38 @@
+#!/bin/sh
+# Single self-bootstrapping entry point (Linux + macOS) for copilot-env.
+# Installs bun if missing, prepares node_modules via user_cache.ts, then execs
+# the cli.ts dispatcher (start / stop / env / cost / codex_config / host_codex).
+# The `agent` shell function (agents.bashrc) is what turns `agent env` output
+# into shell state.
+#
+# Default: no cache — user_cache.ts installs + floats in the checkout and cli.ts
+# runs from there. `local_cache_start` is `start`, but first builds a separate
+# per-user cache (`--local-cache` => symlink mirror on macOS/Linux) and runs
+# from it.
+set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"
+SNAP="$(cd "${HERE}/.." && pwd)"
+
+if ! command -v bun >/dev/null 2>&1 && [ ! -x "$HOME/.bun/bin/bun" ]; then
+    echo "==> Installing bun (one-time) ..." >&2
+    curl -fsSL https://bun.sh/install | bash >/dev/null
+fi
+[ -x "$HOME/.bun/bin/bun" ] && PATH="$HOME/.bun/bin:$PATH"
+export PATH
+
+DEPS="${SNAP}/src/user_cache.ts"
+
+# Prepare node_modules, then dispatch via cli.ts. `local_cache_start` builds a
+# separate per-user cache (--local-cache) and runs from it; everything else runs
+# in-place from the checkout. Capture the run dir from user_cache's stdout.
+if [ "${1:-}" = "local_cache_start" ]; then
+    shift
+    set -- start "$@"
+    CACHE="$(bun run "${DEPS}" "${SNAP}" --local-cache)"
+else
+    CACHE="$(bun run "${DEPS}" "${SNAP}")"
+fi
+# Tell cli.ts where node_modules actually is (checkout for in-place, cache for
+# --local-cache) so the gateway resolves regardless of the mirror mode.
+export COPILOT_ENV_ROOT="${CACHE}"
+exec bun run "${CACHE}/src/cli.ts" "$@"

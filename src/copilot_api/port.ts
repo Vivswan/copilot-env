@@ -1,7 +1,6 @@
-import * as fs from "node:fs";
 import * as net from "node:net";
 
-import { CopilotApiPaths } from "./paths.ts";
+import { CopilotApiState } from "./state.ts";
 
 export const COPILOT_API_PORT_DEFAULT: string = process.env.COPILOT_API_PORT_DEFAULT || "4141";
 
@@ -24,7 +23,9 @@ export async function copilotApiPortAvailable(port: number): Promise<boolean> {
   });
 }
 
-export async function copilotApiFindPort(start: number): Promise<number> {
+export async function copilotApiFindPort(
+  start: number = Number(COPILOT_API_PORT_DEFAULT),
+): Promise<number> {
   const maxAttempts = 50;
   for (let port = start; port < Math.min(start + maxAttempts, 65536); port++) {
     if (await copilotApiPortAvailable(port)) {
@@ -35,17 +36,7 @@ export async function copilotApiFindPort(start: number): Promise<number> {
 }
 
 export function copilotApiResolvePort(): string {
-  const portfile = new CopilotApiPaths().portFile;
-  let port = "";
-  if (fs.existsSync(portfile) && fs.statSync(portfile).isFile()) {
-    try {
-      port = fs.readFileSync(portfile, "utf8").trim();
-    } catch {
-      port = "";
-    }
-  }
-  if (!port) {
-    port = COPILOT_API_PORT_DEFAULT;
-  }
-  return port;
+  // The port is recorded in our state file by `start` and removed by `stop`.
+  const statePort = new CopilotApiState().read().port;
+  return statePort !== undefined ? String(statePort) : COPILOT_API_PORT_DEFAULT;
 }

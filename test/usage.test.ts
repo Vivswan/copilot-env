@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { discoverUsageDbs, readUsage } from "./usage.ts";
+import { discoverUsageDbs, readUsage } from "../src/usage/usage.ts";
 
 let dir = "";
 

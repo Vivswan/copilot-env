@@ -22,7 +22,7 @@ From the project directory:
 bun test            # run the test suite
 bun run typecheck   # tsc --noEmit
 bun run lint        # biome format/lint check
-bun run lint:shell  # shellcheck on shell scripts
+bun run lint:sh     # shellcheck on shell scripts
 bun run lint:ps     # PSScriptAnalyzer on PowerShell scripts
 bun run format      # biome format --write
 ```

@@ -43,7 +43,7 @@ jobs:
 
       - name: Shell lint (shellcheck)
         if: runner.os == 'Linux'
-        run: bun run lint:shell
+        run: bun run lint:sh
 
       - name: PowerShell lint (PSScriptAnalyzer)
         if: runner.os == 'Windows'
@@ -83,8 +83,8 @@ jobs:
         env:
           COPILOT_API_ENTRY: ${{ github.workspace }}/test/fake-gateway.mjs
         run: |
-          bun src/server.ts start
+          bun src/cli.ts start
           if ($LASTEXITCODE -ne 0) { Write-Error 'start failed'; exit 1 }
-          bun src/server.ts stop
+          bun src/cli.ts stop
           if ($LASTEXITCODE -ne 0) { Write-Error 'stop failed'; exit 1 }
           Write-Host 'start/stop OK on Windows'

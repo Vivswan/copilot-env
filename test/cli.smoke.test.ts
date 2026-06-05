@@ -7,8 +7,8 @@ import { expect, test } from "bun:test";
 // CONSOLA_LEVEL is forced because citty renders usage via consola, which
 // silences itself when it detects a "test" environment (as `bun test` is) --
 // that suppression is a harness artifact; a real terminal prints normally.
-test("`server.ts --help` loads the CLI and exits 0", () => {
-  const proc = Bun.spawnSync(["bun", "src/server.ts", "--help"], {
+test("`cli.ts --help` loads the CLI and exits 0", () => {
+  const proc = Bun.spawnSync(["bun", "src/cli.ts", "--help"], {
     stdout: "pipe",
     stderr: "pipe",
     env: { ...process.env, CONSOLA_LEVEL: "5" },

@@ -1,9 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
 import { homedir } from "node:os";
 import { join } from "node:path";
-
-import { getSanitizedHostname } from "./hostname.ts";
-import { CopilotApiPaths, DEFAULT_HOME } from "./paths.ts";
+import { CopilotApiPaths, DEFAULT_HOME } from "../src/copilot_api/paths.ts";
+import { getSanitizedHostname } from "../src/utils/hostname.ts";
 
 const SAVED_HOME = process.env.COPILOT_API_HOME;
 
@@ -29,8 +28,7 @@ test("CopilotApiPaths composes per-host run files under COPILOT_API_HOME", () =>
   expect(paths.home).toBe(home);
   expect(paths.configFile).toBe(join(home, "config.json"));
   expect(paths.runDir).toBe(runDir);
-  expect(paths.pidFile).toBe(join(runDir, ".pid"));
-  expect(paths.portFile).toBe(join(runDir, ".port"));
+  expect(paths.stateFile).toBe(join(runDir, ".state.json"));
   expect(paths.logFile).toBe(join(runDir, ".log"));
   expect(paths.sqliteDb).toBe(join(runDir, "copilot-api.sqlite"));
 });

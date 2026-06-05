@@ -1,15 +1,13 @@
 # Agent commands (Windows / PowerShell) — dot-sourced from your PowerShell
 # $PROFILE. PowerShell equivalent of agents.bashrc.
 #
-# Lifecycle wrappers delegate to the copilot-env package via the PowerShell bin
-# launcher (bin\copilot-api.ps1), which self-bootstraps on first invocation
-# (installs node_modules into the per-user cache; no-op on subsequent runs when
-# the lockfile is unchanged).
+# Thin wrapper over bin\agent.ps1 (which self-bootstraps bun, builds the per-user
+# cache, and dispatches). This file only adds what a subprocess can't do for the
+# session: eval the gateway env into the current shell after `start`.
 
-# Resolve this file's directory; the bin launchers live alongside it.
+# Resolve this file's directory; bin\agent.ps1 lives alongside it.
 $script:AgentsDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$script:CopilotApiPs1 = Join-Path $AgentsDir 'bin\copilot-api.ps1'
-$script:CodexHomePs1 = Join-Path $AgentsDir 'bin\codex-home.ps1'
+$script:AgentPs1 = Join-Path $AgentsDir 'bin\agent.ps1'
 
 # Ensure bun is on PATH (its installer patches the user PATH, but a running
 # session may predate that).
@@ -20,46 +18,26 @@ if ((Test-Path (Join-Path $BunDir 'bun.exe')) -and ($env:Path -notlike "*$BunDir
 
 # --- low-level helpers -----------------------------------------------------
 
-# Invoke the copilot-api launcher with the given arguments.
-function Invoke-CopilotApi {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $script:CopilotApiPs1 @args
+# Invoke bin\agent.ps1 with the given arguments.
+function Invoke-Agent {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 @args
 }
 
 # Apply the `env` output to the current session. Request PowerShell-native
 # `$env:KEY = '...'` lines and evaluate them directly -- no manual parsing.
 function Import-CopilotEnv {
-    $lines = Invoke-CopilotApi env --format powershell 2>$null
+    $lines = Invoke-Agent env --format powershell 2>$null
     if ($LASTEXITCODE -ne 0) { return }
     foreach ($line in $lines) {
         if ($line -match '^\s*\$env:') { Invoke-Expression $line }
     }
 }
 
-# Default Codex wiring run by `agent start`: writes the standard ~/.codex
-# (%USERPROFILE%\.codex), which codex reads natively -- we never set CODEX_HOME
-# (the per-host symlink farm that needs it is Linux-only). Non-fatal -- a failure
-# here doesn't block startup. (`agent codex` calls the launcher directly so it
-# can forward flags and show output.)
-function Update-CodexConfig {
-    if (-not (Test-Path $script:CodexHomePs1)) { return }
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $script:CodexHomePs1 | Out-Null
-}
-
 # Return $true if the local copilot gateway is reachable, $false otherwise.
+# Uses `agent health` (HTTP-probes the gateway, exit 0 = up).
 function Test-CopilotServer {
-    $url = $env:ANTHROPIC_BASE_URL
-    if (-not $url) { $url = ($env:OPENAI_BASE_URL -replace '/v1$', '') }
-    if (-not $url) {
-        $port = $env:COPILOT_API_PORT_DEFAULT; if (-not $port) { $port = '4141' }
-        $url = "http://localhost:$port"
-    }
-    try {
-        Invoke-WebRequest -Uri $url -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop | Out-Null
-        return $true
-    } catch {
-        # Any HTTP response (even an error status) means the server is up.
-        return ($null -ne $_.Exception.Response)
-    }
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 health *> $null
+    return ($LASTEXITCODE -eq 0)
 }
 
 function Assert-AgentCli {
@@ -81,41 +59,15 @@ function Confirm-CopilotServer {
     }
 }
 
-# Unified user-facing entry point (mirrors the POSIX agents.bashrc `agent`).
-#   agent start         start the gateway + export env, then wire Codex (writes ~/.codex)
-#   agent start_only    start the gateway + export env only (no Codex wiring)
-#   agent codex         (re)write the default ~/.codex on demand (no restart)
-#   agent <subcommand>  everything else (stop, env, cost, ...) passes straight
-#                       through to the copilot-api bin
+# Uniform wrapper over bin\agent.ps1 (mirrors the POSIX agents.bashrc `agent`):
+# run the requested command, then re-apply the full session env from the single
+# source of truth — `agent env`, which prints only `$env:KEY = ...` lines
+# (gateway vars, plus CODEX_HOME when a host farm is active). No per-subcommand
+# logic; we only ever eval the dedicated, contract-stable `env` output.
 function agent {
-    if ($args.Count -ge 1) {
-        $rest = @($args | Select-Object -Skip 1)
-        switch ($args[0]) {
-            'start' {
-                Invoke-CopilotApi start @rest
-                if ($LASTEXITCODE -ne 0) { return }
-                Import-CopilotEnv
-                # Import-CopilotEnv leaves $LASTEXITCODE as the `env` call's exit;
-                # don't wire Codex if env export failed.
-                if ($LASTEXITCODE -ne 0) { return }
-                Update-CodexConfig
-                return
-            }
-            'start_only' {
-                Invoke-CopilotApi start @rest
-                if ($LASTEXITCODE -ne 0) { return }
-                Import-CopilotEnv
-                return
-            }
-            'codex' {
-                # Forward flags (e.g. --base-url/--api-key/--help) and show output,
-                # mirroring POSIX `agent codex "$@"`.
-                & powershell -NoProfile -ExecutionPolicy Bypass -File $script:CodexHomePs1 @rest
-                return
-            }
-        }
-    }
-    Invoke-CopilotApi @args
+    Invoke-Agent @args
+    if ($LASTEXITCODE -ne 0) { return }
+    Import-CopilotEnv
 }
 
 # --- agent launchers -------------------------------------------------------

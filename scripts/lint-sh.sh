@@ -13,5 +13,5 @@ if ! command -v shellcheck >/dev/null 2>&1; then
     exit 0
 fi
 
-shellcheck --severity=warning install.sh agents.bashrc bin/copilot-api bin/codex-home
+shellcheck --severity=warning install.sh agents.bashrc bin/agent
 echo "shellcheck: OK"

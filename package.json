@@ -5,19 +5,16 @@
   "type": "module",
   "description": "Local copilot-api gateway lifecycle + config helper (TypeScript port of the Python copilot-api helper).",
   "bin": {
-    "copilot-api": "./bin/copilot-api",
-    "codex-home": "./bin/codex-home"
+    "agent": "./bin/agent"
   },
   "scripts": {
-    "start": "bun run src/server.ts",
-    "codex-home": "bun run src/codex_home.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "lint": "biome check src bin",
-    "lint:shell": "bash scripts/lint-shell.sh",
-    "lint:ps": "bash scripts/lint-powershell.sh",
-    "format": "biome format --write src bin",
-    "check": "biome check --write src bin",
+    "lint": "biome check src bin test",
+    "lint:sh": "bash scripts/lint-sh.sh",
+    "lint:ps": "bash scripts/lint-ps.sh",
+    "format": "biome format --write src bin test",
+    "check": "biome check --write src bin test",
     "postinstall": "patch-package",
     "prepare": "husky"
   },
@@ -51,6 +48,7 @@
   ],
   "lint-staged": {
     "src/**/*.ts": "biome check --write --no-errors-on-unmatched",
+    "test/**/*.ts": "biome check --write --no-errors-on-unmatched",
     "bin/**/*": "biome check --write --no-errors-on-unmatched",
     "biome.json": "biome check --write --no-errors-on-unmatched"
   }

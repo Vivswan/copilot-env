@@ -7,15 +7,16 @@ import { join } from "node:path";
 import { consola } from "consola";
 import { execa } from "execa";
 import psList from "ps-list";
-import { cacheDir } from "./cache.ts";
+import { moduleRoot } from "../utils/root.ts";
 
 const logger = consola;
 
-// Resolve the bundled copilot-api entry by anchoring node's module
-// resolution at the per-user cache (where bootstrap installs the pinned
-// dep + applies patches). Node walks up from the anchor looking for
-// node_modules/.
-const cacheRequire = createRequire(join(cacheDir(), "_anchor.js"));
+// Resolve the bundled copilot-api entry by anchoring node's module resolution
+// at the runtime root (see moduleRoot) — where bootstrap installs the pinned
+// dep + applies patches. An explicit path anchor (not import.meta) so a
+// symlinked cache resolves node_modules in the cache, not via the source's
+// realpath. Node walks up from the anchor looking for node_modules/.
+const cacheRequire = createRequire(join(moduleRoot(), "_anchor.js"));
 
 function resolveCopilotApiEntry(): string {
   // Escape hatch: an explicit entry path overrides cache resolution. CI uses
@@ -29,7 +30,7 @@ function resolveCopilotApiEntry(): string {
     return cacheRequire.resolve("@jeffreycao/copilot-api/dist/main.js");
   } catch (e) {
     throw new Error(
-      `copilot-api not installed under ${cacheDir()}; run the bootstrap step: ${
+      `copilot-api not installed under ${moduleRoot()}; run the bootstrap step: ${
         e instanceof Error ? e.message : String(e)
       }`,
     );
@@ -58,14 +59,26 @@ export function pidAlive(pid: number): boolean {
 }
 
 export function getOrphanPids(myPid: number, myPpid: number): Promise<number[]> {
-  /** Find orphaned copilot-api daemon processes. */
-  if (process.platform === "win32") {
-    return getOrphanPidsWindows(myPid, myPpid);
-  }
-  return getOrphanPidsPosix(myPid, myPpid);
+  /** Find orphaned copilot-api daemon processes (excluding us + our parent). */
+  return listCopilotApiPids().then((pids) => pids.filter((p) => p !== myPid && p !== myPpid));
 }
 
-async function getOrphanPidsWindows(myPid: number, myPpid: number): Promise<number[]> {
+/**
+ * True if `pid` is *currently* a running copilot-api daemon. Used before
+ * signalling a pid read from state, so PID reuse (the OS recycling a stale pid
+ * onto an unrelated process) can't make us SIGTERM something that isn't ours.
+ * Best-effort: a failed scan returns false (treat as "not ours / gone").
+ */
+export async function isCopilotApiPid(pid: number): Promise<boolean> {
+  return (await listCopilotApiPids()).includes(pid);
+}
+
+/** All copilot-api daemon pids of the current user (best-effort, no exclusions). */
+function listCopilotApiPids(): Promise<number[]> {
+  return process.platform === "win32" ? listCopilotApiPidsWindows() : listCopilotApiPidsPosix();
+}
+
+async function listCopilotApiPidsWindows(): Promise<number[]> {
   // ps-list can't see command lines on Windows (fastlist returns name/pid/ppid
   // only), so match on the daemon's command line via WMI: node/bun processes
   // whose CommandLine is the launch (`<runtime> .../copilot-api/.../main.js start`).
@@ -88,36 +101,29 @@ async function getOrphanPidsWindows(myPid: number, myPpid: number): Promise<numb
   const pids: number[] = [];
   for (const line of stdout.split(/\r?\n/)) {
     const pid = Number.parseInt(line.trim(), 10);
-    if (Number.isNaN(pid)) {
-      continue;
+    if (!Number.isNaN(pid)) {
+      pids.push(pid);
     }
-    if (pid === myPid || pid === myPpid) {
-      continue;
-    }
-    pids.push(pid);
   }
   return pids;
 }
 
-async function getOrphanPidsPosix(myPid: number, myPpid: number): Promise<number[]> {
-  // Best-effort, like the old `pgrep`: a failed scan degrades to no orphans
-  // rather than aborting `start`. `all: false` restricts to the current user's
-  // processes (mirrors `pgrep -u me`).
+async function listCopilotApiPidsPosix(): Promise<number[]> {
+  // Best-effort, like the old `pgrep`: a failed scan degrades to none rather
+  // than aborting. `all: false` restricts to the current user's processes
+  // (mirrors `pgrep -u me`).
   const procs = await psList({ all: false }).catch(() => []);
   const pids: number[] = [];
   for (const proc of procs) {
     const cmd = proc.cmd ?? "";
     // Preserve the original `pgrep "copilot-api.*start"` shape: `copilot-api`
-    // must appear BEFORE `start`, and `start` is word-bounded so we don't kill
+    // must appear BEFORE `start`, and `start` is word-bounded so we don't match
     // unrelated processes that merely mention "start" (or "restart") near a path
     // containing "copilot-api".
     if (!/copilot-api.*\bstart\b/.test(cmd)) {
       continue;
     }
     if (cmd.includes("copilot-api.sh") || cmd.includes("copilot_api.py")) {
-      continue;
-    }
-    if (proc.pid === myPid || proc.pid === myPpid) {
       continue;
     }
     pids.push(proc.pid);

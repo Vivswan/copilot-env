@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { consola } from "consola";
 
-import { DEFAULT_HOME } from "./paths.ts";
+import { DEFAULT_HOME } from "../copilot_api/paths.ts";
 
 const DB_FILENAME = "copilot-api.sqlite";
 

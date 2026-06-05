@@ -19,7 +19,7 @@ if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
     Write-Host "PSScriptAnalyzer not installed -- skipping (Install-Module PSScriptAnalyzer -Scope CurrentUser)."
     exit 0
 }
-$files = "install.ps1","agents.ps1","bin/copilot-api.ps1","bin/codex-home.ps1"
+$files = "install.ps1","agents.ps1","bin/agent.ps1"
 $issues = foreach ($f in $files) { Invoke-ScriptAnalyzer -Path $f -Settings PSScriptAnalyzerSettings.psd1 }
 if ($issues) { $issues | Format-Table -AutoSize | Out-String | Write-Host; exit 1 }
 Write-Host "PSScriptAnalyzer: OK"

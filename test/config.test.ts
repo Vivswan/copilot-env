@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { CopilotApiConfig } from "./config.ts";
+import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 
 let dir = "";
 

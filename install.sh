@@ -79,7 +79,8 @@ if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/agents.bashrc" ]; then
 else
     if [ -d "$INSTALL_DIR/.git" ]; then
         echo "Updating copilot-env in $INSTALL_DIR ..."
-        git -C "$INSTALL_DIR" pull --ff-only
+        git -C "$INSTALL_DIR" fetch origin main
+        git -C "$INSTALL_DIR" reset --hard origin/main
     else
         echo "Cloning copilot-env into $INSTALL_DIR ..."
         git clone "$REPO_URL" "$INSTALL_DIR"

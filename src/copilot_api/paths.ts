@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { getSanitizedHostname } from "./hostname.ts";
+import { getSanitizedHostname } from "../utils/hostname.ts";
 
 // Mirror the gateway's own default (`@jeffreycao/copilot-api` lib/paths.ts):
 //   path.join(os.homedir(), ".local", "share", "copilot-api")
@@ -14,8 +14,7 @@ export class CopilotApiPaths {
   home: string;
   configFile: string;
   runDir: string;
-  pidFile: string;
-  portFile: string;
+  stateFile: string;
   logFile: string;
   sqliteDb: string;
 
@@ -25,8 +24,9 @@ export class CopilotApiPaths {
     const runDir = join(this.home, ".run", hostname);
     this.configFile = join(this.home, "config.json");
     this.runDir = runDir;
-    this.pidFile = join(runDir, ".pid");
-    this.portFile = join(runDir, ".port");
+    // Our own per-host state (port + pid + active CODEX_HOME), written by this
+    // tooling and read back by start/stop/env/health/port.
+    this.stateFile = join(runDir, ".state.json");
     this.logFile = join(runDir, ".log");
     this.sqliteDb = join(runDir, "copilot-api.sqlite");
   }

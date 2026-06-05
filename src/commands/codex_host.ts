@@ -1,40 +1,16 @@
-#!/usr/bin/env -S npx tsx
-/**
- * Create or refresh a host-local CODEX_HOME wired to the local copilot-api gateway.
- *
- * Per-host dir under ~/.codex/hosts/<host>, shared-state symlink farm, file
- * seeding, plus the config.toml managed-section logic.
- * Port/API key are read from copilot-api's own data dir.
- *
- * USAGE:
- *     codex-home [--symlink-farm] [--codex-home <path>] [--hostname-path] [--help]
- *
- * By default it does a config-only update (writes config.toml/.env at the
- * resolved CODEX_HOME). Pass --symlink-farm for the full per-host symlink farm.
- *
- * OUTPUT:
- *     On success, prints only the resolved CODEX_HOME path to stdout.
- *     Status, warnings, and errors go to stderr.
- */
-
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { defineCommand, runMain } from "citty";
 import { createConsola } from "consola";
 import { execaSync } from "execa";
-import { parse, stringify } from "smol-toml";
 import which from "which";
-
-import { CopilotApiConfig } from "./utils/config.ts";
-import { getSanitizedHostname, HOME } from "./utils/hostname.ts";
-import { copilotApiResolvePort } from "./utils/port.ts";
+import { CopilotApiState } from "../copilot_api/state.ts";
+import { getSanitizedHostname, HOME } from "../utils/hostname.ts";
+import { applyCodexConfig } from "./codex_config.ts";
 
 const logger = createConsola({ stdout: process.stderr, stderr: process.stderr });
 
-// The per-host CODEX_HOME (~/.codex/hosts/<hostname>). Only used for the
-// --hostname-path / --symlink-farm flows, which are Linux-only (they build/inspect
-// the shared-state symlink farm used on the Linux fleet). Plain config.toml/.env
-// updates target the standard ~/.codex on every platform instead.
+// The per-host CODEX_HOME (~/.codex/hosts/<hostname>). Linux-only: it builds and
+// inspects the shared-state symlink farm used on the Linux fleet.
 function getHostLocalCodexHome(): string {
   return `${HOME}/.codex/hosts/${getSanitizedHostname()}`;
 }
@@ -166,7 +142,7 @@ function cpPrMerge(localPath: string, sharedPath: string): void {
   }
 }
 
-// === section: CODEX_HOME symlink farm (seeding) ===
+// === CODEX_HOME symlink farm (seeding) ===
 
 function warnExistingCodexPath(p: string): void {
   logger.warn(`Warning: Leaving existing Codex path unchanged: ${p}`);
@@ -410,7 +386,7 @@ function ensureCodexFileSymlink(localPath: string, sharedPath: string): number {
   return 0;
 }
 
-export function buildCodexSymlinkFarm(codexHome?: string | null): number {
+function buildCodexSymlinkFarm(codexHome: string): number {
   const localDirs = [
     ".tmp", // Host-local scratch/cache state, including plugin temp data.
     "log", // Host-local runtime logs.
@@ -435,8 +411,6 @@ export function buildCodexSymlinkFarm(codexHome?: string | null): number {
     "session_index.jsonl", // Session lookup index maintained by the desktop app.
     "version.json", // Codex home layout/schema version marker.
   ];
-
-  if (!codexHome) codexHome = getHostLocalCodexHome();
 
   const sharedRoot = `${HOME}/.codex`;
   primeSharedCodexHomeIfMissing(sharedRoot);
@@ -512,213 +486,32 @@ export function buildCodexSymlinkFarm(codexHome?: string | null): number {
   return 0;
 }
 
-// === section: config.toml management ===
-//
-// Load-mutate-stringify so user-added keys/sections survive. smol-toml does
-// NOT preserve comments or whitespace formatting — TS has no battle-tested
-// equivalent of Python's tomlkit. Unknown top-level keys are preserved.
+/**
+ * `host_codex`: build the per-host CODEX_HOME symlink farm (Linux-only) at
+ * `--codex-home` (default `~/.codex/hosts/<hostname>`), then write its config and
+ * persist the CODEX_HOME to state so `env` exports it. With `--delete`, remove
+ * that per-host dir and clear the state instead. No stdout.
+ */
+export function runCodexHost(args: { "codex-home"?: string; delete?: boolean }): void {
+  assertLinux("The CODEX_HOME symlink farm (host_codex)");
+  // Resolve to an absolute path: it gets persisted to state and re-exported into
+  // future shells, so a cwd-relative value would later resolve against the wrong
+  // directory.
+  const codexHome = path.resolve(args["codex-home"] ?? getHostLocalCodexHome());
+  const state = new CopilotApiState();
 
-const DEFAULT_CONFIG = `\
-model_provider = "copilot-api"
-
-[model_providers.copilot-api]
-name = "copilot-api gateway"
-base_url = "{base_url}"
-env_key = "COPILOT_API_KEY"
-wire_api = "responses"
-requires_openai_auth = false
-supports_websockets = false
-
-[analytics]
-enabled = false
-
-[feedback]
-enabled = false
-`;
-
-function formatDefaultConfig(baseUrl: string): string {
-  return DEFAULT_CONFIG.replace("{base_url}", baseUrl);
-}
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-
-// Load existing config (preferring shared, then host-local), or fall back to
-// the default template. Failures to parse fall through to the next source.
-function loadOrCreateConfig(
-  sharedConfig: string,
-  hostConfig: string,
-  baseUrl: string,
-): Record<string, unknown> {
-  for (const source of [sharedConfig, hostConfig]) {
-    try {
-      if (fs.statSync(source).isFile()) {
-        return parse(fs.readFileSync(source, "utf8")) as Record<string, unknown>;
-      }
-    } catch {
-      // try next source
-    }
-  }
-  return parse(formatDefaultConfig(baseUrl)) as Record<string, unknown>;
-}
-
-export function configureCodexConfig(
-  baseUrl: string,
-  apiKey: string,
-  codexHome?: string | null,
-): number {
-  const home = process.env.HOME || HOME;
-  codexHome = codexHome || process.env.CODEX_HOME || `${home}/.codex`;
-
-  if (!baseUrl) {
-    logger.warn("Warning: base_url not provided, skipping Codex config");
-    return 1;
+  if (args.delete) {
+    fs.rmSync(codexHome, { recursive: true, force: true });
+    logger.info(`Removed per-host CODEX_HOME: ${codexHome}`);
+    state.set({ codexHome: null });
+    return;
   }
 
-  if (!/^[A-Za-z0-9:/._-]+$/.test(baseUrl)) {
-    logger.error("Error: base_url contains invalid characters");
-    return 1;
+  logger.info("Preparing CODEX_HOME (building symlink farm)...");
+  if (buildCodexSymlinkFarm(codexHome) !== 0) {
+    throw new Error("Failed to build the CODEX_HOME symlink farm");
   }
-
-  try {
-    fs.mkdirSync(codexHome, { recursive: true });
-  } catch {
-    logger.warn(`Warning: Could not create Codex config directory: ${codexHome}`);
-    return 1;
-  }
-
-  const sharedConfig = `${home}/.codex/config.toml`;
-  const hostConfig = `${codexHome}/config.toml`;
-
-  let doc = loadOrCreateConfig(sharedConfig, hostConfig, baseUrl);
-
-  // Surgically set model_providers."copilot-api".base_url, replacing the
-  // whole document only when our managed provider section is absent.
-  const providers = doc.model_providers;
-  if (!isRecord(providers) || !isRecord(providers["copilot-api"])) {
-    doc = parse(formatDefaultConfig(baseUrl)) as Record<string, unknown>;
-  } else {
-    (providers["copilot-api"] as Record<string, unknown>).base_url = baseUrl;
-  }
-
-  fs.writeFileSync(hostConfig, stringify(doc));
-  logger.info(`Codex App config written to ${hostConfig}`);
-
-  const envFile = `${codexHome}/.env`;
-  fs.writeFileSync(envFile, `COPILOT_API_KEY=${apiKey}\n`);
-  try {
-    fs.chmodSync(envFile, 0o600);
-  } catch {
-    // pass
-  }
-
-  return 0;
-}
-
-// === section: CLI entry point ===
-
-const main = defineCommand({
-  meta: {
-    name: "codex-home",
-    description:
-      "Create or refresh a host-local CODEX_HOME wired to the local copilot-api gateway. " +
-      "On success, prints only the resolved CODEX_HOME path to stdout.",
-  },
-  args: {
-    "hostname-path": {
-      type: "boolean",
-      default: false,
-      description:
-        "Resolve and print the per-host CODEX_HOME path (~/.codex/hosts/<hostname>; Linux-only, " +
-        "or --codex-home if given) only; no symlink farm, no config writes.",
-    },
-    "symlink-farm": {
-      type: "boolean",
-      default: false,
-      description:
-        "Build the full per-host symlink farm (symlink farm + shared-state seeding) before " +
-        "writing config. Without it, the default is a config-only update (write " +
-        "config.toml/.env, no symlink farm).",
-    },
-    "codex-home": {
-      type: "string",
-      description:
-        "CODEX_HOME path to operate on. Default: ~/.codex (%USERPROFILE%\\.codex on Windows) " +
-        "for config writes; ~/.codex/hosts/<hostname> for --hostname-path / --symlink-farm (Linux).",
-    },
-    "base-url": {
-      type: "string",
-      description: "Base URL for the copilot-api gateway (e.g. http://localhost:4141/v1).",
-    },
-    "api-key": {
-      type: "string",
-      description: "API key for the copilot-api gateway.",
-    },
-  },
-  async run({ args }) {
-    const codexHomeArg = args["codex-home"] as string | undefined;
-    // The per-host ~/.codex/hosts/<hostname> dir is used ONLY for --hostname-path
-    // and --symlink-farm (both Linux-only). Every other (config-only) run targets
-    // the standard ~/.codex / %USERPROFILE%\.codex on all platforms. An explicit
-    // --codex-home always overrides.
-    const useHostLocal = Boolean(args["hostname-path"] || args["symlink-farm"]);
-    let codexHomePath: string;
-    if (codexHomeArg) {
-      codexHomePath = codexHomeArg;
-    } else if (useHostLocal) {
-      assertLinux("The per-host CODEX_HOME (~/.codex/hosts/<hostname>)");
-      codexHomePath = getHostLocalCodexHome();
-    } else {
-      codexHomePath = path.join(HOME, ".codex");
-    }
-
-    // Resolve-only mode: print the host-local CODEX_HOME path and exit. No
-    // symlink farm or config writes, so callers can use this to seed
-    // CODEX_HOME cheaply (e.g. eager export on shell startup).
-    if (args["hostname-path"]) {
-      process.stdout.write(`${codexHomePath}\n`);
-      return;
-    }
-
-    // Config-only is the default: (re)write config.toml/.env at the resolved
-    // CODEX_HOME. --symlink-farm first lays down the full symlink farm +
-    // shared-state seeding; configureCodexConfig below creates the dir either way.
-    if (args["symlink-farm"]) {
-      assertLinux("The CODEX_HOME symlink farm (--symlink-farm)");
-      logger.info("Preparing CODEX_HOME (building symlink farm)...");
-      if (buildCodexSymlinkFarm(codexHomePath) !== 0) {
-        throw new Error("Failed to build the CODEX_HOME symlink farm");
-      }
-    }
-
-    let baseUrl = args["base-url"] as string | undefined;
-    let apiKey = args["api-key"] as string | undefined;
-    if (!baseUrl) {
-      const port = copilotApiResolvePort();
-      baseUrl = `http://localhost:${port}/v1`;
-    }
-    if (!apiKey) {
-      try {
-        apiKey = new CopilotApiConfig().ensureApiKey();
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        throw new Error(`failed to persist auth token: ${msg}`);
-      }
-    }
-    if (configureCodexConfig(baseUrl, apiKey, codexHomePath) !== 0) {
-      throw new Error("Codex config write failed");
-    }
-
-    process.stdout.write(`${codexHomePath}\n`);
-  },
-});
-
-if (import.meta.main) {
-  runMain(main).catch((err: unknown) => {
-    const msg = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`Error: ${msg}\n`);
-    // Set exitCode (not process.exit) so pending stderr writes flush.
-    process.exitCode = 1;
-  });
+  applyCodexConfig(codexHome);
+  // Persist the active CODEX_HOME (opt-in: only set because a codex command ran).
+  state.set({ codexHome });
 }

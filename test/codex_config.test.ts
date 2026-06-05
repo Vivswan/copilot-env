@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 
-import { configureCodexConfig } from "./codex_home.ts";
+import { configureCodexConfig } from "../src/commands/codex_config.ts";
 
 const SAVED_HOME = process.env.HOME;
 let dir = "";

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Lint the project's PowerShell scripts with PSScriptAnalyzer. No-op (with a
 # hint) when pwsh or the module is unavailable, so machines without it (e.g.
-# most macOS/Linux boxes) can still commit. Gates only on Warning+Error.
+# most macOS/Linux boxes) can still commit. Severity + intentional rule
+# exclusions live in PSScriptAnalyzerSettings.psd1.
 set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -19,7 +20,7 @@ if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
     exit 0
 }
 $files = "install.ps1","agents.ps1","bin/copilot-api.ps1","bin/codex-home.ps1"
-$issues = foreach ($f in $files) { Invoke-ScriptAnalyzer -Path $f -Severity Warning,Error }
+$issues = foreach ($f in $files) { Invoke-ScriptAnalyzer -Path $f -Settings PSScriptAnalyzerSettings.psd1 }
 if ($issues) { $issues | Format-Table -AutoSize | Out-String | Write-Host; exit 1 }
 Write-Host "PSScriptAnalyzer: OK"
 '

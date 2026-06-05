@@ -19,6 +19,12 @@
 #       install the newest release public for at least N days (default 7,
 #       matching bunfig.toml) instead of npm's `latest`, so a compromised
 #       just-published version has time to be caught and yanked before adoption.
+#   -NoPrereqs
+#       Do not install any prerequisites (Git, Node, Bun) or the agent CLIs --
+#       only verify them. A missing *necessary* tool (bun; git when a clone is
+#       needed) is a fatal error; a missing *optional* tool (Node/npm, the agent
+#       CLIs) is a warning. The repo clone/update and profile wiring still run;
+#       the dependency bootstrap is skipped (deps install on first `agent` run).
 #
 # Env:
 #   COPILOT_ENV_DIR   clone target when fetching fresh (default %USERPROFILE%\.copilot-env);
@@ -42,7 +48,12 @@ param(
 
     # Cooldown window in days (only used with -Cooldown). Default 7, matching
     # bunfig.toml install.minimumReleaseAge (604800s).
-    [int]$CooldownDays = 7
+    [int]$CooldownDays = 7,
+
+    # Do not install any prerequisites (Git, Node, Bun) or the agent CLIs -- only
+    # verify them. A missing necessary tool (bun; git when a clone is needed) is a
+    # fatal error; a missing optional tool (Node/npm, the agent CLIs) is a warning.
+    [switch]$NoPrereqs
 )
 
 $ErrorActionPreference = 'Stop'
@@ -110,6 +121,17 @@ function Test-ExternalCommand {
         return $LASTEXITCODE -eq 0
     } catch {
         return $false
+    }
+}
+
+# -NoPrereqs: warn about an absent *optional* tool (we proceed without installing it).
+function Write-MissingPrereq {
+    param(
+        [Parameter(Mandatory)][string]$Command,
+        [Parameter(Mandatory)][string]$Name
+    )
+    if (-not (Test-ExternalCommand $Command)) {
+        Write-Warning "$Name ('$Command') is not installed; skipping (-NoPrereqs). Install it yourself to use it."
     }
 }
 
@@ -221,7 +243,15 @@ function Install-AgentCli {
 }
 
 Update-ProcessPath
-Install-WingetPackage -Command git -Name 'Git' -Id 'Git.Git'
+if ($NoPrereqs) {
+    # git is necessary only when a fresh clone/update is needed (checked at the
+    # fetch site below); a reused checkout doesn't need it. Note it now, decide later.
+    if (-not (Test-ExternalCommand git)) {
+        Write-Host 'Note: git not found; required only to clone/update copilot-env.'
+    }
+} else {
+    Install-WingetPackage -Command git -Name 'Git' -Id 'Git.Git'
+}
 
 # Resolve the copilot-env commit to pin under -Cooldown: the newest commit on
 # origin/main that is >= $Days old, clamped to the config [MIN, MAX] window. A
@@ -263,6 +293,9 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'agents.ps1'))) {
     Write-Host "Using existing checkout at $RepoDir"
     Import-ProjectConfig -RepoPath $RepoDir
 } else {
+    if (-not (Test-ExternalCommand git)) {
+        throw "git is required to clone/update copilot-env into $InstallDir, but it is not installed (-NoPrereqs). Install git, or run from an existing checkout."
+    }
     if (Test-Path (Join-Path $InstallDir '.git')) {
         Write-Host "Updating copilot-env in $InstallDir ..."
         & git -C $InstallDir fetch origin main
@@ -289,21 +322,49 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'agents.ps1'))) {
 $AgentsPs1 = Join-Path $RepoDir 'agents.ps1'
 if (-not (Test-Path $AgentsPs1)) { Write-Error "Could not find agents.ps1 at $AgentsPs1"; exit 1 }
 
-Install-WingetPackage -Command npm.cmd -Name 'Node.js LTS and npm' -Id 'OpenJS.NodeJS.LTS'
-Install-WingetPackage -Command bun -Name 'Bun' -Id 'Oven-sh.Bun'
+if ($NoPrereqs) {
+    # Node/npm are optional (they only power the agent CLIs; the gateway runs on bun).
+    Write-MissingPrereq -Command npm.cmd -Name 'Node.js LTS and npm'
+} else {
+    Install-WingetPackage -Command npm.cmd -Name 'Node.js LTS and npm' -Id 'OpenJS.NodeJS.LTS'
+}
 
-$npmGlobalBin = (& npm.cmd prefix -g).Trim()
-if (-not $npmGlobalBin) { throw 'Could not determine the npm global executable directory.' }
-Add-UserPath $npmGlobalBin
+if ($NoPrereqs) {
+    # bun is the gateway runtime -- necessary. Fail loudly if it is absent.
+    if (-not (Test-ExternalCommand bun)) {
+        throw 'bun is required to run copilot-env, but it is not installed (-NoPrereqs). Install bun (https://bun.sh) and rerun.'
+    }
+} else {
+    Install-WingetPackage -Command bun -Name 'Bun' -Id 'Oven-sh.Bun'
+}
 
-Write-Host 'Bootstrapping copilot-env dependencies ...'
-& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoDir 'bin\agent.ps1') env | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'copilot-env dependency bootstrap failed.' }
+# Put npm's global bin on PATH so the agent CLIs resolve -- only when npm is present
+# (under -NoPrereqs it may be absent, in which case the agent CLIs are skipped too).
+if (Test-ExternalCommand npm.cmd) {
+    $npmGlobalBin = (& npm.cmd prefix -g).Trim()
+    if (-not $npmGlobalBin) { throw 'Could not determine the npm global executable directory.' }
+    Add-UserPath $npmGlobalBin
+}
 
-$cooldownWindow = if ($Cooldown) { $CooldownDays } else { -1 }
-Install-AgentCli -Command claude -Name 'Claude Code CLI' -Package '@anthropic-ai/claude-code' -CooldownDays $cooldownWindow
-Install-AgentCli -Command copilot -Name 'GitHub Copilot CLI' -Package '@github/copilot' -CooldownDays $cooldownWindow
-Install-AgentCli -Command codex -Name 'Codex CLI' -Package '@openai/codex' -CooldownDays $cooldownWindow
+if ($NoPrereqs) {
+    Write-Host 'Skipping dependency bootstrap (-NoPrereqs); copilot-env installs its deps on the first agent run.'
+} else {
+    Write-Host 'Bootstrapping copilot-env dependencies ...'
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoDir 'bin\agent.ps1') env | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'copilot-env dependency bootstrap failed.' }
+}
+
+if ($NoPrereqs) {
+    # The agent CLIs are optional (they back cl/co/cx). Warn if absent, never install.
+    Write-MissingPrereq -Command claude -Name 'Claude Code CLI'
+    Write-MissingPrereq -Command copilot -Name 'GitHub Copilot CLI'
+    Write-MissingPrereq -Command codex -Name 'Codex CLI'
+} else {
+    $cooldownWindow = if ($Cooldown) { $CooldownDays } else { -1 }
+    Install-AgentCli -Command claude -Name 'Claude Code CLI' -Package '@anthropic-ai/claude-code' -CooldownDays $cooldownWindow
+    Install-AgentCli -Command copilot -Name 'GitHub Copilot CLI' -Package '@github/copilot' -CooldownDays $cooldownWindow
+    Install-AgentCli -Command codex -Name 'Codex CLI' -Package '@openai/codex' -CooldownDays $cooldownWindow
+}
 
 $profileName = if ($AllHosts) { 'profile.ps1' } else { 'Microsoft.PowerShell_profile.ps1' }
 $documents = [Environment]::GetFolderPath('MyDocuments')

@@ -82,6 +82,12 @@ curl -fsSL https://raw.githubusercontent.com/Vivswan/copilot-env/main/install.sh
 powershell -ExecutionPolicy Bypass -File install.ps1 -Cooldown
 ```
 
+In a managed environment where the toolchain is provided externally, add
+`--no-prereqs` (`-NoPrereqs` on Windows) to **verify** prerequisites instead of
+installing them. A missing *necessary* tool (`bun`; `git` when a clone is needed)
+is a fatal error; a missing *optional* tool (Node/npm, the agent CLIs) is a
+warning. The repo clone/update and shell wiring still run.
+
 Prefer to drive the CLI directly from a manual checkout? That works too:
 
 ```bash

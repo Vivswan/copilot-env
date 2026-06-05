@@ -19,6 +19,7 @@ set -eu
 
 REPO_URL="https://github.com/Vivswan/copilot-env.git"
 INSTALL_DIR_ARG=""        # set by --dir; takes precedence over $COPILOT_ENV_DIR
+SKIP_PREREQS=false        # --no-prereqs: verify tools, never install them
 NVM_VERSION="v0.40.1"
 NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 COOLDOWN_DEFAULT_DAYS=7   # matches bunfig.toml install.minimumReleaseAge (604800s)
@@ -29,7 +30,7 @@ COOLDOWN_REPO_MAX_SHA=""
 
 usage() {
     cat <<'EOF'
-Usage: install.sh [--dir DIR] [--cooldown[=DAYS]]
+Usage: install.sh [--dir DIR] [--cooldown[=DAYS]] [--no-prereqs]
 
 Installs Node (via nvm), bun, and the agent CLIs, clones/updates copilot-env,
 and adds its shell integration to ~/.bashrc / ~/.zshrc.
@@ -44,6 +45,11 @@ Options:
                       compromised just-published version has time to be caught
                       and yanked before any user adopts it. Bare --cooldown uses
                       7 days, matching the gateway's bunfig.toml cooldown.
+  --no-prereqs        Do not install any prerequisites (git, Node, bun) or the
+                      agent CLIs -- only verify them. A missing *necessary* tool
+                      (bun; git when a clone is needed) is a fatal error; a
+                      missing *optional* tool (Node/npm, the agent CLIs) is a
+                      warning. The repo clone/update and shell wiring still run.
 EOF
 }
 
@@ -61,6 +67,7 @@ while [ $# -gt 0 ]; do
         --dir=*)
             INSTALL_DIR_ARG="${1#*=}"
             [ -n "$INSTALL_DIR_ARG" ] || { echo "ERROR: --dir= needs a value, e.g. --dir=/opt/copilot-env." >&2; exit 2; } ;;
+        --no-prereqs) SKIP_PREREQS=true ;;
         *) echo "ERROR: unknown argument '$1' (try --help)" >&2; exit 2 ;;
     esac
     shift
@@ -75,6 +82,11 @@ case "$COOLDOWN_DAYS" in
 esac
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# --no-prereqs: note an absent *optional* tool (we proceed without installing it).
+warn_missing() {  # <cmd> <description>
+    have "$1" || echo "WARNING: $2 ('$1') is not installed; skipping (--no-prereqs). Install it yourself to use it." >&2
+}
 
 load_project_config() { # <repo-dir>
     _config="$1/copilot-env.config"
@@ -164,7 +176,13 @@ ensure_git() {
     fi
 }
 
-ensure_git
+if [ "$SKIP_PREREQS" = true ]; then
+    # git is necessary only when a fresh clone/update is needed (checked at the
+    # fetch site below); a reused checkout doesn't need it. Note it now, decide later.
+    have git || echo "Note: git not found; required only to clone/update copilot-env." >&2
+else
+    ensure_git
+fi
 
 # --- locate or fetch the repo ---------------------------------------------
 # When piped through `curl | bash`, $0 is the shell name and there is no script
@@ -180,6 +198,10 @@ if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/agents.bashrc" ]; then
     echo "Using existing checkout at $REPO_DIR"
     load_project_config "$REPO_DIR" || exit 1
 else
+    if ! have git; then
+        echo "ERROR: git is required to clone/update copilot-env into $INSTALL_DIR, but it is not installed (--no-prereqs). Install git, or run from an existing checkout." >&2
+        exit 1
+    fi
     if [ -d "$INSTALL_DIR/.git" ]; then
         echo "Updating copilot-env in $INSTALL_DIR ..."
         git -C "$INSTALL_DIR" fetch origin main
@@ -210,40 +232,55 @@ AGENTS_BASHRC="${REPO_DIR}/agents.bashrc"
 # --- Node.js via nvm (user-local, no sudo) --------------------------------
 # nvm's installer wires its loader into your shell rc so `node` is available in
 # new shells (the gateway daemon needs it) -- we deliberately let it do that.
-if [ ! -s "$NVM_DIR/nvm.sh" ]; then
-    echo "Installing nvm ($NVM_VERSION) ..."
-    curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" | bash
+if [ "$SKIP_PREREQS" = true ]; then
+    # Node/npm are optional (they only power the agent CLIs; the gateway runs on
+    # bun). Warn if absent, never install.
+    warn_missing node "Node.js"
+    warn_missing npm "npm"
+else
+    if [ ! -s "$NVM_DIR/nvm.sh" ]; then
+        echo "Installing nvm ($NVM_VERSION) ..."
+        curl -fsSL "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" | bash
+    fi
+    # Guard against a silently-empty `curl | bash` (no pipefail): nvm.sh must exist.
+    [ -s "$NVM_DIR/nvm.sh" ] || { echo "ERROR: nvm install failed ($NVM_DIR/nvm.sh missing)." >&2; exit 1; }
+
+    # nvm.sh and its commands aren't written for `set -eu`; relax around them, capture
+    # the combined status, then re-assert strict mode. Installing + using an
+    # nvm-managed LTS (idempotent) keeps npm global installs in nvm's user-local
+    # prefix -- no sudo -- regardless of any pre-existing system Node.
+    export NVM_DIR
+    set +eu
+    # shellcheck disable=SC1091
+    . "$NVM_DIR/nvm.sh"
+    echo "Installing/activating Node.js LTS via nvm ..."
+    nvm install --lts && nvm use --lts && nvm alias default 'lts/*'
+    nvm_status=$?
+    set -eu
+    [ "$nvm_status" -eq 0 ] || { echo "ERROR: nvm failed to install/activate Node LTS." >&2; exit 1; }
+
+    # Confirm the *active* node and npm are nvm-managed, so `npm install -g` below
+    # lands in nvm's user-local prefix (no sudo) rather than a system Node prefix.
+    for _bin in node npm; do
+        case "$(command -v "$_bin" 2>/dev/null)" in
+            "$NVM_DIR"/*) ;;
+            *) echo "ERROR: active $_bin is not nvm-managed ($(command -v "$_bin" 2>/dev/null || echo 'not found'))." >&2; exit 1 ;;
+        esac
+    done
 fi
-# Guard against a silently-empty `curl | bash` (no pipefail): nvm.sh must exist.
-[ -s "$NVM_DIR/nvm.sh" ] || { echo "ERROR: nvm install failed ($NVM_DIR/nvm.sh missing)." >&2; exit 1; }
-
-# nvm.sh and its commands aren't written for `set -eu`; relax around them, capture
-# the combined status, then re-assert strict mode. Installing + using an
-# nvm-managed LTS (idempotent) keeps npm global installs in nvm's user-local
-# prefix -- no sudo -- regardless of any pre-existing system Node.
-export NVM_DIR
-set +eu
-# shellcheck disable=SC1091
-. "$NVM_DIR/nvm.sh"
-echo "Installing/activating Node.js LTS via nvm ..."
-nvm install --lts && nvm use --lts && nvm alias default 'lts/*'
-nvm_status=$?
-set -eu
-[ "$nvm_status" -eq 0 ] || { echo "ERROR: nvm failed to install/activate Node LTS." >&2; exit 1; }
-
-# Confirm the *active* node and npm are nvm-managed, so `npm install -g` below
-# lands in nvm's user-local prefix (no sudo) rather than a system Node prefix.
-for _bin in node npm; do
-    case "$(command -v "$_bin" 2>/dev/null)" in
-        "$NVM_DIR"/*) ;;
-        *) echo "ERROR: active $_bin is not nvm-managed ($(command -v "$_bin" 2>/dev/null || echo 'not found'))." >&2; exit 1 ;;
-    esac
-done
 
 # --- bun via its official installer (user-local, no sudo) -----------------
-if ! have bun && [ ! -x "$HOME/.bun/bin/bun" ]; then
-    echo "Installing bun ..."
-    curl -fsSL https://bun.sh/install | bash >/dev/null
+if [ "$SKIP_PREREQS" = true ]; then
+    # bun is the gateway runtime -- necessary. Fail loudly if it is absent.
+    if ! have bun && [ ! -x "$HOME/.bun/bin/bun" ]; then
+        echo "ERROR: bun is required to run copilot-env, but it is not installed (--no-prereqs). Install bun (https://bun.sh) and re-run." >&2
+        exit 1
+    fi
+else
+    if ! have bun && [ ! -x "$HOME/.bun/bin/bun" ]; then
+        echo "Installing bun ..."
+        curl -fsSL https://bun.sh/install | bash >/dev/null
+    fi
 fi
 [ -x "$HOME/.bun/bin/bun" ] && case ":$PATH:" in
     *":$HOME/.bun/bin:"*) ;;
@@ -281,9 +318,16 @@ ensure_cli() {  # ensure_cli <command> <description> <npm-package>
     fi
     npm install -g "$spec"
 }
-ensure_cli claude "Claude Code CLI" "@anthropic-ai/claude-code"
-ensure_cli copilot "GitHub Copilot CLI" "@github/copilot"
-ensure_cli codex "Codex CLI" "@openai/codex"
+if [ "$SKIP_PREREQS" = true ]; then
+    # The agent CLIs are optional (they back cl/co/cx). Warn if absent, never install.
+    warn_missing claude "Claude Code CLI"
+    warn_missing copilot "GitHub Copilot CLI"
+    warn_missing codex "Codex CLI"
+else
+    ensure_cli claude "Claude Code CLI" "@anthropic-ai/claude-code"
+    ensure_cli copilot "GitHub Copilot CLI" "@github/copilot"
+    ensure_cli codex "Codex CLI" "@openai/codex"
+fi
 
 # --- wire the shell integration -------------------------------------------
 SOURCE_BLOCK="AGENTS_BASHRC=\"${AGENTS_BASHRC}\"

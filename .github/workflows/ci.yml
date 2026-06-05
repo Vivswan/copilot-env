@@ -118,6 +118,12 @@ jobs:
           done
           [ -n "$wired" ] || { echo "::error::shell integration block was not added to any rc file"; exit 1; }
 
+      # Re-run verify-only: everything is already installed by the run above, so
+      # --no-prereqs must verify all prereqs present, install nothing, and still
+      # succeed. Catches flag-parsing / control-flow regressions in --no-prereqs.
+      - name: install.sh --no-prereqs (verify-only)
+        run: bash install.sh --no-prereqs
+
   # Windows parity of install-sh: run install.ps1 end-to-end. Git + Node/npm are
   # preinstalled on windows-latest; we provide bun via setup-bun so the installer's
   # winget prereq step is a no-op (winget is unreliable in CI) and the run exercises
@@ -157,6 +163,13 @@ jobs:
             Write-Error "::error::shell integration block was not added to any PowerShell profile"; exit 1
           }
           Write-Host "profile wiring OK"
+
+      # Re-run verify-only: everything is already installed by the run above, so
+      # -NoPrereqs must verify all prereqs present, install nothing, and still
+      # succeed. Catches flag-parsing / control-flow regressions in -NoPrereqs.
+      - name: install.ps1 -NoPrereqs (verify-only)
+        shell: pwsh
+        run: ./install.ps1 -NoPrereqs
 
   actionlint:
     name: actionlint

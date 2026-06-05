@@ -35,9 +35,10 @@ labels:
     description: Lint / formatting fixes
 
 # Branch ruleset for the default branch. Admins (RepositoryRole id 5) are in the
-# bypass list, so direct pushes to main still work. Two newer rules -- "require
-# code quality results" and "automatically request Copilot review" -- aren't
-# expressible here yet; add those in the UI (Settings -> Rules -> Rulesets).
+# bypass list, so direct pushes to main still work. "Automatically request Copilot
+# code review" is the `copilot_code_review` rule below. "Require code quality
+# results" is NOT yet a documented ruleset rule type (public preview, no published
+# REST schema) -- enable it in the UI (Settings -> Rules -> Rulesets -> main).
 rulesets:
   - name: main
     target: branch
@@ -79,6 +80,12 @@ rulesets:
           # Squash-only merges (enforced by the ruleset, not just repo settings).
           allowed_merge_methods:
             - squash
+      # Automatically request Copilot code review on PRs to main, including on
+      # each new push and on draft PRs.
+      - type: copilot_code_review
+        parameters:
+          review_on_push: true
+          review_draft_pull_requests: true
     bypass_actors:
       - actor_id: 5
         actor_type: RepositoryRole

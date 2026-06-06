@@ -48,7 +48,7 @@ Every agent/dev environment and any fresh `git worktree` initializes through **o
 
 Versioned via [release-please](.github/workflows/release-please.yml): every push to `main` updates ONE rolling **release PR** (`chore(main): release X.Y.Z`) that bumps `package.json` + regenerates `CHANGELOG.md` from the commit prefixes. **Nothing releases on push** — merging that PR is what tags `vX.Y.Z` and publishes the GitHub Release. The installers and `agent update` install the newest release tag (not `main`); `--cooldown` installs the newest release ≥N days old.
 
-- First release is pinned to **`1.0.0`** via `"release-as"` in `release-please-config.json`. **Remove that key after v1.0.0 ships** so later versions derive from commits.
+- **Releases only ever move forward.** Once a version is published (tagged + GitHub Release), treat it as immutable: never re-release it, overwrite it, or pin a future release back to it — users may already be on it. Each new release must be **> the latest published tag**. `release-as` is a one-time override to set a starting point (it forced the first release to `1.0.0`, and has since been removed); leave it **absent** so versions derive from commit prefixes (`feat:`→minor, etc.). Do not reintroduce it pointing at a shipped or older version.
 - The release PR is opened by the GITHUB_TOKEN bot. GitHub may not run CI on it (or may hold the run pending manual approval), so the required `all-green` check can sit unmet — merge it with admin bypass (the code already passed CI into `main`), approve the held run, or wire a PAT/GitHub App token into the workflow to run CI on the PR normally.
 
 

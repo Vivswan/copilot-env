@@ -3,18 +3,11 @@ import { join } from "node:path";
 
 export const PROJECT_CONFIG_FILE = "copilot-env.config";
 
-const CONFIG_KEYS = [
-  "CooldownRepoMinSha",
-  "CooldownRepoMaxSha",
-  "GATEWAY_MIN_VERSION",
-  "GATEWAY_MAX_VERSION",
-] as const;
+const CONFIG_KEYS = ["GATEWAY_MIN_VERSION", "GATEWAY_MAX_VERSION"] as const;
 
 type ProjectConfigKey = (typeof CONFIG_KEYS)[number];
 
 export type ProjectConfig = {
-  readonly cooldownRepoMinSha: string;
-  readonly cooldownRepoMaxSha: string | null;
   readonly gatewayMinVersion: string;
   readonly gatewayMaxVersion: string | null;
 };
@@ -60,8 +53,6 @@ export function parseProjectConfig(content: string, source = PROJECT_CONFIG_FILE
   }
 
   return {
-    "cooldownRepoMinSha": requiredValue(raw, "CooldownRepoMinSha", source),
-    "cooldownRepoMaxSha": optionalValue(raw.CooldownRepoMaxSha),
     "gatewayMinVersion": requiredValue(raw, "GATEWAY_MIN_VERSION", source),
     "gatewayMaxVersion": optionalValue(raw.GATEWAY_MAX_VERSION),
   };

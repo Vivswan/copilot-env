@@ -4,8 +4,10 @@ import { runCodexConfig } from "./commands/codex_config.ts";
 import { runCodexHost } from "./commands/codex_host.ts";
 import { runEnv } from "./commands/env.ts";
 import { runHealth } from "./commands/health.ts";
+import { runShellIntegration } from "./commands/shell_integration.ts";
 import { runStart } from "./commands/start.ts";
 import { runStop } from "./commands/stop.ts";
+import { runUpdate } from "./commands/update.ts";
 import { runCost } from "./usage/cost.ts";
 import { OPENROUTER_MODELS_URL } from "./usage/pricing.ts";
 
@@ -120,6 +122,60 @@ const setupCodexHost = defineCommand({
     }),
 });
 
+const update = defineCommand({
+  meta: {
+    name: "update",
+    description: "Update the copilot-env checkout to the latest GitHub release.",
+  },
+  args: {
+    check: {
+      type: "boolean",
+      default: false,
+      description:
+        "Only report status, make no changes. Exit 0 = up to date, 1 = update available, 2 = no release resolved.",
+    },
+    cooldown: {
+      type: "boolean",
+      default: false,
+      description:
+        "Adopt the newest release aged >= --cooldown-days days, not strictly the latest.",
+    },
+    "cooldown-days": {
+      type: "string",
+      default: "7",
+      description: "Cooldown window in days (with --cooldown). Default 7.",
+    },
+  },
+  run: ({ args }) =>
+    runUpdate({
+      check: Boolean(args.check),
+      cooldown: Boolean(args.cooldown),
+      "cooldown-days": String(args["cooldown-days"]),
+    }),
+});
+
+const shellIntegration = defineCommand({
+  meta: {
+    name: "shell-integration",
+    description:
+      "Wire (or --remove) the copilot-env shell integration into your rc files / PowerShell $PROFILE.",
+  },
+  args: {
+    remove: {
+      type: "boolean",
+      default: false,
+      description: "Remove the integration instead of adding it.",
+    },
+    "all-hosts": {
+      type: "boolean",
+      default: false,
+      description: "Windows only: target the CurrentUserAllHosts profile.",
+    },
+  },
+  run: ({ args }) =>
+    runShellIntegration({ remove: Boolean(args.remove), "all-hosts": Boolean(args["all-hosts"]) }),
+});
+
 const cli = defineCommand({
   meta: {
     name: "copilot-api",
@@ -133,6 +189,8 @@ const cli = defineCommand({
     cost,
     codex_config: setupCodexConfig,
     host_codex: setupCodexHost,
+    "shell-integration": shellIntegration,
+    update,
   },
 });
 

@@ -10,8 +10,6 @@ import type { ProjectConfig } from "../src/project_config.ts";
 // they decide, with pure fs reads, whether a full `bun install` can be skipped.
 
 const CONFIG: ProjectConfig = {
-  "cooldownRepoMinSha": "0000000000000000000000000000000000000000",
-  "cooldownRepoMaxSha": null,
   "gatewayMinVersion": "1.10.0",
   "gatewayMaxVersion": null,
 };

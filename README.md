@@ -41,9 +41,9 @@ package manager if it is missing.
 
 ## Install
 
-One line — clones into `~/.copilot-env` (override with the `COPILOT_ENV_DIR` env
-var, or the `--dir DIR` / `-InstallDir DIR` flag, which takes precedence),
-installs prerequisites + the agent CLIs, and wires up your shell:
+One line — clones the latest **release** into `~/.copilot-env` (override with the
+`COPILOT_ENV_DIR` env var, or the `--dir DIR` / `-InstallDir DIR` flag, which takes
+precedence), installs prerequisites + the agent CLIs, and wires up your shell:
 
 ```bash
 # macOS / Linux
@@ -55,22 +55,20 @@ curl -fsSL https://raw.githubusercontent.com/Vivswan/copilot-env/main/install.sh
 irm https://raw.githubusercontent.com/Vivswan/copilot-env/main/install.ps1 | iex
 ```
 
-Re-running the same command later **updates** an existing checkout (`git pull`)
-and is otherwise idempotent.
+Re-running installs only — it **completes or repairs** an existing checkout and
+is otherwise idempotent. To move the install to a newer release later, run
+`agent update`; to (re)wire your shell, run `agent shell-integration`.
 
 For extra supply-chain safety, add `--cooldown`. It applies a delay to **both**
-the agent CLIs (`claude` / `copilot` / `codex`) **and** the copilot-env checkout
+the agent CLIs (`claude` / `copilot` / `codex`) **and** the copilot-env release
 itself (override the 7-day default with `--cooldown=DAYS`): each CLI installs the
 newest npm release whose **publish time** is ≥ 7 days ago instead of bleeding-edge
-`latest`, and the installer-managed clone is rolled back to the newest `main`
-commit **dated** ≥ 7 days ago, never below a manually-vetted known-good baseline
-commit. (The npm side uses the registry's publish timestamp; the repo side uses
-the commit date, which is advisory — the pinned baseline floor is the hard
-anchor.) The repo floor/ceiling and gateway floor/ceiling live in the top-level
-`copilot-env.config`. The same delay the gateway's own dependencies already get,
-it defends against a compromised just-published npm release or just-pushed
-commit (note: `--cooldown` governs *fresh* CLI installs — an already-installed
-`claude` / `copilot` / `codex` is left untouched, never downgraded):
+`latest`, and the installer checks out the newest copilot-env **release** whose
+tag is ≥ 7 days old (falling back to the oldest release if none has aged in yet).
+The same delay the gateway's own dependencies already get, it defends against a
+compromised just-published npm release or just-cut copilot-env release (note:
+`--cooldown` governs *fresh* CLI installs — an already-installed `claude` /
+`copilot` / `codex` is left untouched, never downgraded):
 
 ```bash
 # macOS / Linux
@@ -116,6 +114,8 @@ Every invocation installs dependencies + the gateway directly in the checkout
 ./bin/agent cost       # estimated token spend across all per-host usage DBs
 ./bin/agent stop       # stop the daemon
 ./bin/agent health     # check the gateway is reachable (exit 1 if not)
+./bin/agent update     # update the checkout to the latest release (--check / --cooldown)
+./bin/agent shell-integration  # (re)wire rc / $PROFILE (--remove to unwire)
 
 ./bin/agent codex_config   # write Codex config into ~/.codex, wired to the gateway
 ./bin/agent host_codex     # per-host CODEX_HOME symlink farm (Linux-only)

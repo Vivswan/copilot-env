@@ -1,6 +1,7 @@
-# Clone (or update) copilot-env, install its Windows prerequisites (Git, Node,
-# Bun) and the agent CLIs, then add a dot-source block to your PowerShell
-# profile ($PROFILE). Runs two ways:
+# First-time install: install Windows prerequisites (Git, Node, Bun) and the agent
+# CLIs, clone the latest copilot-env *release*, then wire the PowerShell profile by
+# running `agent shell-integration`. Updates are NOT done here -- use `agent update`.
+# Runs two ways:
 #
 #   # one-liner -- no local checkout needed:
 #   irm https://raw.githubusercontent.com/Vivswan/copilot-env/main/install.ps1 | iex
@@ -11,20 +12,18 @@
 #
 # Options:
 #   -InstallDir DIR
-#       Clone target when fetching fresh (default %USERPROFILE%\.copilot-env).
-#       Takes precedence over $COPILOT_ENV_DIR. Ignored when run from an existing
-#       checkout (that checkout is reused).
+#       Clone target (default %USERPROFILE%\.copilot-env). Takes precedence over
+#       $COPILOT_ENV_DIR. Ignored when run from an existing checkout.
 #   -Cooldown [-CooldownDays N]
-#       Supply-chain cooldown for the agent CLIs (claude / copilot / codex):
-#       install the newest release public for at least N days (default 7,
-#       matching bunfig.toml) instead of npm's `latest`, so a compromised
-#       just-published version has time to be caught and yanked before adoption.
+#       Supply-chain delay: install the newest copilot-env release AND the newest
+#       agent-CLI (claude / copilot / codex) releases public for at least N days
+#       (default 7, matching bunfig.toml), so a compromised just-published version
+#       has time to be caught before adoption.
 #   -NoPrereqs
 #       Do not install any prerequisites (Git, Node, Bun) or the agent CLIs --
 #       only verify them. A missing *necessary* tool (bun; git when a clone is
 #       needed) is a fatal error; a missing *optional* tool (Node/npm, the agent
-#       CLIs) is a warning. The repo clone/update and profile wiring still run;
-#       the dependency bootstrap is skipped (deps install on first `agent` run).
+#       CLIs) is a warning. The repo clone and profile wiring still run.
 #   -LocalInstall
 #       Install prerequisites only via user-local methods (bun's irm installer,
 #       npm); never use winget. Bun and the agent CLIs install as usual; Git and
@@ -32,14 +31,13 @@
 #       clone is needed and a missing Node/npm (with the agent CLIs) is a warning.
 #       Mutually exclusive with -NoPrereqs.
 #   -NoShellIntegration
-#       Do everything except wire the shell integration into your PowerShell
-#       profile ($PROFILE). The repo, prerequisites, and agent CLIs still
-#       install; you dot-source agents.ps1 yourself. Useful for CI or a
-#       hand-managed profile. The execution-policy relaxation is skipped too
-#       (it exists only so the profile can load agents.ps1).
+#       Do everything except run `agent shell-integration` (which wires $PROFILE).
+#       The repo, prerequisites, and agent CLIs still install; run
+#       `agent shell-integration` yourself later. Useful for CI or a hand-managed
+#       profile.
 #
 # Env:
-#   COPILOT_ENV_DIR   clone target when fetching fresh (default %USERPROFILE%\.copilot-env);
+#   COPILOT_ENV_DIR   clone target (default %USERPROFILE%\.copilot-env);
 #                     the -InstallDir parameter takes precedence over it.
 
 [CmdletBinding()]
@@ -98,22 +96,6 @@ $RepoUrl = 'https://github.com/Vivswan/copilot-env.git'
 if (-not $InstallDir) {
     $InstallDir = if ($env:COPILOT_ENV_DIR) { $env:COPILOT_ENV_DIR } else { Join-Path $env:USERPROFILE '.copilot-env' }
 }
-$CooldownRepoMinSha = ''
-$CooldownRepoMaxSha = ''
-$CooldownRepoSha = $null   # set when -Cooldown rolls the repo back to an aged commit
-
-# If the install fails after the cooldown commit is resolved, still roll the
-# managed clone back to it -- never leave it running on fresh origin/main under
-# -Cooldown -- then re-raise so the failure stays visible. The clean-finish
-# rollback is done explicitly near the end; this trap covers mid-install failures
-# and interrupts. (No-op until $CooldownRepoSha is set.)
-trap {
-    if ($CooldownRepoSha) {
-        Write-Host "Cooldown: pinning copilot-env to $CooldownRepoSha after failure ..."
-        & git -C $RepoDir reset --hard $CooldownRepoSha 2>$null
-    }
-    break
-}
 
 # When run via `irm ... | iex` there is no script file; $PSCommandPath is null,
 # so we clone. When run as -File install.ps1 from a checkout, reuse it.
@@ -159,35 +141,6 @@ function Write-MissingPrereq {
     if (-not (Test-ExternalCommand $Command)) {
         Write-Warning "$Name ('$Command') is not installed; skipping. Install it yourself to use it."
     }
-}
-
-function Import-ProjectConfig {
-    param([Parameter(Mandatory)][string]$RepoPath)
-
-    $configPath = Join-Path $RepoPath 'copilot-env.config'
-    if (-not (Test-Path $configPath)) { throw "Missing project config at $configPath." }
-
-    $script:CooldownRepoMinSha = ''
-    $script:CooldownRepoMaxSha = ''
-    foreach ($line in Get-Content -Path $configPath) {
-        $trimmed = $line.Trim()
-        if (-not $trimmed -or $trimmed.StartsWith('#')) { continue }
-
-        $equals = $trimmed.IndexOf('=')
-        if ($equals -lt 0) { throw "$configPath must use KEY=value lines." }
-
-        $key = $trimmed.Substring(0, $equals).Trim()
-        $value = $trimmed.Substring($equals + 1).Trim()
-        switch ($key) {
-            'CooldownRepoMinSha' { $script:CooldownRepoMinSha = $value }
-            'CooldownRepoMaxSha' { $script:CooldownRepoMaxSha = $value }
-            'GATEWAY_MIN_VERSION' { }
-            'GATEWAY_MAX_VERSION' { }
-        }
-    }
-
-    if ($script:CooldownRepoMaxSha -eq 'null') { $script:CooldownRepoMaxSha = '' }
-    if (-not $script:CooldownRepoMinSha) { throw "CooldownRepoMinSha is required in $configPath." }
 }
 
 function Install-WingetPackage {
@@ -280,87 +233,82 @@ if ($NoPrereqs -or $LocalInstall) {
     Install-WingetPackage -Command git -Name 'Git' -Id 'Git.Git'
 }
 
-# Resolve the copilot-env commit to pin under -Cooldown: the newest commit on
-# origin/main that is >= $Days old, clamped to the config [MIN, MAX] window. A
-# MAX ceiling limits the search to its ancestors;
-# if nothing past the floor has aged in yet, we pin MIN exactly (cooldown bypassed
-# for the floor). Mirrors install.sh's resolve_aged_commit + floatGateway. NOTE:
-# --before filters on the commit date (advisory / can be backdated, unlike npm's
-# registry publish time), so the manually-vetted MIN floor is the hard anchor.
-# Assumes a linear main (squash-only merges + required_linear_history).
-function Resolve-AgedCommit {
+# Newest published release tag (vX.Y.Z) for $RepoUrl, or $null if none exist yet.
+function Get-LatestReleaseTag {
+    foreach ($line in (& git ls-remote --tags --sort=-v:refname $RepoUrl 'v*' 2>$null)) {
+        if ($line -match 'refs/tags/(v\d+\.\d+\.\d+)$') { return $Matches[1] }
+    }
+    return $null
+}
+
+# Under -Cooldown, the newest release tag at least $Days old (a supply-chain delay:
+# skip a just-cut release until it has been public long enough to be pulled if bad).
+# Falls back to the OLDEST available release when nothing has aged in yet (maximum
+# delay). Needs a full clone (all tags + their dates); returns $null when the repo
+# has no release tags. Mirrors install.sh's resolve_aged_release.
+function Resolve-AgedRelease {
     param(
         [Parameter(Mandatory)][string]$RepoPath,
         [Parameter(Mandatory)][int]$Days
     )
 
-    $upper = 'origin/main'
-    if ($CooldownRepoMaxSha) {
-        & git -C $RepoPath merge-base --is-ancestor $CooldownRepoMinSha $CooldownRepoMaxSha
-        if ($LASTEXITCODE -ne 0) { throw 'CooldownRepoMinSha is not an ancestor of CooldownRepoMaxSha.' }
-        $upper = $CooldownRepoMaxSha
+    $cutoff = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - ($Days * 86400)
+    $oldest = $null
+    foreach ($line in (& git -C $RepoPath for-each-ref --sort=-creatordate `
+                --format='%(creatordate:unix) %(refname:short)' 'refs/tags/v*')) {
+        $parts = $line -split ' ', 2
+        if ($parts.Count -lt 2) { continue }
+        $tag = $parts[1].Trim()
+        if ($tag -notmatch '^v\d+\.\d+\.\d+$') { continue }
+        $oldest = $tag
+        if ([int64]$parts[0] -le $cutoff) { return $tag }
     }
-
-    $aged = (& git -C $RepoPath rev-list -1 "--before=$Days days ago" $upper | Select-Object -First 1)
-    $useFloor = -not $aged
-    if ($aged) {
-        & git -C $RepoPath merge-base --is-ancestor $CooldownRepoMinSha $aged
-        if ($LASTEXITCODE -ne 0) { $useFloor = $true } # aged is older than the floor
-    }
-    if ($useFloor) {
-        $aged = (& git -C $RepoPath rev-parse --verify --quiet "$CooldownRepoMinSha^{commit}" | Select-Object -First 1)
-        if (-not $aged) { throw "CooldownRepoMinSha ($CooldownRepoMinSha) not found in copilot-env history." }
-    }
-    return $aged.Trim()
+    return $oldest
 }
 
-# Locate an existing checkout, or clone/update one to $InstallDir.
+# Locate an existing checkout, or clone the latest release to $InstallDir.
 if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'agents.ps1'))) {
     $RepoDir = $SelfDir
     Write-Host "Using existing checkout at $RepoDir"
-    Import-ProjectConfig -RepoPath $RepoDir
+} elseif (Test-Path (Join-Path $InstallDir '.git')) {
+    if (-not (Test-Path (Join-Path $InstallDir 'agents.ps1'))) {
+        throw "$InstallDir has a .git but no agents.ps1 -- an incomplete/corrupt clone. Remove it and rerun install.ps1."
+    }
+    # Reuse (don't re-clone or update) an existing checkout: completes/repairs a
+    # half-finished install, idempotent for a finished one. Updates are `agent update`.
+    $RepoDir = $InstallDir
+    Write-Host "Found existing copilot-env at $RepoDir; completing/repairing it (run 'agent update' to move to a newer release)."
 } else {
     if (-not (Test-ExternalCommand git)) {
-        throw "git is required to clone/update copilot-env into $InstallDir, but it is not installed (and -NoPrereqs / -LocalInstall may not install it). Install git, or run from an existing checkout."
+        throw "git is required to clone copilot-env into $InstallDir, but it is not installed (and -NoPrereqs / -LocalInstall may not install it). Install git, or run from an existing checkout."
     }
-    if (Test-Path (Join-Path $InstallDir '.git')) {
-        Write-Host "Updating copilot-env in $InstallDir ..."
-        if ($Cooldown) {
-            # -Cooldown resolves an aged commit by walking history, so it needs a
-            # full clone; deepen a previously-shallow checkout, else a plain fetch.
-            if (Test-Path (Join-Path $InstallDir '.git\shallow')) {
-                & git -C $InstallDir fetch --unshallow origin main
-            } else {
-                & git -C $InstallDir fetch origin main
-            }
-        } else {
-            & git -C $InstallDir fetch --depth 1 origin main
-        }
-        if ($LASTEXITCODE -ne 0) { throw 'git fetch origin main failed.' }
-        & git -C $InstallDir reset --hard origin/main
-    } else {
+    if ($Cooldown) {
+        # Cooldown picks an aged release, which needs all tags + their dates, so a
+        # full clone. Resolve the aged tag and check it out immediately -- the older
+        # release already contains every install step below, so no deferral needed.
         Write-Host "Cloning copilot-env into $InstallDir ..."
-        # Shallow clone for a fast one-liner install; -Cooldown needs full history
-        # to resolve an aged commit (Resolve-AgedCommit), so clone fully for it.
-        if ($Cooldown) {
-            & git clone $RepoUrl $InstallDir
+        & git clone $RepoUrl $InstallDir
+        if ($LASTEXITCODE -ne 0) { throw 'git clone failed.' }
+        $aged = Resolve-AgedRelease -RepoPath $InstallDir -Days $CooldownDays
+        if ($aged) {
+            Write-Host "Cooldown: checking out release $aged (>=${CooldownDays}d old) ..."
+            & git -C $InstallDir -c advice.detachedHead=false checkout $aged
+            if ($LASTEXITCODE -ne 0) { throw "git checkout $aged failed." }
         } else {
+            Write-Host 'Cooldown: no copilot-env releases yet; staying on main.'
+        }
+    } else {
+        $ref = Get-LatestReleaseTag
+        if ($ref) {
+            Write-Host "Cloning copilot-env release $ref into $InstallDir ..."
+            & git clone --branch $ref --depth 1 $RepoUrl $InstallDir
+        } else {
+            Write-Host 'No copilot-env release found yet; installing from main ...'
             & git clone --depth 1 $RepoUrl $InstallDir
         }
+        if ($LASTEXITCODE -ne 0) { throw 'git clone failed.' }
     }
-    if ($LASTEXITCODE -ne 0) { throw 'git clone/pull failed.' }
     $RepoDir = $InstallDir
-    Import-ProjectConfig -RepoPath $RepoDir
-    # With -Cooldown, hold the copilot-env checkout itself back to the newest
-    # commit on main that is >= CooldownDays old (clamped to [MIN, MAX]) -- the
-    # same supply-chain delay we apply to npm packages, here defending against a
-    # compromised just-pushed commit to this very repo. Resolve the SHA now (off
-    # the fresh origin/main) but defer the rollback to the end: the steps below
-    # run from this checkout (e.g. the agent-CLI cooldown resolver) and need not
-    # exist in that commit.
-    if ($Cooldown) {
-        $CooldownRepoSha = Resolve-AgedCommit -RepoPath $InstallDir -Days $CooldownDays
-    }
 }
 $AgentsPs1 = Join-Path $RepoDir 'agents.ps1'
 if (-not (Test-Path $AgentsPs1)) { Write-Error "Could not find agents.ps1 at $AgentsPs1"; exit 1 }
@@ -374,9 +322,16 @@ if ($NoPrereqs -or $LocalInstall) {
 }
 
 if ($NoPrereqs) {
-    # bun is the gateway runtime -- necessary. Fail loudly if it is absent.
+    # bun is the gateway runtime -- necessary. Accept it on PATH or at the default
+    # user-local path (parity with install.sh); fail loudly only if truly absent.
     if (-not (Test-ExternalCommand bun)) {
-        throw 'bun is required to run copilot-env, but it is not installed (-NoPrereqs). Install bun (https://bun.sh) and rerun.'
+        $bunExe = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+        if (Test-Path $bunExe) {
+            Add-UserPath (Split-Path $bunExe -Parent)
+            Update-ProcessPath
+        } else {
+            throw 'bun is required to run copilot-env, but it is not installed (-NoPrereqs). Install bun (https://bun.sh) and rerun.'
+        }
     }
 } elseif ($LocalInstall) {
     # No winget under -LocalInstall: install bun via its user-local installer.
@@ -427,69 +382,22 @@ if ($NoPrereqs -or ($LocalInstall -and -not (Test-ExternalCommand npm.cmd))) {
     Install-AgentCli -Command codex -Name 'Codex CLI' -Package '@openai/codex' -CooldownDays $cooldownWindow
 }
 
-$profileName = if ($AllHosts) { 'profile.ps1' } else { 'Microsoft.PowerShell_profile.ps1' }
-$documents = [Environment]::GetFolderPath('MyDocuments')
-$ProfilePaths = @(
-    (Join-Path $documents "WindowsPowerShell\$profileName")
-    (Join-Path $documents "PowerShell\$profileName")
-) | Select-Object -Unique
-
-$Marker = 'agents.ps1'
-$SourceBlock = @"
-
-# copilot-env shell integration
-`$AgentsPs1 = "$AgentsPs1"
-if (Test-Path `$AgentsPs1) { . `$AgentsPs1 }
-"@
-
+# Wire the profile via the `agent shell-integration` command (the wiring logic
+# lives there now, in src/commands/shell_integration.ts). Run agent.ps1 under a
+# Bypass policy since it (and agents.ps1) are unsigned.
 if ($NoShellIntegration) {
     Write-Host 'Skipping profile wiring (-NoShellIntegration).'
 } else {
-    foreach ($ProfilePath in $ProfilePaths) {
-        if ((Test-Path $ProfilePath) -and (Select-String -Path $ProfilePath -SimpleMatch $Marker -Quiet)) {
-            Write-Host "Already installed in $ProfilePath -- skipping."
-        } else {
-            $ProfileDir = Split-Path -Parent $ProfilePath
-            if (-not (Test-Path $ProfileDir)) { New-Item -ItemType Directory -Path $ProfileDir -Force | Out-Null }
-            Add-Content -Path $ProfilePath -Value $SourceBlock
-            Write-Host "Installed to $ProfilePath"
-        }
-    }
-
-    # The profile block dot-sources the unsigned agents.ps1. Under the client-Windows
-    # default (Restricted) -- or AllSigned/Undefined -- the profile would silently
-    # refuse to load it, disabling the whole integration. Relax the CurrentUser
-    # policy to RemoteSigned (local unsigned scripts allowed) if needed.
-    $effectivePolicy = Get-ExecutionPolicy
-    if ($effectivePolicy -in @('Restricted', 'AllSigned', 'Undefined')) {
-        try {
-            Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
-            Write-Host "Set CurrentUser execution policy to RemoteSigned (was '$effectivePolicy') so the profile can load agents.ps1."
-        } catch {
-            Write-Warning "Execution policy is '$effectivePolicy' and could not be changed (likely Group Policy). The profile may not load agents.ps1 until you run: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned"
-        }
-    }
-}
-
-# Clean-finish repo-cooldown rollback: roll the managed clone back to the aged
-# commit now (before "Done"), so its output doesn't trail the final message. Null
-# out $CooldownRepoSha first so the failure trap is disarmed -- if this reset
-# throws it won't re-enter the trap and reset twice. The trap still covers any
-# earlier mid-install failure.
-if ($CooldownRepoSha) {
-    $sha = $CooldownRepoSha
-    $CooldownRepoSha = $null
-    Write-Host "Cooldown: pinning copilot-env to $sha (>=${CooldownDays}d old) ..."
-    & git -C $RepoDir reset --hard $sha
-    if ($LASTEXITCODE -ne 0) { throw 'git reset to the cooldown commit failed.' }
+    $siArgs = @('shell-integration')
+    if ($AllHosts) { $siArgs += '--all-hosts' }
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoDir 'bin\agent.ps1') @siArgs
+    if ($LASTEXITCODE -ne 0) { throw 'agent shell-integration failed.' }
 }
 
 Write-Host ''
 if ($NoShellIntegration) {
-    Write-Host 'Done. Profile wiring was skipped (-NoShellIntegration). To enable it, add to your $PROFILE:'
-    Write-Host "  `$AgentsPs1 = `"$AgentsPs1`""
-    Write-Host '  if (Test-Path $AgentsPs1) { . $AgentsPs1 }'
+    Write-Host "Done. Profile wiring was skipped (-NoShellIntegration); run 'agent shell-integration' to enable it."
 } else {
-    Write-Host "Done. Restart PowerShell or run:  . `$PROFILE"
+    Write-Host 'Done. Restart PowerShell to load the integration.'
 }
 Write-Host "Then use 'agent start' to launch the gateway, or cl / co / cx to launch an agent."

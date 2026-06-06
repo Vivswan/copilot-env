@@ -57,13 +57,9 @@ rulesets:
           strict_required_status_checks_policy: false
           do_not_enforce_on_create: true
           required_status_checks:
-            - context: ubuntu-latest
-            - context: macos-latest
-            - context: windows-latest
-            - context: "install.sh smoke (ubuntu-latest)"
-            - context: "install.sh smoke (macos-latest)"
-            - context: "install.ps1 smoke (windows-latest)"
-            - context: actionlint
+            # Single aggregate gate (ci.yml `all-green`, which `needs:` every CI
+            # job). Keeps this list stable when matrix jobs are added or renamed.
+            - context: all-green
       - type: code_scanning
         parameters:
           code_scanning_tools:

@@ -3,21 +3,17 @@ import { describe, expect, test } from "bun:test";
 import { parseProjectConfig } from "../src/project_config.ts";
 
 describe("project config", () => {
-  test("parses shared floor and ceiling values", () => {
+  test("parses the gateway floor and ceiling", () => {
     expect(
       parseProjectConfig(
         `
 # comments and blanks are ignored
-CooldownRepoMinSha=e59d7ed288f6efa9e645e01a1900368458a8fb69
-CooldownRepoMaxSha=abc123
 GATEWAY_MIN_VERSION=1.10.30
 GATEWAY_MAX_VERSION=1.11.0
 `,
         "fixture",
       ),
     ).toEqual({
-      "cooldownRepoMinSha": "e59d7ed288f6efa9e645e01a1900368458a8fb69",
-      "cooldownRepoMaxSha": "abc123",
       "gatewayMinVersion": "1.10.30",
       "gatewayMaxVersion": "1.11.0",
     });
@@ -27,30 +23,31 @@ GATEWAY_MAX_VERSION=1.11.0
     expect(
       parseProjectConfig(
         `
-CooldownRepoMinSha=e59d7ed288f6efa9e645e01a1900368458a8fb69
-CooldownRepoMaxSha=
 GATEWAY_MIN_VERSION=1.10.30
 GATEWAY_MAX_VERSION=null
 `,
         "fixture",
       ),
     ).toEqual({
-      "cooldownRepoMinSha": "e59d7ed288f6efa9e645e01a1900368458a8fb69",
-      "cooldownRepoMaxSha": null,
       "gatewayMinVersion": "1.10.30",
       "gatewayMaxVersion": null,
     });
+    expect(
+      parseProjectConfig("GATEWAY_MIN_VERSION=1.10.30\nGATEWAY_MAX_VERSION=").gatewayMaxVersion,
+    ).toBeNull();
   });
 
-  test("rejects missing required values", () => {
-    expect(() =>
+  test("ignores unknown keys (e.g. retired cooldown SHAs)", () => {
+    expect(
       parseProjectConfig(
-        `
-CooldownRepoMaxSha=
-GATEWAY_MAX_VERSION=
-`,
-        "fixture",
+        "CooldownRepoMinSha=abc\nGATEWAY_MIN_VERSION=1.10.30\nGATEWAY_MAX_VERSION=",
       ),
-    ).toThrow("CooldownRepoMinSha is required");
+    ).toEqual({ "gatewayMinVersion": "1.10.30", "gatewayMaxVersion": null });
+  });
+
+  test("rejects a missing required value", () => {
+    expect(() => parseProjectConfig("GATEWAY_MAX_VERSION=", "fixture")).toThrow(
+      "GATEWAY_MIN_VERSION is required",
+    );
   });
 });

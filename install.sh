@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # copilot-env installer (Linux + macOS).
 #
-# Clones (or updates) the copilot-env repo, installs prerequisites (Node via nvm,
-# bun via its official installer) and the agent CLIs (claude / copilot / codex),
-# then wires the shell integration into ~/.bashrc and/or ~/.zshrc. Runs two ways:
+# First-time install: installs prerequisites (Node via nvm when absent, bun via its
+# official installer) and the agent CLIs (claude / copilot / codex), clones the
+# latest copilot-env *release*, then wires the shell integration by running
+# `agent shell-integration`. Updates are NOT done here -- use `agent update`. Runs
+# two ways:
 #
 #   # one-liner -- no local checkout needed:
 #   curl -fsSL https://raw.githubusercontent.com/Vivswan/copilot-env/main/install.sh | bash
@@ -12,8 +14,7 @@
 #   ./install.sh
 #
 # Env:
-#   COPILOT_ENV_DIR   clone target when fetching fresh (default ~/.copilot-env);
-#                     the --dir flag takes precedence over it.
+#   COPILOT_ENV_DIR   clone target (default ~/.copilot-env); --dir takes precedence.
 
 set -eu
 
@@ -25,33 +26,29 @@ SKIP_SHELL_INTEGRATION=false  # --no-shell-integration: don't wire the integrati
 NVM_VERSION="v0.40.1"
 NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 COOLDOWN_DEFAULT_DAYS=7   # matches bunfig.toml install.minimumReleaseAge (604800s)
-COOLDOWN_DAYS=""          # empty = disabled (install the npm `latest` tag)
-COOLDOWN_REPO_SHA=""      # set when --cooldown rolls the repo back to an aged commit
-COOLDOWN_REPO_MIN_SHA=""
-COOLDOWN_REPO_MAX_SHA=""
+COOLDOWN_DAYS=""          # empty = disabled (install the latest release + npm `latest`)
 
 usage() {
     cat <<'EOF'
 Usage: install.sh [--dir DIR] [--cooldown[=DAYS]] [--no-prereqs] [--local-install] [--no-shell-integration]
 
-Installs Node (via nvm), bun, and the agent CLIs, clones/updates copilot-env,
-and adds its shell integration to ~/.bashrc / ~/.zshrc.
+First-time install: installs Node (via nvm if absent), bun, and the agent CLIs,
+clones the latest copilot-env release, and wires the shell integration via
+`agent shell-integration`. Use `agent update` to update later.
 
 Options:
-  --dir DIR           Clone target when fetching fresh (default ~/.copilot-env).
-                      Takes precedence over $COPILOT_ENV_DIR. Ignored when run
-                      from an existing checkout (that checkout is reused).
-  --cooldown[=DAYS]   Supply-chain cooldown for the agent CLIs (claude / copilot
-                      / codex): instead of npm's `latest`, install the newest
-                      release that has been public for at least DAYS days, so a
-                      compromised just-published version has time to be caught
-                      and yanked before any user adopts it. Bare --cooldown uses
-                      7 days, matching the gateway's bunfig.toml cooldown.
+  --dir DIR           Clone target (default ~/.copilot-env). Takes precedence over
+                      $COPILOT_ENV_DIR. Ignored when run from an existing checkout.
+  --cooldown[=DAYS]   Supply-chain delay: install the newest copilot-env release
+                      AND the newest agent-CLI (claude / copilot / codex) releases
+                      that have been public for at least DAYS days, so a compromised
+                      just-published version has time to be caught before adoption.
+                      Bare --cooldown uses 7 days (matching bunfig.toml).
   --no-prereqs        Do not install any prerequisites (git, Node, bun) or the
                       agent CLIs -- only verify them. A missing *necessary* tool
                       (bun; git when a clone is needed) is a fatal error; a
                       missing *optional* tool (Node/npm, the agent CLIs) is a
-                      warning. The repo clone/update and shell wiring still run.
+                      warning. The repo clone and shell wiring still run.
   --local-install     Install prerequisites only via user-local methods (the
                       curl/npm installers); never use sudo or a system package
                       manager (brew/apt/dnf/...). Node (nvm), bun, and the agent
@@ -59,10 +56,10 @@ Options:
                       a missing git is a fatal error when a clone is needed.
                       Mutually exclusive with --no-prereqs.
   --no-shell-integration
-                      Do everything except wire the shell integration into your
-                      rc files (~/.bashrc / ~/.zshrc). The repo, prerequisites,
-                      and agent CLIs still install; you source agents.bashrc
-                      yourself. Useful for CI or a hand-managed shell rc.
+                      Do everything except run `agent shell-integration` (which
+                      wires ~/.bashrc / ~/.zshrc). The repo, prerequisites, and
+                      agent CLIs still install; run `agent shell-integration`
+                      yourself later. Useful for CI or a hand-managed shell rc.
 EOF
 }
 
@@ -108,69 +105,34 @@ warn_missing() {  # <cmd> <description>
     have "$1" || echo "WARNING: $2 ('$1') is not installed; skipping. Install it yourself to use it." >&2
 }
 
-load_project_config() { # <repo-dir>
-    _config="$1/copilot-env.config"
-    [ -f "$_config" ] || { echo "ERROR: missing project config at $_config" >&2; return 1; }
-
-    COOLDOWN_REPO_MIN_SHA=""
-    COOLDOWN_REPO_MAX_SHA=""
-    while IFS= read -r _line || [ -n "$_line" ]; do
-        case "$_line" in
-            ""|\#*) continue ;;
-        esac
-        _key="${_line%%=*}"
-        [ "$_key" != "$_line" ] || { echo "ERROR: $_config must use KEY=value lines." >&2; return 1; }
-        _value="${_line#*=}"
-        case "$_key" in
-            CooldownRepoMinSha) COOLDOWN_REPO_MIN_SHA="$_value" ;;
-            CooldownRepoMaxSha) COOLDOWN_REPO_MAX_SHA="$_value" ;;
-            GATEWAY_MIN_VERSION|GATEWAY_MAX_VERSION) ;;
-        esac
-    done < "$_config"
-
-    [ "$COOLDOWN_REPO_MAX_SHA" = "null" ] && COOLDOWN_REPO_MAX_SHA=""
-    [ -n "$COOLDOWN_REPO_MIN_SHA" ] || { echo "ERROR: CooldownRepoMinSha is required in $_config" >&2; return 1; }
+# Newest published release tag (vX.Y.Z) for $REPO_URL, or empty if none exist yet.
+latest_release_tag() {
+    git ls-remote --tags --sort=-v:refname "$REPO_URL" 'v*' 2>/dev/null \
+        | sed -n 's#.*refs/tags/\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$#\1#p' \
+        | head -1
 }
 
-# Resolve the copilot-env commit to pin under --cooldown: the newest commit on
-# origin/main that is >= <days> old, clamped to the config [MIN, MAX] window. A
-# MAX ceiling limits the search to that commit's ancestors; if nothing past the
-# floor has aged in yet, we pin MIN exactly (cooldown bypassed for the floor), so
-# the known-good baseline is always available. Mirrors floatGateway in src/gateway_float.ts.
-# NOTE: `--before` filters on the *commit date*, which (unlike npm's registry
-# publish time) is advisory and can be backdated. The manually-vetted MIN floor is
-# therefore the hard anchor -- the cooldown only ever advances past it as commits
-# age in. Assumes a linear main (squash-only merges + required_linear_history), so
-# for ALL aged commits the floor fallback is exactly right.
-resolve_aged_commit() {  # <repo-dir> <days> -> prints a commit SHA on stdout
-    _repo="$1"; _days="$2"; _upper="origin/main"
-    if [ -n "$COOLDOWN_REPO_MAX_SHA" ]; then
-        git -C "$_repo" merge-base --is-ancestor "$COOLDOWN_REPO_MIN_SHA" "$COOLDOWN_REPO_MAX_SHA" 2>/dev/null \
-            || { echo "ERROR: COOLDOWN_REPO_MIN_SHA is not an ancestor of COOLDOWN_REPO_MAX_SHA." >&2; return 1; }
-        _upper="$COOLDOWN_REPO_MAX_SHA"
-    fi
-    _aged="$(git -C "$_repo" rev-list -1 --before="${_days} days ago" "$_upper" 2>/dev/null || true)"
-    # Floor: never older than MIN. If nothing past the floor has aged in, pin MIN.
-    if [ -z "$_aged" ] || ! git -C "$_repo" merge-base --is-ancestor "$COOLDOWN_REPO_MIN_SHA" "$_aged" 2>/dev/null; then
-        _aged="$(git -C "$_repo" rev-parse --verify --quiet "${COOLDOWN_REPO_MIN_SHA}^{commit}" || true)"
-        [ -n "$_aged" ] || { echo "ERROR: COOLDOWN_REPO_MIN_SHA (${COOLDOWN_REPO_MIN_SHA}) not found in copilot-env history." >&2; return 1; }
-    fi
-    printf '%s\n' "$_aged"
-}
-
-# Deferred repo-cooldown rollback, armed via an EXIT trap once the aged commit is
-# resolved: on ANY exit -- clean finish or a mid-install failure (npm/bun/bootstrap
-# error, interrupt) -- roll the installer-managed clone back to the aged commit, so
-# under --cooldown it is never left running on fresh origin/main. Preserves the
-# original exit status so failures still surface.
-apply_repo_cooldown() {
-    _rc=$?
-    trap - EXIT
-    if [ -n "$COOLDOWN_REPO_SHA" ]; then
-        echo "Cooldown: pinning copilot-env to ${COOLDOWN_REPO_SHA} (>=${COOLDOWN_DAYS}d old) ..."
-        git -C "$REPO_DIR" reset --hard "$COOLDOWN_REPO_SHA" || true
-    fi
-    exit "$_rc"
+# Under --cooldown, the newest release tag at least <days> old (a supply-chain
+# delay: skip a just-cut release until it has been public long enough to be pulled
+# if bad). Falls back to the OLDEST available release when nothing has aged in yet
+# (maximum delay). Needs a full clone (all tags + their dates); prints empty when
+# the repo has no release tags at all (caller then stays on main).
+resolve_aged_release() {  # <repo-dir> <days> -> prints a tag (or empty) on stdout
+    _repo="$1"; _days="$2"
+    # 10# forces base-10 so a zero-padded --cooldown=08/09 isn't parsed as octal.
+    _cutoff=$(( $(date +%s) - (10#$_days) * 86400 ))
+    _aged=""; _oldest=""
+    # for-each-ref lists release tags newest-first with their unix creator date.
+    while read -r _ts _tag; do
+        # Accept ONLY exact vX.Y.Z (rejects v1.2.3-rc1, v1.2.3.4, v1.2.3v, ...) --
+        # parity with install.ps1's ^v\d+\.\d+\.\d+$ and update.ts.
+        printf '%s\n' "$_tag" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' || continue
+        _oldest="$_tag"
+        if [ "$_ts" -le "$_cutoff" ]; then _aged="$_tag"; break; fi
+    done <<EOF
+$(git -C "$_repo" for-each-ref --sort=-creatordate --format='%(creatordate:unix) %(refname:short)' 'refs/tags/v*')
+EOF
+    printf '%s\n' "${_aged:-$_oldest}"
 }
 
 # --- git (needed to clone; the one prereq that may want the system pkg mgr) -
@@ -217,50 +179,46 @@ esac
 if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/agents.bashrc" ]; then
     REPO_DIR="$SELF_DIR"
     echo "Using existing checkout at $REPO_DIR"
-    load_project_config "$REPO_DIR" || exit 1
-else
-    if ! have git; then
-        echo "ERROR: git is required to clone/update copilot-env into $INSTALL_DIR, but it is not installed (and --no-prereqs / --local-install may not install it). Install git, or run from an existing checkout." >&2
+elif [ -d "$INSTALL_DIR/.git" ]; then
+    if [ ! -f "$INSTALL_DIR/agents.bashrc" ]; then
+        echo "ERROR: $INSTALL_DIR has a .git but no agents.bashrc -- an incomplete/corrupt clone. Remove it and re-run install.sh." >&2
         exit 1
     fi
-    if [ -d "$INSTALL_DIR/.git" ]; then
-        echo "Updating copilot-env in $INSTALL_DIR ..."
-        if [ -n "$COOLDOWN_DAYS" ]; then
-            # --cooldown resolves an aged commit by walking history, so it needs a
-            # full clone; deepen a previously-shallow checkout, else a plain fetch.
-            if [ -f "$INSTALL_DIR/.git/shallow" ]; then
-                git -C "$INSTALL_DIR" fetch --unshallow origin main
-            else
-                git -C "$INSTALL_DIR" fetch origin main
-            fi
-        else
-            git -C "$INSTALL_DIR" fetch --depth 1 origin main
-        fi
-        git -C "$INSTALL_DIR" reset --hard origin/main
-    else
+    # Reuse (don't re-clone or update) an existing checkout: completes/repairs a
+    # half-finished install and is idempotent for a finished one. Moving to a newer
+    # release is `agent update`'s job, not the installer's.
+    REPO_DIR="$INSTALL_DIR"
+    echo "Found existing copilot-env at $REPO_DIR; completing/repairing it (run 'agent update' to move to a newer release)."
+else
+    if ! have git; then
+        echo "ERROR: git is required to clone copilot-env into $INSTALL_DIR, but it is not installed (and --no-prereqs / --local-install may not install it). Install git, or run from an existing checkout." >&2
+        exit 1
+    fi
+    if [ -n "$COOLDOWN_DAYS" ]; then
+        # Cooldown picks an aged release, which needs all tags + their dates, so a
+        # full clone. Resolve the aged tag and check it out immediately -- the older
+        # release already contains every install step below, so the whole install
+        # runs from the aged checkout and no deferred rollback is needed.
         echo "Cloning copilot-env into $INSTALL_DIR ..."
-        # Shallow clone for a fast one-liner install; --cooldown needs full history
-        # to resolve an aged commit (resolve_aged_commit), so clone fully for it.
-        if [ -n "$COOLDOWN_DAYS" ]; then
-            git clone "$REPO_URL" "$INSTALL_DIR"
+        git clone "$REPO_URL" "$INSTALL_DIR"
+        _aged="$(resolve_aged_release "$INSTALL_DIR" "$COOLDOWN_DAYS")"
+        if [ -n "$_aged" ]; then
+            echo "Cooldown: checking out release $_aged (>=${COOLDOWN_DAYS}d old) ..."
+            git -C "$INSTALL_DIR" -c advice.detachedHead=false checkout "$_aged"
         else
+            echo "Cooldown: no copilot-env releases yet; staying on main." >&2
+        fi
+    else
+        _ref="$(latest_release_tag)"
+        if [ -n "$_ref" ]; then
+            echo "Cloning copilot-env release $_ref into $INSTALL_DIR ..."
+            git clone --branch "$_ref" --depth 1 "$REPO_URL" "$INSTALL_DIR"
+        else
+            echo "No copilot-env release found yet; installing from main ..."
             git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
         fi
     fi
     REPO_DIR="$INSTALL_DIR"
-    load_project_config "$REPO_DIR" || exit 1
-    # With --cooldown, hold the copilot-env checkout itself back to the newest
-    # commit on main that is >= COOLDOWN_DAYS old (clamped to [MIN, MAX]) -- the
-    # same supply-chain delay we apply to npm packages, here defending against a
-    # compromised just-pushed commit to this very repo. We resolve the SHA now
-    # (off the fresh origin/main we just fetched) but defer the actual rollback to
-    # the end of the script: the steps below run from this checkout (e.g. the
-    # agent-CLI cooldown resolver in src/install/) and need not exist in that
-    # older commit.
-    if [ -n "$COOLDOWN_DAYS" ]; then
-        COOLDOWN_REPO_SHA="$(resolve_aged_commit "$INSTALL_DIR" "$COOLDOWN_DAYS")" || exit 1
-        trap apply_repo_cooldown EXIT
-    fi
 fi
 
 AGENTS_BASHRC="${REPO_DIR}/agents.bashrc"
@@ -376,61 +334,20 @@ else
     ensure_cli codex "Codex CLI" "@openai/codex"
 fi
 
-# --- wire the shell integration -------------------------------------------
-SOURCE_BLOCK="AGENTS_BASHRC=\"${AGENTS_BASHRC}\"
-"'[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"'
-
-MARKER="# copilot-env shell integration"
-
-already_installed() { grep -qF "$MARKER" "$1" 2>/dev/null; }
-
-install_to() {
-    rc="$1"
-    if already_installed "$rc"; then
-        echo "Already installed in $rc -- skipping."
-        return
-    fi
-    printf '\n# copilot-env shell integration\n%s\n' "$SOURCE_BLOCK" >> "$rc"
-    echo "Installed to $rc"
-}
-
-installed=false
+# --- wire the shell integration (delegated to `agent shell-integration`) ---
+# The wiring logic lives in one place now -- the `agent shell-integration` command
+# (src/commands/shell_integration.ts). Running it via bin/agent also triggers the
+# in-place `bun install` (gateway float) on this fresh checkout.
 if [ "$SKIP_SHELL_INTEGRATION" = true ]; then
     echo "Skipping shell wiring (--no-shell-integration)."
 else
-    for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-        if [ -f "$rc" ]; then
-            install_to "$rc"
-            installed=true
-        fi
-    done
-
-    # No rc file yet -- create one matching the login shell (curl|bash-safe: no prompt).
-    if [ "$installed" = false ]; then
-        case "$(basename "${SHELL:-/bin/bash}")" in
-            zsh) rc="$HOME/.zshrc" ;;
-            *)   rc="$HOME/.bashrc" ;;
-        esac
-        touch "$rc"
-        install_to "$rc"
-    fi
-fi
-
-# Clean-finish repo-cooldown rollback: disarm the failure trap and roll the
-# managed clone back to the aged commit now (before "Done"), so its output
-# doesn't trail the final message. The trap still covers any earlier failure.
-if [ -n "$COOLDOWN_REPO_SHA" ]; then
-    trap - EXIT
-    echo "Cooldown: pinning copilot-env to ${COOLDOWN_REPO_SHA} (>=${COOLDOWN_DAYS}d old) ..."
-    git -C "$REPO_DIR" reset --hard "$COOLDOWN_REPO_SHA"
+    "${REPO_DIR}/bin/agent" shell-integration
 fi
 
 echo ""
 if [ "$SKIP_SHELL_INTEGRATION" = true ]; then
-    echo "Done. Shell wiring was skipped (--no-shell-integration). To enable it, add to your rc:"
-    echo "  AGENTS_BASHRC=\"${AGENTS_BASHRC}\""
-    echo '  [ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"'
+    echo "Done. Shell wiring was skipped (--no-shell-integration); run 'agent shell-integration' to enable it."
 else
-    echo "Done. Restart your shell or run: source ~/.bashrc  (or ~/.zshrc)"
+    echo "Done. Restart your shell to load the integration."
 fi
 echo "Then use 'agent start' to launch the gateway, or cl / co / cx to launch an agent."

@@ -146,3 +146,24 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: raven-actions/actionlint@v2
+
+  # Single aggregate gate: this is the ONLY CI context branch protection requires,
+  # so adding/renaming matrix jobs never desyncs .github/settings.yml. Runs always
+  # and fails unless every needed job succeeded (a matrix job's result is success
+  # only if all its combinations passed).
+  all-green:
+    name: all-green
+    if: always()
+    needs: [check, install-sh, install-ps1, actionlint]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all CI jobs to have succeeded
+        run: |
+          results="${{ join(needs.*.result, ',') }}"
+          echo "needs results: $results"
+          case ",$results," in
+            *,failure,* | *,cancelled,* | *,skipped,*)
+              echo "::error::a required CI job did not succeed ($results)"; exit 1 ;;
+          esac
+          echo "all required CI jobs succeeded"
+

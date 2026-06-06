@@ -325,12 +325,28 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'agents.ps1'))) {
     }
     if (Test-Path (Join-Path $InstallDir '.git')) {
         Write-Host "Updating copilot-env in $InstallDir ..."
-        & git -C $InstallDir fetch origin main
+        if ($Cooldown) {
+            # -Cooldown resolves an aged commit by walking history, so it needs a
+            # full clone; deepen a previously-shallow checkout, else a plain fetch.
+            if (Test-Path (Join-Path $InstallDir '.git\shallow')) {
+                & git -C $InstallDir fetch --unshallow origin main
+            } else {
+                & git -C $InstallDir fetch origin main
+            }
+        } else {
+            & git -C $InstallDir fetch --depth 1 origin main
+        }
         if ($LASTEXITCODE -ne 0) { throw 'git fetch origin main failed.' }
         & git -C $InstallDir reset --hard origin/main
     } else {
         Write-Host "Cloning copilot-env into $InstallDir ..."
-        & git clone $RepoUrl $InstallDir
+        # Shallow clone for a fast one-liner install; -Cooldown needs full history
+        # to resolve an aged commit (Resolve-AgedCommit), so clone fully for it.
+        if ($Cooldown) {
+            & git clone $RepoUrl $InstallDir
+        } else {
+            & git clone --depth 1 $RepoUrl $InstallDir
+        }
     }
     if ($LASTEXITCODE -ne 0) { throw 'git clone/pull failed.' }
     $RepoDir = $InstallDir

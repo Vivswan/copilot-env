@@ -225,11 +225,27 @@ else
     fi
     if [ -d "$INSTALL_DIR/.git" ]; then
         echo "Updating copilot-env in $INSTALL_DIR ..."
-        git -C "$INSTALL_DIR" fetch origin main
+        if [ -n "$COOLDOWN_DAYS" ]; then
+            # --cooldown resolves an aged commit by walking history, so it needs a
+            # full clone; deepen a previously-shallow checkout, else a plain fetch.
+            if [ -f "$INSTALL_DIR/.git/shallow" ]; then
+                git -C "$INSTALL_DIR" fetch --unshallow origin main
+            else
+                git -C "$INSTALL_DIR" fetch origin main
+            fi
+        else
+            git -C "$INSTALL_DIR" fetch --depth 1 origin main
+        fi
         git -C "$INSTALL_DIR" reset --hard origin/main
     else
         echo "Cloning copilot-env into $INSTALL_DIR ..."
-        git clone "$REPO_URL" "$INSTALL_DIR"
+        # Shallow clone for a fast one-liner install; --cooldown needs full history
+        # to resolve an aged commit (resolve_aged_commit), so clone fully for it.
+        if [ -n "$COOLDOWN_DAYS" ]; then
+            git clone "$REPO_URL" "$INSTALL_DIR"
+        else
+            git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
+        fi
     fi
     REPO_DIR="$INSTALL_DIR"
     load_project_config "$REPO_DIR" || exit 1

@@ -1,7 +1,7 @@
-# First-time install: install Windows prerequisites (Git, Node, Bun) and the agent
-# CLIs, clone the latest copilot-env *release*, then wire the PowerShell profile by
-# running `agent shell-integration`. Updates are NOT done here -- use `agent update`.
-# Runs two ways:
+# First-time install: install Windows prerequisites (Node, Bun) and the agent CLIs,
+# download the latest copilot-env *release* tarball over HTTP (no git), then wire the
+# PowerShell profile by running `agent shell-integration`. Updates are NOT done here --
+# use `agent update`. Runs two ways:
 #
 #   # one-liner -- no local checkout needed:
 #   irm https://raw.githubusercontent.com/Vivswan/copilot-env/main/install.ps1 | iex
@@ -12,7 +12,7 @@
 #
 # Options:
 #   -InstallDir DIR
-#       Clone target (default %USERPROFILE%\.copilot-env). Takes precedence over
+#       Install target (default %USERPROFILE%\.copilot-env). Takes precedence over
 #       $COPILOT_ENV_DIR. Ignored when run from an existing checkout.
 #   -Cooldown [-CooldownDays N]
 #       Supply-chain delay: install the newest copilot-env release AND the newest
@@ -20,16 +20,15 @@
 #       (default 7, matching bunfig.toml), so a compromised just-published version
 #       has time to be caught before adoption.
 #   -NoPrereqs
-#       Do not install any prerequisites (Git, Node, Bun) or the agent CLIs --
-#       only verify them. A missing *necessary* tool (bun; git when a clone is
-#       needed) is a fatal error; a missing *optional* tool (Node/npm, the agent
-#       CLIs) is a warning. The repo clone and profile wiring still run.
+#       Do not install any prerequisites (Node, Bun) or the agent CLIs -- only verify
+#       them. A missing *necessary* tool (bun) is a fatal error; a missing *optional*
+#       tool (Node/npm, the agent CLIs) is a warning. The repo download and profile
+#       wiring still run.
 #   -LocalInstall
 #       Install prerequisites only via user-local methods (bun's irm installer,
-#       npm); never use winget. Bun and the agent CLIs install as usual; Git and
-#       Node can only come from winget, so a missing Git is a fatal error when a
-#       clone is needed and a missing Node/npm (with the agent CLIs) is a warning.
-#       Mutually exclusive with -NoPrereqs.
+#       npm); never use winget. Bun and the agent CLIs install as usual; Node can
+#       only come from winget, so a missing Node/npm (with the agent CLIs) is a
+#       warning. Mutually exclusive with -NoPrereqs.
 #   -NoShellIntegration
 #       Do everything except run `agent shell-integration` (which wires $PROFILE).
 #       The repo, prerequisites, and agent CLIs still install; run
@@ -37,7 +36,7 @@
 #       profile.
 #
 # Env:
-#   COPILOT_ENV_DIR   clone target (default %USERPROFILE%\.copilot-env);
+#   COPILOT_ENV_DIR   install target (default %USERPROFILE%\.copilot-env);
 #                     the -InstallDir parameter takes precedence over it.
 
 [CmdletBinding()]
@@ -45,7 +44,7 @@ param(
     # Target the CurrentUserAllHosts profile instead of the current host's profile.
     [switch]$AllHosts,
 
-    # Clone target when fetching fresh (default %USERPROFILE%\.copilot-env). Takes
+    # Install target when fetching fresh (default %USERPROFILE%\.copilot-env). Takes
     # precedence over $COPILOT_ENV_DIR. Ignored when run from an existing checkout.
     [string]$InstallDir = '',
 
@@ -60,14 +59,14 @@ param(
     # bunfig.toml install.minimumReleaseAge (604800s).
     [int]$CooldownDays = 7,
 
-    # Do not install any prerequisites (Git, Node, Bun) or the agent CLIs -- only
-    # verify them. A missing necessary tool (bun; git when a clone is needed) is a
-    # fatal error; a missing optional tool (Node/npm, the agent CLIs) is a warning.
+    # Do not install any prerequisites (Node, Bun) or the agent CLIs -- only verify
+    # them. A missing necessary tool (bun) is a fatal error; a missing optional tool
+    # (Node/npm, the agent CLIs) is a warning.
     [switch]$NoPrereqs,
 
     # Install prerequisites only via user-local methods (bun's irm installer, npm);
-    # never use winget. Git/Node can only come from winget, so a missing Git is
-    # fatal when a clone is needed and a missing Node/npm (+ agent CLIs) is a warning.
+    # never use winget. Node can only come from winget, so a missing Node/npm (+ agent
+    # CLIs) is a warning. Mutually exclusive with -NoPrereqs.
     [switch]$LocalInstall,
 
     # Do everything except wire the shell integration into the PowerShell profile
@@ -78,10 +77,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-# Keep native (git/npm/bun) non-zero exits flowing to our explicit $LASTEXITCODE
+# Keep native (npm/bun/tar) non-zero exits flowing to our explicit $LASTEXITCODE
 # checks instead of throwing -- PowerShell 7.4+ defaults this to $true, which would
-# turn an *expected* non-zero (e.g. `git merge-base --is-ancestor`, exit 1 = "no")
-# into a terminating error. No-op on Windows PowerShell 5.1 (variable unused).
+# turn an *expected* non-zero into a terminating error. No-op on Windows PowerShell
+# 5.1 (variable unused).
 $PSNativeCommandUseErrorActionPreference = $false
 
 if ($Cooldown -and $CooldownDays -lt 0) {
@@ -91,14 +90,17 @@ if ($NoPrereqs -and $LocalInstall) {
     throw '-NoPrereqs and -LocalInstall are mutually exclusive.'
 }
 
-$RepoUrl = 'https://github.com/Vivswan/copilot-env.git'
+# Standalone release resolver (same module src/commands/update.ts imports): the
+# installer downloads THIS one file and runs it with bun to pick the release tarball
+# URL, so the release-pick logic lives in exactly one place.
+$ResolverUrl = 'https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/resolve-release.ts'
 # Precedence: -InstallDir parameter > $COPILOT_ENV_DIR > default.
 if (-not $InstallDir) {
     $InstallDir = if ($env:COPILOT_ENV_DIR) { $env:COPILOT_ENV_DIR } else { Join-Path $env:USERPROFILE '.copilot-env' }
 }
 
-# When run via `irm ... | iex` there is no script file; $PSCommandPath is null,
-# so we clone. When run as -File install.ps1 from a checkout, reuse it.
+# When run via `irm ... | iex` there is no script file; $PSCommandPath is null, so we
+# download the release tarball. When run as -File install.ps1 from a checkout, reuse it.
 $SelfDir = if ($PSCommandPath) { Split-Path -Parent $PSCommandPath } else { $null }
 
 function Update-ProcessPath {
@@ -171,7 +173,7 @@ function Install-WingetPackage {
 # least $Days old (excluding prereleases) and pin to it, instead of trusting
 # npm's `latest` tag -- the same supply-chain delay bunfig.toml gives the
 # gateway's deps. The resolution lives in src/install/aged-version.ts (shared
-# verbatim with install.sh, and unit-tested) and runs under the bun winget just
+# verbatim with install.sh, and unit-tested) and runs under the bun we just
 # installed; here we only feed it `npm view <pkg> time`.
 function Resolve-AgedVersion {
     param(
@@ -221,109 +223,35 @@ function Install-AgentCli {
     }
 }
 
+# Resolve the release tarball URL by downloading the shared resolver and running it
+# with bun (the same module `agent update` imports). $Days >= 0 applies the cooldown.
+function Resolve-ReleaseTarball {
+    param([int]$Days = -1)
+
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("ce-resolve-" + [guid]::NewGuid())
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+    try {
+        $resolver = Join-Path $tmp 'resolve-release.ts'
+        Invoke-WebRequest -Uri $ResolverUrl -OutFile $resolver -UseBasicParsing -Headers @{ 'User-Agent' = 'copilot-env' }
+        if ($Days -ge 0) {
+            $url = (& bun $resolver --cooldown-days $Days)
+        } else {
+            $url = (& bun $resolver)
+        }
+        if ($LASTEXITCODE -ne 0 -or -not $url) { return $null }
+        return ($url | Select-Object -First 1).Trim()
+    } finally {
+        Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+    }
+}
+
 Update-ProcessPath
-if ($NoPrereqs -or $LocalInstall) {
-    # git can only be installed via winget, which neither -NoPrereqs nor
-    # -LocalInstall may use. It is necessary only when a fresh clone/update is
-    # needed (checked at the fetch site below); a reused checkout doesn't need it.
-    if (-not (Test-ExternalCommand git)) {
-        Write-Host 'Note: git not found; required only to clone/update copilot-env.'
-    }
-} else {
-    Install-WingetPackage -Command git -Name 'Git' -Id 'Git.Git'
-}
 
-# Newest published release tag (vX.Y.Z) for $RepoUrl, or $null if none exist yet.
-function Get-LatestReleaseTag {
-    foreach ($line in (& git ls-remote --tags --sort=-v:refname $RepoUrl 'v*' 2>$null)) {
-        if ($line -match 'refs/tags/(v\d+\.\d+\.\d+)$') { return $Matches[1] }
-    }
-    return $null
-}
-
-# Under -Cooldown, the newest release tag at least $Days old (a supply-chain delay:
-# skip a just-cut release until it has been public long enough to be pulled if bad).
-# Falls back to the OLDEST available release when nothing has aged in yet (maximum
-# delay). Needs a full clone (all tags + their dates); returns $null when the repo
-# has no release tags. Mirrors install.sh's resolve_aged_release.
-function Resolve-AgedRelease {
-    param(
-        [Parameter(Mandatory)][string]$RepoPath,
-        [Parameter(Mandatory)][int]$Days
-    )
-
-    $cutoff = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - ($Days * 86400)
-    $oldest = $null
-    foreach ($line in (& git -C $RepoPath for-each-ref --sort=-creatordate `
-                --format='%(creatordate:unix) %(refname:short)' 'refs/tags/v*')) {
-        $parts = $line -split ' ', 2
-        if ($parts.Count -lt 2) { continue }
-        $tag = $parts[1].Trim()
-        if ($tag -notmatch '^v\d+\.\d+\.\d+$') { continue }
-        $oldest = $tag
-        if ([int64]$parts[0] -le $cutoff) { return $tag }
-    }
-    return $oldest
-}
-
-# Locate an existing checkout, or clone the latest release to $InstallDir.
-if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'agents.ps1'))) {
-    $RepoDir = $SelfDir
-    Write-Host "Using existing checkout at $RepoDir"
-} elseif (Test-Path (Join-Path $InstallDir '.git')) {
-    if (-not (Test-Path (Join-Path $InstallDir 'agents.ps1'))) {
-        throw "$InstallDir has a .git but no agents.ps1 -- an incomplete/corrupt clone. Remove it and rerun install.ps1."
-    }
-    # Reuse (don't re-clone or update) an existing checkout: completes/repairs a
-    # half-finished install, idempotent for a finished one. Updates are `agent update`.
-    $RepoDir = $InstallDir
-    Write-Host "Found existing copilot-env at $RepoDir; completing/repairing it (run 'agent update' to move to a newer release)."
-} else {
-    if (-not (Test-ExternalCommand git)) {
-        throw "git is required to clone copilot-env into $InstallDir, but it is not installed (and -NoPrereqs / -LocalInstall may not install it). Install git, or run from an existing checkout."
-    }
-    if ($Cooldown) {
-        # Cooldown picks an aged release, which needs all tags + their dates, so a
-        # full clone. Resolve the aged tag and check it out immediately -- the older
-        # release already contains every install step below, so no deferral needed.
-        Write-Host "Cloning copilot-env into $InstallDir ..."
-        & git clone $RepoUrl $InstallDir
-        if ($LASTEXITCODE -ne 0) { throw 'git clone failed.' }
-        $aged = Resolve-AgedRelease -RepoPath $InstallDir -Days $CooldownDays
-        if ($aged) {
-            Write-Host "Cooldown: checking out release $aged (>=${CooldownDays}d old) ..."
-            & git -C $InstallDir -c advice.detachedHead=false checkout $aged
-            if ($LASTEXITCODE -ne 0) { throw "git checkout $aged failed." }
-        } else {
-            Write-Host 'Cooldown: no copilot-env releases yet; staying on main.'
-        }
-    } else {
-        $ref = Get-LatestReleaseTag
-        if ($ref) {
-            Write-Host "Cloning copilot-env release $ref into $InstallDir ..."
-            & git clone --branch $ref --depth 1 $RepoUrl $InstallDir
-        } else {
-            Write-Host 'No copilot-env release found yet; installing from main ...'
-            & git clone --depth 1 $RepoUrl $InstallDir
-        }
-        if ($LASTEXITCODE -ne 0) { throw 'git clone failed.' }
-    }
-    $RepoDir = $InstallDir
-}
-$AgentsPs1 = Join-Path $RepoDir 'agents.ps1'
-if (-not (Test-Path $AgentsPs1)) { Write-Error "Could not find agents.ps1 at $AgentsPs1"; exit 1 }
-
-if ($NoPrereqs -or $LocalInstall) {
-    # Node/npm only come from winget (forbidden by both flags) and are optional --
-    # they only power the agent CLIs; the gateway runs on bun. Warn if absent.
-    Write-MissingPrereq -Command npm.cmd -Name 'Node.js LTS and npm'
-} else {
-    Install-WingetPackage -Command npm.cmd -Name 'Node.js LTS and npm' -Id 'OpenJS.NodeJS.LTS'
-}
-
+# --- bun (gateway runtime AND powers the release resolver) ----------------
+# Ensured up front -- before anything is downloaded -- so the resolver can run.
 if ($NoPrereqs) {
-    # bun is the gateway runtime -- necessary. Accept it on PATH or at the default
-    # user-local path (parity with install.sh); fail loudly only if truly absent.
+    # bun is necessary. Accept it on PATH or at the default user-local path (parity
+    # with install.sh); fail loudly only if truly absent.
     if (-not (Test-ExternalCommand bun)) {
         $bunExe = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
         if (Test-Path $bunExe) {
@@ -350,6 +278,53 @@ if ($NoPrereqs) {
     }
 } else {
     Install-WingetPackage -Command bun -Name 'Bun' -Id 'Oven-sh.Bun'
+}
+
+# --- locate an existing checkout, or download the latest release ----------
+# An existing install is detected by its agents.ps1 marker (there is no .git --
+# installs are tarballs now, not clones).
+if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'agents.ps1'))) {
+    $RepoDir = $SelfDir
+    Write-Host "Using existing checkout at $RepoDir"
+} elseif (Test-Path (Join-Path $InstallDir 'agents.ps1')) {
+    # Reuse (don't re-download) an existing install: completes/repairs a half-finished
+    # one, idempotent for a finished one. Updates are `agent update`'s job.
+    $RepoDir = $InstallDir
+    Write-Host "Found existing copilot-env at $RepoDir; completing/repairing it (run 'agent update' to move to a newer release)."
+} else {
+    # Fresh install: download the release source tarball over HTTP -- no git. The
+    # release is picked by the shared resolver (src/install/resolve-release.ts),
+    # downloaded standalone and run with bun -- the same logic `agent update` uses.
+    $cooldownWindow = if ($Cooldown) { $CooldownDays } else { -1 }
+    Write-Host 'Resolving the copilot-env release ...'
+    $url = Resolve-ReleaseTarball -Days $cooldownWindow
+    if (-not $url) { throw 'No copilot-env release found (or the GitHub API is unreachable).' }
+
+    Write-Host "Downloading copilot-env into $InstallDir ..."
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("ce-dl-" + [guid]::NewGuid())
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+    try {
+        $tgz = Join-Path $tmp 'release.tgz'
+        Invoke-WebRequest -Uri $url -OutFile $tgz -UseBasicParsing -Headers @{ 'User-Agent' = 'copilot-env' }
+        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+        # --strip-components=1 drops the GitHub `Vivswan-copilot-env-<sha>/` wrapper.
+        & tar -xzf $tgz --strip-components=1 -C $InstallDir
+        if ($LASTEXITCODE -ne 0) { throw 'tar extraction of the release tarball failed.' }
+    } finally {
+        Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+    }
+    $RepoDir = $InstallDir
+}
+$AgentsPs1 = Join-Path $RepoDir 'agents.ps1'
+if (-not (Test-Path $AgentsPs1)) { Write-Error "Could not find agents.ps1 at $AgentsPs1"; exit 1 }
+
+# --- Node.js (needed only for the agent CLIs) -----------------------------
+if ($NoPrereqs -or $LocalInstall) {
+    # Node/npm only come from winget (forbidden by both flags) and are optional --
+    # they only power the agent CLIs; the gateway runs on bun. Warn if absent.
+    Write-MissingPrereq -Command npm.cmd -Name 'Node.js LTS and npm'
+} else {
+    Install-WingetPackage -Command npm.cmd -Name 'Node.js LTS and npm' -Id 'OpenJS.NodeJS.LTS'
 }
 
 # Put npm's global bin on PATH so the agent CLIs resolve -- only when npm is present

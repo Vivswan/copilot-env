@@ -27,6 +27,7 @@
     "patch-package": "^8.0.0",
     "ps-list": "^9.0.0",
     "smol-toml": "^1.4.2",
+    "tar": "^7.5.15",
     "which": "^7.0.0"
   },
   "devDependencies": {

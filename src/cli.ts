@@ -145,12 +145,19 @@ const update = defineCommand({
       default: "7",
       description: "Cooldown window in days (with --cooldown). Default 7.",
     },
+    force: {
+      type: "boolean",
+      default: false,
+      description:
+        "Update even when this is a git checkout (.git present); the sync overwrites local files.",
+    },
   },
   run: ({ args }) =>
     runUpdate({
       check: Boolean(args.check),
       cooldown: Boolean(args.cooldown),
-      "cooldown-days": String(args["cooldown-days"]),
+      cooldownDays: String(args["cooldown-days"]),
+      force: Boolean(args.force),
     }),
 });
 

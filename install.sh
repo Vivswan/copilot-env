@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # copilot-env installer (Linux + macOS).
 #
-# First-time install: installs prerequisites (Node via nvm when absent, bun via its
-# official installer) and the agent CLIs (claude / copilot / codex), clones the
-# latest copilot-env *release*, then wires the shell integration by running
-# `agent shell-integration`. Updates are NOT done here -- use `agent update`. Runs
-# two ways:
+# First-time install: installs prerequisites (bun via its official installer; Node
+# via nvm when absent) and the agent CLIs (claude / copilot / codex), downloads the
+# latest copilot-env *release* tarball over HTTP (no git), then wires the shell
+# integration by running `agent shell-integration`. Updates are NOT done here -- use
+# `agent update`. Runs two ways:
 #
 #   # one-liner -- no local checkout needed:
 #   curl -fsSL https://raw.githubusercontent.com/Vivswan/copilot-env/main/install.sh | bash
@@ -14,11 +14,14 @@
 #   ./install.sh
 #
 # Env:
-#   COPILOT_ENV_DIR   clone target (default ~/.copilot-env); --dir takes precedence.
+#   COPILOT_ENV_DIR   install target (default ~/.copilot-env); --dir takes precedence.
 
 set -eu
 
-REPO_URL="https://github.com/Vivswan/copilot-env.git"
+# Standalone release resolver (same module src/commands/update.ts imports): the
+# installer downloads THIS one file and runs it with bun to pick the release tarball
+# URL, so the release-pick logic lives in exactly one place.
+RESOLVER_URL="https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/resolve-release.ts"
 INSTALL_DIR_ARG=""        # set by --dir; takes precedence over $COPILOT_ENV_DIR
 SKIP_PREREQS=false        # --no-prereqs: verify tools, never install them
 LOCAL_INSTALL=false       # --local-install: install only via curl/npm, never sudo/pkg-mgr
@@ -32,29 +35,26 @@ usage() {
     cat <<'EOF'
 Usage: install.sh [--dir DIR] [--cooldown[=DAYS]] [--no-prereqs] [--local-install] [--no-shell-integration]
 
-First-time install: installs Node (via nvm if absent), bun, and the agent CLIs,
-clones the latest copilot-env release, and wires the shell integration via
-`agent shell-integration`. Use `agent update` to update later.
+First-time install: installs bun (and Node via nvm if absent) and the agent CLIs,
+downloads the latest copilot-env release tarball, and wires the shell integration
+via `agent shell-integration`. Use `agent update` to update later.
 
 Options:
-  --dir DIR           Clone target (default ~/.copilot-env). Takes precedence over
+  --dir DIR           Install target (default ~/.copilot-env). Takes precedence over
                       $COPILOT_ENV_DIR. Ignored when run from an existing checkout.
   --cooldown[=DAYS]   Supply-chain delay: install the newest copilot-env release
                       AND the newest agent-CLI (claude / copilot / codex) releases
                       that have been public for at least DAYS days, so a compromised
                       just-published version has time to be caught before adoption.
                       Bare --cooldown uses 7 days (matching bunfig.toml).
-  --no-prereqs        Do not install any prerequisites (git, Node, bun) or the
-                      agent CLIs -- only verify them. A missing *necessary* tool
-                      (bun; git when a clone is needed) is a fatal error; a
-                      missing *optional* tool (Node/npm, the agent CLIs) is a
-                      warning. The repo clone and shell wiring still run.
+  --no-prereqs        Do not install any prerequisites (Node, bun) or the agent CLIs
+                      -- only verify them. A missing *necessary* tool (bun) is a
+                      fatal error; a missing *optional* tool (Node/npm, the agent
+                      CLIs) is a warning. The repo download and shell wiring still run.
   --local-install     Install prerequisites only via user-local methods (the
                       curl/npm installers); never use sudo or a system package
                       manager (brew/apt/dnf/...). Node (nvm), bun, and the agent
-                      CLIs install as usual; git cannot be installed this way, so
-                      a missing git is a fatal error when a clone is needed.
-                      Mutually exclusive with --no-prereqs.
+                      CLIs all install as usual. Mutually exclusive with --no-prereqs.
   --no-shell-integration
                       Do everything except run `agent shell-integration` (which
                       wires ~/.bashrc / ~/.zshrc). The repo, prerequisites, and
@@ -105,71 +105,32 @@ warn_missing() {  # <cmd> <description>
     have "$1" || echo "WARNING: $2 ('$1') is not installed; skipping. Install it yourself to use it." >&2
 }
 
-# Newest published release tag (vX.Y.Z) for $REPO_URL, or empty if none exist yet.
-latest_release_tag() {
-    git ls-remote --tags --sort=-v:refname "$REPO_URL" 'v*' 2>/dev/null \
-        | sed -n 's#.*refs/tags/\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$#\1#p' \
-        | head -1
-}
-
-# Under --cooldown, the newest release tag at least <days> old (a supply-chain
-# delay: skip a just-cut release until it has been public long enough to be pulled
-# if bad). Falls back to the OLDEST available release when nothing has aged in yet
-# (maximum delay). Needs a full clone (all tags + their dates); prints empty when
-# the repo has no release tags at all (caller then stays on main).
-resolve_aged_release() {  # <repo-dir> <days> -> prints a tag (or empty) on stdout
-    _repo="$1"; _days="$2"
-    # 10# forces base-10 so a zero-padded --cooldown=08/09 isn't parsed as octal.
-    _cutoff=$(( $(date +%s) - (10#$_days) * 86400 ))
-    _aged=""; _oldest=""
-    # for-each-ref lists release tags newest-first with their unix creator date.
-    while read -r _ts _tag; do
-        # Accept ONLY exact vX.Y.Z (rejects v1.2.3-rc1, v1.2.3.4, v1.2.3v, ...) --
-        # parity with install.ps1's ^v\d+\.\d+\.\d+$ and update.ts.
-        printf '%s\n' "$_tag" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$' || continue
-        _oldest="$_tag"
-        if [ "$_ts" -le "$_cutoff" ]; then _aged="$_tag"; break; fi
-    done <<EOF
-$(git -C "$_repo" for-each-ref --sort=-creatordate --format='%(creatordate:unix) %(refname:short)' 'refs/tags/v*')
-EOF
-    printf '%s\n' "${_aged:-$_oldest}"
-}
-
-# --- git (needed to clone; the one prereq that may want the system pkg mgr) -
-as_root() {
-    if [ "$(id -u)" -eq 0 ]; then "$@"
-    elif have sudo; then sudo "$@"
-    else echo "ERROR: need root to run: $*" >&2; return 1; fi
-}
-
-ensure_git() {
-    have git && return 0
-    echo "Installing git ..."
-    if   have brew;    then brew install git
-    elif have apt-get; then as_root apt-get update -y && as_root apt-get install -y git
-    elif have dnf;     then as_root dnf install -y git
-    elif have yum;     then as_root yum install -y git
-    elif have pacman;  then as_root pacman -Sy --noconfirm git
-    elif have zypper;  then as_root zypper install -y git
-    else
-        echo "ERROR: git is required but no supported package manager was found." >&2
-        echo "       Install git manually, then re-run install.sh." >&2
-        return 1
+# --- bun via its official installer (user-local, no sudo) -----------------
+# bun is the gateway runtime AND powers the release resolver below, so it is ensured
+# up front -- before anything is downloaded.
+if [ "$SKIP_PREREQS" = true ]; then
+    # bun is necessary. Fail loudly if it is absent.
+    if ! have bun && [ ! -x "$HOME/.bun/bin/bun" ]; then
+        echo "ERROR: bun is required to run copilot-env, but it is not installed (--no-prereqs). Install bun (https://bun.sh) and re-run." >&2
+        exit 1
     fi
-}
-
-if [ "$SKIP_PREREQS" = true ] || [ "$LOCAL_INSTALL" = true ]; then
-    # Neither --no-prereqs nor --local-install may install git (it needs a system
-    # package manager / sudo). git is necessary only when a fresh clone/update is
-    # needed (checked at the fetch site below); a reused checkout doesn't need it.
-    have git || echo "Note: git not found; required only to clone/update copilot-env." >&2
 else
-    ensure_git
+    if ! have bun && [ ! -x "$HOME/.bun/bin/bun" ]; then
+        echo "Installing bun ..."
+        curl -fsSL https://bun.sh/install | bash >/dev/null
+    fi
 fi
+[ -x "$HOME/.bun/bin/bun" ] && case ":$PATH:" in
+    *":$HOME/.bun/bin:"*) ;;
+    *) PATH="$HOME/.bun/bin:$PATH" ;;
+esac
+export PATH
 
-# --- locate or fetch the repo ---------------------------------------------
-# When piped through `curl | bash`, $0 is the shell name and there is no script
-# file on disk, so we clone. When run as ./install.sh from a checkout, reuse it.
+# --- locate or download the repo ------------------------------------------
+# When piped through `curl | bash`, $0 is the shell name and there is no script file
+# on disk, so we download the release tarball. When run as ./install.sh from a
+# checkout, reuse it. An existing install is detected by its agents.bashrc marker
+# (there is no .git -- installs are tarballs now, not clones).
 SELF_DIR=""
 case "${0:-}" in
     bash|sh|-bash|-sh|"") ;;
@@ -179,45 +140,32 @@ esac
 if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/agents.bashrc" ]; then
     REPO_DIR="$SELF_DIR"
     echo "Using existing checkout at $REPO_DIR"
-elif [ -d "$INSTALL_DIR/.git" ]; then
-    if [ ! -f "$INSTALL_DIR/agents.bashrc" ]; then
-        echo "ERROR: $INSTALL_DIR has a .git but no agents.bashrc -- an incomplete/corrupt clone. Remove it and re-run install.sh." >&2
-        exit 1
-    fi
-    # Reuse (don't re-clone or update) an existing checkout: completes/repairs a
-    # half-finished install and is idempotent for a finished one. Moving to a newer
-    # release is `agent update`'s job, not the installer's.
+elif [ -f "$INSTALL_DIR/agents.bashrc" ]; then
+    # Reuse (don't re-download) an existing install: completes/repairs a half-finished
+    # one and is idempotent for a finished one. Moving to a newer release is `agent
+    # update`'s job, not the installer's.
     REPO_DIR="$INSTALL_DIR"
     echo "Found existing copilot-env at $REPO_DIR; completing/repairing it (run 'agent update' to move to a newer release)."
 else
-    if ! have git; then
-        echo "ERROR: git is required to clone copilot-env into $INSTALL_DIR, but it is not installed (and --no-prereqs / --local-install may not install it). Install git, or run from an existing checkout." >&2
-        exit 1
-    fi
+    # Fresh install: download the release source tarball over HTTP -- no git. Which
+    # release is decided by the shared resolver (src/install/resolve-release.ts),
+    # downloaded standalone and run with bun -- the same logic `agent update` uses.
+    _tmp="$(mktemp -d)"
+    trap 'rm -rf "$_tmp"' EXIT
+    echo "Resolving the copilot-env release ..."
+    curl -fsSL -H "User-Agent: copilot-env" "$RESOLVER_URL" -o "$_tmp/resolve-release.ts"
     if [ -n "$COOLDOWN_DAYS" ]; then
-        # Cooldown picks an aged release, which needs all tags + their dates, so a
-        # full clone. Resolve the aged tag and check it out immediately -- the older
-        # release already contains every install step below, so the whole install
-        # runs from the aged checkout and no deferred rollback is needed.
-        echo "Cloning copilot-env into $INSTALL_DIR ..."
-        git clone "$REPO_URL" "$INSTALL_DIR"
-        _aged="$(resolve_aged_release "$INSTALL_DIR" "$COOLDOWN_DAYS")"
-        if [ -n "$_aged" ]; then
-            echo "Cooldown: checking out release $_aged (>=${COOLDOWN_DAYS}d old) ..."
-            git -C "$INSTALL_DIR" -c advice.detachedHead=false checkout "$_aged"
-        else
-            echo "Cooldown: no copilot-env releases yet; staying on main." >&2
-        fi
+        _url="$(bun "$_tmp/resolve-release.ts" --cooldown-days "$COOLDOWN_DAYS")" \
+            || { echo "ERROR: no copilot-env release >=${COOLDOWN_DAYS}d old (or the GitHub API is unreachable)." >&2; exit 1; }
     else
-        _ref="$(latest_release_tag)"
-        if [ -n "$_ref" ]; then
-            echo "Cloning copilot-env release $_ref into $INSTALL_DIR ..."
-            git clone --branch "$_ref" --depth 1 "$REPO_URL" "$INSTALL_DIR"
-        else
-            echo "No copilot-env release found yet; installing from main ..."
-            git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
-        fi
+        _url="$(bun "$_tmp/resolve-release.ts")" \
+            || { echo "ERROR: no copilot-env release found (or the GitHub API is unreachable)." >&2; exit 1; }
     fi
+    echo "Downloading copilot-env into $INSTALL_DIR ..."
+    curl -fsSL -H "User-Agent: copilot-env" "$_url" -o "$_tmp/release.tgz"
+    mkdir -p "$INSTALL_DIR"
+    # --strip-components=1 drops the GitHub `Vivswan-copilot-env-<sha>/` wrapper dir.
+    tar -xzf "$_tmp/release.tgz" --strip-components=1 -C "$INSTALL_DIR"
     REPO_DIR="$INSTALL_DIR"
 fi
 
@@ -273,25 +221,6 @@ else
         esac
     done
 fi
-
-# --- bun via its official installer (user-local, no sudo) -----------------
-if [ "$SKIP_PREREQS" = true ]; then
-    # bun is the gateway runtime -- necessary. Fail loudly if it is absent.
-    if ! have bun && [ ! -x "$HOME/.bun/bin/bun" ]; then
-        echo "ERROR: bun is required to run copilot-env, but it is not installed (--no-prereqs). Install bun (https://bun.sh) and re-run." >&2
-        exit 1
-    fi
-else
-    if ! have bun && [ ! -x "$HOME/.bun/bin/bun" ]; then
-        echo "Installing bun ..."
-        curl -fsSL https://bun.sh/install | bash >/dev/null
-    fi
-fi
-[ -x "$HOME/.bun/bin/bun" ] && case ":$PATH:" in
-    *":$HOME/.bun/bin:"*) ;;
-    *) PATH="$HOME/.bun/bin:$PATH" ;;
-esac
-export PATH
 
 # --- agent CLIs (npm install -g into the active node's global prefix) ------
 # With --cooldown, resolve the newest published release of <pkg> that is at

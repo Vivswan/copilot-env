@@ -1,53 +1,30 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { consola } from "consola";
-
+import { extract as tarExtract } from "tar";
+import { resolveTarget } from "../install/resolve-release.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { versionLessThan } from "../utils/semver.ts";
 
-// `agent update` brings the copilot-env checkout up to the newest GitHub release
-// (the installers do the first install; this owns updates). `--cooldown` adopts the
-// newest release aged >= N days instead of strictly the latest -- the same
-// supply-chain delay the installers apply. Pure tag-picking is split out
-// (pickLatestTag / pickAgedTag) so it can be unit-tested without a network/git.
-
-const SECONDS_PER_DAY = 24 * 60 * 60;
-
-/** Newest release tag from `git ls-remote --tags --sort=-v:refname` output. */
-export function pickLatestTag(lsRemoteOutput: string): string | null {
-  for (const line of lsRemoteOutput.split("\n")) {
-    // "<sha>\trefs/tags/vX.Y.Z" -- skip peeled "^{}" rows and prereleases.
-    const match = line.match(/\trefs\/tags\/(v\d+\.\d+\.\d+)$/);
-    if (match) return match[1] ?? null;
-  }
-  return null;
-}
-
-/** Newest release tag aged >= `days` from `git for-each-ref ... %(creatordate:unix)` output. */
-export function pickAgedTag(
-  forEachRefOutput: string,
-  nowSeconds: number,
-  days: number,
-): string | null {
-  const cutoff = nowSeconds - days * SECONDS_PER_DAY;
-  let oldest: string | null = null; // fallback: the most-aged release (mirrors the installers)
-  for (const line of forEachRefOutput.split("\n")) {
-    const space = line.indexOf(" ");
-    if (space < 0) continue;
-    const ts = Number(line.slice(0, space));
-    const tag = line.slice(space + 1).trim();
-    if (!/^v\d+\.\d+\.\d+$/.test(tag)) continue;
-    oldest = tag; // input is newest-first, so the last kept tag is the oldest
-    if (Number.isFinite(ts) && ts <= cutoff) return tag;
-  }
-  return oldest;
-}
-
-function git(args: string[]): { status: number; stdout: string } {
-  const result = spawnSync("git", ["-C", PROJECT_ROOT, ...args], { encoding: "utf-8" });
-  return { status: result.status ?? 1, stdout: (result.stdout ?? "").toString() };
-}
+// `agent update` brings the checkout up to the newest GitHub release WITHOUT git:
+//  - discovery (which release, and its tarball URL) is resolveTarget() from
+//    ../install/resolve-release.ts -- the SAME module the installers download + run,
+//    so the release-pick logic has one home. Then
+//  - apply downloads that release's `tarball_url` and SYNCS it onto the checkout:
+//    tracked files are replaced, files the release no longer ships (and OS junk)
+//    are pruned, and node_modules/.git are preserved; then `bun install`.
 
 /** Current version from package.json (release-please-maintained), as `vX.Y.Z`. */
 function currentVersion(): string {
@@ -59,31 +36,88 @@ function currentVersion(): string {
 
 const stripV = (v: string): string => v.replace(/^v/, "");
 
-function resolveTarget(cooldownDays: number | null): string | null {
-  if (cooldownDays === null) {
-    const out = git(["ls-remote", "--tags", "--sort=-v:refname", "origin", "v*"]);
-    return out.status === 0 ? pickLatestTag(out.stdout) : null;
+// Files that live in the checkout but are NOT shipped in a release: keep them across
+// an update. node_modules is restored by `bun install`; .git is the clone's VCS dir.
+// Everything else under the checkout is release-tracked source, so the sync may prune
+// it -- removing files a new release dropped, plus OS junk (.DS_Store, Thumbs.db).
+const PRESERVE = new Set([".git", "node_modules"]);
+
+// A complete release tree contains these. node-tar warns-and-SKIPS unrecoverable
+// entries rather than failing, so we verify the extract before the destructive sync:
+// a partial tree must never be allowed to prune the live checkout.
+const REQUIRED_FILES = ["package.json", "bun.lock", "bin/agent", "src/cli.ts"];
+
+/** True only if `p` is a real directory (NOT a symlink to one). Uses lstat so the
+ *  sync never recurses through a link that points outside the checkout. */
+const isRealDir = (p: string): boolean => {
+  try {
+    return lstatSync(p).isDirectory();
+  } catch {
+    return false;
   }
-  // Cooldown needs tag dates -> fetch tags locally, then pick by creatordate. A
-  // fetch failure (offline/bad remote) must not fall through to stale local tags.
-  if (git(["fetch", "--tags", "--force", "origin"]).status !== 0) return null;
-  const out = git([
-    "for-each-ref",
-    "--sort=-creatordate",
-    "--format=%(creatordate:unix) %(refname:short)",
-    "refs/tags/v*",
-  ]);
-  return out.status === 0 ? pickAgedTag(out.stdout, Date.now() / 1000, cooldownDays) : null;
+};
+
+/** Make `dest` mirror `src` exactly: replace tracked files, recurse into dirs, and
+ *  delete anything in `dest` not in `src` -- except `keep` names at the top level.
+ *  Symlinks are copied verbatim (not dereferenced). */
+function mirror(src: string, dest: string, keep: Set<string>): void {
+  const srcEntries = readdirSync(src, { withFileTypes: true });
+  const srcNames = new Set(srcEntries.map((e) => e.name));
+  for (const name of readdirSync(dest)) {
+    if (keep.has(name) || srcNames.has(name)) continue;
+    rmSync(join(dest, name), { recursive: true, force: true }); // dropped file or OS junk
+  }
+  for (const entry of srcEntries) {
+    if (keep.has(entry.name)) continue; // never copy over a preserved name (node_modules/.git)
+    const s = join(src, entry.name);
+    const d = join(dest, entry.name);
+    if (entry.isDirectory()) {
+      // Anything but a real dir in the way (a file, or a symlink -- even one to a
+      // dir) is removed first, so recursion stays inside the checkout.
+      if (!isRealDir(d)) rmSync(d, { recursive: true, force: true });
+      mkdirSync(d, { recursive: true });
+      mirror(s, d, new Set()); // the preserve list only applies at the checkout root
+    } else {
+      rmSync(d, { recursive: true, force: true });
+      cpSync(s, d, { dereference: false }); // copy files and symlinks verbatim
+    }
+  }
 }
 
-export function runUpdate(args: {
+/** Download the release's source tarball (URL from the API) and sync it onto the
+ *  checkout. Extraction uses the `tar` lib (gzip + symlinks, cross-platform). */
+async function applyRelease(tarballUrl: string): Promise<void> {
+  const res = await fetch(tarballUrl, { headers: { "User-Agent": "copilot-env" } });
+  if (!res.ok) throw new Error(`failed to download release tarball (HTTP ${res.status})`);
+
+  const tmp = mkdtempSync(join(tmpdir(), "copilot-env-update-"));
+  try {
+    const tarball = join(tmp, "release.tar.gz");
+    writeFileSync(tarball, new Uint8Array(await res.arrayBuffer()));
+    const tree = join(tmp, "tree");
+    mkdirSync(tree, { recursive: true });
+    // strip:1 drops the `Vivswan-copilot-env-<sha>/` wrapper dir.
+    await tarExtract({ file: tarball, cwd: tree, strip: 1 });
+    for (const required of REQUIRED_FILES) {
+      if (!existsSync(join(tree, required))) {
+        throw new Error(`release tarball is incomplete (missing ${required}); update aborted`);
+      }
+    }
+    mirror(tree, PROJECT_ROOT, PRESERVE);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+export async function runUpdate(args: {
   check?: boolean;
   cooldown?: boolean;
-  "cooldown-days"?: string;
-}): void {
+  cooldownDays?: string;
+  force?: boolean;
+}): Promise<void> {
   let cooldownDays: number | null = null;
   if (args.cooldown) {
-    const raw = args["cooldown-days"] ?? "7";
+    const raw = args.cooldownDays ?? "7";
     if (!/^\d+$/.test(raw)) {
       throw new Error(`--cooldown-days must be a non-negative whole number (got '${raw}')`);
     }
@@ -91,34 +125,38 @@ export function runUpdate(args: {
   }
 
   const current = currentVersion();
-  const target = resolveTarget(cooldownDays);
+  const target = await resolveTarget(cooldownDays);
   if (!target) {
-    consola.warn("No copilot-env release found upstream (or git/network unavailable).");
+    consola.warn("No copilot-env release found upstream (or the network is unavailable).");
     process.exitCode = 2; // distinct from "update available" (1) and "up to date" (0)
     return;
   }
 
-  if (!versionLessThan(stripV(current), stripV(target))) {
+  if (!versionLessThan(stripV(current), stripV(target.tag))) {
     consola.success(`copilot-env is up to date (${current}).`);
     return;
   }
 
-  consola.info(`Update available: ${current} -> ${target}`);
+  consola.info(`Update available: ${current} -> ${target.tag}`);
   if (args.check) {
     process.exitCode = 1; // an update is available
     return;
   }
 
-  // Refuse to clobber local edits (protects dev checkouts); fail closed if the
-  // status probe itself errors (e.g. not a git checkout).
-  const status = git(["status", "--porcelain"]);
-  if (status.status !== 0 || status.stdout.trim()) {
+  // The sync overwrites/prunes the checkout in place. A `.git` dir means this is a git
+  // checkout (a dev/manual clone, not a tarball install) that may hold uncommitted or
+  // untracked work -- refuse unless --force so an update can't silently destroy it.
+  // (existsSync is a file probe, not a git command; tarball installs have no .git and
+  // update freely.)
+  if (!args.force && existsSync(join(PROJECT_ROOT, ".git"))) {
     throw new Error(
-      "the checkout has uncommitted changes (or is not a git repo); resolve, then retry.",
+      "this is a git checkout (.git present) and `agent update` overwrites files in place; " +
+        "commit or stash your changes and re-run with --force (or update via git).",
     );
   }
-  if (git(["fetch", "--tags", "origin"]).status !== 0) throw new Error("git fetch failed");
-  if (git(["checkout", target]).status !== 0) throw new Error(`failed to checkout ${target}`);
+
+  consola.start(`Updating copilot-env ${current} -> ${target.tag} ...`);
+  await applyRelease(target.tarballUrl);
 
   // Refresh deps for the new release (HUSKY=0 mirrors the bin shims).
   const install = spawnSync("bun", ["install", "--frozen-lockfile"], {
@@ -129,6 +167,6 @@ export function runUpdate(args: {
   if (install.status !== 0) throw new Error("bun install failed after update");
 
   consola.success(
-    `Updated copilot-env ${current} -> ${target}. Restart your agents to pick it up.`,
+    `Updated copilot-env ${current} -> ${target.tag}. Restart your agents to pick it up.`,
   );
 }

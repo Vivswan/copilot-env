@@ -41,7 +41,7 @@ package manager if it is missing.
 
 ## Install
 
-One line — clones the latest **release** into `~/.copilot-env` (override with the
+One line — downloads the latest **release** into `~/.copilot-env` (override with the
 `COPILOT_ENV_DIR` env var, or the `--dir DIR` / `-InstallDir DIR` flag, which takes
 precedence), installs prerequisites + the agent CLIs, and wires up your shell:
 
@@ -63,8 +63,8 @@ For extra supply-chain safety, add `--cooldown`. It applies a delay to **both**
 the agent CLIs (`claude` / `copilot` / `codex`) **and** the copilot-env release
 itself (override the 7-day default with `--cooldown=DAYS`): each CLI installs the
 newest npm release whose **publish time** is ≥ 7 days ago instead of bleeding-edge
-`latest`, and the installer checks out the newest copilot-env **release** whose
-tag is ≥ 7 days old (falling back to the oldest release if none has aged in yet).
+`latest`, and the installer downloads the newest copilot-env **release** whose
+**publish time** is ≥ 7 days ago (falling back to the oldest release if none has aged in yet).
 The same delay the gateway's own dependencies already get, it defends against a
 compromised just-published npm release or just-cut copilot-env release (note:
 `--cooldown` governs *fresh* CLI installs — an already-installed `claude` /
@@ -82,16 +82,15 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -Cooldown
 
 In a managed environment where the toolchain is provided externally, add
 `--no-prereqs` (`-NoPrereqs` on Windows) to **verify** prerequisites instead of
-installing them. A missing *necessary* tool (`bun`; `git` when a clone is needed)
-is a fatal error; a missing *optional* tool (Node/npm, the agent CLIs) is a
-warning. The repo clone/update and shell wiring still run.
+installing them. A missing *necessary* tool (`bun`) is a fatal error; a missing
+*optional* tool (Node/npm, the agent CLIs) is a warning. The repo download and
+shell wiring still run.
 
 To install but never use `sudo` or a system package manager (`brew`/`apt`/…, or
 `winget` on Windows), add `--local-install` (`-LocalInstall`). Tools with a
 user-local installer (bun via curl/`irm`, Node via nvm on Unix, the agent CLIs
-via npm) install as usual; tools that only come from a package manager (`git`
-everywhere; Node on Windows) are not installed — a missing `git` is fatal when a
-clone is needed, a missing Node/agent-CLI is a warning. (`--no-prereqs` and
+via npm) install as usual; Node on Windows comes only from a package manager and
+is not installed — a missing Node/agent-CLI is then a warning. (`--no-prereqs` and
 `--local-install` are mutually exclusive.)
 
 Prefer to drive the CLI directly from a manual checkout? That works too:

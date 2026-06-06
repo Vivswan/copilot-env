@@ -161,7 +161,8 @@ else
         _url="$(bun "$_tmp/resolve-release.ts")" \
             || { echo "ERROR: no copilot-env release found (or the GitHub API is unreachable)." >&2; exit 1; }
     fi
-    echo "Downloading copilot-env into $INSTALL_DIR ..."
+    _ref="${_url##*/}"  # the GitHub tarball_url ends in /tarball/<tag>
+    echo "Downloading copilot-env $_ref into $INSTALL_DIR ..."
     curl -fsSL -H "User-Agent: copilot-env" "$_url" -o "$_tmp/release.tgz"
     mkdir -p "$INSTALL_DIR"
     # --strip-components=1 drops the GitHub `Vivswan-copilot-env-<sha>/` wrapper dir.

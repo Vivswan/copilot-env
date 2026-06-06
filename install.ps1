@@ -300,7 +300,8 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'agents.ps1'))) {
     $url = Resolve-ReleaseTarball -Days $cooldownWindow
     if (-not $url) { throw 'No copilot-env release found (or the GitHub API is unreachable).' }
 
-    Write-Host "Downloading copilot-env into $InstallDir ..."
+    $ref = ($url -split '/')[-1]  # the GitHub tarball_url ends in /tarball/<tag>
+    Write-Host "Downloading copilot-env $ref into $InstallDir ..."
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("ce-dl-" + [guid]::NewGuid())
     New-Item -ItemType Directory -Path $tmp -Force | Out-Null
     try {

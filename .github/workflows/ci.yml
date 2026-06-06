@@ -124,6 +124,12 @@ jobs:
       - name: install.sh --no-prereqs (verify-only)
         run: bash install.sh --no-prereqs
 
+      # No-sudo path: with all prereqs present (git via the runner, Node/bun via the
+      # run above), --local-install must install nothing it can't do locally, touch
+      # no package manager, and exit 0. Catches flag/control-flow regressions.
+      - name: install.sh --local-install (no-sudo smoke)
+        run: bash install.sh --local-install
+
   # Windows parity of install-sh: run install.ps1 end-to-end. Git + Node/npm are
   # preinstalled on windows-latest; we provide bun via setup-bun so the installer's
   # winget prereq step is a no-op (winget is unreliable in CI) and the run exercises
@@ -170,6 +176,12 @@ jobs:
       - name: install.ps1 -NoPrereqs (verify-only)
         shell: pwsh
         run: ./install.ps1 -NoPrereqs
+
+      # No-winget path: with all prereqs present, -LocalInstall must install nothing
+      # via winget and exit 0. Catches flag/control-flow regressions on the PS path.
+      - name: install.ps1 -LocalInstall (no-winget smoke)
+        shell: pwsh
+        run: ./install.ps1 -LocalInstall
 
   actionlint:
     name: actionlint

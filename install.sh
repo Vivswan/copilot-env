@@ -20,6 +20,7 @@ set -eu
 REPO_URL="https://github.com/Vivswan/copilot-env.git"
 INSTALL_DIR_ARG=""        # set by --dir; takes precedence over $COPILOT_ENV_DIR
 SKIP_PREREQS=false        # --no-prereqs: verify tools, never install them
+LOCAL_INSTALL=false       # --local-install: install only via curl/npm, never sudo/pkg-mgr
 NVM_VERSION="v0.40.1"
 NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 COOLDOWN_DEFAULT_DAYS=7   # matches bunfig.toml install.minimumReleaseAge (604800s)
@@ -30,7 +31,7 @@ COOLDOWN_REPO_MAX_SHA=""
 
 usage() {
     cat <<'EOF'
-Usage: install.sh [--dir DIR] [--cooldown[=DAYS]] [--no-prereqs]
+Usage: install.sh [--dir DIR] [--cooldown[=DAYS]] [--no-prereqs] [--local-install]
 
 Installs Node (via nvm), bun, and the agent CLIs, clones/updates copilot-env,
 and adds its shell integration to ~/.bashrc / ~/.zshrc.
@@ -50,6 +51,12 @@ Options:
                       (bun; git when a clone is needed) is a fatal error; a
                       missing *optional* tool (Node/npm, the agent CLIs) is a
                       warning. The repo clone/update and shell wiring still run.
+  --local-install     Install prerequisites only via user-local methods (the
+                      curl/npm installers); never use sudo or a system package
+                      manager (brew/apt/dnf/...). Node (nvm), bun, and the agent
+                      CLIs install as usual; git cannot be installed this way, so
+                      a missing git is a fatal error when a clone is needed.
+                      Mutually exclusive with --no-prereqs.
 EOF
 }
 
@@ -68,10 +75,16 @@ while [ $# -gt 0 ]; do
             INSTALL_DIR_ARG="${1#*=}"
             [ -n "$INSTALL_DIR_ARG" ] || { echo "ERROR: --dir= needs a value, e.g. --dir=/opt/copilot-env." >&2; exit 2; } ;;
         --no-prereqs) SKIP_PREREQS=true ;;
+        --local-install) LOCAL_INSTALL=true ;;
         *) echo "ERROR: unknown argument '$1' (try --help)" >&2; exit 2 ;;
     esac
     shift
 done
+
+if [ "$SKIP_PREREQS" = true ] && [ "$LOCAL_INSTALL" = true ]; then
+    echo "ERROR: --no-prereqs and --local-install are mutually exclusive." >&2
+    exit 2
+fi
 
 # Precedence: --dir flag > $COPILOT_ENV_DIR > default.
 INSTALL_DIR="${INSTALL_DIR_ARG:-${COPILOT_ENV_DIR:-$HOME/.copilot-env}}"
@@ -176,9 +189,10 @@ ensure_git() {
     fi
 }
 
-if [ "$SKIP_PREREQS" = true ]; then
-    # git is necessary only when a fresh clone/update is needed (checked at the
-    # fetch site below); a reused checkout doesn't need it. Note it now, decide later.
+if [ "$SKIP_PREREQS" = true ] || [ "$LOCAL_INSTALL" = true ]; then
+    # Neither --no-prereqs nor --local-install may install git (it needs a system
+    # package manager / sudo). git is necessary only when a fresh clone/update is
+    # needed (checked at the fetch site below); a reused checkout doesn't need it.
     have git || echo "Note: git not found; required only to clone/update copilot-env." >&2
 else
     ensure_git
@@ -199,7 +213,7 @@ if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/agents.bashrc" ]; then
     load_project_config "$REPO_DIR" || exit 1
 else
     if ! have git; then
-        echo "ERROR: git is required to clone/update copilot-env into $INSTALL_DIR, but it is not installed (--no-prereqs). Install git, or run from an existing checkout." >&2
+        echo "ERROR: git is required to clone/update copilot-env into $INSTALL_DIR, but it is not installed (and --no-prereqs / --local-install may not install it). Install git, or run from an existing checkout." >&2
         exit 1
     fi
     if [ -d "$INSTALL_DIR/.git" ]; then

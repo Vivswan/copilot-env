@@ -88,6 +88,14 @@ installing them. A missing *necessary* tool (`bun`; `git` when a clone is needed
 is a fatal error; a missing *optional* tool (Node/npm, the agent CLIs) is a
 warning. The repo clone/update and shell wiring still run.
 
+To install but never use `sudo` or a system package manager (`brew`/`apt`/…, or
+`winget` on Windows), add `--local-install` (`-LocalInstall`). Tools with a
+user-local installer (bun via curl/`irm`, Node via nvm on Unix, the agent CLIs
+via npm) install as usual; tools that only come from a package manager (`git`
+everywhere; Node on Windows) are not installed — a missing `git` is fatal when a
+clone is needed, a missing Node/agent-CLI is a warning. (`--no-prereqs` and
+`--local-install` are mutually exclusive.)
+
 Prefer to drive the CLI directly from a manual checkout? That works too:
 
 ```bash

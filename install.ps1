@@ -25,6 +25,12 @@
 #       needed) is a fatal error; a missing *optional* tool (Node/npm, the agent
 #       CLIs) is a warning. The repo clone/update and profile wiring still run;
 #       the dependency bootstrap is skipped (deps install on first `agent` run).
+#   -LocalInstall
+#       Install prerequisites only via user-local methods (bun's irm installer,
+#       npm); never use winget. Bun and the agent CLIs install as usual; Git and
+#       Node can only come from winget, so a missing Git is a fatal error when a
+#       clone is needed and a missing Node/npm (with the agent CLIs) is a warning.
+#       Mutually exclusive with -NoPrereqs.
 #
 # Env:
 #   COPILOT_ENV_DIR   clone target when fetching fresh (default %USERPROFILE%\.copilot-env);
@@ -53,7 +59,12 @@ param(
     # Do not install any prerequisites (Git, Node, Bun) or the agent CLIs -- only
     # verify them. A missing necessary tool (bun; git when a clone is needed) is a
     # fatal error; a missing optional tool (Node/npm, the agent CLIs) is a warning.
-    [switch]$NoPrereqs
+    [switch]$NoPrereqs,
+
+    # Install prerequisites only via user-local methods (bun's irm installer, npm);
+    # never use winget. Git/Node can only come from winget, so a missing Git is
+    # fatal when a clone is needed and a missing Node/npm (+ agent CLIs) is a warning.
+    [switch]$LocalInstall
 )
 
 $ErrorActionPreference = 'Stop'
@@ -65,6 +76,9 @@ $PSNativeCommandUseErrorActionPreference = $false
 
 if ($Cooldown -and $CooldownDays -lt 0) {
     throw "-CooldownDays must be a non-negative whole number of days (got $CooldownDays)."
+}
+if ($NoPrereqs -and $LocalInstall) {
+    throw '-NoPrereqs and -LocalInstall are mutually exclusive.'
 }
 
 $RepoUrl = 'https://github.com/Vivswan/copilot-env.git'
@@ -243,9 +257,10 @@ function Install-AgentCli {
 }
 
 Update-ProcessPath
-if ($NoPrereqs) {
-    # git is necessary only when a fresh clone/update is needed (checked at the
-    # fetch site below); a reused checkout doesn't need it. Note it now, decide later.
+if ($NoPrereqs -or $LocalInstall) {
+    # git can only be installed via winget, which neither -NoPrereqs nor
+    # -LocalInstall may use. It is necessary only when a fresh clone/update is
+    # needed (checked at the fetch site below); a reused checkout doesn't need it.
     if (-not (Test-ExternalCommand git)) {
         Write-Host 'Note: git not found; required only to clone/update copilot-env.'
     }
@@ -294,7 +309,7 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'agents.ps1'))) {
     Import-ProjectConfig -RepoPath $RepoDir
 } else {
     if (-not (Test-ExternalCommand git)) {
-        throw "git is required to clone/update copilot-env into $InstallDir, but it is not installed (-NoPrereqs). Install git, or run from an existing checkout."
+        throw "git is required to clone/update copilot-env into $InstallDir, but it is not installed (and -NoPrereqs / -LocalInstall may not install it). Install git, or run from an existing checkout."
     }
     if (Test-Path (Join-Path $InstallDir '.git')) {
         Write-Host "Updating copilot-env in $InstallDir ..."
@@ -322,8 +337,9 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'agents.ps1'))) {
 $AgentsPs1 = Join-Path $RepoDir 'agents.ps1'
 if (-not (Test-Path $AgentsPs1)) { Write-Error "Could not find agents.ps1 at $AgentsPs1"; exit 1 }
 
-if ($NoPrereqs) {
-    # Node/npm are optional (they only power the agent CLIs; the gateway runs on bun).
+if ($NoPrereqs -or $LocalInstall) {
+    # Node/npm only come from winget (forbidden by both flags) and are optional --
+    # they only power the agent CLIs; the gateway runs on bun. Warn if absent.
     Write-MissingPrereq -Command npm.cmd -Name 'Node.js LTS and npm'
 } else {
     Install-WingetPackage -Command npm.cmd -Name 'Node.js LTS and npm' -Id 'OpenJS.NodeJS.LTS'
@@ -334,12 +350,26 @@ if ($NoPrereqs) {
     if (-not (Test-ExternalCommand bun)) {
         throw 'bun is required to run copilot-env, but it is not installed (-NoPrereqs). Install bun (https://bun.sh) and rerun.'
     }
+} elseif ($LocalInstall) {
+    # No winget under -LocalInstall: install bun via its user-local installer.
+    if (Test-ExternalCommand bun) {
+        Write-Host 'Bun already installed.'
+    } else {
+        Write-Host 'Installing Bun (user-local, via bun.sh) ...'
+        & powershell -NoProfile -ExecutionPolicy Bypass -Command 'irm bun.sh/install.ps1 | iex' | Out-Null
+        $bunBin = Join-Path $env:USERPROFILE '.bun\bin'
+        if (Test-Path $bunBin) { Add-UserPath $bunBin }
+        Update-ProcessPath
+        if (-not (Test-ExternalCommand bun)) {
+            throw 'Bun was installed but is still unavailable. Open a new PowerShell window and rerun install.ps1.'
+        }
+    }
 } else {
     Install-WingetPackage -Command bun -Name 'Bun' -Id 'Oven-sh.Bun'
 }
 
 # Put npm's global bin on PATH so the agent CLIs resolve -- only when npm is present
-# (under -NoPrereqs it may be absent, in which case the agent CLIs are skipped too).
+# (under -NoPrereqs/-LocalInstall it may be absent, in which case the CLIs are skipped too).
 if (Test-ExternalCommand npm.cmd) {
     $npmGlobalBin = (& npm.cmd prefix -g).Trim()
     if (-not $npmGlobalBin) { throw 'Could not determine the npm global executable directory.' }
@@ -354,8 +384,10 @@ if ($NoPrereqs) {
     if ($LASTEXITCODE -ne 0) { throw 'copilot-env dependency bootstrap failed.' }
 }
 
-if ($NoPrereqs) {
-    # The agent CLIs are optional (they back cl/co/cx). Warn if absent, never install.
+if ($NoPrereqs -or ($LocalInstall -and -not (Test-ExternalCommand npm.cmd))) {
+    # Either verifying only (-NoPrereqs), or -LocalInstall without npm (npm comes
+    # from winget, which -LocalInstall may not use). The agent CLIs are optional --
+    # warn for each missing one, never install.
     Write-MissingPrereq -Command claude -Name 'Claude Code CLI'
     Write-MissingPrereq -Command copilot -Name 'GitHub Copilot CLI'
     Write-MissingPrereq -Command codex -Name 'Codex CLI'

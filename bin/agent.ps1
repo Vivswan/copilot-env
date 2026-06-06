@@ -1,7 +1,8 @@
 # Single self-bootstrapping entry point (Windows) for copilot-env. Mirror of
 # bin/agent: installs bun if missing, installs node_modules in-place in the
-# checkout (`bun install`, whose postinstall floats the gateway), then execs the
-# cli.ts dispatcher (start / stop / env / cost / codex_config / host_codex). The
+# checkout only when a read-only `gateway_float.ts --verify` says it's needed
+# (stale float / missing or out-of-sync node_modules), then execs the cli.ts
+# dispatcher (start / stop / env / cost / codex_config / host_codex). The
 # `agent` function in agents.ps1 turns `agent env` output into session state.
 #
 # No cache: node_modules lives directly in the checkout and cli.ts runs from there.
@@ -19,23 +20,38 @@ if (Test-Path $BunExe) {
     $env:Path = "$(Split-Path $BunExe -Parent);$env:Path"
 }
 
-# Install node_modules in-place in the checkout. Scripts stay enabled so bun
-# install's postinstall gateway float (src/gateway_float.ts) fires every call;
-# HUSKY=0 keeps husky's `prepare` from reinstalling git hooks each time. Discard
-# bun's stdout (its install summary) so it can't be captured into the `agent env`
-# output the profile function evals — PowerShell can't merge stdout into stderr
-# (`1>&2` is reserved). bun's progress/errors and the float's messages go to
-# stderr, which stays visible (and the caller silences with `2>$null`).
-$env:HUSKY = '0'
-Push-Location $Snap
-try {
-    & bun install --frozen-lockfile > $null
-} finally {
-    Pop-Location
+# Install node_modules in-place in the checkout, but only when needed: a read-only
+# `gateway_float.ts --verify` (no registry, no install) reports whether the gateway
+# is already floated to its target with no drift, the weekly re-check isn't due,
+# and node_modules is at least as new as bun.lock. If so we skip the install
+# entirely; otherwise (or when node_modules is absent) we run it, and its
+# postinstall gateway float re-resolves/self-heals. HUSKY=0 keeps husky's `prepare`
+# from reinstalling git hooks each time. Discard bun's stdout (its install summary)
+# so it can't be captured into the `agent env` output the profile function evals --
+# PowerShell can't merge stdout into stderr (`1>&2` is reserved). bun's
+# progress/errors and the float's messages go to stderr (the caller silences with
+# `2>$null`); the verify's own output is discarded for the same reason.
+$needInstall = -not (Test-Path (Join-Path $Snap 'node_modules'))
+if (-not $needInstall) {
+    Push-Location $Snap
+    try { & bun src/gateway_float.ts --verify *> $null } finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) { $needInstall = $true }
 }
-if ($LASTEXITCODE -ne 0) {
-    Write-Error 'copilot-env bootstrap failed.'
-    exit 1
+if ($needInstall) {
+    $env:HUSKY = '0'
+    Push-Location $Snap
+    try {
+        & bun install --frozen-lockfile > $null
+    } finally {
+        Pop-Location
+    }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error 'copilot-env bootstrap failed.'
+        exit 1
+    }
+    # Mark node_modules as freshly installed so the bun.lock-vs-node_modules mtime
+    # check can't loop: a frozen no-op install needn't bump the dir's mtime.
+    (Get-Item (Join-Path $Snap 'node_modules')).LastWriteTime = Get-Date
 }
 
 & bun run (Join-Path $Snap 'src\cli.ts') @args

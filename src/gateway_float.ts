@@ -315,12 +315,92 @@ function envDays(name: string): number | null {
   return n;
 }
 
-function main(): void {
-  if (process.env[NO_FLOAT_ENV]?.trim()) return; // float disabled via env
+/**
+ * Read-only check for the bin shims (`gateway_float.ts --verify`): is the gateway
+ * already floated to the recorded, in-window target with no drift, and the weekly
+ * re-resolution not yet due? Pure fs reads, no registry round-trip. Mirrors
+ * floatGateway's own "not due, no drift" fast path (see its `due` computation) so
+ * the shims can skip a full `bun install` (which re-lays node_modules and re-runs
+ * this float) on the calls that don't need one. Any uncertainty returns false, so
+ * the caller installs and lets floatGateway re-resolve / self-heal.
+ */
+export function gatewayFloatUpToDate(
+  root: string,
+  config: ProjectConfig,
+  checkIntervalMs: number = GATEWAY_CHECK_INTERVAL_MS,
+): boolean {
+  // Float disabled: nothing to re-resolve; a present, readable gateway is all
+  // that's needed (a `bun install` would only re-lay the locked baseline anyway).
+  // An unreadable package.json still falls through to a repair install.
+  if (process.env[NO_FLOAT_ENV]?.trim()) return installedGatewayVersion(root) !== null;
 
-  // During a postinstall lifecycle script, cwd is the package root bun installed
-  // into — the in-place checkout (the runtime root).
+  const installed = installedGatewayVersion(root);
+  if (installed === null) return false; // missing/unreadable -> must install
+
+  // Explicit pin: current iff the exact pinned version is already on disk (a
+  // dist-tag always re-resolves, so a non-semver override is never "up to date").
+  const override = process.env[GATEWAY_VERSION_ENV]?.trim();
+  if (override) return SEMVER_RE.test(override) && installed === override;
+
+  // Normal float: hold the recorded target only while it's in-window, undrifted,
+  // and the weekly stamp is still fresh.
+  const stamp = join(root, ".gateway-checked");
+  const recorded = readRecordedVersion(stamp);
+  if (recorded === null || installed !== recorded) return false;
+  if (!withinGatewayWindow(recorded, config)) return false;
+  try {
+    return Date.now() - statSync(stamp).mtimeMs <= checkIntervalMs;
+  } catch {
+    return false; // no stamp -> resolve now
+  }
+}
+
+/**
+ * True when node_modules exists and is at least as new as bun.lock — i.e. no
+ * dependency change has landed since the last install. bun.lock is the source of
+ * truth for the installed dependency set, and git only rewrites it on a content
+ * change, so "lock newer than node_modules" reliably means the locked deps changed
+ * and a reinstall is due. (package.json is intentionally NOT compared: tooling
+ * bumps its mtime without touching deps — a false "stale" — and any real dependency
+ * change updates bun.lock anyway.) A missing/unstattable bun.lock is ignored.
+ */
+export function nodeModulesFresh(root: string): boolean {
+  let nodeModulesMtime: number;
+  try {
+    nodeModulesMtime = statSync(join(root, "node_modules")).mtimeMs;
+  } catch {
+    return false; // node_modules absent
+  }
+  try {
+    return statSync(join(root, "bun.lock")).mtimeMs <= nodeModulesMtime;
+  } catch {
+    return true; // no bun.lock to compare against — don't force an install on its absence
+  }
+}
+
+function main(): void {
+  // During a postinstall lifecycle script (or a `--verify` shim call), cwd is the
+  // package root — the in-place checkout (the runtime root).
   const root = process.cwd();
+
+  // `--verify` (run by the bin shims before each command): exit 0 = up to date,
+  // skip `bun install`; exit 1 = stale / drift / absent, install. Read-only, no
+  // registry; never throws out of the process.
+  if (process.argv.includes("--verify")) {
+    try {
+      const config = readProjectConfig(root);
+      const intervalDays = envDays(FLOAT_INTERVAL_DAYS_ENV);
+      const checkIntervalMs =
+        intervalDays === null ? GATEWAY_CHECK_INTERVAL_MS : intervalDays * SECONDS_PER_DAY * 1000;
+      process.exit(
+        nodeModulesFresh(root) && gatewayFloatUpToDate(root, config, checkIntervalMs) ? 0 : 1,
+      );
+    } catch {
+      process.exit(1); // uncertain -> install
+    }
+  }
+
+  if (process.env[NO_FLOAT_ENV]?.trim()) return; // float disabled via env
 
   try {
     const config = readProjectConfig(root);

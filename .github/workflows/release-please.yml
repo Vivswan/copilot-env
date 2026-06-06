@@ -23,11 +23,13 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
-      # Reads release-please-config.json + .release-please-manifest.json at the repo
-      # root. Uses the default GITHUB_TOKEN -- GitHub may not run CI on the release
-      # PR it opens, or may hold the run pending manual approval, so the required
-      # `all-green` check can sit unmet. The release PR only bumps version +
-      # changelog (the code already passed CI merging into main), so merge it with
-      # admin bypass / approve the run -- or set `token:` to a PAT or GitHub App
-      # token here to run CI on the release PR normally.
+      # release-please opens/updates the rolling release PR. It is created with
+      # RELEASE_PLEASE_TOKEN (a PAT or GitHub App token) when that secret is set, so
+      # GitHub runs CI on the release PR like a normal PR. PRs opened by the built-in
+      # GITHUB_TOKEN never trigger workflows (a recursion guard) -- that is why the
+      # required `all-green` check used to sit unmet on the release PR. Falls back to
+      # GITHUB_TOKEN when the secret is absent: the release PR still opens, but CI
+      # won't run on it (admin-merge) until you add the token. See AGENTS.md > Releases.
       - uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}

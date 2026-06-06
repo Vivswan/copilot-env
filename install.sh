@@ -264,10 +264,20 @@ else
     ensure_cli codex "Codex CLI" "@openai/codex"
 fi
 
+# --- bootstrap copilot-env's own dependencies (in-place `bun install`) -----
+# A no-op `agent env` makes the bin shim run the in-place install now, so the deps
+# are ready regardless of shell wiring. Mirrors install.ps1's bootstrap step; gated
+# on --no-prereqs (which defers the install to the first `agent` run).
+if [ "$SKIP_PREREQS" = true ]; then
+    echo "Skipping dependency bootstrap (--no-prereqs); deps install on the first agent run."
+else
+    echo "Bootstrapping copilot-env dependencies ..."
+    "${REPO_DIR}/bin/agent" env >/dev/null || { echo "ERROR: copilot-env dependency bootstrap failed." >&2; exit 1; }
+fi
+
 # --- wire the shell integration (delegated to `agent shell-integration`) ---
-# The wiring logic lives in one place now -- the `agent shell-integration` command
-# (src/commands/shell_integration.ts). Running it via bin/agent also triggers the
-# in-place `bun install` (gateway float) on this fresh checkout.
+# The wiring logic lives in one place -- the `agent shell-integration` command
+# (src/commands/shell_integration.ts).
 if [ "$SKIP_SHELL_INTEGRATION" = true ]; then
     echo "Skipping shell wiring (--no-shell-integration)."
 else

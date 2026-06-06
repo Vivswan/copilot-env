@@ -31,6 +31,12 @@
 #       Node can only come from winget, so a missing Git is a fatal error when a
 #       clone is needed and a missing Node/npm (with the agent CLIs) is a warning.
 #       Mutually exclusive with -NoPrereqs.
+#   -NoShellIntegration
+#       Do everything except wire the shell integration into your PowerShell
+#       profile ($PROFILE). The repo, prerequisites, and agent CLIs still
+#       install; you dot-source agents.ps1 yourself. Useful for CI or a
+#       hand-managed profile. The execution-policy relaxation is skipped too
+#       (it exists only so the profile can load agents.ps1).
 #
 # Env:
 #   COPILOT_ENV_DIR   clone target when fetching fresh (default %USERPROFILE%\.copilot-env);
@@ -64,7 +70,13 @@ param(
     # Install prerequisites only via user-local methods (bun's irm installer, npm);
     # never use winget. Git/Node can only come from winget, so a missing Git is
     # fatal when a clone is needed and a missing Node/npm (+ agent CLIs) is a warning.
-    [switch]$LocalInstall
+    [switch]$LocalInstall,
+
+    # Do everything except wire the shell integration into the PowerShell profile
+    # ($PROFILE). The repo, prerequisites, and agent CLIs still install; you
+    # dot-source agents.ps1 yourself. The execution-policy relaxation is skipped
+    # too (it exists only so the profile can load agents.ps1).
+    [switch]$NoShellIntegration
 )
 
 $ErrorActionPreference = 'Stop'
@@ -414,28 +426,32 @@ $SourceBlock = @"
 if (Test-Path `$AgentsPs1) { . `$AgentsPs1 }
 "@
 
-foreach ($ProfilePath in $ProfilePaths) {
-    if ((Test-Path $ProfilePath) -and (Select-String -Path $ProfilePath -SimpleMatch $Marker -Quiet)) {
-        Write-Host "Already installed in $ProfilePath -- skipping."
-    } else {
-        $ProfileDir = Split-Path -Parent $ProfilePath
-        if (-not (Test-Path $ProfileDir)) { New-Item -ItemType Directory -Path $ProfileDir -Force | Out-Null }
-        Add-Content -Path $ProfilePath -Value $SourceBlock
-        Write-Host "Installed to $ProfilePath"
+if ($NoShellIntegration) {
+    Write-Host 'Skipping profile wiring (-NoShellIntegration).'
+} else {
+    foreach ($ProfilePath in $ProfilePaths) {
+        if ((Test-Path $ProfilePath) -and (Select-String -Path $ProfilePath -SimpleMatch $Marker -Quiet)) {
+            Write-Host "Already installed in $ProfilePath -- skipping."
+        } else {
+            $ProfileDir = Split-Path -Parent $ProfilePath
+            if (-not (Test-Path $ProfileDir)) { New-Item -ItemType Directory -Path $ProfileDir -Force | Out-Null }
+            Add-Content -Path $ProfilePath -Value $SourceBlock
+            Write-Host "Installed to $ProfilePath"
+        }
     }
-}
 
-# The profile block dot-sources the unsigned agents.ps1. Under the client-Windows
-# default (Restricted) -- or AllSigned/Undefined -- the profile would silently
-# refuse to load it, disabling the whole integration. Relax the CurrentUser
-# policy to RemoteSigned (local unsigned scripts allowed) if needed.
-$effectivePolicy = Get-ExecutionPolicy
-if ($effectivePolicy -in @('Restricted', 'AllSigned', 'Undefined')) {
-    try {
-        Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
-        Write-Host "Set CurrentUser execution policy to RemoteSigned (was '$effectivePolicy') so the profile can load agents.ps1."
-    } catch {
-        Write-Warning "Execution policy is '$effectivePolicy' and could not be changed (likely Group Policy). The profile may not load agents.ps1 until you run: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned"
+    # The profile block dot-sources the unsigned agents.ps1. Under the client-Windows
+    # default (Restricted) -- or AllSigned/Undefined -- the profile would silently
+    # refuse to load it, disabling the whole integration. Relax the CurrentUser
+    # policy to RemoteSigned (local unsigned scripts allowed) if needed.
+    $effectivePolicy = Get-ExecutionPolicy
+    if ($effectivePolicy -in @('Restricted', 'AllSigned', 'Undefined')) {
+        try {
+            Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
+            Write-Host "Set CurrentUser execution policy to RemoteSigned (was '$effectivePolicy') so the profile can load agents.ps1."
+        } catch {
+            Write-Warning "Execution policy is '$effectivePolicy' and could not be changed (likely Group Policy). The profile may not load agents.ps1 until you run: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned"
+        }
     }
 }
 
@@ -453,5 +469,11 @@ if ($CooldownRepoSha) {
 }
 
 Write-Host ''
-Write-Host "Done. Restart PowerShell or run:  . `$PROFILE"
+if ($NoShellIntegration) {
+    Write-Host 'Done. Profile wiring was skipped (-NoShellIntegration). To enable it, add to your $PROFILE:'
+    Write-Host "  `$AgentsPs1 = `"$AgentsPs1`""
+    Write-Host '  if (Test-Path $AgentsPs1) { . $AgentsPs1 }'
+} else {
+    Write-Host "Done. Restart PowerShell or run:  . `$PROFILE"
+}
 Write-Host "Then use 'agent start' to launch the gateway, or cl / co / cx to launch an agent."

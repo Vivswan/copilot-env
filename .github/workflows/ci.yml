@@ -79,133 +79,64 @@ jobs:
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
           bun run lint:ps
 
-  # Run the real install.sh end-to-end (Linux + macOS) so the whole installer
-  # stays working: nvm + Node, bun, the three agent CLIs (pinned through the
-  # --cooldown resolver, src/install/aged-version.ts), and the shell-rc wiring.
-  # It runs from the checkout (so it exercises THIS commit, not origin/main) and
-  # a non-zero exit -- or a missing CLI / unwired rc afterwards -- fails the job.
+  # Each install.sh scenario runs as its OWN isolated job (fresh runner, fresh
+  # $HOME) via the reusable installer-sh.yml -- they can never interfere with one
+  # another. Runs from the checkout, so it exercises THIS commit, not origin/main.
+  #   full   : end-to-end install (nvm+Node, bun, the three cooldown-pinned CLIs,
+  #            rc wiring). bun is installed BY the installer (provision-bun: false).
+  #   no-prereqs    : verify-only; bun must be pre-present (provision-bun: true) and
+  #                   the installer installs nothing (expect-clis: false).
+  #   local-install : no-sudo path on a bare runner -- bun via curl, Node via nvm,
+  #                   CLIs via npm, never a system package manager.
+  #   no-shell-integration : full install minus rc wiring (expect-wiring: false).
   install-sh:
-    name: install.sh smoke (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    name: install.sh ${{ matrix.scenario.name }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-    steps:
-      - uses: actions/checkout@v6
+        scenario:
+          - { name: "full (--cooldown)", args: "--cooldown", provision-bun: false, expect-clis: true, expect-wiring: true, rerun: false }
+          - { name: "--no-prereqs", args: "--no-prereqs", provision-bun: true, expect-clis: false, expect-wiring: true, rerun: false }
+          - { name: "--local-install", args: "--local-install", provision-bun: false, expect-clis: true, expect-wiring: true, rerun: true }
+          - { name: "--no-shell-integration", args: "--no-shell-integration", provision-bun: false, expect-clis: true, expect-wiring: false, rerun: false }
+    uses: ./.github/workflows/installer-sh.yml
+    with:
+      os: ${{ matrix.os }}
+      args: ${{ matrix.scenario.args }}
+      provision-bun: ${{ matrix.scenario.provision-bun }}
+      expect-clis: ${{ matrix.scenario.expect-clis }}
+      expect-wiring: ${{ matrix.scenario.expect-wiring }}
+      rerun: ${{ matrix.scenario.rerun }}
 
-      - name: Run install.sh --cooldown
-        run: bash install.sh --cooldown
-
-      - name: Verify agent CLIs + shell integration are wired
-        run: |
-          export NVM_DIR="$HOME/.nvm"
-          # shellcheck disable=SC1091
-          . "$NVM_DIR/nvm.sh"
-          for cli in claude copilot codex; do
-            command -v "$cli" >/dev/null || { echo "::error::$cli was not installed by install.sh"; exit 1; }
-            echo "found $cli -> $(command -v "$cli")"
-          done
-          # Only grep files that exist -- passing a missing rc to grep makes it
-          # exit non-zero even when the marker matched in the other file.
-          wired=
-          for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-            if [ -f "$rc" ] && grep -qF "copilot-env shell integration" "$rc"; then
-              wired=1
-              echo "shell integration found in $rc"
-            fi
-          done
-          [ -n "$wired" ] || { echo "::error::shell integration block was not added to any rc file"; exit 1; }
-
-      # Re-run verify-only: everything is already installed by the run above, so
-      # --no-prereqs must verify all prereqs present, install nothing, and still
-      # succeed. Catches flag-parsing / control-flow regressions in --no-prereqs.
-      - name: install.sh --no-prereqs (verify-only)
-        run: bash install.sh --no-prereqs
-
-      # No-sudo path: with all prereqs present (git via the runner, Node/bun via the
-      # run above), --local-install must install nothing it can't do locally, touch
-      # no package manager, and exit 0. Catches flag/control-flow regressions.
-      - name: install.sh --local-install (no-sudo smoke)
-        run: bash install.sh --local-install
-
-  # Windows parity of install-sh: run install.ps1 end-to-end. Git + Node/npm are
-  # preinstalled on windows-latest; we provide bun via setup-bun so the installer's
-  # winget prereq step is a no-op (winget is unreliable in CI) and the run exercises
-  # install.ps1's own logic: clone detection, the -Cooldown agent-CLI resolver, the
-  # npm CLI install, and PowerShell-$PROFILE wiring. Runs from the checkout.
+  # Windows parity: each install.ps1 scenario as its OWN isolated job via the
+  # reusable installer-ps1.yml. Git + Node/npm are preinstalled on windows-latest.
+  #   full / no-prereqs / no-shell-integration : bun provided by setup-bun
+  #     (winget is unreliable in CI), exercising clone detection, the -Cooldown
+  #     agent-CLI resolver, the npm CLI install, and the profile wiring (or its
+  #     deliberate absence).
+  #   local-install (no-winget) : all prereqs present, -LocalInstall must use none.
+  #   local-install (irm bun)   : bun ABSENT (no setup-bun) so -LocalInstall must
+  #     install it user-locally via irm, never winget (expect-bun-local: true).
   install-ps1:
-    name: install.ps1 smoke (windows-latest)
-    runs-on: windows-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.14
-
-      - name: Run install.ps1 -Cooldown
-        shell: pwsh
-        run: ./install.ps1 -Cooldown
-
-      - name: Verify agent CLIs + profile integration are wired
-        shell: pwsh
-        run: |
-          $bin = (& npm.cmd prefix -g).Trim()
-          foreach ($cli in 'claude', 'copilot', 'codex') {
-            $found = (Get-Command $cli -ErrorAction SilentlyContinue) `
-              -or (Test-Path (Join-Path $bin "$cli.cmd")) -or (Test-Path (Join-Path $bin $cli))
-            if (-not $found) { Write-Error "::error::$cli was not installed by install.ps1"; exit 1 }
-            Write-Host "found $cli"
-          }
-          $docs = [Environment]::GetFolderPath('MyDocuments')
-          $profiles = @(
-            (Join-Path $docs 'WindowsPowerShell\Microsoft.PowerShell_profile.ps1')
-            (Join-Path $docs 'PowerShell\Microsoft.PowerShell_profile.ps1')
-          )
-          if (-not ($profiles | Where-Object { (Test-Path $_) -and (Select-String -Path $_ -SimpleMatch 'agents.ps1' -Quiet) })) {
-            Write-Error "::error::shell integration block was not added to any PowerShell profile"; exit 1
-          }
-          Write-Host "profile wiring OK"
-
-      # Re-run verify-only: everything is already installed by the run above, so
-      # -NoPrereqs must verify all prereqs present, install nothing, and still
-      # succeed. Catches flag-parsing / control-flow regressions in -NoPrereqs.
-      - name: install.ps1 -NoPrereqs (verify-only)
-        shell: pwsh
-        run: ./install.ps1 -NoPrereqs
-
-      # No-winget path: with all prereqs present, -LocalInstall must install nothing
-      # via winget and exit 0. Catches flag/control-flow regressions on the PS path.
-      - name: install.ps1 -LocalInstall (no-winget smoke)
-        shell: pwsh
-        run: ./install.ps1 -LocalInstall
-
-  # Exercise the one -LocalInstall path the smoke above can't: the user-local bun
-  # install via `irm bun.sh/install.ps1`. No setup-bun here, so bun is ABSENT and
-  # -LocalInstall must install it via irm (never winget). Git + Node are preinstalled
-  # on windows-latest, so the reused-checkout + npm-CLI paths run too.
-  install-ps1-local:
-    name: install.ps1 -LocalInstall (irm bun)
-    runs-on: windows-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Run install.ps1 -LocalInstall (bun via irm, no setup-bun)
-        shell: pwsh
-        run: ./install.ps1 -LocalInstall
-
-      - name: Verify bun was installed user-locally (not via winget)
-        shell: pwsh
-        run: |
-          $bunExe = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
-          if (-not (Test-Path $bunExe)) {
-            Write-Error "::error::-LocalInstall did not install bun via irm ($bunExe missing)"; exit 1
-          }
-          Write-Host "bun installed user-locally at $bunExe"
+    name: install.ps1 ${{ matrix.scenario.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - { name: "full (-Cooldown)", args: "-Cooldown", provision-bun: true, expect-clis: true, expect-wiring: true, expect-bun-local: false, rerun: false }
+          - { name: "-NoPrereqs", args: "-NoPrereqs", provision-bun: true, expect-clis: false, expect-wiring: true, expect-bun-local: false, rerun: false }
+          - { name: "-LocalInstall (no-winget)", args: "-LocalInstall", provision-bun: true, expect-clis: true, expect-wiring: true, expect-bun-local: false, rerun: true }
+          - { name: "-LocalInstall (irm bun)", args: "-LocalInstall", provision-bun: false, expect-clis: true, expect-wiring: true, expect-bun-local: true, rerun: true }
+          - { name: "-NoShellIntegration", args: "-NoShellIntegration", provision-bun: true, expect-clis: true, expect-wiring: false, expect-bun-local: false, rerun: false }
+    uses: ./.github/workflows/installer-ps1.yml
+    with:
+      args: ${{ matrix.scenario.args }}
+      provision-bun: ${{ matrix.scenario.provision-bun }}
+      expect-clis: ${{ matrix.scenario.expect-clis }}
+      expect-wiring: ${{ matrix.scenario.expect-wiring }}
+      expect-bun-local: ${{ matrix.scenario.expect-bun-local }}
+      rerun: ${{ matrix.scenario.rerun }}
 
   actionlint:
     name: actionlint

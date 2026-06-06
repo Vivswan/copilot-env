@@ -1,0 +1,104 @@
+name: installer-sh smoke
+
+# Reusable, single-scenario install.sh smoke. The caller (ci.yml) invokes this
+# once per (OS, flag) combination, so each scenario runs as its OWN job on a
+# fresh runner -- separate $HOME, separate rc files. Scenarios can never share or
+# clobber each other's state, which is exactly why no "strip the marker first"
+# dance is needed: a fresh rc has no wiring to begin with, so expect-wiring=false
+# can assert the absence directly.
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: Runner OS (ubuntu-latest / macos-latest).
+        required: true
+        type: string
+      args:
+        description: Flag(s) to pass to install.sh (e.g. "--cooldown").
+        required: true
+        type: string
+      provision-bun:
+        description: >-
+          true installs bun via setup-bun before running install.sh. Use for
+          verify-only scenarios (--no-prereqs) where the installer must NOT
+          install bun itself but still requires it present.
+        type: boolean
+        default: false
+      expect-clis:
+        description: true asserts the agent CLIs (claude/copilot/codex) are installed afterward; false asserts they are ABSENT (e.g. --no-prereqs must install nothing).
+        type: boolean
+        default: true
+      expect-wiring:
+        description: true asserts the rc wiring is present; false asserts it is absent.
+        type: boolean
+        default: true
+      rerun:
+        description: >-
+          true runs install.sh a SECOND time after the first, so the run exercises
+          the idempotent "everything already present" no-op path (and must still
+          exit 0). Same flag, same job -- no cross-scenario interference.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: ${{ inputs.os }}
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      # Verify-only scenarios need bun present but installed by something OTHER
+      # than the installer (the installer must not touch it under --no-prereqs).
+      - if: ${{ inputs.provision-bun }}
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Run install.sh ${{ inputs.args }}
+        run: |
+          bash install.sh ${{ inputs.args }}
+          if [ "${{ inputs.rerun }}" = "true" ]; then
+            echo "--- idempotency re-run (everything now present, must no-op) ---"
+            bash install.sh ${{ inputs.args }}
+          fi
+
+      - name: Verify install.sh outcome
+        run: |
+          # No `set -e`: every assertion exits explicitly, and nvm.sh is not
+          # written for strict mode. Source nvm (if present) so CLIs installed into
+          # nvm's prefix resolve -- which also makes the absence check below able to
+          # catch a regression that wrongly installed them under --no-prereqs.
+          export NVM_DIR="$HOME/.nvm"
+          if [ -s "$NVM_DIR/nvm.sh" ]; then
+            # shellcheck disable=SC1091
+            . "$NVM_DIR/nvm.sh"
+          fi
+          for cli in claude copilot codex; do
+            if [ "${{ inputs.expect-clis }}" = "true" ]; then
+              command -v "$cli" >/dev/null || { echo "::error::$cli was not installed by install.sh ${{ inputs.args }}"; exit 1; }
+              echo "found $cli -> $(command -v "$cli")"
+            elif command -v "$cli" >/dev/null; then
+              echo "::error::$cli must NOT have been installed by install.sh ${{ inputs.args }}"; exit 1
+            else
+              echo "$cli correctly absent"
+            fi
+          done
+          # Only grep files that exist -- passing a missing rc to grep makes it
+          # exit non-zero even when the marker matched in the other file.
+          wired=
+          for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+            if [ -f "$rc" ] && grep -qF "copilot-env shell integration" "$rc"; then
+              wired=1
+              echo "shell integration found in $rc"
+            fi
+          done
+          if [ "${{ inputs.expect-wiring }}" = "true" ]; then
+            [ -n "$wired" ] || { echo "::error::expected shell wiring, but no rc was wired"; exit 1; }
+          else
+            [ -z "$wired" ] || { echo "::error::expected NO shell wiring (${{ inputs.args }}), but an rc was wired"; exit 1; }
+          fi
+          echo "install.sh ${{ inputs.args }} verified on ${{ inputs.os }}"

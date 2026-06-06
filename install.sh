@@ -21,6 +21,7 @@ REPO_URL="https://github.com/Vivswan/copilot-env.git"
 INSTALL_DIR_ARG=""        # set by --dir; takes precedence over $COPILOT_ENV_DIR
 SKIP_PREREQS=false        # --no-prereqs: verify tools, never install them
 LOCAL_INSTALL=false       # --local-install: install only via curl/npm, never sudo/pkg-mgr
+SKIP_SHELL_INTEGRATION=false  # --no-shell-integration: don't wire the integration into rc files
 NVM_VERSION="v0.40.1"
 NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 COOLDOWN_DEFAULT_DAYS=7   # matches bunfig.toml install.minimumReleaseAge (604800s)
@@ -31,7 +32,7 @@ COOLDOWN_REPO_MAX_SHA=""
 
 usage() {
     cat <<'EOF'
-Usage: install.sh [--dir DIR] [--cooldown[=DAYS]] [--no-prereqs] [--local-install]
+Usage: install.sh [--dir DIR] [--cooldown[=DAYS]] [--no-prereqs] [--local-install] [--no-shell-integration]
 
 Installs Node (via nvm), bun, and the agent CLIs, clones/updates copilot-env,
 and adds its shell integration to ~/.bashrc / ~/.zshrc.
@@ -57,6 +58,11 @@ Options:
                       CLIs install as usual; git cannot be installed this way, so
                       a missing git is a fatal error when a clone is needed.
                       Mutually exclusive with --no-prereqs.
+  --no-shell-integration
+                      Do everything except wire the shell integration into your
+                      rc files (~/.bashrc / ~/.zshrc). The repo, prerequisites,
+                      and agent CLIs still install; you source agents.bashrc
+                      yourself. Useful for CI or a hand-managed shell rc.
 EOF
 }
 
@@ -76,6 +82,7 @@ while [ $# -gt 0 ]; do
             [ -n "$INSTALL_DIR_ARG" ] || { echo "ERROR: --dir= needs a value, e.g. --dir=/opt/copilot-env." >&2; exit 2; } ;;
         --no-prereqs) SKIP_PREREQS=true ;;
         --local-install) LOCAL_INSTALL=true ;;
+        --no-shell-integration) SKIP_SHELL_INTEGRATION=true ;;
         *) echo "ERROR: unknown argument '$1' (try --help)" >&2; exit 2 ;;
     esac
     shift
@@ -362,21 +369,25 @@ install_to() {
 }
 
 installed=false
-for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-    if [ -f "$rc" ]; then
-        install_to "$rc"
-        installed=true
-    fi
-done
+if [ "$SKIP_SHELL_INTEGRATION" = true ]; then
+    echo "Skipping shell wiring (--no-shell-integration)."
+else
+    for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+        if [ -f "$rc" ]; then
+            install_to "$rc"
+            installed=true
+        fi
+    done
 
-# No rc file yet -- create one matching the login shell (curl|bash-safe: no prompt).
-if [ "$installed" = false ]; then
-    case "$(basename "${SHELL:-/bin/bash}")" in
-        zsh) rc="$HOME/.zshrc" ;;
-        *)   rc="$HOME/.bashrc" ;;
-    esac
-    touch "$rc"
-    install_to "$rc"
+    # No rc file yet -- create one matching the login shell (curl|bash-safe: no prompt).
+    if [ "$installed" = false ]; then
+        case "$(basename "${SHELL:-/bin/bash}")" in
+            zsh) rc="$HOME/.zshrc" ;;
+            *)   rc="$HOME/.bashrc" ;;
+        esac
+        touch "$rc"
+        install_to "$rc"
+    fi
 fi
 
 # Clean-finish repo-cooldown rollback: disarm the failure trap and roll the
@@ -389,5 +400,11 @@ if [ -n "$COOLDOWN_REPO_SHA" ]; then
 fi
 
 echo ""
-echo "Done. Restart your shell or run: source ~/.bashrc  (or ~/.zshrc)"
+if [ "$SKIP_SHELL_INTEGRATION" = true ]; then
+    echo "Done. Shell wiring was skipped (--no-shell-integration). To enable it, add to your rc:"
+    echo "  AGENTS_BASHRC=\"${AGENTS_BASHRC}\""
+    echo '  [ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"'
+else
+    echo "Done. Restart your shell or run: source ~/.bashrc  (or ~/.zshrc)"
+fi
 echo "Then use 'agent start' to launch the gateway, or cl / co / cx to launch an agent."

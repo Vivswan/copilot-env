@@ -98,7 +98,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 # --no-prereqs: note an absent *optional* tool (we proceed without installing it).
 warn_missing() {  # <cmd> <description>
-    have "$1" || echo "WARNING: $2 ('$1') is not installed; skipping (--no-prereqs). Install it yourself to use it." >&2
+    have "$1" || echo "WARNING: $2 ('$1') is not installed; skipping. Install it yourself to use it." >&2
 }
 
 load_project_config() { # <repo-dir>

@@ -138,14 +138,14 @@ function Test-ExternalCommand {
     }
 }
 
-# -NoPrereqs: warn about an absent *optional* tool (we proceed without installing it).
+# -NoPrereqs / -LocalInstall: warn about an absent *optional* tool we won't install.
 function Write-MissingPrereq {
     param(
         [Parameter(Mandatory)][string]$Command,
         [Parameter(Mandatory)][string]$Name
     )
     if (-not (Test-ExternalCommand $Command)) {
-        Write-Warning "$Name ('$Command') is not installed; skipping (-NoPrereqs). Install it yourself to use it."
+        Write-Warning "$Name ('$Command') is not installed; skipping. Install it yourself to use it."
     }
 }
 
@@ -357,6 +357,7 @@ if ($NoPrereqs) {
     } else {
         Write-Host 'Installing Bun (user-local, via bun.sh) ...'
         & powershell -NoProfile -ExecutionPolicy Bypass -Command 'irm bun.sh/install.ps1 | iex' | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Bun installation (irm bun.sh/install.ps1) failed.' }
         $bunBin = Join-Path $env:USERPROFILE '.bun\bin'
         if (Test-Path $bunBin) { Add-UserPath $bunBin }
         Update-ProcessPath

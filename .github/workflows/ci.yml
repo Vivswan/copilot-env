@@ -183,6 +183,30 @@ jobs:
         shell: pwsh
         run: ./install.ps1 -LocalInstall
 
+  # Exercise the one -LocalInstall path the smoke above can't: the user-local bun
+  # install via `irm bun.sh/install.ps1`. No setup-bun here, so bun is ABSENT and
+  # -LocalInstall must install it via irm (never winget). Git + Node are preinstalled
+  # on windows-latest, so the reused-checkout + npm-CLI paths run too.
+  install-ps1-local:
+    name: install.ps1 -LocalInstall (irm bun)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Run install.ps1 -LocalInstall (bun via irm, no setup-bun)
+        shell: pwsh
+        run: ./install.ps1 -LocalInstall
+
+      - name: Verify bun was installed user-locally (not via winget)
+        shell: pwsh
+        run: |
+          $bunExe = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          if (-not (Test-Path $bunExe)) {
+            Write-Error "::error::-LocalInstall did not install bun via irm ($bunExe missing)"; exit 1
+          }
+          Write-Host "bun installed user-locally at $bunExe"
+
   actionlint:
     name: actionlint
     runs-on: ubuntu-latest

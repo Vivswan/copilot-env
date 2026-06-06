@@ -9,6 +9,9 @@ import { posixBlock, quotePosix, quotePowerShell } from "../src/commands/shell_i
 // running the CLI with a throwaway $HOME so we never touch the real rc files.
 
 const MARKER = "# copilot-env shell integration";
+// On win32 the command takes the Windows code path (writes the PS $PROFILE, not an
+// rc file), so these POSIX-behavior tests only run off Windows.
+const skipWin = test.skipIf(process.platform === "win32");
 let home = "";
 
 function run(...args: string[]): { code: number; out: string } {
@@ -28,7 +31,7 @@ afterEach(() => {
   home = "";
 });
 
-test("wires the integration into a freshly created rc file", () => {
+skipWin("wires the integration into a freshly created rc file", () => {
   const { code } = run();
   expect(code).toBe(0);
   const rc = readFileSync(join(home, ".bashrc"), "utf-8");
@@ -36,14 +39,14 @@ test("wires the integration into a freshly created rc file", () => {
   expect(rc).toContain("agents.bashrc");
 });
 
-test("is idempotent -- a second wire adds no duplicate block", () => {
+skipWin("is idempotent -- a second wire adds no duplicate block", () => {
   run();
   run();
   const rc = readFileSync(join(home, ".bashrc"), "utf-8");
   expect(rc.split(MARKER).length - 1).toBe(1);
 });
 
-test("--remove strips the block back out", () => {
+skipWin("--remove strips the block back out", () => {
   run();
   expect(readFileSync(join(home, ".bashrc"), "utf-8")).toContain(MARKER);
   const { code } = run("--remove");
@@ -51,7 +54,7 @@ test("--remove strips the block back out", () => {
   expect(readFileSync(join(home, ".bashrc"), "utf-8")).not.toContain(MARKER);
 });
 
-test("wires an existing rc without clobbering its contents", () => {
+skipWin("wires an existing rc without clobbering its contents", () => {
   writeFileSync(join(home, ".bashrc"), "export EXISTING=1\n");
   run();
   const rc = readFileSync(join(home, ".bashrc"), "utf-8");
@@ -59,7 +62,7 @@ test("wires an existing rc without clobbering its contents", () => {
   expect(rc).toContain(MARKER);
 });
 
-test("--remove strips a CRLF-written block (Windows-style line endings)", () => {
+skipWin("--remove strips a CRLF-written block (Windows-style line endings)", () => {
   // Simulate a block written with CRLF (e.g. old PowerShell Add-Content / a CRLF rc).
   const block = `\r\n${MARKER}\r\nAGENTS_BASHRC="/x/agents.bashrc"\r\n[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\r\n`;
   writeFileSync(join(home, ".bashrc"), `export KEEP=1\r\n${block}`);

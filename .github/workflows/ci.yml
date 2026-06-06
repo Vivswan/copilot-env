@@ -82,12 +82,14 @@ jobs:
   # Each install.sh scenario runs as its OWN isolated job (fresh runner, fresh
   # $HOME) via the reusable installer-sh.yml -- they can never interfere with one
   # another. Runs from the checkout, so it exercises THIS commit, not origin/main.
-  #   full   : end-to-end install (nvm+Node, bun, the three cooldown-pinned CLIs,
-  #            rc wiring). bun is installed BY the installer (provision-bun: false).
+  #   full   : end-to-end install. GitHub runners ship Node, so install.sh reuses
+  #            the runner's node (its nvm fallback only runs when node is absent);
+  #            installs bun + the three cooldown-pinned CLIs + rc wiring.
+  #            bun is installed BY the installer (provision-bun: false).
   #   no-prereqs    : verify-only; bun must be pre-present (provision-bun: true) and
   #                   the installer installs nothing (expect-clis: false).
-  #   local-install : no-sudo path on a bare runner -- bun via curl, Node via nvm,
-  #                   CLIs via npm, never a system package manager.
+  #   local-install : no-sudo path on a bare runner -- bun via curl, the runner's
+  #                   Node, CLIs via npm, never a system package manager.
   #   no-shell-integration : full install minus rc wiring (expect-wiring: false).
   install-sh:
     name: install.sh ${{ matrix.scenario.name }}

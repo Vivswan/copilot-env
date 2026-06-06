@@ -250,14 +250,22 @@ fi
 AGENTS_BASHRC="${REPO_DIR}/agents.bashrc"
 [ -f "$AGENTS_BASHRC" ] || { echo "ERROR: Could not find agents.bashrc at $AGENTS_BASHRC" >&2; exit 1; }
 
-# --- Node.js via nvm (user-local, no sudo) --------------------------------
-# nvm's installer wires its loader into your shell rc so `node` is available in
-# new shells (the gateway daemon needs it) -- we deliberately let it do that.
+# --- Node.js (needed only for the agent CLIs) -----------------------------
+# Respect the user's toolchain: if node + npm are already on PATH, use them as-is
+# and install nothing. Only when node is absent do we install a user-local nvm LTS
+# (no sudo) -- nvm's installer also wires its loader into your shell rc so `node`
+# is available in new shells (the gateway daemon needs it). Mirrors install.ps1,
+# whose winget Node step likewise no-ops when node is already present.
 if [ "$SKIP_PREREQS" = true ]; then
     # Node/npm are optional (they only power the agent CLIs; the gateway runs on
     # bun). Warn if absent, never install.
     warn_missing node "Node.js"
     warn_missing npm "npm"
+elif have node && have npm; then
+    # User already has a node -- don't dictate their toolchain. The `npm install -g`
+    # below targets whatever prefix that node uses (which may need sudo on a system
+    # node; that's the user's environment to manage).
+    echo "Using existing Node.js ($(node --version 2>/dev/null), npm $(npm --version 2>/dev/null)) -- skipping nvm/node install."
 else
     if [ ! -s "$NVM_DIR/nvm.sh" ]; then
         echo "Installing nvm ($NVM_VERSION) ..."
@@ -267,21 +275,23 @@ else
     [ -s "$NVM_DIR/nvm.sh" ] || { echo "ERROR: nvm install failed ($NVM_DIR/nvm.sh missing)." >&2; exit 1; }
 
     # nvm.sh and its commands aren't written for `set -eu`; relax around them, capture
-    # the combined status, then re-assert strict mode. Installing + using an
-    # nvm-managed LTS (idempotent) keeps npm global installs in nvm's user-local
-    # prefix -- no sudo -- regardless of any pre-existing system Node.
+    # the combined status, then re-assert strict mode. An nvm-managed LTS keeps npm
+    # global installs in nvm's user-local prefix -- no sudo.
     export NVM_DIR
     set +eu
     # shellcheck disable=SC1091
     . "$NVM_DIR/nvm.sh"
     echo "Installing/activating Node.js LTS via nvm ..."
-    nvm install --lts && nvm use --lts && nvm alias default 'lts/*'
+    # `nvm install --lts` already activates the version it installs (even when it's
+    # "already installed"), so no separate `nvm use` -- that only re-prints "Now
+    # using node ...".
+    nvm install --lts && nvm alias default 'lts/*'
     nvm_status=$?
     set -eu
     [ "$nvm_status" -eq 0 ] || { echo "ERROR: nvm failed to install/activate Node LTS." >&2; exit 1; }
 
-    # Confirm the *active* node and npm are nvm-managed, so `npm install -g` below
-    # lands in nvm's user-local prefix (no sudo) rather than a system Node prefix.
+    # Confirm the *active* node and npm are the nvm ones we just installed, so
+    # `npm install -g` below lands in nvm's user-local prefix (no sudo).
     for _bin in node npm; do
         case "$(command -v "$_bin" 2>/dev/null)" in
             "$NVM_DIR"/*) ;;
@@ -309,7 +319,7 @@ fi
 esac
 export PATH
 
-# --- agent CLIs (npm global lands in nvm's prefix -- no sudo) --------------
+# --- agent CLIs (npm install -g into the active node's global prefix) ------
 # With --cooldown, resolve the newest published release of <pkg> that is at
 # least COOLDOWN_DAYS old (excluding prereleases) and pin to it, instead of
 # trusting npm's `latest` tag -- the same supply-chain delay bunfig.toml gives

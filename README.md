@@ -23,8 +23,8 @@ It is a TypeScript port of an original Python `copilot-api` helper, and runs on
   live via the admin API and printed grouped by target model.
 - **Shell + Codex wiring** — `env` prints the variables to point your tools at the
   local gateway (the `agent` shell wrapper applies them automatically); `agent
-  codex_config` writes your `~/.codex` config wired to the gateway, and `agent
-  host_codex` builds a per-host `CODEX_HOME` symlink farm on Linux.
+  codex-config` writes your `~/.codex` config wired to the gateway, and `agent
+  host-codex` builds a per-host `CODEX_HOME` symlink farm on Linux.
 - **Cost reporting** — `cost` reads the gateway's per-host usage databases and
   prints estimated spend using live OpenRouter pricing.
 - **Supply-chain hygiene** — the gateway dependency floats to `latest` but only
@@ -116,14 +116,14 @@ Every invocation installs dependencies + the gateway directly in the checkout
 ./bin/agent update     # update the checkout to the latest release (--check / --cooldown)
 ./bin/agent shell-integration  # (re)wire rc / $PROFILE (--remove to unwire)
 
-./bin/agent codex_config   # write Codex config into ~/.codex, wired to the gateway
-./bin/agent host_codex     # per-host CODEX_HOME symlink farm (Linux-only)
+./bin/agent codex-config   # write Codex config into ~/.codex, wired to the gateway
+./bin/agent host-codex     # per-host CODEX_HOME symlink farm (Linux-only)
 ```
 
 On Windows, use the PowerShell launcher `bin/agent.ps1`
-(e.g. `powershell -ExecutionPolicy Bypass -File bin\agent.ps1 codex_config`).
-`codex_config` writes config to `~/.codex` (`%USERPROFILE%\.codex`) by default, which
-Codex reads natively; the per-host symlink farm (`host_codex`) is Linux-only and
+(e.g. `powershell -ExecutionPolicy Bypass -File bin\agent.ps1 codex-config`).
+`codex-config` writes config to `~/.codex` (`%USERPROFILE%\.codex`) by default, which
+Codex reads natively; the per-host symlink farm (`host-codex`) is Linux-only and
 rarely needed.
 
 ### Environment overrides
@@ -146,7 +146,7 @@ The one-line installer above already wires this up — it adds a source block fo
 `agents.bashrc` to `~/.bashrc` and/or `~/.zshrc` (or dot-sources `agents.ps1`
 from your PowerShell `$PROFILE` on Windows). `agents.bashrc` defines an `agent`
 wrapper (`agent start` launches the gateway and applies its env into your shell;
-`agent codex_config` / `agent host_codex` wire Codex; anything else passes
+`agent codex-config` / `agent host-codex` wire Codex; anything else passes
 through to the CLI) plus `cl` / `co` / `cx` launchers.
 
 From a manual checkout you can run the installer directly (idempotent —

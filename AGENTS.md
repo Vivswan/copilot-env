@@ -21,7 +21,7 @@ The non-obvious choices live here; everything else is discoverable in the code.
 - `bin/agent`, `bin/agent.ps1` — self-bootstrapping launchers (install bun + deps, dispatch `cli.ts`).
 - `agents.bashrc`, `agents.ps1` — shell integration (sourced from rc / `$PROFILE`); the `agent` wrapper + `cl`/`co`/`cx` agent launchers. Pure runtime wiring, never installs.
 - `install.sh`, `install.ps1` — one-line installers: prereqs (Node, bun) + agent CLIs + shell wiring, clone/update to `~/.copilot-env`. Idempotent.
-- `src/cli.ts` + `src/commands/` — citty entry; one subcommand → one `run*` module: `start`/`stop`/`health`/`env`/`cost`/`codex_config`/`host_codex` (the last, a per-host Codex `CODEX_HOME` farm, is Linux-only).
+- `src/cli.ts` + `src/commands/` — citty entry; one subcommand → one `run*` module: `start`/`stop`/`health`/`env`/`cost`/`codex-config`/`host-codex` (the last, a per-host Codex `CODEX_HOME` farm, is Linux-only).
 - `src/gateway_float.ts` — the gateway float (see above).
 - `src/copilot_api/` — gateway-specific helpers: admin REST, config/state JSON, model-alias generation, per-host paths, daemon process control.
 - `src/usage/` — `cost` reporting over per-host SQLite usage DBs using live OpenRouter pricing.
@@ -62,7 +62,7 @@ bun run lint:sh       # shellcheck     (skip-if-absent)
 bun run lint:ps       # PSScriptAnalyzer (skip-if-absent)
 bun run check         # biome check --write src bin test scripts
 
-./bin/agent start     # start the daemon; also: stop / health / env / cost / codex_config / host_codex
+./bin/agent start     # start the daemon; also: stop / health / env / cost / codex-config / host-codex
 ./bin/agent env       # print shell env vars pointing at the local gateway
 ```
 

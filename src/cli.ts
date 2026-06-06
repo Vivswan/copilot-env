@@ -95,7 +95,7 @@ const codexArgs = {
 
 const setupCodexConfig = defineCommand({
   meta: {
-    name: "codex_config",
+    name: "codex-config",
     description: "(Re)write the default ~/.codex config.toml/.env wired to the local gateway.",
   },
   args: codexArgs,
@@ -104,7 +104,7 @@ const setupCodexConfig = defineCommand({
 
 const setupCodexHost = defineCommand({
   meta: {
-    name: "host_codex",
+    name: "host-codex",
     description: "Build the per-host CODEX_HOME symlink farm (Linux-only) and wire its config.",
   },
   args: {
@@ -194,8 +194,8 @@ const cli = defineCommand({
     health,
     env,
     cost,
-    codex_config: setupCodexConfig,
-    host_codex: setupCodexHost,
+    "codex-config": setupCodexConfig,
+    "host-codex": setupCodexHost,
     "shell-integration": shellIntegration,
     update,
   },

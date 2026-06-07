@@ -6,7 +6,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
-  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -17,6 +16,7 @@ import { extract as tarExtract } from "tar";
 import { resolveTarget } from "../install/resolve-release.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { versionLessThan } from "../utils/semver.ts";
+import { packageVersion } from "../utils/version.ts";
 
 // `agent update` brings the checkout up to the newest GitHub release WITHOUT git:
 //  - discovery (which release, and its tarball URL) is resolveTarget() from
@@ -25,14 +25,6 @@ import { versionLessThan } from "../utils/semver.ts";
 //  - apply downloads that release's `tarball_url` and SYNCS it onto the checkout:
 //    tracked files are replaced, files the release no longer ships (and OS junk)
 //    are pruned, and node_modules/.git are preserved; then `bun install`.
-
-/** Current version from package.json (release-please-maintained), as `vX.Y.Z`. */
-function currentVersion(): string {
-  const pkg = JSON.parse(readFileSync(join(PROJECT_ROOT, "package.json"), "utf-8")) as {
-    version?: unknown;
-  };
-  return `v${typeof pkg.version === "string" ? pkg.version : "0.0.0"}`;
-}
 
 const stripV = (v: string): string => v.replace(/^v/, "");
 
@@ -124,7 +116,8 @@ export async function runUpdate(args: {
     cooldownDays = Number.parseInt(raw, 10);
   }
 
-  const current = currentVersion();
+  // Current checkout version as `vX.Y.Z`, to match the upstream tag format for display.
+  const current = `v${packageVersion()}`;
   const target = await resolveTarget(cooldownDays);
   if (!target) {
     consola.warn("No copilot-env release found upstream (or the network is unavailable).");
@@ -165,6 +158,20 @@ export async function runUpdate(args: {
     env: { ...process.env, HUSKY: "0" },
   });
   if (install.status !== 0) throw new Error("bun install failed after update");
+
+  // Run post-update migrations in a FRESH process so they load from the new release on
+  // disk -- this process still holds the pre-update code in memory. Best-effort: a
+  // migration hiccup never fails the update. Effective only for updates that originate
+  // at a release already shipping this call (>= the one that introduced migrations);
+  // earlier transitions are handled by the installer's shell-integration refresh.
+  const migrate = spawnSync(
+    "bun",
+    [join(PROJECT_ROOT, "src", "migrations", "index.ts"), stripV(current), stripV(target.tag)],
+    { cwd: PROJECT_ROOT, stdio: "inherit", env: { ...process.env, HUSKY: "0" } },
+  );
+  if (migrate.status !== 0) {
+    consola.warn("Post-update migrations reported a problem; see the output above.");
+  }
 
   consola.success(
     `Updated copilot-env ${current} -> ${target.tag}. Restart your agents to pick it up.`,

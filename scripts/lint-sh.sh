@@ -13,5 +13,5 @@ if ! command -v shellcheck >/dev/null 2>&1; then
     exit 0
 fi
 
-shellcheck --severity=warning install.sh agents.bashrc bin/agent scripts/setup-env.sh
+shellcheck --severity=warning install.sh shell/agents.bashrc shell/agents.launchers.bashrc bin/agent scripts/setup-env.sh
 echo "shellcheck: OK"

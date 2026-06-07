@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { consola } from "consola";
@@ -15,11 +15,21 @@ import { PROJECT_ROOT } from "../utils/root.ts";
 // shared; only the block body and the target files differ per OS.
 
 const MARKER = "# copilot-env shell integration";
+const LAUNCHERS_MARKER = "# copilot-env launchers";
+const ALL_MARKERS = [MARKER, LAUNCHERS_MARKER];
 
-/** A line equals the marker ignoring a trailing CR (rc/profile files may be CRLF). */
-const isMarker = (line: string): boolean => line.replace(/\r$/, "") === MARKER;
+/** A line equals the given marker ignoring a trailing CR (rc/profile files may be CRLF). */
+const lineIs = (line: string, marker: string): boolean => line.replace(/\r$/, "") === marker;
 
-export function runShellIntegration(args: { remove?: boolean; "all-hosts"?: boolean }): void {
+/** A line equals any of our markers (used by removal to strip every block we own). */
+const isAnyMarker = (line: string): boolean => ALL_MARKERS.some((m) => lineIs(line, m));
+
+export function runShellIntegration(args: {
+  remove?: boolean;
+  "all-hosts"?: boolean;
+  launchers?: boolean;
+  existingOnly?: boolean;
+}): void {
   const remove = Boolean(args.remove);
   const windows = process.platform === "win32";
 
@@ -30,53 +40,126 @@ export function runShellIntegration(args: { remove?: boolean; "all-hosts"?: bool
     if (removed) consola.info(windows ? "Restart PowerShell." : "Restart your shell.");
     return;
   }
+  const launchers = Boolean(args.launchers);
+  const existingOnly = Boolean(args.existingOnly);
   if (windows) {
-    wireInto(
+    const wired = wireBlocks(
       windowsProfilePaths(Boolean(args["all-hosts"])),
-      windowsBlock(join(PROJECT_ROOT, "agents.ps1")),
+      windowsBlock(join(PROJECT_ROOT, "shell", "agents.ps1")),
+      windowsLaunchersBlock(join(PROJECT_ROOT, "shell", "agents.launchers.ps1")),
+      launchers,
+      existingOnly,
     );
-    relaxWindowsExecutionPolicy();
+    // Only relax execution policy when integration is actually present -- never for an
+    // opted-out user whose `existingOnly` migration found no owned block to refresh.
+    if (wired) relaxWindowsExecutionPolicy();
     consola.info("Restart PowerShell or run:  . $PROFILE");
   } else {
-    wireInto(rcFiles(false), posixBlock(join(PROJECT_ROOT, "agents.bashrc")));
+    wireBlocks(
+      rcFiles(false),
+      posixBlock(join(PROJECT_ROOT, "shell", "agents.bashrc")),
+      posixLaunchersBlock(join(PROJECT_ROOT, "shell", "agents.launchers.bashrc")),
+      launchers,
+      existingOnly,
+    );
     consola.info("Restart your shell or run: source ~/.bashrc  (or ~/.zshrc)");
   }
 }
 
 // --- shared wire/remove core --------------------------------------------------
 
-function wireInto(files: string[], block: string): void {
+/**
+ * Strip every owned block (integration + launchers) from rc/profile content. Each
+ * block is its marker line + the two lines after it, plus the blank line the block
+ * prepends (only when that preceding line is actually empty). Both block types share
+ * this 3-line shape.
+ */
+function stripOwnedBlocks(content: string): string {
+  const lines = content.split("\n");
+  const skip = new Set<number>();
+  lines.forEach((line, idx) => {
+    if (!isAnyMarker(line)) return;
+    if (idx > 0 && (lines[idx - 1] ?? "").replace(/\r$/, "") === "") skip.add(idx - 1);
+    skip
+      .add(idx)
+      .add(idx + 1)
+      .add(idx + 2);
+  });
+  if (skip.size === 0) return content;
+  return lines.filter((_, idx) => !skip.has(idx)).join("\n");
+}
+
+/** True if any line of `content` is exactly `marker` (CR-tolerant). */
+function hasMarker(content: string, marker: string): boolean {
+  return content.split("\n").some((l) => lineIs(l, marker));
+}
+
+/**
+ * Insert or refresh ONE owned block, IN PLACE. If `marker` is already present, its
+ * existing block (marker line + the two body lines, plus a preceding blank when there
+ * is one) is replaced where it sits -- so a stale path migrates without moving the
+ * block or reordering anything around it, and an already-current block reproduces the
+ * file byte-for-byte. If absent, the block is appended at EOF (it leads with a blank).
+ */
+function upsertBlock(content: string, marker: string, block: string): string {
+  const lines = content.split("\n");
+  const idx = lines.findIndex((l) => lineIs(l, marker));
+  if (idx === -1) return content + block;
+  const start = idx > 0 && (lines[idx - 1] ?? "").replace(/\r$/, "") === "" ? idx - 1 : idx;
+  const end = idx + 2; // marker + its two body lines
+  let blockLines = block.split("\n");
+  if (blockLines[blockLines.length - 1] === "") blockLines = blockLines.slice(0, -1); // trailing newline
+  if (start === idx && blockLines[0] === "") blockLines = blockLines.slice(1); // no preceding blank to keep
+  return [...lines.slice(0, start), ...blockLines, ...lines.slice(end + 1)].join("\n");
+}
+
+/**
+ * Wire (or refresh) the owned blocks. Each block is upserted IN PLACE, so re-running is
+ * byte-idempotent and a stale (pre-`shell/`-move) path migrates without moving the block
+ * or reordering the rest of the file. The launchers block is included when requested OR
+ * already present, so a plain re-run never silently drops a user's launchers. With
+ * `existingOnly`, a file that has no owned block is left untouched -- used by the update
+ * migration so it never newly-wires a user who opted out of shell integration.
+ *
+ * Returns true if any target file has an owned block afterwards (i.e. integration is
+ * active for this user) -- the caller uses this to decide whether Windows-side execution
+ * policy relaxation is warranted, so an opted-out `existingOnly` run touches nothing.
+ */
+function wireBlocks(
+  files: string[],
+  mainBlock: string,
+  launchersBlock: string,
+  wantLaunchers: boolean,
+  existingOnly = false,
+): boolean {
+  let active = false;
   for (const file of files) {
-    // Exact-line marker check (matches removeFrom), so a stray mention of the
-    // marker text in an unrelated line never makes wiring think it's already done.
-    if (existsSync(file) && readFileSync(file, "utf-8").split("\n").some(isMarker)) {
+    const original = existsSync(file) ? readFileSync(file, "utf-8") : "";
+    const hadMain = hasMarker(original, MARKER);
+    const hadLaunchers = hasMarker(original, LAUNCHERS_MARKER);
+    if (existingOnly && !hadMain && !hadLaunchers) continue;
+    active = true; // this file has, or will have, an owned block
+    let next = upsertBlock(original, MARKER, mainBlock);
+    if (wantLaunchers || hadLaunchers) next = upsertBlock(next, LAUNCHERS_MARKER, launchersBlock);
+    if (next === original) {
       consola.info(`Already wired in ${file} -- skipping.`);
       continue;
     }
     mkdirSync(dirname(file), { recursive: true });
-    appendFileSync(file, block);
+    writeFileSync(file, next);
     consola.success(`Wired shell integration into ${file}`);
   }
+  return active;
 }
 
 function removeFrom(files: string[]): boolean {
   let removedAny = false;
   for (const file of files) {
     if (!existsSync(file)) continue;
-    const lines = readFileSync(file, "utf-8").split("\n");
-    // Drop the marker line + the two block lines after it, plus the blank line the
-    // block prepends (only when that preceding line is actually empty).
-    const skip = new Set<number>();
-    lines.forEach((line, idx) => {
-      if (!isMarker(line)) return;
-      if (idx > 0 && (lines[idx - 1] ?? "").replace(/\r$/, "") === "") skip.add(idx - 1);
-      skip
-        .add(idx)
-        .add(idx + 1)
-        .add(idx + 2);
-    });
-    if (skip.size === 0) continue; // marker matched as a substring but no real block
-    writeFileSync(file, lines.filter((_, idx) => !skip.has(idx)).join("\n"));
+    const content = readFileSync(file, "utf-8");
+    const stripped = stripOwnedBlocks(content);
+    if (stripped === content) continue; // no owned block present
+    writeFileSync(file, stripped);
     consola.success(`Removed shell integration from ${file}`);
     removedAny = true;
   }
@@ -100,10 +183,20 @@ export function posixBlock(agentsBashrc: string): string {
   return `\n${MARKER}\nAGENTS_BASHRC=${quotePosix(agentsBashrc)}\n[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n`;
 }
 
+/** Opt-in launchers block; sourced after posixBlock so the `agent` wrapper exists. */
+export function posixLaunchersBlock(launchersBashrc: string): string {
+  return `\n${LAUNCHERS_MARKER}\nAGENTS_LAUNCHERS=${quotePosix(launchersBashrc)}\n[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"\n`;
+}
+
 export function windowsBlock(agentsPs1: string): string {
   // -LiteralPath so a path with PowerShell wildcard chars ([ ] * ?) isn't treated
   // as a pattern (the quoting handles spaces/quotes, not wildcard semantics).
   return `\n${MARKER}\n$AgentsPs1 = ${quotePowerShell(agentsPs1)}\nif (Test-Path -LiteralPath $AgentsPs1) { . $AgentsPs1 }\n`;
+}
+
+/** Opt-in launchers block; dot-sourced after windowsBlock so the `agent` wrapper exists. */
+export function windowsLaunchersBlock(launchersPs1: string): string {
+  return `\n${LAUNCHERS_MARKER}\n$AgentsLaunchers = ${quotePowerShell(launchersPs1)}\nif (Test-Path -LiteralPath $AgentsLaunchers) { . $AgentsLaunchers }\n`;
 }
 
 // --- POSIX target files -------------------------------------------------------

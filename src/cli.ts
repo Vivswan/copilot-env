@@ -10,6 +10,7 @@ import { runStop } from "./commands/stop.ts";
 import { runUpdate } from "./commands/update.ts";
 import { runCost } from "./usage/cost.ts";
 import { OPENROUTER_MODELS_URL } from "./usage/pricing.ts";
+import { packageVersion } from "./utils/version.ts";
 
 // Thin citty wiring: each subcommand only declares its parameters and calls the
 // matching run function from src/commands/* or src/usage/*. bin/agent runs
@@ -178,14 +179,24 @@ const shellIntegration = defineCommand({
       default: false,
       description: "Windows only: target the CurrentUserAllHosts profile.",
     },
+    launchers: {
+      type: "boolean",
+      default: false,
+      description: "Also wire the opt-in cl / co / cx launchers.",
+    },
   },
   run: ({ args }) =>
-    runShellIntegration({ remove: Boolean(args.remove), "all-hosts": Boolean(args["all-hosts"]) }),
+    runShellIntegration({
+      remove: Boolean(args.remove),
+      "all-hosts": Boolean(args["all-hosts"]),
+      launchers: Boolean(args.launchers),
+    }),
 });
 
 const cli = defineCommand({
   meta: {
     name: "copilot-api",
+    version: packageVersion(),
     description: "Manage the local copilot-api gateway and Codex wiring.",
   },
   subCommands: {

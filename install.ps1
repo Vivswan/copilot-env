@@ -29,6 +29,10 @@
 #       npm); never use winget. Bun and the agent CLIs install as usual; Node can
 #       only come from winget, so a missing Node/npm (with the agent CLIs) is a
 #       warning. Mutually exclusive with -NoPrereqs.
+#   -Launchers
+#       Also wire the opt-in cl / co / cx launchers into the PowerShell profile
+#       (off by default to keep those short names free). Without this you can enable
+#       them later by dot-sourcing shell\agents.launchers.ps1 yourself.
 #   -NoShellIntegration
 #       Do everything except run `agent shell-integration` (which wires $PROFILE).
 #       The repo, prerequisites, and agent CLIs still install; run
@@ -68,6 +72,11 @@ param(
     # never use winget. Node can only come from winget, so a missing Node/npm (+ agent
     # CLIs) is a warning. Mutually exclusive with -NoPrereqs.
     [switch]$LocalInstall,
+
+    # Also wire the opt-in cl / co / cx launchers into the PowerShell profile (off by
+    # default to keep those short names free). Without this, dot-source
+    # shell\agents.launchers.ps1 yourself to enable them later.
+    [switch]$Launchers,
 
     # Do everything except wire the shell integration into the PowerShell profile
     # ($PROFILE). The repo, prerequisites, and agent CLIs still install; you
@@ -281,12 +290,12 @@ if ($NoPrereqs) {
 }
 
 # --- locate an existing checkout, or download the latest release ----------
-# An existing install is detected by its agents.ps1 marker (there is no .git --
+# An existing install is detected by its shell/agents.ps1 marker (there is no .git --
 # installs are tarballs now, not clones).
-if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'agents.ps1'))) {
+if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'shell\agents.ps1'))) {
     $RepoDir = $SelfDir
     Write-Host "Using existing checkout at $RepoDir"
-} elseif (Test-Path (Join-Path $InstallDir 'agents.ps1')) {
+} elseif (Test-Path (Join-Path $InstallDir 'shell\agents.ps1')) {
     # Reuse (don't re-download) an existing install: completes/repairs a half-finished
     # one, idempotent for a finished one. Updates are `agent update`'s job.
     $RepoDir = $InstallDir
@@ -316,7 +325,7 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'agents.ps1'))) {
     }
     $RepoDir = $InstallDir
 }
-$AgentsPs1 = Join-Path $RepoDir 'agents.ps1'
+$AgentsPs1 = Join-Path $RepoDir 'shell\agents.ps1'
 if (-not (Test-Path $AgentsPs1)) { Write-Error "Could not find agents.ps1 at $AgentsPs1"; exit 1 }
 
 # --- Node.js (needed only for the agent CLIs) -----------------------------
@@ -366,6 +375,7 @@ if ($NoShellIntegration) {
 } else {
     $siArgs = @('shell-integration')
     if ($AllHosts) { $siArgs += '--all-hosts' }
+    if ($Launchers) { $siArgs += '--launchers' }
     & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $RepoDir 'bin\agent.ps1') @siArgs
     if ($LASTEXITCODE -ne 0) { throw 'agent shell-integration failed.' }
 }
@@ -376,4 +386,9 @@ if ($NoShellIntegration) {
 } else {
     Write-Host 'Done. Restart PowerShell to load the integration.'
 }
-Write-Host "Then use 'agent start' to launch the gateway, or cl / co / cx to launch an agent."
+Write-Host "Then use 'agent start' to launch the gateway."
+if (-not $NoShellIntegration -and $Launchers) {
+    Write-Host "The cl / co / cx launchers are wired -- after restarting PowerShell, use cl / co / cx to launch an agent."
+} else {
+    Write-Host "The cl / co / cx launchers are opt-in: re-run with -Launchers, or add '. $RepoDir\shell\agents.launchers.ps1' to your `$PROFILE (after the integration block)."
+}

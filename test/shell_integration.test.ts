@@ -3,12 +3,18 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { posixBlock, quotePosix, quotePowerShell } from "../src/commands/shell_integration.ts";
+import {
+  posixBlock,
+  posixLaunchersBlock,
+  quotePosix,
+  quotePowerShell,
+} from "../src/commands/shell_integration.ts";
 
 // `agent shell-integration` wires/unwires the rc block. Exercise the POSIX path by
 // running the CLI with a throwaway $HOME so we never touch the real rc files.
 
 const MARKER = "# copilot-env shell integration";
+const LAUNCHERS_MARKER = "# copilot-env launchers";
 // On win32 the command takes the Windows code path (writes the PS $PROFILE, not an
 // rc file), so these POSIX-behavior tests only run off Windows.
 const skipWin = test.skipIf(process.platform === "win32");
@@ -39,11 +45,26 @@ skipWin("wires the integration into a freshly created rc file", () => {
   expect(rc).toContain("agents.bashrc");
 });
 
-skipWin("is idempotent -- a second wire adds no duplicate block", () => {
+skipWin("is idempotent -- a second wire is byte-for-byte identical", () => {
   run();
+  const first = readFileSync(join(home, ".bashrc"), "utf-8");
+  run();
+  const second = readFileSync(join(home, ".bashrc"), "utf-8");
+  expect(second).toBe(first); // no duplicate block, no reordering
+  expect(second.split(MARKER).length - 1).toBe(1);
+});
+
+skipWin("re-wiring refreshes the block in place without reordering later lines", () => {
+  // A stale block followed by a user line that must stay AFTER the integration.
+  const stale = `${MARKER}\nAGENTS_BASHRC="/old/agents.bashrc"\n[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"`;
+  writeFileSync(join(home, ".bashrc"), `export BEFORE=1\n\n${stale}\n\nexport AFTER=1\n`);
   run();
   const rc = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(rc.split(MARKER).length - 1).toBe(1);
+  expect(rc).toContain("shell/agents.bashrc"); // migrated in place
+  expect(rc).not.toContain("/old/agents.bashrc");
+  // BEFORE still precedes the block; AFTER still follows it.
+  expect(rc.indexOf("export BEFORE=1")).toBeLessThan(rc.indexOf(MARKER));
+  expect(rc.indexOf(MARKER)).toBeLessThan(rc.indexOf("export AFTER=1"));
 });
 
 skipWin("--remove strips the block back out", () => {
@@ -73,6 +94,53 @@ skipWin("--remove strips a CRLF-written block (Windows-style line endings)", () 
   expect(rc).toContain("export KEEP=1");
 });
 
+skipWin("--launchers also wires the opt-in launchers block; default does not", () => {
+  run();
+  let rc = readFileSync(join(home, ".bashrc"), "utf-8");
+  expect(rc).toContain(MARKER);
+  expect(rc).not.toContain(LAUNCHERS_MARKER);
+  // Re-running with --launchers adds the launchers block without duplicating the
+  // integration block (incremental opt-in).
+  run("--launchers");
+  rc = readFileSync(join(home, ".bashrc"), "utf-8");
+  expect(rc).toContain("agents.launchers.bashrc");
+  expect(rc.split(MARKER).length - 1).toBe(1);
+  expect(rc.split(LAUNCHERS_MARKER).length - 1).toBe(1);
+});
+
+skipWin("--remove strips both the integration and launchers blocks", () => {
+  run("--launchers");
+  const wired = readFileSync(join(home, ".bashrc"), "utf-8");
+  expect(wired).toContain(MARKER);
+  expect(wired).toContain(LAUNCHERS_MARKER);
+  run("--remove");
+  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
+  expect(rc).not.toContain(MARKER);
+  expect(rc).not.toContain(LAUNCHERS_MARKER);
+});
+
+skipWin("re-wiring migrates a stale block to the current shell/ path", () => {
+  // Simulate a pre-`shell/`-move block that points at the old root-level agents.bashrc.
+  const stale = `\n${MARKER}\nAGENTS_BASHRC="/old/agents.bashrc"\n[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n`;
+  writeFileSync(join(home, ".bashrc"), `export KEEP=1\n${stale}`);
+  run();
+  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
+  expect(rc).toContain("export KEEP=1"); // user content preserved
+  expect(rc).toContain("shell/agents.bashrc"); // migrated to the new path
+  expect(rc).not.toContain("/old/agents.bashrc"); // stale path gone
+  expect(rc.split(MARKER).length - 1).toBe(1); // exactly one block, not duplicated
+});
+
+skipWin("a plain re-wire preserves an already-wired launchers block", () => {
+  run("--launchers");
+  expect(readFileSync(join(home, ".bashrc"), "utf-8")).toContain(LAUNCHERS_MARKER);
+  // Re-running WITHOUT --launchers must not drop the user's launchers block.
+  run();
+  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
+  expect(rc).toContain(LAUNCHERS_MARKER);
+  expect(rc.split(LAUNCHERS_MARKER).length - 1).toBe(1);
+});
+
 test("posixBlock safely quotes paths with shell metacharacters", () => {
   // A path containing a single quote, $, backtick, and a space must round-trip
   // through `source` as the exact literal -- never expand or break parsing.
@@ -92,4 +160,12 @@ test("posixBlock safely quotes paths with shell metacharacters", () => {
 test("quotePosix / quotePowerShell escape embedded single quotes", () => {
   expect(quotePosix("a'b")).toBe("'a'\\''b'");
   expect(quotePowerShell("a'b")).toBe("'a''b'");
+});
+
+test("posixLaunchersBlock sources the launchers file under its own marker", () => {
+  const block = posixLaunchersBlock("/x/shell/agents.launchers.bashrc");
+  expect(block).toContain(LAUNCHERS_MARKER);
+  expect(block).toContain("agents.launchers.bashrc");
+  // Distinct marker from the integration block, so removal can target each.
+  expect(block).not.toContain(MARKER);
 });

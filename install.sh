@@ -26,6 +26,7 @@ INSTALL_DIR_ARG=""        # set by --dir; takes precedence over $COPILOT_ENV_DIR
 SKIP_PREREQS=false        # --no-prereqs: verify tools, never install them
 LOCAL_INSTALL=false       # --local-install: install only via curl/npm, never sudo/pkg-mgr
 SKIP_SHELL_INTEGRATION=false  # --no-shell-integration: don't wire the integration into rc files
+WIRE_LAUNCHERS=false      # --launchers: also wire the opt-in cl/co/cx launchers
 NVM_VERSION="v0.40.1"
 NVM_DIR="${NVM_DIR:-$HOME/.nvm}"
 COOLDOWN_DEFAULT_DAYS=7   # matches bunfig.toml install.minimumReleaseAge (604800s)
@@ -33,7 +34,7 @@ COOLDOWN_DAYS=""          # empty = disabled (install the latest release + npm `
 
 usage() {
     cat <<'EOF'
-Usage: install.sh [--dir DIR] [--cooldown[=DAYS]] [--no-prereqs] [--local-install] [--no-shell-integration]
+Usage: install.sh [--dir DIR] [--cooldown[=DAYS]] [--no-prereqs] [--local-install] [--launchers] [--no-shell-integration]
 
 First-time install: installs bun (and Node via nvm if absent) and the agent CLIs,
 downloads the latest copilot-env release tarball, and wires the shell integration
@@ -55,6 +56,10 @@ Options:
                       curl/npm installers); never use sudo or a system package
                       manager (brew/apt/dnf/...). Node (nvm), bun, and the agent
                       CLIs all install as usual. Mutually exclusive with --no-prereqs.
+  --launchers         Also wire the opt-in cl / co / cx launchers into your rc
+                      file (off by default to keep those short names free). Without
+                      this you can enable them later by sourcing
+                      shell/agents.launchers.bashrc yourself.
   --no-shell-integration
                       Do everything except run `agent shell-integration` (which
                       wires ~/.bashrc / ~/.zshrc). The repo, prerequisites, and
@@ -79,6 +84,7 @@ while [ $# -gt 0 ]; do
             [ -n "$INSTALL_DIR_ARG" ] || { echo "ERROR: --dir= needs a value, e.g. --dir=/opt/copilot-env." >&2; exit 2; } ;;
         --no-prereqs) SKIP_PREREQS=true ;;
         --local-install) LOCAL_INSTALL=true ;;
+        --launchers) WIRE_LAUNCHERS=true ;;
         --no-shell-integration) SKIP_SHELL_INTEGRATION=true ;;
         *) echo "ERROR: unknown argument '$1' (try --help)" >&2; exit 2 ;;
     esac
@@ -129,18 +135,18 @@ export PATH
 # --- locate or download the repo ------------------------------------------
 # When piped through `curl | bash`, $0 is the shell name and there is no script file
 # on disk, so we download the release tarball. When run as ./install.sh from a
-# checkout, reuse it. An existing install is detected by its agents.bashrc marker
-# (there is no .git -- installs are tarballs now, not clones).
+# checkout, reuse it. An existing install is detected by its shell/agents.bashrc
+# marker (there is no .git -- installs are tarballs now, not clones).
 SELF_DIR=""
 case "${0:-}" in
     bash|sh|-bash|-sh|"") ;;
     *) SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)" ;;
 esac
 
-if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/agents.bashrc" ]; then
+if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/shell/agents.bashrc" ]; then
     REPO_DIR="$SELF_DIR"
     echo "Using existing checkout at $REPO_DIR"
-elif [ -f "$INSTALL_DIR/agents.bashrc" ]; then
+elif [ -f "$INSTALL_DIR/shell/agents.bashrc" ]; then
     # Reuse (don't re-download) an existing install: completes/repairs a half-finished
     # one and is idempotent for a finished one. Moving to a newer release is `agent
     # update`'s job, not the installer's.
@@ -170,7 +176,7 @@ else
     REPO_DIR="$INSTALL_DIR"
 fi
 
-AGENTS_BASHRC="${REPO_DIR}/agents.bashrc"
+AGENTS_BASHRC="${REPO_DIR}/shell/agents.bashrc"
 [ -f "$AGENTS_BASHRC" ] || { echo "ERROR: Could not find agents.bashrc at $AGENTS_BASHRC" >&2; exit 1; }
 
 # --- Node.js (needed only for the agent CLIs) -----------------------------
@@ -280,6 +286,8 @@ fi
 # (src/commands/shell_integration.ts).
 if [ "$SKIP_SHELL_INTEGRATION" = true ]; then
     echo "Skipping shell wiring (--no-shell-integration)."
+elif [ "$WIRE_LAUNCHERS" = true ]; then
+    "${REPO_DIR}/bin/agent" shell-integration --launchers
 else
     "${REPO_DIR}/bin/agent" shell-integration
 fi
@@ -290,4 +298,9 @@ if [ "$SKIP_SHELL_INTEGRATION" = true ]; then
 else
     echo "Done. Restart your shell to load the integration."
 fi
-echo "Then use 'agent start' to launch the gateway, or cl / co / cx to launch an agent."
+echo "Then use 'agent start' to launch the gateway."
+if [ "$SKIP_SHELL_INTEGRATION" != true ] && [ "$WIRE_LAUNCHERS" = true ]; then
+    echo "The cl / co / cx launchers are wired -- after restarting your shell, use cl / co / cx to launch an agent."
+else
+    echo "The cl / co / cx launchers are opt-in: re-run with --launchers, or add 'source ${REPO_DIR}/shell/agents.launchers.bashrc' to your shell rc (after the integration block)."
+fi

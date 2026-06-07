@@ -1,6 +1,6 @@
 # copilot-env
 
-Local copilot-api gateway lifecycle + config helper. TypeScript port of the original Python `copilot-api` package. Supports **Linux, macOS, and Windows** via a POSIX launcher (`bin/agent`) and a PowerShell one (`bin/agent.ps1`); every cross-platform pair (`bin/agent` ⇄ `.ps1`, `agents.bashrc` ⇄ `agents.ps1`, `install.sh` ⇄ `install.ps1`) must stay feature-matched.
+Local copilot-api gateway lifecycle + config helper. TypeScript port of the original Python `copilot-api` package. Supports **Linux, macOS, and Windows** via a POSIX launcher (`bin/agent`) and a PowerShell one (`bin/agent.ps1`); every cross-platform pair (`bin/agent` ⇄ `.ps1`, `shell/agents.bashrc` ⇄ `shell/agents.ps1`, `shell/agents.launchers.bashrc` ⇄ `shell/agents.launchers.ps1`, `install.sh` ⇄ `install.ps1`) must stay feature-matched.
 
 `CLAUDE.md` and `.github/copilot-instructions.md` are symlinks to this file.
 
@@ -19,10 +19,12 @@ The non-obvious choices live here; everything else is discoverable in the code.
 ## Repo map
 
 - `bin/agent`, `bin/agent.ps1` — self-bootstrapping launchers (install bun + deps, dispatch `cli.ts`).
-- `agents.bashrc`, `agents.ps1` — shell integration (sourced from rc / `$PROFILE`); the `agent` wrapper + `cl`/`co`/`cx` agent launchers. Pure runtime wiring, never installs.
+- `shell/agents.bashrc`, `shell/agents.ps1` — shell integration (sourced from rc / `$PROFILE`); the `agent` wrapper + eager gateway-env export. Pure runtime wiring, never installs.
+- `shell/agents.launchers.bashrc`, `shell/agents.launchers.ps1` — opt-in `cl`/`co`/`cx` agent launchers, sourced after the integration file (`cx` re-applies `codex-config` before launch). Wired only on `agent shell-integration --launchers` (or the installer's `--launchers` / `-Launchers`); otherwise source manually.
 - `install.sh`, `install.ps1` — one-line installers: prereqs (Node, bun) + agent CLIs + shell wiring, download the latest release tarball to `~/.copilot-env`. Idempotent.
 - `src/cli.ts` + `src/commands/` — citty entry; one subcommand → one `run*` module: `start`/`stop`/`health`/`env`/`cost`/`codex-config`/`host-codex` (the last, a per-host Codex `CODEX_HOME` farm, is Linux-only).
 - `src/gateway_float.ts` — the gateway float (see above).
+- `src/migrations/` — one file per version step (`<from-version>.ts`, registered in `index.ts`); `agent update` runs the due ones for the `[old, new)` range. See "Migrations" below.
 - `src/copilot_api/` — gateway-specific helpers: admin REST, config/state JSON, model-alias generation, per-host paths, daemon process control.
 - `src/usage/` — `cost` reporting over per-host SQLite usage DBs using live OpenRouter pricing.
 - `src/utils/` — generic helpers (hostname, `PROJECT_ROOT`, semver compare).
@@ -33,6 +35,14 @@ The non-obvious choices live here; everything else is discoverable in the code.
 ## Agent & dev environment init
 
 Every agent/dev environment and any fresh `git worktree` initializes through **one** idempotent script — `scripts/setup-env.sh` (`scripts/setup-env.ps1` on Windows) — so no entry point drifts. It runs `bun install --frozen-lockfile` (which also fires the best-effort gateway float; no agent CLIs). Entry points that invoke it: the GitHub Copilot coding agent (`.github/workflows/copilot-setup-steps.yml`), Codespaces / Dev Containers (`.devcontainer/`), Claude Code and Codex CLI worktrees (`SessionStart` hooks in `.claude/` and `.codex/`, no-op when `node_modules` already exists), and humans (run it directly). For the Codex app, configure a Local Environment that runs `scripts/setup-env.sh` on worktree creation and `./bin/agent stop || true` on cleanup.
+
+## Migrations
+
+`src/migrations/` carries one-time, version-to-version fix-ups for an existing install (e.g. relocating files, re-pointing rc blocks). One file per step named for the release it migrates **away from** (`1.2.1.ts`) — so a migration is authored against the *current* released version and never has to predict the future release number release-please will assign. Each exports a `Migration { version, description, run }` registered in `index.ts`; `run` must be **idempotent** (an update can be retried).
+
+`agent update` runs the due migrations after it swaps in the new release: it spawns `bun src/migrations/index.ts <old> <new>` (the module is runnable via an `import.meta.main` guard) — a **fresh process**, because the running `update.ts` still holds the pre-update code in memory, so the new migration set and the code it calls must load from disk. `dueMigrations` selects every from-version left behind, the half-open range `[old, new)`; failures are non-fatal (warn, continue).
+
+**Bootstrapping caveat:** an update is driven by the *old* release's `update.ts`, so the migration call only fires for updates whose old version already ships it (≥ the one that added migrations). The very transition that introduces the subsystem can't auto-run via `update`; that one is covered by the installer's `shell-integration` refresh (which rewrites a stale owned block in place — see `wireBlocks`/`upsertBlock` in `src/commands/shell_integration.ts`).
 
 ## Conventions
 

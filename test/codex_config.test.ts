@@ -82,6 +82,66 @@ test("enforces every managed field while preserving unknown user keys", () => {
   expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe("OPENAI_API_KEY=secret-key\n");
 });
 
+test("replaces OPENAI_API_KEY in .env in place, preserving other lines", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
+  process.env.HOME = dir;
+  const codexHome = join(dir, ".codex");
+  mkdirSync(codexHome, { recursive: true });
+
+  writeFileSync(
+    join(codexHome, ".env"),
+    ["# my secrets", "FOO=bar", "OPENAI_API_KEY=old", "BAZ=qux", ""].join("\n"),
+  );
+
+  const rc = configureCodexConfig("http://localhost:4141/v1", "fresh-key", codexHome);
+  expect(rc).toBe(0);
+
+  // Comment + unrelated vars survive; OPENAI_API_KEY is updated in place.
+  expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe(
+    ["# my secrets", "FOO=bar", "OPENAI_API_KEY=fresh-key", "BAZ=qux", ""].join("\n"),
+  );
+});
+
+test("appends OPENAI_API_KEY to an existing .env that lacks it", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
+  process.env.HOME = dir;
+  const codexHome = join(dir, ".codex");
+  mkdirSync(codexHome, { recursive: true });
+
+  writeFileSync(join(codexHome, ".env"), ["FOO=bar", ""].join("\n"));
+
+  const rc = configureCodexConfig("http://localhost:4141/v1", "k", codexHome);
+  expect(rc).toBe(0);
+
+  expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe(
+    ["FOO=bar", "OPENAI_API_KEY=k", ""].join("\n"),
+  );
+});
+
+test("dedups duplicates, leaves look-alike/commented keys, normalizes CRLF", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
+  process.env.HOME = dir;
+  const codexHome = join(dir, ".codex");
+  mkdirSync(codexHome, { recursive: true });
+
+  // CRLF input with a comment, a look-alike key (must NOT match), a commented
+  // key, an `export ` assignment, and a later duplicate assignment.
+  writeFileSync(
+    join(codexHome, ".env"),
+    "# c\r\nOPENAI_API_KEY_SUFFIX=keep\r\n#OPENAI_API_KEY=disabled\r\nexport OPENAI_API_KEY=old1\r\nOPENAI_API_KEY=old2\r\n",
+  );
+
+  expect(configureCodexConfig("http://localhost:4141/v1", "K", codexHome)).toBe(0);
+
+  // The first (export) assignment is replaced in place, the later duplicate is
+  // dropped, look-alike/commented/comment lines survive, and CRLF -> "\n".
+  expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe(
+    ["# c", "OPENAI_API_KEY_SUFFIX=keep", "#OPENAI_API_KEY=disabled", "OPENAI_API_KEY=K", ""].join(
+      "\n",
+    ),
+  );
+});
+
 test("writes the managed default config when no provider section exists", () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
   process.env.HOME = dir;

@@ -72,6 +72,47 @@ function loadOrCreateConfig(hostConfig: string): Record<string, unknown> {
   return parse(DEFAULT_CONFIG) as Record<string, unknown>;
 }
 
+// Set the gateway key in `$CODEX_HOME/.env` WITHOUT clobbering the rest of the
+// file: replace an existing OPENAI_API_KEY assignment in place (dropping any
+// duplicates so our value is unambiguous regardless of dotenvy precedence), or
+// append it when absent. Comments, blank lines, and any other vars the user
+// keeps there survive. The file is (re)created mode 0600. Line endings are
+// normalized to "\n" (matching what we've always written).
+function writeEnvKey(envFile: string, apiKey: string): void {
+  const assignment = `${CODEX_ENV_KEY}=${apiKey}`;
+  const matcher = new RegExp(`^\\s*(?:export\\s+)?${CODEX_ENV_KEY}\\s*=`);
+  let existing = "";
+  try {
+    existing = fs.readFileSync(envFile, "utf8");
+  } catch (e) {
+    // Only a missing file means "create fresh". Any other error (e.g. EACCES, a
+    // present-but-unreadable .env) must propagate rather than let us blindly
+    // overwrite a file we couldn't read.
+    if ((e as { code?: string }).code !== "ENOENT") throw e;
+  }
+  const lines = existing ? existing.split(/\r?\n/) : [];
+  if (lines.length && lines[lines.length - 1] === "") lines.pop(); // trailing newline
+  const out: string[] = [];
+  let written = false;
+  for (const line of lines) {
+    if (matcher.test(line)) {
+      if (!written) {
+        out.push(assignment); // replace the first occurrence in place
+        written = true;
+      }
+      continue; // drop this (and any later duplicate) assignment
+    }
+    out.push(line);
+  }
+  if (!written) out.push(assignment);
+  fs.writeFileSync(envFile, `${out.join("\n")}\n`);
+  try {
+    fs.chmodSync(envFile, 0o600);
+  } catch {
+    // pass
+  }
+}
+
 /**
  * Write the managed `config.toml` (provider section pointed at `baseUrl`) and a
  * `.env` (mode 0600) holding the API key, at `codexHome`. Returns 0 on success.
@@ -122,12 +163,7 @@ export function configureCodexConfig(
   logger.info(`Codex App config written to ${hostConfig}`);
 
   const envFile = `${codexHome}/.env`;
-  fs.writeFileSync(envFile, `${CODEX_ENV_KEY}=${apiKey}\n`);
-  try {
-    fs.chmodSync(envFile, 0o600);
-  } catch {
-    // pass
-  }
+  writeEnvKey(envFile, apiKey);
 
   return 0;
 }

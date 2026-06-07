@@ -1,9 +1,29 @@
-// The gateway float — the one dependency copilot-env tracks to "latest" (clamped
-// to the configured floor/ceiling and bunfig release-age cooldown). This module IS the
-// `bun install` postinstall hook (package.json: "bun src/gateway_float.ts &&
-// patch-package"): main() — guarded by import.meta.main — floats the gateway in the
-// package root bun just installed into. The bin shims run `bun install` in-place in
-// the checkout (no cache), so that install is the sole trigger for this float.
+// The gateway float — the one dependency copilot-env intentionally does NOT pin
+// in bun.lock. package.json keeps @jeffreycao/copilot-api at "latest" as a
+// reproducible baseline, then this postinstall overlays the exact runtime target
+// into node_modules with `bun add --no-save`.
+//
+// Current resolution:
+// 1. COPILOT_API_NO_FLOAT set -> do nothing; --verify is satisfied only if a
+//    gateway package is already installed and readable.
+// 2. COPILOT_API_VERSION set -> install exactly that version/tag. This bypasses
+//    copilot-env.config bounds and bunfig.toml cooldown.
+// 3. Default float -> read npm publish-time metadata (`bun pm view ... time`),
+//    pick the newest stable x.y.z release at least bunfig.toml
+//    install.minimumReleaseAge seconds old, then clamp it to
+//    [GATEWAY_MIN_VERSION, GATEWAY_MAX_VERSION] from copilot-env.config
+//    (GATEWAY_MAX_VERSION may be empty). If no aged release exists, the floor is
+//    used directly so a required minimum is still installable.
+//
+// The actual overlay installs an exact version with `--minimum-release-age=0`
+// because the age check already happened above; relying on Bun's range resolver
+// with minimumReleaseAge can reject a range when a newer ineligible release
+// exists, even if an older eligible release would satisfy it.
+//
+// `--verify` is read-only for bin/agent: it recomputes the same target and exits
+// 0 only when node_modules is fresh and the installed gateway already matches the
+// target. Otherwise bin/agent runs `bun install --frozen-lockfile`, whose
+// postinstall runs this file without --verify to repair/float the gateway.
 //
 // Tests can import floatGateway directly without the postinstall main() running.
 

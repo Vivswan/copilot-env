@@ -7,6 +7,11 @@
 #
 # No cache: node_modules lives directly in the checkout and cli.ts runs from there.
 $ErrorActionPreference = 'Stop'
+# PowerShell 7.4+ can surface native stderr as terminating errors when
+# $ErrorActionPreference='Stop', even if the native command exits 0. The
+# gateway verify path intentionally writes status to stderr, so keep native
+# stderr non-terminating and rely on explicit $LASTEXITCODE checks.
+$PSNativeCommandUseErrorActionPreference = $false
 
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Snap = (Resolve-Path (Join-Path $Here '..')).Path

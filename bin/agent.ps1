@@ -33,7 +33,13 @@ if (Test-Path $BunExe) {
 $needInstall = -not (Test-Path (Join-Path $Snap 'node_modules'))
 if (-not $needInstall) {
     $GatewayFloat = Join-Path $Snap 'src\gateway_float.ts'
-    & bun $GatewayFloat --verify *> $null
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & bun $GatewayFloat --verify *> $null
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     if ($LASTEXITCODE -ne 0) { $needInstall = $true }
 }
 if ($needInstall) {

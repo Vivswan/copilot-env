@@ -1,3 +1,4 @@
+import "../utils/dotenv.ts";
 import { consola } from "consola";
 
 import { versionLessThan } from "../utils/semver.ts";

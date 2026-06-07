@@ -17,8 +17,8 @@ macOS, and Windows**.
 - **Shell + Codex wiring**: point your tools at the local gateway automatically;
   write `~/.codex` config; build a per-host `CODEX_HOME` farm (Linux).
 - **Cost reporting**: estimated spend from per-host usage DBs via live OpenRouter pricing.
-- **Supply-chain hygiene**: the gateway floats to `latest` but only adopts
-  releases ≥7 days old; every other dependency is pinned via `bun.lock`.
+- **Controlled floating**: the gateway floats to the newest cooldown-aged release
+  within configured bounds; every other dependency is pinned via `bun.lock`.
 
 ## Install
 
@@ -86,15 +86,17 @@ source ~/.copilot-env/shell/agents.launchers.bashrc   # . ...\shell\agents.launc
 
 ### Environment overrides
 
-The gateway float reads these from the environment (e.g.
-`COPILOT_API_COOLDOWN_DAYS=14 agent start`):
+copilot-env loads local defaults from root `.env` when running its TypeScript
+entry points; already-set shell environment variables take precedence. The
+gateway float reads these values:
 
 - `COPILOT_API_VERSION=<version|tag>`: pin the gateway to a specific release
   (bypasses the floor and cooldown).
-- `COPILOT_API_COOLDOWN_DAYS=<n>`: override the release-age window (default 7).
-- `COPILOT_API_FLOAT_INTERVAL_DAYS=<n>`: override how often (default weekly) the
-  float re-resolves the newest release.
 - `COPILOT_API_NO_FLOAT=1`: skip the gateway float entirely.
+
+Without `COPILOT_API_VERSION`, the gateway float reads npm publish times, picks
+the newest version satisfying `bunfig.toml`'s `install.minimumReleaseAge`, and
+clamps it to the bounds in `copilot-env.config`.
 
 ## Development
 

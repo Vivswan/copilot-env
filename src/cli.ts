@@ -1,3 +1,4 @@
+import "./utils/dotenv.ts";
 import { defineCommand, runMain } from "citty";
 import { consola } from "consola";
 import { runCodexConfig } from "./commands/codex_config.ts";

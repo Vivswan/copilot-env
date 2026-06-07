@@ -1,7 +1,7 @@
 # Single self-bootstrapping entry point (Windows) for copilot-env. Mirror of
 # bin/agent: installs bun if missing, installs node_modules in-place in the
 # checkout only when a read-only `gateway_float.ts --verify` says it's needed
-# (stale float / missing or out-of-sync node_modules), then execs the cli.ts
+# (stale float / missing or out-of-sync node_modules), then runs the cli.ts
 # dispatcher (start / stop / env / cost / codex-config / host-codex). The
 # `agent` function in agents.ps1 turns `agent env` output into session state.
 #
@@ -21,20 +21,19 @@ if (Test-Path $BunExe) {
 }
 
 # Install node_modules in-place in the checkout, but only when needed: a read-only
-# `gateway_float.ts --verify` (no registry, no install) reports whether the gateway
-# is already floated to its target with no drift, the weekly re-check isn't due,
-# and node_modules is at least as new as bun.lock. If so we skip the install
-# entirely; otherwise (or when node_modules is absent) we run it, and its
-# postinstall gateway float re-resolves/self-heals. HUSKY=0 keeps husky's `prepare`
-# from reinstalling git hooks each time. Discard bun's stdout (its install summary)
-# so it can't be captured into the `agent env` output the profile function evals --
-# PowerShell can't merge stdout into stderr (`1>&2` is reserved). bun's
-# progress/errors and the float's messages go to stderr (the caller silences with
-# `2>$null`); the verify's own output is discarded for the same reason.
+# `gateway_float.ts --verify` checks whether this call can skip install. Normal
+# no-env verify reads npm publish-time metadata, computes the cooldown-aged target,
+# and compares it to the installed gateway; missing/stale node_modules still force
+# install. HUSKY=0 keeps husky's `prepare` from reinstalling git hooks each time.
+# Discard bun's stdout (its install summary) so it can't be captured into the
+# `agent env` output the profile function evals -- PowerShell can't merge stdout
+# into stderr (`1>&2` is reserved). bun's progress/errors and the float's messages
+# go to stderr (the caller silences with `2>$null`); the verify's own output is
+# discarded for the same reason.
 $needInstall = -not (Test-Path (Join-Path $Snap 'node_modules'))
 if (-not $needInstall) {
-    Push-Location $Snap
-    try { & bun src/gateway_float.ts --verify *> $null } finally { Pop-Location }
+    $GatewayFloat = Join-Path $Snap 'src\gateway_float.ts'
+    & bun $GatewayFloat --verify *> $null
     if ($LASTEXITCODE -ne 0) { $needInstall = $true }
 }
 if ($needInstall) {
@@ -54,5 +53,6 @@ if ($needInstall) {
     (Get-Item (Join-Path $Snap 'node_modules')).LastWriteTime = Get-Date
 }
 
-& bun run (Join-Path $Snap 'src\cli.ts') @args
+$Cli = Join-Path $Snap 'src\cli.ts'
+& bun $Cli @args
 exit $LASTEXITCODE

@@ -1,26 +1,46 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import type { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { gatewayFloatUpToDate, nodeModulesFresh } from "../src/gateway_float.ts";
+import {
+  floatGateway,
+  gatewayFloatUpToDate,
+  gatewayFloatVerifyStatus,
+  nodeModulesFresh,
+  readBunMinimumReleaseAgeSeconds,
+  type SpawnSyncRunner,
+} from "../src/gateway_float.ts";
 import type { ProjectConfig } from "../src/project_config.ts";
 
 // gatewayFloatUpToDate / nodeModulesFresh back the bin shims' `--verify` fast path:
-// they decide, with pure fs reads, whether a full `bun install` can be skipped.
+// they decide whether a full `bun install` can be skipped.
+
+const GATEWAY_PKG = "@jeffreycao/copilot-api";
+const NOW_MS = Date.parse("2026-06-10T00:00:00.000Z");
+const DAY_MS = 86_400_000;
 
 const CONFIG: ProjectConfig = {
   "gatewayMinVersion": "1.10.0",
   "gatewayMaxVersion": null,
 };
 
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const NO_FLOAT_ENV = "COPILOT_API_NO_FLOAT";
 const VERSION_ENV = "COPILOT_API_VERSION";
 
 let dir = "";
 const savedNoFloat = process.env[NO_FLOAT_ENV];
 const savedVersion = process.env[VERSION_ENV];
+const SPAWN_OK: ReturnType<typeof spawnSync> = {
+  "error": undefined,
+  "output": [],
+  "pid": 0,
+  "signal": null,
+  "status": 0,
+  "stderr": Buffer.alloc(0),
+  "stdout": Buffer.alloc(0),
+};
 
 function restoreEnv(name: string, value: string | undefined): void {
   if (value === undefined) delete process.env[name];
@@ -34,14 +54,53 @@ function installGateway(root: string, version: string): void {
   writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ "version": version }));
 }
 
-/** Write the float stamp recording `version`, with mtime `ageMs` in the past. */
-function writeStamp(root: string, version: string, ageMs = 0): void {
-  const stamp = join(root, ".gateway-checked");
-  writeFileSync(stamp, `${version}\n`);
-  if (ageMs > 0) {
-    const when = new Date(Date.now() - ageMs);
-    utimesSync(stamp, when, when);
-  }
+function isoDaysAgo(days: number): string {
+  return new Date(NOW_MS - days * DAY_MS).toISOString();
+}
+
+function npmTime(daysByVersion: Record<string, number>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(daysByVersion).map(([version, days]) => [version, isoDaysAgo(days)]),
+  );
+}
+
+function spawnWithTime(timeMap: Record<string, string>): {
+  calls: string[][];
+  spawn: SpawnSyncRunner;
+} {
+  const calls: string[][] = [];
+  return {
+    calls,
+    "spawn": (_command, args) => {
+      calls.push([...args]);
+      if (args[0] === "pm") {
+        return { ...SPAWN_OK, "stdout": Buffer.from(JSON.stringify(timeMap)) };
+      }
+      if (args[0] === "add") {
+        const spec = args[1] ?? "";
+        installGateway(dir, spec.slice(`${GATEWAY_PKG}@`.length));
+      }
+      return SPAWN_OK;
+    },
+  };
+}
+
+function spawnWithMetadataFailure(): { calls: string[][]; spawn: SpawnSyncRunner } {
+  const calls: string[][] = [];
+  return {
+    calls,
+    "spawn": (_command, args) => {
+      calls.push([...args]);
+      if (args[0] === "pm") {
+        return { ...SPAWN_OK, "status": 1, "stderr": Buffer.from("offline") };
+      }
+      if (args[0] === "add") {
+        const spec = args[1] ?? "";
+        installGateway(dir, spec.slice(`${GATEWAY_PKG}@`.length));
+      }
+      return SPAWN_OK;
+    },
+  };
 }
 
 beforeEach(() => {
@@ -61,62 +120,190 @@ afterEach(() => {
 });
 
 describe("gatewayFloatUpToDate", () => {
-  test("up to date when installed == recorded, in-window, fresh stamp", () => {
+  test("true for normal no-env float when the computed cooldown-aged target is installed", () => {
     installGateway(dir, "1.10.30");
-    writeStamp(dir, "1.10.30");
-    expect(gatewayFloatUpToDate(dir, CONFIG)).toBe(true);
+    const { calls, spawn } = spawnWithTime(npmTime({ "1.10.30": 8, "1.10.31": 1 }));
+
+    expect(gatewayFloatUpToDate(dir, "bun", CONFIG, 604800, spawn, NOW_MS)).toBe(true);
+    expect(calls[0]).toEqual(["pm", "view", GATEWAY_PKG, "time", "--json"]);
+  });
+
+  test("false for normal no-env float when the computed cooldown-aged target differs", () => {
+    installGateway(dir, "1.10.29");
+    const { spawn } = spawnWithTime(npmTime({ "1.10.30": 8, "1.10.31": 1 }));
+
+    const status = gatewayFloatVerifyStatus(dir, "bun", CONFIG, 604800, spawn, NOW_MS);
+
+    expect(status.upToDate).toBe(false);
+    expect(status.message).toContain("update needed: @jeffreycao/copilot-api 1.10.29 -> 1.10.30");
   });
 
   test("false when the gateway is not installed", () => {
-    writeStamp(dir, "1.10.30");
-    expect(gatewayFloatUpToDate(dir, CONFIG)).toBe(false);
-  });
-
-  test("false when no version is recorded yet", () => {
-    installGateway(dir, "1.10.30");
-    expect(gatewayFloatUpToDate(dir, CONFIG)).toBe(false);
-  });
-
-  test("false when the installed gateway drifted from the recorded target", () => {
-    installGateway(dir, "1.10.22");
-    writeStamp(dir, "1.10.30");
-    expect(gatewayFloatUpToDate(dir, CONFIG)).toBe(false);
-  });
-
-  test("false when the weekly stamp has aged out", () => {
-    installGateway(dir, "1.10.30");
-    writeStamp(dir, "1.10.30", 8 * 24 * 60 * 60 * 1000);
-    expect(gatewayFloatUpToDate(dir, CONFIG, WEEK_MS)).toBe(false);
-  });
-
-  test("false when the recorded target falls outside the [floor, max] window", () => {
-    installGateway(dir, "1.9.0");
-    writeStamp(dir, "1.9.0"); // below gatewayMinVersion 1.10.0
-    expect(gatewayFloatUpToDate(dir, CONFIG)).toBe(false);
+    expect(gatewayFloatUpToDate(dir)).toBe(false);
   });
 
   test("NO_FLOAT: true iff a readable gateway is present (float disabled)", () => {
     process.env[NO_FLOAT_ENV] = "1";
-    expect(gatewayFloatUpToDate(dir, CONFIG)).toBe(false);
+    expect(gatewayFloatUpToDate(dir)).toBe(false);
     installGateway(dir, "1.10.22");
-    expect(gatewayFloatUpToDate(dir, CONFIG)).toBe(true);
+    expect(gatewayFloatUpToDate(dir)).toBe(true);
     // An unreadable gateway package.json still falls through to a repair install.
     writeFileSync(
       join(dir, "node_modules", "@jeffreycao", "copilot-api", "package.json"),
       "{ not json",
     );
-    expect(gatewayFloatUpToDate(dir, CONFIG)).toBe(false);
+    expect(gatewayFloatUpToDate(dir)).toBe(false);
   });
 
   test("COPILOT_API_VERSION: true only when the exact pin is installed", () => {
     installGateway(dir, "1.10.30");
     process.env[VERSION_ENV] = "1.10.30";
-    expect(gatewayFloatUpToDate(dir, CONFIG)).toBe(true);
+    expect(gatewayFloatUpToDate(dir)).toBe(true);
     process.env[VERSION_ENV] = "1.10.31";
-    expect(gatewayFloatUpToDate(dir, CONFIG)).toBe(false);
+    expect(gatewayFloatUpToDate(dir)).toBe(false);
     // A dist-tag override always re-resolves -> never "up to date".
     process.env[VERSION_ENV] = "latest";
-    expect(gatewayFloatUpToDate(dir, CONFIG)).toBe(false);
+    expect(gatewayFloatUpToDate(dir)).toBe(false);
+  });
+});
+
+describe("floatGateway", () => {
+  test("default no-env float installs the exact newest cooldown-aged target", () => {
+    const { calls, spawn } = spawnWithTime(npmTime({ "1.10.30": 8, "1.10.31": 1 }));
+
+    floatGateway(dir, "bun", CONFIG, 604800, spawn, NOW_MS);
+
+    const addCalls = calls.filter((args) => args[0] === "add");
+    expect(addCalls).toEqual([
+      [
+        "add",
+        "@jeffreycao/copilot-api@1.10.30",
+        "--no-save",
+        "--ignore-scripts",
+        "--minimum-release-age=0",
+      ],
+    ]);
+  });
+
+  test("default no-env float skips install when the exact target is already installed", () => {
+    installGateway(dir, "1.10.30");
+    const { calls, spawn } = spawnWithTime(npmTime({ "1.10.30": 8, "1.10.31": 1 }));
+
+    floatGateway(dir, "bun", CONFIG, 604800, spawn, NOW_MS);
+
+    expect(calls.filter((args) => args[0] === "add")).toEqual([]);
+  });
+
+  test("target clamps up to the configured floor", () => {
+    const { calls, spawn } = spawnWithTime(npmTime({ "1.10.29": 8 }));
+
+    floatGateway(
+      dir,
+      "bun",
+      { "gatewayMinVersion": "1.10.30", "gatewayMaxVersion": null },
+      604800,
+      spawn,
+      NOW_MS,
+    );
+
+    expect(calls.filter((args) => args[0] === "add")[0]).toEqual([
+      "add",
+      "@jeffreycao/copilot-api@1.10.30",
+      "--no-save",
+      "--ignore-scripts",
+      "--minimum-release-age=0",
+    ]);
+  });
+
+  test("target clamps down to the configured ceiling", () => {
+    const { calls, spawn } = spawnWithTime(npmTime({ "1.10.29": 8, "1.10.30": 8 }));
+
+    floatGateway(
+      dir,
+      "bun",
+      { "gatewayMinVersion": "1.10.0", "gatewayMaxVersion": "1.10.29" },
+      604800,
+      spawn,
+      NOW_MS,
+    );
+
+    expect(calls.filter((args) => args[0] === "add")[0]).toEqual([
+      "add",
+      "@jeffreycao/copilot-api@1.10.29",
+      "--no-save",
+      "--ignore-scripts",
+      "--minimum-release-age=0",
+    ]);
+  });
+
+  test("metadata failure keeps an installed gateway that satisfies the floor", () => {
+    installGateway(dir, "1.10.30");
+    const { calls, spawn } = spawnWithMetadataFailure();
+
+    floatGateway(dir, "bun", CONFIG, 604800, spawn, NOW_MS);
+
+    expect(calls.filter((args) => args[0] === "add")).toEqual([]);
+  });
+
+  test("metadata failure pins the floor when no installed gateway satisfies it", () => {
+    const { calls, spawn } = spawnWithMetadataFailure();
+
+    floatGateway(
+      dir,
+      "bun",
+      { "gatewayMinVersion": "1.10.30", "gatewayMaxVersion": null },
+      604800,
+      spawn,
+      NOW_MS,
+    );
+
+    expect(calls.filter((args) => args[0] === "add")[0]).toEqual([
+      "add",
+      "@jeffreycao/copilot-api@1.10.30",
+      "--no-save",
+      "--ignore-scripts",
+      "--minimum-release-age=0",
+    ]);
+  });
+});
+
+describe("readBunMinimumReleaseAgeSeconds", () => {
+  test("reads install.minimumReleaseAge from bunfig.toml", () => {
+    writeFileSync(
+      join(dir, "bunfig.toml"),
+      `
+[install]
+minimumReleaseAge = 604800  # 7 days
+`,
+    );
+
+    expect(readBunMinimumReleaseAgeSeconds(dir)).toBe(604800);
+  });
+
+  test("defaults to 0 when bunfig.toml has no minimumReleaseAge", () => {
+    writeFileSync(
+      join(dir, "bunfig.toml"),
+      `
+[install]
+registry = "https://registry.npmjs.org"
+`,
+    );
+
+    expect(readBunMinimumReleaseAgeSeconds(dir)).toBe(0);
+  });
+
+  test("throws on non-integer minimumReleaseAge", () => {
+    writeFileSync(
+      join(dir, "bunfig.toml"),
+      `
+[install]
+minimumReleaseAge = "seven days"
+`,
+    );
+
+    expect(() => readBunMinimumReleaseAgeSeconds(dir)).toThrow(
+      "bunfig.toml install.minimumReleaseAge must be a whole number of seconds",
+    );
   });
 });
 

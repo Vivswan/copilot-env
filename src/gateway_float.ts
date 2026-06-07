@@ -1,358 +1,466 @@
 // The gateway float — the one dependency copilot-env tracks to "latest" (clamped
-// to releases >=7 days old by bunfig's minimumReleaseAge). This module IS the
+// to the configured floor/ceiling and bunfig release-age cooldown). This module IS the
 // `bun install` postinstall hook (package.json: "bun src/gateway_float.ts &&
 // patch-package"): main() — guarded by import.meta.main — floats the gateway in the
 // package root bun just installed into. The bin shims run `bun install` in-place in
 // the checkout (no cache), so that install is the sole trigger for this float.
 //
-// Uses only node builtins (+ the dep-free ./project_config.ts), so it has no
-// install-order constraints and tests can import floatGateway directly without the
-// postinstall main() running.
+// Tests can import floatGateway directly without the postinstall main() running.
 
+import "./utils/dotenv.ts";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { createConsola } from "consola";
+import { parse } from "smol-toml";
 import { type ProjectConfig, readProjectConfig } from "./project_config.ts";
+import { PROJECT_ROOT } from "./utils/root.ts";
 import { versionLessThan } from "./utils/semver.ts";
 
 const GATEWAY_PKG = "@jeffreycao/copilot-api";
-
-/** Default float re-check cadence: re-resolve from the registry at most weekly. */
-export const GATEWAY_CHECK_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
-
-// Override: set COPILOT_API_VERSION to a specific version (e.g. "1.10.30") or a
-// dist-tag to pin the gateway, bypassing both the floor and the 7-day cooldown.
-// Lets you adopt a fresh release immediately when you trust it. Unset = float
-// per GATEWAY_MIN_VERSION in copilot-env.config.
 const GATEWAY_VERSION_ENV = "COPILOT_API_VERSION";
-
+const NO_FLOAT_ENV = "COPILOT_API_NO_FLOAT";
 const SECONDS_PER_DAY = 24 * 60 * 60;
-// bunfig.toml's minimumReleaseAge expressed in days — the window the float probe
-// uses when no COPILOT_API_COOLDOWN_DAYS override is set; shown in the ">=N-day-old" line.
-const BUNFIG_COOLDOWN_DAYS = 7;
+const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+const STABLE_RE = /^\d+\.\d+\.\d+$/;
 
-// Float failures throw rather than process.exit: the postinstall entry (main,
-// below) catches them so a transient registry/offline hiccup never fails the whole
-// `bun install`, and tests can import floatGateway without aborting the runner.
-function fail(msg: string): never {
-  throw new Error(msg);
-}
+type GatewayConsolaOptions = NonNullable<Parameters<typeof createConsola>[0]> & {
+  fancy?: boolean;
+};
 
-function gatewayInstalled(root: string): boolean {
-  return existsSync(join(root, "node_modules", "@jeffreycao", "copilot-api", "package.json"));
+const loggerOptions: GatewayConsolaOptions = {
+  "stdout": process.stderr,
+  "stderr": process.stderr,
+  "fancy": false,
+  "formatOptions": { "date": false },
+};
+const logger = createConsola(loggerOptions);
+
+export type SpawnSyncRunner = (
+  command: string,
+  args: string[],
+  options: Parameters<typeof spawnSync>[2],
+) => ReturnType<typeof spawnSync>;
+
+export type GatewayFloatVerifyStatus = {
+  upToDate: boolean;
+  message: string;
+};
+
+type Result<T> = { ok: true; value: T } | { ok: false; message: string };
+type GatewayTarget = { version: string; reason: string };
+type FloatContext = {
+  root: string;
+  bun: string;
+  config: ProjectConfig;
+  minimumReleaseAgeSeconds: number;
+  spawnRunner: SpawnSyncRunner;
+  nowMs: number;
+};
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
 /** Installed gateway version (from its package.json), or null if unresolved. */
 function installedGatewayVersion(root: string): string | null {
   try {
-    const pkgPath = join(root, "node_modules", "@jeffreycao", "copilot-api", "package.json");
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version?: unknown };
+    const pkg = JSON.parse(
+      readFileSync(
+        join(root, "node_modules", "@jeffreycao", "copilot-api", "package.json"),
+        "utf-8",
+      ),
+    ) as {
+      version?: unknown;
+    };
     return typeof pkg.version === "string" ? pkg.version : null;
   } catch {
     return null;
   }
 }
 
-/** Full semver shape (core + optional prerelease/build), anchored. */
-const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+export function readBunMinimumReleaseAgeSeconds(root: string): number {
+  const bunfig = join(root, "bunfig.toml");
+  if (!existsSync(bunfig)) return 0;
 
-/** The version recorded in the float stamp (its content), or null if absent/legacy. */
-function readRecordedVersion(stamp: string): string | null {
-  try {
-    const content = readFileSync(stamp, "utf-8").trim();
-    return SEMVER_RE.test(content) ? content : null;
-  } catch {
-    return null;
+  const doc = parse(readFileSync(bunfig, "utf-8"));
+  const install = doc.install;
+  if (install === undefined) return 0;
+  if (!isRecord(install)) throw new Error("bunfig.toml install must be a table");
+
+  const minimumReleaseAge = install.minimumReleaseAge;
+  if (minimumReleaseAge === undefined) return 0;
+  if (
+    typeof minimumReleaseAge !== "number" ||
+    !Number.isSafeInteger(minimumReleaseAge) ||
+    minimumReleaseAge < 0
+  ) {
+    throw new Error("bunfig.toml install.minimumReleaseAge must be a whole number of seconds");
+  }
+  return minimumReleaseAge;
+}
+
+function formatReleaseAge(seconds: number): string {
+  if (seconds % SECONDS_PER_DAY === 0) return `${seconds / SECONDS_PER_DAY}-day-old`;
+  return `${seconds}-second-old`;
+}
+
+function assertBounds(config: ProjectConfig): void {
+  if (
+    config.gatewayMaxVersion !== null &&
+    versionLessThan(config.gatewayMaxVersion, config.gatewayMinVersion)
+  ) {
+    throw new Error(
+      `GATEWAY_MAX_VERSION (${config.gatewayMaxVersion}) is below GATEWAY_MIN_VERSION (${config.gatewayMinVersion})`,
+    );
   }
 }
 
-/** True if `v` is within the configured [floor, max] window (max optional, inclusive). */
-function withinGatewayWindow(v: string, config: ProjectConfig): boolean {
-  if (versionLessThan(v, config.gatewayMinVersion)) return false;
-  if (config.gatewayMaxVersion !== null && versionLessThan(config.gatewayMaxVersion, v))
-    return false;
-  return true;
+// --- Registry target resolution ---------------------------------------------
+
+function parseNpmTimeMap(stdout: string): Record<string, string> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed)) return null;
+
+  const timeMap: Record<string, string> = {};
+  for (const [version, publishedAt] of Object.entries(parsed)) {
+    if (typeof publishedAt === "string") timeMap[version] = publishedAt;
+  }
+  return timeMap;
 }
 
-function applyPatches(root: string, bun: string): number {
-  const result = spawnSync(bun, [join(root, "node_modules", "patch-package", "index.js")], {
-    cwd: root,
-    stdio: ["ignore", process.stderr, "inherit"],
+function fetchGatewayTimeMap(ctx: FloatContext): Result<Record<string, string>> {
+  const result = ctx.spawnRunner(ctx.bun, ["pm", "view", GATEWAY_PKG, "time", "--json"], {
+    cwd: ctx.root,
+    stdio: ["ignore", "pipe", "pipe"],
   });
+
+  const status = result.status ?? 1;
+  if (status !== 0) {
+    const stderr = result.stderr?.toString().trim();
+    return {
+      "ok": false,
+      "message": `npm publish-time metadata unavailable (exit ${status})${stderr ? `: ${stderr}` : ""}`,
+    };
+  }
+
+  const timeMap = parseNpmTimeMap(result.stdout?.toString() ?? "");
+  return timeMap === null
+    ? { "ok": false, "message": "npm publish-time metadata was not valid JSON" }
+    : { "ok": true, "value": timeMap };
+}
+
+function pickNewestAgedVersion(
+  timeMap: Record<string, string>,
+  minimumReleaseAgeSeconds: number,
+  nowMs: number,
+): string | null {
+  const cutoff = nowMs - minimumReleaseAgeSeconds * 1000;
+  let best: string | null = null;
+
+  for (const [version, publishedAt] of Object.entries(timeMap)) {
+    if (!STABLE_RE.test(version)) continue;
+    const publishedMs = Date.parse(publishedAt);
+    if (!Number.isFinite(publishedMs) || publishedMs > cutoff) continue;
+    if (best === null || versionLessThan(best, version)) best = version;
+  }
+
+  return best;
+}
+
+function clampGatewayTarget(ctx: FloatContext, cooldownVersion: string | null): GatewayTarget {
+  if (cooldownVersion === null) {
+    return {
+      "version": ctx.config.gatewayMinVersion,
+      "reason": `no ${formatReleaseAge(ctx.minimumReleaseAgeSeconds)} release -> floor ${ctx.config.gatewayMinVersion}`,
+    };
+  }
+
+  if (versionLessThan(cooldownVersion, ctx.config.gatewayMinVersion)) {
+    return {
+      "version": ctx.config.gatewayMinVersion,
+      "reason": `${cooldownVersion} < floor ${ctx.config.gatewayMinVersion}`,
+    };
+  }
+
+  if (
+    ctx.config.gatewayMaxVersion !== null &&
+    versionLessThan(ctx.config.gatewayMaxVersion, cooldownVersion)
+  ) {
+    return {
+      "version": ctx.config.gatewayMaxVersion,
+      "reason": `${cooldownVersion} > ceiling ${ctx.config.gatewayMaxVersion}`,
+    };
+  }
+
+  return {
+    "version": cooldownVersion,
+    "reason": `latest >=${formatReleaseAge(ctx.minimumReleaseAgeSeconds)} release ${cooldownVersion}`,
+  };
+}
+
+function resolveGatewayTarget(ctx: FloatContext): Result<GatewayTarget> {
+  const metadata = fetchGatewayTimeMap(ctx);
+  if (!metadata.ok) return metadata;
+
+  const cooldownVersion = pickNewestAgedVersion(
+    metadata.value,
+    ctx.minimumReleaseAgeSeconds,
+    ctx.nowMs,
+  );
+  return { "ok": true, "value": clampGatewayTarget(ctx, cooldownVersion) };
+}
+
+// --- Install actions ----------------------------------------------------------
+
+function applyPatches(ctx: FloatContext): number {
+  const result = ctx.spawnRunner(
+    ctx.bun,
+    [join(ctx.root, "node_modules", "patch-package", "index.js")],
+    {
+      cwd: ctx.root,
+      stdio: ["ignore", process.stderr, "inherit"],
+    },
+  );
   return result.status ?? 1;
 }
+
+function installGatewaySpec(ctx: FloatContext, spec: string, quiet = false): number {
+  const result = ctx.spawnRunner(
+    ctx.bun,
+    ["add", `${GATEWAY_PKG}@${spec}`, "--no-save", "--ignore-scripts", "--minimum-release-age=0"],
+    {
+      cwd: ctx.root,
+      stdio: ["ignore", process.stderr, quiet ? "pipe" : "inherit"],
+    },
+  );
+
+  if (quiet && result.status !== 0) {
+    const err = result.stderr?.toString().trimEnd();
+    if (err) logger.warn(err);
+  }
+
+  const status = result.status ?? 1;
+  return status === 0 ? applyPatches(ctx) : status;
+}
+
+function handlePinnedOverride(ctx: FloatContext, override: string): void {
+  const installedBefore = installedGatewayVersion(ctx.root);
+  if (SEMVER_RE.test(override) && installedBefore === override) {
+    logger.success(`up to date: ${GATEWAY_PKG}@${override} pinned; no install`);
+    return;
+  }
+
+  logger.info(`installing pinned ${GATEWAY_PKG}@${override} (cooldown bypassed)`);
+  const code = installGatewaySpec(ctx, override);
+  if (code !== 0 && installedBefore === null)
+    throw new Error(`failed to install ${GATEWAY_PKG}@${override}`);
+
+  if (code === 0)
+    logger.success(`now using ${GATEWAY_PKG}@${installedGatewayVersion(ctx.root) ?? "unknown"}`);
+  else logger.warn(`pin failed for ${GATEWAY_PKG}@${override}; keeping installed version`);
+}
+
+function handleResolveFailure(ctx: FloatContext, message: string): void {
+  const installed = installedGatewayVersion(ctx.root);
+  if (installed !== null && !versionLessThan(installed, ctx.config.gatewayMinVersion)) {
+    logger.warn(`update check failed (${message}); keeping ${GATEWAY_PKG}@${installed}`);
+    return;
+  }
+
+  logger.warn(
+    `update check failed (${message}); installing floor ${GATEWAY_PKG}@${ctx.config.gatewayMinVersion}`,
+  );
+  const code = installGatewaySpec(ctx, ctx.config.gatewayMinVersion, true);
+  if (code === 0) {
+    logger.success(`now using ${GATEWAY_PKG}@${installedGatewayVersion(ctx.root) ?? "unknown"}`);
+    return;
+  }
+
+  throw new Error(
+    `could not install ${GATEWAY_PKG}@${ctx.config.gatewayMinVersion} (offline?); installed ${installed ?? "none"} < floor ${ctx.config.gatewayMinVersion}`,
+  );
+}
+
+function handleResolvedTarget(ctx: FloatContext, target: GatewayTarget): void {
+  const installed = installedGatewayVersion(ctx.root);
+  if (installed === target.version) {
+    logger.success(`up to date: ${GATEWAY_PKG}@${target.version} (${target.reason}); no install`);
+    return;
+  }
+
+  logger.info(
+    `update needed: ${GATEWAY_PKG} ${installed ?? "none"} -> ${target.version} (${target.reason})`,
+  );
+  const code = installGatewaySpec(ctx, target.version);
+  if (code === 0) {
+    logger.success(`now using ${GATEWAY_PKG}@${installedGatewayVersion(ctx.root) ?? "unknown"}`);
+    return;
+  }
+
+  const installedAfterFailure = installedGatewayVersion(ctx.root);
+  if (
+    installedAfterFailure === null ||
+    versionLessThan(installedAfterFailure, ctx.config.gatewayMinVersion)
+  ) {
+    throw new Error(
+      `could not install ${GATEWAY_PKG}@${target.version} (offline?); installed ${installedAfterFailure ?? "none"} < floor ${ctx.config.gatewayMinVersion}`,
+    );
+  }
+  logger.warn(`update failed; keeping ${GATEWAY_PKG}@${installedAfterFailure}`);
+}
+
+// --- Public float / verify API -----------------------------------------------
 
 /**
  * Float the gateway, overlaying the runtime root's node_modules via `bun add
  * --no-save` so the read-only package.json / bun.lock are never written — only
  * the gateway moves; every other dep stays at its locked version.
- *
- * Resolution order:
- *   1. COPILOT_API_VERSION set  -> pin exactly that, cooldown bypassed.
- *   2. default                  -> newest release in [GATEWAY_MIN_VERSION,
- *                                  GATEWAY_MAX_VERSION] and >=7 days old (bunfig
- *                                  cooldown). Floats forward as releases age in,
- *                                  never below the floor or above the cap.
- *   3. (2) finds nothing yet    -> pin exactly GATEWAY_MIN_VERSION, cooldown
- *                                  bypassed, so the floor is always available.
- *
- * `cooldownSeconds` (the COPILOT_API_COOLDOWN_DAYS override, in seconds; null = absent) overrides the
- * release-age window for the FLOAT PROBE only (path 2). The floor pin (path 3) and
- * the COPILOT_API_VERSION override (path 1) still bypass the cooldown, so the floor
- * stays installable and a trusted override is always adopted (priority MIN >
- * cooldown > MAX).
- *
- * The resolved version is recorded in the `.gateway-checked` stamp (its content
- * is the version; its mtime is the weekly throttle). A registry re-resolution
- * runs only when forced (a baseline (re)install just happened), the gateway is
- * missing, no version is recorded yet, the recorded version falls outside the
- * [floor, max] window, or the last check was over `checkIntervalMs` ago. Otherwise
- * it self-heals: if the installed gateway drifted from the recorded target (e.g. a
- * plain `bun install` reinstalled a different release into the same node_modules),
- * it pins that exact version back + repatches. Offline policy: if a refresh fails
- * but a >=floor gateway is installed, we warn, keep it, and back off; if only a
- * sub-floor (or no) gateway is available, we fail loudly rather than run an
- * out-of-contract gateway.
  */
 export function floatGateway(
   root: string,
   bun: string,
-  force: boolean,
   config: ProjectConfig,
-  cooldownSeconds: number | null,
-  checkIntervalMs: number = GATEWAY_CHECK_INTERVAL_MS,
+  minimumReleaseAgeSeconds: number = readBunMinimumReleaseAgeSeconds(root),
+  spawnRunner: SpawnSyncRunner = spawnSync,
+  nowMs: number = Date.now(),
 ): void {
-  const stamp = join(root, ".gateway-checked");
-  const present = gatewayInstalled(root);
+  assertBounds(config);
+  const ctx: FloatContext = { root, bun, config, minimumReleaseAgeSeconds, spawnRunner, nowMs };
   const override = process.env[GATEWAY_VERSION_ENV]?.trim();
-  // Display window for the "≥N-day-old" messages: the explicit cooldown-override
-  // days when set, else bunfig's default (7).
-  const cooldownDays =
-    cooldownSeconds !== null ? cooldownSeconds / SECONDS_PER_DAY : BUNFIG_COOLDOWN_DAYS;
-
-  // Misconfiguration guard: a ceiling below the floor can never be satisfied.
-  if (
-    config.gatewayMaxVersion !== null &&
-    versionLessThan(config.gatewayMaxVersion, config.gatewayMinVersion)
-  ) {
-    fail(
-      `GATEWAY_MAX_VERSION (${config.gatewayMaxVersion}) is below GATEWAY_MIN_VERSION (${config.gatewayMinVersion})`,
-    );
-  }
-
-  const run = (spec: string, bypassCooldown: boolean, quiet = false): number => {
-    const args = ["add", `${GATEWAY_PKG}@${spec}`, "--no-save", "--ignore-scripts"];
-    if (bypassCooldown) {
-      // Floor pin, COPILOT_API_VERSION override, and self-heal reinstall always
-      // bypass the cooldown: the floor must stay installable (MIN outranks the
-      // cooldown) and an explicit override is a trusted "adopt now" escape hatch.
-      args.push("--minimum-release-age=0");
-    } else if (cooldownSeconds !== null) {
-      // The float probe: the cooldown override beats bunfig's default release-age window.
-      // Otherwise the probe relies on bunfig.toml's minimumReleaseAge default.
-      args.push(`--minimum-release-age=${cooldownSeconds}`);
-    }
-    const result = spawnSync(bun, args, {
-      cwd: root,
-      // Route bun's stdout to our stderr so the float never writes to stdout —
-      // the bin shims keep `agent env` stdout eval-clean. `quiet` captures stderr
-      // so an *expected* failure (e.g. the cooldown blocking the >=floor probe)
-      // stays silent; we re-emit it only when the error is unexpected.
-      stdio: ["ignore", process.stderr, quiet ? "pipe" : "inherit"],
-    });
-    if (quiet && result.status !== 0) {
-      const err = result.stderr?.toString() ?? "";
-      // The cooldown blocking the probe is the normal "nothing aged in yet"
-      // case — swallow it. Surface anything else (real network/registry errors).
-      if (!err.includes("minimum-release-age")) {
-        process.stderr.write(err);
-      }
-    }
-    const status = result.status ?? 1;
-    return status === 0 ? applyPatches(root, bun) : status;
-  };
 
   if (override) {
-    // An exact pin already installed is a no-op (dist-tags always re-resolve).
-    if (SEMVER_RE.test(override) && installedGatewayVersion(root) === override) {
-      return;
-    }
-    process.stderr.write(`==> Pinning ${GATEWAY_PKG}@${override} (cooldown bypassed) ...\n`);
-    const code = run(override, true);
-    if (code !== 0 && !present) {
-      fail(`failed to install ${GATEWAY_PKG}@${override} (exit ${code})`);
-    }
-    if (code !== 0) {
-      process.stderr.write(
-        `gateway-float: WARNING: could not pin ${GATEWAY_PKG}@${override} (offline?); using installed version\n`,
-      );
-    }
-    return; // override never stamps — next unset run should re-check immediately
-  }
-
-  // Re-resolve from the registry only when forced (a baseline (re)install just
-  // happened), the gateway is missing, no target is recorded yet, or the weekly
-  // stamp has aged out. Otherwise we hold the recorded target and self-heal.
-  const recorded = readRecordedVersion(stamp);
-  let due = force || !present || recorded === null;
-  // Re-resolve if the recorded target now falls outside the [floor, max] window
-  // (e.g. the floor was raised, or a ceiling added/lowered, since it was recorded).
-  if (!due && recorded !== null && !withinGatewayWindow(recorded, config)) {
-    due = true;
-  }
-  if (!due) {
-    try {
-      due = Date.now() - statSync(stamp).mtimeMs > checkIntervalMs;
-    } catch {
-      due = true; // no stamp yet — check now
-    }
-  }
-
-  // Target range: >=floor, and <=max when a ceiling is configured.
-  const rangeSpec = config.gatewayMaxVersion
-    ? `>=${config.gatewayMinVersion} <=${config.gatewayMaxVersion}`
-    : `>=${config.gatewayMinVersion}`;
-
-  if (due) {
-    // Newest in-range release past the 7-day cooldown. Quiet: a cooldown block
-    // here just means "nothing aged in yet" and is handled below.
-    process.stderr.write(
-      `==> Checking ${GATEWAY_PKG} for updates (${rangeSpec}, >=${cooldownDays}-day-old) ...\n`,
-    );
-    let code = run(rangeSpec, false, true);
-
-    // Nothing in range has cleared the cooldown yet — guarantee the floor itself.
-    // Quiet too: if the probe already failed for a real reason (e.g. offline) it
-    // printed once; the WARNING/die below conveys the final outcome.
-    if (code !== 0) {
-      process.stderr.write(
-        `==> No ${rangeSpec} release is ${cooldownDays} days old yet; pinning the ${config.gatewayMinVersion} floor (cooldown bypassed) ...\n`,
-      );
-      code = run(config.gatewayMinVersion, true, true);
-    }
-
-    if (code === 0) {
-      // Record the resolved version (content); mtime = now is the weekly
-      // throttle. We hold this exact version until the next resolution.
-      try {
-        writeFileSync(stamp, `${installedGatewayVersion(root) ?? config.gatewayMinVersion}\n`);
-      } catch {
-        // non-fatal; we just re-check on the next run
-      }
-      return;
-    }
-
-    // Resolution failed (e.g. offline). Never run a sub-floor gateway: if the
-    // installed version is below the floor (or absent), fail loudly. Otherwise
-    // keep the installed >=floor gateway; back off (re-stamp with it) when it's
-    // in-window so we don't re-probe the registry on every bootstrap.
-    const installedOnFail = installedGatewayVersion(root);
-    if (installedOnFail === null || versionLessThan(installedOnFail, config.gatewayMinVersion)) {
-      fail(
-        `could not install ${GATEWAY_PKG} ${rangeSpec} (offline?) and the installed version (${installedOnFail ?? "none"}) is below the ${config.gatewayMinVersion} floor`,
-      );
-    }
-    process.stderr.write(
-      `gateway-float: WARNING: could not refresh ${GATEWAY_PKG} (offline?); keeping installed ${installedOnFail}\n`,
-    );
-    if (withinGatewayWindow(installedOnFail, config)) {
-      try {
-        writeFileSync(stamp, `${installedOnFail}\n`);
-      } catch {
-        // non-fatal; we just re-check on the next run
-      }
-    }
+    handlePinnedOverride(ctx, override);
     return;
   }
 
-  // Not due: hold the recorded target. If the installed gateway drifted from it
-  // (e.g. a plain `bun install` pulled a different >=7-day-old release into the
-  // same node_modules), pin that exact version back + repatch — no registry
-  // round-trip, since `recorded` was already vetted by a prior resolution.
-  const installed = installedGatewayVersion(root);
-  if (recorded !== null && installed !== recorded) {
-    process.stderr.write(
-      `==> Installed ${GATEWAY_PKG}@${installed ?? "none"} != pinned ${recorded}; reinstalling + repatching ...\n`,
-    );
-    const code = run(recorded, true);
-    if (code !== 0 && !present) {
-      fail(`failed to reinstall ${GATEWAY_PKG}@${recorded} (exit ${code})`);
-    }
-    if (code !== 0) {
-      const subFloor = installed !== null && versionLessThan(installed, config.gatewayMinVersion);
-      process.stderr.write(
-        `gateway-float: WARNING: could not reinstall ${GATEWAY_PKG}@${recorded} (offline?); using installed ${installed ?? "none"}${subFloor ? ` — BELOW the ${config.gatewayMinVersion} floor` : ""}\n`,
-      );
-    }
-  }
-}
-
-// --- Postinstall entry --------------------------------------------------------
-// `bun install` runs this via the package.json "postinstall" hook, right after it
-// (re)lays node_modules. The float lives entirely here; the bin shims just run
-// `bun install` in-place in the checkout, so the install is the only trigger.
-// Best-effort: a registry/offline hiccup never fails the install (runtime
-// visibility comes from start.ts logging the resolved version).
-//
-// The cooldown/cadence CLI flags were dropped in favor of env vars, inherited
-// straight through `bun install` (so `COPILOT_API_COOLDOWN_DAYS=14 ./bin/agent …`
-// just works), alongside the existing COPILOT_API_VERSION:
-//   COPILOT_API_COOLDOWN_DAYS        float-probe release-age window, in days
-//   COPILOT_API_FLOAT_INTERVAL_DAYS  re-check cadence, in days
-//   COPILOT_API_NO_FLOAT             set (non-empty) to skip the float entirely
-const COOLDOWN_DAYS_ENV = "COPILOT_API_COOLDOWN_DAYS";
-const FLOAT_INTERVAL_DAYS_ENV = "COPILOT_API_FLOAT_INTERVAL_DAYS";
-const NO_FLOAT_ENV = "COPILOT_API_NO_FLOAT";
-
-/** Parse a whole-number-of-days env var, or null when unset/empty. Throws on junk. */
-function envDays(name: string): number | null {
-  const raw = process.env[name]?.trim();
-  if (raw === undefined || raw === "") return null;
-  const n = Number.parseInt(raw, 10);
-  if (!/^\d+$/.test(raw) || !Number.isSafeInteger(n)) {
-    fail(`${name} must be a whole number of days (got '${raw}')`);
-  }
-  return n;
+  const range =
+    config.gatewayMaxVersion === null
+      ? `>=${config.gatewayMinVersion}`
+      : `>=${config.gatewayMinVersion} <=${config.gatewayMaxVersion}`;
+  logger.info(
+    `checking for gateway update (${range}, >=${formatReleaseAge(minimumReleaseAgeSeconds)})`,
+  );
+  const target = resolveGatewayTarget(ctx);
+  if (target.ok) handleResolvedTarget(ctx, target.value);
+  else handleResolveFailure(ctx, target.message);
 }
 
 /**
- * Read-only check for the bin shims (`gateway_float.ts --verify`): is the gateway
- * already floated to the recorded, in-window target with no drift, and the weekly
- * re-resolution not yet due? Pure fs reads, no registry round-trip. Mirrors
- * floatGateway's own "not due, no drift" fast path (see its `due` computation) so
- * the shims can skip a full `bun install` (which re-lays node_modules and re-runs
- * this float) on the calls that don't need one. Any uncertainty returns false, so
- * the caller installs and lets floatGateway re-resolve / self-heal.
+ * Read-only check for the bin shims (`gateway_float.ts --verify`). Normal floating
+ * reads npm publish-time metadata so newly cooldown-aged releases are adopted
+ * immediately, but it skips `bun install` when the computed exact target is already
+ * installed. Disabled floating and exact semver overrides remain pure fs checks.
  */
 export function gatewayFloatUpToDate(
   root: string,
-  config: ProjectConfig,
-  checkIntervalMs: number = GATEWAY_CHECK_INTERVAL_MS,
+  bun: string = process.execPath,
+  config?: ProjectConfig,
+  minimumReleaseAgeSeconds?: number,
+  spawnRunner: SpawnSyncRunner = spawnSync,
+  nowMs: number = Date.now(),
 ): boolean {
-  // Float disabled: nothing to re-resolve; a present, readable gateway is all
-  // that's needed (a `bun install` would only re-lay the locked baseline anyway).
-  // An unreadable package.json still falls through to a repair install.
-  if (process.env[NO_FLOAT_ENV]?.trim()) return installedGatewayVersion(root) !== null;
+  return gatewayFloatVerifyStatus(root, bun, config, minimumReleaseAgeSeconds, spawnRunner, nowMs)
+    .upToDate;
+}
+
+export function gatewayFloatVerifyStatus(
+  root: string,
+  bun: string = process.execPath,
+  config?: ProjectConfig,
+  minimumReleaseAgeSeconds?: number,
+  spawnRunner: SpawnSyncRunner = spawnSync,
+  nowMs: number = Date.now(),
+): GatewayFloatVerifyStatus {
+  if (!nodeModulesFresh(root)) {
+    return {
+      "upToDate": false,
+      "message": "install needed: node_modules is missing or older than bun.lock",
+    };
+  }
 
   const installed = installedGatewayVersion(root);
-  if (installed === null) return false; // missing/unreadable -> must install
-
-  // Explicit pin: current iff the exact pinned version is already on disk (a
-  // dist-tag always re-resolves, so a non-semver override is never "up to date").
-  const override = process.env[GATEWAY_VERSION_ENV]?.trim();
-  if (override) return SEMVER_RE.test(override) && installed === override;
-
-  // Normal float: hold the recorded target only while it's in-window, undrifted,
-  // and the weekly stamp is still fresh.
-  const stamp = join(root, ".gateway-checked");
-  const recorded = readRecordedVersion(stamp);
-  if (recorded === null || installed !== recorded) return false;
-  if (!withinGatewayWindow(recorded, config)) return false;
-  try {
-    return Date.now() - statSync(stamp).mtimeMs <= checkIntervalMs;
-  } catch {
-    return false; // no stamp -> resolve now
+  if (process.env[NO_FLOAT_ENV]?.trim()) {
+    return installed === null
+      ? {
+          "upToDate": false,
+          "message": `${NO_FLOAT_ENV} is set, but ${GATEWAY_PKG} is missing or unreadable`,
+        }
+      : {
+          "upToDate": true,
+          "message": `no update check: ${NO_FLOAT_ENV} is set; keeping ${GATEWAY_PKG}@${installed}`,
+        };
   }
+
+  if (installed === null) {
+    return {
+      "upToDate": false,
+      "message": `install needed: ${GATEWAY_PKG} is missing or unreadable`,
+    };
+  }
+
+  const override = process.env[GATEWAY_VERSION_ENV]?.trim();
+  if (override) return verifyPinnedOverride(installed, override);
+
+  const effectiveConfig = config ?? readProjectConfig(root);
+  const effectiveMinimumReleaseAgeSeconds =
+    minimumReleaseAgeSeconds ?? readBunMinimumReleaseAgeSeconds(root);
+  assertBounds(effectiveConfig);
+
+  const target = resolveGatewayTarget({
+    "root": root,
+    "bun": bun,
+    "config": effectiveConfig,
+    "minimumReleaseAgeSeconds": effectiveMinimumReleaseAgeSeconds,
+    "spawnRunner": spawnRunner,
+    "nowMs": nowMs,
+  });
+  return target.ok
+    ? verifyResolvedTarget(installed, target.value)
+    : verifyResolveFailure(installed, effectiveConfig, target.message);
+}
+
+function verifyPinnedOverride(installed: string, override: string): GatewayFloatVerifyStatus {
+  if (SEMVER_RE.test(override) && installed === override) {
+    return { "upToDate": true, "message": `up to date: ${GATEWAY_PKG}@${override} pinned` };
+  }
+  return {
+    "upToDate": false,
+    "message": `update needed: ${GATEWAY_VERSION_ENV}=${override}; installed ${installed}`,
+  };
+}
+
+function verifyResolvedTarget(installed: string, target: GatewayTarget): GatewayFloatVerifyStatus {
+  return installed === target.version
+    ? {
+        "upToDate": true,
+        "message": `up to date: ${GATEWAY_PKG}@${target.version} (${target.reason})`,
+      }
+    : {
+        "upToDate": false,
+        "message": `update needed: ${GATEWAY_PKG} ${installed} -> ${target.version} (${target.reason})`,
+      };
+}
+
+function verifyResolveFailure(
+  installed: string,
+  config: ProjectConfig,
+  message: string,
+): GatewayFloatVerifyStatus {
+  return versionLessThan(installed, config.gatewayMinVersion)
+    ? {
+        "upToDate": false,
+        "message": `update needed: update check failed (${message}); installed ${installed} < floor ${config.gatewayMinVersion}`,
+      }
+    : {
+        "upToDate": true,
+        "message": `no update check: ${message}; keeping ${GATEWAY_PKG}@${installed}`,
+      };
 }
 
 /**
@@ -378,51 +486,48 @@ export function nodeModulesFresh(root: string): boolean {
   }
 }
 
-function main(): void {
-  // During a postinstall lifecycle script (or a `--verify` shim call), cwd is the
-  // package root — the in-place checkout (the runtime root).
-  const root = process.cwd();
+// --- Postinstall / verify entry ----------------------------------------------
 
-  // `--verify` (run by the bin shims before each command): exit 0 = up to date,
-  // skip `bun install`; exit 1 = stale / drift / absent, install. Read-only, no
-  // registry; never throws out of the process.
+function main(): void {
+  const root = PROJECT_ROOT;
+
   if (process.argv.includes("--verify")) {
     try {
       const config = readProjectConfig(root);
-      const intervalDays = envDays(FLOAT_INTERVAL_DAYS_ENV);
-      const checkIntervalMs =
-        intervalDays === null ? GATEWAY_CHECK_INTERVAL_MS : intervalDays * SECONDS_PER_DAY * 1000;
-      process.exit(
-        nodeModulesFresh(root) && gatewayFloatUpToDate(root, config, checkIntervalMs) ? 0 : 1,
+      const status = gatewayFloatVerifyStatus(
+        root,
+        process.execPath,
+        config,
+        readBunMinimumReleaseAgeSeconds(root),
       );
-    } catch {
+      status.upToDate ? logger.success(status.message) : logger.info(status.message);
+      process.exit(status.upToDate ? 0 : 1);
+    } catch (error) {
+      logger.warn(
+        `install needed: verify failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
       process.exit(1); // uncertain -> install
     }
   }
 
-  if (process.env[NO_FLOAT_ENV]?.trim()) return; // float disabled via env
+  if (process.env[NO_FLOAT_ENV]?.trim()) {
+    const installed = installedGatewayVersion(root);
+    logger.info(
+      `${NO_FLOAT_ENV} is set; skipping float${
+        installed ? ` and keeping installed ${GATEWAY_PKG}@${installed}` : ""
+      }`,
+    );
+    return;
+  }
 
   try {
     const config = readProjectConfig(root);
-    const cooldownDays = envDays(COOLDOWN_DAYS_ENV);
-    const cooldownSeconds = cooldownDays === null ? null : cooldownDays * SECONDS_PER_DAY;
-    const intervalDays = envDays(FLOAT_INTERVAL_DAYS_ENV);
-    const checkIntervalMs =
-      intervalDays === null ? GATEWAY_CHECK_INTERVAL_MS : intervalDays * SECONDS_PER_DAY * 1000;
-
-    // process.execPath is the running bun, reused for the inner `bun add`.
-    // force=false: lean on the .gateway-checked weekly stamp + self-heal so running
-    // on every `bun install` doesn't re-probe the registry each time.
-    floatGateway(root, process.execPath, false, config, cooldownSeconds, checkIntervalMs);
+    floatGateway(root, process.execPath, config);
   } catch (error) {
-    // Best-effort: never fail `bun install` over the float.
-    process.stderr.write(
-      `gateway-float: WARNING: gateway float skipped: ${error instanceof Error ? error.message : String(error)}\n`,
-    );
+    logger.warn(`gateway float skipped: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
-// Run as a script (the postinstall hook), but not when imported (tests).
 if (import.meta.main) {
   main();
 }

@@ -12,6 +12,7 @@
 // Exits non-zero with a ::error:: annotation when the gateway is missing, below
 // the floor, or above the ceiling; prints the resolved version otherwise.
 
+import "../src/utils/dotenv.ts";
 import { copilotApiVersion } from "../src/copilot_api/process.ts";
 import { readProjectConfig } from "../src/project_config.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";

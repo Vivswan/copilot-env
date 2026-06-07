@@ -28,25 +28,31 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-test("preserves unknown user keys while updating the managed base_url", () => {
+test("enforces every managed field while preserving unknown user keys", () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
   process.env.HOME = dir;
   const codexHome = join(dir, ".codex");
   mkdirSync(codexHome, { recursive: true });
 
-  // Seed an existing config with a user-added section plus our managed provider.
+  // Seed a STALE existing config: a user-added section to preserve, plus our
+  // provider table with an old env_key, a stale base_url, a user-added key, and
+  // several managed fields missing entirely.
   writeFileSync(
     join(codexHome, "config.toml"),
     [
-      'model_provider = "copilot-api"',
+      'model_provider = "openai"',
       "",
       "[my_custom]",
       'keep = "me"',
       "",
-      "[model_providers.copilot-api]",
-      'name = "copilot-api gateway"',
+      "[model_providers.copilot-env]",
       'base_url = "http://stale:1/v1"',
       'env_key = "COPILOT_API_KEY"',
+      'user_extra = "kept"',
+      "",
+      "[model_providers.other]",
+      'base_url = "http://other/v1"',
+      'env_key = "OTHER_KEY"',
       "",
     ].join("\n"),
   );
@@ -55,12 +61,25 @@ test("preserves unknown user keys while updating the managed base_url", () => {
   expect(rc).toBe(0);
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
+  // Unknown user content survives, and our gateway is reselected as default.
   expect(asRecord(doc.my_custom).keep).toBe("me");
-  const provider = asRecord(asRecord(doc.model_providers)["copilot-api"]);
-  expect(provider.base_url).toBe("http://localhost:4141/v1");
-  expect(provider.name).toBe("copilot-api gateway");
+  expect(doc.model_provider).toBe("copilot-env");
 
-  expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe("COPILOT_API_KEY=secret-key\n");
+  const provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
+  expect(provider.base_url).toBe("http://localhost:4141/v1");
+  expect(provider.name).toBe("copilot-env");
+  expect(provider.env_key).toBe("OPENAI_API_KEY"); // stale value corrected
+  expect(provider.wire_api).toBe("responses"); // missing managed field filled
+  expect(provider.requires_openai_auth).toBe(false);
+  expect(provider.supports_websockets).toBe(false);
+  expect(provider.user_extra).toBe("kept"); // user-added key in the table survives
+
+  // A second, unrelated provider table is left fully intact.
+  const other = asRecord(asRecord(doc.model_providers).other);
+  expect(other.base_url).toBe("http://other/v1");
+  expect(other.env_key).toBe("OTHER_KEY");
+
+  expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe("OPENAI_API_KEY=secret-key\n");
 });
 
 test("writes the managed default config when no provider section exists", () => {
@@ -72,7 +91,7 @@ test("writes the managed default config when no provider section exists", () => 
   expect(rc).toBe(0);
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
-  const provider = asRecord(asRecord(doc.model_providers)["copilot-api"]);
+  const provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
   expect(provider.base_url).toBe("http://localhost:4141/v1");
 });
 

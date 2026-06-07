@@ -10,22 +10,43 @@ import { CopilotApiState } from "../copilot_api/state.ts";
 
 const logger = createConsola({ stdout: process.stderr, stderr: process.stderr });
 
+// The Codex model-provider id we manage, and the env var the gateway token
+// rides under. OPENAI_API_KEY is the same OpenAI-wire name `env.ts` already
+// exports, so the single token has ONE name across the shell exports and the
+// Codex `.env` — Codex's load_dotenv reads $CODEX_HOME/.env and resolves
+// `env_key` from it.
+const CODEX_PROVIDER_ID = "copilot-env";
+const CODEX_ENV_KEY = "OPENAI_API_KEY";
+
 // === config.toml management ===
 //
-// Load-mutate-stringify so user-added keys/sections survive. smol-toml does
-// NOT preserve comments or whitespace formatting — TS has no battle-tested
-// equivalent of Python's tomlkit. Unknown top-level keys are preserved.
+// Load-merge-stringify so user-added keys/sections survive (smol-toml does NOT
+// preserve comments or whitespace — TS has no battle-tested tomlkit equivalent).
+// configureCodexConfig ENFORCES every managed field on each run, so a renamed or
+// added key (e.g. the env_key) propagates even into a pre-existing config.
 
+// The single source of truth for our managed `[model_providers.copilot-env]`
+// table. Re-applied on every run (managed keys win; any user-added key in the
+// same table is preserved by the merge). The return type is inferred (precise
+// string/boolean fields) — only the parsed user config below is `unknown`,
+// because that TOML shape is arbitrary and we don't control it.
+function managedProvider(baseUrl: string) {
+  return {
+    "name": CODEX_PROVIDER_ID,
+    "base_url": baseUrl,
+    "env_key": CODEX_ENV_KEY,
+    "wire_api": "responses",
+    "requires_openai_auth": false,
+    "supports_websockets": false,
+  };
+}
+
+// Seeded ONLY when no config.toml exists yet: select our gateway as the default
+// provider and disable telemetry. The provider TABLE itself is injected by the
+// merge (managedProvider), so it is intentionally absent here — no duplication,
+// no drift.
 const DEFAULT_CONFIG = `\
-model_provider = "copilot-api"
-
-[model_providers.copilot-api]
-name = "copilot-api gateway"
-base_url = "{base_url}"
-env_key = "COPILOT_API_KEY"
-wire_api = "responses"
-requires_openai_auth = false
-supports_websockets = false
+model_provider = "${CODEX_PROVIDER_ID}"
 
 [analytics]
 enabled = false
@@ -34,17 +55,13 @@ enabled = false
 enabled = false
 `;
 
-function formatDefaultConfig(baseUrl: string): string {
-  return DEFAULT_CONFIG.replace("{base_url}", baseUrl);
-}
-
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-// Load the existing config at `hostConfig`, or fall back to the default
-// template. A parse failure also falls back to the template.
-function loadOrCreateConfig(hostConfig: string, baseUrl: string): Record<string, unknown> {
+// Load the existing config at `hostConfig`, or seed the default template when
+// it is absent or unparseable.
+function loadOrCreateConfig(hostConfig: string): Record<string, unknown> {
   try {
     if (fs.statSync(hostConfig).isFile()) {
       return parse(fs.readFileSync(hostConfig, "utf8")) as Record<string, unknown>;
@@ -52,7 +69,7 @@ function loadOrCreateConfig(hostConfig: string, baseUrl: string): Record<string,
   } catch {
     // fall through to the default template
   }
-  return parse(formatDefaultConfig(baseUrl)) as Record<string, unknown>;
+  return parse(DEFAULT_CONFIG) as Record<string, unknown>;
 }
 
 /**
@@ -87,22 +104,25 @@ export function configureCodexConfig(
 
   const hostConfig = `${codexHome}/config.toml`;
 
-  let doc = loadOrCreateConfig(hostConfig, baseUrl);
+  const doc = loadOrCreateConfig(hostConfig);
 
-  // Surgically set model_providers."copilot-api".base_url, replacing the
-  // whole document only when our managed provider section is absent.
-  const providers = doc.model_providers;
-  if (!isRecord(providers) || !isRecord(providers["copilot-api"])) {
-    doc = parse(formatDefaultConfig(baseUrl)) as Record<string, unknown>;
-  } else {
-    (providers["copilot-api"] as Record<string, unknown>).base_url = baseUrl;
-  }
+  // Enforce our managed contract on every run: select the gateway as the
+  // default provider and (re)write EVERY managed field on its table —
+  // overwriting a stale value (e.g. an old env_key) and filling any managed key
+  // the file lacks. Spreading `existing` first preserves user-added keys in the
+  // same table; other providers, the [analytics]/[feedback] sections, and any
+  // unknown top-level keys are left untouched.
+  doc.model_provider = CODEX_PROVIDER_ID;
+  const providers = isRecord(doc.model_providers) ? doc.model_providers : {};
+  const existing = isRecord(providers[CODEX_PROVIDER_ID]) ? providers[CODEX_PROVIDER_ID] : {};
+  providers[CODEX_PROVIDER_ID] = { ...existing, ...managedProvider(baseUrl) };
+  doc.model_providers = providers;
 
   fs.writeFileSync(hostConfig, stringify(doc));
   logger.info(`Codex App config written to ${hostConfig}`);
 
   const envFile = `${codexHome}/.env`;
-  fs.writeFileSync(envFile, `COPILOT_API_KEY=${apiKey}\n`);
+  fs.writeFileSync(envFile, `${CODEX_ENV_KEY}=${apiKey}\n`);
   try {
     fs.chmodSync(envFile, 0o600);
   } catch {

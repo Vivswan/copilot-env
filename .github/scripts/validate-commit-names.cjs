@@ -95,7 +95,7 @@ function validateCommitNames() {
     console.error(
       [
         "Commit subjects must be Conventional Commits.",
-        "Examples: `feat: add setup flow`, `fix: repair installer`, `feat!: simplify bootstrap`, `chore(main): release 2.0.0`.",
+        "Examples: `feat: add setup flow`, `fix: repair installer`, `feat!: simplify bootstrap`, `chore(main): release 3.0.0`.",
         "",
         ...lines,
       ].join("\n"),

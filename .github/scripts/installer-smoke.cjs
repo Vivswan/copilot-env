@@ -74,13 +74,13 @@ async function shouldSkipLegacyDownloadSmoke() {
   const major = tag ? tagMajor(tag) : null;
   if (tag === null || major === null) {
     console.log(
-      "Skipping download-mode installer smoke because the latest release could not be confirmed as v2.0.0 or newer.",
+      "Skipping download-mode installer smoke because the latest release could not be confirmed as v3.0.0 or newer.",
     );
     writeFileSync(legacyDownloadSkipMarker, `${tag ?? "unknown"}\n`);
     return true;
   }
-  if (tag && major !== null && major < 2) {
-    console.log(`Skipping download-mode installer smoke for ${tag}; bundled TS installer starts in v2.0.0.`);
+  if (tag && major !== null && major < 3) {
+    console.log(`Skipping download-mode installer smoke for ${tag}; supported bundled TS installer release starts in v3.0.0.`);
     writeFileSync(legacyDownloadSkipMarker, `${tag}\n`);
     return true;
   }

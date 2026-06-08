@@ -17,8 +17,8 @@ test("dueMigrations includes the from-version, excludes the to-version", () => {
 });
 
 test("dueMigrations skips versions already left behind", () => {
-  // Updating 1.2.5 -> 2.0.0 must not re-run the 1.2.1 migration.
-  expect(dueMigrations("1.2.5", "2.0.0", LIST).map((m) => m.version)).toEqual(["1.2.5", "1.3.0"]);
+  // Updating 1.2.5 -> 3.0.0 must not re-run the 1.2.1 migration.
+  expect(dueMigrations("1.2.5", "3.0.0", LIST).map((m) => m.version)).toEqual(["1.2.5", "1.3.0"]);
 });
 
 test("dueMigrations is empty when already up to date", () => {

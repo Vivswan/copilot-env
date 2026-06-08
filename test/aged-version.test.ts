@@ -17,7 +17,7 @@ const TIME: Record<string, string> = {
   "1.2.9": iso(30),
   "1.2.10": iso(20),
   "1.10.0": iso(10),
-  "2.0.0-rc.1": iso(15),
+  "4.0.0-rc.1": iso(15),
 };
 
 describe("pickAgedVersion", () => {
@@ -42,8 +42,8 @@ describe("pickAgedVersion", () => {
   });
 
   test("never selects a prerelease, even when it is newest and highest", () => {
-    // 2.0.0-rc.1 (15d) is numerically the highest but must be skipped.
-    expect(pickAgedVersion(TIME, 14 * MILLISECONDS_PER_DAY, NOW)).not.toBe("2.0.0-rc.1");
+    // 4.0.0-rc.1 (15d) is numerically the highest but must be skipped.
+    expect(pickAgedVersion(TIME, 14 * MILLISECONDS_PER_DAY, NOW)).not.toBe("4.0.0-rc.1");
   });
 
   test("ignores the created/modified bookkeeping keys", () => {

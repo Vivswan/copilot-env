@@ -95,6 +95,15 @@ describe("parseReleasesJson", () => {
     expect(parseReleasesJson(json).map((x) => x.tag)).toEqual(["v1.0.0"]);
   });
 
+  test("can include draft releases for authenticated release smoke tests", () => {
+    const json = JSON.stringify([
+      rel("v3.0.0", "2026-06-05T00:00:00Z", { draft: true }),
+      rel("v1.9.0", "2026-05-27T00:00:00Z"),
+    ]);
+    expect(parseReleasesJson(json).map((x) => x.tag)).toEqual(["v1.9.0"]);
+    expect(parseReleasesJson(json, true).map((x) => x.tag)).toEqual(["v3.0.0", "v1.9.0"]);
+  });
+
   test("skips releases with no tarball_url", () => {
     const json = JSON.stringify([
       { tag_name: "v1.0.0", published_at: "2026-06-01T00:00:00Z", draft: false, prerelease: false },

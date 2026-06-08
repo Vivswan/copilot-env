@@ -13,6 +13,11 @@ RESOLVER_URL="https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/ins
 VERIFIER_URL="https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/verify-source-archive.ts"
 INSTALL_DIR_ARG=""
 SKIP_SHELL_INTEGRATION=false
+AUTH_CURL_ARGS=(-H "User-Agent: copilot-env")
+if [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
+    AUTH_TOKEN="${GH_TOKEN:-$GITHUB_TOKEN}"
+    AUTH_CURL_ARGS+=(-H "Authorization: Bearer $AUTH_TOKEN")
+fi
 
 usage() {
     cat <<'EOF'
@@ -111,8 +116,8 @@ else
     _tmp="$(mktemp -d)"
     trap 'rm -rf "$_tmp"' EXIT
     echo "Resolving the copilot-env release ..."
-    retry "Download release resolver" curl -fsSL -H "User-Agent: copilot-env" "$RESOLVER_URL" -o "$_tmp/resolve-release.ts"
-    retry "Download archive verifier" curl -fsSL -H "User-Agent: copilot-env" "$VERIFIER_URL" -o "$_tmp/verify-source-archive.ts"
+    retry "Download release resolver" curl -fsSL "${AUTH_CURL_ARGS[@]}" "$RESOLVER_URL" -o "$_tmp/resolve-release.ts"
+    retry "Download archive verifier" curl -fsSL "${AUTH_CURL_ARGS[@]}" "$VERIFIER_URL" -o "$_tmp/verify-source-archive.ts"
     RESOLVER_ARGS=(--json)
     if [ "$INSTALL_REF" != "latest" ]; then
         RESOLVER_ARGS+=(--tag "$INSTALL_REF")
@@ -128,10 +133,10 @@ else
     }
     _ref="${_url##*/}"
     echo "Downloading copilot-env $_ref into $INSTALL_DIR ..."
-    retry "Download copilot-env release" curl -fsSL -H "User-Agent: copilot-env" "$_url" -o "$_tmp/release.tgz"
+    retry "Download copilot-env release" curl -fsSL "${AUTH_CURL_ARGS[@]}" "$_url" -o "$_tmp/release.tgz"
     VERIFY_ARGS=("$_tmp/release.tgz" "$_sha")
     if [ -n "$_sha256_url" ]; then
-        retry "Download release checksum" curl -fsSL -H "User-Agent: copilot-env" "$_sha256_url" -o "$_tmp/release.tgz.sha256"
+        retry "Download release checksum" curl -fsSL "${AUTH_CURL_ARGS[@]}" "$_sha256_url" -o "$_tmp/release.tgz.sha256"
         VERIFY_ARGS+=("$_tmp/release.tgz.sha256")
     fi
     bun "$_tmp/verify-source-archive.ts" "${VERIFY_ARGS[@]}"

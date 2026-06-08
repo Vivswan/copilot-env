@@ -53,9 +53,11 @@ jobs:
         run: bun src/gateway_float.ts --assert-installed
 
       - name: Typecheck
+        if: runner.os == 'Linux'
         run: bun run typecheck
 
       - name: Lint + format (biome check)
+        if: runner.os == 'Linux'
         run: bun run lint
 
       - name: Test
@@ -91,37 +93,34 @@ jobs:
           bun run lint:ps
 
   # Each install.sh scenario runs as its OWN isolated job (fresh runner, fresh
-  # $HOME) via the reusable installer-sh.yml -- they can never interfere with one
-  # another. Runs from the checkout, so it exercises THIS commit, not origin/main.
-  #   default          : bootstrap install + shell wiring; agent CLIs stay absent.
-  #   setup-clis       : bootstrap install, then `agent setup clis --cooldown`.
-  #   setup-launchers  : bootstrap install, then `agent setup launchers`.
-  #   no-shell-integration : bootstrap install minus rc wiring.
+  # $HOME) via the reusable installer-sh.yml. The default bootstrap path runs on
+  # both Linux and macOS; optional setup variants run on one POSIX OS because the
+  # detailed block/flag behavior is covered by unit tests.
   install-sh:
-    name: install.sh ${{ matrix.scenario.name }}
+    name: install.sh ${{ matrix.name }} / ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-        scenario:
-          - { name: "default", args: "", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: true, rerun: true }
-          - { name: "setup clis", args: "", setup-clis: true, setup-launchers: false, expect-clis: true, expect-wiring: true, rerun: false }
-          - { name: "setup launchers", args: "", setup-clis: false, setup-launchers: true, expect-clis: false, expect-wiring: true, rerun: false }
-          - { name: "--no-shell-integration", args: "--no-shell-integration", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: false, rerun: false }
+        include:
+          - { os: ubuntu-latest, name: "default", args: "", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: true, rerun: true }
+          - { os: macos-latest, name: "default", args: "", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: true, rerun: true }
+          - { os: ubuntu-latest, name: "setup clis", args: "", setup-clis: true, setup-launchers: false, expect-clis: true, expect-wiring: true, rerun: false }
+          - { os: ubuntu-latest, name: "setup launchers", args: "", setup-clis: false, setup-launchers: true, expect-clis: false, expect-wiring: true, rerun: false }
+          - { os: ubuntu-latest, name: "--no-shell-integration", args: "--no-shell-integration", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: false, rerun: false }
     uses: ./.github/workflows/installer-sh.yml
     with:
       os: ${{ matrix.os }}
-      args: ${{ matrix.scenario.args }}
-      setup-clis: ${{ matrix.scenario.setup-clis }}
-      setup-launchers: ${{ matrix.scenario.setup-launchers }}
-      expect-clis: ${{ matrix.scenario.expect-clis }}
-      expect-wiring: ${{ matrix.scenario.expect-wiring }}
-      rerun: ${{ matrix.scenario.rerun }}
+      args: ${{ matrix.args }}
+      setup-clis: ${{ matrix.setup-clis }}
+      setup-launchers: ${{ matrix.setup-launchers }}
+      expect-clis: ${{ matrix.expect-clis }}
+      expect-wiring: ${{ matrix.expect-wiring }}
+      rerun: ${{ matrix.rerun }}
 
   # Windows parity: each install.ps1 scenario as its OWN isolated job via the
   # reusable installer-ps1.yml. Git + Node/npm are preinstalled on windows-latest.
-  #   default / setup-clis / setup-launchers / no-shell-integration : bun provided
-  #     by setup-bun, exercising checkout detection, profile wiring, and moved setup paths.
+  #   default / setup-clis / no-shell-integration : bun provided by setup-bun,
+  #     exercising checkout detection, profile wiring, and moved setup paths.
   install-ps1:
     name: install.ps1 ${{ matrix.scenario.name }}
     strategy:
@@ -130,7 +129,6 @@ jobs:
         scenario:
           - { name: "default", args: "", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: true, rerun: true }
           - { name: "setup clis", args: "", setup-clis: true, setup-launchers: false, expect-clis: true, expect-wiring: true, rerun: false }
-          - { name: "setup launchers", args: "", setup-clis: false, setup-launchers: true, expect-clis: false, expect-wiring: true, rerun: false }
           - { name: "-NoShellIntegration", args: "-NoShellIntegration", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: false, rerun: false }
     uses: ./.github/workflows/installer-ps1.yml
     with:

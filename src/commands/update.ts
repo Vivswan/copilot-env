@@ -64,7 +64,7 @@ export async function runUpdate(args: UpdateArgs): Promise<void> {
   }
 
   consola.start(`Updating copilot-env ${current} -> ${target.tag} ...`);
-  await applyRelease(target.tarballUrl, target.sourceSha, target.sourceSha256Url);
+  await applyRelease(target.tarballUrl, target.sourceSha, target.sourceSha256);
 
   // Refresh deps for the new release (HUSKY=0 mirrors the bin shims).
   const install = spawnSync("bun", ["install", "--frozen-lockfile"], {

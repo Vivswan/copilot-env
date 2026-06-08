@@ -13,11 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { extract as tarExtract, list as tarList } from "tar";
 import { PROJECT_ROOT } from "../utils/root.ts";
-import {
-  parseSha256Checksum,
-  verifySourceArchiveEntry,
-  verifySourceArchiveSha256,
-} from "./verify-source-archive.ts";
+import { verifySourceArchiveEntry, verifySourceArchiveSha256 } from "./verify-source-archive.ts";
 
 // Files that live in the checkout but are NOT shipped in a release: keep them across
 // an update. node_modules is restored by `bun install`; .git is the clone's VCS dir.
@@ -84,19 +80,13 @@ async function verifySourceArchive(
   verifySourceArchiveEntry(firstEntry, expectedSha);
 }
 
-async function fetchText(url: string): Promise<string> {
-  const res = await fetch(url, { headers: { "User-Agent": "copilot-env" } });
-  if (!res.ok) throw new Error(`failed to download release checksum (HTTP ${res.status})`);
-  return res.text();
-}
-
 /** Download the release's source tarball (URL from the API), verify its SHA256
- *  checksum when available plus its source SHA marker, and sync it onto the checkout.
+ *  digest when available plus its source SHA marker, and sync it onto the checkout.
  *  Extraction uses the `tar` lib (gzip + symlinks, cross-platform). */
 export async function applyRelease(
   tarballUrl: string,
   sourceSha: string,
-  sourceSha256Url: string | null = null,
+  sourceSha256: string | null = null,
 ): Promise<void> {
   const res = await fetch(tarballUrl, { headers: { "User-Agent": "copilot-env" } });
   if (!res.ok) throw new Error(`failed to download release tarball (HTTP ${res.status})`);
@@ -105,10 +95,7 @@ export async function applyRelease(
   try {
     const tarball = join(tmp, "release.tar.gz");
     writeFileSync(tarball, new Uint8Array(await res.arrayBuffer()));
-    const expectedSha256 = sourceSha256Url
-      ? parseSha256Checksum(await fetchText(sourceSha256Url))
-      : null;
-    await verifySourceArchive(tarball, sourceSha, expectedSha256);
+    await verifySourceArchive(tarball, sourceSha, sourceSha256);
     const tree = join(tmp, "tree");
     mkdirSync(tree, { recursive: true });
     // strip:1 drops the `Vivswan-copilot-env-<sha>/` wrapper dir.

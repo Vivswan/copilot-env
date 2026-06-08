@@ -15,7 +15,7 @@
 //
 // This gives the shell/PowerShell bootstrappers a small standalone integrity gate
 // before they delete/replace an existing install directory: full archive SHA256
-// when a release checksum asset exists, plus the GitHub source archive root SHA
+// when GitHub reports an asset digest, plus the GitHub source archive root SHA
 // marker in every case.
 
 import { spawnSync } from "node:child_process";
@@ -45,7 +45,9 @@ export function parseSha256Checksum(text: string): string {
 }
 
 function expectedSha256(value: string): string {
-  return parseSha256Checksum(existsSync(value) ? readFileSync(value, "utf8") : value);
+  return /^[0-9a-f]{64}$/i.test(value)
+    ? value.toLowerCase()
+    : parseSha256Checksum(existsSync(value) ? readFileSync(value, "utf8") : value);
 }
 
 export function fileSha256(path: string): string {

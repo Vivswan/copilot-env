@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   commit-names:
@@ -169,3 +169,14 @@ jobs:
               echo "::error::a required CI job did not succeed ($results)"; exit 1 ;;
           esac
           echo "all required CI jobs succeeded"
+
+  release-please:
+    name: release-please
+    needs: all-green
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    uses: ./.github/workflows/release-please.yml
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    secrets: inherit

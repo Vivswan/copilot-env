@@ -28,6 +28,7 @@ foreach ($key in $AuthHeaders.Keys) {
     $AssetHeaders[$key] = $AuthHeaders[$key]
 }
 $AssetHeaders['Accept'] = 'application/octet-stream'
+$PublicAssetHeaders = @{ 'User-Agent' = 'copilot-env'; 'Accept' = 'application/octet-stream' }
 if (-not $InstallDir) {
     $InstallDir = if ($env:COPILOT_ENV_DIR) { $env:COPILOT_ENV_DIR } else { Join-Path $env:USERPROFILE '.copilot-env' }
 }
@@ -108,6 +109,15 @@ function Resolve-ReleaseTarget {
     }
 }
 
+function Resolve-AssetHeaders {
+    param([Parameter(Mandatory)][string]$Url)
+
+    if ($Url.StartsWith('https://api.github.com/')) {
+        return $AssetHeaders
+    }
+    return $PublicAssetHeaders
+}
+
 Update-ProcessPath
 
 $BunExe = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
@@ -142,22 +152,18 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'shell\agents.ps1'))) {
     try {
         $tgz = Join-Path $tmp 'release.tgz'
         $verifier = Join-Path $tmp 'verify-source-archive.ts'
-        $checksum = Join-Path $tmp 'release.tgz.sha256'
         Invoke-WithRetry 'Download archive verifier' {
             Invoke-WebRequest -Uri $VerifierUrl -OutFile $verifier -UseBasicParsing -Headers $AuthHeaders
         }
         Invoke-WithRetry 'Download copilot-env release' {
-            Invoke-WebRequest -Uri $url -OutFile $tgz -UseBasicParsing -Headers $AssetHeaders
+            Invoke-WebRequest -Uri $url -OutFile $tgz -UseBasicParsing -Headers (Resolve-AssetHeaders $url)
         }
         $verifyArgs = @($verifier, $tgz, $target.sourceSha)
-        if ($target.sourceSha256Url) {
-            Invoke-WithRetry 'Download release checksum' {
-                Invoke-WebRequest -Uri $target.sourceSha256Url -OutFile $checksum -UseBasicParsing -Headers $AssetHeaders
-            }
-            $verifyArgs += $checksum
+        if ($target.sourceSha256) {
+            $verifyArgs += $target.sourceSha256
         }
         & bun @verifyArgs
-        if ($LASTEXITCODE -ne 0) { throw 'release archive checksum verification failed.' }
+        if ($LASTEXITCODE -ne 0) { throw 'release archive verification failed.' }
         if (Test-Path $InstallDir) {
             Write-Host "Removing previous copilot-env install at $InstallDir ..."
             Remove-Item -Recurse -Force $InstallDir

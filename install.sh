@@ -127,7 +127,7 @@ else
         || { echo "ERROR: no copilot-env release found (or the GitHub API is unreachable)." >&2; exit 1; }
     _url="$(printf %s "$_target" | json_field tarballUrl)"
     _sha="$(printf %s "$_target" | json_field sourceSha)"
-    _sha256_url="$(printf %s "$_target" | json_field sourceSha256Url)"
+    _sha256="$(printf %s "$_target" | json_field sourceSha256)"
     [ -n "$_url" ] && [ -n "$_sha" ] || {
         echo "ERROR: release resolver returned incomplete metadata." >&2
         exit 1
@@ -136,9 +136,8 @@ else
     echo "Downloading copilot-env $_ref into $INSTALL_DIR ..."
     retry "Download copilot-env release" curl -fsSL "${ASSET_CURL_ARGS[@]}" "$_url" -o "$_tmp/release.tgz"
     VERIFY_ARGS=("$_tmp/release.tgz" "$_sha")
-    if [ -n "$_sha256_url" ]; then
-        retry "Download release checksum" curl -fsSL "${ASSET_CURL_ARGS[@]}" "$_sha256_url" -o "$_tmp/release.tgz.sha256"
-        VERIFY_ARGS+=("$_tmp/release.tgz.sha256")
+    if [ -n "$_sha256" ]; then
+        VERIFY_ARGS+=("$_sha256")
     fi
     bun "$_tmp/verify-source-archive.ts" "${VERIFY_ARGS[@]}"
     if [ -e "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; then

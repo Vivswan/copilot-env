@@ -1,4 +1,3 @@
-const { createHash } = require("node:crypto");
 const { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
 const { join } = require("node:path");
 
@@ -13,30 +12,6 @@ function usage() {
 
 function archiveName(tag) {
   return `copilot-env-${tag}.tar.gz`;
-}
-
-function sha256File(path) {
-  return createHash("sha256").update(readFileSync(path)).digest("hex");
-}
-
-function writeSha256(path, name) {
-  writeFileSync(`${path}.sha256`, `${sha256File(path)}  ${name}\n`);
-}
-
-function readChecksum(path) {
-  const match = readFileSync(path, "utf8").match(/\b[0-9a-f]{64}\b/i);
-  if (!match) throw new Error(`${path}: missing SHA256 checksum`);
-  return match[0].toLowerCase();
-}
-
-function assertSha256(path) {
-  const checksumPath = `${path}.sha256`;
-  const expected = readChecksum(checksumPath);
-  const actual = sha256File(path);
-  if (actual !== expected) {
-    throw new Error(`${path}: SHA256 mismatch: expected ${expected}, got ${actual}`);
-  }
-  console.log(`${path}: OK`);
 }
 
 function pin(path, needle, replacement) {
@@ -92,9 +67,6 @@ function prepare(tag) {
     "$VerifierUrl = 'https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/verify-source-archive.ts'",
     `$VerifierUrl = 'https://raw.githubusercontent.com/Vivswan/copilot-env/${tag}/src/install/verify-source-archive.ts'`,
   );
-
-  writeSha256(shPath, "install.sh");
-  writeSha256(psPath, "install.ps1");
 }
 
 function validate(tag) {
@@ -121,14 +93,6 @@ function validate(tag) {
     psPath,
     `https://raw.githubusercontent.com/Vivswan/copilot-env/${tag}/src/install/verify-source-archive.ts`,
   );
-  assertSha256(shPath);
-  assertSha256(psPath);
-  const source = join(outDir, archiveName(tag));
-  try {
-    assertSha256(source);
-  } catch (error) {
-    if (!String(error).includes("ENOENT")) throw error;
-  }
 }
 
 async function download(url, path) {
@@ -145,10 +109,8 @@ async function createArchive(tag, repository) {
   const archive = archiveName(tag);
   const archivePath = join(outDir, archive);
   rmSync(archivePath, { force: true });
-  rmSync(`${archivePath}.sha256`, { force: true });
   await download(`https://api.github.com/repos/${repository}/tarball/${tag}`, archivePath);
-  writeSha256(archivePath, archive);
-  assertSha256(archivePath);
+  console.log(`${archivePath}: created`);
 }
 
 async function main() {

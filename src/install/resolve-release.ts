@@ -9,7 +9,7 @@
 //   bun src/install/resolve-release.ts
 //     Print the chosen release tarball_url for install.sh / install.ps1.
 //   bun src/install/resolve-release.ts --json
-//     Print tag, tarballUrl, sourceSha, and checksum URL metadata so installers
+//     Print tag, tarballUrl, sourceSha, and SHA256 metadata so installers
 //     can verify the archive.
 //   bun src/install/resolve-release.ts --json --tag vX.Y.Z
 //     Print metadata for that exact published release. Release-uploaded
@@ -21,7 +21,8 @@
 //   --tag   Resolve one exact release tag instead of the latest release.
 //
 // Discovery reads the GitHub Releases REST API (JSON; published, non-prerelease,
-// vX.Y.Z only) and takes the tag/date/tarball URL verbatim from the payload.
+// vX.Y.Z only for floating installs) and takes the tag/date/tarball URL verbatim.
+// An explicit --tag can resolve a prerelease because the user asked for that tag.
 // Set COPILOT_ENV_CI_INCLUDE_DRAFT_RELEASES=1 only in release CI smoke tests;
 // normal installs intentionally ignore draft releases.
 
@@ -43,24 +44,39 @@ export interface Release {
   dateSeconds: number;
   tarballUrl: string;
   sourceSha: string;
-  sourceSha256Url: string | null;
+  sourceSha256: string | null;
 }
 
-function releaseAssetUrl(
+interface ReleaseAsset {
+  url: string;
+  digest: string | null;
+}
+
+function normalizeSha256Digest(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = value.match(/^sha256:([0-9a-f]{64})$/i);
+  const digest = match?.[1];
+  return digest ? digest.toLowerCase() : null;
+}
+
+function releaseAsset(
   release: Record<string, unknown>,
   name: string,
   preferApiUrl = false,
-): string | null {
+): ReleaseAsset | null {
   if (!Array.isArray(release.assets)) return null;
   for (const item of release.assets) {
     if (typeof item !== "object" || item === null) continue;
     const asset = item as Record<string, unknown>;
     if (asset.name !== name) continue;
     if (preferApiUrl && typeof asset.url === "string") {
-      return asset.url;
+      return { url: asset.url, digest: normalizeSha256Digest(asset.digest) };
     }
     if (typeof asset.browser_download_url === "string") {
-      return asset.browser_download_url;
+      return {
+        url: asset.browser_download_url,
+        digest: normalizeSha256Digest(asset.digest),
+      };
     }
   }
   return null;
@@ -73,7 +89,11 @@ function releaseArchiveName(tag: string): string {
 /** Parse the GitHub `/releases` JSON into newest-first releases: published,
  *  non-prerelease, exact vX.Y.Z, with a tarball URL. Returns [] on anything
  *  unparseable. */
-export function parseReleasesJson(jsonText: string, includeDrafts = false): Release[] {
+export function parseReleasesJson(
+  jsonText: string,
+  includeDrafts = false,
+  includePrereleases = false,
+): Release[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonText);
@@ -86,20 +106,19 @@ export function parseReleasesJson(jsonText: string, includeDrafts = false): Rele
   for (const item of parsed) {
     if (typeof item !== "object" || item === null) continue;
     const r = item as Record<string, unknown>;
-    if ((r.draft === true && !includeDrafts) || r.prerelease === true) continue;
+    if ((r.draft === true && !includeDrafts) || (r.prerelease === true && !includePrereleases)) {
+      continue;
+    }
     if (typeof r.tag_name !== "string" || !/^v\d+\.\d+\.\d+$/.test(r.tag_name)) continue;
     if (typeof r.target_commitish !== "string" || !/^[0-9a-f]{40}$/i.test(r.target_commitish)) {
       continue;
     }
     const archiveName = releaseArchiveName(r.tag_name);
     const useAssetApiUrl = r.draft === true;
-    const sourceArchiveUrl = releaseAssetUrl(r, archiveName, useAssetApiUrl);
+    const sourceArchive = releaseAsset(r, archiveName, useAssetApiUrl);
     const tarballUrl =
-      sourceArchiveUrl ?? (typeof r.tarball_url === "string" ? r.tarball_url : null);
+      sourceArchive?.url ?? (typeof r.tarball_url === "string" ? r.tarball_url : null);
     if (!tarballUrl) continue;
-    const sourceSha256Url = sourceArchiveUrl
-      ? releaseAssetUrl(r, `${archiveName}.sha256`, useAssetApiUrl)
-      : null;
     const date = typeof r.published_at === "string" ? r.published_at : r.created_at;
     if (typeof date !== "string") continue;
     const dateSeconds = Math.floor(Date.parse(date) / 1000);
@@ -109,7 +128,7 @@ export function parseReleasesJson(jsonText: string, includeDrafts = false): Rele
         dateSeconds,
         tarballUrl,
         sourceSha: r.target_commitish.toLowerCase(),
-        sourceSha256Url,
+        sourceSha256: sourceArchive?.digest ?? null,
       });
     }
   }
@@ -161,7 +180,7 @@ export async function resolveTarget(
   } catch {
     return null; // offline / API unreachable
   }
-  const releases = parseReleasesJson(text, includeDrafts);
+  const releases = parseReleasesJson(text, includeDrafts, exactTag !== null);
   if (releases.length === 0) return null;
   if (exactTag !== null) return pickTag(releases, exactTag);
   return cooldownDays === null
@@ -211,7 +230,7 @@ if (import.meta.main) {
           tag: target.tag,
           tarballUrl: target.tarballUrl,
           sourceSha: target.sourceSha,
-          sourceSha256Url: target.sourceSha256Url,
+          sourceSha256: target.sourceSha256,
         })
       : target.tarballUrl,
   );

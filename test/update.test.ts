@@ -6,6 +6,10 @@ import {
   pickLatest,
   type Release,
 } from "../src/install/resolve-release.ts";
+import {
+  sourceArchivePrefix,
+  verifySourceArchiveEntry,
+} from "../src/install/verify-source-archive.ts";
 
 // resolve-release.ts is the single source of truth for the release pick (imported by
 // `agent update` and downloaded+run by the installers). The network side is thin; the
@@ -14,11 +18,13 @@ import {
 const secs = (iso: string): number => Math.floor(Date.parse(iso) / 1000);
 const url = (tag: string): string =>
   `https://api.github.com/repos/Vivswan/copilot-env/tarball/${tag}`;
+const sha = (n: string): string => n.padStart(40, "0");
 // A release row shaped like the API, overridable per field.
 const rel = (tag: string, date: string, over: Record<string, unknown> = {}): unknown => ({
   tag_name: tag,
   published_at: date,
   tarball_url: url(tag),
+  target_commitish: sha(tag.replace(/\D/g, "")),
   draft: false,
   prerelease: false,
   ...over,
@@ -34,6 +40,7 @@ describe("parseReleasesJson", () => {
     expect(r.map((x) => x.tag)).toEqual(["v2.0.0", "v1.9.0"]);
     expect(r[0]?.dateSeconds).toBe(secs("2026-06-05T00:00:00Z"));
     expect(r[0]?.tarballUrl).toBe(url("v2.0.0"));
+    expect(r[0]?.sourceSha).toBe(sha("200"));
   });
 
   test("skips drafts, prereleases, and non-vX.Y.Z tags", () => {
@@ -54,12 +61,30 @@ describe("parseReleasesJson", () => {
     expect(parseReleasesJson(json)).toEqual([]);
   });
 
+  test("skips releases without a full target commit SHA", () => {
+    const json = JSON.stringify([
+      rel("v1.0.0", "2026-06-01T00:00:00Z", { target_commitish: "main" }),
+      rel("v1.1.0", "2026-06-02T00:00:00Z", { target_commitish: "abc123" }),
+    ]);
+    expect(parseReleasesJson(json)).toEqual([]);
+  });
+
   test("falls back to created_at when published_at is absent", () => {
     const json = JSON.stringify([
-      { tag_name: "v1.0.0", created_at: "2026-06-01T00:00:00Z", tarball_url: url("v1.0.0") },
+      {
+        tag_name: "v1.0.0",
+        created_at: "2026-06-01T00:00:00Z",
+        tarball_url: url("v1.0.0"),
+        target_commitish: sha("100"),
+      },
     ]);
     expect(parseReleasesJson(json)).toEqual([
-      { tag: "v1.0.0", dateSeconds: secs("2026-06-01T00:00:00Z"), tarballUrl: url("v1.0.0") },
+      {
+        tag: "v1.0.0",
+        dateSeconds: secs("2026-06-01T00:00:00Z"),
+        tarballUrl: url("v1.0.0"),
+        sourceSha: sha("100"),
+      },
     ]);
   });
 
@@ -89,4 +114,28 @@ describe("pickLatest / pickAged", () => {
     expect(pickAged(fresh, now, 7)?.tag).toBe("v3.0.0");
   });
   test("pickLatest is null on empty", () => expect(pickLatest([])).toBeNull());
+});
+
+describe("source archive checksum marker", () => {
+  test("extracts GitHub source archive SHA prefixes", () => {
+    expect(sourceArchivePrefix("Vivswan-copilot-env-6c5ae7f/")).toBe("6c5ae7f");
+    expect(sourceArchivePrefix("Vivswan-copilot-env-6c5ae7fe77396713/file.txt")).toBe(
+      "6c5ae7fe77396713",
+    );
+  });
+
+  test("rejects archive roots without a SHA prefix", () => {
+    expect(sourceArchivePrefix("Vivswan-copilot-env-main/")).toBeNull();
+    expect(sourceArchivePrefix("")).toBeNull();
+  });
+
+  test("verifies archive prefixes against the expected full SHA", () => {
+    const sha = "6c5ae7fe77396713000000000000000000000000";
+    expect(verifySourceArchiveEntry("Vivswan-copilot-env-6c5ae7f/package.json", sha)).toBe(
+      "6c5ae7f",
+    );
+    expect(() => verifySourceArchiveEntry("Vivswan-copilot-env-deadbee/package.json", sha)).toThrow(
+      "checksum mismatch",
+    );
+  });
 });

@@ -1,3 +1,4 @@
+// PROJECT_ROOT discovery for launchers, tests, and installed release archives.
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

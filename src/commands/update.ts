@@ -1,18 +1,9 @@
+// `agent update`: resolves a release, applies it, refreshes deps, and runs migrations.
 import { spawnSync } from "node:child_process";
-import {
-  cpSync,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { consola } from "consola";
-import { extract as tarExtract } from "tar";
+import { applyRelease } from "../install/release.ts";
 import { resolveTarget } from "../install/resolve-release.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { versionLessThan } from "../utils/semver.ts";
@@ -28,97 +19,21 @@ import { packageVersion } from "../utils/version.ts";
 
 const stripV = (v: string): string => v.replace(/^v/, "");
 
-// Files that live in the checkout but are NOT shipped in a release: keep them across
-// an update. node_modules is restored by `bun install`; .git is the clone's VCS dir.
-// Everything else under the checkout is release-tracked source, so the sync may prune
-// it -- removing files a new release dropped, plus OS junk (.DS_Store, Thumbs.db).
-const PRESERVE = new Set([".git", "node_modules"]);
-
-// A complete release tree contains these. node-tar warns-and-SKIPS unrecoverable
-// entries rather than failing, so we verify the extract before the destructive sync:
-// a partial tree must never be allowed to prune the live checkout.
-const REQUIRED_FILES = ["package.json", "bun.lock", "bin/agent", "src/cli.ts"];
-
-/** True only if `p` is a real directory (NOT a symlink to one). Uses lstat so the
- *  sync never recurses through a link that points outside the checkout. */
-const isRealDir = (p: string): boolean => {
-  try {
-    return lstatSync(p).isDirectory();
-  } catch {
-    return false;
-  }
-};
-
-/** Make `dest` mirror `src` exactly: replace tracked files, recurse into dirs, and
- *  delete anything in `dest` not in `src` -- except `keep` names at the top level.
- *  Symlinks are copied verbatim (not dereferenced). */
-function mirror(src: string, dest: string, keep: Set<string>): void {
-  const srcEntries = readdirSync(src, { withFileTypes: true });
-  const srcNames = new Set(srcEntries.map((e) => e.name));
-  for (const name of readdirSync(dest)) {
-    if (keep.has(name) || srcNames.has(name)) continue;
-    rmSync(join(dest, name), { recursive: true, force: true }); // dropped file or OS junk
-  }
-  for (const entry of srcEntries) {
-    if (keep.has(entry.name)) continue; // never copy over a preserved name (node_modules/.git)
-    const s = join(src, entry.name);
-    const d = join(dest, entry.name);
-    if (entry.isDirectory()) {
-      // Anything but a real dir in the way (a file, or a symlink -- even one to a
-      // dir) is removed first, so recursion stays inside the checkout.
-      if (!isRealDir(d)) rmSync(d, { recursive: true, force: true });
-      mkdirSync(d, { recursive: true });
-      mirror(s, d, new Set()); // the preserve list only applies at the checkout root
-    } else {
-      rmSync(d, { recursive: true, force: true });
-      cpSync(s, d, { dereference: false }); // copy files and symlinks verbatim
-    }
-  }
-}
-
-/** Download the release's source tarball (URL from the API) and sync it onto the
- *  checkout. Extraction uses the `tar` lib (gzip + symlinks, cross-platform). */
-async function applyRelease(tarballUrl: string): Promise<void> {
-  const res = await fetch(tarballUrl, { headers: { "User-Agent": "copilot-env" } });
-  if (!res.ok) throw new Error(`failed to download release tarball (HTTP ${res.status})`);
-
-  const tmp = mkdtempSync(join(tmpdir(), "copilot-env-update-"));
-  try {
-    const tarball = join(tmp, "release.tar.gz");
-    writeFileSync(tarball, new Uint8Array(await res.arrayBuffer()));
-    const tree = join(tmp, "tree");
-    mkdirSync(tree, { recursive: true });
-    // strip:1 drops the `Vivswan-copilot-env-<sha>/` wrapper dir.
-    await tarExtract({ file: tarball, cwd: tree, strip: 1 });
-    for (const required of REQUIRED_FILES) {
-      if (!existsSync(join(tree, required))) {
-        throw new Error(`release tarball is incomplete (missing ${required}); update aborted`);
-      }
-    }
-    mirror(tree, PROJECT_ROOT, PRESERVE);
-  } finally {
-    rmSync(tmp, { recursive: true, force: true });
-  }
-}
-
-export async function runUpdate(args: {
+export interface UpdateArgs {
   check?: boolean;
-  cooldown?: boolean;
-  cooldownDays?: string;
+  cooldown?: number | null;
   force?: boolean;
-}): Promise<void> {
-  let cooldownDays: number | null = null;
-  if (args.cooldown) {
-    const raw = args.cooldownDays ?? "7";
-    if (!/^\d+$/.test(raw)) {
-      throw new Error(`--cooldown-days must be a non-negative whole number (got '${raw}')`);
-    }
-    cooldownDays = Number.parseInt(raw, 10);
+}
+
+export async function runUpdate(args: UpdateArgs): Promise<void> {
+  const cooldown = args.cooldown ?? null;
+  if (cooldown !== null && (!Number.isInteger(cooldown) || cooldown < 0)) {
+    throw new Error(`--cooldown expects a non-negative whole number of days (got '${cooldown}')`);
   }
 
   // Current checkout version as `vX.Y.Z`, to match the upstream tag format for display.
   const current = `v${packageVersion()}`;
-  const target = await resolveTarget(cooldownDays);
+  const target = await resolveTarget(cooldown);
   if (!target) {
     consola.warn("No copilot-env release found upstream (or the network is unavailable).");
     process.exitCode = 2; // distinct from "update available" (1) and "up to date" (0)
@@ -149,7 +64,7 @@ export async function runUpdate(args: {
   }
 
   consola.start(`Updating copilot-env ${current} -> ${target.tag} ...`);
-  await applyRelease(target.tarballUrl);
+  await applyRelease(target.tarballUrl, target.sourceSha);
 
   // Refresh deps for the new release (HUSKY=0 mirrors the bin shims).
   const install = spawnSync("bun", ["install", "--frozen-lockfile"], {
@@ -163,7 +78,7 @@ export async function runUpdate(args: {
   // disk -- this process still holds the pre-update code in memory. Best-effort: a
   // migration hiccup never fails the update. Effective only for updates that originate
   // at a release already shipping this call (>= the one that introduced migrations);
-  // earlier transitions are handled by the installer's shell-integration refresh.
+  // earlier transitions are handled by the installer's `agent setup shell` refresh.
   const migrate = spawnSync(
     "bun",
     [join(PROJECT_ROOT, "src", "migrations", "index.ts"), stripV(current), stripV(target.tag)],

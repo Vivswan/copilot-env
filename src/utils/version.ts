@@ -1,3 +1,4 @@
+// package.json version reader used by CLI metadata and update comparisons.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 

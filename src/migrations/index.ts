@@ -1,3 +1,14 @@
+// Migration runner: selects and executes version-to-version fixups after update.
+//
+// Direct run:
+//   bun src/migrations/index.ts <fromVersion> <toVersion>
+//
+// Arguments:
+//   <fromVersion>  Version being updated away from, with or without a leading v.
+//   <toVersion>    Version being updated to, with or without a leading v.
+//
+// `agent update` spawns this after swapping in the new release so migrations load
+// from the new code on disk instead of the already-running old update process.
 import "../utils/dotenv.ts";
 import { consola } from "consola";
 

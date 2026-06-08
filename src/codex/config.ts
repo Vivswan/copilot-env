@@ -1,3 +1,4 @@
+// Codex config writer: points Codex at the local gateway and manages its .env token.
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
@@ -17,6 +18,10 @@ const logger = createConsola({ stdout: process.stderr, stderr: process.stderr })
 // `env_key` from it.
 const CODEX_PROVIDER_ID = "copilot-env";
 const CODEX_ENV_KEY = "OPENAI_API_KEY";
+
+export interface CodexConfigArgs {
+  "codex-home"?: string;
+}
 
 // === config.toml management ===
 //
@@ -194,7 +199,7 @@ export function applyCodexConfig(codexHome: string): void {
  * active home, and the default `~/.codex` needs no `CODEX_HOME` override (only
  * `host_codex` sets/clears the active home). Produces no stdout.
  */
-export function runCodexConfig(args: { "codex-home"?: string }): void {
+export function runCodexConfig(args: CodexConfigArgs): void {
   const codexHome =
     args["codex-home"] ?? new CopilotApiState().read().codexHome ?? path.join(homedir(), ".codex");
   applyCodexConfig(codexHome);

@@ -1,3 +1,4 @@
+// Process lifecycle helpers for finding, launching, and inspecting copilot-api.
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
 import { closeSync, openSync, readFileSync } from "node:fs";

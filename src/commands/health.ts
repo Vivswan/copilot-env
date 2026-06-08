@@ -1,3 +1,4 @@
+// `agent health`: verifies the tracked local gateway process and port are healthy.
 import { consola } from "consola";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
 import { isCopilotApiPid } from "../copilot_api/process.ts";

@@ -14,29 +14,36 @@ on:
         required: true
         type: string
       args:
-        description: Flag(s) to pass to install.sh (e.g. "--cooldown").
+        description: Flag(s) to pass to install.sh (for example "--no-shell-integration").
         required: true
         type: string
       provision-bun:
         description: >-
-          true installs bun via setup-bun before running install.sh. Use for
-          verify-only scenarios (--no-prereqs) where the installer must NOT
-          install bun itself but still requires it present.
+          true installs bun via setup-bun before running install.sh; false lets
+          the installer install bun itself.
         type: boolean
         default: false
       expect-clis:
-        description: true asserts the agent CLIs (claude/copilot/codex) are installed afterward; false asserts they are ABSENT (e.g. --no-prereqs must install nothing).
+        description: true asserts the agent CLIs (claude/copilot/codex) are installed after optional setup; false asserts they are absent.
         type: boolean
-        default: true
+        default: false
+      setup-clis:
+        description: true runs `agent setup clis --cooldown` after install.
+        type: boolean
+        default: false
+      setup-launchers:
+        description: true runs `agent setup launchers` after install.
+        type: boolean
+        default: false
       expect-wiring:
         description: true asserts the rc wiring is present; false asserts it is absent.
         type: boolean
         default: true
       rerun:
         description: >-
-          true runs install.sh a SECOND time after the first, so the run exercises
-          the idempotent "everything already present" no-op path (and must still
-          exit 0). Same flag, same job -- no cross-scenario interference.
+          true runs install.sh a SECOND time after the first, so the repeat
+          install path must still exit 0. Same flag, same job -- no
+          cross-scenario interference.
         type: boolean
         default: false
 
@@ -51,8 +58,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # Verify-only scenarios need bun present but installed by something OTHER
-      # than the installer (the installer must not touch it under --no-prereqs).
       - if: ${{ inputs.provision-bun }}
         uses: oven-sh/setup-bun@v2
         with:
@@ -62,16 +67,37 @@ jobs:
         run: |
           bash install.sh ${{ inputs.args }}
           if [ "${{ inputs.rerun }}" = "true" ]; then
-            echo "--- idempotency re-run (everything now present, must no-op) ---"
+            echo "--- repeat install run (must still succeed) ---"
             bash install.sh ${{ inputs.args }}
           fi
+
+      - name: Assert installer did not install optional CLIs
+        run: |
+          export NVM_DIR="$HOME/.nvm"
+          if [ -s "$NVM_DIR/nvm.sh" ]; then
+            # shellcheck disable=SC1091
+            . "$NVM_DIR/nvm.sh"
+          fi
+          for cli in claude copilot codex; do
+            if command -v "$cli" >/dev/null; then
+              echo "::error::$cli must NOT be installed by install.sh ${{ inputs.args }}"; exit 1
+            fi
+            echo "$cli correctly absent after installer"
+          done
+
+      - name: Run agent setup clis
+        if: ${{ inputs.setup-clis }}
+        run: ./bin/agent setup clis --cooldown
+
+      - name: Run agent setup launchers
+        if: ${{ inputs.setup-launchers }}
+        run: ./bin/agent setup launchers
 
       - name: Verify install.sh outcome
         run: |
           # No `set -e`: every assertion exits explicitly, and nvm.sh is not
-          # written for strict mode. Source nvm (if present) so CLIs installed into
-          # nvm's prefix resolve -- which also makes the absence check below able to
-          # catch a regression that wrongly installed them under --no-prereqs.
+          # written for strict mode. Source nvm (if present) so CLIs installed by
+          # `agent setup clis` into nvm's prefix resolve.
           export NVM_DIR="$HOME/.nvm"
           if [ -s "$NVM_DIR/nvm.sh" ]; then
             # shellcheck disable=SC1091
@@ -79,10 +105,10 @@ jobs:
           fi
           for cli in claude copilot codex; do
             if [ "${{ inputs.expect-clis }}" = "true" ]; then
-              command -v "$cli" >/dev/null || { echo "::error::$cli was not installed by install.sh ${{ inputs.args }}"; exit 1; }
+              command -v "$cli" >/dev/null || { echo "::error::$cli was not installed by agent setup clis"; exit 1; }
               echo "found $cli -> $(command -v "$cli")"
             elif command -v "$cli" >/dev/null; then
-              echo "::error::$cli must NOT have been installed by install.sh ${{ inputs.args }}"; exit 1
+              echo "::error::$cli must NOT have been installed without agent setup clis"; exit 1
             else
               echo "$cli correctly absent"
             fi
@@ -100,5 +126,15 @@ jobs:
             [ -n "$wired" ] || { echo "::error::expected shell wiring, but no rc was wired"; exit 1; }
           else
             [ -z "$wired" ] || { echo "::error::expected NO shell wiring (${{ inputs.args }}), but an rc was wired"; exit 1; }
+          fi
+          if [ "${{ inputs.setup-launchers }}" = "true" ]; then
+            launcher_wired=
+            for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+              if [ -f "$rc" ] && grep -qF "copilot-env launchers" "$rc"; then
+                launcher_wired=1
+                echo "launchers found in $rc"
+              fi
+            done
+            [ -n "$launcher_wired" ] || { echo "::error::expected launcher wiring, but no rc had it"; exit 1; }
           fi
           echo "install.sh ${{ inputs.args }} verified on ${{ inputs.os }}"

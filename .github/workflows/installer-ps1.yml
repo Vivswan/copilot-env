@@ -9,32 +9,39 @@ on:
   workflow_call:
     inputs:
       args:
-        description: Flag(s) to pass to install.ps1 (e.g. "-Cooldown").
+        description: Flag(s) to pass to install.ps1 (for example "-NoShellIntegration").
         required: true
         type: string
       provision-bun:
         description: >-
-          true installs bun via setup-bun before running (winget is unreliable in
-          CI). false leaves bun ABSENT so -LocalInstall must install it via its
-          irm installer -- pair with expect-bun-local.
+          true installs bun via setup-bun before running; false lets the installer
+          install bun via bun.sh.
         type: boolean
         default: true
       expect-clis:
-        description: true asserts the agent CLIs (claude/copilot/codex) are installed afterward; false asserts they are ABSENT (e.g. -NoPrereqs must install nothing).
+        description: true asserts the agent CLIs (claude/copilot/codex) are installed after optional setup; false asserts they are absent.
         type: boolean
-        default: true
+        default: false
+      setup-clis:
+        description: true runs `agent setup clis --cooldown` after install.
+        type: boolean
+        default: false
+      setup-launchers:
+        description: true runs `agent setup launchers` after install.
+        type: boolean
+        default: false
       expect-wiring:
         description: true asserts the profile wiring is present; false asserts it is absent.
         type: boolean
         default: true
       expect-bun-local:
-        description: true asserts bun was installed user-locally (%USERPROFILE%\.bun), i.e. via irm not winget. Also pre-asserts bun is ABSENT before the install so the check isn't vacuous.
+        description: true asserts bun was installed user-locally (%USERPROFILE%\.bun). Also pre-asserts bun is ABSENT before install so the check is not vacuous.
         type: boolean
         default: false
       rerun:
         description: >-
           true runs install.ps1 a SECOND time after the first, exercising the
-          idempotent "everything already present" no-op path (must still exit 0).
+          repeat install path (must still exit 0).
           Same flag, same job -- no cross-scenario interference.
         type: boolean
         default: false
@@ -55,8 +62,8 @@ jobs:
         with:
           bun-version: 1.3.14
 
-      # For irm-bun scenarios bun must be ABSENT going in, or the post-run
-      # user-local assertion is vacuous (e.g. a future runner image ships bun).
+      # For bun.sh scenarios bun must be ABSENT going in, or the post-run user-local
+      # assertion is vacuous (e.g. a future runner image ships bun).
       - name: Assert bun absent before install
         if: ${{ inputs.expect-bun-local }}
         shell: pwsh
@@ -75,15 +82,35 @@ jobs:
         run: |
           ./install.ps1 ${{ inputs.args }}
           if ('${{ inputs.rerun }}' -eq 'true') {
-            Write-Host '--- idempotency re-run (everything now present, must no-op) ---'
+            Write-Host '--- repeat install run (must still succeed) ---'
             ./install.ps1 ${{ inputs.args }}
           }
+
+      - name: Assert installer did not install optional CLIs
+        shell: pwsh
+        run: |
+          foreach ($cli in 'claude', 'copilot', 'codex') {
+            if (Get-Command $cli -ErrorAction SilentlyContinue) {
+              Write-Error "::error::$cli must NOT be installed by install.ps1 ${{ inputs.args }}"; exit 1
+            }
+            Write-Host "$cli correctly absent after installer"
+          }
+
+      - name: Run agent setup clis
+        if: ${{ inputs.setup-clis }}
+        shell: pwsh
+        run: ./bin/agent.ps1 setup clis --cooldown
+
+      - name: Run agent setup launchers
+        if: ${{ inputs.setup-launchers }}
+        shell: pwsh
+        run: ./bin/agent.ps1 setup launchers
 
       - name: Verify install.ps1 outcome
         shell: pwsh
         run: |
-          # npm is optional under -NoPrereqs, so don't hard-depend on it: probe the
-          # npm global bin only when npm exists, otherwise rely on Get-Command.
+          # npm may be absent unless `agent setup clis` ran: probe the npm global
+          # bin only when npm exists, otherwise rely on Get-Command.
           $bin = $null
           if (Get-Command npm.cmd -ErrorAction SilentlyContinue) {
             $bin = (& npm.cmd prefix -g).Trim()
@@ -94,10 +121,10 @@ jobs:
               $found = (Test-Path (Join-Path $bin "$cli.cmd")) -or (Test-Path (Join-Path $bin $cli))
             }
             if ('${{ inputs.expect-clis }}' -eq 'true') {
-              if (-not $found) { Write-Error "::error::$cli was not installed by install.ps1 ${{ inputs.args }}"; exit 1 }
+              if (-not $found) { Write-Error "::error::$cli was not installed by agent setup clis"; exit 1 }
               Write-Host "found $cli"
             } else {
-              if ($found) { Write-Error "::error::$cli must NOT have been installed by install.ps1 ${{ inputs.args }}"; exit 1 }
+              if ($found) { Write-Error "::error::$cli must NOT have been installed without agent setup clis"; exit 1 }
               Write-Host "$cli correctly absent"
             }
           }
@@ -116,7 +143,11 @@ jobs:
           }
           if ('${{ inputs.expect-bun-local }}' -eq 'true') {
             $bunExe = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
-            if (-not (Test-Path $bunExe)) { Write-Error "::error::-LocalInstall did not install bun via irm ($bunExe missing)"; exit 1 }
+            if (-not (Test-Path $bunExe)) { Write-Error "::error::installer did not install bun via bun.sh ($bunExe missing)"; exit 1 }
             Write-Host "bun installed user-locally at $bunExe"
+          }
+          if ('${{ inputs.setup-launchers }}' -eq 'true') {
+            $launcherWired = [bool]($profiles | Where-Object { (Test-Path $_) -and (Select-String -Path $_ -SimpleMatch 'agents.launchers.ps1' -Quiet) })
+            if (-not $launcherWired) { Write-Error "::error::expected launcher wiring, but none found"; exit 1 }
           }
           Write-Host "install.ps1 ${{ inputs.args }} verified"

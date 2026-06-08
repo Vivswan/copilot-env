@@ -32,22 +32,20 @@ curl -fsSL https://raw.githubusercontent.com/Vivswan/copilot-env/main/install.sh
 irm https://raw.githubusercontent.com/Vivswan/copilot-env/main/install.ps1 | iex
 ```
 
-Installs bun, the agent CLIs, and the gateway into `~/.copilot-env`, then wires your shell.
+Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, then wires your shell.
 
-- **Prerequisite:** `git` (macOS/Linux only); the installer fetches everything else.
-- **Idempotent:** re-run to complete or repair an install.
+- **Artifact:** the installer extracts the selected GitHub Release source archive over HTTPS and verifies its source checksum against GitHub release metadata before extraction.
+- **Replaceable:** re-run the bootstrapper to replace the previous install with the selected release.
 - **Next:** restart your shell, then `agent start`.
+- **Optional:** run `agent setup clis --launchers` for Claude/Copilot/Codex CLIs and `cl` / `co` / `cx`.
 - **Update later:** `agent update`.
+- **Specific version:** download `install.sh` / `install.ps1` from that GitHub Release's assets and run it; the `main` one-liner installs the latest release.
 
 ### Install flags
 
 | macOS / Linux | Windows | Effect |
 | --- | --- | --- |
 | `--dir DIR` | `-InstallDir DIR` | Install target (default `~/.copilot-env`; overrides `COPILOT_ENV_DIR`). |
-| `--cooldown[=DAYS]` | `-Cooldown [-CooldownDays N]` | Only install releases public for ≥ N days (default 7): a supply-chain delay for the agent CLIs and the copilot-env release. Already-installed CLIs are left untouched. |
-| `--launchers` | `-Launchers` | Also wire the opt-in `cl` / `co` / `cx` launchers (see below). |
-| `--no-prereqs` | `-NoPrereqs` | Verify prerequisites instead of installing them (`bun` missing is fatal; Node/CLIs missing is a warning). |
-| `--local-install` | `-LocalInstall` | Never use `sudo` or a system package manager (`brew`/`apt`/`winget`). Mutually exclusive with `--no-prereqs`. |
 | `--no-shell-integration` | `-NoShellIntegration` | Don't touch your rc / `$PROFILE`. |
 
 ## Usage
@@ -59,7 +57,9 @@ agent cost               # estimated token spend across all per-host usage DBs
 agent stop               # stop the daemon
 agent health             # check the gateway is reachable (exit 1 if not)
 agent update             # update to the latest release (--check / --cooldown)
-agent shell-integration  # (re)wire rc / $PROFILE (--launchers, or --remove to unwire)
+agent setup clis         # install optional CLIs (--cooldown[=DAYS], --no-sudo, --launchers)
+agent setup launchers    # wire/remove opt-in cl / co / cx launchers
+agent setup shell        # (re)wire rc / $PROFILE (--remove to unwire)
 agent codex-config       # write Codex config into ~/.codex, wired to the gateway
 agent host-codex         # per-host CODEX_HOME symlink farm (Linux-only)
 ```
@@ -76,8 +76,7 @@ The installer wires the `agent` wrapper into your shell and exports the gateway 
 
 The `cl` / `co` / `cx` launchers are **opt-in** (so they don't claim those names unless you ask): `cl` → Claude, `co` → Copilot, `cx` → `codex-config` then Codex. Enable them via:
 
-- **Installer:** `--launchers` / `-Launchers`.
-- **CLI:** `agent shell-integration --launchers`.
+- **CLI:** `agent setup clis --launchers` while installing CLIs, or `agent setup launchers` just for the launcher block; remove only the launcher block with `agent setup launchers --remove`.
 - **Manually:** source the file:
 
 ```bash

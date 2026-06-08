@@ -1,3 +1,4 @@
+// Cross-platform shell/profile integration writer for agent wrappers and launchers.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -6,7 +7,7 @@ import { consola } from "consola";
 
 import { PROJECT_ROOT } from "../utils/root.ts";
 
-// `agent shell-integration` owns wiring the copilot-env integration into the
+// `agent setup shell` owns wiring the copilot-env integration into the
 // user's shell startup -- the logic install.sh / install.ps1 used to duplicate.
 // File wiring is done here in TS for BOTH platforms; we only shell out to tiny
 // `powershell -Command` one-liners for the two Windows-only needs TS can't cover
@@ -18,23 +19,31 @@ const MARKER = "# copilot-env shell integration";
 const LAUNCHERS_MARKER = "# copilot-env launchers";
 const ALL_MARKERS = [MARKER, LAUNCHERS_MARKER];
 
-/** A line equals the given marker ignoring a trailing CR (rc/profile files may be CRLF). */
-const lineIs = (line: string, marker: string): boolean => line.replace(/\r$/, "") === marker;
-
-/** A line equals any of our markers (used by removal to strip every block we own). */
-const isAnyMarker = (line: string): boolean => ALL_MARKERS.some((m) => lineIs(line, m));
-
-export function runShellIntegration(args: {
+export interface ShellIntegrationArgs {
   remove?: boolean;
+  removeLaunchers?: boolean;
   "all-hosts"?: boolean;
   launchers?: boolean;
   existingOnly?: boolean;
-}): void {
+}
+
+/** A line equals the given marker ignoring a trailing CR (rc/profile files may be CRLF). */
+const lineIs = (line: string, marker: string): boolean => line.replace(/\r$/, "") === marker;
+
+export function runShellIntegration(args: ShellIntegrationArgs): void {
   const remove = Boolean(args.remove);
+  const removeLaunchers = Boolean(args.removeLaunchers);
   const windows = process.platform === "win32";
 
   if (remove) {
     const removed = removeFrom(
+      windows ? windowsProfilePaths(Boolean(args["all-hosts"])) : rcFiles(true),
+    );
+    if (removed) consola.info(windows ? "Restart PowerShell." : "Restart your shell.");
+    return;
+  }
+  if (removeLaunchers) {
+    const removed = removeLaunchersFrom(
       windows ? windowsProfilePaths(Boolean(args["all-hosts"])) : rcFiles(true),
     );
     if (removed) consola.info(windows ? "Restart PowerShell." : "Restart your shell.");
@@ -69,16 +78,16 @@ export function runShellIntegration(args: {
 // --- shared wire/remove core --------------------------------------------------
 
 /**
- * Strip every owned block (integration + launchers) from rc/profile content. Each
+ * Strip owned blocks from rc/profile content. Each
  * block is its marker line + the two lines after it, plus the blank line the block
  * prepends (only when that preceding line is actually empty). Both block types share
  * this 3-line shape.
  */
-function stripOwnedBlocks(content: string): string {
+function stripBlocks(content: string, markers: string[]): string {
   const lines = content.split("\n");
   const skip = new Set<number>();
   lines.forEach((line, idx) => {
-    if (!isAnyMarker(line)) return;
+    if (!markers.some((marker) => lineIs(line, marker))) return;
     if (idx > 0 && (lines[idx - 1] ?? "").replace(/\r$/, "") === "") skip.add(idx - 1);
     skip
       .add(idx)
@@ -152,19 +161,42 @@ function wireBlocks(
   return active;
 }
 
-function removeFrom(files: string[]): boolean {
+function removeBlocksFrom(
+  files: string[],
+  markers: string[],
+  removedMessage: (file: string) => string,
+  missingMessage: string,
+): boolean {
   let removedAny = false;
   for (const file of files) {
     if (!existsSync(file)) continue;
     const content = readFileSync(file, "utf-8");
-    const stripped = stripOwnedBlocks(content);
+    const stripped = stripBlocks(content, markers);
     if (stripped === content) continue; // no owned block present
     writeFileSync(file, stripped);
-    consola.success(`Removed shell integration from ${file}`);
+    consola.success(removedMessage(file));
     removedAny = true;
   }
-  if (!removedAny) consola.info("No copilot-env shell integration found to remove.");
+  if (!removedAny) consola.info(missingMessage);
   return removedAny;
+}
+
+function removeFrom(files: string[]): boolean {
+  return removeBlocksFrom(
+    files,
+    ALL_MARKERS,
+    (file) => `Removed shell integration from ${file}`,
+    "No copilot-env shell integration found to remove.",
+  );
+}
+
+function removeLaunchersFrom(files: string[]): boolean {
+  return removeBlocksFrom(
+    files,
+    [LAUNCHERS_MARKER],
+    (file) => `Removed copilot-env launchers from ${file}`,
+    "No copilot-env launchers found to remove.",
+  );
 }
 
 // --- block builders (path-quoted; exported for tests) -------------------------

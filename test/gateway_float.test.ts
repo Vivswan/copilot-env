@@ -8,11 +8,12 @@ import {
   floatGateway,
   gatewayFloatUpToDate,
   gatewayFloatVerifyStatus,
+  gatewayInstallAssertStatus,
   nodeModulesFresh,
   readBunMinimumReleaseAgeSeconds,
   type SpawnSyncRunner,
 } from "../src/gateway_float.ts";
-import type { ProjectConfig } from "../src/project_config.ts";
+import type { ProjectConfig } from "../src/utils/project_config.ts";
 
 // gatewayFloatUpToDate / nodeModulesFresh back the bin shims' `--verify` fast path:
 // they decide whether a full `bun install` can be skipped.
@@ -264,6 +265,50 @@ describe("floatGateway", () => {
       "--ignore-scripts",
       "--minimum-release-age=0",
     ]);
+  });
+});
+
+describe("gatewayInstallAssertStatus", () => {
+  test("fails when the gateway is missing", () => {
+    const status = gatewayInstallAssertStatus(dir, CONFIG);
+
+    expect(status.ok).toBe(false);
+    expect(status.message).toContain("gateway float did not install @jeffreycao/copilot-api");
+  });
+
+  test("fails below the configured floor", () => {
+    installGateway(dir, "1.9.99");
+
+    const status = gatewayInstallAssertStatus(dir, CONFIG);
+
+    expect(status.ok).toBe(false);
+    expect(status.message).toContain("is below the 1.10.0 floor");
+  });
+
+  test("fails above the configured ceiling", () => {
+    installGateway(dir, "1.10.31");
+
+    const status = gatewayInstallAssertStatus(dir, {
+      "gatewayMinVersion": "1.10.0",
+      "gatewayMaxVersion": "1.10.30",
+    });
+
+    expect(status.ok).toBe(false);
+    expect(status.message).toContain("is above the 1.10.30 ceiling");
+  });
+
+  test("passes within the configured floor and ceiling", () => {
+    installGateway(dir, "1.10.30");
+
+    const status = gatewayInstallAssertStatus(dir, {
+      "gatewayMinVersion": "1.10.0",
+      "gatewayMaxVersion": "1.10.30",
+    });
+
+    expect(status.ok).toBe(true);
+    expect(status.message).toBe(
+      "gateway float OK: @jeffreycao/copilot-api 1.10.30 (within [1.10.0, 1.10.30])",
+    );
   });
 });
 

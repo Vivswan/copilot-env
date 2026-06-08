@@ -1,6 +1,11 @@
+// `agent env`: prints machine-readable shell exports for the local gateway.
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
 import { CopilotApiState } from "../copilot_api/state.ts";
+
+export interface EnvArgs {
+  format?: string;
+}
 
 /**
  * `env`: print env assignments for the local gateway, evaluated by the calling
@@ -8,7 +13,7 @@ import { CopilotApiState } from "../copilot_api/state.ts";
  * `agent` wrapper evals it), so it must emit ONLY `export KEY=val` /
  * `$env:KEY = '...'` lines — never logs.
  */
-export function runEnv(args: { format?: string }): void {
+export function runEnv(args: EnvArgs): void {
   const format = String(args.format ?? "posix").toLowerCase();
   const isPowershell = format === "powershell" || format === "pwsh" || format === "ps";
   if (!isPowershell && format !== "posix" && format !== "sh" && format !== "bash") {

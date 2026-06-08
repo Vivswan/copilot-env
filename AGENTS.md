@@ -13,22 +13,28 @@ The non-obvious choices live here; everything else is discoverable in the code.
 - **The gateway floats.** `@jeffreycao/copilot-api` is tracked as `"latest"`; `src/gateway_float.ts` (run as `bun install`'s postinstall) computes the newest release satisfying `bunfig.toml`'s `install.minimumReleaseAge`, clamps it to `[GATEWAY_MIN_VERSION, GATEWAY_MAX_VERSION]` (`copilot-env.config`), then overlays that exact version. The overlay uses `bun add --no-save`, so `bun.lock` stays the pinned reproducible baseline for every *other* dep — but note `bun list`/bun's summary then report the *locked* version, not the floated one on disk (check `node_modules/@jeffreycao/copilot-api/package.json`).
 - **Best-effort at install, hard floor at launch.** The postinstall float never fails `bun install` (offline/registry hiccups are swallowed), so a fresh offline install could sit below the floor. `start.ts` makes the floor a real contract: it refuses to launch a sub-floor gateway. Bump `GATEWAY_MIN_VERSION` when the wrapper depends on newer gateway behavior; set the optional ceiling to hold the float below a known-bad release.
 - **Float env knobs** (set on any `bin/agent` call or in root `.env`, loaded from `PROJECT_ROOT` by `src/utils/dotenv.ts`): `COPILOT_API_VERSION` pins an exact release/tag (bypasses floor + cooldown); `COPILOT_API_NO_FLOAT=1` skips the float. Real shell environment wins over `.env`.
-- **Supply-chain cooldown applies to the installers too.** `install.sh --cooldown` / `install.ps1 -Cooldown` install the newest copilot-env *release* that is ≥7 days old (downloading that release's tarball) **and** the newest agent-CLI (claude/copilot/codex) npm releases that old. Both picks run under the installed bun via shared resolvers: `src/install/aged-version.ts` (the npm-CLI version, fed `npm view <pkg> time`) and `src/install/resolve-release.ts` (the copilot-env release — the same module `agent update` imports, which the installers download standalone and run).
+- **Supply-chain cooldown applies after bootstrap.** The bootstrap installers always resolve the latest copilot-env release; version-specific installs use the `install.sh` / `install.ps1` assets attached to that GitHub Release. Optional copilot-env release cooldown lives under `agent update --cooldown[=DAYS]`; optional agent-CLI cooldown lives under `agent setup clis --cooldown[=DAYS]` and uses `src/utils/aged_version.ts` fed by `npm view <pkg> time`. Copilot-env release selection uses `src/install/resolve-release.ts` (the same module `agent update` imports, which the installers download standalone and run).
 - **`agent env` is the one machine-readable command.** The shell wrapper runs a command, then evals `agent env` (and only that) to refresh session state — so a new subcommand needs no wrapper change, and no command's incidental stdout is ever eval'd.
 
 ## Repo map
 
 - `bin/agent`, `bin/agent.ps1` — self-bootstrapping launchers (install bun + deps, dispatch `cli.ts`).
 - `shell/agents.bashrc`, `shell/agents.ps1` — shell integration (sourced from rc / `$PROFILE`); the `agent` wrapper + eager gateway-env export. Pure runtime wiring, never installs.
-- `shell/agents.launchers.bashrc`, `shell/agents.launchers.ps1` — opt-in `cl`/`co`/`cx` agent launchers, sourced after the integration file (`cx` re-applies `codex-config` before launch). Wired only on `agent shell-integration --launchers` (or the installer's `--launchers` / `-Launchers`); otherwise source manually.
-- `install.sh`, `install.ps1` — one-line installers: prereqs (Node, bun) + agent CLIs + shell wiring, download the latest release tarball to `~/.copilot-env`. Idempotent.
-- `src/cli.ts` + `src/commands/` — citty entry; one subcommand → one `run*` module: `start`/`stop`/`health`/`env`/`cost`/`codex-config`/`host-codex` (the last, a per-host Codex `CODEX_HOME` farm, is Linux-only).
+- `shell/agents.launchers.bashrc`, `shell/agents.launchers.ps1` — opt-in `cl`/`co`/`cx` agent launchers, sourced after the integration file (`cx` re-applies `codex-config` before launch). Wired with `agent setup clis --launchers` or `agent setup launchers`, removed with `agent setup launchers --remove`; otherwise source manually.
+- `install.sh`, `install.ps1` — one-line bootstrap installers: ensure bun, download the latest release source archive to `~/.copilot-env`, verify its source checksum against GitHub release metadata, replace any previous install at the target dir, then run release-local `src/install/installer.ts` to bootstrap deps and wire shell integration. Optional agent CLIs live under `agent setup clis`. Version-specific installer copies are uploaded as release assets by `.github/workflows/release-please.yml` after release creation.
+- `src/install/installer.ts` — release-bundled first-install handoff; keep it dependency-light because it runs before `node_modules` exists.
+- `src/cli.ts` — citty entry; declares subcommands and delegates to command/domain `run*` functions.
+- `src/commands/` — command modules that still own their implementation (`start`/`stop`/`health`/`env`/`update`). Pure wrapper modules are avoided.
 - `src/gateway_float.ts` — the gateway float (see above).
+- `src/commands/setup.ts` — optional agent-CLI install/verification plus setup subcommand helpers.
+- `src/commands/shell_integration.ts` — cross-platform shell/profile block wiring for integration and launchers.
+- `src/install/release.ts` — release archive download/verification/extraction/sync used by `agent update`.
+- `src/codex/` — Codex config and per-host `CODEX_HOME` farm logic.
 - `src/migrations/` — one file per version step (`<from-version>.ts`, registered in `index.ts`); `agent update` runs the due ones for the `[old, new)` range. See "Migrations" below.
 - `src/copilot_api/` — gateway-specific helpers: admin REST, config/state JSON, model-alias generation, per-host paths, daemon process control.
 - `src/usage/` — `cost` reporting over per-host SQLite usage DBs using live OpenRouter pricing.
 - `src/utils/` — generic helpers (hostname, `PROJECT_ROOT`, semver compare).
-- `copilot-env.config` — `KEY=value` gateway-float floor/ceiling, read by `src/gateway_float.ts` (+ `start.ts` / `scripts/verify-gateway-install.ts`).
+- `copilot-env.config` — `KEY=value` gateway-float floor/ceiling, read by `src/gateway_float.ts` (+ `start.ts`).
 - `test/` — `bun test` suites: pure-logic units + a start/stop daemon lifecycle against `test/copilot-api-fake.mjs`.
 - `.github/`, `.devcontainer/`, `.claude/`, `.codex/` — CI/CodeQL, Codespaces, and agent-worktree wiring.
 
@@ -42,7 +48,7 @@ Every agent/dev environment and any fresh `git worktree` initializes through **o
 
 `agent update` runs the due migrations after it swaps in the new release: it spawns `bun src/migrations/index.ts <old> <new>` (the module is runnable via an `import.meta.main` guard) — a **fresh process**, because the running `update.ts` still holds the pre-update code in memory, so the new migration set and the code it calls must load from disk. `dueMigrations` selects every from-version left behind, the half-open range `[old, new)`; failures are non-fatal (warn, continue).
 
-**Bootstrapping caveat:** an update is driven by the *old* release's `update.ts`, so the migration call only fires for updates whose old version already ships it (≥ the one that added migrations). The very transition that introduces the subsystem can't auto-run via `update`; that one is covered by the installer's `shell-integration` refresh (which rewrites a stale owned block in place — see `wireBlocks`/`upsertBlock` in `src/commands/shell_integration.ts`).
+**Bootstrapping caveat:** an update is driven by the *old* release's `update.ts`, so the migration call only fires for updates whose old version already ships it (≥ the one that added migrations). The very transition that introduces the subsystem can't auto-run via `update`; that one is covered by the installer's `agent setup shell` refresh (which rewrites a stale owned block in place — see `wireBlocks`/`upsertBlock` in `src/commands/shell_integration.ts`).
 
 ## Conventions
 
@@ -56,7 +62,7 @@ Every agent/dev environment and any fresh `git worktree` initializes through **o
 
 ## Releases
 
-Versioned via [release-please](.github/workflows/release-please.yml): every push to `main` updates ONE rolling **release PR** (`chore(main): release X.Y.Z`) that bumps `package.json` + regenerates `CHANGELOG.md` from the commit prefixes. **Nothing releases on push** — merging that PR is what tags `vX.Y.Z` and publishes the GitHub Release. The installers and `agent update` install the newest release tag (not `main`); `--cooldown` installs the newest release ≥N days old.
+Versioned via [release-please](.github/workflows/release-please.yml): every push to `main` updates ONE rolling **release PR** (`chore(main): release X.Y.Z`) that bumps `package.json` + regenerates `CHANGELOG.md` from the commit prefixes. **Nothing releases on push** — merging that PR is what tags `vX.Y.Z` and publishes the GitHub Release. The main-branch installers and `agent update` install the newest release tag (not `main`); `agent update --cooldown[=DAYS]` installs the newest release ≥N days old.
 
 - **Releases only ever move forward.** Once a version is published (tagged + GitHub Release), treat it as immutable: never re-release it, overwrite it, or pin a future release back to it — users may already be on it. Each new release must be **> the latest published tag**. `release-as` is a one-time override to set a starting point (it forced the first release to `1.0.0`, and has since been removed); leave it **absent** so versions derive from commit prefixes (`feat:`→minor, etc.). Do not reintroduce it pointing at a shipped or older version.
 - The release PR opens with `RELEASE_PLEASE_TOKEN` (a PAT or GitHub App token, set as a repo secret) so CI runs on it like a normal PR. **Without that secret** the workflow falls back to the built-in `GITHUB_TOKEN`, and GitHub's recursion guard means workflows never trigger on a `GITHUB_TOKEN`-opened PR — so the required `all-green` check sits unmet and you merge with admin bypass (the code already passed CI into `main`).
@@ -72,7 +78,7 @@ bun run lint:sh       # shellcheck     (skip-if-absent)
 bun run lint:ps       # PSScriptAnalyzer (skip-if-absent)
 bun run check         # biome check --write src bin test scripts
 
-./bin/agent start     # start the daemon; also: stop / health / env / cost / codex-config / host-codex
+./bin/agent start     # start the daemon; also: stop / health / env / cost / setup / codex-config / host-codex
 ./bin/agent env       # print shell env vars pointing at the local gateway
 ```
 

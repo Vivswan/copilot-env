@@ -1,3 +1,4 @@
+// Port selection and discovery helpers for the local copilot-api gateway.
 import * as net from "node:net";
 
 import { CopilotApiState } from "./state.ts";

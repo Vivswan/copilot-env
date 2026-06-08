@@ -1,3 +1,4 @@
+// Per-host Codex home manager: builds the Linux CODEX_HOME symlink farm.
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createConsola } from "consola";
@@ -5,9 +6,14 @@ import { execaSync } from "execa";
 import which from "which";
 import { CopilotApiState } from "../copilot_api/state.ts";
 import { getSanitizedHostname, HOME } from "../utils/hostname.ts";
-import { applyCodexConfig } from "./codex_config.ts";
+import { applyCodexConfig } from "./config.ts";
 
 const logger = createConsola({ stdout: process.stderr, stderr: process.stderr });
+
+export interface CodexHostArgs {
+  "codex-home"?: string;
+  delete?: boolean;
+}
 
 // The per-host CODEX_HOME (~/.codex/hosts/<hostname>). Linux-only: it builds and
 // inspects the shared-state symlink farm used on the Linux fleet.
@@ -492,7 +498,7 @@ function buildCodexSymlinkFarm(codexHome: string): number {
  * persist the CODEX_HOME to state so `env` exports it. With `--delete`, remove
  * that per-host dir and clear the state instead. No stdout.
  */
-export function runCodexHost(args: { "codex-home"?: string; delete?: boolean }): void {
+export function runCodexHost(args: CodexHostArgs): void {
   assertLinux("The CODEX_HOME symlink farm (host_codex)");
   // Resolve to an absolute path: it gets persisted to state and re-exported into
   // future shells, so a cwd-relative value would later resolve against the wrong

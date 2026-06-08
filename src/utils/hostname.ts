@@ -1,3 +1,4 @@
+// Hostname normalization helpers for per-host runtime and Codex directories.
 import os from "node:os";
 
 export const HOME: string = process.env.HOME || os.homedir();

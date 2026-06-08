@@ -1,11 +1,20 @@
+// CLI entrypoint: declares citty commands and delegates behavior to command modules.
+//
+// Direct run:
+//   bun src/cli.ts <command> [args]
+//
+// This is the implementation behind bin/agent and bin/agent.ps1. The launchers
+// normally run this after ensuring Bun/deps are present; direct runs are useful
+// for tests and local command debugging. Run `bun src/cli.ts --help` for the
+// command tree and per-command arguments.
 import "./utils/dotenv.ts";
 import { defineCommand, runMain } from "citty";
 import { consola } from "consola";
-import { runCodexConfig } from "./commands/codex_config.ts";
-import { runCodexHost } from "./commands/codex_host.ts";
+import { runCodexConfig } from "./codex/config.ts";
+import { runCodexHost } from "./codex/host.ts";
 import { runEnv } from "./commands/env.ts";
 import { runHealth } from "./commands/health.ts";
-import { runShellIntegration } from "./commands/shell_integration.ts";
+import { runSetupClis, runSetupLaunchers, runSetupShell } from "./commands/setup.ts";
 import { runStart } from "./commands/start.ts";
 import { runStop } from "./commands/stop.ts";
 import { runUpdate } from "./commands/update.ts";
@@ -14,9 +23,51 @@ import { OPENROUTER_MODELS_URL } from "./usage/pricing.ts";
 import { packageVersion } from "./utils/version.ts";
 
 // Thin citty wiring: each subcommand only declares its parameters and calls the
-// matching run function from src/commands/* or src/usage/*. bin/agent runs
-// `bun install` (in-place, in the checkout) before this, so the install/float is
-// not a subcommand here.
+// matching domain/command run function. bin/agent runs `bun install` (in-place,
+// in the checkout) before this, so the install/float is not a subcommand here.
+
+type CliArgs = Record<string, unknown>;
+
+function boolArg(args: CliArgs, dashed: string, camel = dashed): boolean {
+  return Boolean(args[dashed] ?? args[camel]);
+}
+
+function parseNonNegativeDays(raw: string, flag: string): number {
+  if (!/^\d+$/.test(raw)) {
+    throw new Error(`${flag} expects a non-negative whole number of days (got '${raw}')`);
+  }
+  return Number.parseInt(raw, 10);
+}
+
+function optionalDaysArg(rawArgs: string[], name: string, defaultDays: number): number | null {
+  const flag = `--${name}`;
+  let days: number | null = null;
+
+  for (let i = 0; i < rawArgs.length; i++) {
+    const arg = rawArgs[i];
+    if (arg === undefined) continue;
+    if (arg === `--no-${name}`) {
+      days = null;
+      continue;
+    }
+    if (arg === flag) {
+      const next = rawArgs[i + 1];
+      if (next !== undefined && (!next.startsWith("-") || /^-\d/.test(next))) {
+        days = parseNonNegativeDays(next, flag);
+        i++;
+      } else {
+        days = defaultDays;
+      }
+      continue;
+    }
+    if (arg.startsWith(`${flag}=`)) {
+      const raw = arg.slice(flag.length + 1);
+      days = parseNonNegativeDays(raw, flag);
+    }
+  }
+
+  return days;
+}
 
 const start = defineCommand({
   meta: { name: "start", description: "Start copilot-api in the background, detached." },
@@ -139,13 +190,7 @@ const update = defineCommand({
     cooldown: {
       type: "boolean",
       default: false,
-      description:
-        "Adopt the newest release aged >= --cooldown-days days, not strictly the latest.",
-    },
-    "cooldown-days": {
-      type: "string",
-      default: "7",
-      description: "Cooldown window in days (with --cooldown). Default 7.",
+      description: "Adopt the newest release aged >= DAYS. Bare --cooldown uses 7 days.",
     },
     force: {
       type: "boolean",
@@ -154,18 +199,17 @@ const update = defineCommand({
         "Update even when this is a git checkout (.git present); the sync overwrites local files.",
     },
   },
-  run: ({ args }) =>
+  run: ({ args, rawArgs }) =>
     runUpdate({
       check: Boolean(args.check),
-      cooldown: Boolean(args.cooldown),
-      cooldownDays: String(args["cooldown-days"]),
+      cooldown: optionalDaysArg(rawArgs, "cooldown", 7),
       force: Boolean(args.force),
     }),
 });
 
-const shellIntegration = defineCommand({
+const setupShell = defineCommand({
   meta: {
-    name: "shell-integration",
+    name: "shell",
     description:
       "Wire (or --remove) the copilot-env shell integration into your rc files / PowerShell $PROFILE.",
   },
@@ -180,18 +224,93 @@ const shellIntegration = defineCommand({
       default: false,
       description: "Windows only: target the CurrentUserAllHosts profile.",
     },
-    launchers: {
+  },
+  run: ({ args }) =>
+    runSetupShell({
+      remove: boolArg(args, "remove"),
+      "all-hosts": boolArg(args, "all-hosts", "allHosts"),
+    }),
+});
+
+const setupLaunchers = defineCommand({
+  meta: {
+    name: "launchers",
+    description: "Wire or remove the opt-in cl / co / cx launchers.",
+  },
+  args: {
+    remove: {
       type: "boolean",
       default: false,
-      description: "Also wire the opt-in cl / co / cx launchers.",
+      description: "Remove only the launcher block.",
+    },
+    "all-hosts": {
+      type: "boolean",
+      default: false,
+      description: "Windows only: target the CurrentUserAllHosts profile.",
     },
   },
   run: ({ args }) =>
-    runShellIntegration({
-      remove: Boolean(args.remove),
-      "all-hosts": Boolean(args["all-hosts"]),
-      launchers: Boolean(args.launchers),
+    runSetupLaunchers({
+      remove: boolArg(args, "remove"),
+      "all-hosts": boolArg(args, "all-hosts", "allHosts"),
     }),
+});
+
+const setupClis = defineCommand({
+  meta: {
+    name: "clis",
+    description: "Install or verify the optional claude / copilot / codex agent CLIs.",
+  },
+  args: {
+    cooldown: {
+      type: "boolean",
+      default: false,
+      description:
+        "Install the newest agent-CLI npm releases aged >= DAYS. Bare --cooldown uses 7 days.",
+    },
+    "no-sudo": {
+      type: "boolean",
+      default: false,
+      description: "Avoid sudo/system package managers; use only user-local tooling.",
+    },
+    launchers: {
+      type: "boolean",
+      default: false,
+      description: "Also wire the opt-in cl / co / cx launchers after CLI setup.",
+    },
+    "all-hosts": {
+      type: "boolean",
+      default: false,
+      description: "Windows only: with --launchers, target the CurrentUserAllHosts profile.",
+    },
+    prereqs: {
+      type: "boolean",
+      default: true,
+      description: "Install missing prerequisites before installing agent CLIs.",
+      negativeDescription: "Verify prerequisites and CLIs only; install nothing.",
+    },
+  },
+  run: ({ args, rawArgs }) => {
+    runSetupClis({
+      "all-hosts": boolArg(args, "all-hosts", "allHosts"),
+      cooldown: optionalDaysArg(rawArgs, "cooldown", 7),
+      launchers: boolArg(args, "launchers"),
+      noSudo: boolArg(args, "no-sudo", "noSudo"),
+      noPrereqs: args.prereqs === false || boolArg(args, "no-prereqs", "noPrereqs"),
+    });
+  },
+});
+
+const setup = defineCommand({
+  meta: {
+    name: "setup",
+    description: "Configure optional shell, launcher, and agent-CLI integrations.",
+  },
+  subCommands: {
+    shell: setupShell,
+    launchers: setupLaunchers,
+    clis: setupClis,
+  },
 });
 
 const cli = defineCommand({
@@ -208,7 +327,7 @@ const cli = defineCommand({
     cost,
     "codex-config": setupCodexConfig,
     "host-codex": setupCodexHost,
-    "shell-integration": shellIntegration,
+    setup,
     update,
   },
 });

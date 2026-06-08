@@ -37,9 +37,9 @@ jobs:
       # fails the install). Without this check a silently broken float would slip
       # through CI, since the start/stop lifecycle below uses a FAKE gateway
       # (COPILOT_API_ENTRY) and never resolves the real one. This asserts the
-      # float actually installed @jeffreycao/copilot-api >= the floor, on every OS.
-      - name: Verify gateway float installed the gateway (>= floor)
-        run: bun scripts/verify-gateway-install.ts
+      # float actually installed @jeffreycao/copilot-api within config bounds, on every OS.
+      - name: Verify gateway float installed the gateway
+        run: bun src/gateway_float.ts --assert-installed
 
       - name: Typecheck
         run: bun run typecheck
@@ -82,15 +82,10 @@ jobs:
   # Each install.sh scenario runs as its OWN isolated job (fresh runner, fresh
   # $HOME) via the reusable installer-sh.yml -- they can never interfere with one
   # another. Runs from the checkout, so it exercises THIS commit, not origin/main.
-  #   full   : end-to-end install. GitHub runners ship Node, so install.sh reuses
-  #            the runner's node (its nvm fallback only runs when node is absent);
-  #            installs bun + the three cooldown-pinned CLIs + rc wiring.
-  #            bun is installed BY the installer (provision-bun: false).
-  #   no-prereqs    : verify-only; bun must be pre-present (provision-bun: true) and
-  #                   the installer installs nothing (expect-clis: false).
-  #   local-install : no-sudo path on a bare runner -- bun via curl, the runner's
-  #                   Node, CLIs via npm, never a system package manager.
-  #   no-shell-integration : full install minus rc wiring (expect-wiring: false).
+  #   default          : bootstrap install + shell wiring; agent CLIs stay absent.
+  #   setup-clis       : bootstrap install, then `agent setup clis --cooldown`.
+  #   setup-launchers  : bootstrap install, then `agent setup launchers`.
+  #   no-shell-integration : bootstrap install minus rc wiring.
   install-sh:
     name: install.sh ${{ matrix.scenario.name }}
     strategy:
@@ -98,43 +93,41 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         scenario:
-          - { name: "full (--cooldown)", args: "--cooldown", provision-bun: false, expect-clis: true, expect-wiring: true, rerun: false }
-          - { name: "--no-prereqs", args: "--no-prereqs", provision-bun: true, expect-clis: false, expect-wiring: true, rerun: false }
-          - { name: "--local-install", args: "--local-install", provision-bun: false, expect-clis: true, expect-wiring: true, rerun: true }
-          - { name: "--no-shell-integration", args: "--no-shell-integration", provision-bun: false, expect-clis: true, expect-wiring: false, rerun: false }
+          - { name: "default", args: "", provision-bun: false, setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: true, rerun: true }
+          - { name: "setup clis", args: "", provision-bun: false, setup-clis: true, setup-launchers: false, expect-clis: true, expect-wiring: true, rerun: false }
+          - { name: "setup launchers", args: "", provision-bun: false, setup-clis: false, setup-launchers: true, expect-clis: false, expect-wiring: true, rerun: false }
+          - { name: "--no-shell-integration", args: "--no-shell-integration", provision-bun: false, setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: false, rerun: false }
     uses: ./.github/workflows/installer-sh.yml
     with:
       os: ${{ matrix.os }}
       args: ${{ matrix.scenario.args }}
       provision-bun: ${{ matrix.scenario.provision-bun }}
+      setup-clis: ${{ matrix.scenario.setup-clis }}
+      setup-launchers: ${{ matrix.scenario.setup-launchers }}
       expect-clis: ${{ matrix.scenario.expect-clis }}
       expect-wiring: ${{ matrix.scenario.expect-wiring }}
       rerun: ${{ matrix.scenario.rerun }}
 
   # Windows parity: each install.ps1 scenario as its OWN isolated job via the
   # reusable installer-ps1.yml. Git + Node/npm are preinstalled on windows-latest.
-  #   full / no-prereqs / no-shell-integration : bun provided by setup-bun
-  #     (winget is unreliable in CI), exercising clone detection, the -Cooldown
-  #     agent-CLI resolver, the npm CLI install, and the profile wiring (or its
-  #     deliberate absence).
-  #   local-install (no-winget) : all prereqs present, -LocalInstall must use none.
-  #   local-install (irm bun)   : bun ABSENT (no setup-bun) so -LocalInstall must
-  #     install it user-locally via irm, never winget (expect-bun-local: true).
+  #   default / setup-clis / setup-launchers / no-shell-integration : bun provided
+  #     by setup-bun, exercising checkout detection, profile wiring, and moved setup paths.
   install-ps1:
     name: install.ps1 ${{ matrix.scenario.name }}
     strategy:
       fail-fast: false
       matrix:
         scenario:
-          - { name: "full (-Cooldown)", args: "-Cooldown", provision-bun: true, expect-clis: true, expect-wiring: true, expect-bun-local: false, rerun: false }
-          - { name: "-NoPrereqs", args: "-NoPrereqs", provision-bun: true, expect-clis: false, expect-wiring: true, expect-bun-local: false, rerun: false }
-          - { name: "-LocalInstall (no-winget)", args: "-LocalInstall", provision-bun: true, expect-clis: true, expect-wiring: true, expect-bun-local: false, rerun: true }
-          - { name: "-LocalInstall (irm bun)", args: "-LocalInstall", provision-bun: false, expect-clis: true, expect-wiring: true, expect-bun-local: true, rerun: true }
-          - { name: "-NoShellIntegration", args: "-NoShellIntegration", provision-bun: true, expect-clis: true, expect-wiring: false, expect-bun-local: false, rerun: false }
+          - { name: "default", args: "", provision-bun: true, setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: true, expect-bun-local: false, rerun: true }
+          - { name: "setup clis", args: "", provision-bun: true, setup-clis: true, setup-launchers: false, expect-clis: true, expect-wiring: true, expect-bun-local: false, rerun: false }
+          - { name: "setup launchers", args: "", provision-bun: true, setup-clis: false, setup-launchers: true, expect-clis: false, expect-wiring: true, expect-bun-local: false, rerun: false }
+          - { name: "-NoShellIntegration", args: "-NoShellIntegration", provision-bun: true, setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: false, expect-bun-local: false, rerun: false }
     uses: ./.github/workflows/installer-ps1.yml
     with:
       args: ${{ matrix.scenario.args }}
       provision-bun: ${{ matrix.scenario.provision-bun }}
+      setup-clis: ${{ matrix.scenario.setup-clis }}
+      setup-launchers: ${{ matrix.scenario.setup-launchers }}
       expect-clis: ${{ matrix.scenario.expect-clis }}
       expect-wiring: ${{ matrix.scenario.expect-wiring }}
       expect-bun-local: ${{ matrix.scenario.expect-bun-local }}
@@ -166,4 +159,3 @@ jobs:
               echo "::error::a required CI job did not succeed ($results)"; exit 1 ;;
           esac
           echo "all required CI jobs succeeded"
-

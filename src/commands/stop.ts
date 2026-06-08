@@ -1,3 +1,4 @@
+// `agent stop`: terminates the tracked local gateway daemon.
 import { consola } from "consola";
 import { isCopilotApiPid } from "../copilot_api/process.ts";
 import { CopilotApiState } from "../copilot_api/state.ts";

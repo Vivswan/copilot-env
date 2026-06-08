@@ -1,3 +1,4 @@
+// `agent start`: launches the gateway daemon, applies defaults, and syncs aliases.
 import * as fs from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
@@ -19,7 +20,7 @@ import {
   printLogTail,
 } from "../copilot_api/process.ts";
 import { CopilotApiState } from "../copilot_api/state.ts";
-import { readProjectConfig } from "../project_config.ts";
+import { readProjectConfig } from "../utils/project_config.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { versionLessThan } from "../utils/semver.ts";
 
@@ -36,6 +37,10 @@ const DEFAULT_FLAGS: Record<string, unknown> = {
   useResponsesApiWebSocket: true,
   useResponsesApiWebSearch: true,
 };
+
+export interface StartArgs {
+  "dry-run"?: boolean;
+}
 
 function applyDefaultConfig(config: CopilotApiConfig): void {
   // These are static defaults the daemon reads from config.json at startup.
@@ -197,7 +202,7 @@ function assertGatewayFloor(): void {
 }
 
 /** `start`: launch copilot-api detached, wait for readiness, sync aliases. */
-export async function runStart(args: { "dry-run"?: boolean }): Promise<void> {
+export async function runStart(args: StartArgs): Promise<void> {
   const paths = new CopilotApiPaths();
   const config = new CopilotApiConfig();
 

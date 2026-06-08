@@ -30,6 +30,20 @@ jobs:
       # required `all-green` check used to sit unmet on the release PR. Falls back to
       # GITHUB_TOKEN when the secret is absent: the release PR still opens, but CI
       # won't run on it (admin-merge) until you add the token. See AGENTS.md > Releases.
-      - uses: googleapis/release-please-action@v4
+      - id: release
+        uses: googleapis/release-please-action@v4
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Check out released tag
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.release.outputs.tag_name }}
+
+      - name: Upload installer assets
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: gh release upload "$TAG" install.sh install.ps1 --clobber

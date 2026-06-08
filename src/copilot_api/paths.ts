@@ -1,3 +1,4 @@
+// Path helper for per-host copilot-api runtime files under COPILOT_API_HOME.
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getSanitizedHostname } from "../utils/hostname.ts";

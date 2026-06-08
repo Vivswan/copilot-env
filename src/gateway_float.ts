@@ -3,6 +3,19 @@
 // reproducible baseline, then this postinstall overlays the exact runtime target
 // into node_modules with `bun add --no-save`.
 //
+// Direct run:
+//   bun src/gateway_float.ts
+//     Repair/float the installed gateway. Used by package.json postinstall.
+//   bun src/gateway_float.ts --verify
+//     Read-only freshness check used by bin/agent before deciding whether to run
+//     `bun install --frozen-lockfile`.
+//   bun src/gateway_float.ts --assert-installed
+//     CI/dev guard: assert the postinstall float actually installed a gateway
+//     inside copilot-env.config's floor/ceiling window.
+//
+// Runtime knobs are environment variables, not CLI flags: COPILOT_API_NO_FLOAT
+// disables floating, and COPILOT_API_VERSION pins an exact gateway version/tag.
+//
 // Current resolution:
 // 1. COPILOT_API_NO_FLOAT set -> do nothing; --verify is satisfied only if a
 //    gateway package is already installed and readable.
@@ -33,7 +46,8 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createConsola } from "consola";
 import { parse } from "smol-toml";
-import { type ProjectConfig, readProjectConfig } from "./project_config.ts";
+import { pickAgedVersion } from "./utils/aged_version.ts";
+import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
 import { PROJECT_ROOT } from "./utils/root.ts";
 import { versionLessThan } from "./utils/semver.ts";
 
@@ -42,7 +56,6 @@ const GATEWAY_VERSION_ENV = "COPILOT_API_VERSION";
 const NO_FLOAT_ENV = "COPILOT_API_NO_FLOAT";
 const SECONDS_PER_DAY = 24 * 60 * 60;
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
-const STABLE_RE = /^\d+\.\d+\.\d+$/;
 
 type GatewayConsolaOptions = NonNullable<Parameters<typeof createConsola>[0]> & {
   fancy?: boolean;
@@ -64,6 +77,10 @@ export type SpawnSyncRunner = (
 
 export type GatewayFloatVerifyStatus = {
   upToDate: boolean;
+  message: string;
+};
+export type GatewayInstallAssertStatus = {
+  ok: boolean;
   message: string;
 };
 
@@ -175,24 +192,6 @@ function fetchGatewayTimeMap(ctx: FloatContext): Result<Record<string, string>> 
     : { "ok": true, "value": timeMap };
 }
 
-function pickNewestAgedVersion(
-  timeMap: Record<string, string>,
-  minimumReleaseAgeSeconds: number,
-  nowMs: number,
-): string | null {
-  const cutoff = nowMs - minimumReleaseAgeSeconds * 1000;
-  let best: string | null = null;
-
-  for (const [version, publishedAt] of Object.entries(timeMap)) {
-    if (!STABLE_RE.test(version)) continue;
-    const publishedMs = Date.parse(publishedAt);
-    if (!Number.isFinite(publishedMs) || publishedMs > cutoff) continue;
-    if (best === null || versionLessThan(best, version)) best = version;
-  }
-
-  return best;
-}
-
 function clampGatewayTarget(ctx: FloatContext, cooldownVersion: string | null): GatewayTarget {
   if (cooldownVersion === null) {
     return {
@@ -228,9 +227,9 @@ function resolveGatewayTarget(ctx: FloatContext): Result<GatewayTarget> {
   const metadata = fetchGatewayTimeMap(ctx);
   if (!metadata.ok) return metadata;
 
-  const cooldownVersion = pickNewestAgedVersion(
+  const cooldownVersion = pickAgedVersion(
     metadata.value,
-    ctx.minimumReleaseAgeSeconds,
+    ctx.minimumReleaseAgeSeconds * 1000,
     ctx.nowMs,
   );
   return { "ok": true, "value": clampGatewayTarget(ctx, cooldownVersion) };
@@ -506,12 +505,79 @@ export function nodeModulesFresh(root: string): boolean {
   }
 }
 
-// --- Postinstall / verify entry ----------------------------------------------
+/**
+ * CI/dev assertion after `bun install`: the postinstall float is best-effort, so
+ * this makes the final installed gateway a hard check. It intentionally answers a
+ * different question than --verify: not "can bin/agent skip install?", but "did
+ * install leave node_modules in a launchable state?".
+ */
+export function gatewayInstallAssertStatus(
+  root: string,
+  config: ProjectConfig,
+): GatewayInstallAssertStatus {
+  const version = installedGatewayVersion(root);
+  if (version === null) {
+    return {
+      "ok": false,
+      "message":
+        "gateway float did not install @jeffreycao/copilot-api (module resolution failed) — the `bun install` postinstall (src/gateway_float.ts) is broken.",
+    };
+  }
+
+  if (versionLessThan(version, config.gatewayMinVersion)) {
+    return {
+      "ok": false,
+      "message": `installed @jeffreycao/copilot-api ${version} is below the ${config.gatewayMinVersion} floor — the postinstall gateway float failed to reach the floor.`,
+    };
+  }
+
+  if (config.gatewayMaxVersion !== null && versionLessThan(config.gatewayMaxVersion, version)) {
+    return {
+      "ok": false,
+      "message": `installed @jeffreycao/copilot-api ${version} is above the ${config.gatewayMaxVersion} ceiling — the postinstall gateway float overshot GATEWAY_MAX_VERSION.`,
+    };
+  }
+
+  const window =
+    config.gatewayMaxVersion === null
+      ? `>= ${config.gatewayMinVersion} floor`
+      : `within [${config.gatewayMinVersion}, ${config.gatewayMaxVersion}]`;
+  return {
+    "ok": true,
+    "message": `gateway float OK: @jeffreycao/copilot-api ${version} (${window})`,
+  };
+}
+
+// --- Postinstall / verify/assert entry ---------------------------------------
 
 function main(): void {
   const root = PROJECT_ROOT;
+  const args = process.argv.slice(2);
 
-  if (process.argv.includes("--verify")) {
+  if (
+    args.length > 1 ||
+    (args[0] !== undefined && !["--verify", "--assert-installed"].includes(args[0]))
+  ) {
+    logger.error("usage: bun src/gateway_float.ts [--verify | --assert-installed]");
+    process.exit(2);
+  }
+
+  if (args[0] === "--assert-installed") {
+    try {
+      const status = gatewayInstallAssertStatus(root, readProjectConfig(root));
+      if (status.ok) {
+        console.log(status.message);
+      } else {
+        console.error(`::error::${status.message}`);
+      }
+      process.exit(status.ok ? 0 : 1);
+    } catch (error) {
+      console.error(`::error::${error instanceof Error ? error.message : String(error)}`);
+      process.exit(1);
+    }
+  }
+
+  if (args[0] === "--verify") {
     try {
       const config = readProjectConfig(root);
       const status = gatewayFloatVerifyStatus(

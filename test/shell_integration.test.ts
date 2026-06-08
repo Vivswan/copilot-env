@@ -10,7 +10,7 @@ import {
   quotePowerShell,
 } from "../src/commands/shell_integration.ts";
 
-// `agent shell-integration` wires/unwires the rc block. Exercise the POSIX path by
+// `agent setup shell` wires/unwires the rc block. Exercise the POSIX path by
 // running the CLI with a throwaway $HOME so we never touch the real rc files.
 
 const MARKER = "# copilot-env shell integration";
@@ -21,7 +21,16 @@ const skipWin = test.skipIf(process.platform === "win32");
 let home = "";
 
 function run(...args: string[]): { code: number; out: string } {
-  const proc = Bun.spawnSync(["bun", "src/cli.ts", "shell-integration", ...args], {
+  const proc = Bun.spawnSync(["bun", "src/cli.ts", "setup", "shell", ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, HOME: home, SHELL: "/bin/bash", CONSOLA_LEVEL: "5" },
+  });
+  return { code: proc.exitCode, out: proc.stdout.toString() + proc.stderr.toString() };
+}
+
+function runSetup(...args: string[]): { code: number; out: string } {
+  const proc = Bun.spawnSync(["bun", "src/cli.ts", "setup", ...args], {
     stdout: "pipe",
     stderr: "pipe",
     env: { ...process.env, HOME: home, SHELL: "/bin/bash", CONSOLA_LEVEL: "5" },
@@ -75,6 +84,13 @@ skipWin("--remove strips the block back out", () => {
   expect(readFileSync(join(home, ".bashrc"), "utf-8")).not.toContain(MARKER);
 });
 
+skipWin("setup shell wires and removes the integration", () => {
+  expect(runSetup("shell").code).toBe(0);
+  expect(readFileSync(join(home, ".bashrc"), "utf-8")).toContain(MARKER);
+  expect(runSetup("shell", "--remove").code).toBe(0);
+  expect(readFileSync(join(home, ".bashrc"), "utf-8")).not.toContain(MARKER);
+});
+
 skipWin("wires an existing rc without clobbering its contents", () => {
   writeFileSync(join(home, ".bashrc"), "export EXISTING=1\n");
   run();
@@ -94,22 +110,48 @@ skipWin("--remove strips a CRLF-written block (Windows-style line endings)", () 
   expect(rc).toContain("export KEEP=1");
 });
 
-skipWin("--launchers also wires the opt-in launchers block; default does not", () => {
+skipWin("setup launchers adds the opt-in launchers block; default does not", () => {
   run();
   let rc = readFileSync(join(home, ".bashrc"), "utf-8");
   expect(rc).toContain(MARKER);
   expect(rc).not.toContain(LAUNCHERS_MARKER);
-  // Re-running with --launchers adds the launchers block without duplicating the
+  // Re-running setup launchers adds the launchers block without duplicating the
   // integration block (incremental opt-in).
-  run("--launchers");
+  runSetup("launchers");
   rc = readFileSync(join(home, ".bashrc"), "utf-8");
   expect(rc).toContain("agents.launchers.bashrc");
   expect(rc.split(MARKER).length - 1).toBe(1);
   expect(rc.split(LAUNCHERS_MARKER).length - 1).toBe(1);
 });
 
+skipWin("setup launchers wires the opt-in launchers block", () => {
+  expect(runSetup("launchers").code).toBe(0);
+  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
+  expect(rc).toContain(MARKER);
+  expect(rc).toContain(LAUNCHERS_MARKER);
+});
+
+skipWin("setup clis --launchers wires the opt-in launchers block", () => {
+  expect(runSetup("clis", "--launchers", "--no-prereqs").code).toBe(0);
+  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
+  expect(rc).toContain(MARKER);
+  expect(rc).toContain(LAUNCHERS_MARKER);
+});
+
+skipWin("setup launchers --remove strips only the launchers block", () => {
+  expect(runSetup("launchers").code).toBe(0);
+  let rc = readFileSync(join(home, ".bashrc"), "utf-8");
+  expect(rc).toContain(MARKER);
+  expect(rc).toContain(LAUNCHERS_MARKER);
+
+  expect(runSetup("launchers", "--remove").code).toBe(0);
+  rc = readFileSync(join(home, ".bashrc"), "utf-8");
+  expect(rc).toContain(MARKER);
+  expect(rc).not.toContain(LAUNCHERS_MARKER);
+});
+
 skipWin("--remove strips both the integration and launchers blocks", () => {
-  run("--launchers");
+  runSetup("launchers");
   const wired = readFileSync(join(home, ".bashrc"), "utf-8");
   expect(wired).toContain(MARKER);
   expect(wired).toContain(LAUNCHERS_MARKER);
@@ -132,9 +174,9 @@ skipWin("re-wiring migrates a stale block to the current shell/ path", () => {
 });
 
 skipWin("a plain re-wire preserves an already-wired launchers block", () => {
-  run("--launchers");
+  runSetup("launchers");
   expect(readFileSync(join(home, ".bashrc"), "utf-8")).toContain(LAUNCHERS_MARKER);
-  // Re-running WITHOUT --launchers must not drop the user's launchers block.
+  // Re-running plain shell wiring must not drop the user's launchers block.
   run();
   const rc = readFileSync(join(home, ".bashrc"), "utf-8");
   expect(rc).toContain(LAUNCHERS_MARKER);

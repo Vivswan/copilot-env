@@ -5,7 +5,14 @@
 // tarball URL *before* any repo is on disk, while src/commands/update.ts imports the
 // same functions. Keep it dependency-free so the standalone download keeps working.
 //
-//   bun resolve-release.ts [--cooldown-days N]   ->  prints the chosen tarball_url
+// Direct run:
+//   bun src/install/resolve-release.ts
+//     Print the chosen release tarball_url for install.sh / install.ps1.
+//   bun src/install/resolve-release.ts --json
+//     Print tag, tarballUrl, and sourceSha so installers can verify the archive.
+//
+// Arguments:
+//   --json  Emit structured release metadata instead of only the tarball URL.
 //
 // Discovery reads the GitHub Releases REST API (JSON; published, non-prerelease,
 // vX.Y.Z only) and takes the tag/date/tarball URL verbatim from the payload.
@@ -20,11 +27,13 @@ const GH = {
   "User-Agent": "copilot-env",
 } as const;
 
-/** A published release, taken verbatim from the API: tag, publish time, tarball URL. */
+/** A published release, taken from the API: tag, publish time, tarball URL, and
+ *  the full commit SHA GitHub places in the source archive wrapper dir. */
 export interface Release {
   tag: string;
   dateSeconds: number;
   tarballUrl: string;
+  sourceSha: string;
 }
 
 /** Parse the GitHub `/releases` JSON into newest-first releases: published,
@@ -46,11 +55,19 @@ export function parseReleasesJson(jsonText: string): Release[] {
     if (r.draft === true || r.prerelease === true) continue;
     if (typeof r.tag_name !== "string" || !/^v\d+\.\d+\.\d+$/.test(r.tag_name)) continue;
     if (typeof r.tarball_url !== "string") continue;
+    if (typeof r.target_commitish !== "string" || !/^[0-9a-f]{40}$/i.test(r.target_commitish)) {
+      continue;
+    }
     const date = typeof r.published_at === "string" ? r.published_at : r.created_at;
     if (typeof date !== "string") continue;
     const dateSeconds = Math.floor(Date.parse(date) / 1000);
     if (Number.isFinite(dateSeconds)) {
-      releases.push({ tag: r.tag_name, dateSeconds, tarballUrl: r.tarball_url });
+      releases.push({
+        tag: r.tag_name,
+        dateSeconds,
+        tarballUrl: r.tarball_url,
+        sourceSha: r.target_commitish.toLowerCase(),
+      });
     }
   }
   // Don't trust the API's order -- sort newest-first ourselves.
@@ -97,26 +114,27 @@ export async function resolveTarget(cooldownDays: number | null): Promise<Releas
 // Exit 0 + url on success; 1 if no release resolved / offline; 2 on bad/unknown args.
 if (import.meta.main) {
   const args = process.argv.slice(2);
-  let cooldownDays: number | null = null;
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--cooldown-days") {
-      const raw = args[++i] ?? "";
-      if (!/^\d+$/.test(raw)) {
-        process.stderr.write(
-          `--cooldown-days must be a non-negative whole number (got '${raw}')\n`,
-        );
-        process.exit(2);
-      }
-      cooldownDays = Number.parseInt(raw, 10);
+  let json = false;
+  for (const arg of args) {
+    if (arg === "--json") {
+      json = true;
     } else {
-      process.stderr.write(`unknown argument '${args[i]}' (only --cooldown-days N is accepted)\n`);
+      process.stderr.write(`unknown argument '${arg}' (only --json is accepted)\n`);
       process.exit(2);
     }
   }
-  const target = await resolveTarget(cooldownDays);
+  const target = await resolveTarget(null);
   if (!target) {
     process.stderr.write("no copilot-env release found (or the network is unavailable)\n");
     process.exit(1);
   }
-  process.stdout.write(target.tarballUrl);
+  process.stdout.write(
+    json
+      ? JSON.stringify({
+          tag: target.tag,
+          tarballUrl: target.tarballUrl,
+          sourceSha: target.sourceSha,
+        })
+      : target.tarballUrl,
+  );
 }

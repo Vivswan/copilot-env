@@ -1,3 +1,4 @@
+// Migration from 1.2.1: relocate shell files and refresh owned rc/profile blocks.
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { consola } from "consola";

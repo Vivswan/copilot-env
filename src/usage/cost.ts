@@ -1,3 +1,4 @@
+// `agent cost`: fetches pricing, reads usage DBs, and prints spend estimates.
 import { consola } from "consola";
 import {
   type CostEstimate,

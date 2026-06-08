@@ -1,3 +1,4 @@
+// Parser for copilot-env.config gateway floor/ceiling settings.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 

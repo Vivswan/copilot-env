@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.1.0](https://github.com/Vivswan/copilot-env/compare/v3.0.0...v3.1.0) (2026-06-08)
+
+
+### Features
+
+* flatten CLI commands and add custom root help ([8ae6c53](https://github.com/Vivswan/copilot-env/commit/8ae6c53b0535a2f046aaa3ade02995ed7f85440f))
+
+
+### Bug Fixes
+
+* use GitHub asset digests for release installs ([bc32c84](https://github.com/Vivswan/copilot-env/commit/bc32c847c9c058e5b7ae26be128fc782c942ac64))
+* use singular PowerShell helper noun ([4dd9797](https://github.com/Vivswan/copilot-env/commit/4dd9797ba525fc9c54a3a54ff55479cdb097a8db))
+
 ## [3.0.0](https://github.com/Vivswan/copilot-env/compare/v2.0.0...v3.0.0) (2026-06-08)
 
 

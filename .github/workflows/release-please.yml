@@ -10,6 +10,7 @@ on:
     branches: [main]
 
 permissions:
+  actions: read         # wait for the existing CI workflow before publishing
   contents: write       # create the tag + release, push the changelog/version bump
   pull-requests: write  # open/update the release PR
   issues: write         # release-please's `autorelease:` labels (label = issues API)
@@ -122,17 +123,66 @@ jobs:
           COPILOT_ENV_CI_INCLUDE_DRAFT_RELEASES: "1"
         run: node .github/scripts/release-installer-smoke.cjs "${{ needs.release-please.outputs.tag_name }}" "${{ github.repository }}"
 
+  wait-for-ci:
+    name: wait for CI / all-green
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Wait for existing CI workflow
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          deadline=$((SECONDS + 50 * 60))
+          run_id=""
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            run_id="$(gh run list \
+              --repo "$REPO" \
+              --workflow CI \
+              --commit "$SHA" \
+              --json databaseId,event \
+              --jq 'map(select(.event == "push")) | sort_by(.databaseId) | last | .databaseId // ""')"
+            if [ -n "$run_id" ]; then
+              break
+            fi
+            echo "Waiting for CI workflow run for $SHA ..."
+            sleep 10
+          done
+
+          if [ -z "$run_id" ]; then
+            echo "::error::CI workflow run for $SHA was not found."
+            exit 1
+          fi
+
+          echo "Waiting for CI workflow run $run_id ..."
+          gh run watch "$run_id" --repo "$REPO" --exit-status --interval 10
+
+          all_green="$(gh run view "$run_id" \
+            --repo "$REPO" \
+            --json jobs \
+            --jq '.jobs[] | select(.name == "all-green") | .conclusion')"
+          if [ "$all_green" != "success" ]; then
+            echo "::error::CI all-green did not succeed (conclusion: ${all_green:-missing})."
+            exit 1
+          fi
+          echo "CI all-green succeeded."
+
   publish-release:
     name: publish release
     needs:
       - release-please
       - release-installer-smoke-linux
       - release-installer-smoke-windows
+      - wait-for-ci
     if: >-
       ${{
         needs.release-please.outputs.release_created == 'true' &&
         needs.release-installer-smoke-linux.result == 'success' &&
-        needs.release-installer-smoke-windows.result == 'success'
+        needs.release-installer-smoke-windows.result == 'success' &&
+        needs.wait-for-ci.result == 'success'
       }}
     runs-on: ubuntu-latest
     steps:

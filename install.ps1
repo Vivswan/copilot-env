@@ -109,7 +109,7 @@ function Resolve-ReleaseTarget {
     }
 }
 
-function Resolve-AssetHeaders {
+function Resolve-AssetHeaderSet {
     param([Parameter(Mandatory)][string]$Url)
 
     if ($Url.StartsWith('https://api.github.com/')) {
@@ -156,7 +156,7 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'shell\agents.ps1'))) {
             Invoke-WebRequest -Uri $VerifierUrl -OutFile $verifier -UseBasicParsing -Headers $AuthHeaders
         }
         Invoke-WithRetry 'Download copilot-env release' {
-            Invoke-WebRequest -Uri $url -OutFile $tgz -UseBasicParsing -Headers (Resolve-AssetHeaders $url)
+            Invoke-WebRequest -Uri $url -OutFile $tgz -UseBasicParsing -Headers (Resolve-AssetHeaderSet $url)
         }
         $verifyArgs = @($verifier, $tgz, $target.sourceSha)
         if ($target.sourceSha256) {

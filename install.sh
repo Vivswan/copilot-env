@@ -18,6 +18,7 @@ if [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
     AUTH_TOKEN="${GH_TOKEN:-$GITHUB_TOKEN}"
     AUTH_CURL_ARGS+=(-H "Authorization: Bearer $AUTH_TOKEN")
 fi
+ASSET_CURL_ARGS=("${AUTH_CURL_ARGS[@]}" -H "Accept: application/octet-stream")
 
 usage() {
     cat <<'EOF'
@@ -133,10 +134,10 @@ else
     }
     _ref="${_url##*/}"
     echo "Downloading copilot-env $_ref into $INSTALL_DIR ..."
-    retry "Download copilot-env release" curl -fsSL "${AUTH_CURL_ARGS[@]}" "$_url" -o "$_tmp/release.tgz"
+    retry "Download copilot-env release" curl -fsSL "${ASSET_CURL_ARGS[@]}" "$_url" -o "$_tmp/release.tgz"
     VERIFY_ARGS=("$_tmp/release.tgz" "$_sha")
     if [ -n "$_sha256_url" ]; then
-        retry "Download release checksum" curl -fsSL "${AUTH_CURL_ARGS[@]}" "$_sha256_url" -o "$_tmp/release.tgz.sha256"
+        retry "Download release checksum" curl -fsSL "${ASSET_CURL_ARGS[@]}" "$_sha256_url" -o "$_tmp/release.tgz.sha256"
         VERIFY_ARGS+=("$_tmp/release.tgz.sha256")
     fi
     bun "$_tmp/verify-source-archive.ts" "${VERIFY_ARGS[@]}"

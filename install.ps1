@@ -23,6 +23,11 @@ $AuthToken = if ($env:GH_TOKEN) { $env:GH_TOKEN } else { $env:GITHUB_TOKEN }
 if ($AuthToken) {
     $AuthHeaders['Authorization'] = "Bearer $AuthToken"
 }
+$AssetHeaders = @{}
+foreach ($key in $AuthHeaders.Keys) {
+    $AssetHeaders[$key] = $AuthHeaders[$key]
+}
+$AssetHeaders['Accept'] = 'application/octet-stream'
 if (-not $InstallDir) {
     $InstallDir = if ($env:COPILOT_ENV_DIR) { $env:COPILOT_ENV_DIR } else { Join-Path $env:USERPROFILE '.copilot-env' }
 }
@@ -142,12 +147,12 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'shell\agents.ps1'))) {
             Invoke-WebRequest -Uri $VerifierUrl -OutFile $verifier -UseBasicParsing -Headers $AuthHeaders
         }
         Invoke-WithRetry 'Download copilot-env release' {
-            Invoke-WebRequest -Uri $url -OutFile $tgz -UseBasicParsing -Headers $AuthHeaders
+            Invoke-WebRequest -Uri $url -OutFile $tgz -UseBasicParsing -Headers $AssetHeaders
         }
         $verifyArgs = @($verifier, $tgz, $target.sourceSha)
         if ($target.sourceSha256Url) {
             Invoke-WithRetry 'Download release checksum' {
-                Invoke-WebRequest -Uri $target.sourceSha256Url -OutFile $checksum -UseBasicParsing -Headers $AuthHeaders
+                Invoke-WebRequest -Uri $target.sourceSha256Url -OutFile $checksum -UseBasicParsing -Headers $AssetHeaders
             }
             $verifyArgs += $checksum
         }

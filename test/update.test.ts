@@ -37,10 +37,12 @@ const rel = (tag: string, date: string, over: Record<string, unknown> = {}): unk
 });
 const checksumAsset = (tag: string): unknown => ({
   name: `copilot-env-${tag}.tar.gz.sha256`,
+  url: `https://api.github.com/repos/Vivswan/copilot-env/releases/assets/${tag.replace(/\D/g, "")}2`,
   browser_download_url: `https://github.com/Vivswan/copilot-env/releases/download/${tag}/copilot-env-${tag}.tar.gz.sha256`,
 });
 const sourceArchiveAsset = (tag: string): unknown => ({
   name: `copilot-env-${tag}.tar.gz`,
+  url: `https://api.github.com/repos/Vivswan/copilot-env/releases/assets/${tag.replace(/\D/g, "")}1`,
   browser_download_url: `https://github.com/Vivswan/copilot-env/releases/download/${tag}/copilot-env-${tag}.tar.gz`,
 });
 
@@ -115,10 +117,8 @@ describe("parseReleasesJson", () => {
     expect(parseReleasesJson(json)).toEqual([]);
     expect(parseReleasesJson(json, true)[0]).toMatchObject({
       tag: "v3.0.0",
-      tarballUrl:
-        "https://github.com/Vivswan/copilot-env/releases/download/v3.0.0/copilot-env-v3.0.0.tar.gz",
-      sourceSha256Url:
-        "https://github.com/Vivswan/copilot-env/releases/download/v3.0.0/copilot-env-v3.0.0.tar.gz.sha256",
+      tarballUrl: "https://api.github.com/repos/Vivswan/copilot-env/releases/assets/3001",
+      sourceSha256Url: "https://api.github.com/repos/Vivswan/copilot-env/releases/assets/3002",
     });
   });
 

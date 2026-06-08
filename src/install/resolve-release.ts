@@ -46,12 +46,20 @@ export interface Release {
   sourceSha256Url: string | null;
 }
 
-function releaseAssetUrl(release: Record<string, unknown>, name: string): string | null {
+function releaseAssetUrl(
+  release: Record<string, unknown>,
+  name: string,
+  preferApiUrl = false,
+): string | null {
   if (!Array.isArray(release.assets)) return null;
   for (const item of release.assets) {
     if (typeof item !== "object" || item === null) continue;
     const asset = item as Record<string, unknown>;
-    if (asset.name === name && typeof asset.browser_download_url === "string") {
+    if (asset.name !== name) continue;
+    if (preferApiUrl && typeof asset.url === "string") {
+      return asset.url;
+    }
+    if (typeof asset.browser_download_url === "string") {
       return asset.browser_download_url;
     }
   }
@@ -84,11 +92,14 @@ export function parseReleasesJson(jsonText: string, includeDrafts = false): Rele
       continue;
     }
     const archiveName = releaseArchiveName(r.tag_name);
-    const sourceArchiveUrl = releaseAssetUrl(r, archiveName);
+    const useAssetApiUrl = r.draft === true;
+    const sourceArchiveUrl = releaseAssetUrl(r, archiveName, useAssetApiUrl);
     const tarballUrl =
       sourceArchiveUrl ?? (typeof r.tarball_url === "string" ? r.tarball_url : null);
     if (!tarballUrl) continue;
-    const sourceSha256Url = sourceArchiveUrl ? releaseAssetUrl(r, `${archiveName}.sha256`) : null;
+    const sourceSha256Url = sourceArchiveUrl
+      ? releaseAssetUrl(r, `${archiveName}.sha256`, useAssetApiUrl)
+      : null;
     const date = typeof r.published_at === "string" ? r.published_at : r.created_at;
     if (typeof date !== "string") continue;
     const dateSeconds = Math.floor(Date.parse(date) / 1000);

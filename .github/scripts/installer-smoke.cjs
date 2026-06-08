@@ -7,6 +7,7 @@ const step = process.argv[2];
 const isWindows = process.platform === "win32";
 const optionalClis = ["claude", "copilot", "codex"];
 const posixNvmSource = '[ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ] && . "${NVM_DIR:-$HOME/.nvm}/nvm.sh" >/dev/null 2>&1 || true';
+const releaseApi = `https://api.github.com/repos/${process.env.GITHUB_REPOSITORY ?? "Vivswan/copilot-env"}/releases/latest`;
 
 function envBool(name, fallback = false) {
   const value = process.env[name];
@@ -25,6 +26,45 @@ function hasInstallDirArg(args) {
   return isWindows
     ? args.some((arg) => arg.toLowerCase() === "-installdir")
     : args.some((arg) => arg === "--dir" || arg.startsWith("--dir="));
+}
+
+function tagMajor(tag) {
+  const match = /^v?(\d+)\.\d+\.\d+$/.exec(tag.trim());
+  return match ? Number.parseInt(match[1], 10) : null;
+}
+
+async function latestReleaseTag() {
+  const ref = process.env.COPILOT_ENV_INSTALL_REF;
+  if (ref && ref !== "latest") {
+    return ref;
+  }
+  try {
+    const response = await fetch(releaseApi, { headers: { "User-Agent": "copilot-env" } });
+    if (!response.ok) {
+      console.warn(`::warning::could not check latest release for download smoke (HTTP ${response.status})`);
+      return null;
+    }
+    const release = await response.json();
+    return typeof release.tag_name === "string" ? release.tag_name : null;
+  } catch (error) {
+    console.warn(
+      `::warning::could not check latest release for download smoke: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return null;
+  }
+}
+
+async function shouldSkipLegacyDownloadSmoke() {
+  if (!envBool("DOWNLOAD_INSTALL")) {
+    return false;
+  }
+  const tag = await latestReleaseTag();
+  const major = tag ? tagMajor(tag) : null;
+  if (tag && major !== null && major < 2) {
+    console.log(`Skipping download-mode installer smoke for ${tag}; bundled TS installer starts in v2.0.0.`);
+    return true;
+  }
+  return false;
 }
 
 function installerTarget(args) {
@@ -106,7 +146,10 @@ function cliExists(command) {
   return existsSync(join(bin, `${command}.cmd`)) || existsSync(join(bin, command));
 }
 
-function runInstall() {
+async function runInstall() {
+  if (await shouldSkipLegacyDownloadSmoke()) {
+    return;
+  }
   const target = installerTarget(installerArgs());
   if (isWindows) {
     run("pwsh", ["-NoProfile", "-File", target.script, ...target.args]);
@@ -197,17 +240,24 @@ function verifyOutcome() {
   console.log(`${isWindows ? "install.ps1" : "install.sh"} ${process.env.INSTALLER_ARGS ?? ""} verified on ${process.env.RUNNER_OS ?? process.platform}`);
 }
 
-switch (step) {
-  case "run-install":
-    runInstall();
-    break;
-  case "assert-no-optional-clis":
-    assertNoOptionalClis();
-    break;
-  case "verify-outcome":
-    verifyOutcome();
-    break;
-  default:
-    console.error("usage: installer-smoke.cjs run-install|assert-no-optional-clis|verify-outcome");
-    process.exit(2);
+async function main() {
+  switch (step) {
+    case "run-install":
+      await runInstall();
+      break;
+    case "assert-no-optional-clis":
+      assertNoOptionalClis();
+      break;
+    case "verify-outcome":
+      verifyOutcome();
+      break;
+    default:
+      console.error("usage: installer-smoke.cjs run-install|assert-no-optional-clis|verify-outcome");
+      process.exit(2);
+  }
 }
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+});

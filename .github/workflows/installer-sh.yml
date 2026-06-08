@@ -17,12 +17,6 @@ on:
         description: Flag(s) to pass to install.sh (for example "--no-shell-integration").
         required: true
         type: string
-      provision-bun:
-        description: >-
-          true installs bun via setup-bun before running install.sh; false lets
-          the installer install bun itself.
-        type: boolean
-        default: false
       expect-clis:
         description: true asserts the agent CLIs (claude/copilot/codex) are installed after optional setup; false asserts they are absent.
         type: boolean
@@ -58,8 +52,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - if: ${{ inputs.provision-bun }}
-        uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.14
 

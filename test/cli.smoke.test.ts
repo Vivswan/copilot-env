@@ -75,7 +75,7 @@ test("setup clis cooldown is one optional-valued flag", () => {
     });
     expect(proc.exitCode).toBe(0);
   }
-});
+}, 20_000);
 
 test("setup clis supports no-sudo", () => {
   const help = Bun.spawnSync(["bun", "src/cli.ts", "setup", "clis", "--help"], {

@@ -41,6 +41,24 @@ function Add-UserPath {
     Update-ProcessPath
 }
 
+function Invoke-WithRetry {
+    param(
+        [Parameter(Mandatory)][string]$Label,
+        [Parameter(Mandatory)][scriptblock]$Script
+    )
+
+    for ($try = 1; $try -le 3; $try++) {
+        try {
+            & $Script
+            return
+        } catch {
+            if ($try -ge 3) { throw }
+            Write-Warning "$Label failed; retrying ($try/3): $($_.Exception.Message)"
+            Start-Sleep -Seconds ($try * 2)
+        }
+    }
+}
+
 function Test-ExternalCommand {
     param([Parameter(Mandatory)][string]$Command)
 
@@ -49,9 +67,9 @@ function Test-ExternalCommand {
 
 function Resolve-SafeInstallDir {
     $resolved = [System.IO.Path]::GetFullPath($InstallDir)
-    $home = [System.IO.Path]::GetFullPath($env:USERPROFILE)
+    $userHome = [System.IO.Path]::GetFullPath($env:USERPROFILE)
     $root = [System.IO.Path]::GetPathRoot($resolved)
-    if (-not $resolved -or $resolved -eq $root -or $resolved -eq $home) {
+    if (-not $resolved -or $resolved -eq $root -or $resolved -eq $userHome) {
         throw "Refusing to replace unsafe install directory '$InstallDir'."
     }
     return $resolved
@@ -62,7 +80,9 @@ function Resolve-ReleaseTarget {
     New-Item -ItemType Directory -Path $tmp -Force | Out-Null
     try {
         $resolver = Join-Path $tmp 'resolve-release.ts'
-        Invoke-WebRequest -Uri $ResolverUrl -OutFile $resolver -UseBasicParsing -Headers @{ 'User-Agent' = 'copilot-env' }
+        Invoke-WithRetry 'Download release resolver' {
+            Invoke-WebRequest -Uri $ResolverUrl -OutFile $resolver -UseBasicParsing -Headers @{ 'User-Agent' = 'copilot-env' }
+        }
         $json = (& bun $resolver --json)
         if ($LASTEXITCODE -ne 0 -or -not $json) { return $null }
         $target = ($json | Select-Object -First 1) | ConvertFrom-Json
@@ -78,8 +98,10 @@ Update-ProcessPath
 $BunExe = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
 if (-not (Test-ExternalCommand bun) -and -not (Test-Path $BunExe)) {
     Write-Host 'Installing Bun ...'
-    & powershell -NoProfile -ExecutionPolicy Bypass -Command 'irm bun.sh/install.ps1 | iex' | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Bun installation failed.' }
+    Invoke-WithRetry 'Bun install' {
+        & powershell -NoProfile -ExecutionPolicy Bypass -Command 'irm bun.sh/install.ps1 | iex' | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Bun installation failed.' }
+    }
 }
 if (Test-Path $BunExe) {
     Add-UserPath (Split-Path $BunExe -Parent)
@@ -105,8 +127,12 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'shell\agents.ps1'))) {
     try {
         $tgz = Join-Path $tmp 'release.tgz'
         $verifier = Join-Path $tmp 'verify-source-archive.ts'
-        Invoke-WebRequest -Uri $VerifierUrl -OutFile $verifier -UseBasicParsing -Headers @{ 'User-Agent' = 'copilot-env' }
-        Invoke-WebRequest -Uri $url -OutFile $tgz -UseBasicParsing -Headers @{ 'User-Agent' = 'copilot-env' }
+        Invoke-WithRetry 'Download archive verifier' {
+            Invoke-WebRequest -Uri $VerifierUrl -OutFile $verifier -UseBasicParsing -Headers @{ 'User-Agent' = 'copilot-env' }
+        }
+        Invoke-WithRetry 'Download copilot-env release' {
+            Invoke-WebRequest -Uri $url -OutFile $tgz -UseBasicParsing -Headers @{ 'User-Agent' = 'copilot-env' }
+        }
         & bun $verifier $tgz $target.sourceSha
         if ($LASTEXITCODE -ne 0) { throw 'release archive checksum verification failed.' }
         if (Test-Path $InstallDir) {

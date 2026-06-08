@@ -42,9 +42,15 @@ Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, the
 - **Next:** restart your shell, then `agent start`.
 - **Optional:** run `agent setup clis --launchers` for Claude/Copilot/Codex CLIs and `cl` / `co` / `cx`.
 - **Update later:** `agent update`.
-- **Specific version:** use the versioned release asset instead of `latest`, e.g.
-  `curl -fsSL https://github.com/Vivswan/copilot-env/releases/download/v3.0.0/install.sh | bash`
-  or `irm https://github.com/Vivswan/copilot-env/releases/download/v3.0.0/install.ps1 | iex`.
+- **Specific version:** replace `latest` with an exact release tag:
+
+  ```bash
+  curl -fsSL https://github.com/Vivswan/copilot-env/releases/download/v3.0.0/install.sh | bash
+  ```
+
+  ```powershell
+  irm https://github.com/Vivswan/copilot-env/releases/download/v3.0.0/install.ps1 | iex
+  ```
 
 ### Install flags
 
@@ -74,18 +80,38 @@ directly: `powershell -ExecutionPolicy Bypass -File bin\agent.ps1 <cmd>`).
 
 ### Shell integration
 
-The installer wires the `agent` wrapper into your shell and exports the gateway env:
+The installer wires the `agent` wrapper into your shell and exports the gateway env.
 
 - **macOS / Linux:** sources `shell/agents.bashrc` from `~/.bashrc` / `~/.zshrc`.
 - **Windows:** dot-sources `shell/agents.ps1` from your PowerShell `$PROFILE`.
 
-The `cl` / `co` / `cx` launchers are **opt-in** (so they don't claim those names unless you ask): `cl` → Claude, `co` → Copilot, `cx` → `codex-config` then Codex. Enable them via:
+The `cl` / `co` / `cx` launchers are opt-in:
 
-- **CLI:** `agent setup clis --launchers` while installing CLIs, or `agent setup launchers` just for the launcher block; remove only the launcher block with `agent setup launchers --remove`.
-- **Manually:** source the file:
+- `cl` runs Claude.
+- `co` runs Copilot.
+- `cx` runs `codex-config`, then Codex.
+
+Enable them while installing optional CLIs:
 
 ```bash
-source ~/.copilot-env/shell/agents.launchers.bashrc   # . ...\shell\agents.launchers.ps1 on Windows
+agent setup clis --launchers
+```
+
+Or manage only the launcher block:
+
+```bash
+agent setup launchers
+agent setup launchers --remove
+```
+
+Manual sourcing is also supported:
+
+```bash
+source ~/.copilot-env/shell/agents.launchers.bashrc
+```
+
+```powershell
+. ~/.copilot-env/shell/agents.launchers.ps1
 ```
 
 ### Environment overrides

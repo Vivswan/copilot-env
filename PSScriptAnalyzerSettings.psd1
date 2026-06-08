@@ -6,7 +6,7 @@
     ExcludeRules = @(
         # Write-Host is the right tool for user-facing console output here.
         'PSAvoidUsingWriteHost',
-        # Invoke-Expression only ever runs our own `copilot-api env` output
+        # Invoke-Expression only ever runs our own `agent env` output
         # (controlled `$env:KEY = '...'` lines), not untrusted input.
         'PSAvoidUsingInvokeExpression',
         # -WhatIf/ShouldProcess is overkill for these small dot-sourced helpers.

@@ -211,11 +211,11 @@ function verifyOptionalClis() {
   for (const cli of optionalClis) {
     const found = cliExists(cli);
     if (expectClis && !found) {
-      console.error(`::error::${cli} was not installed by agent setup clis`);
+      console.error(`::error::${cli} was not installed by agent setup-clis`);
       process.exit(1);
     }
     if (!expectClis && found) {
-      console.error(`::error::${cli} must NOT have been installed without agent setup clis`);
+      console.error(`::error::${cli} must NOT have been installed without agent setup-clis`);
       process.exit(1);
     }
     console.log(expectClis ? `found ${cli}` : `${cli} correctly absent`);

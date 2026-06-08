@@ -56,6 +56,6 @@ function cx {
     _copilot_ensure_server || return $?
     # Re-wire ~/.codex to the local gateway before launching (via the `agent`
     # wrapper so the env refresh runs too).
-    agent codex-config || return $?
+    agent setup-codex-config || return $?
     command codex "$@"
 }

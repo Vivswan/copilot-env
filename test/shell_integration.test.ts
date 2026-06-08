@@ -11,7 +11,7 @@ import {
   windowsExecutionPolicyCommand,
 } from "../src/commands/shell_integration.ts";
 
-// `agent setup shell` wires/unwires the rc block. Exercise the POSIX path by
+// `agent setup-shell` wires/unwires the rc block. Exercise the POSIX path by
 // running the CLI with a throwaway $HOME so we never touch the real rc files.
 
 const MARKER = "# copilot-env shell integration";
@@ -22,7 +22,7 @@ const skipWin = test.skipIf(process.platform === "win32");
 let home = "";
 
 function run(...args: string[]): { code: number; out: string } {
-  const proc = Bun.spawnSync(["bun", "src/cli.ts", "setup", "shell", ...args], {
+  const proc = Bun.spawnSync(["bun", "src/cli.ts", "setup-shell", ...args], {
     stdout: "pipe",
     stderr: "pipe",
     env: { ...process.env, HOME: home, SHELL: "/bin/bash", CONSOLA_LEVEL: "5" },
@@ -30,8 +30,9 @@ function run(...args: string[]): { code: number; out: string } {
   return { code: proc.exitCode, out: proc.stdout.toString() + proc.stderr.toString() };
 }
 
-function runSetup(...args: string[]): { code: number; out: string } {
-  const proc = Bun.spawnSync(["bun", "src/cli.ts", "setup", ...args], {
+// Invoke a flat `setup-<name>` command (e.g. runSetup("launchers") -> setup-launchers).
+function runSetup(name: string, ...args: string[]): { code: number; out: string } {
+  const proc = Bun.spawnSync(["bun", "src/cli.ts", `setup-${name}`, ...args], {
     stdout: "pipe",
     stderr: "pipe",
     env: { ...process.env, HOME: home, SHELL: "/bin/bash", CONSOLA_LEVEL: "5" },
@@ -85,7 +86,7 @@ skipWin("--remove strips the block back out", () => {
   expect(readFileSync(join(home, ".bashrc"), "utf-8")).not.toContain(MARKER);
 });
 
-skipWin("setup shell wires and removes the integration", () => {
+skipWin("setup-shell wires and removes the integration", () => {
   expect(runSetup("shell").code).toBe(0);
   expect(readFileSync(join(home, ".bashrc"), "utf-8")).toContain(MARKER);
   expect(runSetup("shell", "--remove").code).toBe(0);
@@ -111,12 +112,12 @@ skipWin("--remove strips a CRLF-written block (Windows-style line endings)", () 
   expect(rc).toContain("export KEEP=1");
 });
 
-skipWin("setup launchers adds the opt-in launchers block; default does not", () => {
+skipWin("setup-launchers adds the opt-in launchers block; default does not", () => {
   run();
   let rc = readFileSync(join(home, ".bashrc"), "utf-8");
   expect(rc).toContain(MARKER);
   expect(rc).not.toContain(LAUNCHERS_MARKER);
-  // Re-running setup launchers adds the launchers block without duplicating the
+  // Re-running setup-launchers adds the launchers block without duplicating the
   // integration block (incremental opt-in).
   runSetup("launchers");
   rc = readFileSync(join(home, ".bashrc"), "utf-8");
@@ -125,21 +126,21 @@ skipWin("setup launchers adds the opt-in launchers block; default does not", () 
   expect(rc.split(LAUNCHERS_MARKER).length - 1).toBe(1);
 });
 
-skipWin("setup launchers wires the opt-in launchers block", () => {
+skipWin("setup-launchers wires the opt-in launchers block", () => {
   expect(runSetup("launchers").code).toBe(0);
   const rc = readFileSync(join(home, ".bashrc"), "utf-8");
   expect(rc).toContain(MARKER);
   expect(rc).toContain(LAUNCHERS_MARKER);
 });
 
-skipWin("setup clis --launchers wires the opt-in launchers block", () => {
+skipWin("setup-clis --launchers wires the opt-in launchers block", () => {
   expect(runSetup("clis", "--launchers", "--no-prereqs").code).toBe(0);
   const rc = readFileSync(join(home, ".bashrc"), "utf-8");
   expect(rc).toContain(MARKER);
   expect(rc).toContain(LAUNCHERS_MARKER);
 });
 
-skipWin("setup launchers --remove strips only the launchers block", () => {
+skipWin("setup-launchers --remove strips only the launchers block", () => {
   expect(runSetup("launchers").code).toBe(0);
   let rc = readFileSync(join(home, ".bashrc"), "utf-8");
   expect(rc).toContain(MARKER);

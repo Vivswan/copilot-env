@@ -78,7 +78,7 @@ export async function runUpdate(args: UpdateArgs): Promise<void> {
   // disk -- this process still holds the pre-update code in memory. Best-effort: a
   // migration hiccup never fails the update. Effective only for updates that originate
   // at a release already shipping this call (>= the one that introduced migrations);
-  // earlier transitions are handled by the installer's `agent setup shell` refresh.
+  // earlier transitions are handled by the installer's `agent setup-shell` refresh.
   const migrate = spawnSync(
     "bun",
     [join(PROJECT_ROOT, "src", "migrations", "index.ts"), stripV(current), stripV(target.tag)],

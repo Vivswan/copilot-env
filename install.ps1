@@ -3,7 +3,7 @@
 # Bootstrap only: ensure Bun, download/extract the selected copilot-env GitHub
 # release source archive, then hand off to the release-bundled TypeScript
 # installer. Optional CLIs and launchers are managed after install with
-# `agent setup clis --launchers`.
+# `agent setup-clis --launchers`.
 
 [CmdletBinding()]
 param(

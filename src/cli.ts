@@ -8,7 +8,14 @@
 // for tests and local command debugging. Run `bun src/cli.ts --help` for the
 // command tree and per-command arguments.
 import "./utils/dotenv.ts";
-import { defineCommand, runMain } from "citty";
+import {
+  type ArgsDef,
+  type CommandDef,
+  defineCommand,
+  type RunMainOptions,
+  renderUsage,
+  runMain,
+} from "citty";
 import { consola } from "consola";
 import { runCodexConfig } from "./codex/config.ts";
 import { runCodexHost } from "./codex/host.ts";
@@ -148,8 +155,8 @@ const codexArgs = {
 
 const setupCodexConfig = defineCommand({
   meta: {
-    name: "codex-config",
-    description: "(Re)write the default ~/.codex config.toml/.env wired to the local gateway.",
+    name: "setup-codex-config",
+    description: "Update the default ~/.codex config.toml/.env wired to the local gateway.",
   },
   args: codexArgs,
   run: ({ args }) => runCodexConfig({ "codex-home": args["codex-home"] as string | undefined }),
@@ -157,8 +164,8 @@ const setupCodexConfig = defineCommand({
 
 const setupCodexHost = defineCommand({
   meta: {
-    name: "host-codex",
-    description: "Build the per-host CODEX_HOME symlink farm (Linux-only) and wire its config.",
+    name: "setup-codex-host",
+    description: "(Linux-only) Build the per-host CODEX_HOME symlink farm and wire its config.",
   },
   args: {
     ...codexArgs,
@@ -209,9 +216,8 @@ const update = defineCommand({
 
 const setupShell = defineCommand({
   meta: {
-    name: "shell",
-    description:
-      "Wire (or --remove) the copilot-env shell integration into your rc files / PowerShell $PROFILE.",
+    name: "setup-shell",
+    description: "Wire the copilot-env shell integration into your rc files / PowerShell $PROFILE.",
   },
   args: {
     remove: {
@@ -234,7 +240,7 @@ const setupShell = defineCommand({
 
 const setupLaunchers = defineCommand({
   meta: {
-    name: "launchers",
+    name: "setup-launchers",
     description: "Wire or remove the opt-in cl / co / cx launchers.",
   },
   args: {
@@ -258,7 +264,7 @@ const setupLaunchers = defineCommand({
 
 const setupClis = defineCommand({
   meta: {
-    name: "clis",
+    name: "setup-clis",
     description: "Install or verify the optional claude / copilot / codex agent CLIs.",
   },
   args: {
@@ -301,21 +307,76 @@ const setupClis = defineCommand({
   },
 });
 
-const setup = defineCommand({
-  meta: {
-    name: "setup",
-    description: "Configure optional shell, launcher, and agent-CLI integrations.",
-  },
-  subCommands: {
-    shell: setupShell,
-    launchers: setupLaunchers,
-    clis: setupClis,
-  },
-});
+// --- help rendering --------------------------------------------------------
+// The root `agent --help` gets a hand-rolled, left-aligned command table that
+// drops citty's auto `USAGE agent a|b|c ...` line and surfaces the global
+// --version / --help flags. Per-subcommand help (`agent start --help`) still
+// uses citty's renderer. ANSI styling mirrors citty's own (src/_color.ts) so
+// the two help screens look identical; the NO_COLOR/CI/TEST gating matches too.
+const NO_COLOR = (() => {
+  const env = process.env;
+  return Boolean(env.NO_COLOR === "1" || env.TERM === "dumb" || env.TEST || env.CI);
+})();
+const style =
+  (open: number, close = 39) =>
+  (text: string): string =>
+    NO_COLOR ? text : `\u001B[${open}m${text}\u001B[${close}m`;
+const bold = style(1, 22);
+const cyan = style(36);
+const gray = style(90);
+const underline = style(4, 24);
+
+async function resolveValue<T>(value: T | Promise<T> | (() => T | Promise<T>)): Promise<T> {
+  return typeof value === "function" ? await (value as () => T | Promise<T>)() : await value;
+}
+
+// Two-column block: cyan name padded to the widest name, then its description.
+function helpColumns(rows: [string, string][], width: number): string {
+  return rows.map(([name, desc]) => `  ${cyan(name.padEnd(width))}  ${desc}`).join("\n");
+}
+
+async function renderRootUsage<T extends ArgsDef>(cmd: CommandDef<T>): Promise<string> {
+  const meta = await resolveValue(cmd.meta ?? {});
+  const name = meta.name ?? "agent";
+  const subCommands = await resolveValue(cmd.subCommands ?? {});
+
+  const commandRows: [string, string][] = [];
+  for (const [key, sub] of Object.entries(subCommands)) {
+    const subMeta = await resolveValue((await resolveValue(sub)).meta ?? {});
+    if (subMeta.hidden) continue;
+    commandRows.push([key, subMeta.description ?? ""]);
+  }
+  const optionRows: [string, string][] = [
+    ["--version", "Print the version and exit."],
+    ["--help", `Show this help (or \`${name} <command> --help\`).`],
+  ];
+
+  const width = Math.max(...[...commandRows, ...optionRows].map(([n]) => n.length));
+  const version = meta.version ? ` v${meta.version}` : "";
+  return [
+    gray(`${meta.description ?? ""} (${name}${version})`),
+    "",
+    underline(bold("COMMANDS")),
+    "",
+    helpColumns(commandRows, width),
+    "",
+    underline(bold("OPTIONS")),
+    "",
+    helpColumns(optionRows, width),
+    "",
+    `Use ${cyan(`${name} <command> --help`)} for more information about a command.`,
+  ].join("\n");
+}
+
+// Root help (no parent) gets the custom table; subcommand help keeps citty's.
+const showUsage: RunMainOptions["showUsage"] = async (cmd, parent) => {
+  const usage = parent ? await renderUsage(cmd, parent) : await renderRootUsage(cmd);
+  console.log(`${usage}\n`);
+};
 
 const cli = defineCommand({
   meta: {
-    name: "copilot-api",
+    name: "agent",
     version: packageVersion(),
     description: "Manage the local copilot-api gateway and Codex wiring.",
   },
@@ -325,15 +386,17 @@ const cli = defineCommand({
     health,
     env,
     cost,
-    "codex-config": setupCodexConfig,
-    "host-codex": setupCodexHost,
-    setup,
     update,
+    "setup-shell": setupShell,
+    "setup-launchers": setupLaunchers,
+    "setup-clis": setupClis,
+    "setup-codex-config": setupCodexConfig,
+    "setup-codex-host": setupCodexHost,
   },
 });
 
 if (import.meta.main) {
-  runMain(cli).catch((e: unknown) => {
+  runMain(cli, { showUsage }).catch((e: unknown) => {
     consola.error(e instanceof Error ? e.message : String(e));
     // Set exitCode (not process.exit) so pending stderr writes flush.
     process.exitCode = 1;

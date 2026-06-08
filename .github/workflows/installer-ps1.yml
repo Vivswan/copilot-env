@@ -17,11 +17,11 @@ on:
         type: boolean
         default: false
       setup-clis:
-        description: true runs `agent setup clis --cooldown` after install.
+        description: true runs `agent setup-clis --cooldown` after install.
         type: boolean
         default: false
       setup-launchers:
-        description: true runs `agent setup launchers` after install.
+        description: true runs `agent setup-launchers` after install.
         type: boolean
         default: false
       expect-wiring:
@@ -67,15 +67,15 @@ jobs:
         env:
           INSTALLER_ARGS: ${{ inputs.args }}
 
-      - name: Run agent setup clis
+      - name: Run agent setup-clis
         if: ${{ inputs.setup-clis }}
         shell: pwsh
-        run: ./bin/agent.ps1 setup clis --cooldown
+        run: ./bin/agent.ps1 setup-clis --cooldown
 
-      - name: Run agent setup launchers
+      - name: Run agent setup-launchers
         if: ${{ inputs.setup-launchers }}
         shell: pwsh
-        run: ./bin/agent.ps1 setup launchers
+        run: ./bin/agent.ps1 setup-launchers
 
       - name: Verify install.ps1 outcome
         run: node .github/scripts/installer-smoke.cjs verify-outcome

@@ -194,7 +194,7 @@ function installNodePosix(): void {
 function installNodeWindows(): void {
   if (!commandExists("winget")) {
     throw new Error(
-      "Cannot install Node.js because winget is unavailable. Install Node.js LTS and rerun 'agent setup clis'.",
+      "Cannot install Node.js because winget is unavailable. Install Node.js LTS and rerun 'agent setup-clis'.",
     );
   }
   consola.info("Installing Node.js LTS and npm ...");
@@ -223,7 +223,7 @@ function ensureNpm(options: NormalizedSetupClisOptions): boolean {
 
   if (process.platform === "win32" && options.noSudo) {
     consola.warn(
-      "Node.js/npm are not installed; --no-sudo will not use winget. Install Node.js yourself, then rerun 'agent setup clis'.",
+      "Node.js/npm are not installed; --no-sudo will not use winget. Install Node.js yourself, then rerun 'agent setup-clis'.",
     );
     return false;
   }
@@ -303,7 +303,7 @@ function installCli(cli: (typeof AGENT_CLIS)[number], options: NormalizedSetupCl
   refreshWindowsPath();
   if (!commandExists(cli.command)) {
     throw new Error(
-      `${cli.name} was installed but '${cli.command}' is still unavailable. Open a new shell and rerun 'agent setup clis'.`,
+      `${cli.name} was installed but '${cli.command}' is still unavailable. Open a new shell and rerun 'agent setup-clis'.`,
     );
   }
 }

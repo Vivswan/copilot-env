@@ -60,8 +60,8 @@ function cx {
     if (-not (Assert-AgentCli codex)) { return }
     Confirm-CopilotServer
     # Re-wire ~/.codex to the local gateway before launching; abort if it fails
-    # (mirrors the POSIX `agent codex-config || return`).
-    agent codex-config
+    # (mirrors the POSIX `agent setup-codex-config || return`).
+    agent setup-codex-config
     if ($LASTEXITCODE -ne 0) { return }
     & codex @args
 }

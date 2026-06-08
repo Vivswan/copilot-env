@@ -22,14 +22,10 @@ test("installer rejects unknown commands and flags", () => {
   expect(() => parseInstallArgs(["install", "--launchers"])).toThrow("unknown argument");
 });
 
-test("installer delegates shell setup through agent setup shell", () => {
-  expect(shellSetupArgs({ noShellIntegration: false, allHosts: false })).toEqual([
-    "setup",
-    "shell",
-  ]);
+test("installer delegates shell setup through agent setup-shell", () => {
+  expect(shellSetupArgs({ noShellIntegration: false, allHosts: false })).toEqual(["setup-shell"]);
   expect(shellSetupArgs({ noShellIntegration: false, allHosts: true })).toEqual([
-    "setup",
-    "shell",
+    "setup-shell",
     "--all-hosts",
   ]);
   expect(shellSetupArgs({ noShellIntegration: true, allHosts: true })).toBeNull();

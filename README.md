@@ -40,7 +40,7 @@ Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, the
 - **Artifact:** the installer extracts the official `copilot-env-vX.Y.Z.tar.gz` release asset when present, verifies that asset's SHA256, and checks the archive source marker against GitHub release metadata before extraction.
 - **Replaceable:** re-run the bootstrapper to replace the previous install with the selected release.
 - **Next:** restart your shell, then `agent start`.
-- **Optional:** run `agent setup clis --launchers` for Claude/Copilot/Codex CLIs and `cl` / `co` / `cx`.
+- **Optional:** run `agent setup-clis --launchers` for Claude/Copilot/Codex CLIs and `cl` / `co` / `cx`.
 - **Update later:** `agent update`.
 - **Specific version:** replace `latest` with an exact release tag:
 
@@ -62,17 +62,17 @@ Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, the
 ## Usage
 
 ```bash
-agent start              # launch the daemon and sync aliases (--dry-run to preview)
-agent env                # print shell env vars pointing at the local gateway
-agent cost               # estimated token spend across all per-host usage DBs
-agent stop               # stop the daemon
-agent health             # check the gateway is reachable (exit 1 if not)
-agent update             # update to the latest release (--check / --cooldown)
-agent setup clis         # install optional CLIs (--cooldown[=DAYS], --no-sudo, --launchers)
-agent setup launchers    # wire/remove opt-in cl / co / cx launchers
-agent setup shell        # (re)wire rc / $PROFILE (--remove to unwire)
-agent codex-config       # write Codex config into ~/.codex, wired to the gateway
-agent host-codex         # per-host CODEX_HOME symlink farm (Linux-only)
+agent start                # launch the daemon and sync aliases (--dry-run to preview)
+agent stop                 # stop the daemon
+agent health               # check the gateway is reachable (exit 1 if not)
+agent env                  # print shell env vars pointing at the local gateway
+agent cost                 # estimated token spend across all per-host usage DBs
+agent update               # update to the latest release (--check / --cooldown)
+agent setup-shell          # (re)wire rc / $PROFILE (--remove to unwire)
+agent setup-launchers      # wire/remove opt-in cl / co / cx launchers
+agent setup-clis           # install optional CLIs (--cooldown[=DAYS], --no-sudo, --launchers)
+agent setup-codex-config   # write Codex config into ~/.codex, wired to the gateway
+agent setup-codex-host     # per-host CODEX_HOME symlink farm (Linux-only)
 ```
 
 Once the profile is wired, the same commands run via `agent` on Windows too (or
@@ -89,19 +89,19 @@ The `cl` / `co` / `cx` launchers are opt-in:
 
 - `cl` runs Claude.
 - `co` runs Copilot.
-- `cx` runs `codex-config`, then Codex.
+- `cx` runs `setup-codex-config`, then Codex.
 
 Enable them while installing optional CLIs:
 
 ```bash
-agent setup clis --launchers
+agent setup-clis --launchers
 ```
 
 Or manage only the launcher block:
 
 ```bash
-agent setup launchers
-agent setup launchers --remove
+agent setup-launchers
+agent setup-launchers --remove
 ```
 
 Manual sourcing is also supported:

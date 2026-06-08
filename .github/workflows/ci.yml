@@ -93,15 +93,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         scenario:
-          - { name: "default", args: "", provision-bun: false, setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: true, rerun: true }
-          - { name: "setup clis", args: "", provision-bun: false, setup-clis: true, setup-launchers: false, expect-clis: true, expect-wiring: true, rerun: false }
-          - { name: "setup launchers", args: "", provision-bun: false, setup-clis: false, setup-launchers: true, expect-clis: false, expect-wiring: true, rerun: false }
-          - { name: "--no-shell-integration", args: "--no-shell-integration", provision-bun: false, setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: false, rerun: false }
+          - { name: "default", args: "", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: true, rerun: true }
+          - { name: "setup clis", args: "", setup-clis: true, setup-launchers: false, expect-clis: true, expect-wiring: true, rerun: false }
+          - { name: "setup launchers", args: "", setup-clis: false, setup-launchers: true, expect-clis: false, expect-wiring: true, rerun: false }
+          - { name: "--no-shell-integration", args: "--no-shell-integration", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: false, rerun: false }
     uses: ./.github/workflows/installer-sh.yml
     with:
       os: ${{ matrix.os }}
       args: ${{ matrix.scenario.args }}
-      provision-bun: ${{ matrix.scenario.provision-bun }}
       setup-clis: ${{ matrix.scenario.setup-clis }}
       setup-launchers: ${{ matrix.scenario.setup-launchers }}
       expect-clis: ${{ matrix.scenario.expect-clis }}
@@ -118,19 +117,17 @@ jobs:
       fail-fast: false
       matrix:
         scenario:
-          - { name: "default", args: "", provision-bun: true, setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: true, expect-bun-local: false, rerun: true }
-          - { name: "setup clis", args: "", provision-bun: true, setup-clis: true, setup-launchers: false, expect-clis: true, expect-wiring: true, expect-bun-local: false, rerun: false }
-          - { name: "setup launchers", args: "", provision-bun: true, setup-clis: false, setup-launchers: true, expect-clis: false, expect-wiring: true, expect-bun-local: false, rerun: false }
-          - { name: "-NoShellIntegration", args: "-NoShellIntegration", provision-bun: true, setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: false, expect-bun-local: false, rerun: false }
+          - { name: "default", args: "", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: true, rerun: true }
+          - { name: "setup clis", args: "", setup-clis: true, setup-launchers: false, expect-clis: true, expect-wiring: true, rerun: false }
+          - { name: "setup launchers", args: "", setup-clis: false, setup-launchers: true, expect-clis: false, expect-wiring: true, rerun: false }
+          - { name: "-NoShellIntegration", args: "-NoShellIntegration", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: false, rerun: false }
     uses: ./.github/workflows/installer-ps1.yml
     with:
       args: ${{ matrix.scenario.args }}
-      provision-bun: ${{ matrix.scenario.provision-bun }}
       setup-clis: ${{ matrix.scenario.setup-clis }}
       setup-launchers: ${{ matrix.scenario.setup-launchers }}
       expect-clis: ${{ matrix.scenario.expect-clis }}
       expect-wiring: ${{ matrix.scenario.expect-wiring }}
-      expect-bun-local: ${{ matrix.scenario.expect-bun-local }}
       rerun: ${{ matrix.scenario.rerun }}
 
   actionlint:

@@ -44,6 +44,23 @@ json_field() {
     bun -e "const d=JSON.parse(await Bun.stdin.text()); process.stdout.write(String(d['$1'] ?? ''))"
 }
 
+retry() {
+    _label="$1"
+    shift
+    _try=1
+    while :; do
+        if "$@"; then
+            return 0
+        fi
+        if [ "$_try" -ge 3 ]; then
+            return 1
+        fi
+        echo "$_label failed; retrying ($_try/3) ..." >&2
+        sleep $(( _try * 2 ))
+        _try=$(( _try + 1 ))
+    done
+}
+
 refuse_dangerous_install_dir() {
     if [ -z "$INSTALL_DIR" ] || [ "$INSTALL_DIR" = "/" ] || [ "$INSTALL_DIR" = "$HOME" ]; then
         die "refusing to replace unsafe install directory '$INSTALL_DIR'."
@@ -70,7 +87,7 @@ INSTALL_DIR="${INSTALL_DIR_ARG:-${COPILOT_ENV_DIR:-$HOME/.copilot-env}}"
 
 if ! command -v bun >/dev/null 2>&1 && [ ! -x "$HOME/.bun/bin/bun" ]; then
     echo "Installing bun ..."
-    curl -fsSL https://bun.sh/install | bash >/dev/null
+    retry "Bun install" bash -c 'set -o pipefail; curl -fsSL https://bun.sh/install | bash >/dev/null'
 fi
 [ -x "$HOME/.bun/bin/bun" ] && case ":$PATH:" in
     *":$HOME/.bun/bin:"*) ;;
@@ -92,8 +109,8 @@ else
     _tmp="$(mktemp -d)"
     trap 'rm -rf "$_tmp"' EXIT
     echo "Resolving the copilot-env release ..."
-    curl -fsSL -H "User-Agent: copilot-env" "$RESOLVER_URL" -o "$_tmp/resolve-release.ts"
-    curl -fsSL -H "User-Agent: copilot-env" "$VERIFIER_URL" -o "$_tmp/verify-source-archive.ts"
+    retry "Download release resolver" curl -fsSL -H "User-Agent: copilot-env" "$RESOLVER_URL" -o "$_tmp/resolve-release.ts"
+    retry "Download archive verifier" curl -fsSL -H "User-Agent: copilot-env" "$VERIFIER_URL" -o "$_tmp/verify-source-archive.ts"
     _target="$(bun "$_tmp/resolve-release.ts" --json)" \
         || { echo "ERROR: no copilot-env release found (or the GitHub API is unreachable)." >&2; exit 1; }
     _url="$(printf %s "$_target" | json_field tarballUrl)"
@@ -104,7 +121,7 @@ else
     }
     _ref="${_url##*/}"
     echo "Downloading copilot-env $_ref into $INSTALL_DIR ..."
-    curl -fsSL -H "User-Agent: copilot-env" "$_url" -o "$_tmp/release.tgz"
+    retry "Download copilot-env release" curl -fsSL -H "User-Agent: copilot-env" "$_url" -o "$_tmp/release.tgz"
     bun "$_tmp/verify-source-archive.ts" "$_tmp/release.tgz" "$_sha"
     if [ -e "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; then
         echo "Removing previous copilot-env install at $INSTALL_DIR ..."

@@ -8,6 +8,7 @@ import { parse, stringify } from "smol-toml";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
 import { CopilotApiState } from "../copilot_api/state.ts";
+import { isRecord } from "../utils/json.ts";
 
 const logger = createConsola({ stdout: process.stderr, stderr: process.stderr });
 
@@ -59,10 +60,6 @@ enabled = false
 [feedback]
 enabled = false
 `;
-
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
 
 // Load the existing config at `hostConfig`, or seed the default template when
 // it is absent or unparseable.

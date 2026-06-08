@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { consola } from "consola";
 import { execa } from "execa";
 import psList from "ps-list";
+import { parseJsonRecord } from "../utils/json.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 
 const logger = consola;
@@ -41,8 +42,8 @@ function resolveCopilotApiEntry(): string {
 export function copilotApiVersion(): string | null {
   try {
     const pkgPath = rootRequire.resolve("@jeffreycao/copilot-api/package.json");
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version?: unknown };
-    return typeof pkg.version === "string" ? pkg.version : null;
+    const pkg = parseJsonRecord(readFileSync(pkgPath, "utf-8"));
+    return typeof pkg?.version === "string" ? pkg.version : null;
   } catch {
     return null;
   }

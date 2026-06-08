@@ -47,6 +47,7 @@ import { join } from "node:path";
 import { createConsola } from "consola";
 import { parse } from "smol-toml";
 import { pickAgedVersion } from "./utils/aged_version.ts";
+import { isRecord, parseJsonRecord } from "./utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
 import { PROJECT_ROOT } from "./utils/root.ts";
 import { versionLessThan } from "./utils/semver.ts";
@@ -95,22 +96,16 @@ type FloatContext = {
   nowMs: number;
 };
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
-}
-
 /** Installed gateway version (from its package.json), or null if unresolved. */
 function installedGatewayVersion(root: string): string | null {
   try {
-    const pkg = JSON.parse(
+    const pkg = parseJsonRecord(
       readFileSync(
         join(root, "node_modules", "@jeffreycao", "copilot-api", "package.json"),
         "utf-8",
       ),
-    ) as {
-      version?: unknown;
-    };
-    return typeof pkg.version === "string" ? pkg.version : null;
+    );
+    return typeof pkg?.version === "string" ? pkg.version : null;
   } catch {
     return null;
   }
@@ -156,13 +151,8 @@ function assertBounds(config: ProjectConfig): void {
 // --- Registry target resolution ---------------------------------------------
 
 function parseNpmTimeMap(stdout: string): Record<string, string> | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(stdout);
-  } catch {
-    return null;
-  }
-  if (!isRecord(parsed)) return null;
+  const parsed = parseJsonRecord(stdout);
+  if (parsed === null) return null;
 
   const timeMap: Record<string, string> = {};
   for (const [version, publishedAt] of Object.entries(parsed)) {

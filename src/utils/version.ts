@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { parseJsonRecord } from "./json.ts";
 import { PROJECT_ROOT } from "./root.ts";
 
 /**
@@ -10,10 +11,8 @@ import { PROJECT_ROOT } from "./root.ts";
  */
 export function packageVersion(): string {
   try {
-    const pkg = JSON.parse(readFileSync(join(PROJECT_ROOT, "package.json"), "utf-8")) as {
-      version?: unknown;
-    };
-    return typeof pkg.version === "string" ? pkg.version : "0.0.0";
+    const pkg = parseJsonRecord(readFileSync(join(PROJECT_ROOT, "package.json"), "utf-8"));
+    return typeof pkg?.version === "string" ? pkg.version : "0.0.0";
   } catch {
     return "0.0.0";
   }

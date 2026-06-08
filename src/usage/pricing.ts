@@ -5,6 +5,8 @@
 // and price the aggregated token usage. Models OpenRouter cannot price are
 // reported as unpriced and excluded from the total.
 
+import { isRecord } from "../utils/json.ts";
+
 const FETCH_TIMEOUT_MS = 10_000;
 const PER_MILLION = 1_000_000;
 
@@ -276,8 +278,4 @@ function perMillion(value: unknown): number | undefined {
 
 function round(value: number): number {
   return Math.round(value * 10_000) / 10_000;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

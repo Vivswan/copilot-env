@@ -5,6 +5,7 @@
 // (the latter gated by the admin key). This class owns all of that HTTP; the
 // alias-derivation logic stays pure in `models.ts`.
 
+import { isRecord } from "../utils/json.ts";
 import type { CatalogModel } from "./models.ts";
 
 const ONE_M_TOKENS = 1_000_000;
@@ -93,10 +94,6 @@ export class CopilotAdminClient {
     }
     return res.json();
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Read `capabilities.limits.max_context_window_tokens` defensively. */

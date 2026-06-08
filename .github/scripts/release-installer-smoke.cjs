@@ -43,15 +43,40 @@ function runCommand(command, args) {
   }
 }
 
+async function downloadReleaseAssets(tag, repository, dir, scriptName) {
+  const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  if (token) {
+    runCommand("gh", [
+      "release",
+      "download",
+      tag,
+      "--repo",
+      repository,
+      "--dir",
+      dir,
+      "--clobber",
+      "--pattern",
+      scriptName,
+      "--pattern",
+      `${scriptName}.sha256`,
+    ]);
+    return;
+  }
+
+  const installer = join(dir, scriptName);
+  const checksum = join(dir, `${scriptName}.sha256`);
+  const base = `https://github.com/${repository}/releases/download/${tag}`;
+  await download(`${base}/${scriptName}`, installer);
+  await download(`${base}/${scriptName}.sha256`, checksum);
+}
+
 async function main(tag, repository) {
   const tmp = mkdtempSync(join(tmpdir(), "copilot-env-release-smoke-"));
   const scriptName = isWindows ? "install.ps1" : "install.sh";
   const installer = join(tmp, scriptName);
   const checksum = join(tmp, `${scriptName}.sha256`);
 
-  const base = `https://github.com/${repository}/releases/download/${tag}`;
-  await download(`${base}/${scriptName}`, installer);
-  await download(`${base}/${scriptName}.sha256`, checksum);
+  await downloadReleaseAssets(tag, repository, tmp, scriptName);
   verifyChecksum(installer, checksum);
 
   const installDir = join(tmp, "copilot-env");

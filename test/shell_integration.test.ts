@@ -8,6 +8,7 @@ import {
   posixLaunchersBlock,
   quotePosix,
   quotePowerShell,
+  windowsExecutionPolicyCommand,
 } from "../src/commands/shell_integration.ts";
 
 // `agent setup shell` wires/unwires the rc block. Exercise the POSIX path by
@@ -202,6 +203,17 @@ test("posixBlock safely quotes paths with shell metacharacters", () => {
 test("quotePosix / quotePowerShell escape embedded single quotes", () => {
   expect(quotePosix("a'b")).toBe("'a'\\''b'");
   expect(quotePowerShell("a'b")).toBe("'a''b'");
+});
+
+test("windows execution policy command skips unavailable policy cmdlets", () => {
+  const command = windowsExecutionPolicyCommand();
+  expect(command).toContain("Get-Command Get-ExecutionPolicy -ErrorAction Stop");
+  expect(command).toContain("Get-Command Set-ExecutionPolicy -ErrorAction Stop");
+  expect(command).toContain("catch");
+  expect(command).toContain("exit 0");
+  expect(command).toContain(
+    "Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force",
+  );
 });
 
 test("posixLaunchersBlock sources the launchers file under its own marker", () => {

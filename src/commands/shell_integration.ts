@@ -231,6 +231,21 @@ export function windowsLaunchersBlock(launchersPs1: string): string {
   return `\n${LAUNCHERS_MARKER}\n$AgentsLaunchers = ${quotePowerShell(launchersPs1)}\nif (Test-Path -LiteralPath $AgentsLaunchers) { . $AgentsLaunchers }\n`;
 }
 
+export function windowsExecutionPolicyCommand(): string {
+  return (
+    "$ErrorActionPreference='Stop'; " +
+    "try { " +
+    "Get-Command Get-ExecutionPolicy -ErrorAction Stop | Out-Null; " +
+    "Get-Command Set-ExecutionPolicy -ErrorAction Stop | Out-Null " +
+    "} catch { " +
+    "Write-Host 'Execution policy cmdlets unavailable; skipping execution policy update.'; exit 0 " +
+    "}; " +
+    "if ((Get-ExecutionPolicy) -in 'Restricted','AllSigned','Undefined') { " +
+    "Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force; " +
+    "Write-Host 'Set CurrentUser execution policy to RemoteSigned so the profile can load agents.ps1.' }"
+  );
+}
+
 // --- POSIX target files -------------------------------------------------------
 
 /** Existing ~/.bashrc + ~/.zshrc; for wiring, fall back to one named for $SHELL. */
@@ -271,13 +286,7 @@ function psEval(command: string): string {
 function relaxWindowsExecutionPolicy(): void {
   const result = spawnSync(
     "powershell",
-    [
-      "-NoProfile",
-      "-Command",
-      "if ((Get-ExecutionPolicy) -in 'Restricted','AllSigned','Undefined') { " +
-        "Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force; " +
-        "Write-Host 'Set CurrentUser execution policy to RemoteSigned so the profile can load agents.ps1.' }",
-    ],
+    ["-NoProfile", "-Command", windowsExecutionPolicyCommand()],
     { stdio: ["ignore", "inherit", "inherit"] },
   );
   if (result.error || result.status !== 0) {

@@ -1,5 +1,6 @@
 // `agent cost`: fetches pricing, reads usage DBs, and prints spend estimates.
 import { consola } from "consola";
+import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import {
   type CostEstimate,
   estimateCost,
@@ -62,7 +63,7 @@ function parseDaysCutoff(days: string | undefined): number | undefined {
   if (!Number.isFinite(n) || n <= 0) {
     throw new Error(`--days must be a positive number, got '${days}'`);
   }
-  return Date.now() - n * 86_400_000;
+  return Date.now() - n * MILLISECONDS_PER_DAY;
 }
 
 /** Format a token count with a K/M suffix. */

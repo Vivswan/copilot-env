@@ -14,13 +14,13 @@ import {
   type SpawnSyncRunner,
 } from "../src/gateway_float.ts";
 import type { ProjectConfig } from "../src/utils/project_config.ts";
+import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 
 // gatewayFloatUpToDate / nodeModulesFresh back the bin shims' `--verify` fast path:
 // they decide whether a full `bun install` can be skipped.
 
 const GATEWAY_PKG = "@jeffreycao/copilot-api";
 const NOW_MS = Date.parse("2026-06-10T00:00:00.000Z");
-const DAY_MS = 86_400_000;
 
 const CONFIG: ProjectConfig = {
   "gatewayMinVersion": "1.10.0",
@@ -56,7 +56,7 @@ function installGateway(root: string, version: string): void {
 }
 
 function isoDaysAgo(days: number): string {
-  return new Date(NOW_MS - days * DAY_MS).toISOString();
+  return new Date(NOW_MS - days * MILLISECONDS_PER_DAY).toISOString();
 }
 
 function npmTime(daysByVersion: Record<string, number>): Record<string, string> {

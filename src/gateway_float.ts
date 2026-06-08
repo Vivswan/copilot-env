@@ -51,11 +51,11 @@ import { isRecord, parseJsonRecord } from "./utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
 import { PROJECT_ROOT } from "./utils/root.ts";
 import { versionLessThan } from "./utils/semver.ts";
+import { SECONDS_PER_DAY } from "./utils/time.ts";
 
 const GATEWAY_PKG = "@jeffreycao/copilot-api";
 const GATEWAY_VERSION_ENV = "COPILOT_API_VERSION";
 const NO_FLOAT_ENV = "COPILOT_API_NO_FLOAT";
-const SECONDS_PER_DAY = 24 * 60 * 60;
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 
 type GatewayConsolaOptions = NonNullable<Parameters<typeof createConsola>[0]> & {

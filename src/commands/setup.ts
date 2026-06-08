@@ -2,11 +2,11 @@
 import { spawnSync } from "node:child_process";
 import { consola } from "consola";
 import { pickAgedVersion } from "../utils/aged_version.ts";
+import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { runShellIntegration } from "./shell_integration.ts";
 
 const NVM_VERSION = "v0.40.1";
 const POSIX_NVM_SH = '"$' + '{NVM_DIR:-$HOME/.nvm}/nvm.sh"';
-const DAY_MS = 86_400_000;
 
 const AGENT_CLIS = [
   {
@@ -275,7 +275,11 @@ function resolveAgedVersion(packageName: string, days: number): string {
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error(`npm publish times for ${packageName} were not an object`);
   }
-  const version = pickAgedVersion(parsed as Record<string, string>, days * DAY_MS, Date.now());
+  const version = pickAgedVersion(
+    parsed as Record<string, string>,
+    days * MILLISECONDS_PER_DAY,
+    Date.now(),
+  );
   if (!version) {
     throw new Error(`no release of ${packageName} is >=${days} days old (or npm is unreachable)`);
   }

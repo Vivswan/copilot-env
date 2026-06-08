@@ -24,24 +24,27 @@ macOS, and Windows**.
 
 ```bash
 # macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/Vivswan/copilot-env/main/install.sh | bash
+curl -fsSL https://github.com/Vivswan/copilot-env/releases/latest/download/install.sh | bash
 ```
 
 ```powershell
 # Windows
-irm https://raw.githubusercontent.com/Vivswan/copilot-env/main/install.ps1 | iex
+irm https://github.com/Vivswan/copilot-env/releases/latest/download/install.ps1 | iex
 ```
 
 Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, then wires your shell.
 
+- **Recommended:** install from the latest GitHub release asset, not from the
+  `main` branch. `main` is for development and can be temporarily ahead of the
+  latest released installer flow.
 - **Artifact:** the installer extracts the official `copilot-env-vX.Y.Z.tar.gz` release asset when present, verifies that asset's SHA256, and checks the archive source marker against GitHub release metadata before extraction.
 - **Replaceable:** re-run the bootstrapper to replace the previous install with the selected release.
 - **Next:** restart your shell, then `agent start`.
 - **Optional:** run `agent setup clis --launchers` for Claude/Copilot/Codex CLIs and `cl` / `co` / `cx`.
 - **Update later:** `agent update`.
-- **Specific version:** run that release's installer asset, e.g.
-  `curl -fsSL https://github.com/Vivswan/copilot-env/releases/download/v2.0.0/install.sh | bash`.
-  The `main` one-liner installs the latest release.
+- **Specific version:** use the versioned release asset instead of `latest`, e.g.
+  `curl -fsSL https://github.com/Vivswan/copilot-env/releases/download/v2.0.0/install.sh | bash`
+  or `irm https://github.com/Vivswan/copilot-env/releases/download/v2.0.0/install.ps1 | iex`.
 
 ### Install flags
 

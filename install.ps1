@@ -18,6 +18,11 @@ $PSNativeCommandUseErrorActionPreference = $false
 $InstallRef = if ($env:COPILOT_ENV_INSTALL_REF) { $env:COPILOT_ENV_INSTALL_REF } else { 'latest' }
 $ResolverUrl = 'https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/resolve-release.ts'
 $VerifierUrl = 'https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/verify-source-archive.ts'
+$AuthHeaders = @{ 'User-Agent' = 'copilot-env' }
+$AuthToken = if ($env:GH_TOKEN) { $env:GH_TOKEN } else { $env:GITHUB_TOKEN }
+if ($AuthToken) {
+    $AuthHeaders['Authorization'] = "Bearer $AuthToken"
+}
 if (-not $InstallDir) {
     $InstallDir = if ($env:COPILOT_ENV_DIR) { $env:COPILOT_ENV_DIR } else { Join-Path $env:USERPROFILE '.copilot-env' }
 }
@@ -82,7 +87,7 @@ function Resolve-ReleaseTarget {
     try {
         $resolver = Join-Path $tmp 'resolve-release.ts'
         Invoke-WithRetry 'Download release resolver' {
-            Invoke-WebRequest -Uri $ResolverUrl -OutFile $resolver -UseBasicParsing -Headers @{ 'User-Agent' = 'copilot-env' }
+            Invoke-WebRequest -Uri $ResolverUrl -OutFile $resolver -UseBasicParsing -Headers $AuthHeaders
         }
         $resolverArgs = @($resolver, '--json')
         if ($InstallRef -ne 'latest') {
@@ -134,15 +139,15 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'shell\agents.ps1'))) {
         $verifier = Join-Path $tmp 'verify-source-archive.ts'
         $checksum = Join-Path $tmp 'release.tgz.sha256'
         Invoke-WithRetry 'Download archive verifier' {
-            Invoke-WebRequest -Uri $VerifierUrl -OutFile $verifier -UseBasicParsing -Headers @{ 'User-Agent' = 'copilot-env' }
+            Invoke-WebRequest -Uri $VerifierUrl -OutFile $verifier -UseBasicParsing -Headers $AuthHeaders
         }
         Invoke-WithRetry 'Download copilot-env release' {
-            Invoke-WebRequest -Uri $url -OutFile $tgz -UseBasicParsing -Headers @{ 'User-Agent' = 'copilot-env' }
+            Invoke-WebRequest -Uri $url -OutFile $tgz -UseBasicParsing -Headers $AuthHeaders
         }
         $verifyArgs = @($verifier, $tgz, $target.sourceSha)
         if ($target.sourceSha256Url) {
             Invoke-WithRetry 'Download release checksum' {
-                Invoke-WebRequest -Uri $target.sourceSha256Url -OutFile $checksum -UseBasicParsing -Headers @{ 'User-Agent' = 'copilot-env' }
+                Invoke-WebRequest -Uri $target.sourceSha256Url -OutFile $checksum -UseBasicParsing -Headers $AuthHeaders
             }
             $verifyArgs += $checksum
         }

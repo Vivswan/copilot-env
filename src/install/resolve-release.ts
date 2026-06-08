@@ -22,6 +22,8 @@
 //
 // Discovery reads the GitHub Releases REST API (JSON; published, non-prerelease,
 // vX.Y.Z only) and takes the tag/date/tarball URL verbatim from the payload.
+// Set COPILOT_ENV_CI_INCLUDE_DRAFT_RELEASES=1 only in release CI smoke tests;
+// normal installs intentionally ignore draft releases.
 
 const SECONDS_PER_DAY = 24 * 60 * 60;
 // per_page=100 reads every release in one page (this repo will not exceed that for
@@ -32,6 +34,7 @@ const GH = {
   "X-GitHub-Api-Version": "2026-03-10",
   "User-Agent": "copilot-env",
 } as const;
+const CI_INCLUDE_DRAFT_RELEASES_ENV = "COPILOT_ENV_CI_INCLUDE_DRAFT_RELEASES";
 
 /** A published release, taken from the API: tag, publish time, tarball URL, and
  *  the full commit SHA GitHub places in the source archive wrapper dir. */
@@ -62,7 +65,7 @@ function releaseArchiveName(tag: string): string {
 /** Parse the GitHub `/releases` JSON into newest-first releases: published,
  *  non-prerelease, exact vX.Y.Z, with a tarball URL. Returns [] on anything
  *  unparseable. */
-export function parseReleasesJson(jsonText: string): Release[] {
+export function parseReleasesJson(jsonText: string, includeDrafts = false): Release[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonText);
@@ -75,7 +78,7 @@ export function parseReleasesJson(jsonText: string): Release[] {
   for (const item of parsed) {
     if (typeof item !== "object" || item === null) continue;
     const r = item as Record<string, unknown>;
-    if (r.draft === true || r.prerelease === true) continue;
+    if ((r.draft === true && !includeDrafts) || r.prerelease === true) continue;
     if (typeof r.tag_name !== "string" || !/^v\d+\.\d+\.\d+$/.test(r.tag_name)) continue;
     if (typeof r.tarball_url !== "string") continue;
     if (typeof r.target_commitish !== "string" || !/^[0-9a-f]{40}$/i.test(r.target_commitish)) {
@@ -131,15 +134,21 @@ export async function resolveTarget(
   cooldownDays: number | null,
   exactTag: string | null = null,
 ): Promise<Release | null> {
+  const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  const headers: Record<string, string> = { ...GH };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+  const includeDrafts = process.env[CI_INCLUDE_DRAFT_RELEASES_ENV] === "1";
   let text: string;
   try {
-    const res = await fetch(RELEASES_API, { headers: GH });
+    const res = await fetch(RELEASES_API, { headers });
     if (!res.ok) return null;
     text = await res.text();
   } catch {
     return null; // offline / API unreachable
   }
-  const releases = parseReleasesJson(text);
+  const releases = parseReleasesJson(text, includeDrafts);
   if (releases.length === 0) return null;
   if (exactTag !== null) return pickTag(releases, exactTag);
   return cooldownDays === null

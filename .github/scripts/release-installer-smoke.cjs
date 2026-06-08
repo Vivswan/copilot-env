@@ -12,7 +12,10 @@ function usage() {
 }
 
 async function download(url, path) {
-  const res = await fetch(url, { headers: { "User-Agent": "copilot-env" } });
+  const headers = { "User-Agent": "copilot-env" };
+  const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(url, { headers });
   if (!res.ok) throw new Error(`failed to download ${url} (HTTP ${res.status})`);
   writeFileSync(path, new Uint8Array(await res.arrayBuffer()));
 }

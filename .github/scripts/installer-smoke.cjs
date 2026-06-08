@@ -1,4 +1,12 @@
-const { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync } = require("node:fs");
+const {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} = require("node:fs");
 const { tmpdir } = require("node:os");
 const { join, resolve } = require("node:path");
 const { spawnSync } = require("node:child_process");
@@ -8,6 +16,10 @@ const isWindows = process.platform === "win32";
 const optionalClis = ["claude", "copilot", "codex"];
 const posixNvmSource = '[ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ] && . "${NVM_DIR:-$HOME/.nvm}/nvm.sh" >/dev/null 2>&1 || true';
 const releaseApi = `https://api.github.com/repos/${process.env.GITHUB_REPOSITORY ?? "Vivswan/copilot-env"}/releases/latest`;
+const legacyDownloadSkipMarker = join(
+  process.env.RUNNER_TEMP ?? tmpdir(),
+  "copilot-env-installer-smoke-legacy-download.skip",
+);
 
 function envBool(name, fallback = false) {
   const value = process.env[name];
@@ -62,9 +74,14 @@ async function shouldSkipLegacyDownloadSmoke() {
   const major = tag ? tagMajor(tag) : null;
   if (tag && major !== null && major < 2) {
     console.log(`Skipping download-mode installer smoke for ${tag}; bundled TS installer starts in v2.0.0.`);
+    writeFileSync(legacyDownloadSkipMarker, `${tag}\n`);
     return true;
   }
   return false;
+}
+
+function legacyDownloadSmokeSkipped() {
+  return existsSync(legacyDownloadSkipMarker);
 }
 
 function installerTarget(args) {
@@ -147,6 +164,7 @@ function cliExists(command) {
 }
 
 async function runInstall() {
+  rmSync(legacyDownloadSkipMarker, { force: true });
   if (await shouldSkipLegacyDownloadSmoke()) {
     return;
   }
@@ -168,6 +186,10 @@ async function runInstall() {
 }
 
 function assertNoOptionalClis() {
+  if (legacyDownloadSmokeSkipped()) {
+    console.log("Skipping optional CLI assertion because legacy download-mode smoke was skipped.");
+    return;
+  }
   for (const cli of optionalClis) {
     if (cliExists(cli)) {
       console.error(`::error::${cli} must NOT be installed by installer ${process.env.INSTALLER_ARGS ?? ""}`);
@@ -234,6 +256,10 @@ function verifyLauncherWiring() {
 }
 
 function verifyOutcome() {
+  if (legacyDownloadSmokeSkipped()) {
+    console.log("Skipping outcome verification because legacy download-mode smoke was skipped.");
+    return;
+  }
   verifyOptionalClis();
   verifyShellWiring();
   verifyLauncherWiring();

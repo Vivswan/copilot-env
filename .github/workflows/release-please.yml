@@ -140,4 +140,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.release-please.outputs.tag_name }}
-        run: gh release edit "$TAG" --draft=false --latest
+        run: gh release edit "$TAG" --repo "${{ github.repository }}" --draft=false --latest

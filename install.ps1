@@ -15,6 +15,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
+$InstallRef = if ($env:COPILOT_ENV_INSTALL_REF) { $env:COPILOT_ENV_INSTALL_REF } else { 'latest' }
 $ResolverUrl = 'https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/resolve-release.ts'
 $VerifierUrl = 'https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/verify-source-archive.ts'
 if (-not $InstallDir) {
@@ -83,7 +84,11 @@ function Resolve-ReleaseTarget {
         Invoke-WithRetry 'Download release resolver' {
             Invoke-WebRequest -Uri $ResolverUrl -OutFile $resolver -UseBasicParsing -Headers @{ 'User-Agent' = 'copilot-env' }
         }
-        $json = (& bun $resolver --json)
+        $resolverArgs = @($resolver, '--json')
+        if ($InstallRef -ne 'latest') {
+            $resolverArgs += @('--tag', $InstallRef)
+        }
+        $json = (& bun @resolverArgs)
         if ($LASTEXITCODE -ne 0 -or -not $json) { return $null }
         $target = ($json | Select-Object -First 1) | ConvertFrom-Json
         if (-not $target.tarballUrl -or -not $target.sourceSha) { return $null }

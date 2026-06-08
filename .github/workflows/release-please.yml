@@ -23,6 +23,45 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v6
+
+      - name: Create installer assets
+        id: installer-assets
+        run: |
+          tag="v$(node -p "require('./package.json').version")"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          mkdir -p release-assets
+          cp install.sh install.ps1 release-assets/
+          TAG="$tag" node <<'NODE'
+          const { readFileSync, writeFileSync } = require("node:fs");
+          const tag = process.env.TAG;
+          if (!tag) throw new Error("TAG is required");
+
+          const shPath = "release-assets/install.sh";
+          const shNeedle = 'INSTALL_REF="${COPILOT_ENV_INSTALL_REF:-latest}"';
+          const shReplacement = `INSTALL_REF="\${COPILOT_ENV_INSTALL_REF:-${tag}}"`;
+          const sh = readFileSync(shPath, "utf8");
+          if (!sh.includes(shNeedle)) throw new Error(`${shPath}: install ref placeholder not found`);
+          writeFileSync(shPath, sh.replace(shNeedle, shReplacement));
+
+          const psPath = "release-assets/install.ps1";
+          const psNeedle = "$InstallRef = if ($env:COPILOT_ENV_INSTALL_REF) { $env:COPILOT_ENV_INSTALL_REF } else { 'latest' }";
+          const psReplacement = `$InstallRef = if ($env:COPILOT_ENV_INSTALL_REF) { $env:COPILOT_ENV_INSTALL_REF } else { '${tag}' }`;
+          const ps = readFileSync(psPath, "utf8");
+          if (!ps.includes(psNeedle)) throw new Error(`${psPath}: install ref placeholder not found`);
+          writeFileSync(psPath, ps.replace(psNeedle, psReplacement));
+          NODE
+
+      - name: Validate installer assets
+        env:
+          TAG: ${{ steps.installer-assets.outputs.tag }}
+        run: |
+          grep -F "INSTALL_REF=\"\${COPILOT_ENV_INSTALL_REF:-$TAG}\"" release-assets/install.sh
+          grep -F "\$InstallRef = if (\$env:COPILOT_ENV_INSTALL_REF) { \$env:COPILOT_ENV_INSTALL_REF } else { '$TAG' }" release-assets/install.ps1
+          bash -n release-assets/install.sh
+          pwsh -NoProfile -Command '$null = [scriptblock]::Create((Get-Content -Raw release-assets/install.ps1))'
+
       # release-please opens/updates the rolling release PR. It is created with
       # RELEASE_PLEASE_TOKEN (a PAT or GitHub App token) when that secret is set, so
       # GitHub runs CI on the release PR like a normal PR. PRs opened by the built-in
@@ -35,15 +74,15 @@ jobs:
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
-      - name: Check out released tag
-        if: ${{ steps.release.outputs.release_created == 'true' }}
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ steps.release.outputs.tag_name }}
-
       - name: Upload installer assets
         if: ${{ steps.release.outputs.release_created == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.release.outputs.tag_name }}
-        run: gh release upload "$TAG" install.sh install.ps1 --clobber
+          PREPARED_TAG: ${{ steps.installer-assets.outputs.tag }}
+        run: |
+          if [ "$PREPARED_TAG" != "$TAG" ]; then
+            echo "::error::prepared installer assets are for $PREPARED_TAG, but release-please created $TAG"
+            exit 1
+          fi
+          gh release upload "$TAG" release-assets/install.sh release-assets/install.ps1 --clobber

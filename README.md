@@ -39,7 +39,9 @@ Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, the
 - **Next:** restart your shell, then `agent start`.
 - **Optional:** run `agent setup clis --launchers` for Claude/Copilot/Codex CLIs and `cl` / `co` / `cx`.
 - **Update later:** `agent update`.
-- **Specific version:** download `install.sh` / `install.ps1` from that GitHub Release's assets and run it; the `main` one-liner installs the latest release.
+- **Specific version:** run that release's installer asset, e.g.
+  `curl -fsSL https://github.com/Vivswan/copilot-env/releases/download/v1.3.0/install.sh | bash`.
+  The `main` one-liner installs the latest release.
 
 ### Install flags
 

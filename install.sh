@@ -8,6 +8,7 @@
 
 set -eu
 
+INSTALL_REF="${COPILOT_ENV_INSTALL_REF:-latest}"
 RESOLVER_URL="https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/resolve-release.ts"
 VERIFIER_URL="https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/verify-source-archive.ts"
 INSTALL_DIR_ARG=""
@@ -31,7 +32,8 @@ Options:
                          `agent setup shell` later to enable it.
 
 To install a specific copilot-env version, download install.sh from that
-GitHub Release and run it; this bootstrapper always resolves the latest release.
+GitHub Release and run it. The main-branch installer resolves latest; release
+assets are pinned to their release tag.
 EOF
 }
 
@@ -111,7 +113,11 @@ else
     echo "Resolving the copilot-env release ..."
     retry "Download release resolver" curl -fsSL -H "User-Agent: copilot-env" "$RESOLVER_URL" -o "$_tmp/resolve-release.ts"
     retry "Download archive verifier" curl -fsSL -H "User-Agent: copilot-env" "$VERIFIER_URL" -o "$_tmp/verify-source-archive.ts"
-    _target="$(bun "$_tmp/resolve-release.ts" --json)" \
+    RESOLVER_ARGS=(--json)
+    if [ "$INSTALL_REF" != "latest" ]; then
+        RESOLVER_ARGS+=(--tag "$INSTALL_REF")
+    fi
+    _target="$(bun "$_tmp/resolve-release.ts" "${RESOLVER_ARGS[@]}")" \
         || { echo "ERROR: no copilot-env release found (or the GitHub API is unreachable)." >&2; exit 1; }
     _url="$(printf %s "$_target" | json_field tarballUrl)"
     _sha="$(printf %s "$_target" | json_field sourceSha)"

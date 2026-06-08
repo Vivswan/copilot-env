@@ -10,9 +10,14 @@
 //     Print the chosen release tarball_url for install.sh / install.ps1.
 //   bun src/install/resolve-release.ts --json
 //     Print tag, tarballUrl, and sourceSha so installers can verify the archive.
+//   bun src/install/resolve-release.ts --json --tag vX.Y.Z
+//     Print metadata for that exact published release. Release-uploaded
+//     installer assets use this so `.../releases/download/vX.Y.Z/install.sh`
+//     installs vX.Y.Z instead of floating to latest.
 //
 // Arguments:
 //   --json  Emit structured release metadata instead of only the tarball URL.
+//   --tag   Resolve one exact release tag instead of the latest release.
 //
 // Discovery reads the GitHub Releases REST API (JSON; published, non-prerelease,
 // vX.Y.Z only) and takes the tag/date/tarball URL verbatim from the payload.
@@ -91,10 +96,19 @@ export function pickAged(releases: Release[], nowSeconds: number, days: number):
   return oldest;
 }
 
+/** Exact tag release, accepting either vX.Y.Z or X.Y.Z. */
+export function pickTag(releases: Release[], tag: string): Release | null {
+  const normalized = tag.startsWith("v") ? tag : `v${tag}`;
+  return releases.find((r) => r.tag === normalized) ?? null;
+}
+
 /** Fetch the releases and pick the target: the latest, or (with a cooldown) the newest
  *  release aged >= `cooldownDays`. Returns null when offline / the API errors / there is
  *  no eligible release. */
-export async function resolveTarget(cooldownDays: number | null): Promise<Release | null> {
+export async function resolveTarget(
+  cooldownDays: number | null,
+  exactTag: string | null = null,
+): Promise<Release | null> {
   let text: string;
   try {
     const res = await fetch(RELEASES_API, { headers: GH });
@@ -105,6 +119,7 @@ export async function resolveTarget(cooldownDays: number | null): Promise<Releas
   }
   const releases = parseReleasesJson(text);
   if (releases.length === 0) return null;
+  if (exactTag !== null) return pickTag(releases, exactTag);
   return cooldownDays === null
     ? pickLatest(releases)
     : pickAged(releases, Date.now() / 1000, cooldownDays);
@@ -115,17 +130,35 @@ export async function resolveTarget(cooldownDays: number | null): Promise<Releas
 if (import.meta.main) {
   const args = process.argv.slice(2);
   let json = false;
-  for (const arg of args) {
+  let tag: string | null = null;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
     if (arg === "--json") {
       json = true;
+    } else if (arg === "--tag") {
+      tag = args[++i] ?? "";
+      if (!tag) {
+        process.stderr.write("--tag needs a value, e.g. --tag v1.3.0\n");
+        process.exit(2);
+      }
+    } else if (arg?.startsWith("--tag=")) {
+      tag = arg.slice("--tag=".length);
+      if (!tag) {
+        process.stderr.write("--tag= needs a value, e.g. --tag=v1.3.0\n");
+        process.exit(2);
+      }
     } else {
-      process.stderr.write(`unknown argument '${arg}' (only --json is accepted)\n`);
+      process.stderr.write(`unknown argument '${arg}' (accepted: --json, --tag TAG)\n`);
       process.exit(2);
     }
   }
-  const target = await resolveTarget(null);
+  const target = await resolveTarget(null, tag);
   if (!target) {
-    process.stderr.write("no copilot-env release found (or the network is unavailable)\n");
+    process.stderr.write(
+      tag
+        ? `copilot-env release ${tag} was not found (or the GitHub API is unreachable)\n`
+        : "no copilot-env release found (or the network is unavailable)\n",
+    );
     process.exit(1);
   }
   process.stdout.write(

@@ -4,6 +4,7 @@ import {
   parseReleasesJson,
   pickAged,
   pickLatest,
+  pickTag,
   type Release,
 } from "../src/install/resolve-release.ts";
 import {
@@ -112,6 +113,11 @@ describe("pickLatest / pickAged", () => {
   test("pickAged falls back to the oldest when none is old enough", () => {
     const fresh = parseReleasesJson(JSON.stringify([rel("v3.0.0", "2026-06-05T23:00:00Z")]));
     expect(pickAged(fresh, now, 7)?.tag).toBe("v3.0.0");
+  });
+  test("pickTag resolves exact releases with or without a leading v", () => {
+    expect(pickTag(releases, "v1.9.0")?.tag).toBe("v1.9.0");
+    expect(pickTag(releases, "1.9.0")?.tag).toBe("v1.9.0");
+    expect(pickTag(releases, "v9.9.9")).toBeNull();
   });
   test("pickLatest is null on empty", () => expect(pickLatest([])).toBeNull());
 });

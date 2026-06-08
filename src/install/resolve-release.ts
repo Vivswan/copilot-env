@@ -80,12 +80,14 @@ export function parseReleasesJson(jsonText: string, includeDrafts = false): Rele
     const r = item as Record<string, unknown>;
     if ((r.draft === true && !includeDrafts) || r.prerelease === true) continue;
     if (typeof r.tag_name !== "string" || !/^v\d+\.\d+\.\d+$/.test(r.tag_name)) continue;
-    if (typeof r.tarball_url !== "string") continue;
     if (typeof r.target_commitish !== "string" || !/^[0-9a-f]{40}$/i.test(r.target_commitish)) {
       continue;
     }
     const archiveName = releaseArchiveName(r.tag_name);
     const sourceArchiveUrl = releaseAssetUrl(r, archiveName);
+    const tarballUrl =
+      sourceArchiveUrl ?? (typeof r.tarball_url === "string" ? r.tarball_url : null);
+    if (!tarballUrl) continue;
     const sourceSha256Url = sourceArchiveUrl ? releaseAssetUrl(r, `${archiveName}.sha256`) : null;
     const date = typeof r.published_at === "string" ? r.published_at : r.created_at;
     if (typeof date !== "string") continue;
@@ -94,7 +96,7 @@ export function parseReleasesJson(jsonText: string, includeDrafts = false): Rele
       releases.push({
         tag: r.tag_name,
         dateSeconds,
-        tarballUrl: sourceArchiveUrl ?? r.tarball_url,
+        tarballUrl,
         sourceSha: r.target_commitish.toLowerCase(),
         sourceSha256Url,
       });

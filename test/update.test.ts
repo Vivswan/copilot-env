@@ -104,6 +104,24 @@ describe("parseReleasesJson", () => {
     expect(parseReleasesJson(json, true).map((x) => x.tag)).toEqual(["v3.0.0", "v1.9.0"]);
   });
 
+  test("can include draft releases with uploaded archive assets and no GitHub tarball URL", () => {
+    const json = JSON.stringify([
+      rel("v3.0.0", "2026-06-05T00:00:00Z", {
+        draft: true,
+        tarball_url: null,
+        assets: [sourceArchiveAsset("v3.0.0"), checksumAsset("v3.0.0")],
+      }),
+    ]);
+    expect(parseReleasesJson(json)).toEqual([]);
+    expect(parseReleasesJson(json, true)[0]).toMatchObject({
+      tag: "v3.0.0",
+      tarballUrl:
+        "https://github.com/Vivswan/copilot-env/releases/download/v3.0.0/copilot-env-v3.0.0.tar.gz",
+      sourceSha256Url:
+        "https://github.com/Vivswan/copilot-env/releases/download/v3.0.0/copilot-env-v3.0.0.tar.gz.sha256",
+    });
+  });
+
   test("skips releases with no tarball_url", () => {
     const json = JSON.stringify([
       { tag_name: "v1.0.0", published_at: "2026-06-01T00:00:00Z", draft: false, prerelease: false },

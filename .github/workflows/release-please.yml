@@ -60,7 +60,7 @@ jobs:
           grep -F "INSTALL_REF=\"\${COPILOT_ENV_INSTALL_REF:-$TAG}\"" release-assets/install.sh
           grep -F "\$InstallRef = if (\$env:COPILOT_ENV_INSTALL_REF) { \$env:COPILOT_ENV_INSTALL_REF } else { '$TAG' }" release-assets/install.ps1
           bash -n release-assets/install.sh
-          pwsh -NoProfile -Command '$null = [scriptblock]::Create((Get-Content -Raw release-assets/install.ps1))'
+          pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content -Raw release-assets/install.ps1)) | Out-Null"
 
       # release-please opens/updates the rolling release PR. It is created with
       # RELEASE_PLEASE_TOKEN (a PAT or GitHub App token) when that secret is set, so

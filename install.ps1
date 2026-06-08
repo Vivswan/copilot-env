@@ -132,13 +132,21 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'shell\agents.ps1'))) {
     try {
         $tgz = Join-Path $tmp 'release.tgz'
         $verifier = Join-Path $tmp 'verify-source-archive.ts'
+        $checksum = Join-Path $tmp 'release.tgz.sha256'
         Invoke-WithRetry 'Download archive verifier' {
             Invoke-WebRequest -Uri $VerifierUrl -OutFile $verifier -UseBasicParsing -Headers @{ 'User-Agent' = 'copilot-env' }
         }
         Invoke-WithRetry 'Download copilot-env release' {
             Invoke-WebRequest -Uri $url -OutFile $tgz -UseBasicParsing -Headers @{ 'User-Agent' = 'copilot-env' }
         }
-        & bun $verifier $tgz $target.sourceSha
+        $verifyArgs = @($verifier, $tgz, $target.sourceSha)
+        if ($target.sourceSha256Url) {
+            Invoke-WithRetry 'Download release checksum' {
+                Invoke-WebRequest -Uri $target.sourceSha256Url -OutFile $checksum -UseBasicParsing -Headers @{ 'User-Agent' = 'copilot-env' }
+            }
+            $verifyArgs += $checksum
+        }
+        & bun @verifyArgs
         if ($LASTEXITCODE -ne 0) { throw 'release archive checksum verification failed.' }
         if (Test-Path $InstallDir) {
             Write-Host "Removing previous copilot-env install at $InstallDir ..."

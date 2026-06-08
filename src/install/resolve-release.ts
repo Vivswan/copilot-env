@@ -9,7 +9,8 @@
 //   bun src/install/resolve-release.ts
 //     Print the chosen release tarball_url for install.sh / install.ps1.
 //   bun src/install/resolve-release.ts --json
-//     Print tag, tarballUrl, and sourceSha so installers can verify the archive.
+//     Print tag, tarballUrl, sourceSha, and checksum URL metadata so installers
+//     can verify the archive.
 //   bun src/install/resolve-release.ts --json --tag vX.Y.Z
 //     Print metadata for that exact published release. Release-uploaded
 //     installer assets use this so `.../releases/download/vX.Y.Z/install.sh`
@@ -39,6 +40,23 @@ export interface Release {
   dateSeconds: number;
   tarballUrl: string;
   sourceSha: string;
+  sourceSha256Url: string | null;
+}
+
+function releaseAssetUrl(release: Record<string, unknown>, name: string): string | null {
+  if (!Array.isArray(release.assets)) return null;
+  for (const item of release.assets) {
+    if (typeof item !== "object" || item === null) continue;
+    const asset = item as Record<string, unknown>;
+    if (asset.name === name && typeof asset.browser_download_url === "string") {
+      return asset.browser_download_url;
+    }
+  }
+  return null;
+}
+
+function releaseArchiveName(tag: string): string {
+  return `copilot-env-${tag}.tar.gz`;
 }
 
 /** Parse the GitHub `/releases` JSON into newest-first releases: published,
@@ -63,6 +81,9 @@ export function parseReleasesJson(jsonText: string): Release[] {
     if (typeof r.target_commitish !== "string" || !/^[0-9a-f]{40}$/i.test(r.target_commitish)) {
       continue;
     }
+    const archiveName = releaseArchiveName(r.tag_name);
+    const sourceArchiveUrl = releaseAssetUrl(r, archiveName);
+    const sourceSha256Url = sourceArchiveUrl ? releaseAssetUrl(r, `${archiveName}.sha256`) : null;
     const date = typeof r.published_at === "string" ? r.published_at : r.created_at;
     if (typeof date !== "string") continue;
     const dateSeconds = Math.floor(Date.parse(date) / 1000);
@@ -70,8 +91,9 @@ export function parseReleasesJson(jsonText: string): Release[] {
       releases.push({
         tag: r.tag_name,
         dateSeconds,
-        tarballUrl: r.tarball_url,
+        tarballUrl: sourceArchiveUrl ?? r.tarball_url,
         sourceSha: r.target_commitish.toLowerCase(),
+        sourceSha256Url,
       });
     }
   }
@@ -167,6 +189,7 @@ if (import.meta.main) {
           tag: target.tag,
           tarballUrl: target.tarballUrl,
           sourceSha: target.sourceSha,
+          sourceSha256Url: target.sourceSha256Url,
         })
       : target.tarballUrl,
   );

@@ -1,5 +1,6 @@
-const { existsSync, readFileSync } = require("node:fs");
-const { join } = require("node:path");
+const { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync } = require("node:fs");
+const { tmpdir } = require("node:os");
+const { join, resolve } = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const step = process.argv[2];
@@ -18,6 +19,31 @@ function envBool(name, fallback = false) {
 function installerArgs() {
   const args = process.env.INSTALLER_ARGS ?? "";
   return args.trim() === "" ? [] : args.trim().split(/\s+/);
+}
+
+function hasInstallDirArg(args) {
+  return isWindows
+    ? args.some((arg) => arg.toLowerCase() === "-installdir")
+    : args.some((arg) => arg === "--dir" || arg.startsWith("--dir="));
+}
+
+function installerTarget(args) {
+  const scriptName = isWindows ? "install.ps1" : "install.sh";
+  if (!envBool("DOWNLOAD_INSTALL")) {
+    return { script: isWindows ? `./${scriptName}` : scriptName, args };
+  }
+
+  const tmp = mkdtempSync(join(tmpdir(), "copilot-env-installer-smoke-"));
+  const script = join(tmp, scriptName);
+  copyFileSync(resolve(scriptName), script);
+  if (!isWindows) chmodSync(script, 0o755);
+
+  const installDir = join(tmp, "copilot-env");
+  const nextArgs = hasInstallDirArg(args)
+    ? args
+    : [...args, isWindows ? "-InstallDir" : "--dir", installDir];
+  console.log(`download-mode installer smoke using ${script} -> ${installDir}`);
+  return { script, args: nextArgs };
 }
 
 function run(command, args, options = {}) {
@@ -81,19 +107,19 @@ function cliExists(command) {
 }
 
 function runInstall() {
-  const args = installerArgs();
+  const target = installerTarget(installerArgs());
   if (isWindows) {
-    run("pwsh", ["-NoProfile", "-File", "./install.ps1", ...args]);
+    run("pwsh", ["-NoProfile", "-File", target.script, ...target.args]);
   } else {
-    run("bash", ["install.sh", ...args]);
+    run("bash", [target.script, ...target.args]);
   }
 
   if (envBool("RERUN")) {
     console.log("--- repeat install run (must still succeed) ---");
     if (isWindows) {
-      run("pwsh", ["-NoProfile", "-File", "./install.ps1", ...args]);
+      run("pwsh", ["-NoProfile", "-File", target.script, ...target.args]);
     } else {
-      run("bash", ["install.sh", ...args]);
+      run("bash", [target.script, ...target.args]);
     }
   }
 }

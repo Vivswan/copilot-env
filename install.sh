@@ -121,6 +121,7 @@ else
         || { echo "ERROR: no copilot-env release found (or the GitHub API is unreachable)." >&2; exit 1; }
     _url="$(printf %s "$_target" | json_field tarballUrl)"
     _sha="$(printf %s "$_target" | json_field sourceSha)"
+    _sha256_url="$(printf %s "$_target" | json_field sourceSha256Url)"
     [ -n "$_url" ] && [ -n "$_sha" ] || {
         echo "ERROR: release resolver returned incomplete metadata." >&2
         exit 1
@@ -128,7 +129,12 @@ else
     _ref="${_url##*/}"
     echo "Downloading copilot-env $_ref into $INSTALL_DIR ..."
     retry "Download copilot-env release" curl -fsSL -H "User-Agent: copilot-env" "$_url" -o "$_tmp/release.tgz"
-    bun "$_tmp/verify-source-archive.ts" "$_tmp/release.tgz" "$_sha"
+    VERIFY_ARGS=("$_tmp/release.tgz" "$_sha")
+    if [ -n "$_sha256_url" ]; then
+        retry "Download release checksum" curl -fsSL -H "User-Agent: copilot-env" "$_sha256_url" -o "$_tmp/release.tgz.sha256"
+        VERIFY_ARGS+=("$_tmp/release.tgz.sha256")
+    fi
+    bun "$_tmp/verify-source-archive.ts" "${VERIFY_ARGS[@]}"
     if [ -e "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; then
         echo "Removing previous copilot-env install at $INSTALL_DIR ..."
         rm -rf -- "$INSTALL_DIR"

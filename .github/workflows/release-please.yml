@@ -22,6 +22,9 @@ concurrency:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
     steps:
       - uses: actions/checkout@v6
 
@@ -30,35 +33,13 @@ jobs:
         run: |
           tag="v$(node -p "require('./package.json').version")"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
-          mkdir -p release-assets
-          cp install.sh install.ps1 release-assets/
-          TAG="$tag" node <<'NODE'
-          const { readFileSync, writeFileSync } = require("node:fs");
-          const tag = process.env.TAG;
-          if (!tag) throw new Error("TAG is required");
-
-          const shPath = "release-assets/install.sh";
-          const shNeedle = 'INSTALL_REF="${COPILOT_ENV_INSTALL_REF:-latest}"';
-          const shReplacement = `INSTALL_REF="\${COPILOT_ENV_INSTALL_REF:-${tag}}"`;
-          const sh = readFileSync(shPath, "utf8");
-          if (!sh.includes(shNeedle)) throw new Error(`${shPath}: install ref placeholder not found`);
-          writeFileSync(shPath, sh.replace(shNeedle, shReplacement));
-
-          const psPath = "release-assets/install.ps1";
-          const psNeedle = "$InstallRef = if ($env:COPILOT_ENV_INSTALL_REF) { $env:COPILOT_ENV_INSTALL_REF } else { 'latest' }";
-          const psReplacement = `$InstallRef = if ($env:COPILOT_ENV_INSTALL_REF) { $env:COPILOT_ENV_INSTALL_REF } else { '${tag}' }`;
-          const ps = readFileSync(psPath, "utf8");
-          if (!ps.includes(psNeedle)) throw new Error(`${psPath}: install ref placeholder not found`);
-          writeFileSync(psPath, ps.replace(psNeedle, psReplacement));
-          NODE
+          node .github/scripts/release-assets.cjs prepare "$tag"
 
       - name: Validate installer assets
         env:
           TAG: ${{ steps.installer-assets.outputs.tag }}
         run: |
-          grep -F "INSTALL_REF=\"\${COPILOT_ENV_INSTALL_REF:-$TAG}\"" release-assets/install.sh
-          grep -F "\$InstallRef = if (\$env:COPILOT_ENV_INSTALL_REF) { \$env:COPILOT_ENV_INSTALL_REF } else { '$TAG' }" release-assets/install.ps1
+          node .github/scripts/release-assets.cjs validate "$TAG"
           bash -n release-assets/install.sh
           pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content -Raw release-assets/install.ps1)) | Out-Null"
 
@@ -74,6 +55,15 @@ jobs:
         with:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
+      - name: Create release archive asset
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: |
+          node .github/scripts/release-assets.cjs create-archive "$TAG" "${{ github.repository }}"
+          node .github/scripts/release-assets.cjs validate "$TAG"
+
       - name: Upload installer assets
         if: ${{ steps.release.outputs.release_created == 'true' }}
         env:
@@ -85,4 +75,37 @@ jobs:
             echo "::error::prepared installer assets are for $PREPARED_TAG, but release-please created $TAG"
             exit 1
           fi
-          gh release upload "$TAG" release-assets/install.sh release-assets/install.ps1 --clobber
+          gh release upload "$TAG" \
+            release-assets/install.sh \
+            release-assets/install.sh.sha256 \
+            release-assets/install.ps1 \
+            release-assets/install.ps1.sha256 \
+            "release-assets/copilot-env-$TAG.tar.gz" \
+            "release-assets/copilot-env-$TAG.tar.gz.sha256" \
+            --clobber
+
+      - uses: oven-sh/setup-bun@v2
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        with:
+          bun-version: 1.3.14
+
+      - name: Smoke uploaded install.sh asset
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        timeout-minutes: 20
+        run: node .github/scripts/release-installer-smoke.cjs "${{ steps.release.outputs.tag_name }}" "${{ github.repository }}"
+
+  release-installer-smoke-windows:
+    name: release install.ps1 smoke
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Smoke uploaded install.ps1 asset
+        timeout-minutes: 20
+        run: node .github/scripts/release-installer-smoke.cjs "${{ needs.release-please.outputs.tag_name }}" "${{ github.repository }}"

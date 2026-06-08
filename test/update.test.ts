@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   parseReleasesJson,
@@ -8,8 +11,10 @@ import {
   type Release,
 } from "../src/install/resolve-release.ts";
 import {
+  parseSha256Checksum,
   sourceArchivePrefix,
   verifySourceArchiveEntry,
+  verifySourceArchiveSha256,
 } from "../src/install/verify-source-archive.ts";
 
 // resolve-release.ts is the single source of truth for the release pick (imported by
@@ -30,6 +35,14 @@ const rel = (tag: string, date: string, over: Record<string, unknown> = {}): unk
   prerelease: false,
   ...over,
 });
+const checksumAsset = (tag: string): unknown => ({
+  name: `copilot-env-${tag}.tar.gz.sha256`,
+  browser_download_url: `https://github.com/Vivswan/copilot-env/releases/download/${tag}/copilot-env-${tag}.tar.gz.sha256`,
+});
+const sourceArchiveAsset = (tag: string): unknown => ({
+  name: `copilot-env-${tag}.tar.gz`,
+  browser_download_url: `https://github.com/Vivswan/copilot-env/releases/download/${tag}/copilot-env-${tag}.tar.gz`,
+});
 
 describe("parseReleasesJson", () => {
   test("parses published vX.Y.Z releases (tag/date/tarball), sorted newest-first", () => {
@@ -42,6 +55,33 @@ describe("parseReleasesJson", () => {
     expect(r[0]?.dateSeconds).toBe(secs("2026-06-05T00:00:00Z"));
     expect(r[0]?.tarballUrl).toBe(url("v2.0.0"));
     expect(r[0]?.sourceSha).toBe(sha("200"));
+    expect(r[0]?.sourceSha256Url).toBeNull();
+  });
+
+  test("prefers uploaded source archive and checksum assets when present", () => {
+    const json = JSON.stringify([
+      rel("v2.0.0", "2026-06-05T00:00:00Z", {
+        assets: [sourceArchiveAsset("v2.0.0"), checksumAsset("v2.0.0")],
+      }),
+    ]);
+    const release = parseReleasesJson(json)[0];
+    expect(release?.tarballUrl).toBe(
+      "https://github.com/Vivswan/copilot-env/releases/download/v2.0.0/copilot-env-v2.0.0.tar.gz",
+    );
+    expect(release?.sourceSha256Url).toBe(
+      "https://github.com/Vivswan/copilot-env/releases/download/v2.0.0/copilot-env-v2.0.0.tar.gz.sha256",
+    );
+  });
+
+  test("does not pair an uploaded checksum with GitHub's generated tarball", () => {
+    const json = JSON.stringify([
+      rel("v2.0.0", "2026-06-05T00:00:00Z", {
+        assets: [checksumAsset("v2.0.0")],
+      }),
+    ]);
+    const release = parseReleasesJson(json)[0];
+    expect(release?.tarballUrl).toBe(url("v2.0.0"));
+    expect(release?.sourceSha256Url).toBeNull();
   });
 
   test("skips drafts, prereleases, and non-vX.Y.Z tags", () => {
@@ -85,6 +125,7 @@ describe("parseReleasesJson", () => {
         dateSeconds: secs("2026-06-01T00:00:00Z"),
         tarballUrl: url("v1.0.0"),
         sourceSha: sha("100"),
+        sourceSha256Url: null,
       },
     ]);
   });
@@ -143,5 +184,31 @@ describe("source archive checksum marker", () => {
     expect(() => verifySourceArchiveEntry("Vivswan-copilot-env-deadbee/package.json", sha)).toThrow(
       "checksum mismatch",
     );
+  });
+});
+
+describe("source archive SHA256", () => {
+  test("parses standard sha256sum output", () => {
+    const hash = "a".repeat(64);
+    expect(parseSha256Checksum(`${hash}  copilot-env-v2.0.0.tar.gz\n`)).toBe(hash);
+  });
+
+  test("verifies full archive SHA256 bytes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "copilot-env-sha256-"));
+    try {
+      const file = join(dir, "release.tgz");
+      writeFileSync(file, "hello");
+      expect(
+        verifySourceArchiveSha256(
+          file,
+          "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+        ),
+      ).toBe("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
+      expect(() =>
+        verifySourceArchiveSha256(file, `${"0".repeat(64)}  copilot-env-v2.0.0.tar.gz`),
+      ).toThrow("SHA256 mismatch");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

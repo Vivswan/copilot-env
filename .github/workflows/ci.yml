@@ -104,6 +104,7 @@ jobs:
         include:
           - { os: ubuntu-latest, name: "default", args: "", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: true, rerun: true }
           - { os: macos-latest, name: "default", args: "", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: true, rerun: true }
+          - { os: ubuntu-latest, name: "download path", args: "--no-shell-integration", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: false, rerun: true, download-install: true }
           - { os: ubuntu-latest, name: "setup clis", args: "", setup-clis: true, setup-launchers: false, expect-clis: true, expect-wiring: true, rerun: false }
           - { os: ubuntu-latest, name: "setup launchers", args: "", setup-clis: false, setup-launchers: true, expect-clis: false, expect-wiring: true, rerun: false }
           - { os: ubuntu-latest, name: "--no-shell-integration", args: "--no-shell-integration", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: false, rerun: false }
@@ -116,6 +117,7 @@ jobs:
       expect-clis: ${{ matrix.expect-clis }}
       expect-wiring: ${{ matrix.expect-wiring }}
       rerun: ${{ matrix.rerun }}
+      download-install: ${{ matrix.download-install || false }}
 
   # Windows parity: each install.ps1 scenario as its OWN isolated job via the
   # reusable installer-ps1.yml. Git + Node/npm are preinstalled on windows-latest.
@@ -128,6 +130,7 @@ jobs:
       matrix:
         scenario:
           - { name: "default", args: "", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: true, rerun: true }
+          - { name: "download path", args: "-NoShellIntegration", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: false, rerun: true, download-install: true }
           - { name: "setup clis", args: "", setup-clis: true, setup-launchers: false, expect-clis: true, expect-wiring: true, rerun: false }
           - { name: "-NoShellIntegration", args: "-NoShellIntegration", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: false, rerun: false }
     uses: ./.github/workflows/installer-ps1.yml
@@ -138,6 +141,7 @@ jobs:
       expect-clis: ${{ matrix.scenario.expect-clis }}
       expect-wiring: ${{ matrix.scenario.expect-wiring }}
       rerun: ${{ matrix.scenario.rerun }}
+      download-install: ${{ matrix.scenario.download-install || false }}
 
   actionlint:
     name: actionlint

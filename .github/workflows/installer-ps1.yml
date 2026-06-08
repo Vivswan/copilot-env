@@ -35,6 +35,10 @@ on:
           Same flag, same job -- no cross-scenario interference.
         type: boolean
         default: false
+      download-install:
+        description: true runs a temp-copied installer so it must download/extract a release instead of using the checkout fast path.
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -56,6 +60,7 @@ jobs:
         env:
           INSTALLER_ARGS: ${{ inputs.args }}
           RERUN: ${{ inputs.rerun }}
+          DOWNLOAD_INSTALL: ${{ inputs.download-install }}
 
       - name: Assert installer did not install optional CLIs
         run: node .github/scripts/installer-smoke.cjs assert-no-optional-clis

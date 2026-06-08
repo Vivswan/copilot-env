@@ -84,6 +84,13 @@ jobs:
             "release-assets/copilot-env-$TAG.tar.gz.sha256" \
             --clobber
 
+      - name: Publish release
+        if: ${{ steps.release.outputs.release_created == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: gh release edit "$TAG" --draft=false --latest
+
       - uses: oven-sh/setup-bun@v2
         if: ${{ steps.release.outputs.release_created == 'true' }}
         with:

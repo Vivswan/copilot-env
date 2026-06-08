@@ -3,7 +3,9 @@
   "include-component-in-tag": false,
   "packages": {
     ".": {
-      "release-type": "node"
+      "release-type": "node",
+      "draft": true,
+      "force-tag-creation": true
     }
   }
 }

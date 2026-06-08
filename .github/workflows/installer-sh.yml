@@ -57,26 +57,15 @@ jobs:
           bun-version: 1.3.14
 
       - name: Run install.sh ${{ inputs.args }}
-        run: |
-          bash install.sh ${{ inputs.args }}
-          if [ "${{ inputs.rerun }}" = "true" ]; then
-            echo "--- repeat install run (must still succeed) ---"
-            bash install.sh ${{ inputs.args }}
-          fi
+        run: node .github/scripts/installer-smoke.cjs run-install
+        env:
+          INSTALLER_ARGS: ${{ inputs.args }}
+          RERUN: ${{ inputs.rerun }}
 
       - name: Assert installer did not install optional CLIs
-        run: |
-          export NVM_DIR="$HOME/.nvm"
-          if [ -s "$NVM_DIR/nvm.sh" ]; then
-            # shellcheck disable=SC1091
-            . "$NVM_DIR/nvm.sh"
-          fi
-          for cli in claude copilot codex; do
-            if command -v "$cli" >/dev/null; then
-              echo "::error::$cli must NOT be installed by install.sh ${{ inputs.args }}"; exit 1
-            fi
-            echo "$cli correctly absent after installer"
-          done
+        run: node .github/scripts/installer-smoke.cjs assert-no-optional-clis
+        env:
+          INSTALLER_ARGS: ${{ inputs.args }}
 
       - name: Run agent setup clis
         if: ${{ inputs.setup-clis }}
@@ -87,47 +76,9 @@ jobs:
         run: ./bin/agent setup launchers
 
       - name: Verify install.sh outcome
-        run: |
-          # No `set -e`: every assertion exits explicitly, and nvm.sh is not
-          # written for strict mode. Source nvm (if present) so CLIs installed by
-          # `agent setup clis` into nvm's prefix resolve.
-          export NVM_DIR="$HOME/.nvm"
-          if [ -s "$NVM_DIR/nvm.sh" ]; then
-            # shellcheck disable=SC1091
-            . "$NVM_DIR/nvm.sh"
-          fi
-          for cli in claude copilot codex; do
-            if [ "${{ inputs.expect-clis }}" = "true" ]; then
-              command -v "$cli" >/dev/null || { echo "::error::$cli was not installed by agent setup clis"; exit 1; }
-              echo "found $cli -> $(command -v "$cli")"
-            elif command -v "$cli" >/dev/null; then
-              echo "::error::$cli must NOT have been installed without agent setup clis"; exit 1
-            else
-              echo "$cli correctly absent"
-            fi
-          done
-          # Only grep files that exist -- passing a missing rc to grep makes it
-          # exit non-zero even when the marker matched in the other file.
-          wired=
-          for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-            if [ -f "$rc" ] && grep -qF "copilot-env shell integration" "$rc"; then
-              wired=1
-              echo "shell integration found in $rc"
-            fi
-          done
-          if [ "${{ inputs.expect-wiring }}" = "true" ]; then
-            [ -n "$wired" ] || { echo "::error::expected shell wiring, but no rc was wired"; exit 1; }
-          else
-            [ -z "$wired" ] || { echo "::error::expected NO shell wiring (${{ inputs.args }}), but an rc was wired"; exit 1; }
-          fi
-          if [ "${{ inputs.setup-launchers }}" = "true" ]; then
-            launcher_wired=
-            for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-              if [ -f "$rc" ] && grep -qF "copilot-env launchers" "$rc"; then
-                launcher_wired=1
-                echo "launchers found in $rc"
-              fi
-            done
-            [ -n "$launcher_wired" ] || { echo "::error::expected launcher wiring, but no rc had it"; exit 1; }
-          fi
-          echo "install.sh ${{ inputs.args }} verified on ${{ inputs.os }}"
+        run: node .github/scripts/installer-smoke.cjs verify-outcome
+        env:
+          INSTALLER_ARGS: ${{ inputs.args }}
+          EXPECT_CLIS: ${{ inputs.expect-clis }}
+          EXPECT_WIRING: ${{ inputs.expect-wiring }}
+          SETUP_LAUNCHERS: ${{ inputs.setup-launchers }}

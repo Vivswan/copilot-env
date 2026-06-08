@@ -13,6 +13,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  commit-names:
+    name: conventional-commits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate commit subjects
+        run: node .github/scripts/validate-commit-names.cjs
+
   check:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -144,7 +155,7 @@ jobs:
   all-green:
     name: all-green
     if: always()
-    needs: [check, install-sh, install-ps1, actionlint]
+    needs: [commit-names, check, install-sh, install-ps1, actionlint]
     runs-on: ubuntu-latest
     steps:
       - name: Require all CI jobs to have succeeded

@@ -12,7 +12,6 @@ import {
   copilotApiPortAvailable,
 } from "../copilot_api/port.ts";
 import {
-  copilotApiVersion,
   getOrphanPids,
   isCopilotApiPid,
   launchDaemon,
@@ -20,9 +19,13 @@ import {
   printLogTail,
 } from "../copilot_api/process.ts";
 import { CopilotApiState } from "../copilot_api/state.ts";
-import { readProjectConfig } from "../utils/project_config.ts";
+import {
+  GATEWAY_PACKAGE_NAME,
+  gatewayVersionFloorStatus,
+  installedGatewayVersion,
+} from "../copilot_api/version.ts";
+import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
-import { versionLessThan } from "../utils/semver.ts";
 
 // --- Default config applied on every `start`. ---
 //
@@ -146,7 +149,7 @@ async function printModelAliases(admin: CopilotAdminClient): Promise<void> {
  * fall back to version-only when offline.
  */
 async function logGatewayVersion(): Promise<void> {
-  const version = copilotApiVersion();
+  const version = installedGatewayVersion();
   if (version === null) {
     return;
   }
@@ -178,23 +181,24 @@ async function logGatewayVersion(): Promise<void> {
  * can't confirm the floor), so it throws rather than launching blind.
  */
 function assertGatewayFloor(): void {
-  const version = copilotApiVersion();
+  const version = installedGatewayVersion();
   if (version === null) {
     throw new Error(
-      "@jeffreycao/copilot-api is not installed or its package.json is unreadable — run 'bun install' to (re)install the gateway.",
+      `${GATEWAY_PACKAGE_NAME} is not installed or its package.json is unreadable — run 'bun install' to (re)install the gateway.`,
     );
   }
-  let floor: string;
+  let config: ProjectConfig;
   try {
-    floor = readProjectConfig(PROJECT_ROOT).gatewayMinVersion;
+    config = readProjectConfig(PROJECT_ROOT);
   } catch (e) {
     throw new Error(
       `could not read the gateway floor from copilot-env.config: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
-  if (versionLessThan(version, floor)) {
+  const status = gatewayVersionFloorStatus(version, config);
+  if (!status.ok && status.reason === "belowFloor") {
     throw new Error(
-      `@jeffreycao/copilot-api ${version} is below the required ${floor} floor — the gateway ` +
+      `${GATEWAY_PACKAGE_NAME} ${status.version} is below the required ${status.floor} floor — the gateway ` +
         `float (bun install postinstall) likely failed (offline?). Re-run 'bun install' online, ` +
         `or set COPILOT_API_VERSION to a known-good release.`,
     );

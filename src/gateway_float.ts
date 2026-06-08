@@ -46,6 +46,13 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createConsola } from "consola";
 import { parse } from "smol-toml";
+import {
+  assertGatewayConfigBounds,
+  GATEWAY_PACKAGE_NAME,
+  gatewayVersionBoundsStatus,
+  gatewayVersionFloorStatus,
+  installedGatewayVersion,
+} from "./copilot_api/version.ts";
 import { pickAgedVersion } from "./utils/aged_version.ts";
 import { isRecord, parseJsonRecord } from "./utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
@@ -53,7 +60,7 @@ import { PROJECT_ROOT } from "./utils/root.ts";
 import { versionLessThan } from "./utils/semver.ts";
 import { SECONDS_PER_DAY } from "./utils/time.ts";
 
-const GATEWAY_PKG = "@jeffreycao/copilot-api";
+const GATEWAY_PKG = GATEWAY_PACKAGE_NAME;
 const GATEWAY_VERSION_ENV = "COPILOT_API_VERSION";
 const NO_FLOAT_ENV = "COPILOT_API_NO_FLOAT";
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
@@ -96,21 +103,6 @@ type FloatContext = {
   nowMs: number;
 };
 
-/** Installed gateway version (from its package.json), or null if unresolved. */
-function installedGatewayVersion(root: string): string | null {
-  try {
-    const pkg = parseJsonRecord(
-      readFileSync(
-        join(root, "node_modules", "@jeffreycao", "copilot-api", "package.json"),
-        "utf-8",
-      ),
-    );
-    return typeof pkg?.version === "string" ? pkg.version : null;
-  } catch {
-    return null;
-  }
-}
-
 export function readBunMinimumReleaseAgeSeconds(root: string): number {
   const bunfig = join(root, "bunfig.toml");
   if (!existsSync(bunfig)) return 0;
@@ -135,17 +127,6 @@ export function readBunMinimumReleaseAgeSeconds(root: string): number {
 function formatReleaseAge(seconds: number): string {
   if (seconds % SECONDS_PER_DAY === 0) return `${seconds / SECONDS_PER_DAY}-day-old`;
   return `${seconds}-second-old`;
-}
-
-function assertBounds(config: ProjectConfig): void {
-  if (
-    config.gatewayMaxVersion !== null &&
-    versionLessThan(config.gatewayMaxVersion, config.gatewayMinVersion)
-  ) {
-    throw new Error(
-      `GATEWAY_MAX_VERSION (${config.gatewayMaxVersion}) is below GATEWAY_MIN_VERSION (${config.gatewayMinVersion})`,
-    );
-  }
 }
 
 // --- Registry target resolution ---------------------------------------------
@@ -277,7 +258,7 @@ function handlePinnedOverride(ctx: FloatContext, override: string): void {
 
 function handleResolveFailure(ctx: FloatContext, message: string): void {
   const installed = installedGatewayVersion(ctx.root);
-  if (installed !== null && !versionLessThan(installed, ctx.config.gatewayMinVersion)) {
+  if (gatewayVersionFloorStatus(installed, ctx.config).ok) {
     logger.warn(`update check failed (${message}); keeping ${GATEWAY_PKG}@${installed}`);
     return;
   }
@@ -313,10 +294,7 @@ function handleResolvedTarget(ctx: FloatContext, target: GatewayTarget): void {
   }
 
   const installedAfterFailure = installedGatewayVersion(ctx.root);
-  if (
-    installedAfterFailure === null ||
-    versionLessThan(installedAfterFailure, ctx.config.gatewayMinVersion)
-  ) {
+  if (!gatewayVersionFloorStatus(installedAfterFailure, ctx.config).ok) {
     throw new Error(
       `could not install ${GATEWAY_PKG}@${target.version} (offline?); installed ${installedAfterFailure ?? "none"} < floor ${ctx.config.gatewayMinVersion}`,
     );
@@ -339,7 +317,7 @@ export function floatGateway(
   spawnRunner: SpawnSyncRunner = spawnSync,
   nowMs: number = Date.now(),
 ): void {
-  assertBounds(config);
+  assertGatewayConfigBounds(config);
   const ctx: FloatContext = { root, bun, config, minimumReleaseAgeSeconds, spawnRunner, nowMs };
   const override = process.env[GATEWAY_VERSION_ENV]?.trim();
 
@@ -419,7 +397,7 @@ export function gatewayFloatVerifyStatus(
   const effectiveConfig = config ?? readProjectConfig(root);
   const effectiveMinimumReleaseAgeSeconds =
     minimumReleaseAgeSeconds ?? readBunMinimumReleaseAgeSeconds(root);
-  assertBounds(effectiveConfig);
+  assertGatewayConfigBounds(effectiveConfig);
 
   const target = resolveGatewayTarget({
     "root": root,
@@ -461,7 +439,8 @@ function verifyResolveFailure(
   config: ProjectConfig,
   message: string,
 ): GatewayFloatVerifyStatus {
-  return versionLessThan(installed, config.gatewayMinVersion)
+  const status = gatewayVersionFloorStatus(installed, config);
+  return !status.ok
     ? {
         "upToDate": false,
         "message": `update needed: update check failed (${message}); installed ${installed} < floor ${config.gatewayMinVersion}`,
@@ -505,8 +484,8 @@ export function gatewayInstallAssertStatus(
   root: string,
   config: ProjectConfig,
 ): GatewayInstallAssertStatus {
-  const version = installedGatewayVersion(root);
-  if (version === null) {
+  const status = gatewayVersionBoundsStatus(installedGatewayVersion(root), config);
+  if (!status.ok && status.reason === "missing") {
     return {
       "ok": false,
       "message":
@@ -514,17 +493,17 @@ export function gatewayInstallAssertStatus(
     };
   }
 
-  if (versionLessThan(version, config.gatewayMinVersion)) {
+  if (!status.ok && status.reason === "belowFloor") {
     return {
       "ok": false,
-      "message": `installed @jeffreycao/copilot-api ${version} is below the ${config.gatewayMinVersion} floor — the postinstall gateway float failed to reach the floor.`,
+      "message": `installed @jeffreycao/copilot-api ${status.version} is below the ${status.floor} floor — the postinstall gateway float failed to reach the floor.`,
     };
   }
 
-  if (config.gatewayMaxVersion !== null && versionLessThan(config.gatewayMaxVersion, version)) {
+  if (!status.ok && status.reason === "aboveCeiling") {
     return {
       "ok": false,
-      "message": `installed @jeffreycao/copilot-api ${version} is above the ${config.gatewayMaxVersion} ceiling — the postinstall gateway float overshot GATEWAY_MAX_VERSION.`,
+      "message": `installed @jeffreycao/copilot-api ${status.version} is above the ${status.ceiling} ceiling — the postinstall gateway float overshot GATEWAY_MAX_VERSION.`,
     };
   }
 
@@ -534,7 +513,7 @@ export function gatewayInstallAssertStatus(
       : `within [${config.gatewayMinVersion}, ${config.gatewayMaxVersion}]`;
   return {
     "ok": true,
-    "message": `gateway float OK: @jeffreycao/copilot-api ${version} (${window})`,
+    "message": `gateway float OK: @jeffreycao/copilot-api ${status.version} (${window})`,
   };
 }
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.1](https://github.com/Vivswan/copilot-env/compare/v3.1.0...v3.1.1) (2026-06-09)
+
+
+### Bug Fixes
+
+* expand agent health into a scoped diagnostic command ([271b21b](https://github.com/Vivswan/copilot-env/commit/271b21b5413dff3629792d055e5fc0abc019ecf6))
+
 ## [3.1.0](https://github.com/Vivswan/copilot-env/compare/v3.0.0...v3.1.0) (2026-06-08)
 
 

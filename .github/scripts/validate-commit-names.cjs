@@ -32,6 +32,21 @@ function git(args) {
   return execFileSync("git", args, { encoding: "utf8" }).trim();
 }
 
+// True when `rev` resolves to a commit present in this checkout. A force-push
+// orphans the old tip (and a shallow clone may never fetch it), so `before`
+// can name a commit that no longer exists -- `git rev-list before..after`
+// would then fail fatally. We use this to fall back to the push payload.
+function revExists(rev) {
+  try {
+    // stdio "ignore" keeps git's "fatal: Not a valid object name" off the log
+    // -- a missing `before` is an expected, handled case, not an error.
+    execFileSync("git", ["cat-file", "-e", `${rev}^{commit}`], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function shasInRange(range) {
   const output = git(["rev-list", "--reverse", range]);
   return output ? output.split(/\r?\n/) : [];
@@ -68,7 +83,10 @@ function listCommits() {
   if (eventName === "push") {
     const before = payload.before;
     const after = payload.after;
-    if (before && after && !zeroSha.test(before)) {
+    // Only diff a range when both endpoints are real and reachable here;
+    // otherwise (new branch, or a force-push that orphaned `before`) validate
+    // the commits GitHub listed in this push payload instead.
+    if (before && after && !zeroSha.test(before) && revExists(before) && revExists(after)) {
       return shasInRange(`${before}..${after}`).map((sha) => ({
         sha,
         subject: commitSubject(sha),

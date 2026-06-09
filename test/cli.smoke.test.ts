@@ -141,3 +141,76 @@ test("health --scope bogus exits 1 with a helpful message", () => {
   expect(proc.exitCode).toBe(1);
   expect(out).toContain("--scope must be one of");
 });
+
+// End-to-end coverage of the full diagnostic command: running the REAL
+// `agent health` exercises the whole import graph plus the live probes (bun,
+// node_modules, gateway package, runtime, shell wiring, CLIs, Codex), so it
+// cross-validates the rest of the codebase the way the unit tests can't. An
+// isolated COPILOT_API_HOME + a dead port make the runtime checks deterministic.
+function runHealthJson(scope: string): { exitCode: number | null; json: HealthJson } {
+  const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", scope, "--json"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: isolatedEnv({ COPILOT_API_PORT_DEFAULT: "4199" }),
+  });
+  return { exitCode: proc.exitCode, json: JSON.parse(proc.stdout.toString()) as HealthJson };
+}
+
+interface HealthJson {
+  scope: string;
+  ok: boolean;
+  exitCode: number;
+  checks: { id: string; group: string; status: string; detail: string }[];
+}
+
+test("health --scope full runs every group end-to-end and fails on a dead gateway", () => {
+  const { exitCode, json } = runHealthJson("full");
+  const ids = json.checks.map((c) => c.id);
+  expect(json.scope).toBe("full");
+  // Representative checks from each group are present.
+  for (const id of [
+    "bootstrap.bun",
+    "gateway.package",
+    "runtime.port",
+    "setup.shell",
+    "setup.codex",
+    "setup.codex-host",
+  ]) {
+    expect(ids).toContain(id);
+  }
+  // No daemon + isolated state => runtime fails => exit 1, ok=false.
+  expect(json.exitCode).toBe(1);
+  expect(json.ok).toBe(false);
+  expect(exitCode).toBe(1);
+  // Every check carries the structured fields the report/JSON rely on.
+  for (const c of json.checks) {
+    expect(typeof c.id).toBe("string");
+    expect(typeof c.status).toBe("string");
+    expect(typeof c.detail).toBe("string");
+  }
+});
+
+test("health --scope gateway covers bootstrap+gateway+runtime, not setup", () => {
+  const { json } = runHealthJson("gateway");
+  const ids = json.checks.map((c) => c.id);
+  expect(json.scope).toBe("gateway");
+  expect(ids).toContain("gateway.package");
+  expect(ids).toContain("runtime.port");
+  expect(ids).not.toContain("setup.shell");
+  expect(json.exitCode).toBe(1); // runtime unreachable
+});
+
+test("health --scope setup covers wiring only and never fails (warnings exit 0)", () => {
+  const { exitCode, json } = runHealthJson("setup");
+  const ids = json.checks.map((c) => c.id);
+  expect(json.scope).toBe("setup");
+  expect(ids).toContain("setup.shell");
+  expect(ids).toContain("setup.codex");
+  expect(ids).toContain("setup.codex-host");
+  // Setup-only: no runtime/bootstrap checks can drag the exit code to 1.
+  expect(ids).not.toContain("runtime.port");
+  expect(ids).not.toContain("bootstrap.bun");
+  expect(json.checks.every((c) => c.status !== "fail")).toBe(true);
+  expect(json.exitCode).toBe(0);
+  expect(exitCode).toBe(0);
+});

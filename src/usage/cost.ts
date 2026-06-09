@@ -117,7 +117,29 @@ function printTable(
   }
 }
 
-/** Print the by-model usage + cost report as a table (hosts merged). */
+/** A category cell: a token count and, when priced, its cost (null = unpriced). */
+interface CatCell {
+  tok: string;
+  cost: string | null;
+}
+
+/**
+ * Sub-align a category column: pad the token parts to one width and the `$`
+ * amounts to another, separated by `|`, so the tokens, the separator, and the
+ * decimal points all line up vertically — e.g.
+ *   `   176 |   $0.00`  /  `90.3K |   $0.45`  /  `234.2M | $117.09`.
+ */
+function alignCatColumn(cells: CatCell[]): string[] {
+  const tokW = Math.max(...cells.map((c) => c.tok.length));
+  const costStrs = cells.map((c) => (c.cost === null ? "" : `$${c.cost}`));
+  const costW = Math.max(...costStrs.map((s) => s.length));
+  return cells.map((c, i) => {
+    const tok = c.tok.padStart(tokW);
+    return c.cost === null ? tok : `${tok} | ${(costStrs[i] ?? "").padStart(costW)}`;
+  });
+}
+
+/** Print the by-model usage + cost report as one table (tokens with $ per category). */
 function printCostReport(
   report: UsageReport,
   estimate: CostEstimate,
@@ -127,58 +149,139 @@ function printCostReport(
   const { byModel, activeDays } = report;
   const models = [...byModel.keys()].sort();
   const period = days ? `last ${days} days` : "all time";
+  const div = activeDays > 0 ? activeDays : 1;
 
-  const sum = { reqs: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
-  const body: string[][] = [];
+  // Bare cost amount (no `$`; alignCatColumn re-adds it after padding).
+  const money = (n: number): string => n.toFixed(2);
+
+  const sum = {
+    reqs: 0,
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    total: 0,
+    inputCost: 0,
+    outputCost: 0,
+    cacheReadCost: 0,
+    cacheWriteCost: 0,
+  };
+
+  // Collect raw rows; the four category columns are sub-aligned together afterward.
+  const labels: string[] = [];
+  const reqsCol: string[] = [];
+  const inputCol: CatCell[] = [];
+  const outputCol: CatCell[] = [];
+  const cacheReadCol: CatCell[] = [];
+  const cacheWriteCol: CatCell[] = [];
+  const totalCol: string[] = [];
+  const costCol: string[] = [];
+
   for (const model of models) {
     const u = byModel.get(model);
     if (u === undefined) {
       continue;
     }
     const total = u.input + u.output + u.cacheRead + u.cacheCreation;
+    const c = estimate.perModel[model]; // ModelCost | undefined (unpriced)
     sum.reqs += u.events;
     sum.input += u.input;
     sum.output += u.output;
     sum.cacheRead += u.cacheRead;
     sum.cacheWrite += u.cacheCreation;
     sum.total += total;
-    const priced = estimate.perModel[model];
-    body.push([
-      model,
-      formatTokens(u.events),
-      formatTokens(u.input),
-      formatTokens(u.output),
-      formatTokens(u.cacheRead),
-      formatTokens(u.cacheCreation),
-      formatTokens(total),
-      priced ? formatCurrency(priced.estimatedCostUsd) : "unpriced",
-    ]);
+    if (c !== undefined) {
+      sum.inputCost += c.inputCostUsd;
+      sum.outputCost += c.outputCostUsd;
+      sum.cacheReadCost += c.cacheReadCostUsd;
+      sum.cacheWriteCost += c.cacheCreationCostUsd;
+    }
+    labels.push(model);
+    reqsCol.push(formatTokens(u.events));
+    inputCol.push({ tok: formatTokens(u.input), cost: c ? money(c.inputCostUsd) : null });
+    outputCol.push({ tok: formatTokens(u.output), cost: c ? money(c.outputCostUsd) : null });
+    cacheReadCol.push({
+      tok: formatTokens(u.cacheRead),
+      cost: c ? money(c.cacheReadCostUsd) : null,
+    });
+    cacheWriteCol.push({
+      tok: formatTokens(u.cacheCreation),
+      cost: c ? money(c.cacheCreationCostUsd) : null,
+    });
+    totalCol.push(formatTokens(total));
+    costCol.push(c ? formatCurrency(c.estimatedCostUsd) : "unpriced");
   }
 
-  const perDay = (n: number): string =>
-    activeDays > 0 ? formatTokens(Math.round(n / activeDays)) : "N/A";
-  const footer: string[][] = [
-    [
-      "TOTAL",
-      formatTokens(sum.reqs),
-      formatTokens(sum.input),
-      formatTokens(sum.output),
-      formatTokens(sum.cacheRead),
-      formatTokens(sum.cacheWrite),
-      formatTokens(sum.total),
-      formatCurrency(estimate.totalUsd),
-    ],
-    [
-      "Avg/day",
-      perDay(sum.reqs),
-      perDay(sum.input),
-      perDay(sum.output),
-      perDay(sum.cacheRead),
-      perDay(sum.cacheWrite),
-      perDay(sum.total),
-      activeDays > 0 ? formatCurrency(estimate.totalUsd / activeDays) : "N/A",
-    ],
+  // Footer rows (TOTAL, Avg/day) participate in the same sub-alignment.
+  const avg = (n: number): number => n / div;
+  const footerRows: Array<{
+    label: string;
+    reqs: string;
+    cats: CatCell[];
+    total: string;
+    cost: string;
+  }> = [
+    {
+      label: "TOTAL",
+      reqs: formatTokens(sum.reqs),
+      cats: [
+        { tok: formatTokens(sum.input), cost: money(sum.inputCost) },
+        { tok: formatTokens(sum.output), cost: money(sum.outputCost) },
+        { tok: formatTokens(sum.cacheRead), cost: money(sum.cacheReadCost) },
+        { tok: formatTokens(sum.cacheWrite), cost: money(sum.cacheWriteCost) },
+      ],
+      total: formatTokens(sum.total),
+      cost: formatCurrency(estimate.totalUsd),
+    },
+    {
+      label: "Avg/day",
+      reqs: activeDays > 0 ? formatTokens(Math.round(avg(sum.reqs))) : "N/A",
+      cats: [
+        { tok: formatTokens(Math.round(avg(sum.input))), cost: money(avg(sum.inputCost)) },
+        { tok: formatTokens(Math.round(avg(sum.output))), cost: money(avg(sum.outputCost)) },
+        { tok: formatTokens(Math.round(avg(sum.cacheRead))), cost: money(avg(sum.cacheReadCost)) },
+        {
+          tok: formatTokens(Math.round(avg(sum.cacheWrite))),
+          cost: money(avg(sum.cacheWriteCost)),
+        },
+      ],
+      total: activeDays > 0 ? formatTokens(Math.round(avg(sum.total))) : "N/A",
+      cost: activeDays > 0 ? formatCurrency(estimate.totalUsd / div) : "N/A",
+    },
   ];
+  for (const f of footerRows) {
+    inputCol.push(f.cats[0] as CatCell);
+    outputCol.push(f.cats[1] as CatCell);
+    cacheReadCol.push(f.cats[2] as CatCell);
+    cacheWriteCol.push(f.cats[3] as CatCell);
+  }
+
+  const inputCells = alignCatColumn(inputCol);
+  const outputCells = alignCatColumn(outputCol);
+  const cacheReadCells = alignCatColumn(cacheReadCol);
+  const cacheWriteCells = alignCatColumn(cacheWriteCol);
+
+  const body: string[][] = labels.map((label, i) => [
+    label,
+    reqsCol[i] ?? "",
+    inputCells[i] ?? "",
+    outputCells[i] ?? "",
+    cacheReadCells[i] ?? "",
+    cacheWriteCells[i] ?? "",
+    totalCol[i] ?? "",
+    costCol[i] ?? "",
+  ]);
+  const n = labels.length;
+  const footer: string[][] = footerRows.map((f, j) => [
+    f.label,
+    f.reqs,
+    inputCells[n + j] ?? "",
+    outputCells[n + j] ?? "",
+    cacheReadCells[n + j] ?? "",
+    cacheWriteCells[n + j] ?? "",
+    f.total,
+    f.cost,
+  ]);
 
   console.log();
   console.log(

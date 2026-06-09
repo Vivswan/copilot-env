@@ -6,6 +6,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { type AutoupdateData, AutoupdateState } from "../autoupdate/state.ts";
 import { CODEX_ENV_KEY, type CodexWiringStatus, inspectCodexWiring } from "../codex/config.ts";
 import { getHostLocalCodexHome } from "../codex/host.ts";
 import { AGENT_CLIS, resolveCommand } from "../commands/setup.ts";
@@ -24,7 +25,7 @@ import {
   gatewayVersionBoundsStatus,
   installedGatewayVersion,
 } from "../copilot_api/version.ts";
-import { nodeModulesFresh } from "../gateway_float.ts";
+import { nodeModulesFresh, resolveMinimumReleaseAgeSeconds } from "../gateway_float.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { packageVersion } from "../utils/version.ts";
@@ -61,6 +62,8 @@ export interface GatewayFacts {
   // null when the project config could not be read (see configError).
   bounds: GatewayVersionStatus | null;
   configError: string | null;
+  // The gateway float's cooldown window in seconds (null if it couldn't be read).
+  cooldownSeconds: number | null;
 }
 
 export interface ShellFileFact {
@@ -109,6 +112,7 @@ export interface HealthFacts {
   tools?: ToolFacts;
   codex?: CodexFacts;
   codexHost?: CodexHostFacts;
+  autoupdate?: AutoupdateData;
 }
 
 // --- injectable I/O surface -------------------------------------------------
@@ -127,10 +131,12 @@ export interface ProbeDeps {
   readFileSafe(path: string): string | null;
   installedGatewayVersion(): string | null;
   projectConfig(): ProjectConfig;
+  gatewayCooldownSeconds(): number;
   codexHome(): string;
   codexTokenInEnviron(): boolean;
   hostCodexHome(): string;
   dirExists(path: string): boolean;
+  readAutoupdate(): AutoupdateData;
   nodeModulesPresent(): boolean;
   nodeModulesFresh(): boolean;
   bunVersion(): string | null;
@@ -181,6 +187,7 @@ export function defaultProbeDeps(): ProbeDeps {
     readFileSafe,
     installedGatewayVersion: () => installedGatewayVersion(root),
     projectConfig: () => readProjectConfig(root),
+    gatewayCooldownSeconds: () => resolveMinimumReleaseAgeSeconds(root),
     // Effective CODEX_HOME, matching runCodexConfig / env.ts precedence:
     // per-host state override, then $CODEX_HOME, then the default ~/.codex.
     codexHome: () =>
@@ -188,6 +195,7 @@ export function defaultProbeDeps(): ProbeDeps {
     codexTokenInEnviron: () => Boolean(process.env[CODEX_ENV_KEY]),
     hostCodexHome: getHostLocalCodexHome,
     dirExists: (path: string) => existsSync(path),
+    readAutoupdate: () => new AutoupdateState().read(),
     nodeModulesPresent: () => existsSync(join(root, "node_modules")),
     nodeModulesFresh: () => {
       try {
@@ -279,6 +287,13 @@ export async function gatherFacts(
           nodeModules: { present: deps.nodeModulesPresent(), fresh: deps.nodeModulesFresh() },
         };
         const version = deps.installedGatewayVersion();
+        // A bad COPILOT_API_MIN_RELEASE_AGE / bunfig value shouldn't crash health.
+        let cooldownSeconds: number | null = null;
+        try {
+          cooldownSeconds = deps.gatewayCooldownSeconds();
+        } catch {
+          cooldownSeconds = null;
+        }
         // Reading copilot-env.config can throw on a malformed/missing file; turn
         // that into a gateway-check failure rather than crashing the whole report.
         try {
@@ -286,12 +301,14 @@ export async function gatherFacts(
             version,
             bounds: gatewayVersionBoundsStatus(version, deps.projectConfig()),
             configError: null,
+            cooldownSeconds,
           };
         } catch (e) {
           facts.gateway = {
             version,
             bounds: null,
             configError: e instanceof Error ? e.message : String(e),
+            cooldownSeconds,
           };
         }
       })(),
@@ -329,6 +346,7 @@ export async function gatherFacts(
           exists: deps.dirExists(hostHome),
           active: home === hostHome,
         };
+        facts.autoupdate = deps.readAutoupdate();
       })(),
     );
   }

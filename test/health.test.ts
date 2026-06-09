@@ -9,6 +9,7 @@ import {
   worstStatus,
 } from "../src/health/aggregate.ts";
 import {
+  checkAutoupdate,
   checkBun,
   checkCli,
   checkCliVersion,
@@ -119,6 +120,7 @@ test("gateway package: missing and below-floor fail, above-ceiling warns, in-bou
       version: null,
       bounds: { ok: false, reason: "missing", version: null },
       configError: null,
+      cooldownSeconds: 604800,
     }).status,
   ).toBe("fail");
   expect(
@@ -126,12 +128,14 @@ test("gateway package: missing and below-floor fail, above-ceiling warns, in-bou
       version: "1.0.0",
       bounds: { ok: false, reason: "belowFloor", version: "1.0.0", floor: "1.10.0" },
       configError: null,
+      cooldownSeconds: 604800,
     }).status,
   ).toBe("fail");
   const above = checkGatewayPackage({
     version: "2.0.0",
     bounds: { ok: false, reason: "aboveCeiling", version: "2.0.0", ceiling: "1.99.0" },
     configError: null,
+    cooldownSeconds: 604800,
   });
   expect(above.status).toBe("warn");
   expect(above.fix).toBe("agent update");
@@ -140,12 +144,33 @@ test("gateway package: missing and below-floor fail, above-ceiling warns, in-bou
       version: "1.10.5",
       bounds: { ok: true, version: "1.10.5" },
       configError: null,
+      cooldownSeconds: 604800,
     }).status,
   ).toBe("ok");
 });
 
+test("gateway package detail shows the float cooldown window", () => {
+  const ok = (cooldownSeconds: number | null) =>
+    checkGatewayPackage({
+      version: "1.10.5",
+      bounds: { ok: true, version: "1.10.5" },
+      configError: null,
+      cooldownSeconds,
+    }).detail;
+  expect(ok(604800)).toContain("cooldown 7d");
+  expect(ok(0)).toContain("no cooldown");
+  expect(ok(259200)).toContain("cooldown 3d");
+  expect(ok(90)).toContain("cooldown 90s");
+  expect(ok(null)).toContain("cooldown: unknown");
+});
+
 test("gateway package fails (not throws) when copilot-env.config is unreadable", () => {
-  const r = checkGatewayPackage({ version: "1.10.5", bounds: null, configError: "bad config" });
+  const r = checkGatewayPackage({
+    version: "1.10.5",
+    bounds: null,
+    configError: "bad config",
+    cooldownSeconds: 604800,
+  });
   expect(r.status).toBe("fail");
   expect(r.detail).toContain("copilot-env.config");
 });
@@ -362,6 +387,32 @@ test("checkCodexHost: active ok, active-missing warns, built/unbuilt information
   expect(checkCodexHost({ ...unbuilt, supported: false }).detail).toContain("Linux-only");
 });
 
+test("checkAutoupdate: full status always shown (disabled too); recorded error warns", () => {
+  const base = { enabled: false, cooldownDays: 7, lastCheckMs: 0, lastResult: "" };
+  const disabled = checkAutoupdate(base);
+  expect(disabled.status).toBe("ok");
+  // Even when disabled, cooldown / last check / last result are surfaced.
+  expect(disabled.detail).toContain("disabled");
+  expect(disabled.detail).toContain("cooldown 7d");
+  expect(disabled.detail).toContain("last check never");
+  expect(disabled.detail).toContain("last result: (none)");
+
+  const enabled = {
+    ...base,
+    enabled: true,
+    lastCheckMs: 1_700_000_000_000,
+    lastResult: "up to date",
+  };
+  expect(checkAutoupdate(enabled).status).toBe("ok");
+  expect(checkAutoupdate(enabled).detail).toContain("enabled");
+  expect(checkAutoupdate(enabled).detail).toContain("up to date");
+
+  const errored = { ...enabled, lastResult: "error: bun install failed after update" };
+  const r = checkAutoupdate(errored);
+  expect(r.status).toBe("warn");
+  expect(r.fix).toBe("agent update --auto-status");
+});
+
 // --- evaluateAll scope filtering --------------------------------------------
 
 test("evaluateAll(runtime) yields exactly the two runtime checks", () => {
@@ -374,7 +425,12 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
   const facts: HealthFacts = {
     runtime: RUNTIME_OK,
     bootstrap: BOOTSTRAP_OK,
-    gateway: { version: "1.10.5", bounds: { ok: true, version: "1.10.5" }, configError: null },
+    gateway: {
+      version: "1.10.5",
+      bounds: { ok: true, version: "1.10.5" },
+      configError: null,
+      cooldownSeconds: 604800,
+    },
     shell: { files: [], integrationWired: true, launchersWired: false },
     clis: [{ command: "claude", name: "Claude", resolved: null }],
     tools: { node: "/n", npm: "/m" },
@@ -393,10 +449,12 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       tokenAvailable: false,
     },
     codexHost: { supported: false, hostHome: "/h/.codex/hosts/box", exists: false, active: false },
+    autoupdate: { enabled: false, cooldownDays: 7, lastCheckMs: 0, lastResult: "" },
   };
   const ids = evaluateAll("full", facts).map((r) => r.id);
   expect(ids).toContain("runtime.paths");
   expect(ids).toContain("setup.cli.claude");
   expect(ids).toContain("gateway.package");
   expect(ids).toContain("setup.codex-host");
+  expect(ids).toContain("setup.autoupdate");
 });

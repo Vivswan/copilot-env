@@ -1,7 +1,9 @@
 // Pure evaluators: HealthFacts -> CheckResult[]. No I/O — every input is a fact
 // gathered by probe.ts, so each check is independently unit-testable.
 import { join } from "node:path";
+import type { AutoupdateData } from "../autoupdate/state.ts";
 import type { GatewayVersionStatus } from "../copilot_api/version.ts";
+import { SECONDS_PER_DAY } from "../utils/time.ts";
 import type {
   BootstrapFacts,
   CliFacts,
@@ -85,7 +87,8 @@ export function checkGatewayPackage(f: GatewayFacts): CheckResult {
   let fix: string | undefined;
   if (bounds.ok) {
     status = "ok";
-    detail = `@jeffreycao/copilot-api ${bounds.version}`;
+    // Version + cooldown as separate lines -> rendered as `•` sub-items.
+    detail = `@jeffreycao/copilot-api ${bounds.version}\nfloat ${floatCooldownLabel(f.cooldownSeconds)}`;
   } else if (bounds.reason === "missing") {
     status = "fail";
     detail = "@jeffreycao/copilot-api is not installed";
@@ -107,8 +110,16 @@ export function checkGatewayPackage(f: GatewayFacts): CheckResult {
     status,
     detail,
     ...(fix ? { fix } : {}),
-    value: { version: f.version },
+    value: { version: f.version, cooldownSeconds: f.cooldownSeconds },
   };
+}
+
+/** Human label for the gateway float cooldown window (seconds, null = unknown). */
+function floatCooldownLabel(seconds: number | null): string {
+  if (seconds === null) return "cooldown: unknown";
+  if (seconds === 0) return "no cooldown";
+  if (seconds % SECONDS_PER_DAY === 0) return `cooldown ${seconds / SECONDS_PER_DAY}d`;
+  return `cooldown ${seconds}s`;
 }
 
 export function checkRuntimePort(f: RuntimeFacts): CheckResult {
@@ -299,6 +310,37 @@ export function checkCodexHost(f: CodexHostFacts): CheckResult {
   return { ...base, status: "ok", detail: `${why}: ${f.hostHome}` };
 }
 
+/** Report opt-in autoupdate status (mirrors `agent update --auto-status`). */
+export function checkAutoupdate(f: AutoupdateData): CheckResult {
+  const base = {
+    id: "setup.autoupdate",
+    label: "Autoupdate",
+    group: "setup" as const,
+    scopes: SETUP,
+    value: {
+      enabled: f.enabled,
+      cooldownDays: f.cooldownDays,
+      lastCheckMs: f.lastCheckMs,
+      lastResult: f.lastResult,
+    },
+  };
+  // Always show the full status (enabled, cooldown, last check, last result),
+  // whether or not autoupdate is on — matching `agent update --auto-status`. One
+  // fact per line so the report renders them as `•` sub-items.
+  const last = f.lastCheckMs > 0 ? new Date(f.lastCheckMs).toISOString() : "never";
+  const detail = [
+    `status: ${f.enabled ? "enabled" : "disabled"}`,
+    `cooldown ${f.cooldownDays}d`,
+    `last check ${last}`,
+    `last result: ${f.lastResult || "(none)"}`,
+  ].join("\n");
+  // Surface a recorded self-update error as a warning, but never a hard failure.
+  if (f.enabled && f.lastResult.startsWith("error:")) {
+    return { ...base, status: "warn", detail, fix: "agent update --auto-status" };
+  }
+  return { ...base, status: "ok", detail };
+}
+
 /** Build every check applicable to `scope` from the gathered facts. */
 export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult[] {
   const out: CheckResult[] = [];
@@ -325,5 +367,6 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
   }
   if (facts.codex) out.push(checkCodex(facts.codex));
   if (facts.codexHost) out.push(checkCodexHost(facts.codexHost));
+  if (facts.autoupdate) out.push(checkAutoupdate(facts.autoupdate));
   return out.filter((r) => r.scopes.includes(scope));
 }

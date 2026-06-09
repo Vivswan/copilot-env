@@ -28,10 +28,15 @@ export function renderReport(scope: HealthScope, results: CheckResult[]): void {
     if (inGroup.length === 0) continue;
     console.log(`\n${bold(GROUP_LABEL[group])}`);
     for (const r of inGroup) {
-      const [first, ...rest] = r.detail.split("\n");
-      console.log(`  ${glyph(r.status)} ${r.label}: ${first}`);
-      // Continuation lines (e.g. the Paths check's state/log) align under the detail.
-      for (const line of rest) console.log(`      ${line}`);
+      const lines = r.detail.split("\n");
+      if (lines.length <= 1) {
+        // Single fact -> one row: `✔ label: value`.
+        console.log(`  ${glyph(r.status)} ${r.label}: ${lines[0] ?? ""}`);
+      } else {
+        // Multiple facts -> a label row, then each fact as a `•` sub-item.
+        console.log(`  ${glyph(r.status)} ${r.label}`);
+        for (const line of lines) console.log(`      ${gray("•")} ${line}`);
+      }
       if (r.fix && r.status !== "ok") console.log(`      ${gray(`→ fix: ${r.fix}`)}`);
     }
   }

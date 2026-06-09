@@ -2,9 +2,11 @@
 
 ## Supported Versions
 
-Only the latest `main` branch is supported. `copilot-env` is pre-1.0 and is
-not published to a package registry, so all security fixes land directly on
-`main`. Please track `main` and update to the latest commit to receive fixes.
+Only the latest published release is supported. `copilot-env` ships versioned
+GitHub Releases (tagged `vX.Y.Z` via release-please) and is not published to a
+package registry. Security fixes land in the next release. Install from the
+latest GitHub Release asset (`install.sh` / `install.ps1`), or run
+`agent update` to upgrade to the newest release tag.
 
 ## Reporting a Vulnerability
 

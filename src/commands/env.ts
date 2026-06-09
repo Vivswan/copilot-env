@@ -46,10 +46,12 @@ export function runEnv(args: EnvArgs): void {
   for (const [key, value] of vars) {
     if (isPowershell) {
       // Single-quoted PS literal; double any embedded quote per PS escaping.
+      // codeql[js/clear-text-logging]
       console.log(`$env:${key} = ${quotePowerShell(value)}`);
     } else {
       // Single-quoted POSIX literal so values with spaces/metacharacters (e.g. a
       // CODEX_HOME path) survive the shell wrapper's `eval`. Embedded `'` → `'\''`.
+      // codeql[js/clear-text-logging]
       console.log(`export ${key}=${quotePosix(value)}`);
     }
   }

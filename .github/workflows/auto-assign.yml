@@ -6,9 +6,17 @@ on:
     types: [opened]
   pull_request:
     types: [opened, synchronize]
+  # Code scanning alerts have no creation trigger for Actions, so assign them
+  # after each CodeQL run completes, with a weekly cron as a catch-up.
+  workflow_run:
+    workflows: ["CodeQL"]
+    types: [completed]
+  schedule:
+    - cron: "23 6 * * 1"
 
 jobs:
   assign:
+    if: github.event_name == 'issues' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -49,3 +57,41 @@ jobs:
               issue_number: context.payload.pull_request.number,
               labels: ['fix-lint']
             });
+
+  # Assign open, currently-unassigned code scanning alerts to the repo owner.
+  # No Actions trigger exists for alert creation, so this polls after CodeQL
+  # completes (workflow_run) and weekly (schedule). Idempotent: alerts that
+  # already have an assignee are skipped. Code scanning only exists on a public
+  # repo (or GHAS), matching codeql.yml's private guard.
+  assign-code-scanning:
+    if: >-
+      github.event.repository.private == false &&
+      github.event_name != 'issues' &&
+      github.event_name != 'pull_request' &&
+      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - name: Assign open alerts to owner
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const assignee = context.repo.owner;
+            const alerts = await github.paginate(
+              github.rest.codeScanning.listAlertsForRepo,
+              { owner, repo, state: 'open', per_page: 100 }
+            );
+            let assigned = 0;
+            for (const alert of alerts) {
+              if (alert.assignees && alert.assignees.length > 0) continue;
+              await github.request(
+                'PATCH /repos/{owner}/{repo}/code-scanning/alerts/{alert_number}',
+                { owner, repo, alert_number: alert.number, assignees: [assignee] }
+              );
+              core.info(`assigned alert #${alert.number} to ${assignee}`);
+              assigned++;
+            }
+            core.info(`assigned ${assigned} of ${alerts.length} open alert(s)`);

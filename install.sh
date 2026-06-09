@@ -140,12 +140,23 @@ else
         VERIFY_ARGS+=("$_sha256")
     fi
     bun "$_tmp/verify-source-archive.ts" "${VERIFY_ARGS[@]}"
+    # Preserve opt-in autoupdate state across the destructive replace below.
+    if [ -d "$INSTALL_DIR/.autoupdate" ]; then
+        cp -a "$INSTALL_DIR/.autoupdate" "$_tmp/.autoupdate-backup"
+    fi
     if [ -e "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; then
         echo "Removing previous copilot-env install at $INSTALL_DIR ..."
         rm -rf -- "$INSTALL_DIR"
     fi
     mkdir -p "$INSTALL_DIR"
     tar -xzf "$_tmp/release.tgz" --strip-components=1 -C "$INSTALL_DIR"
+    # Restore preserved autoupdate state. The release never ships .autoupdate (it's
+    # gitignored), so the freshly-extracted tree has none — copy the backup's
+    # contents into a fresh dir (no destructive pre-clean of $INSTALL_DIR needed).
+    if [ -d "$_tmp/.autoupdate-backup" ]; then
+        mkdir -p "$INSTALL_DIR/.autoupdate"
+        cp -a "$_tmp/.autoupdate-backup/." "$INSTALL_DIR/.autoupdate/"
+    fi
     REPO_DIR="$INSTALL_DIR"
 fi
 

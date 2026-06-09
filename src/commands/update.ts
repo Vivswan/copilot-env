@@ -1,13 +1,14 @@
 // `agent update`: resolves a release, applies it, refreshes deps, and runs migrations.
-import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { consola } from "consola";
-import { applyRelease } from "../install/release.ts";
+import { runPreflight } from "../autoupdate/preflight.ts";
+import { AutoupdateState, DEFAULT_AUTOUPDATE_COOLDOWN_DAYS } from "../autoupdate/state.ts";
 import { resolveTarget } from "../install/resolve-release.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { stripV, versionLessThan } from "../utils/semver.ts";
 import { packageVersion } from "../utils/version.ts";
+import { applyUpdate } from "./apply_update.ts";
 
 // `agent update` brings the checkout up to the newest GitHub release WITHOUT git:
 //  - discovery (which release, and its tarball URL) is resolveTarget() from
@@ -21,6 +22,12 @@ export interface UpdateArgs {
   check?: boolean;
   cooldown?: number | null;
   force?: boolean;
+  /** Enable autoupdate (and apply once immediately). */
+  auto?: boolean;
+  /** Disable autoupdate. */
+  noAuto?: boolean;
+  /** Print autoupdate status and exit. */
+  autoStatus?: boolean;
 }
 
 export async function runUpdate(args: UpdateArgs): Promise<void> {
@@ -29,9 +36,46 @@ export async function runUpdate(args: UpdateArgs): Promise<void> {
     throw new Error(`--cooldown expects a non-negative whole number of days (got '${cooldown}')`);
   }
 
+  // Autoupdate management flags short-circuit the manual update flow.
+  if (args.autoStatus) return runAutoStatus();
+  if (args.noAuto) return runDisableAuto();
+  if (args.auto) return runEnableAuto(cooldown);
+
+  await runManualUpdate({ check: args.check, cooldown, force: args.force });
+}
+
+function runAutoStatus(): void {
+  const s = new AutoupdateState().read();
+  const last = s.lastCheckMs > 0 ? new Date(s.lastCheckMs).toISOString() : "never";
+  consola.info(
+    `autoupdate: ${s.enabled ? "enabled" : "disabled"} | cooldown ${s.cooldownDays}d | ` +
+      `last check ${last} | last result: ${s.lastResult || "(none)"}`,
+  );
+}
+
+function runDisableAuto(): void {
+  new AutoupdateState().set({ enabled: false });
+  consola.success("autoupdate disabled.");
+}
+
+async function runEnableAuto(cooldown: number | null): Promise<void> {
+  const cooldownDays = cooldown ?? DEFAULT_AUTOUPDATE_COOLDOWN_DAYS;
+  const state = new AutoupdateState();
+  state.set({ enabled: true, cooldownDays });
+  consola.success(`autoupdate enabled (cooldown ${cooldownDays}d). Checking now ...`);
+  // Enable + apply now: run the daily routine once immediately, forcing past the
+  // once-per-day gate. Failures are recorded in state and never throw out.
+  await runPreflight({ nowMs: Date.now(), force: true, state });
+}
+
+async function runManualUpdate(args: {
+  check?: boolean;
+  cooldown: number | null;
+  force?: boolean;
+}): Promise<void> {
   // Current checkout version as `vX.Y.Z`, to match the upstream tag format for display.
   const current = `v${packageVersion()}`;
-  const target = await resolveTarget(cooldown);
+  const target = await resolveTarget(args.cooldown);
   if (!target) {
     consola.warn("No copilot-env release found upstream (or the network is unavailable).");
     process.exitCode = 2; // distinct from "update available" (1) and "up to date" (0)
@@ -62,31 +106,5 @@ export async function runUpdate(args: UpdateArgs): Promise<void> {
   }
 
   consola.start(`Updating copilot-env ${current} -> ${target.tag} ...`);
-  await applyRelease(target.tarballUrl, target.sourceSha, target.sourceSha256);
-
-  // Refresh deps for the new release (HUSKY=0 mirrors the bin shims).
-  const install = spawnSync("bun", ["install", "--frozen-lockfile"], {
-    cwd: PROJECT_ROOT,
-    stdio: "inherit",
-    env: { ...process.env, HUSKY: "0" },
-  });
-  if (install.status !== 0) throw new Error("bun install failed after update");
-
-  // Run post-update migrations in a FRESH process so they load from the new release on
-  // disk -- this process still holds the pre-update code in memory. Best-effort: a
-  // migration hiccup never fails the update. Effective only for updates that originate
-  // at a release already shipping this call (>= the one that introduced migrations);
-  // earlier transitions are handled by the installer's `agent setup-shell` refresh.
-  const migrate = spawnSync(
-    "bun",
-    [join(PROJECT_ROOT, "src", "migrations", "index.ts"), stripV(current), stripV(target.tag)],
-    { cwd: PROJECT_ROOT, stdio: "inherit", env: { ...process.env, HUSKY: "0" } },
-  );
-  if (migrate.status !== 0) {
-    consola.warn("Post-update migrations reported a problem; see the output above.");
-  }
-
-  consola.success(
-    `Updated copilot-env ${current} -> ${target.tag}. Restart your agents to pick it up.`,
-  );
+  await applyUpdate(current, target);
 }

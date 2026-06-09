@@ -4,6 +4,9 @@
 .claude/worktrees/
 .worktrees/
 
+# Opt-in autoupdate state/lock (runtime data, lives in the install checkout).
+.autoupdate/
+
 ## Bun
 # Logs
 logs

@@ -34,4 +34,15 @@ if [ ! -d "${SNAP}/node_modules" ] \
     touch "${SNAP}/node_modules"
 fi
 
+# Opt-in autoupdate preflight: ONLY on `agent start` (a deliberate, less-frequent
+# action), and only for users who ENABLED it (the state file says so). Output to
+# stderr; non-fatal so a failed self-update never blocks the start. The TS routine
+# itself enforces the once-per-day cadence.
+if [ "${1:-}" = "start" ]; then
+    _au_state="${SNAP}/.autoupdate/state.json"
+    if [ -f "${_au_state}" ] && grep -q '"enabled": true' "${_au_state}" 2>/dev/null; then
+        bun "${SNAP}/src/autoupdate/preflight.ts" >&2 || true
+    fi
+fi
+
 exec bun run "${SNAP}/src/cli.ts" "$@"

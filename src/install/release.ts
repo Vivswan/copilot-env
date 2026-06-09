@@ -16,10 +16,11 @@ import { PROJECT_ROOT } from "../utils/root.ts";
 import { verifySourceArchiveEntry, verifySourceArchiveSha256 } from "./verify-source-archive.ts";
 
 // Files that live in the checkout but are NOT shipped in a release: keep them across
-// an update. node_modules is restored by `bun install`; .git is the clone's VCS dir.
-// Everything else under the checkout is release-tracked source, so the sync may prune
-// it -- removing files a new release dropped, plus OS junk (.DS_Store, Thumbs.db).
-const PRESERVE = new Set([".git", "node_modules"]);
+// an update. node_modules is restored by `bun install`; .git is the clone's VCS dir;
+// .autoupdate holds the opt-in autoupdate state/lock, which must survive the very
+// update it triggers. Everything else under the checkout is release-tracked source, so
+// the sync may prune it -- removing files a new release dropped, plus OS junk.
+const PRESERVE = new Set([".git", "node_modules", ".autoupdate"]);
 
 // A complete release tree contains these. node-tar warns-and-SKIPS unrecoverable
 // entries rather than failing, so we verify the extract before the destructive sync:

@@ -59,6 +59,21 @@ if ($needInstall) {
     (Get-Item (Join-Path $Snap 'node_modules')).LastWriteTime = Get-Date
 }
 
+# Opt-in autoupdate preflight: ONLY on `agent start` (a deliberate, less-frequent
+# action), and only when ENABLED (state file says so). Non-fatal so a failed
+# self-update never blocks the start. The TS routine enforces the once-per-day
+# cadence and writes all of its output (incl. child processes) to stderr.
+$Sub = if ($args.Count -gt 0) { $args[0] } else { '' }
+$AuState = Join-Path $Snap '.autoupdate\state.json'
+if ($Sub -eq 'start' -and `
+        (Test-Path $AuState) -and `
+        (Select-String -Path $AuState -Pattern '"enabled": true' -Quiet)) {
+    # Non-fatal: write the failure to stderr (stdout stays pure) and continue.
+    # Not Write-Error -- $ErrorActionPreference is 'Stop', which would re-throw.
+    try { & bun (Join-Path $Snap 'src\autoupdate\preflight.ts') }
+    catch { [Console]::Error.WriteLine("autoupdate preflight failed: $_") }
+}
+
 $Cli = Join-Path $Snap 'src\cli.ts'
 & bun $Cli @args
 exit $LASTEXITCODE

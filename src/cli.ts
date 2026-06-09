@@ -221,12 +221,25 @@ const update = defineCommand({
       description:
         "Update even when this is a git checkout (.git present); the sync overwrites local files.",
     },
+    auto: {
+      type: "boolean",
+      description:
+        "Enable autoupdate: once a day, adopt the newest release aged >= cooldown (default 7) days, and apply once now. Use --no-auto to disable.",
+    },
+    "auto-status": {
+      type: "boolean",
+      default: false,
+      description: "Print autoupdate status (enabled, cooldown, last check, last result).",
+    },
   },
   run: ({ args, rawArgs }) =>
     runUpdate({
       check: Boolean(args.check),
       cooldown: optionalDaysArg(rawArgs, "cooldown", 7),
       force: Boolean(args.force),
+      auto: rawArgs.includes("--auto"),
+      noAuto: rawArgs.includes("--no-auto"),
+      autoStatus: Boolean(args["auto-status"]) || rawArgs.includes("--auto-status"),
     }),
 });
 

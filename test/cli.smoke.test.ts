@@ -214,3 +214,29 @@ test("health --scope setup covers wiring only and never fails (warnings exit 0)"
   expect(json.exitCode).toBe(0);
   expect(exitCode).toBe(0);
 });
+
+// --- autoupdate management flags --------------------------------------------
+
+test("update --help documents the autoupdate flags alongside the manual ones", () => {
+  const help = Bun.spawnSync(["bun", "src/cli.ts", "update", "--help"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, CONSOLA_LEVEL: "5" },
+  });
+  const out = help.stdout.toString() + help.stderr.toString();
+  expect(help.exitCode).toBe(0);
+  for (const flag of ["--auto", "--no-auto", "--auto-status", "--check", "--cooldown", "--force"]) {
+    expect(out).toContain(flag);
+  }
+});
+
+test("update --auto-status reports status and exits 0 (offline, read-only)", () => {
+  const proc = Bun.spawnSync(["bun", "src/cli.ts", "update", "--auto-status"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, CONSOLA_LEVEL: "5" },
+  });
+  const out = proc.stdout.toString() + proc.stderr.toString();
+  expect(proc.exitCode).toBe(0);
+  expect(out).toContain("autoupdate:");
+});

@@ -164,6 +164,11 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'shell\agents.ps1'))) {
         }
         & bun @verifyArgs
         if ($LASTEXITCODE -ne 0) { throw 'release archive verification failed.' }
+        # Preserve opt-in autoupdate state across the destructive replace below.
+        $autoupdateBackup = Join-Path $tmp '.autoupdate-backup'
+        if (Test-Path (Join-Path $InstallDir '.autoupdate')) {
+            Copy-Item -Recurse -Force (Join-Path $InstallDir '.autoupdate') $autoupdateBackup
+        }
         if (Test-Path $InstallDir) {
             Write-Host "Removing previous copilot-env install at $InstallDir ..."
             Remove-Item -Recurse -Force $InstallDir
@@ -171,6 +176,11 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'shell\agents.ps1'))) {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
         & tar -xzf $tgz --strip-components=1 -C $InstallDir
         if ($LASTEXITCODE -ne 0) { throw 'tar extraction of the release tarball failed.' }
+        # Restore preserved autoupdate state. The release never ships .autoupdate
+        # (gitignored), so the fresh tree has none — copy the backup into place.
+        if (Test-Path $autoupdateBackup) {
+            Copy-Item -Recurse -Force $autoupdateBackup (Join-Path $InstallDir '.autoupdate')
+        }
     } finally {
         Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
     }

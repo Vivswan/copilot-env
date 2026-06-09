@@ -11,6 +11,7 @@ import {
   gatewayInstallAssertStatus,
   nodeModulesFresh,
   readBunMinimumReleaseAgeSeconds,
+  resolveMinimumReleaseAgeSeconds,
   type SpawnSyncRunner,
 } from "../src/gateway_float.ts";
 import type { ProjectConfig } from "../src/utils/project_config.ts";
@@ -27,11 +28,11 @@ const CONFIG: ProjectConfig = {
   "gatewayMaxVersion": null,
 };
 
-const NO_FLOAT_ENV = "COPILOT_API_NO_FLOAT";
+const MIN_RELEASE_AGE_ENV = "COPILOT_API_MIN_RELEASE_AGE";
 const VERSION_ENV = "COPILOT_API_VERSION";
 
 let dir = "";
-const savedNoFloat = process.env[NO_FLOAT_ENV];
+const savedMinAge = process.env[MIN_RELEASE_AGE_ENV];
 const savedVersion = process.env[VERSION_ENV];
 const SPAWN_OK: ReturnType<typeof spawnSync> = {
   "error": undefined,
@@ -107,12 +108,12 @@ function spawnWithMetadataFailure(): { calls: string[][]; spawn: SpawnSyncRunner
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "copilot-float-"));
   // The verify helpers read these env vars; isolate every test from the ambient env.
-  delete process.env[NO_FLOAT_ENV];
+  delete process.env[MIN_RELEASE_AGE_ENV];
   delete process.env[VERSION_ENV];
 });
 
 afterEach(() => {
-  restoreEnv(NO_FLOAT_ENV, savedNoFloat);
+  restoreEnv(MIN_RELEASE_AGE_ENV, savedMinAge);
   restoreEnv(VERSION_ENV, savedVersion);
   if (dir) {
     rmSync(dir, { recursive: true, force: true });
@@ -143,17 +144,31 @@ describe("gatewayFloatUpToDate", () => {
     expect(gatewayFloatUpToDate(dir)).toBe(false);
   });
 
-  test("NO_FLOAT: true iff a readable gateway is present (float disabled)", () => {
-    process.env[NO_FLOAT_ENV] = "1";
-    expect(gatewayFloatUpToDate(dir)).toBe(false);
-    installGateway(dir, "1.10.22");
-    expect(gatewayFloatUpToDate(dir)).toBe(true);
-    // An unreadable gateway package.json still falls through to a repair install.
-    writeFileSync(
-      join(dir, "node_modules", "@jeffreycao", "copilot-api", "package.json"),
-      "{ not json",
-    );
-    expect(gatewayFloatUpToDate(dir)).toBe(false);
+  test("COPILOT_API_MIN_RELEASE_AGE overrides the cooldown window (0 = no cooldown)", () => {
+    installGateway(dir, "1.10.30");
+    const times = npmTime({ "1.10.30": 8, "1.10.31": 1 });
+    // No cooldown -> the newest (1.10.31, 1 day old) is the target, so 1.10.30 is stale.
+    process.env[MIN_RELEASE_AGE_ENV] = "0";
+    expect(
+      gatewayFloatVerifyStatus(dir, "bun", CONFIG, undefined, spawnWithTime(times).spawn, NOW_MS)
+        .upToDate,
+    ).toBe(false);
+    // 7-day cooldown -> 1.10.30 (8 days old) is the target, which is installed.
+    process.env[MIN_RELEASE_AGE_ENV] = "604800";
+    expect(
+      gatewayFloatVerifyStatus(dir, "bun", CONFIG, undefined, spawnWithTime(times).spawn, NOW_MS)
+        .upToDate,
+    ).toBe(true);
+  });
+
+  test("resolveMinimumReleaseAgeSeconds: env wins, 0 allowed, bad value throws", () => {
+    expect(resolveMinimumReleaseAgeSeconds(dir)).toBe(0); // no env, no bunfig
+    process.env[MIN_RELEASE_AGE_ENV] = "0";
+    expect(resolveMinimumReleaseAgeSeconds(dir)).toBe(0);
+    process.env[MIN_RELEASE_AGE_ENV] = "604800";
+    expect(resolveMinimumReleaseAgeSeconds(dir)).toBe(604800);
+    process.env[MIN_RELEASE_AGE_ENV] = "abc";
+    expect(() => resolveMinimumReleaseAgeSeconds(dir)).toThrow("whole number of seconds");
   });
 
   test("COPILOT_API_VERSION: true only when the exact pin is installed", () => {
@@ -164,6 +179,16 @@ describe("gatewayFloatUpToDate", () => {
     expect(gatewayFloatUpToDate(dir)).toBe(false);
     // A dist-tag override always re-resolves -> never "up to date".
     process.env[VERSION_ENV] = "latest";
+    expect(gatewayFloatUpToDate(dir)).toBe(false);
+  });
+
+  test("a pin bypasses the cooldown: a bad COPILOT_API_MIN_RELEASE_AGE is ignored", () => {
+    installGateway(dir, "1.10.30");
+    process.env[VERSION_ENV] = "1.10.30";
+    process.env[MIN_RELEASE_AGE_ENV] = "not-a-number"; // would throw if resolved
+    // Pin matches installed -> up to date, and the bad cooldown is never resolved.
+    expect(gatewayFloatUpToDate(dir)).toBe(true);
+    process.env[VERSION_ENV] = "1.10.31";
     expect(gatewayFloatUpToDate(dir)).toBe(false);
   });
 });

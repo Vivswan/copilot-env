@@ -13,17 +13,17 @@
 //     CI/dev guard: assert the postinstall float actually installed a gateway
 //     inside copilot-env.config's floor/ceiling window.
 //
-// Runtime knobs are environment variables, not CLI flags: COPILOT_API_NO_FLOAT
-// disables floating, and COPILOT_API_VERSION pins an exact gateway version/tag.
+// Runtime knobs are environment variables, not CLI flags: COPILOT_API_VERSION
+// pins an exact gateway version/tag, and COPILOT_API_MIN_RELEASE_AGE overrides the
+// cooldown window (in seconds) from bunfig.toml's install.minimumReleaseAge.
 //
 // Current resolution:
-// 1. COPILOT_API_NO_FLOAT set -> do nothing; --verify is satisfied only if a
-//    gateway package is already installed and readable.
-// 2. COPILOT_API_VERSION set -> install exactly that version/tag. This bypasses
-//    copilot-env.config bounds and bunfig.toml cooldown.
-// 3. Default float -> read npm publish-time metadata (`bun pm view ... time`),
-//    pick the newest stable x.y.z release at least bunfig.toml
-//    install.minimumReleaseAge seconds old, then clamp it to
+// 1. COPILOT_API_VERSION set -> install exactly that version/tag. This bypasses
+//    copilot-env.config bounds and the cooldown.
+// 2. Default float -> read npm publish-time metadata (`bun pm view ... time`),
+//    pick the newest stable x.y.z release at least the cooldown window old
+//    (COPILOT_API_MIN_RELEASE_AGE seconds if set, else bunfig.toml
+//    install.minimumReleaseAge; 0 disables the cooldown), then clamp it to
 //    [GATEWAY_MIN_VERSION, GATEWAY_MAX_VERSION] from copilot-env.config
 //    (GATEWAY_MAX_VERSION may be empty). If no aged release exists, the floor is
 //    used directly so a required minimum is still installable.
@@ -62,7 +62,7 @@ import { SECONDS_PER_DAY } from "./utils/time.ts";
 
 const GATEWAY_PKG = GATEWAY_PACKAGE_NAME;
 const GATEWAY_VERSION_ENV = "COPILOT_API_VERSION";
-const NO_FLOAT_ENV = "COPILOT_API_NO_FLOAT";
+const MIN_RELEASE_AGE_ENV = "COPILOT_API_MIN_RELEASE_AGE";
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 
 type GatewayConsolaOptions = NonNullable<Parameters<typeof createConsola>[0]> & {
@@ -122,6 +122,23 @@ export function readBunMinimumReleaseAgeSeconds(root: string): number {
     throw new Error("bunfig.toml install.minimumReleaseAge must be a whole number of seconds");
   }
   return minimumReleaseAge;
+}
+
+/**
+ * The effective cooldown window in seconds: COPILOT_API_MIN_RELEASE_AGE when set
+ * (a whole number of seconds; 0 disables the cooldown), otherwise bunfig.toml's
+ * install.minimumReleaseAge. This is the single source the float and `--verify`
+ * read, so the env var overrides the committed bunfig value per-invocation.
+ */
+export function resolveMinimumReleaseAgeSeconds(root: string): number {
+  const raw = process.env[MIN_RELEASE_AGE_ENV]?.trim();
+  if (raw) {
+    if (!/^\d+$/.test(raw)) {
+      throw new Error(`${MIN_RELEASE_AGE_ENV} must be a whole number of seconds (got '${raw}')`);
+    }
+    return Number.parseInt(raw, 10);
+  }
+  return readBunMinimumReleaseAgeSeconds(root);
 }
 
 function formatReleaseAge(seconds: number): string {
@@ -313,26 +330,37 @@ export function floatGateway(
   root: string,
   bun: string,
   config: ProjectConfig,
-  minimumReleaseAgeSeconds: number = readBunMinimumReleaseAgeSeconds(root),
+  minimumReleaseAgeSeconds?: number,
   spawnRunner: SpawnSyncRunner = spawnSync,
   nowMs: number = Date.now(),
 ): void {
   assertGatewayConfigBounds(config);
-  const ctx: FloatContext = { root, bun, config, minimumReleaseAgeSeconds, spawnRunner, nowMs };
   const override = process.env[GATEWAY_VERSION_ENV]?.trim();
 
+  // An exact pin bypasses the cooldown entirely, so resolve the cooldown window
+  // ONLY on the float path — a bad COPILOT_API_MIN_RELEASE_AGE must not block a pin.
   if (override) {
-    handlePinnedOverride(ctx, override);
+    handlePinnedOverride(
+      { root, bun, config, minimumReleaseAgeSeconds: 0, spawnRunner, nowMs },
+      override,
+    );
     return;
   }
 
+  const effectiveAge = minimumReleaseAgeSeconds ?? resolveMinimumReleaseAgeSeconds(root);
+  const ctx: FloatContext = {
+    root,
+    bun,
+    config,
+    minimumReleaseAgeSeconds: effectiveAge,
+    spawnRunner,
+    nowMs,
+  };
   const range =
     config.gatewayMaxVersion === null
       ? `>=${config.gatewayMinVersion}`
       : `>=${config.gatewayMinVersion} <=${config.gatewayMaxVersion}`;
-  logger.info(
-    `checking for gateway update (${range}, >=${formatReleaseAge(minimumReleaseAgeSeconds)})`,
-  );
+  logger.info(`checking for gateway update (${range}, >=${formatReleaseAge(effectiveAge)})`);
   const target = resolveGatewayTarget(ctx);
   if (target.ok) handleResolvedTarget(ctx, target.value);
   else handleResolveFailure(ctx, target.message);
@@ -342,7 +370,7 @@ export function floatGateway(
  * Read-only check for the bin shims (`gateway_float.ts --verify`). Normal floating
  * reads npm publish-time metadata so newly cooldown-aged releases are adopted
  * immediately, but it skips `bun install` when the computed exact target is already
- * installed. Disabled floating and exact semver overrides remain pure fs checks.
+ * installed. An exact `COPILOT_API_VERSION` semver pin is a pure fs check.
  */
 export function gatewayFloatUpToDate(
   root: string,
@@ -372,18 +400,6 @@ export function gatewayFloatVerifyStatus(
   }
 
   const installed = installedGatewayVersion(root);
-  if (process.env[NO_FLOAT_ENV]?.trim()) {
-    return installed === null
-      ? {
-          "upToDate": false,
-          "message": `${NO_FLOAT_ENV} is set, but ${GATEWAY_PKG} is missing or unreadable`,
-        }
-      : {
-          "upToDate": true,
-          "message": `no update check: ${NO_FLOAT_ENV} is set; keeping ${GATEWAY_PKG}@${installed}`,
-        };
-  }
-
   if (installed === null) {
     return {
       "upToDate": false,
@@ -396,7 +412,7 @@ export function gatewayFloatVerifyStatus(
 
   const effectiveConfig = config ?? readProjectConfig(root);
   const effectiveMinimumReleaseAgeSeconds =
-    minimumReleaseAgeSeconds ?? readBunMinimumReleaseAgeSeconds(root);
+    minimumReleaseAgeSeconds ?? resolveMinimumReleaseAgeSeconds(root);
   assertGatewayConfigBounds(effectiveConfig);
 
   const target = resolveGatewayTarget({
@@ -549,12 +565,10 @@ function main(): void {
   if (args[0] === "--verify") {
     try {
       const config = readProjectConfig(root);
-      const status = gatewayFloatVerifyStatus(
-        root,
-        process.execPath,
-        config,
-        readBunMinimumReleaseAgeSeconds(root),
-      );
+      // Don't pre-resolve the cooldown: gatewayFloatVerifyStatus resolves it
+      // internally AFTER its pin check, so a COPILOT_API_VERSION pin (which
+      // bypasses the cooldown) isn't blocked by a bad COPILOT_API_MIN_RELEASE_AGE.
+      const status = gatewayFloatVerifyStatus(root, process.execPath, config);
       status.upToDate ? logger.success(status.message) : logger.info(status.message);
       process.exit(status.upToDate ? 0 : 1);
     } catch (error) {
@@ -563,16 +577,6 @@ function main(): void {
       );
       process.exit(1); // uncertain -> install
     }
-  }
-
-  if (process.env[NO_FLOAT_ENV]?.trim()) {
-    const installed = installedGatewayVersion(root);
-    logger.info(
-      `${NO_FLOAT_ENV} is set; skipping float${
-        installed ? ` and keeping installed ${GATEWAY_PKG}@${installed}` : ""
-      }`,
-    );
-    return;
   }
 
   try {

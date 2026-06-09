@@ -122,11 +122,14 @@ gateway float reads these values:
 
 - `COPILOT_API_VERSION=<version|tag>`: pin the gateway to a specific release
   (bypasses the floor and cooldown).
-- `COPILOT_API_NO_FLOAT=1`: skip the gateway float entirely.
+- `COPILOT_API_MIN_RELEASE_AGE=<seconds>`: override the cooldown window
+  (`0` = no cooldown), taking precedence over `bunfig.toml`'s
+  `install.minimumReleaseAge`.
 
 Without `COPILOT_API_VERSION`, the gateway float reads npm publish times, picks
-the newest version satisfying `bunfig.toml`'s `install.minimumReleaseAge`, and
-clamps it to the bounds in `copilot-env.config`.
+the newest version at least the cooldown window old (`COPILOT_API_MIN_RELEASE_AGE`
+if set, else `bunfig.toml`'s `install.minimumReleaseAge`), and clamps it to the
+bounds in `copilot-env.config`.
 
 ## Development
 

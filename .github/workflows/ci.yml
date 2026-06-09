@@ -65,17 +65,26 @@ jobs:
 
       # End-to-end daemon lifecycle on every OS: process.ts spawns a detached
       # daemon, `start` waits for it to listen + syncs aliases, `stop` verifies
-      # the tracked pid is ours and signals it. COPILOT_API_ENTRY points at a
-      # fake gateway so no Copilot auth is needed. `shell: bash` runs on the
-      # Windows runner too (git-bash), and a non-zero start/stop fails the step.
-      - name: Start/stop lifecycle (fake gateway)
+      # the tracked pid is ours and signals it. `health --scope runtime` is the
+      # cross-check: it must pass (exit 0) while the daemon is up and fail (exit
+      # 1) once it's down, so start/stop and the runtime probe verify each other.
+      # COPILOT_API_ENTRY points at a fake gateway so no Copilot auth is needed.
+      # `shell: bash` runs on the Windows runner too (git-bash); -e is on, so any
+      # unexpected non-zero (and the inverted post-stop check) fails the step.
+      - name: Start/stop + health lifecycle (fake gateway)
         shell: bash
         env:
           COPILOT_API_ENTRY: ${{ github.workspace }}/test/copilot-api-fake.mjs
         run: |
           bun src/cli.ts start
+          bun src/cli.ts health --scope runtime
+          echo "health OK while running on ${{ runner.os }}"
           bun src/cli.ts stop
-          echo "start/stop OK on ${{ runner.os }}"
+          if bun src/cli.ts health --scope runtime; then
+            echo "::error::health reported healthy after stop on ${{ runner.os }}"
+            exit 1
+          fi
+          echo "start/stop + health OK on ${{ runner.os }}"
 
       - name: Shell lint (shellcheck)
         if: runner.os == 'Linux'

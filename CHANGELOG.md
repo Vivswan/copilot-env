@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.1.2](https://github.com/Vivswan/copilot-env/compare/v3.1.1...v3.1.2) (2026-06-09)
+
+
+### Bug Fixes
+
+* add opt-in autoupdate for the copilot-env checkout ([d327078](https://github.com/Vivswan/copilot-env/commit/d3270789a90205324bbd68041942cb45ed15045c))
+* add per-category cost breakdown to agent cost ([ab70dcb](https://github.com/Vivswan/copilot-env/commit/ab70dcbce04f56346e6eaaa74c56b243e295fe04))
+* mark CodeQL env export alerts as false positives ([9250090](https://github.com/Vivswan/copilot-env/commit/9250090f94d59157caba08a50e172a30be055479))
+* raise the gateway version floor to 1.11.0 ([5afd663](https://github.com/Vivswan/copilot-env/commit/5afd6638e3410904655bac37c94fa57a2b715805))
+* replace COPILOT_API_NO_FLOAT with COPILOT_API_MIN_RELEASE_AGE ([a0485bb](https://github.com/Vivswan/copilot-env/commit/a0485bbfac181f9a93b5ff1a2bb2303328045534))
+* surface autoupdate and gateway float cooldown in agent health ([d37dee3](https://github.com/Vivswan/copilot-env/commit/d37dee35d2b5d5374516dd7909156d84afb9c7f6))
+
 ## [3.1.1](https://github.com/Vivswan/copilot-env/compare/v3.1.0...v3.1.1) (2026-06-09)
 
 

@@ -6,6 +6,7 @@ import { basename, dirname, join } from "node:path";
 import { consola } from "consola";
 
 import { PROJECT_ROOT } from "../utils/root.ts";
+import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 
 // `agent setup-shell` owns wiring the copilot-env integration into the
 // user's shell startup -- the logic install.sh / install.ps1 used to duplicate.
@@ -15,8 +16,8 @@ import { PROJECT_ROOT } from "../utils/root.ts";
 // The marker is a comment in both bash and PowerShell, so the wire/remove core is
 // shared; only the block body and the target files differ per OS.
 
-const MARKER = "# copilot-env shell integration";
-const LAUNCHERS_MARKER = "# copilot-env launchers";
+export const MARKER = "# copilot-env shell integration";
+export const LAUNCHERS_MARKER = "# copilot-env launchers";
 const ALL_MARKERS = [MARKER, LAUNCHERS_MARKER];
 
 export interface ShellIntegrationArgs {
@@ -99,7 +100,7 @@ function stripBlocks(content: string, markers: string[]): string {
 }
 
 /** True if any line of `content` is exactly `marker` (CR-tolerant). */
-function hasMarker(content: string, marker: string): boolean {
+export function hasMarker(content: string, marker: string): boolean {
   return content.split("\n").some((l) => lineIs(l, marker));
 }
 
@@ -199,17 +200,10 @@ function removeLaunchersFrom(files: string[]): boolean {
   );
 }
 
-// --- block builders (path-quoted; exported for tests) -------------------------
+// --- block builders (path-quoted; quote helpers re-exported for tests) --------
 
-/** POSIX single-quote: only `'` is special inside single quotes -> close/escape/reopen. */
-export function quotePosix(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`;
-}
-
-/** PowerShell single-quote: literal (no interpolation); escape `'` by doubling it. */
-export function quotePowerShell(s: string): string {
-  return `'${s.replace(/'/g, "''")}'`;
-}
+// Re-exported so test/shell_integration.test.ts can import them from here.
+export { quotePosix, quotePowerShell };
 
 export function posixBlock(agentsBashrc: string): string {
   return `\n${MARKER}\nAGENTS_BASHRC=${quotePosix(agentsBashrc)}\n[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n`;
@@ -249,13 +243,25 @@ export function windowsExecutionPolicyCommand(): string {
 // --- POSIX target files -------------------------------------------------------
 
 /** Existing ~/.bashrc + ~/.zshrc; for wiring, fall back to one named for $SHELL. */
-function rcFiles(remove: boolean): string[] {
+export function rcFiles(remove: boolean): string[] {
   const existing = [".bashrc", ".zshrc"]
     .map((f) => join(homedir(), f))
     .filter((p) => existsSync(p));
   if (existing.length > 0 || remove) return existing;
   const shell = basename(process.env.SHELL ?? "/bin/bash");
   return [join(homedir(), shell === "zsh" ? ".zshrc" : ".bashrc")];
+}
+
+/**
+ * Shell rc/profile files to INSPECT for owned blocks (read-only) on this platform:
+ * existing POSIX rc files, or the Windows `$PROFILE` candidates (both the
+ * current-host and all-hosts profiles, so a `--all-hosts` wiring is still seen).
+ * Used by `agent health` to report shell-integration / launcher wiring without
+ * mutating anything.
+ */
+export function shellTargetFiles(): string[] {
+  if (process.platform !== "win32") return rcFiles(true);
+  return [...new Set([...windowsProfilePaths(false), ...windowsProfilePaths(true)])];
 }
 
 // --- Windows (file ops in TS; PS only for what it must) ------------------------

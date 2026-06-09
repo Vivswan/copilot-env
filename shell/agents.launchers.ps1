@@ -19,9 +19,9 @@ if (-not $script:AgentPs1) {
 }
 
 # Return $true if the local copilot gateway is reachable, $false otherwise.
-# Uses `agent health` (HTTP-probes the gateway, exit 0 = up).
+# Uses `agent health --scope runtime` (fast HTTP probe of the gateway, exit 0 = up).
 function Test-CopilotServer {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 health *> $null
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 health --scope runtime *> $null
     return ($LASTEXITCODE -eq 0)
 }
 

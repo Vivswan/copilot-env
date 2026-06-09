@@ -1,37 +1,34 @@
-// `agent health`: verifies the tracked local gateway process and port are healthy.
-import { consola } from "consola";
-import { copilotApiResolvePort } from "../copilot_api/port.ts";
-import { isCopilotApiPid } from "../copilot_api/process.ts";
-import { CopilotApiState } from "../copilot_api/state.ts";
+// `agent health`: diagnose the local gateway and setup. Default `--scope full`
+// runs the whole environment diagnosis; `--scope runtime` is the fast
+// gateway-readiness probe the launchers/scripts rely on — its exit code is
+// byte-compatible with the original health command (it skips the shell/CLI
+// probes, though the tracked-pid check still spawns `ps`/PowerShell as before).
+// `--json` emits a structured report instead of the formatted text one. Exit 1
+// iff any check fails; warnings alone exit 0.
+import { buildHealthJson, exitCodeFor, isHealthScope } from "../health/aggregate.ts";
+import { evaluateAll } from "../health/checks.ts";
+import { gatherFacts } from "../health/probe.ts";
+import { renderReport } from "../health/report.ts";
+import { HEALTH_SCOPES } from "../health/types.ts";
 
-/**
- * `health`: report whether OUR gateway is up — both HTTP-reachable on the
- * tracked port AND backed by the tracked copilot-api pid (so a foreign service
- * squatting the port doesn't read as healthy). Exits non-zero otherwise, so it's
- * usable in scripts / the shell wrappers' readiness check.
- */
-export async function runHealth(): Promise<void> {
-  const port = copilotApiResolvePort();
-  const pid = new CopilotApiState().read().pid ?? null;
-  const tracked = pid !== null && (await isCopilotApiPid(pid));
+export interface HealthArgs {
+  scope: string;
+  json: boolean;
+}
 
-  let reachable = false;
-  try {
-    // Any HTTP response (even an error status) means something is listening.
-    await fetch(`http://localhost:${port}/`, { signal: AbortSignal.timeout(2000) });
-    reachable = true;
-  } catch {
-    reachable = false;
+export async function runHealth(args: HealthArgs): Promise<void> {
+  if (!isHealthScope(args.scope)) {
+    throw new Error(`--scope must be one of: ${HEALTH_SCOPES.join(", ")}`);
   }
+  const scope = args.scope;
+  const facts = await gatherFacts(scope);
+  const results = evaluateAll(scope, facts);
 
-  const pidStr = pid === null ? "untracked" : `pid ${pid}${tracked ? "" : " stale/foreign"}`;
-  if (reachable && tracked) {
-    consola.success(`copilot-api is up on port ${port} — ${pidStr}`);
-  } else if (reachable) {
-    consola.warn(`Port ${port} is in use but not by a tracked copilot-api — ${pidStr}`);
-    process.exitCode = 1;
+  if (args.json) {
+    console.log(JSON.stringify(buildHealthJson(scope, results), null, 2));
   } else {
-    consola.warn(`copilot-api is NOT reachable on port ${port} — ${pidStr}`);
-    process.exitCode = 1;
+    renderReport(scope, results);
   }
+  // Set, don't exit, so stderr/stdout flush (matches the rest of the CLI).
+  process.exitCode = exitCodeFor(results);
 }

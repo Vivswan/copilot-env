@@ -6,7 +6,7 @@ import { consola } from "consola";
 import { applyRelease } from "../install/release.ts";
 import { resolveTarget } from "../install/resolve-release.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
-import { versionLessThan } from "../utils/semver.ts";
+import { stripV, versionLessThan } from "../utils/semver.ts";
 import { packageVersion } from "../utils/version.ts";
 
 // `agent update` brings the checkout up to the newest GitHub release WITHOUT git:
@@ -16,8 +16,6 @@ import { packageVersion } from "../utils/version.ts";
 //  - apply downloads that release's `tarball_url` and SYNCS it onto the checkout:
 //    tracked files are replaced, files the release no longer ships (and OS junk)
 //    are pruned, and node_modules/.git are preserved; then `bun install`.
-
-const stripV = (v: string): string => v.replace(/^v/, "");
 
 export interface UpdateArgs {
   check?: boolean;

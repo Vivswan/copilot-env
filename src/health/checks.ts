@@ -1,0 +1,329 @@
+// Pure evaluators: HealthFacts -> CheckResult[]. No I/O — every input is a fact
+// gathered by probe.ts, so each check is independently unit-testable.
+import { join } from "node:path";
+import type { GatewayVersionStatus } from "../copilot_api/version.ts";
+import type {
+  BootstrapFacts,
+  CliFacts,
+  CodexFacts,
+  CodexHostFacts,
+  GatewayFacts,
+  HealthFacts,
+  RuntimeFacts,
+  ShellFacts,
+} from "./probe.ts";
+import type { CheckResult, HealthScope } from "./types.ts";
+
+const RUNTIME: readonly HealthScope[] = ["full", "gateway", "runtime"];
+const BOOTSTRAP: readonly HealthScope[] = ["full", "gateway"];
+const SETUP: readonly HealthScope[] = ["full", "setup"];
+
+export function checkCliVersion(f: BootstrapFacts): CheckResult {
+  return {
+    id: "bootstrap.version",
+    label: "copilot-env version",
+    group: "bootstrap",
+    scopes: BOOTSTRAP,
+    status: "ok",
+    detail: f.cliVersion,
+    value: { version: f.cliVersion },
+  };
+}
+
+export function checkBun(f: BootstrapFacts): CheckResult {
+  const { available, version } = f.bun;
+  return {
+    id: "bootstrap.bun",
+    label: "Bun runtime",
+    group: "bootstrap",
+    scopes: BOOTSTRAP,
+    status: available ? "ok" : "fail",
+    detail: available ? `bun ${version ?? "?"}` : "Bun runtime not detected",
+    ...(available ? {} : { fix: "install Bun (https://bun.sh)" }),
+    value: { available, version },
+  };
+}
+
+export function checkNodeModules(f: BootstrapFacts): CheckResult {
+  const { present, fresh } = f.nodeModules;
+  const status = !present ? "fail" : !fresh ? "warn" : "ok";
+  const detail = !present
+    ? "node_modules is missing"
+    : !fresh
+      ? "node_modules is stale (older than bun.lock)"
+      : "installed and up to date";
+  return {
+    id: "bootstrap.nodeModules",
+    label: "Dependencies (node_modules)",
+    group: "bootstrap",
+    scopes: BOOTSTRAP,
+    status,
+    detail,
+    ...(status === "ok" ? {} : { fix: "bun install --frozen-lockfile" }),
+    value: { present, fresh },
+  };
+}
+
+export function checkGatewayPackage(f: GatewayFacts): CheckResult {
+  // A config that couldn't be read means we can't judge bounds — surface that
+  // as the failure rather than letting the exception escape the report.
+  if (f.configError !== null || f.bounds === null) {
+    return {
+      id: "gateway.package",
+      label: "Gateway package",
+      group: "gateway",
+      scopes: BOOTSTRAP,
+      status: "fail",
+      detail: `could not read copilot-env.config: ${f.configError ?? "unknown error"}`,
+      fix: "check copilot-env.config",
+      value: { version: f.version, configError: f.configError },
+    };
+  }
+  const bounds: GatewayVersionStatus = f.bounds;
+  let status: CheckResult["status"];
+  let detail: string;
+  let fix: string | undefined;
+  if (bounds.ok) {
+    status = "ok";
+    detail = `@jeffreycao/copilot-api ${bounds.version}`;
+  } else if (bounds.reason === "missing") {
+    status = "fail";
+    detail = "@jeffreycao/copilot-api is not installed";
+    fix = "bun install --frozen-lockfile";
+  } else if (bounds.reason === "belowFloor") {
+    status = "fail";
+    detail = `gateway ${bounds.version} is below the floor ${bounds.floor}`;
+    fix = "bun install --frozen-lockfile";
+  } else {
+    status = "warn";
+    detail = `gateway ${bounds.version} is above the ceiling ${bounds.ceiling}`;
+    fix = "agent update";
+  }
+  return {
+    id: "gateway.package",
+    label: "Gateway package",
+    group: "gateway",
+    scopes: BOOTSTRAP,
+    status,
+    detail,
+    ...(fix ? { fix } : {}),
+    value: { version: f.version },
+  };
+}
+
+export function checkRuntimePort(f: RuntimeFacts): CheckResult {
+  return {
+    id: "runtime.port",
+    label: "Gateway port reachable",
+    group: "runtime",
+    scopes: RUNTIME,
+    status: f.reachable ? "ok" : "fail",
+    detail: f.reachable ? `listening on port ${f.port}` : `nothing reachable on port ${f.port}`,
+    ...(f.reachable ? {} : { fix: "agent start" }),
+    value: { port: f.port, reachable: f.reachable },
+  };
+}
+
+export function checkRuntimePid(f: RuntimeFacts): CheckResult {
+  const tracked = f.pidTracked;
+  let detail: string;
+  if (f.trackedPid === null) {
+    detail = "no tracked copilot-api pid";
+  } else if (tracked) {
+    detail = `tracked copilot-api pid ${f.trackedPid}`;
+  } else {
+    detail = `tracked pid ${f.trackedPid} is stale or foreign`;
+  }
+  return {
+    id: "runtime.pid",
+    label: "Tracked gateway process",
+    group: "runtime",
+    scopes: RUNTIME,
+    status: tracked ? "ok" : "fail",
+    detail,
+    ...(tracked ? {} : { fix: "agent start" }),
+    value: { pid: f.trackedPid, tracked, alive: f.pidAlive },
+  };
+}
+
+export function checkRuntimePaths(f: RuntimeFacts): CheckResult {
+  // Multi-line detail: report.ts indents each line so state/log sit on their own.
+  return {
+    id: "runtime.paths",
+    label: "Paths",
+    group: "runtime",
+    scopes: ["full"],
+    status: "ok",
+    detail: `state ${f.paths.stateFile}\nlog ${f.paths.logFile}`,
+    value: { ...f.paths },
+  };
+}
+
+export function checkShellIntegration(f: ShellFacts): CheckResult {
+  return {
+    id: "setup.shell",
+    label: "Shell integration",
+    group: "setup",
+    scopes: SETUP,
+    status: f.integrationWired ? "ok" : "warn",
+    detail: f.integrationWired
+      ? "wired into a shell rc/profile"
+      : "not wired into any shell rc/profile",
+    ...(f.integrationWired ? {} : { fix: "agent setup-shell" }),
+    value: { integrationWired: f.integrationWired, files: f.files },
+  };
+}
+
+export function checkLaunchers(f: ShellFacts): CheckResult {
+  return {
+    id: "setup.launchers",
+    label: "Launchers (cl/co/cx)",
+    group: "setup",
+    scopes: SETUP,
+    status: f.launchersWired ? "ok" : "warn",
+    detail: f.launchersWired ? "wired into a shell rc/profile" : "not wired (optional)",
+    ...(f.launchersWired ? {} : { fix: "agent setup-launchers" }),
+    value: { launchersWired: f.launchersWired },
+  };
+}
+
+export function checkCli(c: CliFacts): CheckResult {
+  const present = c.resolved !== null;
+  return {
+    id: `setup.cli.${c.command}`,
+    label: `${c.name} (${c.command})`,
+    group: "setup",
+    scopes: SETUP,
+    status: present ? "ok" : "warn",
+    detail: present ? (c.resolved as string) : "not installed (optional)",
+    ...(present ? {} : { fix: "agent setup-clis" }),
+    value: { command: c.command, resolved: c.resolved },
+  };
+}
+
+export function checkTool(name: "node" | "npm", resolved: string | null): CheckResult {
+  const present = resolved !== null;
+  return {
+    id: `setup.tool.${name}`,
+    label: name,
+    group: "setup",
+    scopes: SETUP,
+    status: present ? "ok" : "warn",
+    detail: present ? resolved : "not installed (optional)",
+    ...(present ? {} : { fix: "agent setup-clis" }),
+    value: { resolved },
+  };
+}
+
+export function checkCodex(f: CodexFacts): CheckResult {
+  const configPath = join(f.home, "config.toml");
+  const envPath = join(f.home, ".env");
+  const base = {
+    id: "setup.codex",
+    label: "Codex wiring",
+    group: "codex" as const,
+    scopes: SETUP,
+    value: {
+      home: f.home,
+      configFile: configPath,
+      configExists: f.configExists,
+      modelProvider: f.modelProvider,
+      baseUrl: f.baseUrl,
+      providerWired: f.providerWired,
+      envFilePresent: f.envFilePresent,
+      envKeyInDotenv: f.envKeyInDotenv,
+      envKeyInEnviron: f.envKeyInEnviron,
+      tokenAvailable: f.tokenAvailable,
+    },
+  };
+  // No config at the effective CODEX_HOME: the user hasn't wired Codex — fine.
+  if (!f.configExists) {
+    return { ...base, status: "ok", detail: `no Codex config at ${configPath} (not wired)` };
+  }
+  // Config exists: report precisely which part of the wiring is off.
+  let detail: string | null = null;
+  if (!f.providerSelected) {
+    detail = `${configPath} model_provider is ${f.modelProvider ?? "unset"}, not "copilot-env"`;
+  } else if (!f.baseUrlMatches) {
+    detail = `copilot-env base_url ${f.baseUrl ?? "(missing)"} is not the running gateway`;
+  } else if (!f.envKeyMatches) {
+    detail = `copilot-env provider env_key is not OPENAI_API_KEY`;
+  } else if (!f.tokenAvailable) {
+    detail = `OPENAI_API_KEY token not found (checked ${envPath} and the environment)`;
+  }
+  if (detail !== null) {
+    return { ...base, status: "warn", detail, fix: "agent setup-codex-config" };
+  }
+  // Fully wired: the wiring status, the gateway, then each token source on its
+  // own line (Codex resolves env_key from .env, but an exported var works too).
+  const present = (ok: boolean) => (ok ? "present" : "absent");
+  const detailLines = [
+    `wired via ${configPath}`,
+    `model_provider copilot-env → ${f.baseUrl}`,
+    `OPENAI_API_KEY in ${envPath}: ${present(f.envKeyInDotenv)}`,
+    `OPENAI_API_KEY in environment: ${present(f.envKeyInEnviron)}`,
+  ];
+  return { ...base, status: "ok", detail: detailLines.join("\n") };
+}
+
+/** Report the per-host CODEX_HOME farm (~/.codex/hosts/<hostname>) status. */
+export function checkCodexHost(f: CodexHostFacts): CheckResult {
+  const base = {
+    id: "setup.codex-host",
+    label: "Per-host CODEX_HOME",
+    group: "codex" as const,
+    scopes: SETUP,
+    value: { supported: f.supported, hostHome: f.hostHome, exists: f.exists, active: f.active },
+  };
+  // Active per-host home whose directory vanished is a real inconsistency.
+  if (f.active && !f.exists) {
+    return {
+      ...base,
+      status: "warn",
+      detail: `active CODEX_HOME ${f.hostHome} does not exist on disk`,
+      fix: "agent setup-codex-host",
+    };
+  }
+  if (f.active) {
+    return { ...base, status: "ok", detail: `active per-host CODEX_HOME: ${f.hostHome}` };
+  }
+  if (f.exists) {
+    return {
+      ...base,
+      status: "ok",
+      detail: `built but not active (using another CODEX_HOME): ${f.hostHome}`,
+    };
+  }
+  // Not built. Informational — it's an optional Linux-only feature.
+  const why = f.supported ? "not built (optional)" : "not built (Linux-only feature)";
+  return { ...base, status: "ok", detail: `${why}: ${f.hostHome}` };
+}
+
+/** Build every check applicable to `scope` from the gathered facts. */
+export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult[] {
+  const out: CheckResult[] = [];
+  if (facts.bootstrap) {
+    out.push(
+      checkCliVersion(facts.bootstrap),
+      checkBun(facts.bootstrap),
+      checkNodeModules(facts.bootstrap),
+    );
+  }
+  if (facts.gateway) out.push(checkGatewayPackage(facts.gateway));
+  if (facts.runtime) {
+    out.push(checkRuntimePort(facts.runtime), checkRuntimePid(facts.runtime));
+    out.push(checkRuntimePaths(facts.runtime));
+  }
+  if (facts.shell) {
+    out.push(checkShellIntegration(facts.shell), checkLaunchers(facts.shell));
+  }
+  if (facts.clis) {
+    for (const c of facts.clis) out.push(checkCli(c));
+  }
+  if (facts.tools) {
+    out.push(checkTool("node", facts.tools.node), checkTool("npm", facts.tools.npm));
+  }
+  if (facts.codex) out.push(checkCodex(facts.codex));
+  if (facts.codexHost) out.push(checkCodexHost(facts.codexHost));
+  return out.filter((r) => r.scopes.includes(scope));
+}

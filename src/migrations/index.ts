@@ -12,7 +12,7 @@
 import "../utils/dotenv.ts";
 import { consola } from "consola";
 
-import { versionLessThan } from "../utils/semver.ts";
+import { stripV, versionLessThan } from "../utils/semver.ts";
 import { migration as v121 } from "./1.2.1.ts";
 
 /**
@@ -33,8 +33,6 @@ export interface Migration {
 // One file per version step (named for the from-version), registered in ascending order;
 // `dueMigrations` re-sorts defensively, so order here is for readability only.
 const MIGRATIONS: Migration[] = [v121];
-
-const stripV = (v: string): string => v.replace(/^v/, "");
 
 /**
  * The migrations whose (from-)version falls in the half-open range [from, to), sorted

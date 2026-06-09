@@ -6,7 +6,7 @@ import { createConsola } from "consola";
 import { parse, stringify } from "smol-toml";
 
 import { CopilotApiConfig } from "../copilot_api/config.ts";
-import { copilotApiResolvePort } from "../copilot_api/port.ts";
+import { copilotApiResolvePort, openaiBaseUrl } from "../copilot_api/port.ts";
 import { CopilotApiState } from "../copilot_api/state.ts";
 import { isRecord } from "../utils/json.ts";
 
@@ -17,8 +17,8 @@ const logger = createConsola({ stdout: process.stderr, stderr: process.stderr })
 // exports, so the single token has ONE name across the shell exports and the
 // Codex `.env` — Codex's load_dotenv reads $CODEX_HOME/.env and resolves
 // `env_key` from it.
-const CODEX_PROVIDER_ID = "copilot-env";
-const CODEX_ENV_KEY = "OPENAI_API_KEY";
+export const CODEX_PROVIDER_ID = "copilot-env";
+export const CODEX_ENV_KEY = "OPENAI_API_KEY";
 
 export interface CodexConfigArgs {
   "codex-home"?: string;
@@ -45,6 +45,103 @@ function managedProvider(baseUrl: string) {
     "requires_openai_auth": false,
     "supports_websockets": false,
   };
+}
+
+// === wiring inspection (inverse of the write contract above) ===
+//
+// The read-only counterpart to configureCodexConfig: given a CODEX_HOME's raw
+// config.toml/.env content, report whether Codex is wired to our local gateway.
+// It lives HERE, next to managedProvider, so the provider id / env_key / table
+// shape are defined once and `agent health` reuses them instead of re-parsing
+// the TOML with its own copy of the contract.
+
+export interface CodexWiringStatus {
+  /** A config.toml exists at the home (false => the user never wired Codex). */
+  configExists: boolean;
+  /** Whatever `model_provider` is set to, for messaging. */
+  modelProvider: string | null;
+  /** `model_provider` selects our managed provider. */
+  providerSelected: boolean;
+  /** The managed provider table's `base_url`, if present. */
+  baseUrl: string | null;
+  /** `base_url` is a localhost URL whose effective port matches the gateway. */
+  baseUrlMatches: boolean;
+  /** The managed provider table's `env_key` is OPENAI_API_KEY. */
+  envKeyMatches: boolean;
+  /** All of: provider selected, base_url matches, env_key matches. */
+  providerWired: boolean;
+  /** A `.env` file exists at the home. */
+  envFilePresent: boolean;
+  /** `.env` defines the OPENAI_API_KEY token. */
+  envKeyInDotenv: boolean;
+  /** OPENAI_API_KEY is exported in the running process environment. */
+  envKeyInEnviron: boolean;
+  /** The token is resolvable from .env OR the environment (Codex needs one). */
+  tokenAvailable: boolean;
+}
+
+/**
+ * True when `baseUrl` matches the managed gateway contract: an http localhost
+ * URL on `expectedPort` whose path is `/v1` (what configureCodexConfig writes via
+ * openaiBaseUrl). A bare host, https, or a non-/v1 path is NOT a match.
+ */
+function baseUrlMatchesGateway(baseUrl: string, expectedPort: number): boolean {
+  try {
+    const u = new URL(baseUrl);
+    const isLocal = u.hostname === "localhost" || u.hostname === "127.0.0.1";
+    const path = u.pathname.replace(/\/$/, ""); // tolerate a trailing slash
+    return u.protocol === "http:" && isLocal && u.port === String(expectedPort) && path === "/v1";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Inspect raw config.toml + .env content against the managed contract. Pure (no
+ * I/O): callers read the files and pass the strings (null = absent file), plus
+ * whether OPENAI_API_KEY is set in the running environment (Codex's load_dotenv
+ * reads $CODEX_HOME/.env, but a token already exported in the shell works too).
+ */
+export function inspectCodexWiring(
+  configToml: string | null,
+  envText: string | null,
+  expectedPort: number,
+  envKeyInEnviron: boolean,
+): CodexWiringStatus {
+  const envKeyInDotenv =
+    envText !== null &&
+    new RegExp(`^\\s*(?:export\\s+)?${CODEX_ENV_KEY}\\s*=\\s*\\S`, "m").test(envText);
+  const status: CodexWiringStatus = {
+    configExists: configToml !== null,
+    modelProvider: null,
+    providerSelected: false,
+    baseUrl: null,
+    baseUrlMatches: false,
+    envKeyMatches: false,
+    providerWired: false,
+    envFilePresent: envText !== null,
+    envKeyInDotenv,
+    envKeyInEnviron,
+    tokenAvailable: envKeyInDotenv || envKeyInEnviron,
+  };
+  if (configToml === null) return status;
+  try {
+    const doc = parse(configToml);
+    const modelProvider =
+      isRecord(doc) && typeof doc.model_provider === "string" ? doc.model_provider : null;
+    const providers = isRecord(doc) ? doc.model_providers : undefined;
+    const table = isRecord(providers) ? providers[CODEX_PROVIDER_ID] : undefined;
+    const baseUrl = isRecord(table) && typeof table.base_url === "string" ? table.base_url : null;
+    status.modelProvider = modelProvider;
+    status.providerSelected = modelProvider === CODEX_PROVIDER_ID;
+    status.baseUrl = baseUrl;
+    status.baseUrlMatches = baseUrl !== null && baseUrlMatchesGateway(baseUrl, expectedPort);
+    status.envKeyMatches = isRecord(table) && table.env_key === CODEX_ENV_KEY;
+    status.providerWired = status.providerSelected && status.baseUrlMatches && status.envKeyMatches;
+  } catch {
+    // Malformed TOML => leave everything but config/.env facts false.
+  }
+  return status;
 }
 
 // Seeded ONLY when no config.toml exists yet: select our gateway as the default
@@ -177,7 +274,7 @@ export function configureCodexConfig(
  */
 export function applyCodexConfig(codexHome: string): void {
   const port = copilotApiResolvePort();
-  const baseUrl = `http://localhost:${port}/v1`;
+  const baseUrl = openaiBaseUrl(port);
   let apiKey: string;
   try {
     apiKey = new CopilotApiConfig().ensureApiKey();

@@ -27,6 +27,7 @@ import { runStop } from "./commands/stop.ts";
 import { runUpdate } from "./commands/update.ts";
 import { runCost } from "./usage/cost.ts";
 import { OPENROUTER_MODELS_URL } from "./usage/pricing.ts";
+import { bold, cyan, gray, underline } from "./utils/ansi.ts";
 import { packageVersion } from "./utils/version.ts";
 
 // Thin citty wiring: each subcommand only declares its parameters and calls the
@@ -96,9 +97,24 @@ const stop = defineCommand({
 const health = defineCommand({
   meta: {
     name: "health",
-    description: "Check whether the local gateway is reachable (exit 1 if not).",
+    description: "Diagnose the local gateway and setup (exit 1 on any failure).",
   },
-  run: () => runHealth(),
+  args: {
+    scope: {
+      type: "string",
+      default: "full",
+      description:
+        "Checks to run: full (default; whole environment) | runtime (fast gateway " +
+        "readiness probe) | gateway (bootstrap + gateway + runtime) | setup (shell, " +
+        "CLIs, Codex).",
+    },
+    json: {
+      type: "boolean",
+      default: false,
+      description: "Emit a JSON report instead of the formatted text report.",
+    },
+  },
+  run: ({ args }) => runHealth({ scope: String(args.scope), json: Boolean(args.json) }),
 });
 
 const env = defineCommand({
@@ -311,20 +327,8 @@ const setupClis = defineCommand({
 // The root `agent --help` gets a hand-rolled, left-aligned command table that
 // drops citty's auto `USAGE agent a|b|c ...` line and surfaces the global
 // --version / --help flags. Per-subcommand help (`agent start --help`) still
-// uses citty's renderer. ANSI styling mirrors citty's own (src/_color.ts) so
-// the two help screens look identical; the NO_COLOR/CI/TEST gating matches too.
-const NO_COLOR = (() => {
-  const env = process.env;
-  return Boolean(env.NO_COLOR === "1" || env.TERM === "dumb" || env.TEST || env.CI);
-})();
-const style =
-  (open: number, close = 39) =>
-  (text: string): string =>
-    NO_COLOR ? text : `\u001B[${open}m${text}\u001B[${close}m`;
-const bold = style(1, 22);
-const cyan = style(36);
-const gray = style(90);
-const underline = style(4, 24);
+// uses citty's renderer. ANSI styling is shared with the health report (see
+// utils/ansi.ts) and mirrors citty's own so the two help screens look identical.
 
 async function resolveValue<T>(value: T | Promise<T> | (() => T | Promise<T>)): Promise<T> {
   return typeof value === "function" ? await (value as () => T | Promise<T>)() : await value;

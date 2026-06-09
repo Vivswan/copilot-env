@@ -12,6 +12,7 @@ import {
 import { basename, dirname, join } from "node:path";
 import { consola } from "consola";
 
+import { isRecord } from "../utils/json.ts";
 import { CopilotApiPaths } from "./paths.ts";
 
 const logger = consola.withTag("copilot_api.utils.config");
@@ -58,7 +59,7 @@ export class CopilotApiConfig {
       logger.warn(`${this.path} is not valid JSON (${String(e)}); treating as empty`);
       return {};
     }
-    return isPlainObject(data) ? data : {};
+    return isRecord(data) ? data : {};
   }
 
   /** Atomically write ``data`` to disk with mode 0600. */
@@ -94,11 +95,16 @@ export class CopilotApiConfig {
 
   // ---------- domain helpers (auth) ----------
 
+  /** A fresh 64-char hex secret (the entropy/encoding for persisted keys). */
+  private generateToken(): string {
+    return randomBytes(32).toString("hex");
+  }
+
   /** Return ``auth.apiKeys[0]``, generating and persisting one if absent. */
   ensureApiKey(): string {
     const data = this.load();
     const authRaw = data.auth;
-    const auth = isPlainObject(authRaw) ? authRaw : null;
+    const auth = isRecord(authRaw) ? authRaw : null;
     if (auth) {
       const keys = auth.apiKeys;
       if (Array.isArray(keys) && keys.length > 0 && keys[0]) {
@@ -106,7 +112,7 @@ export class CopilotApiConfig {
       }
     }
 
-    const token = randomBytes(32).toString("hex");
+    const token = this.generateToken();
 
     const mutate = (d: Record<string, unknown>): void => {
       const authBlock = ensureDict(d, "auth");
@@ -130,12 +136,12 @@ export class CopilotApiConfig {
   ensureAdminApiKey(): string {
     const data = this.load();
     const authRaw = data.auth;
-    const auth = isPlainObject(authRaw) ? authRaw : null;
+    const auth = isRecord(authRaw) ? authRaw : null;
     if (auth && typeof auth.adminApiKey === "string" && auth.adminApiKey) {
       return auth.adminApiKey;
     }
 
-    const token = randomBytes(32).toString("hex");
+    const token = this.generateToken();
 
     this.update((d) => {
       const authBlock = ensureDict(d, "auth");
@@ -148,16 +154,12 @@ export class CopilotApiConfig {
 /** Return ``parent[key]`` as a dict, creating/replacing if needed. */
 function ensureDict(parent: Record<string, unknown>, key: string): Record<string, unknown> {
   const value = parent[key];
-  if (isPlainObject(value)) {
+  if (isRecord(value)) {
     return value;
   }
   const fresh: Record<string, unknown> = {};
   parent[key] = fresh;
   return fresh;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isFile(path: string): boolean {
@@ -206,7 +208,7 @@ function sortKeys(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(sortKeys);
   }
-  if (isPlainObject(value)) {
+  if (isRecord(value)) {
     const out: Record<string, unknown> = {};
     for (const key of Object.keys(value).sort()) {
       out[key] = sortKeys(value[key]);

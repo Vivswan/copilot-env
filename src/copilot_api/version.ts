@@ -1,11 +1,10 @@
 // Gateway package version helpers shared by startup checks and the postinstall float.
-import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { parseJsonRecord } from "../utils/json.ts";
 import type { ProjectConfig } from "../utils/project_config.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { versionLessThan } from "../utils/semver.ts";
+import { readPackageVersion } from "../utils/version.ts";
 
 export const GATEWAY_PACKAGE_NAME = "@jeffreycao/copilot-api";
 
@@ -20,18 +19,13 @@ export type GatewayVersionStatus =
 
 /** Installed gateway version (from its package.json), or null if unresolved. */
 export function installedGatewayVersion(root: string = PROJECT_ROOT): string | null {
-  try {
-    const packagePath = join(
-      root,
-      "node_modules",
-      ...GATEWAY_PACKAGE_NAME.split("/"),
-      "package.json",
-    );
-    const pkg = parseJsonRecord(readFileSync(packagePath, "utf-8"));
-    return typeof pkg?.version === "string" ? pkg.version : null;
-  } catch {
-    return null;
-  }
+  const packagePath = join(
+    root,
+    "node_modules",
+    ...GATEWAY_PACKAGE_NAME.split("/"),
+    "package.json",
+  );
+  return readPackageVersion(packagePath);
 }
 
 export function assertGatewayConfigBounds(config: ProjectConfig): void {

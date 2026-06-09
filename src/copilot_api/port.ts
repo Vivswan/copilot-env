@@ -41,3 +41,8 @@ export function copilotApiResolvePort(): string {
   const statePort = new CopilotApiState().read().port;
   return statePort !== undefined ? String(statePort) : COPILOT_API_PORT_DEFAULT;
 }
+
+/** The OpenAI-wire gateway base URL for `port` (single source for the emitted string). */
+export function openaiBaseUrl(port: string): string {
+  return `http://localhost:${port}/v1`;
+}

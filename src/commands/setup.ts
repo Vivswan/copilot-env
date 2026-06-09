@@ -2,13 +2,14 @@
 import { spawnSync } from "node:child_process";
 import { consola } from "consola";
 import { pickAgedVersion } from "../utils/aged_version.ts";
+import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { runShellIntegration } from "./shell_integration.ts";
 
 const NVM_VERSION = "v0.40.1";
 const POSIX_NVM_SH = '"$' + '{NVM_DIR:-$HOME/.nvm}/nvm.sh"';
 
-const AGENT_CLIS = [
+export const AGENT_CLIS = [
   {
     command: "claude",
     name: "Claude Code CLI",
@@ -66,10 +67,6 @@ export function normalizeSetupClisOptions(args: SetupClisArgs): NormalizedSetupC
   return { cooldown, launchers: Boolean(args.launchers), noSudo, noPrereqs };
 }
 
-function shellQuote(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`;
-}
-
 function run(
   command: string,
   args: string[],
@@ -78,7 +75,7 @@ function run(
   return spawnSync(command, args, { stdio: "inherit", ...options });
 }
 
-function commandExists(command: string): boolean {
+export function commandExists(command: string): boolean {
   if (process.platform === "win32") {
     const result = spawnSync(
       "powershell",
@@ -105,7 +102,7 @@ function commandExists(command: string): boolean {
   return result.status === 0;
 }
 
-function resolveCommand(command: string): string | null {
+export function resolveCommand(command: string): string | null {
   if (process.platform === "win32") return commandExists(command) ? command : null;
   const result = spawnSync(
     "sh",
@@ -152,13 +149,12 @@ function refreshWindowsPath(): void {
 
 function addWindowsUserPath(directory: string): void {
   if (process.platform !== "win32") return;
-  const escaped = directory.replace(/'/g, "''");
   const result = spawnSync(
     "powershell",
     [
       "-NoProfile",
       "-Command",
-      `$dir='${escaped}';` +
+      `$dir=${quotePowerShell(directory)};` +
         "$path=[Environment]::GetEnvironmentVariable('Path','User');" +
         "$entries=@($path -split ';' | Where-Object { $_ });" +
         "if ($entries -notcontains $dir) {" +
@@ -174,7 +170,7 @@ function addWindowsUserPath(directory: string): void {
 function installNodePosix(): void {
   const script = [
     "set -e",
-    `NVM_VERSION=${shellQuote(NVM_VERSION)}`,
+    `NVM_VERSION=${quotePosix(NVM_VERSION)}`,
     'NVM_DIR="$' + '{NVM_DIR:-$HOME/.nvm}"',
     'if [ ! -s "$NVM_DIR/nvm.sh" ]; then',
     '  echo "Installing nvm ($NVM_VERSION) ..."',

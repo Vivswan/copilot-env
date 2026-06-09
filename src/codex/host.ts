@@ -16,8 +16,9 @@ export interface CodexHostArgs {
 }
 
 // The per-host CODEX_HOME (~/.codex/hosts/<hostname>). Linux-only: it builds and
-// inspects the shared-state symlink farm used on the Linux fleet.
-function getHostLocalCodexHome(): string {
+// inspects the shared-state symlink farm used on the Linux fleet. Exported so
+// `agent health` can report the per-host directory without rebuilding the path.
+export function getHostLocalCodexHome(): string {
   return `${HOME}/.codex/hosts/${getSanitizedHostname()}`;
 }
 

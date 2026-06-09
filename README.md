@@ -64,7 +64,7 @@ Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, the
 ```bash
 agent start                # launch the daemon and sync aliases (--dry-run to preview)
 agent stop                 # stop the daemon
-agent health               # check the gateway is reachable (exit 1 if not)
+agent health               # full environment diagnosis (--scope runtime|gateway|setup, --json)
 agent env                  # print shell env vars pointing at the local gateway
 agent cost                 # estimated token spend across all per-host usage DBs
 agent update               # update to the latest release (--check / --cooldown)

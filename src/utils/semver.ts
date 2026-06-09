@@ -27,3 +27,8 @@ export function versionLessThan(a: string, b: string): boolean {
   if (preA !== preB) return preA;
   return false;
 }
+
+/** Drop a leading `v` from a tag/version (e.g. `v1.2.3` -> `1.2.3`). */
+export function stripV(v: string): string {
+  return v.replace(/^v/, "");
+}

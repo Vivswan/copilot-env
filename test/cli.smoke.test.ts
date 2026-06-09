@@ -1,4 +1,14 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// A throwaway COPILOT_API_HOME so the runtime probe sees no tracked pid/port and
+// falls back to the default port — independent of any real gateway on this host.
+function isolatedEnv(extra: Record<string, string> = {}): Record<string, string> {
+  const home = mkdtempSync(join(tmpdir(), "copilot-health-"));
+  return { ...process.env, CONSOLA_LEVEL: "5", COPILOT_API_HOME: home, ...extra };
+}
 
 // End-to-end smoke test: the citty CLI must load its whole import graph and
 // print help without a running daemon or any auth. Catches wiring/import
@@ -84,4 +94,50 @@ test("setup-clis supports no-sudo", () => {
   const helpOutput = help.stdout.toString() + help.stderr.toString();
   expect(help.exitCode).toBe(0);
   expect(helpOutput).toContain("--no-sudo");
+});
+
+test("health --help surfaces --scope and --json", () => {
+  const help = Bun.spawnSync(["bun", "src/cli.ts", "health", "--help"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, CONSOLA_LEVEL: "5" },
+  });
+  const out = help.stdout.toString() + help.stderr.toString();
+  expect(help.exitCode).toBe(0);
+  expect(out).toContain("--scope");
+  expect(out).toContain("--json");
+});
+
+test("health --scope runtime exits 1 when no gateway is running", () => {
+  // Default port nothing is listening on + isolated state => probe always fails.
+  const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", "runtime"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: isolatedEnv({ COPILOT_API_PORT_DEFAULT: "4199" }),
+  });
+  expect(proc.exitCode).toBe(1);
+});
+
+test("health --json emits a parseable report with scope/exitCode/checks", () => {
+  const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", "runtime", "--json"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: isolatedEnv({ COPILOT_API_PORT_DEFAULT: "4199" }),
+  });
+  const parsed = JSON.parse(proc.stdout.toString());
+  expect(parsed.scope).toBe("runtime");
+  expect(typeof parsed.exitCode).toBe("number");
+  expect(Array.isArray(parsed.checks)).toBe(true);
+  expect(parsed.checks.map((c: { id: string }) => c.id)).toEqual(["runtime.port", "runtime.pid"]);
+});
+
+test("health --scope bogus exits 1 with a helpful message", () => {
+  const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", "bogus"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: isolatedEnv(),
+  });
+  const out = proc.stdout.toString() + proc.stderr.toString();
+  expect(proc.exitCode).toBe(1);
+  expect(out).toContain("--scope must be one of");
 });

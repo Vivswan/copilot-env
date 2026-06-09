@@ -1,7 +1,8 @@
 // `agent env`: prints machine-readable shell exports for the local gateway.
 import { CopilotApiConfig } from "../copilot_api/config.ts";
-import { copilotApiResolvePort } from "../copilot_api/port.ts";
+import { copilotApiResolvePort, openaiBaseUrl } from "../copilot_api/port.ts";
 import { CopilotApiState } from "../copilot_api/state.ts";
+import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 
 export interface EnvArgs {
   format?: string;
@@ -31,7 +32,7 @@ export function runEnv(args: EnvArgs): void {
   const vars: Array<[string, string]> = [
     ["ANTHROPIC_BASE_URL", `http://localhost:${port}`],
     ["ANTHROPIC_AUTH_TOKEN", token],
-    ["OPENAI_BASE_URL", `http://localhost:${port}/v1`],
+    ["OPENAI_BASE_URL", openaiBaseUrl(port)],
     ["OPENAI_API_KEY", token],
   ];
 
@@ -45,11 +46,11 @@ export function runEnv(args: EnvArgs): void {
   for (const [key, value] of vars) {
     if (isPowershell) {
       // Single-quoted PS literal; double any embedded quote per PS escaping.
-      console.log(`$env:${key} = '${value.replace(/'/g, "''")}'`);
+      console.log(`$env:${key} = ${quotePowerShell(value)}`);
     } else {
       // Single-quoted POSIX literal so values with spaces/metacharacters (e.g. a
       // CODEX_HOME path) survive the shell wrapper's `eval`. Embedded `'` → `'\''`.
-      console.log(`export ${key}='${value.replace(/'/g, "'\\''")}'`);
+      console.log(`export ${key}=${quotePosix(value)}`);
     }
   }
 }

@@ -17,10 +17,11 @@
 : "${_COPILOT_AGENTS_DIR:=$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")/.." && pwd)}"
 
 # Check the gateway before launching an agent; if it's down, offer to start it.
-# Uses `agent health` (HTTP-probes the gateway, exit 0 = up). `agent start` runs
-# in the current shell, so its env exports propagate to the agent we launch next.
+# Uses `agent health --scope runtime` (fast HTTP probe of the gateway, exit 0 =
+# up). `agent start` runs in the current shell, so its env exports propagate to
+# the agent we launch next.
 function _copilot_ensure_server {
-    if "${_COPILOT_AGENTS_DIR}/bin/agent" health >/dev/null 2>&1; then
+    if "${_COPILOT_AGENTS_DIR}/bin/agent" health --scope runtime >/dev/null 2>&1; then
         return 0
     fi
 

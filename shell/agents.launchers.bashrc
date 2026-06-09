@@ -54,9 +54,22 @@ function co {
 
 function cx {
     _copilot_require_cli codex || return 1
-    _copilot_ensure_server || return $?
-    # Re-wire ~/.codex to the local gateway before launching (via the `agent`
-    # wrapper so the env refresh runs too).
+    # Refresh the effective CODEX_HOME. Existing direct config stays as-is;
+    # proxy config is refreshed; missing/custom configs become direct.
     agent setup-codex-config || return $?
+    if "${_COPILOT_AGENTS_DIR}/bin/agent" setup-codex-config --check >/dev/null 2>&1; then
+        _codex_provider_status=0
+    else
+        _codex_provider_status=$?
+    fi
+    if [ "$_codex_provider_status" -eq 2 ]; then
+        unset _codex_provider_status
+        _copilot_ensure_server || return $?
+    elif [ "$_codex_provider_status" -eq 0 ]; then
+        unset _codex_provider_status
+    else
+        unset _codex_provider_status
+        return 1
+    fi
     command codex "$@"
 }

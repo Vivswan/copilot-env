@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,6 +8,25 @@ import { join } from "node:path";
 function isolatedEnv(extra: Record<string, string> = {}): Record<string, string> {
   const home = mkdtempSync(join(tmpdir(), "copilot-health-"));
   return { ...process.env, CONSOLA_LEVEL: "5", COPILOT_API_HOME: home, ...extra };
+}
+
+function isolatedProxyEnv(extra: Record<string, string> = {}): Record<string, string> {
+  const root = mkdtempSync(join(tmpdir(), "copilot-health-proxy-"));
+  const codexHome = join(root, ".codex");
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(
+    join(codexHome, "config.toml"),
+    [
+      'model_provider = "copilot-env"',
+      "",
+      "[model_providers.copilot-env]",
+      'base_url = "http://localhost:4199/v1"',
+      'env_key = "OPENAI_API_KEY"',
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(join(codexHome, ".env"), "OPENAI_API_KEY=test-key\n");
+  return isolatedEnv({ CODEX_HOME: codexHome, ...extra });
 }
 
 // End-to-end smoke test: the citty CLI must load its whole import graph and
@@ -46,6 +65,130 @@ for (const args of [["setup-shell"], ["setup-clis"], ["setup-launchers"]] as con
     expect(output).toContain(args[0]);
   });
 }
+
+for (const args of [["setup-codex-config"], ["setup-codex-host"]] as const) {
+  test(`cli.ts ${args.join(" ")} --help exposes provider modes`, () => {
+    const proc = Bun.spawnSync(["bun", "src/cli.ts", ...args, "--help"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, CONSOLA_LEVEL: "5" },
+    });
+    const output = proc.stdout.toString() + proc.stderr.toString();
+
+    expect(proc.exitCode).toBe(0);
+    expect(output).toContain("--proxy");
+    expect(output).toContain("--direct");
+  });
+}
+
+test("setup-codex-config exposes and runs check mode", () => {
+  const root = mkdtempSync(join(tmpdir(), "copilot-codex-check-"));
+  const codexHome = join(root, ".codex");
+  const directHome = join(root, "direct-codex");
+  const otherHome = join(root, "other-codex");
+  const noneHome = join(root, "none-codex");
+  const unsetHome = join(root, "unset-codex");
+  mkdirSync(codexHome, { recursive: true });
+  mkdirSync(directHome, { recursive: true });
+  mkdirSync(otherHome, { recursive: true });
+  mkdirSync(noneHome, { recursive: true });
+  mkdirSync(unsetHome, { recursive: true });
+  writeFileSync(
+    join(codexHome, "config.toml"),
+    [
+      'model_provider = "copilot-env"',
+      "",
+      "[model_providers.copilot-env]",
+      'base_url = "http://localhost:4199/v1"',
+      'env_key = "OPENAI_API_KEY"',
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(
+    join(directHome, "config.toml"),
+    [
+      'model_provider = "github-copilot-direct"',
+      "",
+      "[model_providers.github-copilot-direct]",
+      'base_url = "https://api.githubcopilot.com"',
+      "",
+    ].join("\n"),
+  );
+  writeFileSync(join(otherHome, "config.toml"), 'model_provider = "openai"\n');
+  writeFileSync(join(unsetHome, "config.toml"), "[analytics]\nenabled = false\n");
+
+  const help = Bun.spawnSync(["bun", "src/cli.ts", "setup-codex-config", "--help"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, CONSOLA_LEVEL: "5" },
+  });
+  expect(help.stdout.toString() + help.stderr.toString()).toContain("--check");
+
+  const hostHelp = Bun.spawnSync(["bun", "src/cli.ts", "setup-codex-host", "--help"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, CONSOLA_LEVEL: "5" },
+  });
+  expect(hostHelp.stdout.toString() + hostHelp.stderr.toString()).not.toContain("--check");
+
+  const runCheck = (home: string) =>
+    Bun.spawnSync(["bun", "src/cli.ts", "setup-codex-config", "--check"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: isolatedEnv({ CODEX_HOME: home, COPILOT_API_PORT_DEFAULT: "4199" }),
+    });
+
+  const proxy = runCheck(codexHome);
+  expect(proxy.exitCode).toBe(2);
+  expect(proxy.stdout.toString()).toContain("Codex provider mode: proxy");
+  expect(proxy.stdout.toString()).toContain("local copilot-api proxy");
+  expect(proxy.stdout.toString()).toContain(`config.toml: ${join(codexHome, "config.toml")}`);
+
+  const direct = runCheck(directHome);
+  expect(direct.exitCode).toBe(0);
+  expect(direct.stdout.toString()).toContain("Codex provider mode: direct");
+  expect(direct.stdout.toString()).toContain("GitHub Copilot Direct");
+  expect(direct.stdout.toString()).toContain(`config.toml: ${join(directHome, "config.toml")}`);
+
+  const other = runCheck(otherHome);
+  expect(other.exitCode).toBe(1);
+  expect(other.stdout.toString()).toContain("Codex provider mode: other");
+  expect(other.stdout.toString()).toContain(`config.toml: ${join(otherHome, "config.toml")}`);
+
+  const missing = runCheck(noneHome);
+  expect(missing.exitCode).toBe(1);
+  expect(missing.stdout.toString()).toContain("Codex provider mode: none");
+  expect(missing.stdout.toString()).toContain("no config.toml found");
+
+  const unset = runCheck(unsetHome);
+  expect(unset.exitCode).toBe(1);
+  expect(unset.stdout.toString()).toContain("Codex provider mode: none");
+  expect(unset.stdout.toString()).toContain("no model_provider configured");
+
+  const conflicting = Bun.spawnSync(
+    ["bun", "src/cli.ts", "setup-codex-config", "--proxy", "--direct"],
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: isolatedEnv({ CODEX_HOME: codexHome, COPILOT_API_PORT_DEFAULT: "4199" }),
+    },
+  );
+  expect(conflicting.exitCode).toBe(1);
+  expect(conflicting.stderr.toString()).toContain("--proxy and --direct are mutually exclusive");
+
+  const conflictingCheck = Bun.spawnSync(
+    ["bun", "src/cli.ts", "setup-codex-config", "--check", "--proxy", "--direct"],
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: isolatedEnv({ CODEX_HOME: codexHome, COPILOT_API_PORT_DEFAULT: "4199" }),
+    },
+  );
+  expect(conflictingCheck.exitCode).toBe(1);
+  expect(conflictingCheck.stderr.toString()).toContain(
+    "--proxy and --direct are mutually exclusive",
+  );
+});
 
 test("the launcher flag lives on setup-clis, not setup-shell", () => {
   const shell = Bun.spawnSync(["bun", "src/cli.ts", "setup-shell", "--help"], {
@@ -151,7 +294,7 @@ function runHealthJson(scope: string): { exitCode: number | null; json: HealthJs
   const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", scope, "--json"], {
     stdout: "pipe",
     stderr: "pipe",
-    env: isolatedEnv({ COPILOT_API_PORT_DEFAULT: "4199" }),
+    env: isolatedProxyEnv({ COPILOT_API_PORT_DEFAULT: "4199" }),
   });
   return { exitCode: proc.exitCode, json: JSON.parse(proc.stdout.toString()) as HealthJson };
 }
@@ -160,7 +303,13 @@ interface HealthJson {
   scope: string;
   ok: boolean;
   exitCode: number;
-  checks: { id: string; group: string; status: string; detail: string }[];
+  checks: {
+    id: string;
+    group: string;
+    status: string;
+    detail: string;
+    value?: Record<string, unknown>;
+  }[];
 }
 
 test("health --scope full runs every group end-to-end and fails on a dead gateway", () => {
@@ -188,6 +337,11 @@ test("health --scope full runs every group end-to-end and fails on a dead gatewa
     expect(typeof c.status).toBe("string");
     expect(typeof c.detail).toBe("string");
   }
+  const codex = json.checks.find((c) => c.id === "setup.codex");
+  expect(codex?.value?.providerMode).toBe("proxy");
+  expect(typeof codex?.value?.configFile).toBe("string");
+  expect(codex?.detail).toContain("provider: proxy");
+  expect(codex?.detail).toContain("config.toml:");
 });
 
 test("health --scope gateway covers bootstrap+gateway+runtime, not setup", () => {
@@ -207,10 +361,25 @@ test("health --scope setup covers wiring only and never fails (warnings exit 0)"
   expect(ids).toContain("setup.shell");
   expect(ids).toContain("setup.codex");
   expect(ids).toContain("setup.codex-host");
+  const codexHost = json.checks.find((c) => c.id === "setup.codex-host");
+  expect(codexHost?.detail).toBe("not built (Linux-only feature)");
+  expect(codexHost?.detail).not.toContain(String(codexHost?.value?.hostHome));
+  expect(codexHost?.detail).not.toContain("config.toml:");
+  expect(typeof codexHost?.value?.configFile).toBe("string");
   // Setup-only: no runtime/bootstrap checks can drag the exit code to 1.
   expect(ids).not.toContain("runtime.port");
   expect(ids).not.toContain("bootstrap.bun");
   expect(json.checks.every((c) => c.status !== "fail")).toBe(true);
+  expect(json.exitCode).toBe(0);
+  expect(exitCode).toBe(0);
+});
+
+test("health --scope codex covers only Codex wiring", () => {
+  const { exitCode, json } = runHealthJson("codex");
+  const ids = json.checks.map((c) => c.id);
+  expect(json.scope).toBe("codex");
+  expect(ids).toEqual(["setup.codex"]);
+  expect(json.checks[0]?.value?.providerMode).toBe("proxy");
   expect(json.exitCode).toBe(0);
   expect(exitCode).toBe(0);
 });

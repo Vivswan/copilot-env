@@ -3,6 +3,7 @@
 // tracked-pid check still spawns `ps`/PowerShell exactly as the original health
 // command did). Pure sub-evaluators (evalShellFiles, evalCodex) take raw content
 // so they unit-test without touching the world.
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -89,8 +90,13 @@ export interface ToolFacts {
   npm: string | null;
 }
 
+export interface CodexDirectAuthFacts {
+  command: string | null;
+  authenticated: boolean;
+}
+
 /** Codex wiring facts: the home being inspected plus the wiring contract status. */
-export type CodexFacts = CodexWiringStatus & { home: string };
+export type CodexFacts = CodexWiringStatus & { home: string; directAuth: CodexDirectAuthFacts };
 
 export interface CodexHostFacts {
   /** The per-host CODEX_HOME farm is a Linux-only feature. */
@@ -134,6 +140,7 @@ export interface ProbeDeps {
   gatewayCooldownSeconds(): number;
   codexHome(): string;
   codexTokenInEnviron(): boolean;
+  codexDirectAuth(): CodexDirectAuthFacts;
   hostCodexHome(): string;
   dirExists(path: string): boolean;
   readAutoupdate(): AutoupdateData;
@@ -159,6 +166,17 @@ function readFileSafe(path: string): string | null {
   } catch {
     return null;
   }
+}
+
+function codexDirectAuth(): CodexDirectAuthFacts {
+  const command = resolveCommand("gh");
+  if (command === null) return { command: null, authenticated: false };
+  const result = spawnSync("gh", ["auth", "token"], {
+    stdio: "ignore",
+    timeout: 5000,
+    windowsHide: true,
+  });
+  return { command, authenticated: result.status === 0 };
 }
 
 export function defaultProbeDeps(): ProbeDeps {
@@ -193,6 +211,7 @@ export function defaultProbeDeps(): ProbeDeps {
     codexHome: () =>
       new CopilotApiState().read().codexHome ?? process.env.CODEX_HOME ?? join(homedir(), ".codex"),
     codexTokenInEnviron: () => Boolean(process.env[CODEX_ENV_KEY]),
+    codexDirectAuth,
     hostCodexHome: getHostLocalCodexHome,
     dirExists: (path: string) => existsSync(path),
     readAutoupdate: () => new AutoupdateState().read(),
@@ -236,8 +255,13 @@ export function evalCodex(
   envText: string | null,
   expectedPort: number,
   envKeyInEnviron: boolean,
+  directAuth: CodexDirectAuthFacts = { command: null, authenticated: false },
 ): CodexFacts {
-  return { home, ...inspectCodexWiring(configToml, envText, expectedPort, envKeyInEnviron) };
+  return {
+    home,
+    directAuth,
+    ...inspectCodexWiring(configToml, envText, expectedPort, envKeyInEnviron),
+  };
 }
 
 // --- orchestration ----------------------------------------------------------
@@ -245,6 +269,7 @@ export function evalCodex(
 const SCOPE_RUNTIME: readonly HealthScope[] = ["full", "gateway", "runtime"];
 const SCOPE_BOOTSTRAP: readonly HealthScope[] = ["full", "gateway"];
 const SCOPE_SETUP: readonly HealthScope[] = ["full", "setup"];
+const SCOPE_CODEX: readonly HealthScope[] = ["full", "setup", "codex"];
 
 /** Gather exactly the facts `scope` needs, running independent probes concurrently. */
 export async function gatherFacts(
@@ -315,6 +340,24 @@ export async function gatherFacts(
     );
   }
 
+  if (SCOPE_CODEX.includes(scope)) {
+    jobs.push(
+      (async () => {
+        const home = deps.codexHome();
+        const configToml = deps.readFileSafe(join(home, "config.toml"));
+        const envText = deps.readFileSafe(join(home, ".env"));
+        facts.codex = evalCodex(
+          home,
+          configToml,
+          envText,
+          port,
+          deps.codexTokenInEnviron(),
+          deps.codexDirectAuth(),
+        );
+      })(),
+    );
+  }
+
   if (SCOPE_SETUP.includes(scope)) {
     jobs.push(
       (async () => {
@@ -336,9 +379,6 @@ export async function gatherFacts(
         }));
         facts.tools = { node: deps.commandResolved("node"), npm: deps.commandResolved("npm") };
         const home = deps.codexHome();
-        const configToml = deps.readFileSafe(join(home, "config.toml"));
-        const envText = deps.readFileSafe(join(home, ".env"));
-        facts.codex = evalCodex(home, configToml, envText, port, deps.codexTokenInEnviron());
         const hostHome = deps.hostCodexHome();
         facts.codexHost = {
           supported: process.platform === "linux",

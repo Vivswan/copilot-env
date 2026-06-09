@@ -10,16 +10,20 @@ export async function runStop(): Promise<void> {
   const pid = state.read().pid;
 
   if (pid === undefined) {
-    throw new Error("No tracked copilot-api on this host (run 'agent start' first).");
+    // Not a crash — just nothing to do. Friendly note, no stack trace, but a
+    // non-zero exit so scripts can still tell "stopped" from "nothing running".
+    consola.info("No copilot-api is running on this host (nothing to stop).");
+    process.exitCode = 1;
+    return;
   }
 
   // Confirm the tracked pid is still OUR daemon before signalling it — the OS
   // may have recycled a stale pid onto an unrelated process.
   if (!(await isCopilotApiPid(pid))) {
     state.set({ pid: null, port: null });
-    throw new Error(
-      `Tracked pid ${pid} is not a running copilot-api (stopped or reused); cleared.`,
-    );
+    consola.info(`copilot-api (PID ${pid}) was already stopped; cleared stale tracking.`);
+    process.exitCode = 1;
+    return;
   }
 
   // On Windows there are no POSIX signals: Node maps SIGTERM (and SIGKILL) to

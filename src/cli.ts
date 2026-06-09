@@ -106,7 +106,7 @@ const health = defineCommand({
       description:
         "Checks to run: full (default; whole environment) | runtime (fast gateway " +
         "readiness probe) | gateway (bootstrap + gateway + runtime) | setup (shell, " +
-        "CLIs, Codex).",
+        "CLIs, Codex) | codex (Codex wiring only).",
     },
     json: {
       type: "boolean",
@@ -167,15 +167,40 @@ const codexArgs = {
     description:
       "CODEX_HOME path to operate on. Default: ~/.codex (%USERPROFILE%\\.codex on Windows).",
   },
+  proxy: {
+    type: "boolean",
+    default: false,
+    description:
+      "Write Codex config for the local copilot-api proxy instead of GitHub Copilot Direct.",
+  },
+  direct: {
+    type: "boolean",
+    default: false,
+    description: "Write Codex config for GitHub Copilot Direct, overwriting proxy/custom wiring.",
+  },
 } as const;
 
 const setupCodexConfig = defineCommand({
   meta: {
     name: "setup-codex-config",
-    description: "Update the default ~/.codex config.toml/.env wired to the local gateway.",
+    description: "Update the default ~/.codex config.toml for GitHub Copilot Direct.",
   },
-  args: codexArgs,
-  run: ({ args }) => runCodexConfig({ "codex-home": args["codex-home"] as string | undefined }),
+  args: {
+    ...codexArgs,
+    check: {
+      type: "boolean",
+      default: false,
+      description:
+        "Check the effective Codex provider without changing config: exit 0 direct, 2 proxy, 1 other/error.",
+    },
+  },
+  run: ({ args }) =>
+    runCodexConfig({
+      "codex-home": args["codex-home"] as string | undefined,
+      check: Boolean(args.check),
+      direct: Boolean(args.direct),
+      proxy: Boolean(args.proxy),
+    }),
 });
 
 const setupCodexHost = defineCommand({
@@ -195,6 +220,8 @@ const setupCodexHost = defineCommand({
     runCodexHost({
       "codex-home": args["codex-home"] as string | undefined,
       delete: Boolean(args.delete),
+      direct: Boolean(args.direct),
+      proxy: Boolean(args.proxy),
     }),
 });
 

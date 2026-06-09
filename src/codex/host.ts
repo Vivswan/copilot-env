@@ -13,6 +13,8 @@ const logger = createConsola({ stdout: process.stderr, stderr: process.stderr })
 export interface CodexHostArgs {
   "codex-home"?: string;
   delete?: boolean;
+  direct?: boolean;
+  proxy?: boolean;
 }
 
 // The per-host CODEX_HOME (~/.codex/hosts/<hostname>). Linux-only: it builds and
@@ -22,12 +24,21 @@ export function getHostLocalCodexHome(): string {
   return `${HOME}/.codex/hosts/${getSanitizedHostname()}`;
 }
 
-function assertLinux(feature: string, hint?: string): void {
+/**
+ * Guard a Linux-only feature. Returns false on a non-Linux host after printing a
+ * friendly note and setting a non-zero exit code — callers should `return` when
+ * it returns false rather than continue. (No raw throw: an unsupported platform
+ * is an expected user condition, not a crash, so it shouldn't dump a stack trace.)
+ */
+function assertLinux(feature: string, hint?: string): boolean {
   if (process.platform !== "linux") {
-    throw new Error(
+    logger.info(
       `${feature} is only supported on Linux (this is ${process.platform}).${hint ? ` ${hint}` : ""}`,
     );
+    process.exitCode = 1;
+    return false;
   }
+  return true;
 }
 
 // --- small fs helpers ------------------------------------------------------
@@ -495,17 +506,20 @@ function buildCodexSymlinkFarm(codexHome: string): number {
 
 /**
  * `host_codex`: build the per-host CODEX_HOME symlink farm (Linux-only) at
- * `--codex-home` (default `~/.codex/hosts/<hostname>`), then write its config and
- * persist the CODEX_HOME to state so `env` exports it. With `--delete`, remove
- * that per-host dir and clear the state instead. No stdout.
+ * `--codex-home` (default `~/.codex/hosts/<hostname>`), then write its config
+ * and persist the CODEX_HOME to state so `env` exports it. With `--delete`,
+ * remove that per-host dir and clear the state instead. No stdout.
  */
 export function runCodexHost(args: CodexHostArgs): void {
-  assertLinux("The CODEX_HOME symlink farm (host_codex)");
+  if (!assertLinux("The CODEX_HOME symlink farm (host_codex)")) return;
   // Resolve to an absolute path: it gets persisted to state and re-exported into
   // future shells, so a cwd-relative value would later resolve against the wrong
   // directory.
   const codexHome = path.resolve(args["codex-home"] ?? getHostLocalCodexHome());
   const state = new CopilotApiState();
+  if (args.proxy && args.direct) {
+    throw new Error("--proxy and --direct are mutually exclusive");
+  }
 
   if (args.delete) {
     fs.rmSync(codexHome, { recursive: true, force: true });
@@ -518,7 +532,7 @@ export function runCodexHost(args: CodexHostArgs): void {
   if (buildCodexSymlinkFarm(codexHome) !== 0) {
     throw new Error("Failed to build the CODEX_HOME symlink farm");
   }
-  applyCodexConfig(codexHome);
+  applyCodexConfig(codexHome, { proxy: args.proxy });
   // Persist the active CODEX_HOME (opt-in: only set because a codex command ran).
   state.set({ codexHome });
 }

@@ -19,6 +19,7 @@ import type { CheckResult, HealthScope } from "./types.ts";
 const RUNTIME: readonly HealthScope[] = ["full", "gateway", "runtime"];
 const BOOTSTRAP: readonly HealthScope[] = ["full", "gateway"];
 const SETUP: readonly HealthScope[] = ["full", "setup"];
+const CODEX: readonly HealthScope[] = ["full", "setup", "codex"];
 
 export function checkCliVersion(f: BootstrapFacts): CheckResult {
   return {
@@ -233,34 +234,78 @@ export function checkCodex(f: CodexFacts): CheckResult {
     id: "setup.codex",
     label: "Codex wiring",
     group: "codex" as const,
-    scopes: SETUP,
+    scopes: CODEX,
     value: {
       home: f.home,
       configFile: configPath,
       configExists: f.configExists,
       modelProvider: f.modelProvider,
+      providerMode: f.providerMode,
       baseUrl: f.baseUrl,
       providerWired: f.providerWired,
       envFilePresent: f.envFilePresent,
       envKeyInDotenv: f.envKeyInDotenv,
       envKeyInEnviron: f.envKeyInEnviron,
       tokenAvailable: f.tokenAvailable,
+      directAuth: f.directAuth,
     },
   };
   // No config at the effective CODEX_HOME: the user hasn't wired Codex — fine.
   if (!f.configExists) {
-    return { ...base, status: "ok", detail: `no Codex config at ${configPath} (not wired)` };
+    return {
+      ...base,
+      status: "ok",
+      detail: `provider: none\nno Codex config at ${configPath} (not wired)`,
+    };
+  }
+  if (f.providerMode === "direct") {
+    const authOk = f.directAuth.command !== null && f.directAuth.authenticated;
+    const status = f.providerWired && authOk ? "ok" : "warn";
+    const authDetail =
+      f.directAuth.command === null
+        ? "gh auth: GitHub CLI not found"
+        : f.directAuth.authenticated
+          ? `gh auth: authenticated via ${f.directAuth.command}`
+          : `gh auth: ${f.directAuth.command} is not authenticated`;
+    const fix =
+      f.directAuth.command === null ? "install gh and run gh auth login" : "gh auth login";
+    return {
+      ...base,
+      status,
+      detail: [
+        "provider: direct",
+        `config.toml: ${configPath}`,
+        `model_provider github-copilot-direct → ${f.baseUrl ?? "(missing)"}`,
+        authDetail,
+      ].join("\n"),
+      ...(status === "ok" ? {} : { fix: f.providerWired ? fix : "agent setup-codex-config" }),
+    };
   }
   // Config exists: report precisely which part of the wiring is off.
+  const withConfigPath = (message: string) => `config.toml: ${configPath}\n${message}`;
   let detail: string | null = null;
   if (!f.providerSelected) {
-    detail = `${configPath} model_provider is ${f.modelProvider ?? "unset"}, not "copilot-env"`;
+    detail = [
+      `provider: ${f.providerMode}`,
+      withConfigPath(
+        `model_provider is ${f.modelProvider ?? "unset"}, not "copilot-env" or "github-copilot-direct"`,
+      ),
+    ].join("\n");
   } else if (!f.baseUrlMatches) {
-    detail = `copilot-env base_url ${f.baseUrl ?? "(missing)"} is not the running gateway`;
+    detail = [
+      "provider: proxy",
+      withConfigPath(`copilot-env base_url ${f.baseUrl ?? "(missing)"} is not the running gateway`),
+    ].join("\n");
   } else if (!f.envKeyMatches) {
-    detail = `copilot-env provider env_key is not OPENAI_API_KEY`;
+    detail = [
+      "provider: proxy",
+      withConfigPath("copilot-env provider env_key is not OPENAI_API_KEY"),
+    ].join("\n");
   } else if (!f.tokenAvailable) {
-    detail = `OPENAI_API_KEY token not found (checked ${envPath} and the environment)`;
+    detail = [
+      "provider: proxy",
+      withConfigPath(`OPENAI_API_KEY token not found (checked ${envPath} and the environment)`),
+    ].join("\n");
   }
   if (detail !== null) {
     return { ...base, status: "warn", detail, fix: "agent setup-codex-config" };
@@ -269,7 +314,8 @@ export function checkCodex(f: CodexFacts): CheckResult {
   // own line (Codex resolves env_key from .env, but an exported var works too).
   const present = (ok: boolean) => (ok ? "present" : "absent");
   const detailLines = [
-    `wired via ${configPath}`,
+    "provider: proxy",
+    `config.toml: ${configPath}`,
     `model_provider copilot-env → ${f.baseUrl}`,
     `OPENAI_API_KEY in ${envPath}: ${present(f.envKeyInDotenv)}`,
     `OPENAI_API_KEY in environment: ${present(f.envKeyInEnviron)}`,
@@ -279,35 +325,44 @@ export function checkCodex(f: CodexFacts): CheckResult {
 
 /** Report the per-host CODEX_HOME farm (~/.codex/hosts/<hostname>) status. */
 export function checkCodexHost(f: CodexHostFacts): CheckResult {
+  const configFile = join(f.hostHome, "config.toml");
+  const detail = (summary: string) =>
+    f.exists ? `${summary}\nconfig.toml: ${configFile}` : summary;
   const base = {
     id: "setup.codex-host",
     label: "Per-host CODEX_HOME",
     group: "codex" as const,
     scopes: SETUP,
-    value: { supported: f.supported, hostHome: f.hostHome, exists: f.exists, active: f.active },
+    value: {
+      supported: f.supported,
+      hostHome: f.hostHome,
+      configFile,
+      exists: f.exists,
+      active: f.active,
+    },
   };
   // Active per-host home whose directory vanished is a real inconsistency.
   if (f.active && !f.exists) {
     return {
       ...base,
       status: "warn",
-      detail: `active CODEX_HOME ${f.hostHome} does not exist on disk`,
+      detail: detail(`active CODEX_HOME ${f.hostHome} does not exist on disk`),
       fix: "agent setup-codex-host",
     };
   }
   if (f.active) {
-    return { ...base, status: "ok", detail: `active per-host CODEX_HOME: ${f.hostHome}` };
+    return { ...base, status: "ok", detail: detail(`active per-host CODEX_HOME: ${f.hostHome}`) };
   }
   if (f.exists) {
     return {
       ...base,
       status: "ok",
-      detail: `built but not active (using another CODEX_HOME): ${f.hostHome}`,
+      detail: detail(`built but not active (using another CODEX_HOME): ${f.hostHome}`),
     };
   }
   // Not built. Informational — it's an optional Linux-only feature.
   const why = f.supported ? "not built (optional)" : "not built (Linux-only feature)";
-  return { ...base, status: "ok", detail: `${why}: ${f.hostHome}` };
+  return { ...base, status: "ok", detail: why };
 }
 
 /** Report opt-in autoupdate status (mirrors `agent update --auto-status`). */

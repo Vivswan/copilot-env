@@ -21,6 +21,12 @@ const LAUNCHERS_MARKER = "# copilot-env launchers";
 const skipWin = test.skipIf(process.platform === "win32");
 let home = "";
 
+function shellFunctionBody(source: string, name: string): string {
+  const match = source.match(new RegExp(`function ${name} \\{([\\s\\S]*?)\\n\\}`));
+  if (!match) throw new Error(`function ${name} not found`);
+  return match[1] as string;
+}
+
 function run(...args: string[]): { code: number; out: string } {
   const proc = Bun.spawnSync(["bun", "src/cli.ts", "setup-shell", ...args], {
     stdout: "pipe",
@@ -223,4 +229,34 @@ test("posixLaunchersBlock sources the launchers file under its own marker", () =
   expect(block).toContain("agents.launchers.bashrc");
   // Distinct marker from the integration block, so removal can target each.
   expect(block).not.toContain(MARKER);
+});
+
+test("cx launchers start the gateway only for proxy-backed Codex configs", () => {
+  const posix = readFileSync(join(process.cwd(), "shell", "agents.launchers.bashrc"), "utf8");
+  const posixCx = shellFunctionBody(posix, "cx");
+  expect(posixCx).toContain("agent setup-codex-config");
+  expect(posixCx).toContain("setup-codex-config --check");
+  expect(posixCx).toContain("_codex_provider_status");
+  expect(posixCx).toContain("-eq 0");
+  expect(posixCx).toContain("-eq 2");
+  expect(posixCx).toContain("_copilot_ensure_server");
+  expect(posixCx).not.toContain("--json");
+  expect(posixCx).not.toContain("jq");
+  expect(posix).not.toContain("_copilot_codex_config_file");
+  expect(posix).not.toContain("_copilot_codex_uses_proxy");
+  expect(posixCx).not.toContain("--proxy");
+
+  const powershell = readFileSync(join(process.cwd(), "shell", "agents.launchers.ps1"), "utf8");
+  const powershellCx = shellFunctionBody(powershell, "cx");
+  expect(powershellCx).toContain("agent setup-codex-config");
+  expect(powershellCx).toContain("setup-codex-config --check");
+  expect(powershellCx).toContain("$codexProviderStatus");
+  expect(powershellCx).toContain("$codexProviderStatus -eq 2");
+  expect(powershellCx).toContain("$codexProviderStatus -ne 0");
+  expect(powershellCx).toContain("Confirm-CopilotServer");
+  expect(powershellCx).not.toContain("--json");
+  expect(powershellCx).not.toContain("jq");
+  expect(powershell).not.toContain("Get-CodexConfigPath");
+  expect(powershell).not.toContain("Test-CodexProxyProvider");
+  expect(powershellCx).not.toContain("--proxy");
 });

@@ -64,15 +64,18 @@ Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, the
 ```bash
 agent start                # launch the daemon and sync aliases (--dry-run to preview)
 agent stop                 # stop the daemon
-agent health               # full environment diagnosis (--scope runtime|gateway|setup, --json)
+agent health               # full environment diagnosis (--scope runtime|gateway|setup|codex, --json)
 agent env                  # print shell env vars pointing at the local gateway
 agent cost                 # estimated token spend across all per-host usage DBs
 agent update               # update to the latest release (--check / --cooldown)
 agent setup-shell          # (re)wire rc / $PROFILE (--remove to unwire)
 agent setup-launchers      # wire/remove opt-in cl / co / cx launchers
 agent setup-clis           # install optional CLIs (--cooldown[=DAYS], --no-sudo, --launchers)
-agent setup-codex-config   # write Codex config into ~/.codex, wired to the gateway
-agent setup-codex-host     # per-host CODEX_HOME symlink farm (Linux-only)
+agent setup-codex-config   # refresh direct/proxy config; initialize unknown/missing to direct
+agent setup-codex-config --proxy   # force the local copilot-api gateway provider
+agent setup-codex-config --direct  # force GitHub Copilot Direct
+agent setup-codex-config --check  # print provider mode; exits 0 direct, 2 proxy, 1 other/error
+agent setup-codex-host     # per-host CODEX_HOME symlink farm (Linux-only, direct by default)
 ```
 
 Once the profile is wired, the same commands run via `agent` on Windows too (or
@@ -89,7 +92,7 @@ The `cl` / `co` / `cx` launchers are opt-in:
 
 - `cl` runs Claude.
 - `co` runs Copilot.
-- `cx` runs `setup-codex-config`, then Codex.
+- `cx` runs `setup-codex-config`, starts the gateway only for proxy-backed Codex configs, then Codex.
 
 Enable them while installing optional CLIs:
 

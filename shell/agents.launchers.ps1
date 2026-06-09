@@ -58,10 +58,16 @@ function co {
 
 function cx {
     if (-not (Assert-AgentCli codex)) { return }
-    Confirm-CopilotServer
-    # Re-wire ~/.codex to the local gateway before launching; abort if it fails
-    # (mirrors the POSIX `agent setup-codex-config || return`).
+    # Refresh the effective CODEX_HOME. Existing direct config stays as-is;
+    # proxy config is refreshed; missing/custom configs become direct.
     agent setup-codex-config
     if ($LASTEXITCODE -ne 0) { return }
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 setup-codex-config --check *> $null
+    $codexProviderStatus = $LASTEXITCODE
+    if ($codexProviderStatus -eq 2) {
+        Confirm-CopilotServer
+    } elseif ($codexProviderStatus -ne 0) {
+        return
+    }
     & codex @args
 }

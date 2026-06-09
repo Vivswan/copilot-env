@@ -86,20 +86,25 @@ test("filterByScope keeps only participating checks, preserving order", () => {
   const all = [
     result("runtime.port", "ok", ["full", "gateway", "runtime"]),
     result("setup.shell", "warn", ["full", "setup"]),
+    result("setup.codex", "ok", ["full", "setup", "codex"]),
     result("bootstrap.bun", "ok", ["full", "gateway"]),
   ];
   expect(filterByScope(all, "runtime").map((r) => r.id)).toEqual(["runtime.port"]);
-  expect(filterByScope(all, "setup").map((r) => r.id)).toEqual(["setup.shell"]);
+  expect(filterByScope(all, "setup").map((r) => r.id)).toEqual(["setup.shell", "setup.codex"]);
+  expect(filterByScope(all, "codex").map((r) => r.id)).toEqual(["setup.codex"]);
   expect(filterByScope(all, "gateway").map((r) => r.id)).toEqual(["runtime.port", "bootstrap.bun"]);
   expect(filterByScope(all, "full").map((r) => r.id)).toEqual([
     "runtime.port",
     "setup.shell",
+    "setup.codex",
     "bootstrap.bun",
   ]);
 });
 
-test("isHealthScope narrows the four scopes and rejects others", () => {
-  for (const s of ["full", "runtime", "gateway", "setup"]) expect(isHealthScope(s)).toBe(true);
+test("isHealthScope narrows known scopes and rejects others", () => {
+  for (const s of ["full", "runtime", "gateway", "setup", "codex"]) {
+    expect(isHealthScope(s)).toBe(true);
+  }
   expect(isHealthScope("bogus")).toBe(false);
 });
 
@@ -239,6 +244,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
     home: "/c",
     configExists: true,
     providerSelected: true,
+    providerMode: "proxy",
     modelProvider: "copilot-env",
     baseUrl: "http://localhost:4141/v1",
     baseUrlMatches: true,
@@ -248,6 +254,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
     envKeyInDotenv: true,
     envKeyInEnviron: false,
     tokenAvailable: true,
+    directAuth: { command: "/bin/gh", authenticated: true },
   };
   // No config at all -> ok (user never wired Codex).
   expect(checkCodex({ ...wired, configExists: false, providerWired: false }).status).toBe("ok");
@@ -256,7 +263,9 @@ test("codex: not configured is ok; each broken part warns with a precise message
   expect(ok.status).toBe("ok");
   expect(ok.detail).toContain("copilot-env");
   expect(ok.detail).toContain("4141");
-  expect(ok.detail.split("\n")).toHaveLength(4);
+  expect(ok.detail).toContain("provider: proxy");
+  expect(ok.detail.split("\n")).toHaveLength(5);
+  expect(ok.detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
   expect(ok.detail).toContain(`${join("/c", ".env")}: present`);
   expect(ok.detail).toContain("in environment: absent");
   // model_provider not selected.
@@ -264,6 +273,10 @@ test("codex: not configured is ok; each broken part warns with a precise message
     checkCodex({ ...wired, providerSelected: false, modelProvider: "openai", providerWired: false })
       .detail,
   ).toContain("model_provider");
+  expect(
+    checkCodex({ ...wired, providerSelected: false, modelProvider: "openai", providerWired: false })
+      .detail,
+  ).toContain(`config.toml: ${join("/c", "config.toml")}`);
   // base_url points at the wrong port.
   expect(
     checkCodex({
@@ -273,14 +286,22 @@ test("codex: not configured is ok; each broken part warns with a precise message
       providerWired: false,
     }).detail,
   ).toContain("base_url");
+  expect(
+    checkCodex({
+      ...wired,
+      baseUrl: "http://localhost:9999/v1",
+      baseUrlMatches: false,
+      providerWired: false,
+    }).detail,
+  ).toContain(`config.toml: ${join("/c", "config.toml")}`);
   // env_key is not OPENAI_API_KEY.
-  expect(checkCodex({ ...wired, envKeyMatches: false, providerWired: false }).detail).toContain(
-    "env_key",
-  );
+  const wrongEnvKey = checkCodex({ ...wired, envKeyMatches: false, providerWired: false });
+  expect(wrongEnvKey.detail).toContain("env_key");
+  expect(wrongEnvKey.detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
   // provider wired but no token in .env or environment.
-  expect(checkCodex({ ...wired, envKeyInDotenv: false, tokenAvailable: false }).detail).toContain(
-    "OPENAI_API_KEY",
-  );
+  const missingToken = checkCodex({ ...wired, envKeyInDotenv: false, tokenAvailable: false });
+  expect(missingToken.detail).toContain("OPENAI_API_KEY");
+  expect(missingToken.detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
   // token only in the environment (not .env) is still wired-ok.
   const fromEnv = checkCodex({
     ...wired,
@@ -290,6 +311,51 @@ test("codex: not configured is ok; each broken part warns with a precise message
   });
   expect(fromEnv.status).toBe("ok");
   expect(fromEnv.detail).toContain("in environment: present");
+
+  const direct = checkCodex({
+    ...wired,
+    providerMode: "direct",
+    modelProvider: "github-copilot-direct",
+    baseUrl: "https://api.githubcopilot.com",
+    envKeyMatches: false,
+    envKeyInDotenv: false,
+    envKeyInEnviron: false,
+    tokenAvailable: false,
+  });
+  expect(direct.status).toBe("ok");
+  expect(direct.detail).toContain("provider: direct");
+  expect(direct.detail).toContain("gh auth: authenticated via /bin/gh");
+  expect(direct.detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
+
+  const directMissingGh = checkCodex({
+    ...wired,
+    providerMode: "direct",
+    modelProvider: "github-copilot-direct",
+    baseUrl: "https://api.githubcopilot.com",
+    envKeyMatches: false,
+    envKeyInDotenv: false,
+    envKeyInEnviron: false,
+    tokenAvailable: false,
+    directAuth: { command: null, authenticated: false },
+  });
+  expect(directMissingGh.status).toBe("warn");
+  expect(directMissingGh.detail).toContain("GitHub CLI not found");
+  expect(directMissingGh.fix).toBe("install gh and run gh auth login");
+
+  const directUnauthed = checkCodex({
+    ...wired,
+    providerMode: "direct",
+    modelProvider: "github-copilot-direct",
+    baseUrl: "https://api.githubcopilot.com",
+    envKeyMatches: false,
+    envKeyInDotenv: false,
+    envKeyInEnviron: false,
+    tokenAvailable: false,
+    directAuth: { command: "/bin/gh", authenticated: false },
+  });
+  expect(directUnauthed.status).toBe("warn");
+  expect(directUnauthed.detail).toContain("not authenticated");
+  expect(directUnauthed.fix).toBe("gh auth login");
 });
 
 // --- pure sub-evaluators ----------------------------------------------------
@@ -318,6 +384,7 @@ test("evalCodex: no config.toml at the home reads as not-configured", () => {
   expect(f.configExists).toBe(false);
   expect(f.providerWired).toBe(false);
   expect(f.home).toBe("/c");
+  expect(f.providerMode).toBe("none");
 });
 
 test("evalCodex: provider wired only when default + env_key + host:port all match", () => {
@@ -326,6 +393,7 @@ test("evalCodex: provider wired only when default + env_key + host:port all matc
   const wrongEnvKey = `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "http://localhost:4141/v1"\nenv_key = "COPILOT_API_KEY"\n`;
   const env = "OPENAI_API_KEY=sk-test\n";
   expect(evalCodex("/c", good, env, 4141, false)).toMatchObject({
+    providerMode: "proxy",
     providerWired: true,
     envKeyInDotenv: true,
     tokenAvailable: true,
@@ -340,6 +408,15 @@ test("evalCodex: provider wired only when default + env_key + host:port all matc
   });
   // No token anywhere => not available.
   expect(evalCodex("/c", good, "FOO=1\n", 4141, false).tokenAvailable).toBe(false);
+});
+
+test("evalCodex: direct provider reports direct mode without requiring OPENAI_API_KEY", () => {
+  const direct = `model_provider = "github-copilot-direct"\n[model_providers.github-copilot-direct]\nbase_url = "https://api.githubcopilot.com"\n`;
+  expect(evalCodex("/c", direct, null, 4141, false)).toMatchObject({
+    providerMode: "direct",
+    providerWired: true,
+    tokenAvailable: false,
+  });
 });
 
 test("evalCodex: a port that only appears as a substring does not match", () => {
@@ -378,13 +455,27 @@ test("evalCodex: OPENAI_API_KEY with spaces after = still counts as present in .
 
 test("checkCodexHost: active ok, active-missing warns, built/unbuilt informational", () => {
   const host = { supported: true, hostHome: "/h/.codex/hosts/box", exists: true, active: true };
-  expect(checkCodexHost(host).status).toBe("ok");
-  expect(checkCodexHost(host).detail).toContain("active per-host");
-  expect(checkCodexHost({ ...host, exists: false }).status).toBe("warn");
-  expect(checkCodexHost({ ...host, active: false }).detail).toContain("built but not active");
+  const active = checkCodexHost(host);
+  expect(active.status).toBe("ok");
+  expect(active.detail).toContain("active per-host");
+  expect(active.detail).toContain(`config.toml: ${join(host.hostHome, "config.toml")}`);
+  expect(active.value?.configFile).toBe(join(host.hostHome, "config.toml"));
+  const activeMissing = checkCodexHost({ ...host, exists: false });
+  expect(activeMissing.status).toBe("warn");
+  expect(activeMissing.detail).not.toContain("config.toml:");
+  const built = checkCodexHost({ ...host, active: false });
+  expect(built.detail).toContain("built but not active");
+  expect(built.detail).toContain(`config.toml: ${join(host.hostHome, "config.toml")}`);
   const unbuilt = { ...host, active: false, exists: false };
-  expect(checkCodexHost(unbuilt).status).toBe("ok");
-  expect(checkCodexHost({ ...unbuilt, supported: false }).detail).toContain("Linux-only");
+  const unbuiltResult = checkCodexHost(unbuilt);
+  expect(unbuiltResult.status).toBe("ok");
+  expect(unbuiltResult.detail).toBe("not built (optional)");
+  expect(unbuiltResult.detail).not.toContain(host.hostHome);
+  expect(unbuiltResult.detail).not.toContain("config.toml:");
+  const unsupported = checkCodexHost({ ...unbuilt, supported: false });
+  expect(unsupported.detail).toBe("not built (Linux-only feature)");
+  expect(unsupported.detail).not.toContain(host.hostHome);
+  expect(unsupported.detail).not.toContain("config.toml:");
 });
 
 test("checkAutoupdate: full status always shown (disabled too); recorded error warns", () => {
@@ -421,6 +512,30 @@ test("evaluateAll(runtime) yields exactly the two runtime checks", () => {
   expect(ids).toEqual(["runtime.port", "runtime.pid"]);
 });
 
+test("evaluateAll(codex) yields only the Codex wiring check", () => {
+  const facts: HealthFacts = {
+    codex: {
+      home: "/c",
+      configExists: false,
+      providerSelected: false,
+      providerMode: "none",
+      modelProvider: null,
+      baseUrl: null,
+      baseUrlMatches: false,
+      envKeyMatches: false,
+      providerWired: false,
+      envFilePresent: false,
+      envKeyInDotenv: false,
+      envKeyInEnviron: false,
+      tokenAvailable: false,
+      directAuth: { command: null, authenticated: false },
+    },
+    codexHost: { supported: false, hostHome: "/h/.codex/hosts/box", exists: false, active: false },
+  };
+  const ids = evaluateAll("codex", facts).map((r) => r.id);
+  expect(ids).toEqual(["setup.codex"]);
+});
+
 test("evaluateAll(full) includes runtime.paths and setup checks", () => {
   const facts: HealthFacts = {
     runtime: RUNTIME_OK,
@@ -438,6 +553,7 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       home: "/c",
       configExists: false,
       providerSelected: false,
+      providerMode: "none",
       modelProvider: null,
       baseUrl: null,
       baseUrlMatches: false,
@@ -447,6 +563,7 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       envKeyInDotenv: false,
       envKeyInEnviron: false,
       tokenAvailable: false,
+      directAuth: { command: null, authenticated: false },
     },
     codexHost: { supported: false, hostHome: "/h/.codex/hosts/box", exists: false, active: false },
     autoupdate: { enabled: false, cooldownDays: 7, lastCheckMs: 0, lastResult: "" },

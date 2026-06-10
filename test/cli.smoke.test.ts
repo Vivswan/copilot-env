@@ -362,7 +362,10 @@ test("health --scope setup covers wiring only and never fails (warnings exit 0)"
   expect(ids).toContain("setup.codex");
   expect(ids).toContain("setup.codex-host");
   const codexHost = json.checks.find((c) => c.id === "setup.codex-host");
-  expect(codexHost?.detail).toBe("not built (Linux-only feature)");
+  // Unbuilt farm: optional on Linux/macOS (POSIX symlinks), unsupported on Windows.
+  const expectedHostDetail =
+    process.platform === "win32" ? "not built (unsupported on Windows)" : "not built (optional)";
+  expect(codexHost?.detail).toBe(expectedHostDetail);
   expect(codexHost?.detail).not.toContain(String(codexHost?.value?.hostHome));
   expect(codexHost?.detail).not.toContain("config.toml:");
   expect(typeof codexHost?.value?.configFile).toBe("string");

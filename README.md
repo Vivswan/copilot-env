@@ -15,7 +15,7 @@ macOS, and Windows**.
 - **Zero setup**: auto-installs [bun](https://bun.sh), dependencies, and the
   gateway on first run. No global installs to manage.
 - **Shell + Codex wiring**: point your tools at the local gateway automatically;
-  write `~/.codex` config; build a per-host `CODEX_HOME` farm (Linux).
+  write `~/.codex` config; build a per-host `CODEX_HOME` farm (Linux/macOS).
 - **Cost reporting**: estimated spend from per-host usage DBs via live OpenRouter pricing.
 - **Controlled floating**: the gateway floats to the newest cooldown-aged release
   within configured bounds; every other dependency is pinned via `bun.lock`.
@@ -75,7 +75,7 @@ agent setup-codex-config   # refresh direct/proxy config; initialize unknown/mis
 agent setup-codex-config --proxy   # force the local copilot-api gateway provider
 agent setup-codex-config --direct  # force GitHub Copilot Direct
 agent setup-codex-config --check  # print provider mode; exits 0 direct, 2 proxy, 1 other/error
-agent setup-codex-host     # per-host CODEX_HOME symlink farm (Linux-only, direct by default)
+agent setup-codex-host     # per-host CODEX_HOME symlink farm (Linux/macOS, direct by default)
 ```
 
 Once the profile is wired, the same commands run via `agent` on Windows too (or

@@ -99,7 +99,7 @@ export interface CodexDirectAuthFacts {
 export type CodexFacts = CodexWiringStatus & { home: string; directAuth: CodexDirectAuthFacts };
 
 export interface CodexHostFacts {
-  /** The per-host CODEX_HOME farm is a Linux-only feature. */
+  /** The per-host CODEX_HOME farm needs POSIX symlinks (Linux/macOS, not Windows). */
   supported: boolean;
   /** The per-host CODEX_HOME path (~/.codex/hosts/<hostname>). */
   hostHome: string;
@@ -381,7 +381,7 @@ export async function gatherFacts(
         const home = deps.codexHome();
         const hostHome = deps.hostCodexHome();
         facts.codexHost = {
-          supported: process.platform === "linux",
+          supported: process.platform !== "win32",
           hostHome,
           exists: deps.dirExists(hostHome),
           active: home === hostHome,

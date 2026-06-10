@@ -473,7 +473,7 @@ test("checkCodexHost: active ok, active-missing warns, built/unbuilt information
   expect(unbuiltResult.detail).not.toContain(host.hostHome);
   expect(unbuiltResult.detail).not.toContain("config.toml:");
   const unsupported = checkCodexHost({ ...unbuilt, supported: false });
-  expect(unsupported.detail).toBe("not built (Linux-only feature)");
+  expect(unsupported.detail).toBe("not built (unsupported on Windows)");
   expect(unsupported.detail).not.toContain(host.hostHome);
   expect(unsupported.detail).not.toContain("config.toml:");
 });

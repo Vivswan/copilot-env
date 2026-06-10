@@ -40,6 +40,32 @@ function boolArg(args: CliArgs, dashed: string, camel = dashed): boolean {
   return Boolean(args[dashed] ?? args[camel]);
 }
 
+/**
+ * Run a command action, rendering any thrown Error as a friendly one-line
+ * message (no stack trace) with a non-zero exit code. citty's runMain prints
+ * raw Errors with a code-frame and process.exit(1)s before the outer .catch
+ * below can run, so we intercept here — inside cmd.run — before citty ever sees
+ * the throw. An unexpected platform/arg/IO failure thus reads as `✖ <message>`
+ * instead of dumping a Bun stack frame at the user.
+ */
+async function runSafe(action: () => void | Promise<void>): Promise<void> {
+  try {
+    await action();
+  } catch (e) {
+    consola.error(e instanceof Error ? e.message : String(e));
+    process.exitCode = 1;
+  }
+}
+
+/** Wrap a command's `run` with runSafe in place, preserving its arg types. */
+function safe<T extends ArgsDef>(cmd: CommandDef<T>): CommandDef<T> {
+  const orig = cmd.run;
+  if (typeof orig === "function") {
+    cmd.run = (ctx) => runSafe(() => orig(ctx));
+  }
+  return cmd;
+}
+
 function parseNonNegativeDays(raw: string, flag: string): number {
   if (!/^\d+$/.test(raw)) {
     throw new Error(`${flag} expects a non-negative whole number of days (got '${raw}')`);
@@ -206,7 +232,7 @@ const setupCodexConfig = defineCommand({
 const setupCodexHost = defineCommand({
   meta: {
     name: "setup-codex-host",
-    description: "(Linux-only) Build the per-host CODEX_HOME symlink farm and wire its config.",
+    description: "(Linux/macOS) Build the per-host CODEX_HOME symlink farm and wire its config.",
   },
   args: {
     ...codexArgs,
@@ -425,17 +451,17 @@ const cli = defineCommand({
     description: "Manage the local copilot-api gateway and Codex wiring.",
   },
   subCommands: {
-    start,
-    stop,
-    health,
-    env,
-    cost,
-    update,
-    "setup-shell": setupShell,
-    "setup-launchers": setupLaunchers,
-    "setup-clis": setupClis,
-    "setup-codex-config": setupCodexConfig,
-    "setup-codex-host": setupCodexHost,
+    start: safe(start),
+    stop: safe(stop),
+    health: safe(health),
+    env: safe(env),
+    cost: safe(cost),
+    update: safe(update),
+    "setup-shell": safe(setupShell),
+    "setup-launchers": safe(setupLaunchers),
+    "setup-clis": safe(setupClis),
+    "setup-codex-config": safe(setupCodexConfig),
+    "setup-codex-host": safe(setupCodexHost),
   },
 });
 

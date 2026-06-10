@@ -1,4 +1,4 @@
-// Per-host Codex home manager: builds the Linux CODEX_HOME symlink farm.
+// Per-host Codex home manager: builds the per-host CODEX_HOME symlink farm (Linux/macOS).
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { createConsola } from "consola";
@@ -17,23 +17,24 @@ export interface CodexHostArgs {
   proxy?: boolean;
 }
 
-// The per-host CODEX_HOME (~/.codex/hosts/<hostname>). Linux-only: it builds and
-// inspects the shared-state symlink farm used on the Linux fleet. Exported so
-// `agent health` can report the per-host directory without rebuilding the path.
+// The per-host CODEX_HOME (~/.codex/hosts/<hostname>). On Linux/macOS it builds and
+// inspects the shared-state symlink farm. Exported so `agent health` can report
+// the per-host directory without rebuilding the path.
 export function getHostLocalCodexHome(): string {
   return `${HOME}/.codex/hosts/${getSanitizedHostname()}`;
 }
 
 /**
- * Guard a Linux-only feature. Returns false on a non-Linux host after printing a
- * friendly note and setting a non-zero exit code — callers should `return` when
- * it returns false rather than continue. (No raw throw: an unsupported platform
- * is an expected user condition, not a crash, so it shouldn't dump a stack trace.)
+ * Guard a feature that needs POSIX symlinks (Linux or macOS). Returns false on
+ * Windows after printing a friendly note and setting a non-zero exit code —
+ * callers should `return` when it returns false rather than continue. (No raw
+ * throw: an unsupported platform is an expected user condition, not a crash, so
+ * it shouldn't dump a stack trace.)
  */
-function assertLinux(feature: string, hint?: string): boolean {
-  if (process.platform !== "linux") {
+function assertUnix(feature: string, hint?: string): boolean {
+  if (process.platform === "win32") {
     logger.info(
-      `${feature} is only supported on Linux (this is ${process.platform}).${hint ? ` ${hint}` : ""}`,
+      `${feature} is only supported on Linux and macOS (this is ${process.platform}).${hint ? ` ${hint}` : ""}`,
     );
     process.exitCode = 1;
     return false;
@@ -505,13 +506,13 @@ function buildCodexSymlinkFarm(codexHome: string): number {
 }
 
 /**
- * `host_codex`: build the per-host CODEX_HOME symlink farm (Linux-only) at
+ * `host_codex`: build the per-host CODEX_HOME symlink farm (Linux/macOS) at
  * `--codex-home` (default `~/.codex/hosts/<hostname>`), then write its config
  * and persist the CODEX_HOME to state so `env` exports it. With `--delete`,
  * remove that per-host dir and clear the state instead. No stdout.
  */
 export function runCodexHost(args: CodexHostArgs): void {
-  if (!assertLinux("The CODEX_HOME symlink farm (host_codex)")) return;
+  if (!assertUnix("The CODEX_HOME symlink farm (host_codex)")) return;
   // Resolve to an absolute path: it gets persisted to state and re-exported into
   // future shells, so a cwd-relative value would later resolve against the wrong
   // directory.

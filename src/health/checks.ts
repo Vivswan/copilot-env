@@ -360,8 +360,8 @@ export function checkCodexHost(f: CodexHostFacts): CheckResult {
       detail: detail(`built but not active (using another CODEX_HOME): ${f.hostHome}`),
     };
   }
-  // Not built. Informational — it's an optional Linux-only feature.
-  const why = f.supported ? "not built (optional)" : "not built (Linux-only feature)";
+  // Not built. Informational — it's an optional feature (Linux/macOS only).
+  const why = f.supported ? "not built (optional)" : "not built (unsupported on Windows)";
   return { ...base, status: "ok", detail: why };
 }
 

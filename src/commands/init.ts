@@ -88,10 +88,9 @@ function printGuidance(codex: CodexProviderMode, claude: ClaudeProviderMode): vo
   if (anyProxy) {
     lines.push("At least one agent uses the local gateway proxy.");
     lines.push("");
-    lines.push("  • Start the gateway:                 agent start");
-    lines.push("  • Launchers cl / cx offer to start it: agent setup-launchers");
-    lines.push("  • `agent cost` reports gateway usage.");
-    lines.push("  • Prefer GitHub Copilot Direct?      agent init --direct");
+    lines.push("  • Start the gateway:                    agent start");
+    lines.push("  • Launchers cl / cx offer to start it:  agent setup-launchers");
+    lines.push("  • Report gateway usage:                 agent cost");
   } else if (bothDirect) {
     lines.push("Both agents use GitHub Copilot Direct — the local gateway is NOT needed.");
     lines.push("");

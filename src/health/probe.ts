@@ -6,7 +6,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { type AutoupdateData, AutoupdateState } from "../autoupdate/state.ts";
 import {
   type ClaudeWiringStatus,
@@ -15,7 +15,7 @@ import {
 } from "../claude/config.ts";
 import { CODEX_ENV_KEY, type CodexWiringStatus, inspectCodexWiring } from "../codex/config.ts";
 import { getHostLocalCodexHome } from "../codex/host.ts";
-import { AGENT_CLIS, resolveCommand } from "../commands/setup.ts";
+import { AGENT_CLIS } from "../commands/setup.ts";
 import {
   hasMarker,
   LAUNCHERS_MARKER,
@@ -32,6 +32,13 @@ import {
   installedGatewayVersion,
 } from "../copilot_api/version.ts";
 import { nodeModulesFresh, resolveMinimumReleaseAgeSeconds } from "../gateway_float.ts";
+import { childPathPrepending, resolveCommand } from "../utils/command.ts";
+import {
+  CLAUDE_PROBE,
+  CODEX_PROBE,
+  PROBE_PROMPT,
+  PROBE_TIMEOUT_MS,
+} from "../utils/direct_probe.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { packageVersion } from "../utils/version.ts";
@@ -55,6 +62,8 @@ export interface RuntimeFacts {
   pidTracked: boolean;
   pidAlive: boolean;
   paths: RuntimePaths;
+  /** Both Codex and Claude are configured direct => the gateway is not required. */
+  bothDirect: boolean;
 }
 
 export interface BootstrapFacts {
@@ -100,6 +109,16 @@ export interface CodexDirectAuthFacts {
   authenticated: boolean;
 }
 
+/**
+ * Result of a `--live` end-to-end prompt against an agent CLI's CONFIGURED home.
+ * `ran` is false when the CLI isn't installed (the check is skipped, not failed).
+ */
+export interface LiveProbeFacts {
+  ran: boolean;
+  ok: boolean;
+  cli: string | null;
+}
+
 /** Codex wiring facts: the home being inspected plus the wiring contract status. */
 export type CodexFacts = CodexWiringStatus & { home: string; directAuth: CodexDirectAuthFacts };
 
@@ -131,6 +150,8 @@ export interface HealthFacts {
   codex?: CodexFacts;
   codexHost?: CodexHostFacts;
   claude?: ClaudeFacts;
+  codexLive?: LiveProbeFacts;
+  claudeLive?: LiveProbeFacts;
   autoupdate?: AutoupdateData;
 }
 
@@ -162,6 +183,9 @@ export interface ProbeDeps {
   nodeModulesFresh(): boolean;
   bunVersion(): string | null;
   cliVersion(): string;
+  /** `--live` end-to-end prompts against the configured Codex/Claude homes. */
+  codexLive(home: string): Promise<LiveProbeFacts>;
+  claudeLive(home: string): Promise<LiveProbeFacts>;
 }
 
 /** Probe the URL: any HTTP response (even an error status) means "reachable". */
@@ -187,16 +211,53 @@ function codexDirectAuth(): Promise<CodexDirectAuthFacts> {
   if (command === null) return Promise.resolve({ command: null, authenticated: false });
   // Async (non-blocking) so it runs concurrently with the other probes under
   // gatherFacts' Promise.all, instead of freezing the event loop for the whole
-  // `gh auth token` call. stdio:"ignore" keeps the printed token out of our
-  // process memory. A timeout (SIGTERM) or any non-zero exit => authenticated:false.
+  // `gh auth token` call. Spawn gh's RESOLVED path (not the bare name) so an
+  // nvm-only gh resolveCommand found via the nvm fallback is runnable here.
+  // stdio:"ignore" keeps the printed token out of our process memory. A timeout
+  // (SIGTERM) or any non-zero exit => authenticated:false.
   return new Promise((resolve) => {
-    const child = spawn("gh", ["auth", "token"], {
+    const child = spawn(command, ["auth", "token"], {
       stdio: "ignore",
       timeout: 5000,
       windowsHide: true,
+      env: { ...process.env, PATH: childPathPrepending([dirname(command)]) },
     });
     child.on("error", () => resolve({ command, authenticated: false }));
     child.on("close", (code) => resolve({ command, authenticated: code === 0 }));
+  });
+}
+
+/**
+ * Run an agent CLI's read-only smoke prompt against a CONFIGURED home (`--live`).
+ * Async (overlaps the other probes) with a hard timeout; a timeout or any
+ * non-zero exit => ok:false. Skipped (ran:false) when the CLI isn't installed.
+ * Spawns the RESOLVED path so the nvm fallback isn't defeated.
+ */
+function runLiveCli(
+  cli: string,
+  args: string[],
+  home: string,
+  homeEnvVar: string,
+): Promise<LiveProbeFacts> {
+  const resolved = resolveCommand(cli);
+  if (resolved === null) return Promise.resolve({ ran: false, ok: false, cli: null });
+  const ghPath = resolveCommand("gh");
+  return new Promise((resolve) => {
+    const child = spawn(resolved, args, {
+      stdio: "ignore",
+      timeout: PROBE_TIMEOUT_MS,
+      windowsHide: true,
+      // Put the resolved CLI's and gh's bin dirs on the child PATH so an nvm-only
+      // toolchain (node-shim CLI, the config's bare `gh` call) is reachable even
+      // when the parent process never sourced nvm.
+      env: {
+        ...process.env,
+        [homeEnvVar]: home,
+        PATH: childPathPrepending([dirname(resolved), ghPath ? dirname(ghPath) : null]),
+      },
+    });
+    child.on("error", () => resolve({ ran: true, ok: false, cli: resolved }));
+    child.on("close", (code) => resolve({ ran: true, ok: code === 0, cli: resolved }));
   });
 }
 
@@ -249,6 +310,10 @@ export function defaultProbeDeps(): ProbeDeps {
     },
     bunVersion: () => process.versions.bun ?? null,
     cliVersion: packageVersion,
+    codexLive: (home) =>
+      runLiveCli(CODEX_PROBE.cli, CODEX_PROBE.args(PROBE_PROMPT), home, CODEX_PROBE.homeEnvVar),
+    claudeLive: (home) =>
+      runLiveCli(CLAUDE_PROBE.cli, CLAUDE_PROBE.args(PROBE_PROMPT), home, CLAUDE_PROBE.homeEnvVar),
   };
 }
 
@@ -308,10 +373,31 @@ const SCOPE_BOOTSTRAP: readonly HealthScope[] = ["full", "gateway"];
 const SCOPE_SETUP: readonly HealthScope[] = ["full", "setup"];
 const SCOPE_CODEX: readonly HealthScope[] = ["full", "setup", "codex"];
 const SCOPE_CLAUDE: readonly HealthScope[] = ["full", "setup", "claude"];
+// `--live` end-to-end prompts only run in the agent-focused scopes (never setup).
+const SCOPE_CODEX_LIVE: readonly HealthScope[] = ["full", "codex"];
+const SCOPE_CLAUDE_LIVE: readonly HealthScope[] = ["full", "claude"];
+
+/** Read the configured Codex/Claude provider modes (cheap, no live probe). */
+function readProviderModes(deps: ProbeDeps, port: number): { bothDirect: boolean } {
+  const codexHome = deps.codexHome();
+  const codexMode = inspectCodexWiring(
+    deps.readFileSafe(join(codexHome, "config.toml")),
+    null,
+    port,
+    false,
+  ).providerMode;
+  const claudeHome = deps.claudeHome();
+  const claudeMode = inspectClaudeWiring(
+    deps.readFileSafe(join(claudeHome, "settings.json")),
+    claudeHome,
+  ).providerMode;
+  return { bothDirect: codexMode === "direct" && claudeMode === "direct" };
+}
 
 /** Gather exactly the facts `scope` needs, running independent probes concurrently. */
 export async function gatherFacts(
   scope: HealthScope,
+  opts: { live?: boolean } = {},
   overrides?: Partial<ProbeDeps>,
 ): Promise<HealthFacts> {
   const deps: ProbeDeps = { ...defaultProbeDeps(), ...overrides };
@@ -344,6 +430,9 @@ export async function gatherFacts(
           pidTracked,
           pidAlive: trackedPid !== null ? deps.isPidAlive(trackedPid) : false,
           paths: deps.paths(),
+          // When both agents are configured direct, no gateway is required, so a
+          // down gateway must not read as a runtime failure.
+          bothDirect: readProviderModes(deps, port).bothDirect,
         };
       })(),
     );
@@ -411,6 +500,24 @@ export async function gatherFacts(
         const settingsText = deps.readFileSafe(join(home, "settings.json"));
         // Direct mode authenticates via `gh auth token`, same probe as Codex.
         facts.claude = evalClaude(home, settingsText, await sharedDirectAuth());
+      })(),
+    );
+  }
+
+  // `--live`: run each agent's read-only smoke prompt against its CONFIGURED home.
+  // Only in the agent-focused scopes, and only when explicitly requested (a live
+  // model call, slow). Skipped instantly when the CLI isn't installed.
+  if (opts.live && SCOPE_CODEX_LIVE.includes(scope)) {
+    jobs.push(
+      (async () => {
+        facts.codexLive = await deps.codexLive(deps.codexHome());
+      })(),
+    );
+  }
+  if (opts.live && SCOPE_CLAUDE_LIVE.includes(scope)) {
+    jobs.push(
+      (async () => {
+        facts.claudeLive = await deps.claudeLive(deps.claudeHome());
       })(),
     );
   }

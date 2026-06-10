@@ -8,7 +8,7 @@ export interface CopilotState {
   port?: number;
   /** Tracked daemon pid set by `start` (cleared by `stop`). */
   pid?: number;
-  /** Active CODEX_HOME set by `setup-codex-host` (cleared by `setup-codex-host --delete`). */
+  /** Active CODEX_HOME set by `codex --host` (cleared by `codex --host --delete-host`). */
   codexHome?: string;
 }
 

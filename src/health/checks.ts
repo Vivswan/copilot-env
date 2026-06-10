@@ -13,6 +13,7 @@ import type {
   CodexHostFacts,
   GatewayFacts,
   HealthFacts,
+  LiveProbeFacts,
   RuntimeFacts,
   ShellFacts,
 } from "./probe.ts";
@@ -127,11 +128,23 @@ function floatCooldownLabel(seconds: number | null): string {
 }
 
 export function checkRuntimePort(f: RuntimeFacts): CheckResult {
-  return {
+  const base = {
     id: "runtime.port",
     label: "Gateway port reachable",
-    group: "runtime",
+    group: "runtime" as const,
     scopes: RUNTIME,
+  };
+  // Both agents direct => no gateway needed, so a down gateway is not a failure.
+  if (!f.reachable && f.bothDirect) {
+    return {
+      ...base,
+      status: "ok",
+      detail: `gateway not running on port ${f.port}; not required (Codex + Claude are both direct)`,
+      value: { port: f.port, reachable: f.reachable, bothDirect: true },
+    };
+  }
+  return {
+    ...base,
     status: f.reachable ? "ok" : "fail",
     detail: f.reachable ? `listening on port ${f.port}` : `nothing reachable on port ${f.port}`,
     ...(f.reachable ? {} : { fix: "agent start" }),
@@ -141,6 +154,12 @@ export function checkRuntimePort(f: RuntimeFacts): CheckResult {
 
 export function checkRuntimePid(f: RuntimeFacts): CheckResult {
   const tracked = f.pidTracked;
+  const base = {
+    id: "runtime.pid",
+    label: "Tracked gateway process",
+    group: "runtime" as const,
+    scopes: RUNTIME,
+  };
   let detail: string;
   if (f.trackedPid === null) {
     detail = "no tracked copilot-api pid";
@@ -149,11 +168,17 @@ export function checkRuntimePid(f: RuntimeFacts): CheckResult {
   } else {
     detail = `tracked pid ${f.trackedPid} is stale or foreign`;
   }
+  // Both agents direct => no gateway needed, so a missing tracked pid is fine.
+  if (!tracked && f.bothDirect) {
+    return {
+      ...base,
+      status: "ok",
+      detail: `${detail}; not required (Codex + Claude are both direct)`,
+      value: { pid: f.trackedPid, tracked, alive: f.pidAlive, bothDirect: true },
+    };
+  }
   return {
-    id: "runtime.pid",
-    label: "Tracked gateway process",
-    group: "runtime",
-    scopes: RUNTIME,
+    ...base,
     status: tracked ? "ok" : "fail",
     detail,
     ...(tracked ? {} : { fix: "agent start" }),
@@ -281,7 +306,7 @@ export function checkCodex(f: CodexFacts): CheckResult {
         `model_provider github-copilot-direct → ${f.baseUrl ?? "(missing)"}`,
         authDetail,
       ].join("\n"),
-      ...(status === "ok" ? {} : { fix: f.providerWired ? fix : "agent setup-codex-config" }),
+      ...(status === "ok" ? {} : { fix: f.providerWired ? fix : "agent codex --auto" }),
     };
   }
   // Config exists: report precisely which part of the wiring is off.
@@ -311,7 +336,7 @@ export function checkCodex(f: CodexFacts): CheckResult {
     ].join("\n");
   }
   if (detail !== null) {
-    return { ...base, status: "warn", detail, fix: "agent setup-codex-config" };
+    return { ...base, status: "warn", detail, fix: "agent codex --auto" };
   }
   // Fully wired: the wiring status, the gateway, then each token source on its
   // own line (Codex resolves env_key from .env, but an exported var works too).
@@ -350,7 +375,7 @@ export function checkCodexHost(f: CodexHostFacts): CheckResult {
       ...base,
       status: "warn",
       detail: detail(`active CODEX_HOME ${f.hostHome} does not exist on disk`),
-      fix: "agent setup-codex-host",
+      fix: "agent codex --host",
     };
   }
   if (f.active) {
@@ -399,7 +424,7 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
           : `gh auth: ${f.directAuth.command} is not authenticated`;
     const status = authOk && baseOk ? "ok" : "warn";
     const fix = !baseOk
-      ? "agent setup-claude-config --direct"
+      ? "agent claude --direct"
       : f.directAuth.command === null
         ? "install gh and run gh auth login"
         : "gh auth login";
@@ -450,7 +475,7 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
     detail: [
       "provider: none",
       `settings.json: ${f.settingsPath}`,
-      "not configured; `cl` defaults to the local gateway (or run agent setup-claude-config)",
+      "not configured; run `agent claude --auto` (or --direct/--proxy)",
     ].join("\n"),
   };
 }
@@ -486,6 +511,50 @@ export function checkAutoupdate(f: AutoupdateData): CheckResult {
   return { ...base, status: "ok", detail };
 }
 
+/** `--live` end-to-end check: did Codex actually respond via its configured backend? */
+export function checkCodexLive(f: LiveProbeFacts): CheckResult {
+  const base = {
+    id: "codex.live",
+    label: "Codex live prompt",
+    group: "codex" as const,
+    scopes: CODEX,
+    value: { ran: f.ran, ok: f.ok, cli: f.cli },
+  };
+  if (!f.ran) {
+    return { ...base, status: "ok" as const, detail: "skipped (codex CLI not installed)" };
+  }
+  return f.ok
+    ? { ...base, status: "ok", detail: `read-only prompt responded via ${f.cli}` }
+    : {
+        ...base,
+        status: "warn",
+        detail: `read-only prompt failed (${f.cli}); the configured backend did not answer`,
+        fix: "agent codex --auto",
+      };
+}
+
+/** `--live` end-to-end check: did Claude actually respond via its configured backend? */
+export function checkClaudeLive(f: LiveProbeFacts): CheckResult {
+  const base = {
+    id: "claude.live",
+    label: "Claude live prompt",
+    group: "claude" as const,
+    scopes: CLAUDE,
+    value: { ran: f.ran, ok: f.ok, cli: f.cli },
+  };
+  if (!f.ran) {
+    return { ...base, status: "ok" as const, detail: "skipped (claude CLI not installed)" };
+  }
+  return f.ok
+    ? { ...base, status: "ok", detail: `read-only prompt responded via ${f.cli}` }
+    : {
+        ...base,
+        status: "warn",
+        detail: `read-only prompt failed (${f.cli}); the configured backend did not answer`,
+        fix: "agent claude --auto",
+      };
+}
+
 /** Build every check applicable to `scope` from the gathered facts. */
 export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult[] {
   const out: CheckResult[] = [];
@@ -511,8 +580,10 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
     out.push(checkTool("node", facts.tools.node), checkTool("npm", facts.tools.npm));
   }
   if (facts.codex) out.push(checkCodex(facts.codex));
+  if (facts.codexLive) out.push(checkCodexLive(facts.codexLive));
   if (facts.codexHost) out.push(checkCodexHost(facts.codexHost));
   if (facts.claude) out.push(checkClaude(facts.claude));
+  if (facts.claudeLive) out.push(checkClaudeLive(facts.claudeLive));
   if (facts.autoupdate) out.push(checkAutoupdate(facts.autoupdate));
   return out.filter((r) => r.scopes.includes(scope));
 }

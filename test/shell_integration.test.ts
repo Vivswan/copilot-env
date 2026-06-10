@@ -234,8 +234,9 @@ test("posixLaunchersBlock sources the launchers file under its own marker", () =
 test("cx launchers start the gateway only for proxy-backed Codex configs", () => {
   const posix = readFileSync(join(process.cwd(), "shell", "agents.launchers.bashrc"), "utf8");
   const posixCx = shellFunctionBody(posix, "cx");
-  expect(posixCx).toContain("agent setup-codex-config");
-  expect(posixCx).toContain("setup-codex-config --check");
+  // Check-only: read the configured provider (no live probe), and re-sync proxy.
+  expect(posixCx).toContain("codex --check");
+  expect(posixCx).toContain("codex --proxy");
   expect(posixCx).toContain("_codex_provider_status");
   expect(posixCx).toContain("-eq 0");
   expect(posixCx).toContain("-eq 2");
@@ -244,12 +245,13 @@ test("cx launchers start the gateway only for proxy-backed Codex configs", () =>
   expect(posixCx).not.toContain("jq");
   expect(posix).not.toContain("_copilot_codex_config_file");
   expect(posix).not.toContain("_copilot_codex_uses_proxy");
-  expect(posixCx).not.toContain("--proxy");
+  // The launcher reconfigures proxy only; it never runs the live auto-detect.
+  expect(posixCx).not.toContain("--auto");
 
   const powershell = readFileSync(join(process.cwd(), "shell", "agents.launchers.ps1"), "utf8");
   const powershellCx = shellFunctionBody(powershell, "cx");
-  expect(powershellCx).toContain("agent setup-codex-config");
-  expect(powershellCx).toContain("setup-codex-config --check");
+  expect(powershellCx).toContain("codex --check");
+  expect(powershellCx).toContain("codex --proxy");
   expect(powershellCx).toContain("$codexProviderStatus");
   expect(powershellCx).toContain("$codexProviderStatus -eq 2");
   expect(powershellCx).toContain("$codexProviderStatus -ne 0");
@@ -258,5 +260,5 @@ test("cx launchers start the gateway only for proxy-backed Codex configs", () =>
   expect(powershellCx).not.toContain("jq");
   expect(powershell).not.toContain("Get-CodexConfigPath");
   expect(powershell).not.toContain("Test-CodexProxyProvider");
-  expect(powershellCx).not.toContain("--proxy");
+  expect(powershellCx).not.toContain("--auto");
 });

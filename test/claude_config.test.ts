@@ -6,8 +6,9 @@ import { join } from "node:path";
 import {
   configureClaudeConfig,
   DIRECT_BASE_URL,
+  detectClaudeDirect,
   inspectClaudeWiring,
-  runClaudeConfig,
+  runClaude,
 } from "../src/claude/config.ts";
 import { copilotApiResolvePort } from "../src/copilot_api/port.ts";
 
@@ -129,58 +130,50 @@ test("inspectClaudeWiring classifies direct / proxy / other / none / malformed (
   expect(inspectClaudeWiring("{not json", home).providerMode).toBe("other");
 });
 
-test("runClaudeConfig --direct/--proxy round-trip cleans the other mode; mutual exclusion throws", () => {
+test("runClaude --direct/--proxy round-trip cleans the other mode; mutual exclusion throws", () => {
   const home = tmpHome();
   const read = () => inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home);
 
-  runClaudeConfig({ "claude-home": home, direct: true });
+  runClaude({ "claude-home": home, direct: true });
   expect(read().providerMode).toBe("direct");
   expect(
     (readSettings(home).env as Record<string, unknown>).CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS,
   ).toBe("1");
 
-  runClaudeConfig({ "claude-home": home, proxy: true });
+  runClaude({ "claude-home": home, proxy: true });
   expect(read().providerMode).toBe("proxy");
   // Switching to proxy drops the direct-only disable-betas knob.
   expect(
     (readSettings(home).env as Record<string, unknown>).CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS,
   ).toBeUndefined();
 
-  runClaudeConfig({ "claude-home": home, direct: true });
+  runClaude({ "claude-home": home, direct: true });
   expect(read().providerMode).toBe("direct");
 
-  expect(() => runClaudeConfig({ "claude-home": home, proxy: true, direct: true })).toThrow(
-    "--proxy and --direct are mutually exclusive",
+  expect(() => runClaude({ "claude-home": home, proxy: true, direct: true })).toThrow(
+    "--direct, --proxy, and --auto are mutually exclusive",
   );
 });
 
-test("runClaudeConfig no-arg refresh: none -> proxy, direct re-asserts, custom left alone", () => {
+test("detectClaudeDirect: true only when CLI+gh present, gh authed, and the probe succeeds", () => {
   const home = tmpHome();
-
-  // Never configured -> the no-arg refresh writes proxy (gateway is the default).
-  runClaudeConfig({ "claude-home": home });
+  // detectClaudeDirect writes a throwaway direct config under a temp home; the
+  // tmpHome()/COPILOT_API_HOME isolation keeps it off any real state.
+  void home;
+  const ok = {
+    resolveCommand: (c: string) => `/bin/${c}`,
+    ghAuthOk: () => true,
+    runProbe: () => true,
+  };
+  expect(detectClaudeDirect(ok)).toBe(true);
+  expect(detectClaudeDirect({ ...ok, runProbe: () => false })).toBe(false);
+  expect(detectClaudeDirect({ ...ok, ghAuthOk: () => false })).toBe(false);
   expect(
-    inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home).providerMode,
-  ).toBe("proxy");
-
-  // Already direct (with a stale base URL) -> re-asserted, not flipped to proxy.
-  runClaudeConfig({ "claude-home": home, direct: true });
-  const stale = readSettings(home);
-  (stale.env as Record<string, unknown>).ANTHROPIC_BASE_URL = "https://old.example";
-  writeFileSync(join(home, "settings.json"), `${JSON.stringify(stale, null, 2)}\n`);
-  runClaudeConfig({ "claude-home": home });
-  expect((readSettings(home).env as Record<string, unknown>).ANTHROPIC_BASE_URL).toBe(
-    DIRECT_BASE_URL,
-  );
-
-  // A custom (foreign) config is left exactly as-is by the no-arg refresh.
-  writeFileSync(
-    join(home, "settings.json"),
-    `${JSON.stringify({ apiKeyHelper: "/opt/company/copilot-token.sh" }, null, 2)}\n`,
-  );
-  const before = readFileSync(join(home, "settings.json"), "utf8");
-  runClaudeConfig({ "claude-home": home });
-  expect(readFileSync(join(home, "settings.json"), "utf8")).toBe(before);
+    detectClaudeDirect({ ...ok, resolveCommand: (c) => (c === "claude" ? null : `/bin/${c}`) }),
+  ).toBe(false);
+  expect(
+    detectClaudeDirect({ ...ok, resolveCommand: (c) => (c === "gh" ? null : `/bin/${c}`) }),
+  ).toBe(false);
 });
 
 test("configureClaudeConfig refuses to overwrite a malformed settings.json", () => {

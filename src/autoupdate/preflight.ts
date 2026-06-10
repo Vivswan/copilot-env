@@ -4,10 +4,10 @@
 // `agent env` stdout contract is never at risk; the launchers also skip `env`.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { createConsola } from "consola";
 
 import { applyUpdate } from "../commands/apply_update.ts";
 import { resolveTarget } from "../install/resolve-release.ts";
+import { createStderrLogger } from "../utils/logger.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { stripV, versionLessThan } from "../utils/semver.ts";
 import { packageVersion } from "../utils/version.ts";
@@ -15,7 +15,7 @@ import { isDue } from "./due.ts";
 import { acquireLock, releaseLock } from "./lock.ts";
 import { AutoupdateState } from "./state.ts";
 
-const logger = createConsola({ stdout: process.stderr, stderr: process.stderr });
+const logger = createStderrLogger();
 
 export interface PreflightOptions {
   nowMs: number;

@@ -12,6 +12,7 @@
 import "../utils/dotenv.ts";
 import { consola } from "consola";
 
+import { disableConsolaTimestamps } from "../utils/logger.ts";
 import { stripV, versionLessThan } from "../utils/semver.ts";
 import { migration as v121 } from "./1.2.1.ts";
 
@@ -79,6 +80,7 @@ export async function runMigrations(from: string, to: string): Promise<void> {
 // so importing this module (registry/dueMigrations) never executes it.
 //   bun src/migrations/index.ts <fromVersion> <toVersion>
 if (import.meta.main) {
+  disableConsolaTimestamps();
   const [from, to] = process.argv.slice(2);
   if (!from || !to) {
     consola.error("usage: bun src/migrations/index.ts <fromVersion> <toVersion>");

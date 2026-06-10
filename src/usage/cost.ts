@@ -302,7 +302,7 @@ function printCostReport(
   }
   console.log();
   console.log(
-    "  Note: only gateway (proxy) usage is recorded. Direct GitHub Copilot usage (codex/claude in --direct mode) bypasses the gateway and is not tracked here.",
+    "  Note: only gateway (proxy) usage is recorded. Direct-wired Codex/Claude (GitHub Copilot Direct) bypasses the gateway and is not tracked here at all.",
   );
   console.log();
 }
@@ -325,6 +325,6 @@ function buildCostJson(
     avgCostPerDayUsd:
       report.activeDays > 0 ? Math.round((estimate.totalUsd / div) * 10_000) / 10_000 : null,
     unpriced: estimate.unpriced,
-    note: "only gateway (proxy) usage is recorded; direct GitHub Copilot usage is not tracked",
+    note: "only gateway (proxy) usage is recorded; direct GitHub Copilot usage is not tracked at all",
   };
 }

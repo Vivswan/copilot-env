@@ -4,15 +4,22 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
-import { createConsola } from "consola";
 import { parse, stringify } from "smol-toml";
 
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { copilotApiResolvePort, openaiBaseUrl } from "../copilot_api/port.ts";
 import { CopilotApiState } from "../copilot_api/state.ts";
+import {
+  assertSingleMode,
+  CODEX_PROBE,
+  type DirectProbeDeps,
+  probeDirectWorks,
+  resolveDirect,
+} from "../utils/direct_probe.ts";
 import { isRecord } from "../utils/json.ts";
+import { createStderrLogger } from "../utils/logger.ts";
 
-const logger = createConsola({ stdout: process.stderr, stderr: process.stderr });
+const logger = createStderrLogger();
 
 // The Codex model-provider ids we manage. CODEX_PROVIDER_ID is the proxy
 // provider contract used by the gateway health inspector. OPENAI_API_KEY is the
@@ -31,6 +38,7 @@ export interface CodexConfigArgs {
   check?: boolean;
   direct?: boolean;
   proxy?: boolean;
+  auto?: boolean;
 }
 
 interface ConfigureCodexConfigOptions {
@@ -38,6 +46,8 @@ interface ConfigureCodexConfigOptions {
   baseUrl?: string;
   apiKey?: string;
   codexExecVersion?: string | null;
+  /** Suppress the "config written" info line (used by the temp-config probe). */
+  quiet?: boolean;
 }
 
 interface ProxyConfigOptions {
@@ -145,7 +155,7 @@ function managedProviderForMode(
 // The read-only counterpart to configureCodexConfig: given a CODEX_HOME's raw
 // config.toml/.env content, report whether Codex is direct, proxy-backed, or
 // custom. It lives HERE, next to the managed provider tables, so `agent health`
-// and `setup-codex-config` reuse the same contract instead of shell/TOML copies.
+// and `agent codex` reuse the same contract instead of shell/TOML copies.
 
 export interface CodexWiringStatus {
   /** A config.toml exists at the home (false => the user never wired Codex). */
@@ -383,7 +393,7 @@ export function configureCodexConfig(
   doc.model_providers = providers;
 
   fs.writeFileSync(hostConfig, stringify(doc));
-  logger.info(`Codex App config written to ${hostConfig}`);
+  if (!options.quiet) logger.log(`  ✓ Codex config written → ${hostConfig}`);
 
   if (proxyOptions !== null) {
     const envFile = `${codexHome}/.env`;
@@ -482,8 +492,8 @@ function providerModeDetail(mode: CodexProviderMode, configExists: boolean): str
 
 function checkExitCode(mode: CodexProviderMode): 0 | 1 | 2 {
   if (mode === "direct") return 0;
-  if (mode === "proxy") return 2;
-  return 1;
+  if (mode === "other") return 1;
+  return 2; // proxy or none (the gateway is the default backend)
 }
 
 function checkCodexConfig(args: Pick<CodexConfigArgs, "codex-home">): void {
@@ -501,42 +511,47 @@ function checkCodexConfig(args: Pick<CodexConfigArgs, "codex-home">): void {
   }
 }
 
-function resolveWriteMode(currentMode: CodexProviderMode): ManagedCodexProviderMode | null {
-  if (currentMode === "direct") return "direct";
-  if (currentMode === "proxy") return "proxy";
-  return "direct";
-}
-
-function resolveForcedWriteMode(
-  args: Pick<CodexConfigArgs, "direct" | "proxy">,
-): ManagedCodexProviderMode | null {
-  if (args.proxy) return "proxy";
-  if (args.direct) return "direct";
-  return null;
+/**
+ * Live auto-detect: does GitHub Copilot Direct work for Codex on this machine?
+ * Writes a throwaway direct config and runs `codex exec --sandbox read-only`
+ * against it (see src/utils/direct_probe.ts). False => the caller writes proxy.
+ */
+export function detectCodexDirect(deps?: DirectProbeDeps): boolean {
+  return probeDirectWorks(
+    CODEX_PROBE,
+    (tmpHome) => {
+      configureCodexConfig(tmpHome, { quiet: true });
+    },
+    deps,
+  );
 }
 
 /**
- * `codex_config`: (re)write config at the active CODEX_HOME — an explicit
- * `--codex-home`, else the one `host_codex` set in state, else the default
- * `~/.codex`. Does NOT touch `state.codexHome`: it only refreshes config at the
- * active home, and the default `~/.codex` needs no `CODEX_HOME` override (only
- * `host_codex` sets/clears the active home). Produces no stdout.
+ * `agent codex`: configure Codex at the active CODEX_HOME — an explicit
+ * `--codex-home`, else the one a `--host` farm set in state, else the default
+ * `~/.codex`. `--direct` forces GitHub Copilot Direct, `--proxy` forces the local
+ * gateway, and `--auto` (or no mode flag) AUTO-DETECTS — it writes direct wiring
+ * when a live read-only probe against Copilot Direct succeeds, else falls back to
+ * the gateway proxy. `--check` reports the configured mode (exit 0 direct / 2
+ * proxy|none / 1 other) without a probe. Does NOT touch `state.codexHome` (only
+ * `--host` sets/clears that).
  */
-export function runCodexConfig(args: CodexConfigArgs): void {
-  if (args.proxy && args.direct) {
-    throw new Error("--proxy and --direct are mutually exclusive");
-  }
+export function runCodex(args: CodexConfigArgs): void {
+  assertSingleMode(args);
   if (args.check) {
     checkCodexConfig(args);
     return;
   }
-  const forcedMode = resolveForcedWriteMode(args);
-  if (forcedMode !== null) {
-    applyCodexConfig(effectiveCodexHome(args), { proxy: forcedMode === "proxy" });
-    return;
-  }
-  const { codexHome, providerMode } = inspectEffectiveCodexConfig(args);
-  const writeMode = resolveWriteMode(providerMode);
-  if (writeMode === null) return;
-  applyCodexConfig(codexHome, { proxy: writeMode === "proxy" });
+  const direct = resolveDirect(args, detectCodexDirect);
+  logger.log(
+    `  Configuring Codex for ${direct ? "GitHub Copilot Direct" : "the local copilot-api gateway proxy"} …`,
+  );
+  applyCodexConfig(effectiveCodexHome(args), { proxy: !direct });
+}
+
+/** The configured Codex provider mode at the effective CODEX_HOME (read-only). */
+export function effectiveCodexProviderMode(
+  args: Pick<CodexConfigArgs, "codex-home"> = {},
+): CodexProviderMode {
+  return inspectEffectiveCodexConfig(args).providerMode;
 }

@@ -25,21 +25,21 @@ function Invoke-Agent {
     & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 @args
 }
 
-# Apply the `env` output to the current session. Request PowerShell-native
-# `$env:KEY = '...'` lines and evaluate them directly -- no manual parsing.
+# Apply the `env` output to the current session. It emits PowerShell-native
+# `$env:KEY = '...'` assignments AND `Remove-Item Env:KEY` clears; evaluate both.
 function Import-CopilotEnv {
     $lines = Invoke-Agent env --format powershell 2>$null
     if ($LASTEXITCODE -ne 0) { return }
     foreach ($line in $lines) {
-        if ($line -match '^\s*\$env:') { Invoke-Expression $line }
+        if ($line -match '^\s*(\$env:|Remove-Item )') { Invoke-Expression $line }
     }
 }
 
 # Uniform wrapper over bin\agent.ps1 (mirrors the POSIX agents.bashrc `agent`):
 # run the requested command, then re-apply the full session env from the single
-# source of truth — `agent env`, which prints only `$env:KEY = ...` lines
-# (gateway vars, plus CODEX_HOME when a host farm is active). No per-subcommand
-# logic; we only ever eval the dedicated, contract-stable `env` output.
+# source of truth — `agent env`, which prints `$env:KEY = ...` / `Remove-Item
+# Env:KEY` lines (CODEX_HOME + the proxy ANTHROPIC_BASE_URL, set or cleared). No
+# per-subcommand logic; we only ever eval the dedicated, contract-stable `env` output.
 function agent {
     Invoke-Agent @args
     if ($LASTEXITCODE -ne 0) { return }
@@ -48,5 +48,5 @@ function agent {
 
 # --- shell-startup side effects --------------------------------------------
 
-# Eagerly export CODEX_HOME (the only var `agent env` emits) for the current shell.
+# Eagerly apply the managed env (CODEX_HOME + proxy ANTHROPIC_BASE_URL) for the current shell.
 Import-CopilotEnv

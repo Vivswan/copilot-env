@@ -18,9 +18,9 @@ _COPILOT_AGENTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")/.." && pwd
 
 # Uniform wrapper over bin/agent: run the requested command, then re-apply the
 # full session env from the single source of truth — `agent env`, which prints
-# ONLY `export KEY=val` lines (gateway vars, plus CODEX_HOME when a host farm is
-# active). There is no per-subcommand logic: adding a bin/agent subcommand never
-# touches this, and we only ever eval the dedicated, contract-stable `env`
+# `export KEY=val` and `unset KEY` lines (CODEX_HOME + the proxy ANTHROPIC_BASE_URL,
+# set or cleared). There is no per-subcommand logic: adding a bin/agent subcommand
+# never touches this, and we only ever eval the dedicated, contract-stable `env`
 # output (never a command's incidental stdout).
 function agent {
     "${_COPILOT_AGENTS_DIR}/bin/agent" "$@" || return $?
@@ -31,9 +31,9 @@ function agent {
     unset _env
 }
 
-# Eagerly export CODEX_HOME (the only var `agent env` emits) for the current
-# shell. Silence stderr so the bootstrap's informational output ("Installing
-# copilot-env node_modules ...") doesn't break Powerlevel10k's instant-prompt
-# guard on first source. If env resolution fails, a later `agent`/launcher call
-# will surface the error.
+# Eagerly apply the managed env (CODEX_HOME + proxy ANTHROPIC_BASE_URL) for the
+# current shell. Silence stderr so the bootstrap's informational output
+# ("Installing copilot-env node_modules ...") doesn't break Powerlevel10k's
+# instant-prompt guard on first source. If env resolution fails, a later
+# `agent`/launcher call will surface the error.
 eval "$("${_COPILOT_AGENTS_DIR}/bin/agent" env "$@" 2>/dev/null)"

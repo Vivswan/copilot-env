@@ -62,23 +62,23 @@ Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, the
 ## Usage
 
 ```bash
-agent start                # launch the daemon and sync aliases (--dry-run to preview)
+agent init                 # set up BOTH Codex + Claude (auto-detect direct vs the gateway); --direct / --proxy to force
+agent start                # launch the daemon and sync aliases (--dry-run to preview, --port to pin)
 agent stop                 # stop the daemon
-agent health               # full environment diagnosis (--scope runtime|gateway|setup|codex, --json)
-agent env                  # print shell exports for the calling shell (CODEX_HOME only)
+agent health               # full environment diagnosis (--scope runtime|gateway|setup|codex|claude, --json, --live)
+agent env                  # print shell exports for the calling shell (CODEX_HOME / proxy ANTHROPIC_BASE_URL)
 agent cost                 # estimated token spend across all per-host usage DBs
 agent update               # update to the latest release (--check / --cooldown)
 agent setup-shell          # (re)wire rc / $PROFILE (--remove to unwire)
 agent setup-launchers      # wire/remove opt-in cl / co / cx launchers
-agent setup-clis           # install optional CLIs (--cooldown[=DAYS], --no-sudo, --launchers)
-agent setup-codex-config   # refresh direct/proxy config; initialize unknown/missing to direct
-agent setup-codex-config --proxy   # force the local copilot-api gateway provider
-agent setup-codex-config --direct  # force GitHub Copilot Direct
-agent setup-codex-config --check  # print provider mode; exits 0 direct, 2 proxy, 1 other/error
-agent setup-codex-host     # per-host CODEX_HOME symlink farm (Linux/macOS, direct by default)
-agent setup-claude-config --direct  # wire ~/.claude for GitHub Copilot Direct (apiKeyHelper + base URL)
-agent setup-claude-config --proxy   # remove the managed direct wiring; use the local gateway
-agent setup-claude-config --check  # print Claude provider mode; exits 0 direct, 2 proxy, 1 other/error
+agent setup-clis           # install optional CLIs + auto-detect each backend (--cooldown[=DAYS], --no-sudo, --launchers)
+agent codex                # configure Codex; --direct / --proxy force, --auto auto-detects, --check reports
+agent codex --auto         # probe GitHub Copilot Direct; fall back to the local gateway proxy
+agent codex --check        # print provider mode; exits 0 direct, 2 proxy, 1 other
+agent codex --host         # per-host CODEX_HOME symlink farm (Linux/macOS); --delete-host to remove
+agent claude               # configure Claude; --direct / --proxy force, --auto auto-detects, --check reports
+agent claude --auto        # probe GitHub Copilot Direct for Claude; fall back to the local gateway proxy
+agent claude --check       # print Claude provider mode; exits 0 direct, 2 proxy, 1 other
 ```
 
 Once the profile is wired, the same commands run via `agent` on Windows too (or
@@ -95,7 +95,7 @@ The `cl` / `co` / `cx` launchers are opt-in:
 
 - `cl` runs Claude.
 - `co` runs Copilot.
-- `cx` runs `setup-codex-config`, starts the gateway only for proxy-backed Codex configs, then Codex.
+- `cx` reads the configured Codex provider (`agent codex --check`), starts the gateway only for proxy-backed configs (re-syncing the port/token), then Codex.
 
 Enable them while installing optional CLIs:
 

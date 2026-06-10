@@ -14,6 +14,7 @@ import { HEALTH_SCOPES } from "../health/types.ts";
 export interface HealthArgs {
   scope: string;
   json: boolean;
+  live?: boolean;
 }
 
 export async function runHealth(args: HealthArgs): Promise<void> {
@@ -21,7 +22,7 @@ export async function runHealth(args: HealthArgs): Promise<void> {
     throw new Error(`--scope must be one of: ${HEALTH_SCOPES.join(", ")}`);
   }
   const scope = args.scope;
-  const facts = await gatherFacts(scope);
+  const facts = await gatherFacts(scope, { live: Boolean(args.live) });
   const results = evaluateAll(scope, facts);
 
   if (args.json) {

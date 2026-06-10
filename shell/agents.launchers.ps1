@@ -46,18 +46,22 @@ function Confirm-CopilotServer {
 
 function cl {
     if (-not (Assert-AgentCli claude)) { return }
-    # Refresh Claude wiring. Existing direct config stays as-is; proxy/default is
-    # left on the gateway; missing/custom configs are not clobbered. Then branch
-    # on the provider mode: exit 0 = direct (Claude reads settings.json itself),
-    # 2 = proxy/default (ensure the gateway), else custom/error.
-    agent setup-claude-config
-    if ($LASTEXITCODE -ne 0) { return }
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 setup-claude-config --check *> $null
+    # Read the configured Claude provider (no live probe — provider auto-detection
+    # is done once by `agent setup-clis`, not on every launch): exit 0 = direct
+    # (Claude reads settings.json itself), 2 = proxy/default (ensure the gateway +
+    # re-sync the port/token), else custom/error.
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 claude --check *> $null
     $claudeProviderStatus = $LASTEXITCODE
     if ($claudeProviderStatus -eq 2) {
         Confirm-CopilotServer
+        # Bail if the gateway is still down (declined / failed) — don't re-sync
+        # proxy config against a stale port or launch into a dead gateway.
+        if (-not (Test-CopilotServer)) { return }
+        agent claude --proxy
+        if ($LASTEXITCODE -ne 0) { return }
     } elseif ($claudeProviderStatus -ne 0) {
-        return
+        # Custom/foreign config (exit 1) we don't manage: say so and launch as-is.
+        Write-Host 'cl: Claude has a custom provider config (not managed by copilot-env); launching it as-is.'
     }
     $env:CLAUDE_CODE_NO_FLICKER = '1'
     & claude --permission-mode auto --enable-auto-mode @args
@@ -70,16 +74,22 @@ function co {
 
 function cx {
     if (-not (Assert-AgentCli codex)) { return }
-    # Refresh the effective CODEX_HOME. Existing direct config stays as-is;
-    # proxy config is refreshed; missing/custom configs become direct.
-    agent setup-codex-config
-    if ($LASTEXITCODE -ne 0) { return }
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 setup-codex-config --check *> $null
+    # Read the configured Codex provider (no live probe — provider auto-detection
+    # is done once by `agent setup-clis`, not on every launch): exit 0 = direct
+    # (Codex reads its own config), 2 = proxy/default (ensure the gateway + re-sync
+    # the port/token), else custom/error.
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 codex --check *> $null
     $codexProviderStatus = $LASTEXITCODE
     if ($codexProviderStatus -eq 2) {
         Confirm-CopilotServer
+        # Bail if the gateway is still down (declined / failed) — don't re-sync
+        # proxy config against a stale port or launch into a dead gateway.
+        if (-not (Test-CopilotServer)) { return }
+        agent codex --proxy
+        if ($LASTEXITCODE -ne 0) { return }
     } elseif ($codexProviderStatus -ne 0) {
-        return
+        # Custom/foreign config (exit 1) we don't manage: say so and launch as-is.
+        Write-Host 'cx: Codex has a custom provider config (not managed by copilot-env); launching it as-is.'
     }
     & codex @args
 }

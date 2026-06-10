@@ -97,8 +97,17 @@ export function runInstall(options: InstallOptions): void {
         : "Done. Restart your shell to load the integration.",
     );
   }
-  console.log("Then use 'agent start' to launch the gateway.");
-  console.log("Optional: run 'agent setup-clis --launchers' for CLIs and cl/co/cx shortcuts.");
+  console.log("");
+  console.log("Next steps:");
+  console.log(
+    "  1. Run 'agent init' to set up Codex + Claude (it picks GitHub Copilot Direct or the local gateway).",
+  );
+  console.log(
+    "  2. Optional: 'agent setup-clis --launchers' to install the CLIs + cl/co/cx shortcuts.",
+  );
+  console.log(
+    "  'agent init' will then tell you whether you need 'agent start' (only for the gateway).",
+  );
 }
 
 if (import.meta.main) {

@@ -16,10 +16,11 @@
 # shellcheck disable=SC2296
 : "${_COPILOT_AGENTS_DIR:=$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")/.." && pwd)}"
 
-# Check the gateway before launching an agent; if it's down, offer to start it.
-# Uses `agent health --scope runtime` (fast HTTP probe of the gateway, exit 0 =
-# up). `agent start` runs in the current shell, so its env exports propagate to
-# the agent we launch next.
+# Check the gateway before launching a proxy-backed agent; if it's down, offer to
+# start it. Returns SUCCESS only if the gateway is reachable afterward — so a
+# caller that `|| return`s won't re-sync proxy config against a stale port or
+# launch into a dead gateway when the user declines. `agent start` runs in the
+# current shell so its env exports propagate to the agent we launch next.
 function _copilot_ensure_server {
     if "${_COPILOT_AGENTS_DIR}/bin/agent" health --scope runtime >/dev/null 2>&1; then
         return 0
@@ -29,8 +30,10 @@ function _copilot_ensure_server {
     read -r _ans
     case "$_ans" in
         ''|y|Y|yes|Yes) agent start ;;
-        *) echo "Continuing without starting the gateway." >&2 ;;
+        *) echo "Continuing without the gateway; proxy-backed agents need it (run 'agent start')." >&2 ;;
     esac
+    # Success only if the gateway is reachable now (declined / failed start => non-zero).
+    "${_COPILOT_AGENTS_DIR}/bin/agent" health --scope runtime >/dev/null 2>&1
 }
 
 # Error if an agent CLI is missing; installation is handled by install.sh.
@@ -42,12 +45,11 @@ function _copilot_require_cli {
 
 function cl {
     _copilot_require_cli claude || return 1
-    # Refresh Claude wiring. Existing direct config stays as-is; proxy/default is
-    # left on the gateway; missing/custom configs are not clobbered. Then branch
-    # on the provider mode: exit 0 = direct (Claude reads settings.json itself),
-    # 2 = proxy/default (ensure the gateway), else custom/error.
-    agent setup-claude-config || return $?
-    if "${_COPILOT_AGENTS_DIR}/bin/agent" setup-claude-config --check >/dev/null 2>&1; then
+    # Read the configured Claude provider (no live probe — provider auto-detection
+    # is done once by `agent setup-clis`, not on every launch): exit 0 = direct
+    # (Claude reads settings.json itself), 2 = proxy/default (ensure the gateway +
+    # re-sync the port/token), else custom/error.
+    if "${_COPILOT_AGENTS_DIR}/bin/agent" claude --check >/dev/null 2>&1; then
         _claude_provider_status=0
     else
         _claude_provider_status=$?
@@ -55,11 +57,14 @@ function cl {
     if [ "$_claude_provider_status" -eq 2 ]; then
         unset _claude_provider_status
         _copilot_ensure_server || return $?
+        agent claude --proxy || return $?
     elif [ "$_claude_provider_status" -eq 0 ]; then
         unset _claude_provider_status
     else
+        # Custom/foreign config (exit 1) we don't manage: don't touch it, just say
+        # so and launch Claude with the user's own wiring.
         unset _claude_provider_status
-        return 1
+        echo "cl: Claude has a custom provider config (not managed by copilot-env); launching it as-is." >&2
     fi
     export CLAUDE_CODE_NO_FLICKER=1
     command claude --permission-mode auto --enable-auto-mode "$@"
@@ -72,10 +77,11 @@ function co {
 
 function cx {
     _copilot_require_cli codex || return 1
-    # Refresh the effective CODEX_HOME. Existing direct config stays as-is;
-    # proxy config is refreshed; missing/custom configs become direct.
-    agent setup-codex-config || return $?
-    if "${_COPILOT_AGENTS_DIR}/bin/agent" setup-codex-config --check >/dev/null 2>&1; then
+    # Read the configured Codex provider (no live probe — provider auto-detection
+    # is done once by `agent setup-clis`, not on every launch): exit 0 = direct
+    # (Codex reads its own config), 2 = proxy/default (ensure the gateway + re-sync
+    # the port/token), else custom/error.
+    if "${_COPILOT_AGENTS_DIR}/bin/agent" codex --check >/dev/null 2>&1; then
         _codex_provider_status=0
     else
         _codex_provider_status=$?
@@ -83,11 +89,14 @@ function cx {
     if [ "$_codex_provider_status" -eq 2 ]; then
         unset _codex_provider_status
         _copilot_ensure_server || return $?
+        agent codex --proxy || return $?
     elif [ "$_codex_provider_status" -eq 0 ]; then
         unset _codex_provider_status
     else
+        # Custom/foreign config (exit 1) we don't manage: don't touch it, just say
+        # so and launch Codex with the user's own wiring.
         unset _codex_provider_status
-        return 1
+        echo "cx: Codex has a custom provider config (not managed by copilot-env); launching it as-is." >&2
     fi
     command codex "$@"
 }

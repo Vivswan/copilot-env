@@ -12,10 +12,12 @@ import {
   checkAutoupdate,
   checkBun,
   checkClaude,
+  checkClaudeLive,
   checkCli,
   checkCliVersion,
   checkCodex,
   checkCodexHost,
+  checkCodexLive,
   checkGatewayPackage,
   checkLaunchers,
   checkNodeModules,
@@ -48,6 +50,7 @@ const RUNTIME_OK: RuntimeFacts = {
   trackedPid: 1234,
   pidTracked: true,
   pidAlive: true,
+  bothDirect: false,
   paths: {
     home: "/h",
     configFile: "/h/config.json",
@@ -193,6 +196,17 @@ test("copilot-env version check is always ok and surfaces the version", () => {
 test("runtime port fails only when unreachable", () => {
   expect(checkRuntimePort(RUNTIME_OK).status).toBe("ok");
   expect(checkRuntimePort({ ...RUNTIME_OK, reachable: false }).status).toBe("fail");
+});
+
+test("runtime: a down gateway is OK when both Codex and Claude are direct", () => {
+  const down = { ...RUNTIME_OK, reachable: false, trackedPid: null, pidTracked: false };
+  // Gateway not required => no failure (warnings/ok only), so the overall exit is 0.
+  expect(checkRuntimePort(down).status).toBe("fail");
+  expect(checkRuntimePid(down).status).toBe("fail");
+  const bothDirect = { ...down, bothDirect: true };
+  expect(checkRuntimePort(bothDirect).status).toBe("ok");
+  expect(checkRuntimePort(bothDirect).detail).toContain("both direct");
+  expect(checkRuntimePid(bothDirect).status).toBe("ok");
 });
 
 test("runtime pid: stale/foreign and untracked fail, tracked ok", () => {
@@ -393,7 +407,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   const staleBase = checkClaude({ ...direct, baseUrl: null });
   expect(staleBase.status).toBe("warn");
   expect(staleBase.detail).toContain("(missing)");
-  expect(staleBase.fix).toBe("agent setup-claude-config --direct");
+  expect(staleBase.fix).toBe("agent claude --direct");
 
   // Proxy: gateway-backed via settings.json (localhost base URL + gateway helper).
   const proxy = checkClaude({
@@ -431,6 +445,36 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   expect(other.status).toBe("ok");
   expect(other.detail).toContain("provider: other");
   expect(other.detail).toContain("not managed");
+});
+
+// --- live (--live) checks ---------------------------------------------------
+
+test("checkCodexLive/checkClaudeLive: ok responds, fail warns, missing skips", () => {
+  expect(checkCodexLive({ ran: true, ok: true, cli: "/bin/codex" }).status).toBe("ok");
+  const codexFail = checkCodexLive({ ran: true, ok: false, cli: "/bin/codex" });
+  expect(codexFail.status).toBe("warn");
+  expect(codexFail.fix).toBe("agent codex --auto");
+  const codexSkip = checkCodexLive({ ran: false, ok: false, cli: null });
+  expect(codexSkip.status).toBe("ok");
+  expect(codexSkip.detail).toContain("skipped");
+
+  expect(checkClaudeLive({ ran: true, ok: true, cli: "/bin/claude" }).status).toBe("ok");
+  const claudeFail = checkClaudeLive({ ran: true, ok: false, cli: "/bin/claude" });
+  expect(claudeFail.status).toBe("warn");
+  expect(claudeFail.fix).toBe("agent claude --auto");
+  expect(checkClaudeLive({ ran: false, ok: false, cli: null }).status).toBe("ok");
+});
+
+test("evaluateAll(full) includes the live checks only when their facts are present", () => {
+  const facts: HealthFacts = {
+    codexLive: { ran: true, ok: true, cli: "/bin/codex" },
+    claudeLive: { ran: true, ok: false, cli: "/bin/claude" },
+  };
+  const ids = evaluateAll("full", facts).map((r) => r.id);
+  expect(ids).toContain("codex.live");
+  expect(ids).toContain("claude.live");
+  // No live facts => no live checks.
+  expect(evaluateAll("full", {}).map((r) => r.id)).not.toContain("codex.live");
 });
 
 // --- pure sub-evaluators ----------------------------------------------------

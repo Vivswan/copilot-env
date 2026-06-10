@@ -2,12 +2,13 @@
 import { spawnSync } from "node:child_process";
 import { consola } from "consola";
 import { pickAgedVersion } from "../utils/aged_version.ts";
+import { commandExists, resolveCommand } from "../utils/command.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
+import { configureBothAgents } from "./init.ts";
 import { runShellIntegration } from "./shell_integration.ts";
 
 const NVM_VERSION = "v0.40.1";
-const POSIX_NVM_SH = '"$' + '{NVM_DIR:-$HOME/.nvm}/nvm.sh"';
 
 export const AGENT_CLIS = [
   {
@@ -73,49 +74,6 @@ function run(
   options: Parameters<typeof spawnSync>[2] = {},
 ): ReturnType<typeof spawnSync> {
   return spawnSync(command, args, { stdio: "inherit", ...options });
-}
-
-export function commandExists(command: string): boolean {
-  if (process.platform === "win32") {
-    const result = spawnSync(
-      "powershell",
-      [
-        "-NoProfile",
-        "-Command",
-        `if (Get-Command ${command} -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }`,
-      ],
-      { stdio: "ignore" },
-    );
-    return result.status === 0;
-  }
-
-  const result = spawnSync(
-    "sh",
-    [
-      "-c",
-      `command -v "$1" >/dev/null 2>&1 || { [ -s ${POSIX_NVM_SH} ] && . ${POSIX_NVM_SH} >/dev/null 2>&1 && command -v "$1" >/dev/null 2>&1; }`,
-      "sh",
-      command,
-    ],
-    { stdio: "ignore" },
-  );
-  return result.status === 0;
-}
-
-export function resolveCommand(command: string): string | null {
-  if (process.platform === "win32") return commandExists(command) ? command : null;
-  const result = spawnSync(
-    "sh",
-    [
-      "-c",
-      `command -v "$1" 2>/dev/null || { [ -s ${POSIX_NVM_SH} ] && . ${POSIX_NVM_SH} >/dev/null 2>&1 && command -v "$1" 2>/dev/null; }`,
-      "sh",
-      command,
-    ],
-    { encoding: "utf8" },
-  );
-  if (result.status !== 0) return null;
-  return result.stdout.trim() || null;
 }
 
 function warnMissing(command: string, name: string): void {
@@ -304,6 +262,19 @@ function installCli(cli: (typeof AGENT_CLIS)[number], options: NormalizedSetupCl
   }
 }
 
+/**
+ * After installing the agent CLIs, auto-detect each agent's backend and write its
+ * config (Direct when a live probe succeeds, else the gateway), then point the
+ * user at `agent init` to review / change it. Best-effort per agent.
+ */
+function autoConfigureAgents(): void {
+  consola.info("Auto-detecting Codex/Claude backend (direct vs. local gateway) ...");
+  const { codex, claude } = configureBothAgents({});
+  consola.info(`Codex  → ${codex === "direct" ? "GitHub Copilot Direct" : codex}`);
+  consola.info(`Claude → ${claude === "direct" ? "GitHub Copilot Direct" : claude}`);
+  consola.info("Run `agent init` any time to re-detect, or `agent init --direct` / `--proxy`.");
+}
+
 export function runSetupClis(args: SetupClisArgs): void {
   const options = normalizeSetupClisOptions(args);
   if (options.noPrereqs) {
@@ -323,6 +294,7 @@ export function runSetupClis(args: SetupClisArgs): void {
   syncNpmGlobalBinToPath();
   for (const cli of AGENT_CLIS) installCli(cli, options);
   syncNpmGlobalBinToPath();
+  autoConfigureAgents();
   if (options.launchers) runSetupLaunchers({ "all-hosts": args["all-hosts"] });
 }
 

@@ -43,6 +43,8 @@ const DEFAULT_FLAGS: Record<string, unknown> = {
 
 export interface StartArgs {
   "dry-run"?: boolean;
+  /** Pin the gateway to this port instead of auto-resolving (fails if busy). */
+  port?: number;
 }
 
 function applyDefaultConfig(config: CopilotApiConfig): void {
@@ -214,9 +216,14 @@ export async function runStart(args: StartArgs): Promise<void> {
   const state = new CopilotApiState();
 
   if (args["dry-run"]) {
-    let port = Number(COPILOT_API_PORT_DEFAULT);
-    if (!(await copilotApiPortAvailable(port))) {
-      port = await copilotApiFindPort(port + 1);
+    let port: number;
+    if (args.port !== undefined) {
+      port = args.port;
+    } else {
+      port = Number(COPILOT_API_PORT_DEFAULT);
+      if (!(await copilotApiPortAvailable(port))) {
+        port = await copilotApiFindPort(port + 1);
+      }
     }
     const statePid = state.read().pid;
     const trackedPid = statePid !== undefined && pidAlive(statePid) ? statePid : null;
@@ -300,7 +307,16 @@ export async function runStart(args: StartArgs): Promise<void> {
   await sleep(1000);
 
   let port = Number(COPILOT_API_PORT_DEFAULT);
-  if (!(await copilotApiPortAvailable(port))) {
+  if (args.port !== undefined) {
+    // Pinned port: use it as-is, but fail clearly rather than silently moving off
+    // the port the user asked for.
+    if (!(await copilotApiPortAvailable(args.port))) {
+      throw new Error(
+        `requested port ${args.port} is busy (held by another process). Free it or pick another --port.`,
+      );
+    }
+    port = args.port;
+  } else if (!(await copilotApiPortAvailable(port))) {
     consola.warn(`WARNING: Port ${port} is busy (held by another process/user).`);
     try {
       port = await copilotApiFindPort(port + 1);
@@ -323,6 +339,13 @@ export async function runStart(args: StartArgs): Promise<void> {
       logContent = "";
     }
     if (/address already in use|EADDRINUSE|bind.*failed/i.test(logContent)) {
+      if (args.port !== undefined) {
+        // Pinned port lost the race to another process: fail rather than moving.
+        printLogTail(logFile, 20);
+        throw new Error(
+          `requested port ${port} was taken by another process just before launch. See ${logFile}`,
+        );
+      }
       consola.warn(
         `WARNING: Port ${port} was taken by another process just before launch; retrying on a different port ...`,
       );
@@ -411,6 +434,18 @@ export async function runStart(args: StartArgs): Promise<void> {
       `   Port:   ${port}`,
       `   SQLite: ${paths.sqliteDb}`,
       `   Bun env: ${PROJECT_ROOT}`,
+    ].join("\n"),
+  );
+  // What's next: set off in its own box so it doesn't blend into the path block.
+  consola.log("");
+  consola.box(
+    [
+      "Next steps",
+      "",
+      "  • Launch an agent:  cl (Claude) / cx (Codex) / co (Copilot)",
+      "    …or run `claude` / `codex` directly.",
+      "  • Install those launchers:  agent setup-launchers",
+      "  • `agent cost` reports gateway usage  ·  `agent stop` stops the gateway.",
     ].join("\n"),
   );
 }

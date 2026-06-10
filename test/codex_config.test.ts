@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 
-import { codexUserAgent, configureCodexConfig, runCodexConfig } from "../src/codex/config.ts";
+import {
+  codexUserAgent,
+  configureCodexConfig,
+  detectCodexDirect,
+  runCodex,
+} from "../src/codex/config.ts";
 
 const SAVED_HOME = process.env.HOME;
 const SAVED_CODEX_HOME = process.env.CODEX_HOME;
@@ -252,7 +257,7 @@ test("formats Codex user-agent with dynamic version fallback", () => {
   expect(codexUserAgent(null)).toBe("codex_exec");
 });
 
-test("runCodexConfig uses CODEX_HOME and refreshes an existing proxy provider", () => {
+test("runCodex --proxy writes the proxy provider at CODEX_HOME", () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
   process.env.HOME = dir;
   process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
@@ -271,7 +276,7 @@ test("runCodexConfig uses CODEX_HOME and refreshes an existing proxy provider", 
     ].join("\n"),
   );
 
-  runCodexConfig({});
+  runCodex({ proxy: true });
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
@@ -280,7 +285,7 @@ test("runCodexConfig uses CODEX_HOME and refreshes an existing proxy provider", 
   expect(readFileSync(join(codexHome, ".env"), "utf8")).toContain("OPENAI_API_KEY=");
 });
 
-test("runCodexConfig refreshes an existing direct provider", () => {
+test("runCodex --proxy and --direct force the selected provider (no probe)", () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
   process.env.HOME = dir;
   process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
@@ -298,73 +303,54 @@ test("runCodexConfig refreshes an existing direct provider", () => {
     ].join("\n"),
   );
 
-  runCodexConfig({});
-
-  const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
-  const provider = asRecord(asRecord(doc.model_providers)["github-copilot-direct"]);
-  expect(provider.base_url).toBe("https://api.githubcopilot.com");
-  expect(typeof asRecord(provider.http_headers)["User-Agent"]).toBe("string");
-});
-
-test("runCodexConfig normalizes custom or missing providers to direct", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
-  const codexHome = join(dir, "custom-codex-home");
-  process.env.CODEX_HOME = codexHome;
-  mkdirSync(codexHome, { recursive: true });
-  writeFileSync(
-    join(codexHome, "config.toml"),
-    [
-      'model_provider = "openai"',
-      "",
-      "[model_providers.openai]",
-      'base_url = "https://api.openai.com/v1"',
-      "",
-    ].join("\n"),
-  );
-
-  runCodexConfig({});
-
-  const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
-  expect(doc.model_provider).toBe("github-copilot-direct");
-});
-
-test("runCodexConfig --proxy and --direct force the selected provider", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
-  const codexHome = join(dir, "custom-codex-home");
-  process.env.CODEX_HOME = codexHome;
-  mkdirSync(codexHome, { recursive: true });
-  writeFileSync(
-    join(codexHome, "config.toml"),
-    [
-      'model_provider = "github-copilot-direct"',
-      "",
-      "[model_providers.github-copilot-direct]",
-      'base_url = "https://old.example"',
-      "",
-    ].join("\n"),
-  );
-
-  runCodexConfig({ proxy: true });
+  runCodex({ proxy: true });
   let doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
   expect(asRecord(asRecord(doc.model_providers)["copilot-env"]).base_url).toBe(
     "http://localhost:4141/v1",
   );
 
-  runCodexConfig({ direct: true });
+  runCodex({ direct: true });
   doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("github-copilot-direct");
   expect(asRecord(asRecord(doc.model_providers)["github-copilot-direct"]).base_url).toBe(
     "https://api.githubcopilot.com",
   );
 
-  expect(() => runCodexConfig({ proxy: true, direct: true })).toThrow(
-    "--proxy and --direct are mutually exclusive",
+  expect(() => runCodex({ proxy: true, direct: true })).toThrow(
+    "--direct, --proxy, and --auto are mutually exclusive",
   );
+});
+
+test("detectCodexDirect: true only when CLI+gh present, gh authed, and the probe succeeds", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
+  process.env.HOME = dir;
+  // A runProbe spy lets us prove the cheap gates short-circuit BEFORE the (here
+  // simulated) model call.
+  let probeCalls = 0;
+  const ok = {
+    resolveCommand: (c: string) => `/bin/${c}`,
+    ghAuthOk: () => true,
+    runProbe: () => {
+      probeCalls++;
+      return true;
+    },
+  };
+  expect(detectCodexDirect(ok)).toBe(true);
+  expect(probeCalls).toBe(1);
+  // The live read-only prompt failed -> proxy.
+  expect(detectCodexDirect({ ...ok, runProbe: () => false })).toBe(false);
+
+  // Each cheap gate miss returns false WITHOUT calling runProbe.
+  probeCalls = 0;
+  expect(detectCodexDirect({ ...ok, ghAuthOk: () => false })).toBe(false);
+  expect(
+    detectCodexDirect({ ...ok, resolveCommand: (c) => (c === "codex" ? null : `/bin/${c}`) }),
+  ).toBe(false);
+  expect(
+    detectCodexDirect({ ...ok, resolveCommand: (c) => (c === "gh" ? null : `/bin/${c}`) }),
+  ).toBe(false);
+  expect(probeCalls).toBe(0);
 });
 
 test("proxy mode rejects a base_url containing invalid characters", () => {

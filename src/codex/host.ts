@@ -1,20 +1,22 @@
 // Per-host Codex home manager: builds the per-host CODEX_HOME symlink farm (Linux/macOS).
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { createConsola } from "consola";
 import { execaSync } from "execa";
 import which from "which";
 import { CopilotApiState } from "../copilot_api/state.ts";
+import { assertSingleMode, resolveDirect } from "../utils/direct_probe.ts";
 import { getSanitizedHostname, HOME } from "../utils/hostname.ts";
-import { applyCodexConfig } from "./config.ts";
+import { createStderrLogger } from "../utils/logger.ts";
+import { applyCodexConfig, detectCodexDirect } from "./config.ts";
 
-const logger = createConsola({ stdout: process.stderr, stderr: process.stderr });
+const logger = createStderrLogger();
 
 export interface CodexHostArgs {
   "codex-home"?: string;
   delete?: boolean;
   direct?: boolean;
   proxy?: boolean;
+  auto?: boolean;
 }
 
 // The per-host CODEX_HOME (~/.codex/hosts/<hostname>). On Linux/macOS it builds and
@@ -506,10 +508,12 @@ function buildCodexSymlinkFarm(codexHome: string): number {
 }
 
 /**
- * `host_codex`: build the per-host CODEX_HOME symlink farm (Linux/macOS) at
- * `--codex-home` (default `~/.codex/hosts/<hostname>`), then write its config
- * and persist the CODEX_HOME to state so `env` exports it. With `--delete`,
- * remove that per-host dir and clear the state instead. No stdout.
+ * `agent codex --host`: build the per-host CODEX_HOME symlink farm (Linux/macOS)
+ * at `--codex-home` (default `~/.codex/hosts/<hostname>`), then write its config
+ * and persist the CODEX_HOME to state so `env` exports it. The provider mode is
+ * `--direct` / `--proxy` forced, or `--auto` (or no mode flag) auto-detected
+ * (direct when a live Copilot Direct probe succeeds, else proxy). With
+ * `--delete-host`, remove that per-host dir and clear the state instead. No stdout.
  */
 export function runCodexHost(args: CodexHostArgs): void {
   if (!assertUnix("The CODEX_HOME symlink farm (host_codex)")) return;
@@ -518,9 +522,7 @@ export function runCodexHost(args: CodexHostArgs): void {
   // directory.
   const codexHome = path.resolve(args["codex-home"] ?? getHostLocalCodexHome());
   const state = new CopilotApiState();
-  if (args.proxy && args.direct) {
-    throw new Error("--proxy and --direct are mutually exclusive");
-  }
+  assertSingleMode(args);
 
   if (args.delete) {
     fs.rmSync(codexHome, { recursive: true, force: true });
@@ -535,7 +537,12 @@ export function runCodexHost(args: CodexHostArgs): void {
       `Failed to build the CODEX_HOME symlink farm at ${codexHome} (a filesystem operation under it or ~/.codex failed — check permissions and free space)`,
     );
   }
-  applyCodexConfig(codexHome, { proxy: args.proxy });
+  // --direct/--proxy force the mode; --auto (or no flag) auto-detects.
+  const direct = resolveDirect(args, detectCodexDirect);
+  logger.info(
+    `Configuring the per-host Codex home for ${direct ? "GitHub Copilot Direct" : "the local copilot-api gateway proxy"} ...`,
+  );
+  applyCodexConfig(codexHome, { proxy: !direct });
   // Persist the active CODEX_HOME (opt-in: only set because a codex command ran).
   state.set({ codexHome });
 }

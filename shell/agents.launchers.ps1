@@ -1,9 +1,10 @@
 # Opt-in agent launchers (Windows / PowerShell) — dot-source this AFTER
-# agents.ps1 to enable the short `cl` / `co` / `cx` launchers. PowerShell
-# equivalent of agents.launchers.bashrc. They are intentionally NOT defined by
-# the always-on integration so these two-letter names never collide with a
-# user's own aliases unless explicitly enabled. Add to your $PROFILE, after the
-# copilot-env integration block:
+# agents.ps1 to enable the short `cl` / `co` / `cx` launchers (plus the
+# more-permissive `clx` / `cox` / `cxx` variants that add each agent's
+# most-relaxed flag). PowerShell equivalent of agents.launchers.bashrc.
+# They are intentionally NOT defined by the always-on integration so these short
+# names never collide with a user's own aliases unless explicitly enabled. Add
+# to your $PROFILE, after the copilot-env integration block:
 #
 #     . C:\path\to\agents.launchers.ps1
 #
@@ -93,3 +94,11 @@ function cx {
     }
     & codex @args
 }
+
+# More-permissive variants: same provider wiring as cl/co/cx, plus each agent's
+# most-relaxed flag (Claude skips permission prompts; Copilot allows all; Codex
+# opens a full-access sandbox). Delegate to the base launcher so the
+# gateway/provider logic lives in one place.
+function clx { cl --dangerously-skip-permissions @args }
+function cox { co --allow-all @args }
+function cxx { cx --sandbox danger-full-access @args }

@@ -1,8 +1,9 @@
 # Opt-in agent launchers — source this AFTER agents.bashrc to enable the
-# short `cl` / `co` / `cx` launchers. They are intentionally NOT defined by the
-# always-on integration so these two-letter names never collide with a user's
-# own aliases unless explicitly enabled. Add to your shell rc, after the
-# copilot-env integration block:
+# short `cl` / `co` / `cx` launchers (plus the more-permissive `clx` / `cox` /
+# `cxx` variants that add each agent's most-relaxed flag). They are intentionally
+# NOT defined by the always-on integration so these short names never collide
+# with a user's own aliases unless explicitly enabled. Add to your shell rc,
+# after the copilot-env integration block:
 #
 #     source /path/to/agents.launchers.bashrc
 #
@@ -100,3 +101,12 @@ function cx {
     fi
     command codex "$@"
 }
+
+
+# More-permissive variants: same provider wiring as cl/co/cx, plus each agent's
+# most-relaxed flag (Claude skips permission prompts; Copilot allows all; Codex
+# opens a full-access sandbox). Delegate to the base launcher so the
+# gateway/provider logic lives in one place.
+function clx { cl --dangerously-skip-permissions "$@"; }
+function cox { co --allow-all "$@"; }
+function cxx { cx --sandbox danger-full-access "$@"; }

@@ -97,6 +97,8 @@ The `cl` / `co` / `cx` launchers are opt-in:
 - `co` runs Copilot.
 - `cx` reads the configured Codex provider (`agent codex --check`), starts the gateway only for proxy-backed configs (re-syncing the port/token), then Codex.
 
+Each has a more-permissive variant that adds the agent's most-relaxed flag: `clx` (`--dangerously-skip-permissions`), `cox` (`--allow-all`), `cxx` (`--sandbox danger-full-access`).
+
 Enable them while installing optional CLIs:
 
 ```bash

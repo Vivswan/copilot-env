@@ -1,5 +1,24 @@
 # Changelog
 
+## [3.2.0](https://github.com/Vivswan/copilot-env/compare/v3.1.2...v3.2.0) (2026-06-10)
+
+
+### Features
+
+* add Claude Code provider wiring (GitHub Copilot Direct + gateway proxy) ([57c736a](https://github.com/Vivswan/copilot-env/commit/57c736a74f62d61abaa09522f4bccfb3e734c904))
+* agent init + codex/claude provider commands with live auto-detect ([c4518bc](https://github.com/Vivswan/copilot-env/commit/c4518bcf7ad1ebee5cadb8a01c30dcfe532527d8))
+* configure agents via their own config files; agent env exports CODEX_HOME only ([e7d250f](https://github.com/Vivswan/copilot-env/commit/e7d250f6b67321232a2b7c7f451b35a825a6dd5a))
+* support direct Copilot provider mode ([76ad1c8](https://github.com/Vivswan/copilot-env/commit/76ad1c858e999473073c2953e46787cfc62b9144))
+* support setup-codex-host on macOS and render CLI errors as friendly messages ([ae3d726](https://github.com/Vivswan/copilot-env/commit/ae3d726ff2d1fa8d93cfa0926f176ba10d4525b0))
+
+
+### Bug Fixes
+
+* launch agent CLI shims via cmd.exe on Windows for Direct auto-detect ([aa5ec55](https://github.com/Vivswan/copilot-env/commit/aa5ec551398534877471918c72fcf57de8780036))
+* make error and warning messages clearer and more actionable ([a7d97d7](https://github.com/Vivswan/copilot-env/commit/a7d97d755537591ac2e9a9e078cccadb0a14252b))
+* probe gh auth once per health run to avoid a double-spawn timeout ([77f48ac](https://github.com/Vivswan/copilot-env/commit/77f48ace2e59c7a03e438c70263a624834a2f0b8))
+* probe gh auth without blocking health; widen health smoke-test budgets ([1c65fe2](https://github.com/Vivswan/copilot-env/commit/1c65fe2e16e9c04855d4243f7f18e0502083e4ec))
+
 ## [3.1.2](https://github.com/Vivswan/copilot-env/compare/v3.1.1...v3.1.2) (2026-06-09)
 
 

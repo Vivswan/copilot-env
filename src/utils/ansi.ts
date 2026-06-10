@@ -1,7 +1,6 @@
-// Shared ANSI styling with NO_COLOR/CI/TEST gating, used by the CLI help screen
-// and the `agent health` report so both style identically and the gating lives in
-// one place. Color codes mirror citty's own (its src/_color.ts) so the hand-rolled
-// help screen matches citty-rendered subcommand help.
+// Shared ANSI styling with NO_COLOR/CI/TEST gating, used by the `agent health`
+// report (and any other styled output) so the gating lives in one place. Color
+// codes follow the conventional SGR palette; Commander renders its own help.
 const NO_COLOR = (() => {
   const env = process.env;
   return Boolean(env.NO_COLOR === "1" || env.TERM === "dumb" || env.TEST || env.CI);

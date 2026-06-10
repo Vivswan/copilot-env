@@ -29,13 +29,13 @@ function isolatedProxyEnv(extra: Record<string, string> = {}): Record<string, st
   return isolatedEnv({ CODEX_HOME: codexHome, ...extra });
 }
 
-// End-to-end smoke test: the citty CLI must load its whole import graph and
+// End-to-end smoke test: the Commander CLI must load its whole import graph and
 // print help without a running daemon or any auth. Catches wiring/import
 // regressions that unit tests on individual modules would miss.
 //
-// CONSOLA_LEVEL is forced because citty renders usage via consola, which
-// silences itself when it detects a "test" environment (as `bun test` is) --
-// that suppression is a harness artifact; a real terminal prints normally.
+// CONSOLA_LEVEL is forced for the run* command output (consola silences itself
+// when it detects a "test" environment, as `bun test` is); Commander prints its
+// own help to stdout directly, independent of consola.
 test("`cli.ts --help` loads the CLI and exits 0", () => {
   const proc = Bun.spawnSync(["bun", "src/cli.ts", "--help"], {
     stdout: "pipe",

@@ -1,5 +1,23 @@
 # Changelog
 
+## [3.3.0](https://github.com/Vivswan/copilot-env/compare/v3.2.0...v3.3.0) (2026-06-10)
+
+
+### Features
+
+* **codex:** add --mobile to pair the Codex app with phone remote-control ([6449597](https://github.com/Vivswan/copilot-env/commit/6449597b6e15cd10923902708577c6262355b54d))
+* **codex:** disable image_generation in Direct mode, drop it for proxy ([dba197e](https://github.com/Vivswan/copilot-env/commit/dba197ecab388cc2274b3512b0a38dd6642f4fe8))
+* **codex:** drive the Codex app on Windows for --mobile; gate Linux ([a5a61c1](https://github.com/Vivswan/copilot-env/commit/a5a61c1eb4ec981b67bc4e77a2e6d5655e5e8aa5))
+* rename the local service from 'gateway' to 'proxy' and polish CLI output ([421fc07](https://github.com/Vivswan/copilot-env/commit/421fc07f1e7c7aa9de0f6c8f67bbe5e3737c3a2d))
+
+
+### Bug Fixes
+
+* add clx/cox/cxx permissive launcher variants ([d5117cd](https://github.com/Vivswan/copilot-env/commit/d5117cda9c46b8bed35043d840729ce30c91f29d))
+* added on auto-detect to README; warn on Direct ([0520dd5](https://github.com/Vivswan/copilot-env/commit/0520dd50454ea501dc11edc4bfa7d01c97b32c3d))
+* align agent cost bullet in init guidance box ([ec0565e](https://github.com/Vivswan/copilot-env/commit/ec0565e3ac0afc8e131e85fb6bbe6898096881f0))
+* harden Direct auto-detect probe with retry + env sanitization ([8ca98b6](https://github.com/Vivswan/copilot-env/commit/8ca98b6fee39bff60c250634a33704014f4e6d62))
+
 ## [3.2.0](https://github.com/Vivswan/copilot-env/compare/v3.1.2...v3.2.0) (2026-06-10)
 
 

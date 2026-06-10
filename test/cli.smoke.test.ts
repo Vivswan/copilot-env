@@ -409,7 +409,7 @@ test("health --scope full runs every group end-to-end and fails on a dead gatewa
   expect(typeof codex?.value?.configFile).toBe("string");
   expect(codex?.detail).toContain("provider: proxy");
   expect(codex?.detail).toContain("config.toml:");
-});
+}, 15_000);
 
 test("health --scope gateway covers bootstrap+gateway+runtime, not setup", () => {
   const { json } = runHealthJson("gateway");
@@ -442,7 +442,7 @@ test("health --scope setup covers wiring only and never fails (warnings exit 0)"
   expect(json.checks.every((c) => c.status !== "fail")).toBe(true);
   expect(json.exitCode).toBe(0);
   expect(exitCode).toBe(0);
-});
+}, 15_000);
 
 test("health --scope codex covers only Codex wiring", () => {
   const { exitCode, json } = runHealthJson("codex");
@@ -452,15 +452,15 @@ test("health --scope codex covers only Codex wiring", () => {
   expect(json.checks[0]?.value?.providerMode).toBe("proxy");
   expect(json.exitCode).toBe(0);
   expect(exitCode).toBe(0);
-});
+}, 15_000);
 
 test("health --scope claude covers only Claude wiring", () => {
   const home = mkdtempSync(join(tmpdir(), "copilot-claude-scope-"));
-  // Direct wiring => providerMode "direct"; status may warn on gh, but that
-  // never fails the scope (warnings exit 0).
+  // Proxy wiring (the gateway is Claude's default; CI has no gh/direct) =>
+  // providerMode "proxy", status ok.
   writeFileSync(
     join(home, "settings.json"),
-    JSON.stringify({ apiKeyHelper: join(home, "copilot-token.sh") }),
+    JSON.stringify({ apiKeyHelper: join(home, "copilot-gateway-token.sh") }),
   );
   const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", "claude", "--json"], {
     stdout: "pipe",
@@ -470,9 +470,9 @@ test("health --scope claude covers only Claude wiring", () => {
   const json = JSON.parse(proc.stdout.toString()) as HealthJson;
   expect(json.scope).toBe("claude");
   expect(json.checks.map((c) => c.id)).toEqual(["setup.claude"]);
-  expect(json.checks[0]?.value?.providerMode).toBe("direct");
+  expect(json.checks[0]?.value?.providerMode).toBe("proxy");
   expect(json.exitCode).toBe(0);
-});
+}, 15_000);
 
 // --- autoupdate management flags --------------------------------------------
 

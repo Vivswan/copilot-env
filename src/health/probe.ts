@@ -3,7 +3,7 @@
 // tracked-pid check still spawns `ps`/PowerShell exactly as the original health
 // command did). Pure sub-evaluators (evalShellFiles, evalCodex) take raw content
 // so they unit-test without touching the world.
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -153,7 +153,7 @@ export interface ProbeDeps {
   gatewayCooldownSeconds(): number;
   codexHome(): string;
   codexTokenInEnviron(): boolean;
-  codexDirectAuth(): CodexDirectAuthFacts;
+  codexDirectAuth(): Promise<CodexDirectAuthFacts>;
   claudeHome(): string;
   hostCodexHome(): string;
   dirExists(path: string): boolean;
@@ -182,15 +182,22 @@ function readFileSafe(path: string): string | null {
   }
 }
 
-function codexDirectAuth(): CodexDirectAuthFacts {
+function codexDirectAuth(): Promise<CodexDirectAuthFacts> {
   const command = resolveCommand("gh");
-  if (command === null) return { command: null, authenticated: false };
-  const result = spawnSync("gh", ["auth", "token"], {
-    stdio: "ignore",
-    timeout: 5000,
-    windowsHide: true,
+  if (command === null) return Promise.resolve({ command: null, authenticated: false });
+  // Async (non-blocking) so it runs concurrently with the other probes under
+  // gatherFacts' Promise.all, instead of freezing the event loop for the whole
+  // `gh auth token` call. stdio:"ignore" keeps the printed token out of our
+  // process memory. A timeout (SIGTERM) or any non-zero exit => authenticated:false.
+  return new Promise((resolve) => {
+    const child = spawn("gh", ["auth", "token"], {
+      stdio: "ignore",
+      timeout: 5000,
+      windowsHide: true,
+    });
+    child.on("error", () => resolve({ command, authenticated: false }));
+    child.on("close", (code) => resolve({ command, authenticated: code === 0 }));
   });
-  return { command, authenticated: result.status === 0 };
 }
 
 export function defaultProbeDeps(): ProbeDeps {
@@ -312,11 +319,12 @@ export async function gatherFacts(
   const facts: HealthFacts = {};
 
   // gh auth backs BOTH Codex and Claude direct mode; probe it at most once per
-  // run. codexDirectAuth is a blocking spawnSync, so calling it from both the
-  // codex and claude jobs on `--scope full` would serialize into two ~5s gh
-  // spawns and trip the health timeout.
-  let directAuthCache: CodexDirectAuthFacts | undefined;
-  const sharedDirectAuth = (): CodexDirectAuthFacts => (directAuthCache ??= deps.codexDirectAuth());
+  // run, and asynchronously, so the single ~5s `gh auth token` call overlaps with
+  // the other probes under Promise.all instead of serializing into the health
+  // timeout. Both jobs await the same cached promise.
+  let directAuthCache: Promise<CodexDirectAuthFacts> | undefined;
+  const sharedDirectAuth = (): Promise<CodexDirectAuthFacts> =>
+    (directAuthCache ??= deps.codexDirectAuth());
 
   const jobs: Promise<void>[] = [];
 
@@ -390,7 +398,7 @@ export async function gatherFacts(
           envText,
           port,
           deps.codexTokenInEnviron(),
-          sharedDirectAuth(),
+          await sharedDirectAuth(),
         );
       })(),
     );
@@ -402,7 +410,7 @@ export async function gatherFacts(
         const home = deps.claudeHome();
         const settingsText = deps.readFileSafe(join(home, "settings.json"));
         // Direct mode authenticates via `gh auth token`, same probe as Codex.
-        facts.claude = evalClaude(home, settingsText, sharedDirectAuth());
+        facts.claude = evalClaude(home, settingsText, await sharedDirectAuth());
       })(),
     );
   }

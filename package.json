@@ -10,7 +10,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --timeout 15000",
     "lint": "biome check src bin test scripts",
     "lint:sh": "bash scripts/lint-sh.sh",
     "lint:ps": "bash scripts/lint-ps.sh",

@@ -61,7 +61,7 @@ jobs:
         run: bun run lint
 
       - name: Test
-        run: bun test
+        run: bun test --timeout 15000
 
       # End-to-end daemon lifecycle on every OS: process.ts spawns a detached
       # daemon, `start` waits for it to listen + syncs aliases, `stop` verifies

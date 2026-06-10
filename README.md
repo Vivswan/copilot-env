@@ -76,6 +76,9 @@ agent setup-codex-config --proxy   # force the local copilot-api gateway provide
 agent setup-codex-config --direct  # force GitHub Copilot Direct
 agent setup-codex-config --check  # print provider mode; exits 0 direct, 2 proxy, 1 other/error
 agent setup-codex-host     # per-host CODEX_HOME symlink farm (Linux/macOS, direct by default)
+agent setup-claude-config --direct  # wire ~/.claude for GitHub Copilot Direct (apiKeyHelper + base URL)
+agent setup-claude-config --proxy   # remove the managed direct wiring; use the local gateway
+agent setup-claude-config --check  # print Claude provider mode; exits 0 direct, 2 proxy, 1 other/error
 ```
 
 Once the profile is wired, the same commands run via `agent` on Windows too (or

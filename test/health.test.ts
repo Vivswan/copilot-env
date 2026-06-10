@@ -11,6 +11,7 @@ import {
 import {
   checkAutoupdate,
   checkBun,
+  checkClaude,
   checkCli,
   checkCliVersion,
   checkCodex,
@@ -26,6 +27,7 @@ import {
 } from "../src/health/checks.ts";
 import {
   type BootstrapFacts,
+  type ClaudeFacts,
   type CodexFacts,
   evalCodex,
   evalShellFiles,
@@ -102,7 +104,7 @@ test("filterByScope keeps only participating checks, preserving order", () => {
 });
 
 test("isHealthScope narrows known scopes and rejects others", () => {
-  for (const s of ["full", "runtime", "gateway", "setup", "codex"]) {
+  for (const s of ["full", "runtime", "gateway", "setup", "codex", "claude"]) {
     expect(isHealthScope(s)).toBe(true);
   }
   expect(isHealthScope("bogus")).toBe(false);
@@ -356,6 +358,71 @@ test("codex: not configured is ok; each broken part warns with a precise message
   expect(directUnauthed.status).toBe("warn");
   expect(directUnauthed.detail).toContain("not authenticated");
   expect(directUnauthed.fix).toBe("gh auth login");
+});
+
+test("checkClaude: direct needs gh; proxy/other are informational ok", () => {
+  const direct: ClaudeFacts = {
+    home: "/h/.claude",
+    settingsPath: join("/h/.claude", "settings.json"),
+    settingsExists: true,
+    apiKeyHelper: join("/h/.claude", "copilot-token.sh"),
+    helperIsManaged: true,
+    baseUrl: "https://api.githubcopilot.com",
+    baseUrlIsManaged: true,
+    providerMode: "direct",
+    directAuth: { command: "/bin/gh", authenticated: true },
+  };
+  const directOk = checkClaude(direct);
+  expect(directOk.status).toBe("ok");
+  expect(directOk.detail).toContain("provider: direct");
+  expect(directOk.detail).toContain("ANTHROPIC_BASE_URL → https://api.githubcopilot.com");
+  expect(directOk.detail).toContain("authenticated via /bin/gh");
+
+  const missingGh = checkClaude({ ...direct, directAuth: { command: null, authenticated: false } });
+  expect(missingGh.status).toBe("warn");
+  expect(missingGh.detail).toContain("GitHub CLI not found");
+  expect(missingGh.fix).toBe("install gh and run gh auth login");
+
+  const unauthed = checkClaude({
+    ...direct,
+    directAuth: { command: "/bin/gh", authenticated: false },
+  });
+  expect(unauthed.status).toBe("warn");
+  expect(unauthed.detail).toContain("not authenticated");
+  expect(unauthed.fix).toBe("gh auth login");
+
+  // Direct helper present but the managed base URL was dropped/altered: warn.
+  const staleBase = checkClaude({ ...direct, baseUrl: null, baseUrlIsManaged: false });
+  expect(staleBase.status).toBe("warn");
+  expect(staleBase.detail).toContain("(missing)");
+  expect(staleBase.fix).toBe("agent setup-claude-config --direct");
+
+  // Proxy (default): no managed direct markers — Claude uses the gateway.
+  const proxy = checkClaude({
+    ...direct,
+    apiKeyHelper: null,
+    helperIsManaged: false,
+    baseUrl: null,
+    baseUrlIsManaged: false,
+    providerMode: "proxy",
+    directAuth: { command: null, authenticated: false },
+  });
+  expect(proxy.status).toBe("ok");
+  expect(proxy.detail).toContain("provider: proxy");
+  expect(proxy.detail).toContain("local copilot-api gateway");
+
+  // Custom apiKeyHelper the user set — left alone, reported informationally.
+  const other = checkClaude({
+    ...direct,
+    apiKeyHelper: "/opt/x/helper.sh",
+    helperIsManaged: false,
+    baseUrl: null,
+    baseUrlIsManaged: false,
+    providerMode: "other",
+  });
+  expect(other.status).toBe("ok");
+  expect(other.detail).toContain("provider: other");
+  expect(other.detail).toContain("not managed");
 });
 
 // --- pure sub-evaluators ----------------------------------------------------

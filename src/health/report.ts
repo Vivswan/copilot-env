@@ -5,13 +5,14 @@ import { bold, gray, green, red, yellow } from "../utils/ansi.ts";
 import { worstStatus } from "./aggregate.ts";
 import type { CheckGroup, CheckResult, CheckStatus, HealthScope } from "./types.ts";
 
-const GROUP_ORDER: CheckGroup[] = ["bootstrap", "gateway", "runtime", "setup", "codex"];
+const GROUP_ORDER: CheckGroup[] = ["bootstrap", "gateway", "runtime", "setup", "codex", "claude"];
 const GROUP_LABEL: Record<CheckGroup, string> = {
   bootstrap: "Bootstrap",
   gateway: "Gateway",
   runtime: "Runtime",
   setup: "Setup",
   codex: "Codex",
+  claude: "Claude",
 };
 
 function glyph(status: CheckStatus): string {

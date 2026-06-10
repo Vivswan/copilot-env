@@ -301,6 +301,10 @@ function printCostReport(
     console.log(`  Unpriced (excluded from total): ${estimate.unpriced.join(", ")}`);
   }
   console.log();
+  console.log(
+    "  Note: only gateway (proxy) usage is recorded. Direct GitHub Copilot usage (codex/claude in --direct mode) bypasses the gateway and is not tracked here.",
+  );
+  console.log();
 }
 
 /** Build the `--json` payload. */
@@ -321,5 +325,6 @@ function buildCostJson(
     avgCostPerDayUsd:
       report.activeDays > 0 ? Math.round((estimate.totalUsd / div) * 10_000) / 10_000 : null,
     unpriced: estimate.unpriced,
+    note: "only gateway (proxy) usage is recorded; direct GitHub Copilot usage is not tracked",
   };
 }

@@ -17,6 +17,7 @@ import {
   runMain,
 } from "citty";
 import { consola } from "consola";
+import { runClaudeConfig } from "./claude/config.ts";
 import { runCodexConfig } from "./codex/config.ts";
 import { runCodexHost } from "./codex/host.ts";
 import { runEnv } from "./commands/env.ts";
@@ -132,7 +133,7 @@ const health = defineCommand({
       description:
         "Checks to run: full (default; whole environment) | runtime (fast gateway " +
         "readiness probe) | gateway (bootstrap + gateway + runtime) | setup (shell, " +
-        "CLIs, Codex) | codex (Codex wiring only).",
+        "CLIs, Codex, Claude) | codex (Codex wiring only) | claude (Claude wiring only).",
     },
     json: {
       type: "boolean",
@@ -223,6 +224,45 @@ const setupCodexConfig = defineCommand({
   run: ({ args }) =>
     runCodexConfig({
       "codex-home": args["codex-home"] as string | undefined,
+      check: Boolean(args.check),
+      direct: Boolean(args.direct),
+      proxy: Boolean(args.proxy),
+    }),
+});
+
+const setupClaudeConfig = defineCommand({
+  meta: {
+    name: "setup-claude-config",
+    description: "Wire ~/.claude/settings.json for GitHub Copilot Direct (or the gateway proxy).",
+  },
+  args: {
+    "claude-home": {
+      type: "string",
+      description:
+        "Claude home to operate on. Default: $CLAUDE_CONFIG_DIR, else ~/.claude " +
+        "(%USERPROFILE%\\.claude on Windows).",
+    },
+    proxy: {
+      type: "boolean",
+      default: false,
+      description: "Remove the managed direct wiring so Claude uses the local copilot-api gateway.",
+    },
+    direct: {
+      type: "boolean",
+      default: false,
+      description:
+        "Write GitHub Copilot Direct wiring (managed apiKeyHelper + ANTHROPIC_BASE_URL).",
+    },
+    check: {
+      type: "boolean",
+      default: false,
+      description:
+        "Check the effective Claude provider without changing config: exit 0 direct, 2 proxy, 1 other/error.",
+    },
+  },
+  run: ({ args }) =>
+    runClaudeConfig({
+      "claude-home": args["claude-home"] as string | undefined,
       check: Boolean(args.check),
       direct: Boolean(args.direct),
       proxy: Boolean(args.proxy),
@@ -462,6 +502,7 @@ const cli = defineCommand({
     "setup-clis": safe(setupClis),
     "setup-codex-config": safe(setupCodexConfig),
     "setup-codex-host": safe(setupCodexHost),
+    "setup-claude-config": safe(setupClaudeConfig),
   },
 });
 

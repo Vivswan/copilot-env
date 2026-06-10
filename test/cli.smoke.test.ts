@@ -66,7 +66,11 @@ for (const args of [["setup-shell"], ["setup-clis"], ["setup-launchers"]] as con
   });
 }
 
-for (const args of [["setup-codex-config"], ["setup-codex-host"]] as const) {
+for (const args of [
+  ["setup-codex-config"],
+  ["setup-codex-host"],
+  ["setup-claude-config"],
+] as const) {
   test(`cli.ts ${args.join(" ")} --help exposes provider modes`, () => {
     const proc = Bun.spawnSync(["bun", "src/cli.ts", ...args, "--help"], {
       stdout: "pipe",
@@ -188,6 +192,66 @@ test("setup-codex-config exposes and runs check mode", () => {
   expect(conflictingCheck.stderr.toString()).toContain(
     "--proxy and --direct are mutually exclusive",
   );
+});
+
+test("setup-claude-config exposes and runs check mode", () => {
+  const root = mkdtempSync(join(tmpdir(), "copilot-claude-check-"));
+  const directHome = join(root, "direct");
+  const proxyHome = join(root, "proxy");
+  const otherHome = join(root, "other");
+  const noneHome = join(root, "none"); // no settings.json at all
+  mkdirSync(directHome, { recursive: true });
+  mkdirSync(proxyHome, { recursive: true });
+  mkdirSync(otherHome, { recursive: true });
+  mkdirSync(noneHome, { recursive: true });
+  writeFileSync(
+    join(directHome, "settings.json"),
+    JSON.stringify({ apiKeyHelper: join(directHome, "copilot-token.sh") }),
+  );
+  writeFileSync(join(proxyHome, "settings.json"), JSON.stringify({ model: "sonnet" }));
+  writeFileSync(
+    join(otherHome, "settings.json"),
+    JSON.stringify({ apiKeyHelper: "/opt/x/helper.sh" }),
+  );
+
+  const help = Bun.spawnSync(["bun", "src/cli.ts", "setup-claude-config", "--help"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, CONSOLA_LEVEL: "5" },
+  });
+  expect(help.stdout.toString() + help.stderr.toString()).toContain("--check");
+
+  const runCheck = (home: string) =>
+    Bun.spawnSync(["bun", "src/cli.ts", "setup-claude-config", "--check", "--claude-home", home], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: isolatedEnv(),
+    });
+
+  const direct = runCheck(directHome);
+  expect(direct.exitCode).toBe(0);
+  expect(direct.stdout.toString()).toContain("Claude provider mode: direct");
+  expect(direct.stdout.toString()).toContain(`settings.json: ${join(directHome, "settings.json")}`);
+
+  const proxy = runCheck(proxyHome);
+  expect(proxy.exitCode).toBe(2);
+  expect(proxy.stdout.toString()).toContain("Claude provider mode: proxy");
+
+  // No settings.json at all is still "proxy" (the gateway is Claude's default).
+  const none = runCheck(noneHome);
+  expect(none.exitCode).toBe(2);
+  expect(none.stdout.toString()).toContain("Claude provider mode: proxy");
+
+  const other = runCheck(otherHome);
+  expect(other.exitCode).toBe(1);
+  expect(other.stdout.toString()).toContain("Claude provider mode: other");
+
+  const conflicting = Bun.spawnSync(
+    ["bun", "src/cli.ts", "setup-claude-config", "--proxy", "--direct", "--claude-home", proxyHome],
+    { stdout: "pipe", stderr: "pipe", env: isolatedEnv() },
+  );
+  expect(conflicting.exitCode).toBe(1);
+  expect(conflicting.stderr.toString()).toContain("--proxy and --direct are mutually exclusive");
 });
 
 test("the launcher flag lives on setup-clis, not setup-shell", () => {

@@ -2,10 +2,12 @@
 // gathered by probe.ts, so each check is independently unit-testable.
 import { join } from "node:path";
 import type { AutoupdateData } from "../autoupdate/state.ts";
+import { DIRECT_BASE_URL } from "../claude/config.ts";
 import type { GatewayVersionStatus } from "../copilot_api/version.ts";
 import { SECONDS_PER_DAY } from "../utils/time.ts";
 import type {
   BootstrapFacts,
+  ClaudeFacts,
   CliFacts,
   CodexFacts,
   CodexHostFacts,
@@ -20,6 +22,7 @@ const RUNTIME: readonly HealthScope[] = ["full", "gateway", "runtime"];
 const BOOTSTRAP: readonly HealthScope[] = ["full", "gateway"];
 const SETUP: readonly HealthScope[] = ["full", "setup"];
 const CODEX: readonly HealthScope[] = ["full", "setup", "codex"];
+const CLAUDE: readonly HealthScope[] = ["full", "setup", "claude"];
 
 export function checkCliVersion(f: BootstrapFacts): CheckResult {
   return {
@@ -365,6 +368,77 @@ export function checkCodexHost(f: CodexHostFacts): CheckResult {
   return { ...base, status: "ok", detail: why };
 }
 
+/** Report Claude Code wiring (~/.claude/settings.json): direct / proxy / custom. */
+export function checkClaude(f: ClaudeFacts): CheckResult {
+  const base = {
+    id: "setup.claude",
+    label: "Claude wiring",
+    group: "claude" as const,
+    scopes: CLAUDE,
+    value: {
+      home: f.home,
+      settingsFile: f.settingsPath,
+      settingsExists: f.settingsExists,
+      providerMode: f.providerMode,
+      apiKeyHelper: f.apiKeyHelper,
+      baseUrl: f.baseUrl,
+      directAuth: f.directAuth,
+    },
+  };
+  if (f.providerMode === "direct") {
+    // Direct needs gh to mint the token (via the managed apiKeyHelper) AND the
+    // managed ANTHROPIC_BASE_URL — a user could keep the helper but drop/alter
+    // the base URL, which would silently route Claude to the wrong endpoint.
+    const authOk = f.directAuth.command !== null && f.directAuth.authenticated;
+    const authDetail =
+      f.directAuth.command === null
+        ? "gh auth: GitHub CLI not found"
+        : f.directAuth.authenticated
+          ? `gh auth: authenticated via ${f.directAuth.command}`
+          : `gh auth: ${f.directAuth.command} is not authenticated`;
+    const status = authOk && f.baseUrlIsManaged ? "ok" : "warn";
+    const fix = !f.baseUrlIsManaged
+      ? "agent setup-claude-config --direct"
+      : f.directAuth.command === null
+        ? "install gh and run gh auth login"
+        : "gh auth login";
+    return {
+      ...base,
+      status,
+      detail: [
+        "provider: direct",
+        `settings.json: ${f.settingsPath}`,
+        `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${
+          f.baseUrlIsManaged ? "" : ` (expected ${DIRECT_BASE_URL})`
+        }`,
+        authDetail,
+      ].join("\n"),
+      ...(status === "ok" ? {} : { fix }),
+    };
+  }
+  if (f.providerMode === "other") {
+    return {
+      ...base,
+      status: "ok",
+      detail: [
+        "provider: other",
+        `settings.json: ${f.settingsPath}`,
+        `custom apiKeyHelper/ANTHROPIC_BASE_URL set (${f.apiKeyHelper ?? f.baseUrl}); not managed`,
+      ].join("\n"),
+    };
+  }
+  // proxy (default): the local gateway backs Claude via the shell's ANTHROPIC_* env.
+  return {
+    ...base,
+    status: "ok",
+    detail: [
+      "provider: proxy",
+      `settings.json: ${f.settingsPath}`,
+      "Claude uses the local copilot-api gateway (ANTHROPIC_* env from `agent env`)",
+    ].join("\n"),
+  };
+}
+
 /** Report opt-in autoupdate status (mirrors `agent update --auto-status`). */
 export function checkAutoupdate(f: AutoupdateData): CheckResult {
   const base = {
@@ -422,6 +496,7 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
   }
   if (facts.codex) out.push(checkCodex(facts.codex));
   if (facts.codexHost) out.push(checkCodexHost(facts.codexHost));
+  if (facts.claude) out.push(checkClaude(facts.claude));
   if (facts.autoupdate) out.push(checkAutoupdate(facts.autoupdate));
   return out.filter((r) => r.scopes.includes(scope));
 }

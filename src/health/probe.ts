@@ -8,6 +8,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { type AutoupdateData, AutoupdateState } from "../autoupdate/state.ts";
+import {
+  type ClaudeWiringStatus,
+  claudeHelperPath,
+  inspectClaudeWiring,
+  resolveClaudeHome,
+} from "../claude/config.ts";
 import { CODEX_ENV_KEY, type CodexWiringStatus, inspectCodexWiring } from "../codex/config.ts";
 import { getHostLocalCodexHome } from "../codex/host.ts";
 import { AGENT_CLIS, resolveCommand } from "../commands/setup.ts";
@@ -98,6 +104,13 @@ export interface CodexDirectAuthFacts {
 /** Codex wiring facts: the home being inspected plus the wiring contract status. */
 export type CodexFacts = CodexWiringStatus & { home: string; directAuth: CodexDirectAuthFacts };
 
+/** Claude wiring facts: the home + settings.json contract + gh-auth (for direct). */
+export type ClaudeFacts = ClaudeWiringStatus & {
+  home: string;
+  settingsPath: string;
+  directAuth: CodexDirectAuthFacts;
+};
+
 export interface CodexHostFacts {
   /** The per-host CODEX_HOME farm needs POSIX symlinks (Linux/macOS, not Windows). */
   supported: boolean;
@@ -118,6 +131,7 @@ export interface HealthFacts {
   tools?: ToolFacts;
   codex?: CodexFacts;
   codexHost?: CodexHostFacts;
+  claude?: ClaudeFacts;
   autoupdate?: AutoupdateData;
 }
 
@@ -141,6 +155,7 @@ export interface ProbeDeps {
   codexHome(): string;
   codexTokenInEnviron(): boolean;
   codexDirectAuth(): CodexDirectAuthFacts;
+  claudeHome(): string;
   hostCodexHome(): string;
   dirExists(path: string): boolean;
   readAutoupdate(): AutoupdateData;
@@ -212,6 +227,9 @@ export function defaultProbeDeps(): ProbeDeps {
       new CopilotApiState().read().codexHome ?? process.env.CODEX_HOME ?? join(homedir(), ".codex"),
     codexTokenInEnviron: () => Boolean(process.env[CODEX_ENV_KEY]),
     codexDirectAuth,
+    // Claude's direct mode also authenticates via `gh auth token`, so it reuses
+    // the same probe. Effective Claude home matches resolveClaudeHome precedence.
+    claudeHome: () => resolveClaudeHome(),
     hostCodexHome: getHostLocalCodexHome,
     dirExists: (path: string) => existsSync(path),
     readAutoupdate: () => new AutoupdateState().read(),
@@ -264,12 +282,26 @@ export function evalCodex(
   };
 }
 
+export function evalClaude(
+  home: string,
+  settingsText: string | null,
+  directAuth: CodexDirectAuthFacts = { command: null, authenticated: false },
+): ClaudeFacts {
+  return {
+    home,
+    settingsPath: join(home, "settings.json"),
+    directAuth,
+    ...inspectClaudeWiring(settingsText, claudeHelperPath(home)),
+  };
+}
+
 // --- orchestration ----------------------------------------------------------
 
 const SCOPE_RUNTIME: readonly HealthScope[] = ["full", "gateway", "runtime"];
 const SCOPE_BOOTSTRAP: readonly HealthScope[] = ["full", "gateway"];
 const SCOPE_SETUP: readonly HealthScope[] = ["full", "setup"];
 const SCOPE_CODEX: readonly HealthScope[] = ["full", "setup", "codex"];
+const SCOPE_CLAUDE: readonly HealthScope[] = ["full", "setup", "claude"];
 
 /** Gather exactly the facts `scope` needs, running independent probes concurrently. */
 export async function gatherFacts(
@@ -354,6 +386,17 @@ export async function gatherFacts(
           deps.codexTokenInEnviron(),
           deps.codexDirectAuth(),
         );
+      })(),
+    );
+  }
+
+  if (SCOPE_CLAUDE.includes(scope)) {
+    jobs.push(
+      (async () => {
+        const home = deps.claudeHome();
+        const settingsText = deps.readFileSafe(join(home, "settings.json"));
+        // Direct mode authenticates via `gh auth token`, same probe as Codex.
+        facts.claude = evalClaude(home, settingsText, deps.codexDirectAuth());
       })(),
     );
   }

@@ -20,7 +20,7 @@ The non-obvious choices live here; everything else is discoverable in the code.
 
 - `bin/agent`, `bin/agent.ps1` — self-bootstrapping launchers (install bun + deps, dispatch `cli.ts`).
 - `shell/agents.bashrc`, `shell/agents.ps1` — shell integration (sourced from rc / `$PROFILE`); the `agent` wrapper + eager gateway-env export. Pure runtime wiring, never installs.
-- `shell/agents.launchers.bashrc`, `shell/agents.launchers.ps1` — opt-in `cl`/`co`/`cx` agent launchers, sourced after the integration file (`cx` re-applies `setup-codex-config` before launch). Wired with `agent setup-clis --launchers` or `agent setup-launchers`, removed with `agent setup-launchers --remove`; otherwise source manually.
+- `shell/agents.launchers.bashrc`, `shell/agents.launchers.ps1` — opt-in `cl`/`co`/`cx` agent launchers, sourced after the integration file (`cx`/`cl` re-apply `setup-codex-config`/`setup-claude-config` before launch). Wired with `agent setup-clis --launchers` or `agent setup-launchers`, removed with `agent setup-launchers --remove`; otherwise source manually.
 - `install.sh`, `install.ps1` — one-line bootstrap installers: ensure bun, download the latest release source archive to `~/.copilot-env`, verify its source checksum against GitHub release metadata, replace any previous install at the target dir, then run release-local `src/install/installer.ts` to bootstrap deps and wire shell integration. Optional agent CLIs live under `agent setup-clis`. Version-specific installer copies are uploaded as release assets by `.github/workflows/release-please.yml` after release creation.
 - `src/install/installer.ts` — release-bundled first-install handoff; keep it dependency-light because it runs before `node_modules` exists.
 - `src/cli.ts` — citty entry; declares subcommands and delegates to command/domain `run*` functions.
@@ -31,6 +31,7 @@ The non-obvious choices live here; everything else is discoverable in the code.
 - `src/install/release.ts` — release archive download/verification/extraction/sync used by `agent update`.
 - `src/install/verify-source-archive.ts` — source-archive checksum verification against GitHub release metadata, shared by the installers and `agent update`.
 - `src/codex/` — Codex config and per-host `CODEX_HOME` farm logic.
+- `src/claude/` — Claude Code config wiring (`~/.claude/settings.json`): GitHub Copilot Direct vs the gateway proxy.
 - `src/migrations/` — one file per version step (`<from-version>.ts`, registered in `index.ts`); `agent update` runs the due ones for the `[old, new)` range. See "Migrations" below.
 - `src/copilot_api/` — gateway-specific helpers: admin REST, config/state JSON, model-alias generation, per-host paths, daemon process control.
 - `src/usage/` — `cost` reporting over per-host SQLite usage DBs using live OpenRouter pricing.
@@ -81,7 +82,7 @@ bun run lint:ps       # PSScriptAnalyzer (skip-if-absent)
 bun run check         # biome check --write src bin test scripts
 bun run format        # biome format --write src bin test scripts
 
-./bin/agent start     # start the daemon; also: stop / health / env / cost / update / setup-shell / setup-launchers / setup-clis / setup-codex-config / setup-codex-host
+./bin/agent start     # start the daemon; also: stop / health / env / cost / update / setup-shell / setup-launchers / setup-clis / setup-codex-config / setup-codex-host / setup-claude-config
 ./bin/agent env       # print shell env vars pointing at the local gateway
 ```
 

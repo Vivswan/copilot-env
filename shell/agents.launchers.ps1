@@ -46,7 +46,19 @@ function Confirm-CopilotServer {
 
 function cl {
     if (-not (Assert-AgentCli claude)) { return }
-    Confirm-CopilotServer
+    # Refresh Claude wiring. Existing direct config stays as-is; proxy/default is
+    # left on the gateway; missing/custom configs are not clobbered. Then branch
+    # on the provider mode: exit 0 = direct (Claude reads settings.json itself),
+    # 2 = proxy/default (ensure the gateway), else custom/error.
+    agent setup-claude-config
+    if ($LASTEXITCODE -ne 0) { return }
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 setup-claude-config --check *> $null
+    $claudeProviderStatus = $LASTEXITCODE
+    if ($claudeProviderStatus -eq 2) {
+        Confirm-CopilotServer
+    } elseif ($claudeProviderStatus -ne 0) {
+        return
+    }
     $env:CLAUDE_CODE_NO_FLICKER = '1'
     & claude --permission-mode auto --enable-auto-mode @args
 }

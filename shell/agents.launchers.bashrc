@@ -42,7 +42,25 @@ function _copilot_require_cli {
 
 function cl {
     _copilot_require_cli claude || return 1
-    _copilot_ensure_server || return $?
+    # Refresh Claude wiring. Existing direct config stays as-is; proxy/default is
+    # left on the gateway; missing/custom configs are not clobbered. Then branch
+    # on the provider mode: exit 0 = direct (Claude reads settings.json itself),
+    # 2 = proxy/default (ensure the gateway), else custom/error.
+    agent setup-claude-config || return $?
+    if "${_COPILOT_AGENTS_DIR}/bin/agent" setup-claude-config --check >/dev/null 2>&1; then
+        _claude_provider_status=0
+    else
+        _claude_provider_status=$?
+    fi
+    if [ "$_claude_provider_status" -eq 2 ]; then
+        unset _claude_provider_status
+        _copilot_ensure_server || return $?
+    elif [ "$_claude_provider_status" -eq 0 ]; then
+        unset _claude_provider_status
+    else
+        unset _claude_provider_status
+        return 1
+    fi
     export CLAUDE_CODE_NO_FLICKER=1
     command claude --permission-mode auto --enable-auto-mode "$@"
 }

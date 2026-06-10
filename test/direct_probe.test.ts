@@ -1,6 +1,33 @@
 import { expect, test } from "bun:test";
 
-import { assertSingleMode, resolveDirect } from "../src/utils/direct_probe.ts";
+import {
+  assertSingleMode,
+  DEFAULT_PROBE_RETRIES,
+  type ProbeDescriptor,
+  probeDirectWorks,
+  resolveDirect,
+} from "../src/utils/direct_probe.ts";
+
+// A throwaway descriptor: clears one provider var, points at a fake home env var.
+const FAKE_DESCRIPTOR: ProbeDescriptor = {
+  cli: "claude",
+  homeEnvVar: "CLAUDE_CONFIG_DIR",
+  args: (prompt) => ["-p", prompt],
+  clearEnv: ["ANTHROPIC_AUTH_TOKEN"],
+};
+
+type RunProbe = (cliPath: string, args: string[], env: Record<string, string>) => boolean;
+
+// Deps that pass every cheap gate so the live smoke call is reached; retries fire
+// with no real backoff so the suite stays fast.
+function passingDeps(runProbe: RunProbe) {
+  return {
+    resolveCommand: (c: string) => `/bin/${c}`,
+    ghAuthOk: () => true,
+    runProbe,
+    retryDelayMs: 0,
+  };
+}
 
 // --- assertSingleMode -------------------------------------------------------
 
@@ -42,4 +69,60 @@ test("resolveDirect: --direct/--proxy force without probing; --auto and no-flag 
   expect(resolveDirect({ auto: true }, detectFalse)).toBe(false);
   expect(resolveDirect({}, detectTrue)).toBe(true); // no flag == auto
   expect(resolveDirect({}, detectFalse)).toBe(false);
+});
+
+// --- probeDirectWorks: retry on transient failure ---------------------------
+
+test("probeDirectWorks retries the live smoke call and succeeds once it passes", () => {
+  let calls = 0;
+  const ok = probeDirectWorks(
+    FAKE_DESCRIPTOR,
+    () => {}, // no-op writeDirectConfig
+    passingDeps(() => {
+      calls++;
+      return calls >= 3; // fail twice (transient), then succeed
+    }),
+  );
+  expect(ok).toBe(true);
+  expect(calls).toBe(3);
+});
+
+test("probeDirectWorks falls back after exhausting retries", () => {
+  let calls = 0;
+  const ok = probeDirectWorks(
+    FAKE_DESCRIPTOR,
+    () => {},
+    passingDeps(() => {
+      calls++;
+      return false; // never succeeds
+    }),
+  );
+  expect(ok).toBe(false);
+  expect(calls).toBe(DEFAULT_PROBE_RETRIES + 1); // initial attempt + retries
+});
+
+// --- probeDirectWorks: env sanitization -------------------------------------
+
+test("probeDirectWorks strips the descriptor's provider vars from the child env", () => {
+  process.env.ANTHROPIC_AUTH_TOKEN = "leaked-token";
+  try {
+    let seen: Record<string, string> | null = null;
+    const ok = probeDirectWorks(
+      FAKE_DESCRIPTOR,
+      () => {},
+      passingDeps((_cli, _args, env) => {
+        seen = env;
+        return true;
+      }),
+    );
+    expect(ok).toBe(true);
+    expect(seen).not.toBeNull();
+    const env = seen as unknown as Record<string, string>;
+    // The leaked provider var is gone; the temp home + PATH are present.
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(env.CLAUDE_CONFIG_DIR).toBeTruthy();
+    expect(env.PATH).toBeTruthy();
+  } finally {
+    delete process.env.ANTHROPIC_AUTH_TOKEN;
+  }
 });

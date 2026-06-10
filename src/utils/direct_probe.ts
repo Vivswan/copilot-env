@@ -5,7 +5,11 @@
 // gateway proxy. Rather than guess, we WRITE a throwaway direct config into a temp
 // home and run the agent CLI's own read-only smoke prompt against it; exit 0 means
 // direct works. Cheap gates (CLI present, gh authenticated) run first so the
-// common "no gh auth" case — e.g. CI — returns instantly without a model call.
+// common "no gh auth" case — e.g. CI — returns instantly without a model call. Two
+// guards keep the live test honest: the child env is SANITIZED (the descriptor's
+// provider vars are dropped) so a leaked shell export can't hijack auth, and the
+// single live call is RETRIED so a transient blip doesn't silently flip a working
+// Direct setup to proxy.
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,6 +27,26 @@ export const PROBE_PROMPT = "Reply with the single word OK.";
 /** A live model call can be slow; cap it and treat a timeout as "direct failed". */
 export const PROBE_TIMEOUT_MS = 60_000;
 
+/** Retry the live smoke call this many times before concluding Direct fails. */
+export const DEFAULT_PROBE_RETRIES = 3;
+
+/** Base backoff before each retry (multiplied by the attempt index: 600ms, 1200ms). */
+export const DEFAULT_PROBE_RETRY_DELAY_MS = 600;
+
+/**
+ * A failed attempt that ran for ~this fraction of the timeout was a hang/outage,
+ * not a transient blip — retrying would just burn another PROBE_TIMEOUT_MS, so we
+ * stop and fall back immediately. Fast 4xx/5xx blips (the case worth retrying)
+ * return well under this.
+ */
+const TIMEOUT_RETRY_FRACTION = 0.9;
+
+/** Block the current thread for `ms` (the probe path is synchronous: spawnSync). */
+function sleepSyncMs(ms: number): void {
+  if (ms <= 0) return;
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /**
  * How to drive one agent CLI's read-only smoke test: the binary, the env var that
  * points it at a config home, and the argv for a given prompt. Shared by the
@@ -33,12 +57,23 @@ export interface ProbeDescriptor {
   cli: string;
   homeEnvVar: string;
   args: (prompt: string) => string[];
+  /**
+   * Provider env vars to DELETE from the probe child's environment so the
+   * throwaway temp config — not a leaked shell export — decides where and how the
+   * CLI authenticates. Without this a leaked `ANTHROPIC_AUTH_TOKEN` (which the CLI
+   * honors over the config's apiKeyHelper) or a gateway `*_BASE_URL` makes the
+   * "direct" smoke test authenticate the wrong way and fail even though Direct
+   * works. The health probe (src/health/probe.ts) deliberately does NOT clear
+   * these: it tests the user's real, fully-resolved environment.
+   */
+  clearEnv: string[];
 }
 
 export const CODEX_PROBE: ProbeDescriptor = {
   cli: "codex",
   homeEnvVar: "CODEX_HOME",
   args: (prompt) => ["exec", "--json", "--sandbox", "read-only", prompt],
+  clearEnv: ["OPENAI_API_KEY", "OPENAI_BASE_URL"],
 };
 
 export const CLAUDE_PROBE: ProbeDescriptor = {
@@ -53,6 +88,7 @@ export const CLAUDE_PROBE: ProbeDescriptor = {
     "stream-json",
     prompt,
   ],
+  clearEnv: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"],
 };
 
 /** Injectable I/O so unit tests decide the probe outcome without real model calls. */
@@ -63,6 +99,10 @@ export interface DirectProbeDeps {
   ghAuthOk?: (ghPath: string) => boolean;
   /** Run the agent CLI's read-only smoke prompt at its RESOLVED path; true = exit 0. */
   runProbe?: (cliPath: string, args: string[], env: Record<string, string>) => boolean;
+  /** Extra live-call retries on failure (default DEFAULT_PROBE_RETRIES). */
+  retries?: number;
+  /** Base backoff ms between retries (default DEFAULT_PROBE_RETRY_DELAY_MS; 0 in tests). */
+  retryDelayMs?: number;
 }
 
 /** The three mutually-exclusive provider-mode flags every agent command accepts. */
@@ -107,12 +147,15 @@ function defaultGhAuthOk(ghPath: string): boolean {
 
 function defaultRunProbe(cliPath: string, args: string[], env: Record<string, string>): boolean {
   const s = cliSpawn(cliPath, args);
+  // `env` is the COMPLETE child environment (process.env minus the descriptor's
+  // cleared provider vars, plus the temp home + PATH) — built by probeDirectWorks.
+  // Spawn with it verbatim; do NOT re-merge process.env or the cleared vars return.
   const result = spawnSync(s.file, s.args, {
     stdio: "ignore",
     timeout: PROBE_TIMEOUT_MS,
     windowsHide: true,
     shell: s.shell,
-    env: { ...process.env, ...env },
+    env,
   });
   return !result.error && result.status === 0;
 }
@@ -133,6 +176,8 @@ export function probeDirectWorks(
   const resolve = deps.resolveCommand ?? resolveCommand;
   const ghAuthOk = deps.ghAuthOk ?? defaultGhAuthOk;
   const runProbe = deps.runProbe ?? defaultRunProbe;
+  const retries = deps.retries ?? DEFAULT_PROBE_RETRIES;
+  const retryDelayMs = deps.retryDelayMs ?? DEFAULT_PROBE_RETRY_DELAY_MS;
 
   logger.log(`  Probing GitHub Copilot Direct for ${descriptor.cli} …`);
 
@@ -161,19 +206,41 @@ export function probeDirectWorks(
   try {
     tmpHome = mkdtempSync(join(tmpdir(), `copilot-env-${descriptor.cli}-`));
     writeDirectConfig(tmpHome);
-    // Put the resolved CLI's and gh's bin dirs on the child PATH: the CLI may be a
-    // node-shim and its direct config shells out to `gh` by name, so an nvm-only
-    // toolchain must be reachable even if the parent never sourced nvm.
-    const ok = runProbe(cliPath, descriptor.args(PROBE_PROMPT), {
-      [descriptor.homeEnvVar]: tmpHome,
-      PATH: childPathPrepending([dirname(cliPath), dirname(ghPath)]),
-    });
-    if (ok) {
-      logger.success("    GitHub Copilot Direct is available");
-    } else {
-      logger.log("    • the Direct smoke prompt did not succeed → using the local gateway proxy");
+    // Build the COMPLETE child environment: every inherited var EXCEPT the
+    // descriptor's provider vars (so a leaked ANTHROPIC_AUTH_TOKEN / gateway
+    // *_BASE_URL can't hijack the "direct" test), then the temp home + a PATH that
+    // puts the resolved CLI's and gh's bin dirs first (the CLI may be a node-shim
+    // and its direct config shells out to `gh` by name, so an nvm-only toolchain
+    // must be reachable even if the parent never sourced nvm).
+    const cleared = new Set(descriptor.clearEnv);
+    const childEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value !== undefined && !cleared.has(key)) childEnv[key] = value;
     }
-    return ok;
+    childEnv[descriptor.homeEnvVar] = tmpHome;
+    childEnv.PATH = childPathPrepending([dirname(cliPath), dirname(ghPath)]);
+
+    // The smoke call is a single live model call, so a transient blip (a fast
+    // 4xx/5xx, a momentary network hiccup) must not silently downgrade a working
+    // Direct setup to proxy. Retry on failure — but a near-timeout failure is a
+    // hang/outage, not a blip, so stop rather than burn another PROBE_TIMEOUT_MS.
+    const args = descriptor.args(PROBE_PROMPT);
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      if (attempt > 0) {
+        logger.log(
+          `    • smoke prompt failed; retrying (attempt ${attempt + 1} of ${retries + 1}) …`,
+        );
+        sleepSyncMs(retryDelayMs * attempt);
+      }
+      const startedAt = Date.now();
+      if (runProbe(cliPath, args, childEnv)) {
+        logger.success("    GitHub Copilot Direct is available");
+        return true;
+      }
+      if (Date.now() - startedAt >= PROBE_TIMEOUT_MS * TIMEOUT_RETRY_FRACTION) break;
+    }
+    logger.log("    • the Direct smoke prompt did not succeed → using the local gateway proxy");
+    return false;
   } catch (e) {
     logger.log(
       `    • the Direct probe errored (${e instanceof Error ? e.message : String(e)}) → using the local gateway proxy`,

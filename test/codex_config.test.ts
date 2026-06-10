@@ -335,6 +335,7 @@ test("detectCodexDirect: true only when CLI+gh present, gh authed, and the probe
       probeCalls++;
       return true;
     },
+    retryDelayMs: 0,
   };
   expect(detectCodexDirect(ok)).toBe(true);
   expect(probeCalls).toBe(1);

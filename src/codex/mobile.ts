@@ -3,8 +3,9 @@
 // DEFAULT OpenAI provider, so this temporarily removes the managed `model_provider`
 // from config.toml, walks the user through pairing in the app, then restores it.
 //
-// macOS drives the app programmatically (open / osascript quit / pgrep). Other
-// platforms fall back to "do X, then press Enter" prompts so the flow still works.
+// macOS and Windows drive the app programmatically (macOS: open/osascript/pgrep;
+// Windows: PowerShell Get-Process/Start-Process/Stop-Process). There is no Linux
+// Codex app, so `--mobile` is gated to macOS/Windows.
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { consola } from "consola";
@@ -79,9 +80,9 @@ interface AppController {
   installed(): Promise<boolean>;
   /** The Codex app is currently running. */
   isRunning(): Promise<boolean>;
-  /** Ensure the app is closed (graceful, then forced; or prompt on non-macOS). */
+  /** Ensure the app is closed (graceful, then forced). */
   quit(): Promise<void>;
-  /** Open / focus the app (or prompt on non-macOS). */
+  /** Open / focus the app. */
   open(): Promise<void>;
 }
 
@@ -110,21 +111,57 @@ function macController(): AppController {
 }
 
 /** Non-macOS fallback: we can't reliably drive the app, so ask the user to. */
-function manualController(): AppController {
+function manualPromptOpen(): Promise<unknown> {
+  return consola.prompt(`Open the ${APP_NAME} app, then press Enter.`, { type: "text" });
+}
+
+/**
+ * Windows: drive the app via PowerShell (mirrors macController). Process/Start-menu
+ * name is APP_NAME ("Codex"). isRunning/quit are fully programmatic; open resolves
+ * the Start-menu app (covers Store + most installers) and falls back to a manual
+ * prompt only if it can't launch.
+ */
+function windowsController(): AppController {
+  const ps = (script: string) =>
+    execa("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { reject: false });
+  const isRunning = async () =>
+    (
+      await ps(
+        `if (Get-Process -Name '${APP_NAME}' -ErrorAction SilentlyContinue) { exit 0 } exit 1`,
+      )
+    ).exitCode === 0;
   return {
-    installed: async () => true, // can't check generically; assume yes
-    isRunning: async () => true, // always offer to close, to be safe
+    installed: async () =>
+      (
+        await ps(
+          `if ((Get-StartApps | Where-Object { $_.Name -like '${APP_NAME}*' }) -or (Get-Process -Name '${APP_NAME}' -ErrorAction SilentlyContinue)) { exit 0 } exit 1`,
+        )
+      ).exitCode === 0,
+    isRunning,
     open: async () => {
-      await consola.prompt(`Open the ${APP_NAME} app, then press Enter.`, { type: "text" });
+      const r = await ps(
+        `$a = Get-StartApps | Where-Object { $_.Name -like '${APP_NAME}*' } | Select-Object -First 1;` +
+          `if ($a) { Start-Process ('shell:AppsFolder\\' + $a.AppID) } else { Start-Process '${APP_NAME}' }`,
+      );
+      if (r.exitCode !== 0) await manualPromptOpen();
     },
     quit: async () => {
-      await consola.prompt(`Quit the ${APP_NAME} app, then press Enter.`, { type: "text" });
+      // Graceful: ask the window to close, then poll, then force.
+      await ps(
+        `Get-Process -Name '${APP_NAME}' -ErrorAction SilentlyContinue | ForEach-Object { $_.CloseMainWindow() | Out-Null }`,
+      );
+      const deadline = Date.now() + QUIT_TIMEOUT_MS;
+      while (Date.now() < deadline) {
+        if (!(await isRunning())) return;
+        await sleep(QUIT_POLL_MS);
+      }
+      await ps(`Stop-Process -Name '${APP_NAME}' -Force -ErrorAction SilentlyContinue`);
     },
   };
 }
 
 function appController(): AppController {
-  return process.platform === "darwin" ? macController() : manualController();
+  return process.platform === "win32" ? windowsController() : macController();
 }
 
 // --- orchestration ----------------------------------------------------------
@@ -136,6 +173,15 @@ function appController(): AppController {
  * abort mid-flow can't leave Codex unconfigured.
  */
 export async function runCodexMobile(args: CodexMobileArgs): Promise<void> {
+  // The Codex desktop app exists on macOS and Windows only (no Linux app). Gate
+  // other platforms BEFORE touching any config (mirrors host.ts's assertUnix).
+  if (process.platform !== "darwin" && process.platform !== "win32") {
+    logger.info(
+      `The ${APP_NAME} desktop app isn't available on ${process.platform} — \`codex --mobile\` is macOS/Windows only.`,
+    );
+    process.exitCode = 1;
+    return;
+  }
   if (!process.stdin.isTTY) {
     throw new Error("`agent codex --mobile` is interactive — run it in a terminal.");
   }

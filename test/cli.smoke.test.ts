@@ -281,9 +281,11 @@ test("init configures both agents and rejects --direct + --proxy", () => {
   expect(conflict.stderr.toString()).toContain("--direct and --proxy are mutually exclusive");
 });
 
-test("codex --mobile refuses to run without an interactive terminal", () => {
+test("codex --mobile refuses to run (non-TTY, or unsupported platform)", () => {
   // Spawned without a TTY: the interactive pairing flow must bail with a clear
-  // message instead of hanging on a prompt.
+  // message + exit 1 instead of hanging on a prompt. On macOS/Windows that's the
+  // TTY guard ("interactive"); on Linux the platform gate fires first (no Codex
+  // app there). Either way it refuses.
   const proc = Bun.spawnSync(["bun", "src/cli.ts", "codex", "--mobile"], {
     stdin: "pipe",
     stdout: "pipe",
@@ -291,7 +293,12 @@ test("codex --mobile refuses to run without an interactive terminal", () => {
     env: isolatedEnv(),
   });
   expect(proc.exitCode).toBe(1);
-  expect(proc.stderr.toString()).toContain("interactive");
+  const err = proc.stderr.toString();
+  if (process.platform === "darwin" || process.platform === "win32") {
+    expect(err).toContain("interactive");
+  } else {
+    expect(err).toContain("macOS/Windows only");
+  }
 });
 
 test("the launcher flag lives on setup-clis, not setup-shell", () => {

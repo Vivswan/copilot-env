@@ -323,18 +323,22 @@ export async function runStart(args: StartArgs): Promise<void> {
       logContent = "";
     }
     if (/address already in use|EADDRINUSE|bind.*failed/i.test(logContent)) {
-      consola.warn(`WARNING: Port ${port} was taken (TOCTOU race), retrying ...`);
+      consola.warn(
+        `WARNING: Port ${port} was taken by another process just before launch; retrying on a different port ...`,
+      );
       try {
         port = await copilotApiFindPort(port + 1);
       } catch {
-        throw new Error("could not find a free port after TOCTOU retry.");
+        throw new Error("could not find a free port after the retry.");
       }
       fs.writeFileSync(logFile, "");
       pid = launchDaemon(port, logFile, daemonEnv);
       await sleep(1000);
       if (!pidAlive(pid)) {
         printLogTail(logFile, 20);
-        throw new Error(`copilot-api failed to start after TOCTOU retry. See ${logFile}`);
+        throw new Error(
+          `copilot-api failed to start after retrying on a different port. See ${logFile}`,
+        );
       }
       consola.info(`OK Started on port ${port} after retry.`);
     } else {

@@ -266,7 +266,9 @@ function handlePinnedOverride(ctx: FloatContext, override: string): void {
   logger.info(`installing pinned ${GATEWAY_PKG}@${override} (cooldown bypassed)`);
   const code = installGatewaySpec(ctx, override);
   if (code !== 0 && installedBefore === null)
-    throw new Error(`failed to install ${GATEWAY_PKG}@${override}`);
+    throw new Error(
+      `failed to install ${GATEWAY_PKG}@${override} (pinned via ${GATEWAY_VERSION_ENV}); check the version/tag exists (offline?)`,
+    );
 
   if (code === 0)
     logger.success(`now using ${GATEWAY_PKG}@${installedGatewayVersion(ctx.root) ?? "unknown"}`);

@@ -330,7 +330,7 @@ function validateProxyOptions(options: ConfigureCodexConfigOptions): ProxyConfig
     return null;
   }
   if (!/^[A-Za-z0-9:/._-]+$/.test(options.baseUrl)) {
-    logger.error("Error: base_url contains invalid characters");
+    logger.error(`Error: base_url contains invalid characters: ${options.baseUrl}`);
     return null;
   }
   return { baseUrl: options.baseUrl, apiKey: options.apiKey };
@@ -353,8 +353,10 @@ export function configureCodexConfig(
 
   try {
     fs.mkdirSync(codexHome, { recursive: true });
-  } catch {
-    logger.warn(`Warning: Could not create Codex config directory: ${codexHome}`);
+  } catch (e) {
+    logger.warn(
+      `Warning: Could not create Codex config directory ${codexHome}: ${e instanceof Error ? e.message : String(e)}`,
+    );
     return 1;
   }
 
@@ -419,7 +421,9 @@ export function applyCodexConfig(
   }
 
   if (configureCodexConfig(codexHome, options) !== 0) {
-    throw new Error("Codex config write failed");
+    throw new Error(
+      `Codex config write failed for ${codexHome} (see the logged warning above for the cause)`,
+    );
   }
 }
 

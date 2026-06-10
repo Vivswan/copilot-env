@@ -25,7 +25,10 @@ export function bunInstallFrozen(stdio: StdioOptions = "inherit"): void {
     stdio,
     env: { ...process.env, HUSKY: "0" },
   });
-  if (install.status !== 0) throw new Error("bun install failed");
+  if (install.status !== 0)
+    throw new Error(
+      `bun install failed (exit ${install.status ?? install.signal}); see the output above.`,
+    );
 }
 
 export interface ApplyUpdateOptions {

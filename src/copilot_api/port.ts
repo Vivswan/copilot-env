@@ -33,7 +33,9 @@ export async function copilotApiFindPort(
       return port;
     }
   }
-  throw new Error(`no free port found in range ${start}-${start + maxAttempts}`);
+  throw new Error(
+    `no free port found in range ${start}-${start + maxAttempts}; free a port or set COPILOT_API_PORT_DEFAULT to start the search elsewhere`,
+  );
 }
 
 export function copilotApiResolvePort(): string {

@@ -19,7 +19,9 @@ export async function runCost(args: {
 }): Promise<void> {
   const dbPaths = discoverUsageDbs();
   if (dbPaths.length === 0) {
-    consola.warn("WARNING: no copilot-api usage databases found.");
+    consola.warn(
+      "WARNING: no copilot-api usage databases found; start the gateway with 'agent start' and make some requests, then re-run 'agent cost'.",
+    );
     return;
   }
 

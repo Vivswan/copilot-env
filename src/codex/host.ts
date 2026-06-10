@@ -531,7 +531,9 @@ export function runCodexHost(args: CodexHostArgs): void {
 
   logger.info("Preparing CODEX_HOME (building symlink farm)...");
   if (buildCodexSymlinkFarm(codexHome) !== 0) {
-    throw new Error("Failed to build the CODEX_HOME symlink farm");
+    throw new Error(
+      `Failed to build the CODEX_HOME symlink farm at ${codexHome} (a filesystem operation under it or ~/.codex failed — check permissions and free space)`,
+    );
   }
   applyCodexConfig(codexHome, { proxy: args.proxy });
   // Persist the active CODEX_HOME (opt-in: only set because a codex command ran).

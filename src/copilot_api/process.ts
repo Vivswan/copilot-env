@@ -30,7 +30,7 @@ function resolveCopilotApiEntry(): string {
     return rootRequire.resolve("@jeffreycao/copilot-api/dist/main.js");
   } catch (e) {
     throw new Error(
-      `copilot-api not installed under ${PROJECT_ROOT}; run the bootstrap step: ${
+      `copilot-api not installed under ${PROJECT_ROOT}; run \`bun install --frozen-lockfile\` (or re-run the agent launcher) to install dependencies: ${
         e instanceof Error ? e.message : String(e)
       }`,
     );

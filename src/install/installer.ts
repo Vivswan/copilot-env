@@ -67,7 +67,8 @@ function runAgent(root: string, args: string[]): void {
     env: { ...process.env, HUSKY: "0" },
   });
   if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error(`agent ${args.join(" ")} failed`);
+  if (result.status !== 0)
+    throw new Error(`agent ${args.join(" ")} failed (exit ${result.status ?? result.signal})`);
 }
 
 export function runInstall(options: InstallOptions): void {

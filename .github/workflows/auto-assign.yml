@@ -2,6 +2,18 @@ name: Auto Assign
 
 on:
   workflow_dispatch:
+  # Reusable entry: another workflow (e.g. release-please) calls this to assign +
+  # request the code owner on a specific PR it just opened. Bot-opened PRs never
+  # fire `on: pull_request` (GITHUB_TOKEN recursion guard), so they must be driven
+  # explicitly by number here. NOTE: inside a reusable call `github.event_name` is
+  # the CALLER's event (e.g. push), not "workflow_call" -- jobs key off
+  # `inputs.pr_number` / an event allowlist instead, never `== 'workflow_call'`.
+  workflow_call:
+    inputs:
+      pr_number:
+        description: PR number to assign and request the code owner on.
+        required: true
+        type: string
   issues:
     types: [opened]
   pull_request:
@@ -46,6 +58,22 @@ jobs:
               assignees: ['${{ github.repository_owner }}']
             });
 
+      # CODEOWNERS auto-requests the owner on protected-branch PRs, but not on
+      # every PR (and never when this workflow itself didn't fire). Request the
+      # code owner as a reviewer too, skipping owner-authored PRs -- GitHub
+      # rejects a self-review request with 422.
+      - name: Request review from code owner
+        if: github.event_name == 'pull_request' && github.event.action == 'opened' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != github.repository_owner
+        uses: actions/github-script@v9
+        with:
+          script: |
+            await github.rest.pulls.requestReviewers({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              reviewers: ['${{ github.repository_owner }}']
+            });
+
       - name: Add fix-lint label to same-repo PRs
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v9
@@ -58,17 +86,68 @@ jobs:
               labels: ['fix-lint']
             });
 
+  # Reusable path: assign + request the code owner on a PR passed by number.
+  # Runs ONLY when invoked via workflow_call (the only trigger that populates
+  # inputs.pr_number); empty on every other event, so the guard skips it. The
+  # script is idempotent -- safe to re-run on every caller invocation (e.g. each
+  # push that updates a rolling release PR): it skips an already-set assignee and
+  # won't re-request a reviewer who is already requested or has reviewed.
+  assign-called-pr:
+    if: ${{ inputs.pr_number != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Assign PR and request code owner review
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = Number('${{ inputs.pr_number }}');
+            const { data: pr } = await github.rest.pulls.get({
+              owner, repo, pull_number: prNumber,
+            });
+
+            if (!(pr.assignees || []).some((a) => a.login === owner)) {
+              await github.rest.issues.addAssignees({
+                owner, repo, issue_number: prNumber, assignees: [owner],
+              });
+              core.info(`assigned PR #${prNumber} to ${owner}`);
+            }
+
+            // GitHub rejects a self-review request (422). The release PR is
+            // bot-authored, so the owner is a valid reviewer -- but guard anyway,
+            // and skip if already requested or already reviewed (idempotent).
+            const alreadyRequested = (pr.requested_reviewers || []).some(
+              (r) => r.login === owner,
+            );
+            const { data: reviews } = await github.rest.pulls.listReviews({
+              owner, repo, pull_number: prNumber,
+            });
+            const alreadyReviewed = reviews.some((r) => r.user && r.user.login === owner);
+            if (pr.user.login !== owner && !alreadyRequested && !alreadyReviewed) {
+              await github.rest.pulls.requestReviewers({
+                owner, repo, pull_number: prNumber, reviewers: [owner],
+              });
+              core.info(`requested review from ${owner} on PR #${prNumber}`);
+            }
+
   # Assign open, currently-unassigned code scanning alerts to the repo owner.
   # No Actions trigger exists for alert creation, so this polls after CodeQL
   # completes (workflow_run) and weekly (schedule). Idempotent: alerts that
   # already have an assignee are skipped. Code scanning only exists on a public
-  # repo (or GHAS), matching codeql.yml's private guard.
+  # repo (or GHAS), matching codeql.yml's private guard. A positive event
+  # allowlist (not a negative one) keeps a reusable workflow_call -- where
+  # github.event_name is the caller's event, e.g. push -- from triggering this.
   assign-code-scanning:
     if: >-
       github.event.repository.private == false &&
-      github.event_name != 'issues' &&
-      github.event_name != 'pull_request' &&
-      (github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success')
+      inputs.pr_number == '' &&
+      (github.event_name == 'schedule' ||
+       github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success'))
     runs-on: ubuntu-latest
     permissions:
       security-events: write

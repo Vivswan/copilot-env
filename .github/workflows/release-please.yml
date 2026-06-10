@@ -24,6 +24,10 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
+      # The open rolling release PR's number, or '' when there is none. `pr` is a
+      # JSON object only when a release PR exists; `&&` short-circuits so fromJSON
+      # never runs on an empty string.
+      pr_number: ${{ steps.release.outputs.pr && fromJSON(steps.release.outputs.pr).number }}
     steps:
       - uses: actions/checkout@v6
 
@@ -85,6 +89,21 @@ jobs:
             release-assets/install.ps1 \
             "release-assets/copilot-env-$TAG.tar.gz" \
             --clobber
+
+  # Assign + request the code owner on the rolling release PR. That PR is opened
+  # by GITHUB_TOKEN, so it never fires auto-assign's `on: pull_request` trigger
+  # (recursion guard) -- drive it explicitly by number through the reusable
+  # workflow. Runs whenever a release PR is open (created or updated); the called
+  # job is idempotent. Skipped when there is no open release PR.
+  assign-release-pr:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.pr_number != '' }}
+    permissions:
+      issues: write
+      pull-requests: write
+    uses: ./.github/workflows/auto-assign.yml
+    with:
+      pr_number: ${{ needs.release-please.outputs.pr_number }}
 
   release-installer-smoke-linux:
     name: release install.sh smoke

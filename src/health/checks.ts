@@ -390,14 +390,15 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
     // managed ANTHROPIC_BASE_URL — a user could keep the helper but drop/alter
     // the base URL, which would silently route Claude to the wrong endpoint.
     const authOk = f.directAuth.command !== null && f.directAuth.authenticated;
+    const baseOk = f.baseUrl === DIRECT_BASE_URL;
     const authDetail =
       f.directAuth.command === null
         ? "gh auth: GitHub CLI not found"
         : f.directAuth.authenticated
           ? `gh auth: authenticated via ${f.directAuth.command}`
           : `gh auth: ${f.directAuth.command} is not authenticated`;
-    const status = authOk && f.baseUrlIsManaged ? "ok" : "warn";
-    const fix = !f.baseUrlIsManaged
+    const status = authOk && baseOk ? "ok" : "warn";
+    const fix = !baseOk
       ? "agent setup-claude-config --direct"
       : f.directAuth.command === null
         ? "install gh and run gh auth login"
@@ -409,11 +410,26 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
         "provider: direct",
         `settings.json: ${f.settingsPath}`,
         `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${
-          f.baseUrlIsManaged ? "" : ` (expected ${DIRECT_BASE_URL})`
+          baseOk ? "" : ` (expected ${DIRECT_BASE_URL})`
         }`,
         authDetail,
       ].join("\n"),
       ...(status === "ok" ? {} : { fix }),
+    };
+  }
+  if (f.providerMode === "proxy") {
+    // Gateway-backed via settings.json (apiKeyHelper prints the gateway token,
+    // base URL points at localhost). Runtime reachability is the gateway check's
+    // job; here we just confirm the wiring is present.
+    return {
+      ...base,
+      status: "ok",
+      detail: [
+        "provider: proxy",
+        `settings.json: ${f.settingsPath}`,
+        `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}`,
+        `apiKeyHelper → ${f.apiKeyHelper ?? "(missing)"}`,
+      ].join("\n"),
     };
   }
   if (f.providerMode === "other") {
@@ -427,14 +443,14 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
       ].join("\n"),
     };
   }
-  // proxy (default): the local gateway backs Claude via the shell's ANTHROPIC_* env.
+  // none: never configured. `cl` will write proxy wiring on first launch.
   return {
     ...base,
     status: "ok",
     detail: [
-      "provider: proxy",
+      "provider: none",
       `settings.json: ${f.settingsPath}`,
-      "Claude uses the local copilot-api gateway (ANTHROPIC_* env from `agent env`)",
+      "not configured; `cl` defaults to the local gateway (or run agent setup-claude-config)",
     ].join("\n"),
   };
 }

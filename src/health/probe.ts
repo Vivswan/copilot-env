@@ -10,7 +10,6 @@ import { join } from "node:path";
 import { type AutoupdateData, AutoupdateState } from "../autoupdate/state.ts";
 import {
   type ClaudeWiringStatus,
-  claudeHelperPath,
   inspectClaudeWiring,
   resolveClaudeHome,
 } from "../claude/config.ts";
@@ -291,7 +290,7 @@ export function evalClaude(
     home,
     settingsPath: join(home, "settings.json"),
     directAuth,
-    ...inspectClaudeWiring(settingsText, claudeHelperPath(home)),
+    ...inspectClaudeWiring(settingsText, home),
   };
 }
 

@@ -9,18 +9,33 @@ import {
   inspectClaudeWiring,
   runClaudeConfig,
 } from "../src/claude/config.ts";
+import { copilotApiResolvePort } from "../src/copilot_api/port.ts";
 
+const SAVED = {
+  HOME: process.env.HOME,
+  CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+  COPILOT_API_HOME: process.env.COPILOT_API_HOME,
+};
 let dir = "";
 
+function restore(key: keyof typeof SAVED): void {
+  if (SAVED[key] === undefined) delete process.env[key];
+  else process.env[key] = SAVED[key];
+}
+
 afterEach(() => {
+  for (const k of Object.keys(SAVED) as (keyof typeof SAVED)[]) restore(k);
   if (dir) {
     rmSync(dir, { recursive: true, force: true });
     dir = "";
   }
 });
 
+// A temp Claude home, with an isolated gateway home so proxy writes (which
+// resolve the gateway endpoint/token) don't touch any real state.
 function tmpHome(): string {
   dir = mkdtempSync(join(tmpdir(), "copilot-claude-"));
+  process.env.COPILOT_API_HOME = join(dir, "gateway-home");
   return join(dir, ".claude");
 }
 
@@ -32,7 +47,6 @@ test("direct mode writes the managed apiKeyHelper + env and the token helper, pr
   const home = tmpHome();
 
   configureClaudeConfig(home, "direct");
-  // pre-existing settings should survive a re-run.
   const seeded = readSettings(home);
   seeded.model = "sonnet";
   seeded.permissions = { allow: ["Bash"] };
@@ -45,122 +59,125 @@ test("direct mode writes the managed apiKeyHelper + env and the token helper, pr
   const env = doc.env as Record<string, unknown>;
   expect(env.ANTHROPIC_BASE_URL).toBe(DIRECT_BASE_URL);
   expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1");
-  // Unrelated user settings are untouched.
   expect(doc.model).toBe("sonnet");
   expect((doc.permissions as Record<string, unknown>).allow).toEqual(["Bash"]);
 
   const helper = join(home, "copilot-token.sh");
   expect(readFileSync(helper, "utf8")).toBe("#!/bin/sh\nexec gh auth token\n");
   if (process.platform !== "win32") {
-    expect(statSync(helper).mode & 0o100).not.toBe(0); // owner-executable
+    expect(statSync(helper).mode & 0o100).not.toBe(0);
   }
 });
 
-test("proxy mode removes only the managed direct markers, preserving everything else", () => {
+test("proxy mode writes gateway wiring (localhost base URL + a token helper), preserving user keys", () => {
   const home = tmpHome();
-  configureClaudeConfig(home, "direct");
-  // Add an unrelated env key + top-level setting alongside the managed ones.
+  configureClaudeConfig(home, "direct"); // seed, then add a user key
   const seeded = readSettings(home);
-  (seeded.env as Record<string, unknown>).FOO = "bar";
   seeded.model = "sonnet";
   writeFileSync(join(home, "settings.json"), `${JSON.stringify(seeded, null, 2)}\n`);
 
   configureClaudeConfig(home, "proxy");
 
   const doc = readSettings(home);
-  expect(doc.apiKeyHelper).toBeUndefined();
+  expect(doc.apiKeyHelper).toBe(join(home, "copilot-gateway-token.sh"));
   const env = doc.env as Record<string, unknown>;
-  expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+  expect(env.ANTHROPIC_BASE_URL).toBe(`http://localhost:${copilotApiResolvePort()}`);
+  // Disable-betas is a direct-only knob; switching to proxy drops it.
   expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBeUndefined();
-  expect(env.FOO).toBe("bar"); // unrelated env key survives
-  expect(doc.model).toBe("sonnet");
+  expect(doc.model).toBe("sonnet"); // unrelated user key survives
+
+  const helper = join(home, "copilot-gateway-token.sh");
+  const script = readFileSync(helper, "utf8");
+  expect(script.startsWith("#!/bin/sh\nprintf '%s' '")).toBe(true);
+  if (process.platform !== "win32") {
+    expect(statSync(helper).mode & 0o100).not.toBe(0);
+  }
 });
 
-test("proxy mode leaves a foreign apiKeyHelper untouched (even same basename)", () => {
-  const home = tmpHome();
-  configureClaudeConfig(home, "direct"); // create the dir + a base file
-  // Same basename as ours but a different path — must NOT be treated as managed.
-  writeFileSync(
-    join(home, "settings.json"),
-    `${JSON.stringify({ apiKeyHelper: "/opt/company/copilot-token.sh" }, null, 2)}\n`,
-  );
+test("inspectClaudeWiring classifies direct / proxy / other / none / malformed (by exact path)", () => {
+  const home = "/home/x/.claude";
+  const directHelper = `${home}/copilot-token.sh`;
+  const proxyHelper = `${home}/copilot-gateway-token.sh`;
 
-  configureClaudeConfig(home, "proxy");
-
-  expect(readSettings(home).apiKeyHelper).toBe("/opt/company/copilot-token.sh");
-});
-
-test("inspectClaudeWiring classifies direct / proxy / other / absent / malformed", () => {
-  const HELPER = "/home/x/.claude/copilot-token.sh";
-
-  // Managed helper at the EXACT expected path => direct.
-  expect(inspectClaudeWiring(JSON.stringify({ apiKeyHelper: HELPER }), HELPER).providerMode).toBe(
-    "direct",
-  );
-
-  // A foreign helper that shares the basename but lives elsewhere is NOT ours.
   expect(
-    inspectClaudeWiring(JSON.stringify({ apiKeyHelper: "/opt/company/copilot-token.sh" }), HELPER)
+    inspectClaudeWiring(JSON.stringify({ apiKeyHelper: directHelper }), home).providerMode,
+  ).toBe("direct");
+  expect(
+    inspectClaudeWiring(JSON.stringify({ apiKeyHelper: proxyHelper }), home).providerMode,
+  ).toBe("proxy");
+
+  // A foreign helper sharing our basename but elsewhere is NOT ours.
+  expect(
+    inspectClaudeWiring(JSON.stringify({ apiKeyHelper: "/opt/company/copilot-token.sh" }), home)
       .providerMode,
   ).toBe("other");
-
-  expect(inspectClaudeWiring("{}", HELPER).providerMode).toBe("proxy");
-  expect(inspectClaudeWiring(JSON.stringify({ model: "sonnet" }), HELPER).providerMode).toBe(
-    "proxy",
-  );
-
-  expect(
-    inspectClaudeWiring(JSON.stringify({ apiKeyHelper: "/usr/bin/other.sh" }), HELPER).providerMode,
-  ).toBe("other");
+  // A custom base URL with no managed helper is also "other".
   expect(
     inspectClaudeWiring(
       JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://other.example" } }),
-      HELPER,
+      home,
     ).providerMode,
   ).toBe("other");
 
-  const absent = inspectClaudeWiring(null, HELPER);
-  expect(absent.providerMode).toBe("proxy");
+  expect(inspectClaudeWiring("{}", home).providerMode).toBe("none");
+  expect(inspectClaudeWiring(JSON.stringify({ model: "sonnet" }), home).providerMode).toBe("none");
+
+  const absent = inspectClaudeWiring(null, home);
+  expect(absent.providerMode).toBe("none");
   expect(absent.settingsExists).toBe(false);
 
-  expect(inspectClaudeWiring("{not json", HELPER).providerMode).toBe("other");
+  expect(inspectClaudeWiring("{not json", home).providerMode).toBe("other");
 });
 
-test("runClaudeConfig --direct/--proxy round-trip; mutual exclusion throws", () => {
+test("runClaudeConfig --direct/--proxy round-trip cleans the other mode; mutual exclusion throws", () => {
   const home = tmpHome();
-  const helper = join(home, "copilot-token.sh");
+  const read = () => inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home);
 
   runClaudeConfig({ "claude-home": home, direct: true });
+  expect(read().providerMode).toBe("direct");
   expect(
-    inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), helper).providerMode,
-  ).toBe("direct");
+    (readSettings(home).env as Record<string, unknown>).CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS,
+  ).toBe("1");
 
   runClaudeConfig({ "claude-home": home, proxy: true });
+  expect(read().providerMode).toBe("proxy");
+  // Switching to proxy drops the direct-only disable-betas knob.
   expect(
-    inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), helper).providerMode,
-  ).toBe("proxy");
+    (readSettings(home).env as Record<string, unknown>).CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS,
+  ).toBeUndefined();
+
+  runClaudeConfig({ "claude-home": home, direct: true });
+  expect(read().providerMode).toBe("direct");
 
   expect(() => runClaudeConfig({ "claude-home": home, proxy: true, direct: true })).toThrow(
     "--proxy and --direct are mutually exclusive",
   );
 });
 
-test("runClaudeConfig no-arg refresh re-asserts direct but leaves proxy alone", () => {
+test("runClaudeConfig no-arg refresh: none -> proxy, direct re-asserts, custom left alone", () => {
   const home = tmpHome();
 
-  // Direct with a STALE base_url: the no-arg refresh should correct it.
+  // Never configured -> the no-arg refresh writes proxy (gateway is the default).
+  runClaudeConfig({ "claude-home": home });
+  expect(
+    inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home).providerMode,
+  ).toBe("proxy");
+
+  // Already direct (with a stale base URL) -> re-asserted, not flipped to proxy.
   runClaudeConfig({ "claude-home": home, direct: true });
   const stale = readSettings(home);
   (stale.env as Record<string, unknown>).ANTHROPIC_BASE_URL = "https://old.example";
   writeFileSync(join(home, "settings.json"), `${JSON.stringify(stale, null, 2)}\n`);
-
   runClaudeConfig({ "claude-home": home });
   expect((readSettings(home).env as Record<string, unknown>).ANTHROPIC_BASE_URL).toBe(
     DIRECT_BASE_URL,
   );
 
-  // A proxy (unmanaged) home is left exactly as-is by the no-arg refresh.
-  runClaudeConfig({ "claude-home": home, proxy: true });
+  // A custom (foreign) config is left exactly as-is by the no-arg refresh.
+  writeFileSync(
+    join(home, "settings.json"),
+    `${JSON.stringify({ apiKeyHelper: "/opt/company/copilot-token.sh" }, null, 2)}\n`,
+  );
   const before = readFileSync(join(home, "settings.json"), "utf8");
   runClaudeConfig({ "claude-home": home });
   expect(readFileSync(join(home, "settings.json"), "utf8")).toBe(before);
@@ -168,7 +185,7 @@ test("runClaudeConfig no-arg refresh re-asserts direct but leaves proxy alone", 
 
 test("configureClaudeConfig refuses to overwrite a malformed settings.json", () => {
   const home = tmpHome();
-  configureClaudeConfig(home, "proxy"); // creates the dir
+  configureClaudeConfig(home, "direct"); // creates the dir + a valid file
   writeFileSync(join(home, "settings.json"), "{ this is : not json");
   expect(() => configureClaudeConfig(home, "direct")).toThrow("not valid JSON");
 });

@@ -360,15 +360,13 @@ test("codex: not configured is ok; each broken part warns with a precise message
   expect(directUnauthed.fix).toBe("gh auth login");
 });
 
-test("checkClaude: direct needs gh; proxy/other are informational ok", () => {
+test("checkClaude: direct needs gh + managed base URL; proxy/none/other informational", () => {
   const direct: ClaudeFacts = {
     home: "/h/.claude",
     settingsPath: join("/h/.claude", "settings.json"),
     settingsExists: true,
     apiKeyHelper: join("/h/.claude", "copilot-token.sh"),
-    helperIsManaged: true,
     baseUrl: "https://api.githubcopilot.com",
-    baseUrlIsManaged: true,
     providerMode: "direct",
     directAuth: { command: "/bin/gh", authenticated: true },
   };
@@ -392,32 +390,42 @@ test("checkClaude: direct needs gh; proxy/other are informational ok", () => {
   expect(unauthed.fix).toBe("gh auth login");
 
   // Direct helper present but the managed base URL was dropped/altered: warn.
-  const staleBase = checkClaude({ ...direct, baseUrl: null, baseUrlIsManaged: false });
+  const staleBase = checkClaude({ ...direct, baseUrl: null });
   expect(staleBase.status).toBe("warn");
   expect(staleBase.detail).toContain("(missing)");
   expect(staleBase.fix).toBe("agent setup-claude-config --direct");
 
-  // Proxy (default): no managed direct markers — Claude uses the gateway.
+  // Proxy: gateway-backed via settings.json (localhost base URL + gateway helper).
   const proxy = checkClaude({
     ...direct,
-    apiKeyHelper: null,
-    helperIsManaged: false,
-    baseUrl: null,
-    baseUrlIsManaged: false,
+    apiKeyHelper: join("/h/.claude", "copilot-gateway-token.sh"),
+    baseUrl: "http://localhost:4141",
     providerMode: "proxy",
     directAuth: { command: null, authenticated: false },
   });
   expect(proxy.status).toBe("ok");
   expect(proxy.detail).toContain("provider: proxy");
-  expect(proxy.detail).toContain("local copilot-api gateway");
+  expect(proxy.detail).toContain("ANTHROPIC_BASE_URL → http://localhost:4141");
+  expect(proxy.detail).toContain("apiKeyHelper → ");
+
+  // Never configured: informational; cl defaults it to the gateway.
+  const none = checkClaude({
+    ...direct,
+    settingsExists: false,
+    apiKeyHelper: null,
+    baseUrl: null,
+    providerMode: "none",
+    directAuth: { command: null, authenticated: false },
+  });
+  expect(none.status).toBe("ok");
+  expect(none.detail).toContain("provider: none");
+  expect(none.detail).toContain("not configured");
 
   // Custom apiKeyHelper the user set — left alone, reported informationally.
   const other = checkClaude({
     ...direct,
     apiKeyHelper: "/opt/x/helper.sh",
-    helperIsManaged: false,
     baseUrl: null,
-    baseUrlIsManaged: false,
     providerMode: "other",
   });
   expect(other.status).toBe("ok");
@@ -633,6 +641,15 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       directAuth: { command: null, authenticated: false },
     },
     codexHost: { supported: false, hostHome: "/h/.codex/hosts/box", exists: false, active: false },
+    claude: {
+      home: "/h/.claude",
+      settingsPath: "/h/.claude/settings.json",
+      settingsExists: false,
+      apiKeyHelper: null,
+      baseUrl: null,
+      providerMode: "none",
+      directAuth: { command: null, authenticated: false },
+    },
     autoupdate: { enabled: false, cooldownDays: 7, lastCheckMs: 0, lastResult: "" },
   };
   const ids = evaluateAll("full", facts).map((r) => r.id);
@@ -640,5 +657,6 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
   expect(ids).toContain("setup.cli.claude");
   expect(ids).toContain("gateway.package");
   expect(ids).toContain("setup.codex-host");
+  expect(ids).toContain("setup.claude");
   expect(ids).toContain("setup.autoupdate");
 });

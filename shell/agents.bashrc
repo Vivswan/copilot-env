@@ -31,9 +31,9 @@ function agent {
     unset _env
 }
 
-# Eagerly export ANTHROPIC_/OPENAI_ env vars for the current shell. Silence
-# stderr so the bootstrap's informational output ("Installing copilot-env
-# node_modules ...") doesn't break Powerlevel10k's instant-prompt guard on
-# first source. If env resolution fails, a later `agent`/launcher call will
-# surface the error.
+# Eagerly export CODEX_HOME (the only var `agent env` emits) for the current
+# shell. Silence stderr so the bootstrap's informational output ("Installing
+# copilot-env node_modules ...") doesn't break Powerlevel10k's instant-prompt
+# guard on first source. If env resolution fails, a later `agent`/launcher call
+# will surface the error.
 eval "$("${_COPILOT_AGENTS_DIR}/bin/agent" env "$@" 2>/dev/null)"

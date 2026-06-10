@@ -48,5 +48,5 @@ function agent {
 
 # --- shell-startup side effects --------------------------------------------
 
-# Eagerly export ANTHROPIC_/OPENAI_ env vars for the current shell.
+# Eagerly export CODEX_HOME (the only var `agent env` emits) for the current shell.
 Import-CopilotEnv

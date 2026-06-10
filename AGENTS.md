@@ -14,12 +14,12 @@ The non-obvious choices live here; everything else is discoverable in the code.
 - **Best-effort at install, hard floor at launch.** The postinstall float never fails `bun install` (offline/registry hiccups are swallowed), so a fresh offline install could sit below the floor. `start.ts` makes the floor a real contract: it refuses to launch a sub-floor gateway. Bump `GATEWAY_MIN_VERSION` when the wrapper depends on newer gateway behavior; set the optional ceiling to hold the float below a known-bad release.
 - **Float env knobs** (set on any `bin/agent` call or in root `.env`, loaded from `PROJECT_ROOT` by `src/utils/dotenv.ts`): `COPILOT_API_VERSION` pins an exact release/tag (bypasses floor + cooldown); `COPILOT_API_MIN_RELEASE_AGE` overrides the cooldown window in seconds (`0` = no cooldown), taking precedence over `bunfig.toml`'s `install.minimumReleaseAge`. Real shell environment wins over `.env`.
 - **Supply-chain cooldown applies after bootstrap.** The bootstrap installers always resolve the latest copilot-env release; version-specific installs use the `install.sh` / `install.ps1` assets attached to that GitHub Release. Optional copilot-env release cooldown lives under `agent update --cooldown[=DAYS]`; optional agent-CLI cooldown lives under `agent setup-clis --cooldown[=DAYS]` and uses `src/utils/aged_version.ts` fed by `npm view <pkg> time`. Copilot-env release selection uses `src/install/resolve-release.ts` (the same module `agent update` imports, which the installers download standalone and run).
-- **`agent env` is the one machine-readable command.** The shell wrapper runs a command, then evals `agent env` (and only that) to refresh session state — so a new subcommand needs no wrapper change, and no command's incidental stdout is ever eval'd.
+- **`agent env` is the one machine-readable command.** The shell wrapper runs a command, then evals `agent env` (and only that) to refresh session state — so a new subcommand needs no wrapper change, and no command's incidental stdout is ever eval'd. It exports **only `CODEX_HOME`** (when a codex command set one): each agent's gateway/direct wiring lives in its own config file — Codex in `~/.codex/config.toml` + `.env`, Claude in `~/.claude/settings.json` + a managed `apiKeyHelper` — so the gateway endpoint/token are no longer injected into the shell (which also avoids shell env overriding those config files).
 
 ## Repo map
 
 - `bin/agent`, `bin/agent.ps1` — self-bootstrapping launchers (install bun + deps, dispatch `cli.ts`).
-- `shell/agents.bashrc`, `shell/agents.ps1` — shell integration (sourced from rc / `$PROFILE`); the `agent` wrapper + eager gateway-env export. Pure runtime wiring, never installs.
+- `shell/agents.bashrc`, `shell/agents.ps1` — shell integration (sourced from rc / `$PROFILE`); the `agent` wrapper + eager `agent env` export (CODEX_HOME only). Pure runtime wiring, never installs.
 - `shell/agents.launchers.bashrc`, `shell/agents.launchers.ps1` — opt-in `cl`/`co`/`cx` agent launchers, sourced after the integration file (`cx`/`cl` re-apply `setup-codex-config`/`setup-claude-config` before launch). Wired with `agent setup-clis --launchers` or `agent setup-launchers`, removed with `agent setup-launchers --remove`; otherwise source manually.
 - `install.sh`, `install.ps1` — one-line bootstrap installers: ensure bun, download the latest release source archive to `~/.copilot-env`, verify its source checksum against GitHub release metadata, replace any previous install at the target dir, then run release-local `src/install/installer.ts` to bootstrap deps and wire shell integration. Optional agent CLIs live under `agent setup-clis`. Version-specific installer copies are uploaded as release assets by `.github/workflows/release-please.yml` after release creation.
 - `src/install/installer.ts` — release-bundled first-install handoff; keep it dependency-light because it runs before `node_modules` exists.
@@ -83,7 +83,7 @@ bun run check         # biome check --write src bin test scripts
 bun run format        # biome format --write src bin test scripts
 
 ./bin/agent start     # start the daemon; also: stop / health / env / cost / update / setup-shell / setup-launchers / setup-clis / setup-codex-config / setup-codex-host / setup-claude-config
-./bin/agent env       # print shell env vars pointing at the local gateway
+./bin/agent env       # print shell exports for the calling shell (CODEX_HOME only)
 ```
 
 The husky `pre-commit` hook runs lint-staged (biome) + typecheck + tests + the shell/PS linters; the linters are skip-if-absent and gate only on warnings+errors. CI runs the same on a Linux/macOS/Windows matrix, plus the start/stop lifecycle and end-to-end installer jobs.

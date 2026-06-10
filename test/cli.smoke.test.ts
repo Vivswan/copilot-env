@@ -208,7 +208,10 @@ test("setup-claude-config exposes and runs check mode", () => {
     join(directHome, "settings.json"),
     JSON.stringify({ apiKeyHelper: join(directHome, "copilot-token.sh") }),
   );
-  writeFileSync(join(proxyHome, "settings.json"), JSON.stringify({ model: "sonnet" }));
+  writeFileSync(
+    join(proxyHome, "settings.json"),
+    JSON.stringify({ apiKeyHelper: join(proxyHome, "copilot-gateway-token.sh") }),
+  );
   writeFileSync(
     join(otherHome, "settings.json"),
     JSON.stringify({ apiKeyHelper: "/opt/x/helper.sh" }),
@@ -237,10 +240,10 @@ test("setup-claude-config exposes and runs check mode", () => {
   expect(proxy.exitCode).toBe(2);
   expect(proxy.stdout.toString()).toContain("Claude provider mode: proxy");
 
-  // No settings.json at all is still "proxy" (the gateway is Claude's default).
+  // No settings.json at all is "none" — still exit 2 (the gateway is the default).
   const none = runCheck(noneHome);
   expect(none.exitCode).toBe(2);
-  expect(none.stdout.toString()).toContain("Claude provider mode: proxy");
+  expect(none.stdout.toString()).toContain("Claude provider mode: none");
 
   const other = runCheck(otherHome);
   expect(other.exitCode).toBe(1);
@@ -449,6 +452,26 @@ test("health --scope codex covers only Codex wiring", () => {
   expect(json.checks[0]?.value?.providerMode).toBe("proxy");
   expect(json.exitCode).toBe(0);
   expect(exitCode).toBe(0);
+});
+
+test("health --scope claude covers only Claude wiring", () => {
+  const home = mkdtempSync(join(tmpdir(), "copilot-claude-scope-"));
+  // Direct wiring => providerMode "direct"; status may warn on gh, but that
+  // never fails the scope (warnings exit 0).
+  writeFileSync(
+    join(home, "settings.json"),
+    JSON.stringify({ apiKeyHelper: join(home, "copilot-token.sh") }),
+  );
+  const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", "claude", "--json"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: isolatedEnv({ CLAUDE_CONFIG_DIR: home }),
+  });
+  const json = JSON.parse(proc.stdout.toString()) as HealthJson;
+  expect(json.scope).toBe("claude");
+  expect(json.checks.map((c) => c.id)).toEqual(["setup.claude"]);
+  expect(json.checks[0]?.value?.providerMode).toBe("direct");
+  expect(json.exitCode).toBe(0);
 });
 
 // --- autoupdate management flags --------------------------------------------

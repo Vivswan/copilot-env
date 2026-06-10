@@ -76,3 +76,25 @@ export function childPathPrepending(dirs: (string | null | undefined)[]): string
   }
   return parts.join(separator);
 }
+
+/** Quote a single arg for a cmd.exe command line (only when it needs it). */
+function quoteCmdArg(arg: string): string {
+  if (arg !== "" && !/[\s"&|<>^()]/.test(arg)) return arg;
+  return `"${arg.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Spawn parameters for invoking an agent CLI cross-platform. On Windows, npm-
+ * installed CLIs (codex/claude) are `.cmd`/`.ps1` shims that Node cannot spawn
+ * directly — it blocks `.cmd`/`.bat` without a shell — so run them through cmd.exe
+ * (`shell: true`) with args quoted so whitespace survives the shell join. On POSIX,
+ * spawn the (resolved) file directly with no shell. Pass the result to
+ * spawn/spawnSync: `const s = cliSpawn(file, args); spawnSync(s.file, s.args, { shell: s.shell, ... })`.
+ */
+export function cliSpawn(
+  file: string,
+  args: string[],
+): { file: string; args: string[]; shell: boolean } {
+  if (process.platform !== "win32") return { file, args, shell: false };
+  return { file, args: args.map(quoteCmdArg), shell: true };
+}

@@ -9,6 +9,7 @@ import { parse, stringify } from "smol-toml";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { copilotApiResolvePort, openaiBaseUrl } from "../copilot_api/port.ts";
 import { CopilotApiState } from "../copilot_api/state.ts";
+import { cliSpawn } from "../utils/command.ts";
 import {
   assertSingleMode,
   CODEX_PROBE,
@@ -73,10 +74,13 @@ let cachedCodexVersion: string | null | undefined;
 
 function installedCodexVersion(): string | null {
   if (cachedCodexVersion !== undefined) return cachedCodexVersion;
-  const result = spawnSync("codex", ["--version"], {
+  // cliSpawn routes through cmd.exe on Windows so a codex.cmd shim is launchable.
+  const s = cliSpawn("codex", ["--version"]);
+  const result = spawnSync(s.file, s.args, {
     encoding: "utf8",
     timeout: 1000,
     windowsHide: true,
+    shell: s.shell,
   });
   cachedCodexVersion =
     result.error || result.status !== 0

@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { childPathPrepending, resolveCommand } from "./command.ts";
+import { childPathPrepending, cliSpawn, resolveCommand } from "./command.ts";
 import { createStderrLogger } from "./logger.ts";
 
 // Probe progress goes to stderr (consola), never stdout: the `--check`/`env`
@@ -93,20 +93,25 @@ export function resolveDirect(flags: ModeFlags, detectDirect: () => boolean): bo
 function defaultGhAuthOk(ghPath: string): boolean {
   // Spawn gh's RESOLVED path (not the bare name), with gh's bin dir on PATH, so an
   // nvm-only gh (or a node-shim gh) found via the nvm fallback is runnable here.
-  const result = spawnSync(ghPath, ["auth", "token"], {
+  // cliSpawn routes through cmd.exe on Windows so a .cmd/.exe shim is launchable.
+  const s = cliSpawn(ghPath, ["auth", "token"]);
+  const result = spawnSync(s.file, s.args, {
     stdio: "ignore",
     timeout: 5000,
     windowsHide: true,
+    shell: s.shell,
     env: { ...process.env, PATH: childPathPrepending([dirname(ghPath)]) },
   });
   return !result.error && result.status === 0;
 }
 
 function defaultRunProbe(cliPath: string, args: string[], env: Record<string, string>): boolean {
-  const result = spawnSync(cliPath, args, {
+  const s = cliSpawn(cliPath, args);
+  const result = spawnSync(s.file, s.args, {
     stdio: "ignore",
     timeout: PROBE_TIMEOUT_MS,
     windowsHide: true,
+    shell: s.shell,
     env: { ...process.env, ...env },
   });
   return !result.error && result.status === 0;

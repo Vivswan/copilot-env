@@ -32,7 +32,7 @@ import {
   installedGatewayVersion,
 } from "../copilot_api/version.ts";
 import { nodeModulesFresh, resolveMinimumReleaseAgeSeconds } from "../gateway_float.ts";
-import { childPathPrepending, resolveCommand } from "../utils/command.ts";
+import { childPathPrepending, cliSpawn, resolveCommand } from "../utils/command.ts";
 import {
   CLAUDE_PROBE,
   CODEX_PROBE,
@@ -216,10 +216,12 @@ function codexDirectAuth(): Promise<CodexDirectAuthFacts> {
   // stdio:"ignore" keeps the printed token out of our process memory. A timeout
   // (SIGTERM) or any non-zero exit => authenticated:false.
   return new Promise((resolve) => {
-    const child = spawn(command, ["auth", "token"], {
+    const s = cliSpawn(command, ["auth", "token"]);
+    const child = spawn(s.file, s.args, {
       stdio: "ignore",
       timeout: 5000,
       windowsHide: true,
+      shell: s.shell,
       env: { ...process.env, PATH: childPathPrepending([dirname(command)]) },
     });
     child.on("error", () => resolve({ command, authenticated: false }));
@@ -243,10 +245,12 @@ function runLiveCli(
   if (resolved === null) return Promise.resolve({ ran: false, ok: false, cli: null });
   const ghPath = resolveCommand("gh");
   return new Promise((resolve) => {
-    const child = spawn(resolved, args, {
+    const s = cliSpawn(resolved, args);
+    const child = spawn(s.file, s.args, {
       stdio: "ignore",
       timeout: PROBE_TIMEOUT_MS,
       windowsHide: true,
+      shell: s.shell,
       // Put the resolved CLI's and gh's bin dirs on the child PATH so an nvm-only
       // toolchain (node-shim CLI, the config's bare `gh` call) is reachable even
       // when the parent process never sourced nvm.

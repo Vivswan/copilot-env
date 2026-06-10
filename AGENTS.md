@@ -31,7 +31,7 @@ The non-obvious choices live here; everything else is discoverable in the code.
 - `src/commands/shell_integration.ts` — cross-platform shell/profile block wiring for integration and launchers.
 - `src/install/release.ts` — release archive download/verification/extraction/sync used by `agent update`.
 - `src/install/verify-source-archive.ts` — source-archive checksum verification against GitHub release metadata, shared by the installers and `agent update`.
-- `src/codex/` — Codex config and per-host `CODEX_HOME` farm logic.
+- `src/codex/` — Codex config, per-host `CODEX_HOME` farm logic, and the `--mobile` phone-pairing flow (`mobile.ts`: temporarily strips `model_provider` around the Codex app's remote-control pairing).
 - `src/claude/` — Claude Code config wiring (`~/.claude/settings.json`): GitHub Copilot Direct vs the gateway proxy.
 - `src/migrations/` — one file per version step (`<from-version>.ts`, registered in `index.ts`); `agent update` runs the due ones for the `[old, new)` range. See "Migrations" below.
 - `src/copilot_api/` — gateway-specific helpers: admin REST, config/state JSON, model-alias generation, per-host paths, daemon process control.

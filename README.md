@@ -76,6 +76,7 @@ agent codex                # configure Codex; --auto auto-detects the backend, -
 agent codex --auto         # probe GitHub Copilot Direct; fall back to the local gateway proxy
 agent codex --check        # print provider mode; exits 0 direct, 2 proxy, 1 other
 agent codex --host         # per-host CODEX_HOME symlink farm (Linux/macOS); --delete-host to remove
+agent codex --mobile       # pair the Codex desktop app with the phone remote-control flow (interactive)
 agent claude               # configure Claude; --auto auto-detects the backend, --check reports it
 agent claude --auto        # probe GitHub Copilot Direct for Claude; fall back to the local gateway proxy
 agent claude --check       # print Claude provider mode; exits 0 direct, 2 proxy, 1 other

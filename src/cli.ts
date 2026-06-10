@@ -13,6 +13,7 @@ import { consola } from "consola";
 import { runClaude } from "./claude/config.ts";
 import { runCodex } from "./codex/config.ts";
 import { runCodexHost } from "./codex/host.ts";
+import { runCodexMobile } from "./codex/mobile.ts";
 import { runEnv } from "./commands/env.ts";
 import { runHealth } from "./commands/health.ts";
 import { runInit } from "./commands/init.ts";
@@ -278,6 +279,12 @@ const codex = defineCommand({
       default: false,
       description: "With --host: remove the per-host CODEX_HOME dir and stop exporting CODEX_HOME.",
     },
+    mobile: {
+      type: "boolean",
+      default: false,
+      description:
+        "Interactive: pair the Codex desktop app with its phone remote-control flow (toggles model_provider).",
+    },
   },
   run: ({ args }) => {
     const common = {
@@ -286,6 +293,10 @@ const codex = defineCommand({
       proxy: Boolean(args.proxy),
       auto: Boolean(args.auto),
     };
+    // --mobile is its own interactive flow (toggles config around app pairing).
+    if (args.mobile) {
+      return runCodexMobile({ "codex-home": args["codex-home"] as string | undefined });
+    }
     // --check is read-only: never build/delete the host farm or probe, even when
     // combined with --host/--delete-host. Route it to the check path first.
     if (args.check) {

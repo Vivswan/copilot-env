@@ -131,6 +131,7 @@ test("codex exposes and runs check mode", () => {
   // The per-host farm flags live on `codex` too, not a separate command.
   expect(helpOut).toContain("--host");
   expect(helpOut).toContain("--delete-host");
+  expect(helpOut).toContain("--mobile");
 
   const runCheck = (home: string) =>
     Bun.spawnSync(["bun", "src/cli.ts", "codex", "--check"], {
@@ -278,6 +279,19 @@ test("init configures both agents and rejects --direct + --proxy", () => {
   });
   expect(conflict.exitCode).toBe(1);
   expect(conflict.stderr.toString()).toContain("--direct and --proxy are mutually exclusive");
+});
+
+test("codex --mobile refuses to run without an interactive terminal", () => {
+  // Spawned without a TTY: the interactive pairing flow must bail with a clear
+  // message instead of hanging on a prompt.
+  const proc = Bun.spawnSync(["bun", "src/cli.ts", "codex", "--mobile"], {
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+    env: isolatedEnv(),
+  });
+  expect(proc.exitCode).toBe(1);
+  expect(proc.stderr.toString()).toContain("interactive");
 });
 
 test("the launcher flag lives on setup-clis, not setup-shell", () => {

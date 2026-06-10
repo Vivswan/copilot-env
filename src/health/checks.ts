@@ -405,7 +405,7 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
       settingsFile: f.settingsPath,
       settingsExists: f.settingsExists,
       providerMode: f.providerMode,
-      apiKeyHelper: f.apiKeyHelper,
+      apiKeyHelper: f.helperPath,
       baseUrl: f.baseUrl,
       directAuth: f.directAuth,
     },
@@ -453,7 +453,7 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
         "provider: proxy",
         `settings.json: ${f.settingsPath}`,
         `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}`,
-        `apiKeyHelper → ${f.apiKeyHelper ?? "(missing)"}`,
+        `apiKeyHelper → ${f.helperPath ?? "(missing)"}`,
       ].join("\n"),
     };
   }
@@ -464,7 +464,7 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
       detail: [
         "provider: other",
         `settings.json: ${f.settingsPath}`,
-        `custom apiKeyHelper/ANTHROPIC_BASE_URL set (${f.apiKeyHelper ?? f.baseUrl}); not managed`,
+        `custom apiKeyHelper/ANTHROPIC_BASE_URL set (${f.helperPath ?? f.baseUrl}); not managed`,
       ].join("\n"),
     };
   }

@@ -379,7 +379,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
     home: "/h/.claude",
     settingsPath: join("/h/.claude", "settings.json"),
     settingsExists: true,
-    apiKeyHelper: join("/h/.claude", "copilot-token.sh"),
+    helperPath: join("/h/.claude", "copilot-token.sh"),
     baseUrl: "https://api.githubcopilot.com",
     providerMode: "direct",
     directAuth: { command: "/bin/gh", authenticated: true },
@@ -412,7 +412,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   // Proxy: gateway-backed via settings.json (localhost base URL + gateway helper).
   const proxy = checkClaude({
     ...direct,
-    apiKeyHelper: join("/h/.claude", "copilot-gateway-token.sh"),
+    helperPath: join("/h/.claude", "copilot-gateway-token.sh"),
     baseUrl: "http://localhost:4141",
     providerMode: "proxy",
     directAuth: { command: null, authenticated: false },
@@ -426,7 +426,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   const none = checkClaude({
     ...direct,
     settingsExists: false,
-    apiKeyHelper: null,
+    helperPath: null,
     baseUrl: null,
     providerMode: "none",
     directAuth: { command: null, authenticated: false },
@@ -438,7 +438,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   // Custom apiKeyHelper the user set — left alone, reported informationally.
   const other = checkClaude({
     ...direct,
-    apiKeyHelper: "/opt/x/helper.sh",
+    helperPath: "/opt/x/helper.sh",
     baseUrl: null,
     providerMode: "other",
   });
@@ -689,7 +689,7 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       home: "/h/.claude",
       settingsPath: "/h/.claude/settings.json",
       settingsExists: false,
-      apiKeyHelper: null,
+      helperPath: null,
       baseUrl: null,
       providerMode: "none",
       directAuth: { command: null, authenticated: false },

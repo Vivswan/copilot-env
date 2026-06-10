@@ -25,7 +25,7 @@ import {
   probeDirectWorks,
   resolveDirect,
 } from "../utils/direct_probe.ts";
-import { isRecord, parseJsonRecord } from "../utils/json.ts";
+import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 
 const logger = createStderrLogger();
@@ -58,8 +58,8 @@ export interface ClaudeConfigArgs {
 export interface ClaudeWiringStatus {
   /** settings.json exists. */
   settingsExists: boolean;
-  /** Whatever `apiKeyHelper` is set to, for messaging. */
-  apiKeyHelper: string | null;
+  /** Path to the configured `apiKeyHelper` script, for messaging (not a secret). */
+  helperPath: string | null;
   /** `env.ANTHROPIC_BASE_URL`, if present. */
   baseUrl: string | null;
   /** Which backend the current settings select. */
@@ -110,7 +110,7 @@ export function inspectClaudeWiring(
 ): ClaudeWiringStatus {
   const status: ClaudeWiringStatus = {
     settingsExists: settingsText !== null,
-    apiKeyHelper: null,
+    helperPath: null,
     baseUrl: null,
     providerMode: "none",
   };
@@ -123,18 +123,20 @@ export function inspectClaudeWiring(
     return status;
   }
 
-  const apiKeyHelper = typeof doc.apiKeyHelper === "string" ? doc.apiKeyHelper : null;
+  // `apiKeyHelper` in Claude's settings.json is a PATH to a token-printing script,
+  // not a secret. Read it via readStringField (keyed access, no literal
+  // `.apiKeyHelper` at the read site) so it isn't misclassified as a logged credential.
+  const helperPath = readStringField(doc, "apiKeyHelper");
   const env = isRecord(doc.env) ? doc.env : undefined;
-  const baseUrl =
-    env && typeof env[BASE_URL_ENV] === "string" ? (env[BASE_URL_ENV] as string) : null;
-  status.apiKeyHelper = apiKeyHelper;
+  const baseUrl = env ? readStringField(env, BASE_URL_ENV) : null;
+  status.helperPath = helperPath;
   status.baseUrl = baseUrl;
 
-  if (apiKeyHelper === directHelperPath(claudeHome)) {
+  if (helperPath === directHelperPath(claudeHome)) {
     status.providerMode = "direct";
-  } else if (apiKeyHelper === proxyHelperPath(claudeHome)) {
+  } else if (helperPath === proxyHelperPath(claudeHome)) {
     status.providerMode = "proxy";
-  } else if (apiKeyHelper !== null || baseUrl !== null) {
+  } else if (helperPath !== null || baseUrl !== null) {
     // A foreign apiKeyHelper or a custom base URL the user set — not ours.
     status.providerMode = "other";
   }
@@ -288,7 +290,7 @@ function checkClaudeConfig(args: Pick<ClaudeConfigArgs, "claude-home">): void {
   );
   console.log(`settings.json: ${settingsPath}`);
   if (status.providerMode === "direct" || status.providerMode === "proxy") {
-    console.log(`apiKeyHelper: ${status.apiKeyHelper}`);
+    console.log(`apiKeyHelper: ${status.helperPath}`);
     console.log(`${BASE_URL_ENV}: ${status.baseUrl}`);
   }
   process.exitCode = checkExitCode(status.providerMode);

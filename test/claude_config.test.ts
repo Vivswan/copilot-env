@@ -97,8 +97,10 @@ test("proxy mode writes gateway wiring (localhost base URL + a token helper), pr
 
 test("inspectClaudeWiring classifies direct / proxy / other / none / malformed (by exact path)", () => {
   const home = "/home/x/.claude";
-  const directHelper = `${home}/copilot-token.sh`;
-  const proxyHelper = `${home}/copilot-gateway-token.sh`;
+  // Build the managed helper paths with join() so they match inspectClaudeWiring's
+  // own path.join() on every OS (forward-slash literals fail the exact match on Windows).
+  const directHelper = join(home, "copilot-token.sh");
+  const proxyHelper = join(home, "copilot-gateway-token.sh");
 
   expect(
     inspectClaudeWiring(JSON.stringify({ apiKeyHelper: directHelper }), home).providerMode,

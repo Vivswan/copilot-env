@@ -1,4 +1,4 @@
-// `agent start`: launches the gateway daemon, applies defaults, and syncs aliases.
+// `agent start`: launches the proxy daemon, applies defaults, and syncs aliases.
 import * as fs from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
@@ -20,9 +20,9 @@ import {
 } from "../copilot_api/process.ts";
 import { CopilotApiState } from "../copilot_api/state.ts";
 import {
-  GATEWAY_PACKAGE_NAME,
-  gatewayVersionFloorStatus,
-  installedGatewayVersion,
+  installedProxyVersion,
+  PROXY_PACKAGE_NAME,
+  proxyVersionFloorStatus,
 } from "../copilot_api/version.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
@@ -43,7 +43,7 @@ const DEFAULT_FLAGS: Record<string, unknown> = {
 
 export interface StartArgs {
   "dry-run"?: boolean;
-  /** Pin the gateway to this port instead of auto-resolving (fails if busy). */
+  /** Pin the proxy to this port instead of auto-resolving (fails if busy). */
   port?: number;
 }
 
@@ -61,7 +61,7 @@ function applyDefaultConfig(config: CopilotApiConfig): void {
 }
 
 /**
- * Disable every built-in extraPrompt the gateway injects.
+ * Disable every built-in extraPrompt the proxy injects.
  *
  * The pinned `@jeffreycao/copilot-api` re-adds any *missing* default extraPrompt
  * key on every config reload (`mergeDefaultConfig`), so an empty or absent map
@@ -89,7 +89,7 @@ function disableExtraPrompts(config: CopilotApiConfig): void {
 
 /**
  * Pull the daemon's live model catalog and replace its aliases with a
- * catalog-derived map. Best-effort: on failure no aliases are set (the gateway
+ * catalog-derived map. Best-effort: on failure no aliases are set (the proxy
  * still resolves plain dash-form ids via its own normalizer), and a warning is
  * logged.
  */
@@ -98,10 +98,10 @@ async function syncModelAliases(admin: CopilotAdminClient): Promise<void> {
     const catalog = await admin.getModels();
     const aliases = generateAliases(catalog);
     await admin.setModelMappings(aliases);
-    consola.info(`OK Synced ${Object.keys(aliases).length} model aliases from catalog.`);
+    consola.success(`Synced ${Object.keys(aliases).length} model aliases from catalog.`);
   } catch (e) {
     consola.warn(
-      `WARNING: could not sync model aliases from catalog (${e instanceof Error ? e.message : String(e)}).`,
+      `Could not sync model aliases from catalog (${e instanceof Error ? e.message : String(e)}); check \`agent health\`.`,
     );
   }
   await printModelAliases(admin);
@@ -114,7 +114,7 @@ async function printModelAliases(admin: CopilotAdminClient): Promise<void> {
     mappings = await admin.getModelMappings();
   } catch (e) {
     consola.warn(
-      `WARNING: could not read live model mappings (${e instanceof Error ? e.message : String(e)}).`,
+      `Could not read live model mappings (${e instanceof Error ? e.message : String(e)}); check \`agent health\`.`,
     );
     return;
   }
@@ -140,18 +140,18 @@ async function printModelAliases(admin: CopilotAdminClient): Promise<void> {
     return `   ${target.padEnd(width)}  <-  ${aliases.join(", ")}`;
   });
   consola.info(
-    `--- Model aliases (${sources.length} -> ${targets.length} models):\n${rows.join("\n")}`,
+    `Model aliases (${sources.length} -> ${targets.length} models):\n${rows.join("\n")}`,
   );
 }
 
 /**
- * Log the running gateway's version and (best-effort) its npm publish date.
+ * Log the running proxy's version and (best-effort) its npm publish date.
  * The installed package.json carries only the version; the publish timestamp
  * lives in the registry's `time` map, so we fetch it with a short timeout and
  * fall back to version-only when offline.
  */
-async function logGatewayVersion(): Promise<void> {
-  const version = installedGatewayVersion();
+async function logProxyVersion(): Promise<void> {
+  const version = installedProxyVersion();
   if (version === null) {
     return;
   }
@@ -171,22 +171,22 @@ async function logGatewayVersion(): Promise<void> {
   } catch {
     // offline / slow registry — version alone is still useful
   }
-  consola.info(`   Gateway: @jeffreycao/copilot-api ${version}${published}`);
+  consola.info(`   Proxy: @jeffreycao/copilot-api ${version}${published}`);
 }
 
 /**
- * Refuse to launch on a gateway below the GATEWAY_MIN_VERSION floor. The float
+ * Refuse to launch on a proxy below the PROXY_MIN_VERSION floor. The float
  * (`bun install`'s postinstall) is best-effort, so an offline/failed install can
- * leave a sub-floor gateway in node_modules; the floor is a hard runtime contract,
+ * leave a sub-floor proxy in node_modules; the floor is a hard runtime contract,
  * so we enforce it here — **fail-closed** and before disturbing any running daemon.
- * An unresolvable gateway or unreadable copilot-env.config is itself fatal (we
+ * An unresolvable proxy or unreadable copilot-env.config is itself fatal (we
  * can't confirm the floor), so it throws rather than launching blind.
  */
-function assertGatewayFloor(): void {
-  const version = installedGatewayVersion();
+function assertProxyFloor(): void {
+  const version = installedProxyVersion();
   if (version === null) {
     throw new Error(
-      `${GATEWAY_PACKAGE_NAME} is not installed or its package.json is unreadable — run 'bun install' to (re)install the gateway.`,
+      `${PROXY_PACKAGE_NAME} is not installed or its package.json is unreadable — run 'bun install' to (re)install the proxy.`,
     );
   }
   let config: ProjectConfig;
@@ -194,13 +194,13 @@ function assertGatewayFloor(): void {
     config = readProjectConfig(PROJECT_ROOT);
   } catch (e) {
     throw new Error(
-      `could not read the gateway floor from copilot-env.config: ${e instanceof Error ? e.message : String(e)}`,
+      `could not read the proxy floor from copilot-env.config: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
-  const status = gatewayVersionFloorStatus(version, config);
+  const status = proxyVersionFloorStatus(version, config);
   if (!status.ok && status.reason === "belowFloor") {
     throw new Error(
-      `${GATEWAY_PACKAGE_NAME} ${status.version} is below the required ${status.floor} floor — the gateway ` +
+      `${PROXY_PACKAGE_NAME} ${status.version} is below the required ${status.floor} floor — the proxy ` +
         `float (bun install postinstall) likely failed (offline?). Re-run 'bun install' online, ` +
         `or set COPILOT_API_VERSION to a known-good release.`,
     );
@@ -229,35 +229,35 @@ export async function runStart(args: StartArgs): Promise<void> {
     const trackedPid = statePid !== undefined && pidAlive(statePid) ? statePid : null;
     const orphans = (await getOrphanPids(process.pid, process.ppid)).filter(pidAlive);
 
-    consola.info("DRY RUN: no gateway runtime changes will be made.");
+    consola.info("DRY RUN: no proxy runtime changes will be made.");
     consola.info(`   Would ensure runtime directories: ${paths.home}, ${paths.runDir}`);
     consola.info(`   Would apply default configuration: ${config.path}`);
     if (trackedPid !== null) {
-      consola.info(`   Would stop tracked copilot-api (pid=${trackedPid}).`);
+      consola.info(`   Would stop tracked proxy (pid=${trackedPid}).`);
     }
     for (const orphan of orphans) {
-      consola.info(`   Would stop orphaned copilot-api (pid=${orphan}).`);
+      consola.info(`   Would stop orphaned proxy (pid=${orphan}).`);
     }
-    consola.info(`   Would launch copilot-api on port ${port}.`);
+    consola.info(`   Would launch the proxy on port ${port}.`);
     consola.info(`   Would write runtime state + log: ${paths.stateFile}, ${logFile}`);
-    consola.info("   Would wait for readiness, sync model aliases, and report gateway details.");
+    consola.info("   Would wait for readiness, sync model aliases, and report proxy details.");
     return;
   }
 
   // Hard floor gate (before touching the running daemon): the postinstall float
-  // is best-effort, so never launch on a sub-floor gateway.
-  assertGatewayFloor();
+  // is best-effort, so never launch on a sub-floor proxy.
+  assertProxyFloor();
 
   fs.mkdirSync(paths.home, { recursive: true });
   fs.mkdirSync(paths.runDir, { recursive: true });
   applyDefaultConfig(config);
-  consola.info("==> Cleaning up existing copilot-api processes ...");
+  consola.start("Cleaning up existing proxy processes ...");
 
   const tracked = state.read().pid;
   if (tracked !== undefined) {
     // Only signal it if it's still OUR daemon (guard against PID reuse).
     if (await isCopilotApiPid(tracked)) {
-      consola.info(`   Stopping tracked copilot-api (pid=${tracked}) ...`);
+      consola.info(`   Stopping tracked proxy (pid=${tracked}) ...`);
       try {
         process.kill(tracked, "SIGTERM");
       } catch {
@@ -283,7 +283,7 @@ export async function runStart(args: StartArgs): Promise<void> {
   if (orphans.length > 0) {
     for (const opid of orphans) {
       if (pidAlive(opid)) {
-        consola.info(`   Stopping orphaned copilot-api (pid=${opid}) ...`);
+        consola.info(`   Stopping orphaned proxy (pid=${opid}) ...`);
         try {
           process.kill(opid, "SIGTERM");
         } catch {
@@ -317,13 +317,13 @@ export async function runStart(args: StartArgs): Promise<void> {
     }
     port = args.port;
   } else if (!(await copilotApiPortAvailable(port))) {
-    consola.warn(`WARNING: Port ${port} is busy (held by another process/user).`);
+    consola.warn(`Port ${port} is busy (held by another process/user).`);
     try {
       port = await copilotApiFindPort(port + 1);
     } catch {
-      throw new Error("could not find a free port to start copilot-api.");
+      throw new Error("could not find a free port to start the proxy.");
     }
-    consola.info(`OK Using alternative port: ${port}`);
+    consola.success(`Using alternative port: ${port}`);
   }
 
   fs.writeFileSync(logFile, "");
@@ -347,7 +347,7 @@ export async function runStart(args: StartArgs): Promise<void> {
         );
       }
       consola.warn(
-        `WARNING: Port ${port} was taken by another process just before launch; retrying on a different port ...`,
+        `Port ${port} was taken by another process just before launch; retrying on a different port ...`,
       );
       try {
         port = await copilotApiFindPort(port + 1);
@@ -360,27 +360,27 @@ export async function runStart(args: StartArgs): Promise<void> {
       if (!pidAlive(pid)) {
         printLogTail(logFile, 20);
         throw new Error(
-          `copilot-api failed to start after retrying on a different port. See ${logFile}`,
+          `the proxy failed to start after retrying on a different port. See ${logFile}`,
         );
       }
-      consola.info(`OK Started on port ${port} after retry.`);
+      consola.success(`Started on port ${port} after retry.`);
     } else {
       printLogTail(logFile, 20);
-      throw new Error(`copilot-api failed to start. See ${logFile}`);
+      throw new Error(`the proxy failed to start. See ${logFile}`);
     }
   }
 
   state.set({ pid, port });
-  consola.info(`Started copilot-api (PID ${pid}) on port ${port}, detached. Logs: ${logFile}`);
+  consola.info(`Started the proxy (PID ${pid}) on port ${port}, detached. Logs: ${logFile}`);
 
-  consola.info(`--- Waiting for copilot-api to start (tailing ${logFile}) ...`);
+  consola.start(`Waiting for the proxy to start (tailing ${logFile}) ...`);
 
   const maxWait = 120;
   let ready = false;
   let printedLogBytes = 0;
   for (let i = 0; i < maxWait; i++) {
     if (!pidAlive(pid)) {
-      throw new Error(`copilot-api (PID ${pid}) exited during startup. See ${logFile}.`);
+      throw new Error(`the proxy (PID ${pid}) exited during startup. See ${logFile}.`);
     }
     let logContent = "";
     try {
@@ -404,16 +404,14 @@ export async function runStart(args: StartArgs): Promise<void> {
   }
 
   if (!ready) {
-    consola.warn(
-      `WARNING: copilot-api did not start listening on port ${port} within ${maxWait}s.`,
-    );
-    consola.warn(`    It may still be coming up; check the log file: ${logFile}`);
-    throw new Error(`copilot-api did not start listening on port ${port} within ${maxWait}s`);
+    consola.warn(`The proxy did not start listening on port ${port} within ${maxWait}s.`);
+    consola.warn(`It may still be coming up; check the log file: ${logFile}`);
+    throw new Error(`the proxy did not start listening on port ${port} within ${maxWait}s`);
   }
 
-  consola.info(`OK copilot-api is up on port ${port} (PID ${pid}).`);
+  consola.success(`The proxy is up on port ${port} (PID ${pid}).`);
 
-  // Blank the gateway's built-in extraPrompts now that config.json holds the
+  // Blank the proxy's built-in extraPrompts now that config.json holds the
   // package's full default set. The setModelMappings POST below triggers the
   // daemon's reloadConfig(), which makes the blanked values take effect.
   disableExtraPrompts(config);
@@ -425,16 +423,20 @@ export async function runStart(args: StartArgs): Promise<void> {
   });
   await syncModelAliases(admin);
 
-  await logGatewayVersion();
+  await logProxyVersion();
   // One message, one timestamp — keeps the path block from interleaving.
+  const summary: Array<[string, string]> = [
+    ["Logs", logFile],
+    ["PID", String(pid)],
+    ["Port", String(port)],
+    ["SQLite", paths.sqliteDb],
+    ["Bun env", PROJECT_ROOT],
+  ];
+  const labelWidth = summary.reduce((m, [label]) => Math.max(m, label.length), 0);
   consola.info(
-    [
-      `   Logs:   ${logFile}`,
-      `   PID:    ${pid}`,
-      `   Port:   ${port}`,
-      `   SQLite: ${paths.sqliteDb}`,
-      `   Bun env: ${PROJECT_ROOT}`,
-    ].join("\n"),
+    summary
+      .map(([label, value]) => `   ${`${label}:`.padEnd(labelWidth + 1)}  ${value}`)
+      .join("\n"),
   );
   // What's next: set off in its own box so it doesn't blend into the path block.
   consola.log("");
@@ -442,10 +444,10 @@ export async function runStart(args: StartArgs): Promise<void> {
     [
       "Next steps",
       "",
-      "  • Launch an agent:  cl (Claude) / cx (Codex) / co (Copilot)",
+      "  • Launch an agent:  `cl` (Claude) / `cx` (Codex) / `co` (Copilot)",
       "    …or run `claude` / `codex` directly.",
-      "  • Install those launchers:  agent setup-launchers",
-      "  • `agent cost` reports gateway usage  ·  `agent stop` stops the gateway.",
+      "  • Install those launchers:  `agent setup-launchers`",
+      "  • `agent cost` reports proxy usage  ·  `agent stop` stops the proxy.",
     ].join("\n"),
   );
 }

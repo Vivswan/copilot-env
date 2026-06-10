@@ -1,5 +1,5 @@
-// Minimal dotted-numeric version comparison shared by the gateway float and the
-// `start` floor check. Not a full semver implementation — the gateway ships plain
+// Minimal dotted-numeric version comparison shared by the proxy float and the
+// `start` floor check. Not a full semver implementation — the proxy ships plain
 // `x.y.z` releases and we only need floor/ceiling ordering tests.
 
 /**
@@ -7,7 +7,7 @@
  * Compares numeric cores segment by segment; on equal cores, a prerelease
  * (`x.y.z-...`) ranks below the plain release (build metadata after `+` is
  * ignored, per semver). Not a full prerelease-identifier ordering — sufficient
- * because the gateway ships plain releases and we only need floor/ceiling tests.
+ * because the proxy ships plain releases and we only need floor/ceiling tests.
  */
 export function versionLessThan(a: string, b: string): boolean {
   const core = (v: string): number[] =>

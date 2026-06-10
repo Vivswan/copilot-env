@@ -1,6 +1,6 @@
 # Single self-bootstrapping entry point (Windows) for copilot-env. Mirror of
 # bin/agent: installs bun if missing, installs node_modules in-place in the
-# checkout only when a read-only `gateway_float.ts --verify` says it's needed
+# checkout only when a read-only `proxy_float.ts --verify` says it's needed
 # (stale float / missing or out-of-sync node_modules), then runs the cli.ts
 # dispatcher (start / stop / env / cost / codex / claude).
 # The `agent` function in agents.ps1 turns `agent env` output into session state.
@@ -21,9 +21,9 @@ if (Test-Path $BunExe) {
 }
 
 # Install node_modules in-place in the checkout, but only when needed: a read-only
-# `gateway_float.ts --verify` checks whether this call can skip install. Normal
+# `proxy_float.ts --verify` checks whether this call can skip install. Normal
 # no-env verify reads npm publish-time metadata, computes the cooldown-aged target,
-# and compares it to the installed gateway; missing/stale node_modules still force
+# and compares it to the installed proxy; missing/stale node_modules still force
 # install. HUSKY=0 keeps husky's `prepare` from reinstalling git hooks each time.
 # Discard bun's stdout (its install summary) so it can't be captured into the
 # `agent env` output the profile function evals -- PowerShell can't merge stdout
@@ -32,11 +32,11 @@ if (Test-Path $BunExe) {
 # discarded for the same reason.
 $needInstall = -not (Test-Path (Join-Path $Snap 'node_modules'))
 if (-not $needInstall) {
-    $GatewayFloat = Join-Path $Snap 'src\gateway_float.ts'
+    $ProxyFloat = Join-Path $Snap 'src\proxy_float.ts'
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & bun $GatewayFloat --verify *> $null
+        & bun $ProxyFloat --verify *> $null
     } finally {
         $ErrorActionPreference = $previousErrorActionPreference
     }
@@ -51,7 +51,7 @@ if ($needInstall) {
         Pop-Location
     }
     if ($LASTEXITCODE -ne 0) {
-        Write-Error 'copilot-env bootstrap failed.'
+        Write-Error 'copilot-env bootstrap failed: bun install did not complete -- check network/bun, then re-run.'
         exit 1
     }
     # Mark node_modules as freshly installed so the bun.lock-vs-node_modules mtime

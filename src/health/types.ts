@@ -5,13 +5,13 @@
 export type CheckStatus = "ok" | "warn" | "fail";
 
 /** Which diagnostic surface a `agent health` run targets. */
-export type HealthScope = "full" | "runtime" | "gateway" | "setup" | "codex" | "claude";
+export type HealthScope = "full" | "runtime" | "proxy" | "setup" | "codex" | "claude";
 
 /** Declaration order doubles as the help/text-report ordering for scopes. */
-export const HEALTH_SCOPES = ["full", "runtime", "gateway", "setup", "codex", "claude"] as const;
+export const HEALTH_SCOPES = ["full", "runtime", "proxy", "setup", "codex", "claude"] as const;
 
 /** Section a check renders under (fixed render order lives in report.ts). */
-export type CheckGroup = "bootstrap" | "gateway" | "runtime" | "setup" | "codex" | "claude";
+export type CheckGroup = "bootstrap" | "proxy" | "runtime" | "setup" | "codex" | "claude";
 
 /**
  * One diagnostic result. `id` is a stable machine-readable key (e.g.

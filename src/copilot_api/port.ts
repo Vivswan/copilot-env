@@ -1,4 +1,4 @@
-// Port selection and discovery helpers for the local copilot-api gateway.
+// Port selection and discovery helpers for the local copilot-api proxy.
 import * as net from "node:net";
 
 import { CopilotApiState } from "./state.ts";
@@ -44,7 +44,7 @@ export function copilotApiResolvePort(): string {
   return statePort !== undefined ? String(statePort) : COPILOT_API_PORT_DEFAULT;
 }
 
-/** The OpenAI-wire gateway base URL for `port` (single source for the emitted string). */
+/** The OpenAI-wire proxy base URL for `port` (single source for the emitted string). */
 export function openaiBaseUrl(port: string): string {
   return `http://localhost:${port}/v1`;
 }

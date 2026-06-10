@@ -3,7 +3,7 @@
 import { join } from "node:path";
 import type { AutoupdateData } from "../autoupdate/state.ts";
 import { DIRECT_BASE_URL } from "../claude/config.ts";
-import type { GatewayVersionStatus } from "../copilot_api/version.ts";
+import type { ProxyVersionStatus } from "../copilot_api/version.ts";
 import { SECONDS_PER_DAY } from "../utils/time.ts";
 import type {
   BootstrapFacts,
@@ -11,16 +11,16 @@ import type {
   CliFacts,
   CodexFacts,
   CodexHostFacts,
-  GatewayFacts,
   HealthFacts,
   LiveProbeFacts,
+  ProxyFacts,
   RuntimeFacts,
   ShellFacts,
 } from "./probe.ts";
 import type { CheckResult, HealthScope } from "./types.ts";
 
-const RUNTIME: readonly HealthScope[] = ["full", "gateway", "runtime"];
-const BOOTSTRAP: readonly HealthScope[] = ["full", "gateway"];
+const RUNTIME: readonly HealthScope[] = ["full", "proxy", "runtime"];
+const BOOTSTRAP: readonly HealthScope[] = ["full", "proxy"];
 const SETUP: readonly HealthScope[] = ["full", "setup"];
 const CODEX: readonly HealthScope[] = ["full", "setup", "codex"];
 const CLAUDE: readonly HealthScope[] = ["full", "setup", "claude"];
@@ -71,14 +71,14 @@ export function checkNodeModules(f: BootstrapFacts): CheckResult {
   };
 }
 
-export function checkGatewayPackage(f: GatewayFacts): CheckResult {
+export function checkProxyPackage(f: ProxyFacts): CheckResult {
   // A config that couldn't be read means we can't judge bounds — surface that
   // as the failure rather than letting the exception escape the report.
   if (f.configError !== null || f.bounds === null) {
     return {
-      id: "gateway.package",
-      label: "Gateway package",
-      group: "gateway",
+      id: "proxy.package",
+      label: "Proxy package",
+      group: "proxy",
       scopes: BOOTSTRAP,
       status: "fail",
       detail: `could not read copilot-env.config: ${f.configError ?? "unknown error"}`,
@@ -86,7 +86,7 @@ export function checkGatewayPackage(f: GatewayFacts): CheckResult {
       value: { version: f.version, configError: f.configError },
     };
   }
-  const bounds: GatewayVersionStatus = f.bounds;
+  const bounds: ProxyVersionStatus = f.bounds;
   let status: CheckResult["status"];
   let detail: string;
   let fix: string | undefined;
@@ -100,17 +100,17 @@ export function checkGatewayPackage(f: GatewayFacts): CheckResult {
     fix = "bun install --frozen-lockfile";
   } else if (bounds.reason === "belowFloor") {
     status = "fail";
-    detail = `gateway ${bounds.version} is below the floor ${bounds.floor}`;
+    detail = `proxy ${bounds.version} is below the floor ${bounds.floor}`;
     fix = "bun install --frozen-lockfile";
   } else {
     status = "warn";
-    detail = `gateway ${bounds.version} is above the ceiling ${bounds.ceiling}`;
+    detail = `proxy ${bounds.version} is above the ceiling ${bounds.ceiling}`;
     fix = "agent update";
   }
   return {
-    id: "gateway.package",
-    label: "Gateway package",
-    group: "gateway",
+    id: "proxy.package",
+    label: "Proxy package",
+    group: "proxy",
     scopes: BOOTSTRAP,
     status,
     detail,
@@ -119,7 +119,7 @@ export function checkGatewayPackage(f: GatewayFacts): CheckResult {
   };
 }
 
-/** Human label for the gateway float cooldown window (seconds, null = unknown). */
+/** Human label for the proxy float cooldown window (seconds, null = unknown). */
 function floatCooldownLabel(seconds: number | null): string {
   if (seconds === null) return "cooldown: unknown";
   if (seconds === 0) return "no cooldown";
@@ -130,16 +130,16 @@ function floatCooldownLabel(seconds: number | null): string {
 export function checkRuntimePort(f: RuntimeFacts): CheckResult {
   const base = {
     id: "runtime.port",
-    label: "Gateway port reachable",
+    label: "Proxy port reachable",
     group: "runtime" as const,
     scopes: RUNTIME,
   };
-  // Both agents direct => no gateway needed, so a down gateway is not a failure.
+  // Both agents direct => no proxy needed, so a down proxy is not a failure.
   if (!f.reachable && f.bothDirect) {
     return {
       ...base,
       status: "ok",
-      detail: `gateway not running on port ${f.port}; not required (Codex + Claude are both direct)`,
+      detail: `proxy not running on port ${f.port}; not required (Codex + Claude are both direct)`,
       value: { port: f.port, reachable: f.reachable, bothDirect: true },
     };
   }
@@ -156,7 +156,7 @@ export function checkRuntimePid(f: RuntimeFacts): CheckResult {
   const tracked = f.pidTracked;
   const base = {
     id: "runtime.pid",
-    label: "Tracked gateway process",
+    label: "Tracked proxy process",
     group: "runtime" as const,
     scopes: RUNTIME,
   };
@@ -168,7 +168,7 @@ export function checkRuntimePid(f: RuntimeFacts): CheckResult {
   } else {
     detail = `tracked pid ${f.trackedPid} is stale or foreign`;
   }
-  // Both agents direct => no gateway needed, so a missing tracked pid is fine.
+  // Both agents direct => no proxy needed, so a missing tracked pid is fine.
   if (!tracked && f.bothDirect) {
     return {
       ...base,
@@ -322,7 +322,7 @@ export function checkCodex(f: CodexFacts): CheckResult {
   } else if (!f.baseUrlMatches) {
     detail = [
       "provider: proxy",
-      withConfigPath(`copilot-env base_url ${f.baseUrl ?? "(missing)"} is not the running gateway`),
+      withConfigPath(`copilot-env base_url ${f.baseUrl ?? "(missing)"} is not the running proxy`),
     ].join("\n");
   } else if (!f.envKeyMatches) {
     detail = [
@@ -338,7 +338,7 @@ export function checkCodex(f: CodexFacts): CheckResult {
   if (detail !== null) {
     return { ...base, status: "warn", detail, fix: "agent codex --auto" };
   }
-  // Fully wired: the wiring status, the gateway, then each token source on its
+  // Fully wired: the wiring status, the proxy, then each token source on its
   // own line (Codex resolves env_key from .env, but an exported var works too).
   const present = (ok: boolean) => (ok ? "present" : "absent");
   const detailLines = [
@@ -443,8 +443,8 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
     };
   }
   if (f.providerMode === "proxy") {
-    // Gateway-backed via settings.json (apiKeyHelper prints the gateway token,
-    // base URL points at localhost). Runtime reachability is the gateway check's
+    // Proxy-backed via settings.json (apiKeyHelper prints the proxy token,
+    // base URL points at localhost). Runtime reachability is the proxy check's
     // job; here we just confirm the wiring is present.
     return {
       ...base,
@@ -565,7 +565,7 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
       checkNodeModules(facts.bootstrap),
     );
   }
-  if (facts.gateway) out.push(checkGatewayPackage(facts.gateway));
+  if (facts.proxy) out.push(checkProxyPackage(facts.proxy));
   if (facts.runtime) {
     out.push(checkRuntimePort(facts.runtime), checkRuntimePid(facts.runtime));
     out.push(checkRuntimePaths(facts.runtime));

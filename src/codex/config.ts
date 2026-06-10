@@ -1,5 +1,5 @@
 // Codex config writer: points Codex at GitHub Copilot directly by default, with
-// the local gateway provider available as an explicit proxy mode.
+// the local copilot-api proxy available as an explicit proxy mode.
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import { homedir } from "node:os";
@@ -23,8 +23,8 @@ import { createStderrLogger } from "../utils/logger.ts";
 const logger = createStderrLogger();
 
 // The Codex model-provider ids we manage. CODEX_PROVIDER_ID is the proxy
-// provider contract used by the gateway health inspector. OPENAI_API_KEY is the
-// same OpenAI-wire name `env.ts` already exports, so the single gateway token
+// provider contract used by the proxy health inspector. OPENAI_API_KEY is the
+// same OpenAI-wire name `env.ts` already exports, so the single proxy token
 // has ONE name across the shell exports and the Codex `.env`.
 export const DIRECT_PROVIDER_ID = "github-copilot-direct";
 const DIRECT_BASE_URL = "https://api.githubcopilot.com";
@@ -189,11 +189,11 @@ export interface CodexWiringStatus {
 }
 
 /**
- * True when `baseUrl` matches the managed gateway contract: an http localhost
+ * True when `baseUrl` matches the managed proxy contract: an http localhost
  * URL on `expectedPort` whose path is `/v1` (what configureCodexConfig writes via
  * openaiBaseUrl). A bare host, https, or a non-/v1 path is NOT a match.
  */
-function baseUrlMatchesGateway(baseUrl: string, expectedPort: number): boolean {
+function baseUrlMatchesProxy(baseUrl: string, expectedPort: number): boolean {
   try {
     const u = new URL(baseUrl);
     const isLocal = u.hostname === "localhost" || u.hostname === "127.0.0.1";
@@ -250,7 +250,7 @@ export function inspectCodexWiring(
     status.baseUrlMatches =
       baseUrl !== null &&
       (providerMode === "proxy"
-        ? baseUrlMatchesGateway(baseUrl, expectedPort)
+        ? baseUrlMatchesProxy(baseUrl, expectedPort)
         : providerMode === "direct" && baseUrl === DIRECT_BASE_URL);
     status.envKeyMatches =
       providerMode === "direct" || (isRecord(table) && table.env_key === CODEX_ENV_KEY);
@@ -293,7 +293,7 @@ function loadOrCreateConfig(
   return defaultConfig(mode);
 }
 
-// Set the gateway key in `$CODEX_HOME/.env` WITHOUT clobbering the rest of the
+// Set the proxy key in `$CODEX_HOME/.env` WITHOUT clobbering the rest of the
 // file: replace an existing OPENAI_API_KEY assignment in place (dropping any
 // duplicates so our value is unambiguous regardless of dotenvy precedence), or
 // append it when absent. Comments, blank lines, and any other vars the user
@@ -353,7 +353,7 @@ function validateProxyOptions(options: ConfigureCodexConfigOptions): ProxyConfig
 /**
  * Write the managed `config.toml` at `codexHome`. Direct mode is the default
  * and does not touch `.env`; proxy mode also writes a `.env` (mode 0600)
- * holding the gateway API key. Returns 0 on success. Exported for unit testing.
+ * holding the proxy API key. Returns 0 on success. Exported for unit testing.
  */
 export function configureCodexConfig(
   codexHome?: string | null,
@@ -398,7 +398,7 @@ export function configureCodexConfig(
     features.image_generation = false;
     doc.features = features;
   } else if (isRecord(doc.features)) {
-    // Proxy: image generation works via the gateway, so drop the direct-only
+    // Proxy: image generation works via the proxy, so drop the direct-only
     // disable (and the whole [features] table if it has nothing else).
     delete doc.features.image_generation;
     if (Object.keys(doc.features).length === 0) delete doc.features;
@@ -424,7 +424,7 @@ export function configureCodexConfig(
 }
 
 /**
- * Resolve baseUrl/apiKey from the local gateway and write the Codex config at
+ * Resolve baseUrl/apiKey from the local proxy and write the Codex config at
  * `codexHome`. Pure config write — the caller persists CODEX_HOME to state.
  * Shared by `runCodexConfig` and codex_host's `runCodexHost`.
  */
@@ -515,7 +515,7 @@ function providerModeDetail(mode: CodexProviderMode, configExists: boolean): str
 function checkExitCode(mode: CodexProviderMode): 0 | 1 | 2 {
   if (mode === "direct") return 0;
   if (mode === "other") return 1;
-  return 2; // proxy or none (the gateway is the default backend)
+  return 2; // proxy or none (the proxy is the default backend)
 }
 
 function checkCodexConfig(args: Pick<CodexConfigArgs, "codex-home">): void {
@@ -552,9 +552,9 @@ export function detectCodexDirect(deps?: DirectProbeDeps): boolean {
  * `agent codex`: configure Codex at the active CODEX_HOME — an explicit
  * `--codex-home`, else the one a `--host` farm set in state, else the default
  * `~/.codex`. `--direct` forces GitHub Copilot Direct, `--proxy` forces the local
- * gateway, and `--auto` (or no mode flag) AUTO-DETECTS — it writes direct wiring
+ * proxy, and `--auto` (or no mode flag) AUTO-DETECTS — it writes direct wiring
  * when a live read-only probe against Copilot Direct succeeds, else falls back to
- * the gateway proxy. `--check` reports the configured mode (exit 0 direct / 2
+ * the proxy. `--check` reports the configured mode (exit 0 direct / 2
  * proxy|none / 1 other) without a probe. Does NOT touch `state.codexHome` (only
  * `--host` sets/clears that).
  */
@@ -566,7 +566,7 @@ export function runCodex(args: CodexConfigArgs): void {
   }
   const direct = resolveDirect(args, detectCodexDirect);
   logger.log(
-    `  Configuring Codex for ${direct ? "GitHub Copilot Direct" : "the local copilot-api gateway proxy"} …`,
+    `  Configuring Codex for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} …`,
   );
   applyCodexConfig(effectiveCodexHome(args), { proxy: !direct });
 }

@@ -5,7 +5,7 @@
 # unless a command explicitly overrides it.
 #
 # It only affects *resolution*, so it's a no-op under `--frozen-lockfile` (the
-# reproducible baseline install). The gateway overlay in src/gateway_float.ts
+# reproducible baseline install). The proxy overlay in src/proxy_float.ts
 # mirrors this release-age window from npm publish-time metadata.
 
 [install]

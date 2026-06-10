@@ -18,9 +18,9 @@ import {
   checkCodex,
   checkCodexHost,
   checkCodexLive,
-  checkGatewayPackage,
   checkLaunchers,
   checkNodeModules,
+  checkProxyPackage,
   checkRuntimePid,
   checkRuntimePort,
   checkShellIntegration,
@@ -89,15 +89,15 @@ test("exitCodeFor is 1 iff any fail; warnings alone exit 0", () => {
 
 test("filterByScope keeps only participating checks, preserving order", () => {
   const all = [
-    result("runtime.port", "ok", ["full", "gateway", "runtime"]),
+    result("runtime.port", "ok", ["full", "proxy", "runtime"]),
     result("setup.shell", "warn", ["full", "setup"]),
     result("setup.codex", "ok", ["full", "setup", "codex"]),
-    result("bootstrap.bun", "ok", ["full", "gateway"]),
+    result("bootstrap.bun", "ok", ["full", "proxy"]),
   ];
   expect(filterByScope(all, "runtime").map((r) => r.id)).toEqual(["runtime.port"]);
   expect(filterByScope(all, "setup").map((r) => r.id)).toEqual(["setup.shell", "setup.codex"]);
   expect(filterByScope(all, "codex").map((r) => r.id)).toEqual(["setup.codex"]);
-  expect(filterByScope(all, "gateway").map((r) => r.id)).toEqual(["runtime.port", "bootstrap.bun"]);
+  expect(filterByScope(all, "proxy").map((r) => r.id)).toEqual(["runtime.port", "bootstrap.bun"]);
   expect(filterByScope(all, "full").map((r) => r.id)).toEqual([
     "runtime.port",
     "setup.shell",
@@ -107,7 +107,7 @@ test("filterByScope keeps only participating checks, preserving order", () => {
 });
 
 test("isHealthScope narrows known scopes and rejects others", () => {
-  for (const s of ["full", "runtime", "gateway", "setup", "codex", "claude"]) {
+  for (const s of ["full", "runtime", "proxy", "setup", "codex", "claude"]) {
     expect(isHealthScope(s)).toBe(true);
   }
   expect(isHealthScope("bogus")).toBe(false);
@@ -122,11 +122,11 @@ test("buildHealthJson exposes scope/ok/status/exitCode/checks with ok === no-fai
   expect(failJson).toMatchObject({ ok: false, status: "fail", exitCode: 1 });
 });
 
-// --- gateway version checks -------------------------------------------------
+// --- proxy version checks -------------------------------------------------
 
-test("gateway package: missing and below-floor fail, above-ceiling warns, in-bounds ok", () => {
+test("proxy package: missing and below-floor fail, above-ceiling warns, in-bounds ok", () => {
   expect(
-    checkGatewayPackage({
+    checkProxyPackage({
       version: null,
       bounds: { ok: false, reason: "missing", version: null },
       configError: null,
@@ -134,14 +134,14 @@ test("gateway package: missing and below-floor fail, above-ceiling warns, in-bou
     }).status,
   ).toBe("fail");
   expect(
-    checkGatewayPackage({
+    checkProxyPackage({
       version: "1.0.0",
       bounds: { ok: false, reason: "belowFloor", version: "1.0.0", floor: "1.10.0" },
       configError: null,
       cooldownSeconds: 604800,
     }).status,
   ).toBe("fail");
-  const above = checkGatewayPackage({
+  const above = checkProxyPackage({
     version: "2.0.0",
     bounds: { ok: false, reason: "aboveCeiling", version: "2.0.0", ceiling: "1.99.0" },
     configError: null,
@@ -150,7 +150,7 @@ test("gateway package: missing and below-floor fail, above-ceiling warns, in-bou
   expect(above.status).toBe("warn");
   expect(above.fix).toBe("agent update");
   expect(
-    checkGatewayPackage({
+    checkProxyPackage({
       version: "1.10.5",
       bounds: { ok: true, version: "1.10.5" },
       configError: null,
@@ -159,9 +159,9 @@ test("gateway package: missing and below-floor fail, above-ceiling warns, in-bou
   ).toBe("ok");
 });
 
-test("gateway package detail shows the float cooldown window", () => {
+test("proxy package detail shows the float cooldown window", () => {
   const ok = (cooldownSeconds: number | null) =>
-    checkGatewayPackage({
+    checkProxyPackage({
       version: "1.10.5",
       bounds: { ok: true, version: "1.10.5" },
       configError: null,
@@ -174,8 +174,8 @@ test("gateway package detail shows the float cooldown window", () => {
   expect(ok(null)).toContain("cooldown: unknown");
 });
 
-test("gateway package fails (not throws) when copilot-env.config is unreadable", () => {
-  const r = checkGatewayPackage({
+test("proxy package fails (not throws) when copilot-env.config is unreadable", () => {
+  const r = checkProxyPackage({
     version: "1.10.5",
     bounds: null,
     configError: "bad config",
@@ -198,9 +198,9 @@ test("runtime port fails only when unreachable", () => {
   expect(checkRuntimePort({ ...RUNTIME_OK, reachable: false }).status).toBe("fail");
 });
 
-test("runtime: a down gateway is OK when both Codex and Claude are direct", () => {
+test("runtime: a down proxy is OK when both Codex and Claude are direct", () => {
   const down = { ...RUNTIME_OK, reachable: false, trackedPid: null, pidTracked: false };
-  // Gateway not required => no failure (warnings/ok only), so the overall exit is 0.
+  // Proxy not required => no failure (warnings/ok only), so the overall exit is 0.
   expect(checkRuntimePort(down).status).toBe("fail");
   expect(checkRuntimePid(down).status).toBe("fail");
   const bothDirect = { ...down, bothDirect: true };
@@ -274,7 +274,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
   };
   // No config at all -> ok (user never wired Codex).
   expect(checkCodex({ ...wired, configExists: false, providerWired: false }).status).toBe("ok");
-  // Fully wired -> ok, multi-line detail: wiring, gateway, then each token source.
+  // Fully wired -> ok, multi-line detail: wiring, proxy, then each token source.
   const ok = checkCodex(wired);
   expect(ok.status).toBe("ok");
   expect(ok.detail).toContain("copilot-env");
@@ -409,10 +409,10 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   expect(staleBase.detail).toContain("(missing)");
   expect(staleBase.fix).toBe("agent claude --direct");
 
-  // Proxy: gateway-backed via settings.json (localhost base URL + gateway helper).
+  // Proxy: proxy-backed via settings.json (localhost base URL + proxy helper).
   const proxy = checkClaude({
     ...direct,
-    helperPath: join("/h/.claude", "copilot-gateway-token.sh"),
+    helperPath: join("/h/.claude", "copilot-proxy-token.sh"),
     baseUrl: "http://localhost:4141",
     providerMode: "proxy",
     directAuth: { command: null, authenticated: false },
@@ -422,7 +422,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   expect(proxy.detail).toContain("ANTHROPIC_BASE_URL → http://localhost:4141");
   expect(proxy.detail).toContain("apiKeyHelper → ");
 
-  // Never configured: informational; cl defaults it to the gateway.
+  // Never configured: informational; cl defaults it to the proxy.
   const none = checkClaude({
     ...direct,
     settingsExists: false,
@@ -659,7 +659,7 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
   const facts: HealthFacts = {
     runtime: RUNTIME_OK,
     bootstrap: BOOTSTRAP_OK,
-    gateway: {
+    proxy: {
       version: "1.10.5",
       bounds: { ok: true, version: "1.10.5" },
       configError: null,
@@ -699,7 +699,7 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
   const ids = evaluateAll("full", facts).map((r) => r.id);
   expect(ids).toContain("runtime.paths");
   expect(ids).toContain("setup.cli.claude");
-  expect(ids).toContain("gateway.package");
+  expect(ids).toContain("proxy.package");
   expect(ids).toContain("setup.codex-host");
   expect(ids).toContain("setup.claude");
   expect(ids).toContain("setup.autoupdate");

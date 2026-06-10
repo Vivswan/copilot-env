@@ -43,14 +43,14 @@ jobs:
         env:
           HUSKY: "0"
 
-      # Guard the postinstall gateway float: `bun install` above runs
-      # src/gateway_float.ts as its postinstall, which is best-effort (never
+      # Guard the postinstall proxy float: `bun install` above runs
+      # src/proxy_float.ts as its postinstall, which is best-effort (never
       # fails the install). Without this check a silently broken float would slip
-      # through CI, since the start/stop lifecycle below uses a FAKE gateway
+      # through CI, since the start/stop lifecycle below uses a FAKE proxy
       # (COPILOT_API_ENTRY) and never resolves the real one. This asserts the
       # float actually installed @jeffreycao/copilot-api within config bounds, on every OS.
-      - name: Verify gateway float installed the gateway
-        run: bun src/gateway_float.ts --assert-installed
+      - name: Verify proxy float installed the proxy
+        run: bun src/proxy_float.ts --assert-installed
 
       - name: Typecheck
         if: runner.os == 'Linux'
@@ -68,10 +68,10 @@ jobs:
       # the tracked pid is ours and signals it. `health --scope runtime` is the
       # cross-check: it must pass (exit 0) while the daemon is up and fail (exit
       # 1) once it's down, so start/stop and the runtime probe verify each other.
-      # COPILOT_API_ENTRY points at a fake gateway so no Copilot auth is needed.
+      # COPILOT_API_ENTRY points at a fake proxy so no Copilot auth is needed.
       # `shell: bash` runs on the Windows runner too (git-bash); -e is on, so any
       # unexpected non-zero (and the inverted post-stop check) fails the step.
-      - name: Start/stop + health lifecycle (fake gateway)
+      - name: Start/stop + health lifecycle (fake proxy)
         shell: bash
         env:
           COPILOT_API_ENTRY: ${{ github.workspace }}/test/copilot-api-fake.mjs

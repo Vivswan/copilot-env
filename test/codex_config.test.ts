@@ -143,7 +143,7 @@ test("proxy mode enforces every managed field while preserving unknown user keys
   expect(rc).toBe(0);
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
-  // Unknown user content survives, and our gateway is reselected as default.
+  // Unknown user content survives, and our proxy is reselected as default.
   expect(asRecord(doc.my_custom).keep).toBe("me");
   expect(doc.model_provider).toBe("copilot-env");
 

@@ -1,7 +1,7 @@
-// Read the gateway's per-host SQLite usage tables.
+// Read the proxy's per-host SQLite usage tables.
 //
 // The daemon writes one `token_usage_events` row per request into a per-host
-// database (`<home>/.run/<hostname>/copilot-api.sqlite`). Running the gateway on
+// database (`<home>/.run/<hostname>/copilot-api.sqlite`). Running the proxy on
 // several machines therefore yields several DBs; a legacy top-level
 // `<home>/copilot-api.sqlite` may also exist from before the per-host split. We
 // read all of them read-only and aggregate token counts by model.
@@ -18,7 +18,7 @@ import { DEFAULT_HOME } from "../copilot_api/paths.ts";
 const DB_FILENAME = "copilot-api.sqlite";
 
 // Raw SQLite open flags. We open via URI (`file:...?immutable=1`) so SQLite
-// skips all locking — the gateway DBs live on NFS where POSIX shared locks
+// skips all locking — the proxy DBs live on NFS where POSIX shared locks
 // fail with SQLITE_PROTOCOL ("locking protocol"), and the daemon is actively
 // writing to them. `immutable=1` promises SQLite the file won't change for
 // the connection's lifetime, which is the right semantic for a best-effort
@@ -149,9 +149,7 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
         }
       }
     } catch (e) {
-      consola.warn(
-        `WARNING: could not read ${path} (${e instanceof Error ? e.message : String(e)}).`,
-      );
+      consola.warn(`could not read ${path} (${e instanceof Error ? e.message : String(e)}).`);
     } finally {
       db?.close();
     }

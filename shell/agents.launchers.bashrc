@@ -8,7 +8,7 @@
 #     source /path/to/agents.launchers.bashrc
 #
 # Must be compatible with both bash and zsh (POSIX constructs only). Relies on
-# the `agent` function and gateway env that agents.bashrc sets up.
+# the `agent` function and proxy env that agents.bashrc sets up.
 
 # shellcheck shell=bash
 # Resolve the repo root if agents.bashrc hasn't already (this file lives in
@@ -17,30 +17,30 @@
 # shellcheck disable=SC2296
 : "${_COPILOT_AGENTS_DIR:=$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")/.." && pwd)}"
 
-# Check the gateway before launching a proxy-backed agent; if it's down, offer to
-# start it. Returns SUCCESS only if the gateway is reachable afterward — so a
+# Check the proxy before launching a proxy-backed agent; if it's down, offer to
+# start it. Returns SUCCESS only if the proxy is reachable afterward — so a
 # caller that `|| return`s won't re-sync proxy config against a stale port or
-# launch into a dead gateway when the user declines. `agent start` runs in the
+# launch into a dead proxy when the user declines. `agent start` runs in the
 # current shell so its env exports propagate to the agent we launch next.
 function _copilot_ensure_server {
     if "${_COPILOT_AGENTS_DIR}/bin/agent" health --scope runtime >/dev/null 2>&1; then
         return 0
     fi
 
-    printf 'copilot gateway not running. Start it now? [Y/n] ' >&2
+    printf 'copilot proxy not running. Start it now? [Y/n] ' >&2
     read -r _ans
     case "$_ans" in
         ''|y|Y|yes|Yes) agent start ;;
-        *) echo "Continuing without the gateway; proxy-backed agents need it (run 'agent start')." >&2 ;;
+        *) echo "Continuing without the proxy; proxy-backed agents need it (run 'agent start')." >&2 ;;
     esac
-    # Success only if the gateway is reachable now (declined / failed start => non-zero).
+    # Success only if the proxy is reachable now (declined / failed start => non-zero).
     "${_COPILOT_AGENTS_DIR}/bin/agent" health --scope runtime >/dev/null 2>&1
 }
 
 # Error if an agent CLI is missing; installation is handled by install.sh.
 function _copilot_require_cli {
     command -v "$1" >/dev/null 2>&1 && return 0
-    echo "'$1' is not installed. Run install.sh to install the agent CLIs." >&2
+    echo "'$1' is not installed. Run 'agent setup-clis' to install the agent CLIs." >&2
     return 1
 }
 
@@ -48,7 +48,7 @@ function cl {
     _copilot_require_cli claude || return 1
     # Read the configured Claude provider (no live probe — provider auto-detection
     # is done once by `agent setup-clis`, not on every launch): exit 0 = direct
-    # (Claude reads settings.json itself), 2 = proxy/default (ensure the gateway +
+    # (Claude reads settings.json itself), 2 = proxy/default (ensure the proxy +
     # re-sync the port/token), else custom/error.
     if "${_COPILOT_AGENTS_DIR}/bin/agent" claude --check >/dev/null 2>&1; then
         _claude_provider_status=0
@@ -80,7 +80,7 @@ function cx {
     _copilot_require_cli codex || return 1
     # Read the configured Codex provider (no live probe — provider auto-detection
     # is done once by `agent setup-clis`, not on every launch): exit 0 = direct
-    # (Codex reads its own config), 2 = proxy/default (ensure the gateway + re-sync
+    # (Codex reads its own config), 2 = proxy/default (ensure the proxy + re-sync
     # the port/token), else custom/error.
     if "${_COPILOT_AGENTS_DIR}/bin/agent" codex --check >/dev/null 2>&1; then
         _codex_provider_status=0
@@ -106,7 +106,7 @@ function cx {
 # More-permissive variants: same provider wiring as cl/co/cx, plus each agent's
 # most-relaxed flag (Claude skips permission prompts; Copilot allows all; Codex
 # opens a full-access sandbox). Delegate to the base launcher so the
-# gateway/provider logic lives in one place.
+# proxy/provider logic lives in one place.
 function clx { cl --dangerously-skip-permissions "$@"; }
 function cox { co --allow-all "$@"; }
 function cxx { cx --sandbox danger-full-access "$@"; }

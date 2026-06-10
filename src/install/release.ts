@@ -77,7 +77,7 @@ async function verifySourceArchive(
       firstEntry ??= entry.path;
     },
   });
-  if (!firstEntry) throw new Error("release tarball is empty; update aborted");
+  if (!firstEntry) throw new Error("release archive is empty; update aborted");
   verifySourceArchiveEntry(firstEntry, expectedSha);
 }
 
@@ -90,7 +90,7 @@ export async function applyRelease(
   sourceSha256: string | null = null,
 ): Promise<void> {
   const res = await fetch(tarballUrl, { headers: { "User-Agent": "copilot-env" } });
-  if (!res.ok) throw new Error(`failed to download release tarball (HTTP ${res.status})`);
+  if (!res.ok) throw new Error(`failed to download release archive (HTTP ${res.status})`);
 
   const tmp = mkdtempSync(join(tmpdir(), "copilot-env-update-"));
   try {
@@ -103,7 +103,7 @@ export async function applyRelease(
     await tarExtract({ file: tarball, cwd: tree, strip: 1 });
     for (const required of REQUIRED_FILES) {
       if (!existsSync(join(tree, required))) {
-        throw new Error(`release tarball is incomplete (missing ${required}); update aborted`);
+        throw new Error(`release archive is incomplete (missing ${required}); update aborted`);
       }
     }
     mirror(tree, PROJECT_ROOT, PRESERVE);

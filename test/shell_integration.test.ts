@@ -231,7 +231,7 @@ test("posixLaunchersBlock sources the launchers file under its own marker", () =
   expect(block).not.toContain(MARKER);
 });
 
-test("cx launchers start the gateway only for proxy-backed Codex configs", () => {
+test("cx launchers start the proxy only for proxy-backed Codex configs", () => {
   const posix = readFileSync(join(process.cwd(), "shell", "agents.launchers.bashrc"), "utf8");
   const posixCx = shellFunctionBody(posix, "cx");
   // Check-only: read the configured provider (no live probe), and re-sync proxy.

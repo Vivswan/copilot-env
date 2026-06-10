@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // A throwaway COPILOT_API_HOME so the runtime probe sees no tracked pid/port and
-// falls back to the default port — independent of any real gateway on this host.
+// falls back to the default port — independent of any real proxy on this host.
 function isolatedEnv(extra: Record<string, string> = {}): Record<string, string> {
   const home = mkdtempSync(join(tmpdir(), "copilot-health-"));
   return { ...process.env, CONSOLA_LEVEL: "5", COPILOT_API_HOME: home, ...extra };
@@ -157,7 +157,7 @@ test("codex exposes and runs check mode", () => {
   expect(other.stdout.toString()).toContain("Codex provider mode: other");
   expect(other.stdout.toString()).toContain(`config.toml: ${join(otherHome, "config.toml")}`);
 
-  // none (no config.toml) now exits 2 (gateway default), matching Claude.
+  // none (no config.toml) now exits 2 (proxy default), matching Claude.
   const missing = runCheck(noneHome);
   expect(missing.exitCode).toBe(2);
   expect(missing.stdout.toString()).toContain("Codex provider mode: none");
@@ -195,7 +195,7 @@ test("claude exposes and runs check mode", () => {
   );
   writeFileSync(
     join(proxyHome, "settings.json"),
-    JSON.stringify({ apiKeyHelper: join(proxyHome, "copilot-gateway-token.sh") }),
+    JSON.stringify({ apiKeyHelper: join(proxyHome, "copilot-proxy-token.sh") }),
   );
   writeFileSync(
     join(otherHome, "settings.json"),
@@ -225,7 +225,7 @@ test("claude exposes and runs check mode", () => {
   expect(proxy.exitCode).toBe(2);
   expect(proxy.stdout.toString()).toContain("Claude provider mode: proxy");
 
-  // No settings.json at all is "none" — still exit 2 (the gateway is the default).
+  // No settings.json at all is "none" — still exit 2 (the proxy is the default).
   const none = runCheck(noneHome);
   expect(none.exitCode).toBe(2);
   expect(none.stdout.toString()).toContain("Claude provider mode: none");
@@ -255,7 +255,7 @@ test("init configures both agents and rejects --direct + --proxy", () => {
   expect(helpOut).toContain("--direct");
   expect(helpOut).toContain("--proxy");
 
-  // --proxy forces BOTH agents to the gateway (no probe); isolate the homes so we
+  // --proxy forces BOTH agents to the proxy (no probe); isolate the homes so we
   // never touch the real ~/.codex or ~/.claude.
   const root = mkdtempSync(join(tmpdir(), "copilot-init-"));
   const proc = Bun.spawnSync(["bun", "src/cli.ts", "init", "--proxy"], {
@@ -268,7 +268,7 @@ test("init configures both agents and rejects --direct + --proxy", () => {
   });
   expect(proc.exitCode).toBe(0);
   const out = proc.stdout.toString() + proc.stderr.toString();
-  expect(out).toContain("local gateway proxy");
+  expect(out).toContain("local proxy");
   expect(existsSync(join(root, ".codex", "config.toml"))).toBe(true);
   expect(existsSync(join(root, ".claude", "settings.json"))).toBe(true);
 
@@ -362,8 +362,8 @@ test("health --help surfaces --scope and --json", () => {
   expect(out).toContain("--json");
 });
 
-test("health --scope runtime exits 1 when no gateway is running", () => {
-  // Proxy-wired Codex (not both-direct) so a down gateway is a genuine failure;
+test("health --scope runtime exits 1 when no proxy is running", () => {
+  // Proxy-wired Codex (not both-direct) so a down proxy is a genuine failure;
   // the default port has nothing listening + isolated state => probe always fails.
   const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", "runtime"], {
     stdout: "pipe",
@@ -399,7 +399,7 @@ test("health --scope bogus exits 1 with a helpful message", () => {
 
 // End-to-end coverage of the full diagnostic command: running the REAL
 // `agent health` exercises the whole import graph plus the live probes (bun,
-// node_modules, gateway package, runtime, shell wiring, CLIs, Codex), so it
+// node_modules, proxy package, runtime, shell wiring, CLIs, Codex), so it
 // cross-validates the rest of the codebase the way the unit tests can't. An
 // isolated COPILOT_API_HOME + a dead port make the runtime checks deterministic.
 function runHealthJson(scope: string): { exitCode: number | null; json: HealthJson } {
@@ -424,14 +424,14 @@ interface HealthJson {
   }[];
 }
 
-test("health --scope full runs every group end-to-end and fails on a dead gateway", () => {
+test("health --scope full runs every group end-to-end and fails on a dead proxy", () => {
   const { exitCode, json } = runHealthJson("full");
   const ids = json.checks.map((c) => c.id);
   expect(json.scope).toBe("full");
   // Representative checks from each group are present.
   for (const id of [
     "bootstrap.bun",
-    "gateway.package",
+    "proxy.package",
     "runtime.port",
     "setup.shell",
     "setup.codex",
@@ -456,11 +456,11 @@ test("health --scope full runs every group end-to-end and fails on a dead gatewa
   expect(codex?.detail).toContain("config.toml:");
 }, 15_000);
 
-test("health --scope gateway covers bootstrap+gateway+runtime, not setup", () => {
-  const { json } = runHealthJson("gateway");
+test("health --scope proxy covers bootstrap+proxy+runtime, not setup", () => {
+  const { json } = runHealthJson("proxy");
   const ids = json.checks.map((c) => c.id);
-  expect(json.scope).toBe("gateway");
-  expect(ids).toContain("gateway.package");
+  expect(json.scope).toBe("proxy");
+  expect(ids).toContain("proxy.package");
   expect(ids).toContain("runtime.port");
   expect(ids).not.toContain("setup.shell");
   expect(json.exitCode).toBe(1); // runtime unreachable
@@ -501,11 +501,11 @@ test("health --scope codex covers only Codex wiring", () => {
 
 test("health --scope claude covers only Claude wiring", () => {
   const home = mkdtempSync(join(tmpdir(), "copilot-claude-scope-"));
-  // Proxy wiring (the gateway is Claude's default; CI has no gh/direct) =>
+  // Proxy wiring (the proxy is Claude's default; CI has no gh/direct) =>
   // providerMode "proxy", status ok.
   writeFileSync(
     join(home, "settings.json"),
-    JSON.stringify({ apiKeyHelper: join(home, "copilot-gateway-token.sh") }),
+    JSON.stringify({ apiKeyHelper: join(home, "copilot-proxy-token.sh") }),
   );
   const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", "claude", "--json"], {
     stdout: "pipe",
@@ -542,5 +542,5 @@ test("update --auto-status reports status and exits 0 (offline, read-only)", () 
   });
   const out = proc.stdout.toString() + proc.stderr.toString();
   expect(proc.exitCode).toBe(0);
-  expect(out).toContain("autoupdate:");
+  expect(out).toContain("Autoupdate:");
 });

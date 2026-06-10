@@ -4,9 +4,9 @@
 # feature (repository-settings/app) -- its schema may still change.
 
 repository:
-  description: Local copilot-api gateway lifecycle + config helper (TypeScript).
+  description: Local copilot-api proxy lifecycle + config helper (TypeScript).
   homepage: https://github.com/Vivswan/copilot-env
-  topics: copilot, copilot-api, cli, bun, typescript, gateway, claude-code, codex
+  topics: copilot, copilot-api, cli, bun, typescript, proxy, claude-code, codex
   has_issues: true
   has_wiki: false
   has_projects: false

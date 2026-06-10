@@ -1,6 +1,6 @@
 # copilot-env
 
-Local copilot-api gateway lifecycle + config helper. TypeScript port of the original Python `copilot-api` package. Supports **Linux, macOS, and Windows** via a POSIX launcher (`bin/agent`) and a PowerShell one (`bin/agent.ps1`); every cross-platform pair (`bin/agent` ⇄ `.ps1`, `shell/agents.bashrc` ⇄ `shell/agents.ps1`, `shell/agents.launchers.bashrc` ⇄ `shell/agents.launchers.ps1`, `install.sh` ⇄ `install.ps1`) must stay feature-matched.
+Local copilot-api proxy lifecycle + config helper. TypeScript port of the original Python `copilot-api` package. Supports **Linux, macOS, and Windows** via a POSIX launcher (`bin/agent`) and a PowerShell one (`bin/agent.ps1`); every cross-platform pair (`bin/agent` ⇄ `.ps1`, `shell/agents.bashrc` ⇄ `shell/agents.ps1`, `shell/agents.launchers.bashrc` ⇄ `shell/agents.launchers.ps1`, `install.sh` ⇄ `install.ps1`) must stay feature-matched.
 
 `CLAUDE.md` and `.github/copilot-instructions.md` are symlinks to this file.
 
@@ -9,41 +9,41 @@ Local copilot-api gateway lifecycle + config helper. TypeScript port of the orig
 The non-obvious choices live here; everything else is discoverable in the code.
 
 - **In-place, no cache.** `bin/agent` installs `node_modules` in the checkout itself (when needed — see below) and runs `cli.ts` from there — `node_modules` lives in the checkout, and module resolution anchors at it (`PROJECT_ROOT`, `src/utils/root.ts`). Install output is routed to stderr so it never pollutes the `agent env` stdout the shell wrapper evals.
-- **bun runtime, no bundler.** Bin shims auto-install bun if missing. Normal no-env `bun src/gateway_float.ts --verify` reads npm publish-time metadata on each call, computes the cooldown-aged target, and skips `bun install --frozen-lockfile` when that exact target is already installed; missing `node_modules`, stale `bun.lock`, or a changed target still force install.
-- **The gateway floats.** `@jeffreycao/copilot-api` is tracked as `"latest"`; `src/gateway_float.ts` (run as `bun install`'s postinstall) computes the newest release satisfying the cooldown window (`COPILOT_API_MIN_RELEASE_AGE` if set, else `bunfig.toml`'s `install.minimumReleaseAge`), clamps it to `[GATEWAY_MIN_VERSION, GATEWAY_MAX_VERSION]` (`copilot-env.config`), then overlays that exact version. The overlay uses `bun add --no-save`, so `bun.lock` stays the pinned reproducible baseline for every *other* dep — but note `bun list`/bun's summary then report the *locked* version, not the floated one on disk (check `node_modules/@jeffreycao/copilot-api/package.json`).
-- **Best-effort at install, hard floor at launch.** The postinstall float never fails `bun install` (offline/registry hiccups are swallowed), so a fresh offline install could sit below the floor. `start.ts` makes the floor a real contract: it refuses to launch a sub-floor gateway. Bump `GATEWAY_MIN_VERSION` when the wrapper depends on newer gateway behavior; set the optional ceiling to hold the float below a known-bad release.
+- **bun runtime, no bundler.** Bin shims auto-install bun if missing. Normal no-env `bun src/proxy_float.ts --verify` reads npm publish-time metadata on each call, computes the cooldown-aged target, and skips `bun install --frozen-lockfile` when that exact target is already installed; missing `node_modules`, stale `bun.lock`, or a changed target still force install.
+- **The proxy floats.** `@jeffreycao/copilot-api` is tracked as `"latest"`; `src/proxy_float.ts` (run as `bun install`'s postinstall) computes the newest release satisfying the cooldown window (`COPILOT_API_MIN_RELEASE_AGE` if set, else `bunfig.toml`'s `install.minimumReleaseAge`), clamps it to `[PROXY_MIN_VERSION, PROXY_MAX_VERSION]` (`copilot-env.config`), then overlays that exact version. The overlay uses `bun add --no-save`, so `bun.lock` stays the pinned reproducible baseline for every *other* dep — but note `bun list`/bun's summary then report the *locked* version, not the floated one on disk (check `node_modules/@jeffreycao/copilot-api/package.json`).
+- **Best-effort at install, hard floor at launch.** The postinstall float never fails `bun install` (offline/registry hiccups are swallowed), so a fresh offline install could sit below the floor. `start.ts` makes the floor a real contract: it refuses to launch a sub-floor proxy. Bump `PROXY_MIN_VERSION` when the wrapper depends on newer proxy behavior; set the optional ceiling to hold the float below a known-bad release.
 - **Float env knobs** (set on any `bin/agent` call or in root `.env`, loaded from `PROJECT_ROOT` by `src/utils/dotenv.ts`): `COPILOT_API_VERSION` pins an exact release/tag (bypasses floor + cooldown); `COPILOT_API_MIN_RELEASE_AGE` overrides the cooldown window in seconds (`0` = no cooldown), taking precedence over `bunfig.toml`'s `install.minimumReleaseAge`. Real shell environment wins over `.env`.
 - **Supply-chain cooldown applies after bootstrap.** The bootstrap installers always resolve the latest copilot-env release; version-specific installs use the `install.sh` / `install.ps1` assets attached to that GitHub Release. Optional copilot-env release cooldown lives under `agent update --cooldown[=DAYS]`; optional agent-CLI cooldown lives under `agent setup-clis --cooldown[=DAYS]` and uses `src/utils/aged_version.ts` fed by `npm view <pkg> time`. Copilot-env release selection uses `src/install/resolve-release.ts` (the same module `agent update` imports, which the installers download standalone and run).
-- **`agent env` is the one machine-readable command.** The shell wrapper runs a command, then evals `agent env` (and only that) to refresh session state — so a new subcommand needs no wrapper change, and no command's incidental stdout is ever eval'd. It exports `CODEX_HOME` (when a `codex --host` farm set one and its dir exists) and `ANTHROPIC_BASE_URL` (only when Claude is proxy-wired and its base URL is the local gateway, ≠ the direct default). Otherwise each agent's gateway/direct wiring lives in its own config file — Codex in `~/.codex/config.toml` + `.env`, Claude in `~/.claude/settings.json` + a managed `apiKeyHelper`.
+- **`agent env` is the one machine-readable command.** The shell wrapper runs a command, then evals `agent env` (and only that) to refresh session state — so a new subcommand needs no wrapper change, and no command's incidental stdout is ever eval'd. It exports `CODEX_HOME` (when a `codex --host` farm set one and its dir exists) and `ANTHROPIC_BASE_URL` (only when Claude is proxy-wired and its base URL is the local proxy, ≠ the direct default). Otherwise each agent's proxy/direct wiring lives in its own config file — Codex in `~/.codex/config.toml` + `.env`, Claude in `~/.claude/settings.json` + a managed `apiKeyHelper`.
 
 ## Repo map
 
 - `bin/agent`, `bin/agent.ps1` — self-bootstrapping launchers (install bun + deps, dispatch `cli.ts`).
 - `shell/agents.bashrc`, `shell/agents.ps1` — shell integration (sourced from rc / `$PROFILE`); the `agent` wrapper + eager `agent env` export (CODEX_HOME + proxy ANTHROPIC_BASE_URL). Pure runtime wiring, never installs.
-- `shell/agents.launchers.bashrc`, `shell/agents.launchers.ps1` — opt-in `cl`/`co`/`cx` agent launchers, sourced after the integration file (`cx`/`cl` read the configured provider via `agent codex --check`/`agent claude --check` and, for proxy, ensure the gateway + re-sync the port/token before launch — no live probe). Wired with `agent setup-clis --launchers` or `agent setup-launchers`, removed with `agent setup-launchers --remove`; otherwise source manually.
+- `shell/agents.launchers.bashrc`, `shell/agents.launchers.ps1` — opt-in `cl`/`co`/`cx` agent launchers, sourced after the integration file (`cx`/`cl` read the configured provider via `agent codex --check`/`agent claude --check` and, for proxy, ensure the proxy + re-sync the port/token before launch — no live probe). Wired with `agent setup-clis --launchers` or `agent setup-launchers`, removed with `agent setup-launchers --remove`; otherwise source manually.
 - `install.sh`, `install.ps1` — one-line bootstrap installers: ensure bun, download the latest release source archive to `~/.copilot-env`, verify its source checksum against GitHub release metadata, replace any previous install at the target dir, then run release-local `src/install/installer.ts` to bootstrap deps and wire shell integration. Optional agent CLIs live under `agent setup-clis`. Version-specific installer copies are uploaded as release assets by `.github/workflows/release-please.yml` after release creation.
 - `src/install/installer.ts` — release-bundled first-install handoff; keep it dependency-light because it runs before `node_modules` exists.
 - `src/cli.ts` — Commander entry; declares subcommands and delegates to command/domain `run*` functions.
 - `src/commands/` — command modules that still own their implementation (`start`/`stop`/`health`/`env`/`update`/`init`). Pure wrapper modules are avoided.
 - `src/commands/init.ts` — `agent init`: configure BOTH agents (auto/--direct/--proxy) + next-step guidance; exports `configureBothAgents` (reused by `setup-clis`).
-- `src/gateway_float.ts` — the gateway float (see above).
+- `src/proxy_float.ts` — the proxy float (see above).
 - `src/commands/setup.ts` — optional agent-CLI install/verification plus setup subcommand helpers.
 - `src/commands/shell_integration.ts` — cross-platform shell/profile block wiring for integration and launchers.
 - `src/install/release.ts` — release archive download/verification/extraction/sync used by `agent update`.
 - `src/install/verify-source-archive.ts` — source-archive checksum verification against GitHub release metadata, shared by the installers and `agent update`.
 - `src/codex/` — Codex config, per-host `CODEX_HOME` farm logic, and the `--mobile` phone-pairing flow (`mobile.ts`: temporarily strips `model_provider` around the Codex app's remote-control pairing).
-- `src/claude/` — Claude Code config wiring (`~/.claude/settings.json`): GitHub Copilot Direct vs the gateway proxy.
+- `src/claude/` — Claude Code config wiring (`~/.claude/settings.json`): GitHub Copilot Direct vs the proxy.
 - `src/migrations/` — one file per version step (`<from-version>.ts`, registered in `index.ts`); `agent update` runs the due ones for the `[old, new)` range. See "Migrations" below.
-- `src/copilot_api/` — gateway-specific helpers: admin REST, config/state JSON, model-alias generation, per-host paths, daemon process control.
+- `src/copilot_api/` — proxy-specific helpers: admin REST, config/state JSON, model-alias generation, per-host paths, daemon process control.
 - `src/usage/` — `cost` reporting over per-host SQLite usage DBs using live OpenRouter pricing.
 - `src/utils/` — generic helpers (hostname, `PROJECT_ROOT`, semver compare).
-- `copilot-env.config` — `KEY=value` gateway-float floor/ceiling, read by `src/gateway_float.ts` (+ `start.ts`).
+- `copilot-env.config` — `KEY=value` proxy-float floor/ceiling, read by `src/proxy_float.ts` (+ `start.ts`).
 - `test/` — `bun test` suites: pure-logic units + a start/stop daemon lifecycle against `test/copilot-api-fake.mjs`.
 - `.github/`, `.devcontainer/`, `.claude/`, `.codex/` — CI/CodeQL, Codespaces, and agent-worktree wiring.
 
 ## Agent & dev environment init
 
-Every agent/dev environment and any fresh `git worktree` initializes through **one** idempotent script — `scripts/setup-env.sh` (`scripts/setup-env.ps1` on Windows) — so no entry point drifts. It runs `bun install --frozen-lockfile` (which also fires the best-effort gateway float; no agent CLIs). Entry points that invoke it: the GitHub Copilot coding agent (`.github/workflows/copilot-setup-steps.yml`), Codespaces / Dev Containers (`.devcontainer/`), Claude Code and Codex CLI worktrees (`SessionStart` hooks in `.claude/` and `.codex/`, no-op when `node_modules` already exists), and humans (run it directly). For the Codex app, configure a Local Environment that runs `scripts/setup-env.sh` on worktree creation and `./bin/agent stop || true` on cleanup.
+Every agent/dev environment and any fresh `git worktree` initializes through **one** idempotent script — `scripts/setup-env.sh` (`scripts/setup-env.ps1` on Windows) — so no entry point drifts. It runs `bun install --frozen-lockfile` (which also fires the best-effort proxy float; no agent CLIs). Entry points that invoke it: the GitHub Copilot coding agent (`.github/workflows/copilot-setup-steps.yml`), Codespaces / Dev Containers (`.devcontainer/`), Claude Code and Codex CLI worktrees (`SessionStart` hooks in `.claude/` and `.codex/`, no-op when `node_modules` already exists), and humans (run it directly). For the Codex app, configure a Local Environment that runs `scripts/setup-env.sh` on worktree creation and `./bin/agent stop || true` on cleanup.
 
 ## Migrations
 
@@ -83,7 +83,7 @@ bun run lint:ps       # PSScriptAnalyzer (skip-if-absent)
 bun run check         # biome check --write src bin test scripts
 bun run format        # biome format --write src bin test scripts
 
-./bin/agent init      # set up both Codex + Claude (auto-detect direct vs gateway); --direct / --proxy force
+./bin/agent init      # set up both Codex + Claude (auto-detect direct vs proxy); --direct / --proxy force
 ./bin/agent start     # start the daemon (--port to pin); also: stop / health / env / cost / update / setup-shell / setup-launchers / setup-clis / codex / claude
 ./bin/agent env       # print shell exports for the calling shell (CODEX_HOME + proxy ANTHROPIC_BASE_URL)
 ```

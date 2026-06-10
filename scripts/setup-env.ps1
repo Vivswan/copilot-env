@@ -2,7 +2,7 @@
 # Windows parity of scripts/setup-env.sh: initialize a copilot-env environment (or
 # a freshly-created git worktree) by installing the pinned project dependencies so
 # bun run typecheck / bun test / biome work immediately. Idempotent. bun + deps
-# only -- it does NOT install the agent CLIs or start the gateway.
+# only -- it does NOT install the agent CLIs or start the proxy.
 $ErrorActionPreference = 'Stop'
 
 # Run from the repo root regardless of where we're invoked (e.g. a worktree).

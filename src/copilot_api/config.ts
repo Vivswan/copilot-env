@@ -1,4 +1,4 @@
-// File-backed gateway config helper for config.json and persistent API keys.
+// File-backed proxy config helper for config.json and persistent API keys.
 import { randomBytes } from "node:crypto";
 import {
   chmodSync,

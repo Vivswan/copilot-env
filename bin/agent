@@ -1,7 +1,7 @@
 #!/bin/sh
 # Single self-bootstrapping entry point (Linux + macOS) for copilot-env.
 # Installs bun if missing, installs node_modules in-place in the checkout only
-# when a read-only `gateway_float.ts --verify` says it's needed (stale float /
+# when a read-only `proxy_float.ts --verify` says it's needed (stale float /
 # missing or out-of-sync node_modules), then runs the cli.ts dispatcher (start /
 # stop / env / cost / setup-codex-config / setup-codex-host). The `agent` shell function
 # (agents.bashrc) is what turns `agent env` output into shell state.
@@ -20,15 +20,18 @@ fi
 export PATH
 
 # Install node_modules in-place in the checkout, but only when needed: a read-only
-# `gateway_float.ts --verify` checks whether this call can skip install. Normal
+# `proxy_float.ts --verify` checks whether this call can skip install. Normal
 # no-env verify reads npm publish-time metadata, computes the cooldown-aged target,
-# and compares it to the installed gateway; missing/stale node_modules still force
+# and compares it to the installed proxy; missing/stale node_modules still force
 # install. HUSKY=0 keeps husky's `prepare` from reinstalling git hooks each time.
 # Route all of bun's output to stderr so it can't leak into the `agent env` stdout
 # the shell function evals (the verify's own output is discarded for the same reason).
 if [ ! -d "${SNAP}/node_modules" ] \
-    || ! bun "${SNAP}/src/gateway_float.ts" --verify >/dev/null 2>&1; then
-    ( cd "${SNAP}" && HUSKY=0 bun install --frozen-lockfile >&2 )
+    || ! bun "${SNAP}/src/proxy_float.ts" --verify >/dev/null 2>&1; then
+    if ! ( cd "${SNAP}" && HUSKY=0 bun install --frozen-lockfile >&2 ); then
+        echo "copilot-env bootstrap failed: bun install did not complete -- check network/bun, then re-run." >&2
+        exit 1
+    fi
     # Mark node_modules as freshly installed so the bun.lock-vs-node_modules mtime
     # check above can't loop: a frozen no-op install needn't bump the dir's mtime.
     touch "${SNAP}/node_modules"

@@ -20,7 +20,7 @@ const rootRequire = createRequire(join(PROJECT_ROOT, "_anchor.js"));
 
 function resolveCopilotApiEntry(): string {
   // Escape hatch: an explicit entry path overrides module resolution. CI uses
-  // this to point `start` at a fake gateway so the daemon lifecycle can be
+  // this to point `start` at a fake proxy so the daemon lifecycle can be
   // exercised without GitHub Copilot auth.
   const override = process.env.COPILOT_API_ENTRY?.trim();
   if (override) {
@@ -30,7 +30,7 @@ function resolveCopilotApiEntry(): string {
     return rootRequire.resolve("@jeffreycao/copilot-api/dist/main.js");
   } catch (e) {
     throw new Error(
-      `copilot-api not installed under ${PROJECT_ROOT}; run \`bun install --frozen-lockfile\` (or re-run the agent launcher) to install dependencies: ${
+      `the proxy is not installed under ${PROJECT_ROOT}; run \`bun install --frozen-lockfile\` (or re-run the agent launcher) to install dependencies: ${
         e instanceof Error ? e.message : String(e)
       }`,
     );
@@ -155,7 +155,7 @@ export function launchDaemon(
   closeSync(devnull);
   closeSync(logFd);
   if (proc.pid === undefined) {
-    throw new Error("Failed to spawn copilot-api daemon");
+    throw new Error("Failed to start the proxy; check `agent health` and retry `agent start`");
   }
   return proc.pid;
 }

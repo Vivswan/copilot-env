@@ -264,14 +264,18 @@ function installCli(cli: (typeof AGENT_CLIS)[number], options: NormalizedSetupCl
 
 /**
  * After installing the agent CLIs, auto-detect each agent's backend and write its
- * config (Direct when a live probe succeeds, else the gateway), then point the
+ * config (Direct when a live probe succeeds, else the proxy), then point the
  * user at `agent init` to review / change it. Best-effort per agent.
  */
 function autoConfigureAgents(): void {
-  consola.info("Auto-detecting Codex/Claude backend (direct vs. local gateway) ...");
+  consola.info(
+    "Auto-detecting Codex/Claude backend (GitHub Copilot Direct vs. the local proxy) ...",
+  );
   const { codex, claude } = configureBothAgents({});
-  consola.info(`Codex  → ${codex === "direct" ? "GitHub Copilot Direct" : codex}`);
-  consola.info(`Claude → ${claude === "direct" ? "GitHub Copilot Direct" : claude}`);
+  const describeMode = (mode: string): string =>
+    mode === "direct" ? "GitHub Copilot Direct" : mode === "proxy" ? "the proxy" : mode;
+  consola.info(`Codex  → ${describeMode(codex)}`);
+  consola.info(`Claude → ${describeMode(claude)}`);
   consola.info("Run `agent init` any time to re-detect, or `agent init --direct` / `--proxy`.");
 }
 

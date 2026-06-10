@@ -219,8 +219,8 @@ if (import.meta.main) {
   if (!target) {
     process.stderr.write(
       tag
-        ? `copilot-env release ${tag} was not found (or the GitHub API is unreachable)\n`
-        : "no copilot-env release found (or the network is unavailable)\n",
+        ? `copilot-env release ${tag} was not found (or the GitHub API is unreachable); retry later or set GH_TOKEN to avoid GitHub API rate limits\n`
+        : "no copilot-env release found (or the GitHub API is unreachable); retry later or set GH_TOKEN to avoid GitHub API rate limits\n",
     );
     process.exit(1);
   }

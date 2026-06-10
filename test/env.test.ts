@@ -59,9 +59,9 @@ function writeClaude(home: string, apiKeyHelper: string, baseUrl: string): void 
   );
 }
 
-test("env exports ANTHROPIC_BASE_URL when Claude is proxy at a localhost gateway URL", () => {
+test("env exports ANTHROPIC_BASE_URL when Claude is proxy at a localhost proxy URL", () => {
   const home = isolate();
-  writeClaude(home, join(home, "copilot-gateway-token.sh"), "http://localhost:4141");
+  writeClaude(home, join(home, "copilot-proxy-token.sh"), "http://localhost:4141");
   const lines = envLines();
   expect(lines).toContain("export ANTHROPIC_BASE_URL='http://localhost:4141'");
 });
@@ -79,10 +79,10 @@ test("env clears a stale localhost ANTHROPIC_BASE_URL when Claude switched to di
 test("env never touches a user's own (non-local) ANTHROPIC_BASE_URL", () => {
   const home = isolate();
   // Managed proxy helper, but the user hand-edited the URL to a remote host.
-  writeClaude(home, join(home, "copilot-gateway-token.sh"), "https://example.test");
+  writeClaude(home, join(home, "copilot-proxy-token.sh"), "https://example.test");
   process.env.ANTHROPIC_BASE_URL = "https://example.test";
   const lines = envLines();
-  // Not a localhost gateway URL => neither exported nor unset.
+  // Not a localhost proxy URL => neither exported nor unset.
   expect(lines.some((l) => l.includes("ANTHROPIC_BASE_URL"))).toBe(false);
 });
 

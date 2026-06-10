@@ -3,7 +3,7 @@
 #
 # Thin wrapper over bin\agent.ps1 (which self-bootstraps bun, installs
 # node_modules in-place in the checkout, and dispatches). This file only adds what
-# a subprocess can't do for the session: eval the gateway env into the current
+# a subprocess can't do for the session: eval the proxy env into the current
 # shell after `start`.
 
 # Resolve the repo root; this file lives in shell/, so the checkout root is its

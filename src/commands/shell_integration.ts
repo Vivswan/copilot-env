@@ -63,7 +63,7 @@ export function runShellIntegration(args: ShellIntegrationArgs): void {
     // Only relax execution policy when integration is actually present -- never for an
     // opted-out user whose `existingOnly` migration found no owned block to refresh.
     if (wired) relaxWindowsExecutionPolicy();
-    consola.info("Restart PowerShell or run:  . $PROFILE");
+    consola.info("Restart PowerShell or run: . $PROFILE");
   } else {
     wireBlocks(
       rcFiles(false),
@@ -72,7 +72,7 @@ export function runShellIntegration(args: ShellIntegrationArgs): void {
       launchers,
       existingOnly,
     );
-    consola.info("Restart your shell or run: source ~/.bashrc  (or ~/.zshrc)");
+    consola.info("Restart your shell or run: source ~/.bashrc (or ~/.zshrc)");
   }
 }
 
@@ -152,7 +152,7 @@ function wireBlocks(
     let next = upsertBlock(original, MARKER, mainBlock);
     if (wantLaunchers || hadLaunchers) next = upsertBlock(next, LAUNCHERS_MARKER, launchersBlock);
     if (next === original) {
-      consola.info(`Already wired in ${file} -- skipping.`);
+      consola.info(`Shell integration already wired in ${file} -- skipping.`);
       continue;
     }
     mkdirSync(dirname(file), { recursive: true });

@@ -2,10 +2,10 @@
 // shell. It may set OR clear two managed vars, each only when relevant:
 //   - CODEX_HOME: set to the active `codex --host` farm when its dir exists;
 //     cleared when the shell still carries OUR (now-deleted) farm path.
-//   - ANTHROPIC_BASE_URL: set when Claude is proxy-wired at a LOCAL gateway URL;
-//     cleared when the shell still carries a localhost gateway URL (one WE set)
-//     but Claude is no longer proxy — otherwise a stale proxy URL would override
-//     the now-direct settings.json (shell env wins) and mask the gateway in health.
+//   - ANTHROPIC_BASE_URL: set when Claude is wired to a LOCAL proxy URL;
+//     cleared when the shell still carries a localhost proxy URL (one WE set)
+//     but Claude is no longer in proxy mode — otherwise a stale proxy URL would
+//     override the now-direct settings.json (shell env wins) and mask it in health.
 // It NEVER touches a value the user set themselves (a foreign CODEX_HOME, or a
 // non-local ANTHROPIC_BASE_URL). Everything else lives in each agent's own config
 // file (Codex: config.toml + .env; Claude: settings.json + apiKeyHelper).
@@ -36,8 +36,8 @@ function readTextOrNull(path: string): string | null {
   }
 }
 
-/** True for an http://localhost or http://127.0.0.1 URL — the gateway shape we write. */
-function isLocalGatewayUrl(url: string): boolean {
+/** True for an http://localhost or http://127.0.0.1 URL — the proxy shape we write. */
+function isLocalProxyUrl(url: string): boolean {
   try {
     const u = new URL(url);
     return u.protocol === "http:" && (u.hostname === "localhost" || u.hostname === "127.0.0.1");
@@ -55,7 +55,7 @@ export function runEnv(args: EnvArgs): void {
   const format = String(args.format ?? "posix").toLowerCase();
   const isPowershell = format === "powershell" || format === "pwsh" || format === "ps";
   if (!isPowershell && format !== "posix" && format !== "sh" && format !== "bash") {
-    throw new Error(`unknown --format '${args.format}' (expected 'posix' or 'powershell')`);
+    throw new Error(`Unknown --format '${args.format}' (expected 'posix' or 'powershell').`);
   }
 
   const directives: EnvDirective[] = [];
@@ -73,8 +73,8 @@ export function runEnv(args: EnvArgs): void {
     }
   }
 
-  // ANTHROPIC_BASE_URL: export only when Claude is proxy-wired at a LOCAL gateway
-  // URL. If the shell carries a localhost gateway URL (one WE set) but Claude is no
+  // ANTHROPIC_BASE_URL: export only when Claude is proxy-wired at a LOCAL proxy
+  // URL. If the shell carries a localhost proxy URL (one WE set) but Claude is no
   // longer proxy, clear it so it can't override the now-direct settings.json; never
   // touch a non-local URL the user set.
   const claudeHome = resolveClaudeHome();
@@ -83,14 +83,14 @@ export function runEnv(args: EnvArgs): void {
     claude.providerMode === "proxy" &&
     claude.baseUrl &&
     claude.baseUrl !== DIRECT_BASE_URL &&
-    isLocalGatewayUrl(claude.baseUrl)
+    isLocalProxyUrl(claude.baseUrl)
       ? claude.baseUrl
       : null;
   if (proxyUrl) {
     directives.push({ key: BASE_URL_ENV, value: proxyUrl });
   } else {
     const current = process.env[BASE_URL_ENV];
-    if (current && isLocalGatewayUrl(current)) {
+    if (current && isLocalProxyUrl(current)) {
       directives.push({ key: BASE_URL_ENV, unset: true });
     }
   }

@@ -10,7 +10,7 @@ updates:
 
   # bun deps (Dependabot supports the bun ecosystem as of 2025-02-13 GA). The
   # committed bun.lock pins everything except @jeffreycao/copilot-api, which
-  # floats at runtime via floatGateway (setup_dependencies.ts) -- so it is ignored here.
+  # floats at runtime via floatProxy (src/proxy_float.ts) -- so it is ignored here.
   # cooldown mirrors bunfig.toml's 7-day minimumReleaseAge supply-chain wait.
   - package-ecosystem: bun
     directory: "/"

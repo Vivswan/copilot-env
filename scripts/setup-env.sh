@@ -11,7 +11,7 @@
 #   - Codex Cloud: point its environment setup script here
 #   - humans / a fresh `git worktree add`
 #
-# bun + deps only -- it does NOT install the agent CLIs or start the gateway.
+# bun + deps only -- it does NOT install the agent CLIs or start the proxy.
 set -eu
 
 # Run from the repo root regardless of where we're invoked (e.g. a worktree).

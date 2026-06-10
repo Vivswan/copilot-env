@@ -5,19 +5,19 @@
 
 A small, self-bootstrapping CLI that manages a local
 [`@jeffreycao/copilot-api`](https://www.npmjs.com/package/@jeffreycao/copilot-api)
-gateway: start/stop the daemon, wire model aliases, export env vars for your shell
+proxy: start/stop the daemon, wire model aliases, export env vars for your shell
 and for Codex, and report estimated token spend.
 
 TypeScript port of the original Python `copilot-api` helper. Runs on **Linux,
 macOS, and Windows**.
 
-- **Lifecycle**: `start` / `stop` the local gateway with one command.
+- **Lifecycle**: `start` / `stop` the local proxy with one command.
 - **Zero setup**: auto-installs [bun](https://bun.sh), dependencies, and the
-  gateway on first run. No global installs to manage.
-- **Shell + Codex wiring**: point your tools at the local gateway automatically;
+  proxy on first run. No global installs to manage.
+- **Shell + Codex wiring**: point your tools at the local proxy automatically;
   write `~/.codex` config; build a per-host `CODEX_HOME` farm (Linux/macOS).
 - **Cost reporting**: estimated spend from per-host usage DBs via live OpenRouter pricing.
-- **Controlled floating**: the gateway floats to the newest cooldown-aged release
+- **Controlled floating**: the proxy floats to the newest cooldown-aged release
   within configured bounds; every other dependency is pinned via `bun.lock`.
 
 ## Install
@@ -62,10 +62,10 @@ Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, the
 ## Usage
 
 ```bash
-agent init                 # set up BOTH Codex + Claude (auto-detect direct vs the gateway) + next-step guidance
+agent init                 # set up BOTH Codex + Claude (auto-detect direct vs the proxy) + next-step guidance
 agent start                # launch the daemon and sync aliases (--dry-run to preview, --port to pin)
 agent stop                 # stop the daemon
-agent health               # full environment diagnosis (--scope runtime|gateway|setup|codex|claude, --json, --live)
+agent health               # full environment diagnosis (--scope runtime|proxy|setup|codex|claude, --json, --live)
 agent env                  # print shell exports for the calling shell (CODEX_HOME / proxy ANTHROPIC_BASE_URL)
 agent cost                 # estimated token spend across all per-host usage DBs
 agent update               # update to the latest release (--check / --cooldown)
@@ -73,12 +73,12 @@ agent setup-shell          # (re)wire rc / $PROFILE (--remove to unwire)
 agent setup-launchers      # wire/remove opt-in cl / co / cx launchers
 agent setup-clis           # install optional CLIs + auto-detect each backend (--cooldown[=DAYS], --no-sudo, --launchers)
 agent codex                # configure Codex; --auto auto-detects the backend, --check reports it
-agent codex --auto         # probe GitHub Copilot Direct; fall back to the local gateway proxy
+agent codex --auto         # probe GitHub Copilot Direct; fall back to the local proxy
 agent codex --check        # print provider mode; exits 0 direct, 2 proxy, 1 other
 agent codex --host         # per-host CODEX_HOME symlink farm (Linux/macOS); --delete-host to remove
 agent codex --mobile       # pair the Codex desktop app with the phone remote-control flow (interactive)
 agent claude               # configure Claude; --auto auto-detects the backend, --check reports it
-agent claude --auto        # probe GitHub Copilot Direct for Claude; fall back to the local gateway proxy
+agent claude --auto        # probe GitHub Copilot Direct for Claude; fall back to the local proxy
 agent claude --check       # print Claude provider mode; exits 0 direct, 2 proxy, 1 other
 ```
 
@@ -87,7 +87,7 @@ directly: `powershell -ExecutionPolicy Bypass -File bin\agent.ps1 <cmd>`).
 
 ### Shell integration
 
-The installer wires the `agent` wrapper into your shell and exports the gateway env.
+The installer wires the `agent` wrapper into your shell and exports the proxy env.
 
 - **macOS / Linux:** sources `shell/agents.bashrc` from `~/.bashrc` / `~/.zshrc`.
 - **Windows:** dot-sources `shell/agents.ps1` from your PowerShell `$PROFILE`.
@@ -96,7 +96,7 @@ The `cl` / `co` / `cx` launchers are opt-in:
 
 - `cl` runs Claude.
 - `co` runs Copilot.
-- `cx` reads the configured Codex provider (`agent codex --check`), starts the gateway only for proxy-backed configs (re-syncing the port/token), then Codex.
+- `cx` reads the configured Codex provider (`agent codex --check`), starts the proxy only for proxy-backed configs (re-syncing the port/token), then Codex.
 
 Each has a more-permissive variant that adds the agent's most-relaxed flag: `clx` (`--dangerously-skip-permissions`), `cox` (`--allow-all`), `cxx` (`--sandbox danger-full-access`).
 
@@ -127,22 +127,22 @@ source ~/.copilot-env/shell/agents.launchers.bashrc
 
 copilot-env loads local defaults from root `.env` when running its TypeScript
 entry points; already-set shell environment variables take precedence. The
-gateway float reads these values:
+proxy float reads these values:
 
-- `COPILOT_API_VERSION=<version|tag>`: pin the gateway to a specific release
+- `COPILOT_API_VERSION=<version|tag>`: pin the proxy to a specific release
   (bypasses the floor and cooldown).
 - `COPILOT_API_MIN_RELEASE_AGE=<seconds>`: override the cooldown window
   (`0` = no cooldown), taking precedence over `bunfig.toml`'s
   `install.minimumReleaseAge`.
 
-Without `COPILOT_API_VERSION`, the gateway float reads npm publish times, picks
+Without `COPILOT_API_VERSION`, the proxy float reads npm publish times, picks
 the newest version at least the cooldown window old (`COPILOT_API_MIN_RELEASE_AGE`
 if set, else `bunfig.toml`'s `install.minimumReleaseAge`), and clamps it to the
 bounds in `copilot-env.config`.
 
 ## Development
 
-Drive the CLI from a checkout (deps + gateway install in-place; no separate cache):
+Drive the CLI from a checkout (deps + proxy install in-place; no separate cache):
 
 ```bash
 git clone https://github.com/Vivswan/copilot-env.git
@@ -161,7 +161,7 @@ bun run check       # biome check --write src bin test scripts
 - **Env init:** `scripts/setup-env.sh` (`setup-env.ps1` on Windows) is the single
   initializer; the Copilot coding agent, Codespaces / Dev Containers, and
   Claude/Codex worktrees all run it.
-- **More docs:** conventions, the gateway float/cooldown model, and a file-by-file
+- **More docs:** conventions, the proxy float/cooldown model, and a file-by-file
   breakdown live in [`AGENTS.md`](./AGENTS.md).
 
 ## License

@@ -98,7 +98,7 @@ const program = new Command();
 
 program
   .name("agent")
-  .description("Manage the local copilot-api gateway and Codex wiring.")
+  .description("Manage the local proxy and wire Codex + Claude.")
   .version(packageVersion(), "--version", "Print the version and exit.")
   .helpOption("--help", "Show this help.");
 
@@ -119,20 +119,20 @@ program.configureHelp({
 
 program
   .command("init")
-  .description("Set up both Codex and Claude (auto-detect GitHub Copilot Direct vs the gateway).")
+  .description("Set up both Codex and Claude (auto-detect GitHub Copilot Direct vs the proxy).")
   .option("--direct", "Force both agents to GitHub Copilot Direct (no probe).")
-  .option("--proxy", "Force both agents to the local copilot-api gateway proxy (no probe).")
+  .option("--proxy", "Force both agents to the local proxy (no probe).")
   .action((opts: Opts) =>
     runSafe(() => runInit({ direct: Boolean(opts.direct), proxy: Boolean(opts.proxy) })),
   );
 
 program
   .command("start")
-  .description("Start copilot-api in the background, detached.")
-  .option("--dry-run", "Print the resolved startup plan without changing gateway runtime state.")
+  .description("Start the proxy in the background, detached.")
+  .option("--dry-run", "Print the resolved startup plan without changing proxy runtime state.")
   .option(
     "--port <port>",
-    "Pin the gateway to this port instead of auto-resolving from the default (fails if it is busy).",
+    "Pin the proxy to this port instead of auto-resolving from the default (fails if it is busy).",
   )
   .action((opts: Opts) =>
     runSafe(() => runStart({ "dry-run": Boolean(opts.dryRun), port: parsePort(opts.port) })),
@@ -140,16 +140,16 @@ program
 
 program
   .command("stop")
-  .description("Stop the copilot-api server on this host.")
+  .description("Stop the proxy on this host.")
   .action(() => runSafe(() => runStop()));
 
 program
   .command("health")
-  .description("Diagnose the local gateway and setup (exit 1 on any failure).")
+  .description("Diagnose the local proxy and setup (exit 1 on any failure).")
   .option(
     "--scope <scope>",
-    "Checks to run: full (default; whole environment) | runtime (fast gateway " +
-      "readiness probe) | gateway (bootstrap + gateway + runtime) | setup (shell, " +
+    "Checks to run: full (default; whole environment) | runtime (fast proxy " +
+      "readiness probe) | proxy (bootstrap + proxy + runtime) | setup (shell, " +
       "CLIs, Codex, Claude) | codex (Codex wiring only) | claude (Claude wiring only).",
     "full",
   )
@@ -166,7 +166,7 @@ program
 
 program
   .command("env")
-  .description("Print env assignments for copilot-api, evaluated by the calling shell.")
+  .description("Print env assignments for the proxy, evaluated by the calling shell.")
   .option(
     "--format <format>",
     "Output syntax: 'posix' (default; `export KEY=VALUE`, eval-able by sh/bash/zsh) " +
@@ -197,16 +197,16 @@ program
 
 program
   .command("codex")
-  .description("Configure Codex: GitHub Copilot Direct, the local gateway proxy, or auto-detect.")
+  .description("Configure Codex: GitHub Copilot Direct, the local proxy, or auto-detect.")
   .option(
     "--codex-home <path>",
     "CODEX_HOME path to operate on. Default: ~/.codex (%USERPROFILE%\\.codex on Windows).",
   )
-  .option("--proxy", "Force the local copilot-api gateway provider (no probe).")
+  .option("--proxy", "Force the local proxy (no probe).")
   .option("--direct", "Force GitHub Copilot Direct (no probe).")
   .option(
     "--auto",
-    "Auto-detect: write direct when a live read-only Copilot Direct probe succeeds, else the gateway proxy.",
+    "Auto-detect: write direct when a live read-only Copilot Direct probe succeeds, else the proxy.",
   )
   .option(
     "--check",
@@ -252,19 +252,17 @@ program
 
 program
   .command("claude")
-  .description(
-    "Configure Claude Code: GitHub Copilot Direct, the local gateway proxy, or auto-detect.",
-  )
+  .description("Configure Claude Code: GitHub Copilot Direct, the local proxy, or auto-detect.")
   .option(
     "--claude-home <path>",
     "Claude home to operate on. Default: $CLAUDE_CONFIG_DIR, else ~/.claude " +
       "(%USERPROFILE%\\.claude on Windows).",
   )
-  .option("--proxy", "Force the local copilot-api gateway (no probe).")
+  .option("--proxy", "Force the local proxy (no probe).")
   .option("--direct", "Force GitHub Copilot Direct (no probe).")
   .option(
     "--auto",
-    "Auto-detect: write direct when a live `claude -p` Copilot Direct probe succeeds, else the gateway proxy.",
+    "Auto-detect: write direct when a live `claude -p` Copilot Direct probe succeeds, else the proxy.",
   )
   .option(
     "--check",

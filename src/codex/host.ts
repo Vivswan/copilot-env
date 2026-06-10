@@ -166,7 +166,7 @@ function cpPrMerge(localPath: string, sharedPath: string): void {
 // === CODEX_HOME symlink farm (seeding) ===
 
 function warnExistingCodexPath(p: string): void {
-  logger.warn(`Warning: Leaving existing Codex path unchanged: ${p}`);
+  logger.warn(`Leaving existing Codex path unchanged: ${p}`);
 }
 
 function ensureCodexPathParent(p: string): number {
@@ -276,8 +276,8 @@ function primeSharedCodexHomeIfMissing(sharedRoot: string): void {
 function seedLocalCodexFileIfMissing(localPath: string, sharedPath: string): number {
   if (lexists(localPath)) {
     if (isSymlinkPath(localPath)) {
-      logger.info(
-        `Warning: Skipping local Codex seed because the path already exists as a symlink: ${localPath}`,
+      logger.warn(
+        `Skipping local Codex seed because the path already exists as a symlink: ${localPath}`,
       );
     }
     return 0;
@@ -540,7 +540,7 @@ export function runCodexHost(args: CodexHostArgs): void {
   // --direct/--proxy force the mode; --auto (or no flag) auto-detects.
   const direct = resolveDirect(args, detectCodexDirect);
   logger.info(
-    `Configuring the per-host Codex home for ${direct ? "GitHub Copilot Direct" : "the local copilot-api gateway proxy"} ...`,
+    `Configuring the per-host Codex home for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} ...`,
   );
   applyCodexConfig(codexHome, { proxy: !direct });
   // Persist the active CODEX_HOME (opt-in: only set because a codex command ran).

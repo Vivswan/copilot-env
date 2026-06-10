@@ -25,16 +25,16 @@ response or remediation timeline.
 
 ## Security Model / Scope
 
-`copilot-env` is a local CLI that manages a `@jeffreycao/copilot-api` gateway on
+`copilot-env` is a local CLI that manages a `@jeffreycao/copilot-api` proxy on
 your own machine. Its security posture:
 
-- **Secrets stay local.** The gateway API key is stored in
+- **Secrets stay local.** The proxy API key is stored in
   `~/.local/share/copilot-api/config.json`, and the Codex key in
   `~/.codex/.env`. Both files are written with `0600` (owner read/write only)
   permissions. No secret is ever committed to this repository.
-- **Localhost-only binding.** The gateway listens on `localhost` and is not
+- **Localhost-only binding.** The proxy listens on `localhost` and is not
   exposed to the network.
-- **Supply-chain posture.** The gateway dependency floats but only adopts
+- **Supply-chain posture.** The proxy dependency floats but only adopts
   releases that have been public for at least 7 days (a cooldown configured in
   `bunfig.toml`). Every other dependency is pinned via the committed
   `bun.lock` for reproducible installs.

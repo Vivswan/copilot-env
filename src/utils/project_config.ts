@@ -1,16 +1,16 @@
-// Parser for copilot-env.config gateway floor/ceiling settings.
+// Parser for copilot-env.config proxy floor/ceiling settings.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const PROJECT_CONFIG_FILE = "copilot-env.config";
 
-const CONFIG_KEYS = ["GATEWAY_MIN_VERSION", "GATEWAY_MAX_VERSION"] as const;
+const CONFIG_KEYS = ["PROXY_MIN_VERSION", "PROXY_MAX_VERSION"] as const;
 
 type ProjectConfigKey = (typeof CONFIG_KEYS)[number];
 
 export type ProjectConfig = {
-  readonly gatewayMinVersion: string;
-  readonly gatewayMaxVersion: string | null;
+  readonly proxyMinVersion: string;
+  readonly proxyMaxVersion: string | null;
 };
 
 function isProjectConfigKey(key: string): key is ProjectConfigKey {
@@ -54,8 +54,8 @@ export function parseProjectConfig(content: string, source = PROJECT_CONFIG_FILE
   }
 
   return {
-    "gatewayMinVersion": requiredValue(raw, "GATEWAY_MIN_VERSION", source),
-    "gatewayMaxVersion": optionalValue(raw.GATEWAY_MAX_VERSION),
+    "proxyMinVersion": requiredValue(raw, "PROXY_MIN_VERSION", source),
+    "proxyMaxVersion": optionalValue(raw.PROXY_MAX_VERSION),
   };
 }
 

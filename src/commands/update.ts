@@ -33,7 +33,7 @@ export interface UpdateArgs {
 export async function runUpdate(args: UpdateArgs): Promise<void> {
   const cooldown = args.cooldown ?? null;
   if (cooldown !== null && (!Number.isInteger(cooldown) || cooldown < 0)) {
-    throw new Error(`--cooldown expects a non-negative whole number of days (got '${cooldown}')`);
+    throw new Error(`--cooldown expects a non-negative whole number of days (got '${cooldown}').`);
   }
 
   // Autoupdate management flags short-circuit the manual update flow.
@@ -48,21 +48,21 @@ function runAutoStatus(): void {
   const s = new AutoupdateState().read();
   const last = s.lastCheckMs > 0 ? new Date(s.lastCheckMs).toISOString() : "never";
   consola.info(
-    `autoupdate: ${s.enabled ? "enabled" : "disabled"} | cooldown ${s.cooldownDays}d | ` +
+    `Autoupdate: ${s.enabled ? "enabled" : "disabled"} | cooldown ${s.cooldownDays}d | ` +
       `last check ${last} | last result: ${s.lastResult || "(none)"}`,
   );
 }
 
 function runDisableAuto(): void {
   new AutoupdateState().set({ enabled: false });
-  consola.success("autoupdate disabled.");
+  consola.success("Autoupdate disabled.");
 }
 
 async function runEnableAuto(cooldown: number | null): Promise<void> {
   const cooldownDays = cooldown ?? DEFAULT_AUTOUPDATE_COOLDOWN_DAYS;
   const state = new AutoupdateState();
   state.set({ enabled: true, cooldownDays });
-  consola.success(`autoupdate enabled (cooldown ${cooldownDays}d). Checking now ...`);
+  consola.success(`Autoupdate enabled (cooldown ${cooldownDays}d). Checking now ...`);
   // Enable + apply now: run the daily routine once immediately, forcing past the
   // once-per-day gate. Failures are recorded in state and never throw out.
   await runPreflight({ nowMs: Date.now(), force: true, state });
@@ -100,7 +100,7 @@ async function runManualUpdate(args: {
   // update freely.)
   if (!args.force && existsSync(join(PROJECT_ROOT, ".git"))) {
     throw new Error(
-      "this is a git checkout (.git present) and `agent update` overwrites files in place; " +
+      "This is a git checkout (.git present) and `agent update` overwrites files in place; " +
         "commit or stash your changes and re-run with --force (or update via git).",
     );
   }

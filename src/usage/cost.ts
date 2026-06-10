@@ -20,7 +20,7 @@ export async function runCost(args: {
   const dbPaths = discoverUsageDbs();
   if (dbPaths.length === 0) {
     consola.warn(
-      "WARNING: no copilot-api usage databases found; start the gateway with 'agent start' and make some requests, then re-run 'agent cost'.",
+      "WARNING: no copilot-api usage databases found; start the proxy with 'agent start' and make some requests, then re-run 'agent cost'.",
     );
     return;
   }
@@ -302,7 +302,7 @@ function printCostReport(
   }
   console.log();
   console.log(
-    "  Note: only gateway (proxy) usage is recorded. Direct-wired Codex/Claude (GitHub Copilot Direct) bypasses the gateway and is not tracked here at all.",
+    "  Note: only proxy usage is recorded. Direct-wired Codex/Claude (GitHub Copilot Direct) bypasses the proxy and is not tracked here at all.",
   );
   console.log();
 }
@@ -325,6 +325,6 @@ function buildCostJson(
     avgCostPerDayUsd:
       report.activeDays > 0 ? Math.round((estimate.totalUsd / div) * 10_000) / 10_000 : null,
     unpriced: estimate.unpriced,
-    note: "only gateway (proxy) usage is recorded; direct GitHub Copilot usage is not tracked at all",
+    note: "only proxy usage is recorded; direct GitHub Copilot usage is not tracked at all",
   };
 }

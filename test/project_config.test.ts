@@ -3,19 +3,19 @@ import { describe, expect, test } from "bun:test";
 import { parseProjectConfig } from "../src/utils/project_config.ts";
 
 describe("project config", () => {
-  test("parses the gateway floor and ceiling", () => {
+  test("parses the proxy floor and ceiling", () => {
     expect(
       parseProjectConfig(
         `
 # comments and blanks are ignored
-GATEWAY_MIN_VERSION=1.10.30
-GATEWAY_MAX_VERSION=1.11.0
+PROXY_MIN_VERSION=1.10.30
+PROXY_MAX_VERSION=1.11.0
 `,
         "fixture",
       ),
     ).toEqual({
-      "gatewayMinVersion": "1.10.30",
-      "gatewayMaxVersion": "1.11.0",
+      "proxyMinVersion": "1.10.30",
+      "proxyMaxVersion": "1.11.0",
     });
   });
 
@@ -23,31 +23,29 @@ GATEWAY_MAX_VERSION=1.11.0
     expect(
       parseProjectConfig(
         `
-GATEWAY_MIN_VERSION=1.10.30
-GATEWAY_MAX_VERSION=null
+PROXY_MIN_VERSION=1.10.30
+PROXY_MAX_VERSION=null
 `,
         "fixture",
       ),
     ).toEqual({
-      "gatewayMinVersion": "1.10.30",
-      "gatewayMaxVersion": null,
+      "proxyMinVersion": "1.10.30",
+      "proxyMaxVersion": null,
     });
     expect(
-      parseProjectConfig("GATEWAY_MIN_VERSION=1.10.30\nGATEWAY_MAX_VERSION=").gatewayMaxVersion,
+      parseProjectConfig("PROXY_MIN_VERSION=1.10.30\nPROXY_MAX_VERSION=").proxyMaxVersion,
     ).toBeNull();
   });
 
   test("ignores unknown keys (e.g. retired cooldown SHAs)", () => {
     expect(
-      parseProjectConfig(
-        "CooldownRepoMinSha=abc\nGATEWAY_MIN_VERSION=1.10.30\nGATEWAY_MAX_VERSION=",
-      ),
-    ).toEqual({ "gatewayMinVersion": "1.10.30", "gatewayMaxVersion": null });
+      parseProjectConfig("CooldownRepoMinSha=abc\nPROXY_MIN_VERSION=1.10.30\nPROXY_MAX_VERSION="),
+    ).toEqual({ "proxyMinVersion": "1.10.30", "proxyMaxVersion": null });
   });
 
   test("rejects a missing required value", () => {
-    expect(() => parseProjectConfig("GATEWAY_MAX_VERSION=", "fixture")).toThrow(
-      "GATEWAY_MIN_VERSION is required",
+    expect(() => parseProjectConfig("PROXY_MAX_VERSION=", "fixture")).toThrow(
+      "PROXY_MIN_VERSION is required",
     );
   });
 });

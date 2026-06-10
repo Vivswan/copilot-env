@@ -1,6 +1,6 @@
-// `agent health`: diagnose the local gateway and setup. Default `--scope full`
+// `agent health`: diagnose the local proxy and setup. Default `--scope full`
 // runs the whole environment diagnosis; `--scope runtime` is the fast
-// gateway-readiness probe the launchers/scripts rely on — its exit code is
+// proxy-readiness probe the launchers/scripts rely on — its exit code is
 // byte-compatible with the original health command (it skips the shell/CLI
 // probes, though the tracked-pid check still spawns `ps`/PowerShell as before).
 // `--json` emits a structured report instead of the formatted text one. Exit 1

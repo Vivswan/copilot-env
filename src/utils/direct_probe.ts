@@ -2,7 +2,7 @@
 // / `agent claude` (the auto-detect path) and `agent setup-clis`. Direct mode
 // mints tokens via `gh auth token`, so a machine without an authenticated GitHub
 // CLI — or where Copilot Direct rejects the request — must fall back to the local
-// gateway proxy. Rather than guess, we WRITE a throwaway direct config into a temp
+// proxy. Rather than guess, we WRITE a throwaway direct config into a temp
 // home and run the agent CLI's own read-only smoke prompt against it; exit 0 means
 // direct works. Cheap gates (CLI present, gh authenticated) run first so the
 // common "no gh auth" case — e.g. CI — returns instantly without a model call. Two
@@ -61,7 +61,7 @@ export interface ProbeDescriptor {
    * Provider env vars to DELETE from the probe child's environment so the
    * throwaway temp config — not a leaked shell export — decides where and how the
    * CLI authenticates. Without this a leaked `ANTHROPIC_AUTH_TOKEN` (which the CLI
-   * honors over the config's apiKeyHelper) or a gateway `*_BASE_URL` makes the
+   * honors over the config's apiKeyHelper) or a proxy `*_BASE_URL` makes the
    * "direct" smoke test authenticate the wrong way and fail even though Direct
    * works. The health probe (src/health/probe.ts) deliberately does NOT clear
    * these: it tests the user's real, fully-resolved environment.
@@ -183,19 +183,17 @@ export function probeDirectWorks(
 
   const cliPath = resolve(descriptor.cli);
   if (cliPath === null) {
-    logger.log(`    • ${descriptor.cli} CLI not found → using the local gateway proxy`);
+    logger.log(`    • ${descriptor.cli} CLI not found → using the local proxy`);
     return false;
   }
   const ghPath = resolve("gh");
   if (ghPath === null) {
-    logger.log("    • GitHub CLI (gh) not found → using the local gateway proxy");
+    logger.log("    • GitHub CLI (gh) not found → using the local proxy");
     return false;
   }
   logger.log("    • checking gh authentication …");
   if (!ghAuthOk(ghPath)) {
-    logger.log(
-      "    • gh is not authenticated (run `gh auth login`) → using the local gateway proxy",
-    );
+    logger.log("    • gh is not authenticated (run `gh auth login`) → using the local proxy");
     return false;
   }
   logger.log(
@@ -207,7 +205,7 @@ export function probeDirectWorks(
     tmpHome = mkdtempSync(join(tmpdir(), `copilot-env-${descriptor.cli}-`));
     writeDirectConfig(tmpHome);
     // Build the COMPLETE child environment: every inherited var EXCEPT the
-    // descriptor's provider vars (so a leaked ANTHROPIC_AUTH_TOKEN / gateway
+    // descriptor's provider vars (so a leaked ANTHROPIC_AUTH_TOKEN / proxy
     // *_BASE_URL can't hijack the "direct" test), then the temp home + a PATH that
     // puts the resolved CLI's and gh's bin dirs first (the CLI may be a node-shim
     // and its direct config shells out to `gh` by name, so an nvm-only toolchain
@@ -239,11 +237,11 @@ export function probeDirectWorks(
       }
       if (Date.now() - startedAt >= PROBE_TIMEOUT_MS * TIMEOUT_RETRY_FRACTION) break;
     }
-    logger.log("    • the Direct smoke prompt did not succeed → using the local gateway proxy");
+    logger.log("    • the Direct smoke prompt did not succeed → using the local proxy");
     return false;
   } catch (e) {
     logger.log(
-      `    • the Direct probe errored (${e instanceof Error ? e.message : String(e)}) → using the local gateway proxy`,
+      `    • the Direct probe errored (${e instanceof Error ? e.message : String(e)}) → using the local proxy`,
     );
     return false;
   } finally {

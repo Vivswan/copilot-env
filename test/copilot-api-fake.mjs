@@ -1,7 +1,7 @@
-// Fake copilot-api gateway for CI / local lifecycle testing.
+// Fake copilot-api proxy for CI / local lifecycle testing.
 //
 // Spawned by the daemon launcher (copilot_api/process.ts) in place of the real
-// gateway when COPILOT_API_ENTRY points here. It binds the requested port,
+// proxy when COPILOT_API_ENTRY points here. It binds the requested port,
 // answers the admin endpoints that `start` calls (so model-alias sync succeeds
 // with an empty catalog), prints the exact "Listening on:" marker that `start`
 // waits for in the daemon log, and stays alive until killed -- exercising

@@ -1,5 +1,5 @@
 // `agent init`: the headline one-shot — configure BOTH Codex and Claude (each
-// auto-detects GitHub Copilot Direct vs the local gateway proxy, or --direct /
+// auto-detects GitHub Copilot Direct vs the local proxy, or --direct /
 // --proxy forces both), then print next-step guidance. This is also the shared
 // "configure both agents" routine reused by `agent setup-clis` after it installs.
 import {
@@ -73,7 +73,7 @@ export function configureBothAgents(flags: BothFlags): {
 
 function modeLabel(mode: CodexProviderMode | ClaudeProviderMode): string {
   if (mode === "direct") return "GitHub Copilot Direct";
-  if (mode === "proxy") return "the local gateway proxy";
+  if (mode === "proxy") return "the local proxy";
   if (mode === "other") return "a custom provider (not managed)";
   return "not configured";
 }
@@ -83,34 +83,57 @@ function printGuidance(codex: CodexProviderMode, claude: ClaudeProviderMode): vo
   const bothDirect = codex === "direct" && claude === "direct";
   const anyProxy = codex === "proxy" || claude === "proxy";
 
-  const lines: string[] = [`Codex   →  ${modeLabel(codex)}`, `Claude  →  ${modeLabel(claude)}`, ""];
+  const lines: string[] = [`Codex   →  ${modeLabel(codex)}`, `Claude  →  ${modeLabel(claude)}`];
+
+  // Append a blank line, a bold section header, then `• `-prefixed rows. Commands
+  // wrapped in `backticks` render as highlighted inline code inside the box, so
+  // they stand out without fragile space-padded columns.
+  const section = (title: string, items: string[]): void => {
+    lines.push("", bold(title));
+    for (const item of items) lines.push(`  • ${item}`);
+  };
 
   if (anyProxy) {
-    lines.push("At least one agent uses the local gateway proxy.");
-    lines.push("");
-    lines.push("  • Start the gateway:                    agent start");
-    lines.push("  • Launchers cl / cx offer to start it:  agent setup-launchers");
-    lines.push("  • Report gateway usage:                 agent cost");
+    lines.push("", "At least one agent uses the local proxy.");
+    section("Start the proxy", [
+      "`agent start` — launch the daemon",
+      "`agent setup-launchers` — `cl` / `cx` then auto-start it for you",
+      "`agent cost` — report proxy usage",
+    ]);
   } else if (bothDirect) {
-    lines.push("Both agents use GitHub Copilot Direct — the local gateway is NOT needed.");
-    lines.push("");
-    lines.push("  • Just run `claude` and `codex` directly (no `agent start` / `agent stop`).");
-    lines.push("  • Optional launchers cl / co / cx:   agent setup-launchers");
-    lines.push("  • Direct usage is NOT tracked by `agent cost` (only gateway usage is).");
-    lines.push("  • Heads up: model discovery/aliases come from the gateway, so in Direct");
-    lines.push("    mode some model names may not resolve — use the provider's exact ids.");
-    lines.push("  • Prefer the local gateway instead?  agent init --proxy");
+    lines.push("", "Both agents use GitHub Copilot Direct — no local proxy needed.");
+    section("Run the agents", [
+      "Just use `claude` and `codex` — no `agent start` / `agent stop`",
+      "`agent setup-launchers` — optional `cl` / `co` / `cx` shortcuts",
+    ]);
+    section("Good to know", [
+      "`agent cost` reports proxy usage only — Direct usage won't appear",
+      "Model aliases come from the proxy; in Direct, use the provider's exact ids",
+    ]);
   } else {
-    // No proxy and not both-direct: a mixed/partial result (e.g. one direct, the
-    // other custom/unconfigured). Be specific rather than claim "neither".
-    lines.push("Mixed setup — the two agents aren't configured the same way:");
-    lines.push("");
+    lines.push("", "Mixed setup — the agents aren't configured the same way.");
+    const steps = ["Anything unconfigured? Re-run `agent init` or check `agent health`"];
     if (codex === "direct" || claude === "direct") {
-      lines.push("  • The Direct agent needs no gateway — run it directly.");
-      lines.push("  • Heads up: in Direct mode model discovery/aliases (from the gateway)");
-      lines.push("    may not resolve — use the provider's exact model ids.");
+      steps.unshift("The Direct agent needs no proxy — run it directly");
     }
-    lines.push("  • For anything not configured, re-run `agent init` or see `agent health`.");
+    section("Next steps", steps);
+  }
+
+  // Codex-in-Direct caveat: Copilot Direct doesn't serve image generation, so the
+  // wrapper disables it (src/codex/config.ts). Point at the proxy escape hatch.
+  // Fold it into the bothDirect "Good to know"; otherwise give it its own section.
+  if (codex === "direct") {
+    const caveat =
+      "If you see a Codex image generation error, switch it to the proxy — `agent codex --proxy`, then `agent start`";
+    if (bothDirect) lines.push(`  • ${caveat}`);
+    else section("Good to know", [caveat]);
+  }
+
+  if (bothDirect) {
+    lines.push(
+      "",
+      "if needed, switch everything to the proxy:  `agent init --proxy`, then `agent start`",
+    );
   }
 
   logger.log("");
@@ -120,7 +143,7 @@ function printGuidance(codex: CodexProviderMode, claude: ClaudeProviderMode): vo
 /**
  * `init`: configure both agents and explain the result. `--direct`/`--proxy`
  * force both; with no flag each auto-detects (live Copilot Direct probe, else
- * the gateway). `--direct` and `--proxy` are mutually exclusive.
+ * the proxy). `--direct` and `--proxy` are mutually exclusive.
  */
 export function runInit(args: InitArgs): void {
   if (args.direct && args.proxy) {

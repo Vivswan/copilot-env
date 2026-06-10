@@ -8,7 +8,7 @@ import { PROJECT_ROOT } from "./root.ts";
 /**
  * Read a package.json's `version` string from `path`, or null if the file is
  * missing/malformed or has no string version. Shared by the CLI's own version
- * and the installed-gateway version reader.
+ * and the installed-proxy version reader.
  */
 export function readPackageVersion(path: string): string | null {
   try {

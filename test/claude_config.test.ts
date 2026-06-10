@@ -32,11 +32,11 @@ afterEach(() => {
   }
 });
 
-// A temp Claude home, with an isolated gateway home so proxy writes (which
-// resolve the gateway endpoint/token) don't touch any real state.
+// A temp Claude home, with an isolated proxy home so proxy writes (which
+// resolve the proxy endpoint/token) don't touch any real state.
 function tmpHome(): string {
   dir = mkdtempSync(join(tmpdir(), "copilot-claude-"));
-  process.env.COPILOT_API_HOME = join(dir, "gateway-home");
+  process.env.COPILOT_API_HOME = join(dir, "proxy-home");
   return join(dir, ".claude");
 }
 
@@ -70,7 +70,7 @@ test("direct mode writes the managed apiKeyHelper + env and the token helper, pr
   }
 });
 
-test("proxy mode writes gateway wiring (localhost base URL + a token helper), preserving user keys", () => {
+test("proxy mode writes proxy wiring (localhost base URL + a token helper), preserving user keys", () => {
   const home = tmpHome();
   configureClaudeConfig(home, "direct"); // seed, then add a user key
   const seeded = readSettings(home);
@@ -80,14 +80,14 @@ test("proxy mode writes gateway wiring (localhost base URL + a token helper), pr
   configureClaudeConfig(home, "proxy");
 
   const doc = readSettings(home);
-  expect(doc.apiKeyHelper).toBe(join(home, "copilot-gateway-token.sh"));
+  expect(doc.apiKeyHelper).toBe(join(home, "copilot-proxy-token.sh"));
   const env = doc.env as Record<string, unknown>;
   expect(env.ANTHROPIC_BASE_URL).toBe(`http://localhost:${copilotApiResolvePort()}`);
   // Disable-betas is a direct-only knob; switching to proxy drops it.
   expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBeUndefined();
   expect(doc.model).toBe("sonnet"); // unrelated user key survives
 
-  const helper = join(home, "copilot-gateway-token.sh");
+  const helper = join(home, "copilot-proxy-token.sh");
   const script = readFileSync(helper, "utf8");
   expect(script.startsWith("#!/bin/sh\nprintf '%s' '")).toBe(true);
   if (process.platform !== "win32") {
@@ -100,7 +100,7 @@ test("inspectClaudeWiring classifies direct / proxy / other / none / malformed (
   // Build the managed helper paths with join() so they match inspectClaudeWiring's
   // own path.join() on every OS (forward-slash literals fail the exact match on Windows).
   const directHelper = join(home, "copilot-token.sh");
-  const proxyHelper = join(home, "copilot-gateway-token.sh");
+  const proxyHelper = join(home, "copilot-proxy-token.sh");
 
   expect(
     inspectClaudeWiring(JSON.stringify({ apiKeyHelper: directHelper }), home).providerMode,

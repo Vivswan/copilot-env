@@ -1,4 +1,4 @@
-// Per-host state persistence for the gateway pid, port, and active CODEX_HOME.
+// Per-host state persistence for the proxy pid, port, and active CODEX_HOME.
 import { CopilotApiConfig } from "./config.ts";
 import { CopilotApiPaths } from "./paths.ts";
 

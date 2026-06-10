@@ -1,4 +1,4 @@
-// Gateway package version helpers shared by startup checks and the postinstall float.
+// Proxy package version helpers shared by startup checks and the postinstall float.
 import { join } from "node:path";
 
 import type { ProjectConfig } from "../utils/project_config.ts";
@@ -6,74 +6,69 @@ import { PROJECT_ROOT } from "../utils/root.ts";
 import { versionLessThan } from "../utils/semver.ts";
 import { readPackageVersion } from "../utils/version.ts";
 
-export const GATEWAY_PACKAGE_NAME = "@jeffreycao/copilot-api";
+export const PROXY_PACKAGE_NAME = "@jeffreycao/copilot-api";
 
-export type GatewayVersionFloorStatus =
+export type ProxyVersionFloorStatus =
   | { ok: true; version: string }
   | { ok: false; reason: "missing"; version: null }
   | { ok: false; reason: "belowFloor"; version: string; floor: string };
 
-export type GatewayVersionStatus =
-  | GatewayVersionFloorStatus
+export type ProxyVersionStatus =
+  | ProxyVersionFloorStatus
   | { ok: false; reason: "aboveCeiling"; version: string; ceiling: string };
 
-/** Installed gateway version (from its package.json), or null if unresolved. */
-export function installedGatewayVersion(root: string = PROJECT_ROOT): string | null {
-  const packagePath = join(
-    root,
-    "node_modules",
-    ...GATEWAY_PACKAGE_NAME.split("/"),
-    "package.json",
-  );
+/** Installed proxy version (from its package.json), or null if unresolved. */
+export function installedProxyVersion(root: string = PROJECT_ROOT): string | null {
+  const packagePath = join(root, "node_modules", ...PROXY_PACKAGE_NAME.split("/"), "package.json");
   return readPackageVersion(packagePath);
 }
 
-export function assertGatewayConfigBounds(config: ProjectConfig): void {
+export function assertProxyConfigBounds(config: ProjectConfig): void {
   if (
-    config.gatewayMaxVersion !== null &&
-    versionLessThan(config.gatewayMaxVersion, config.gatewayMinVersion)
+    config.proxyMaxVersion !== null &&
+    versionLessThan(config.proxyMaxVersion, config.proxyMinVersion)
   ) {
     throw new Error(
-      `GATEWAY_MAX_VERSION (${config.gatewayMaxVersion}) is below GATEWAY_MIN_VERSION (${config.gatewayMinVersion})`,
+      `PROXY_MAX_VERSION (${config.proxyMaxVersion}) is below PROXY_MIN_VERSION (${config.proxyMinVersion})`,
     );
   }
 }
 
-export function gatewayVersionFloorStatus(
+export function proxyVersionFloorStatus(
   version: string | null,
-  config: Pick<ProjectConfig, "gatewayMinVersion">,
-): GatewayVersionFloorStatus {
+  config: Pick<ProjectConfig, "proxyMinVersion">,
+): ProxyVersionFloorStatus {
   if (version === null) {
     return { "ok": false, "reason": "missing", "version": null };
   }
-  if (versionLessThan(version, config.gatewayMinVersion)) {
+  if (versionLessThan(version, config.proxyMinVersion)) {
     return {
       "ok": false,
       "reason": "belowFloor",
       "version": version,
-      "floor": config.gatewayMinVersion,
+      "floor": config.proxyMinVersion,
     };
   }
   return { "ok": true, "version": version };
 }
 
-export function gatewayVersionBoundsStatus(
+export function proxyVersionBoundsStatus(
   version: string | null,
   config: ProjectConfig,
-): GatewayVersionStatus {
-  const floorStatus = gatewayVersionFloorStatus(version, config);
+): ProxyVersionStatus {
+  const floorStatus = proxyVersionFloorStatus(version, config);
   if (!floorStatus.ok) {
     return floorStatus;
   }
   if (
-    config.gatewayMaxVersion !== null &&
-    versionLessThan(config.gatewayMaxVersion, floorStatus.version)
+    config.proxyMaxVersion !== null &&
+    versionLessThan(config.proxyMaxVersion, floorStatus.version)
   ) {
     return {
       "ok": false,
       "reason": "aboveCeiling",
       "version": floorStatus.version,
-      "ceiling": config.gatewayMaxVersion,
+      "ceiling": config.proxyMaxVersion,
     };
   }
   return floorStatus;

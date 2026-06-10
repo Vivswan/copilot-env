@@ -4,7 +4,7 @@
 // `CopilotAdminClient.getModels`). We derive the alias map mechanically so it
 // tracks new models without hand edits.
 //
-// The gateway's own request-time normalizer already maps the plain dash form to
+// The proxy's own request-time normalizer already maps the plain dash form to
 // the dot form (`claude-opus-4-8` -> `claude-opus-4.8`); aliases are generated
 // only for the forms it cannot parse: the `[1m]` suffix, reasoning-effort
 // qualifiers, and the friendly `opus` / `sonnet` / `haiku` shorthands.

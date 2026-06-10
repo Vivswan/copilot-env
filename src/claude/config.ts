@@ -4,11 +4,11 @@
 //
 //   - direct: GitHub Copilot. apiKeyHelper -> copilot-token.sh (`gh auth token`)
 //     and env.ANTHROPIC_BASE_URL = https://api.githubcopilot.com.
-//   - proxy:  the local copilot-api gateway. apiKeyHelper -> copilot-gateway-token.sh
-//     (prints the gateway key) and env.ANTHROPIC_BASE_URL = http://localhost:<port>.
+//   - proxy:  the local copilot-api proxy. apiKeyHelper -> copilot-proxy-token.sh
+//     (prints the proxy key) and env.ANTHROPIC_BASE_URL = http://localhost:<port>.
 //
 // `agent env` re-exports ANTHROPIC_BASE_URL only for the proxy backend (to keep
-// the shell aligned with the live gateway port); direct is driven entirely by
+// the shell aligned with the live proxy port); direct is driven entirely by
 // settings.json. Mode is inferred from which managed apiKeyHelper (by EXACT path)
 // settings.json points at. The merge is surgical: only the managed keys are
 // touched; all other settings are preserved.
@@ -36,7 +36,7 @@ const logger = createStderrLogger();
 // CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS is treated as a tested knob.
 export const DIRECT_BASE_URL = "https://api.githubcopilot.com";
 export const DIRECT_HELPER_NAME = "copilot-token.sh";
-export const PROXY_HELPER_NAME = "copilot-gateway-token.sh";
+export const PROXY_HELPER_NAME = "copilot-proxy-token.sh";
 export const BASE_URL_ENV = "ANTHROPIC_BASE_URL";
 export const DISABLE_BETAS_ENV = "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS";
 
@@ -99,10 +99,10 @@ function proxyHelperPath(claudeHome: string): string {
  * two managed helper paths are derived. Mode is keyed off the EXACT apiKeyHelper
  * path so a user's own same-named helper is never mistaken for ours:
  *   - direct: apiKeyHelper === <home>/copilot-token.sh
- *   - proxy:  apiKeyHelper === <home>/copilot-gateway-token.sh
+ *   - proxy:  apiKeyHelper === <home>/copilot-proxy-token.sh
  *   - other:  a foreign apiKeyHelper, a custom ANTHROPIC_BASE_URL, or malformed
  *             JSON (a config we must not clobber)
- *   - none:   no relevant keys (absent/empty) — unconfigured; gateway is default
+ *   - none:   no relevant keys (absent/empty) — unconfigured; proxy is default
  */
 export function inspectClaudeWiring(
   settingsText: string | null,
@@ -184,7 +184,7 @@ function writeHelperScript(helperPath: string, script: string): void {
 function applyManagedEnv(doc: Record<string, unknown>, mode: ManagedClaudeMode, baseUrl: string) {
   const env = isRecord(doc.env) ? doc.env : {};
   env[BASE_URL_ENV] = baseUrl;
-  // Disabling betas is a direct-only knob (the gateway speaks full Anthropic).
+  // Disabling betas is a direct-only knob (the proxy speaks full Anthropic).
   if (mode === "direct") env[DISABLE_BETAS_ENV] = "1";
   else delete env[DISABLE_BETAS_ENV];
   doc.env = env;
@@ -192,11 +192,11 @@ function applyManagedEnv(doc: Record<string, unknown>, mode: ManagedClaudeMode, 
 
 /**
  * Apply the managed Claude wiring at `claudeHome`. Direct writes the gh-token
- * helper + the Copilot base URL; proxy resolves the local gateway port + token,
+ * helper + the Copilot base URL; proxy resolves the local proxy port + token,
  * writes a helper that prints that token, and points the base URL at localhost.
  * Either way the merge is surgical (only managed keys change) and the OTHER
  * mode's settings are overwritten so switching modes is clean. Throws on an
- * unwritable home / malformed settings.json / unresolvable gateway token.
+ * unwritable home / malformed settings.json / unresolvable proxy token.
  */
 export function configureClaudeConfig(
   claudeHome: string,
@@ -223,7 +223,7 @@ export function configureClaudeConfig(
     return;
   }
 
-  // proxy: resolve the local gateway endpoint + token and write a helper that
+  // proxy: resolve the local proxy endpoint + token and write a helper that
   // prints the token (kept out of settings.json, chmod 0700 like Codex's .env).
   const port = copilotApiResolvePort();
   let token: string;
@@ -231,7 +231,7 @@ export function configureClaudeConfig(
     token = new CopilotApiConfig().ensureApiKey();
   } catch (e) {
     throw new Error(
-      `failed to persist the gateway auth token: ${e instanceof Error ? e.message : String(e)}`,
+      `failed to persist the proxy auth token: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
   writeHelperScript(proxyHelperPath(claudeHome), proxyHelperScript(token));
@@ -239,13 +239,11 @@ export function configureClaudeConfig(
   applyManagedEnv(doc, "proxy", `http://localhost:${port}`);
   saveSettings(settingsPath, doc);
   if (!quiet) {
-    logger.log(
-      `  ✓ Claude config written → ${settingsPath} (proxy: local gateway on port ${port})`,
-    );
+    logger.log(`  ✓ Claude config written → ${settingsPath} (proxy mode → port ${port})`);
   }
 }
 
-/** The proxy apiKeyHelper: print the resolved gateway token verbatim on stdout. */
+/** The proxy apiKeyHelper: print the resolved proxy token verbatim on stdout. */
 function proxyHelperScript(token: string): string {
   const escaped = token.replace(/'/g, `'\\''`); // single-quote-safe for /bin/sh
   return `#!/bin/sh\nprintf '%s' '${escaped}'\n`;
@@ -266,11 +264,11 @@ function providerModeDetail(mode: ClaudeProviderMode): string {
     case "direct":
       return "GitHub Copilot Direct";
     case "proxy":
-      return "local copilot-api gateway";
+      return "local copilot-api proxy";
     case "other":
       return "custom Claude provider (not managed)";
     case "none":
-      return "not configured (gateway is the default)";
+      return "not configured (proxy is the default)";
   }
 }
 
@@ -278,7 +276,7 @@ function providerModeDetail(mode: ClaudeProviderMode): string {
 function checkExitCode(mode: ClaudeProviderMode): 0 | 1 | 2 {
   if (mode === "direct") return 0;
   if (mode === "other") return 1; // custom — the cl launcher does NOT launch
-  return 2; // proxy or none — gateway (the default backend)
+  return 2; // proxy or none — proxy (the default backend)
 }
 
 function checkClaudeConfig(args: Pick<ClaudeConfigArgs, "claude-home">): void {
@@ -313,10 +311,10 @@ export function detectClaudeDirect(deps?: DirectProbeDeps): boolean {
 
 /**
  * `agent claude`: configure Claude Code's wiring at the effective Claude home.
- * `--direct` forces GitHub Copilot Direct, `--proxy` forces the local gateway,
+ * `--direct` forces GitHub Copilot Direct, `--proxy` forces the local proxy,
  * and `--auto` (or no mode flag) AUTO-DETECTS — it writes direct wiring when a
  * live `claude -p` probe against Copilot Direct succeeds, else falls back to the
- * gateway proxy. `--check` reports the configured mode (exit 0 direct / 2
+ * proxy. `--check` reports the configured mode (exit 0 direct / 2
  * proxy|none / 1 other) without a probe.
  */
 export function runClaude(args: ClaudeConfigArgs): void {
@@ -328,7 +326,7 @@ export function runClaude(args: ClaudeConfigArgs): void {
   const claudeHome = resolveClaudeHome(args["claude-home"]);
   const direct = resolveDirect(args, detectClaudeDirect);
   logger.log(
-    `  Configuring Claude for ${direct ? "GitHub Copilot Direct" : "the local copilot-api gateway proxy"} …`,
+    `  Configuring Claude for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} …`,
   );
   configureClaudeConfig(claudeHome, direct ? "direct" : "proxy");
 }

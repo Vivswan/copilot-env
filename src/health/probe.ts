@@ -27,11 +27,11 @@ import { copilotApiResolvePort } from "../copilot_api/port.ts";
 import { isCopilotApiPid, pidAlive } from "../copilot_api/process.ts";
 import { CopilotApiState } from "../copilot_api/state.ts";
 import {
-  type GatewayVersionStatus,
-  gatewayVersionBoundsStatus,
-  installedGatewayVersion,
+  installedProxyVersion,
+  type ProxyVersionStatus,
+  proxyVersionBoundsStatus,
 } from "../copilot_api/version.ts";
-import { nodeModulesFresh, resolveMinimumReleaseAgeSeconds } from "../gateway_float.ts";
+import { nodeModulesFresh, resolveMinimumReleaseAgeSeconds } from "../proxy_float.ts";
 import { childPathPrepending, cliSpawn, resolveCommand } from "../utils/command.ts";
 import {
   CLAUDE_PROBE,
@@ -62,7 +62,7 @@ export interface RuntimeFacts {
   pidTracked: boolean;
   pidAlive: boolean;
   paths: RuntimePaths;
-  /** Both Codex and Claude are configured direct => the gateway is not required. */
+  /** Both Codex and Claude are configured direct => the proxy is not required. */
   bothDirect: boolean;
 }
 
@@ -72,12 +72,12 @@ export interface BootstrapFacts {
   nodeModules: { present: boolean; fresh: boolean };
 }
 
-export interface GatewayFacts {
+export interface ProxyFacts {
   version: string | null;
   // null when the project config could not be read (see configError).
-  bounds: GatewayVersionStatus | null;
+  bounds: ProxyVersionStatus | null;
   configError: string | null;
-  // The gateway float's cooldown window in seconds (null if it couldn't be read).
+  // The proxy float's cooldown window in seconds (null if it couldn't be read).
   cooldownSeconds: number | null;
 }
 
@@ -143,7 +143,7 @@ export interface CodexHostFacts {
 export interface HealthFacts {
   runtime?: RuntimeFacts;
   bootstrap?: BootstrapFacts;
-  gateway?: GatewayFacts;
+  proxy?: ProxyFacts;
   shell?: ShellFacts;
   clis?: CliFacts[];
   tools?: ToolFacts;
@@ -169,9 +169,9 @@ export interface ProbeDeps {
   agentClis(): readonly { command: string; name: string }[];
   shellTargets(): string[];
   readFileSafe(path: string): string | null;
-  installedGatewayVersion(): string | null;
+  installedProxyVersion(): string | null;
   projectConfig(): ProjectConfig;
-  gatewayCooldownSeconds(): number;
+  proxyCooldownSeconds(): number;
   codexHome(): string;
   codexTokenInEnviron(): boolean;
   codexDirectAuth(): Promise<CodexDirectAuthFacts>;
@@ -289,9 +289,9 @@ export function defaultProbeDeps(): ProbeDeps {
     agentClis: () => AGENT_CLIS,
     shellTargets: shellTargetFiles,
     readFileSafe,
-    installedGatewayVersion: () => installedGatewayVersion(root),
+    installedProxyVersion: () => installedProxyVersion(root),
     projectConfig: () => readProjectConfig(root),
-    gatewayCooldownSeconds: () => resolveMinimumReleaseAgeSeconds(root),
+    proxyCooldownSeconds: () => resolveMinimumReleaseAgeSeconds(root),
     // Effective CODEX_HOME, matching runCodexConfig / env.ts precedence:
     // per-host state override, then $CODEX_HOME, then the default ~/.codex.
     codexHome: () =>
@@ -372,8 +372,8 @@ export function evalClaude(
 
 // --- orchestration ----------------------------------------------------------
 
-const SCOPE_RUNTIME: readonly HealthScope[] = ["full", "gateway", "runtime"];
-const SCOPE_BOOTSTRAP: readonly HealthScope[] = ["full", "gateway"];
+const SCOPE_RUNTIME: readonly HealthScope[] = ["full", "proxy", "runtime"];
+const SCOPE_BOOTSTRAP: readonly HealthScope[] = ["full", "proxy"];
 const SCOPE_SETUP: readonly HealthScope[] = ["full", "setup"];
 const SCOPE_CODEX: readonly HealthScope[] = ["full", "setup", "codex"];
 const SCOPE_CLAUDE: readonly HealthScope[] = ["full", "setup", "claude"];
@@ -434,8 +434,8 @@ export async function gatherFacts(
           pidTracked,
           pidAlive: trackedPid !== null ? deps.isPidAlive(trackedPid) : false,
           paths: deps.paths(),
-          // When both agents are configured direct, no gateway is required, so a
-          // down gateway must not read as a runtime failure.
+          // When both agents are configured direct, no proxy is required, so a
+          // down proxy must not read as a runtime failure.
           bothDirect: readProviderModes(deps, port).bothDirect,
         };
       })(),
@@ -450,25 +450,25 @@ export async function gatherFacts(
           bun: { available: deps.bunVersion() !== null, version: deps.bunVersion() },
           nodeModules: { present: deps.nodeModulesPresent(), fresh: deps.nodeModulesFresh() },
         };
-        const version = deps.installedGatewayVersion();
+        const version = deps.installedProxyVersion();
         // A bad COPILOT_API_MIN_RELEASE_AGE / bunfig value shouldn't crash health.
         let cooldownSeconds: number | null = null;
         try {
-          cooldownSeconds = deps.gatewayCooldownSeconds();
+          cooldownSeconds = deps.proxyCooldownSeconds();
         } catch {
           cooldownSeconds = null;
         }
         // Reading copilot-env.config can throw on a malformed/missing file; turn
-        // that into a gateway-check failure rather than crashing the whole report.
+        // that into a proxy-check failure rather than crashing the whole report.
         try {
-          facts.gateway = {
+          facts.proxy = {
             version,
-            bounds: gatewayVersionBoundsStatus(version, deps.projectConfig()),
+            bounds: proxyVersionBoundsStatus(version, deps.projectConfig()),
             configError: null,
             cooldownSeconds,
           };
         } catch (e) {
-          facts.gateway = {
+          facts.proxy = {
             version,
             bounds: null,
             configError: e instanceof Error ? e.message : String(e),

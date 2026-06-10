@@ -15,6 +15,6 @@ Hand-edits to `node_modules/` are persisted here by [patch-package](https://gith
 
 ## Notes
 
-- **The gateway floats to `"latest"` (≥7-day cooldown), so patches are normally incompatible.** A patch is keyed to one exact version and won't apply once the float moves on. To patch, first pin `@jeffreycao/copilot-api` to an exact version in `package.json` (freezing the float), generate the patch, and commit both together. Restore `"latest"` (and drop the patch) to resume floating.
+- **The proxy floats to `"latest"` (≥7-day cooldown), so patches are normally incompatible.** A patch is keyed to one exact version and won't apply once the float moves on. To patch, first pin `@jeffreycao/copilot-api` to an exact version in `package.json` (freezing the float), generate the patch, and commit both together. Restore `"latest"` (and drop the patch) to resume floating.
 - `patch-package` is kept non-fatal (it warns rather than failing the install), so a stale patch won't break startup — but don't rely on it applying.
 - When bumping a pinned version, regenerate the patch by re-editing and re-running `npx patch-package`.

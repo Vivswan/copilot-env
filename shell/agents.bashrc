@@ -2,7 +2,7 @@
 # Must be compatible with both bash and zsh (POSIX constructs only).
 #
 # Pure runtime wiring: defines the `agent` lifecycle wrapper and exports the
-# gateway env. Prerequisites and the agent CLIs are installed by install.sh —
+# proxy env. Prerequisites and the agent CLIs are installed by install.sh —
 # this file never installs anything.
 
 # shellcheck shell=bash

@@ -82,14 +82,14 @@ export function runInstall(options: InstallOptions): void {
 
   const setupArgs = shellSetupArgs(options);
   if (setupArgs === null) {
-    console.log("Skipping shell wiring (--no-shell-integration).");
+    console.log("Skipping shell integration (--no-shell-integration).");
   } else {
     runAgent(root, setupArgs);
   }
 
   console.log("");
   if (options.noShellIntegration) {
-    console.log("Done. Shell wiring was skipped; run 'agent setup-shell' to enable it.");
+    console.log("Done. Shell integration was skipped; run 'agent setup-shell' to enable it.");
   } else {
     console.log(
       process.platform === "win32"
@@ -100,13 +100,10 @@ export function runInstall(options: InstallOptions): void {
   console.log("");
   console.log("Next steps:");
   console.log(
-    "  1. Run 'agent init' to set up Codex + Claude (it picks GitHub Copilot Direct or the local gateway).",
+    "  1. Run 'agent init' to set up Codex + Claude (it picks GitHub Copilot Direct or the local proxy), then tells you whether you need 'agent start' (only for the proxy).",
   );
   console.log(
-    "  2. Optional: 'agent setup-clis --launchers' to install the CLIs + cl/co/cx shortcuts.",
-  );
-  console.log(
-    "  'agent init' will then tell you whether you need 'agent start' (only for the gateway).",
+    "  2. Optionally run 'agent setup-clis --launchers' to install the CLIs plus the cl/co/cx shortcuts.",
   );
 }
 

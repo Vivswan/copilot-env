@@ -14,7 +14,7 @@ afterEach(() => {
   }
 });
 
-test("DEFAULT_HOME mirrors the gateway's default data dir", () => {
+test("DEFAULT_HOME mirrors the proxy's default data dir", () => {
   expect(DEFAULT_HOME).toBe(join(homedir(), ".local", "share", "copilot-api"));
 });
 

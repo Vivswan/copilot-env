@@ -1,20 +1,20 @@
-// The gateway float — the one dependency copilot-env intentionally does NOT pin
+// The proxy float — the one dependency copilot-env intentionally does NOT pin
 // in bun.lock. package.json keeps @jeffreycao/copilot-api at "latest" as a
 // reproducible baseline, then this postinstall overlays the exact runtime target
 // into node_modules with `bun add --no-save`.
 //
 // Direct run:
-//   bun src/gateway_float.ts
-//     Repair/float the installed gateway. Used by package.json postinstall.
-//   bun src/gateway_float.ts --verify
+//   bun src/proxy_float.ts
+//     Repair/float the installed proxy. Used by package.json postinstall.
+//   bun src/proxy_float.ts --verify
 //     Read-only freshness check used by bin/agent before deciding whether to run
 //     `bun install --frozen-lockfile`.
-//   bun src/gateway_float.ts --assert-installed
-//     CI/dev guard: assert the postinstall float actually installed a gateway
+//   bun src/proxy_float.ts --assert-installed
+//     CI/dev guard: assert the postinstall float actually installed a proxy
 //     inside copilot-env.config's floor/ceiling window.
 //
 // Runtime knobs are environment variables, not CLI flags: COPILOT_API_VERSION
-// pins an exact gateway version/tag, and COPILOT_API_MIN_RELEASE_AGE overrides the
+// pins an exact proxy version/tag, and COPILOT_API_MIN_RELEASE_AGE overrides the
 // cooldown window (in seconds) from bunfig.toml's install.minimumReleaseAge.
 //
 // Current resolution:
@@ -24,8 +24,8 @@
 //    pick the newest stable x.y.z release at least the cooldown window old
 //    (COPILOT_API_MIN_RELEASE_AGE seconds if set, else bunfig.toml
 //    install.minimumReleaseAge; 0 disables the cooldown), then clamp it to
-//    [GATEWAY_MIN_VERSION, GATEWAY_MAX_VERSION] from copilot-env.config
-//    (GATEWAY_MAX_VERSION may be empty). If no aged release exists, the floor is
+//    [PROXY_MIN_VERSION, PROXY_MAX_VERSION] from copilot-env.config
+//    (PROXY_MAX_VERSION may be empty). If no aged release exists, the floor is
 //    used directly so a required minimum is still installable.
 //
 // The actual overlay installs an exact version with `--minimum-release-age=0`
@@ -34,11 +34,11 @@
 // exists, even if an older eligible release would satisfy it.
 //
 // `--verify` is read-only for bin/agent: it recomputes the same target and exits
-// 0 only when node_modules is fresh and the installed gateway already matches the
+// 0 only when node_modules is fresh and the installed proxy already matches the
 // target. Otherwise bin/agent runs `bun install --frozen-lockfile`, whose
-// postinstall runs this file without --verify to repair/float the gateway.
+// postinstall runs this file without --verify to repair/float the proxy.
 //
-// Tests can import floatGateway directly without the postinstall main() running.
+// Tests can import floatProxy directly without the postinstall main() running.
 
 import "./utils/dotenv.ts";
 import { spawnSync } from "node:child_process";
@@ -47,11 +47,11 @@ import { join } from "node:path";
 import { createConsola } from "consola";
 import { parse } from "smol-toml";
 import {
-  assertGatewayConfigBounds,
-  GATEWAY_PACKAGE_NAME,
-  gatewayVersionBoundsStatus,
-  gatewayVersionFloorStatus,
-  installedGatewayVersion,
+  assertProxyConfigBounds,
+  installedProxyVersion,
+  PROXY_PACKAGE_NAME,
+  proxyVersionBoundsStatus,
+  proxyVersionFloorStatus,
 } from "./copilot_api/version.ts";
 import { pickAgedVersion } from "./utils/aged_version.ts";
 import { isRecord, parseJsonRecord } from "./utils/json.ts";
@@ -60,16 +60,16 @@ import { PROJECT_ROOT } from "./utils/root.ts";
 import { versionLessThan } from "./utils/semver.ts";
 import { SECONDS_PER_DAY } from "./utils/time.ts";
 
-const GATEWAY_PKG = GATEWAY_PACKAGE_NAME;
-const GATEWAY_VERSION_ENV = "COPILOT_API_VERSION";
+const PROXY_PKG = PROXY_PACKAGE_NAME;
+const PROXY_VERSION_ENV = "COPILOT_API_VERSION";
 const MIN_RELEASE_AGE_ENV = "COPILOT_API_MIN_RELEASE_AGE";
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 
-type GatewayConsolaOptions = NonNullable<Parameters<typeof createConsola>[0]> & {
+type ProxyConsolaOptions = NonNullable<Parameters<typeof createConsola>[0]> & {
   fancy?: boolean;
 };
 
-const loggerOptions: GatewayConsolaOptions = {
+const loggerOptions: ProxyConsolaOptions = {
   "stdout": process.stderr,
   "stderr": process.stderr,
   "fancy": false,
@@ -83,17 +83,17 @@ export type SpawnSyncRunner = (
   options: Parameters<typeof spawnSync>[2],
 ) => ReturnType<typeof spawnSync>;
 
-export type GatewayFloatVerifyStatus = {
+export type ProxyFloatVerifyStatus = {
   upToDate: boolean;
   message: string;
 };
-export type GatewayInstallAssertStatus = {
+export type ProxyInstallAssertStatus = {
   ok: boolean;
   message: string;
 };
 
 type Result<T> = { ok: true; value: T } | { ok: false; message: string };
-type GatewayTarget = { version: string; reason: string };
+type ProxyTarget = { version: string; reason: string };
 type FloatContext = {
   root: string;
   bun: string;
@@ -142,8 +142,8 @@ export function resolveMinimumReleaseAgeSeconds(root: string): number {
 }
 
 function formatReleaseAge(seconds: number): string {
-  if (seconds % SECONDS_PER_DAY === 0) return `${seconds / SECONDS_PER_DAY}-day-old`;
-  return `${seconds}-second-old`;
+  if (seconds % SECONDS_PER_DAY === 0) return `${seconds / SECONDS_PER_DAY} days old`;
+  return `${seconds} seconds old`;
 }
 
 // --- Registry target resolution ---------------------------------------------
@@ -159,8 +159,8 @@ function parseNpmTimeMap(stdout: string): Record<string, string> | null {
   return timeMap;
 }
 
-function fetchGatewayTimeMap(ctx: FloatContext): Result<Record<string, string>> {
-  const result = ctx.spawnRunner(ctx.bun, ["pm", "view", GATEWAY_PKG, "time", "--json"], {
+function fetchProxyTimeMap(ctx: FloatContext): Result<Record<string, string>> {
+  const result = ctx.spawnRunner(ctx.bun, ["pm", "view", PROXY_PKG, "time", "--json"], {
     cwd: ctx.root,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -180,28 +180,28 @@ function fetchGatewayTimeMap(ctx: FloatContext): Result<Record<string, string>> 
     : { "ok": true, "value": timeMap };
 }
 
-function clampGatewayTarget(ctx: FloatContext, cooldownVersion: string | null): GatewayTarget {
+function clampProxyTarget(ctx: FloatContext, cooldownVersion: string | null): ProxyTarget {
   if (cooldownVersion === null) {
     return {
-      "version": ctx.config.gatewayMinVersion,
-      "reason": `no ${formatReleaseAge(ctx.minimumReleaseAgeSeconds)} release -> floor ${ctx.config.gatewayMinVersion}`,
+      "version": ctx.config.proxyMinVersion,
+      "reason": `no ${formatReleaseAge(ctx.minimumReleaseAgeSeconds)} release -> floor ${ctx.config.proxyMinVersion}`,
     };
   }
 
-  if (versionLessThan(cooldownVersion, ctx.config.gatewayMinVersion)) {
+  if (versionLessThan(cooldownVersion, ctx.config.proxyMinVersion)) {
     return {
-      "version": ctx.config.gatewayMinVersion,
-      "reason": `${cooldownVersion} < floor ${ctx.config.gatewayMinVersion}`,
+      "version": ctx.config.proxyMinVersion,
+      "reason": `${cooldownVersion} < floor ${ctx.config.proxyMinVersion}`,
     };
   }
 
   if (
-    ctx.config.gatewayMaxVersion !== null &&
-    versionLessThan(ctx.config.gatewayMaxVersion, cooldownVersion)
+    ctx.config.proxyMaxVersion !== null &&
+    versionLessThan(ctx.config.proxyMaxVersion, cooldownVersion)
   ) {
     return {
-      "version": ctx.config.gatewayMaxVersion,
-      "reason": `${cooldownVersion} > ceiling ${ctx.config.gatewayMaxVersion}`,
+      "version": ctx.config.proxyMaxVersion,
+      "reason": `${cooldownVersion} > ceiling ${ctx.config.proxyMaxVersion}`,
     };
   }
 
@@ -211,8 +211,8 @@ function clampGatewayTarget(ctx: FloatContext, cooldownVersion: string | null): 
   };
 }
 
-function resolveGatewayTarget(ctx: FloatContext): Result<GatewayTarget> {
-  const metadata = fetchGatewayTimeMap(ctx);
+function resolveProxyTarget(ctx: FloatContext): Result<ProxyTarget> {
+  const metadata = fetchProxyTimeMap(ctx);
   if (!metadata.ok) return metadata;
 
   const cooldownVersion = pickAgedVersion(
@@ -220,7 +220,7 @@ function resolveGatewayTarget(ctx: FloatContext): Result<GatewayTarget> {
     ctx.minimumReleaseAgeSeconds * 1000,
     ctx.nowMs,
   );
-  return { "ok": true, "value": clampGatewayTarget(ctx, cooldownVersion) };
+  return { "ok": true, "value": clampProxyTarget(ctx, cooldownVersion) };
 }
 
 // --- Install actions ----------------------------------------------------------
@@ -237,10 +237,10 @@ function applyPatches(ctx: FloatContext): number {
   return result.status ?? 1;
 }
 
-function installGatewaySpec(ctx: FloatContext, spec: string, quiet = false): number {
+function installProxySpec(ctx: FloatContext, spec: string, quiet = false): number {
   const result = ctx.spawnRunner(
     ctx.bun,
-    ["add", `${GATEWAY_PKG}@${spec}`, "--no-save", "--ignore-scripts", "--minimum-release-age=0"],
+    ["add", `${PROXY_PKG}@${spec}`, "--no-save", "--ignore-scripts", "--minimum-release-age=0"],
     {
       cwd: ctx.root,
       stdio: ["ignore", process.stderr, quiet ? "pipe" : "inherit"],
@@ -257,78 +257,78 @@ function installGatewaySpec(ctx: FloatContext, spec: string, quiet = false): num
 }
 
 function handlePinnedOverride(ctx: FloatContext, override: string): void {
-  const installedBefore = installedGatewayVersion(ctx.root);
+  const installedBefore = installedProxyVersion(ctx.root);
   if (SEMVER_RE.test(override) && installedBefore === override) {
-    logger.success(`up to date: ${GATEWAY_PKG}@${override} pinned; no install`);
+    logger.success(`up to date: ${PROXY_PKG}@${override} pinned; no install`);
     return;
   }
 
-  logger.info(`installing pinned ${GATEWAY_PKG}@${override} (cooldown bypassed)`);
-  const code = installGatewaySpec(ctx, override);
+  logger.info(`installing pinned ${PROXY_PKG}@${override} (cooldown bypassed)`);
+  const code = installProxySpec(ctx, override);
   if (code !== 0 && installedBefore === null)
     throw new Error(
-      `failed to install ${GATEWAY_PKG}@${override} (pinned via ${GATEWAY_VERSION_ENV}); check the version/tag exists (offline?)`,
+      `failed to install ${PROXY_PKG}@${override} (pinned via ${PROXY_VERSION_ENV}); check the version/tag exists (offline?)`,
     );
 
   if (code === 0)
-    logger.success(`now using ${GATEWAY_PKG}@${installedGatewayVersion(ctx.root) ?? "unknown"}`);
-  else logger.warn(`pin failed for ${GATEWAY_PKG}@${override}; keeping installed version`);
+    logger.success(`now using ${PROXY_PKG}@${installedProxyVersion(ctx.root) ?? "unknown"}`);
+  else logger.warn(`pin failed for ${PROXY_PKG}@${override}; keeping installed version`);
 }
 
 function handleResolveFailure(ctx: FloatContext, message: string): void {
-  const installed = installedGatewayVersion(ctx.root);
-  if (gatewayVersionFloorStatus(installed, ctx.config).ok) {
-    logger.warn(`update check failed (${message}); keeping ${GATEWAY_PKG}@${installed}`);
+  const installed = installedProxyVersion(ctx.root);
+  if (proxyVersionFloorStatus(installed, ctx.config).ok) {
+    logger.warn(`update check failed (${message}); keeping ${PROXY_PKG}@${installed}`);
     return;
   }
 
   logger.warn(
-    `update check failed (${message}); installing floor ${GATEWAY_PKG}@${ctx.config.gatewayMinVersion}`,
+    `update check failed (${message}); installing floor ${PROXY_PKG}@${ctx.config.proxyMinVersion}`,
   );
-  const code = installGatewaySpec(ctx, ctx.config.gatewayMinVersion, true);
+  const code = installProxySpec(ctx, ctx.config.proxyMinVersion, true);
   if (code === 0) {
-    logger.success(`now using ${GATEWAY_PKG}@${installedGatewayVersion(ctx.root) ?? "unknown"}`);
+    logger.success(`now using ${PROXY_PKG}@${installedProxyVersion(ctx.root) ?? "unknown"}`);
     return;
   }
 
   throw new Error(
-    `could not install ${GATEWAY_PKG}@${ctx.config.gatewayMinVersion} (offline?); installed ${installed ?? "none"} < floor ${ctx.config.gatewayMinVersion}`,
+    `could not install ${PROXY_PKG}@${ctx.config.proxyMinVersion} (offline?); installed ${installed ?? "none"} < floor ${ctx.config.proxyMinVersion}`,
   );
 }
 
-function handleResolvedTarget(ctx: FloatContext, target: GatewayTarget): void {
-  const installed = installedGatewayVersion(ctx.root);
+function handleResolvedTarget(ctx: FloatContext, target: ProxyTarget): void {
+  const installed = installedProxyVersion(ctx.root);
   if (installed === target.version) {
-    logger.success(`up to date: ${GATEWAY_PKG}@${target.version} (${target.reason}); no install`);
+    logger.success(`up to date: ${PROXY_PKG}@${target.version} (${target.reason}); no install`);
     return;
   }
 
   logger.info(
-    `update needed: ${GATEWAY_PKG} ${installed ?? "none"} -> ${target.version} (${target.reason})`,
+    `update needed: ${PROXY_PKG} ${installed ?? "none"} -> ${target.version} (${target.reason})`,
   );
-  const code = installGatewaySpec(ctx, target.version);
+  const code = installProxySpec(ctx, target.version);
   if (code === 0) {
-    logger.success(`now using ${GATEWAY_PKG}@${installedGatewayVersion(ctx.root) ?? "unknown"}`);
+    logger.success(`now using ${PROXY_PKG}@${installedProxyVersion(ctx.root) ?? "unknown"}`);
     return;
   }
 
-  const installedAfterFailure = installedGatewayVersion(ctx.root);
-  if (!gatewayVersionFloorStatus(installedAfterFailure, ctx.config).ok) {
+  const installedAfterFailure = installedProxyVersion(ctx.root);
+  if (!proxyVersionFloorStatus(installedAfterFailure, ctx.config).ok) {
     throw new Error(
-      `could not install ${GATEWAY_PKG}@${target.version} (offline?); installed ${installedAfterFailure ?? "none"} < floor ${ctx.config.gatewayMinVersion}`,
+      `could not install ${PROXY_PKG}@${target.version} (offline?); installed ${installedAfterFailure ?? "none"} < floor ${ctx.config.proxyMinVersion}`,
     );
   }
-  logger.warn(`update failed; keeping ${GATEWAY_PKG}@${installedAfterFailure}`);
+  logger.warn(`update failed; keeping ${PROXY_PKG}@${installedAfterFailure}`);
 }
 
 // --- Public float / verify API -----------------------------------------------
 
 /**
- * Float the gateway, overlaying the runtime root's node_modules via `bun add
+ * Float the proxy, overlaying the runtime root's node_modules via `bun add
  * --no-save` so the read-only package.json / bun.lock are never written — only
- * the gateway moves; every other dep stays at its locked version.
+ * the proxy moves; every other dep stays at its locked version.
  */
-export function floatGateway(
+export function floatProxy(
   root: string,
   bun: string,
   config: ProjectConfig,
@@ -336,8 +336,8 @@ export function floatGateway(
   spawnRunner: SpawnSyncRunner = spawnSync,
   nowMs: number = Date.now(),
 ): void {
-  assertGatewayConfigBounds(config);
-  const override = process.env[GATEWAY_VERSION_ENV]?.trim();
+  assertProxyConfigBounds(config);
+  const override = process.env[PROXY_VERSION_ENV]?.trim();
 
   // An exact pin bypasses the cooldown entirely, so resolve the cooldown window
   // ONLY on the float path — a bad COPILOT_API_MIN_RELEASE_AGE must not block a pin.
@@ -359,22 +359,22 @@ export function floatGateway(
     nowMs,
   };
   const range =
-    config.gatewayMaxVersion === null
-      ? `>=${config.gatewayMinVersion}`
-      : `>=${config.gatewayMinVersion} <=${config.gatewayMaxVersion}`;
-  logger.info(`checking for gateway update (${range}, >=${formatReleaseAge(effectiveAge)})`);
-  const target = resolveGatewayTarget(ctx);
+    config.proxyMaxVersion === null
+      ? `>=${config.proxyMinVersion}`
+      : `>=${config.proxyMinVersion} <=${config.proxyMaxVersion}`;
+  logger.info(`checking for proxy update (${range}, >=${formatReleaseAge(effectiveAge)})`);
+  const target = resolveProxyTarget(ctx);
   if (target.ok) handleResolvedTarget(ctx, target.value);
   else handleResolveFailure(ctx, target.message);
 }
 
 /**
- * Read-only check for the bin shims (`gateway_float.ts --verify`). Normal floating
+ * Read-only check for the bin shims (`proxy_float.ts --verify`). Normal floating
  * reads npm publish-time metadata so newly cooldown-aged releases are adopted
  * immediately, but it skips `bun install` when the computed exact target is already
  * installed. An exact `COPILOT_API_VERSION` semver pin is a pure fs check.
  */
-export function gatewayFloatUpToDate(
+export function proxyFloatUpToDate(
   root: string,
   bun: string = process.execPath,
   config?: ProjectConfig,
@@ -382,18 +382,18 @@ export function gatewayFloatUpToDate(
   spawnRunner: SpawnSyncRunner = spawnSync,
   nowMs: number = Date.now(),
 ): boolean {
-  return gatewayFloatVerifyStatus(root, bun, config, minimumReleaseAgeSeconds, spawnRunner, nowMs)
+  return proxyFloatVerifyStatus(root, bun, config, minimumReleaseAgeSeconds, spawnRunner, nowMs)
     .upToDate;
 }
 
-export function gatewayFloatVerifyStatus(
+export function proxyFloatVerifyStatus(
   root: string,
   bun: string = process.execPath,
   config?: ProjectConfig,
   minimumReleaseAgeSeconds?: number,
   spawnRunner: SpawnSyncRunner = spawnSync,
   nowMs: number = Date.now(),
-): GatewayFloatVerifyStatus {
+): ProxyFloatVerifyStatus {
   if (!nodeModulesFresh(root)) {
     return {
       "upToDate": false,
@@ -401,23 +401,23 @@ export function gatewayFloatVerifyStatus(
     };
   }
 
-  const installed = installedGatewayVersion(root);
+  const installed = installedProxyVersion(root);
   if (installed === null) {
     return {
       "upToDate": false,
-      "message": `install needed: ${GATEWAY_PKG} is missing or unreadable`,
+      "message": `install needed: ${PROXY_PKG} is missing or unreadable`,
     };
   }
 
-  const override = process.env[GATEWAY_VERSION_ENV]?.trim();
+  const override = process.env[PROXY_VERSION_ENV]?.trim();
   if (override) return verifyPinnedOverride(installed, override);
 
   const effectiveConfig = config ?? readProjectConfig(root);
   const effectiveMinimumReleaseAgeSeconds =
     minimumReleaseAgeSeconds ?? resolveMinimumReleaseAgeSeconds(root);
-  assertGatewayConfigBounds(effectiveConfig);
+  assertProxyConfigBounds(effectiveConfig);
 
-  const target = resolveGatewayTarget({
+  const target = resolveProxyTarget({
     "root": root,
     "bun": bun,
     "config": effectiveConfig,
@@ -430,25 +430,25 @@ export function gatewayFloatVerifyStatus(
     : verifyResolveFailure(installed, effectiveConfig, target.message);
 }
 
-function verifyPinnedOverride(installed: string, override: string): GatewayFloatVerifyStatus {
+function verifyPinnedOverride(installed: string, override: string): ProxyFloatVerifyStatus {
   if (SEMVER_RE.test(override) && installed === override) {
-    return { "upToDate": true, "message": `up to date: ${GATEWAY_PKG}@${override} pinned` };
+    return { "upToDate": true, "message": `up to date: ${PROXY_PKG}@${override} pinned` };
   }
   return {
     "upToDate": false,
-    "message": `update needed: ${GATEWAY_VERSION_ENV}=${override}; installed ${installed}`,
+    "message": `update needed: ${PROXY_VERSION_ENV}=${override}; installed ${installed}`,
   };
 }
 
-function verifyResolvedTarget(installed: string, target: GatewayTarget): GatewayFloatVerifyStatus {
+function verifyResolvedTarget(installed: string, target: ProxyTarget): ProxyFloatVerifyStatus {
   return installed === target.version
     ? {
         "upToDate": true,
-        "message": `up to date: ${GATEWAY_PKG}@${target.version} (${target.reason})`,
+        "message": `up to date: ${PROXY_PKG}@${target.version} (${target.reason})`,
       }
     : {
         "upToDate": false,
-        "message": `update needed: ${GATEWAY_PKG} ${installed} -> ${target.version} (${target.reason})`,
+        "message": `update needed: ${PROXY_PKG} ${installed} -> ${target.version} (${target.reason})`,
       };
 }
 
@@ -456,16 +456,16 @@ function verifyResolveFailure(
   installed: string,
   config: ProjectConfig,
   message: string,
-): GatewayFloatVerifyStatus {
-  const status = gatewayVersionFloorStatus(installed, config);
+): ProxyFloatVerifyStatus {
+  const status = proxyVersionFloorStatus(installed, config);
   return !status.ok
     ? {
         "upToDate": false,
-        "message": `update needed: update check failed (${message}); installed ${installed} < floor ${config.gatewayMinVersion}`,
+        "message": `update needed: update check failed (${message}); installed ${installed} < floor ${config.proxyMinVersion}`,
       }
     : {
         "upToDate": true,
-        "message": `no update check: ${message}; keeping ${GATEWAY_PKG}@${installed}`,
+        "message": `no update check: ${message}; keeping ${PROXY_PKG}@${installed}`,
       };
 }
 
@@ -494,44 +494,44 @@ export function nodeModulesFresh(root: string): boolean {
 
 /**
  * CI/dev assertion after `bun install`: the postinstall float is best-effort, so
- * this makes the final installed gateway a hard check. It intentionally answers a
+ * this makes the final installed proxy a hard check. It intentionally answers a
  * different question than --verify: not "can bin/agent skip install?", but "did
  * install leave node_modules in a launchable state?".
  */
-export function gatewayInstallAssertStatus(
+export function proxyInstallAssertStatus(
   root: string,
   config: ProjectConfig,
-): GatewayInstallAssertStatus {
-  const status = gatewayVersionBoundsStatus(installedGatewayVersion(root), config);
+): ProxyInstallAssertStatus {
+  const status = proxyVersionBoundsStatus(installedProxyVersion(root), config);
   if (!status.ok && status.reason === "missing") {
     return {
       "ok": false,
       "message":
-        "gateway float did not install @jeffreycao/copilot-api (module resolution failed) — the `bun install` postinstall (src/gateway_float.ts) is broken.",
+        "proxy float did not install @jeffreycao/copilot-api (module resolution failed) — the `bun install` postinstall (src/proxy_float.ts) is broken.",
     };
   }
 
   if (!status.ok && status.reason === "belowFloor") {
     return {
       "ok": false,
-      "message": `installed @jeffreycao/copilot-api ${status.version} is below the ${status.floor} floor — the postinstall gateway float failed to reach the floor.`,
+      "message": `installed @jeffreycao/copilot-api ${status.version} is below the ${status.floor} floor — the postinstall proxy float failed to reach the floor.`,
     };
   }
 
   if (!status.ok && status.reason === "aboveCeiling") {
     return {
       "ok": false,
-      "message": `installed @jeffreycao/copilot-api ${status.version} is above the ${status.ceiling} ceiling — the postinstall gateway float overshot GATEWAY_MAX_VERSION.`,
+      "message": `installed @jeffreycao/copilot-api ${status.version} is above the ${status.ceiling} ceiling — the postinstall proxy float overshot PROXY_MAX_VERSION.`,
     };
   }
 
   const window =
-    config.gatewayMaxVersion === null
-      ? `>= ${config.gatewayMinVersion} floor`
-      : `within [${config.gatewayMinVersion}, ${config.gatewayMaxVersion}]`;
+    config.proxyMaxVersion === null
+      ? `>= ${config.proxyMinVersion} floor`
+      : `within [${config.proxyMinVersion}, ${config.proxyMaxVersion}]`;
   return {
     "ok": true,
-    "message": `gateway float OK: @jeffreycao/copilot-api ${status.version} (${window})`,
+    "message": `proxy float OK: @jeffreycao/copilot-api ${status.version} (${window})`,
   };
 }
 
@@ -545,13 +545,13 @@ function main(): void {
     args.length > 1 ||
     (args[0] !== undefined && !["--verify", "--assert-installed"].includes(args[0]))
   ) {
-    logger.error("usage: bun src/gateway_float.ts [--verify | --assert-installed]");
+    logger.error("usage: bun src/proxy_float.ts [--verify | --assert-installed]");
     process.exit(2);
   }
 
   if (args[0] === "--assert-installed") {
     try {
-      const status = gatewayInstallAssertStatus(root, readProjectConfig(root));
+      const status = proxyInstallAssertStatus(root, readProjectConfig(root));
       if (status.ok) {
         console.log(status.message);
       } else {
@@ -567,10 +567,10 @@ function main(): void {
   if (args[0] === "--verify") {
     try {
       const config = readProjectConfig(root);
-      // Don't pre-resolve the cooldown: gatewayFloatVerifyStatus resolves it
+      // Don't pre-resolve the cooldown: proxyFloatVerifyStatus resolves it
       // internally AFTER its pin check, so a COPILOT_API_VERSION pin (which
       // bypasses the cooldown) isn't blocked by a bad COPILOT_API_MIN_RELEASE_AGE.
-      const status = gatewayFloatVerifyStatus(root, process.execPath, config);
+      const status = proxyFloatVerifyStatus(root, process.execPath, config);
       status.upToDate ? logger.success(status.message) : logger.info(status.message);
       process.exit(status.upToDate ? 0 : 1);
     } catch (error) {
@@ -583,9 +583,9 @@ function main(): void {
 
   try {
     const config = readProjectConfig(root);
-    floatGateway(root, process.execPath, config);
+    floatProxy(root, process.execPath, config);
   } catch (error) {
-    logger.warn(`gateway float skipped: ${error instanceof Error ? error.message : String(error)}`);
+    logger.warn(`proxy float skipped: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 

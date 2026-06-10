@@ -3,14 +3,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { getSanitizedHostname } from "../utils/hostname.ts";
 
-// Mirror the gateway's own default (`@jeffreycao/copilot-api` lib/paths.ts):
+// Mirror the proxy's own default (`@jeffreycao/copilot-api` lib/paths.ts):
 //   path.join(os.homedir(), ".local", "share", "copilot-api")
 // applied on every platform. Must stay byte-for-byte compatible so the wrapper
 // reads the same config/run dir the daemon writes — do NOT swap in a native
 // %LOCALAPPDATA% location on Windows, that would diverge from the daemon.
 export const DEFAULT_HOME: string = join(homedir(), ".local", "share", "copilot-api");
 
-/** Per-host runtime file paths for the copilot-api gateway. */
+/** Per-host runtime file paths for the copilot-api proxy. */
 export class CopilotApiPaths {
   home: string;
   configFile: string;

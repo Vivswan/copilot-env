@@ -312,6 +312,13 @@ export async function gatherFacts(
   const port = Number(deps.resolvePort());
   const facts: HealthFacts = {};
 
+  // gh auth backs BOTH Codex and Claude direct mode; probe it at most once per
+  // run. codexDirectAuth is a blocking spawnSync, so calling it from both the
+  // codex and claude jobs on `--scope full` would serialize into two ~5s gh
+  // spawns and trip the health timeout.
+  let directAuthCache: CodexDirectAuthFacts | undefined;
+  const sharedDirectAuth = (): CodexDirectAuthFacts => (directAuthCache ??= deps.codexDirectAuth());
+
   const jobs: Promise<void>[] = [];
 
   if (SCOPE_RUNTIME.includes(scope)) {
@@ -384,7 +391,7 @@ export async function gatherFacts(
           envText,
           port,
           deps.codexTokenInEnviron(),
-          deps.codexDirectAuth(),
+          sharedDirectAuth(),
         );
       })(),
     );
@@ -396,7 +403,7 @@ export async function gatherFacts(
         const home = deps.claudeHome();
         const settingsText = deps.readFileSafe(join(home, "settings.json"));
         // Direct mode authenticates via `gh auth token`, same probe as Codex.
-        facts.claude = evalClaude(home, settingsText, deps.codexDirectAuth());
+        facts.claude = evalClaude(home, settingsText, sharedDirectAuth());
       })(),
     );
   }

@@ -97,6 +97,8 @@ function printGuidance(codex: CodexProviderMode, claude: ClaudeProviderMode): vo
     lines.push("  • Just run `claude` and `codex` directly (no `agent start` / `agent stop`).");
     lines.push("  • Optional launchers cl / co / cx:   agent setup-launchers");
     lines.push("  • Direct usage is NOT tracked by `agent cost` (only gateway usage is).");
+    lines.push("  • Heads up: model discovery/aliases come from the gateway, so in Direct");
+    lines.push("    mode some model names may not resolve — use the provider's exact ids.");
     lines.push("  • Prefer the local gateway instead?  agent init --proxy");
   } else {
     // No proxy and not both-direct: a mixed/partial result (e.g. one direct, the
@@ -105,6 +107,8 @@ function printGuidance(codex: CodexProviderMode, claude: ClaudeProviderMode): vo
     lines.push("");
     if (codex === "direct" || claude === "direct") {
       lines.push("  • The Direct agent needs no gateway — run it directly.");
+      lines.push("  • Heads up: in Direct mode model discovery/aliases (from the gateway)");
+      lines.push("    may not resolve — use the provider's exact model ids.");
     }
     lines.push("  • For anything not configured, re-run `agent init` or see `agent health`.");
   }

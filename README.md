@@ -62,7 +62,7 @@ Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, the
 ## Usage
 
 ```bash
-agent init                 # set up BOTH Codex + Claude (auto-detect direct vs the gateway); --direct / --proxy to force
+agent init                 # set up BOTH Codex + Claude (auto-detect direct vs the gateway) + next-step guidance
 agent start                # launch the daemon and sync aliases (--dry-run to preview, --port to pin)
 agent stop                 # stop the daemon
 agent health               # full environment diagnosis (--scope runtime|gateway|setup|codex|claude, --json, --live)
@@ -72,11 +72,11 @@ agent update               # update to the latest release (--check / --cooldown)
 agent setup-shell          # (re)wire rc / $PROFILE (--remove to unwire)
 agent setup-launchers      # wire/remove opt-in cl / co / cx launchers
 agent setup-clis           # install optional CLIs + auto-detect each backend (--cooldown[=DAYS], --no-sudo, --launchers)
-agent codex                # configure Codex; --direct / --proxy force, --auto auto-detects, --check reports
+agent codex                # configure Codex; --auto auto-detects the backend, --check reports it
 agent codex --auto         # probe GitHub Copilot Direct; fall back to the local gateway proxy
 agent codex --check        # print provider mode; exits 0 direct, 2 proxy, 1 other
 agent codex --host         # per-host CODEX_HOME symlink farm (Linux/macOS); --delete-host to remove
-agent claude               # configure Claude; --direct / --proxy force, --auto auto-detects, --check reports
+agent claude               # configure Claude; --auto auto-detects the backend, --check reports it
 agent claude --auto        # probe GitHub Copilot Direct for Claude; fall back to the local gateway proxy
 agent claude --check       # print Claude provider mode; exits 0 direct, 2 proxy, 1 other
 ```

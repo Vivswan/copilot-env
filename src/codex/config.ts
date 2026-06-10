@@ -361,6 +361,10 @@ export function configureCodexConfig(
 ): number {
   const home = process.env.HOME || homedir();
   codexHome = codexHome || process.env.CODEX_HOME || `${home}/.codex`;
+  // Low-level writer: absence of `proxy` means write a Direct config. The
+  // never-silent-Direct guarantee lives UPSTREAM at resolveDirect() — callers
+  // must pass an already-resolved mode (an explicit flag or a passing probe);
+  // the only intentional bare-Direct use is the throwaway probe config itself.
   const mode: ManagedCodexProviderMode = options.proxy ? "proxy" : "direct";
   const proxyOptions = mode === "proxy" ? validateProxyOptions(options) : null;
   if (mode === "proxy" && proxyOptions === null) return 1;
@@ -416,6 +420,8 @@ export function applyCodexConfig(
   codexHome: string,
   args: Pick<CodexConfigArgs, "proxy"> = {},
 ): void {
+  // Caller passes an already-resolved mode; bare {} => Direct (see
+  // configureCodexConfig). The never-silent-Direct guarantee is upstream at resolveDirect().
   const mode: ManagedCodexProviderMode = args.proxy ? "proxy" : "direct";
   let options: ConfigureCodexConfigOptions = {};
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.1](https://github.com/Vivswan/copilot-env/compare/v3.3.0...v3.3.1) (2026-06-10)
+
+
+### Bug Fixes
+
+* **codex:** sync the desktop app's image_generation gate with the mode ([d1f6a8c](https://github.com/Vivswan/copilot-env/commit/d1f6a8c5f339f1fa7d7f918f32b5ad971e827b0e))
+
 ## [3.3.0](https://github.com/Vivswan/copilot-env/compare/v3.2.0...v3.3.0) (2026-06-10)
 
 

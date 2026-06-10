@@ -1,0 +1,66 @@
+name: Assign PR
+
+# Reusable: assign + request the code owner on a specific PR by number. Bot-opened
+# PRs (e.g. the release-please release PR, opened by GITHUB_TOKEN) never fire
+# auto-assign's `on: pull_request` trigger (a recursion guard), so they must be
+# driven explicitly here. Calling a reusable workflow runs in the SAME run, so
+# that guard does not block these API calls.
+#
+# Kept SEPARATE from auto-assign.yml on purpose: a reusable call is statically
+# validated against the permissions of EVERY job in the called file, regardless
+# of each job's `if:`. auto-assign.yml's code-scanning job needs
+# `security-events: write`, so a caller that only grants issues/pull-requests
+# write (as the release flow does) cannot call that file. This file requests only
+# what PR assignment needs.
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: PR number to assign and request the code owner on.
+        required: true
+        type: string
+
+jobs:
+  # Idempotent -- safe to re-run on every caller invocation (e.g. each push that
+  # updates a rolling release PR): it skips an already-set assignee and won't
+  # re-request a reviewer who is already requested or has reviewed.
+  assign:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Assign PR and request code owner review
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = Number('${{ inputs.pr_number }}');
+            const { data: pr } = await github.rest.pulls.get({
+              owner, repo, pull_number: prNumber,
+            });
+
+            if (!(pr.assignees || []).some((a) => a.login === owner)) {
+              await github.rest.issues.addAssignees({
+                owner, repo, issue_number: prNumber, assignees: [owner],
+              });
+              core.info(`assigned PR #${prNumber} to ${owner}`);
+            }
+
+            // GitHub rejects a self-review request (422). The release PR is
+            // bot-authored, so the owner is a valid reviewer -- but guard anyway,
+            // and skip if already requested or already reviewed (idempotent).
+            const alreadyRequested = (pr.requested_reviewers || []).some(
+              (r) => r.login === owner,
+            );
+            const { data: reviews } = await github.rest.pulls.listReviews({
+              owner, repo, pull_number: prNumber,
+            });
+            const alreadyReviewed = reviews.some((r) => r.user && r.user.login === owner);
+            if (pr.user.login !== owner && !alreadyRequested && !alreadyReviewed) {
+              await github.rest.pulls.requestReviewers({
+                owner, repo, pull_number: prNumber, reviewers: [owner],
+              });
+              core.info(`requested review from ${owner} on PR #${prNumber}`);
+            }

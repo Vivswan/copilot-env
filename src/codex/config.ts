@@ -26,7 +26,7 @@ const logger = createStderrLogger();
 // provider contract used by the gateway health inspector. OPENAI_API_KEY is the
 // same OpenAI-wire name `env.ts` already exports, so the single gateway token
 // has ONE name across the shell exports and the Codex `.env`.
-const DIRECT_PROVIDER_ID = "github-copilot-direct";
+export const DIRECT_PROVIDER_ID = "github-copilot-direct";
 const DIRECT_BASE_URL = "https://api.githubcopilot.com";
 export const CODEX_PROVIDER_ID = "copilot-env";
 export const CODEX_ENV_KEY = "OPENAI_API_KEY";
@@ -390,7 +390,19 @@ export function configureCodexConfig(
   // unknown top-level keys are left untouched.
   const providerId = providerIdForMode(mode);
   doc.model_provider = providerId;
-  if (mode === "direct") doc.web_search = "live";
+  if (mode === "direct") {
+    doc.web_search = "live";
+    // Direct (GitHub Copilot) doesn't serve image generation; disable the feature
+    // so the app doesn't offer it. Merge so other [features] keys are preserved.
+    const features = isRecord(doc.features) ? doc.features : {};
+    features.image_generation = false;
+    doc.features = features;
+  } else if (isRecord(doc.features)) {
+    // Proxy: image generation works via the gateway, so drop the direct-only
+    // disable (and the whole [features] table if it has nothing else).
+    delete doc.features.image_generation;
+    if (Object.keys(doc.features).length === 0) delete doc.features;
+  }
 
   const providers = isRecord(doc.model_providers) ? doc.model_providers : {};
   const existing = isRecord(providers[providerId]) ? providers[providerId] : {};
@@ -447,7 +459,7 @@ export function applyCodexConfig(
   }
 }
 
-function effectiveCodexHome(args: Pick<CodexConfigArgs, "codex-home">): string {
+export function effectiveCodexHome(args: Pick<CodexConfigArgs, "codex-home">): string {
   return (
     args["codex-home"] ??
     new CopilotApiState().read().codexHome ??

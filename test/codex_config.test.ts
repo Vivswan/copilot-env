@@ -78,6 +78,8 @@ test("enforces every managed field while preserving unknown user keys", () => {
   expect(asRecord(doc.my_custom).keep).toBe("me");
   expect(doc.model_provider).toBe("github-copilot-direct");
   expect(doc.web_search).toBe("live");
+  // Direct disables image generation via a top-level [features] table.
+  expect(asRecord(doc.features).image_generation).toBe(false);
 
   const provider = asRecord(asRecord(doc.model_providers)["github-copilot-direct"]);
   expect(provider.name).toBe("GitHub Copilot Direct");
@@ -247,6 +249,7 @@ test("writes the managed direct default config when no provider section exists",
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("github-copilot-direct");
   expect(doc.web_search).toBe("live");
+  expect(asRecord(doc.features).image_generation).toBe(false);
   const provider = asRecord(asRecord(doc.model_providers)["github-copilot-direct"]);
   expect(provider.base_url).toBe("https://api.githubcopilot.com");
   expect(existsSync(join(codexHome, ".env"))).toBe(false);

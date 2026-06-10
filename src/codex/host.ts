@@ -7,6 +7,7 @@ import { CopilotApiState } from "../copilot_api/state.ts";
 import { assertSingleMode, resolveDirect } from "../utils/direct_probe.ts";
 import { getSanitizedHostname, HOME } from "../utils/hostname.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { syncCodexAppImageGeneration } from "./app_patch.ts";
 import { applyCodexConfig, detectCodexDirect } from "./config.ts";
 
 const logger = createStderrLogger();
@@ -515,7 +516,7 @@ function buildCodexSymlinkFarm(codexHome: string): number {
  * (direct when a live Copilot Direct probe succeeds, else proxy). With
  * `--delete-host`, remove that per-host dir and clear the state instead. No stdout.
  */
-export function runCodexHost(args: CodexHostArgs): void {
+export async function runCodexHost(args: CodexHostArgs): Promise<void> {
   if (!assertUnix("The CODEX_HOME symlink farm (host_codex)")) return;
   // Resolve to an absolute path: it gets persisted to state and re-exported into
   // future shells, so a cwd-relative value would later resolve against the wrong
@@ -545,4 +546,6 @@ export function runCodexHost(args: CodexHostArgs): void {
   applyCodexConfig(codexHome, { proxy: !direct });
   // Persist the active CODEX_HOME (opt-in: only set because a codex command ran).
   state.set({ codexHome });
+  // Keep the Codex desktop app's image_generation gate in sync (best-effort).
+  await syncCodexAppImageGeneration(direct);
 }

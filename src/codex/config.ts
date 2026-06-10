@@ -19,6 +19,7 @@ import {
 } from "../utils/direct_probe.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { syncCodexAppImageGeneration } from "./app_patch.ts";
 
 const logger = createStderrLogger();
 
@@ -558,7 +559,7 @@ export function detectCodexDirect(deps?: DirectProbeDeps): boolean {
  * proxy|none / 1 other) without a probe. Does NOT touch `state.codexHome` (only
  * `--host` sets/clears that).
  */
-export function runCodex(args: CodexConfigArgs): void {
+export async function runCodex(args: CodexConfigArgs): Promise<void> {
   assertSingleMode(args);
   if (args.check) {
     checkCodexConfig(args);
@@ -569,6 +570,9 @@ export function runCodex(args: CodexConfigArgs): void {
     `  Configuring Codex for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} …`,
   );
   applyCodexConfig(effectiveCodexHome(args), { proxy: !direct });
+  // Keep the Codex desktop app's image_generation gate in sync with the mode
+  // (best-effort, macOS/Windows; never breaks the config write above).
+  await syncCodexAppImageGeneration(direct);
 }
 
 /** The configured Codex provider mode at the effective CODEX_HOME (read-only). */

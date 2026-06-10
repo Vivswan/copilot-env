@@ -44,14 +44,14 @@ function safeMode<T>(read: () => T, fallback: T): T {
  * still runs), and report the resulting modes. Each agent's narration is grouped
  * under a header with blank-line spacing. Shared by `agent init` and `setup-clis`.
  */
-export function configureBothAgents(flags: BothFlags): {
+export async function configureBothAgents(flags: BothFlags): Promise<{
   codex: CodexProviderMode;
   claude: ClaudeProviderMode;
-} {
+}> {
   logger.log("");
   logger.log(bold("▸ Codex"));
   try {
-    runCodex(flags);
+    await runCodex(flags);
   } catch (e) {
     logger.warn(`  Could not configure Codex: ${errMessage(e)}`);
   }
@@ -145,10 +145,10 @@ function printGuidance(codex: CodexProviderMode, claude: ClaudeProviderMode): vo
  * force both; with no flag each auto-detects (live Copilot Direct probe, else
  * the proxy). `--direct` and `--proxy` are mutually exclusive.
  */
-export function runInit(args: InitArgs): void {
+export async function runInit(args: InitArgs): Promise<void> {
   if (args.direct && args.proxy) {
     throw new Error("--direct and --proxy are mutually exclusive");
   }
-  const { codex, claude } = configureBothAgents({ direct: args.direct, proxy: args.proxy });
+  const { codex, claude } = await configureBothAgents({ direct: args.direct, proxy: args.proxy });
   printGuidance(codex, claude);
 }

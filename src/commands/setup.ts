@@ -267,11 +267,11 @@ function installCli(cli: (typeof AGENT_CLIS)[number], options: NormalizedSetupCl
  * config (Direct when a live probe succeeds, else the proxy), then point the
  * user at `agent init` to review / change it. Best-effort per agent.
  */
-function autoConfigureAgents(): void {
+async function autoConfigureAgents(): Promise<void> {
   consola.info(
     "Auto-detecting Codex/Claude backend (GitHub Copilot Direct vs. the local proxy) ...",
   );
-  const { codex, claude } = configureBothAgents({});
+  const { codex, claude } = await configureBothAgents({});
   const describeMode = (mode: string): string =>
     mode === "direct" ? "GitHub Copilot Direct" : mode === "proxy" ? "the proxy" : mode;
   consola.info(`Codex  → ${describeMode(codex)}`);
@@ -279,7 +279,7 @@ function autoConfigureAgents(): void {
   consola.info("Run `agent init` any time to re-detect, or `agent init --direct` / `--proxy`.");
 }
 
-export function runSetupClis(args: SetupClisArgs): void {
+export async function runSetupClis(args: SetupClisArgs): Promise<void> {
   const options = normalizeSetupClisOptions(args);
   if (options.noPrereqs) {
     warnMissing(process.platform === "win32" ? "npm.cmd" : "node", "Node.js");
@@ -298,7 +298,7 @@ export function runSetupClis(args: SetupClisArgs): void {
   syncNpmGlobalBinToPath();
   for (const cli of AGENT_CLIS) installCli(cli, options);
   syncNpmGlobalBinToPath();
-  autoConfigureAgents();
+  await autoConfigureAgents();
   if (options.launchers) runSetupLaunchers({ "all-hosts": args["all-hosts"] });
 }
 

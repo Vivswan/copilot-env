@@ -10,3 +10,8 @@
 
 [install]
 minimumReleaseAge = 604800  # 7 days, in seconds
+
+# Global test preload: hard-disables the Codex desktop-app patch so the suite never
+# modifies a real installed /Applications/Codex.app (see test/setup.ts).
+[test]
+preload = ["./test/setup.ts"]

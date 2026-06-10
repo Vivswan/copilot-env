@@ -260,7 +260,7 @@ test("formats Codex user-agent with dynamic version fallback", () => {
   expect(codexUserAgent(null)).toBe("codex_exec");
 });
 
-test("runCodex --proxy writes the proxy provider at CODEX_HOME", () => {
+test("runCodex --proxy writes the proxy provider at CODEX_HOME", async () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
   process.env.HOME = dir;
   process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
@@ -279,7 +279,7 @@ test("runCodex --proxy writes the proxy provider at CODEX_HOME", () => {
     ].join("\n"),
   );
 
-  runCodex({ proxy: true });
+  await runCodex({ proxy: true });
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
@@ -288,7 +288,7 @@ test("runCodex --proxy writes the proxy provider at CODEX_HOME", () => {
   expect(readFileSync(join(codexHome, ".env"), "utf8")).toContain("OPENAI_API_KEY=");
 });
 
-test("runCodex --proxy and --direct force the selected provider (no probe)", () => {
+test("runCodex --proxy and --direct force the selected provider (no probe)", async () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
   process.env.HOME = dir;
   process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
@@ -306,21 +306,21 @@ test("runCodex --proxy and --direct force the selected provider (no probe)", () 
     ].join("\n"),
   );
 
-  runCodex({ proxy: true });
+  await runCodex({ proxy: true });
   let doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
   expect(asRecord(asRecord(doc.model_providers)["copilot-env"]).base_url).toBe(
     "http://localhost:4141/v1",
   );
 
-  runCodex({ direct: true });
+  await runCodex({ direct: true });
   doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("github-copilot-direct");
   expect(asRecord(asRecord(doc.model_providers)["github-copilot-direct"]).base_url).toBe(
     "https://api.githubcopilot.com",
   );
 
-  expect(() => runCodex({ proxy: true, direct: true })).toThrow(
+  await expect(runCodex({ proxy: true, direct: true })).rejects.toThrow(
     "--direct, --proxy, and --auto are mutually exclusive",
   );
 });

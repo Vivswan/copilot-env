@@ -10,6 +10,11 @@ import { getSanitizedHostname } from "../utils/hostname.ts";
 // %LOCALAPPDATA% location on Windows, that would diverge from the daemon.
 export const DEFAULT_HOME: string = join(homedir(), ".local", "share", "copilot-api");
 
+/** The effective copilot-api home: `$COPILOT_API_HOME` or the default data dir. */
+export function resolveHome(): string {
+  return process.env.COPILOT_API_HOME || DEFAULT_HOME;
+}
+
 /** Per-host runtime file paths for the copilot-api proxy. */
 export class CopilotApiPaths {
   home: string;
@@ -20,7 +25,7 @@ export class CopilotApiPaths {
   sqliteDb: string;
 
   constructor() {
-    this.home = process.env.COPILOT_API_HOME || DEFAULT_HOME;
+    this.home = resolveHome();
     const hostname = getSanitizedHostname();
     const runDir = join(this.home, ".run", hostname);
     this.configFile = join(this.home, "config.json");

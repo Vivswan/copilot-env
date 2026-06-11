@@ -5,7 +5,7 @@ import { pickAgedVersion } from "../utils/aged_version.ts";
 import { commandExists, resolveCommand } from "../utils/command.ts";
 import { resolveGhToken } from "../utils/direct_probe.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
-import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
+import { assertNonNegativeDays, MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { configureBothAgents } from "./init.ts";
 import { runShellIntegration } from "./shell_integration.ts";
 
@@ -65,9 +65,7 @@ export function normalizeSetupClisOptions(args: SetupClisArgs): NormalizedSetupC
   }
 
   const cooldown = args.cooldown ?? null;
-  if (cooldown !== null && (!Number.isInteger(cooldown) || cooldown < 0)) {
-    throw new Error(`--cooldown expects a non-negative whole number of days (got '${cooldown}')`);
-  }
+  assertNonNegativeDays(cooldown);
   // Validate the token up front so a bad/absent value fails before any install.
   resolveGhToken(args["gh-token"]);
 

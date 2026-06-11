@@ -256,6 +256,11 @@ function installProxySpec(ctx: FloatContext, spec: string, quiet = false): numbe
   return status === 0 ? applyPatches(ctx) : status;
 }
 
+/** Log the proxy version now on disk after a (re)install. */
+function logNowUsing(ctx: FloatContext): void {
+  logger.success(`now using ${PROXY_PKG}@${installedProxyVersion(ctx.root) ?? "unknown"}`);
+}
+
 function handlePinnedOverride(ctx: FloatContext, override: string): void {
   const installedBefore = installedProxyVersion(ctx.root);
   if (SEMVER_RE.test(override) && installedBefore === override) {
@@ -270,8 +275,7 @@ function handlePinnedOverride(ctx: FloatContext, override: string): void {
       `failed to install ${PROXY_PKG}@${override} (pinned via ${PROXY_VERSION_ENV}); check the version/tag exists (offline?)`,
     );
 
-  if (code === 0)
-    logger.success(`now using ${PROXY_PKG}@${installedProxyVersion(ctx.root) ?? "unknown"}`);
+  if (code === 0) logNowUsing(ctx);
   else logger.warn(`pin failed for ${PROXY_PKG}@${override}; keeping installed version`);
 }
 
@@ -287,7 +291,7 @@ function handleResolveFailure(ctx: FloatContext, message: string): void {
   );
   const code = installProxySpec(ctx, ctx.config.proxyMinVersion, true);
   if (code === 0) {
-    logger.success(`now using ${PROXY_PKG}@${installedProxyVersion(ctx.root) ?? "unknown"}`);
+    logNowUsing(ctx);
     return;
   }
 
@@ -308,7 +312,7 @@ function handleResolvedTarget(ctx: FloatContext, target: ProxyTarget): void {
   );
   const code = installProxySpec(ctx, target.version);
   if (code === 0) {
-    logger.success(`now using ${PROXY_PKG}@${installedProxyVersion(ctx.root) ?? "unknown"}`);
+    logNowUsing(ctx);
     return;
   }
 

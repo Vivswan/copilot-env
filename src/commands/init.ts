@@ -11,6 +11,7 @@ import { type CodexProviderMode, effectiveCodexProviderMode, runCodex } from "..
 import { CopilotApiState } from "../copilot_api/state.ts";
 import { bold } from "../utils/ansi.ts";
 import { resolveGhToken } from "../utils/direct_probe.ts";
+import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 
 // All init output goes to stderr (one logger) so it interleaves deterministically
@@ -31,10 +32,6 @@ interface BothFlags {
   direct?: boolean;
   proxy?: boolean;
   "gh-token"?: string | boolean;
-}
-
-function errMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }
 
 /** Read a provider mode, treating any read error as "other" (never throws). */

@@ -10,6 +10,20 @@ export type HealthScope = "full" | "runtime" | "proxy" | "setup" | "codex" | "cl
 /** Declaration order doubles as the help/text-report ordering for scopes. */
 export const HEALTH_SCOPES = ["full", "runtime", "proxy", "setup", "codex", "claude"] as const;
 
+// Scope membership per check/fact: the scopes each participates in. SINGLE SOURCE
+// shared by the fact-gatherer (probe.ts, which gates which facts to collect) and
+// the check evaluator (checks.ts, which stamps CheckResult.scopes) — the two must
+// stay in lockstep, so the sets live here rather than as two hand-synced copies.
+// Every set includes "full".
+export const RUNTIME_SCOPES: readonly HealthScope[] = ["full", "proxy", "runtime"];
+export const BOOTSTRAP_SCOPES: readonly HealthScope[] = ["full", "proxy"];
+export const SETUP_SCOPES: readonly HealthScope[] = ["full", "setup"];
+export const CODEX_SCOPES: readonly HealthScope[] = ["full", "setup", "codex"];
+export const CLAUDE_SCOPES: readonly HealthScope[] = ["full", "setup", "claude"];
+// `--live` end-to-end prompts run only in the agent-focused scopes (never setup).
+export const CODEX_LIVE_SCOPES: readonly HealthScope[] = ["full", "codex"];
+export const CLAUDE_LIVE_SCOPES: readonly HealthScope[] = ["full", "claude"];
+
 /** Section a check renders under (fixed render order lives in report.ts). */
 export type CheckGroup = "bootstrap" | "proxy" | "runtime" | "setup" | "codex" | "claude";
 

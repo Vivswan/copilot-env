@@ -134,7 +134,7 @@ export function resolvePricingId(model: string, catalogIds: Set<string>): string
 
 /** Price an aggregated usage map; unpriceable models are excluded from the total. */
 export function estimateCost(
-  usageByModel: Map<string, UsageTokens>,
+  usageByModel: ReadonlyMap<string, UsageTokens>,
   pricing: Map<string, PricingTier>,
 ): CostEstimate {
   const catalogIds = new Set(pricing.keys());

@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { consola } from "consola";
 
-import { DEFAULT_HOME } from "../copilot_api/paths.ts";
+import { resolveHome } from "../copilot_api/paths.ts";
 
 const DB_FILENAME = "copilot-api.sqlite";
 
@@ -52,16 +52,11 @@ export interface UsageReport {
   activeDays: number;
 }
 
-/** Default config home, matching `CopilotApiPaths`. */
-function defaultHome(): string {
-  return process.env.COPILOT_API_HOME || DEFAULT_HOME;
-}
-
 /**
  * Locate every usage DB under `home`: the legacy top-level file plus one per
  * host directory under `.run/`. Only paths that exist on disk are returned.
  */
-export function discoverUsageDbs(home: string = defaultHome()): string[] {
+export function discoverUsageDbs(home: string = resolveHome()): string[] {
   const paths: string[] = [];
 
   const legacy = join(home, DB_FILENAME);

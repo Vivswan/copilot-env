@@ -7,9 +7,10 @@ import { join } from "node:path";
 
 import { applyUpdate } from "../commands/apply_update.ts";
 import { resolveTarget } from "../install/resolve-release.ts";
+import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
-import { stripV, versionLessThan } from "../utils/semver.ts";
+import { isUpToDate } from "../utils/semver.ts";
 import { packageVersion } from "../utils/version.ts";
 import { isDue } from "./due.ts";
 import { acquireLock, releaseLock } from "./lock.ts";
@@ -23,10 +24,6 @@ export interface PreflightOptions {
   force?: boolean;
   /** Injectable for tests; defaults to the real on-disk state. */
   state?: AutoupdateState;
-}
-
-function errMessage(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }
 
 /** Run the autoupdate check (and apply) if enabled and due. Non-throwing. */
@@ -69,7 +66,7 @@ async function checkAndApply(
     return;
   }
 
-  if (!versionLessThan(stripV(current), stripV(target.tag))) {
+  if (isUpToDate(current, target.tag)) {
     state.set({ lastCheckMs: nowMs, lastResult: "up to date" });
     return;
   }

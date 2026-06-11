@@ -11,6 +11,7 @@ import type {
   BootstrapFacts,
   ClaudeFacts,
   CliFacts,
+  CodexDirectAuthFacts,
   CodexFacts,
   CodexHostFacts,
   HealthFacts,
@@ -20,12 +21,36 @@ import type {
   ShellFacts,
 } from "./probe.ts";
 import type { CheckResult, HealthScope } from "./types.ts";
+import {
+  BOOTSTRAP_SCOPES as BOOTSTRAP,
+  CLAUDE_SCOPES as CLAUDE,
+  CODEX_SCOPES as CODEX,
+  RUNTIME_SCOPES as RUNTIME,
+  SETUP_SCOPES as SETUP,
+} from "./types.ts";
 
-const RUNTIME: readonly HealthScope[] = ["full", "proxy", "runtime"];
-const BOOTSTRAP: readonly HealthScope[] = ["full", "proxy"];
-const SETUP: readonly HealthScope[] = ["full", "setup"];
-const CODEX: readonly HealthScope[] = ["full", "setup", "codex"];
-const CLAUDE: readonly HealthScope[] = ["full", "setup", "claude"];
+/**
+ * The gh-auth status shared by Codex and Claude Direct (gh-backed) checks: both
+ * mint the bearer via `gh auth token`. Returns whether it's usable, a one-line
+ * detail, and the gh-specific fix. Callers wrap `ghFix` in their own fix
+ * selection (e.g. a base-URL/provider fix takes precedence).
+ */
+function describeDirectGhAuth(a: CodexDirectAuthFacts): {
+  ok: boolean;
+  detail: string;
+  ghFix: string;
+} {
+  return {
+    ok: a.command !== null && a.authenticated,
+    detail:
+      a.command === null
+        ? "gh auth: GitHub CLI not found"
+        : a.authenticated
+          ? `gh auth: authenticated via ${a.command}`
+          : `gh auth: ${a.command} is not authenticated`,
+    ghFix: a.command === null ? "install gh and run gh auth login" : "gh auth login",
+  };
+}
 
 export function checkCliVersion(f: BootstrapFacts): CheckResult {
   return {
@@ -306,16 +331,8 @@ export function checkCodex(f: CodexFacts): CheckResult {
         ...(status === "ok" ? {} : { fix: "agent codex --gh-token" }),
       };
     }
-    const authOk = f.directAuth.command !== null && f.directAuth.authenticated;
+    const { ok: authOk, detail: authDetail, ghFix } = describeDirectGhAuth(f.directAuth);
     const status = f.providerWired && authOk ? "ok" : "warn";
-    const authDetail =
-      f.directAuth.command === null
-        ? "gh auth: GitHub CLI not found"
-        : f.directAuth.authenticated
-          ? `gh auth: authenticated via ${f.directAuth.command}`
-          : `gh auth: ${f.directAuth.command} is not authenticated`;
-    const fix =
-      f.directAuth.command === null ? "install gh and run gh auth login" : "gh auth login";
     return {
       ...base,
       status,
@@ -325,7 +342,7 @@ export function checkCodex(f: CodexFacts): CheckResult {
         `model_provider github-copilot-direct → ${f.baseUrl ?? "(missing)"}`,
         authDetail,
       ].join("\n"),
-      ...(status === "ok" ? {} : { fix: f.providerWired ? fix : "agent codex --auto" }),
+      ...(status === "ok" ? {} : { fix: f.providerWired ? ghFix : "agent codex --auto" }),
     };
   }
   // Config exists: report precisely which part of the wiring is off.
@@ -453,19 +470,9 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
     // Direct needs gh to mint the token (via the managed apiKeyHelper) AND the
     // managed ANTHROPIC_BASE_URL — a user could keep the helper but drop/alter
     // the base URL, which would silently route Claude to the wrong endpoint.
-    const authOk = f.directAuth.command !== null && f.directAuth.authenticated;
-    const authDetail =
-      f.directAuth.command === null
-        ? "gh auth: GitHub CLI not found"
-        : f.directAuth.authenticated
-          ? `gh auth: authenticated via ${f.directAuth.command}`
-          : `gh auth: ${f.directAuth.command} is not authenticated`;
+    const { ok: authOk, detail: authDetail, ghFix } = describeDirectGhAuth(f.directAuth);
     const status = authOk && baseOk ? "ok" : "warn";
-    const fix = !baseOk
-      ? "agent claude --direct"
-      : f.directAuth.command === null
-        ? "install gh and run gh auth login"
-        : "gh auth login";
+    const fix = !baseOk ? "agent claude --direct" : ghFix;
     return {
       ...base,
       status,
@@ -549,17 +556,29 @@ export function checkAutoupdate(f: AutoupdateData): CheckResult {
   return { ...base, status: "ok", detail };
 }
 
-/** `--live` end-to-end check: did Codex actually respond via its configured backend? */
-export function checkCodexLive(f: LiveProbeFacts): CheckResult {
+/**
+ * `--live` end-to-end check shared by Codex and Claude: did the agent actually
+ * respond via its configured backend? Only the ids/labels/group/scopes/fix differ.
+ */
+function checkAgentLive(agent: "codex" | "claude", f: LiveProbeFacts): CheckResult {
+  const meta =
+    agent === "codex"
+      ? { id: "codex.live", label: "Codex live prompt", group: "codex" as const, scopes: CODEX }
+      : {
+          id: "claude.live",
+          label: "Claude live prompt",
+          group: "claude" as const,
+          scopes: CLAUDE,
+        };
   const base = {
-    id: "codex.live",
-    label: "Codex live prompt",
-    group: "codex" as const,
-    scopes: CODEX,
+    id: meta.id,
+    label: meta.label,
+    group: meta.group,
+    scopes: meta.scopes,
     value: { ran: f.ran, ok: f.ok, cli: f.cli },
   };
   if (!f.ran) {
-    return { ...base, status: "ok" as const, detail: "skipped (codex CLI not installed)" };
+    return { ...base, status: "ok", detail: `skipped (${agent} CLI not installed)` };
   }
   return f.ok
     ? { ...base, status: "ok", detail: `read-only prompt responded via ${f.cli}` }
@@ -569,30 +588,16 @@ export function checkCodexLive(f: LiveProbeFacts): CheckResult {
         detail: `read-only prompt failed (${f.cli})${
           f.detail ? `\n${f.detail}` : "; the configured backend did not answer"
         }`,
-        fix: "agent codex --auto",
+        fix: `agent ${agent} --auto`,
       };
 }
+
+/** `--live` end-to-end check: did Codex actually respond via its configured backend? */
+export function checkCodexLive(f: LiveProbeFacts): CheckResult {
+  return checkAgentLive("codex", f);
+}
 export function checkClaudeLive(f: LiveProbeFacts): CheckResult {
-  const base = {
-    id: "claude.live",
-    label: "Claude live prompt",
-    group: "claude" as const,
-    scopes: CLAUDE,
-    value: { ran: f.ran, ok: f.ok, cli: f.cli },
-  };
-  if (!f.ran) {
-    return { ...base, status: "ok" as const, detail: "skipped (claude CLI not installed)" };
-  }
-  return f.ok
-    ? { ...base, status: "ok", detail: `read-only prompt responded via ${f.cli}` }
-    : {
-        ...base,
-        status: "warn",
-        detail: `read-only prompt failed (${f.cli})${
-          f.detail ? `\n${f.detail}` : "; the configured backend did not answer"
-        }`,
-        fix: "agent claude --auto",
-      };
+  return checkAgentLive("claude", f);
 }
 
 /** Build every check applicable to `scope` from the gathered facts. */

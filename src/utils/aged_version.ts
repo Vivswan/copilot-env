@@ -1,4 +1,5 @@
 // Utility for picking the newest stable npm release older than a minimum-age window.
+import { versionLessThan } from "./semver.ts";
 
 const STABLE = /^\d+\.\d+\.\d+$/; // plain x.y.z -- excludes prereleases + created/modified
 
@@ -10,19 +11,14 @@ export function pickAgedVersion(
   nowMs: number,
 ): string | null {
   const cutoff = nowMs - minimumAgeMs;
-  let best: [number, number, number] | null = null;
+  let best: string | null = null;
   for (const [version, iso] of Object.entries(timeMap)) {
     if (!STABLE.test(version)) continue;
     const published = Date.parse(iso);
     if (Number.isNaN(published) || published > cutoff) continue;
-    const [major = 0, minor = 0, patch = 0] = version.split(".").map(Number);
-    const parts: [number, number, number] = [major, minor, patch];
-    if (best === null || compareCore(parts, best) > 0) best = parts;
+    // Only STABLE x.y.z values reach here, so versionLessThan compares numeric
+    // cores; first-seen wins on a tie (kept, matching the previous behavior).
+    if (best === null || versionLessThan(best, version)) best = version;
   }
-  return best === null ? null : best.join(".");
-}
-
-// Numeric (not lexical) compare so 1.2.10 > 1.2.9 and 1.10.0 > 1.9.9.
-function compareCore(a: [number, number, number], b: [number, number, number]): number {
-  return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+  return best;
 }

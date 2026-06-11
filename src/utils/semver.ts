@@ -32,3 +32,12 @@ export function versionLessThan(a: string, b: string): boolean {
 export function stripV(v: string): string {
   return v.replace(/^v/, "");
 }
+
+/**
+ * True when `current` is at or beyond `target` — i.e. no update is needed.
+ * Tolerates a leading `v` on either side. Names the `!versionLessThan(stripV…)`
+ * idiom shared by `agent update` and the autoupdate preflight.
+ */
+export function isUpToDate(current: string, target: string): boolean {
+  return !versionLessThan(stripV(current), stripV(target));
+}

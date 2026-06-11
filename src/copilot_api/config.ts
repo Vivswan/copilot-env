@@ -1,18 +1,12 @@
 // File-backed proxy config helper for config.json and persistent API keys.
 import { randomBytes } from "node:crypto";
-import {
-  chmodSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { consola } from "consola";
 
+import { isFile } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
+import { sleepSync } from "../utils/time.ts";
 import { CopilotApiPaths } from "./paths.ts";
 
 const logger = consola.withTag("copilot_api.utils.config");
@@ -162,14 +156,6 @@ function ensureDict(parent: Record<string, unknown>, key: string): Record<string
   return fresh;
 }
 
-function isFile(path: string): boolean {
-  try {
-    return statSync(path).isFile();
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Rename with a short retry. A POSIX rename over an open destination always
  * succeeds, but Windows can transiently throw EPERM/EBUSY/EACCES when another
@@ -187,14 +173,9 @@ function renameWithRetry(from: string, to: string, attempts = 5): void {
       if (i >= attempts || !transient) {
         throw err;
       }
-      sleepMs(50);
+      sleepSync(50);
     }
   }
-}
-
-/** Block the current thread for `ms` (Atomics.wait on a throwaway buffer). */
-function sleepMs(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
 /**

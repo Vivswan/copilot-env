@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.2](https://github.com/Vivswan/copilot-env/compare/v3.3.1...v3.3.2) (2026-06-11)
+
+
+### Bug Fixes
+
+* make codex Direct detection work outside a git repo and show the full live error ([f5cd2ea](https://github.com/Vivswan/copilot-env/commit/f5cd2ea8c3cbf8a6b6bda97ab0a292882f1784b6))
+
 ## [3.3.1](https://github.com/Vivswan/copilot-env/compare/v3.3.0...v3.3.1) (2026-06-11)
 
 

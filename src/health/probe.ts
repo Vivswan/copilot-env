@@ -44,6 +44,15 @@ import { type ProjectConfig, readProjectConfig } from "../utils/project_config.t
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { packageVersion } from "../utils/version.ts";
 import type { HealthScope } from "./types.ts";
+import {
+  BOOTSTRAP_SCOPES as SCOPE_BOOTSTRAP,
+  CLAUDE_SCOPES as SCOPE_CLAUDE,
+  CLAUDE_LIVE_SCOPES as SCOPE_CLAUDE_LIVE,
+  CODEX_SCOPES as SCOPE_CODEX,
+  CODEX_LIVE_SCOPES as SCOPE_CODEX_LIVE,
+  RUNTIME_SCOPES as SCOPE_RUNTIME,
+  SETUP_SCOPES as SCOPE_SETUP,
+} from "./types.ts";
 
 // --- fact shapes ------------------------------------------------------------
 
@@ -452,15 +461,6 @@ export function evalClaude(
 }
 
 // --- orchestration ----------------------------------------------------------
-
-const SCOPE_RUNTIME: readonly HealthScope[] = ["full", "proxy", "runtime"];
-const SCOPE_BOOTSTRAP: readonly HealthScope[] = ["full", "proxy"];
-const SCOPE_SETUP: readonly HealthScope[] = ["full", "setup"];
-const SCOPE_CODEX: readonly HealthScope[] = ["full", "setup", "codex"];
-const SCOPE_CLAUDE: readonly HealthScope[] = ["full", "setup", "claude"];
-// `--live` end-to-end prompts only run in the agent-focused scopes (never setup).
-const SCOPE_CODEX_LIVE: readonly HealthScope[] = ["full", "codex"];
-const SCOPE_CLAUDE_LIVE: readonly HealthScope[] = ["full", "claude"];
 
 /** Read the configured Codex/Claude provider modes (cheap, no live probe). */
 function readProviderModes(deps: ProbeDeps, port: number): { bothDirect: boolean } {

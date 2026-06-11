@@ -6,7 +6,8 @@ import { runPreflight } from "../autoupdate/preflight.ts";
 import { AutoupdateState, DEFAULT_AUTOUPDATE_COOLDOWN_DAYS } from "../autoupdate/state.ts";
 import { resolveTarget } from "../install/resolve-release.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
-import { stripV, versionLessThan } from "../utils/semver.ts";
+import { isUpToDate } from "../utils/semver.ts";
+import { assertNonNegativeDays } from "../utils/time.ts";
 import { packageVersion } from "../utils/version.ts";
 import { applyUpdate } from "./apply_update.ts";
 
@@ -32,9 +33,7 @@ export interface UpdateArgs {
 
 export async function runUpdate(args: UpdateArgs): Promise<void> {
   const cooldown = args.cooldown ?? null;
-  if (cooldown !== null && (!Number.isInteger(cooldown) || cooldown < 0)) {
-    throw new Error(`--cooldown expects a non-negative whole number of days (got '${cooldown}').`);
-  }
+  assertNonNegativeDays(cooldown);
 
   // Autoupdate management flags short-circuit the manual update flow.
   if (args.autoStatus) return runAutoStatus();
@@ -82,7 +81,7 @@ async function runManualUpdate(args: {
     return;
   }
 
-  if (!versionLessThan(stripV(current), stripV(target.tag))) {
+  if (isUpToDate(current, target.tag)) {
     consola.success(`copilot-env is up to date (${current}).`);
     return;
   }

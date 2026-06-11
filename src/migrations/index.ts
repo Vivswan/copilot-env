@@ -11,7 +11,7 @@
 // from the new code on disk instead of the already-running old update process.
 import "../utils/dotenv.ts";
 import { consola } from "consola";
-
+import { errMessage } from "../utils/error.ts";
 import { disableConsolaTimestamps } from "../utils/logger.ts";
 import { stripV, versionLessThan } from "../utils/semver.ts";
 import { migration as v121 } from "./1.2.1.ts";
@@ -68,9 +68,7 @@ export async function runMigrations(from: string, to: string): Promise<void> {
       await m.run();
       consola.success(`Migration ${m.version} complete.`);
     } catch (e) {
-      consola.warn(
-        `Migration ${m.version} did not complete (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
-      );
+      consola.warn(`Migration ${m.version} did not complete (non-fatal): ${errMessage(e)}`);
     }
   }
 }
@@ -88,7 +86,7 @@ if (import.meta.main) {
     process.exitCode = 2;
   } else {
     runMigrations(from, to).catch((e: unknown) => {
-      consola.error(e instanceof Error ? e.message : String(e));
+      consola.error(errMessage(e));
       process.exitCode = 1;
     });
   }

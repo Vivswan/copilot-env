@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { childPathPrepending, cliSpawn, resolveCommand } from "./command.ts";
 import { createStderrLogger } from "./logger.ts";
+import { sleepSync } from "./time.ts";
 
 // Probe progress goes to stderr (consola), never stdout: the `--check`/`env`
 // machine-readable paths never probe, so this narration can't pollute them.
@@ -40,12 +41,6 @@ export const DEFAULT_PROBE_RETRY_DELAY_MS = 600;
  * return well under this.
  */
 const TIMEOUT_RETRY_FRACTION = 0.9;
-
-/** Block the current thread for `ms` (the probe path is synchronous: spawnSync). */
-function sleepSyncMs(ms: number): void {
-  if (ms <= 0) return;
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
 
 /**
  * How to drive one agent CLI's read-only smoke test: the binary, the env var that
@@ -383,7 +378,7 @@ export function probeDirectWorks(
         logger.log(
           `    • smoke prompt failed${lastDetail ? ` (${lastDetail})` : ""}; retrying (attempt ${attempt + 1} of ${retries + 1}) …`,
         );
-        sleepSyncMs(retryDelayMs * attempt);
+        sleepSync(retryDelayMs * attempt);
       }
       const startedAt = Date.now();
       const outcome = runProbe(cliPath, args, childEnv);

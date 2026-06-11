@@ -5,6 +5,7 @@ import { execaSync } from "execa";
 import which from "which";
 import { CopilotApiState } from "../copilot_api/state.ts";
 import { assertSingleMode, resolveDirect } from "../utils/direct_probe.ts";
+import { isFile } from "../utils/fs.ts";
 import { getSanitizedHostname, HOME } from "../utils/hostname.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { applyCodexConfig, detectCodexDirect } from "./config.ts";
@@ -82,14 +83,6 @@ function isSymlinkPath(p: string): boolean {
 function isDirPath(p: string): boolean {
   try {
     return fs.statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
-function isFilePath(p: string): boolean {
-  try {
-    return fs.statSync(p).isFile();
   } catch {
     return false;
   }
@@ -223,13 +216,9 @@ function promoteCodexDirToSharedIfSafe(localPath: string, sharedPath: string): n
         warnExistingCodexPath(localPath);
         return 2;
       }
-    } else if (isFilePath(entry)) {
+    } else if (isFile(entry)) {
       if (lexists(targetPath)) {
-        if (
-          isSymlinkPath(targetPath) ||
-          !isFilePath(targetPath) ||
-          !filesEqual(entry, targetPath)
-        ) {
+        if (isSymlinkPath(targetPath) || !isFile(targetPath) || !filesEqual(entry, targetPath)) {
           warnExistingCodexPath(localPath);
           return 2;
         }
@@ -285,7 +274,7 @@ function seedLocalCodexFileIfMissing(localPath: string, sharedPath: string): num
 
   if (ensureCodexPathParent(localPath) !== 0) return 1;
   try {
-    if (isFilePath(sharedPath)) {
+    if (isFile(sharedPath)) {
       fs.copyFileSync(sharedPath, localPath);
     } else {
       fs.writeFileSync(localPath, "");
@@ -303,7 +292,7 @@ function seedSharedCodexFileIfMissingImpl(
 ): number {
   const sharedExists = lexists(sharedPath);
 
-  if (isFilePath(localPath) && !isSymlinkPath(localPath)) {
+  if (isFile(localPath) && !isSymlinkPath(localPath)) {
     if (!sharedExists) {
       if (ensureCodexPathParent(sharedPath) !== 0) return 1;
       try {
@@ -314,7 +303,7 @@ function seedSharedCodexFileIfMissingImpl(
       return 0;
     }
 
-    if (isFilePath(sharedPath) && statSize(sharedPath) === 0 && statSize(localPath) > 0) {
+    if (isFile(sharedPath) && statSize(sharedPath) === 0 && statSize(localPath) > 0) {
       try {
         fs.copyFileSync(localPath, sharedPath);
       } catch {
@@ -382,7 +371,7 @@ function ensureCodexFileSymlink(localPath: string, sharedPath: string): number {
     return 0;
   }
 
-  if (isFilePath(localPath)) {
+  if (isFile(localPath)) {
     if (filesEqual(localPath, sharedPath)) {
       try {
         fs.unlinkSync(localPath);

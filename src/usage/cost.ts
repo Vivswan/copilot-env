@@ -7,7 +7,6 @@ import {
   fetchPricing,
   OPENROUTER_MODELS_URL,
   type PricingTier,
-  type UsageTokens,
 } from "./pricing.ts";
 import { discoverUsageDbs, readUsage, type UsageReport } from "./usage.ts";
 
@@ -38,16 +37,9 @@ export async function runCost(args: {
     );
   }
 
-  const tokensByModel = new Map<string, UsageTokens>();
-  for (const [model, u] of report.byModel) {
-    tokensByModel.set(model, {
-      input: u.input,
-      output: u.output,
-      cacheRead: u.cacheRead,
-      cacheCreation: u.cacheCreation,
-    });
-  }
-  const estimate = estimateCost(tokensByModel, pricing);
+  // ModelUsage is a structural superset of UsageTokens, so the read-only
+  // estimateCost reads report.byModel directly — no per-model copy needed.
+  const estimate = estimateCost(report.byModel, pricing);
 
   if (args.json) {
     console.log(JSON.stringify(buildCostJson(report, estimate, dbPaths.length, sinceMs), null, 2));

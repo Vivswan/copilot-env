@@ -328,7 +328,10 @@ export async function runStart(args: StartArgs): Promise<void> {
 
   fs.writeFileSync(logFile, "");
   const daemonEnv: Record<string, string> = { COPILOT_API_SQLITE_DB_PATH: paths.sqliteDb };
-  let pid = launchDaemon(port, logFile, daemonEnv);
+  // A `--gh-token` provisioned into our state is passed to the daemon as
+  // `--github-token` (in-memory only; never written to copilot-api's own login file).
+  const githubToken = state.read().githubToken;
+  let pid = launchDaemon(port, logFile, daemonEnv, githubToken);
 
   await sleep(1000);
   if (!pidAlive(pid)) {
@@ -355,7 +358,7 @@ export async function runStart(args: StartArgs): Promise<void> {
         throw new Error("could not find a free port after the retry.");
       }
       fs.writeFileSync(logFile, "");
-      pid = launchDaemon(port, logFile, daemonEnv);
+      pid = launchDaemon(port, logFile, daemonEnv, githubToken);
       await sleep(1000);
       if (!pidAlive(pid)) {
         printLogTail(logFile, 20);

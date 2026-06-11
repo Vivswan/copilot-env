@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { consola } from "consola";
 import { pickAgedVersion } from "../utils/aged_version.ts";
 import { commandExists, resolveCommand } from "../utils/command.ts";
+import { resolveGhToken } from "../utils/direct_probe.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { configureBothAgents } from "./init.ts";
@@ -34,6 +35,8 @@ export interface SetupClisArgs {
   launchers?: boolean;
   noSudo?: boolean;
   noPrereqs?: boolean;
+  /** `--gh-token`: provision this GitHub token for Direct + the proxy (implies direct). */
+  "gh-token"?: string | boolean;
 }
 
 export interface SetupShellArgs {
@@ -51,6 +54,7 @@ export interface NormalizedSetupClisOptions {
   launchers: boolean;
   noSudo: boolean;
   noPrereqs: boolean;
+  "gh-token"?: string | boolean;
 }
 
 export function normalizeSetupClisOptions(args: SetupClisArgs): NormalizedSetupClisOptions {
@@ -64,8 +68,16 @@ export function normalizeSetupClisOptions(args: SetupClisArgs): NormalizedSetupC
   if (cooldown !== null && (!Number.isInteger(cooldown) || cooldown < 0)) {
     throw new Error(`--cooldown expects a non-negative whole number of days (got '${cooldown}')`);
   }
+  // Validate the token up front so a bad/absent value fails before any install.
+  resolveGhToken(args["gh-token"]);
 
-  return { cooldown, launchers: Boolean(args.launchers), noSudo, noPrereqs };
+  return {
+    cooldown,
+    launchers: Boolean(args.launchers),
+    noSudo,
+    noPrereqs,
+    "gh-token": args["gh-token"],
+  };
 }
 
 function run(
@@ -187,16 +199,15 @@ function ensureNpm(options: NormalizedSetupClisOptions): boolean {
   return commandExists(npmCommand);
 }
 
-function npmArgs(): { command: string; prefix: string[] } {
+function resolveNpm(): string {
   const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
   const resolved = resolveCommand(npmCommand);
   if (!resolved) throw new Error("npm is required to install agent CLIs.");
-  return { command: resolved, prefix: [] };
+  return resolved;
 }
 
 function runNpm(args: string[], capture = false): string {
-  const npm = npmArgs();
-  const result = spawnSync(npm.command, [...npm.prefix, ...args], {
+  const result = spawnSync(resolveNpm(), args, {
     encoding: "utf8",
     stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit",
   });
@@ -263,15 +274,19 @@ function installCli(cli: (typeof AGENT_CLIS)[number], options: NormalizedSetupCl
 }
 
 /**
- * After installing the agent CLIs, auto-detect each agent's backend and write its
- * config (Direct when a live probe succeeds, else the proxy), then point the
- * user at `agent init` to review / change it. Best-effort per agent.
+ * After installing the agent CLIs, configure each agent's backend and point the
+ * user at `agent init` to review / change it. With a `--gh-token` both agents go
+ * Direct on that baked token (no `gh`/probe) and the proxy token is seeded;
+ * otherwise each backend is auto-detected (Direct when a live probe succeeds,
+ * else the proxy). Best-effort per agent.
  */
-function autoConfigureAgents(): void {
+function autoConfigureAgents(ghToken?: string | boolean): void {
   consola.info(
-    "Auto-detecting Codex/Claude backend (GitHub Copilot Direct vs. the local proxy) ...",
+    ghToken
+      ? "Configuring Codex/Claude for GitHub Copilot Direct using your token ..."
+      : "Auto-detecting Codex/Claude backend (GitHub Copilot Direct vs. the local proxy) ...",
   );
-  const { codex, claude } = configureBothAgents({});
+  const { codex, claude } = configureBothAgents({ "gh-token": ghToken });
   const describeMode = (mode: string): string =>
     mode === "direct" ? "GitHub Copilot Direct" : mode === "proxy" ? "the proxy" : mode;
   consola.info(`Codex  → ${describeMode(codex)}`);
@@ -298,7 +313,7 @@ export function runSetupClis(args: SetupClisArgs): void {
   syncNpmGlobalBinToPath();
   for (const cli of AGENT_CLIS) installCli(cli, options);
   syncNpmGlobalBinToPath();
-  autoConfigureAgents();
+  autoConfigureAgents(options["gh-token"]);
   if (options.launchers) runSetupLaunchers({ "all-hosts": args["all-hosts"] });
 }
 

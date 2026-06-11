@@ -3,8 +3,10 @@
 import { join } from "node:path";
 import type { AutoupdateData } from "../autoupdate/state.ts";
 import { DIRECT_BASE_URL } from "../claude/config.ts";
+import { DIRECT_ENV_KEY } from "../codex/config.ts";
 import type { ProxyVersionStatus } from "../copilot_api/version.ts";
 import { SECONDS_PER_DAY } from "../utils/time.ts";
+import { filterByScope } from "./aggregate.ts";
 import type {
   BootstrapFacts,
   ClaudeFacts,
@@ -276,6 +278,7 @@ export function checkCodex(f: CodexFacts): CheckResult {
       envKeyInEnviron: f.envKeyInEnviron,
       tokenAvailable: f.tokenAvailable,
       directAuth: f.directAuth,
+      directUsesToken: f.directUsesToken,
     },
   };
   // No config at the effective CODEX_HOME: the user hasn't wired Codex — fine.
@@ -287,6 +290,22 @@ export function checkCodex(f: CodexFacts): CheckResult {
     };
   }
   if (f.providerMode === "direct") {
+    // A baked token (--gh-token, read via env_key) needs no `gh` — wiring alone
+    // decides; otherwise `gh auth token` must work.
+    if (f.directUsesToken) {
+      const status = f.providerWired ? "ok" : "warn";
+      return {
+        ...base,
+        status,
+        detail: [
+          "provider: direct",
+          `config.toml: ${configPath}`,
+          `model_provider github-copilot-direct → ${f.baseUrl ?? "(missing)"}`,
+          `auth: baked GitHub token (.env ${DIRECT_ENV_KEY}, no gh CLI)`,
+        ].join("\n"),
+        ...(status === "ok" ? {} : { fix: "agent codex --gh-token" }),
+      };
+    }
     const authOk = f.directAuth.command !== null && f.directAuth.authenticated;
     const status = f.providerWired && authOk ? "ok" : "warn";
     const authDetail =
@@ -408,14 +427,33 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
       apiKeyHelper: f.helperPath,
       baseUrl: f.baseUrl,
       directAuth: f.directAuth,
+      directUsesToken: f.directUsesToken,
     },
   };
   if (f.providerMode === "direct") {
+    const baseOk = f.baseUrl === DIRECT_BASE_URL;
+    // A baked token (--gh-token) helper needs no `gh`; only the base URL must be
+    // right. Otherwise the helper shells out to `gh auth token`, which must work.
+    if (f.directUsesToken) {
+      const status = baseOk ? "ok" : "warn";
+      return {
+        ...base,
+        status,
+        detail: [
+          "provider: direct",
+          `settings.json: ${f.settingsPath}`,
+          `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${
+            baseOk ? "" : ` (expected ${DIRECT_BASE_URL})`
+          }`,
+          "auth: baked GitHub token (apiKeyHelper, no gh CLI)",
+        ].join("\n"),
+        ...(status === "ok" ? {} : { fix: "agent claude --gh-token" }),
+      };
+    }
     // Direct needs gh to mint the token (via the managed apiKeyHelper) AND the
     // managed ANTHROPIC_BASE_URL — a user could keep the helper but drop/alter
     // the base URL, which would silently route Claude to the wrong endpoint.
     const authOk = f.directAuth.command !== null && f.directAuth.authenticated;
-    const baseOk = f.baseUrl === DIRECT_BASE_URL;
     const authDetail =
       f.directAuth.command === null
         ? "gh auth: GitHub CLI not found"
@@ -587,5 +625,7 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
   if (facts.claude) out.push(checkClaude(facts.claude));
   if (facts.claudeLive) out.push(checkClaudeLive(facts.claudeLive));
   if (facts.autoupdate) out.push(checkAutoupdate(facts.autoupdate));
-  return out.filter((r) => r.scopes.includes(scope));
+  // Keep only the checks that participate in `scope` (single source of the rule,
+  // shared with the --json path and the unit tests).
+  return filterByScope(out, scope);
 }

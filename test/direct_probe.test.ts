@@ -9,6 +9,7 @@ import {
   type ProbeOutcome,
   probeDirectWorks,
   resolveDirect,
+  resolveGhToken,
   summarizeProbeFailure,
 } from "../src/utils/direct_probe.ts";
 
@@ -106,6 +107,46 @@ test("assertSingleMode allows zero or one mode flag, rejects two or more", () =>
     expect(() => assertSingleMode(combo)).toThrow(
       "--direct, --proxy, and --auto are mutually exclusive",
     );
+  }
+});
+
+test("assertSingleMode rejects --gh-token alongside --proxy or --auto (token forces direct)", () => {
+  expect(() => assertSingleMode({ "gh-token": "x", proxy: true })).toThrow(
+    "cannot be combined with --proxy or --auto",
+  );
+  expect(() => assertSingleMode({ "gh-token": "x", auto: true })).toThrow(
+    "cannot be combined with --proxy or --auto",
+  );
+  // A token with direct (or alone) is fine.
+  expect(() => assertSingleMode({ "gh-token": "x", direct: true })).not.toThrow();
+  expect(() => assertSingleMode({ "gh-token": true })).not.toThrow();
+});
+
+// --- resolveGhToken (flag -> token string | null) ---------------------------
+
+test("resolveGhToken: undefined -> null, string -> trimmed literal, bare -> env, else throws", () => {
+  const savedGh = process.env.GH_TOKEN;
+  const savedGithub = process.env.GITHUB_TOKEN;
+  try {
+    expect(resolveGhToken(undefined)).toBeNull();
+    expect(resolveGhToken(false)).toBeNull(); // defensive: never the token "false"
+    expect(resolveGhToken("ghu_abc")).toBe("ghu_abc");
+    expect(resolveGhToken("  ghu_trim  ")).toBe("ghu_trim");
+    expect(() => resolveGhToken("")).toThrow("empty value");
+
+    // Bare flag prefers GH_TOKEN, falls back to GITHUB_TOKEN.
+    delete process.env.GH_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    expect(() => resolveGhToken(true)).toThrow("neither GH_TOKEN nor GITHUB_TOKEN is set");
+    process.env.GITHUB_TOKEN = "ghu_github";
+    expect(resolveGhToken(true)).toBe("ghu_github");
+    process.env.GH_TOKEN = "ghu_gh";
+    expect(resolveGhToken(true)).toBe("ghu_gh"); // GH_TOKEN wins
+  } finally {
+    if (savedGh === undefined) delete process.env.GH_TOKEN;
+    else process.env.GH_TOKEN = savedGh;
+    if (savedGithub === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = savedGithub;
   }
 });
 

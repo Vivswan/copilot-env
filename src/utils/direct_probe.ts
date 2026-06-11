@@ -156,13 +156,49 @@ export interface ModeFlags {
   direct?: boolean;
   proxy?: boolean;
   auto?: boolean;
+  /**
+   * The raw `--gh-token` value: `undefined` = absent, `true` = bare flag (read
+   * the token from the environment), a string = the literal token. A token
+   * implies Direct, so it is mutually exclusive with `--proxy`.
+   */
+  "gh-token"?: string | boolean;
 }
 
-/** Reject more than one of --direct / --proxy / --auto on the same invocation. */
+/**
+ * Reject more than one of --direct / --proxy / --auto on the same invocation, and
+ * reject --gh-token alongside --proxy or --auto (a token forces Direct, so a
+ * proxy target or an auto-detect probe is contradictory).
+ */
 export function assertSingleMode(flags: ModeFlags): void {
   if ([flags.direct, flags.proxy, flags.auto].filter(Boolean).length > 1) {
     throw new Error("--direct, --proxy, and --auto are mutually exclusive");
   }
+  if (flags["gh-token"] !== undefined && (flags.proxy || flags.auto)) {
+    throw new Error("--gh-token forces Direct mode and cannot be combined with --proxy or --auto");
+  }
+}
+
+/**
+ * Resolve the raw `--gh-token` flag into a token string (Direct authenticates
+ * with it directly, no `gh` CLI) or `null` when the flag is absent. A bare
+ * `--gh-token` (value `true`) reads `$GH_TOKEN`, then `$GITHUB_TOKEN`, so the
+ * secret stays out of argv / shell history; a string value is used verbatim
+ * (trimmed). Throws when a token was requested but none could be resolved.
+ */
+export function resolveGhToken(flag: string | boolean | undefined): string | null {
+  // undefined = flag absent; false should never come from Commander for an
+  // optional-value option, but treat it as absence rather than the token "false".
+  if (flag === undefined || flag === false) return null;
+  if (flag === true) {
+    const fromEnv = process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim();
+    if (fromEnv) return fromEnv;
+    throw new Error(
+      "--gh-token was given with no value and neither GH_TOKEN nor GITHUB_TOKEN is set",
+    );
+  }
+  const token = flag.trim();
+  if (token === "") throw new Error("--gh-token was given an empty value");
+  return token;
 }
 
 /**

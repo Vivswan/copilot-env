@@ -1,5 +1,4 @@
 // Process lifecycle helpers for finding, launching, and inspecting copilot-api.
-import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
 import { closeSync, openSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -120,21 +119,11 @@ async function listCopilotApiPidsPosix(): Promise<number[]> {
   return pids;
 }
 
-export function killProc(proc: ChildProcess): void {
-  /** Kill a subprocess, ignoring errors. */
-  try {
-    proc.kill("SIGKILL");
-  } catch (_e) {
-    // ignore
-  }
-  // Best-effort wait; Node has no synchronous wait-with-timeout on a spawned child.
-  // The Python `wait(timeout=2)` is mirrored by allowing the kill signal to propagate.
-}
-
 export function launchDaemon(
   port: number,
   logfile: string,
   extraEnv?: Record<string, string>,
+  githubToken?: string,
 ): number {
   /** Launch copilot-api as a detached daemon. Returns the PID. */
   const env: Record<string, string> = { ...process.env } as Record<string, string>;
@@ -144,7 +133,14 @@ export function launchDaemon(
   const logFd = openSync(logfile, "w");
   const devnull = openSync(devNull, "r");
   const entry = resolveCopilotApiEntry();
-  const proc = spawn(process.execPath, [entry, "start", "--verbose", "--port", String(port)], {
+  const args = [entry, "start", "--verbose", "--port", String(port)];
+  // A provisioned `--gh-token` (stored in our state) is handed to the daemon as
+  // `--github-token`: copilot-api uses it in-memory and does NOT write it to its
+  // own github_token file, so the user's existing device-flow login is untouched.
+  if (githubToken) {
+    args.push("--github-token", githubToken);
+  }
+  const proc = spawn(process.execPath, args, {
     stdio: [devnull, logFd, logFd],
     detached: true,
     // No console window on Windows (defensive; redirected stdio already avoids one).

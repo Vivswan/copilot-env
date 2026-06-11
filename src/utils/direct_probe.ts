@@ -56,7 +56,14 @@ function sleepSyncMs(ms: number): void {
 export interface ProbeDescriptor {
   cli: string;
   homeEnvVar: string;
-  args: (prompt: string) => string[];
+  /**
+   * Build the smoke-test argv for `prompt`, given the config `home` the probe
+   * points the CLI at (the temp dir for detect, the real home for the health
+   * probe). Codex auto-loads `$CODEX_HOME/config.toml` and ignores `home`, but
+   * Claude's `--bare` disables settings.json auto-discovery, so it must pass
+   * `--settings <home>/settings.json` to load its gh-token apiKeyHelper.
+   */
+  args: (prompt: string, home: string) => string[];
   /**
    * Escape hatch: EXTRA exact env-var names to delete from the probe child beyond
    * the families cleared by prefix (see PROVIDER_ENV_PREFIXES). The prefixes cover
@@ -97,8 +104,17 @@ export const CODEX_PROBE: ProbeDescriptor = {
 export const CLAUDE_PROBE: ProbeDescriptor = {
   cli: "claude",
   homeEnvVar: "CLAUDE_CONFIG_DIR",
-  args: (prompt) => [
-    "-p",
+  // --bare forces auth STRICTLY through the apiKeyHelper (OAuth and keychain are
+  // never read) so a user's Claude subscription login can't make Direct look
+  // available when the gh-token path is actually broken — but it also disables
+  // settings.json auto-discovery from CLAUDE_CONFIG_DIR, so the managed
+  // apiKeyHelper is only honored when handed in via --settings. Without it the
+  // probe has NO auth path and always fails (apiKeySource "none").
+  args: (prompt, home) => [
+    "--bare",
+    "--settings",
+    join(home, "settings.json"),
+    "--print",
     "--permission-mode",
     "plan",
     "--verbose",
@@ -324,7 +340,7 @@ export function probeDirectWorks(
     // 4xx/5xx, a momentary network hiccup) must not silently downgrade a working
     // Direct setup to proxy. Retry on failure — but a near-timeout failure is a
     // hang/outage, not a blip, so stop rather than burn another PROBE_TIMEOUT_MS.
-    const args = descriptor.args(PROBE_PROMPT);
+    const args = descriptor.args(PROBE_PROMPT, tmpHome);
     let lastDetail: string | undefined;
     for (let attempt = 0; attempt <= retries; attempt++) {
       if (attempt > 0) {

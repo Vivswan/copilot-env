@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 
 import {
   assertSingleMode,
+  CLAUDE_PROBE,
   CODEX_PROBE,
   DEFAULT_PROBE_RETRIES,
   type ProbeDescriptor,
@@ -11,12 +12,23 @@ import {
   summarizeProbeFailure,
 } from "../src/utils/direct_probe.ts";
 
-// --- CODEX_PROBE args --------------------------------------------------------
+// --- probe args --------------------------------------------------------------
 
 test("CODEX_PROBE passes --skip-git-repo-check so a non-git cwd can't fail the probe", () => {
   // codex refuses to run outside a git repo / trusted dir, and the probe's
   // throwaway home has no trust list — so the flag is mandatory.
-  expect(CODEX_PROBE.args("hi")).toContain("--skip-git-repo-check");
+  expect(CODEX_PROBE.args("hi", "/tmp/home")).toContain("--skip-git-repo-check");
+});
+
+test("CLAUDE_PROBE pairs --bare with --settings so the apiKeyHelper is loaded", () => {
+  // --bare disables settings.json auto-discovery and reads auth ONLY via
+  // --settings, so without the explicit path the gh-token apiKeyHelper never
+  // runs and the probe has no auth path (always fails).
+  const args = CLAUDE_PROBE.args("hi", "/tmp/home");
+  expect(args).toContain("--bare");
+  const i = args.indexOf("--settings");
+  expect(i).toBeGreaterThanOrEqual(0);
+  expect(args[i + 1]).toMatch(/[\\/]tmp[\\/]home[\\/]settings\.json$/);
 });
 
 // A throwaway descriptor: clears one provider var, points at a fake home env var.

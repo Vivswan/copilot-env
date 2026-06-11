@@ -377,9 +377,19 @@ export function defaultProbeDeps(): ProbeDeps {
     bunVersion: () => process.versions.bun ?? null,
     cliVersion: packageVersion,
     codexLive: (home) =>
-      runLiveCli(CODEX_PROBE.cli, CODEX_PROBE.args(PROBE_PROMPT), home, CODEX_PROBE.homeEnvVar),
+      runLiveCli(
+        CODEX_PROBE.cli,
+        CODEX_PROBE.args(PROBE_PROMPT, home),
+        home,
+        CODEX_PROBE.homeEnvVar,
+      ),
     claudeLive: (home) =>
-      runLiveCli(CLAUDE_PROBE.cli, CLAUDE_PROBE.args(PROBE_PROMPT), home, CLAUDE_PROBE.homeEnvVar),
+      runLiveCli(
+        CLAUDE_PROBE.cli,
+        CLAUDE_PROBE.args(PROBE_PROMPT, home),
+        home,
+        CLAUDE_PROBE.homeEnvVar,
+      ),
   };
 }
 

@@ -1,5 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "smol-toml";
@@ -7,7 +15,9 @@ import { parse } from "smol-toml";
 import {
   codexUserAgent,
   configureCodexConfig,
+  DIRECT_ENV_KEY,
   detectCodexDirect,
+  inspectCodexWiring,
   runCodex,
 } from "../src/codex/config.ts";
 
@@ -104,6 +114,81 @@ test("enforces every managed field while preserving unknown user keys", () => {
   expect(other.env_key).toBe("OTHER_KEY");
 
   expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe("OPENAI_API_KEY=old\n");
+});
+
+test("direct + baked gh-token: env_key (no auth block) + the token in .env (0600), still direct", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
+  process.env.HOME = dir;
+  const codexHome = join(dir, ".codex");
+
+  const rc = configureCodexConfig(codexHome, { ghToken: "ghu_baked", codexExecVersion: "0.139.0" });
+  expect(rc).toBe(0);
+
+  const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
+  expect(doc.model_provider).toBe("github-copilot-direct");
+  const provider = asRecord(asRecord(doc.model_providers)["github-copilot-direct"]);
+  // Token mode reads the bearer from a dedicated env_key, and drops the gh `auth` block.
+  expect(provider.env_key).toBe(DIRECT_ENV_KEY);
+  expect(provider.auth).toBeUndefined();
+  // The dedicated key must NOT be a standard GitHub var (so it can't shadow gh/git).
+  expect(DIRECT_ENV_KEY).not.toBe("GITHUB_TOKEN");
+  expect(DIRECT_ENV_KEY).not.toBe("GH_TOKEN");
+
+  // The token lives in CODEX_HOME's .env (0600), under the dedicated key.
+  const envText = readFileSync(join(codexHome, ".env"), "utf8");
+  expect(envText).toContain(`${DIRECT_ENV_KEY}=ghu_baked`);
+  if (process.platform !== "win32") {
+    expect(statSync(join(codexHome, ".env")).mode & 0o077).toBe(0);
+  }
+
+  // Wiring still classifies as direct, and flags the token path.
+  const wiring = inspectCodexWiring(
+    readFileSync(join(codexHome, "config.toml"), "utf8"),
+    envText,
+    4141,
+    false,
+  );
+  expect(wiring.providerMode).toBe("direct");
+  expect(wiring.directUsesToken).toBe(true);
+});
+
+test("switching direct token -> direct gh (no token) drops the stale env_key and restores auth", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
+  process.env.HOME = dir;
+  const codexHome = join(dir, ".codex");
+
+  configureCodexConfig(codexHome, { ghToken: "ghu_baked" });
+  // Sanity: the baked token landed in .env first.
+  expect(readFileSync(join(codexHome, ".env"), "utf8")).toContain(`${DIRECT_ENV_KEY}=ghu_baked`);
+
+  configureCodexConfig(codexHome, {}); // plain direct, no token
+
+  const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
+  const provider = asRecord(asRecord(doc.model_providers)["github-copilot-direct"]);
+  expect(provider.env_key).toBeUndefined(); // stale token key removed
+  expect(asRecord(provider.auth).command).toBe("gh"); // gh auth restored
+  // The baked token is scrubbed from .env — no Copilot token left at rest.
+  expect(readFileSync(join(codexHome, ".env"), "utf8")).not.toContain(DIRECT_ENV_KEY);
+});
+
+test("gh-direct .env scrub preserves other keys and never creates a .env when absent", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
+  process.env.HOME = dir;
+  const codexHome = join(dir, ".codex");
+  mkdirSync(codexHome, { recursive: true });
+  // A user-maintained .env with our baked token plus an unrelated key.
+  writeFileSync(join(codexHome, ".env"), `MY_VAR=keep\n${DIRECT_ENV_KEY}=ghu_old\n`);
+
+  configureCodexConfig(codexHome, {}); // gh-direct
+
+  const env = readFileSync(join(codexHome, ".env"), "utf8");
+  expect(env).toContain("MY_VAR=keep");
+  expect(env).not.toContain(DIRECT_ENV_KEY);
+
+  // A second gh-direct home with no .env at all: the scrub must not create one.
+  const codexHome2 = join(dir, ".codex2");
+  configureCodexConfig(codexHome2, {});
+  expect(existsSync(join(codexHome2, ".env"))).toBe(false);
 });
 
 test("proxy mode enforces every managed field while preserving unknown user keys", () => {

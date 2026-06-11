@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { type AutoupdateData, AutoupdateState } from "../autoupdate/state.ts";
 import {
   type ClaudeWiringStatus,
+  directHelperUsesToken,
   inspectClaudeWiring,
   resolveClaudeHome,
 } from "../claude/config.ts";
@@ -129,6 +130,12 @@ export type ClaudeFacts = ClaudeWiringStatus & {
   home: string;
   settingsPath: string;
   directAuth: CodexDirectAuthFacts;
+  /**
+   * Direct mode only: true when the apiKeyHelper prints a baked token (from
+   * `--gh-token`) rather than shelling out to `gh auth token`. Always false
+   * outside direct mode.
+   */
+  directUsesToken: boolean;
 };
 
 export interface CodexHostFacts {
@@ -433,11 +440,13 @@ export function evalClaude(
   home: string,
   settingsText: string | null,
   directAuth: CodexDirectAuthFacts = { command: null, authenticated: false },
+  directUsesToken = false,
 ): ClaudeFacts {
   return {
     home,
     settingsPath: join(home, "settings.json"),
     directAuth,
+    directUsesToken,
     ...inspectClaudeWiring(settingsText, home),
   };
 }
@@ -557,13 +566,19 @@ export async function gatherFacts(
         const home = deps.codexHome();
         const configToml = deps.readFileSafe(join(home, "config.toml"));
         const envText = deps.readFileSafe(join(home, ".env"));
+        const wiring = inspectCodexWiring(configToml, envText, port, deps.codexTokenInEnviron());
+        // The `gh auth token` probe is only meaningful for the gh-backed direct
+        // path; skip its ~5s spawn when the direct provider bakes a token (--gh-token).
+        const directAuth = wiring.directUsesToken
+          ? { command: null, authenticated: false }
+          : await sharedDirectAuth();
         facts.codex = evalCodex(
           home,
           configToml,
           envText,
           port,
           deps.codexTokenInEnviron(),
-          await sharedDirectAuth(),
+          directAuth,
         );
       })(),
     );
@@ -574,8 +589,22 @@ export async function gatherFacts(
       (async () => {
         const home = deps.claudeHome();
         const settingsText = deps.readFileSafe(join(home, "settings.json"));
-        // Direct mode authenticates via `gh auth token`, same probe as Codex.
-        facts.claude = evalClaude(home, settingsText, await sharedDirectAuth());
+        const wiring = inspectClaudeWiring(settingsText, home);
+        // Direct mode authenticates via `gh auth token` UNLESS the apiKeyHelper
+        // bakes a literal token (--gh-token). POSITIVELY identify the managed
+        // baked-token helper shape (not "absence of gh auth token") so a broken
+        // or foreign helper stays on the gh-backed path and is flagged, rather
+        // than being mistaken for a working token setup.
+        let directUsesToken = false;
+        if (wiring.providerMode === "direct" && wiring.helperPath) {
+          directUsesToken = directHelperUsesToken(deps.readFileSafe(wiring.helperPath));
+        }
+        // gh-auth probe is only meaningful for the `gh auth token` path; skip it
+        // (and the ~5s spawn) when the helper bakes a token.
+        const directAuth = directUsesToken
+          ? { command: null, authenticated: false }
+          : await sharedDirectAuth();
+        facts.claude = evalClaude(home, settingsText, directAuth, directUsesToken);
       })(),
     );
   }

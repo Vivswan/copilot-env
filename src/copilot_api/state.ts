@@ -10,6 +10,13 @@ export interface CopilotState {
   pid?: number;
   /** Active CODEX_HOME set by `codex --host` (cleared by `codex --host --delete-host`). */
   codexHome?: string;
+  /**
+   * GitHub token provisioned by `--gh-token` for the proxy. `start` passes it to
+   * the daemon as `--github-token` (used in-memory only — copilot-api never writes
+   * it to its own `github_token` file, so an existing device-flow login is left
+   * untouched). Cleared by `agent init --remove-gh-token`.
+   */
+  githubToken?: string;
 }
 
 type StatePatch = { [K in keyof CopilotState]?: CopilotState[K] | null };
@@ -38,6 +45,10 @@ export class CopilotApiState {
           : undefined,
       pid: typeof pid === "number" && Number.isInteger(pid) && pid > 0 ? pid : undefined,
       codexHome: typeof d.codexHome === "string" && d.codexHome ? d.codexHome : undefined,
+      // Ignore a blank/whitespace-only token (e.g. a hand-edited state file) so we
+      // never pass an empty `--github-token` that would break the daemon's auth.
+      githubToken:
+        typeof d.githubToken === "string" && d.githubToken.trim() ? d.githubToken : undefined,
     };
   }
 

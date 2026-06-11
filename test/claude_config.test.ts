@@ -7,6 +7,7 @@ import {
   configureClaudeConfig,
   DIRECT_BASE_URL,
   detectClaudeDirect,
+  directHelperUsesToken,
   inspectClaudeWiring,
   runClaude,
 } from "../src/claude/config.ts";
@@ -16,6 +17,8 @@ const SAVED = {
   HOME: process.env.HOME,
   CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
   COPILOT_API_HOME: process.env.COPILOT_API_HOME,
+  GH_TOKEN: process.env.GH_TOKEN,
+  GITHUB_TOKEN: process.env.GITHUB_TOKEN,
 };
 let dir = "";
 
@@ -184,4 +187,52 @@ test("configureClaudeConfig refuses to overwrite a malformed settings.json", () 
   configureClaudeConfig(home, "direct"); // creates the dir + a valid file
   writeFileSync(join(home, "settings.json"), "{ this is : not json");
   expect(() => configureClaudeConfig(home, "direct")).toThrow("not valid JSON");
+});
+
+test("direct mode with a baked token writes a token-printing helper (no gh), still direct", () => {
+  const home = tmpHome();
+  configureClaudeConfig(home, "direct", true, "ghu_secret123");
+
+  const doc = readSettings(home);
+  // Same helper PATH, so wiring still classifies as direct.
+  expect(doc.apiKeyHelper).toBe(join(home, "copilot-token.sh"));
+  expect(
+    inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home).providerMode,
+  ).toBe("direct");
+
+  // The helper prints the literal token, NOT `gh auth token`.
+  const script = readFileSync(join(home, "copilot-token.sh"), "utf8");
+  expect(script).toBe("#!/bin/sh\nprintf '%s' 'ghu_secret123'\n");
+  expect(script).not.toContain("gh auth token");
+  // The managed baked-token helper is POSITIVELY identified (health relies on this).
+  expect(directHelperUsesToken(script)).toBe(true);
+});
+
+test("directHelperUsesToken: only the managed printf helper counts (gh / broken / missing => false)", () => {
+  expect(directHelperUsesToken("#!/bin/sh\nprintf '%s' 'ghu_x'\n")).toBe(true);
+  // The gh-auth helper, a foreign/broken script, and a missing file are NOT token mode —
+  // so health stays on the gh-backed path and flags them instead of reporting a false "ok".
+  expect(directHelperUsesToken("#!/bin/sh\nexec gh auth token\n")).toBe(false);
+  expect(directHelperUsesToken("#!/bin/sh\necho hi\n")).toBe(false);
+  expect(directHelperUsesToken("")).toBe(false);
+  expect(directHelperUsesToken(null)).toBe(false);
+});
+
+test("runClaude --gh-token forces direct and bakes the token; resolves a bare flag from the env", () => {
+  const home = tmpHome();
+  const read = () => inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home);
+
+  runClaude({ "claude-home": home, "gh-token": "ghu_literal" });
+  expect(read().providerMode).toBe("direct");
+  expect(readFileSync(join(home, "copilot-token.sh"), "utf8")).toContain("ghu_literal");
+
+  // Bare flag reads GH_TOKEN.
+  process.env.GH_TOKEN = "ghu_fromenv";
+  runClaude({ "claude-home": home, "gh-token": true });
+  expect(readFileSync(join(home, "copilot-token.sh"), "utf8")).toContain("ghu_fromenv");
+
+  // A token cannot combine with --proxy.
+  expect(() => runClaude({ "claude-home": home, "gh-token": "x", proxy: true })).toThrow(
+    "cannot be combined with --proxy",
+  );
 });

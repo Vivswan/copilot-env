@@ -271,6 +271,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
     envKeyInEnviron: false,
     tokenAvailable: true,
     directAuth: { command: "/bin/gh", authenticated: true },
+    directUsesToken: false,
   };
   // No config at all -> ok (user never wired Codex).
   expect(checkCodex({ ...wired, configExists: false, providerWired: false }).status).toBe("ok");
@@ -383,6 +384,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
     baseUrl: "https://api.githubcopilot.com",
     providerMode: "direct",
     directAuth: { command: "/bin/gh", authenticated: true },
+    directUsesToken: false,
   };
   const directOk = checkClaude(direct);
   expect(directOk.status).toBe("ok");
@@ -445,6 +447,47 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   expect(other.status).toBe("ok");
   expect(other.detail).toContain("provider: other");
   expect(other.detail).toContain("not managed");
+});
+
+test("direct + baked token reports ok with gh absent (no gh requirement)", () => {
+  // Codex: token mode (env_key, providerWired) is ok even though gh is missing.
+  const codexToken: CodexFacts = {
+    home: "/c",
+    configExists: true,
+    providerSelected: true,
+    providerMode: "direct",
+    modelProvider: "github-copilot-direct",
+    baseUrl: "https://api.githubcopilot.com",
+    baseUrlMatches: true,
+    envKeyMatches: true,
+    providerWired: true,
+    envFilePresent: true,
+    envKeyInDotenv: false,
+    envKeyInEnviron: false,
+    tokenAvailable: false,
+    directAuth: { command: null, authenticated: false },
+    directUsesToken: true,
+  };
+  const codexRes = checkCodex(codexToken);
+  expect(codexRes.status).toBe("ok");
+  expect(codexRes.detail).toContain("baked GitHub token");
+  expect(codexRes.detail).not.toContain("GitHub CLI not found");
+
+  // Claude: token-mode apiKeyHelper, gh absent → still ok (base URL is right).
+  const claudeToken: ClaudeFacts = {
+    home: "/h/.claude",
+    settingsPath: join("/h/.claude", "settings.json"),
+    settingsExists: true,
+    helperPath: join("/h/.claude", "copilot-token.sh"),
+    baseUrl: "https://api.githubcopilot.com",
+    providerMode: "direct",
+    directAuth: { command: null, authenticated: false },
+    directUsesToken: true,
+  };
+  const claudeRes = checkClaude(claudeToken);
+  expect(claudeRes.status).toBe("ok");
+  expect(claudeRes.detail).toContain("baked GitHub token");
+  expect(claudeRes.detail).not.toContain("GitHub CLI not found");
 });
 
 // --- live (--live) checks ---------------------------------------------------
@@ -669,6 +712,7 @@ test("evaluateAll(codex) yields only the Codex wiring check", () => {
       envKeyInEnviron: false,
       tokenAvailable: false,
       directAuth: { command: null, authenticated: false },
+      directUsesToken: false,
     },
     codexHost: { supported: false, hostHome: "/h/.codex/hosts/box", exists: false, active: false },
   };
@@ -704,6 +748,7 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       envKeyInEnviron: false,
       tokenAvailable: false,
       directAuth: { command: null, authenticated: false },
+      directUsesToken: false,
     },
     codexHost: { supported: false, hostHome: "/h/.codex/hosts/box", exists: false, active: false },
     claude: {
@@ -714,6 +759,7 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       baseUrl: null,
       providerMode: "none",
       directAuth: { command: null, authenticated: false },
+      directUsesToken: false,
     },
     autoupdate: { enabled: false, cooldownDays: 7, lastCheckMs: 0, lastResult: "" },
   };

@@ -122,8 +122,26 @@ program
   .description("Set up both Codex and Claude (auto-detect GitHub Copilot Direct vs the proxy).")
   .option("--direct", "Force both agents to GitHub Copilot Direct (no probe).")
   .option("--proxy", "Force both agents to the local proxy (no probe).")
+  .option(
+    "--gh-token [token]",
+    "Provision this GitHub token (baked into Direct configs + stored for the proxy) so no `gh` " +
+      "login is needed. Bare flag reads $GH_TOKEN/$GITHUB_TOKEN. Implies Direct; the token must " +
+      "be a Copilot-enabled GitHub token (a generic PAT won't work).",
+  )
+  .option(
+    "--remove-gh-token",
+    "Revert a prior --gh-token: reconfigure both agents to gh Direct (scrubbing the baked token) " +
+      "and clear the stored proxy token, so everything uses the gh CLI / proxy login again.",
+  )
   .action((opts: Opts) =>
-    runSafe(() => runInit({ direct: Boolean(opts.direct), proxy: Boolean(opts.proxy) })),
+    runSafe(() =>
+      runInit({
+        direct: Boolean(opts.direct),
+        proxy: Boolean(opts.proxy),
+        "gh-token": opts.ghToken as string | boolean | undefined,
+        "remove-gh-token": Boolean(opts.removeGhToken),
+      }),
+    ),
   );
 
 program
@@ -209,6 +227,11 @@ program
     "Auto-detect: write direct when a live read-only Copilot Direct probe succeeds, else the proxy.",
   )
   .option(
+    "--gh-token [token]",
+    "Direct mode: authenticate with this GitHub token (written to .env) instead of the gh CLI. " +
+      "Bare flag reads $GH_TOKEN/$GITHUB_TOKEN. Implies --direct.",
+  )
+  .option(
     "--check",
     "Report the configured Codex provider without changing config or probing: exit 0 direct, 2 proxy, 1 other.",
   )
@@ -245,7 +268,8 @@ program
       if (opts.host || opts.deleteHost) {
         runCodexHost({ ...common, delete: Boolean(opts.deleteHost) });
       } else {
-        runCodex(common);
+        // --gh-token only applies to a plain (non-host) Direct configure.
+        runCodex({ ...common, "gh-token": opts.ghToken as string | boolean | undefined });
       }
     }),
   );
@@ -265,6 +289,11 @@ program
     "Auto-detect: write direct when a live `claude -p` Copilot Direct probe succeeds, else the proxy.",
   )
   .option(
+    "--gh-token [token]",
+    "Direct mode: authenticate with this GitHub token (baked into the apiKeyHelper) instead of the " +
+      "gh CLI. Bare flag reads $GH_TOKEN/$GITHUB_TOKEN. Implies --direct.",
+  )
+  .option(
     "--check",
     "Report the configured Claude provider without changing config or probing: exit 0 direct, 2 proxy, 1 other.",
   )
@@ -276,6 +305,7 @@ program
         direct: Boolean(opts.direct),
         proxy: Boolean(opts.proxy),
         auto: Boolean(opts.auto),
+        "gh-token": opts.ghToken as string | boolean | undefined,
       }),
     ),
   );
@@ -349,6 +379,11 @@ program
   .option("--launchers", "Also wire the opt-in cl / co / cx launchers after CLI setup.")
   .option("--all-hosts", "Windows only: with --launchers, target the CurrentUserAllHosts profile.")
   .option("--no-prereqs", "Verify prerequisites and CLIs only; install nothing.")
+  .option(
+    "--gh-token [token]",
+    "Configure both agents for Direct with this GitHub token (baked + seeded for the proxy) — no " +
+      "`gh` login needed. Bare flag reads $GH_TOKEN/$GITHUB_TOKEN.",
+  )
   .action((opts: Opts) =>
     runSafe(() =>
       runSetupClis({
@@ -357,6 +392,7 @@ program
         launchers: Boolean(opts.launchers),
         noSudo: opts.sudo === false,
         noPrereqs: opts.prereqs === false,
+        "gh-token": opts.ghToken as string | boolean | undefined,
       }),
     ),
   );

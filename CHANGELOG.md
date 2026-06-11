@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.3](https://github.com/Vivswan/copilot-env/compare/v3.3.2...v3.3.3) (2026-06-11)
+
+
+### Bug Fixes
+
+* load the Claude Direct-probe apiKeyHelper by pairing --bare with --settings ([09d952f](https://github.com/Vivswan/copilot-env/commit/09d952f6449db4ccede4f86da67f9b3f9308976b))
+
 ## [3.3.2](https://github.com/Vivswan/copilot-env/compare/v3.3.1...v3.3.2) (2026-06-11)
 
 

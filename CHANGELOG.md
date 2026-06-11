@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.1](https://github.com/Vivswan/copilot-env/compare/v3.3.0...v3.3.1) (2026-06-11)
+
+
+### Bug Fixes
+
+* surface why agent init falls back to the proxy and sanitize the probe env ([ec5c7e4](https://github.com/Vivswan/copilot-env/commit/ec5c7e4ad388bad57259523e28cbfb892828e946))
+
 ## [3.3.0](https://github.com/Vivswan/copilot-env/compare/v3.2.0...v3.3.0) (2026-06-10)
 
 

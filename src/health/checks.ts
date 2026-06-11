@@ -528,12 +528,12 @@ export function checkCodexLive(f: LiveProbeFacts): CheckResult {
     : {
         ...base,
         status: "warn",
-        detail: `read-only prompt failed (${f.cli}); the configured backend did not answer`,
+        detail: `read-only prompt failed (${f.cli})${
+          f.detail ? `\n${f.detail}` : "; the configured backend did not answer"
+        }`,
         fix: "agent codex --auto",
       };
 }
-
-/** `--live` end-to-end check: did Claude actually respond via its configured backend? */
 export function checkClaudeLive(f: LiveProbeFacts): CheckResult {
   const base = {
     id: "claude.live",
@@ -550,7 +550,9 @@ export function checkClaudeLive(f: LiveProbeFacts): CheckResult {
     : {
         ...base,
         status: "warn",
-        detail: `read-only prompt failed (${f.cli}); the configured backend did not answer`,
+        detail: `read-only prompt failed (${f.cli})${
+          f.detail ? `\n${f.detail}` : "; the configured backend did not answer"
+        }`,
         fix: "agent claude --auto",
       };
 }

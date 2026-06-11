@@ -84,7 +84,12 @@ export const PROVIDER_ENV_PREFIXES = ["OPENAI_", "ANTHROPIC_", "CODEX_", "CLAUDE
 export const CODEX_PROBE: ProbeDescriptor = {
   cli: "codex",
   homeEnvVar: "CODEX_HOME",
-  args: (prompt) => ["exec", "--json", "--sandbox", "read-only", prompt],
+  // --skip-git-repo-check: the probe runs against a throwaway home with no
+  // `[projects]` trust list, so without this codex refuses to run unless the cwd
+  // happens to be a git repo ("Not inside a trusted directory and
+  // --skip-git-repo-check was not specified.") — making Direct detection fail
+  // purely based on where `agent init` was invoked.
+  args: (prompt) => ["exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", prompt],
   // OPENAI_*/CODEX_* are cleared by prefix; nothing extra needed today.
   clearEnv: [],
 };

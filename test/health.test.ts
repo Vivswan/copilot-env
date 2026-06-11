@@ -458,10 +458,31 @@ test("checkCodexLive/checkClaudeLive: ok responds, fail warns, missing skips", (
   expect(codexSkip.status).toBe("ok");
   expect(codexSkip.detail).toContain("skipped");
 
+  // When the probe captured output, the full error is surfaced verbatim (no
+  // generic "did not answer" placeholder).
+  const codexFailWithDetail = checkCodexLive({
+    ran: true,
+    ok: false,
+    cli: "/bin/codex",
+    detail: '{"type":"turn.failed","error":{"message":"401 Unauthorized"}}',
+  });
+  expect(codexFailWithDetail.status).toBe("warn");
+  expect(codexFailWithDetail.detail).toContain("401 Unauthorized");
+  expect(codexFailWithDetail.detail).not.toContain("did not answer");
+
   expect(checkClaudeLive({ ran: true, ok: true, cli: "/bin/claude" }).status).toBe("ok");
   const claudeFail = checkClaudeLive({ ran: true, ok: false, cli: "/bin/claude" });
   expect(claudeFail.status).toBe("warn");
   expect(claudeFail.fix).toBe("agent claude --auto");
+  // Claude surfaces the full captured error too (symmetric with codex).
+  const claudeFailWithDetail = checkClaudeLive({
+    ran: true,
+    ok: false,
+    cli: "/bin/claude",
+    detail: "API Error: 401 invalid x-api-key",
+  });
+  expect(claudeFailWithDetail.detail).toContain("401 invalid x-api-key");
+  expect(claudeFailWithDetail.detail).not.toContain("did not answer");
   expect(checkClaudeLive({ ran: false, ok: false, cli: null }).status).toBe("ok");
 });
 

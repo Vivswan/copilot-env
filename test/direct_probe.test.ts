@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 
 import {
   assertSingleMode,
+  CODEX_PROBE,
   DEFAULT_PROBE_RETRIES,
   type ProbeDescriptor,
   type ProbeOutcome,
@@ -9,6 +10,14 @@ import {
   resolveDirect,
   summarizeProbeFailure,
 } from "../src/utils/direct_probe.ts";
+
+// --- CODEX_PROBE args --------------------------------------------------------
+
+test("CODEX_PROBE passes --skip-git-repo-check so a non-git cwd can't fail the probe", () => {
+  // codex refuses to run outside a git repo / trusted dir, and the probe's
+  // throwaway home has no trust list — so the flag is mandatory.
+  expect(CODEX_PROBE.args("hi")).toContain("--skip-git-repo-check");
+});
 
 // A throwaway descriptor: clears one provider var, points at a fake home env var.
 const FAKE_DESCRIPTOR: ProbeDescriptor = {

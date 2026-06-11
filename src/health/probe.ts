@@ -117,6 +117,8 @@ export interface LiveProbeFacts {
   ran: boolean;
   ok: boolean;
   cli: string | null;
+  /** On failure (`ok: false`): the captured reason + a tail of the real CLI output. */
+  detail?: string;
 }
 
 /** Codex wiring facts: the home being inspected plus the wiring contract status. */
@@ -230,10 +232,39 @@ function codexDirectAuth(): Promise<CodexDirectAuthFacts> {
 }
 
 /**
+ * Build the `--live` failure detail: the CLI's FULL stdout/stderr, verbatim, so
+ * `agent health --live` shows the complete error instead of a one-line summary.
+ * codex's giant model-catalog lines are dropped (noise, not error); everything
+ * else is kept untruncated. When the child produced no output (e.g. a timeout
+ * kill, with code null + signal), fall back to the bare exit/timeout status so
+ * the detail is never blank.
+ */
+function formatLiveFailure(
+  code: number | null,
+  signal: string | null,
+  errorMessage: string | undefined,
+  stdout: string,
+  stderr: string,
+): string {
+  const lines = `${stderr}\n${stdout}`
+    .split(/\r?\n/)
+    .map((l) => l.trimEnd())
+    .filter((l) => l.trim() && !/"capabilities"|"object":\s*"model"|model_picker/.test(l));
+  if (lines.length) return lines.join("\n");
+  if (errorMessage) return errorMessage;
+  if (code === null && signal) {
+    return `no response within ${Math.round(PROBE_TIMEOUT_MS / 1000)}s (killed by ${signal})`;
+  }
+  return `exit ${code ?? "?"}`;
+}
+
+/**
  * Run an agent CLI's read-only smoke prompt against a CONFIGURED home (`--live`).
  * Async (overlaps the other probes) with a hard timeout; a timeout or any
- * non-zero exit => ok:false. Skipped (ran:false) when the CLI isn't installed.
- * Spawns the RESOLVED path so the nvm fallback isn't defeated.
+ * non-zero exit => ok:false, with `detail` carrying the captured reason + output.
+ * Skipped (ran:false) when the CLI isn't installed. Spawns the RESOLVED path so
+ * the nvm fallback isn't defeated. Unlike the init probe, the environment is NOT
+ * sanitized — `--live` tests the user's real, fully-resolved setup.
  */
 function runLiveCli(
   cli: string,
@@ -246,8 +277,12 @@ function runLiveCli(
   const ghPath = resolveCommand("gh");
   return new Promise((resolve) => {
     const s = cliSpawn(resolved, args);
+    // Capture stdout/stderr (not stdio:"ignore") so a failure reports the FULL
+    // reason the backend didn't answer. The cap is effectively unbounded (64 MB) —
+    // a smoke prompt's real output is tiny, and the catalog noise is filtered out
+    // when formatting — but it guards against a pathologically chatty CLI.
     const child = spawn(s.file, s.args, {
-      stdio: "ignore",
+      stdio: ["ignore", "pipe", "pipe"],
       timeout: PROBE_TIMEOUT_MS,
       windowsHide: true,
       shell: s.shell,
@@ -260,8 +295,35 @@ function runLiveCli(
         PATH: childPathPrepending([dirname(resolved), ghPath ? dirname(ghPath) : null]),
       },
     });
-    child.on("error", () => resolve({ ran: true, ok: false, cli: resolved }));
-    child.on("close", (code) => resolve({ ran: true, ok: code === 0, cli: resolved }));
+    const CAP = 64 * 1024 * 1024;
+    let out = "";
+    let err = "";
+    child.stdout?.on("data", (d: Buffer) => {
+      if (out.length < CAP) out += d.toString();
+    });
+    child.stderr?.on("data", (d: Buffer) => {
+      if (err.length < CAP) err += d.toString();
+    });
+    child.on("error", (e: Error) =>
+      resolve({
+        ran: true,
+        ok: false,
+        cli: resolved,
+        detail: formatLiveFailure(null, null, e.message, out, err),
+      }),
+    );
+    child.on("close", (code, signal) => {
+      if (code === 0) {
+        resolve({ ran: true, ok: true, cli: resolved });
+      } else {
+        resolve({
+          ran: true,
+          ok: false,
+          cli: resolved,
+          detail: formatLiveFailure(code, signal, undefined, out, err),
+        });
+      }
+    });
   });
 }
 

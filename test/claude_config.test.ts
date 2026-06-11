@@ -165,11 +165,11 @@ test("detectClaudeDirect: true only when CLI+gh present, gh authed, and the prob
   const ok = {
     resolveCommand: (c: string) => `/bin/${c}`,
     ghAuthOk: () => true,
-    runProbe: () => true,
+    runProbe: () => ({ ok: true }),
     retryDelayMs: 0,
   };
   expect(detectClaudeDirect(ok)).toBe(true);
-  expect(detectClaudeDirect({ ...ok, runProbe: () => false })).toBe(false);
+  expect(detectClaudeDirect({ ...ok, runProbe: () => ({ ok: false }) })).toBe(false);
   expect(detectClaudeDirect({ ...ok, ghAuthOk: () => false })).toBe(false);
   expect(
     detectClaudeDirect({ ...ok, resolveCommand: (c) => (c === "claude" ? null : `/bin/${c}`) }),

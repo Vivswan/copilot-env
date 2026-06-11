@@ -336,14 +336,14 @@ test("detectCodexDirect: true only when CLI+gh present, gh authed, and the probe
     ghAuthOk: () => true,
     runProbe: () => {
       probeCalls++;
-      return true;
+      return { ok: true };
     },
     retryDelayMs: 0,
   };
   expect(detectCodexDirect(ok)).toBe(true);
   expect(probeCalls).toBe(1);
   // The live read-only prompt failed -> proxy.
-  expect(detectCodexDirect({ ...ok, runProbe: () => false })).toBe(false);
+  expect(detectCodexDirect({ ...ok, runProbe: () => ({ ok: false }) })).toBe(false);
 
   // Each cheap gate miss returns false WITHOUT calling runProbe.
   probeCalls = 0;

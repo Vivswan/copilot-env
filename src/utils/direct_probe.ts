@@ -146,30 +146,16 @@ export interface DirectProbeDeps {
   retryDelayMs?: number;
 }
 
-/** The three mutually-exclusive provider-mode flags every agent command accepts. */
+/** The mutually-exclusive provider-mode flags every agent command accepts. */
 export interface ModeFlags {
   direct?: boolean;
   proxy?: boolean;
-  auto?: boolean;
-  /**
-   * The raw `--gh-token` value: `undefined` = absent, `true` = bare flag (read
-   * the token from the environment), a string = the literal token. A token
-   * implies Direct, so it is mutually exclusive with `--proxy`.
-   */
-  "gh-token"?: string | boolean;
 }
 
-/**
- * Reject more than one of --direct / --proxy / --auto on the same invocation, and
- * reject --gh-token alongside --proxy or --auto (a token forces Direct, so a
- * proxy target or an auto-detect probe is contradictory).
- */
+/** Reject both --direct and --proxy on the same invocation. */
 export function assertSingleMode(flags: ModeFlags): void {
-  if ([flags.direct, flags.proxy, flags.auto].filter(Boolean).length > 1) {
-    throw new Error("--direct, --proxy, and --auto are mutually exclusive");
-  }
-  if (flags["gh-token"] !== undefined && (flags.proxy || flags.auto)) {
-    throw new Error("--gh-token forces Direct mode and cannot be combined with --proxy or --auto");
+  if (flags.direct && flags.proxy) {
+    throw new Error("--direct and --proxy are mutually exclusive");
   }
 }
 
@@ -179,6 +165,7 @@ export function assertSingleMode(flags: ModeFlags): void {
  * `--gh-token` (value `true`) reads `$GH_TOKEN`, then `$GITHUB_TOKEN`, so the
  * secret stays out of argv / shell history; a string value is used verbatim
  * (trimmed). Throws when a token was requested but none could be resolved.
+ * Used by `agent init` to resolve the flag before persisting it to state.
  */
 export function resolveGhToken(flag: string | boolean | undefined): string | null {
   // undefined = flag absent; false should never come from Commander for an
@@ -197,13 +184,20 @@ export function resolveGhToken(flag: string | boolean | undefined): string | nul
 }
 
 /**
- * Decide whether to write DIRECT (true) or PROXY (false): `--direct` forces
- * direct, `--proxy` forces proxy, and `--auto` (or no mode flag) runs the live
- * `detectDirect` probe. The detect callback is only invoked on the auto path.
+ * Decide whether to write DIRECT (true) or PROXY (false), honoring a provisioned
+ * token (the shared store's githubToken): `--proxy` => proxy, `--direct` =>
+ * direct, and with NO mode flag a present token selects Direct (we already hold a
+ * credential, so no probe is needed) while no token falls back to the live
+ * `detectDirect` probe.
  */
-export function resolveDirect(flags: ModeFlags, detectDirect: () => boolean): boolean {
-  if (flags.direct) return true;
+export function resolveDirectMode(
+  flags: ModeFlags,
+  ghToken: string | null,
+  detectDirect: () => boolean,
+): boolean {
   if (flags.proxy) return false;
+  if (flags.direct) return true;
+  if (ghToken !== null) return true;
   return detectDirect();
 }
 

@@ -4,7 +4,7 @@
 # Bootstrap only: ensure bun, download/extract the selected copilot-env GitHub
 # release source archive, then hand off to the release-bundled TypeScript
 # installer. Optional CLIs and launchers are managed after install with
-# `agent setup-clis --launchers`.
+# `agent shell --clis --launchers`.
 
 set -eu
 
@@ -28,14 +28,14 @@ Installs copilot-env into ~/.copilot-env by downloading the selected GitHub
 release source archive, bootstraps its dependencies, and wires shell integration
 by default. Optional agent CLIs and launchers are configured after install:
 
-  agent setup-clis [--cooldown[=DAYS]] [--no-sudo] [--no-prereqs] [--launchers]
+  agent shell --clis [--cooldown[=DAYS]] [--no-sudo] [--no-prereqs] [--launchers]
 
 Options:
   --dir DIR              Install target (default ~/.copilot-env). Takes
                          precedence over $COPILOT_ENV_DIR. Ignored when run
                          from an existing checkout.
   --no-shell-integration Do not wire ~/.bashrc / ~/.zshrc. Run
-                         `agent setup-shell` later to enable it.
+                         `agent shell` later to enable it.
 
 To install a specific copilot-env version, download install.sh from that
 GitHub Release and run it. The main-branch installer resolves latest; release

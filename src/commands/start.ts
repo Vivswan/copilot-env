@@ -4,6 +4,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
 import { CopilotAdminClient } from "../copilot_api/admin.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
+import { readStoredGithubToken } from "../copilot_api/gh_token.ts";
 import { generateAliases } from "../copilot_api/models.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import {
@@ -328,9 +329,9 @@ export async function runStart(args: StartArgs): Promise<void> {
 
   fs.writeFileSync(logFile, "");
   const daemonEnv: Record<string, string> = { COPILOT_API_SQLITE_DB_PATH: paths.sqliteDb };
-  // A `--gh-token` provisioned into our state is passed to the daemon as
+  // A `--gh-token` provisioned via `agent init` is passed to the daemon as
   // `--github-token` (in-memory only; never written to copilot-api's own login file).
-  const githubToken = state.read().githubToken;
+  const githubToken = readStoredGithubToken() ?? undefined;
   let pid = launchDaemon(port, logFile, daemonEnv, githubToken);
 
   await sleep(1000);
@@ -449,7 +450,7 @@ export async function runStart(args: StartArgs): Promise<void> {
       "",
       "  • Launch an agent:  `cl` (Claude) / `cx` (Codex) / `co` (Copilot)",
       "    …or run `claude` / `codex` directly.",
-      "  • Install those launchers:  `agent setup-launchers`",
+      "  • Install those launchers:  `agent shell --launchers`",
       "  • `agent cost` reports proxy usage  ·  `agent stop` stops the proxy.",
     ].join("\n"),
   );

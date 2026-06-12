@@ -3,8 +3,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execaSync } from "execa";
 import which from "which";
+import { readStoredGithubToken } from "../copilot_api/gh_token.ts";
 import { CopilotApiState } from "../copilot_api/state.ts";
-import { assertSingleMode, resolveDirect } from "../utils/direct_probe.ts";
+import { assertSingleMode, resolveDirectMode } from "../utils/direct_probe.ts";
 import { isFile } from "../utils/fs.ts";
 import { getSanitizedHostname, HOME } from "../utils/hostname.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -13,11 +14,9 @@ import { applyCodexConfig, detectCodexDirect } from "./config.ts";
 const logger = createStderrLogger();
 
 export interface CodexHostArgs {
-  "codex-home"?: string;
   delete?: boolean;
   direct?: boolean;
   proxy?: boolean;
-  auto?: boolean;
 }
 
 // The per-host CODEX_HOME (~/.codex/hosts/<hostname>). On Linux/macOS it builds and
@@ -498,18 +497,18 @@ function buildCodexSymlinkFarm(codexHome: string): number {
 
 /**
  * `agent codex --host`: build the per-host CODEX_HOME symlink farm (Linux/macOS)
- * at `--codex-home` (default `~/.codex/hosts/<hostname>`), then write its config
- * and persist the CODEX_HOME to state so `env` exports it. The provider mode is
- * `--direct` / `--proxy` forced, or `--auto` (or no mode flag) auto-detected
- * (direct when a live Copilot Direct probe succeeds, else proxy). With
- * `--delete-host`, remove that per-host dir and clear the state instead. No stdout.
+ * at `~/.codex/hosts/<hostname>`, then write its config and persist the CODEX_HOME
+ * to state so `env` exports it. The provider mode is `--direct` / `--proxy` forced,
+ * or with no mode flag auto-detected (direct when a live Copilot Direct probe
+ * succeeds, else proxy). With `--delete-host`, remove that per-host dir and clear
+ * the state instead. No stdout.
  */
 export function runCodexHost(args: CodexHostArgs): void {
   if (!assertUnix("The CODEX_HOME symlink farm (host_codex)")) return;
   // Resolve to an absolute path: it gets persisted to state and re-exported into
   // future shells, so a cwd-relative value would later resolve against the wrong
   // directory.
-  const codexHome = path.resolve(args["codex-home"] ?? getHostLocalCodexHome());
+  const codexHome = path.resolve(getHostLocalCodexHome());
   const state = new CopilotApiState();
   assertSingleMode(args);
 
@@ -526,12 +525,14 @@ export function runCodexHost(args: CodexHostArgs): void {
       `Failed to build the CODEX_HOME symlink farm at ${codexHome} (a filesystem operation under it or ~/.codex failed — check permissions and free space)`,
     );
   }
-  // --direct/--proxy force the mode; --auto (or no flag) auto-detects.
-  const direct = resolveDirect(args, detectCodexDirect);
+  // --direct/--proxy force the mode; with no flag a token provisioned via
+  // `agent init --gh-token` (in the shared store) selects Direct, else probe.
+  const ghToken = readStoredGithubToken();
+  const direct = resolveDirectMode(args, ghToken, detectCodexDirect);
   logger.info(
     `Configuring the per-host Codex home for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} ...`,
   );
-  applyCodexConfig(codexHome, { proxy: !direct });
+  applyCodexConfig(codexHome, { proxy: !direct }, direct ? ghToken : null);
   // Persist the active CODEX_HOME (opt-in: only set because a codex command ran).
   state.set({ codexHome });
 }

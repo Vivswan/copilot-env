@@ -13,20 +13,13 @@ import { execa } from "execa";
 import { parse, stringify } from "smol-toml";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import {
-  CODEX_PROVIDER_ID,
-  type CodexConfigArgs,
-  DIRECT_PROVIDER_ID,
-  effectiveCodexHome,
-} from "./config.ts";
+import { CODEX_PROVIDER_ID, DIRECT_PROVIDER_ID, effectiveCodexHome } from "./config.ts";
 
 const logger = createStderrLogger();
 
 const APP_NAME = "Codex";
 const QUIT_POLL_MS = 500;
 const QUIT_TIMEOUT_MS = 8000;
-
-export type CodexMobileArgs = Pick<CodexConfigArgs, "codex-home">;
 
 // --- pure config toggle (unit-tested) ---------------------------------------
 
@@ -172,7 +165,7 @@ function appController(): AppController {
  * Interactive (TTY required). The config is restored in a finally block so an
  * abort mid-flow can't leave Codex unconfigured.
  */
-export async function runCodexMobile(args: CodexMobileArgs): Promise<void> {
+export async function runCodexMobile(): Promise<void> {
   // The Codex desktop app exists on macOS and Windows only (no Linux app). Gate
   // other platforms BEFORE touching any config (mirrors host.ts's assertUnix).
   if (process.platform !== "darwin" && process.platform !== "win32") {
@@ -186,7 +179,7 @@ export async function runCodexMobile(args: CodexMobileArgs): Promise<void> {
     throw new Error("`agent codex --mobile` is interactive — run it in a terminal.");
   }
 
-  const home = effectiveCodexHome(args);
+  const home = effectiveCodexHome();
   const configPath = join(home, "config.toml");
   let original: string;
   try {

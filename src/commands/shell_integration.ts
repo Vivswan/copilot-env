@@ -8,7 +8,7 @@ import { consola } from "consola";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 
-// `agent setup-shell` owns wiring the copilot-env integration into the
+// `agent shell` owns wiring the copilot-env integration into the
 // user's shell startup -- the logic install.sh / install.ps1 used to duplicate.
 // File wiring is done here in TS for BOTH platforms; we only shell out to tiny
 // `powershell -Command` one-liners for the two Windows-only needs TS can't cover

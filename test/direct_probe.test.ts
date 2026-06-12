@@ -8,7 +8,7 @@ import {
   type ProbeDescriptor,
   type ProbeOutcome,
   probeDirectWorks,
-  resolveDirect,
+  resolveDirectMode,
   resolveGhToken,
   summarizeProbeFailure,
 } from "../src/utils/direct_probe.ts";
@@ -93,33 +93,13 @@ test("summarizeProbeFailure truncates an oversized reason line", () => {
 
 // --- assertSingleMode -------------------------------------------------------
 
-test("assertSingleMode allows zero or one mode flag, rejects two or more", () => {
+test("assertSingleMode allows zero or one mode flag, rejects both", () => {
   expect(() => assertSingleMode({})).not.toThrow();
   expect(() => assertSingleMode({ direct: true })).not.toThrow();
   expect(() => assertSingleMode({ proxy: true })).not.toThrow();
-  expect(() => assertSingleMode({ auto: true })).not.toThrow();
-  for (const combo of [
-    { direct: true, proxy: true },
-    { direct: true, auto: true },
-    { proxy: true, auto: true },
-    { direct: true, proxy: true, auto: true },
-  ]) {
-    expect(() => assertSingleMode(combo)).toThrow(
-      "--direct, --proxy, and --auto are mutually exclusive",
-    );
-  }
-});
-
-test("assertSingleMode rejects --gh-token alongside --proxy or --auto (token forces direct)", () => {
-  expect(() => assertSingleMode({ "gh-token": "x", proxy: true })).toThrow(
-    "cannot be combined with --proxy or --auto",
+  expect(() => assertSingleMode({ direct: true, proxy: true })).toThrow(
+    "--direct and --proxy are mutually exclusive",
   );
-  expect(() => assertSingleMode({ "gh-token": "x", auto: true })).toThrow(
-    "cannot be combined with --proxy or --auto",
-  );
-  // A token with direct (or alone) is fine.
-  expect(() => assertSingleMode({ "gh-token": "x", direct: true })).not.toThrow();
-  expect(() => assertSingleMode({ "gh-token": true })).not.toThrow();
 });
 
 // --- resolveGhToken (flag -> token string | null) ---------------------------
@@ -150,27 +130,17 @@ test("resolveGhToken: undefined -> null, string -> trimmed literal, bare -> env,
   }
 });
 
-// --- resolveDirect (the force-vs-probe contract) ----------------------------
+// --- resolveDirectMode (mode + provisioned token) ---------------------------
 
-test("resolveDirect: --direct/--proxy force without probing; --auto and no-flag probe", () => {
-  const detectTrue = () => true;
-  const detectFalse = () => false;
-
-  // Forced modes must NOT invoke the probe at all.
-  let calls = 0;
-  const spy = () => {
-    calls++;
-    return true;
-  };
-  expect(resolveDirect({ direct: true }, spy)).toBe(true);
-  expect(resolveDirect({ proxy: true }, spy)).toBe(false);
-  expect(calls).toBe(0);
-
-  // --auto and no mode flag both run the probe and return its result.
-  expect(resolveDirect({ auto: true }, detectTrue)).toBe(true);
-  expect(resolveDirect({ auto: true }, detectFalse)).toBe(false);
-  expect(resolveDirect({}, detectTrue)).toBe(true); // no flag == auto
-  expect(resolveDirect({}, detectFalse)).toBe(false);
+test("resolveDirectMode: a stored token selects Direct only when no mode flag wins", () => {
+  const probe = () => false; // probe says "not direct" so token-vs-probe is visible
+  // --proxy / --direct win over a stored token.
+  expect(resolveDirectMode({ proxy: true }, "ghu_x", probe)).toBe(false);
+  expect(resolveDirectMode({ direct: true }, null, probe)).toBe(true);
+  // No mode flag: a present token selects Direct without probing; no token probes.
+  expect(resolveDirectMode({}, "ghu_x", probe)).toBe(true);
+  expect(resolveDirectMode({}, null, probe)).toBe(false);
+  expect(resolveDirectMode({}, null, () => true)).toBe(true);
 });
 
 // --- probeDirectWorks: retry on transient failure ---------------------------

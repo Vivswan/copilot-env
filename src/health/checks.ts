@@ -236,7 +236,7 @@ export function checkShellIntegration(f: ShellFacts): CheckResult {
     detail: f.integrationWired
       ? "wired into a shell rc/profile"
       : "not wired into any shell rc/profile",
-    ...(f.integrationWired ? {} : { fix: "agent setup-shell" }),
+    ...(f.integrationWired ? {} : { fix: "agent shell" }),
     value: { integrationWired: f.integrationWired, files: f.files },
   };
 }
@@ -249,7 +249,7 @@ export function checkLaunchers(f: ShellFacts): CheckResult {
     scopes: SETUP,
     status: f.launchersWired ? "ok" : "warn",
     detail: f.launchersWired ? "wired into a shell rc/profile" : "not wired (optional)",
-    ...(f.launchersWired ? {} : { fix: "agent setup-launchers" }),
+    ...(f.launchersWired ? {} : { fix: "agent shell --launchers" }),
     value: { launchersWired: f.launchersWired },
   };
 }
@@ -342,7 +342,7 @@ export function checkCodex(f: CodexFacts): CheckResult {
         `model_provider github-copilot-direct → ${f.baseUrl ?? "(missing)"}`,
         authDetail,
       ].join("\n"),
-      ...(status === "ok" ? {} : { fix: f.providerWired ? ghFix : "agent codex --auto" }),
+      ...(status === "ok" ? {} : { fix: f.providerWired ? ghFix : "agent codex" }),
     };
   }
   // Config exists: report precisely which part of the wiring is off.
@@ -372,7 +372,7 @@ export function checkCodex(f: CodexFacts): CheckResult {
     ].join("\n");
   }
   if (detail !== null) {
-    return { ...base, status: "warn", detail, fix: "agent codex --auto" };
+    return { ...base, status: "warn", detail, fix: "agent codex" };
   }
   // Fully wired: the wiring status, the proxy, then each token source on its
   // own line (Codex resolves env_key from .env, but an exported var works too).
@@ -520,7 +520,7 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
     detail: [
       "provider: none",
       `settings.json: ${f.settingsPath}`,
-      "not configured; run `agent claude --auto` (or --direct/--proxy)",
+      "not configured; run `agent claude` (or --direct/--proxy)",
     ].join("\n"),
   };
 }
@@ -588,7 +588,7 @@ function checkAgentLive(agent: "codex" | "claude", f: LiveProbeFacts): CheckResu
         detail: `read-only prompt failed (${f.cli})${
           f.detail ? `\n${f.detail}` : "; the configured backend did not answer"
         }`,
-        fix: `agent ${agent} --auto`,
+        fix: `agent ${agent}`,
       };
 }
 

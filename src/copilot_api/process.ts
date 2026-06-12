@@ -5,13 +5,10 @@ import { createRequire } from "node:module";
 import { devNull } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { consola } from "consola";
 import { execa } from "execa";
 import psList from "ps-list";
 import { errMessage } from "../utils/error.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
-
-const logger = consola.withTag("copilot_api.process");
 
 // Resolve the bundled copilot-api entry by anchoring node's module resolution at
 // the in-place checkout where bootstrap installs the pinned dep + applies
@@ -199,9 +196,9 @@ export function printLogTail(logfile: string, lines: number): void {
     // Write the daemon's own log verbatim to stderr — NOT line-by-line through
     // consola.error. copilot-api already formats its lines, and routing each one
     // through a tagged ERROR badge (including the blank lines inside its stack
-    // traces) produced large padded gaps that buried the real failure.
-    logger.error("--- proxy log tail ---");
-    process.stderr.write(`${tail}\n`);
+    // traces) produced large padded gaps that buried the real failure. The header is
+    // written raw too, so it doesn't carry a mismatched consola ERROR badge.
+    process.stderr.write(`\n--- proxy log tail (${logfile}) ---\n${tail}\n`);
   } catch (_e) {
     // ignore
   }

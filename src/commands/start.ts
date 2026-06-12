@@ -44,7 +44,7 @@ const DEFAULT_SMALL_MODEL = "gpt-5.5";
 // the upstream Copilot bearer instead of first exchanging it at GitHub's editor-only
 // `copilot_internal/v2/token` endpoint.
 export const COPILOT_API_OAUTH_APP_ENV = "COPILOT_API_OAUTH_APP";
-const OPENCODE_PASSTHROUGH = "opencode";
+export const OPENCODE_PASSTHROUGH = "opencode";
 
 /**
  * Whether a GitHub token is a Personal Access Token by its prefix: `ghp_` (classic)

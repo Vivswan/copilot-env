@@ -63,93 +63,101 @@ export function restoreModelProvider(configToml: string, provider: string): stri
 
 // --- desktop app control ----------------------------------------------------
 
-interface AppController {
-  /** The Codex app appears installed. */
-  installed(): Promise<boolean>;
-  /** The Codex app is currently running. */
-  isRunning(): Promise<boolean>;
-  /** Ensure the app is closed (graceful, then forced). */
-  quit(): Promise<void>;
-  /** Open / focus the app. */
-  open(): Promise<void>;
-}
-
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-function macController(): AppController {
-  const run = (file: string, args: string[]) => execa(file, args, { reject: false });
-  const isRunning = async () => (await run("pgrep", ["-x", APP_NAME])).exitCode === 0;
-  return {
-    installed: async () => (await run("open", ["-Ra", APP_NAME])).exitCode === 0,
-    isRunning,
-    open: async () => {
-      await run("open", ["-a", APP_NAME]);
-    },
-    quit: async () => {
-      await run("osascript", ["-e", `tell application "${APP_NAME}" to quit`]);
-      // Wait for a graceful quit; force-kill if it overstays.
-      const deadline = Date.now() + QUIT_TIMEOUT_MS;
-      while (Date.now() < deadline) {
-        if (!(await isRunning())) return;
-        await sleep(QUIT_POLL_MS);
-      }
-      await run("pkill", ["-x", APP_NAME]);
-    },
-  };
-}
-
-/** Non-macOS fallback: we can't reliably drive the app, so ask the user to. */
-function manualPromptOpen(): Promise<unknown> {
-  return consola.prompt(`Open the ${APP_NAME} app, then press Enter.`, { type: "text" });
-}
-
 /**
- * Windows: drive the app via PowerShell (mirrors macController). Process/Start-menu
- * name is APP_NAME ("Codex"). isRunning/quit are fully programmatic; open resolves
- * the Start-menu app (covers Store + most installers) and falls back to a manual
- * prompt only if it can't launch.
+ * Drives the Codex desktop app (install check / running check / open / quit) across
+ * macOS and Windows. macOS uses `open`/`pgrep`/`osascript`/`pkill`; Windows drives it
+ * via PowerShell (Get-StartApps/Get-Process/Start-Process/Stop-Process). The
+ * graceful-then-force `quit()` poll loop is shared; only the per-platform primitives differ.
  */
-function windowsController(): AppController {
-  const ps = (script: string) =>
-    execa("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { reject: false });
-  const isRunning = async () =>
-    (
-      await ps(
-        `if (Get-Process -Name '${APP_NAME}' -ErrorAction SilentlyContinue) { exit 0 } exit 1`,
-      )
-    ).exitCode === 0;
-  return {
-    installed: async () =>
-      (
-        await ps(
-          `if ((Get-StartApps | Where-Object { $_.Name -like '${APP_NAME}*' }) -or (Get-Process -Name '${APP_NAME}' -ErrorAction SilentlyContinue)) { exit 0 } exit 1`,
-        )
-      ).exitCode === 0,
-    isRunning,
-    open: async () => {
-      const r = await ps(
+export class CodexAppController {
+  private readonly windows = process.platform === "win32";
+
+  private run(file: string, args: string[]) {
+    return execa(file, args, { reject: false });
+  }
+
+  private ps(script: string) {
+    return execa("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
+      reject: false,
+    });
+  }
+
+  /** The Codex app appears installed. */
+  async installed(): Promise<boolean> {
+    if (this.windows) {
+      return (
+        (
+          await this.ps(
+            `if ((Get-StartApps | Where-Object { $_.Name -like '${APP_NAME}*' }) -or (Get-Process -Name '${APP_NAME}' -ErrorAction SilentlyContinue)) { exit 0 } exit 1`,
+          )
+        ).exitCode === 0
+      );
+    }
+    return (await this.run("open", ["-Ra", APP_NAME])).exitCode === 0;
+  }
+
+  /** The Codex app is currently running. */
+  async isRunning(): Promise<boolean> {
+    if (this.windows) {
+      return (
+        (
+          await this.ps(
+            `if (Get-Process -Name '${APP_NAME}' -ErrorAction SilentlyContinue) { exit 0 } exit 1`,
+          )
+        ).exitCode === 0
+      );
+    }
+    return (await this.run("pgrep", ["-x", APP_NAME])).exitCode === 0;
+  }
+
+  /** Open / focus the app. On Windows, falls back to a manual prompt if it can't launch. */
+  async open(): Promise<void> {
+    if (this.windows) {
+      const r = await this.ps(
         `$a = Get-StartApps | Where-Object { $_.Name -like '${APP_NAME}*' } | Select-Object -First 1;` +
           `if ($a) { Start-Process ('shell:AppsFolder\\' + $a.AppID) } else { Start-Process '${APP_NAME}' }`,
       );
-      if (r.exitCode !== 0) await manualPromptOpen();
-    },
-    quit: async () => {
-      // Graceful: ask the window to close, then poll, then force.
-      await ps(
+      if (r.exitCode !== 0) await this.manualPromptOpen();
+      return;
+    }
+    await this.run("open", ["-a", APP_NAME]);
+  }
+
+  /** Ensure the app is closed: ask it to quit, poll, then force-kill if it overstays. */
+  async quit(): Promise<void> {
+    await this.requestQuit();
+    const deadline = Date.now() + QUIT_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (!(await this.isRunning())) return;
+      await sleep(QUIT_POLL_MS);
+    }
+    await this.forceQuit();
+  }
+
+  private async requestQuit(): Promise<void> {
+    if (this.windows) {
+      await this.ps(
         `Get-Process -Name '${APP_NAME}' -ErrorAction SilentlyContinue | ForEach-Object { $_.CloseMainWindow() | Out-Null }`,
       );
-      const deadline = Date.now() + QUIT_TIMEOUT_MS;
-      while (Date.now() < deadline) {
-        if (!(await isRunning())) return;
-        await sleep(QUIT_POLL_MS);
-      }
-      await ps(`Stop-Process -Name '${APP_NAME}' -Force -ErrorAction SilentlyContinue`);
-    },
-  };
-}
+    } else {
+      await this.run("osascript", ["-e", `tell application "${APP_NAME}" to quit`]);
+    }
+  }
 
-function appController(): AppController {
-  return process.platform === "win32" ? windowsController() : macController();
+  private async forceQuit(): Promise<void> {
+    if (this.windows) {
+      await this.ps(`Stop-Process -Name '${APP_NAME}' -Force -ErrorAction SilentlyContinue`);
+    } else {
+      await this.run("pkill", ["-x", APP_NAME]);
+    }
+  }
+
+  /** Non-programmable launch fallback: ask the user to open the app. */
+  private manualPromptOpen(): Promise<unknown> {
+    return consola.prompt(`Open the ${APP_NAME} app, then press Enter.`, { type: "text" });
+  }
 }
 
 // --- orchestration ----------------------------------------------------------
@@ -190,7 +198,7 @@ export async function runCodexMobile(): Promise<void> {
     );
   }
 
-  const app = appController();
+  const app = new CodexAppController();
 
   if (!(await app.installed())) {
     logger.warn(`The ${APP_NAME} app does not appear to be installed.`);

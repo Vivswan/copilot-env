@@ -20,6 +20,7 @@
     "prepare": "husky"
   },
   "dependencies": {
+    "@electron/asar": "^4.2.0",
     "@jeffreycao/copilot-api": "latest",
     "commander": "^15.0.0",
     "consola": "^3.4.2",

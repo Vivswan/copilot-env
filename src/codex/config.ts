@@ -29,6 +29,7 @@ import {
   providerModeExitCode,
 } from "../utils/provider_mode.ts";
 import { AGENT_AUTH_GET_ARGS, agentLauncherCommand } from "../utils/root.ts";
+import { syncCodexAppImageGeneration } from "./app_patch.ts";
 
 const logger = createStderrLogger();
 
@@ -656,7 +657,7 @@ export function detectCodexDirect(deps?: DirectProbeDeps): boolean {
  * Direct credential automatically; with no mode flag, its presence selects Direct
  * without probing.
  */
-export function runCodex(args: CodexConfigArgs): void {
+export async function runCodex(args: CodexConfigArgs): Promise<void> {
   assertSingleMode(args);
   if (args.check) {
     checkCodexConfig();
@@ -671,6 +672,9 @@ export function runCodex(args: CodexConfigArgs): void {
     `  Configuring Codex for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} …`,
   );
   applyCodexConfig(effectiveCodexHome(), { proxy: !direct });
+  // Keep the Codex desktop app's image_generation gate in sync with the mode
+  // (best-effort, macOS/Windows; never breaks the config write above).
+  await syncCodexAppImageGeneration(direct);
 }
 
 /** The configured Codex provider mode at the effective CODEX_HOME (read-only). */

@@ -289,16 +289,14 @@ program
       // --check is read-only: never build/delete the host farm or probe, even when
       // combined with --host/--delete-host. Route it to the check path first.
       if (opts.check) {
-        runCodex({ ...common, check: true });
-        return;
+        return runCodex({ ...common, check: true });
       }
       // --host (and --delete-host, which only makes sense with it) route to the
       // per-host symlink farm; everything else configures the active CODEX_HOME.
       if (opts.host || opts.deleteHost) {
-        runCodexHost({ ...common, delete: Boolean(opts.deleteHost) });
-      } else {
-        runCodex(common);
+        return runCodexHost({ ...common, delete: Boolean(opts.deleteHost) });
       }
+      return runCodex(common);
     }),
   );
 

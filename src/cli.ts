@@ -189,8 +189,22 @@ program
     "--port <port>",
     "Pin the proxy to this port instead of auto-resolving from the default (fails if it is busy).",
   )
+  .option(
+    "--passthrough",
+    "Forward the GitHub token directly to Copilot, skipping the editor token exchange (needed for PATs; auto-enabled for PAT-shaped tokens).",
+  )
+  .option(
+    "--no-passthrough",
+    "Force the standard editor token exchange even for a PAT-shaped token.",
+  )
   .action((opts: Opts) =>
-    runSafe(() => runStart({ dryRun: Boolean(opts.dryRun), port: parsePort(opts.port) })),
+    runSafe(() =>
+      runStart({
+        dryRun: Boolean(opts.dryRun),
+        port: parsePort(opts.port),
+        passthrough: opts.passthrough as boolean | undefined,
+      }),
+    ),
   );
 
 program

@@ -5,6 +5,7 @@ import {
   CLAUDE_PROBE,
   CODEX_PROBE,
   DEFAULT_PROBE_RETRIES,
+  ghTokenFromEnv,
   type ProbeDescriptor,
   type ProbeOutcome,
   probeDirectWorks,
@@ -105,8 +106,11 @@ test("assertSingleMode allows zero or one mode flag, rejects both", () => {
 // --- tokenFromSetFlag (flag -> token string | null) ---------------------------
 
 test("tokenFromSetFlag: undefined -> null, string -> trimmed literal, bare -> env, else throws", () => {
-  const savedGh = process.env.GH_TOKEN;
-  const savedGithub = process.env.GITHUB_TOKEN;
+  const saved = {
+    COPILOT_GITHUB_TOKEN: process.env.COPILOT_GITHUB_TOKEN,
+    GH_TOKEN: process.env.GH_TOKEN,
+    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+  };
   try {
     expect(tokenFromSetFlag(undefined)).toBeNull();
     expect(tokenFromSetFlag(false)).toBeNull(); // defensive: never the token "false"
@@ -114,19 +118,48 @@ test("tokenFromSetFlag: undefined -> null, string -> trimmed literal, bare -> en
     expect(tokenFromSetFlag("  ghu_trim  ")).toBe("ghu_trim");
     expect(() => tokenFromSetFlag("")).toThrow("is empty");
 
-    // Bare flag prefers GH_TOKEN, falls back to GITHUB_TOKEN.
+    // Bare flag reads the env vars, most specific first.
+    delete process.env.COPILOT_GITHUB_TOKEN;
     delete process.env.GH_TOKEN;
     delete process.env.GITHUB_TOKEN;
-    expect(() => tokenFromSetFlag(true)).toThrow("neither GH_TOKEN nor GITHUB_TOKEN is set");
+    expect(() => tokenFromSetFlag(true)).toThrow("COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN");
     process.env.GITHUB_TOKEN = "ghu_github";
     expect(tokenFromSetFlag(true)).toBe("ghu_github");
     process.env.GH_TOKEN = "ghu_gh";
-    expect(tokenFromSetFlag(true)).toBe("ghu_gh"); // GH_TOKEN wins
+    expect(tokenFromSetFlag(true)).toBe("ghu_gh"); // GH_TOKEN beats GITHUB_TOKEN
+    process.env.COPILOT_GITHUB_TOKEN = "ghu_copilot";
+    expect(tokenFromSetFlag(true)).toBe("ghu_copilot"); // COPILOT_GITHUB_TOKEN wins
   } finally {
-    if (savedGh === undefined) delete process.env.GH_TOKEN;
-    else process.env.GH_TOKEN = savedGh;
-    if (savedGithub === undefined) delete process.env.GITHUB_TOKEN;
-    else process.env.GITHUB_TOKEN = savedGithub;
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("ghTokenFromEnv: precedence COPILOT_GITHUB_TOKEN > GH_TOKEN > GITHUB_TOKEN, trims, null when unset", () => {
+  const saved = {
+    COPILOT_GITHUB_TOKEN: process.env.COPILOT_GITHUB_TOKEN,
+    GH_TOKEN: process.env.GH_TOKEN,
+    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+  };
+  try {
+    delete process.env.COPILOT_GITHUB_TOKEN;
+    delete process.env.GH_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    expect(ghTokenFromEnv()).toBeNull();
+    // A blank/whitespace value is treated as unset (falls through).
+    expect(ghTokenFromEnv({ GH_TOKEN: "   " })).toBeNull();
+    expect(ghTokenFromEnv({ GITHUB_TOKEN: "  ghu_g  " })).toBe("ghu_g"); // trimmed
+    expect(ghTokenFromEnv({ COPILOT_GITHUB_TOKEN: "c", GH_TOKEN: "g", GITHUB_TOKEN: "gh" })).toBe(
+      "c",
+    );
+    expect(ghTokenFromEnv({ GH_TOKEN: "g", GITHUB_TOKEN: "gh" })).toBe("g");
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   }
 });
 

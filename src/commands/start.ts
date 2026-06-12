@@ -39,6 +39,48 @@ import { ensureAuthenticated } from "./auth.ts";
 
 const DEFAULT_SMALL_MODEL = "gpt-5.5";
 
+// copilot-api's "passthrough" mode: with `--oauth-app opencode` (which the daemon
+// maps to COPILOT_API_OAUTH_APP=opencode), it forwards the GitHub token DIRECTLY as
+// the upstream Copilot bearer instead of first exchanging it at GitHub's editor-only
+// `copilot_internal/v2/token` endpoint.
+export const COPILOT_API_OAUTH_APP_ENV = "COPILOT_API_OAUTH_APP";
+const OPENCODE_PASSTHROUGH = "opencode";
+
+/**
+ * Whether a GitHub token is a Personal Access Token by its prefix: `ghp_` (classic)
+ * or `github_pat_` (fine-grained). PATs cannot perform copilot-api's editor token
+ * exchange (`copilot_internal/v2/token` → 403), so they need passthrough; OAuth /
+ * app tokens (`gho_`/`ghu_`/`ghs_`/…) can, so they don't. Legacy unprefixed 40-hex
+ * classic PATs are NOT detected here — use `--passthrough` for those.
+ */
+export function isPatToken(token: string): boolean {
+  const t = token.trim();
+  return t.startsWith("ghp_") || t.startsWith("github_pat_");
+}
+
+/**
+ * The `--oauth-app` value `agent start` should pass the daemon: OPENCODE_PASSTHROUGH
+ * to forward the token directly, "" to force the standard editor exchange (overriding
+ * any inherited env), or null to pass nothing and inherit the environment.
+ *
+ * Precedence:
+ *   1. `--passthrough` / `--no-passthrough` (explicit force on/off) wins.
+ *   2. An explicit COPILOT_API_OAUTH_APP in the env is the user's choice — the daemon
+ *      inherits it, so pass nothing (null).
+ *   3. Auto: a PAT can't do the editor exchange, so default it to passthrough; every
+ *      other token shape keeps the normal exchange.
+ */
+export function passthroughOauthApp(opts: {
+  force: boolean | undefined;
+  token: string | undefined;
+  env: NodeJS.ProcessEnv;
+}): string | null {
+  if (opts.force === true) return OPENCODE_PASSTHROUGH; // --passthrough
+  if (opts.force === false) return ""; // --no-passthrough: force the editor exchange
+  if (opts.env[COPILOT_API_OAUTH_APP_ENV] !== undefined) return null; // honor the env (inherit)
+  return opts.token !== undefined && isPatToken(opts.token) ? OPENCODE_PASSTHROUGH : null;
+}
+
 const DEFAULT_FLAGS: Record<string, unknown> = {
   useMessagesApi: true,
   useResponsesApiWebSocket: true,
@@ -49,6 +91,11 @@ export interface StartArgs {
   dryRun?: boolean;
   /** Pin the proxy to this port instead of auto-resolving (fails if busy). */
   port?: number;
+  /**
+   * Force proxy passthrough mode (`--passthrough`) or force the standard editor token
+   * exchange (`--no-passthrough`). Undefined => auto-detect from the token shape.
+   */
+  passthrough?: boolean;
 }
 
 function applyDefaultConfig(config: CopilotApiConfig): void {
@@ -334,7 +381,20 @@ export async function runStart(args: StartArgs): Promise<void> {
     await ensureAuthenticated();
     githubToken = credential.resolve() ?? undefined;
   }
-  let pid = launchDaemon(port, logFile, daemonEnv, githubToken);
+  // Passthrough mode: forward the GitHub token directly as the upstream Copilot
+  // bearer instead of running copilot-api's editor token exchange (which a PAT can't
+  // pass). Auto-on for PAT-shaped tokens; `--passthrough`/`--no-passthrough` force it.
+  const oauthApp =
+    passthroughOauthApp({ force: args.passthrough, token: githubToken, env: process.env }) ??
+    undefined;
+  if (oauthApp === OPENCODE_PASSTHROUGH) {
+    consola.info(
+      `Proxy passthrough mode on (--oauth-app=${oauthApp}): forwarding the token directly, skipping the editor exchange.`,
+    );
+  } else if (oauthApp === "") {
+    consola.info("Proxy passthrough mode off (--no-passthrough): using the editor token exchange.");
+  }
+  let pid = launchDaemon(port, logFile, daemonEnv, githubToken, oauthApp);
 
   await sleep(1000);
   if (!pidAlive(pid)) {
@@ -361,7 +421,7 @@ export async function runStart(args: StartArgs): Promise<void> {
         throw new Error("could not find a free port after the retry.");
       }
       fs.writeFileSync(logFile, "");
-      pid = launchDaemon(port, logFile, daemonEnv, githubToken);
+      pid = launchDaemon(port, logFile, daemonEnv, githubToken, oauthApp);
       await sleep(1000);
       if (!pidAlive(pid)) {
         printLogTail(logFile, 20);

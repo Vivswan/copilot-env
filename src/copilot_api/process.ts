@@ -150,6 +150,7 @@ export function launchDaemon(
   logfile: string,
   extraEnv?: Record<string, string>,
   githubToken?: string,
+  oauthApp?: string,
 ): number {
   /** Launch copilot-api as a detached daemon. Returns the PID. */
   const env: Record<string, string> = { ...process.env } as Record<string, string>;
@@ -165,6 +166,14 @@ export function launchDaemon(
   // to its own github_token file, so an existing device-flow login is untouched.
   if (githubToken) {
     args.push("--github-token", githubToken);
+  }
+  // `--oauth-app opencode` puts copilot-api in passthrough mode: it forwards the
+  // GitHub token directly as the upstream Copilot bearer instead of running the
+  // editor token exchange (which a PAT can't pass). An empty value forces the editor
+  // exchange even if COPILOT_API_OAUTH_APP is set in the inherited env. See
+  // passthroughOauthApp — undefined means "pass nothing, inherit the environment".
+  if (oauthApp !== undefined) {
+    args.push("--oauth-app", oauthApp);
   }
   const proc = spawn(process.execPath, args, {
     stdio: [devnull, logFd, logFd],
@@ -186,9 +195,13 @@ export function printLogTail(logfile: string, lines: number): void {
   /** Print the last N lines of a log file to stderr. */
   try {
     const allLines = readFileSync(logfile, "utf-8").split("\n");
-    for (const line of allLines.slice(-lines)) {
-      logger.error(line);
-    }
+    const tail = allLines.slice(-lines).join("\n");
+    // Write the daemon's own log verbatim to stderr — NOT line-by-line through
+    // consola.error. copilot-api already formats its lines, and routing each one
+    // through a tagged ERROR badge (including the blank lines inside its stack
+    // traces) produced large padded gaps that buried the real failure.
+    logger.error("--- proxy log tail ---");
+    process.stderr.write(`${tail}\n`);
   } catch (_e) {
     // ignore
   }

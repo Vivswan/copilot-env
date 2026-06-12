@@ -1,12 +1,12 @@
 // `agent stop`: terminates the tracked local proxy daemon.
 import { consola } from "consola";
-import { isCopilotApiPid } from "../copilot_api/process.ts";
-import { CopilotApiState } from "../copilot_api/state.ts";
+import { isCopilotApiPid, terminatePid } from "../copilot_api/process.ts";
+import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 
 /** `stop`: terminate the proxy daemon tracked on this host. */
 export async function runStop(): Promise<void> {
-  const state = new CopilotApiState();
+  const state = new CopilotEnvRunState();
   const pid = state.read().pid;
 
   if (pid === undefined) {
@@ -26,11 +26,11 @@ export async function runStop(): Promise<void> {
     return;
   }
 
-  // On Windows there are no POSIX signals: Node maps SIGTERM (and SIGKILL) to
-  // an unconditional TerminateProcess, so this is a hard kill with no graceful
-  // SQLite flush. SQLite's WAL recovery makes that safe; just don't expect
-  // clean teardown here on Windows.
-  process.kill(pid, "SIGTERM");
+  // On Windows there are no POSIX signals: Node maps SIGTERM to an unconditional
+  // TerminateProcess, so this is a hard kill with no graceful SQLite flush.
+  // SQLite's WAL recovery makes that safe; just don't expect clean teardown here on
+  // Windows. graceMs:0 — a single SIGTERM, no force-kill escalation.
+  await terminatePid(pid, 0);
   state.set({ pid: null, port: null });
   consola.info(`Stopped the proxy (PID ${pid})`);
   consola.info(`   Bun env: ${PROJECT_ROOT}`);

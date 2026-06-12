@@ -4,7 +4,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
 import { CopilotAdminClient } from "../copilot_api/admin.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
-import { readStoredGithubToken } from "../copilot_api/gh_token.ts";
+import { Credential } from "../copilot_api/credential.ts";
 import { generateAliases } from "../copilot_api/models.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import {
@@ -18,15 +18,18 @@ import {
   launchDaemon,
   pidAlive,
   printLogTail,
+  terminatePid,
 } from "../copilot_api/process.ts";
-import { CopilotApiState } from "../copilot_api/state.ts";
+import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import {
   installedProxyVersion,
   PROXY_PACKAGE_NAME,
   proxyVersionFloorStatus,
 } from "../copilot_api/version.ts";
+import { errMessage } from "../utils/error.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
+import { ensureAuthenticated } from "./auth.ts";
 
 // --- Default config applied on every `start`. ---
 //
@@ -43,7 +46,7 @@ const DEFAULT_FLAGS: Record<string, unknown> = {
 };
 
 export interface StartArgs {
-  "dry-run"?: boolean;
+  dryRun?: boolean;
   /** Pin the proxy to this port instead of auto-resolving (fails if busy). */
   port?: number;
 }
@@ -102,7 +105,7 @@ async function syncModelAliases(admin: CopilotAdminClient): Promise<void> {
     consola.success(`Synced ${Object.keys(aliases).length} model aliases from catalog.`);
   } catch (e) {
     consola.warn(
-      `Could not sync model aliases from catalog (${e instanceof Error ? e.message : String(e)}); check \`agent health\`.`,
+      `Could not sync model aliases from catalog (${errMessage(e)}); check \`agent health\`.`,
     );
   }
   await printModelAliases(admin);
@@ -114,9 +117,7 @@ async function printModelAliases(admin: CopilotAdminClient): Promise<void> {
   try {
     mappings = await admin.getModelMappings();
   } catch (e) {
-    consola.warn(
-      `Could not read live model mappings (${e instanceof Error ? e.message : String(e)}); check \`agent health\`.`,
-    );
+    consola.warn(`Could not read live model mappings (${errMessage(e)}); check \`agent health\`.`);
     return;
   }
   // Group the aliases by the model they resolve to, so each target is listed
@@ -176,6 +177,35 @@ async function logProxyVersion(): Promise<void> {
 }
 
 /**
+ * Resolve the port `start` will bind: a pinned `--port` is used as-is but must be
+ * free (else throw — never silently move off the port the user asked for); with no
+ * pin, use the default or the next free port above it. `announce` emits the
+ * busy/alternative-port notices on the live path (the dry-run resolves quietly).
+ * Read-only (just probes availability), so it's safe to call from `--dry-run`.
+ */
+async function resolveStartPort(pinned: number | undefined, announce: boolean): Promise<number> {
+  if (pinned !== undefined) {
+    if (!(await copilotApiPortAvailable(pinned))) {
+      throw new Error(
+        `requested port ${pinned} is busy (held by another process). Free it or pick another --port.`,
+      );
+    }
+    return pinned;
+  }
+  const def = Number(COPILOT_API_PORT_DEFAULT);
+  if (await copilotApiPortAvailable(def)) return def;
+  if (announce) consola.warn(`Port ${def} is busy (held by another process/user).`);
+  let port: number;
+  try {
+    port = await copilotApiFindPort(def + 1);
+  } catch {
+    throw new Error("could not find a free port to start the proxy.");
+  }
+  if (announce) consola.success(`Using alternative port: ${port}`);
+  return port;
+}
+
+/**
  * Refuse to launch on a proxy below the PROXY_MIN_VERSION floor. The float
  * (`bun install`'s postinstall) is best-effort, so an offline/failed install can
  * leave a sub-floor proxy in node_modules; the floor is a hard runtime contract,
@@ -194,9 +224,7 @@ function assertProxyFloor(): void {
   try {
     config = readProjectConfig(PROJECT_ROOT);
   } catch (e) {
-    throw new Error(
-      `could not read the proxy floor from copilot-env.config: ${e instanceof Error ? e.message : String(e)}`,
-    );
+    throw new Error(`could not read the proxy floor from copilot-env.config: ${errMessage(e)}`);
   }
   const status = proxyVersionFloorStatus(version, config);
   if (!status.ok && status.reason === "belowFloor") {
@@ -214,18 +242,10 @@ export async function runStart(args: StartArgs): Promise<void> {
   const config = new CopilotApiConfig();
 
   const logFile = paths.logFile;
-  const state = new CopilotApiState();
+  const state = new CopilotEnvRunState();
 
-  if (args["dry-run"]) {
-    let port: number;
-    if (args.port !== undefined) {
-      port = args.port;
-    } else {
-      port = Number(COPILOT_API_PORT_DEFAULT);
-      if (!(await copilotApiPortAvailable(port))) {
-        port = await copilotApiFindPort(port + 1);
-      }
-    }
+  if (args.dryRun) {
+    const port = await resolveStartPort(args.port, false);
     const statePid = state.read().pid;
     const trackedPid = statePid !== undefined && pidAlive(statePid) ? statePid : null;
     const orphans = (await getOrphanPids(process.pid, process.ppid)).filter(pidAlive);
@@ -259,19 +279,7 @@ export async function runStart(args: StartArgs): Promise<void> {
     // Only signal it if it's still OUR daemon (guard against PID reuse).
     if (await isCopilotApiPid(tracked)) {
       consola.info(`   Stopping tracked proxy (pid=${tracked}) ...`);
-      try {
-        process.kill(tracked, "SIGTERM");
-      } catch {
-        /* OSError */
-      }
-      await sleep(2000);
-      if (pidAlive(tracked)) {
-        try {
-          process.kill(tracked, "SIGKILL");
-        } catch {
-          /* OSError */
-        }
-      }
+      await terminatePid(tracked, 2000);
     }
     // Clear both pid and port up front: if the relaunch below throws, we don't
     // leave a stale port pointing at the now-dead daemon.
@@ -307,31 +315,25 @@ export async function runStart(args: StartArgs): Promise<void> {
 
   await sleep(1000);
 
-  let port = Number(COPILOT_API_PORT_DEFAULT);
-  if (args.port !== undefined) {
-    // Pinned port: use it as-is, but fail clearly rather than silently moving off
-    // the port the user asked for.
-    if (!(await copilotApiPortAvailable(args.port))) {
-      throw new Error(
-        `requested port ${args.port} is busy (held by another process). Free it or pick another --port.`,
-      );
-    }
-    port = args.port;
-  } else if (!(await copilotApiPortAvailable(port))) {
-    consola.warn(`Port ${port} is busy (held by another process/user).`);
-    try {
-      port = await copilotApiFindPort(port + 1);
-    } catch {
-      throw new Error("could not find a free port to start the proxy.");
-    }
-    consola.success(`Using alternative port: ${port}`);
-  }
+  let port = await resolveStartPort(args.port, true);
 
   fs.writeFileSync(logFile, "");
   const daemonEnv: Record<string, string> = { COPILOT_API_SQLITE_DB_PATH: paths.sqliteDb };
-  // A `--gh-token` provisioned via `agent init` is passed to the daemon as
-  // `--github-token` (in-memory only; never written to copilot-api's own login file).
-  const githubToken = readStoredGithubToken() ?? undefined;
+  // Feed the daemon the resolved credential — the SAME resolution Direct uses
+  // (`agent auth --get`), driven by the recorded provider (gh-cli → `gh auth token`,
+  // copilot/gh-token → the stored token). Passing it as `--github-token` keeps the
+  // proxy on our single source of truth (copilot-api uses it in-memory and won't
+  // write its own github_token file).
+  const credential = new Credential();
+  let githubToken = credential.resolve() ?? undefined;
+  if (githubToken === undefined && process.stdin.isTTY) {
+    // Nothing resolved AND we have a terminal: log in (provider choice → our store)
+    // so the proxy stays on the single source. Errors out if login fails. Headless/CI
+    // (no TTY) can't complete an interactive login, so skip and let the daemon handle
+    // its own cold-start login (a fake proxy in tests just starts without a token).
+    await ensureAuthenticated();
+    githubToken = credential.resolve() ?? undefined;
+  }
   let pid = launchDaemon(port, logFile, daemonEnv, githubToken);
 
   await sleep(1000);

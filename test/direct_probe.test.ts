@@ -9,8 +9,8 @@ import {
   type ProbeOutcome,
   probeDirectWorks,
   resolveDirectMode,
-  resolveGhToken,
   summarizeProbeFailure,
+  tokenFromSetFlag,
 } from "../src/utils/direct_probe.ts";
 
 // --- probe args --------------------------------------------------------------
@@ -23,7 +23,7 @@ test("CODEX_PROBE passes --skip-git-repo-check so a non-git cwd can't fail the p
 
 test("CLAUDE_PROBE pairs --bare with --settings so the apiKeyHelper is loaded", () => {
   // --bare disables settings.json auto-discovery and reads auth ONLY via
-  // --settings, so without the explicit path the gh-token apiKeyHelper never
+  // --settings, so without the explicit path the managed apiKeyHelper never
   // runs and the probe has no auth path (always fails).
   const args = CLAUDE_PROBE.args("hi", "/tmp/home");
   expect(args).toContain("--bare");
@@ -102,26 +102,26 @@ test("assertSingleMode allows zero or one mode flag, rejects both", () => {
   );
 });
 
-// --- resolveGhToken (flag -> token string | null) ---------------------------
+// --- tokenFromSetFlag (flag -> token string | null) ---------------------------
 
-test("resolveGhToken: undefined -> null, string -> trimmed literal, bare -> env, else throws", () => {
+test("tokenFromSetFlag: undefined -> null, string -> trimmed literal, bare -> env, else throws", () => {
   const savedGh = process.env.GH_TOKEN;
   const savedGithub = process.env.GITHUB_TOKEN;
   try {
-    expect(resolveGhToken(undefined)).toBeNull();
-    expect(resolveGhToken(false)).toBeNull(); // defensive: never the token "false"
-    expect(resolveGhToken("ghu_abc")).toBe("ghu_abc");
-    expect(resolveGhToken("  ghu_trim  ")).toBe("ghu_trim");
-    expect(() => resolveGhToken("")).toThrow("empty value");
+    expect(tokenFromSetFlag(undefined)).toBeNull();
+    expect(tokenFromSetFlag(false)).toBeNull(); // defensive: never the token "false"
+    expect(tokenFromSetFlag("ghu_abc")).toBe("ghu_abc");
+    expect(tokenFromSetFlag("  ghu_trim  ")).toBe("ghu_trim");
+    expect(() => tokenFromSetFlag("")).toThrow("is empty");
 
     // Bare flag prefers GH_TOKEN, falls back to GITHUB_TOKEN.
     delete process.env.GH_TOKEN;
     delete process.env.GITHUB_TOKEN;
-    expect(() => resolveGhToken(true)).toThrow("neither GH_TOKEN nor GITHUB_TOKEN is set");
+    expect(() => tokenFromSetFlag(true)).toThrow("neither GH_TOKEN nor GITHUB_TOKEN is set");
     process.env.GITHUB_TOKEN = "ghu_github";
-    expect(resolveGhToken(true)).toBe("ghu_github");
+    expect(tokenFromSetFlag(true)).toBe("ghu_github");
     process.env.GH_TOKEN = "ghu_gh";
-    expect(resolveGhToken(true)).toBe("ghu_gh"); // GH_TOKEN wins
+    expect(tokenFromSetFlag(true)).toBe("ghu_gh"); // GH_TOKEN wins
   } finally {
     if (savedGh === undefined) delete process.env.GH_TOKEN;
     else process.env.GH_TOKEN = savedGh;

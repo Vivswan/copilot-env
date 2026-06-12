@@ -1,5 +1,6 @@
 // `agent cost`: fetches pricing, reads usage DBs, and prints spend estimates.
 import { consola } from "consola";
+import { errMessage } from "../utils/error.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import {
   type CostEstimate,
@@ -14,7 +15,7 @@ import { discoverUsageDbs, readUsage, type UsageReport } from "./usage.ts";
 export async function runCost(args: {
   days?: string;
   json?: boolean;
-  "pricing-url"?: string;
+  pricingUrl?: string;
 }): Promise<void> {
   const dbPaths = discoverUsageDbs();
   if (dbPaths.length === 0) {
@@ -30,10 +31,10 @@ export async function runCost(args: {
   // Best-effort pricing: a fetch failure still yields a token-only report.
   let pricing = new Map<string, PricingTier>();
   try {
-    pricing = await fetchPricing(args["pricing-url"] ?? OPENROUTER_MODELS_URL);
+    pricing = await fetchPricing(args.pricingUrl ?? OPENROUTER_MODELS_URL);
   } catch (e) {
     consola.warn(
-      `WARNING: could not fetch OpenRouter pricing (${e instanceof Error ? e.message : String(e)}); reporting tokens only.`,
+      `WARNING: could not fetch OpenRouter pricing (${errMessage(e)}); reporting tokens only.`,
     );
   }
 

@@ -9,6 +9,7 @@ import {
   worstStatus,
 } from "../src/health/aggregate.ts";
 import {
+  checkAuth,
   checkAutoupdate,
   checkBun,
   checkClaude,
@@ -272,6 +273,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
     tokenAvailable: true,
     directAuth: { command: "/bin/gh", authenticated: true },
     directUsesToken: false,
+    provider: "gh-cli",
   };
   // No config at all -> ok (user never wired Codex).
   expect(checkCodex({ ...wired, configExists: false, providerWired: false }).status).toBe("ok");
@@ -373,6 +375,25 @@ test("codex: not configured is ok; each broken part warns with a precise message
   expect(directUnauthed.status).toBe("warn");
   expect(directUnauthed.detail).toContain("not authenticated");
   expect(directUnauthed.fix).toBe("gh auth login");
+
+  // Non-gh-cli provider (or none) with no stored token: gh is NOT a fallback, so
+  // a managed Direct config that doesn't resolve warns and points at `agent auth`
+  // (NOT the gh-specific message). Guards against the provider-blind false-OK.
+  const directNoCred = checkCodex({
+    ...wired,
+    providerMode: "direct",
+    modelProvider: "github-copilot-direct",
+    baseUrl: "https://api.githubcopilot.com",
+    envKeyMatches: false,
+    tokenAvailable: false,
+    provider: "copilot",
+    directUsesToken: false,
+    directAuth: { command: "/bin/gh", authenticated: true },
+  });
+  expect(directNoCred.status).toBe("warn");
+  expect(directNoCred.detail).toContain("no credential resolves");
+  expect(directNoCred.detail).not.toContain("gh auth:");
+  expect(directNoCred.fix).toBe("agent auth");
 });
 
 test("checkClaude: direct needs gh + managed base URL; proxy/none/other informational", () => {
@@ -385,6 +406,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
     providerMode: "direct",
     directAuth: { command: "/bin/gh", authenticated: true },
     directUsesToken: false,
+    provider: "gh-cli",
   };
   const directOk = checkClaude(direct);
   expect(directOk.status).toBe("ok");
@@ -404,6 +426,14 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   expect(unauthed.status).toBe("warn");
   expect(unauthed.detail).toContain("not authenticated");
   expect(unauthed.fix).toBe("gh auth login");
+
+  // Non-gh-cli provider with no stored token: gh is NOT a fallback — warn pointing
+  // at `agent auth`, not the gh-specific message.
+  const noCred = checkClaude({ ...direct, provider: "copilot", directUsesToken: false });
+  expect(noCred.status).toBe("warn");
+  expect(noCred.detail).toContain("no credential resolves");
+  expect(noCred.detail).not.toContain("gh auth:");
+  expect(noCred.fix).toBe("agent auth");
 
   // Direct helper present but the managed base URL was dropped/altered: warn.
   const staleBase = checkClaude({ ...direct, baseUrl: null });
@@ -449,8 +479,8 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   expect(other.detail).toContain("not managed");
 });
 
-test("direct + baked token reports ok with gh absent (no gh requirement)", () => {
-  // Codex: token mode (env_key, providerWired) is ok even though gh is missing.
+test("direct + stored token reports ok with gh absent (no gh requirement)", () => {
+  // Codex: a stored token (directUsesToken, providerWired) is ok even with gh missing.
   const codexToken: CodexFacts = {
     home: "/c",
     configExists: true,
@@ -470,10 +500,10 @@ test("direct + baked token reports ok with gh absent (no gh requirement)", () =>
   };
   const codexRes = checkCodex(codexToken);
   expect(codexRes.status).toBe("ok");
-  expect(codexRes.detail).toContain("baked GitHub token");
+  expect(codexRes.detail).toContain("stored GitHub token");
   expect(codexRes.detail).not.toContain("GitHub CLI not found");
 
-  // Claude: token-mode apiKeyHelper, gh absent → still ok (base URL is right).
+  // Claude: stored-token resolver, gh absent → still ok (base URL is right).
   const claudeToken: ClaudeFacts = {
     home: "/h/.claude",
     settingsPath: join("/h/.claude", "settings.json"),
@@ -486,8 +516,32 @@ test("direct + baked token reports ok with gh absent (no gh requirement)", () =>
   };
   const claudeRes = checkClaude(claudeToken);
   expect(claudeRes.status).toBe("ok");
-  expect(claudeRes.detail).toContain("baked GitHub token");
+  expect(claudeRes.detail).toContain("stored GitHub token");
   expect(claudeRes.detail).not.toContain("GitHub CLI not found");
+});
+
+// --- auth (credential) check ------------------------------------------------
+
+test("checkAuth: a stored token reports ok", () => {
+  const res = checkAuth({ storedToken: true, ghAuthenticated: false, provider: "gh-token" });
+  expect(res.group).toBe("auth");
+  expect(res.status).toBe("ok");
+  expect(res.detail).toContain("stored GitHub token");
+  expect(res.detail).toContain("gh-token");
+  expect(res.fix).toBeUndefined();
+});
+
+test("checkAuth: no stored token but gh authed reports ok (falls back to gh)", () => {
+  const res = checkAuth({ storedToken: false, ghAuthenticated: true, provider: "gh-cli" });
+  expect(res.status).toBe("ok");
+  expect(res.detail).toContain("gh CLI");
+});
+
+test("checkAuth: neither stored token nor gh reports warn with the agent auth fix", () => {
+  const res = checkAuth({ storedToken: false, ghAuthenticated: false, provider: null });
+  expect(res.status).toBe("warn");
+  expect(res.detail).toContain("not authenticated");
+  expect(res.fix).toBe("agent auth");
 });
 
 // --- live (--live) checks ---------------------------------------------------

@@ -7,11 +7,10 @@ import {
   configureClaudeConfig,
   DIRECT_BASE_URL,
   detectClaudeDirect,
-  directHelperUsesToken,
   inspectClaudeWiring,
   runClaude,
 } from "../src/claude/config.ts";
-import { storeGithubToken } from "../src/copilot_api/gh_token.ts";
+import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { copilotApiResolvePort } from "../src/copilot_api/port.ts";
 
 const SAVED = {
@@ -71,7 +70,13 @@ test("direct mode writes the managed apiKeyHelper + env and the token helper, pr
   expect((doc.permissions as Record<string, unknown>).allow).toEqual(["Bash"]);
 
   const helper = join(home, "copilot-token.sh");
-  expect(readFileSync(helper, "utf8")).toBe("#!/bin/sh\nexec gh auth token\n");
+  const directScript = readFileSync(helper, "utf8");
+  // The direct helper execs `agent auth --get` (the resolver) — never `gh auth token`,
+  // never a baked token.
+  expect(directScript.startsWith("#!/bin/sh\nexec ")).toBe(true);
+  expect(directScript).toContain("auth");
+  expect(directScript).toContain("--get");
+  expect(directScript).not.toContain("gh auth token");
   if (process.platform !== "win32") {
     expect(statSync(helper).mode & 0o100).not.toBe(0);
   }
@@ -193,46 +198,34 @@ test("configureClaudeConfig refuses to overwrite a malformed settings.json", () 
   expect(() => configureClaudeConfig(home, "direct")).toThrow("not valid JSON");
 });
 
-test("direct mode with a baked token writes a token-printing helper (no gh), still direct", () => {
+test("direct helper execs `agent auth --get` and never bakes a token, still classified direct", () => {
   const home = tmpHome();
-  configureClaudeConfig(home, "direct", true, "ghu_secret123");
+  configureClaudeConfig(home, "direct");
 
   const doc = readSettings(home);
-  // Same helper PATH, so wiring still classifies as direct.
   expect(doc.apiKeyHelper).toBe(join(home, "copilot-token.sh"));
   expect(
     inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home).providerMode,
   ).toBe("direct");
 
-  // The helper prints the literal token, NOT `gh auth token`.
   const script = readFileSync(join(home, "copilot-token.sh"), "utf8");
-  expect(script).toBe("#!/bin/sh\nprintf '%s' 'ghu_secret123'\n");
+  expect(script).toContain("auth");
+  expect(script).toContain("--get");
   expect(script).not.toContain("gh auth token");
-  // The managed baked-token helper is POSITIVELY identified (health relies on this).
-  expect(directHelperUsesToken(script)).toBe(true);
 });
 
-test("directHelperUsesToken: only the managed printf helper counts (gh / broken / missing => false)", () => {
-  expect(directHelperUsesToken("#!/bin/sh\nprintf '%s' 'ghu_x'\n")).toBe(true);
-  // The gh-auth helper, a foreign/broken script, and a missing file are NOT token mode —
-  // so health stays on the gh-backed path and flags them instead of reporting a false "ok".
-  expect(directHelperUsesToken("#!/bin/sh\nexec gh auth token\n")).toBe(false);
-  expect(directHelperUsesToken("#!/bin/sh\necho hi\n")).toBe(false);
-  expect(directHelperUsesToken("")).toBe(false);
-  expect(directHelperUsesToken(null)).toBe(false);
-});
-
-test("runClaude bakes the stored GitHub token into Direct (no gh); --proxy ignores it for the bake", () => {
+test("runClaude with a stored token selects Direct WITHOUT baking it; --proxy still wins", () => {
   const home = tmpHome(); // also points COPILOT_API_HOME at an isolated dir
   const read = () => inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home);
 
-  // A token in the shared store selects Direct with NO probe and bakes it in.
-  storeGithubToken("ghu_stored");
+  // A configured credential selects Direct with NO probe — but the helper resolves
+  // it at fetch time (`agent auth --get`), so it's never written to disk.
+  new CopilotEnvState().set({ githubToken: "ghu_stored", authProvider: "gh-token" });
   runClaude({});
   expect(read().providerMode).toBe("direct");
   const helper = readFileSync(join(home, "copilot-token.sh"), "utf8");
-  expect(helper).toContain("ghu_stored");
-  expect(helper).not.toContain("gh auth token");
+  expect(helper).not.toContain("ghu_stored");
+  expect(helper).toContain("--get");
 
   // --proxy still wins: proxy mode (the stored token is only used by the proxy).
   runClaude({ proxy: true });

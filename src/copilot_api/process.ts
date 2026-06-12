@@ -4,12 +4,14 @@ import { closeSync, openSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { devNull } from "node:os";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
 import { execa } from "execa";
 import psList from "ps-list";
+import { errMessage } from "../utils/error.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 
-const logger = consola;
+const logger = consola.withTag("copilot_api.process");
 
 // Resolve the bundled copilot-api entry by anchoring node's module resolution at
 // the in-place checkout where bootstrap installs the pinned dep + applies
@@ -17,7 +19,7 @@ const logger = consola;
 // stable directory looking for node_modules/.
 const rootRequire = createRequire(join(PROJECT_ROOT, "_anchor.js"));
 
-function resolveCopilotApiEntry(): string {
+export function resolveCopilotApiEntry(): string {
   // Escape hatch: an explicit entry path overrides module resolution. CI uses
   // this to point `start` at a fake proxy so the daemon lifecycle can be
   // exercised without GitHub Copilot auth.
@@ -29,9 +31,9 @@ function resolveCopilotApiEntry(): string {
     return rootRequire.resolve("@jeffreycao/copilot-api/dist/main.js");
   } catch (e) {
     throw new Error(
-      `the proxy is not installed under ${PROJECT_ROOT}; run \`bun install --frozen-lockfile\` (or re-run the agent launcher) to install dependencies: ${
-        e instanceof Error ? e.message : String(e)
-      }`,
+      `the proxy is not installed under ${PROJECT_ROOT}; run \`bun install --frozen-lockfile\` (or re-run the agent launcher) to install dependencies: ${errMessage(
+        e,
+      )}`,
     );
   }
 }
@@ -43,6 +45,30 @@ export function pidAlive(pid: number): boolean {
     return true;
   } catch (_e) {
     return false;
+  }
+}
+
+/**
+ * Terminate `pid`: SIGTERM, then — when `graceMs > 0` — wait that long and SIGKILL
+ * if it's still alive. Signal errors (e.g. ESRCH on an already-gone pid) are
+ * swallowed. The caller must confirm `pid` is OURS (PID-reuse guard) before calling.
+ * `graceMs: 0` sends a single SIGTERM with no force-kill escalation.
+ */
+export async function terminatePid(pid: number, graceMs: number): Promise<void> {
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    /* already gone */
+  }
+  if (graceMs > 0) {
+    await sleep(graceMs);
+    if (pidAlive(pid)) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
   }
 }
 
@@ -134,9 +160,9 @@ export function launchDaemon(
   const devnull = openSync(devNull, "r");
   const entry = resolveCopilotApiEntry();
   const args = [entry, "start", "--verbose", "--port", String(port)];
-  // A provisioned `--gh-token` (stored in our state) is handed to the daemon as
-  // `--github-token`: copilot-api uses it in-memory and does NOT write it to its
-  // own github_token file, so the user's existing device-flow login is untouched.
+  // A token provisioned via `agent auth` (stored in our state) is handed to the
+  // daemon as `--github-token`: copilot-api uses it in-memory and does NOT write it
+  // to its own github_token file, so an existing device-flow login is untouched.
   if (githubToken) {
     args.push("--github-token", githubToken);
   }

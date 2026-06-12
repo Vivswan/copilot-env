@@ -29,6 +29,13 @@ export class CopilotApiPaths {
    * host. Lives beside config.json, never inside `.run/<host>/`.
    */
   sharedStateFile: string;
+  /**
+   * copilot-api's OWN device-login token file (`github_token`), written when the
+   * proxy authenticates itself via the device flow. copilot-env never writes it
+   * (we pass `--github-token` from `sharedStateFile`); we only read+scrub it when
+   * consolidating an existing proxy login into our single-source-of-truth store.
+   */
+  githubTokenFile: string;
 
   constructor() {
     this.home = resolveHome();
@@ -42,5 +49,6 @@ export class CopilotApiPaths {
     this.logFile = join(runDir, ".log");
     this.sqliteDb = join(runDir, "copilot-api.sqlite");
     this.sharedStateFile = join(this.home, ".copilot-env-state.json");
+    this.githubTokenFile = join(this.home, "github_token");
   }
 }

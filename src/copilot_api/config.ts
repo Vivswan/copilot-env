@@ -9,16 +9,18 @@ import { isRecord } from "../utils/json.ts";
 import { sleepSync } from "../utils/time.ts";
 import { CopilotApiPaths } from "./paths.ts";
 
-const logger = consola.withTag("copilot_api.utils.config");
+const logger = consola.withTag("copilot_api.config");
 
 /**
- * Read/write helper for ``~/.local/share/copilot-api/config.json``.
+ * Atomic JSON store for `~/.local/share/copilot-api/` files: the proxy's
+ * `config.json` and the small state files (`CopilotEnvState`, `CopilotEnvRunState`,
+ * `AutoupdateState` all wrap one of these). Sorted keys, 0600, atomic rename with a
+ * Windows EPERM/EBUSY retry.
  *
- * The class is intentionally schema-agnostic: it manipulates a JSON
- * document and exposes a small set of domain helpers for the keys this
- * tooling cares about. Unknown keys present in the file
- * are preserved across writes so hand edits and new upstream fields
- * are not clobbered.
+ * The class is intentionally schema-agnostic: it manipulates a JSON document and
+ * exposes a small set of domain helpers for the keys this tooling cares about.
+ * Unknown keys present in the file are preserved across writes so hand edits and
+ * new upstream fields are not clobbered.
  */
 export class CopilotApiConfig {
   readonly path: string;

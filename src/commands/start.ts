@@ -39,19 +39,12 @@ import { ensureAuthenticated } from "./auth.ts";
 
 const DEFAULT_SMALL_MODEL = "gpt-5.5";
 
-// copilot-api's "passthrough" mode: with `--oauth-app opencode` (which the daemon
-// maps to COPILOT_API_OAUTH_APP=opencode), it forwards the GitHub token DIRECTLY as
-// the upstream Copilot bearer instead of first exchanging it at GitHub's editor-only
-// `copilot_internal/v2/token` endpoint.
-export const COPILOT_API_OAUTH_APP_ENV = "COPILOT_API_OAUTH_APP";
-export const OPENCODE_PASSTHROUGH = "opencode";
-
 /**
  * Whether a GitHub token is a Personal Access Token by its prefix: `ghp_` (classic)
  * or `github_pat_` (fine-grained). PATs cannot perform copilot-api's editor token
- * exchange (`copilot_internal/v2/token` -> 403), so they need passthrough; OAuth /
- * app tokens (`gho_`/`ghu_`/`ghs_`/...) can, so they don't. Legacy unprefixed 40-hex
- * classic PATs are NOT detected here -- use `--passthrough` for those.
+ * exchange (`copilot_internal/v2/token` -> 403), so they need the PAT passthrough
+ * shim; OAuth / app tokens (`gho_`/`ghu_`/`ghs_`/...) can, so they don't. Legacy
+ * unprefixed 40-hex classic PATs are NOT detected here -- use `--passthrough` for those.
  */
 export function isPatToken(token: string): boolean {
   const t = token.trim();
@@ -59,26 +52,23 @@ export function isPatToken(token: string): boolean {
 }
 
 /**
- * The `--oauth-app` value `agent start` should pass the daemon: OPENCODE_PASSTHROUGH
- * to forward the token directly, "" to force the standard editor exchange (overriding
- * any inherited env), or null to pass nothing and inherit the environment.
+ * Whether to load the PAT-passthrough preload shim into the daemon
+ * (`src/copilot_api/pat_passthrough_preload.ts`). The shim intercepts copilot-api's
+ * editor token exchange and hands the PAT back as the Copilot token, so the daemon
+ * runs its normal `vscode-chat` path with the PAT as the bearer -- the only way a PAT
+ * works through the proxy. It's a no-op for non-PAT tokens, so `--passthrough` can
+ * force it for an undetected (e.g. legacy unprefixed) PAT, and `--no-passthrough`
+ * forces it off.
  *
- * Precedence:
- *   1. `--passthrough` / `--no-passthrough` (explicit force on/off) wins.
- *   2. An explicit COPILOT_API_OAUTH_APP in the env is the user's choice -- the daemon
- *      inherits it, so pass nothing (null).
- *   3. Auto: a PAT can't do the editor exchange, so default it to passthrough; every
- *      other token shape keeps the normal exchange.
+ * Precedence: explicit `--passthrough`/`--no-passthrough` wins; otherwise auto-enable
+ * for a PAT-shaped token.
  */
-export function passthroughOauthApp(opts: {
+export function usePatPassthrough(opts: {
   force: boolean | undefined;
   token: string | undefined;
-  env: NodeJS.ProcessEnv;
-}): string | null {
-  if (opts.force === true) return OPENCODE_PASSTHROUGH; // --passthrough
-  if (opts.force === false) return ""; // --no-passthrough: force the editor exchange
-  if (opts.env[COPILOT_API_OAUTH_APP_ENV] !== undefined) return null; // honor the env (inherit)
-  return opts.token !== undefined && isPatToken(opts.token) ? OPENCODE_PASSTHROUGH : null;
+}): boolean {
+  if (opts.force !== undefined) return opts.force;
+  return opts.token !== undefined && isPatToken(opts.token);
 }
 
 const DEFAULT_FLAGS: Record<string, unknown> = {
@@ -381,20 +371,22 @@ export async function runStart(args: StartArgs): Promise<void> {
     await ensureAuthenticated();
     githubToken = credential.resolve() ?? undefined;
   }
-  // Passthrough mode: forward the GitHub token directly as the upstream Copilot
-  // bearer instead of running copilot-api's editor token exchange (which a PAT can't
-  // pass). Auto-on for PAT-shaped tokens; `--passthrough`/`--no-passthrough` force it.
-  const oauthApp =
-    passthroughOauthApp({ force: args.passthrough, token: githubToken, env: process.env }) ??
-    undefined;
-  if (oauthApp === OPENCODE_PASSTHROUGH) {
+  // A PAT can't perform copilot-api's editor token exchange, so load the PAT
+  // passthrough shim (it fakes the exchange, handing the PAT straight through as the
+  // Copilot token). Auto-on for PAT-shaped tokens; `--passthrough`/`--no-passthrough`
+  // force it. Only meaningful when we actually resolved a token.
+  const patPassthrough =
+    githubToken !== undefined && usePatPassthrough({ force: args.passthrough, token: githubToken });
+  if (patPassthrough) {
     consola.info(
-      `Proxy passthrough mode on (--oauth-app=${oauthApp}): forwarding the token directly, skipping the editor exchange.`,
+      "PAT passthrough on: faking the editor token exchange so the proxy uses the token directly.",
     );
-  } else if (oauthApp === "") {
-    consola.info("Proxy passthrough mode off (--no-passthrough): using the editor token exchange.");
+  } else if (args.passthrough === false) {
+    consola.info(
+      "PAT passthrough off (--no-passthrough): using the standard editor token exchange.",
+    );
   }
-  let pid = launchDaemon(port, logFile, daemonEnv, githubToken, oauthApp);
+  let pid = launchDaemon(port, logFile, daemonEnv, githubToken, patPassthrough);
 
   await sleep(1000);
   if (!pidAlive(pid)) {
@@ -421,7 +413,7 @@ export async function runStart(args: StartArgs): Promise<void> {
         throw new Error("could not find a free port after the retry.");
       }
       fs.writeFileSync(logFile, "");
-      pid = launchDaemon(port, logFile, daemonEnv, githubToken, oauthApp);
+      pid = launchDaemon(port, logFile, daemonEnv, githubToken, patPassthrough);
       await sleep(1000);
       if (!pidAlive(pid)) {
         printLogTail(logFile, 20);

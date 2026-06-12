@@ -1,11 +1,6 @@
 import { expect, test } from "bun:test";
 
-import {
-  COPILOT_API_OAUTH_APP_ENV,
-  isPatToken,
-  OPENCODE_PASSTHROUGH,
-  passthroughOauthApp,
-} from "../src/commands/start.ts";
+import { isPatToken, usePatPassthrough } from "../src/commands/start.ts";
 
 // --- isPatToken --------------------------------------------------------------
 
@@ -21,37 +16,17 @@ test("isPatToken: ghp_/github_pat_ are PATs; gho_/ghu_/ghs_/empty are not", () =
   expect(isPatToken("0123456789abcdef0123456789abcdef01234567")).toBe(false);
 });
 
-// --- passthroughOauthApp -----------------------------------------------------
+// --- usePatPassthrough -------------------------------------------------------
 
-const NO_ENV = {} as NodeJS.ProcessEnv;
-const ENV_SET = { [COPILOT_API_OAUTH_APP_ENV]: OPENCODE_PASSTHROUGH } as NodeJS.ProcessEnv;
-
-test("passthroughOauthApp: --passthrough forces opencode regardless of token/env", () => {
-  expect(passthroughOauthApp({ force: true, token: "gho_x", env: NO_ENV })).toBe(
-    OPENCODE_PASSTHROUGH,
-  );
-  expect(passthroughOauthApp({ force: true, token: undefined, env: ENV_SET })).toBe(
-    OPENCODE_PASSTHROUGH,
-  );
+test("usePatPassthrough: --passthrough/--no-passthrough force on/off regardless of token", () => {
+  expect(usePatPassthrough({ force: true, token: "gho_oauth" })).toBe(true);
+  expect(usePatPassthrough({ force: true, token: undefined })).toBe(true);
+  expect(usePatPassthrough({ force: false, token: "ghp_pat" })).toBe(false);
 });
 
-test("passthroughOauthApp: --no-passthrough forces the editor exchange (empty string)", () => {
-  // "" is distinct from null: it is passed as `--oauth-app ""` to override an
-  // inherited COPILOT_API_OAUTH_APP, forcing the standard exchange even for a PAT.
-  expect(passthroughOauthApp({ force: false, token: "ghp_pat", env: ENV_SET })).toBe("");
-});
-
-test("passthroughOauthApp: auto — env set is honored (inherit), so pass nothing", () => {
-  expect(passthroughOauthApp({ force: undefined, token: "ghp_pat", env: ENV_SET })).toBeNull();
-});
-
-test("passthroughOauthApp: auto — PAT enables passthrough, other tokens do not", () => {
-  expect(passthroughOauthApp({ force: undefined, token: "ghp_pat", env: NO_ENV })).toBe(
-    OPENCODE_PASSTHROUGH,
-  );
-  expect(passthroughOauthApp({ force: undefined, token: "github_pat_x", env: NO_ENV })).toBe(
-    OPENCODE_PASSTHROUGH,
-  );
-  expect(passthroughOauthApp({ force: undefined, token: "gho_oauth", env: NO_ENV })).toBeNull();
-  expect(passthroughOauthApp({ force: undefined, token: undefined, env: NO_ENV })).toBeNull();
+test("usePatPassthrough: auto — on for a PAT-shaped token, off otherwise", () => {
+  expect(usePatPassthrough({ force: undefined, token: "ghp_pat" })).toBe(true);
+  expect(usePatPassthrough({ force: undefined, token: "github_pat_x" })).toBe(true);
+  expect(usePatPassthrough({ force: undefined, token: "gho_oauth" })).toBe(false);
+  expect(usePatPassthrough({ force: undefined, token: undefined })).toBe(false);
 });

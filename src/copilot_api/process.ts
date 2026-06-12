@@ -147,7 +147,7 @@ export function launchDaemon(
   logfile: string,
   extraEnv?: Record<string, string>,
   githubToken?: string,
-  oauthApp?: string,
+  patPassthrough?: boolean,
 ): number {
   /** Launch copilot-api as a detached daemon. Returns the PID. */
   const env: Record<string, string> = { ...process.env } as Record<string, string>;
@@ -157,20 +157,26 @@ export function launchDaemon(
   const logFd = openSync(logfile, "w");
   const devnull = openSync(devNull, "r");
   const entry = resolveCopilotApiEntry();
-  const args = [entry, "start", "--verbose", "--port", String(port)];
+  // bun flags go BEFORE the entry script. For a PAT, preload the passthrough shim,
+  // which wraps the daemon's globalThis.fetch to fake the editor token exchange so the
+  // PAT is used directly (see pat_passthrough_preload.ts). A runtime shim -- NOT a
+  // patch-package patch -- so it never pins the floated proxy version.
+  const bunFlags = patPassthrough
+    ? ["--preload", join(PROJECT_ROOT, "src/copilot_api/pat_passthrough_preload.ts")]
+    : [];
+  if (patPassthrough) {
+    // The shim relies on copilot-api's DEFAULT path (which sends the vscode-chat editor
+    // headers the token needs). An inherited COPILOT_API_OAUTH_APP=opencode would put
+    // copilot-api in opencode mode and strip those headers, so scrub it.
+    delete env.COPILOT_API_OAUTH_APP;
+  }
+  const args = [...bunFlags, entry, "start", "--verbose", "--port", String(port)];
   // A token provisioned via `agent auth` (stored in our state) is handed to the
   // daemon as `--github-token`: copilot-api uses it in-memory and does NOT write it
-  // to its own github_token file, so an existing device-flow login is untouched.
+  // to its own github_token file, so an existing device-flow login is untouched. The
+  // preload shim above also reads the PAT from this flag.
   if (githubToken) {
     args.push("--github-token", githubToken);
-  }
-  // `--oauth-app opencode` puts copilot-api in passthrough mode: it forwards the
-  // GitHub token directly as the upstream Copilot bearer instead of running the
-  // editor token exchange (which a PAT can't pass). An empty value forces the editor
-  // exchange even if COPILOT_API_OAUTH_APP is set in the inherited env. See
-  // passthroughOauthApp -- undefined means "pass nothing, inherit the environment".
-  if (oauthApp !== undefined) {
-    args.push("--oauth-app", oauthApp);
   }
   const proc = spawn(process.execPath, args, {
     stdio: [devnull, logFd, logFd],

@@ -1,5 +1,18 @@
 # Changelog
 
+## [4.0.0](https://github.com/Vivswan/copilot-env/compare/v3.3.3...v4.0.0) (2026-06-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* the setup-shell, setup-launchers, and setup-clis commands are removed (use `agent shell [--launchers|--clis]`); the --auto, --codex-home, and --claude-home flags are removed from `agent codex` / `agent claude`.
+
+### Features
+
+* add --gh-token for headless Direct mode without the gh CLI ([acfe76d](https://github.com/Vivswan/copilot-env/commit/acfe76d8c80737d7273fe0c0f5d2816e89e76eef))
+* consolidate the CLI surface and share the gh-token store ([2e48791](https://github.com/Vivswan/copilot-env/commit/2e48791071f8e86939c7a58b1545fc717156860e))
+* provider-driven credential behind a Credential class, with semver + valibot ([9ccd383](https://github.com/Vivswan/copilot-env/commit/9ccd383767328767256e5a1296cc3b91750976a9))
+
 ## [3.3.3](https://github.com/Vivswan/copilot-env/compare/v3.3.2...v3.3.3) (2026-06-11)
 
 

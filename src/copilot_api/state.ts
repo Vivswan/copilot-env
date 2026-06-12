@@ -1,9 +1,10 @@
 // Per-host state persistence for the proxy pid, port, and active CODEX_HOME.
+import * as v from "valibot";
 import { CopilotApiConfig } from "./config.ts";
 import { CopilotApiPaths } from "./paths.ts";
 
 /** Per-host runtime state we persist (`.run/<host>/.state.json`). */
-export interface CopilotState {
+export interface CopilotEnvRunStateData {
   /** Port the daemon was bound to by `start` (cleared by `stop`). */
   port?: number;
   /** Tracked daemon pid set by `start` (cleared by `stop`). */
@@ -12,14 +13,27 @@ export interface CopilotState {
   codexHome?: string;
 }
 
-type StatePatch = { [K in keyof CopilotState]?: CopilotState[K] | null };
+type StatePatch = { [K in keyof CopilotEnvRunStateData]?: CopilotEnvRunStateData[K] | null };
+
+// Lenient read schema: absent or ill-typed/out-of-range fields fall back to
+// `undefined` (treated as "unset" by callers) rather than throwing. The port range
+// is any valid TCP port (1..65535) — WIDER than port.ts's >=1024 allocation floor
+// on purpose, so we round-trip whatever port the daemon actually bound, not re-filter it.
+const RUN_STATE_SCHEMA = v.object({
+  port: v.fallback(
+    v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(65535))),
+    undefined,
+  ),
+  pid: v.fallback(v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))), undefined),
+  codexHome: v.fallback(v.optional(v.pipe(v.string(), v.minLength(1))), undefined),
+});
 
 /**
  * Read/write helper for the per-host state file. Backed by CopilotApiConfig —
  * the project's atomic JSON store (sorted keys, 0600, atomic rename, Windows
- * EPERM/EBUSY retry) — so there's no second I/O implementation and no new dep.
+ * EPERM/EBUSY retry) — so there's no second I/O implementation.
  */
-export class CopilotApiState {
+export class CopilotEnvRunState {
   private readonly store: CopilotApiConfig;
 
   constructor(path?: string) {
@@ -27,18 +41,8 @@ export class CopilotApiState {
   }
 
   /** Current state; absent or ill-typed/out-of-range fields come back `undefined`. */
-  read(): CopilotState {
-    const d = this.store.load();
-    const port = d.port;
-    const pid = d.pid;
-    return {
-      port:
-        typeof port === "number" && Number.isInteger(port) && port > 0 && port < 65536
-          ? port
-          : undefined,
-      pid: typeof pid === "number" && Number.isInteger(pid) && pid > 0 ? pid : undefined,
-      codexHome: typeof d.codexHome === "string" && d.codexHome ? d.codexHome : undefined,
-    };
+  read(): CopilotEnvRunStateData {
+    return v.parse(RUN_STATE_SCHEMA, this.store.load());
   }
 
   /** Merge `patch` into the file; a `null` (or `undefined`) value deletes its key. */

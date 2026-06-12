@@ -12,8 +12,8 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { consola } from "consola";
-
 import { resolveHome } from "../copilot_api/paths.ts";
+import { errMessage } from "../utils/error.ts";
 
 const DB_FILENAME = "copilot-api.sqlite";
 
@@ -144,7 +144,7 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
         }
       }
     } catch (e) {
-      consola.warn(`could not read ${path} (${e instanceof Error ? e.message : String(e)}).`);
+      consola.warn(`could not read ${path} (${errMessage(e)}).`);
     } finally {
       db?.close();
     }

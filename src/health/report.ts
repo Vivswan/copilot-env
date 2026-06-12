@@ -5,9 +5,18 @@ import { bold, gray, green, red, yellow } from "../utils/ansi.ts";
 import { worstStatus } from "./aggregate.ts";
 import type { CheckGroup, CheckResult, CheckStatus, HealthScope } from "./types.ts";
 
-const GROUP_ORDER: CheckGroup[] = ["setup", "bootstrap", "codex", "claude", "proxy", "runtime"];
+const GROUP_ORDER: CheckGroup[] = [
+  "setup",
+  "auth",
+  "bootstrap",
+  "codex",
+  "claude",
+  "proxy",
+  "runtime",
+];
 const GROUP_LABEL: Record<CheckGroup, string> = {
   setup: "Setup",
+  auth: "Authentication",
   bootstrap: "Bootstrap",
   codex: "Codex",
   claude: "Claude",

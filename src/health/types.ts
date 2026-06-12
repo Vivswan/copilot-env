@@ -5,10 +5,18 @@
 export type CheckStatus = "ok" | "warn" | "fail";
 
 /** Which diagnostic surface a `agent health` run targets. */
-export type HealthScope = "full" | "runtime" | "proxy" | "setup" | "codex" | "claude";
+export type HealthScope = "full" | "runtime" | "proxy" | "setup" | "auth" | "codex" | "claude";
 
 /** Declaration order doubles as the help/text-report ordering for scopes. */
-export const HEALTH_SCOPES = ["full", "runtime", "proxy", "setup", "codex", "claude"] as const;
+export const HEALTH_SCOPES = [
+  "full",
+  "runtime",
+  "proxy",
+  "setup",
+  "auth",
+  "codex",
+  "claude",
+] as const;
 
 // Scope membership per check/fact: the scopes each participates in. SINGLE SOURCE
 // shared by the fact-gatherer (probe.ts, which gates which facts to collect) and
@@ -18,6 +26,10 @@ export const HEALTH_SCOPES = ["full", "runtime", "proxy", "setup", "codex", "cla
 export const RUNTIME_SCOPES: readonly HealthScope[] = ["full", "proxy", "runtime"];
 export const BOOTSTRAP_SCOPES: readonly HealthScope[] = ["full", "proxy"];
 export const SETUP_SCOPES: readonly HealthScope[] = ["full", "setup"];
+// The GitHub credential underpins Direct for both agents, but it gets its own
+// section rather than crowding the narrow per-agent scopes: full, setup, and its
+// own focused `auth` scope.
+export const AUTH_SCOPES: readonly HealthScope[] = ["full", "auth", "setup"];
 export const CODEX_SCOPES: readonly HealthScope[] = ["full", "setup", "codex"];
 export const CLAUDE_SCOPES: readonly HealthScope[] = ["full", "setup", "claude"];
 // `--live` end-to-end prompts run only in the agent-focused scopes (never setup).
@@ -25,7 +37,7 @@ export const CODEX_LIVE_SCOPES: readonly HealthScope[] = ["full", "codex"];
 export const CLAUDE_LIVE_SCOPES: readonly HealthScope[] = ["full", "claude"];
 
 /** Section a check renders under (fixed render order lives in report.ts). */
-export type CheckGroup = "bootstrap" | "proxy" | "runtime" | "setup" | "codex" | "claude";
+export type CheckGroup = "bootstrap" | "proxy" | "runtime" | "setup" | "auth" | "codex" | "claude";
 
 /**
  * One diagnostic result. `id` is a stable machine-readable key (e.g.

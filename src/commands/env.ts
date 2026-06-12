@@ -18,7 +18,7 @@ import {
   resolveClaudeHome,
 } from "../claude/config.ts";
 import { getHostLocalCodexHome } from "../codex/host.ts";
-import { CopilotApiState } from "../copilot_api/state.ts";
+import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 
 export interface EnvArgs {
@@ -63,7 +63,7 @@ export function runEnv(args: EnvArgs): void {
   // CODEX_HOME: export the active host farm when its dir exists. If the shell
   // currently carries OUR farm path but it's gone (e.g. after `codex --delete-host`),
   // clear it; never touch a CODEX_HOME the user pointed somewhere else.
-  const codexHome = new CopilotApiState().read().codexHome;
+  const codexHome = new CopilotEnvRunState().read().codexHome;
   if (codexHome && existsSync(codexHome)) {
     directives.push({ key: "CODEX_HOME", value: codexHome });
   } else {

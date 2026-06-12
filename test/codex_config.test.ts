@@ -1,13 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "smol-toml";
@@ -20,6 +12,7 @@ import {
   inspectCodexWiring,
   runCodex,
 } from "../src/codex/config.ts";
+import { agentLauncherCommand } from "../src/utils/root.ts";
 
 const SAVED_HOME = process.env.HOME;
 const SAVED_CODEX_HOME = process.env.CODEX_HOME;
@@ -103,11 +96,15 @@ test("enforces every managed field while preserving unknown user keys", () => {
   expect(headers["Openai-Intent"]).toBe("conversation-edits");
   expect(headers["User-Agent"]).toBe("codex_exec/0.139.0");
 
+  // Direct fetches the bearer via `auth.command` → the agent launcher `auth --get`.
   const auth = asRecord(provider.auth);
-  expect(auth.command).toBe("gh");
-  expect(auth.args).toEqual(["auth", "token"]);
-  expect(auth.timeout_ms).toBe(5000);
+  const expected = agentLauncherCommand(["auth", "--get"]);
+  expect(auth.command).toBe(expected.command);
+  expect(auth.args).toEqual(expected.args);
+  expect(auth.timeout_ms).toBe(15000);
   expect(auth.refresh_interval_ms).toBe(300000);
+  // No baked token at rest.
+  expect(provider.env_key).toBeUndefined();
 
   const other = asRecord(asRecord(doc.model_providers).other);
   expect(other.base_url).toBe("http://other/v1");
@@ -116,59 +113,38 @@ test("enforces every managed field while preserving unknown user keys", () => {
   expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe("OPENAI_API_KEY=old\n");
 });
 
-test("direct + baked gh-token: env_key (no auth block) + the token in .env (0600), still direct", () => {
+test("direct uses the launcher auth.command (no env_key, no token at rest), classified direct", () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
   process.env.HOME = dir;
   const codexHome = join(dir, ".codex");
 
-  const rc = configureCodexConfig(codexHome, { ghToken: "ghu_baked", codexExecVersion: "0.139.0" });
+  const rc = configureCodexConfig(codexHome, { codexExecVersion: "0.139.0" });
   expect(rc).toBe(0);
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("github-copilot-direct");
   const provider = asRecord(asRecord(doc.model_providers)["github-copilot-direct"]);
-  // Token mode reads the bearer from a dedicated env_key, and drops the gh `auth` block.
-  expect(provider.env_key).toBe(DIRECT_ENV_KEY);
-  expect(provider.auth).toBeUndefined();
-  // The dedicated key must NOT be a standard GitHub var (so it can't shadow gh/git).
-  expect(DIRECT_ENV_KEY).not.toBe("GITHUB_TOKEN");
-  expect(DIRECT_ENV_KEY).not.toBe("GH_TOKEN");
+  // The bearer is fetched at runtime via `agent auth --get`; nothing is baked.
+  expect(provider.env_key).toBeUndefined();
+  const auth = asRecord(provider.auth);
+  const expected = agentLauncherCommand(["auth", "--get"]);
+  expect(auth.command).toBe(expected.command);
+  expect(auth.args).toEqual(expected.args);
 
-  // The token lives in CODEX_HOME's .env (0600), under the dedicated key.
-  const envText = readFileSync(join(codexHome, ".env"), "utf8");
-  expect(envText).toContain(`${DIRECT_ENV_KEY}=ghu_baked`);
-  if (process.platform !== "win32") {
-    expect(statSync(join(codexHome, ".env")).mode & 0o077).toBe(0);
+  // No .env token at rest (the scrub may leave no .env at all).
+  if (existsSync(join(codexHome, ".env"))) {
+    expect(readFileSync(join(codexHome, ".env"), "utf8")).not.toContain(DIRECT_ENV_KEY);
   }
 
-  // Wiring still classifies as direct, and flags the token path.
+  // Wiring classifies as direct and flags the managed auth.command.
   const wiring = inspectCodexWiring(
     readFileSync(join(codexHome, "config.toml"), "utf8"),
-    envText,
+    null,
     4141,
     false,
   );
   expect(wiring.providerMode).toBe("direct");
   expect(wiring.directUsesToken).toBe(true);
-});
-
-test("switching direct token -> direct gh (no token) drops the stale env_key and restores auth", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  const codexHome = join(dir, ".codex");
-
-  configureCodexConfig(codexHome, { ghToken: "ghu_baked" });
-  // Sanity: the baked token landed in .env first.
-  expect(readFileSync(join(codexHome, ".env"), "utf8")).toContain(`${DIRECT_ENV_KEY}=ghu_baked`);
-
-  configureCodexConfig(codexHome, {}); // plain direct, no token
-
-  const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
-  const provider = asRecord(asRecord(doc.model_providers)["github-copilot-direct"]);
-  expect(provider.env_key).toBeUndefined(); // stale token key removed
-  expect(asRecord(provider.auth).command).toBe("gh"); // gh auth restored
-  // The baked token is scrubbed from .env — no Copilot token left at rest.
-  expect(readFileSync(join(codexHome, ".env"), "utf8")).not.toContain(DIRECT_ENV_KEY);
 });
 
 test("gh-direct .env scrub preserves other keys and never creates a .env when absent", () => {

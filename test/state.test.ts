@@ -3,14 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import {
-  clearGithubToken,
-  readStoredGithubToken,
-  storeGithubToken,
-} from "../src/copilot_api/gh_token.ts";
+import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 
-// gh_token reads/writes the SHARED store under COPILOT_API_HOME, so isolate each
-// test in a temp home (not the per-host .run state).
+// CopilotEnvState reads/writes the SHARED store under COPILOT_API_HOME, so isolate
+// each test in a temp home (not the per-host .run state).
 const SAVED_HOME = process.env.COPILOT_API_HOME;
 let dir = "";
 
@@ -24,35 +20,50 @@ afterEach(() => {
 });
 
 function tmpHome(): void {
-  dir = mkdtempSync(join(tmpdir(), "copilot-ghtoken-"));
+  dir = mkdtempSync(join(tmpdir(), "copilot-envstate-"));
   process.env.COPILOT_API_HOME = dir;
 }
 
 test("the provisioned GitHub token round-trips through the shared store and clears", () => {
   tmpHome();
-  expect(readStoredGithubToken()).toBeNull();
+  const state = new CopilotEnvState();
+  expect(state.read().githubToken).toBeNull();
 
-  // Written by `agent init --gh-token`, read by every config write + `agent start`.
-  storeGithubToken("ghu_provisioned");
-  expect(readStoredGithubToken()).toBe("ghu_provisioned");
+  // Written by `agent auth`, read by every config write + `agent start`.
+  state.set({ githubToken: "ghu_provisioned" });
+  expect(state.read().githubToken).toBe("ghu_provisioned");
 
-  // `--remove-gh-token` clears it (revert to the gh CLI / proxy device login).
-  clearGithubToken();
-  expect(readStoredGithubToken()).toBeNull();
+  // `agent auth --del` clears it (revert to the gh CLI / proxy device login).
+  state.set({ githubToken: null });
+  expect(state.read().githubToken).toBeNull();
 });
 
-test("storeGithubToken trims; a blank/whitespace value reads back as null", () => {
+test("set() trims; a blank/whitespace value reads back as null", () => {
   tmpHome();
-  storeGithubToken("  ghu_trimmed  ");
-  expect(readStoredGithubToken()).toBe("ghu_trimmed");
+  const state = new CopilotEnvState();
+  state.set({ githubToken: "  ghu_trimmed  " });
+  expect(state.read().githubToken).toBe("ghu_trimmed");
 
-  storeGithubToken("   ");
-  expect(readStoredGithubToken()).toBeNull();
+  state.set({ githubToken: "   " });
+  expect(state.read().githubToken).toBeNull();
 });
 
-test("the token lives in the shared home, independent of per-host .run state", () => {
+test("the auth provider round-trips and clears alongside the token", () => {
   tmpHome();
-  storeGithubToken("ghu_shared");
+  const state = new CopilotEnvState();
+  expect(state.read().authProvider).toBeNull();
+
+  state.set({ githubToken: "ghu_x", authProvider: "gh-token" });
+  expect(state.read().authProvider).toBe("gh-token");
+
+  // `--del` clears both keys at once.
+  state.set({ githubToken: null, authProvider: null });
+  expect(state.read()).toEqual({ githubToken: null, authProvider: null });
+});
+
+test("the state lives in the shared home, independent of per-host .run state", () => {
+  tmpHome();
+  new CopilotEnvState().set({ githubToken: "ghu_shared" });
   // Stored beside config.json at the home root, not under .run/<host>/.
-  expect(readStoredGithubToken()).toBe("ghu_shared");
+  expect(new CopilotEnvState().read().githubToken).toBe("ghu_shared");
 });

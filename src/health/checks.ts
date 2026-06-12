@@ -3,11 +3,11 @@
 import { join } from "node:path";
 import type { AutoupdateData } from "../autoupdate/state.ts";
 import { DIRECT_BASE_URL } from "../claude/config.ts";
-import { DIRECT_ENV_KEY } from "../codex/config.ts";
 import type { ProxyVersionStatus } from "../copilot_api/version.ts";
 import { SECONDS_PER_DAY } from "../utils/time.ts";
 import { filterByScope } from "./aggregate.ts";
 import type {
+  AuthFacts,
   BootstrapFacts,
   ClaudeFacts,
   CliFacts,
@@ -22,6 +22,7 @@ import type {
 } from "./probe.ts";
 import type { CheckResult, HealthScope } from "./types.ts";
 import {
+  AUTH_SCOPES as AUTH,
   BOOTSTRAP_SCOPES as BOOTSTRAP,
   CLAUDE_SCOPES as CLAUDE,
   CODEX_SCOPES as CODEX,
@@ -263,7 +264,7 @@ export function checkCli(c: CliFacts): CheckResult {
     scopes: SETUP,
     status: present ? "ok" : "warn",
     detail: present ? (c.resolved as string) : "not installed (optional)",
-    ...(present ? {} : { fix: "agent setup-clis" }),
+    ...(present ? {} : { fix: "agent shell --clis" }),
     value: { command: c.command, resolved: c.resolved },
   };
 }
@@ -277,8 +278,55 @@ export function checkTool(name: "node" | "npm", resolved: string | null): CheckR
     scopes: SETUP,
     status: present ? "ok" : "warn",
     detail: present ? resolved : "not installed (optional)",
-    ...(present ? {} : { fix: "agent setup-clis" }),
+    ...(present ? {} : { fix: "agent shell --clis" }),
     value: { resolved },
+  };
+}
+
+export function checkAuth(f: AuthFacts): CheckResult {
+  const base = {
+    id: "setup.auth",
+    label: "Authentication",
+    group: "auth" as const,
+    scopes: AUTH,
+    value: { storedToken: f.storedToken, ghAuthenticated: f.ghAuthenticated, provider: f.provider },
+  };
+  // Provider-driven, matching `Credential.resolve()`: no provider => not auth (no
+  // implicit gh fallback); gh-cli resolves via gh; copilot/gh-token via the stored
+  // token. A chosen-but-unresolved provider is a warn, not OK.
+  if (f.provider === null) {
+    return {
+      ...base,
+      status: "warn",
+      detail: [
+        "not authenticated: no credential provider is configured",
+        "run `agent auth` (Direct won't work; the proxy can still device-login on `agent start`)",
+      ].join("\n"),
+      fix: "agent auth",
+    };
+  }
+  const resolves = f.provider === "gh-cli" ? f.ghAuthenticated : f.storedToken;
+  if (resolves) {
+    const how = f.provider === "gh-cli" ? "gh CLI (`gh auth token`)" : "stored GitHub token";
+    return {
+      ...base,
+      status: "ok",
+      detail: [
+        `credential: ${how} (provider: ${f.provider})`,
+        "resolved by `agent auth --get` for Direct; passed to the proxy on `agent start`",
+      ].join("\n"),
+    };
+  }
+  return {
+    ...base,
+    status: "warn",
+    detail: [
+      `provider '${f.provider}' is selected but no credential resolves`,
+      f.provider === "gh-cli"
+        ? "`gh` is unauthenticated — run `gh auth login`, or `agent auth` to switch provider"
+        : "the stored token is missing — run `agent auth` to re-provision",
+    ].join("\n"),
+    fix: "agent auth",
   };
 }
 
@@ -315,8 +363,8 @@ export function checkCodex(f: CodexFacts): CheckResult {
     };
   }
   if (f.providerMode === "direct") {
-    // A baked token (--gh-token, read via env_key) needs no `gh` — wiring alone
-    // decides; otherwise `gh auth token` must work.
+    // A stored token means the resolver (`agent auth --get`) needs no `gh`; wiring
+    // alone decides. Otherwise it falls back to `gh auth token`, which must work.
     if (f.directUsesToken) {
       const status = f.providerWired ? "ok" : "warn";
       return {
@@ -326,23 +374,38 @@ export function checkCodex(f: CodexFacts): CheckResult {
           "provider: direct",
           `config.toml: ${configPath}`,
           `model_provider github-copilot-direct → ${f.baseUrl ?? "(missing)"}`,
-          `auth: baked GitHub token (.env ${DIRECT_ENV_KEY}, no gh CLI)`,
+          "auth: stored GitHub token (agent auth --get, no gh CLI)",
         ].join("\n"),
-        ...(status === "ok" ? {} : { fix: "agent codex --gh-token" }),
+        ...(status === "ok" ? {} : { fix: "agent codex --direct" }),
       };
     }
-    const { ok: authOk, detail: authDetail, ghFix } = describeDirectGhAuth(f.directAuth);
-    const status = f.providerWired && authOk ? "ok" : "warn";
+    // Not "uses token": only `gh-cli` resolves via gh, so probe-report gh for it.
+    // Any other provider (or none) means no credential resolves — point at agent auth.
+    if (f.provider === "gh-cli") {
+      const { ok: authOk, detail: authDetail, ghFix } = describeDirectGhAuth(f.directAuth);
+      const status = f.providerWired && authOk ? "ok" : "warn";
+      return {
+        ...base,
+        status,
+        detail: [
+          "provider: direct",
+          `config.toml: ${configPath}`,
+          `model_provider github-copilot-direct → ${f.baseUrl ?? "(missing)"}`,
+          authDetail,
+        ].join("\n"),
+        ...(status === "ok" ? {} : { fix: f.providerWired ? ghFix : "agent codex --direct" }),
+      };
+    }
     return {
       ...base,
-      status,
+      status: "warn",
       detail: [
         "provider: direct",
         `config.toml: ${configPath}`,
         `model_provider github-copilot-direct → ${f.baseUrl ?? "(missing)"}`,
-        authDetail,
+        "auth: no credential resolves via `agent auth --get` — run `agent auth`",
       ].join("\n"),
-      ...(status === "ok" ? {} : { fix: f.providerWired ? ghFix : "agent codex" }),
+      fix: f.providerWired ? "agent auth" : "agent codex --direct",
     };
   }
   // Config exists: report precisely which part of the wiring is off.
@@ -449,8 +512,8 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
   };
   if (f.providerMode === "direct") {
     const baseOk = f.baseUrl === DIRECT_BASE_URL;
-    // A baked token (--gh-token) helper needs no `gh`; only the base URL must be
-    // right. Otherwise the helper shells out to `gh auth token`, which must work.
+    // A stored token means the resolver (`agent auth --get`) needs no `gh`; only
+    // the base URL must be right. Otherwise it falls back to `gh auth token`.
     if (f.directUsesToken) {
       const status = baseOk ? "ok" : "warn";
       return {
@@ -462,29 +525,43 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
           `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${
             baseOk ? "" : ` (expected ${DIRECT_BASE_URL})`
           }`,
-          "auth: baked GitHub token (apiKeyHelper, no gh CLI)",
+          "auth: stored GitHub token (agent auth --get, no gh CLI)",
         ].join("\n"),
-        ...(status === "ok" ? {} : { fix: "agent claude --gh-token" }),
+        ...(status === "ok" ? {} : { fix: "agent claude --direct" }),
       };
     }
-    // Direct needs gh to mint the token (via the managed apiKeyHelper) AND the
-    // managed ANTHROPIC_BASE_URL — a user could keep the helper but drop/alter
-    // the base URL, which would silently route Claude to the wrong endpoint.
-    const { ok: authOk, detail: authDetail, ghFix } = describeDirectGhAuth(f.directAuth);
-    const status = authOk && baseOk ? "ok" : "warn";
-    const fix = !baseOk ? "agent claude --direct" : ghFix;
+    // Not "uses token": only `gh-cli` resolves via gh. Probe-report gh for it; any
+    // other provider (or none) means no credential resolves — point at agent auth.
+    if (f.provider === "gh-cli") {
+      const { ok: authOk, detail: authDetail, ghFix } = describeDirectGhAuth(f.directAuth);
+      const status = authOk && baseOk ? "ok" : "warn";
+      const fix = !baseOk ? "agent claude --direct" : ghFix;
+      return {
+        ...base,
+        status,
+        detail: [
+          "provider: direct",
+          `settings.json: ${f.settingsPath}`,
+          `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${
+            baseOk ? "" : ` (expected ${DIRECT_BASE_URL})`
+          }`,
+          authDetail,
+        ].join("\n"),
+        ...(status === "ok" ? {} : { fix }),
+      };
+    }
     return {
       ...base,
-      status,
+      status: "warn",
       detail: [
         "provider: direct",
         `settings.json: ${f.settingsPath}`,
         `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${
           baseOk ? "" : ` (expected ${DIRECT_BASE_URL})`
         }`,
-        authDetail,
+        "auth: no credential resolves via `agent auth --get` — run `agent auth`",
       ].join("\n"),
-      ...(status === "ok" ? {} : { fix }),
+      fix: !baseOk ? "agent claude --direct" : "agent auth",
     };
   }
   if (f.providerMode === "proxy") {
@@ -624,6 +701,7 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
   if (facts.tools) {
     out.push(checkTool("node", facts.tools.node), checkTool("npm", facts.tools.npm));
   }
+  if (facts.auth) out.push(checkAuth(facts.auth));
   if (facts.codex) out.push(checkCodex(facts.codex));
   if (facts.codexLive) out.push(checkCodexLive(facts.codexLive));
   if (facts.codexHost) out.push(checkCodexHost(facts.codexHost));

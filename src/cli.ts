@@ -18,6 +18,7 @@ import { runClaude } from "./claude/config.ts";
 import { runCodex } from "./codex/config.ts";
 import { runCodexHost } from "./codex/host.ts";
 import { runCodexMobile } from "./codex/mobile.ts";
+import { runAuth } from "./commands/auth.ts";
 import { runEnv } from "./commands/env.ts";
 import { runHealth } from "./commands/health.ts";
 import { runInit } from "./commands/init.ts";
@@ -28,6 +29,7 @@ import { runUpdate } from "./commands/update.ts";
 import { runCost } from "./usage/cost.ts";
 import { OPENROUTER_MODELS_URL } from "./usage/pricing.ts";
 import { bold, cyan, gray } from "./utils/ansi.ts";
+import { errMessage } from "./utils/error.ts";
 import { disableConsolaTimestamps } from "./utils/logger.ts";
 import { packageVersion } from "./utils/version.ts";
 
@@ -53,7 +55,7 @@ async function runSafe(action: () => void | Promise<void>): Promise<void> {
   try {
     await action();
   } catch (e) {
-    consola.error(e instanceof Error ? e.message : String(e));
+    consola.error(errMessage(e));
     process.exitCode = 1;
   }
 }
@@ -137,24 +139,44 @@ program
   .description("Set up both Codex and Claude (auto-detect GitHub Copilot Direct vs the proxy).")
   .option("--direct", "Force both agents to GitHub Copilot Direct (no auto-detect probe).")
   .option("--proxy", "Force both agents to the local copilot-api proxy (no auto-detect probe).")
-  .option(
-    "--gh-token [token]",
-    "Provision this GitHub token (stored in state; used for Direct + the proxy) so no `gh` login " +
-      "is needed. Bare flag reads $GH_TOKEN/$GITHUB_TOKEN. Implies Direct; the token must be a " +
-      "Copilot-enabled GitHub token (a generic PAT won't work).",
-  )
-  .option(
-    "--remove-gh-token",
-    "Revert a prior --gh-token: reconfigure both agents to gh Direct and clear the stored token, " +
-      "so everything uses the gh CLI / proxy login again.",
-  )
   .action((opts: Opts) =>
     runSafe(() =>
       runInit({
         direct: Boolean(opts.direct),
         proxy: Boolean(opts.proxy),
-        "gh-token": opts.ghToken as string | boolean | undefined,
-        "remove-gh-token": Boolean(opts.removeGhToken),
+      }),
+    ),
+  );
+
+program
+  .command("auth")
+  .description("Manage the GitHub Copilot credential (the single source of truth for Direct).")
+  .option(
+    "--provider <provider>",
+    "How to authenticate (no flag => interactive choice): 'copilot' (device flow, " +
+      "read:user scope), 'gh-cli' (use the machine's gh login), or 'gh-token' " +
+      "(store $GH_TOKEN/$GITHUB_TOKEN — for headless servers).",
+  )
+  .option(
+    "--set [token]",
+    "Non-interactive gh-token: store this token verbatim, or read $GH_TOKEN/$GITHUB_TOKEN " +
+      "when given no value. Implies --provider gh-token.",
+  )
+  .option(
+    "--get",
+    "Print the resolved token to stdout (provider-driven: gh-cli → `gh auth token`, " +
+      "copilot/gh-token → the stored token).",
+  )
+  .option("--del", "Clear the stored token (de-authenticate).")
+  .option("--check", "Report auth status and exit (0 authenticated, 1 not).")
+  .action((opts: Opts) =>
+    runSafe(() =>
+      runAuth({
+        provider: opts.provider as string | undefined,
+        set: opts.set as string | boolean | undefined,
+        get: Boolean(opts.get),
+        del: Boolean(opts.del),
+        check: Boolean(opts.check),
       }),
     ),
   );
@@ -168,7 +190,7 @@ program
     "Pin the proxy to this port instead of auto-resolving from the default (fails if it is busy).",
   )
   .action((opts: Opts) =>
-    runSafe(() => runStart({ "dry-run": Boolean(opts.dryRun), port: parsePort(opts.port) })),
+    runSafe(() => runStart({ dryRun: Boolean(opts.dryRun), port: parsePort(opts.port) })),
   );
 
 program
@@ -183,7 +205,8 @@ program
     "--scope <scope>",
     "Checks to run: full (default; whole environment) | runtime (fast proxy " +
       "readiness probe) | proxy (bootstrap + proxy + runtime) | setup (shell, " +
-      "CLIs, Codex, Claude) | codex (Codex wiring only) | claude (Claude wiring only).",
+      "CLIs, Codex, Claude) | auth (the GitHub credential) | codex (Codex wiring " +
+      "only) | claude (Claude wiring only).",
     "full",
   )
   .option("--json", "Emit a JSON report instead of the formatted text report.")
@@ -223,7 +246,7 @@ program
       runCost({
         days: opts.days as string | undefined,
         json: Boolean(opts.json),
-        "pricing-url": String(opts.pricingUrl),
+        pricingUrl: String(opts.pricingUrl),
       }),
     ),
   );
@@ -237,7 +260,7 @@ program
   .option("--proxy", "Force the local copilot-api proxy (no auto-detect probe).")
   .option(
     "--check",
-    "Report the configured provider and exit — no changes, no probe (0 direct, 2 proxy, 1 other).",
+    "Report the configured provider and exit — no changes, no probe (0 direct, 1 other, 2 proxy/none).",
   )
   .option("--host", "(Linux/macOS) Build the per-host CODEX_HOME symlink farm and wire its config.")
   .option("--delete-host", "With --host: remove the per-host CODEX_HOME and stop exporting it.")
@@ -274,7 +297,7 @@ program
   .option("--proxy", "Force the local copilot-api proxy (no auto-detect probe).")
   .option(
     "--check",
-    "Report the configured provider and exit — no changes, no probe (0 direct, 2 proxy, 1 other).",
+    "Report the configured provider and exit — no changes, no probe (0 direct, 1 other, 2 proxy/none).",
   )
   .action((opts: Opts) =>
     runSafe(() =>
@@ -356,14 +379,14 @@ program
         cooldown: resolveCooldown(opts.cooldown, 7),
         noSudo: opts.sudo === false,
         noPrereqs: opts.prereqs === false,
-        "all-hosts": Boolean(opts.allHosts),
+        allHosts: Boolean(opts.allHosts),
       }),
     ),
   );
 
 if (import.meta.main) {
   program.parseAsync(process.argv).catch((e: unknown) => {
-    consola.error(e instanceof Error ? e.message : String(e));
+    consola.error(errMessage(e));
     // Set exitCode (not process.exit) so pending stderr writes flush.
     process.exitCode = 1;
   });

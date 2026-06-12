@@ -2,8 +2,8 @@
 // backends, mirroring src/codex/config.ts but adapted to how Claude consumes
 // config (JSON settings.json + an apiKeyHelper script, no `model_provider`):
 //
-//   - direct: GitHub Copilot. apiKeyHelper -> copilot-token.sh (`gh auth token`,
-//     or a baked literal token when `--gh-token` is given — no `gh` needed)
+//   - direct: GitHub Copilot. apiKeyHelper -> copilot-token.sh, which execs
+//     `agent auth --get` (provider-driven: gh-cli -> gh, copilot/gh-token -> stored token)
 //     and env.ANTHROPIC_BASE_URL = https://api.githubcopilot.com.
 //   - proxy:  the local copilot-api proxy. apiKeyHelper -> copilot-proxy-token.sh
 //     (prints the proxy key) and env.ANTHROPIC_BASE_URL = http://localhost:<port>.
@@ -16,9 +16,8 @@
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
-
 import { CopilotApiConfig } from "../copilot_api/config.ts";
-import { readStoredGithubToken } from "../copilot_api/gh_token.ts";
+import { Credential } from "../copilot_api/credential.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
 import {
   assertSingleMode,
@@ -27,8 +26,15 @@ import {
   probeDirectWorks,
   resolveDirectMode,
 } from "../utils/direct_probe.ts";
+import { errMessage } from "../utils/error.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import {
+  type AgentProviderMode,
+  type ManagedAgentMode,
+  providerModeExitCode,
+} from "../utils/provider_mode.ts";
+import { AGENT_AUTH_GET_ARGS, agentLauncherCommand } from "../utils/root.ts";
 
 const logger = createStderrLogger();
 
@@ -42,14 +48,32 @@ export const PROXY_HELPER_NAME = "copilot-proxy-token.sh";
 export const BASE_URL_ENV = "ANTHROPIC_BASE_URL";
 export const DISABLE_BETAS_ENV = "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS";
 
-// The direct apiKeyHelper: print a GitHub token on stdout. Claude runs
-// apiKeyHelper via /bin/sh and uses its stdout as the credential. The default
-// shells out to `gh auth token`; `--gh-token` instead bakes a literal token via
-// literalTokenHelperScript (no `gh` binary required — for headless servers).
-const DIRECT_HELPER_SCRIPT = "#!/bin/sh\nexec gh auth token\n";
+/** Single-quote a string for safe embedding in a /bin/sh command line. */
+function shQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
 
-export type ClaudeProviderMode = "direct" | "proxy" | "other" | "none";
-export type ManagedClaudeMode = Extract<ClaudeProviderMode, "direct" | "proxy">;
+/**
+ * The direct apiKeyHelper body: print the Direct credential on stdout. Claude runs
+ * apiKeyHelper via /bin/sh and uses its stdout as the credential. We exec
+ * `agent auth --get`, the provider-driven resolver (gh-cli -> gh, else the stored token), so
+ * the token is never baked into this script — it lives only in the state store.
+ */
+function directHelperScript(): string {
+  const { command, args } = agentLauncherCommand(AGENT_AUTH_GET_ARGS);
+  const line = [command, ...args].map(shQuote).join(" ");
+  return `#!/bin/sh\nexec ${line}\n`;
+}
+
+/**
+ * True iff `helperBody` is exactly the managed direct helper (execs `agent auth
+ * --get`). Health uses this to POSITIVELY confirm Direct resolves via the managed
+ * launcher before deciding gh is unneeded — a stale `gh auth token` helper, a
+ * foreign script, or a missing file returns false and stays on the gh-checked path.
+ */
+export function directHelperResolvesViaAgent(helperBody: string | null): boolean {
+  return helperBody !== null && helperBody === directHelperScript();
+}
 
 export interface ClaudeConfigArgs {
   check?: boolean;
@@ -65,7 +89,7 @@ export interface ClaudeWiringStatus {
   /** `env.ANTHROPIC_BASE_URL`, if present. */
   baseUrl: string | null;
   /** Which backend the current settings select. */
-  providerMode: ClaudeProviderMode;
+  providerMode: AgentProviderMode;
 }
 
 // --- paths ------------------------------------------------------------------
@@ -182,7 +206,7 @@ function writeHelperScript(helperPath: string, script: string): void {
 }
 
 /** Set the managed `env` keys in place (preserving any other env vars). */
-function applyManagedEnv(doc: Record<string, unknown>, mode: ManagedClaudeMode, baseUrl: string) {
+function applyManagedEnv(doc: Record<string, unknown>, mode: ManagedAgentMode, baseUrl: string) {
   const env = isRecord(doc.env) ? doc.env : {};
   env[BASE_URL_ENV] = baseUrl;
   // Disabling betas is a direct-only knob (the proxy speaks full Anthropic).
@@ -192,42 +216,36 @@ function applyManagedEnv(doc: Record<string, unknown>, mode: ManagedClaudeMode, 
 }
 
 /**
- * Apply the managed Claude wiring at `claudeHome`. Direct writes the gh-token
- * helper + the Copilot base URL (or, when `ghToken` is supplied, a helper that
- * prints that literal token — no `gh` binary required); proxy resolves the local
- * proxy port + token, writes a helper that prints that token, and points the base
- * URL at localhost. Either way the merge is surgical (only managed keys change)
- * and the OTHER mode's settings are overwritten so switching modes is clean.
- * Throws on an unwritable home / malformed settings.json / unresolvable proxy token.
+ * Apply the managed Claude wiring at `claudeHome`. Direct writes the apiKeyHelper
+ * that execs `agent auth --get` (the single credential resolver) + the Copilot
+ * base URL; proxy resolves the local proxy port + token, writes a helper that
+ * prints that token, and points the base URL at localhost. Either way the merge
+ * is surgical (only managed keys change) and the OTHER mode's settings are
+ * overwritten so switching modes is clean. Throws on an unwritable home /
+ * malformed settings.json / unresolvable proxy token.
  */
 export function configureClaudeConfig(
   claudeHome: string,
-  mode: ManagedClaudeMode,
+  mode: ManagedAgentMode,
   quiet = false,
-  ghToken?: string | null,
 ): void {
   try {
     fs.mkdirSync(claudeHome, { recursive: true });
   } catch (e) {
-    throw new Error(
-      `could not create Claude config directory ${claudeHome}: ${e instanceof Error ? e.message : String(e)}`,
-    );
+    throw new Error(`could not create Claude config directory ${claudeHome}: ${errMessage(e)}`);
   }
 
   const settingsPath = settingsPathFor(claudeHome);
   const doc = loadSettings(settingsPath);
 
   if (mode === "direct") {
-    // `--gh-token` bakes the literal token into the helper (chmod 0700, like the
-    // proxy helper); otherwise the helper shells out to `gh auth token`.
-    const script = ghToken ? literalTokenHelperScript(ghToken) : DIRECT_HELPER_SCRIPT;
-    writeHelperScript(directHelperPath(claudeHome), script);
+    // The helper execs `agent auth --get`; the token is never baked here.
+    writeHelperScript(directHelperPath(claudeHome), directHelperScript());
     doc.apiKeyHelper = directHelperPath(claudeHome);
     applyManagedEnv(doc, "direct", DIRECT_BASE_URL);
     saveSettings(settingsPath, doc);
     if (!quiet) {
-      const how = ghToken ? "direct: GitHub Copilot, baked token" : "direct: GitHub Copilot";
-      logger.log(`  ✓ Claude config written → ${settingsPath} (${how})`);
+      logger.log(`  ✓ Claude config written → ${settingsPath} (direct: GitHub Copilot)`);
     }
     return;
   }
@@ -239,9 +257,7 @@ export function configureClaudeConfig(
   try {
     token = new CopilotApiConfig().ensureApiKey();
   } catch (e) {
-    throw new Error(
-      `failed to persist the proxy auth token: ${e instanceof Error ? e.message : String(e)}`,
-    );
+    throw new Error(`failed to persist the proxy auth token: ${errMessage(e)}`);
   }
   writeHelperScript(proxyHelperPath(claudeHome), literalTokenHelperScript(token));
   doc.apiKeyHelper = proxyHelperPath(claudeHome);
@@ -253,25 +269,14 @@ export function configureClaudeConfig(
 }
 
 // The managed literal-token helper shape: `#!/bin/sh` + a `printf '%s' '<token>'`
-// line. Shared by the writer (literalTokenHelperScript) and the positive detector
-// (directHelperUsesToken) so the two never drift.
+// line. Used for the PROXY helper (which prints the local proxy key verbatim);
+// the direct helper instead execs `agent auth --get` (see directHelperScript).
 const TOKEN_HELPER_PREFIX = "#!/bin/sh\nprintf '%s' '";
 
-/** An apiKeyHelper that prints a literal token verbatim on stdout (proxy key or a baked gh token). */
+/** An apiKeyHelper that prints a literal token verbatim on stdout (the proxy key). */
 function literalTokenHelperScript(token: string): string {
   const escaped = token.replace(/'/g, `'\\''`); // single-quote-safe for /bin/sh
   return `${TOKEN_HELPER_PREFIX}${escaped}'\n`;
-}
-
-/**
- * True iff `helperBody` is the managed baked-token direct helper (the printf form
- * written by `--gh-token`), as opposed to the `gh auth token` helper or a foreign
- * script. Health uses this to POSITIVELY identify a token-backed Direct setup
- * (so it can skip the gh-auth probe) — a missing/broken/custom helper returns
- * false and stays on the gh-backed code path rather than being mistaken for one.
- */
-export function directHelperUsesToken(helperBody: string | null): boolean {
-  return helperBody?.startsWith(TOKEN_HELPER_PREFIX) ?? false;
 }
 
 // --- the `--check` provider report ------------------------------------------
@@ -284,7 +289,7 @@ function readTextOrNull(filePath: string): string | null {
   }
 }
 
-function providerModeDetail(mode: ClaudeProviderMode): string {
+function providerModeDetail(mode: AgentProviderMode): string {
   switch (mode) {
     case "direct":
       return "GitHub Copilot Direct";
@@ -298,12 +303,6 @@ function providerModeDetail(mode: ClaudeProviderMode): string {
 }
 
 /** Exit-code contract for `--check`, consumed by the `cl` launcher. */
-function checkExitCode(mode: ClaudeProviderMode): 0 | 1 | 2 {
-  if (mode === "direct") return 0;
-  if (mode === "other") return 1; // custom — the cl launcher does NOT launch
-  return 2; // proxy or none — proxy (the default backend)
-}
-
 function checkClaudeConfig(): void {
   const claudeHome = resolveClaudeHome();
   const settingsPath = settingsPathFor(claudeHome);
@@ -316,7 +315,7 @@ function checkClaudeConfig(): void {
     console.log(`apiKeyHelper: ${status.helperPath}`);
     console.log(`${BASE_URL_ENV}: ${status.baseUrl}`);
   }
-  process.exitCode = checkExitCode(status.providerMode);
+  process.exitCode = providerModeExitCode(status.providerMode);
 }
 
 /**
@@ -338,11 +337,10 @@ export function detectClaudeDirect(deps?: DirectProbeDeps): boolean {
  * `agent claude`: configure Claude Code's wiring at the effective Claude home
  * ($CLAUDE_CONFIG_DIR, else ~/.claude). `--direct` forces GitHub Copilot Direct,
  * `--proxy` forces the local proxy, and with no mode flag it auto-detects (live
- * `claude -p` probe, else the proxy). A GitHub token provisioned via `agent init
- * --gh-token` (in the shared store) is used as the Direct credential
- * automatically — and with no mode flag, its presence selects Direct without
- * probing. `--check` reports the configured mode (exit 0 direct / 2 proxy|none /
- * 1 other) without a probe.
+ * `claude -p` probe, else the proxy). A GitHub token provisioned via `agent auth`
+ * (in the shared store) selects Direct without probing when no mode flag is given.
+ * `--check` reports the configured mode (exit 0 direct / 2 proxy|none / 1 other)
+ * without a probe.
  */
 export function runClaude(args: ClaudeConfigArgs): void {
   assertSingleMode(args);
@@ -351,18 +349,19 @@ export function runClaude(args: ClaudeConfigArgs): void {
     return;
   }
   const claudeHome = resolveClaudeHome();
-  // Single source of truth: the token provisioned via `agent init --gh-token`.
-  const ghToken = readStoredGithubToken();
+  // A configured credential (`agent auth`) selects Direct without a live probe.
+  // Resolve it provider-aware (gh-cli → gh, copilot/gh-token → stored token, none →
+  // null); the helper re-resolves at fetch time via `agent auth --get`.
+  const ghToken = new Credential().resolve();
   const direct = resolveDirectMode(args, ghToken, detectClaudeDirect);
   logger.log(
     `  Configuring Claude for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} …`,
   );
-  // Bake the stored token only in Direct mode; proxy mode uses it via `agent start`.
-  configureClaudeConfig(claudeHome, direct ? "direct" : "proxy", false, direct ? ghToken : null);
+  configureClaudeConfig(claudeHome, direct ? "direct" : "proxy");
 }
 
 /** The configured Claude provider mode at the effective Claude home (read-only). */
-export function effectiveClaudeProviderMode(): ClaudeProviderMode {
+export function effectiveClaudeProviderMode(): AgentProviderMode {
   const claudeHome = resolveClaudeHome();
   return inspectClaudeWiring(readTextOrNull(settingsPathFor(claudeHome)), claudeHome).providerMode;
 }

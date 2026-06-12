@@ -5,6 +5,7 @@
 // and price the aggregated token usage. Models OpenRouter cannot price are
 // reported as unpriced and excluded from the total.
 
+import { ONE_M_SUFFIX } from "../copilot_api/models.ts";
 import { isRecord } from "../utils/json.ts";
 
 const FETCH_TIMEOUT_MS = 10_000;
@@ -176,7 +177,7 @@ export function estimateCost(
 function normalizeModelName(model: string): string {
   let n = (model || "").toLowerCase().replace(/\*+$/, "").replace(/\s+/g, "-");
   n = n
-    .replace("[1m]", "")
+    .replace(ONE_M_SUFFIX, "")
     .replace(/-internal$/, "")
     .replace(/(-|\.)1m$/, "");
   const toDot = (s: string): string => s.replace(/(?<=\d)-(?=\d)/g, ".");

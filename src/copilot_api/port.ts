@@ -1,7 +1,7 @@
 // Port selection and discovery helpers for the local copilot-api proxy.
 import * as net from "node:net";
 
-import { CopilotApiState } from "./state.ts";
+import { CopilotEnvRunState } from "./state.ts";
 
 export const COPILOT_API_PORT_DEFAULT: string = process.env.COPILOT_API_PORT_DEFAULT || "4141";
 
@@ -40,7 +40,7 @@ export async function copilotApiFindPort(
 
 export function copilotApiResolvePort(): string {
   // The port is recorded in our state file by `start` and removed by `stop`.
-  const statePort = new CopilotApiState().read().port;
+  const statePort = new CopilotEnvRunState().read().port;
   return statePort !== undefined ? String(statePort) : COPILOT_API_PORT_DEFAULT;
 }
 

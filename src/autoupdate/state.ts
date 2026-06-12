@@ -1,8 +1,9 @@
 // Opt-in autoupdate state, persisted to `<install>/.autoupdate/state.json`.
 //
 // Thin typed wrapper over CopilotApiConfig (the project's atomic JSON store:
-// sorted keys, 0600, atomic rename, Windows retry) — mirroring CopilotApiState,
-// so there's no second I/O implementation and no new dependency.
+// sorted keys, 0600, atomic rename, Windows retry) — mirroring CopilotEnvRunState,
+// so there's no second I/O implementation.
+import * as v from "valibot";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { autoupdateStateFile } from "./paths.ts";
 
@@ -22,6 +23,18 @@ export interface AutoupdateData {
 
 type AutoupdatePatch = { [K in keyof AutoupdateData]?: AutoupdateData[K] | null };
 
+// Lenient read schema: absent or ill-typed fields fall back to safe defaults rather
+// than throwing. `lastCheckMs` must be finite (rejects NaN/Infinity).
+const AUTOUPDATE_SCHEMA = v.object({
+  enabled: v.fallback(v.boolean(), false),
+  cooldownDays: v.fallback(
+    v.pipe(v.number(), v.integer(), v.minValue(0)),
+    DEFAULT_AUTOUPDATE_COOLDOWN_DAYS,
+  ),
+  lastCheckMs: v.fallback(v.pipe(v.number(), v.finite(), v.minValue(0)), 0),
+  lastResult: v.fallback(v.string(), ""),
+});
+
 export class AutoupdateState {
   private readonly store: CopilotApiConfig;
 
@@ -31,21 +44,7 @@ export class AutoupdateState {
 
   /** Current state; absent or ill-typed fields fall back to safe defaults. */
   read(): AutoupdateData {
-    const d = this.store.load();
-    const cooldownRaw = d.cooldownDays;
-    const lastCheckRaw = d.lastCheckMs;
-    return {
-      enabled: d.enabled === true,
-      cooldownDays:
-        typeof cooldownRaw === "number" && Number.isInteger(cooldownRaw) && cooldownRaw >= 0
-          ? cooldownRaw
-          : DEFAULT_AUTOUPDATE_COOLDOWN_DAYS,
-      lastCheckMs:
-        typeof lastCheckRaw === "number" && Number.isFinite(lastCheckRaw) && lastCheckRaw >= 0
-          ? lastCheckRaw
-          : 0,
-      lastResult: typeof d.lastResult === "string" ? d.lastResult : "",
-    };
+    return v.parse(AUTOUPDATE_SCHEMA, this.store.load());
   }
 
   /** Merge `patch` into the file; a `null` (or `undefined`) value deletes its key. */

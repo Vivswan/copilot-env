@@ -316,8 +316,10 @@ test("the launcher / CLI-install flags live on shell, not init", () => {
     expect(shellOut).toContain(flag);
     expect(initOut).not.toContain(flag);
   }
-  // init keeps the agent-config flags; shell does not configure agents.
-  expect(initOut).toContain("--gh-token");
+  // init keeps the agent-config flags; shell does not configure agents. The
+  // credential flags moved to `agent auth`, so init no longer carries --gh-token.
+  expect(initOut).toContain("--direct");
+  expect(initOut).not.toContain("--gh-token");
   expect(shellOut).not.toContain("--gh-token");
 });
 

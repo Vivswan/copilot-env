@@ -6,10 +6,9 @@
 // alias-derivation logic stays pure in `models.ts`.
 
 import { isRecord } from "../utils/json.ts";
-import type { CatalogModel } from "./models.ts";
+import { type CatalogModel, ONE_M_SUFFIX } from "./models.ts";
 
 const ONE_M_TOKENS = 1_000_000;
-const ONE_M_SUFFIX = "[1m]";
 const FETCH_TIMEOUT_MS = 5000;
 
 interface RequestOptions {

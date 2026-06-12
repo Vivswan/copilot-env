@@ -10,14 +10,14 @@ export async function runStop(): Promise<void> {
   const pid = state.read().pid;
 
   if (pid === undefined) {
-    // Not a crash — just nothing to do. Friendly note, no stack trace, but a
+    // Not a crash -- just nothing to do. Friendly note, no stack trace, but a
     // non-zero exit so scripts can still tell "stopped" from "nothing running".
     consola.info("The proxy is not running on this host (nothing to stop).");
     process.exitCode = 1;
     return;
   }
 
-  // Confirm the tracked pid is still OUR daemon before signalling it — the OS
+  // Confirm the tracked pid is still OUR daemon before signalling it -- the OS
   // may have recycled a stale pid onto an unrelated process.
   if (!(await isCopilotApiPid(pid))) {
     state.set({ pid: null, port: null });
@@ -29,7 +29,7 @@ export async function runStop(): Promise<void> {
   // On Windows there are no POSIX signals: Node maps SIGTERM to an unconditional
   // TerminateProcess, so this is a hard kill with no graceful SQLite flush.
   // SQLite's WAL recovery makes that safe; just don't expect clean teardown here on
-  // Windows. graceMs:0 — a single SIGTERM, no force-kill escalation.
+  // Windows. graceMs:0 -- a single SIGTERM, no force-kill escalation.
   await terminatePid(pid, 0);
   state.set({ pid: null, port: null });
   consola.info(`Stopped the proxy (PID ${pid})`);

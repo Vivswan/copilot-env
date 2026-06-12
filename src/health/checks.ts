@@ -1,4 +1,4 @@
-// Pure evaluators: HealthFacts -> CheckResult[]. No I/O — every input is a fact
+// Pure evaluators: HealthFacts -> CheckResult[]. No I/O -- every input is a fact
 // gathered by probe.ts, so each check is independently unit-testable.
 import { join } from "node:path";
 import type { AutoupdateData } from "../autoupdate/state.ts";
@@ -100,7 +100,7 @@ export function checkNodeModules(f: BootstrapFacts): CheckResult {
 }
 
 export function checkProxyPackage(f: ProxyFacts): CheckResult {
-  // A config that couldn't be read means we can't judge bounds — surface that
+  // A config that couldn't be read means we can't judge bounds -- surface that
   // as the failure rather than letting the exception escape the report.
   if (f.configError !== null || f.bounds === null) {
     return {
@@ -120,7 +120,7 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
   let fix: string | undefined;
   if (bounds.ok) {
     status = "ok";
-    // Version + cooldown as separate lines -> rendered as `•` sub-items.
+    // Version + cooldown as separate lines -> rendered as `-` sub-items.
     detail = `@jeffreycao/copilot-api ${bounds.version}\nfloat ${floatCooldownLabel(f.cooldownSeconds)}`;
   } else if (bounds.reason === "missing") {
     status = "fail";
@@ -354,7 +354,7 @@ export function checkCodex(f: CodexFacts): CheckResult {
       directUsesToken: f.directUsesToken,
     },
   };
-  // No config at the effective CODEX_HOME: the user hasn't wired Codex — fine.
+  // No config at the effective CODEX_HOME: the user hasn't wired Codex -- fine.
   if (!f.configExists) {
     return {
       ...base,
@@ -380,7 +380,7 @@ export function checkCodex(f: CodexFacts): CheckResult {
       };
     }
     // Not "uses token": only `gh-cli` resolves via gh, so probe-report gh for it.
-    // Any other provider (or none) means no credential resolves — point at agent auth.
+    // Any other provider (or none) means no credential resolves -- point at agent auth.
     if (f.provider === "gh-cli") {
       const { ok: authOk, detail: authDetail, ghFix } = describeDirectGhAuth(f.directAuth);
       const status = f.providerWired && authOk ? "ok" : "warn";
@@ -485,7 +485,7 @@ export function checkCodexHost(f: CodexHostFacts): CheckResult {
       detail: detail(`built but not active (using another CODEX_HOME): ${f.hostHome}`),
     };
   }
-  // Not built. Informational — it's an optional feature (Linux/macOS only).
+  // Not built. Informational -- it's an optional feature (Linux/macOS only).
   const why = f.supported ? "not built (optional)" : "not built (unsupported on Windows)";
   return { ...base, status: "ok", detail: why };
 }
@@ -529,7 +529,7 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
       };
     }
     // Not "uses token": only `gh-cli` resolves via gh. Probe-report gh for it; any
-    // other provider (or none) means no credential resolves — point at agent auth.
+    // other provider (or none) means no credential resolves -- point at agent auth.
     if (f.provider === "gh-cli") {
       const { ok: authOk, detail: authDetail, ghFix } = describeDirectGhAuth(f.directAuth);
       const status = authOk && baseOk ? "ok" : "warn";
@@ -615,8 +615,8 @@ export function checkAutoupdate(f: AutoupdateData): CheckResult {
     },
   };
   // Always show the full status (enabled, cooldown, last check, last result),
-  // whether or not autoupdate is on — matching `agent update --auto-status`. One
-  // fact per line so the report renders them as `•` sub-items.
+  // whether or not autoupdate is on -- matching `agent update --auto-status`. One
+  // fact per line so the report renders them as `-` sub-items.
   const last = f.lastCheckMs > 0 ? new Date(f.lastCheckMs).toISOString() : "never";
   const detail = [
     `status: ${f.enabled ? "enabled" : "disabled"}`,

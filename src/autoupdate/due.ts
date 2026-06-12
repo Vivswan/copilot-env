@@ -17,7 +17,7 @@ export function isDue(lastCheckMs: number, nowMs: number): boolean {
 
 /**
  * True when the preflight should run for this first arg. Autoupdate is limited to
- * `agent start` — a deliberate, less-frequent action — so day-to-day commands
+ * `agent start` -- a deliberate, less-frequent action -- so day-to-day commands
  * (env/health/cost/...) never trigger a self-update, and `agent env` (whose stdout
  * the shell wrapper evals) is never in scope.
  */

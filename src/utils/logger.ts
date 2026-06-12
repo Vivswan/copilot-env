@@ -1,6 +1,6 @@
 // Shared consola configuration for copilot-env. Two things every logger here
 // wants: no right-aligned wall-clock timestamp (noise for short-lived CLI output,
-// and it wraps awkwardly), and — for the per-module loggers — stderr only, so the
+// and it wraps awkwardly), and -- for the per-module loggers -- stderr only, so the
 // machine-readable `agent env` stdout is never polluted.
 import { type ConsolaInstance, consola, createConsola } from "consola";
 

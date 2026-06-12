@@ -1,5 +1,5 @@
 // The Direct-mode GitHub credential as one domain object over the shared state
-// store (`CopilotEnvState` → `.copilot-env-state.json`). It owns provider-driven
+// store (`CopilotEnvState` -> `.copilot-env-state.json`). It owns provider-driven
 // resolution, status, and the state mutations (store / use-gh-cli / clear), so the
 // agent config writers and health (`codex`/`claude`/`host`/`probe`) and the daemon
 // (`start`) depend on THIS domain class rather than reaching into the `commands/`
@@ -17,7 +17,7 @@ import { CopilotApiPaths } from "./paths.ts";
 export type { AuthProvider, TokenProvider } from "./env_state.ts";
 export { AUTH_PROVIDERS } from "./env_state.ts";
 
-/** Provider + whether its credential resolves — the shared status for auth/health. */
+/** Provider + whether its credential resolves -- the shared status for auth/health. */
 export interface CredentialStatus {
   provider: AuthProvider | null;
   resolves: boolean;
@@ -41,7 +41,7 @@ export function ghAuthToken(): string | null {
 
 /**
  * The Direct GitHub credential, keyed off the recorded provider. Construct freely
- * (it's a thin façade over `CopilotEnvState`); pass an existing state instance only
+ * (it's a thin facade over `CopilotEnvState`); pass an existing state instance only
  * to share one read/write cursor.
  */
 export class Credential {
@@ -54,16 +54,16 @@ export class Credential {
   /** The recorded provider, or null when one was never chosen / is unrecognized. */
   provider(): AuthProvider | null {
     // CopilotEnvState validates `authProvider` against the picklist on read, so an
-    // unknown/corrupt value already reads back as null — no extra guard needed here.
+    // unknown/corrupt value already reads back as null -- no extra guard needed here.
     return this.state.read().authProvider;
   }
 
   /**
-   * The resolved Direct credential, driven STRICTLY by the recorded provider — NO
+   * The resolved Direct credential, driven STRICTLY by the recorded provider -- NO
    * implicit `gh` fallback and no token-without-provider:
-   *   - gh-cli           → `gh auth token` (live)
-   *   - copilot/gh-token → the stored token
-   *   - none / unknown   → null (the caller prompts / errors; never silently gh)
+   *   - gh-cli           -> `gh auth token` (live)
+   *   - copilot/gh-token -> the stored token
+   *   - none / unknown   -> null (the caller prompts / errors; never silently gh)
    */
   resolve(): string | null {
     const { githubToken, authProvider } = this.state.read();
@@ -79,7 +79,7 @@ export class Credential {
   }
 
   /**
-   * True when auth is usable RIGHT NOW — the configured provider's credential
+   * True when auth is usable RIGHT NOW -- the configured provider's credential
    * actually resolves. A recorded-but-broken provider (e.g. `gh-cli` after `gh`
    * logout) is NOT authenticated, so init/start/auth re-ask rather than silently
    * proceeding; and a bare `gh` login the user never opted into never counts.
@@ -88,7 +88,7 @@ export class Credential {
     return this.resolve() !== null;
   }
 
-  /** Provider + whether its credential resolves — for `--check` and health. */
+  /** Provider + whether its credential resolves -- for `--check` and health. */
   status(): CredentialStatus {
     return { provider: this.provider(), resolves: this.resolve() !== null };
   }

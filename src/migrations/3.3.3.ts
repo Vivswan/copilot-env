@@ -22,7 +22,7 @@ const LEGACY_CODEX_PROVIDER = "github-copilot-direct";
  * the unified `copilot-env` provider: fold the legacy table into `copilot-env`
  * (rewriting the old display name), drop the legacy table, and repoint
  * `model_provider`. A targeted TOML edit that preserves the install's existing mode +
- * fields. Idempotent — a config with no legacy table/name is left untouched. Returns
+ * fields. Idempotent -- a config with no legacy table/name is left untouched. Returns
  * whether it changed the file.
  */
 function rewriteLegacyCodexProvider(codexHome: string): boolean {
@@ -32,7 +32,7 @@ function rewriteLegacyCodexProvider(codexHome: string): boolean {
     if (!statSync(configPath).isFile()) return false;
     doc = parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
   } catch {
-    return false; // absent or unparseable — nothing to rewrite
+    return false; // absent or unparseable -- nothing to rewrite
   }
   let changed = false;
 
@@ -41,7 +41,7 @@ function rewriteLegacyCodexProvider(codexHome: string): boolean {
     const legacy = providers[LEGACY_CODEX_PROVIDER];
     const current = isRecord(providers[CODEX_PROVIDER_ID]) ? providers[CODEX_PROVIDER_ID] : {};
     // Which table is AUTHORITATIVE is decided by `model_provider`: if the install
-    // selects the legacy direct provider, the legacy (direct) table must win — else a
+    // selects the legacy direct provider, the legacy (direct) table must win -- else a
     // stale leftover `copilot-env` proxy table would override it and silently flip the
     // install to proxy. If `copilot-env` is the selected/default, keep it and just fold
     // the legacy table under it. The unselected table's keys come second either way.
@@ -63,7 +63,7 @@ function rewriteLegacyCodexProvider(codexHome: string): boolean {
   return changed;
 }
 
-// Rewrite the Codex config at the ACTIVE home — `effectiveCodexHome()` resolves
+// Rewrite the Codex config at the ACTIVE home -- `effectiveCodexHome()` resolves
 // state.codexHome (a `--host` farm) -> $CODEX_HOME -> ~/.codex, so this covers both the
 // default and a configured farm. Other (non-active) farm homes heal on their next
 // `agent codex --host`, which writes the unified provider. Best-effort: a failure warns.
@@ -117,12 +117,12 @@ export const migration: Migration = {
     try {
       theirs = readFileSync(tokenFile, "utf8").trim();
     } catch {
-      return; // unreadable — leave it alone
+      return; // unreadable -- leave it alone
     }
     if (!theirs) return;
 
     // Import ONLY when copilot-env has no credential of its own (no token AND no
-    // chosen provider) — so a token or provider the user already set via `agent auth`
+    // chosen provider) -- so a token or provider the user already set via `agent auth`
     // (including a no-token `gh-cli` choice, or the backfill above) is never
     // overwritten on a retry. The imported token came from copilot-api's device flow,
     // so record `copilot`.
@@ -132,7 +132,7 @@ export const migration: Migration = {
       consola.info("Imported copilot-api's GitHub token into the copilot-env store");
     }
 
-    // Scrub copilot-api's copy now that the store holds a token (it's redundant —
+    // Scrub copilot-api's copy now that the store holds a token (it's redundant --
     // `agent start` passes the stored token to the daemon via --github-token).
     if (state.read().githubToken !== null) {
       try {

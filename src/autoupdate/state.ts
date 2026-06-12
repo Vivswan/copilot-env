@@ -1,7 +1,7 @@
 // Opt-in autoupdate state, persisted to `<install>/.autoupdate/state.json`.
 //
 // Thin typed wrapper over CopilotApiConfig (the project's atomic JSON store:
-// sorted keys, 0600, atomic rename, Windows retry) — mirroring CopilotEnvRunState,
+// sorted keys, 0600, atomic rename, Windows retry) -- mirroring CopilotEnvRunState,
 // so there's no second I/O implementation.
 import * as v from "valibot";
 import { CopilotApiConfig } from "../copilot_api/config.ts";

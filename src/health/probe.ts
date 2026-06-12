@@ -1,5 +1,5 @@
 // I/O fact-gathering for `agent health`. Each scope gathers ONLY the facts it
-// needs (the `runtime` scope stays minimal — no shell/CLI probes — though the
+// needs (the `runtime` scope stays minimal -- no shell/CLI probes -- though the
 // tracked-pid check still spawns `ps`/PowerShell exactly as the original health
 // command did). Pure sub-evaluators (evalShellFiles, evalCodex) take raw content
 // so they unit-test without touching the world.
@@ -138,7 +138,7 @@ export interface LiveProbeFacts {
 export type CodexFacts = CodexWiringStatus & {
   home: string;
   directAuth: CodexDirectAuthFacts;
-  /** Recorded auth provider — lets the check frame a non-gh-cli credential miss. */
+  /** Recorded auth provider -- lets the check frame a non-gh-cli credential miss. */
   provider?: string | null;
 };
 
@@ -147,7 +147,7 @@ export type ClaudeFacts = ClaudeWiringStatus & {
   home: string;
   settingsPath: string;
   directAuth: CodexDirectAuthFacts;
-  /** Recorded auth provider — lets the check frame a non-gh-cli credential miss. */
+  /** Recorded auth provider -- lets the check frame a non-gh-cli credential miss. */
   provider?: string | null;
   /**
    * Direct mode only: true when a GitHub token is provisioned in the store, so the
@@ -186,8 +186,8 @@ export interface HealthFacts {
 /**
  * The GitHub credential state, independent of any one agent: a token provisioned
  * in the store (`agent auth`), and/or a usable `gh` login. Direct resolves the
- * credential at fetch time via `agent auth --get`, provider-driven (`gh-cli` →
- * `gh`, `copilot`/`gh-token` → the stored token; no provider → nothing).
+ * credential at fetch time via `agent auth --get`, provider-driven (`gh-cli` ->
+ * `gh`, `copilot`/`gh-token` -> the stored token; no provider -> nothing).
  */
 export interface AuthFacts {
   storedToken: boolean;
@@ -307,7 +307,7 @@ function formatLiveFailure(
  * non-zero exit => ok:false, with `detail` carrying the captured reason + output.
  * Skipped (ran:false) when the CLI isn't installed. Spawns the RESOLVED path so
  * the nvm fallback isn't defeated. Unlike the init probe, the environment is NOT
- * sanitized — `--live` tests the user's real, fully-resolved setup.
+ * sanitized -- `--live` tests the user's real, fully-resolved setup.
  */
 function runLiveCli(
   cli: string,
@@ -321,9 +321,9 @@ function runLiveCli(
   return new Promise((resolve) => {
     const s = cliSpawn(resolved, args);
     // Capture stdout/stderr (not stdio:"ignore") so a failure reports the FULL
-    // reason the backend didn't answer. The cap is effectively unbounded (64 MB) —
+    // reason the backend didn't answer. The cap is effectively unbounded (64 MB) --
     // a smoke prompt's real output is tiny, and the catalog noise is filtered out
-    // when formatting — but it guards against a pathologically chatty CLI.
+    // when formatting -- but it guards against a pathologically chatty CLI.
     const child = spawn(s.file, s.args, {
       stdio: ["ignore", "pipe", "pipe"],
       timeout: PROBE_TIMEOUT_MS,
@@ -537,15 +537,15 @@ export async function gatherFacts(
   const sharedDirectAuth = (): Promise<CodexDirectAuthFacts> =>
     (directAuthCache ??= deps.codexDirectAuth());
 
-  // Skip the (~5s) gh probe — and report Direct as "uses token" — only when the
+  // Skip the (~5s) gh probe -- and report Direct as "uses token" -- only when the
   // config truly resolves via the managed `agent auth --get` (`managed`) AND a
   // token is stored; otherwise probe gh (a stale/foreign config still needs it).
   // Shared by the Codex and Claude scope jobs so the gating stays identical.
   // Decide the Direct gh-auth facts for an agent whose config is `managed` (execs
   // `agent auth --get`), provider-aware to match `Credential.resolve()`:
-  //   - copilot/gh-token with a stored token → resolves via the token, skip gh.
-  //   - gh-cli → resolves via gh, so probe it (a leftover token does NOT count).
-  //   - otherwise → no credential resolves (report unauthenticated, no probe).
+  //   - copilot/gh-token with a stored token -> resolves via the token, skip gh.
+  //   - gh-cli -> resolves via gh, so probe it (a leftover token does NOT count).
+  //   - otherwise -> no credential resolves (report unauthenticated, no probe).
   const directAuthFor = async (
     managed: boolean,
   ): Promise<{ directAuth: CodexDirectAuthFacts; noGhNeeded: boolean }> => {
@@ -642,7 +642,7 @@ export async function gatherFacts(
         );
         // Re-scope `directUsesToken` from the wiring's config meaning ("the direct
         // table carries the managed auth.command") to the store-aware "Direct needs
-        // no gh" — the meaning checkCodex consumes.
+        // no gh" -- the meaning checkCodex consumes.
         facts.codex = { ...codexFacts, directUsesToken: noGhNeeded, provider: deps.authProvider() };
       })(),
     );
@@ -673,8 +673,8 @@ export async function gatherFacts(
     jobs.push(
       (async () => {
         // The credential state, agent-independent. `gh` is a credential ONLY for the
-        // `gh-cli` provider (matching `Credential.resolve()` — no implicit fallback),
-        // so only probe it then. Reuses the shared (cached) gh probe — no extra spawn.
+        // `gh-cli` provider (matching `Credential.resolve()` -- no implicit fallback),
+        // so only probe it then. Reuses the shared (cached) gh probe -- no extra spawn.
         const provider = deps.authProvider();
         const storedToken = deps.storedTokenPresent();
         const ghAuthenticated =

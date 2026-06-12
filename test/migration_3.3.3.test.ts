@@ -9,7 +9,7 @@ import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { migration } from "../src/migrations/3.3.3.ts";
 
 // The 3.3.3 migration has filesystem side effects (state store + copilot-api's
-// github_token file + the Codex config), so it is isolated here under a temp home —
+// github_token file + the Codex config), so it is isolated here under a temp home --
 // separate from migrations.test.ts, which covers the pure selection logic.
 const SAVED = {
   HOME: process.env.HOME,

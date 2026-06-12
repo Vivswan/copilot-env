@@ -1,6 +1,6 @@
 // Shared agent-configuration + result-guidance helpers for `agent init`: configure
 // both agents and print the next-step guidance box. Kept in their own module so
-// init.ts stays focused on orchestration (ensure-auth → configure → guide).
+// init.ts stays focused on orchestration (ensure-auth -> configure -> guide).
 import { effectiveClaudeProviderMode, runClaude } from "../claude/config.ts";
 import { effectiveCodexProviderMode, runCodex } from "../codex/config.ts";
 import { bold } from "../utils/ansi.ts";
@@ -79,7 +79,7 @@ export function printGuidance(
 
   const lines: string[] = [`Codex   →  ${modeLabel(codex)}`, `Claude  →  ${modeLabel(claude)}`];
 
-  // Append a blank line, a bold section header, then `• `-prefixed rows. Commands
+  // Append a blank line, a bold section header, then `- `-prefixed rows. Commands
   // wrapped in `backticks` render as highlighted inline code inside the box, so
   // they stand out without fragile space-padded columns.
   const section = (title: string, items: string[]): void => {

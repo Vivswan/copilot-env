@@ -427,7 +427,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   expect(unauthed.detail).toContain("not authenticated");
   expect(unauthed.fix).toBe("gh auth login");
 
-  // Non-gh-cli provider with no stored token: gh is NOT a fallback — warn pointing
+  // Non-gh-cli provider with no stored token: gh is NOT a fallback -- warn pointing
   // at `agent auth`, not the gh-specific message.
   const noCred = checkClaude({ ...direct, provider: "copilot", directUsesToken: false });
   expect(noCred.status).toBe("warn");
@@ -467,7 +467,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   expect(none.detail).toContain("provider: none");
   expect(none.detail).toContain("not configured");
 
-  // Custom apiKeyHelper the user set — left alone, reported informationally.
+  // Custom apiKeyHelper the user set -- left alone, reported informationally.
   const other = checkClaude({
     ...direct,
     helperPath: "/opt/x/helper.sh",
@@ -503,7 +503,7 @@ test("direct + stored token reports ok with gh absent (no gh requirement)", () =
   expect(codexRes.detail).toContain("stored GitHub token");
   expect(codexRes.detail).not.toContain("GitHub CLI not found");
 
-  // Claude: stored-token resolver, gh absent → still ok (base URL is right).
+  // Claude: stored-token resolver, gh absent -> still ok (base URL is right).
   const claudeToken: ClaudeFacts = {
     home: "/h/.claude",
     settingsPath: join("/h/.claude", "settings.json"),

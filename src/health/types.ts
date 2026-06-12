@@ -20,7 +20,7 @@ export const HEALTH_SCOPES = [
 
 // Scope membership per check/fact: the scopes each participates in. SINGLE SOURCE
 // shared by the fact-gatherer (probe.ts, which gates which facts to collect) and
-// the check evaluator (checks.ts, which stamps CheckResult.scopes) — the two must
+// the check evaluator (checks.ts, which stamps CheckResult.scopes) -- the two must
 // stay in lockstep, so the sets live here rather than as two hand-synced copies.
 // Every set includes "full".
 export const RUNTIME_SCOPES: readonly HealthScope[] = ["full", "proxy", "runtime"];

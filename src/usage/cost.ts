@@ -39,7 +39,7 @@ export async function runCost(args: {
   }
 
   // ModelUsage is a structural superset of UsageTokens, so the read-only
-  // estimateCost reads report.byModel directly — no per-model copy needed.
+  // estimateCost reads report.byModel directly -- no per-model copy needed.
   const estimate = estimateCost(report.byModel, pricing);
 
   if (args.json) {
@@ -85,7 +85,7 @@ function padCell(text: string, width: number, align: Align): string {
 /**
  * Render an aligned text table to stdout: a header row, a separator, the body
  * rows, then (if present) a second separator and footer rows. Uses console.log
- * directly so output is clean — no consola `i` prefix or trailing timestamp.
+ * directly so output is clean -- no consola `i` prefix or trailing timestamp.
  */
 function printTable(
   headers: string[],
@@ -121,7 +121,7 @@ interface CatCell {
 /**
  * Sub-align a category column: pad the token parts to one width and the `$`
  * amounts to another, separated by `|`, so the tokens, the separator, and the
- * decimal points all line up vertically — e.g.
+ * decimal points all line up vertically -- e.g.
  *   `   176 |   $0.00`  /  `90.3K |   $0.45`  /  `234.2M | $117.09`.
  */
 function alignCatColumn(cells: CatCell[]): string[] {

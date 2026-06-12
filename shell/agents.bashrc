@@ -1,13 +1,13 @@
-# Agent commands — source this from your shell rc (~/.bashrc / ~/.zshrc).
+# Agent commands -- source this from your shell rc (~/.bashrc / ~/.zshrc).
 # Must be compatible with both bash and zsh (POSIX constructs only).
 #
 # Pure runtime wiring: defines the `agent` lifecycle wrapper and exports the
-# proxy env. Prerequisites and the agent CLIs are installed by install.sh —
+# proxy env. Prerequisites and the agent CLIs are installed by install.sh --
 # this file never installs anything.
 
 # shellcheck shell=bash
 # Resolve the repo root (this file lives in shell/, so the checkout root is its
-# parent — bin/agent lives there). Kept in the shell environment because the
+# parent -- bin/agent lives there). Kept in the shell environment because the
 # functions below reference it at call time. Both bash and zsh compatible; the
 # ${(%):-%x} fallback is zsh's equivalent of $BASH_SOURCE.
 # shellcheck disable=SC2296
@@ -17,7 +17,7 @@ _COPILOT_AGENTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")/.." && pwd
 [ -x "$HOME/.bun/bin/bun" ] && case ":$PATH:" in *":$HOME/.bun/bin:"*) ;; *) export PATH="$HOME/.bun/bin:$PATH" ;; esac
 
 # Uniform wrapper over bin/agent: run the requested command, then re-apply the
-# full session env from the single source of truth — `agent env`, which prints
+# full session env from the single source of truth -- `agent env`, which prints
 # `export KEY=val` and `unset KEY` lines (CODEX_HOME + the proxy ANTHROPIC_BASE_URL,
 # set or cleared). There is no per-subcommand logic: adding a bin/agent subcommand
 # never touches this, and we only ever eval the dedicated, contract-stable `env`

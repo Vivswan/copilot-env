@@ -57,7 +57,7 @@ function shQuote(s: string): string {
  * The direct apiKeyHelper body: print the Direct credential on stdout. Claude runs
  * apiKeyHelper via /bin/sh and uses its stdout as the credential. We exec
  * `agent auth --get`, the provider-driven resolver (gh-cli -> gh, else the stored token), so
- * the token is never baked into this script — it lives only in the state store.
+ * the token is never baked into this script -- it lives only in the state store.
  */
 function directHelperScript(): string {
   const { command, args } = agentLauncherCommand(AGENT_AUTH_GET_ARGS);
@@ -68,7 +68,7 @@ function directHelperScript(): string {
 /**
  * True iff `helperBody` is exactly the managed direct helper (execs `agent auth
  * --get`). Health uses this to POSITIVELY confirm Direct resolves via the managed
- * launcher before deciding gh is unneeded — a stale `gh auth token` helper, a
+ * launcher before deciding gh is unneeded -- a stale `gh auth token` helper, a
  * foreign script, or a missing file returns false and stays on the gh-checked path.
  */
 export function directHelperResolvesViaAgent(helperBody: string | null): boolean {
@@ -97,7 +97,7 @@ export interface ClaudeWiringStatus {
 /**
  * Resolve the effective Claude home: `$CLAUDE_CONFIG_DIR` (Claude Code's own
  * override), else `~/.claude` (`%USERPROFILE%\.claude` on Windows). This is the
- * single knob — there is no per-command override flag.
+ * single knob -- there is no per-command override flag.
  */
 export function resolveClaudeHome(): string {
   if (process.env.CLAUDE_CONFIG_DIR) return process.env.CLAUDE_CONFIG_DIR;
@@ -127,7 +127,7 @@ function proxyHelperPath(claudeHome: string): string {
  *   - proxy:  apiKeyHelper === <home>/copilot-proxy-token.sh
  *   - other:  a foreign apiKeyHelper, a custom ANTHROPIC_BASE_URL, or malformed
  *             JSON (a config we must not clobber)
- *   - none:   no relevant keys (absent/empty) — unconfigured; proxy is default
+ *   - none:   no relevant keys (absent/empty) -- unconfigured; proxy is default
  */
 export function inspectClaudeWiring(
   settingsText: string | null,
@@ -162,7 +162,7 @@ export function inspectClaudeWiring(
   } else if (helperPath === proxyHelperPath(claudeHome)) {
     status.providerMode = "proxy";
   } else if (helperPath !== null || baseUrl !== null) {
-    // A foreign apiKeyHelper or a custom base URL the user set — not ours.
+    // A foreign apiKeyHelper or a custom base URL the user set -- not ours.
     status.providerMode = "other";
   }
   return status;
@@ -201,7 +201,7 @@ function writeHelperScript(helperPath: string, script: string): void {
   try {
     fs.chmodSync(helperPath, 0o700);
   } catch {
-    // pass (e.g. Windows) — the exec bit is best-effort.
+    // pass (e.g. Windows) -- the exec bit is best-effort.
   }
 }
 
@@ -350,7 +350,7 @@ export function runClaude(args: ClaudeConfigArgs): void {
   }
   const claudeHome = resolveClaudeHome();
   // A configured credential (`agent auth`) selects Direct without a live probe.
-  // Resolve it provider-aware (gh-cli → gh, copilot/gh-token → stored token, none →
+  // Resolve it provider-aware (gh-cli -> gh, copilot/gh-token -> stored token, none ->
   // null); the helper re-resolves at fetch time via `agent auth --get`.
   const ghToken = new Credential().resolve();
   const direct = resolveDirectMode(args, ghToken, detectClaudeDirect);

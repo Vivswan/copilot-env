@@ -1,4 +1,4 @@
-# Opt-in agent launchers — source this AFTER agents.bashrc to enable the
+# Opt-in agent launchers -- source this AFTER agents.bashrc to enable the
 # short `cl` / `co` / `cx` launchers (plus the more-permissive `clx` / `cox` /
 # `cxx` variants that add each agent's most-relaxed flag). They are intentionally
 # NOT defined by the always-on integration so these short names never collide
@@ -12,13 +12,13 @@
 
 # shellcheck shell=bash
 # Resolve the repo root if agents.bashrc hasn't already (this file lives in
-# shell/, so the checkout root is its parent — bin/agent lives there). The
+# shell/, so the checkout root is its parent -- bin/agent lives there). The
 # ${(%):-%x} fallback is zsh's equivalent of $BASH_SOURCE.
 # shellcheck disable=SC2296
 : "${_COPILOT_AGENTS_DIR:=$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")/.." && pwd)}"
 
 # Check the proxy before launching a proxy-backed agent; if it's down, offer to
-# start it. Returns SUCCESS only if the proxy is reachable afterward — so a
+# start it. Returns SUCCESS only if the proxy is reachable afterward -- so a
 # caller that `|| return`s won't re-sync proxy config against a stale port or
 # launch into a dead proxy when the user declines. `agent start` runs in the
 # current shell so its env exports propagate to the agent we launch next.
@@ -46,7 +46,7 @@ function _copilot_require_cli {
 
 function cl {
     _copilot_require_cli claude || return 1
-    # Read the configured Claude provider (no live probe — provider auto-detection
+    # Read the configured Claude provider (no live probe -- provider auto-detection
     # is done once by `agent init`, not on every launch): exit 0 = direct
     # (Claude reads settings.json itself), 2 = proxy/default (ensure the proxy +
     # re-sync the port/token), else custom/error.
@@ -78,7 +78,7 @@ function co {
 
 function cx {
     _copilot_require_cli codex || return 1
-    # Read the configured Codex provider (no live probe — provider auto-detection
+    # Read the configured Codex provider (no live probe -- provider auto-detection
     # is done once by `agent init`, not on every launch): exit 0 = direct
     # (Codex reads its own config), 2 = proxy/default (ensure the proxy + re-sync
     # the port/token), else custom/error.

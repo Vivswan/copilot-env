@@ -3,7 +3,7 @@
 // freshly nvm-installed binary (codex/claude/gh/node) resolves in the SAME process
 // that installed it, and uses Get-Command on Windows. Kept in its own module (not
 // commands/setup.ts) so lower-level utilities can resolve binaries without
-// importing the heavier setup module — which would form an import cycle
+// importing the heavier setup module -- which would form an import cycle
 // (setup -> codex/claude config -> direct_probe -> setup).
 import { spawnSync } from "node:child_process";
 
@@ -86,7 +86,7 @@ function quoteCmdArg(arg: string): string {
 /**
  * Spawn parameters for invoking an agent CLI cross-platform. On Windows, npm-
  * installed CLIs (codex/claude) are `.cmd`/`.ps1` shims that Node cannot spawn
- * directly — it blocks `.cmd`/`.bat` without a shell — so run them through cmd.exe
+ * directly -- it blocks `.cmd`/`.bat` without a shell -- so run them through cmd.exe
  * (`shell: true`) with args quoted so whitespace survives the shell join. On POSIX,
  * spawn the (resolved) file directly with no shell. Pass the result to
  * spawn/spawnSync: `const s = cliSpawn(file, args); spawnSync(s.file, s.args, { shell: s.shell, ... })`.

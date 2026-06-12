@@ -1,7 +1,7 @@
 // Apply a resolved release onto the checkout: download + sync the tarball, refresh
 // deps, and run post-update migrations in a fresh process. Shared by `agent update`
 // (src/commands/update.ts) and the autoupdate preflight (src/autoupdate/preflight.ts)
-// so there's exactly one update implementation — and so neither imports the other
+// so there's exactly one update implementation -- and so neither imports the other
 // (no import cycle). Callers own the up-to-date / `--check` / `.git` gates.
 import { type StdioOptions, spawnSync } from "node:child_process";
 import { join } from "node:path";

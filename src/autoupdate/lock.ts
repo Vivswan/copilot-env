@@ -8,7 +8,7 @@
 // This is a BEST-EFFORT advisory lock for a once-a-day personal self-update, not a
 // distributed mutex. Its correctness rests on one invariant: STALE_LOCK_MS must far
 // exceed the real work duration (a tarball download + `bun install` of a few pinned
-// deps — seconds to a couple of minutes), so a LIVE holder is never seen as stale.
+// deps -- seconds to a couple of minutes), so a LIVE holder is never seen as stale.
 // Steal therefore only ever reaps a crashed/dead holder; a live lock is never stolen,
 // which is what keeps the release path from racing a successor.
 import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -16,7 +16,7 @@ import { dirname } from "node:path";
 import { pidAlive } from "../copilot_api/process.ts";
 import { autoupdateLockFile } from "./paths.ts";
 
-// 30 minutes — chosen to dwarf any real update (see the invariant above).
+// 30 minutes -- chosen to dwarf any real update (see the invariant above).
 const STALE_LOCK_MS = 30 * 60 * 1000;
 
 interface LockInfo {
@@ -43,7 +43,7 @@ function readLock(path: string): LockInfo | null {
 
 /**
  * Atomically create the lock with its content already in place. Writes to a unique
- * temp file, then hard-links it to `path` — link fails EEXIST if the lock exists,
+ * temp file, then hard-links it to `path` -- link fails EEXIST if the lock exists,
  * and a successful link exposes the fully-written file in one step (no empty
  * window for a racer to misread as stale).
  */
@@ -81,7 +81,7 @@ export function acquireLock(nowMs: number, path: string = autoupdateLockFile()):
   try {
     renameSync(path, claimed);
   } catch {
-    // someone else already moved/removed it — just attempt a fresh create
+    // someone else already moved/removed it -- just attempt a fresh create
     return tryCreate(path, nowMs);
   }
   try {

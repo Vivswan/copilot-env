@@ -46,7 +46,7 @@ export function pidAlive(pid: number): boolean {
 }
 
 /**
- * Terminate `pid`: SIGTERM, then — when `graceMs > 0` — wait that long and SIGKILL
+ * Terminate `pid`: SIGTERM, then -- when `graceMs > 0` -- wait that long and SIGKILL
  * if it's still alive. Signal errors (e.g. ESRCH on an already-gone pid) are
  * swallowed. The caller must confirm `pid` is OURS (PID-reuse guard) before calling.
  * `graceMs: 0` sends a single SIGTERM with no force-kill escalation.
@@ -168,7 +168,7 @@ export function launchDaemon(
   // GitHub token directly as the upstream Copilot bearer instead of running the
   // editor token exchange (which a PAT can't pass). An empty value forces the editor
   // exchange even if COPILOT_API_OAUTH_APP is set in the inherited env. See
-  // passthroughOauthApp — undefined means "pass nothing, inherit the environment".
+  // passthroughOauthApp -- undefined means "pass nothing, inherit the environment".
   if (oauthApp !== undefined) {
     args.push("--oauth-app", oauthApp);
   }
@@ -193,7 +193,7 @@ export function printLogTail(logfile: string, lines: number): void {
   try {
     const allLines = readFileSync(logfile, "utf-8").split("\n");
     const tail = allLines.slice(-lines).join("\n");
-    // Write the daemon's own log verbatim to stderr — NOT line-by-line through
+    // Write the daemon's own log verbatim to stderr -- NOT line-by-line through
     // consola.error. copilot-api already formats its lines, and routing each one
     // through a tagged ERROR badge (including the blank lines inside its stack
     // traces) produced large padded gaps that buried the real failure. The header is

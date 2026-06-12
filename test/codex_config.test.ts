@@ -96,7 +96,7 @@ test("enforces every managed field while preserving unknown user keys", () => {
   expect(headers["Openai-Intent"]).toBe("conversation-edits");
   expect(headers["User-Agent"]).toBe("codex_exec/0.139.0");
 
-  // Direct fetches the bearer via `auth.command` → the agent launcher `auth --get`.
+  // Direct fetches the bearer via `auth.command` -> the agent launcher `auth --get`.
   const auth = asRecord(provider.auth);
   const expected = agentLauncherCommand(["auth", "--get"]);
   expect(auth.command).toBe(expected.command);

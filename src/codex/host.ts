@@ -28,7 +28,7 @@ export function getHostLocalCodexHome(): string {
 
 /**
  * Guard a feature that needs POSIX symlinks (Linux or macOS). Returns false on
- * Windows after printing a friendly note and setting a non-zero exit code —
+ * Windows after printing a friendly note and setting a non-zero exit code --
  * callers should `return` when it returns false rather than continue. (No raw
  * throw: an unsupported platform is an expected user condition, not a crash, so
  * it shouldn't dump a stack trace.)

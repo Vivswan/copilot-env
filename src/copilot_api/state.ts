@@ -17,7 +17,7 @@ type StatePatch = { [K in keyof CopilotEnvRunStateData]?: CopilotEnvRunStateData
 
 // Lenient read schema: absent or ill-typed/out-of-range fields fall back to
 // `undefined` (treated as "unset" by callers) rather than throwing. The port range
-// is any valid TCP port (1..65535) — WIDER than port.ts's >=1024 allocation floor
+// is any valid TCP port (1..65535) -- WIDER than port.ts's >=1024 allocation floor
 // on purpose, so we round-trip whatever port the daemon actually bound, not re-filter it.
 const RUN_STATE_SCHEMA = v.object({
   port: v.fallback(
@@ -29,9 +29,9 @@ const RUN_STATE_SCHEMA = v.object({
 });
 
 /**
- * Read/write helper for the per-host state file. Backed by CopilotApiConfig —
+ * Read/write helper for the per-host state file. Backed by CopilotApiConfig --
  * the project's atomic JSON store (sorted keys, 0600, atomic rename, Windows
- * EPERM/EBUSY retry) — so there's no second I/O implementation.
+ * EPERM/EBUSY retry) -- so there's no second I/O implementation.
  */
 export class CopilotEnvRunState {
   private readonly store: CopilotApiConfig;

@@ -1,4 +1,4 @@
-// `agent init`: the headline one-shot — ensure a GitHub credential exists (running
+// `agent init`: the headline one-shot -- ensure a GitHub credential exists (running
 // the auth flow first if not), then configure BOTH Codex and Claude (each auto-
 // detects GitHub Copilot Direct vs the local proxy, or --direct / --proxy forces
 // both), and print next-step guidance. The credential itself is managed by
@@ -19,7 +19,7 @@ export interface InitArgs {
  * `init`: ensure authentication, then configure both agents and explain the
  * result. `--direct`/`--proxy` force both; with no flag each auto-detects (live
  * Copilot Direct probe, else the proxy). If no credential exists, the GitHub login
- * flow runs first (`agent auth`) and ERRORS OUT if it fails — init never proceeds
+ * flow runs first (`agent auth`) and ERRORS OUT if it fails -- init never proceeds
  * to configure agents without a credential.
  */
 export async function runInit(args: InitArgs): Promise<void> {
@@ -27,7 +27,7 @@ export async function runInit(args: InitArgs): Promise<void> {
 
   // A credential is only needed for a Direct-capable setup. `--proxy` opts out of
   // Direct entirely (the daemon handles its own auth on `agent start`), so don't
-  // prompt there. Otherwise ensure auth first — when none, ask; never silently fall
+  // prompt there. Otherwise ensure auth first -- when none, ask; never silently fall
   // back. Throws (propagated) if login fails, so we never configure half-broken.
   if (!args.proxy) {
     await ensureAuthenticated();

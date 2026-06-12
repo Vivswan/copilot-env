@@ -1,13 +1,13 @@
 // Live "does GitHub Copilot Direct actually work?" probe, shared by `agent codex`
 // / `agent claude` (the auto-detect path) and `agent shell --clis`. Direct mode
-// resolves its credential via `agent auth --get` (provider-driven: gh-cli → `gh
-// auth token`, copilot/gh-token → the stored token; no implicit gh fallback), so a
-// machine with no credential — or where Copilot Direct rejects the request — must
+// resolves its credential via `agent auth --get` (provider-driven: gh-cli -> `gh
+// auth token`, copilot/gh-token -> the stored token; no implicit gh fallback), so a
+// machine with no credential -- or where Copilot Direct rejects the request -- must
 // fall back to the local proxy. Rather than guess, we
 // WRITE a throwaway direct config into a temp
 // home and run the agent CLI's own read-only smoke prompt against it; exit 0 means
 // direct works. Cheap gates (CLI present, gh authenticated) run first so the
-// common "no gh auth" case — e.g. CI — returns instantly without a model call. Two
+// common "no gh auth" case -- e.g. CI -- returns instantly without a model call. Two
 // guards keep the live test honest: the child env is SANITIZED (the descriptor's
 // provider vars are dropped) so a leaked shell export can't hijack auth, and the
 // single live call is RETRIED so a transient blip doesn't silently flip a working
@@ -39,7 +39,7 @@ export const DEFAULT_PROBE_RETRY_DELAY_MS = 600;
 
 /**
  * A failed attempt that ran for ~this fraction of the timeout was a hang/outage,
- * not a transient blip — retrying would just burn another PROBE_TIMEOUT_MS, so we
+ * not a transient blip -- retrying would just burn another PROBE_TIMEOUT_MS, so we
  * stop and fall back immediately. Fast 4xx/5xx blips (the case worth retrying)
  * return well under this.
  */
@@ -65,7 +65,7 @@ export interface ProbeDescriptor {
   /**
    * Escape hatch: EXTRA exact env-var names to delete from the probe child beyond
    * the families cleared by prefix (see PROVIDER_ENV_PREFIXES). The prefixes cover
-   * every case today, so both descriptors leave this empty — but if some future var
+   * every case today, so both descriptors leave this empty -- but if some future var
    * hijacks the CLI's auth/routing yet doesn't share a provider prefix, list it here
    * rather than widening the prefixes. The health probe (src/health/probe.ts)
    * deliberately does NOT clear any of this: it tests the real, resolved env.
@@ -80,7 +80,7 @@ export interface ProbeDescriptor {
  * not steer the "does Direct work?" test away from the throwaway temp config. The
  * probe re-sets its own home var (`CODEX_HOME` / `CLAUDE_CONFIG_DIR`) to the temp
  * dir AFTER this clear, so stripping those families here is safe. `GH_*`/`GITHUB_*`
- * are NOT here on purpose — Direct mints its token via `gh auth token`, so they
+ * are NOT here on purpose -- Direct mints its token via `gh auth token`, so they
  * must survive. The health probe (src/health/probe.ts) deliberately does NOT clear
  * any of this: it tests the user's real, fully-resolved environment.
  */
@@ -92,7 +92,7 @@ export const CODEX_PROBE: ProbeDescriptor = {
   // --skip-git-repo-check: the probe runs against a throwaway home with no
   // `[projects]` trust list, so without this codex refuses to run unless the cwd
   // happens to be a git repo ("Not inside a trusted directory and
-  // --skip-git-repo-check was not specified.") — making Direct detection fail
+  // --skip-git-repo-check was not specified.") -- making Direct detection fail
   // purely based on where `agent init` was invoked.
   args: (prompt) => ["exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", prompt],
   // OPENAI_*/CODEX_* are cleared by prefix; nothing extra needed today.
@@ -104,7 +104,7 @@ export const CLAUDE_PROBE: ProbeDescriptor = {
   homeEnvVar: "CLAUDE_CONFIG_DIR",
   // --bare forces auth STRICTLY through the apiKeyHelper (OAuth and keychain are
   // never read) so a user's Claude subscription login can't make Direct look
-  // available when the managed credential path is actually broken — but it also disables
+  // available when the managed credential path is actually broken -- but it also disables
   // settings.json auto-discovery from CLAUDE_CONFIG_DIR, so the managed
   // apiKeyHelper is only honored when handed in via --settings. Without it the
   // probe has NO auth path and always fails (apiKeySource "none").
@@ -127,7 +127,7 @@ export const CLAUDE_PROBE: ProbeDescriptor = {
 /**
  * The result of one live smoke call: `ok` is exit 0, and on failure `detail` is a
  * concise, single-line reason (an HTTP status, an auth rejection, a timeout, a
- * stream disconnect, or the raw exit) lifted from the child's stderr/stdout — so
+ * stream disconnect, or the raw exit) lifted from the child's stderr/stdout -- so
  * a fallback to the proxy is never silent.
  */
 export interface ProbeOutcome {
@@ -139,7 +139,7 @@ export interface ProbeOutcome {
 export interface DirectProbeDeps {
   /** Resolve a CLI binary on PATH / via nvm (null = not installed). */
   resolveCommand?: (cmd: string) => string | null;
-  /** True when `gh auth token` succeeds — given gh's RESOLVED path (nvm-safe). */
+  /** True when `gh auth token` succeeds -- given gh's RESOLVED path (nvm-safe). */
   ghAuthOk?: (ghPath: string) => boolean;
   /** Run the agent CLI's read-only smoke prompt at its RESOLVED path (ok = exit 0). */
   runProbe?: (cliPath: string, args: string[], env: Record<string, string>) => ProbeOutcome;
@@ -243,7 +243,7 @@ export function summarizeProbeFailure(
   if (errorMessage && /ETIMEDOUT|timed?\s?out/i.test(errorMessage)) {
     return `timed out after ${Math.round(PROBE_TIMEOUT_MS / 1000)}s`;
   }
-  // Scan stderr (tracing/errors) and the JSON stdout stream — newest line first —
+  // Scan stderr (tracing/errors) and the JSON stdout stream -- newest line first --
   // for the most informative failure marker: an HTTP 4xx/5xx, an auth rejection,
   // a stream disconnect, or the "waiting on stdin" hang. Skip codex's giant model
   // catalog lines so they can't drown out the real reason.
@@ -257,7 +257,7 @@ export function summarizeProbeFailure(
     const line = lines[i];
     if (line && MARKER.test(line)) return truncateReason(line);
   }
-  // No recognizable marker. A non-timeout spawn error (ENOENT, ENOBUFS, …) carries
+  // No recognizable marker. A non-timeout spawn error (ENOENT, ENOBUFS, ...) carries
   // the real reason when the output didn't, so prefer it; else report the raw exit
   // plus a hint of the last line.
   if (errorMessage) return truncateReason(errorMessage);
@@ -280,12 +280,12 @@ function defaultRunProbe(
 ): ProbeOutcome {
   const s = cliSpawn(cliPath, args);
   // `env` is the COMPLETE child environment (process.env minus the descriptor's
-  // cleared provider vars, plus the temp home + PATH) — built by probeDirectWorks.
+  // cleared provider vars, plus the temp home + PATH) -- built by probeDirectWorks.
   // Spawn with it verbatim; do NOT re-merge process.env or the cleared vars return.
   // Capture stdout/stderr (not stdio:"ignore") so a failure carries a real reason
   // instead of silently flipping the user to the proxy. A generous maxBuffer keeps
   // a working Direct from being misread as failed: codex prints a large (~tens of
-  // KB) model catalog, and the default 1 MB cap would set result.error (ENOBUFS) —
+  // KB) model catalog, and the default 1 MB cap would set result.error (ENOBUFS) --
   // failing the probe even on exit 0. 16 MB is far above any real probe output.
   const result = spawnSync(s.file, s.args, {
     stdio: ["ignore", "pipe", "pipe"],
@@ -359,7 +359,7 @@ export function probeDirectWorks(
     // authenticates), then the temp home + a PATH that puts the resolved CLI's and
     // gh's bin dirs first (the CLI may be a node-shim and its direct config shells
     // out to `gh` by name, so an nvm-only toolchain must be reachable even if the
-    // parent never sourced nvm). GH_*/GITHUB_* are deliberately KEPT — Direct
+    // parent never sourced nvm). GH_*/GITHUB_* are deliberately KEPT -- Direct
     // authenticates via `gh auth token`, so clearing them would break it.
     // Match case-INSENSITIVELY: Windows env names are case-insensitive, so an
     // `OpenAI_BASE_URL` or `anthropic_auth_token` must be stripped too. The
@@ -378,7 +378,7 @@ export function probeDirectWorks(
 
     // The smoke call is a single live model call, so a transient blip (a fast
     // 4xx/5xx, a momentary network hiccup) must not silently downgrade a working
-    // Direct setup to proxy. Retry on failure — but a near-timeout failure is a
+    // Direct setup to proxy. Retry on failure -- but a near-timeout failure is a
     // hang/outage, not a blip, so stop rather than burn another PROBE_TIMEOUT_MS.
     const args = descriptor.args(PROBE_PROMPT, tmpHome);
     let lastDetail: string | undefined;

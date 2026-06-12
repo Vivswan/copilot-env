@@ -18,7 +18,7 @@ import {
 
 test("CODEX_PROBE passes --skip-git-repo-check so a non-git cwd can't fail the probe", () => {
   // codex refuses to run outside a git repo / trusted dir, and the probe's
-  // throwaway home has no trust list — so the flag is mandatory.
+  // throwaway home has no trust list -- so the flag is mandatory.
   expect(CODEX_PROBE.args("hi", "/tmp/home")).toContain("--skip-git-repo-check");
 });
 
@@ -215,7 +215,7 @@ test("probeDirectWorks strips provider/CLI env families but keeps gh auth", () =
   process.env.CLAUDE_CODE_FOO = "leaked-claude";
   process.env.openai_org = "leaked-lowercase"; // case-insensitive match (Windows)
   process.env.CLAUDE_CONFIG_DIR = "leaked-home"; // the home var: temp must override it
-  process.env.GH_TOKEN = "keep-me"; // Direct authenticates via gh — must survive
+  process.env.GH_TOKEN = "keep-me"; // Direct authenticates via gh -- must survive
   try {
     let seen: Record<string, string> | null = null;
     const ok = probeDirectWorks(
@@ -230,13 +230,13 @@ test("probeDirectWorks strips provider/CLI env families but keeps gh auth", () =
     expect(seen).not.toBeNull();
     const env = seen as unknown as Record<string, string>;
     // Every OPENAI_*/ANTHROPIC_*/CODEX_*/CLAUDE_* var is gone (prefix + clearEnv),
-    // case-insensitively…
+    // case-insensitively...
     expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
     expect(env.OPENAI_BASE_URL).toBeUndefined();
     expect(env.CODEX_API_KEY).toBeUndefined();
     expect(env.CLAUDE_CODE_FOO).toBeUndefined();
     expect(env.openai_org).toBeUndefined();
-    // …gh auth survives, and the probe's own home var wins over the leaked one.
+    // ...gh auth survives, and the probe's own home var wins over the leaked one.
     expect(env.GH_TOKEN).toBe("keep-me");
     expect(env.CLAUDE_CONFIG_DIR).toBeTruthy();
     expect(env.CLAUDE_CONFIG_DIR).not.toBe("leaked-home");

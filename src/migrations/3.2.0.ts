@@ -6,10 +6,10 @@ import { consola } from "consola";
 import { PROXY_HELPER_NAME, resolveClaudeHome } from "../claude/config.ts";
 import type { Migration } from "./index.ts";
 
-// Leaving 3.2.0 behind: the "gateway" → "proxy" terminology rename also renamed the
+// Leaving 3.2.0 behind: the "gateway" -> "proxy" terminology rename also renamed the
 // managed Claude proxy-token helper script from copilot-gateway-token.sh to
 // copilot-proxy-token.sh. Claude's settings.json points `apiKeyHelper` at the EXACT
-// path, and inspectClaudeWiring infers "proxy" mode off that exact path — so a proxy-
+// path, and inspectClaudeWiring infers "proxy" mode off that exact path -- so a proxy-
 // wired Claude updated from 3.2.0 would otherwise read as "other" (unmanaged) until a
 // re-init. Move the on-disk script to the new name and re-point apiKeyHelper. Only the
 // default Claude home is reachable here (matching the rest of the migration system);
@@ -39,7 +39,7 @@ export const migration: Migration = {
     try {
       doc = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
     } catch {
-      return; // malformed settings.json — leave it untouched
+      return; // malformed settings.json -- leave it untouched
     }
     if (doc.apiKeyHelper === oldPath) {
       doc.apiKeyHelper = newPath;

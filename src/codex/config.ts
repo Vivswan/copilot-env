@@ -1,7 +1,7 @@
 // Codex config writer: points Codex at GitHub Copilot directly by default, with
 // the local copilot-api proxy available as an explicit proxy mode. Direct mode
 // fetches its bearer at runtime via an `auth.command` that runs `agent auth --get`
-// (provider-driven: gh-cli -> gh, copilot/gh-token -> the stored token) — nothing is baked
+// (provider-driven: gh-cli -> gh, copilot/gh-token -> the stored token) -- nothing is baked
 // into the config or `.env`.
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -33,7 +33,7 @@ import { AGENT_AUTH_GET_ARGS, agentLauncherCommand } from "../utils/root.ts";
 const logger = createStderrLogger();
 
 // The Codex model-provider id we manage: ONE provider, `copilot-env`, for BOTH
-// direct and proxy — the mode is read from the table's CONTENTS (base_url + an
+// direct and proxy -- the mode is read from the table's CONTENTS (base_url + an
 // `auth` block vs an `env_key`), not from the provider name. OPENAI_API_KEY is the
 // same OpenAI-wire name `env.ts` already exports, so the single proxy token has ONE
 // name across the shell exports and the Codex `.env`. (The pre-unification
@@ -73,7 +73,7 @@ interface ProxyConfigOptions {
 // === config.toml management ===
 //
 // Load-merge-stringify so user-added keys/sections survive (smol-toml does NOT
-// preserve comments or whitespace — TS has no battle-tested tomlkit equivalent).
+// preserve comments or whitespace -- TS has no battle-tested tomlkit equivalent).
 // configureCodexConfig ENFORCES every managed field on each run, so a renamed or
 // added key (e.g. the env_key) propagates even into a pre-existing config.
 
@@ -109,8 +109,8 @@ export function codexUserAgent(version: string | null = installedCodexVersion())
 
 /**
  * Derive the mode from our managed provider TABLE's contents (the unified `copilot-env`
- * table doesn't encode mode in its name): a Direct base_url ⇒ direct, a localhost proxy
- * base_url or our `env_key` ⇒ proxy, anything else ⇒ "other" (e.g. a half-written
+ * table doesn't encode mode in its name): a Direct base_url -> direct, a localhost proxy
+ * base_url or our `env_key` -> proxy, anything else -> "other" (e.g. a half-written
  * table). `expectedPort` is the running proxy port used to validate a proxy base_url.
  */
 function codexTableMode(table: unknown, expectedPort: number): AgentProviderMode {
@@ -131,8 +131,8 @@ function isManagedProviderMode(mode: AgentProviderMode): mode is ManagedAgentMod
 }
 
 // The managed direct (GitHub Copilot) provider table. The bearer is fetched via
-// `auth.command` → `agent auth --get` (provider-driven: gh-cli → `gh auth token`,
-// copilot/gh-token → the stored token), so the token is never baked into the config.
+// `auth.command` -> `agent auth --get` (provider-driven: gh-cli -> `gh auth token`,
+// copilot/gh-token -> the stored token), so the token is never baked into the config.
 // Codex re-runs the command on `refresh_interval_ms`, so it always tracks the
 // current credential. Re-applied on every direct-mode run (managed keys win; any
 // user-added key in the same table is preserved by the merge).
@@ -162,7 +162,7 @@ function managedDirectProvider(codexExecVersion?: string | null) {
 // The single source of truth for our managed `[model_providers.copilot-env]`
 // table. Re-applied on every run (managed keys win; any user-added key in the
 // same table is preserved by the merge). The return type is inferred (precise
-// string/boolean fields) — only the parsed user config below is `unknown`,
+// string/boolean fields) -- only the parsed user config below is `unknown`,
 // because that TOML shape is arbitrary and we don't control it.
 function managedProxyProvider(baseUrl: string) {
   return {
@@ -233,7 +233,7 @@ export interface CodexWiringStatus {
    * Direct mode only: true when the direct provider carries a managed
    * `auth.command` (it resolves the bearer via `agent auth --get`). Always false
    * outside direct mode. Whether a `gh` login is needed is a STORE question, not a
-   * config one — the health probe decides that separately.
+   * config one -- the health probe decides that separately.
    */
   directUsesToken: boolean;
 }
@@ -291,7 +291,7 @@ export function inspectCodexWiring(
       isRecord(doc) && typeof doc.model_provider === "string" ? doc.model_provider : null;
     const providers = isRecord(doc) ? doc.model_providers : undefined;
     // We select our single provider by name, but read the MODE from its table's
-    // contents — the unified `copilot-env` table no longer encodes mode in its name.
+    // contents -- the unified `copilot-env` table no longer encodes mode in its name.
     const selected = modelProvider === CODEX_PROVIDER_ID;
     const table = selected && isRecord(providers) ? providers[CODEX_PROVIDER_ID] : undefined;
     const tableMode = selected ? codexTableMode(table, expectedPort) : "other";
@@ -318,9 +318,9 @@ export function inspectCodexWiring(
       providerMode === "direct" || (isRecord(table) && table.env_key === CODEX_ENV_KEY);
     // Direct mode resolves its bearer via the managed `auth.command` (agent auth
     // --get). Positively identify OUR launcher (command + args), not just any
-    // auth.command — a stale `gh auth token` block must NOT read as managed. Whether
+    // auth.command -- a stale `gh auth token` block must NOT read as managed. Whether
     // a `gh` login is actually needed depends on the store (a token there means no
-    // gh) — the health probe decides that from the store, not the static config.
+    // gh) -- the health probe decides that from the store, not the static config.
     status.directUsesToken =
       providerMode === "direct" && isRecord(table) && isManagedDirectAuth(table.auth);
     status.providerWired =
@@ -336,7 +336,7 @@ export function inspectCodexWiring(
 
 // Seeded ONLY when no config.toml exists yet: select the requested provider and
 // disable telemetry. Provider TABLES are injected by the merge functions, so
-// they are intentionally absent here — no duplication, no drift.
+// they are intentionally absent here -- no duplication, no drift.
 function defaultConfig(mode: ManagedAgentMode): Record<string, unknown> {
   return {
     "model_provider": CODEX_PROVIDER_ID,
@@ -418,7 +418,7 @@ function removeEnvKey(envFile: string, key: string): void {
   const lines = existing.split(/\r?\n/);
   if (lines.length && lines[lines.length - 1] === "") lines.pop(); // trailing newline
   const kept = lines.filter((line) => !matcher.test(line));
-  if (kept.length === lines.length) return; // key absent — leave the file untouched
+  if (kept.length === lines.length) return; // key absent -- leave the file untouched
   fs.writeFileSync(envFile, kept.length ? `${kept.join("\n")}\n` : "");
   try {
     fs.chmodSync(envFile, 0o600);
@@ -457,7 +457,7 @@ export function configureCodexConfig(
   const home = process.env.HOME || homedir();
   codexHome = codexHome || process.env.CODEX_HOME || `${home}/.codex`;
   // Low-level writer: absence of `proxy` means write a Direct config. The
-  // never-silent-Direct guarantee lives UPSTREAM at resolveDirectMode() — callers
+  // never-silent-Direct guarantee lives UPSTREAM at resolveDirectMode() -- callers
   // must pass an already-resolved mode (an explicit flag or a passing probe);
   // the only intentional bare-Direct use is the throwaway probe config itself.
   const mode: ManagedAgentMode = options.proxy ? "proxy" : "direct";
@@ -476,7 +476,7 @@ export function configureCodexConfig(
   const doc = loadOrCreateConfig(hostConfig, mode);
 
   // Enforce our managed contract on every run: select the requested provider
-  // as the default and (re)write EVERY managed field on its table —
+  // as the default and (re)write EVERY managed field on its table --
   // overwriting a stale value (e.g. an old env_key) and filling any managed key
   // the file lacks. Spreading `existing` first preserves user-added keys in the
   // same table; other providers, the [analytics]/[feedback] sections, and any
@@ -531,7 +531,7 @@ export function configureCodexConfig(
 
 /**
  * Resolve baseUrl/apiKey from the local proxy and write the Codex config at
- * `codexHome`. Pure config write — the caller persists CODEX_HOME to state.
+ * `codexHome`. Pure config write -- the caller persists CODEX_HOME to state.
  * Shared by `runCodexConfig` and codex_host's `runCodexHost`. Direct mode fetches
  * the bearer at runtime via `agent auth --get`; nothing is baked into the config.
  */
@@ -645,7 +645,7 @@ export function detectCodexDirect(deps?: DirectProbeDeps): boolean {
 }
 
 /**
- * `agent codex`: configure Codex at the active CODEX_HOME — the one a `--host`
+ * `agent codex`: configure Codex at the active CODEX_HOME -- the one a `--host`
  * farm set in state, else `$CODEX_HOME`, else the default `~/.codex`. `--direct`
  * forces GitHub Copilot Direct, `--proxy` forces the local proxy, and with no
  * mode flag it auto-detects (live read-only probe, else the proxy). `--check`
@@ -663,7 +663,7 @@ export function runCodex(args: CodexConfigArgs): void {
     return;
   }
   // A configured credential (`agent auth`) selects Direct without a live probe.
-  // Resolve it provider-aware (gh-cli → gh, copilot/gh-token → stored token, none →
+  // Resolve it provider-aware (gh-cli -> gh, copilot/gh-token -> stored token, none ->
   // null) so a recorded-but-broken provider correctly falls through to the probe.
   const ghToken = new Credential().resolve();
   const direct = resolveDirectMode(args, ghToken, detectCodexDirect);

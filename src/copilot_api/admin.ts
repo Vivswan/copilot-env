@@ -70,7 +70,7 @@ export class CopilotAdminClient {
     });
   }
 
-  /** Shared `fetch` wrapper: bearer selection, timeout, non-2xx → throw, JSON parse. */
+  /** Shared `fetch` wrapper: bearer selection, timeout, non-2xx -> throw, JSON parse. */
   private async request(path: string, opts: RequestOptions = {}): Promise<unknown> {
     const method = opts.method ?? "GET";
     const headers: Record<string, string> = {

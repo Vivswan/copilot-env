@@ -244,7 +244,7 @@ export async function runCodexMobile(): Promise<void> {
   };
 
   // `finally` does not run on a signal, so restore synchronously on SIGINT/SIGTERM
-  // too — otherwise Ctrl-C during pairing leaves config.toml without a provider.
+  // too -- otherwise Ctrl-C during pairing leaves config.toml without a provider.
   const onSignal = (): void => {
     try {
       restore();
@@ -252,7 +252,7 @@ export async function runCodexMobile(): Promise<void> {
       try {
         fs.writeFileSync(configPath, original);
       } catch {
-        // give up — the backup file is the last resort
+        // give up -- the backup file is the last resort
       }
     }
     process.exit(130);

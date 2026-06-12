@@ -40,10 +40,10 @@ export function renderReport(scope: HealthScope, results: CheckResult[]): void {
     for (const r of inGroup) {
       const lines = r.detail.split("\n");
       if (lines.length <= 1) {
-        // Single fact -> one row: `✔ label: value`.
+        // Single fact -> one row: `ok label: value`.
         console.log(`  ${glyph(r.status)} ${r.label}: ${lines[0] ?? ""}`);
       } else {
-        // Multiple facts -> a label row, then each fact as a `•` sub-item.
+        // Multiple facts -> a label row, then each fact as a `-` sub-item.
         console.log(`  ${glyph(r.status)} ${r.label}`);
         for (const line of lines) console.log(`      ${gray("•")} ${line}`);
       }

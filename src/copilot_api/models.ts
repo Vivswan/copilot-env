@@ -58,7 +58,7 @@ export function generateAliases(catalog: CatalogModel[]): Record<string, string>
   for (const model of catalog) {
     const match = MODEL_ID_PATTERN.exec(model.id);
     if (!match) {
-      continue; // non-claude (gpt/gemini/...) — clients address these directly
+      continue; // non-claude (gpt/gemini/...) -- clients address these directly
     }
     const [, family, version, qualifier] = match;
     if (family === undefined || version === undefined) {

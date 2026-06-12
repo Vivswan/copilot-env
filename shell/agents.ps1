@@ -1,4 +1,4 @@
-# Agent commands (Windows / PowerShell) — dot-sourced from your PowerShell
+# Agent commands (Windows / PowerShell) -- dot-sourced from your PowerShell
 # $PROFILE. PowerShell equivalent of agents.bashrc.
 #
 # Thin wrapper over bin\agent.ps1 (which self-bootstraps bun, installs
@@ -37,7 +37,7 @@ function Import-CopilotEnv {
 
 # Uniform wrapper over bin\agent.ps1 (mirrors the POSIX agents.bashrc `agent`):
 # run the requested command, then re-apply the full session env from the single
-# source of truth — `agent env`, which prints `$env:KEY = ...` / `Remove-Item
+# source of truth -- `agent env`, which prints `$env:KEY = ...` / `Remove-Item
 # Env:KEY` lines (CODEX_HOME + the proxy ANTHROPIC_BASE_URL, set or cleared). No
 # per-subcommand logic; we only ever eval the dedicated, contract-stable `env` output.
 function agent {

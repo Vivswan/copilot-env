@@ -1,4 +1,4 @@
-// Pure aggregation over CheckResult[] — the primary unit-test surface. No I/O.
+// Pure aggregation over CheckResult[] -- the primary unit-test surface. No I/O.
 import {
   type CheckResult,
   type CheckStatus,

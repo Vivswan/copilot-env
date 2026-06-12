@@ -1,11 +1,11 @@
 // copilot-env's shared, account/machine-wide state: the provisioned GitHub token
 // (the SINGLE source of truth for the Direct credential + the proxy's
 // `--github-token`) and the auth provider that produced it. Stored in
-// `.copilot-env-state.json` under the copilot-api home — NOT per-host `.run/` state
+// `.copilot-env-state.json` under the copilot-api home -- NOT per-host `.run/` state
 // (CopilotEnvRunState), since the credential applies regardless of which host/node
 // runs an agent. Resolution is provider-driven (see `Credential.resolve()`):
 // `gh-cli` runs `gh auth token`, `copilot`/`gh-token` return this stored token, and
-// no recorded provider resolves to nothing — there is no implicit `gh` fallback.
+// no recorded provider resolves to nothing -- there is no implicit `gh` fallback.
 // `agent auth --del` clears both fields.
 import * as v from "valibot";
 import { CopilotApiConfig } from "./config.ts";
@@ -13,7 +13,7 @@ import { CopilotApiPaths } from "./paths.ts";
 
 // The provider vocabulary lives HERE, with the store that persists `authProvider`,
 // so env_state can validate it at the read boundary without importing from the
-// auth/`Credential` layer (which would cycle — Credential wraps this store).
+// auth/`Credential` layer (which would cycle -- Credential wraps this store).
 // `src/commands/auth.ts` and `Credential` re-import these.
 export const AUTH_PROVIDERS = ["copilot", "gh-cli", "gh-token"] as const;
 export type AuthProvider = (typeof AUTH_PROVIDERS)[number];
@@ -43,7 +43,7 @@ const STATE_SCHEMA = v.object({
 /**
  * Read/write helper for the shared `.copilot-env-state.json`. Backed by
  * CopilotApiConfig (the project's atomic JSON store: sorted keys, 0600, atomic
- * rename, Windows EPERM/EBUSY retry) and mirroring CopilotEnvRunState — one I/O
+ * rename, Windows EPERM/EBUSY retry) and mirroring CopilotEnvRunState -- one I/O
  * implementation.
  */
 export class CopilotEnvState {
@@ -60,7 +60,7 @@ export class CopilotEnvState {
 
   /**
    * Merge `patch`. Unlike the sibling state classes, values are credentials/labels,
-   * so we trim and treat a null/undefined OR blank value as a delete — a blank token
+   * so we trim and treat a null/undefined OR blank value as a delete -- a blank token
    * is never a meaningful value, so it must clear rather than persist `""`.
    */
   set(patch: EnvStatePatch): void {

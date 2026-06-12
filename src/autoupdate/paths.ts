@@ -3,7 +3,7 @@
 // State lives in `<PROJECT_ROOT>/.autoupdate/` (the install dir, default
 // ~/.copilot-env). That directory is overwritten by `agent update` and the
 // installers, so `.autoupdate` is added to the updater's PRESERVE set and is
-// snapshot/restored by install.sh / install.ps1 — keeping the opt-in durable.
+// snapshot/restored by install.sh / install.ps1 -- keeping the opt-in durable.
 import { join } from "node:path";
 import { PROJECT_ROOT } from "../utils/root.ts";
 

@@ -6,7 +6,7 @@ import { getSanitizedHostname } from "../utils/hostname.ts";
 // Mirror the proxy's own default (`@jeffreycao/copilot-api` lib/paths.ts):
 //   path.join(os.homedir(), ".local", "share", "copilot-api")
 // applied on every platform. Must stay byte-for-byte compatible so the wrapper
-// reads the same config/run dir the daemon writes — do NOT swap in a native
+// reads the same config/run dir the daemon writes -- do NOT swap in a native
 // %LOCALAPPDATA% location on Windows, that would diverge from the daemon.
 export const DEFAULT_HOME: string = join(homedir(), ".local", "share", "copilot-api");
 
@@ -24,7 +24,7 @@ export class CopilotApiPaths {
   logFile: string;
   sqliteDb: string;
   /**
-   * Shared (NOT per-host) copilot-env state under the copilot-api home — holds
+   * Shared (NOT per-host) copilot-env state under the copilot-api home -- holds
    * the provisioned GitHub token, which is account/machine-wide regardless of
    * host. Lives beside config.json, never inside `.run/<host>/`.
    */

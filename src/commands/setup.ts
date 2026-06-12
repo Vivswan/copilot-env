@@ -29,7 +29,7 @@ export const AGENT_CLIS = [
 
 /**
  * `agent shell`: wire shell integration, optionally the cl/co/cx launchers, and
- * optionally install the agent CLIs — the merge of the old setup-shell /
+ * optionally install the agent CLIs -- the merge of the old setup-shell /
  * setup-launchers commands plus the install flags.
  */
 export interface ShellArgs {
@@ -43,7 +43,7 @@ export interface ShellArgs {
   cooldown?: number | null;
   /** With `clis`: avoid sudo/system package managers. */
   noSudo?: boolean;
-  /** With `clis`: verify prerequisites/CLIs only — install nothing. */
+  /** With `clis`: verify prerequisites/CLIs only -- install nothing. */
   noPrereqs?: boolean;
   /** Windows only: target the CurrentUserAllHosts profile. */
   allHosts?: boolean;
@@ -250,10 +250,10 @@ function installCli(cli: (typeof AGENT_CLIS)[number], options: InstallClisOption
 }
 
 /**
- * Install (or with `noPrereqs`, just verify) the optional agent CLIs — the
+ * Install (or with `noPrereqs`, just verify) the optional agent CLIs -- the
  * `agent shell --clis` path. Best-effort: a missing/uninstallable toolchain warns
  * rather than throwing, so the surrounding `agent shell` run still wires the
- * integration. Does NOT wire the rc blocks — `runShell` owns that ordering.
+ * integration. Does NOT wire the rc blocks -- `runShell` owns that ordering.
  */
 export function installAgentClis(options: InstallClisOptions): void {
   if (options.noPrereqs) {

@@ -1,4 +1,4 @@
-// The proxy float — the one dependency copilot-env intentionally does NOT pin
+// The proxy float -- the one dependency copilot-env intentionally does NOT pin
 // in bun.lock. package.json keeps @jeffreycao/copilot-api at "latest" as a
 // reproducible baseline, then this postinstall overlays the exact runtime target
 // into node_modules with `bun add --no-save`.
@@ -329,7 +329,7 @@ function handleResolvedTarget(ctx: FloatContext, target: ProxyTarget): void {
 
 /**
  * Float the proxy, overlaying the runtime root's node_modules via `bun add
- * --no-save` so the read-only package.json / bun.lock are never written — only
+ * --no-save` so the read-only package.json / bun.lock are never written -- only
  * the proxy moves; every other dep stays at its locked version.
  */
 export function floatProxy(
@@ -344,7 +344,7 @@ export function floatProxy(
   const override = process.env[PROXY_VERSION_ENV]?.trim();
 
   // An exact pin bypasses the cooldown entirely, so resolve the cooldown window
-  // ONLY on the float path — a bad COPILOT_API_MIN_RELEASE_AGE must not block a pin.
+  // ONLY on the float path -- a bad COPILOT_API_MIN_RELEASE_AGE must not block a pin.
   if (override) {
     handlePinnedOverride(
       { root, bun, config, minimumReleaseAgeSeconds: 0, spawnRunner, nowMs },
@@ -474,12 +474,12 @@ function verifyResolveFailure(
 }
 
 /**
- * True when node_modules exists and is at least as new as bun.lock — i.e. no
+ * True when node_modules exists and is at least as new as bun.lock -- i.e. no
  * dependency change has landed since the last install. bun.lock is the source of
  * truth for the installed dependency set, and git only rewrites it on a content
  * change, so "lock newer than node_modules" reliably means the locked deps changed
  * and a reinstall is due. (package.json is intentionally NOT compared: tooling
- * bumps its mtime without touching deps — a false "stale" — and any real dependency
+ * bumps its mtime without touching deps -- a false "stale" -- and any real dependency
  * change updates bun.lock anyway.) A missing/unstattable bun.lock is ignored.
  */
 export function nodeModulesFresh(root: string): boolean {
@@ -492,7 +492,7 @@ export function nodeModulesFresh(root: string): boolean {
   try {
     return statSync(join(root, "bun.lock")).mtimeMs <= nodeModulesMtime;
   } catch {
-    return true; // no bun.lock to compare against — don't force an install on its absence
+    return true; // no bun.lock to compare against -- don't force an install on its absence
   }
 }
 

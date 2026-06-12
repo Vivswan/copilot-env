@@ -46,8 +46,8 @@ type Opts = Record<string, unknown>;
 /**
  * Run a command action, rendering any thrown Error as a friendly one-line
  * message (no stack trace) with a non-zero exit code. Commander surfaces a
- * rejected action as an unhandled error; intercepting here — inside the action —
- * keeps an unexpected platform/arg/IO failure reading as `✖ <message>` instead
+ * rejected action as an unhandled error; intercepting here -- inside the action --
+ * keeps an unexpected platform/arg/IO failure reading as `x <message>` instead
  * of dumping a Bun stack frame at the user. runSafe never rethrows, so the
  * action resolves cleanly and the exit code is carried by process.exitCode.
  */
@@ -73,9 +73,9 @@ function coerceDays(raw: string): number {
 }
 
 /**
- * Resolve `--cooldown [days]` to a day count or null: absent → null, bare
- * `--cooldown` → Commander passes `true` (coercion skipped) → default days,
- * `--cooldown=N` / `--cooldown N` → already coerced to the number N.
+ * Resolve `--cooldown [days]` to a day count or null: absent -> null, bare
+ * `--cooldown` -> Commander passes `true` (coercion skipped) -> default days,
+ * `--cooldown=N` / `--cooldown N` -> already coerced to the number N.
  */
 function resolveCooldown(value: unknown, defaultDays: number): number | null {
   if (value === undefined) return null;
@@ -106,8 +106,8 @@ program
   .option("--full-help", "Print help for `agent` and every subcommand, then exit.");
 
 // `agent --full-help`: dump the top-level help plus each subcommand's help in one
-// shot. The option:full-help listener fires during parse — before any "missing
-// command" handling — so it works with no subcommand.
+// shot. The option:full-help listener fires during parse -- before any "missing
+// command" handling -- so it works with no subcommand.
 program.on("option:full-help", () => {
   const sep = "─".repeat(72);
   const parts = [program.helpInformation()];
@@ -122,7 +122,7 @@ program.on("option:full-help", () => {
 // Tint Commander's native help to match the `agent health` report: bold section
 // titles, cyan command/option names, gray descriptions. The ansi.ts helpers
 // no-op under NO_COLOR / TERM=dumb / CI / test runs, so these hooks degrade to
-// plain text on their own — Commander still owns all layout and width-wrapping.
+// plain text on their own -- Commander still owns all layout and width-wrapping.
 program.configureHelp({
   styleTitle: bold,
   styleCommandText: cyan,

@@ -120,7 +120,7 @@ test("auth (bare) is idempotent on a RECORDED provider — no re-auth, no config
 test("auth (bare) with NO recorded provider re-runs the flow even when gh works (no idempotency loop)", async () => {
   isolate();
   // No stored token and no recorded provider. Idempotency must key on the RECORDED
-  // choice, not on whether `gh` happens to work — otherwise a machine with a gh
+  // choice, not on whether `gh` happens to work -- otherwise a machine with a gh
   // login could never reach a fresh login (and --del would clear nothing). With no
   // recorded provider, bare auth runs the flow: interactive choice, which throws
   // here because the test env is non-TTY (proving it did NOT short-circuit on gh).
@@ -142,7 +142,7 @@ test("auth --provider gh-token stores the env token + provider, and does NOT con
   // An explicit provider always runs (not short-circuited by "already authenticated").
   await runAuth({ provider: "gh-token" });
   expect(state().read()).toEqual({ githubToken: "ghu_new_from_env", authProvider: "gh-token" });
-  // auth only manages the credential — configuring Codex/Claude is `agent init`'s job.
+  // auth only manages the credential -- configuring Codex/Claude is `agent init`'s job.
   expect(existsSync(join(claudeHome, "settings.json"))).toBe(false);
 });
 

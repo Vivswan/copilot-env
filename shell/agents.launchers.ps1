@@ -1,4 +1,4 @@
-# Opt-in agent launchers (Windows / PowerShell) — dot-source this AFTER
+# Opt-in agent launchers (Windows / PowerShell) -- dot-source this AFTER
 # agents.ps1 to enable the short `cl` / `co` / `cx` launchers (plus the
 # more-permissive `clx` / `cox` / `cxx` variants that add each agent's
 # most-relaxed flag). PowerShell equivalent of agents.launchers.bashrc.
@@ -47,7 +47,7 @@ function Confirm-CopilotServer {
 
 function cl {
     if (-not (Assert-AgentCli claude)) { return }
-    # Read the configured Claude provider (no live probe — provider auto-detection
+    # Read the configured Claude provider (no live probe -- provider auto-detection
     # is done once by `agent init`, not on every launch): exit 0 = direct
     # (Claude reads settings.json itself), 2 = proxy/default (ensure the proxy +
     # re-sync the port/token), else custom/error.
@@ -55,7 +55,7 @@ function cl {
     $claudeProviderStatus = $LASTEXITCODE
     if ($claudeProviderStatus -eq 2) {
         Confirm-CopilotServer
-        # Bail if the proxy is still down (declined / failed) — don't re-sync
+        # Bail if the proxy is still down (declined / failed) -- don't re-sync
         # proxy config against a stale port or launch into a dead proxy.
         if (-not (Test-CopilotServer)) { return }
         agent claude --proxy
@@ -75,7 +75,7 @@ function co {
 
 function cx {
     if (-not (Assert-AgentCli codex)) { return }
-    # Read the configured Codex provider (no live probe — provider auto-detection
+    # Read the configured Codex provider (no live probe -- provider auto-detection
     # is done once by `agent init`, not on every launch): exit 0 = direct
     # (Codex reads its own config), 2 = proxy/default (ensure the proxy + re-sync
     # the port/token), else custom/error.
@@ -83,7 +83,7 @@ function cx {
     $codexProviderStatus = $LASTEXITCODE
     if ($codexProviderStatus -eq 2) {
         Confirm-CopilotServer
-        # Bail if the proxy is still down (declined / failed) — don't re-sync
+        # Bail if the proxy is still down (declined / failed) -- don't re-sync
         # proxy config against a stale port or launch into a dead proxy.
         if (-not (Test-CopilotServer)) { return }
         agent codex --proxy

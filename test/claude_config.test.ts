@@ -71,7 +71,7 @@ test("direct mode writes the managed apiKeyHelper + env and the token helper, pr
 
   const helper = join(home, "copilot-token.sh");
   const directScript = readFileSync(helper, "utf8");
-  // The direct helper execs `agent auth --get` (the resolver) — never `gh auth token`,
+  // The direct helper execs `agent auth --get` (the resolver) -- never `gh auth token`,
   // never a baked token.
   expect(directScript.startsWith("#!/bin/sh\nexec ")).toBe(true);
   expect(directScript).toContain("auth");
@@ -218,7 +218,7 @@ test("runClaude with a stored token selects Direct WITHOUT baking it; --proxy st
   const home = tmpHome(); // also points COPILOT_API_HOME at an isolated dir
   const read = () => inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home);
 
-  // A configured credential selects Direct with NO probe — but the helper resolves
+  // A configured credential selects Direct with NO probe -- but the helper resolves
   // it at fetch time (`agent auth --get`), so it's never written to disk.
   new CopilotEnvState().set({ githubToken: "ghu_stored", authProvider: "gh-token" });
   runClaude({});

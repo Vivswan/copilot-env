@@ -1,5 +1,5 @@
 // `agent auth`: the single front door for the Direct-mode GitHub credential. It
-// ONLY manages the credential — acquiring it, reading it back, checking status,
+// ONLY manages the credential -- acquiring it, reading it back, checking status,
 // clearing it. Configuring Codex/Claude (direct vs proxy) is `agent init`'s job.
 // The credential domain (provider-driven resolution, status, state writes) lives in
 // the `Credential` class (`src/copilot_api/credential.ts`); this module is the thin
@@ -128,7 +128,7 @@ function loginWithCopilot(cred: Credential): void {
 }
 
 /**
- * Read a line from the terminal WITHOUT echoing it — for pasting a secret token so
+ * Read a line from the terminal WITHOUT echoing it -- for pasting a secret token so
  * it never lingers on screen or in scrollback. consola's text prompt echoes input
  * and has no masked variant, so we drive readline directly and suppress its output
  * write (the canonical `_writeToOutput` hook: print the one-time query, swallow the
@@ -207,7 +207,7 @@ async function loginWithGhToken(
 
 /** `gh-cli`: rely on the machine's gh login (store nothing, verify gh works). */
 function loginWithGhCli(cred: Credential): void {
-  // Verify gh works BEFORE recording — otherwise a failed gh check would point
+  // Verify gh works BEFORE recording -- otherwise a failed gh check would point
   // `--get` at a `gh` that can't produce a token.
   if (ghAuthToken() === null) {
     throw new Error("gh is not authenticated — run `gh auth login`, then retry `agent auth`");
@@ -220,7 +220,7 @@ function loginWithGhCli(cred: Credential): void {
  * Authenticate: pick the provider (explicit `--provider`, else interactive
  * choice), acquire + record the credential. `setValue` is the `--set [token]` value
  * for gh-token (verbatim string, or true/undefined => env). Does NOT configure the
- * agents — that is `agent init`'s job. Throws on failure.
+ * agents -- that is `agent init`'s job. Throws on failure.
  */
 async function authenticate(
   providerArg: string | undefined,
@@ -247,7 +247,7 @@ function runGet(): void {
     process.exitCode = 1;
     return;
   }
-  // codeql[js/clear-text-logging] — emitting the token on stdout IS this command's
+  // codeql[js/clear-text-logging] -- emitting the token on stdout IS this command's
   // contract (like `gh auth token`); the agent configs consume it.
   process.stdout.write(`${token}\n`);
 }
@@ -279,7 +279,7 @@ function runCheck(): void {
 }
 
 /**
- * Ensure a credential exists WITHOUT configuring the agents — used by `agent init`
+ * Ensure a credential exists WITHOUT configuring the agents -- used by `agent init`
  * and `agent start`. No-op when already authenticated; otherwise runs the auth flow
  * (interactive provider choice). Throws if acquisition fails, so callers error out
  * rather than proceeding unauthenticated.
@@ -322,7 +322,7 @@ export async function runAuth(args: AuthArgs): Promise<void> {
   // `--set` is the non-interactive gh-token path: it implies `--provider gh-token`
   // (and rejects a conflicting provider). Bare `agent auth` (no --provider, no --set)
   // is idempotent only when the recorded provider STILL RESOLVES: if so, report it
-  // and how to change it; otherwise run the auth flow (prompt) — covering both "no
+  // and how to change it; otherwise run the auth flow (prompt) -- covering both "no
   // provider yet" and "provider chosen but broken (e.g. gh-cli after gh logout)".
   // `gh` is never silently used without the `gh-cli` choice, and `agent auth --del`
   // clears the provider so the next run starts fresh. An explicit `--provider` always runs.

@@ -18,7 +18,7 @@ import { errMessage } from "../utils/error.ts";
 const DB_FILENAME = "copilot-api.sqlite";
 
 // Raw SQLite open flags. We open via URI (`file:...?immutable=1`) so SQLite
-// skips all locking — the proxy DBs live on NFS where POSIX shared locks
+// skips all locking -- the proxy DBs live on NFS where POSIX shared locks
 // fail with SQLITE_PROTOCOL ("locking protocol"), and the daemon is actively
 // writing to them. `immutable=1` promises SQLite the file won't change for
 // the connection's lifetime, which is the right semantic for a best-effort

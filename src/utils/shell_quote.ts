@@ -1,5 +1,5 @@
 // Shell single-quoting helpers shared by the env exporter, shell-integration
-// block writers, and setup PATH wiring — so the two escaping rules live in one
+// block writers, and setup PATH wiring -- so the two escaping rules live in one
 // place. Both wrap the value in single quotes (a literal string in each shell).
 
 /** POSIX single-quote: only `'` is special inside single quotes -> close/escape/reopen. */

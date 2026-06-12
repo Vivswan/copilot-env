@@ -49,9 +49,9 @@ export const OPENCODE_PASSTHROUGH = "opencode";
 /**
  * Whether a GitHub token is a Personal Access Token by its prefix: `ghp_` (classic)
  * or `github_pat_` (fine-grained). PATs cannot perform copilot-api's editor token
- * exchange (`copilot_internal/v2/token` → 403), so they need passthrough; OAuth /
- * app tokens (`gho_`/`ghu_`/`ghs_`/…) can, so they don't. Legacy unprefixed 40-hex
- * classic PATs are NOT detected here — use `--passthrough` for those.
+ * exchange (`copilot_internal/v2/token` -> 403), so they need passthrough; OAuth /
+ * app tokens (`gho_`/`ghu_`/`ghs_`/...) can, so they don't. Legacy unprefixed 40-hex
+ * classic PATs are NOT detected here -- use `--passthrough` for those.
  */
 export function isPatToken(token: string): boolean {
   const t = token.trim();
@@ -65,7 +65,7 @@ export function isPatToken(token: string): boolean {
  *
  * Precedence:
  *   1. `--passthrough` / `--no-passthrough` (explicit force on/off) wins.
- *   2. An explicit COPILOT_API_OAUTH_APP in the env is the user's choice — the daemon
+ *   2. An explicit COPILOT_API_OAUTH_APP in the env is the user's choice -- the daemon
  *      inherits it, so pass nothing (null).
  *   3. Auto: a PAT can't do the editor exchange, so default it to passthrough; every
  *      other token shape keeps the normal exchange.
@@ -116,7 +116,7 @@ function applyDefaultConfig(config: CopilotApiConfig): void {
  *
  * The pinned `@jeffreycao/copilot-api` re-adds any *missing* default extraPrompt
  * key on every config reload (`mergeDefaultConfig`), so an empty or absent map
- * is futile — the defaults always come back. Instead we blank every key the
+ * is futile -- the defaults always come back. Instead we blank every key the
  * daemon has already written to config.json. Discovering the key set at runtime
  * (rather than hardcoding it) keeps this correct when a future package version
  * adds new default prompts.
@@ -218,14 +218,14 @@ async function logProxyVersion(): Promise<void> {
       }
     }
   } catch {
-    // offline / slow registry — version alone is still useful
+    // offline / slow registry -- version alone is still useful
   }
   consola.info(`   Proxy: @jeffreycao/copilot-api ${version}${published}`);
 }
 
 /**
  * Resolve the port `start` will bind: a pinned `--port` is used as-is but must be
- * free (else throw — never silently move off the port the user asked for); with no
+ * free (else throw -- never silently move off the port the user asked for); with no
  * pin, use the default or the next free port above it. `announce` emits the
  * busy/alternative-port notices on the live path (the dry-run resolves quietly).
  * Read-only (just probes availability), so it's safe to call from `--dry-run`.
@@ -256,7 +256,7 @@ async function resolveStartPort(pinned: number | undefined, announce: boolean): 
  * Refuse to launch on a proxy below the PROXY_MIN_VERSION floor. The float
  * (`bun install`'s postinstall) is best-effort, so an offline/failed install can
  * leave a sub-floor proxy in node_modules; the floor is a hard runtime contract,
- * so we enforce it here — **fail-closed** and before disturbing any running daemon.
+ * so we enforce it here -- **fail-closed** and before disturbing any running daemon.
  * An unresolvable proxy or unreadable copilot-env.config is itself fatal (we
  * can't confirm the floor), so it throws rather than launching blind.
  */
@@ -366,15 +366,15 @@ export async function runStart(args: StartArgs): Promise<void> {
 
   fs.writeFileSync(logFile, "");
   const daemonEnv: Record<string, string> = { COPILOT_API_SQLITE_DB_PATH: paths.sqliteDb };
-  // Feed the daemon the resolved credential — the SAME resolution Direct uses
-  // (`agent auth --get`), driven by the recorded provider (gh-cli → `gh auth token`,
-  // copilot/gh-token → the stored token). Passing it as `--github-token` keeps the
+  // Feed the daemon the resolved credential -- the SAME resolution Direct uses
+  // (`agent auth --get`), driven by the recorded provider (gh-cli -> `gh auth token`,
+  // copilot/gh-token -> the stored token). Passing it as `--github-token` keeps the
   // proxy on our single source of truth (copilot-api uses it in-memory and won't
   // write its own github_token file).
   const credential = new Credential();
   let githubToken = credential.resolve() ?? undefined;
   if (githubToken === undefined && process.stdin.isTTY) {
-    // Nothing resolved AND we have a terminal: log in (provider choice → our store)
+    // Nothing resolved AND we have a terminal: log in (provider choice -> our store)
     // so the proxy stays on the single source. Errors out if login fails. Headless/CI
     // (no TTY) can't complete an interactive login, so skip and let the daemon handle
     // its own cold-start login (a fake proxy in tests just starts without a token).
@@ -490,7 +490,7 @@ export async function runStart(args: StartArgs): Promise<void> {
   await syncModelAliases(admin);
 
   await logProxyVersion();
-  // One message, one timestamp — keeps the path block from interleaving.
+  // One message, one timestamp -- keeps the path block from interleaving.
   const summary: Array<[string, string]> = [
     ["Logs", logFile],
     ["PID", String(pid)],

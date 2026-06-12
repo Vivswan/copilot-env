@@ -4,7 +4,7 @@
 //     cleared when the shell still carries OUR (now-deleted) farm path.
 //   - ANTHROPIC_BASE_URL: set when Claude is wired to a LOCAL proxy URL;
 //     cleared when the shell still carries a localhost proxy URL (one WE set)
-//     but Claude is no longer in proxy mode — otherwise a stale proxy URL would
+//     but Claude is no longer in proxy mode -- otherwise a stale proxy URL would
 //     override the now-direct settings.json (shell env wins) and mask it in health.
 // It NEVER touches a value the user set themselves (a foreign CODEX_HOME, or a
 // non-local ANTHROPIC_BASE_URL). Everything else lives in each agent's own config
@@ -36,7 +36,7 @@ function readTextOrNull(path: string): string | null {
   }
 }
 
-/** True for an http://localhost or http://127.0.0.1 URL — the proxy shape we write. */
+/** True for an http://localhost or http://127.0.0.1 URL -- the proxy shape we write. */
 function isLocalProxyUrl(url: string): boolean {
   try {
     const u = new URL(url);
@@ -49,7 +49,7 @@ function isLocalProxyUrl(url: string): boolean {
 /**
  * `env`: print env directives for the calling shell. This is the only command
  * whose stdout is machine-readable (the shell `agent` wrapper evals it), so it
- * must emit ONLY assignment / unset directives — never logs.
+ * must emit ONLY assignment / unset directives -- never logs.
  */
 export function runEnv(args: EnvArgs): void {
   const format = String(args.format ?? "posix").toLowerCase();
@@ -109,7 +109,7 @@ export function runEnv(args: EnvArgs): void {
       console.log(`$env:${directive.key} = ${quotePowerShell(directive.value)}`);
     } else {
       // Single-quoted POSIX literal so values with spaces/metacharacters survive
-      // the shell wrapper's `eval`. Embedded `'` → `'\''`.
+      // the shell wrapper's `eval`. Embedded `'` -> `'\''`.
       console.log(`export ${directive.key}=${quotePosix(directive.value)}`);
     }
   }

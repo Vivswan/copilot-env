@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // A throwaway COPILOT_API_HOME so the runtime probe sees no tracked pid/port and
-// falls back to the default port — independent of any real proxy on this host.
+// falls back to the default port -- independent of any real proxy on this host.
 function isolatedEnv(extra: Record<string, string> = {}): Record<string, string> {
   const home = mkdtempSync(join(tmpdir(), "copilot-health-"));
   return { ...process.env, CONSOLA_LEVEL: "5", COPILOT_API_HOME: home, ...extra };
@@ -222,7 +222,7 @@ test("claude exposes and runs check mode", () => {
   expect(proxy.exitCode).toBe(2);
   expect(proxy.stdout.toString()).toContain("Claude provider mode: proxy");
 
-  // No settings.json at all is "none" — still exit 2 (the proxy is the default).
+  // No settings.json at all is "none" -- still exit 2 (the proxy is the default).
   const none = runCheck(noneHome);
   expect(none.exitCode).toBe(2);
   expect(none.stdout.toString()).toContain("Claude provider mode: none");

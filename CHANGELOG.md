@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.4.0](https://github.com/Vivswan/copilot-env/compare/v3.3.3...v3.4.0) (2026-06-12)
+
+
+### Features
+
+* add --gh-token for headless Direct mode without the gh CLI ([acfe76d](https://github.com/Vivswan/copilot-env/commit/acfe76d8c80737d7273fe0c0f5d2816e89e76eef))
+* consolidate the CLI surface and share the gh-token store ([50119c6](https://github.com/Vivswan/copilot-env/commit/50119c621247a59f59cfa111d35475c559a29b4a))
+* provider-driven credential behind a Credential class, with semver + valibot ([81258e2](https://github.com/Vivswan/copilot-env/commit/81258e215d868275c0d19de0a5ab217b9f680483))
+
+
+### Bug Fixes
+
+* prompt for gh-token when GH_TOKEN/GITHUB_TOKEN are unset ([eac7b7c](https://github.com/Vivswan/copilot-env/commit/eac7b7cb1917bf2a9d757fad4590b6568adca61d))
+* run the proxy in passthrough mode for PAT credentials ([13c1c79](https://github.com/Vivswan/copilot-env/commit/13c1c790b8ca220ee6ef01bdf5e4900872a8401a))
+* unify the Codex model provider under a single copilot-env id ([3cca17a](https://github.com/Vivswan/copilot-env/commit/3cca17a64c8e24f0044f2f031a47391d73989417))
+* write the proxy log tail raw and export the passthrough constant ([cb24b75](https://github.com/Vivswan/copilot-env/commit/cb24b751c137812403d6899da3658587224fa9df))
+
 ## [3.3.3](https://github.com/Vivswan/copilot-env/compare/v3.3.2...v3.3.3) (2026-06-11)
 
 

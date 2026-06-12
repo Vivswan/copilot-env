@@ -15,10 +15,12 @@
 //                store and scrub it, so the token rests only in our state.
 //   - gh-cli   : rely on the machine's `gh` login (stores nothing; `--get` runs
 //                `gh auth token`).
-//   - gh-token : store a token. `--set <token>` provides it inline (no UI), or
-//                `--set` / no value reads $GH_TOKEN/$GITHUB_TOKEN (headless servers).
+//   - gh-token : store a token. `--set <token>` provides it inline (no UI), `--set`
+//                (bare) reads $GH_TOKEN/$GITHUB_TOKEN (headless servers), and with no
+//                `--set` it prefers those env vars, else prompts for the token in a TTY.
 import { spawnSync } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
+import { createInterface } from "node:readline";
 import { consola } from "consola";
 import {
   AUTH_PROVIDERS,
@@ -123,19 +125,78 @@ function loginWithCopilot(cred: Credential): void {
 }
 
 /**
- * `gh-token`: store a token. `--set <token>` provides it verbatim (no UI / no env);
- * `--set` (bare) or no value reads $GH_TOKEN/$GITHUB_TOKEN (out of argv).
+ * Read a line from the terminal WITHOUT echoing it — for pasting a secret token so
+ * it never lingers on screen or in scrollback. consola's text prompt echoes input
+ * and has no masked variant, so we drive readline directly and suppress its output
+ * write (the canonical `_writeToOutput` hook: print the one-time query, swallow the
+ * echoed keystrokes). Narration stays on stderr like the rest of this command, so
+ * `--get`'s stdout contract is untouched.
  */
-function loginWithGhToken(cred: Credential, setValue: string | boolean | undefined): void {
-  const token = tokenFromSetFlag(setValue === undefined ? true : setValue);
-  if (token === null) {
-    throw new Error("no token: pass `--set <token>` or set GH_TOKEN / GITHUB_TOKEN");
+function readSecret(query: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const rl = createInterface({ input: process.stdin, output: process.stderr, terminal: true });
+    let prompted = false;
+    (rl as unknown as { _writeToOutput: (s: string) => void })._writeToOutput = () => {
+      if (!prompted) {
+        process.stderr.write(query);
+        prompted = true;
+      }
+      // Swallow everything else (the echoed keystrokes / line re-renders).
+    };
+    rl.question(query, (answer) => {
+      process.stderr.write("\n");
+      rl.close();
+      resolve(answer);
+    });
+    rl.on("SIGINT", () => {
+      rl.close();
+      reject(new Error("cancelled"));
+    });
+  });
+}
+
+/** Interactive masked prompt for a gh-token. Errors out without a TTY. */
+async function promptForGhToken(): Promise<string> {
+  if (!process.stdin.isTTY) {
+    throw new Error("no GitHub token found: pass `--set <token>` or set GH_TOKEN / GITHUB_TOKEN");
+  }
+  const token = (await readSecret("Paste your Copilot-enabled GitHub token: ")).trim();
+  if (token === "") throw new Error("the provided GitHub token is empty");
+  return token;
+}
+
+/**
+ * `gh-token`: store a token.
+ *   - `--set <token>` : the value verbatim (no UI / no env).
+ *   - `--set` (bare)  : read $GH_TOKEN/$GITHUB_TOKEN, error if neither is set (headless).
+ *   - no `--set`      : prefer $GH_TOKEN/$GITHUB_TOKEN, else prompt for it in a TTY.
+ */
+async function loginWithGhToken(
+  cred: Credential,
+  setValue: string | boolean | undefined,
+): Promise<void> {
+  let token: string;
+  let fromEnv = true;
+  if (setValue === undefined) {
+    // Interactive / no-`--set` path: prefer the environment, but when neither var is
+    // set, prompt for the token instead of erroring out.
+    const envToken = process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim() || "";
+    if (envToken) {
+      token = envToken;
+    } else {
+      token = await promptForGhToken();
+      fromEnv = false;
+    }
+  } else {
+    // `--set <token>` (verbatim) or `--set` bare (env-only, headless): never prompts.
+    token = tokenFromSetFlag(setValue) as string;
+    fromEnv = typeof setValue !== "string";
   }
   cred.store("gh-token", token);
   logger.success(
-    typeof setValue === "string"
-      ? "  Stored the provided GitHub token."
-      : "  Stored the GitHub token from the environment.",
+    fromEnv
+      ? "  Stored the GitHub token from the environment."
+      : "  Stored the provided GitHub token.",
   );
 }
 
@@ -165,7 +226,7 @@ async function authenticate(
   if (provider === "copilot") {
     loginWithCopilot(cred);
   } else if (provider === "gh-token") {
-    loginWithGhToken(cred, setValue);
+    await loginWithGhToken(cred, setValue);
   } else {
     loginWithGhCli(cred);
   }

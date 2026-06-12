@@ -163,9 +163,25 @@ export function assertSingleMode(flags: ModeFlags): void {
 }
 
 /**
+ * Env var names checked (in order, most specific first) for a `gh-token` value, so
+ * the secret stays out of argv / shell history. COPILOT_GITHUB_TOKEN is the
+ * Copilot-specific name; GH_TOKEN / GITHUB_TOKEN are the gh CLI's conventional vars.
+ */
+export const GH_TOKEN_ENV_VARS = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] as const;
+
+/** First non-empty (trimmed) token among GH_TOKEN_ENV_VARS, or null when none is set. */
+export function ghTokenFromEnv(env: NodeJS.ProcessEnv = process.env): string | null {
+  for (const name of GH_TOKEN_ENV_VARS) {
+    const value = env[name]?.trim();
+    if (value) return value;
+  }
+  return null;
+}
+
+/**
  * Resolve a GitHub token from `agent auth --provider gh-token`: a bare request
- * (`true`) reads `$GH_TOKEN`, then `$GITHUB_TOKEN`, so the secret stays out of argv
- * / shell history; a string value is used verbatim (trimmed); `undefined`/`false`
+ * (`true`) reads the GH_TOKEN_ENV_VARS in order, so the secret stays out of argv /
+ * shell history; a string value is used verbatim (trimmed); `undefined`/`false`
  * => `null` (not requested). Throws when a token was requested but none resolved.
  */
 export function tokenFromSetFlag(flag: string | boolean | undefined): string | null {
@@ -173,9 +189,9 @@ export function tokenFromSetFlag(flag: string | boolean | undefined): string | n
   // but treat it as absence rather than the literal token "false").
   if (flag === undefined || flag === false) return null;
   if (flag === true) {
-    const fromEnv = process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim();
+    const fromEnv = ghTokenFromEnv();
     if (fromEnv) return fromEnv;
-    throw new Error("no GitHub token found: neither GH_TOKEN nor GITHUB_TOKEN is set");
+    throw new Error(`no GitHub token found: set one of ${GH_TOKEN_ENV_VARS.join(" / ")}`);
   }
   const token = flag.trim();
   if (token === "") throw new Error("the provided GitHub token is empty");

@@ -16,7 +16,7 @@
 //   - gh-cli   : rely on the machine's `gh` login (stores nothing; `--get` runs
 //                `gh auth token`).
 //   - gh-token : store a token. `--set <token>` provides it inline (no UI), `--set`
-//                (bare) reads $GH_TOKEN/$GITHUB_TOKEN (headless servers), and with no
+//                (bare) reads $COPILOT_GITHUB_TOKEN/$GH_TOKEN/$GITHUB_TOKEN (headless
 //                `--set` it prefers those env vars, else prompts for the token in a TTY.
 import { spawnSync } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
@@ -30,7 +30,7 @@ import {
 } from "../copilot_api/credential.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { resolveCopilotApiEntry } from "../copilot_api/process.ts";
-import { tokenFromSetFlag } from "../utils/direct_probe.ts";
+import { GH_TOKEN_ENV_VARS, ghTokenFromEnv, tokenFromSetFlag } from "../utils/direct_probe.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 
@@ -68,7 +68,10 @@ async function chooseProvider(): Promise<AuthProvider> {
     options: [
       { label: "copilot — device-flow browser login (read:user scope)", value: "copilot" },
       { label: "gh-cli — use the machine's `gh auth login`", value: "gh-cli" },
-      { label: "gh-token — store $GH_TOKEN / $GITHUB_TOKEN (headless)", value: "gh-token" },
+      {
+        label: "gh-token — store $COPILOT_GITHUB_TOKEN / $GH_TOKEN / $GITHUB_TOKEN (headless)",
+        value: "gh-token",
+      },
     ],
     cancel: "reject",
   });
@@ -158,7 +161,9 @@ function readSecret(query: string): Promise<string> {
 /** Interactive masked prompt for a gh-token. Errors out without a TTY. */
 async function promptForGhToken(): Promise<string> {
   if (!process.stdin.isTTY) {
-    throw new Error("no GitHub token found: pass `--set <token>` or set GH_TOKEN / GITHUB_TOKEN");
+    throw new Error(
+      `no GitHub token found: pass \`--set <token>\` or set one of ${GH_TOKEN_ENV_VARS.join(" / ")}`,
+    );
   }
   const token = (await readSecret("Paste your Copilot-enabled GitHub token: ")).trim();
   if (token === "") throw new Error("the provided GitHub token is empty");
@@ -168,8 +173,8 @@ async function promptForGhToken(): Promise<string> {
 /**
  * `gh-token`: store a token.
  *   - `--set <token>` : the value verbatim (no UI / no env).
- *   - `--set` (bare)  : read $GH_TOKEN/$GITHUB_TOKEN, error if neither is set (headless).
- *   - no `--set`      : prefer $GH_TOKEN/$GITHUB_TOKEN, else prompt for it in a TTY.
+ *   - `--set` (bare)  : read $COPILOT_GITHUB_TOKEN/$GH_TOKEN/$GITHUB_TOKEN, error if none set (headless).
+ *   - no `--set`      : prefer those env vars, else prompt for it in a TTY.
  */
 async function loginWithGhToken(
   cred: Credential,
@@ -178,9 +183,9 @@ async function loginWithGhToken(
   let token: string;
   let fromEnv = true;
   if (setValue === undefined) {
-    // Interactive / no-`--set` path: prefer the environment, but when neither var is
+    // Interactive / no-`--set` path: prefer the environment, but when no token var is
     // set, prompt for the token instead of erroring out.
-    const envToken = process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim() || "";
+    const envToken = ghTokenFromEnv();
     if (envToken) {
       token = envToken;
     } else {

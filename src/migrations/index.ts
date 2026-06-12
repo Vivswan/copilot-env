@@ -16,6 +16,7 @@ import { disableConsolaTimestamps } from "../utils/logger.ts";
 import { stripV, versionLessThan } from "../utils/semver.ts";
 import { migration as v121 } from "./1.2.1.ts";
 import { migration as v320 } from "./3.2.0.ts";
+import { migration as v333 } from "./3.3.3.ts";
 
 /**
  * One step in the version history, named for the release it migrates AWAY FROM (so a
@@ -34,7 +35,7 @@ export interface Migration {
 
 // One file per version step (named for the from-version), registered in ascending order;
 // `dueMigrations` re-sorts defensively, so order here is for readability only.
-const MIGRATIONS: Migration[] = [v121, v320];
+const MIGRATIONS: Migration[] = [v121, v320, v333];
 
 /**
  * The migrations whose (from-)version falls in the half-open range [from, to), sorted

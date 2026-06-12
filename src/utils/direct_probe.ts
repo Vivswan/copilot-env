@@ -1,8 +1,10 @@
 // Live "does GitHub Copilot Direct actually work?" probe, shared by `agent codex`
-// / `agent claude` (the auto-detect path) and `agent setup-clis`. Direct mode
-// mints tokens via `gh auth token`, so a machine without an authenticated GitHub
-// CLI — or where Copilot Direct rejects the request — must fall back to the local
-// proxy. Rather than guess, we WRITE a throwaway direct config into a temp
+// / `agent claude` (the auto-detect path) and `agent shell --clis`. Direct mode
+// resolves its credential via `agent auth --get` (provider-driven: gh-cli → `gh
+// auth token`, copilot/gh-token → the stored token; no implicit gh fallback), so a
+// machine with no credential — or where Copilot Direct rejects the request — must
+// fall back to the local proxy. Rather than guess, we
+// WRITE a throwaway direct config into a temp
 // home and run the agent CLI's own read-only smoke prompt against it; exit 0 means
 // direct works. Cheap gates (CLI present, gh authenticated) run first so the
 // common "no gh auth" case — e.g. CI — returns instantly without a model call. Two
@@ -15,6 +17,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { childPathPrepending, cliSpawn, resolveCommand } from "./command.ts";
+import { errMessage } from "./error.ts";
 import { createStderrLogger } from "./logger.ts";
 import { sleepSync } from "./time.ts";
 
@@ -56,7 +59,7 @@ export interface ProbeDescriptor {
    * points the CLI at (the temp dir for detect, the real home for the health
    * probe). Codex auto-loads `$CODEX_HOME/config.toml` and ignores `home`, but
    * Claude's `--bare` disables settings.json auto-discovery, so it must pass
-   * `--settings <home>/settings.json` to load its gh-token apiKeyHelper.
+   * `--settings <home>/settings.json` to load its managed apiKeyHelper.
    */
   args: (prompt: string, home: string) => string[];
   /**
@@ -101,7 +104,7 @@ export const CLAUDE_PROBE: ProbeDescriptor = {
   homeEnvVar: "CLAUDE_CONFIG_DIR",
   // --bare forces auth STRICTLY through the apiKeyHelper (OAuth and keychain are
   // never read) so a user's Claude subscription login can't make Direct look
-  // available when the gh-token path is actually broken — but it also disables
+  // available when the managed credential path is actually broken — but it also disables
   // settings.json auto-discovery from CLAUDE_CONFIG_DIR, so the managed
   // apiKeyHelper is only honored when handed in via --settings. Without it the
   // probe has NO auth path and always fails (apiKeySource "none").
@@ -160,26 +163,22 @@ export function assertSingleMode(flags: ModeFlags): void {
 }
 
 /**
- * Resolve the raw `--gh-token` flag into a token string (Direct authenticates
- * with it directly, no `gh` CLI) or `null` when the flag is absent. A bare
- * `--gh-token` (value `true`) reads `$GH_TOKEN`, then `$GITHUB_TOKEN`, so the
- * secret stays out of argv / shell history; a string value is used verbatim
- * (trimmed). Throws when a token was requested but none could be resolved.
- * Used by `agent init` to resolve the flag before persisting it to state.
+ * Resolve a GitHub token from `agent auth --provider gh-token`: a bare request
+ * (`true`) reads `$GH_TOKEN`, then `$GITHUB_TOKEN`, so the secret stays out of argv
+ * / shell history; a string value is used verbatim (trimmed); `undefined`/`false`
+ * => `null` (not requested). Throws when a token was requested but none resolved.
  */
-export function resolveGhToken(flag: string | boolean | undefined): string | null {
-  // undefined = flag absent; false should never come from Commander for an
-  // optional-value option, but treat it as absence rather than the token "false".
+export function tokenFromSetFlag(flag: string | boolean | undefined): string | null {
+  // undefined/false = not requested (false should never come from a boolean flag,
+  // but treat it as absence rather than the literal token "false").
   if (flag === undefined || flag === false) return null;
   if (flag === true) {
     const fromEnv = process.env.GH_TOKEN?.trim() || process.env.GITHUB_TOKEN?.trim();
     if (fromEnv) return fromEnv;
-    throw new Error(
-      "--gh-token was given with no value and neither GH_TOKEN nor GITHUB_TOKEN is set",
-    );
+    throw new Error("no GitHub token found: neither GH_TOKEN nor GITHUB_TOKEN is set");
   }
   const token = flag.trim();
-  if (token === "") throw new Error("--gh-token was given an empty value");
+  if (token === "") throw new Error("the provided GitHub token is empty");
   return token;
 }
 
@@ -388,9 +387,7 @@ export function probeDirectWorks(
     );
     return false;
   } catch (e) {
-    logger.log(
-      `    • the Direct probe errored (${e instanceof Error ? e.message : String(e)}) → using the local proxy`,
-    );
+    logger.log(`    • the Direct probe errored (${errMessage(e)}) → using the local proxy`);
     return false;
   } finally {
     if (tmpHome !== null) {

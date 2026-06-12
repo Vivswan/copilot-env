@@ -1,31 +1,29 @@
-// Minimal dotted-numeric version comparison shared by the proxy float and the
-// `start` floor check. Not a full semver implementation — the proxy ships plain
-// `x.y.z` releases and we only need floor/ceiling ordering tests.
+// Version-ordering helpers shared by the proxy float, the `start` floor check, and
+// the update/migration machinery. Backed by the `semver` package for correct
+// precedence (prerelease identifiers, build metadata) with tolerant parsing so a
+// ragged (`1.2`) or `v`-prefixed input never throws.
+import * as semver from "semver";
 
 /**
- * True if dotted-numeric version `a` is lower than `b` (e.g. 1.10.13 < 1.10.30).
- * Compares numeric cores segment by segment; on equal cores, a prerelease
- * (`x.y.z-...`) ranks below the plain release (build metadata after `+` is
- * ignored, per semver). Not a full prerelease-identifier ordering — sufficient
- * because the proxy ships plain releases and we only need floor/ceiling tests.
+ * Parse to a comparable SemVer, tolerating a leading `v`, prerelease/build, and
+ * partial cores (`1.2` → `1.2.0`). `parse` keeps prerelease identifiers; `coerce`
+ * is the fallback for partial inputs. Returns null only for un-version-like text.
+ */
+function toSemver(v: string): semver.SemVer | null {
+  return semver.parse(v.trim(), { loose: true }) ?? semver.coerce(v);
+}
+
+/**
+ * True if version `a` is lower than `b` (e.g. 1.10.13 < 1.10.30), by SemVer
+ * precedence: numeric cores compared field by field, a prerelease ranks below its
+ * plain release, build metadata is ignored. Un-parseable input is treated as not
+ * less-than (no throw) — in practice only well-formed `x.y.z` values reach here.
  */
 export function versionLessThan(a: string, b: string): boolean {
-  const core = (v: string): number[] =>
-    (v.split(/[-+]/)[0] ?? v).split(".").map((n) => Number.parseInt(n, 10) || 0);
-  const isPrerelease = (v: string): boolean => (v.split("+")[0] ?? v).includes("-");
-  const pa = core(a);
-  const pb = core(b);
-  const len = Math.max(pa.length, pb.length);
-  for (let i = 0; i < len; i++) {
-    const da = pa[i] ?? 0;
-    const db = pb[i] ?? 0;
-    if (da !== db) return da < db;
-  }
-  // Equal numeric cores: a prerelease ranks below a plain release.
-  const preA = isPrerelease(a);
-  const preB = isPrerelease(b);
-  if (preA !== preB) return preA;
-  return false;
+  const sa = toSemver(a);
+  const sb = toSemver(b);
+  if (sa === null || sb === null) return false;
+  return semver.lt(sa, sb);
 }
 
 /** Drop a leading `v` from a tag/version (e.g. `v1.2.3` -> `1.2.3`). */

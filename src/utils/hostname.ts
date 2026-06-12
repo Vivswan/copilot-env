@@ -3,7 +3,7 @@ import os from "node:os";
 
 export const HOME: string = process.env.HOME || os.homedir();
 
-export function normalizeHostnameValue(hostnameValue: string): string {
+function normalizeHostnameValue(hostnameValue: string): string {
   hostnameValue = hostnameValue.replace(/[^A-Za-z0-9._-]/g, "-");
 
   while (hostnameValue) {

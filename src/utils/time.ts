@@ -15,7 +15,7 @@ export function sleepSync(ms: number): void {
 
 /**
  * Throw if `days` is set but not a non-negative whole number — the shared
- * post-coercion `--cooldown` guard for `agent update` and `agent setup-clis`.
+ * post-coercion `--cooldown` guard for `agent update` and `agent shell --clis`.
  * (cli.ts validates the raw string at Commander-coercion time; this guards the
  * already-parsed number.) `flag` names the option in the message.
  */

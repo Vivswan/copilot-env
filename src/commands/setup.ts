@@ -46,7 +46,7 @@ export interface ShellArgs {
   /** With `clis`: verify prerequisites/CLIs only — install nothing. */
   noPrereqs?: boolean;
   /** Windows only: target the CurrentUserAllHosts profile. */
-  "all-hosts"?: boolean;
+  allHosts?: boolean;
 }
 
 /** Options for installing the optional agent CLIs (the `agent shell --clis` path). */
@@ -136,7 +136,7 @@ function installNodePosix(): void {
 function installNodeWindows(): void {
   if (!commandExists("winget")) {
     throw new Error(
-      "Cannot install Node.js because winget is unavailable. Install Node.js LTS and rerun 'agent setup-clis'.",
+      "Cannot install Node.js because winget is unavailable. Install Node.js LTS and rerun 'agent shell --clis'.",
     );
   }
   consola.info("Installing Node.js LTS and npm ...");
@@ -165,7 +165,7 @@ function ensureNpm(options: InstallClisOptions): boolean {
 
   if (process.platform === "win32" && options.noSudo) {
     consola.warn(
-      "Node.js/npm are not installed; --no-sudo will not use winget. Install Node.js yourself, then rerun 'agent setup-clis'.",
+      "Node.js/npm are not installed; --no-sudo will not use winget. Install Node.js yourself, then rerun 'agent shell --clis'.",
     );
     return false;
   }
@@ -288,7 +288,7 @@ export function runShell(args: ShellArgs): void {
   const cooldown = args.cooldown ?? null;
   const noSudo = Boolean(args.noSudo);
   const noPrereqs = Boolean(args.noPrereqs);
-  const allHosts = Boolean(args["all-hosts"]);
+  const allHosts = Boolean(args.allHosts);
 
   // Validate the install flags before touching anything.
   if (!clis && (cooldown !== null || noSudo || noPrereqs)) {
@@ -310,11 +310,9 @@ export function runShell(args: ShellArgs): void {
     // --launchers scopes the removal to just the launchers block; otherwise the
     // whole integration block (which also strips launchers) is removed.
     runShellIntegration(
-      launchers
-        ? { "all-hosts": allHosts, removeLaunchers: true }
-        : { "all-hosts": allHosts, remove: true },
+      launchers ? { allHosts, removeLaunchers: true } : { allHosts, remove: true },
     );
     return;
   }
-  runShellIntegration({ "all-hosts": allHosts, launchers });
+  runShellIntegration({ allHosts, launchers });
 }

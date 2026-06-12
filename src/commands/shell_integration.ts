@@ -23,7 +23,7 @@ const ALL_MARKERS = [MARKER, LAUNCHERS_MARKER];
 export interface ShellIntegrationArgs {
   remove?: boolean;
   removeLaunchers?: boolean;
-  "all-hosts"?: boolean;
+  allHosts?: boolean;
   launchers?: boolean;
   existingOnly?: boolean;
 }
@@ -38,14 +38,14 @@ export function runShellIntegration(args: ShellIntegrationArgs): void {
 
   if (remove) {
     const removed = removeFrom(
-      windows ? windowsProfilePaths(Boolean(args["all-hosts"])) : rcFiles(true),
+      windows ? windowsProfilePaths(Boolean(args.allHosts)) : rcFiles(true),
     );
     if (removed) consola.info(windows ? "Restart PowerShell." : "Restart your shell.");
     return;
   }
   if (removeLaunchers) {
     const removed = removeLaunchersFrom(
-      windows ? windowsProfilePaths(Boolean(args["all-hosts"])) : rcFiles(true),
+      windows ? windowsProfilePaths(Boolean(args.allHosts)) : rcFiles(true),
     );
     if (removed) consola.info(windows ? "Restart PowerShell." : "Restart your shell.");
     return;
@@ -54,7 +54,7 @@ export function runShellIntegration(args: ShellIntegrationArgs): void {
   const existingOnly = Boolean(args.existingOnly);
   if (windows) {
     const wired = wireBlocks(
-      windowsProfilePaths(Boolean(args["all-hosts"])),
+      windowsProfilePaths(Boolean(args.allHosts)),
       windowsBlock(join(PROJECT_ROOT, "shell", "agents.ps1")),
       windowsLaunchersBlock(join(PROJECT_ROOT, "shell", "agents.launchers.ps1")),
       launchers,

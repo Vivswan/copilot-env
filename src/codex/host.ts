@@ -3,8 +3,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execaSync } from "execa";
 import which from "which";
-import { readStoredGithubToken } from "../copilot_api/gh_token.ts";
-import { CopilotApiState } from "../copilot_api/state.ts";
+import { Credential } from "../copilot_api/credential.ts";
+import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { assertSingleMode, resolveDirectMode } from "../utils/direct_probe.ts";
 import { isFile } from "../utils/fs.ts";
 import { getSanitizedHostname, HOME } from "../utils/hostname.ts";
@@ -509,7 +509,7 @@ export function runCodexHost(args: CodexHostArgs): void {
   // future shells, so a cwd-relative value would later resolve against the wrong
   // directory.
   const codexHome = path.resolve(getHostLocalCodexHome());
-  const state = new CopilotApiState();
+  const state = new CopilotEnvRunState();
   assertSingleMode(args);
 
   if (args.delete) {
@@ -525,14 +525,14 @@ export function runCodexHost(args: CodexHostArgs): void {
       `Failed to build the CODEX_HOME symlink farm at ${codexHome} (a filesystem operation under it or ~/.codex failed — check permissions and free space)`,
     );
   }
-  // --direct/--proxy force the mode; with no flag a token provisioned via
-  // `agent init --gh-token` (in the shared store) selects Direct, else probe.
-  const ghToken = readStoredGithubToken();
+  // --direct/--proxy force the mode; with no flag a configured credential
+  // (`agent auth`, resolved provider-aware) selects Direct, else probe.
+  const ghToken = new Credential().resolve();
   const direct = resolveDirectMode(args, ghToken, detectCodexDirect);
   logger.info(
     `Configuring the per-host Codex home for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} ...`,
   );
-  applyCodexConfig(codexHome, { proxy: !direct }, direct ? ghToken : null);
+  applyCodexConfig(codexHome, { proxy: !direct });
   // Persist the active CODEX_HOME (opt-in: only set because a codex command ran).
   state.set({ codexHome });
 }

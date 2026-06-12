@@ -9,7 +9,8 @@
 // only for the forms it cannot parse: the `[1m]` suffix, reasoning-effort
 // qualifiers, and the friendly `opus` / `sonnet` / `haiku` shorthands.
 
-const ONE_M_SUFFIX = "[1m]";
+/** The display-only 1M-context suffix on catalog ids (single source of truth). */
+export const ONE_M_SUFFIX = "[1m]";
 
 /** A catalog entry, with the display-only `[1m]` suffix stripped from `id`. */
 export interface CatalogModel {

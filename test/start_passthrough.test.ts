@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import {
   COPILOT_API_OAUTH_APP_ENV,
   isPatToken,
+  OPENCODE_PASSTHROUGH,
   passthroughOauthApp,
 } from "../src/commands/start.ts";
 
@@ -23,11 +24,15 @@ test("isPatToken: ghp_/github_pat_ are PATs; gho_/ghu_/ghs_/empty are not", () =
 // --- passthroughOauthApp -----------------------------------------------------
 
 const NO_ENV = {} as NodeJS.ProcessEnv;
-const ENV_SET = { [COPILOT_API_OAUTH_APP_ENV]: "opencode" } as NodeJS.ProcessEnv;
+const ENV_SET = { [COPILOT_API_OAUTH_APP_ENV]: OPENCODE_PASSTHROUGH } as NodeJS.ProcessEnv;
 
 test("passthroughOauthApp: --passthrough forces opencode regardless of token/env", () => {
-  expect(passthroughOauthApp({ force: true, token: "gho_x", env: NO_ENV })).toBe("opencode");
-  expect(passthroughOauthApp({ force: true, token: undefined, env: ENV_SET })).toBe("opencode");
+  expect(passthroughOauthApp({ force: true, token: "gho_x", env: NO_ENV })).toBe(
+    OPENCODE_PASSTHROUGH,
+  );
+  expect(passthroughOauthApp({ force: true, token: undefined, env: ENV_SET })).toBe(
+    OPENCODE_PASSTHROUGH,
+  );
 });
 
 test("passthroughOauthApp: --no-passthrough forces the editor exchange (empty string)", () => {
@@ -41,9 +46,11 @@ test("passthroughOauthApp: auto — env set is honored (inherit), so pass nothin
 });
 
 test("passthroughOauthApp: auto — PAT enables passthrough, other tokens do not", () => {
-  expect(passthroughOauthApp({ force: undefined, token: "ghp_pat", env: NO_ENV })).toBe("opencode");
+  expect(passthroughOauthApp({ force: undefined, token: "ghp_pat", env: NO_ENV })).toBe(
+    OPENCODE_PASSTHROUGH,
+  );
   expect(passthroughOauthApp({ force: undefined, token: "github_pat_x", env: NO_ENV })).toBe(
-    "opencode",
+    OPENCODE_PASSTHROUGH,
   );
   expect(passthroughOauthApp({ force: undefined, token: "gho_oauth", env: NO_ENV })).toBeNull();
   expect(passthroughOauthApp({ force: undefined, token: undefined, env: NO_ENV })).toBeNull();

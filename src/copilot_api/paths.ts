@@ -23,6 +23,12 @@ export class CopilotApiPaths {
   stateFile: string;
   logFile: string;
   sqliteDb: string;
+  /**
+   * Shared (NOT per-host) copilot-env state under the copilot-api home — holds
+   * the provisioned GitHub token, which is account/machine-wide regardless of
+   * host. Lives beside config.json, never inside `.run/<host>/`.
+   */
+  sharedStateFile: string;
 
   constructor() {
     this.home = resolveHome();
@@ -35,5 +41,6 @@ export class CopilotApiPaths {
     this.stateFile = join(runDir, ".state.json");
     this.logFile = join(runDir, ".log");
     this.sqliteDb = join(runDir, "copilot-api.sqlite");
+    this.sharedStateFile = join(this.home, ".copilot-env-state.json");
   }
 }

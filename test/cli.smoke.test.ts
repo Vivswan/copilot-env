@@ -46,7 +46,7 @@ test("`cli.ts --help` loads the CLI and exits 0", () => {
 
   expect(proc.exitCode).toBe(0);
   expect(output).toContain("start");
-  expect(output).toContain("setup-shell");
+  expect(output).toContain("shell");
   // `init` is the headline command and appears first in the COMMANDS list.
   expect(output).toContain("init");
   expect(output.indexOf("init")).toBeLessThan(output.indexOf("start"));
@@ -55,7 +55,7 @@ test("`cli.ts --help` loads the CLI and exits 0", () => {
   expect(output).toContain("--version");
 });
 
-for (const args of [["setup-shell"], ["setup-clis"], ["setup-launchers"]] as const) {
+for (const args of [["shell"]] as const) {
   test(`cli.ts ${args.join(" ")} --help loads command help and exits 0`, () => {
     const proc = Bun.spawnSync(["bun", "src/cli.ts", ...args, "--help"], {
       stdout: "pipe",
@@ -81,7 +81,6 @@ for (const args of [["codex"], ["claude"]] as const) {
     expect(proc.exitCode).toBe(0);
     expect(output).toContain("--proxy");
     expect(output).toContain("--direct");
-    expect(output).toContain("--auto");
   });
 }
 
@@ -174,9 +173,7 @@ test("codex exposes and runs check mode", () => {
     env: isolatedEnv({ CODEX_HOME: codexHome, COPILOT_API_PORT_DEFAULT: "4199" }),
   });
   expect(conflicting.exitCode).toBe(1);
-  expect(conflicting.stderr.toString()).toContain(
-    "--direct, --proxy, and --auto are mutually exclusive",
-  );
+  expect(conflicting.stderr.toString()).toContain("--direct and --proxy are mutually exclusive");
 });
 
 test("claude exposes and runs check mode", () => {
@@ -210,10 +207,10 @@ test("claude exposes and runs check mode", () => {
   expect(help.stdout.toString() + help.stderr.toString()).toContain("--check");
 
   const runCheck = (home: string) =>
-    Bun.spawnSync(["bun", "src/cli.ts", "claude", "--check", "--claude-home", home], {
+    Bun.spawnSync(["bun", "src/cli.ts", "claude", "--check"], {
       stdout: "pipe",
       stderr: "pipe",
-      env: isolatedEnv(),
+      env: isolatedEnv({ CLAUDE_CONFIG_DIR: home }),
     });
 
   const direct = runCheck(directHome);
@@ -234,14 +231,13 @@ test("claude exposes and runs check mode", () => {
   expect(other.exitCode).toBe(1);
   expect(other.stdout.toString()).toContain("Claude provider mode: other");
 
-  const conflicting = Bun.spawnSync(
-    ["bun", "src/cli.ts", "claude", "--proxy", "--direct", "--claude-home", proxyHome],
-    { stdout: "pipe", stderr: "pipe", env: isolatedEnv() },
-  );
+  const conflicting = Bun.spawnSync(["bun", "src/cli.ts", "claude", "--proxy", "--direct"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: isolatedEnv({ CLAUDE_CONFIG_DIR: proxyHome }),
+  });
   expect(conflicting.exitCode).toBe(1);
-  expect(conflicting.stderr.toString()).toContain(
-    "--direct, --proxy, and --auto are mutually exclusive",
-  );
+  expect(conflicting.stderr.toString()).toContain("--direct and --proxy are mutually exclusive");
 });
 
 test("init configures both agents and rejects --direct + --proxy", () => {
@@ -301,53 +297,107 @@ test("codex --mobile refuses to run (non-TTY, or unsupported platform)", () => {
   }
 });
 
-test("the launcher flag lives on setup-clis, not setup-shell", () => {
-  const shell = Bun.spawnSync(["bun", "src/cli.ts", "setup-shell", "--help"], {
+test("the launcher / CLI-install flags live on shell, not init", () => {
+  const shell = Bun.spawnSync(["bun", "src/cli.ts", "shell", "--help"], {
     stdout: "pipe",
     stderr: "pipe",
     env: { ...process.env, CONSOLA_LEVEL: "5" },
   });
-  const clis = Bun.spawnSync(["bun", "src/cli.ts", "setup-clis", "--help"], {
+  const init = Bun.spawnSync(["bun", "src/cli.ts", "init", "--help"], {
     stdout: "pipe",
     stderr: "pipe",
     env: { ...process.env, CONSOLA_LEVEL: "5" },
   });
-
   expect(shell.exitCode).toBe(0);
-  expect(clis.exitCode).toBe(0);
-  expect(shell.stdout.toString() + shell.stderr.toString()).not.toContain("--launchers");
-  expect(clis.stdout.toString() + clis.stderr.toString()).toContain("--launchers");
+  expect(init.exitCode).toBe(0);
+  const shellOut = shell.stdout.toString() + shell.stderr.toString();
+  const initOut = init.stdout.toString() + init.stderr.toString();
+  for (const flag of ["--launchers", "--clis"]) {
+    expect(shellOut).toContain(flag);
+    expect(initOut).not.toContain(flag);
+  }
+  // init keeps the agent-config flags; shell does not configure agents.
+  expect(initOut).toContain("--gh-token");
+  expect(shellOut).not.toContain("--gh-token");
 });
 
-test("setup-clis cooldown is one optional-valued flag", () => {
-  const help = Bun.spawnSync(["bun", "src/cli.ts", "setup-clis", "--help"], {
+test("shell --help surfaces the install/launcher flags", () => {
+  const help = Bun.spawnSync(["bun", "src/cli.ts", "shell", "--help"], {
     stdout: "pipe",
     stderr: "pipe",
     env: { ...process.env, CONSOLA_LEVEL: "5" },
   });
   const helpOutput = help.stdout.toString() + help.stderr.toString();
   expect(help.exitCode).toBe(0);
-  expect(helpOutput).toContain("--cooldown");
+  for (const flag of [
+    "--launchers",
+    "--clis",
+    "--cooldown",
+    "--no-sudo",
+    "--no-prereqs",
+    "--remove",
+  ]) {
+    expect(helpOutput).toContain(flag);
+  }
+});
 
+test("shell --clis --no-prereqs: optional-valued --cooldown parses, no install", () => {
+  // --no-prereqs => verify only (no npm install). Isolate HOME so the integration
+  // wiring it does touches a throwaway rc, never the real one.
   for (const args of [["--cooldown"], ["--cooldown=0"], ["--cooldown", "14"]] as const) {
-    const proc = Bun.spawnSync(["bun", "src/cli.ts", "setup-clis", ...args, "--no-prereqs"], {
+    const root = mkdtempSync(join(tmpdir(), "copilot-shell-clis-"));
+    const proc = Bun.spawnSync(["bun", "src/cli.ts", "shell", "--clis", "--no-prereqs", ...args], {
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env, CONSOLA_LEVEL: "5" },
+      env: isolatedEnv({ HOME: root, SHELL: "/bin/bash" }),
     });
     expect(proc.exitCode).toBe(0);
   }
 }, 20_000);
 
-test("setup-clis supports no-sudo", () => {
-  const help = Bun.spawnSync(["bun", "src/cli.ts", "setup-clis", "--help"], {
+test("the merged commands are gone; --gh-token is off the per-agent commands", () => {
+  const rootHelp = Bun.spawnSync(["bun", "src/cli.ts", "--help"], {
     stdout: "pipe",
     stderr: "pipe",
     env: { ...process.env, CONSOLA_LEVEL: "5" },
   });
-  const helpOutput = help.stdout.toString() + help.stderr.toString();
-  expect(help.exitCode).toBe(0);
-  expect(helpOutput).toContain("--no-sudo");
+  const rootOut = rootHelp.stdout.toString() + rootHelp.stderr.toString();
+  // setup-clis / setup-shell / setup-launchers were folded into init/shell.
+  for (const stale of ["setup-clis", "setup-shell", "setup-launchers"]) {
+    expect(rootOut).not.toContain(stale);
+    const gone = Bun.spawnSync(["bun", "src/cli.ts", stale], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, CONSOLA_LEVEL: "5" },
+    });
+    expect(gone.exitCode).not.toBe(0);
+    expect(gone.stderr.toString()).toContain("unknown command");
+  }
+
+  // --gh-token now lives only on init, not on codex/claude.
+  for (const cmd of ["codex", "claude"] as const) {
+    const help = Bun.spawnSync(["bun", "src/cli.ts", cmd, "--help"], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, CONSOLA_LEVEL: "5" },
+    });
+    expect(help.exitCode).toBe(0);
+    expect(help.stdout.toString() + help.stderr.toString()).not.toContain("--gh-token");
+  }
+});
+
+test("--full-help prints the overview plus every subcommand's help", () => {
+  const proc = Bun.spawnSync(["bun", "src/cli.ts", "--full-help"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, CONSOLA_LEVEL: "5" },
+  });
+  expect(proc.exitCode).toBe(0);
+  const out = proc.stdout.toString();
+  // Top-level overview + a sampling of subcommand help sections.
+  for (const needle of ["agent init", "agent shell", "agent start", "agent codex", "--clis"]) {
+    expect(out).toContain(needle);
+  }
 });
 
 test("health --help surfaces --scope and --json", () => {

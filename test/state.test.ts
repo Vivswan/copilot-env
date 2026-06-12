@@ -3,46 +3,56 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { CopilotApiState } from "../src/copilot_api/state.ts";
+import {
+  clearGithubToken,
+  readStoredGithubToken,
+  storeGithubToken,
+} from "../src/copilot_api/gh_token.ts";
 
+// gh_token reads/writes the SHARED store under COPILOT_API_HOME, so isolate each
+// test in a temp home (not the per-host .run state).
+const SAVED_HOME = process.env.COPILOT_API_HOME;
 let dir = "";
 
 afterEach(() => {
+  if (SAVED_HOME === undefined) delete process.env.COPILOT_API_HOME;
+  else process.env.COPILOT_API_HOME = SAVED_HOME;
   if (dir) {
     rmSync(dir, { recursive: true, force: true });
     dir = "";
   }
 });
 
-function tmpState(): CopilotApiState {
-  dir = mkdtempSync(join(tmpdir(), "copilot-state-"));
-  return new CopilotApiState(join(dir, ".state.json"));
+function tmpHome(): void {
+  dir = mkdtempSync(join(tmpdir(), "copilot-ghtoken-"));
+  process.env.COPILOT_API_HOME = dir;
 }
 
-test("githubToken round-trips, merges alongside pid/port, and clears on null", () => {
-  const state = tmpState();
+test("the provisioned GitHub token round-trips through the shared store and clears", () => {
+  tmpHome();
+  expect(readStoredGithubToken()).toBeNull();
 
-  // Stored by `--gh-token` and read back by `start`.
-  state.set({ githubToken: "ghu_provisioned" });
-  expect(state.read().githubToken).toBe("ghu_provisioned");
+  // Written by `agent init --gh-token`, read by every config write + `agent start`.
+  storeGithubToken("ghu_provisioned");
+  expect(readStoredGithubToken()).toBe("ghu_provisioned");
 
-  // A pid/port write (what start does) must NOT drop the token — set() merges.
-  state.set({ pid: 1234, port: 4141 });
-  const after = state.read();
-  expect(after.githubToken).toBe("ghu_provisioned");
-  expect(after.pid).toBe(1234);
-  expect(after.port).toBe(4141);
-
-  // `--remove-gh-token` clears just the token, leaving pid/port intact.
-  state.set({ githubToken: null });
-  const cleared = state.read();
-  expect(cleared.githubToken).toBeUndefined();
-  expect(cleared.pid).toBe(1234);
-  expect(cleared.port).toBe(4141);
+  // `--remove-gh-token` clears it (revert to the gh CLI / proxy device login).
+  clearGithubToken();
+  expect(readStoredGithubToken()).toBeNull();
 });
 
-test("an empty-string or non-string githubToken reads back as undefined", () => {
-  const state = tmpState();
-  state.set({ githubToken: "" });
-  expect(state.read().githubToken).toBeUndefined();
+test("storeGithubToken trims; a blank/whitespace value reads back as null", () => {
+  tmpHome();
+  storeGithubToken("  ghu_trimmed  ");
+  expect(readStoredGithubToken()).toBe("ghu_trimmed");
+
+  storeGithubToken("   ");
+  expect(readStoredGithubToken()).toBeNull();
+});
+
+test("the token lives in the shared home, independent of per-host .run state", () => {
+  tmpHome();
+  storeGithubToken("ghu_shared");
+  // Stored beside config.json at the home root, not under .run/<host>/.
+  expect(readStoredGithubToken()).toBe("ghu_shared");
 });

@@ -21,7 +21,7 @@ import { runCodexMobile } from "./codex/mobile.ts";
 import { runEnv } from "./commands/env.ts";
 import { runHealth } from "./commands/health.ts";
 import { runInit } from "./commands/init.ts";
-import { runSetupClis, runSetupLaunchers, runSetupShell } from "./commands/setup.ts";
+import { runShell } from "./commands/setup.ts";
 import { runStart } from "./commands/start.ts";
 import { runStop } from "./commands/stop.ts";
 import { runUpdate } from "./commands/update.ts";
@@ -100,7 +100,22 @@ program
   .name("agent")
   .description("Manage the local proxy and wire Codex + Claude.")
   .version(packageVersion(), "--version", "Print the version and exit.")
-  .helpOption("--help", "Show this help.");
+  .helpOption("--help", "Show this help.")
+  .option("--full-help", "Print help for `agent` and every subcommand, then exit.");
+
+// `agent --full-help`: dump the top-level help plus each subcommand's help in one
+// shot. The option:full-help listener fires during parse — before any "missing
+// command" handling — so it works with no subcommand.
+program.on("option:full-help", () => {
+  const sep = "─".repeat(72);
+  const parts = [program.helpInformation()];
+  for (const cmd of program.commands) {
+    if (cmd.name() === "help") continue;
+    parts.push(`${sep}\nagent ${cmd.name()}\n${sep}\n${cmd.helpInformation()}`);
+  }
+  process.stdout.write(parts.join("\n"));
+  process.exit(0);
+});
 
 // Tint Commander's native help to match the `agent health` report: bold section
 // titles, cyan command/option names, gray descriptions. The ansi.ts helpers
@@ -120,18 +135,18 @@ program.configureHelp({
 program
   .command("init")
   .description("Set up both Codex and Claude (auto-detect GitHub Copilot Direct vs the proxy).")
-  .option("--direct", "Force both agents to GitHub Copilot Direct (no probe).")
-  .option("--proxy", "Force both agents to the local proxy (no probe).")
+  .option("--direct", "Force both agents to GitHub Copilot Direct (no auto-detect probe).")
+  .option("--proxy", "Force both agents to the local copilot-api proxy (no auto-detect probe).")
   .option(
     "--gh-token [token]",
-    "Provision this GitHub token (baked into Direct configs + stored for the proxy) so no `gh` " +
-      "login is needed. Bare flag reads $GH_TOKEN/$GITHUB_TOKEN. Implies Direct; the token must " +
-      "be a Copilot-enabled GitHub token (a generic PAT won't work).",
+    "Provision this GitHub token (stored in state; used for Direct + the proxy) so no `gh` login " +
+      "is needed. Bare flag reads $GH_TOKEN/$GITHUB_TOKEN. Implies Direct; the token must be a " +
+      "Copilot-enabled GitHub token (a generic PAT won't work).",
   )
   .option(
     "--remove-gh-token",
-    "Revert a prior --gh-token: reconfigure both agents to gh Direct (scrubbing the baked token) " +
-      "and clear the stored proxy token, so everything uses the gh CLI / proxy login again.",
+    "Revert a prior --gh-token: reconfigure both agents to gh Direct and clear the stored token, " +
+      "so everything uses the gh CLI / proxy login again.",
   )
   .action((opts: Opts) =>
     runSafe(() =>
@@ -215,47 +230,24 @@ program
 
 program
   .command("codex")
-  .description("Configure Codex: GitHub Copilot Direct, the local proxy, or auto-detect.")
-  .option(
-    "--codex-home <path>",
-    "CODEX_HOME path to operate on. Default: ~/.codex (%USERPROFILE%\\.codex on Windows).",
+  .description(
+    "Configure Codex: GitHub Copilot Direct or the local proxy (auto-detects with no flag).",
   )
-  .option("--proxy", "Force the local proxy (no probe).")
-  .option("--direct", "Force GitHub Copilot Direct (no probe).")
-  .option(
-    "--auto",
-    "Auto-detect: write direct when a live read-only Copilot Direct probe succeeds, else the proxy.",
-  )
-  .option(
-    "--gh-token [token]",
-    "Direct mode: authenticate with this GitHub token (written to .env) instead of the gh CLI. " +
-      "Bare flag reads $GH_TOKEN/$GITHUB_TOKEN. Implies --direct.",
-  )
+  .option("--direct", "Force GitHub Copilot Direct (no auto-detect probe).")
+  .option("--proxy", "Force the local copilot-api proxy (no auto-detect probe).")
   .option(
     "--check",
-    "Report the configured Codex provider without changing config or probing: exit 0 direct, 2 proxy, 1 other.",
+    "Report the configured provider and exit — no changes, no probe (0 direct, 2 proxy, 1 other).",
   )
   .option("--host", "(Linux/macOS) Build the per-host CODEX_HOME symlink farm and wire its config.")
-  .option(
-    "--delete-host",
-    "With --host: remove the per-host CODEX_HOME dir and stop exporting CODEX_HOME.",
-  )
-  .option(
-    "--mobile",
-    "Interactive: pair the Codex desktop app with its phone remote-control flow (toggles model_provider).",
-  )
+  .option("--delete-host", "With --host: remove the per-host CODEX_HOME and stop exporting it.")
+  .option("--mobile", "Interactive: pair the Codex desktop app with its phone remote-control flow.")
   .action((opts: Opts) =>
     runSafe(() => {
-      const codexHome = opts.codexHome as string | undefined;
-      const common = {
-        "codex-home": codexHome,
-        direct: Boolean(opts.direct),
-        proxy: Boolean(opts.proxy),
-        auto: Boolean(opts.auto),
-      };
+      const common = { direct: Boolean(opts.direct), proxy: Boolean(opts.proxy) };
       // --mobile is its own interactive flow (toggles config around app pairing).
       if (opts.mobile) {
-        return runCodexMobile({ "codex-home": codexHome });
+        return runCodexMobile();
       }
       // --check is read-only: never build/delete the host farm or probe, even when
       // combined with --host/--delete-host. Route it to the check path first.
@@ -268,44 +260,28 @@ program
       if (opts.host || opts.deleteHost) {
         runCodexHost({ ...common, delete: Boolean(opts.deleteHost) });
       } else {
-        // --gh-token only applies to a plain (non-host) Direct configure.
-        runCodex({ ...common, "gh-token": opts.ghToken as string | boolean | undefined });
+        runCodex(common);
       }
     }),
   );
 
 program
   .command("claude")
-  .description("Configure Claude Code: GitHub Copilot Direct, the local proxy, or auto-detect.")
-  .option(
-    "--claude-home <path>",
-    "Claude home to operate on. Default: $CLAUDE_CONFIG_DIR, else ~/.claude " +
-      "(%USERPROFILE%\\.claude on Windows).",
+  .description(
+    "Configure Claude Code: GitHub Copilot Direct or the local proxy (auto-detects with no flag).",
   )
-  .option("--proxy", "Force the local proxy (no probe).")
-  .option("--direct", "Force GitHub Copilot Direct (no probe).")
-  .option(
-    "--auto",
-    "Auto-detect: write direct when a live `claude -p` Copilot Direct probe succeeds, else the proxy.",
-  )
-  .option(
-    "--gh-token [token]",
-    "Direct mode: authenticate with this GitHub token (baked into the apiKeyHelper) instead of the " +
-      "gh CLI. Bare flag reads $GH_TOKEN/$GITHUB_TOKEN. Implies --direct.",
-  )
+  .option("--direct", "Force GitHub Copilot Direct (no auto-detect probe).")
+  .option("--proxy", "Force the local copilot-api proxy (no auto-detect probe).")
   .option(
     "--check",
-    "Report the configured Claude provider without changing config or probing: exit 0 direct, 2 proxy, 1 other.",
+    "Report the configured provider and exit — no changes, no probe (0 direct, 2 proxy, 1 other).",
   )
   .action((opts: Opts) =>
     runSafe(() =>
       runClaude({
-        "claude-home": opts.claudeHome as string | undefined,
         check: Boolean(opts.check),
         direct: Boolean(opts.direct),
         proxy: Boolean(opts.proxy),
-        auto: Boolean(opts.auto),
-        "gh-token": opts.ghToken as string | boolean | undefined,
       }),
     ),
   );
@@ -315,7 +291,7 @@ program
   .description("Update the copilot-env checkout to the latest GitHub release.")
   .option(
     "--check",
-    "Only report status, make no changes. Exit 0 = up to date, 1 = update available, 2 = no release resolved.",
+    "Report update status and exit — no changes (0 up to date, 1 update available, 2 no release resolved).",
   )
   .option(
     "--cooldown [days]",
@@ -331,7 +307,10 @@ program
     "Enable autoupdate: once a day, adopt the newest release aged >= cooldown (default 7) days, and apply once now.",
   )
   .option("--no-auto", "Disable autoupdate.")
-  .option("--auto-status", "Print autoupdate status (enabled, cooldown, last check, last result).")
+  .option(
+    "--auto-status",
+    "Report autoupdate status and exit (enabled, cooldown, last check, last result).",
+  )
   .action((opts: Opts) =>
     runSafe(() =>
       runUpdate({
@@ -346,53 +325,38 @@ program
   );
 
 program
-  .command("setup-shell")
-  .description("Wire the copilot-env shell integration into your rc files / PowerShell $PROFILE.")
-  .option("--remove", "Remove the integration instead of adding it.")
-  .option("--all-hosts", "Windows only: target the CurrentUserAllHosts profile.")
-  .action((opts: Opts) =>
-    runSafe(() =>
-      runSetupShell({ remove: Boolean(opts.remove), "all-hosts": Boolean(opts.allHosts) }),
-    ),
-  );
-
-program
-  .command("setup-launchers")
-  .description("Wire or remove the opt-in cl / co / cx launchers.")
-  .option("--remove", "Remove only the launcher block.")
-  .option("--all-hosts", "Windows only: target the CurrentUserAllHosts profile.")
-  .action((opts: Opts) =>
-    runSafe(() =>
-      runSetupLaunchers({ remove: Boolean(opts.remove), "all-hosts": Boolean(opts.allHosts) }),
-    ),
-  );
-
-program
-  .command("setup-clis")
-  .description("Install or verify the optional claude / copilot / codex agent CLIs.")
+  .command("shell")
+  .description(
+    "Set up the shell environment: wire the copilot-env integration (rc / PowerShell $PROFILE), " +
+      "optionally the cl / co / cx launchers and the optional agent CLIs.",
+  )
+  .option("--clis", "Also install the optional claude / copilot / codex agent CLIs.")
   .option(
     "--cooldown [days]",
-    "Install the newest agent-CLI npm releases aged >= DAYS. Bare --cooldown uses 7 days.",
+    "With --clis: install the newest agent-CLI npm releases aged >= DAYS. Bare --cooldown uses 7 days.",
     coerceDays,
   )
-  .option("--no-sudo", "Avoid sudo/system package managers; use only user-local tooling.")
-  .option("--launchers", "Also wire the opt-in cl / co / cx launchers after CLI setup.")
-  .option("--all-hosts", "Windows only: with --launchers, target the CurrentUserAllHosts profile.")
-  .option("--no-prereqs", "Verify prerequisites and CLIs only; install nothing.")
   .option(
-    "--gh-token [token]",
-    "Configure both agents for Direct with this GitHub token (baked + seeded for the proxy) — no " +
-      "`gh` login needed. Bare flag reads $GH_TOKEN/$GITHUB_TOKEN.",
+    "--no-sudo",
+    "With --clis: avoid sudo/system package managers; use only user-local tooling.",
+  )
+  .option("--no-prereqs", "With --clis: verify prerequisites and CLIs only; install nothing.")
+  .option("--launchers", "Also wire the opt-in cl / co / cx launchers.")
+  .option("--all-hosts", "Windows only: target the CurrentUserAllHosts profile.")
+  .option(
+    "--remove",
+    "Unwire the integration (and launchers); with --launchers, remove only the launcher block.",
   )
   .action((opts: Opts) =>
     runSafe(() =>
-      runSetupClis({
-        "all-hosts": Boolean(opts.allHosts),
-        cooldown: resolveCooldown(opts.cooldown, 7),
+      runShell({
+        remove: Boolean(opts.remove),
         launchers: Boolean(opts.launchers),
+        clis: Boolean(opts.clis),
+        cooldown: resolveCooldown(opts.cooldown, 7),
         noSudo: opts.sudo === false,
         noPrereqs: opts.prereqs === false,
-        "gh-token": opts.ghToken as string | boolean | undefined,
+        "all-hosts": Boolean(opts.allHosts),
       }),
     ),
   );

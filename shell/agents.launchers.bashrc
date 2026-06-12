@@ -40,14 +40,14 @@ function _copilot_ensure_server {
 # Error if an agent CLI is missing; installation is handled by install.sh.
 function _copilot_require_cli {
     command -v "$1" >/dev/null 2>&1 && return 0
-    echo "'$1' is not installed. Run 'agent setup-clis' to install the agent CLIs." >&2
+    echo "'$1' is not installed. Run 'agent shell --clis' to install the agent CLIs." >&2
     return 1
 }
 
 function cl {
     _copilot_require_cli claude || return 1
     # Read the configured Claude provider (no live probe — provider auto-detection
-    # is done once by `agent setup-clis`, not on every launch): exit 0 = direct
+    # is done once by `agent init`, not on every launch): exit 0 = direct
     # (Claude reads settings.json itself), 2 = proxy/default (ensure the proxy +
     # re-sync the port/token), else custom/error.
     if "${_COPILOT_AGENTS_DIR}/bin/agent" claude --check >/dev/null 2>&1; then
@@ -79,7 +79,7 @@ function co {
 function cx {
     _copilot_require_cli codex || return 1
     # Read the configured Codex provider (no live probe — provider auto-detection
-    # is done once by `agent setup-clis`, not on every launch): exit 0 = direct
+    # is done once by `agent init`, not on every launch): exit 0 = direct
     # (Codex reads its own config), 2 = proxy/default (ensure the proxy + re-sync
     # the port/token), else custom/error.
     if "${_COPILOT_AGENTS_DIR}/bin/agent" codex --check >/dev/null 2>&1; then

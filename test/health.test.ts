@@ -496,7 +496,7 @@ test("checkCodexLive/checkClaudeLive: ok responds, fail warns, missing skips", (
   expect(checkCodexLive({ ran: true, ok: true, cli: "/bin/codex" }).status).toBe("ok");
   const codexFail = checkCodexLive({ ran: true, ok: false, cli: "/bin/codex" });
   expect(codexFail.status).toBe("warn");
-  expect(codexFail.fix).toBe("agent codex --auto");
+  expect(codexFail.fix).toBe("agent codex");
   const codexSkip = checkCodexLive({ ran: false, ok: false, cli: null });
   expect(codexSkip.status).toBe("ok");
   expect(codexSkip.detail).toContain("skipped");
@@ -516,7 +516,7 @@ test("checkCodexLive/checkClaudeLive: ok responds, fail warns, missing skips", (
   expect(checkClaudeLive({ ran: true, ok: true, cli: "/bin/claude" }).status).toBe("ok");
   const claudeFail = checkClaudeLive({ ran: true, ok: false, cli: "/bin/claude" });
   expect(claudeFail.status).toBe("warn");
-  expect(claudeFail.fix).toBe("agent claude --auto");
+  expect(claudeFail.fix).toBe("agent claude");
   // Claude surfaces the full captured error too (symmetric with codex).
   const claudeFailWithDetail = checkClaudeLive({
     ran: true,

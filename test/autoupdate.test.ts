@@ -83,7 +83,7 @@ test("isDue is false under a day, true at/after a day", () => {
 
 test("shouldRunPreflight runs only for `start`", () => {
   expect(shouldRunPreflight("start")).toBe(true);
-  for (const a of ["env", "update", "stop", "health", "cost", "setup-shell", "-h", "", undefined]) {
+  for (const a of ["env", "update", "stop", "health", "cost", "shell", "-h", "", undefined]) {
     expect(shouldRunPreflight(a)).toBe(false);
   }
 });

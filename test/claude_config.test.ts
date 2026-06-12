@@ -11,6 +11,7 @@ import {
   inspectClaudeWiring,
   runClaude,
 } from "../src/claude/config.ts";
+import { storeGithubToken } from "../src/copilot_api/gh_token.ts";
 import { copilotApiResolvePort } from "../src/copilot_api/port.ts";
 
 const SAVED = {
@@ -35,12 +36,15 @@ afterEach(() => {
   }
 });
 
-// A temp Claude home, with an isolated proxy home so proxy writes (which
-// resolve the proxy endpoint/token) don't touch any real state.
+// A temp Claude home, exported via CLAUDE_CONFIG_DIR (the only home knob now),
+// with an isolated proxy home so proxy writes (which resolve the proxy
+// endpoint/token) don't touch any real state.
 function tmpHome(): string {
   dir = mkdtempSync(join(tmpdir(), "copilot-claude-"));
   process.env.COPILOT_API_HOME = join(dir, "proxy-home");
-  return join(dir, ".claude");
+  const claudeHome = join(dir, ".claude");
+  process.env.CLAUDE_CONFIG_DIR = claudeHome;
+  return claudeHome;
 }
 
 function readSettings(home: string): Record<string, unknown> {
@@ -139,24 +143,24 @@ test("runClaude --direct/--proxy round-trip cleans the other mode; mutual exclus
   const home = tmpHome();
   const read = () => inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home);
 
-  runClaude({ "claude-home": home, direct: true });
+  runClaude({ direct: true });
   expect(read().providerMode).toBe("direct");
   expect(
     (readSettings(home).env as Record<string, unknown>).CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS,
   ).toBe("1");
 
-  runClaude({ "claude-home": home, proxy: true });
+  runClaude({ proxy: true });
   expect(read().providerMode).toBe("proxy");
   // Switching to proxy drops the direct-only disable-betas knob.
   expect(
     (readSettings(home).env as Record<string, unknown>).CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS,
   ).toBeUndefined();
 
-  runClaude({ "claude-home": home, direct: true });
+  runClaude({ direct: true });
   expect(read().providerMode).toBe("direct");
 
-  expect(() => runClaude({ "claude-home": home, proxy: true, direct: true })).toThrow(
-    "--direct, --proxy, and --auto are mutually exclusive",
+  expect(() => runClaude({ proxy: true, direct: true })).toThrow(
+    "--direct and --proxy are mutually exclusive",
   );
 });
 
@@ -218,21 +222,19 @@ test("directHelperUsesToken: only the managed printf helper counts (gh / broken 
   expect(directHelperUsesToken(null)).toBe(false);
 });
 
-test("runClaude --gh-token forces direct and bakes the token; resolves a bare flag from the env", () => {
-  const home = tmpHome();
+test("runClaude bakes the stored GitHub token into Direct (no gh); --proxy ignores it for the bake", () => {
+  const home = tmpHome(); // also points COPILOT_API_HOME at an isolated dir
   const read = () => inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home);
 
-  runClaude({ "claude-home": home, "gh-token": "ghu_literal" });
+  // A token in the shared store selects Direct with NO probe and bakes it in.
+  storeGithubToken("ghu_stored");
+  runClaude({});
   expect(read().providerMode).toBe("direct");
-  expect(readFileSync(join(home, "copilot-token.sh"), "utf8")).toContain("ghu_literal");
+  const helper = readFileSync(join(home, "copilot-token.sh"), "utf8");
+  expect(helper).toContain("ghu_stored");
+  expect(helper).not.toContain("gh auth token");
 
-  // Bare flag reads GH_TOKEN.
-  process.env.GH_TOKEN = "ghu_fromenv";
-  runClaude({ "claude-home": home, "gh-token": true });
-  expect(readFileSync(join(home, "copilot-token.sh"), "utf8")).toContain("ghu_fromenv");
-
-  // A token cannot combine with --proxy.
-  expect(() => runClaude({ "claude-home": home, "gh-token": "x", proxy: true })).toThrow(
-    "cannot be combined with --proxy",
-  );
+  // --proxy still wins: proxy mode (the stored token is only used by the proxy).
+  runClaude({ proxy: true });
+  expect(read().providerMode).toBe("proxy");
 });

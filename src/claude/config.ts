@@ -18,14 +18,14 @@ import { homedir } from "node:os";
 import * as path from "node:path";
 
 import { CopilotApiConfig } from "../copilot_api/config.ts";
+import { readStoredGithubToken } from "../copilot_api/gh_token.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
 import {
   assertSingleMode,
   CLAUDE_PROBE,
   type DirectProbeDeps,
   probeDirectWorks,
-  resolveDirect,
-  resolveGhToken,
+  resolveDirectMode,
 } from "../utils/direct_probe.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -52,13 +52,9 @@ export type ClaudeProviderMode = "direct" | "proxy" | "other" | "none";
 export type ManagedClaudeMode = Extract<ClaudeProviderMode, "direct" | "proxy">;
 
 export interface ClaudeConfigArgs {
-  "claude-home"?: string;
   check?: boolean;
   direct?: boolean;
   proxy?: boolean;
-  auto?: boolean;
-  /** `--gh-token`: bake this GitHub token into the direct helper (implies direct). */
-  "gh-token"?: string | boolean;
 }
 
 export interface ClaudeWiringStatus {
@@ -75,12 +71,11 @@ export interface ClaudeWiringStatus {
 // --- paths ------------------------------------------------------------------
 
 /**
- * Resolve the effective Claude home: an explicit `--claude-home`, else
- * $CLAUDE_CONFIG_DIR (Claude Code's own override), else ~/.claude
- * (%USERPROFILE%\.claude on Windows).
+ * Resolve the effective Claude home: `$CLAUDE_CONFIG_DIR` (Claude Code's own
+ * override), else `~/.claude` (`%USERPROFILE%\.claude` on Windows). This is the
+ * single knob — there is no per-command override flag.
  */
-export function resolveClaudeHome(arg?: string | null): string {
-  if (arg) return arg;
+export function resolveClaudeHome(): string {
   if (process.env.CLAUDE_CONFIG_DIR) return process.env.CLAUDE_CONFIG_DIR;
   return path.join(process.env.HOME || homedir(), ".claude");
 }
@@ -309,8 +304,8 @@ function checkExitCode(mode: ClaudeProviderMode): 0 | 1 | 2 {
   return 2; // proxy or none — proxy (the default backend)
 }
 
-function checkClaudeConfig(args: Pick<ClaudeConfigArgs, "claude-home">): void {
-  const claudeHome = resolveClaudeHome(args["claude-home"]);
+function checkClaudeConfig(): void {
+  const claudeHome = resolveClaudeHome();
   const settingsPath = settingsPathFor(claudeHome);
   const status = inspectClaudeWiring(readTextOrNull(settingsPath), claudeHome);
   console.log(
@@ -340,31 +335,34 @@ export function detectClaudeDirect(deps?: DirectProbeDeps): boolean {
 }
 
 /**
- * `agent claude`: configure Claude Code's wiring at the effective Claude home.
- * `--direct` forces GitHub Copilot Direct, `--proxy` forces the local proxy,
- * and `--auto` (or no mode flag) AUTO-DETECTS — it writes direct wiring when a
- * live `claude -p` probe against Copilot Direct succeeds, else falls back to the
- * proxy. `--gh-token` bakes a GitHub token into the direct helper (implies
- * direct, no `gh` binary needed). `--check` reports the configured mode (exit 0
- * direct / 2 proxy|none / 1 other) without a probe.
+ * `agent claude`: configure Claude Code's wiring at the effective Claude home
+ * ($CLAUDE_CONFIG_DIR, else ~/.claude). `--direct` forces GitHub Copilot Direct,
+ * `--proxy` forces the local proxy, and with no mode flag it auto-detects (live
+ * `claude -p` probe, else the proxy). A GitHub token provisioned via `agent init
+ * --gh-token` (in the shared store) is used as the Direct credential
+ * automatically — and with no mode flag, its presence selects Direct without
+ * probing. `--check` reports the configured mode (exit 0 direct / 2 proxy|none /
+ * 1 other) without a probe.
  */
 export function runClaude(args: ClaudeConfigArgs): void {
   assertSingleMode(args);
   if (args.check) {
-    checkClaudeConfig(args);
+    checkClaudeConfig();
     return;
   }
-  const claudeHome = resolveClaudeHome(args["claude-home"]);
-  const ghToken = resolveGhToken(args["gh-token"]);
-  const direct = ghToken !== null ? true : resolveDirect(args, detectClaudeDirect);
+  const claudeHome = resolveClaudeHome();
+  // Single source of truth: the token provisioned via `agent init --gh-token`.
+  const ghToken = readStoredGithubToken();
+  const direct = resolveDirectMode(args, ghToken, detectClaudeDirect);
   logger.log(
     `  Configuring Claude for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} …`,
   );
-  configureClaudeConfig(claudeHome, direct ? "direct" : "proxy", false, ghToken);
+  // Bake the stored token only in Direct mode; proxy mode uses it via `agent start`.
+  configureClaudeConfig(claudeHome, direct ? "direct" : "proxy", false, direct ? ghToken : null);
 }
 
 /** The configured Claude provider mode at the effective Claude home (read-only). */
-export function effectiveClaudeProviderMode(claudeHomeArg?: string): ClaudeProviderMode {
-  const claudeHome = resolveClaudeHome(claudeHomeArg);
+export function effectiveClaudeProviderMode(): ClaudeProviderMode {
+  const claudeHome = resolveClaudeHome();
   return inspectClaudeWiring(readTextOrNull(settingsPathFor(claudeHome)), claudeHome).providerMode;
 }

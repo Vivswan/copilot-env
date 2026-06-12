@@ -334,7 +334,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
   const direct = checkCodex({
     ...wired,
     providerMode: "direct",
-    modelProvider: "github-copilot-direct",
+    modelProvider: "copilot-env",
     baseUrl: "https://api.githubcopilot.com",
     envKeyMatches: false,
     envKeyInDotenv: false,
@@ -349,7 +349,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
   const directMissingGh = checkCodex({
     ...wired,
     providerMode: "direct",
-    modelProvider: "github-copilot-direct",
+    modelProvider: "copilot-env",
     baseUrl: "https://api.githubcopilot.com",
     envKeyMatches: false,
     envKeyInDotenv: false,
@@ -364,7 +364,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
   const directUnauthed = checkCodex({
     ...wired,
     providerMode: "direct",
-    modelProvider: "github-copilot-direct",
+    modelProvider: "copilot-env",
     baseUrl: "https://api.githubcopilot.com",
     envKeyMatches: false,
     envKeyInDotenv: false,
@@ -382,7 +382,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
   const directNoCred = checkCodex({
     ...wired,
     providerMode: "direct",
-    modelProvider: "github-copilot-direct",
+    modelProvider: "copilot-env",
     baseUrl: "https://api.githubcopilot.com",
     envKeyMatches: false,
     tokenAvailable: false,
@@ -486,7 +486,7 @@ test("direct + stored token reports ok with gh absent (no gh requirement)", () =
     configExists: true,
     providerSelected: true,
     providerMode: "direct",
-    modelProvider: "github-copilot-direct",
+    modelProvider: "copilot-env",
     baseUrl: "https://api.githubcopilot.com",
     baseUrlMatches: true,
     envKeyMatches: true,
@@ -648,7 +648,7 @@ test("evalCodex: provider wired only when default + env_key + host:port all matc
 });
 
 test("evalCodex: direct provider reports direct mode without requiring OPENAI_API_KEY", () => {
-  const direct = `model_provider = "github-copilot-direct"\n[model_providers.github-copilot-direct]\nbase_url = "https://api.githubcopilot.com"\n`;
+  const direct = `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "https://api.githubcopilot.com"\n`;
   expect(evalCodex("/c", direct, null, 4141, false)).toMatchObject({
     providerMode: "direct",
     providerWired: true,

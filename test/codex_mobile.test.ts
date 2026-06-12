@@ -24,7 +24,7 @@ const CONFIG = [
   'env_key = "OPENAI_API_KEY"',
   "requires_openai_auth = true",
   "",
-  "[model_providers.github-copilot-direct]",
+  "[model_providers.other]",
   'base_url = "https://api.githubcopilot.com"',
   "",
 ].join("\n");
@@ -46,9 +46,7 @@ test("stripModelProvider removes model_provider, forces requires_openai_auth=fal
   expect(asRecord(providers["copilot-env"]).requires_openai_auth).toBe(false);
   // The provider tables themselves survive.
   expect(asRecord(providers["copilot-env"]).base_url).toBe("http://localhost:4141/v1");
-  expect(asRecord(providers["github-copilot-direct"]).base_url).toBe(
-    "https://api.githubcopilot.com",
-  );
+  expect(asRecord(providers["other"]).base_url).toBe("https://api.githubcopilot.com");
 });
 
 test("restoreModelProvider puts the provider back and round-trips through strip", () => {

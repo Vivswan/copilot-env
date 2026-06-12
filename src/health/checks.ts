@@ -373,7 +373,7 @@ export function checkCodex(f: CodexFacts): CheckResult {
         detail: [
           "provider: direct",
           `config.toml: ${configPath}`,
-          `model_provider github-copilot-direct → ${f.baseUrl ?? "(missing)"}`,
+          `model_provider ${f.modelProvider ?? "(unset)"} (direct) → ${f.baseUrl ?? "(missing)"}`,
           "auth: stored GitHub token (agent auth --get, no gh CLI)",
         ].join("\n"),
         ...(status === "ok" ? {} : { fix: "agent codex --direct" }),
@@ -390,7 +390,7 @@ export function checkCodex(f: CodexFacts): CheckResult {
         detail: [
           "provider: direct",
           `config.toml: ${configPath}`,
-          `model_provider github-copilot-direct → ${f.baseUrl ?? "(missing)"}`,
+          `model_provider ${f.modelProvider ?? "(unset)"} (direct) → ${f.baseUrl ?? "(missing)"}`,
           authDetail,
         ].join("\n"),
         ...(status === "ok" ? {} : { fix: f.providerWired ? ghFix : "agent codex --direct" }),
@@ -402,7 +402,7 @@ export function checkCodex(f: CodexFacts): CheckResult {
       detail: [
         "provider: direct",
         `config.toml: ${configPath}`,
-        `model_provider github-copilot-direct → ${f.baseUrl ?? "(missing)"}`,
+        `model_provider ${f.modelProvider ?? "(unset)"} (direct) → ${f.baseUrl ?? "(missing)"}`,
         "auth: no credential resolves via `agent auth --get` — run `agent auth`",
       ].join("\n"),
       fix: f.providerWired ? "agent auth" : "agent codex --direct",
@@ -414,9 +414,7 @@ export function checkCodex(f: CodexFacts): CheckResult {
   if (!f.providerSelected) {
     detail = [
       `provider: ${f.providerMode}`,
-      withConfigPath(
-        `model_provider is ${f.modelProvider ?? "unset"}, not "copilot-env" or "github-copilot-direct"`,
-      ),
+      withConfigPath(`model_provider is ${f.modelProvider ?? "unset"}, not "copilot-env"`),
     ].join("\n");
   } else if (!f.baseUrlMatches) {
     detail = [

@@ -32,14 +32,16 @@ import { AGENT_AUTH_GET_ARGS, agentLauncherCommand } from "../utils/root.ts";
 
 const logger = createStderrLogger();
 
-// The Codex model-provider ids we manage. CODEX_PROVIDER_ID is the proxy
-// provider contract used by the proxy health inspector. OPENAI_API_KEY is the
-// same OpenAI-wire name `env.ts` already exports, so the single proxy token
-// has ONE name across the shell exports and the Codex `.env`.
-export const DIRECT_PROVIDER_ID = "github-copilot-direct";
-const DIRECT_BASE_URL = "https://api.githubcopilot.com";
+// The Codex model-provider id we manage: ONE provider, `copilot-env`, for BOTH
+// direct and proxy — the mode is read from the table's CONTENTS (base_url + an
+// `auth` block vs an `env_key`), not from the provider name. OPENAI_API_KEY is the
+// same OpenAI-wire name `env.ts` already exports, so the single proxy token has ONE
+// name across the shell exports and the Codex `.env`. (The pre-unification
+// `github-copilot-direct` provider is handled ONLY by the 3.3.3 migration, which
+// rewrites existing configs to `copilot-env`; nothing here knows that legacy name.)
 export const CODEX_PROVIDER_ID = "copilot-env";
 export const CODEX_ENV_KEY = "OPENAI_API_KEY";
+const DIRECT_BASE_URL = "https://api.githubcopilot.com";
 // Legacy: an older copilot-env baked the Direct bearer into this .env key. Direct
 // mode no longer bakes a token (it resolves at runtime via `agent auth --get`), so
 // this name now exists ONLY so configureCodexConfig can scrub a token left at rest
@@ -105,19 +107,27 @@ export function codexUserAgent(version: string | null = installedCodexVersion())
   return version ? `codex_exec/${version}` : "codex_exec";
 }
 
-function providerModeFromModelProvider(modelProvider: string | null): AgentProviderMode {
-  if (modelProvider === CODEX_PROVIDER_ID) return "proxy";
-  if (modelProvider === DIRECT_PROVIDER_ID) return "direct";
-  if (modelProvider === null) return "none";
+/**
+ * Derive the mode from our managed provider TABLE's contents (the unified `copilot-env`
+ * table doesn't encode mode in its name): a Direct base_url ⇒ direct, a localhost proxy
+ * base_url or our `env_key` ⇒ proxy, anything else ⇒ "other" (e.g. a half-written
+ * table). `expectedPort` is the running proxy port used to validate a proxy base_url.
+ */
+function codexTableMode(table: unknown, expectedPort: number): AgentProviderMode {
+  if (!isRecord(table)) return "other";
+  if (table.base_url === DIRECT_BASE_URL) return "direct";
+  const baseUrl = typeof table.base_url === "string" ? table.base_url : null;
+  if (
+    (baseUrl !== null && baseUrlMatchesProxy(baseUrl, expectedPort)) ||
+    table.env_key === CODEX_ENV_KEY
+  ) {
+    return "proxy";
+  }
   return "other";
 }
 
 function isManagedProviderMode(mode: AgentProviderMode): mode is ManagedAgentMode {
   return mode === "direct" || mode === "proxy";
-}
-
-function providerIdForMode(mode: ManagedAgentMode): string {
-  return mode === "proxy" ? CODEX_PROVIDER_ID : DIRECT_PROVIDER_ID;
 }
 
 // The managed direct (GitHub Copilot) provider table. The bearer is fetched via
@@ -129,7 +139,7 @@ function providerIdForMode(mode: ManagedAgentMode): string {
 function managedDirectProvider(codexExecVersion?: string | null) {
   const { command, args } = agentLauncherCommand(AGENT_AUTH_GET_ARGS);
   return {
-    "name": "GitHub Copilot Direct",
+    "name": CODEX_PROVIDER_ID,
     "base_url": DIRECT_BASE_URL,
     "wire_api": "responses",
     "supports_websockets": false,
@@ -280,13 +290,24 @@ export function inspectCodexWiring(
     const modelProvider =
       isRecord(doc) && typeof doc.model_provider === "string" ? doc.model_provider : null;
     const providers = isRecord(doc) ? doc.model_providers : undefined;
-    const providerMode = providerModeFromModelProvider(modelProvider);
-    const providerId = isManagedProviderMode(providerMode) ? providerIdForMode(providerMode) : null;
-    const table = providerId !== null && isRecord(providers) ? providers[providerId] : undefined;
+    // We select our single provider by name, but read the MODE from its table's
+    // contents — the unified `copilot-env` table no longer encodes mode in its name.
+    const selected = modelProvider === CODEX_PROVIDER_ID;
+    const table = selected && isRecord(providers) ? providers[CODEX_PROVIDER_ID] : undefined;
+    const tableMode = selected ? codexTableMode(table, expectedPort) : "other";
+    // A selected-but-unrecognized table shape ("other") still counts as one of ours for
+    // messaging; report it as proxy so the wiring checks below flag what's off.
+    const providerMode: AgentProviderMode = selected
+      ? isManagedProviderMode(tableMode)
+        ? tableMode
+        : "proxy"
+      : modelProvider === null
+        ? "none"
+        : "other";
     const baseUrl = isRecord(table) && typeof table.base_url === "string" ? table.base_url : null;
     status.modelProvider = modelProvider;
     status.providerMode = providerMode;
-    status.providerSelected = isManagedProviderMode(providerMode);
+    status.providerSelected = selected;
     status.baseUrl = baseUrl;
     status.baseUrlMatches =
       baseUrl !== null &&
@@ -318,7 +339,7 @@ export function inspectCodexWiring(
 // they are intentionally absent here — no duplication, no drift.
 function defaultConfig(mode: ManagedAgentMode): Record<string, unknown> {
   return {
-    "model_provider": providerIdForMode(mode),
+    "model_provider": CODEX_PROVIDER_ID,
     ...(mode === "direct" ? { "web_search": "live" } : {}),
     "analytics": { "enabled": false },
     "feedback": { "enabled": false },
@@ -460,8 +481,7 @@ export function configureCodexConfig(
   // the file lacks. Spreading `existing` first preserves user-added keys in the
   // same table; other providers, the [analytics]/[feedback] sections, and any
   // unknown top-level keys are left untouched.
-  const providerId = providerIdForMode(mode);
-  doc.model_provider = providerId;
+  doc.model_provider = CODEX_PROVIDER_ID;
   if (mode === "direct") {
     doc.web_search = "live";
     // Direct (GitHub Copilot) doesn't serve image generation; disable the feature
@@ -477,18 +497,22 @@ export function configureCodexConfig(
   }
 
   const providers = isRecord(doc.model_providers) ? doc.model_providers : {};
-  const existing = isRecord(providers[providerId]) ? providers[providerId] : {};
+  const existing = isRecord(providers[CODEX_PROVIDER_ID]) ? providers[CODEX_PROVIDER_ID] : {};
   const merged: Record<string, unknown> = {
     ...existing,
     ...managedProviderForMode(mode, proxyOptions, options.codexExecVersion),
   };
-  // Direct authenticates via the managed `auth` command (`agent auth --get`); drop
-  // any stale `env_key` left by an older baked-token config so the auth path is
-  // unambiguous.
+  // Both modes share ONE `copilot-env` table, so the `...existing` spread would bleed
+  // the OTHER mode's managed keys when toggling. Scrub the cross-mode keys (managed
+  // values still win for keys present in both): direct drops the proxy `env_key`;
+  // proxy drops the direct `auth`/`http_headers`. User-added keys still survive.
   if (mode === "direct") {
     delete merged.env_key;
+  } else {
+    delete merged.auth;
+    delete merged.http_headers;
   }
-  providers[providerId] = merged;
+  providers[CODEX_PROVIDER_ID] = merged;
   doc.model_providers = providers;
 
   fs.writeFileSync(hostConfig, stringify(doc));

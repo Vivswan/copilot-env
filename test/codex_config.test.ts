@@ -62,7 +62,7 @@ test("enforces every managed field while preserving unknown user keys", () => {
       "[my_custom]",
       'keep = "me"',
       "",
-      "[model_providers.github-copilot-direct]",
+      "[model_providers.copilot-env]",
       'base_url = "https://stale.example"',
       'user_extra = "kept"',
       "",
@@ -79,13 +79,13 @@ test("enforces every managed field while preserving unknown user keys", () => {
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(asRecord(doc.my_custom).keep).toBe("me");
-  expect(doc.model_provider).toBe("github-copilot-direct");
+  expect(doc.model_provider).toBe("copilot-env");
   expect(doc.web_search).toBe("live");
   // Direct disables image generation via a top-level [features] table.
   expect(asRecord(doc.features).image_generation).toBe(false);
 
-  const provider = asRecord(asRecord(doc.model_providers)["github-copilot-direct"]);
-  expect(provider.name).toBe("GitHub Copilot Direct");
+  const provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
+  expect(provider.name).toBe("copilot-env");
   expect(provider.base_url).toBe("https://api.githubcopilot.com");
   expect(provider.wire_api).toBe("responses");
   expect(provider.supports_websockets).toBe(false);
@@ -122,8 +122,8 @@ test("direct uses the launcher auth.command (no env_key, no token at rest), clas
   expect(rc).toBe(0);
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
-  expect(doc.model_provider).toBe("github-copilot-direct");
-  const provider = asRecord(asRecord(doc.model_providers)["github-copilot-direct"]);
+  expect(doc.model_provider).toBe("copilot-env");
+  const provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
   // The bearer is fetched at runtime via `agent auth --get`; nothing is baked.
   expect(provider.env_key).toBeUndefined();
   const auth = asRecord(provider.auth);
@@ -308,11 +308,12 @@ test("writes the managed direct default config when no provider section exists",
   expect(rc).toBe(0);
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
-  expect(doc.model_provider).toBe("github-copilot-direct");
+  expect(doc.model_provider).toBe("copilot-env");
   expect(doc.web_search).toBe("live");
   expect(asRecord(doc.features).image_generation).toBe(false);
-  const provider = asRecord(asRecord(doc.model_providers)["github-copilot-direct"]);
+  const provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
   expect(provider.base_url).toBe("https://api.githubcopilot.com");
+  expect(provider.supports_websockets).toBe(false);
   expect(existsSync(join(codexHome, ".env"))).toBe(false);
 });
 
@@ -359,9 +360,9 @@ test("runCodex --proxy and --direct force the selected provider (no probe)", () 
   writeFileSync(
     join(codexHome, "config.toml"),
     [
-      'model_provider = "github-copilot-direct"',
+      'model_provider = "copilot-env"',
       "",
-      "[model_providers.github-copilot-direct]",
+      "[model_providers.copilot-env]",
       'base_url = "https://old.example"',
       "",
     ].join("\n"),
@@ -376,14 +377,47 @@ test("runCodex --proxy and --direct force the selected provider (no probe)", () 
 
   runCodex({ direct: true });
   doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
-  expect(doc.model_provider).toBe("github-copilot-direct");
-  expect(asRecord(asRecord(doc.model_providers)["github-copilot-direct"]).base_url).toBe(
-    "https://api.githubcopilot.com",
-  );
+  expect(doc.model_provider).toBe("copilot-env");
+  const directProvider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
+  expect(directProvider.base_url).toBe("https://api.githubcopilot.com");
+  // Toggling proxy -> direct must leave NO stale proxy-only key on the shared table.
+  expect(directProvider.env_key).toBeUndefined();
 
   expect(() => runCodex({ proxy: true, direct: true })).toThrow(
     "--direct and --proxy are mutually exclusive",
   );
+});
+
+test("toggling direct -> proxy scrubs the direct-only auth/http_headers from the shared table", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
+  process.env.HOME = dir;
+  const codexHome = join(dir, ".codex");
+
+  // Start direct: the table carries the managed auth + http_headers.
+  expect(configureCodexConfig(codexHome, { codexExecVersion: "0.139.0" })).toBe(0);
+  let provider = asRecord(
+    asRecord(asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8"))).model_providers)[
+      "copilot-env"
+    ],
+  );
+  expect(provider.auth).toBeDefined();
+  expect(provider.http_headers).toBeDefined();
+
+  // Switch to proxy on the SAME table: the direct-only keys must be gone.
+  expect(
+    configureCodexConfig(codexHome, {
+      proxy: true,
+      baseUrl: "http://localhost:4141/v1",
+      apiKey: "k",
+    }),
+  ).toBe(0);
+  const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
+  expect(doc.model_provider).toBe("copilot-env");
+  provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
+  expect(provider.base_url).toBe("http://localhost:4141/v1");
+  expect(provider.env_key).toBe("OPENAI_API_KEY");
+  expect(provider.auth).toBeUndefined();
+  expect(provider.http_headers).toBeUndefined();
 });
 
 test("detectCodexDirect: true only when CLI+gh present, gh authed, and the probe succeeds", () => {

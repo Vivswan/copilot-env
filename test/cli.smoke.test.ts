@@ -110,9 +110,9 @@ test("codex exposes and runs check mode", () => {
   writeFileSync(
     join(directHome, "config.toml"),
     [
-      'model_provider = "github-copilot-direct"',
+      'model_provider = "copilot-env"',
       "",
-      "[model_providers.github-copilot-direct]",
+      "[model_providers.copilot-env]",
       'base_url = "https://api.githubcopilot.com"',
       "",
     ].join("\n"),

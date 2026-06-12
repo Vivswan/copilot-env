@@ -13,7 +13,7 @@ import { execa } from "execa";
 import { parse, stringify } from "smol-toml";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { CODEX_PROVIDER_ID, DIRECT_PROVIDER_ID, effectiveCodexHome } from "./config.ts";
+import { CODEX_PROVIDER_ID, effectiveCodexHome } from "./config.ts";
 
 const logger = createStderrLogger();
 
@@ -23,17 +23,12 @@ const QUIT_TIMEOUT_MS = 8000;
 
 // --- pure config toggle (unit-tested) ---------------------------------------
 
-/** The provider tables whose `requires_openai_auth` we keep false. */
-const MANAGED_PROVIDER_IDS = [CODEX_PROVIDER_ID, DIRECT_PROVIDER_ID];
-
-/** Force `requires_openai_auth = false` on our managed provider tables (idempotent). */
+/** Force `requires_openai_auth = false` on our managed provider table (idempotent). */
 function ensureNoForcedOpenaiAuth(doc: Record<string, unknown>): void {
   const providers = isRecord(doc.model_providers) ? doc.model_providers : null;
   if (!providers) return;
-  for (const id of MANAGED_PROVIDER_IDS) {
-    const table = providers[id];
-    if (isRecord(table)) table.requires_openai_auth = false;
-  }
+  const table = providers[CODEX_PROVIDER_ID];
+  if (isRecord(table)) table.requires_openai_auth = false;
 }
 
 /** Read the configured `model_provider` (null when unset/malformed). Pure. */

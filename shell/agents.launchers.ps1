@@ -29,7 +29,7 @@ function Test-CopilotServer {
 function Assert-AgentCli {
     param([Parameter(Mandatory)][string]$Command)
     if (Get-Command $Command -ErrorAction SilentlyContinue) { return $true }
-    Write-Error "'$Command' is not installed. Run 'agent setup-clis' to install the agent CLIs."
+    Write-Error "'$Command' is not installed. Run 'agent shell --clis' to install the agent CLIs."
     return $false
 }
 
@@ -48,7 +48,7 @@ function Confirm-CopilotServer {
 function cl {
     if (-not (Assert-AgentCli claude)) { return }
     # Read the configured Claude provider (no live probe — provider auto-detection
-    # is done once by `agent setup-clis`, not on every launch): exit 0 = direct
+    # is done once by `agent init`, not on every launch): exit 0 = direct
     # (Claude reads settings.json itself), 2 = proxy/default (ensure the proxy +
     # re-sync the port/token), else custom/error.
     & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 claude --check *> $null
@@ -76,7 +76,7 @@ function co {
 function cx {
     if (-not (Assert-AgentCli codex)) { return }
     # Read the configured Codex provider (no live probe — provider auto-detection
-    # is done once by `agent setup-clis`, not on every launch): exit 0 = direct
+    # is done once by `agent init`, not on every launch): exit 0 = direct
     # (Codex reads its own config), 2 = proxy/default (ensure the proxy + re-sync
     # the port/token), else custom/error.
     & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 codex --check *> $null

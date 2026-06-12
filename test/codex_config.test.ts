@@ -406,7 +406,7 @@ test("runCodex --proxy and --direct force the selected provider (no probe)", () 
   );
 
   expect(() => runCodex({ proxy: true, direct: true })).toThrow(
-    "--direct, --proxy, and --auto are mutually exclusive",
+    "--direct and --proxy are mutually exclusive",
   );
 });
 

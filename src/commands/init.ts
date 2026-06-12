@@ -1,14 +1,18 @@
 // `agent init`: the headline one-shot — configure BOTH Codex and Claude (each
-// auto-detects GitHub Copilot Direct vs the local proxy, or --direct /
-// --proxy forces both), then print next-step guidance. This is also the shared
-// "configure both agents" routine reused by `agent setup-clis` after it installs.
+// auto-detects GitHub Copilot Direct vs the local proxy, or --direct / --proxy
+// forces both), then print next-step guidance. Shell wiring and CLI install live
+// in `agent shell`.
 import {
   type ClaudeProviderMode,
   effectiveClaudeProviderMode,
   runClaude,
 } from "../claude/config.ts";
 import { type CodexProviderMode, effectiveCodexProviderMode, runCodex } from "../codex/config.ts";
-import { CopilotApiState } from "../copilot_api/state.ts";
+import {
+  clearGithubToken,
+  readStoredGithubToken,
+  storeGithubToken,
+} from "../copilot_api/gh_token.ts";
 import { bold } from "../utils/ansi.ts";
 import { resolveGhToken } from "../utils/direct_probe.ts";
 import { errMessage } from "../utils/error.ts";
@@ -23,7 +27,7 @@ export interface InitArgs {
   proxy?: boolean;
   /** `--gh-token`: provision this GitHub token for Direct (baked) + the proxy (stored for start). */
   "gh-token"?: string | boolean;
-  /** `--remove-gh-token`: revert to `gh` — reconfigure both agents to gh-direct + clear the stored proxy token. */
+  /** `--remove-gh-token`: revert to `gh` — reconfigure both agents to gh-direct + clear the stored token. */
   "remove-gh-token"?: boolean;
 }
 
@@ -31,7 +35,6 @@ export interface InitArgs {
 interface BothFlags {
   direct?: boolean;
   proxy?: boolean;
-  "gh-token"?: string | boolean;
 }
 
 /** Read a provider mode, treating any read error as "other" (never throws). */
@@ -45,10 +48,11 @@ function safeMode<T>(read: () => T, fallback: T): T {
 
 /**
  * Configure both agents, resiliently (a failure on one only warns, the other
- * still runs), and report the resulting modes. When `--gh-token` is present it is
- * also stored in copilot-env's per-host state (best-effort) so `agent start`
- * passes it to the daemon as `--github-token`. Each agent's narration is grouped
- * under a header with blank-line spacing. Shared by `agent init` and `setup-clis`.
+ * still runs), and report the resulting modes. `runCodex`/`runClaude` read the
+ * provisioned GitHub token from the shared token store themselves (the single
+ * source of truth), so callers persist the token separately. Each agent's
+ * narration is grouped under a header with blank-line spacing. Used by both
+ * `agent init` paths (the normal configure and the `--remove-gh-token` revert).
  */
 export function configureBothAgents(flags: BothFlags): {
   codex: CodexProviderMode;
@@ -68,27 +72,6 @@ export function configureBothAgents(flags: BothFlags): {
     runClaude(flags);
   } catch (e) {
     logger.warn(`  Could not configure Claude: ${errMessage(e)}`);
-  }
-
-  // Store the proxy's GitHub token in our own per-host state, so `agent start`
-  // passes it to the daemon as `--github-token` (used in-memory only; the user's
-  // copilot-api login file is never touched). Best-effort: never abort. The token
-  // was already validated by the caller, so a resolve error here is just swallowed.
-  let ghToken: string | null = null;
-  try {
-    ghToken = resolveGhToken(flags["gh-token"]);
-  } catch {
-    ghToken = null;
-  }
-  if (ghToken !== null) {
-    try {
-      new CopilotApiState().set({ githubToken: ghToken });
-      logger.log(
-        "  ✓ Stored the GitHub token for the proxy (`agent start` passes it, no login prompt)",
-      );
-    } catch (e) {
-      logger.warn(`  Could not store the proxy GitHub token: ${errMessage(e)}`);
-    }
   }
 
   // Read-back is also best-effort: a config-read error must not abort init.
@@ -128,7 +111,7 @@ function printGuidance(
     lines.push("", "At least one agent uses the local proxy.");
     section("Start the proxy", [
       "`agent start` — launch the daemon",
-      "`agent setup-launchers` — `cl` / `cx` then auto-start it for you",
+      "`agent shell --launchers` — `cl` / `cx` then auto-start it for you",
       "`agent cost` — report proxy usage",
     ]);
   } else if (bothDirect) {
@@ -136,7 +119,7 @@ function printGuidance(
     lines.push("", `Both agents use GitHub Copilot Direct — no local proxy needed${tail}`);
     section("Run the agents", [
       "Just use `claude` and `codex` — no `agent start` / `agent stop`",
-      "`agent setup-launchers` — optional `cl` / `co` / `cx` shortcuts",
+      "`agent shell --launchers` — optional `cl` / `co` / `cx` shortcuts",
     ]);
     section("Good to know", [
       "`agent cost` reports proxy usage only — Direct usage won't appear",
@@ -176,16 +159,18 @@ function printGuidance(
  * `init`: configure both agents and explain the result. `--direct`/`--proxy`
  * force both; with no flag each auto-detects (live Copilot Direct probe, else
  * the proxy). `--gh-token` provisions a supplied GitHub token everywhere — baked
- * into both Direct configs (no `gh` binary needed) AND stored for the proxy (so
- * `agent start` passes it as `--github-token`). `--remove-gh-token` reverts: it
+ * into both Direct configs (no `gh` needed) AND stored for the proxy (so
+ * `agent start` passes it as `--github-token`). `--remove-gh-token` reverts:
  * reconfigures both agents to gh-direct (scrubbing the baked Codex token) and
- * clears the stored proxy token. `--direct`/`--proxy` are mutually exclusive, and
+ * clears the stored token. `--direct`/`--proxy` are mutually exclusive, and
  * `--gh-token` / `--remove-gh-token` cannot combine with `--proxy` or each other.
+ * (Shell wiring + CLI install live in `agent shell`.)
  */
 export function runInit(args: InitArgs): void {
   if (args.direct && args.proxy) {
     throw new Error("--direct and --proxy are mutually exclusive");
   }
+
   const removeGhToken = Boolean(args["remove-gh-token"]);
   if (removeGhToken) {
     if (args["gh-token"] !== undefined) {
@@ -194,32 +179,42 @@ export function runInit(args: InitArgs): void {
     if (args.proxy) {
       throw new Error("--remove-gh-token reverts to gh Direct and cannot be combined with --proxy");
     }
-    // Reconfigure both agents to gh-direct (this scrubs the baked Codex token via
-    // configureCodexConfig and resets the Claude helper to `gh auth token`)...
-    const { codex, claude } = configureBothAgents({ direct: true });
-    // ...then clear the stored proxy token so `agent start` falls back to gh.
+    // Clear the stored token FIRST so the reconfigure below reads null and writes
+    // gh-direct — scrubbing the baked Codex `.env` token and resetting the Claude
+    // helper to `gh auth token` (if we reconfigured first, runCodex/runClaude would
+    // re-read the still-stored token and bake it right back in).
     try {
-      new CopilotApiState().set({ githubToken: null });
-      logger.log("  ✓ Cleared the stored proxy GitHub token (the proxy uses its own login again)");
+      clearGithubToken();
+      logger.log("  ✓ Cleared the stored GitHub token (Direct + the proxy use the gh login again)");
     } catch (e) {
-      logger.warn(`  Could not clear the stored proxy GitHub token: ${errMessage(e)}`);
+      logger.warn(`  Could not clear the stored GitHub token: ${errMessage(e)}`);
     }
+    const { codex, claude } = configureBothAgents({ direct: true });
     printGuidance(codex, claude, false);
     return;
   }
 
-  // Resolve early so a bad/absent token (or a --proxy conflict) fails before we
-  // touch any config. configureBothAgents re-resolves it to store for the proxy.
-  const ghToken = resolveGhToken(args["gh-token"]);
-  if (ghToken !== null && args.proxy) {
-    throw new Error("--gh-token configures Direct mode and cannot be combined with --proxy");
+  // Resolve a `--gh-token` (if any) and persist it to the shared store up front —
+  // it's the single source of truth that configureBothAgents / runClaude /
+  // runCodex and `agent start` all read. A bad/absent value (or a --proxy
+  // conflict) fails before we touch any config.
+  const explicitToken = resolveGhToken(args["gh-token"]);
+  if (explicitToken !== null) {
+    if (args.proxy) {
+      throw new Error("--gh-token configures Direct mode and cannot be combined with --proxy");
+    }
+    try {
+      storeGithubToken(explicitToken);
+      logger.log(
+        "  ✓ Stored the GitHub token (used for Direct + the proxy until --remove-gh-token)",
+      );
+    } catch (e) {
+      logger.warn(`  Could not store the GitHub token: ${errMessage(e)}`);
+    }
   }
 
-  const { codex, claude } = configureBothAgents({
-    direct: args.direct,
-    proxy: args.proxy,
-    "gh-token": args["gh-token"],
-  });
+  const { codex, claude } = configureBothAgents({ direct: args.direct, proxy: args.proxy });
 
-  printGuidance(codex, claude, ghToken !== null);
+  // A token is "in use" for guidance if one is now stored (explicit or pre-existing).
+  printGuidance(codex, claude, readStoredGithubToken() !== null);
 }

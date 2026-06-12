@@ -9,6 +9,7 @@ import * as path from "node:path";
 import { parse, stringify } from "smol-toml";
 
 import { CopilotApiConfig } from "../copilot_api/config.ts";
+import { readStoredGithubToken } from "../copilot_api/gh_token.ts";
 import { copilotApiResolvePort, openaiBaseUrl } from "../copilot_api/port.ts";
 import { CopilotApiState } from "../copilot_api/state.ts";
 import { cliSpawn } from "../utils/command.ts";
@@ -17,8 +18,7 @@ import {
   CODEX_PROBE,
   type DirectProbeDeps,
   probeDirectWorks,
-  resolveDirect,
-  resolveGhToken,
+  resolveDirectMode,
 } from "../utils/direct_probe.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -46,13 +46,9 @@ export type CodexProviderMode = "direct" | "proxy" | "other" | "none";
 type ManagedCodexProviderMode = Extract<CodexProviderMode, "direct" | "proxy">;
 
 export interface CodexConfigArgs {
-  "codex-home"?: string;
   check?: boolean;
   direct?: boolean;
   proxy?: boolean;
-  auto?: boolean;
-  /** `--gh-token`: write this GitHub token to .env and read it via env_key (implies direct). */
-  "gh-token"?: string | boolean;
 }
 
 interface ConfigureCodexConfigOptions {
@@ -428,7 +424,7 @@ export function configureCodexConfig(
   const home = process.env.HOME || homedir();
   codexHome = codexHome || process.env.CODEX_HOME || `${home}/.codex`;
   // Low-level writer: absence of `proxy` means write a Direct config. The
-  // never-silent-Direct guarantee lives UPSTREAM at resolveDirect() — callers
+  // never-silent-Direct guarantee lives UPSTREAM at resolveDirectMode() — callers
   // must pass an already-resolved mode (an explicit flag or a passing probe);
   // the only intentional bare-Direct use is the throwaway probe config itself.
   const mode: ManagedCodexProviderMode = options.proxy ? "proxy" : "direct";
@@ -516,7 +512,7 @@ export function applyCodexConfig(
   ghToken?: string | null,
 ): void {
   // Caller passes an already-resolved mode; bare {} => Direct (see
-  // configureCodexConfig). The never-silent-Direct guarantee is upstream at resolveDirect().
+  // configureCodexConfig). The never-silent-Direct guarantee is upstream at resolveDirectMode().
   const mode: ManagedCodexProviderMode = args.proxy ? "proxy" : "direct";
   let options: ConfigureCodexConfigOptions = mode === "direct" ? { ghToken } : {};
 
@@ -542,9 +538,8 @@ export function applyCodexConfig(
   }
 }
 
-export function effectiveCodexHome(args: Pick<CodexConfigArgs, "codex-home">): string {
+export function effectiveCodexHome(): string {
   return (
-    args["codex-home"] ??
     new CopilotApiState().read().codexHome ??
     process.env.CODEX_HOME ??
     path.join(homedir(), ".codex")
@@ -558,10 +553,8 @@ interface EffectiveCodexConfig {
   providerMode: CodexProviderMode;
 }
 
-function inspectEffectiveCodexConfig(
-  args: Pick<CodexConfigArgs, "codex-home">,
-): EffectiveCodexConfig {
-  const codexHome = effectiveCodexHome(args);
+function inspectEffectiveCodexConfig(): EffectiveCodexConfig {
+  const codexHome = effectiveCodexHome();
   const configPath = path.join(codexHome, "config.toml");
   try {
     const status = inspectCodexWiring(
@@ -601,9 +594,9 @@ function checkExitCode(mode: CodexProviderMode): 0 | 1 | 2 {
   return 2; // proxy or none (the proxy is the default backend)
 }
 
-function checkCodexConfig(args: Pick<CodexConfigArgs, "codex-home">): void {
+function checkCodexConfig(): void {
   try {
-    const { codexHome, configPath, configExists, providerMode } = inspectEffectiveCodexConfig(args);
+    const { codexHome, configPath, configExists, providerMode } = inspectEffectiveCodexConfig();
     console.log(
       `Codex provider mode: ${providerMode} (${providerModeDetail(providerMode, configExists)})`,
     );
@@ -632,33 +625,34 @@ export function detectCodexDirect(deps?: DirectProbeDeps): boolean {
 }
 
 /**
- * `agent codex`: configure Codex at the active CODEX_HOME — an explicit
- * `--codex-home`, else the one a `--host` farm set in state, else the default
- * `~/.codex`. `--direct` forces GitHub Copilot Direct, `--proxy` forces the local
- * proxy, and `--auto` (or no mode flag) AUTO-DETECTS — it writes direct wiring
- * when a live read-only probe against Copilot Direct succeeds, else falls back to
- * the proxy. `--gh-token` bakes a GitHub token into `.env` (implies direct, no
- * `gh` binary needed). `--check` reports the configured mode (exit 0 direct / 2
- * proxy|none / 1 other) without a probe. Does NOT touch `state.codexHome` (only
- * `--host` sets/clears that).
+ * `agent codex`: configure Codex at the active CODEX_HOME — the one a `--host`
+ * farm set in state, else `$CODEX_HOME`, else the default `~/.codex`. `--direct`
+ * forces GitHub Copilot Direct, `--proxy` forces the local proxy, and with no
+ * mode flag it auto-detects (live read-only probe, else the proxy). `--check`
+ * reports the configured mode (exit 0 direct / 2 proxy|none / 1 other) without a
+ * probe. Does NOT touch `state.codexHome` (only `--host` sets/clears that).
+ *
+ * A GitHub token provisioned via `agent init --gh-token` (in the shared store) is
+ * used as the Direct credential automatically; with no mode flag, its presence
+ * selects Direct without probing.
  */
 export function runCodex(args: CodexConfigArgs): void {
   assertSingleMode(args);
   if (args.check) {
-    checkCodexConfig(args);
+    checkCodexConfig();
     return;
   }
-  const ghToken = resolveGhToken(args["gh-token"]);
-  const direct = ghToken !== null ? true : resolveDirect(args, detectCodexDirect);
+  // Single source of truth: the token provisioned via `agent init --gh-token`.
+  const ghToken = readStoredGithubToken();
+  const direct = resolveDirectMode(args, ghToken, detectCodexDirect);
   logger.log(
     `  Configuring Codex for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} …`,
   );
-  applyCodexConfig(effectiveCodexHome(args), { proxy: !direct }, ghToken);
+  // Bake the stored token only in Direct mode; proxy mode uses it via `agent start`.
+  applyCodexConfig(effectiveCodexHome(), { proxy: !direct }, direct ? ghToken : null);
 }
 
 /** The configured Codex provider mode at the effective CODEX_HOME (read-only). */
-export function effectiveCodexProviderMode(
-  args: Pick<CodexConfigArgs, "codex-home"> = {},
-): CodexProviderMode {
-  return inspectEffectiveCodexConfig(args).providerMode;
+export function effectiveCodexProviderMode(): CodexProviderMode {
+  return inspectEffectiveCodexConfig().providerMode;
 }

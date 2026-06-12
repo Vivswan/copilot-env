@@ -13,7 +13,7 @@ import type { Migration } from "./index.ts";
 // wired Claude updated from 3.2.0 would otherwise read as "other" (unmanaged) until a
 // re-init. Move the on-disk script to the new name and re-point apiKeyHelper. Only the
 // default Claude home is reachable here (matching the rest of the migration system);
-// a custom --claude-home is re-fixed by the next `agent claude` run.
+// a Claude home set via CLAUDE_CONFIG_DIR is re-fixed by the next `agent claude` run.
 const OLD_PROXY_HELPER_NAME = "copilot-gateway-token.sh";
 
 export const migration: Migration = {

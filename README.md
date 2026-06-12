@@ -40,7 +40,7 @@ Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, the
 - **Artifact:** the installer extracts the official `copilot-env-vX.Y.Z.tar.gz` release asset when present, verifies that asset's SHA256, and checks the archive source marker against GitHub release metadata before extraction.
 - **Replaceable:** re-run the bootstrapper to replace the previous install with the selected release.
 - **Next:** restart your shell, then `agent start`.
-- **Optional:** run `agent setup-clis --launchers` for Claude/Copilot/Codex CLIs and `cl` / `co` / `cx`.
+- **Optional:** run `agent shell --clis --launchers` for Claude/Copilot/Codex CLIs and `cl` / `co` / `cx`.
 - **Update later:** `agent update`.
 - **Specific version:** replace `latest` with an exact release tag:
 
@@ -69,16 +69,14 @@ agent health               # full environment diagnosis (--scope runtime|proxy|s
 agent env                  # print shell exports for the calling shell (CODEX_HOME / proxy ANTHROPIC_BASE_URL)
 agent cost                 # estimated token spend across all per-host usage DBs
 agent update               # update to the latest release (--check / --cooldown)
-agent setup-shell          # (re)wire rc / $PROFILE (--remove to unwire)
-agent setup-launchers      # wire/remove opt-in cl / co / cx launchers
-agent setup-clis           # install optional CLIs + auto-detect each backend (--cooldown[=DAYS], --no-sudo, --launchers)
-agent codex                # configure Codex; --auto auto-detects the backend, --check reports it
-agent codex --auto         # probe GitHub Copilot Direct; fall back to the local proxy
+agent shell                # wire rc / $PROFILE; --launchers adds cl/co/cx, --clis installs the CLIs, --remove unwires
+agent codex                # configure Codex; no flag auto-detects the backend, --check reports it
+agent codex --direct       # force GitHub Copilot Direct (no auto-detect probe)
 agent codex --check        # print provider mode; exits 0 direct, 2 proxy, 1 other
 agent codex --host         # per-host CODEX_HOME symlink farm (Linux/macOS); --delete-host to remove
 agent codex --mobile       # pair the Codex desktop app with the phone remote-control flow (interactive)
-agent claude               # configure Claude; --auto auto-detects the backend, --check reports it
-agent claude --auto        # probe GitHub Copilot Direct for Claude; fall back to the local proxy
+agent claude               # configure Claude; no flag auto-detects the backend, --check reports it
+agent claude --direct      # force GitHub Copilot Direct for Claude (no auto-detect probe)
 agent claude --check       # print Claude provider mode; exits 0 direct, 2 proxy, 1 other
 ```
 
@@ -103,14 +101,14 @@ Each has a more-permissive variant that adds the agent's most-relaxed flag: `clx
 Enable them while installing optional CLIs:
 
 ```bash
-agent setup-clis --launchers
+agent shell --clis --launchers
 ```
 
 Or manage only the launcher block:
 
 ```bash
-agent setup-launchers
-agent setup-launchers --remove
+agent shell --launchers
+agent shell --launchers --remove
 ```
 
 Manual sourcing is also supported:

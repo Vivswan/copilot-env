@@ -1,37 +1,27 @@
 import { expect, test } from "bun:test";
 
-import { normalizeSetupClisOptions } from "../src/commands/setup.ts";
+import { runShell } from "../src/commands/setup.ts";
 
-test("setup-clis defaults to latest npm releases", () => {
-  expect(normalizeSetupClisOptions({})).toEqual({
-    cooldown: null,
-    launchers: false,
-    noSudo: false,
-    noPrereqs: false,
-  });
+// runShell's flag validation throws BEFORE any install or rc wiring, so these
+// need no filesystem/network isolation.
+
+test("shell: the CLI-install tuning flags require --clis", () => {
+  expect(() => runShell({ cooldown: 7 })).toThrow("require --clis");
+  expect(() => runShell({ noSudo: true })).toThrow("require --clis");
+  expect(() => runShell({ noPrereqs: true })).toThrow("require --clis");
 });
 
-test("setup-clis parses cooldown days", () => {
-  expect(normalizeSetupClisOptions({ cooldown: 7 })).toEqual({
-    cooldown: 7,
-    launchers: false,
-    noSudo: false,
-    noPrereqs: false,
-  });
-  expect(normalizeSetupClisOptions({ cooldown: 14 }).cooldown).toBe(14);
-});
-
-test("setup-clis parses launcher wiring", () => {
-  expect(normalizeSetupClisOptions({ launchers: true }).launchers).toBe(true);
-});
-
-test("setup-clis rejects invalid cooldown days", () => {
-  expect(() => normalizeSetupClisOptions({ cooldown: -1 })).toThrow("--cooldown");
-  expect(() => normalizeSetupClisOptions({ cooldown: 1.5 })).toThrow("--cooldown");
-});
-
-test("setup-clis rejects mutually exclusive prereq modes", () => {
-  expect(() => normalizeSetupClisOptions({ noSudo: true, noPrereqs: true })).toThrow(
+test("shell --clis: --no-sudo and --no-prereqs are mutually exclusive", () => {
+  expect(() => runShell({ clis: true, noSudo: true, noPrereqs: true })).toThrow(
     "mutually exclusive",
   );
+});
+
+test("shell --clis: a non-integer/negative cooldown is rejected", () => {
+  expect(() => runShell({ clis: true, cooldown: 1.5 })).toThrow("--cooldown");
+  expect(() => runShell({ clis: true, cooldown: -1 })).toThrow("--cooldown");
+});
+
+test("shell --clis cannot combine with --remove", () => {
+  expect(() => runShell({ clis: true, remove: true })).toThrow("cannot be combined with --remove");
 });

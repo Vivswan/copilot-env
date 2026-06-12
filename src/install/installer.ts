@@ -1,13 +1,13 @@
 #!/usr/bin/env bun
-// Release-bundled installer handoff: bootstraps deps and invokes setup-shell wiring.
+// Release-bundled installer handoff: bootstraps deps and invokes `agent shell` wiring.
 //
 // Direct run:
 //   bun src/install/installer.ts install [--no-shell-integration] [--all-hosts]
 //
 // Arguments:
 //   install                   Required command; keeps accidental direct runs explicit.
-//   --no-shell-integration    Bootstrap deps only; skip `agent setup-shell`.
-//   --all-hosts               Windows only; pass through to `agent setup-shell --all-hosts`.
+//   --no-shell-integration    Bootstrap deps only; skip `agent shell`.
+//   --all-hosts               Windows only; pass through to `agent shell --all-hosts`.
 //
 // install.sh / install.ps1 run this from the extracted release so installer
 // behavior comes from the selected release, not from main.
@@ -45,7 +45,7 @@ export function parseInstallArgs(args: string[]): InstallOptions {
 
 export function shellSetupArgs(options: InstallOptions): string[] | null {
   if (options.noShellIntegration) return null;
-  const args = ["setup-shell"];
+  const args = ["shell"];
   if (options.allHosts) args.push("--all-hosts");
   return args;
 }
@@ -89,7 +89,7 @@ export function runInstall(options: InstallOptions): void {
 
   console.log("");
   if (options.noShellIntegration) {
-    console.log("Done. Shell integration was skipped; run 'agent setup-shell' to enable it.");
+    console.log("Done. Shell integration was skipped; run 'agent shell' to enable it.");
   } else {
     console.log(
       process.platform === "win32"
@@ -103,7 +103,7 @@ export function runInstall(options: InstallOptions): void {
     "  1. Run 'agent init' to set up Codex + Claude (it picks GitHub Copilot Direct or the local proxy), then tells you whether you need 'agent start' (only for the proxy).",
   );
   console.log(
-    "  2. Optionally run 'agent setup-clis --launchers' to install the CLIs plus the cl/co/cx shortcuts.",
+    "  2. Optionally run 'agent shell --clis --launchers' to install the CLIs plus the cl/co/cx shortcuts.",
   );
 }
 

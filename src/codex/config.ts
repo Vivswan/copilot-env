@@ -162,11 +162,11 @@ function managedDirectProvider(codexExecVersion?: string | null) {
 // string/boolean fields) -- only the parsed user config below is `unknown`,
 // because that TOML shape is arbitrary and we don't control it.
 //
-// `auth.command` runs the shared `scripts/proxy-token.sh` (`.ps1` on Windows, via
-// `proxyTokenCommand`): it ensures the proxy is up (starting it if down) and, only then,
-// prints the proxy key -- so opening Codex in proxy mode auto-starts the proxy. Codex
-// forbids `auth` together with `env_key` on one provider, so proxy (like direct)
-// resolves its key via the command, not an env var.
+// `auth.command` runs the shared `src/scripts/proxy-token.sh --yes` (`.ps1` on Windows, via
+// `proxyTokenCommand`): it ensures the proxy is up (auto-starting it when the managed
+// lifecycle is on, `agent init --auto-start`) and then prints the proxy key. `--yes` is the
+// headless path (never prompt). Codex forbids `auth` together with `env_key` on one
+// provider, so proxy (like direct) resolves its key via the command, not an env var.
 function managedProxyProvider(baseUrl: string) {
   const auth = proxyTokenCommand();
   return {

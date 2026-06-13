@@ -20,6 +20,11 @@ export interface InitArgs {
    * stored setting unchanged.
    */
   autoStart?: boolean;
+  /**
+   * `--get-auto-start`: report the managed-lifecycle flag and exit (0 enabled, 1 not),
+   * WITHOUT configuring agents. The proxy-token resolver uses this as its auto-start gate.
+   */
+  getAutoStart?: boolean;
 }
 
 /**
@@ -30,6 +35,13 @@ export interface InitArgs {
  * to configure agents without a credential.
  */
 export async function runInit(args: InitArgs): Promise<void> {
+  // `--get-auto-start` is a pure query the resolver gate uses -- report the flag and exit
+  // before any setup work.
+  if (args.getAutoStart) {
+    process.exitCode = new CopilotEnvState().autoStartEnabled() ? 0 : 1;
+    return;
+  }
+
   assertSingleMode(args); // --direct/--proxy mutually exclusive (fail fast, before auth)
 
   // Managed proxy lifecycle toggle (account-wide, only meaningful for proxy mode). Apply

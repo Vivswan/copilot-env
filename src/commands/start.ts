@@ -1,7 +1,5 @@
 // `agent start`: launches the proxy daemon, applies defaults, and syncs aliases.
-import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
-import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
 import { CopilotAdminClient } from "../copilot_api/admin.ts";
@@ -90,11 +88,16 @@ export interface StartArgs {
    */
   passthrough?: boolean;
   /**
-   * `--ensure`: ensure the proxy is running (start it if down), with all output on
-   * stderr and nothing on stdout. The agents' proxy resolvers run this before printing
-   * the key, so opening an agent in proxy mode auto-starts the proxy.
+   * `--record-event`: record an activity heartbeat (`lastEnsureAt`) for the idle watchdog
+   * and return WITHOUT launching. The agents' proxy resolver calls this on each token
+   * fetch so an open agent keeps the proxy alive between requests.
    */
-  ensure?: boolean;
+  recordEvent?: boolean;
+  /**
+   * `--check`: set exit code 0 iff OUR proxy is genuinely running (1 otherwise) and return
+   * WITHOUT launching. The proxy resolver + shell launchers use this as the "is it up?" probe.
+   */
+  check?: boolean;
 }
 
 // True when OUR proxy is genuinely up: the tracked, alive copilot-api pid AND the port
@@ -112,41 +115,6 @@ async function proxyIsRunning(): Promise<boolean> {
     return true; // any HTTP response (even an error status) means it's listening
   } catch {
     return false;
-  }
-}
-
-// Ensure the proxy is up FOR AN AGENT, gated on the managed lifecycle being enabled
-// (`agent init --auto-start`). When enabled: record the heartbeat and, if the proxy is
-// down, bring it up with a full `agent start` (which attaches the idle watchdog). When
-// NOT enabled: never auto-start -- if the proxy is already running (started manually) we
-// succeed so the resolver prints the key; otherwise signal "not running" so the resolver
-// skips the token (the user must `agent start` themselves). Output goes to stderr only.
-async function runStartEnsure(): Promise<void> {
-  const autoStart = new CopilotEnvState().autoStartEnabled();
-  if (autoStart) {
-    // Heartbeat: record that an agent's proxy resolver just ran. The idle watchdog counts
-    // this -- alongside real request traffic (the log mtime) -- as activity, so an open
-    // agent keeps the proxy alive even while it is briefly idle.
-    new CopilotEnvRunState().set({ lastEnsureAt: Date.now() });
-  }
-  if (await proxyIsRunning()) return; // already up + ours -> the resolver prints the key
-  if (!autoStart) {
-    // Auto-start not enabled: do not start the proxy. Signal "not running" so the
-    // agents' `start --ensure && auth --print-proxy-token` chain skips the token.
-    process.exitCode = 1;
-    return;
-  }
-  const result = spawnSync(process.execPath, [join(PROJECT_ROOT, "src/cli.ts"), "start"], {
-    stdio: ["ignore", 2, 2], // child stdout + stderr -> our stderr
-    windowsHide: true,
-  });
-  if (result.error) consola.warn(`could not auto-start the proxy: ${result.error.message}`);
-  // Confirm it actually came up (re-reads the run state, so it sees the port `start`
-  // recorded); a non-zero exit lets the agents' `start --ensure && auth
-  // --print-proxy-token` chain SKIP printing a token for a proxy that isn't serving.
-  if (!(await proxyIsRunning())) {
-    consola.error("the proxy is not running after `agent start`");
-    process.exitCode = 1;
   }
 }
 
@@ -337,8 +305,15 @@ function assertProxyFloor(): void {
 
 /** `start`: launch copilot-api detached, wait for readiness, sync aliases. */
 export async function runStart(args: StartArgs): Promise<void> {
-  if (args.ensure) {
-    await runStartEnsure();
+  if (args.check) {
+    // "Is the proxy up?" probe -- no launch. Used by the proxy resolver + launchers.
+    process.exitCode = (await proxyIsRunning()) ? 0 : 1;
+    return;
+  }
+  if (args.recordEvent) {
+    // Record an activity heartbeat for the idle watchdog and return -- no launch. The
+    // proxy resolver calls this on each token fetch so an open agent stays "active".
+    new CopilotEnvRunState().set({ lastEnsureAt: Date.now() });
     return;
   }
   const paths = new CopilotApiPaths();

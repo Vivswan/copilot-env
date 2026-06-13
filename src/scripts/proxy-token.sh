@@ -1,15 +1,41 @@
 #!/bin/sh
-# Proxy-mode credential resolver, SHARED by Codex's `auth.command` and Claude's
-# `apiKeyHelper`: ensure the local copilot-api proxy is running (start it if down), then
-# print its API key. The `&&` prints a key only once `start --ensure` confirms the proxy
-# is up (its non-zero exit on failure skips the print). src/scripts/proxy-token.ps1 is the
-# Windows parity copy -- keep the two feature-matched.
+# Proxy-mode credential resolver, SHARED by Codex's `auth.command`, Claude's `apiKeyHelper`,
+# and the cl/cx shell launchers. It ensures the local copilot-api proxy is up (per the rules
+# below), then prints its API key on stdout. src/scripts/proxy-token.ps1 is the Windows
+# parity copy -- keep the two feature-matched.
 #
-# Goes through bin/agent (NOT `bun src/cli.ts` directly) so bun + node_modules are
-# bootstrapped first -- bin/agent installs bun when it is only at ~/.bun/bin and not on
-# PATH, and (re)installs deps when node_modules is missing or stale. Its install chatter
-# goes to stderr, so the `auth --print-proxy-token` stdout stays a clean key.
+# `--yes` selects the HEADLESS path: Codex/Claude run this on a timer and can't answer a
+# prompt, so they pass `--yes`. Without it (the cl/cx launcher), an unmanaged + down proxy
+# prompts the user. Auto-start is gated on the managed lifecycle (`agent init --auto-start`,
+# queried via `init --get-auto-start`) -- so the opt-in is honored on the headless path.
 #
-# This script lives at src/scripts/, so the repo root is two levels up.
+# Calls go through bin/agent (NOT `bun src/cli.ts`) so bun + node_modules are bootstrapped
+# first. Start/prompt noise goes to stderr; only the key reaches stdout. This script lives at
+# src/scripts/, so the repo root is two levels up.
 dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
-"$dir/bin/agent" start --ensure >/dev/null 2>&1 && exec "$dir/bin/agent" auth --print-proxy-token
+agent="$dir/bin/agent"
+
+yes=0
+[ "$1" = "--yes" ] && yes=1
+
+if ! "$agent" start --check >/dev/null 2>&1; then
+  if "$agent" init --get-auto-start >/dev/null 2>&1; then
+    # Managed lifecycle on: auto-start the proxy without asking.
+    "$agent" start >/dev/null 2>&1
+  elif [ "$yes" -ne 1 ]; then
+    # Unmanaged + interactive (launcher): offer to start.
+    printf 'copilot proxy not running. Start it now? [Y/n] ' >&2
+    read -r ans
+    case "$ans" in
+      ''|y|Y|yes|Yes) "$agent" start >&2 ;;
+      *) echo "Continuing without the proxy; proxy-backed agents need it (run 'agent start')." >&2 ;;
+    esac
+  fi
+  # Unmanaged + --yes (headless): never auto-start.
+fi
+
+# Record the activity heartbeat (keeps an open agent's proxy alive), then print the key only
+# if the proxy is actually up. Down => non-zero exit and no token.
+"$agent" start --record-event >/dev/null 2>&1
+"$agent" start --check >/dev/null 2>&1 && exec "$agent" auth --print-proxy-token
+exit 1

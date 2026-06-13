@@ -256,10 +256,9 @@ function runGet(): void {
 }
 
 /**
- * `--print-proxy-token`: print the local copilot-api proxy's API key on stdout. The
- * proxy-mode agents' resolvers run this (after `agent start --ensure`, chained with
- * `&&`) to authenticate to the local proxy. Distinct from `--get` (the upstream GitHub
- * credential).
+ * `--print-proxy-token`: print the local copilot-api proxy's API key on stdout. A pure
+ * printer -- the proxy-mode resolver (`src/scripts/proxy-token.sh`) runs this last, after
+ * it has ensured the proxy is up. Distinct from `--get` (the upstream GitHub credential).
  */
 function runPrintProxyToken(): void {
   const key = new CopilotApiConfig().ensureApiKey();

@@ -43,17 +43,18 @@ const PROXY_TOKEN_SCRIPT_PS1: string = join(PROJECT_ROOT, "src", "scripts", "pro
 
 /**
  * The platform `{ command, args }` to run the shared proxy-token script as a NATIVE
- * subprocess (Codex's `auth.command`): `/bin/sh <script>.sh` on POSIX,
- * `powershell -File <script>.ps1` on Windows.
+ * subprocess (Codex's `auth.command`): `/bin/sh <script>.sh --yes` on POSIX,
+ * `powershell -File <script>.ps1 --yes` on Windows. `--yes` selects the headless path
+ * (never prompt) -- Codex/Claude run this on a timer and can't answer a prompt.
  */
 export function proxyTokenCommand(): { command: string; args: string[] } {
   if (process.platform === "win32") {
     return {
       command: "powershell",
-      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", PROXY_TOKEN_SCRIPT_PS1],
+      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", PROXY_TOKEN_SCRIPT_PS1, "--yes"],
     };
   }
-  return { command: "/bin/sh", args: [PROXY_TOKEN_SCRIPT_SH] };
+  return { command: "/bin/sh", args: [PROXY_TOKEN_SCRIPT_SH, "--yes"] };
 }
 
 /**

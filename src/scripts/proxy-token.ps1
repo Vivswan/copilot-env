@@ -1,17 +1,44 @@
-# Windows parity of proxy-token.sh: ensure the local copilot-api proxy is running, then
-# print its API key. Used by Codex's `auth.command` (and, on POSIX, Claude's helper uses
-# the .sh). `if ($LASTEXITCODE -ne 0)` is the `&&` gate (Windows PowerShell 5.1 lacks
-# `&&`); the script `exit`s with the failing code so Codex sees a failed auth command
-# rather than an empty successful one.
+# Windows parity of proxy-token.sh: ensure the local copilot-api proxy is up (per the rules
+# in the .sh), then print its API key on stdout. Used by Codex's `auth.command` and the
+# Windows cl/cx launchers. `--yes` selects the HEADLESS path (no prompt); without it, an
+# unmanaged + down proxy prompts. Auto-start is gated on the managed lifecycle
+# (`init --get-auto-start`). Keep feature-matched with proxy-token.sh.
 #
-# Goes through bin/agent.ps1 (NOT `bun src/cli.ts` directly) so bun + node_modules are
-# bootstrapped first. agent.ps1 ends with `exit`, so each call is a CHILD powershell --
-# invoking it in this host would terminate the script before the gate/print.
-#
-# This script lives at src/scripts/, so the repo root is three Split-Path levels up.
+# Each `agent.ps1` call is a CHILD powershell -- agent.ps1 ends with `exit`, so invoking it
+# in this host would terminate the script. Start/prompt noise goes to stderr; only the key
+# reaches stdout. This script lives at src/scripts/, so the repo root is three levels up.
 $repo = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
 $agent = Join-Path $repo 'bin/agent.ps1'
-& powershell -NoProfile -ExecutionPolicy Bypass -File $agent start --ensure *> $null
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-& powershell -NoProfile -ExecutionPolicy Bypass -File $agent auth --print-proxy-token
-exit $LASTEXITCODE
+$ps = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $agent)
+$yes = ($args.Count -ge 1 -and $args[0] -eq '--yes')
+
+& powershell @ps start --check *> $null
+if ($LASTEXITCODE -ne 0) {
+  & powershell @ps init --get-auto-start *> $null
+  if ($LASTEXITCODE -eq 0) {
+    # Managed lifecycle on: auto-start without asking.
+    & powershell @ps start *> $null
+  } elseif (-not $yes) {
+    # Unmanaged + interactive (launcher): offer to start.
+    [Console]::Error.Write('copilot proxy not running. Start it now? [Y/n] ')
+    $ans = Read-Host
+    if ($ans -eq '' -or $ans -match '^(y|Y|yes|Yes)$') {
+      # Discard stdout (the success stream) so it can't mix with the key; the proxy's
+      # progress goes to stderr (error stream), which stays visible. (`*>&2` is invalid
+      # PowerShell -- only merge-to-success `*>&1` exists.)
+      & powershell @ps start 1> $null
+    } else {
+      [Console]::Error.WriteLine("Continuing without the proxy; proxy-backed agents need it (run 'agent start').")
+    }
+  }
+  # Unmanaged + --yes (headless): never auto-start.
+}
+
+# Record the activity heartbeat, then print the key only if the proxy is actually up.
+& powershell @ps start --record-event *> $null
+& powershell @ps start --check *> $null
+if ($LASTEXITCODE -eq 0) {
+  & powershell @ps auth --print-proxy-token
+  exit $LASTEXITCODE
+}
+exit 1

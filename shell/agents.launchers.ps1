@@ -20,9 +20,9 @@ if (-not $script:AgentPs1) {
 }
 
 # Return $true if the local copilot proxy is reachable, $false otherwise.
-# Uses `agent health --scope runtime` (fast HTTP probe of the proxy, exit 0 = up).
+# Uses `agent start --check` (fast HTTP probe of OUR proxy, exit 0 = up).
 function Test-CopilotServer {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 health --scope runtime *> $null
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 start --check *> $null
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -33,14 +33,13 @@ function Assert-AgentCli {
     return $false
 }
 
-# Ping the proxy before launching an agent; if it's down, offer to start it.
+# Ensure the proxy is up before launching a proxy-backed agent. Delegates to the shared
+# resolver (src/scripts/proxy-token.ps1) WITHOUT `--yes`, so an unmanaged + down proxy
+# prompts the user (the managed path starts it silently). stdout (the key) is discarded;
+# only the prompt/start noise shows.
 function Confirm-CopilotServer {
-    if (Test-CopilotServer) { return }
-    $ans = Read-Host 'copilot proxy not running. Start it now? [Y/n]'
-    switch -Regex ($ans) {
-        '^(|y|Y|yes|Yes)$' { agent start }
-        default { Write-Host "Continuing without the proxy; proxy-backed agents need it (run 'agent start')." }
-    }
+    $resolver = Join-Path $script:AgentsDir 'src\scripts\proxy-token.ps1'
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $resolver 1> $null
 }
 
 # --- agent launchers -------------------------------------------------------

@@ -12,9 +12,9 @@ export interface CopilotEnvRunStateData {
   /** Active CODEX_HOME set by `codex --host` (cleared by `codex --host --delete-host`). */
   codexHome?: string;
   /**
-   * Epoch ms of the most recent `start --ensure` heartbeat (an agent's proxy resolver
-   * ran). The in-daemon idle watchdog treats this -- alongside the proxy log mtime -- as
-   * activity that resets the idle timer. Cleared by `stop` and on idle auto-stop.
+   * Epoch ms of the most recent `start --record-event` heartbeat (an agent's proxy
+   * resolver ran). The in-daemon idle watchdog treats this -- alongside the proxy log
+   * mtime -- as activity that resets the idle timer. Cleared by `stop` and on idle auto-stop.
    */
   lastEnsureAt?: number;
 }

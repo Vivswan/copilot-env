@@ -285,7 +285,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
   expect(ok.detail).toContain("provider: proxy");
   expect(ok.detail.split("\n")).toHaveLength(4);
   expect(ok.detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
-  expect(ok.detail).toContain("--print-proxy-token");
+  expect(ok.detail).toContain("proxy-token resolver");
   // model_provider not selected.
   expect(
     checkCodex({ ...wired, providerSelected: false, modelProvider: "openai", providerWired: false })
@@ -320,7 +320,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
   // A wired proxy is ok regardless of any env token (the key comes from auth.command).
   const noEnvToken = checkCodex({ ...wired, envKeyInDotenv: false, tokenAvailable: false });
   expect(noEnvToken.status).toBe("ok");
-  expect(noEnvToken.detail).toContain("--print-proxy-token");
+  expect(noEnvToken.detail).toContain("proxy-token resolver");
 
   const direct = checkCodex({
     ...wired,

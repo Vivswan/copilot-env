@@ -36,13 +36,18 @@ Only the *why* lives here; the mechanics are discoverable in the code.
   fallback**. `agent auth` is the credential front door; when auth is none we **ask, never
   silently fall back**.
 - **The managed proxy lifecycle is opt-in** (`agent init --auto-start` / `--no-auto-start`,
-  stored as `autoStart` in `CopilotEnvState`). When ON: the agents' shared proxy-token resolver
-  (`src/scripts/proxy-token.{sh,ps1}`, run by Codex's `auth.command` + Claude's `apiKeyHelper`)
-  auto-starts the proxy on demand, and the proxy auto-stops when idle. Auto-stop is an
-  **in-daemon watchdog** (`src/scripts/idle_watchdog_preload.ts`, `bun --preload`-ed into the
-  proxy), so the server and its watchdog are one process and neither can orphan the other.
-  OFF (default): manage the proxy yourself with `agent start` / `agent stop`. Idle window:
-  `COPILOT_API_IDLE_TIMEOUT` seconds (default 3600; `0` disables).
+  stored as `autoStart` in `CopilotEnvState`; read back via `init --get-auto-start`). The
+  shared resolver `src/scripts/proxy-token.{sh,ps1}` (run by Codex's `auth.command`, Claude's
+  `apiKeyHelper`, and the `cl`/`cx` launchers) is built from **honest primitives** rather than
+  a magic flag: `start --check` (is the proxy up?), `init --get-auto-start` (the gate),
+  `start` (launch), `start --record-event` (the watchdog heartbeat), `auth --print-proxy-token`
+  (a pure key printer). The resolver: if the proxy is down and the lifecycle is ON, auto-start
+  it; if OFF, only `--yes` callers (Codex/Claude, headless) skip starting while non-`--yes`
+  callers (the launcher) prompt; then it prints the key only if the proxy is up. Auto-stop is
+  an **in-daemon watchdog** (`src/scripts/idle_watchdog_preload.ts`, `bun --preload`-ed into
+  the proxy) gated on the same flag, so server and watchdog are one process and neither can
+  orphan the other. OFF (default): manage the proxy yourself with `agent start` / `agent stop`.
+  Idle window: `COPILOT_API_IDLE_TIMEOUT` seconds (default 3600; `0` disables).
 - **A PAT works through a runtime shim.** A classic/fine-grained PAT can't perform copilot-api's
   editor token exchange (403) but is accepted directly under the `vscode-chat` integration. So
   `agent start` preloads `src/scripts/pat_passthrough_preload.ts`, which fakes the exchange so

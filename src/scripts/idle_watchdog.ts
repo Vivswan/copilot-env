@@ -4,7 +4,7 @@
 // -- no separate pid, no orphan in either direction, and every daemon (re)start re-attaches it.
 //
 // Activity is the most recent of the proxy log mtime (real request traffic the daemon writes
-// under --verbose) and the `start --ensure` heartbeat (an open agent re-runs its proxy resolver
+// under --verbose) and the `start --record-event` heartbeat (an open agent re-runs its proxy resolver
 // on a refresh interval). Idle past the timeout -> the daemon exits.
 //
 // This module is import-safe -- it never arms a timer on import, so unit tests can exercise the

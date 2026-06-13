@@ -101,8 +101,8 @@ test("proxy mode writes proxy wiring (localhost base URL + a token helper), pres
 
   const helper = join(home, "copilot-proxy-token.sh");
   const script = readFileSync(helper, "utf8");
-  // The proxy helper ensures the proxy (start --ensure) then execs auth --print-proxy-token;
-  // no literal token is baked in.
+  // The proxy helper execs the shared proxy-token resolver (with --yes); no literal token
+  // is baked in.
   expect(script.startsWith("#!/bin/sh\n")).toBe(true);
   expect(script).toContain("proxy-token.sh");
   if (process.platform !== "win32") {

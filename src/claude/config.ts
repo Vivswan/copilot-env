@@ -249,9 +249,9 @@ export function configureClaudeConfig(
     return;
   }
 
-  // proxy: write a helper that ensures the proxy is running and prints its key
-  // (`agent start --ensure` then `agent auth --print-proxy-token`), so opening Claude in
-  // proxy mode auto-starts the proxy. The key is resolved at helper-run time (not baked in).
+  // proxy: write a helper that runs the shared proxy-token resolver (ensures the proxy is
+  // up per the managed-lifecycle rules, then prints its key). The key is resolved at
+  // helper-run time (not baked in).
   const port = copilotApiResolvePort();
   writeHelperScript(proxyHelperPath(claudeHome), proxyHelperScript());
   doc.apiKeyHelper = proxyHelperPath(claudeHome);
@@ -263,13 +263,13 @@ export function configureClaudeConfig(
 }
 
 /**
- * The proxy apiKeyHelper body: exec the SHARED `scripts/proxy-token.sh`, which ensures
- * the proxy is up then prints its key -- so opening Claude in proxy mode auto-starts the
- * proxy. The same script backs Codex's `auth.command`; the key is resolved at run time
- * (nothing is baked into this thin wrapper).
+ * The proxy apiKeyHelper body: exec the SHARED `src/scripts/proxy-token.sh --yes`, which
+ * (per the managed-lifecycle rules) ensures the proxy is up then prints its key. `--yes` is
+ * the headless path (never prompt) -- Claude runs this on a timer. The same script backs
+ * Codex's `auth.command`; the key is resolved at run time (nothing is baked in here).
  */
 function proxyHelperScript(): string {
-  return `#!/bin/sh\nexec ${shQuote(PROXY_TOKEN_SCRIPT_SH)}\n`;
+  return `#!/bin/sh\nexec ${shQuote(PROXY_TOKEN_SCRIPT_SH)} --yes\n`;
 }
 
 // --- the `--check` provider report ------------------------------------------

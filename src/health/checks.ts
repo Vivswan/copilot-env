@@ -422,7 +422,7 @@ export function checkCodex(f: CodexFacts): CheckResult {
     ].join("\n");
   } else if (!f.providerWired) {
     // Selected + base_url ok, but not fully wired: the managed proxy auth.command
-    // (`agent auth --print-proxy-token`, which resolves the key + auto-starts the proxy)
+    // (the shared proxy-token resolver, which ensures the proxy is up then prints its key)
     // is missing/foreign, and there's no legacy env_key token either.
     detail = [
       "provider: proxy",
@@ -432,13 +432,14 @@ export function checkCodex(f: CodexFacts): CheckResult {
   if (detail !== null) {
     return { ...base, status: "warn", detail, fix: "agent codex --proxy" };
   }
-  // Fully wired: the proxy resolves its key at runtime via the managed auth.command
-  // (which also auto-starts the proxy), so there's no baked token to report.
+  // Fully wired: the proxy resolves its key at runtime via the managed auth.command (the
+  // proxy-token resolver, which ensures the proxy when the lifecycle is on), so there's no
+  // baked token to report.
   const detailLines = [
     "provider: proxy",
     `config.toml: ${configPath}`,
     `model_provider copilot-env → ${f.baseUrl}`,
-    "auth: local proxy key via `agent auth --print-proxy-token` (auto-starts the proxy)",
+    "auth: local proxy key via the proxy-token resolver",
   ];
   return { ...base, status: "ok", detail: detailLines.join("\n") };
 }

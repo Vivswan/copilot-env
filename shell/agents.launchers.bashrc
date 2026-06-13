@@ -17,24 +17,13 @@
 # shellcheck disable=SC2296
 : "${_COPILOT_AGENTS_DIR:=$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")/.." && pwd)}"
 
-# Check the proxy before launching a proxy-backed agent; if it's down, offer to
-# start it. Returns SUCCESS only if the proxy is reachable afterward -- so a
-# caller that `|| return`s won't re-sync proxy config against a stale port or
-# launch into a dead proxy when the user declines. `agent start` runs in the
-# current shell so its env exports propagate to the agent we launch next.
+# Ensure the proxy is up before launching a proxy-backed agent. Delegates to the shared
+# resolver (src/scripts/proxy-token.sh) WITHOUT `--yes`, so an unmanaged + down proxy
+# prompts the user (the managed path starts it silently). stdout (the key) is discarded;
+# only the prompt/start noise on stderr shows, and the exit code signals reachability -- so
+# a caller that `|| return`s won't re-sync against a stale port or launch into a dead proxy.
 function _copilot_ensure_server {
-    if "${_COPILOT_AGENTS_DIR}/bin/agent" health --scope runtime >/dev/null 2>&1; then
-        return 0
-    fi
-
-    printf 'copilot proxy not running. Start it now? [Y/n] ' >&2
-    read -r _ans
-    case "$_ans" in
-        ''|y|Y|yes|Yes) agent start ;;
-        *) echo "Continuing without the proxy; proxy-backed agents need it (run 'agent start')." >&2 ;;
-    esac
-    # Success only if the proxy is reachable now (declined / failed start => non-zero).
-    "${_COPILOT_AGENTS_DIR}/bin/agent" health --scope runtime >/dev/null 2>&1
+    "${_COPILOT_AGENTS_DIR}/src/scripts/proxy-token.sh" >/dev/null
 }
 
 # Error if an agent CLI is missing; installation is handled by install.sh.

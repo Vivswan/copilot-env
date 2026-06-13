@@ -144,12 +144,17 @@ program
     "Enable the managed proxy lifecycle: agents auto-start the proxy on open, and it auto-stops when idle.",
   )
   .option("--no-auto-start", "Disable the managed proxy lifecycle (manage the proxy yourself).")
+  .option(
+    "--get-auto-start",
+    "Report the managed-lifecycle flag and exit (0 enabled, 1 not), without configuring agents.",
+  )
   .action((opts: Opts) =>
     runSafe(() =>
       runInit({
         direct: Boolean(opts.direct),
         proxy: Boolean(opts.proxy),
         autoStart: opts.autoStart as boolean | undefined,
+        getAutoStart: Boolean(opts.getAutoStart),
       }),
     ),
   );
@@ -177,7 +182,7 @@ program
   .option("--check", "Report auth status and exit (0 authenticated, 1 not).")
   .option(
     "--print-proxy-token",
-    "Print the local proxy's API key to stdout (used by proxy-mode agents after `start --ensure`).",
+    "Print the local proxy's API key to stdout (used by the proxy-mode resolver after it ensures the proxy).",
   )
   .action((opts: Opts) =>
     runSafe(() =>
@@ -209,16 +214,18 @@ program
     "Force the standard editor token exchange even for a PAT-shaped token.",
   )
   .option(
-    "--ensure",
-    "Ensure the proxy is running (start it if down), output on stderr only (used by the agents' proxy resolvers to auto-start the proxy).",
+    "--record-event",
+    "Record an activity heartbeat for the idle watchdog and exit, without launching (used by the proxy resolver).",
   )
+  .option("--check", "Exit 0 if the proxy is running, 1 otherwise; do not launch.")
   .action((opts: Opts) =>
     runSafe(() =>
       runStart({
         dryRun: Boolean(opts.dryRun),
         port: parsePort(opts.port),
         passthrough: opts.passthrough as boolean | undefined,
-        ensure: Boolean(opts.ensure),
+        recordEvent: Boolean(opts.recordEvent),
+        check: Boolean(opts.check),
       }),
     ),
   );

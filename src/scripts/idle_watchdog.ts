@@ -11,7 +11,7 @@
 // pure helpers. idle_watchdog_preload.ts is the tiny `bun --preload` entry that arms it (and is
 // never imported by tests), the same split pat_passthrough_preload.ts gets from its own file.
 import { statSync } from "node:fs";
-import { CopilotEnvState } from "../copilot_api/env_state.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 
@@ -24,15 +24,19 @@ const MAX_CHECK_INTERVAL_MS = 60_000;
 const MIN_CHECK_INTERVAL_MS = 1_000;
 
 /**
- * The effective idle timeout in milliseconds. Reads `COPILOT_API_IDLE_TIMEOUT` (a whole
- * number of seconds; `0` disables), else the 1-hour default. A malformed value falls back
- * to the default rather than throwing -- the watchdog runs inside the detached daemon, so a
- * bad env var must not crash it (and the proxy would then never auto-stop, the safe way).
+ * The effective idle timeout in milliseconds. Precedence: `COPILOT_API_IDLE_TIMEOUT` env >
+ * config `idleTimeout` > the 1-hour default. `0` disables. A malformed env value falls back
+ * to the next source rather than throwing -- the watchdog runs inside the detached daemon, so
+ * a bad env var must not crash it (and the proxy would then never auto-stop, the safe way).
  */
 export function idleTimeoutMs(): number {
   const raw = process.env[IDLE_TIMEOUT_ENV]?.trim();
   if (raw !== undefined && /^\d+$/.test(raw)) {
     return Number.parseInt(raw, 10) * 1000;
+  }
+  const configured = new CopilotEnvConfig().read().idleTimeout;
+  if (configured !== undefined) {
+    return configured * 1000;
   }
   return DEFAULT_IDLE_TIMEOUT_SECONDS * 1000;
 }
@@ -61,13 +65,14 @@ function logMtimeMs(): number {
 
 /**
  * One idle check, run on the interval inside the daemon. If the managed lifecycle was
- * turned off (`agent init --no-auto-start`) we disengage and leave the daemon running.
+ * turned off (the `auto-start` config key set to false) we disengage and leave the daemon
+ * running.
  * Otherwise, when idle past the timeout, clear our run-state tracking (best-effort) and
  * stop the server by exiting this process. `startedAtMs` floors activity so a freshly
  * launched, quiet daemon is not considered idle before its first request/heartbeat.
  */
 export function idleCheck(startedAtMs: number, timeoutMs: number): void {
-  if (!new CopilotEnvState().autoStartEnabled()) return; // lifecycle disabled -> stay up
+  if (!new CopilotEnvConfig().autoStartEnabled()) return; // lifecycle disabled -> stay up
   const state = new CopilotEnvRunState();
   const snapshot = state.read();
   const lastActivity = Math.max(startedAtMs, logMtimeMs(), snapshot.lastEnsureAt ?? 0);

@@ -23,7 +23,7 @@ function restore(key: keyof typeof SAVED): void {
 
 afterEach(() => {
   for (const k of Object.keys(SAVED) as (keyof typeof SAVED)[]) restore(k);
-  process.exitCode = undefined;
+  process.exitCode = 0; // NOT undefined -- bun keeps the last value otherwise (leaks exit 1)
   if (dir) {
     rmSync(dir, { recursive: true, force: true });
     dir = "";
@@ -96,7 +96,7 @@ test("auth --del clears the stored token and provider", async () => {
   isolate();
   state().set({ githubToken: "ghu_stored123", authProvider: "gh-token" });
   await runAuth({ del: true });
-  expect(state().read()).toEqual({ githubToken: null, authProvider: null, autoStart: null });
+  expect(state().read()).toEqual({ githubToken: null, authProvider: null });
 });
 
 test("auth --check: a configured provider reports authenticated, exit 0", async () => {
@@ -144,7 +144,6 @@ test("auth --provider gh-token stores the env token + provider, and does NOT con
   expect(state().read()).toEqual({
     githubToken: "ghu_new_from_env",
     authProvider: "gh-token",
-    autoStart: null,
   });
   // auth only manages the credential -- configuring Codex/Claude is `agent init`'s job.
   expect(existsSync(join(claudeHome, "settings.json"))).toBe(false);
@@ -158,7 +157,6 @@ test("auth --set <token> stores it verbatim (no env, no UI) and records gh-token
   expect(state().read()).toEqual({
     githubToken: "ghu_inline_value",
     authProvider: "gh-token",
-    autoStart: null,
   });
 });
 

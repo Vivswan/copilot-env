@@ -5,13 +5,13 @@ import { consola } from "consola";
 import { CopilotAdminClient } from "../copilot_api/admin.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
-import { CopilotEnvState } from "../copilot_api/env_state.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { generateAliases } from "../copilot_api/models.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import {
-  COPILOT_API_PORT_DEFAULT,
   copilotApiFindPort,
   copilotApiPortAvailable,
+  defaultProxyPort,
 } from "../copilot_api/port.ts";
 import {
   getOrphanPids,
@@ -38,14 +38,14 @@ import { ensureAuthenticated } from "./auth.ts";
 // model ids). Do not change them during refactors.
 //
 
-const DEFAULT_SMALL_MODEL = "gpt-5.5";
+const DEFAULT_SMALL_MODEL = "gpt-5-mini";
 
 /**
  * Whether a GitHub token is a Personal Access Token by its prefix: `ghp_` (classic)
  * or `github_pat_` (fine-grained). PATs cannot perform copilot-api's editor token
  * exchange (`copilot_internal/v2/token` -> 403), so they need the PAT passthrough
  * shim; OAuth / app tokens (`gho_`/`ghu_`/`ghs_`/...) can, so they don't. Legacy
- * unprefixed 40-hex classic PATs are NOT detected here -- use `--passthrough` for those.
+ * unprefixed 40-hex classic PATs are NOT detected here -- use `config passthrough on` for those.
  */
 export function isPatToken(token: string): boolean {
   const t = token.trim();
@@ -57,12 +57,12 @@ export function isPatToken(token: string): boolean {
  * (`src/scripts/pat_passthrough_preload.ts`). The shim intercepts copilot-api's
  * editor token exchange and hands the PAT back as the Copilot token, so the daemon
  * runs its normal `vscode-chat` path with the PAT as the bearer -- the only way a PAT
- * works through the proxy. It's a no-op for non-PAT tokens, so `--passthrough` can
- * force it for an undetected (e.g. legacy unprefixed) PAT, and `--no-passthrough`
- * forces it off.
+ * works through the proxy. It's a no-op for non-PAT tokens, so the `passthrough` config
+ * key (`on`) can force it for an undetected (e.g. legacy unprefixed) PAT, and `off` forces
+ * it off.
  *
- * Precedence: explicit `--passthrough`/`--no-passthrough` wins; otherwise auto-enable
- * for a PAT-shaped token.
+ * Precedence: an explicit `force` (resolved by the caller from the `passthrough` config:
+ * on -> true, off -> false) wins; otherwise (`auto`/unset) auto-enable for a PAT-shaped token.
  */
 export function usePatPassthrough(opts: {
   force: boolean | undefined;
@@ -82,11 +82,6 @@ export interface StartArgs {
   dryRun?: boolean;
   /** Pin the proxy to this port instead of auto-resolving (fails if busy). */
   port?: number;
-  /**
-   * Force proxy passthrough mode (`--passthrough`) or force the standard editor token
-   * exchange (`--no-passthrough`). Undefined => auto-detect from the token shape.
-   */
-  passthrough?: boolean;
   /**
    * `--record-event`: record an activity heartbeat (`lastEnsureAt`) for the idle watchdog
    * and return WITHOUT launching. The agents' proxy resolver calls this on each token
@@ -109,7 +104,7 @@ async function proxyIsRunning(): Promise<boolean> {
   if (pid === undefined || !pidAlive(pid) || !(await isCopilotApiPid(pid))) {
     return false;
   }
-  const probePort = port ?? Number(COPILOT_API_PORT_DEFAULT);
+  const probePort = port ?? defaultProxyPort();
   try {
     await fetch(`http://localhost:${probePort}/`, { signal: AbortSignal.timeout(2000) });
     return true; // any HTTP response (even an error status) means it's listening
@@ -123,7 +118,7 @@ function applyDefaultConfig(config: CopilotApiConfig): void {
   // They have no admin REST endpoint, so they must be written to the file before
   // launch (unlike model aliases, which are pushed live via CopilotAdminClient).
   config.update((d) => {
-    d.smallModel = DEFAULT_SMALL_MODEL;
+    d.smallModel = new CopilotEnvConfig().read().smallModel ?? DEFAULT_SMALL_MODEL;
     Object.assign(d, DEFAULT_FLAGS);
   });
   // Persist an admin key so the live `/admin/config/model-mappings` route (used
@@ -259,7 +254,9 @@ async function resolveStartPort(pinned: number | undefined, announce: boolean): 
     }
     return pinned;
   }
-  const def = Number(COPILOT_API_PORT_DEFAULT);
+  // No hard `--port` pin: the auto-resolve base is the default proxy port (config `port`,
+  // else the built-in 4141) -- a SOFT default that moves to the next free port if busy.
+  const def = defaultProxyPort();
   if (await copilotApiPortAvailable(def)) return def;
   if (announce) consola.warn(`Port ${def} is busy (held by another process/user).`);
   let port: number;
@@ -412,26 +409,27 @@ export async function runStart(args: StartArgs): Promise<void> {
     await ensureAuthenticated();
     githubToken = credential.resolve() ?? undefined;
   }
-  // A PAT can't perform copilot-api's editor token exchange, so load the PAT
-  // passthrough shim (it fakes the exchange, handing the PAT straight through as the
-  // Copilot token). Auto-on for PAT-shaped tokens; `--passthrough`/`--no-passthrough`
-  // force it. Only meaningful when we actually resolved a token.
+  // A PAT can't perform copilot-api's editor token exchange, so load the PAT passthrough
+  // shim (it fakes the exchange, handing the PAT straight through as the Copilot token).
+  // Precedence: config `passthrough` (on/off) > `auto` (shape-detect from the token). Set
+  // it with `agent config --set passthrough on|off`. Only meaningful when a token resolved.
+  const cfgPassthrough = new CopilotEnvConfig().read().passthrough;
+  const forcePassthrough =
+    cfgPassthrough === "on" ? true : cfgPassthrough === "off" ? false : undefined;
   const patPassthrough =
-    githubToken !== undefined && usePatPassthrough({ force: args.passthrough, token: githubToken });
+    githubToken !== undefined && usePatPassthrough({ force: forcePassthrough, token: githubToken });
   if (patPassthrough) {
     consola.info(
       "PAT passthrough on: faking the editor token exchange so the proxy uses the token directly.",
     );
-  } else if (args.passthrough === false) {
-    consola.info(
-      "PAT passthrough off (--no-passthrough): using the standard editor token exchange.",
-    );
+  } else if (forcePassthrough === false) {
+    consola.info("PAT passthrough off: using the standard editor token exchange.");
   }
-  // Managed lifecycle on (`agent init --auto-start`)? Preload the in-daemon idle watchdog
+  // Managed lifecycle on (the `auto-start` config key)? Preload the in-daemon idle watchdog
   // so the proxy stops itself after the idle window. It lives in the daemon process, so
   // the server and watchdog are one unit (no orphan either way), and every (re)start
   // re-attaches it. With the flag off, the proxy never auto-starts and gets no watchdog.
-  const idleWatchdog = new CopilotEnvState().autoStartEnabled();
+  const idleWatchdog = new CopilotEnvConfig().autoStartEnabled();
   let pid = launchDaemon(port, logFile, daemonEnv, githubToken, patPassthrough, idleWatchdog);
 
   await sleep(1000);

@@ -3,10 +3,11 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// A throwaway COPILOT_API_HOME so the runtime probe sees no tracked pid/port and
-// falls back to the default port -- independent of any real proxy on this host.
+// A throwaway COPILOT_API_HOME so the runtime probe sees no tracked pid/port. We pin the
+// default proxy port to 4199 via config (isolated from any real proxy on 4141 on this host).
 function isolatedEnv(extra: Record<string, string> = {}): Record<string, string> {
   const home = mkdtempSync(join(tmpdir(), "copilot-health-"));
+  writeFileSync(join(home, ".copilot-env-config.json"), JSON.stringify({ port: 4199 }));
   return { ...process.env, CONSOLA_LEVEL: "5", COPILOT_API_HOME: home, ...extra };
 }
 
@@ -136,7 +137,7 @@ test("codex exposes and runs check mode", () => {
     Bun.spawnSync(["bun", "src/cli.ts", "codex", "--check"], {
       stdout: "pipe",
       stderr: "pipe",
-      env: isolatedEnv({ CODEX_HOME: home, COPILOT_API_PORT_DEFAULT: "4199" }),
+      env: isolatedEnv({ CODEX_HOME: home }),
     });
 
   const proxy = runCheck(codexHome);
@@ -170,7 +171,7 @@ test("codex exposes and runs check mode", () => {
   const conflicting = Bun.spawnSync(["bun", "src/cli.ts", "codex", "--proxy", "--direct"], {
     stdout: "pipe",
     stderr: "pipe",
-    env: isolatedEnv({ CODEX_HOME: codexHome, COPILOT_API_PORT_DEFAULT: "4199" }),
+    env: isolatedEnv({ CODEX_HOME: codexHome }),
   });
   expect(conflicting.exitCode).toBe(1);
   expect(conflicting.stderr.toString()).toContain("--direct and --proxy are mutually exclusive");
@@ -420,7 +421,7 @@ test("health --scope runtime exits 1 when no proxy is running", () => {
   const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", "runtime"], {
     stdout: "pipe",
     stderr: "pipe",
-    env: isolatedProxyEnv({ COPILOT_API_PORT_DEFAULT: "4199" }),
+    env: isolatedProxyEnv({}),
   });
   expect(proc.exitCode).toBe(1);
 });
@@ -429,7 +430,7 @@ test("health --json emits a parseable report with scope/exitCode/checks", () => 
   const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", "runtime", "--json"], {
     stdout: "pipe",
     stderr: "pipe",
-    env: isolatedEnv({ COPILOT_API_PORT_DEFAULT: "4199" }),
+    env: isolatedEnv({}),
   });
   const parsed = JSON.parse(proc.stdout.toString());
   expect(parsed.scope).toBe("runtime");
@@ -458,7 +459,7 @@ function runHealthJson(scope: string): { exitCode: number | null; json: HealthJs
   const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", scope, "--json"], {
     stdout: "pipe",
     stderr: "pipe",
-    env: isolatedProxyEnv({ COPILOT_API_PORT_DEFAULT: "4199" }),
+    env: isolatedProxyEnv({}),
   });
   return { exitCode: proc.exitCode, json: JSON.parse(proc.stdout.toString()) as HealthJson };
 }

@@ -3,7 +3,7 @@ import type { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import {
   floatProxy,
   nodeModulesFresh,
@@ -34,6 +34,7 @@ const VERSION_ENV = "COPILOT_API_VERSION";
 let dir = "";
 const savedMinAge = process.env[MIN_RELEASE_AGE_ENV];
 const savedVersion = process.env[VERSION_ENV];
+const savedHome = process.env.COPILOT_API_HOME;
 const SPAWN_OK: ReturnType<typeof spawnSync> = {
   "error": undefined,
   "output": [],
@@ -107,14 +108,17 @@ function spawnWithMetadataFailure(): { calls: string[][]; spawn: SpawnSyncRunner
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "copilot-float-"));
-  // The verify helpers read these env vars; isolate every test from the ambient env.
+  // The verify helpers read these env vars + the config store; isolate every test from the
+  // ambient env, and point the config home at the temp dir (empty config -> falls through).
   delete process.env[MIN_RELEASE_AGE_ENV];
   delete process.env[VERSION_ENV];
+  process.env.COPILOT_API_HOME = dir;
 });
 
 afterEach(() => {
   restoreEnv(MIN_RELEASE_AGE_ENV, savedMinAge);
   restoreEnv(VERSION_ENV, savedVersion);
+  restoreEnv("COPILOT_API_HOME", savedHome);
   if (dir) {
     rmSync(dir, { recursive: true, force: true });
     dir = "";
@@ -169,6 +173,15 @@ describe("proxyFloatUpToDate", () => {
     expect(resolveMinimumReleaseAgeSeconds(dir)).toBe(604800);
     process.env[MIN_RELEASE_AGE_ENV] = "abc";
     expect(() => resolveMinimumReleaseAgeSeconds(dir)).toThrow("whole number of seconds");
+  });
+
+  test("resolveMinimumReleaseAgeSeconds: config releaseCooldown applies, env overrides it", () => {
+    new CopilotEnvConfig().set({ releaseCooldown: 172800 });
+    // env unset -> config wins over the (no-bunfig) 0 default.
+    expect(resolveMinimumReleaseAgeSeconds(dir)).toBe(172800);
+    // env set -> overrides config.
+    process.env[MIN_RELEASE_AGE_ENV] = "100";
+    expect(resolveMinimumReleaseAgeSeconds(dir)).toBe(100);
   });
 
   test("COPILOT_API_VERSION: true only when the exact pin is installed", () => {

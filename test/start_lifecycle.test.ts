@@ -2,21 +2,21 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runInit } from "../src/commands/init.ts";
 import { runStart } from "../src/commands/start.ts";
-import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 
 // The lifecycle primitives the proxy-token resolver orchestrates: `start --record-event`
-// (heartbeat), `start --check` (is-it-up probe), `init --get-auto-start` (the gate). Each
-// is isolated in a temp COPILOT_API_HOME and resets the shared process.exitCode.
+// (heartbeat) and `start --check` (is-it-up probe). Each is isolated in a temp
+// COPILOT_API_HOME and resets the shared process.exitCode.
 const SAVED_HOME = process.env.COPILOT_API_HOME;
 let dir = "";
 
 afterEach(() => {
   if (SAVED_HOME === undefined) delete process.env.COPILOT_API_HOME;
   else process.env.COPILOT_API_HOME = SAVED_HOME;
-  process.exitCode = undefined;
+  // Reset to 0 (NOT undefined -- bun's process.exitCode setter ignores undefined and keeps
+  // the last value, which would leak a test's exit 1 to the whole `bun test` run).
+  process.exitCode = 0;
   if (dir) {
     rmSync(dir, { recursive: true, force: true });
     dir = "";
@@ -42,19 +42,4 @@ test("start --check exits non-zero when no proxy is tracked/running", async () =
   tmpHome();
   await runStart({ check: true });
   expect(process.exitCode).toBe(1);
-});
-
-test("init --get-auto-start exits non-zero when the flag is off (default)", async () => {
-  tmpHome();
-  await runInit({ getAutoStart: true });
-  expect(process.exitCode).toBe(1);
-});
-
-test("init --get-auto-start exits zero when the flag is on, without configuring agents", async () => {
-  tmpHome();
-  new CopilotEnvState().set({ autoStart: true });
-  await runInit({ getAutoStart: true });
-  expect(process.exitCode).toBe(0);
-  // It short-circuited: no agent config dirs were created under the temp home.
-  expect(new CopilotEnvRunState().read().pid).toBeUndefined();
 });

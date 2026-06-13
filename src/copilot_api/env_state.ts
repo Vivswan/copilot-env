@@ -26,12 +26,6 @@ export interface CopilotEnvStateData {
   githubToken: string | null;
   /** How the user authenticated, or null when unset/unrecognized. */
   authProvider: AuthProvider | null;
-  /**
-   * Whether the managed proxy lifecycle is enabled (`agent init --auto-start`): the
-   * agents' proxy resolvers auto-start the proxy on demand AND it auto-stops when idle.
-   * Account/machine-wide, so it lives here beside the credential. Null/absent => off.
-   */
-  autoStart: boolean | null;
 }
 
 // Mirror CopilotEnvRunState/AutoupdateState's patch spelling (`Data[K] | null`).
@@ -44,14 +38,13 @@ type EnvStatePatch = { [K in keyof CopilotEnvStateData]?: CopilotEnvStateData[K]
 const STATE_SCHEMA = v.object({
   githubToken: v.fallback(v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1))), null),
   authProvider: v.fallback(v.nullable(v.picklist(AUTH_PROVIDERS)), null),
-  autoStart: v.fallback(v.nullable(v.boolean()), null),
 });
 
 /**
  * Read/write helper for the shared `.copilot-env-state.json`. Backed by
  * CopilotApiConfig (the project's atomic JSON store: sorted keys, 0600, atomic
  * rename, Windows EPERM/EBUSY retry) and mirroring CopilotEnvRunState -- one I/O
- * implementation.
+ * implementation. Holds CREDENTIALS only; user preferences live in CopilotEnvConfig.
  */
 export class CopilotEnvState {
   private readonly store: CopilotApiConfig;
@@ -65,28 +58,19 @@ export class CopilotEnvState {
     return v.parse(STATE_SCHEMA, this.store.load());
   }
 
-  /** Whether the managed proxy lifecycle (auto-start + idle auto-stop) is enabled. */
-  autoStartEnabled(): boolean {
-    return this.read().autoStart === true;
-  }
-
   /**
-   * Merge `patch`. String values (credentials/labels) are trimmed and a null/undefined
+   * Merge `patch`. Values are credentials/labels, so they're trimmed and a null/undefined
    * OR blank value deletes the key -- a blank token is never meaningful, so it clears
-   * rather than persisting `""`. Boolean values (e.g. `autoStart`) are stored as-is; a
-   * null/undefined boolean deletes the key.
+   * rather than persisting `""`.
    */
   set(patch: EnvStatePatch): void {
     this.store.update((d) => {
       for (const key of Object.keys(patch) as (keyof EnvStatePatch)[]) {
         const value = patch[key];
-        if (value === null || value === undefined) {
+        if (value === null || value === undefined || value.trim() === "") {
           delete d[key];
-        } else if (typeof value === "string") {
-          if (value.trim() === "") delete d[key];
-          else d[key] = value.trim();
         } else {
-          d[key] = value;
+          d[key] = value.trim();
         }
       }
     });

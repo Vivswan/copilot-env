@@ -6,8 +6,8 @@
 #
 # `--yes` selects the HEADLESS path: Codex/Claude run this on a timer and can't answer a
 # prompt, so they pass `--yes`. Without it (the cl/cx launcher), an unmanaged + down proxy
-# prompts the user. Auto-start is gated on the managed lifecycle (`agent init --auto-start`,
-# queried via `init --get-auto-start`) -- so the opt-in is honored on the headless path.
+# prompts the user. Auto-start is gated on the managed lifecycle (the `auto-start` config key,
+# queried via `config --get auto-start`) -- so the opt-in is honored on the headless path.
 #
 # Calls go through bin/agent (NOT `bun src/cli.ts`) so bun + node_modules are bootstrapped
 # first. Start/prompt noise goes to stderr; only the key reaches stdout. This script lives at
@@ -19,8 +19,8 @@ yes=0
 [ "$1" = "--yes" ] && yes=1
 
 if ! "$agent" start --check >/dev/null 2>&1; then
-  if "$agent" init --get-auto-start >/dev/null 2>&1; then
-    # Managed lifecycle on: auto-start the proxy without asking.
+  if [ "$("$agent" config --get auto-start 2>/dev/null)" = "true" ]; then
+    # Managed lifecycle on (config auto-start): auto-start the proxy without asking.
     "$agent" start >/dev/null 2>&1
   elif [ "$yes" -ne 1 ]; then
     # Unmanaged + interactive (launcher): offer to start.

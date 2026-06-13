@@ -70,7 +70,7 @@ test("with no --github-token in argv, no wrap is installed (real fetch is used)"
 
 test("the wrap acts for ANY token shape (the load decision is start.ts's job, not the shim's)", () => {
   // A non-PAT token still gets intercepted when the shim is preloaded -- start.ts only
-  // preloads it on purpose (auto for a PAT, or a forced --passthrough).
+  // preloads it on purpose (auto for a PAT, or a forced `passthrough on` config).
   expect(runPreloaded(EXCHANGE_URL, "gho_oauth123")).toBe("INTERCEPTED:gho_oauth123:21600");
 });
 

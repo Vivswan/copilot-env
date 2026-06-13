@@ -12,7 +12,7 @@ import {
   inspectCodexWiring,
   runCodex,
 } from "../src/codex/config.ts";
-import { agentLauncherCommand } from "../src/utils/root.ts";
+import { agentLauncherCommand, proxyTokenCommand } from "../src/utils/root.ts";
 
 const SAVED_HOME = process.env.HOME;
 const SAVED_CODEX_HOME = process.env.CODEX_HOME;
@@ -110,7 +110,8 @@ test("enforces every managed field while preserving unknown user keys", () => {
   expect(other.base_url).toBe("http://other/v1");
   expect(other.env_key).toBe("OTHER_KEY");
 
-  expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe("OPENAI_API_KEY=old\n");
+  // Direct resolves via auth.command; any stale proxy OPENAI_API_KEY in .env is scrubbed.
+  expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe("");
 });
 
 test("direct uses the launcher auth.command (no env_key, no token at rest), classified direct", () => {
@@ -199,7 +200,6 @@ test("proxy mode enforces every managed field while preserving unknown user keys
   const rc = configureCodexConfig(codexHome, {
     proxy: true,
     baseUrl: "http://localhost:4141/v1",
-    apiKey: "secret-key",
   });
   expect(rc).toBe(0);
 
@@ -211,7 +211,15 @@ test("proxy mode enforces every managed field while preserving unknown user keys
   const provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
   expect(provider.base_url).toBe("http://localhost:4141/v1");
   expect(provider.name).toBe("copilot-env");
-  expect(provider.env_key).toBe("OPENAI_API_KEY"); // stale value corrected
+  // Proxy resolves its key via auth.command (the shared proxy-token script: ensure +
+  // print); the stale env_key is scrubbed (Codex forbids auth + env_key together).
+  expect(provider.env_key).toBeUndefined();
+  const proxyAuthCmd = proxyTokenCommand();
+  expect(asRecord(provider.auth).command).toBe(proxyAuthCmd.command);
+  expect(asRecord(provider.auth).args).toEqual(proxyAuthCmd.args);
+  expect(String(asRecord(provider.auth).args)).toContain("proxy-token");
+  // A generous timeout so the first auth attempt outlasts a proxy cold start.
+  expect(asRecord(provider.auth).timeout_ms).toBe(180000);
   expect(provider.wire_api).toBe("responses"); // missing managed field filled
   expect(provider.requires_openai_auth).toBe(false);
   expect(provider.supports_websockets).toBe(false);
@@ -222,78 +230,38 @@ test("proxy mode enforces every managed field while preserving unknown user keys
   expect(other.base_url).toBe("http://other/v1");
   expect(other.env_key).toBe("OTHER_KEY");
 
-  expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe("OPENAI_API_KEY=secret-key\n");
+  // No key is baked into .env (resolved at runtime by auth.command).
+  expect(existsSync(join(codexHome, ".env"))).toBe(false);
 });
 
-test("replaces OPENAI_API_KEY in .env in place, preserving other lines", () => {
+test("proxy mode scrubs a stale OPENAI_API_KEY from .env, preserving other lines", () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
   process.env.HOME = dir;
   const codexHome = join(dir, ".codex");
   mkdirSync(codexHome, { recursive: true });
 
+  // A .env left by the old env_key wiring (incl. a look-alike + commented key + an
+  // `export` form). Proxy now resolves via auth.command, so the real OPENAI_API_KEY
+  // assignments are scrubbed while everything else survives.
   writeFileSync(
     join(codexHome, ".env"),
-    ["# my secrets", "FOO=bar", "OPENAI_API_KEY=old", "BAZ=qux", ""].join("\n"),
-  );
-
-  const rc = configureCodexConfig(codexHome, {
-    proxy: true,
-    baseUrl: "http://localhost:4141/v1",
-    apiKey: "fresh-key",
-  });
-  expect(rc).toBe(0);
-
-  // Comment + unrelated vars survive; OPENAI_API_KEY is updated in place.
-  expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe(
-    ["# my secrets", "FOO=bar", "OPENAI_API_KEY=fresh-key", "BAZ=qux", ""].join("\n"),
-  );
-});
-
-test("appends OPENAI_API_KEY to an existing .env that lacks it", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  const codexHome = join(dir, ".codex");
-  mkdirSync(codexHome, { recursive: true });
-
-  writeFileSync(join(codexHome, ".env"), ["FOO=bar", ""].join("\n"));
-
-  const rc = configureCodexConfig(codexHome, {
-    proxy: true,
-    baseUrl: "http://localhost:4141/v1",
-    apiKey: "k",
-  });
-  expect(rc).toBe(0);
-
-  expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe(
-    ["FOO=bar", "OPENAI_API_KEY=k", ""].join("\n"),
-  );
-});
-
-test("dedups duplicates, leaves look-alike/commented keys, normalizes CRLF", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  const codexHome = join(dir, ".codex");
-  mkdirSync(codexHome, { recursive: true });
-
-  // CRLF input with a comment, a look-alike key (must NOT match), a commented
-  // key, an `export ` assignment, and a later duplicate assignment.
-  writeFileSync(
-    join(codexHome, ".env"),
-    "# c\r\nOPENAI_API_KEY_SUFFIX=keep\r\n#OPENAI_API_KEY=disabled\r\nexport OPENAI_API_KEY=old1\r\nOPENAI_API_KEY=old2\r\n",
+    [
+      "# my secrets",
+      "FOO=bar",
+      "OPENAI_API_KEY_SUFFIX=keep",
+      "#OPENAI_API_KEY=disabled",
+      "export OPENAI_API_KEY=old1",
+      "OPENAI_API_KEY=old2",
+      "",
+    ].join("\n"),
   );
 
   expect(
-    configureCodexConfig(codexHome, {
-      proxy: true,
-      baseUrl: "http://localhost:4141/v1",
-      apiKey: "K",
-    }),
+    configureCodexConfig(codexHome, { proxy: true, baseUrl: "http://localhost:4141/v1" }),
   ).toBe(0);
 
-  // The first (export) assignment is replaced in place, the later duplicate is
-  // dropped, look-alike/commented/comment lines survive, and CRLF -> "\n".
   expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe(
-    ["# c", "OPENAI_API_KEY_SUFFIX=keep", "#OPENAI_API_KEY=disabled", "OPENAI_API_KEY=K", ""].join(
+    ["# my secrets", "FOO=bar", "OPENAI_API_KEY_SUFFIX=keep", "#OPENAI_API_KEY=disabled", ""].join(
       "\n",
     ),
   );
@@ -347,7 +315,11 @@ test("runCodex --proxy writes the proxy provider at CODEX_HOME", () => {
   expect(doc.model_provider).toBe("copilot-env");
   const provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
   expect(provider.base_url).toBe("http://localhost:4141/v1");
-  expect(readFileSync(join(codexHome, ".env"), "utf8")).toContain("OPENAI_API_KEY=");
+  // Proxy resolves the key at runtime via auth.command; nothing is baked into .env.
+  expect(provider.env_key).toBeUndefined();
+  expect(asRecord(provider.auth).command).toBe(proxyTokenCommand().command);
+  expect(asRecord(provider.auth).args).toEqual(proxyTokenCommand().args);
+  expect(existsSync(join(codexHome, ".env"))).toBe(false);
 });
 
 test("runCodex --proxy and --direct force the selected provider (no probe)", () => {
@@ -388,35 +360,37 @@ test("runCodex --proxy and --direct force the selected provider (no probe)", () 
   );
 });
 
-test("toggling direct -> proxy scrubs the direct-only auth/http_headers from the shared table", () => {
+test("toggling direct <-> proxy swaps the mode-specific keys on the shared table", () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
   process.env.HOME = dir;
   const codexHome = join(dir, ".codex");
 
-  // Start direct: the table carries the managed auth + http_headers.
+  // Start direct: the table carries the managed auth (agent auth --get) + http_headers.
   expect(configureCodexConfig(codexHome, { codexExecVersion: "0.139.0" })).toBe(0);
   let provider = asRecord(
     asRecord(asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8"))).model_providers)[
       "copilot-env"
     ],
   );
-  expect(provider.auth).toBeDefined();
+  expect(asRecord(provider.auth).args).toEqual(["auth", "--get"]);
   expect(provider.http_headers).toBeDefined();
 
-  // Switch to proxy on the SAME table: the direct-only keys must be gone.
+  // Switch to proxy on the SAME table: the proxy auth (/bin/sh -c ensure + print)
+  // replaces the direct auth, env_key stays absent, and direct-only http_headers is
+  // scrubbed.
   expect(
     configureCodexConfig(codexHome, {
       proxy: true,
       baseUrl: "http://localhost:4141/v1",
-      apiKey: "k",
     }),
   ).toBe(0);
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
   provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
   expect(provider.base_url).toBe("http://localhost:4141/v1");
-  expect(provider.env_key).toBe("OPENAI_API_KEY");
-  expect(provider.auth).toBeUndefined();
+  expect(provider.env_key).toBeUndefined();
+  expect(asRecord(provider.auth).command).toBe(proxyTokenCommand().command);
+  expect(asRecord(provider.auth).args).toEqual(proxyTokenCommand().args);
   expect(provider.http_headers).toBeUndefined();
 });
 
@@ -459,7 +433,6 @@ test("proxy mode rejects a base_url containing invalid characters", () => {
   const rc = configureCodexConfig(join(dir, ".codex"), {
     proxy: true,
     baseUrl: "http://bad url/v1",
-    apiKey: "k",
   });
   expect(rc).toBe(1);
 });

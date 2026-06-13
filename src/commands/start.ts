@@ -1,5 +1,7 @@
 // `agent start`: launches the proxy daemon, applies defaults, and syncs aliases.
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
 import { CopilotAdminClient } from "../copilot_api/admin.ts";
@@ -86,6 +88,50 @@ export interface StartArgs {
    * exchange (`--no-passthrough`). Undefined => auto-detect from the token shape.
    */
   passthrough?: boolean;
+  /**
+   * `--ensure`: ensure the proxy is running (start it if down), with all output on
+   * stderr and nothing on stdout. The agents' proxy resolvers run this before printing
+   * the key, so opening an agent in proxy mode auto-starts the proxy.
+   */
+  ensure?: boolean;
+}
+
+// True when OUR proxy is genuinely up: the tracked, alive copilot-api pid AND the port
+// it actually recorded both confirm it. Reading pid AND port from the SAME run-state
+// snapshot ties the probe to the daemon's real listening port -- so a moved port (start
+// chose a different one) or a stranger on the default port can't produce a false result.
+async function proxyIsRunning(): Promise<boolean> {
+  const { pid, port } = new CopilotEnvRunState().read();
+  if (pid === undefined || !pidAlive(pid) || !(await isCopilotApiPid(pid))) {
+    return false;
+  }
+  const probePort = port ?? Number(COPILOT_API_PORT_DEFAULT);
+  try {
+    await fetch(`http://localhost:${probePort}/`, { signal: AbortSignal.timeout(2000) });
+    return true; // any HTTP response (even an error status) means it's listening
+  } catch {
+    return false;
+  }
+}
+
+// Ensure the proxy is up: a NO-OP when it is already running (see proxyIsRunning),
+// otherwise bring it up by spawning a full `agent start`. We start ONLY when it's not
+// running, so a healthy proxy is never restarted. Any start output goes to OUR stderr,
+// never stdout.
+async function runStartEnsure(): Promise<void> {
+  if (await proxyIsRunning()) return; // already up + ours
+  const result = spawnSync(process.execPath, [join(PROJECT_ROOT, "src/cli.ts"), "start"], {
+    stdio: ["ignore", 2, 2], // child stdout + stderr -> our stderr
+    windowsHide: true,
+  });
+  if (result.error) consola.warn(`could not auto-start the proxy: ${result.error.message}`);
+  // Confirm it actually came up (re-reads the run state, so it sees the port `start`
+  // recorded); a non-zero exit lets the agents' `start --ensure && auth
+  // --print-proxy-token` chain SKIP printing a token for a proxy that isn't serving.
+  if (!(await proxyIsRunning())) {
+    consola.error("the proxy is not running after `agent start`");
+    process.exitCode = 1;
+  }
 }
 
 function applyDefaultConfig(config: CopilotApiConfig): void {
@@ -275,6 +321,10 @@ function assertProxyFloor(): void {
 
 /** `start`: launch copilot-api detached, wait for readiness, sync aliases. */
 export async function runStart(args: StartArgs): Promise<void> {
+  if (args.ensure) {
+    await runStartEnsure();
+    return;
+  }
   const paths = new CopilotApiPaths();
   const config = new CopilotApiConfig();
 

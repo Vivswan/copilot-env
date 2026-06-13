@@ -277,16 +277,15 @@ test("codex: not configured is ok; each broken part warns with a precise message
   };
   // No config at all -> ok (user never wired Codex).
   expect(checkCodex({ ...wired, configExists: false, providerWired: false }).status).toBe("ok");
-  // Fully wired -> ok, multi-line detail: wiring, proxy, then each token source.
+  // Fully wired -> ok, multi-line detail: wiring, proxy, then the auth.command resolver.
   const ok = checkCodex(wired);
   expect(ok.status).toBe("ok");
   expect(ok.detail).toContain("copilot-env");
   expect(ok.detail).toContain("4141");
   expect(ok.detail).toContain("provider: proxy");
-  expect(ok.detail.split("\n")).toHaveLength(5);
+  expect(ok.detail.split("\n")).toHaveLength(4);
   expect(ok.detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
-  expect(ok.detail).toContain(`${join("/c", ".env")}: present`);
-  expect(ok.detail).toContain("in environment: absent");
+  expect(ok.detail).toContain("--print-proxy-token");
   // model_provider not selected.
   expect(
     checkCodex({ ...wired, providerSelected: false, modelProvider: "openai", providerWired: false })
@@ -313,23 +312,15 @@ test("codex: not configured is ok; each broken part warns with a precise message
       providerWired: false,
     }).detail,
   ).toContain(`config.toml: ${join("/c", "config.toml")}`);
-  // env_key is not OPENAI_API_KEY.
-  const wrongEnvKey = checkCodex({ ...wired, envKeyMatches: false, providerWired: false });
-  expect(wrongEnvKey.detail).toContain("env_key");
-  expect(wrongEnvKey.detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
-  // provider wired but no token in .env or environment.
-  const missingToken = checkCodex({ ...wired, envKeyInDotenv: false, tokenAvailable: false });
-  expect(missingToken.detail).toContain("OPENAI_API_KEY");
-  expect(missingToken.detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
-  // token only in the environment (not .env) is still wired-ok.
-  const fromEnv = checkCodex({
-    ...wired,
-    envKeyInDotenv: false,
-    envKeyInEnviron: true,
-    tokenAvailable: true,
-  });
-  expect(fromEnv.status).toBe("ok");
-  expect(fromEnv.detail).toContain("in environment: present");
+  // Not fully wired (e.g. the managed proxy auth.command is missing/foreign).
+  const notWired = checkCodex({ ...wired, providerWired: false });
+  expect(notWired.status).toBe("warn");
+  expect(notWired.detail).toContain("not fully wired");
+  expect(notWired.detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
+  // A wired proxy is ok regardless of any env token (the key comes from auth.command).
+  const noEnvToken = checkCodex({ ...wired, envKeyInDotenv: false, tokenAvailable: false });
+  expect(noEnvToken.status).toBe("ok");
+  expect(noEnvToken.detail).toContain("--print-proxy-token");
 
   const direct = checkCodex({
     ...wired,

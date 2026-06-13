@@ -169,6 +169,10 @@ program
   )
   .option("--del", "Clear the stored token (de-authenticate).")
   .option("--check", "Report auth status and exit (0 authenticated, 1 not).")
+  .option(
+    "--print-proxy-token",
+    "Print the local proxy's API key to stdout (used by proxy-mode agents after `start --ensure`).",
+  )
   .action((opts: Opts) =>
     runSafe(() =>
       runAuth({
@@ -177,6 +181,7 @@ program
         get: Boolean(opts.get),
         del: Boolean(opts.del),
         check: Boolean(opts.check),
+        printProxyToken: Boolean(opts.printProxyToken),
       }),
     ),
   );
@@ -197,12 +202,17 @@ program
     "--no-passthrough",
     "Force the standard editor token exchange even for a PAT-shaped token.",
   )
+  .option(
+    "--ensure",
+    "Ensure the proxy is running (start it if down), output on stderr only (used by the agents' proxy resolvers to auto-start the proxy).",
+  )
   .action((opts: Opts) =>
     runSafe(() =>
       runStart({
         dryRun: Boolean(opts.dryRun),
         port: parsePort(opts.port),
         passthrough: opts.passthrough as boolean | undefined,
+        ensure: Boolean(opts.ensure),
       }),
     ),
   );

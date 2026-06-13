@@ -22,6 +22,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { consola } from "consola";
+import { CopilotApiConfig } from "../copilot_api/config.ts";
 import {
   AUTH_PROVIDERS,
   type AuthProvider,
@@ -48,6 +49,8 @@ export interface AuthArgs {
   del?: boolean;
   /** `--check`: report auth status; exit 0 authenticated, 1 not. */
   check?: boolean;
+  /** `--print-proxy-token`: print the local proxy's API key to stdout (for proxy-mode agents). */
+  printProxyToken?: boolean;
 }
 
 function asProvider(provider: string): AuthProvider {
@@ -252,6 +255,19 @@ function runGet(): void {
   process.stdout.write(`${token}\n`);
 }
 
+/**
+ * `--print-proxy-token`: print the local copilot-api proxy's API key on stdout. The
+ * proxy-mode agents' resolvers run this (after `agent start --ensure`, chained with
+ * `&&`) to authenticate to the local proxy. Distinct from `--get` (the upstream GitHub
+ * credential).
+ */
+function runPrintProxyToken(): void {
+  const key = new CopilotApiConfig().ensureApiKey();
+  // codeql[js/clear-text-logging] -- emitting the proxy key on stdout IS this command's
+  // contract (the proxy-mode agents' auth.command / apiKeyHelper consume it).
+  process.stdout.write(`${key}\n`);
+}
+
 function runDel(): void {
   if (new Credential().clear()) {
     logger.success("De-authenticated. Run `agent auth` to log in again.");
@@ -299,12 +315,18 @@ export async function ensureAuthenticated(): Promise<void> {
  * is the non-interactive gh-token path (provide the token inline, or via env).
  */
 export async function runAuth(args: AuthArgs): Promise<void> {
-  const subActions = [args.get, args.del, args.check].filter(Boolean).length;
+  const subActions = [args.get, args.del, args.check, args.printProxyToken].filter(Boolean).length;
   if (subActions > 1) {
-    throw new Error("--get, --del, and --check are mutually exclusive");
+    throw new Error("--get, --del, --check, and --print-proxy-token are mutually exclusive");
   }
   if (args.set !== undefined && subActions > 0) {
-    throw new Error("--set provisions a token and cannot combine with --get/--del/--check");
+    throw new Error(
+      "--set provisions a token and cannot combine with --get/--del/--check/--print-proxy-token",
+    );
+  }
+  if (args.printProxyToken) {
+    runPrintProxyToken();
+    return;
   }
   if (args.get) {
     runGet();

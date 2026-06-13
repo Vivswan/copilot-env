@@ -16,7 +16,6 @@
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
-import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
 import {
@@ -34,7 +33,7 @@ import {
   type ManagedAgentMode,
   providerModeExitCode,
 } from "../utils/provider_mode.ts";
-import { AGENT_AUTH_GET_ARGS, agentLauncherCommand } from "../utils/root.ts";
+import { AGENT_AUTH_GET_ARGS, agentLauncherCommand, PROXY_TOKEN_SCRIPT_SH } from "../utils/root.ts";
 
 const logger = createStderrLogger();
 
@@ -250,16 +249,11 @@ export function configureClaudeConfig(
     return;
   }
 
-  // proxy: resolve the local proxy endpoint + token and write a helper that
-  // prints the token (kept out of settings.json, chmod 0700 like Codex's .env).
+  // proxy: write a helper that ensures the proxy is running and prints its key
+  // (`agent start --ensure` then `agent auth --print-proxy-token`), so opening Claude in
+  // proxy mode auto-starts the proxy. The key is resolved at helper-run time (not baked in).
   const port = copilotApiResolvePort();
-  let token: string;
-  try {
-    token = new CopilotApiConfig().ensureApiKey();
-  } catch (e) {
-    throw new Error(`failed to persist the proxy auth token: ${errMessage(e)}`);
-  }
-  writeHelperScript(proxyHelperPath(claudeHome), literalTokenHelperScript(token));
+  writeHelperScript(proxyHelperPath(claudeHome), proxyHelperScript());
   doc.apiKeyHelper = proxyHelperPath(claudeHome);
   applyManagedEnv(doc, "proxy", `http://localhost:${port}`);
   saveSettings(settingsPath, doc);
@@ -268,15 +262,14 @@ export function configureClaudeConfig(
   }
 }
 
-// The managed literal-token helper shape: `#!/bin/sh` + a `printf '%s' '<token>'`
-// line. Used for the PROXY helper (which prints the local proxy key verbatim);
-// the direct helper instead execs `agent auth --get` (see directHelperScript).
-const TOKEN_HELPER_PREFIX = "#!/bin/sh\nprintf '%s' '";
-
-/** An apiKeyHelper that prints a literal token verbatim on stdout (the proxy key). */
-function literalTokenHelperScript(token: string): string {
-  const escaped = token.replace(/'/g, `'\\''`); // single-quote-safe for /bin/sh
-  return `${TOKEN_HELPER_PREFIX}${escaped}'\n`;
+/**
+ * The proxy apiKeyHelper body: exec the SHARED `scripts/proxy-token.sh`, which ensures
+ * the proxy is up then prints its key -- so opening Claude in proxy mode auto-starts the
+ * proxy. The same script backs Codex's `auth.command`; the key is resolved at run time
+ * (nothing is baked into this thin wrapper).
+ */
+function proxyHelperScript(): string {
+  return `#!/bin/sh\nexec ${shQuote(PROXY_TOKEN_SCRIPT_SH)}\n`;
 }
 
 // --- the `--check` provider report ------------------------------------------

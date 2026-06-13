@@ -332,7 +332,6 @@ export function checkAuth(f: AuthFacts): CheckResult {
 
 export function checkCodex(f: CodexFacts): CheckResult {
   const configPath = join(f.home, "config.toml");
-  const envPath = join(f.home, ".env");
   const base = {
     id: "setup.codex",
     label: "Codex wiring",
@@ -421,29 +420,25 @@ export function checkCodex(f: CodexFacts): CheckResult {
       "provider: proxy",
       withConfigPath(`copilot-env base_url ${f.baseUrl ?? "(missing)"} is not the running proxy`),
     ].join("\n");
-  } else if (!f.envKeyMatches) {
+  } else if (!f.providerWired) {
+    // Selected + base_url ok, but not fully wired: the managed proxy auth.command
+    // (`agent auth --print-proxy-token`, which resolves the key + auto-starts the proxy)
+    // is missing/foreign, and there's no legacy env_key token either.
     detail = [
       "provider: proxy",
-      withConfigPath("copilot-env provider env_key is not OPENAI_API_KEY"),
-    ].join("\n");
-  } else if (!f.tokenAvailable) {
-    detail = [
-      "provider: proxy",
-      withConfigPath(`OPENAI_API_KEY token not found (checked ${envPath} and the environment)`),
+      withConfigPath("copilot-env proxy is not fully wired — run `agent codex --proxy`"),
     ].join("\n");
   }
   if (detail !== null) {
-    return { ...base, status: "warn", detail, fix: "agent codex" };
+    return { ...base, status: "warn", detail, fix: "agent codex --proxy" };
   }
-  // Fully wired: the wiring status, the proxy, then each token source on its
-  // own line (Codex resolves env_key from .env, but an exported var works too).
-  const present = (ok: boolean) => (ok ? "present" : "absent");
+  // Fully wired: the proxy resolves its key at runtime via the managed auth.command
+  // (which also auto-starts the proxy), so there's no baked token to report.
   const detailLines = [
     "provider: proxy",
     `config.toml: ${configPath}`,
     `model_provider copilot-env → ${f.baseUrl}`,
-    `OPENAI_API_KEY in ${envPath}: ${present(f.envKeyInDotenv)}`,
-    `OPENAI_API_KEY in environment: ${present(f.envKeyInEnviron)}`,
+    "auth: local proxy key via `agent auth --print-proxy-token` (auto-starts the proxy)",
   ];
   return { ...base, status: "ok", detail: detailLines.join("\n") };
 }

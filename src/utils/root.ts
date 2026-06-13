@@ -36,6 +36,26 @@ const AGENT_LAUNCHER_PS1: string = join(PROJECT_ROOT, "bin", "agent.ps1");
  */
 export const AGENT_AUTH_GET_ARGS: readonly string[] = ["auth", "--get"];
 
+/** The shared proxy-token scripts (ensure the proxy + print its key); .ps1 is the
+ *  Windows parity. Referenced by Codex's `auth.command` and Claude's `apiKeyHelper`. */
+export const PROXY_TOKEN_SCRIPT_SH: string = join(PROJECT_ROOT, "scripts", "proxy-token.sh");
+const PROXY_TOKEN_SCRIPT_PS1: string = join(PROJECT_ROOT, "scripts", "proxy-token.ps1");
+
+/**
+ * The platform `{ command, args }` to run the shared proxy-token script as a NATIVE
+ * subprocess (Codex's `auth.command`): `/bin/sh <script>.sh` on POSIX,
+ * `powershell -File <script>.ps1` on Windows.
+ */
+export function proxyTokenCommand(): { command: string; args: string[] } {
+  if (process.platform === "win32") {
+    return {
+      command: "powershell",
+      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", PROXY_TOKEN_SCRIPT_PS1],
+    };
+  }
+  return { command: "/bin/sh", args: [PROXY_TOKEN_SCRIPT_SH] };
+}
+
 /**
  * The platform `{ command, args }` to invoke `agent <subArgs...>` as a NATIVE
  * subprocess -- i.e. spawned directly by another program (Codex's `auth.command`,

@@ -69,8 +69,11 @@ if ($Sub -eq 'start' -and `
         (Test-Path $AuState) -and `
         (Select-String -Path $AuState -Pattern '"enabled": true' -Quiet)) {
     # Non-fatal: write the failure to stderr (stdout stays pure) and continue.
-    # Not Write-Error -- $ErrorActionPreference is 'Stop', which would re-throw.
-    try { & bun (Join-Path $Snap 'src\autoupdate\preflight.ts') }
+    # Not Write-Error -- $ErrorActionPreference is 'Stop', which would re-throw. Pipe any stdout
+    # the child emits to stderr (the PowerShell-valid equivalent of the POSIX twin's `>&2`; a
+    # literal `1>&2` is NOT valid PowerShell) so nothing leaks into the bootstrap stdout the
+    # shell wrapper evals.
+    try { & bun (Join-Path $Snap 'src\autoupdate\preflight.ts') | ForEach-Object { [Console]::Error.WriteLine($_) } }
     catch { [Console]::Error.WriteLine("autoupdate preflight failed: $_") }
 }
 

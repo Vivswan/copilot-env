@@ -6,7 +6,7 @@
 //     `agent auth --get` (provider-driven: gh-cli -> gh, copilot/gh-token -> stored token)
 //     and env.ANTHROPIC_BASE_URL = https://api.githubcopilot.com.
 //   - proxy:  the local copilot-api proxy. apiKeyHelper -> copilot-proxy-token.{sh,cmd}
-//     (prints the proxy key) and env.ANTHROPIC_BASE_URL = http://localhost:<port>.
+//     (prints the proxy key) and env.ANTHROPIC_BASE_URL = http://127.0.0.1:<port>.
 //
 // The helper is a script FILE whose path Claude stores in apiKeyHelper (so health can read
 // it back and mode detection keys off the exact path). It must be runnable by bare path:
@@ -77,8 +77,8 @@ function winQuote(s: string): string {
  *  off` keeps the command itself off stdout; CRLF endings so cmd.exe parses it reliably. Literal
  *  `%` is doubled to `%%` -- in a batch file `%` triggers variable expansion even inside quotes,
  *  so a checkout path containing `%` would otherwise be mangled. (`!` needs no escaping: we never
- *  `setlocal enabledelayedexpansion`, so delayed expansion is off.) */
-function cmdHelperBody(command: string, args: readonly string[]): string {
+ *  `setlocal enabledelayedexpansion`, so delayed expansion is off.) Exported for tests. */
+export function cmdHelperBody(command: string, args: readonly string[]): string {
   const line = [command, ...args].map(winQuote).join(" ").replace(/%/g, "%%");
   return `@echo off\r\n${line}\r\n`;
 }
@@ -252,7 +252,7 @@ function applyManagedEnv(doc: Record<string, unknown>, mode: ManagedAgentMode, b
  * Apply the managed Claude wiring at `claudeHome`. Direct writes the apiKeyHelper
  * that execs `agent auth --get` (the single credential resolver) + the Copilot
  * base URL; proxy resolves the local proxy port + token, writes a helper that
- * prints that token, and points the base URL at localhost. Either way the merge
+ * prints that token, and points the base URL at 127.0.0.1. Either way the merge
  * is surgical (only managed keys change) and the OTHER mode's settings are
  * overwritten so switching modes is clean. Throws on an unwritable home /
  * malformed settings.json / unresolvable proxy token.
@@ -289,7 +289,10 @@ export function configureClaudeConfig(
   const port = copilotApiResolvePort();
   writeHelperScript(proxyHelperPath(claudeHome), proxyHelperScript());
   doc.apiKeyHelper = proxyHelperPath(claudeHome);
-  applyManagedEnv(doc, "proxy", `http://localhost:${port}`);
+  // 127.0.0.1, not `localhost`: the daemon binds IPv4, and on Windows the Claude CLI resolves
+  // `localhost` to ::1 first with no IPv4 fallback -> ECONNREFUSED while health reads green.
+  // In lockstep with openaiBaseUrl(); env.ts's isLocalProxyUrl already accepts 127.0.0.1.
+  applyManagedEnv(doc, "proxy", `http://127.0.0.1:${port}`);
   saveSettings(settingsPath, doc);
   if (!quiet) {
     logger.log(`  ✓ Claude config written → ${settingsPath} (proxy mode → port ${port})`);

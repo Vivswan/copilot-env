@@ -34,7 +34,7 @@ import {
   proxyVersionBoundsStatus,
 } from "../copilot_api/version.ts";
 import { nodeModulesFresh, resolveMinimumReleaseAgeSeconds } from "../proxy_float.ts";
-import { childPathPrepending, cliSpawn, resolveCommand } from "../utils/command.ts";
+import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
 import {
   CLAUDE_PROBE,
   CODEX_PROBE,
@@ -267,7 +267,7 @@ function codexDirectAuth(): Promise<CodexDirectAuthFacts> {
       timeout: 5000,
       windowsHide: true,
       shell: s.shell,
-      env: { ...process.env, PATH: childPathPrepending([dirname(command)]) },
+      env: childEnvWithPath([dirname(command)]),
     });
     child.on("error", () => resolve({ command, authenticated: false }));
     child.on("close", (code) => resolve({ command, authenticated: code === 0 }));
@@ -332,11 +332,9 @@ function runLiveCli(
       // Put the resolved CLI's and gh's bin dirs on the child PATH so an nvm-only
       // toolchain (node-shim CLI, the config's bare `gh` call) is reachable even
       // when the parent process never sourced nvm.
-      env: {
-        ...process.env,
-        [homeEnvVar]: home,
-        PATH: childPathPrepending([dirname(resolved), ghPath ? dirname(ghPath) : null]),
-      },
+      env: childEnvWithPath([dirname(resolved), ghPath ? dirname(ghPath) : null], {
+        extra: { [homeEnvVar]: home },
+      }),
     });
     const CAP = 64 * 1024 * 1024;
     let out = "";

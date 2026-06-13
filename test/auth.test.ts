@@ -13,6 +13,9 @@ const SAVED = {
   COPILOT_API_HOME: process.env.COPILOT_API_HOME,
   GH_TOKEN: process.env.GH_TOKEN,
   GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+  // COPILOT_GITHUB_TOKEN is FIRST in the gh-token env precedence (GH_TOKEN_ENV_VARS); save it so
+  // a runner that exports it can't leak into the "no token" tests and silently make them pass.
+  COPILOT_GITHUB_TOKEN: process.env.COPILOT_GITHUB_TOKEN,
 };
 let dir = "";
 
@@ -36,6 +39,9 @@ function isolate(): { claudeHome: string } {
   process.env.COPILOT_API_HOME = join(dir, "proxy-home");
   process.env.HOME = dir;
   process.env.CODEX_HOME = join(dir, ".codex");
+  // Clear an inherited COPILOT_GITHUB_TOKEN so a real one in the runner env can't satisfy the
+  // "no credential" paths (afterEach restores it). GH_TOKEN/GITHUB_TOKEN are set per-test.
+  delete process.env.COPILOT_GITHUB_TOKEN;
   const claudeHome = join(dir, ".claude");
   process.env.CLAUDE_CONFIG_DIR = claudeHome;
   return { claudeHome };

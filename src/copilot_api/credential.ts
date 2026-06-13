@@ -8,7 +8,7 @@
 import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { dirname } from "node:path";
-import { childPathPrepending, cliSpawn, resolveCommand } from "../utils/command.ts";
+import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
 import { type AuthProvider, CopilotEnvState, type TokenProvider } from "./env_state.ts";
 import { CopilotApiPaths } from "./paths.ts";
 
@@ -33,7 +33,7 @@ export function ghAuthToken(): string | null {
     timeout: 5000,
     windowsHide: true,
     shell: s.shell,
-    env: { ...process.env, PATH: childPathPrepending([dirname(ghPath)]) },
+    env: childEnvWithPath([dirname(ghPath)]),
   });
   if (result.error || result.status !== 0) return null;
   return (result.stdout ?? "").trim() || null;

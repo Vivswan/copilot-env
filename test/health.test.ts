@@ -34,6 +34,7 @@ import {
   type CodexFacts,
   evalCodex,
   evalShellFiles,
+  gatherFacts,
   type HealthFacts,
   type RuntimeFacts,
 } from "../src/health/probe.ts";
@@ -193,6 +194,25 @@ test("copilot-env version check is always ok and surfaces the version", () => {
 });
 
 // --- runtime checks (preserve original semantics) ---------------------------
+
+test("gatherFacts probes the proxy at 127.0.0.1, never localhost (Windows IPv6 safety)", async () => {
+  // The daemon binds IPv4; on Windows `localhost` resolves to ::1 first with no fallback, so the
+  // reachability probe MUST hit 127.0.0.1 or health falsely reports the proxy down. Capture the URL.
+  let probed = "";
+  await gatherFacts(
+    "runtime",
+    {},
+    {
+      resolvePort: () => "4141",
+      readState: () => ({ pid: undefined, port: 4141 }),
+      reach: async (url: string) => {
+        probed = url;
+        return true;
+      },
+    },
+  );
+  expect(probed).toBe("http://127.0.0.1:4141/");
+});
 
 test("runtime port fails only when unreachable", () => {
   expect(checkRuntimePort(RUNTIME_OK).status).toBe("ok");

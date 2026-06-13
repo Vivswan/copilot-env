@@ -23,7 +23,7 @@ export interface CodexHostArgs {
 // inspects the shared-state symlink farm. Exported so `agent health` can report
 // the per-host directory without rebuilding the path.
 export function getHostLocalCodexHome(): string {
-  return `${HOME}/.codex/hosts/${getSanitizedHostname()}`;
+  return path.join(HOME, ".codex", "hosts", getSanitizedHostname());
 }
 
 /**

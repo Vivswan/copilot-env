@@ -16,7 +16,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { childPathPrepending, cliSpawn, resolveCommand } from "./command.ts";
+import { childEnvWithPath, cliSpawn, resolveCommand } from "./command.ts";
 import { errMessage } from "./error.ts";
 import { createStderrLogger } from "./logger.ts";
 import { sleepSync } from "./time.ts";
@@ -226,7 +226,7 @@ function defaultGhAuthOk(ghPath: string): boolean {
     timeout: 5000,
     windowsHide: true,
     shell: s.shell,
-    env: { ...process.env, PATH: childPathPrepending([dirname(ghPath)]) },
+    env: childEnvWithPath([dirname(ghPath)]),
   });
   return !result.error && result.status === 0;
 }
@@ -353,28 +353,21 @@ export function probeDirectWorks(
   try {
     tmpHome = mkdtempSync(join(tmpdir(), `copilot-env-${descriptor.cli}-`));
     writeDirectConfig(tmpHome);
-    // Build the COMPLETE child environment: every inherited var EXCEPT the
-    // provider vars (so a leaked ANTHROPIC_AUTH_TOKEN, OPENAI_BASE_URL, or any
-    // OPENAI_*/ANTHROPIC_* export can't hijack where the "direct" test routes or
-    // authenticates), then the temp home + a PATH that puts the resolved CLI's and
-    // gh's bin dirs first (the CLI may be a node-shim and its direct config shells
-    // out to `gh` by name, so an nvm-only toolchain must be reachable even if the
-    // parent never sourced nvm). GH_*/GITHUB_* are deliberately KEPT -- Direct
-    // authenticates via `gh auth token`, so clearing them would break it.
-    // Match case-INSENSITIVELY: Windows env names are case-insensitive, so an
-    // `OpenAI_BASE_URL` or `anthropic_auth_token` must be stripped too. The
-    // prefixes are uppercase, so upcase each key (and the clearEnv names) to compare.
+    // Build the COMPLETE child environment via the shared helper: every inherited var EXCEPT the
+    // provider vars (so a leaked ANTHROPIC_AUTH_TOKEN, OPENAI_BASE_URL, or any OPENAI_*/ANTHROPIC_*
+    // export can't hijack where the "direct" test routes or authenticates), plus the temp home and
+    // a PATH that puts the resolved CLI's and gh's bin dirs first (the CLI may be a node-shim whose
+    // direct config shells out to `gh` by name, so an nvm-only toolchain must be reachable even if
+    // the parent never sourced nvm). GH_*/GITHUB_* are deliberately KEPT -- Direct authenticates via
+    // `gh auth token`. The omit predicate matches case-INSENSITIVELY (Windows env names are
+    // case-insensitive, so `OpenAI_BASE_URL` must be stripped too); childEnvWithPath upcases each
+    // key for us and handles the PATH-casing dedup centrally.
     const cleared = new Set(descriptor.clearEnv.map((name) => name.toUpperCase()));
-    const childEnv: Record<string, string> = {};
-    for (const [key, value] of Object.entries(process.env)) {
-      if (value === undefined) continue;
-      const upper = key.toUpperCase();
-      if (cleared.has(upper)) continue;
-      if (PROVIDER_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix))) continue;
-      childEnv[key] = value;
-    }
-    childEnv[descriptor.homeEnvVar] = tmpHome;
-    childEnv.PATH = childPathPrepending([dirname(cliPath), dirname(ghPath)]);
+    const childEnv = childEnvWithPath([dirname(cliPath), dirname(ghPath)], {
+      extra: { [descriptor.homeEnvVar]: tmpHome },
+      omit: (upper) =>
+        cleared.has(upper) || PROVIDER_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix)),
+    });
 
     // The smoke call is a single live model call, so a transient blip (a fast
     // 4xx/5xx, a momentary network hiccup) must not silently downgrade a working

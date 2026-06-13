@@ -50,7 +50,10 @@ export function copilotApiResolvePort(): string {
   return statePort !== undefined ? String(statePort) : String(defaultProxyPort());
 }
 
-/** The OpenAI-wire proxy base URL for `port` (single source for the emitted string). */
+/** The OpenAI-wire proxy base URL for `port` (single source for the emitted string). Uses the
+ *  127.0.0.1 literal, not `localhost`: the daemon binds IPv4, and on Windows `localhost` resolves
+ *  to ::1 first with no IPv4 fallback -- so a `localhost` base_url would make the agent CLI
+ *  ECONNREFUSED against the proxy. Matches the 127.0.0.1 the liveness probes already use. */
 export function openaiBaseUrl(port: string): string {
-  return `http://localhost:${port}/v1`;
+  return `http://127.0.0.1:${port}/v1`;
 }

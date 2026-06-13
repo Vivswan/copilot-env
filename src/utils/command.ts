@@ -77,6 +77,34 @@ export function childPathPrepending(dirs: (string | null | undefined)[]): string
   return parts.join(separator);
 }
 
+/**
+ * A child environment derived from the current process env with `dirs` prepended to PATH and
+ * any case-variant PATH key removed, then `opts.extra` applied. On Windows env names are
+ * case-insensitive, so a plain `{ ...process.env, PATH: ... }` yields BOTH the inherited `Path`
+ * AND the new `PATH`; which one the spawned child sees is then undefined. Stripping every
+ * `toUpperCase() === "PATH"` key before setting the single canonical `PATH` makes the child's
+ * PATH deterministic on every platform. This is the ONE way to build a PATH-overriding child
+ * env -- callers that also need to drop keys (e.g. provider env stripping) pass `opts.omit`
+ * rather than hand-rolling the copy loop.
+ */
+export function childEnvWithPath(
+  dirs: (string | null | undefined)[],
+  opts: { extra?: Record<string, string>; omit?: (upperKey: string) => boolean } = {},
+): Record<string, string> {
+  const { extra, omit } = opts;
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined) continue;
+    const upper = key.toUpperCase();
+    if (upper === "PATH") continue; // drop every PATH casing; the canonical PATH is set below
+    if (omit?.(upper)) continue;
+    out[key] = value;
+  }
+  if (extra) Object.assign(out, extra);
+  out.PATH = childPathPrepending(dirs);
+  return out;
+}
+
 /** Quote a single arg for a cmd.exe command line (only when it needs it). */
 function quoteCmdArg(arg: string): string {
   if (arg !== "" && !/[\s"&|<>^()]/.test(arg)) return arg;

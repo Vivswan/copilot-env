@@ -314,7 +314,7 @@ test("runCodex --proxy writes the proxy provider at CODEX_HOME", () => {
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
   const provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
-  expect(provider.base_url).toBe("http://localhost:4141/v1");
+  expect(provider.base_url).toBe("http://127.0.0.1:4141/v1");
   // Proxy resolves the key at runtime via auth.command; nothing is baked into .env.
   expect(provider.env_key).toBeUndefined();
   expect(asRecord(provider.auth).command).toBe(proxyTokenCommand().command);
@@ -344,7 +344,7 @@ test("runCodex --proxy and --direct force the selected provider (no probe)", () 
   let doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
   expect(asRecord(asRecord(doc.model_providers)["copilot-env"]).base_url).toBe(
-    "http://localhost:4141/v1",
+    "http://127.0.0.1:4141/v1",
   );
 
   runCodex({ direct: true });

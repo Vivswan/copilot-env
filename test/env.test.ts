@@ -67,6 +67,24 @@ test("env exports ANTHROPIC_BASE_URL when Claude is proxy at a localhost proxy U
   expect(lines).toContain("export ANTHROPIC_BASE_URL='http://localhost:4141'");
 });
 
+test("env exports a 127.0.0.1 proxy URL (the production shape the writer now emits)", () => {
+  // The Claude writer now emits http://127.0.0.1:<port> (not localhost) so the agent reaches
+  // the IPv4 proxy on Windows. isLocalProxyUrl must accept it -- this is the production path.
+  const home = isolate();
+  writeClaude(home, join(home, PROXY_HELPER_NAME), "http://127.0.0.1:4141");
+  const lines = envLines();
+  expect(lines).toContain("export ANTHROPIC_BASE_URL='http://127.0.0.1:4141'");
+});
+
+test("env clears a stale 127.0.0.1 ANTHROPIC_BASE_URL when Claude switched to direct", () => {
+  const home = isolate();
+  writeClaude(home, join(home, DIRECT_HELPER_NAME), "https://api.githubcopilot.com");
+  process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:4141";
+  const lines = envLines();
+  expect(lines).toContain("unset ANTHROPIC_BASE_URL");
+  expect(lines.some((l) => l.startsWith("export ANTHROPIC_BASE_URL"))).toBe(false);
+});
+
 test("env clears a stale localhost ANTHROPIC_BASE_URL when Claude switched to direct", () => {
   const home = isolate();
   // Claude is now DIRECT, but the shell still carries our old proxy URL.

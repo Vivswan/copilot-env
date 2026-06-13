@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  cmdHelperBody,
   configureClaudeConfig,
   DIRECT_BASE_URL,
   DIRECT_HELPER_NAME,
@@ -86,7 +87,7 @@ test("direct mode writes the managed apiKeyHelper + env and the token helper, pr
   }
 });
 
-test("proxy mode writes proxy wiring (localhost base URL + a token helper), preserving user keys", () => {
+test("proxy mode writes proxy wiring (127.0.0.1 base URL + a token helper), preserving user keys", () => {
   const home = tmpHome();
   configureClaudeConfig(home, "direct"); // seed, then add a user key
   const seeded = readSettings(home);
@@ -98,7 +99,7 @@ test("proxy mode writes proxy wiring (localhost base URL + a token helper), pres
   const doc = readSettings(home);
   expect(doc.apiKeyHelper).toBe(join(home, PROXY_HELPER_NAME));
   const env = doc.env as Record<string, unknown>;
-  expect(env.ANTHROPIC_BASE_URL).toBe(`http://localhost:${copilotApiResolvePort()}`);
+  expect(env.ANTHROPIC_BASE_URL).toBe(`http://127.0.0.1:${copilotApiResolvePort()}`);
   // Disable-betas is a direct-only knob; switching to proxy drops it.
   expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBeUndefined();
   expect(doc.model).toBe("sonnet"); // unrelated user key survives
@@ -112,6 +113,27 @@ test("proxy mode writes proxy wiring (localhost base URL + a token helper), pres
   if (!WIN) {
     expect(statSync(helper).mode & 0o100).not.toBe(0);
   }
+});
+
+test("cmdHelperBody: @echo off + CRLF, quotes paths with spaces, escapes % as %%", () => {
+  // The Windows .cmd helper shells into PowerShell; paths carry spaces/`%` (a legal Windows
+  // path char). winQuote double-quotes the path; cmdHelperBody doubles every `%` so batch
+  // variable-expansion can't mangle it. Pure + platform-independent, so it runs on POSIX CI.
+  const body = cmdHelperBody("powershell", [
+    "-NoProfile",
+    "-File",
+    "C:\\Users\\a b\\50%done\\agent.ps1",
+    "auth",
+    "--get",
+  ]);
+  expect(body.startsWith("@echo off\r\n")).toBe(true);
+  expect(body.endsWith("\r\n")).toBe(true);
+  // path quoted AND every % doubled; bare flags/words stay unquoted.
+  expect(body).toContain('"C:\\Users\\a b\\50%%done\\agent.ps1"');
+  expect(body).toContain("powershell -NoProfile -File ");
+  expect(body).toContain(" auth --get");
+  // no single (unescaped) % survives.
+  expect(/[^%]%[^%]/.test(body)).toBe(false);
 });
 
 test("inspectClaudeWiring classifies direct / proxy / other / none / malformed (by exact path)", () => {

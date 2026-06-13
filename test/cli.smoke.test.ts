@@ -23,7 +23,10 @@ function isolatedProxyEnv(extra: Record<string, string> = {}): Record<string, st
       'model_provider = "copilot-env"',
       "",
       "[model_providers.copilot-env]",
-      'base_url = "http://localhost:4199/v1"',
+      // Production shape: the writer emits 127.0.0.1 (not localhost) so the agent reaches the
+      // IPv4 proxy on Windows. The matcher accepts both; the other fixture keeps a localhost
+      // case to prove backward-compat acceptance.
+      'base_url = "http://127.0.0.1:4199/v1"',
       'env_key = "OPENAI_API_KEY"',
       "",
     ].join("\n"),

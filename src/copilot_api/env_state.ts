@@ -26,6 +26,12 @@ export interface CopilotEnvStateData {
   githubToken: string | null;
   /** How the user authenticated, or null when unset/unrecognized. */
   authProvider: AuthProvider | null;
+  /**
+   * Whether the managed proxy lifecycle is enabled (`agent init --auto-start`): the
+   * agents' proxy resolvers auto-start the proxy on demand AND it auto-stops when idle.
+   * Account/machine-wide, so it lives here beside the credential. Null/absent => off.
+   */
+  autoStart: boolean | null;
 }
 
 // Mirror CopilotEnvRunState/AutoupdateState's patch spelling (`Data[K] | null`).
@@ -38,6 +44,7 @@ type EnvStatePatch = { [K in keyof CopilotEnvStateData]?: CopilotEnvStateData[K]
 const STATE_SCHEMA = v.object({
   githubToken: v.fallback(v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1))), null),
   authProvider: v.fallback(v.nullable(v.picklist(AUTH_PROVIDERS)), null),
+  autoStart: v.fallback(v.nullable(v.boolean()), null),
 });
 
 /**
@@ -58,19 +65,28 @@ export class CopilotEnvState {
     return v.parse(STATE_SCHEMA, this.store.load());
   }
 
+  /** Whether the managed proxy lifecycle (auto-start + idle auto-stop) is enabled. */
+  autoStartEnabled(): boolean {
+    return this.read().autoStart === true;
+  }
+
   /**
-   * Merge `patch`. Unlike the sibling state classes, values are credentials/labels,
-   * so we trim and treat a null/undefined OR blank value as a delete -- a blank token
-   * is never a meaningful value, so it must clear rather than persist `""`.
+   * Merge `patch`. String values (credentials/labels) are trimmed and a null/undefined
+   * OR blank value deletes the key -- a blank token is never meaningful, so it clears
+   * rather than persisting `""`. Boolean values (e.g. `autoStart`) are stored as-is; a
+   * null/undefined boolean deletes the key.
    */
   set(patch: EnvStatePatch): void {
     this.store.update((d) => {
       for (const key of Object.keys(patch) as (keyof EnvStatePatch)[]) {
         const value = patch[key];
-        if (value === null || value === undefined || value.trim() === "") {
+        if (value === null || value === undefined) {
           delete d[key];
+        } else if (typeof value === "string") {
+          if (value.trim() === "") delete d[key];
+          else d[key] = value.trim();
         } else {
-          d[key] = value.trim();
+          d[key] = value;
         }
       }
     });

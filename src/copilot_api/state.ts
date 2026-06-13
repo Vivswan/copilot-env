@@ -11,6 +11,12 @@ export interface CopilotEnvRunStateData {
   pid?: number;
   /** Active CODEX_HOME set by `codex --host` (cleared by `codex --host --delete-host`). */
   codexHome?: string;
+  /**
+   * Epoch ms of the most recent `start --ensure` heartbeat (an agent's proxy resolver
+   * ran). The in-daemon idle watchdog treats this -- alongside the proxy log mtime -- as
+   * activity that resets the idle timer. Cleared by `stop` and on idle auto-stop.
+   */
+  lastEnsureAt?: number;
 }
 
 type StatePatch = { [K in keyof CopilotEnvRunStateData]?: CopilotEnvRunStateData[K] | null };
@@ -26,6 +32,7 @@ const RUN_STATE_SCHEMA = v.object({
   ),
   pid: v.fallback(v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))), undefined),
   codexHome: v.fallback(v.optional(v.pipe(v.string(), v.minLength(1))), undefined),
+  lastEnsureAt: v.fallback(v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))), undefined),
 });
 
 /**
@@ -56,6 +63,22 @@ export class CopilotEnvRunState {
           d[key] = value;
         }
       }
+    });
+  }
+
+  /**
+   * Atomically clear the daemon tracking (`pid`/`port`/`lastEnsureAt`) ONLY if the recorded
+   * pid is still `pid`. The check runs INSIDE the read-modify-write, so it tests the value at
+   * write time, not a stale snapshot -- a daemon that has been replaced by a newer one cannot
+   * clobber its successor's freshly written pid/port. Used by the in-daemon idle watchdog when
+   * it auto-stops the proxy.
+   */
+  clearIfPid(pid: number): void {
+    this.store.update((d) => {
+      if (d.pid !== pid) return;
+      delete d.pid;
+      delete d.port;
+      delete d.lastEnsureAt;
     });
   }
 }

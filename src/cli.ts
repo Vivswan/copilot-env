@@ -139,11 +139,17 @@ program
   .description("Set up both Codex and Claude (auto-detect GitHub Copilot Direct vs the proxy).")
   .option("--direct", "Force both agents to GitHub Copilot Direct (no auto-detect probe).")
   .option("--proxy", "Force both agents to the local copilot-api proxy (no auto-detect probe).")
+  .option(
+    "--auto-start",
+    "Enable the managed proxy lifecycle: agents auto-start the proxy on open, and it auto-stops when idle.",
+  )
+  .option("--no-auto-start", "Disable the managed proxy lifecycle (manage the proxy yourself).")
   .action((opts: Opts) =>
     runSafe(() =>
       runInit({
         direct: Boolean(opts.direct),
         proxy: Boolean(opts.proxy),
+        autoStart: opts.autoStart as boolean | undefined,
       }),
     ),
   );

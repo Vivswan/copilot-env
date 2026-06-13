@@ -38,8 +38,8 @@ export const AGENT_AUTH_GET_ARGS: readonly string[] = ["auth", "--get"];
 
 /** The shared proxy-token scripts (ensure the proxy + print its key); .ps1 is the
  *  Windows parity. Referenced by Codex's `auth.command` and Claude's `apiKeyHelper`. */
-export const PROXY_TOKEN_SCRIPT_SH: string = join(PROJECT_ROOT, "scripts", "proxy-token.sh");
-const PROXY_TOKEN_SCRIPT_PS1: string = join(PROJECT_ROOT, "scripts", "proxy-token.ps1");
+export const PROXY_TOKEN_SCRIPT_SH: string = join(PROJECT_ROOT, "src", "scripts", "proxy-token.sh");
+const PROXY_TOKEN_SCRIPT_PS1: string = join(PROJECT_ROOT, "src", "scripts", "proxy-token.ps1");
 
 /**
  * The platform `{ command, args }` to run the shared proxy-token script as a NATIVE

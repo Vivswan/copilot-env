@@ -7,7 +7,9 @@
 # Goes through bin/agent.ps1 (NOT `bun src/cli.ts` directly) so bun + node_modules are
 # bootstrapped first. agent.ps1 ends with `exit`, so each call is a CHILD powershell --
 # invoking it in this host would terminate the script before the gate/print.
-$repo = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+#
+# This script lives at src/scripts/, so the repo root is three Split-Path levels up.
+$repo = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
 $agent = Join-Path $repo 'bin/agent.ps1'
 & powershell -NoProfile -ExecutionPolicy Bypass -File $agent start --ensure *> $null
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

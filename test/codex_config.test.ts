@@ -372,7 +372,7 @@ test("toggling direct <-> proxy swaps the mode-specific keys on the shared table
       "copilot-env"
     ],
   );
-  expect(asRecord(provider.auth).args).toEqual(["auth", "--get"]);
+  expect(asRecord(provider.auth).args).toEqual(agentLauncherCommand(["auth", "--get"]).args);
   expect(provider.http_headers).toBeDefined();
 
   // Switch to proxy on the SAME table: the proxy auth (/bin/sh -c ensure + print)

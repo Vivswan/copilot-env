@@ -1,5 +1,15 @@
 # Changelog
 
+## [3.3.5](https://github.com/Vivswan/copilot-env/compare/v3.3.4...v3.3.5) (2026-06-13)
+
+
+### Bug Fixes
+
+* add `agent config` and route the scattered knobs through it ([5520b4e](https://github.com/Vivswan/copilot-env/commit/5520b4edb385cc6cc92981033d6558e10ee3d5f6))
+* add a gpt-latest alias for the newest non-mini GPT ([53982ea](https://github.com/Vivswan/copilot-env/commit/53982ea63a899b7cb3f6fbff3aec894d72ad83ae))
+* auto-start the proxy on demand in agent proxy mode ([de6c654](https://github.com/Vivswan/copilot-env/commit/de6c6549878d5d462ece27bf98ce6fbb09343cf6))
+* opt-in managed proxy lifecycle (auto-start + idle auto-stop) ([c9442c5](https://github.com/Vivswan/copilot-env/commit/c9442c541a56b89458f49123c4c7d4015c156aa1))
+
 ## [3.3.4](https://github.com/Vivswan/copilot-env/compare/v3.3.3...v3.3.4) (2026-06-12)
 
 

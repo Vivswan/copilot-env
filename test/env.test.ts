@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/config.ts";
 import { runEnv } from "../src/commands/env.ts";
 
 const SAVED: Record<string, string | undefined> = {
@@ -61,7 +62,7 @@ function writeClaude(home: string, apiKeyHelper: string, baseUrl: string): void 
 
 test("env exports ANTHROPIC_BASE_URL when Claude is proxy at a localhost proxy URL", () => {
   const home = isolate();
-  writeClaude(home, join(home, "copilot-proxy-token.sh"), "http://localhost:4141");
+  writeClaude(home, join(home, PROXY_HELPER_NAME), "http://localhost:4141");
   const lines = envLines();
   expect(lines).toContain("export ANTHROPIC_BASE_URL='http://localhost:4141'");
 });
@@ -69,7 +70,7 @@ test("env exports ANTHROPIC_BASE_URL when Claude is proxy at a localhost proxy U
 test("env clears a stale localhost ANTHROPIC_BASE_URL when Claude switched to direct", () => {
   const home = isolate();
   // Claude is now DIRECT, but the shell still carries our old proxy URL.
-  writeClaude(home, join(home, "copilot-token.sh"), "https://api.githubcopilot.com");
+  writeClaude(home, join(home, DIRECT_HELPER_NAME), "https://api.githubcopilot.com");
   process.env.ANTHROPIC_BASE_URL = "http://localhost:4141";
   const lines = envLines();
   expect(lines).toContain("unset ANTHROPIC_BASE_URL");
@@ -79,7 +80,7 @@ test("env clears a stale localhost ANTHROPIC_BASE_URL when Claude switched to di
 test("env never touches a user's own (non-local) ANTHROPIC_BASE_URL", () => {
   const home = isolate();
   // Managed proxy helper, but the user hand-edited the URL to a remote host.
-  writeClaude(home, join(home, "copilot-proxy-token.sh"), "https://example.test");
+  writeClaude(home, join(home, PROXY_HELPER_NAME), "https://example.test");
   process.env.ANTHROPIC_BASE_URL = "https://example.test";
   const lines = envLines();
   // Not a localhost proxy URL => neither exported nor unset.

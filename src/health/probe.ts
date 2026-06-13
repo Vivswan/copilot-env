@@ -568,7 +568,11 @@ export async function gatherFacts(
         const state = deps.readState();
         const trackedPid = state.pid ?? null;
         const [reachable, pidTracked] = await Promise.all([
-          deps.reach(`http://localhost:${port}/`, 2000),
+          // Probe 127.0.0.1, not `localhost`: the daemon binds 0.0.0.0 (IPv4), but on Windows
+          // `localhost` resolves to ::1 first and the runtime's fetch does not fall back to
+          // IPv4 -- so a `localhost` probe would report the proxy DOWN while it is up. 127.0.0.1
+          // always hits the IPv4 listener (matching admin.ts and start.ts's portListening).
+          deps.reach(`http://127.0.0.1:${port}/`, 2000),
           trackedPid !== null ? deps.isTrackedPid(trackedPid) : Promise.resolve(false),
         ]);
         facts.runtime = {

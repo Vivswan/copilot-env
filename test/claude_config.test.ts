@@ -6,12 +6,16 @@ import { join } from "node:path";
 import {
   configureClaudeConfig,
   DIRECT_BASE_URL,
+  DIRECT_HELPER_NAME,
   detectClaudeDirect,
   inspectClaudeWiring,
+  PROXY_HELPER_NAME,
   runClaude,
 } from "../src/claude/config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { copilotApiResolvePort } from "../src/copilot_api/port.ts";
+
+const WIN = process.platform === "win32";
 
 const SAVED = {
   HOME: process.env.HOME,
@@ -62,22 +66,22 @@ test("direct mode writes the managed apiKeyHelper + env and the token helper, pr
   configureClaudeConfig(home, "direct");
 
   const doc = readSettings(home);
-  expect(doc.apiKeyHelper).toBe(join(home, "copilot-token.sh"));
+  expect(doc.apiKeyHelper).toBe(join(home, DIRECT_HELPER_NAME));
   const env = doc.env as Record<string, unknown>;
   expect(env.ANTHROPIC_BASE_URL).toBe(DIRECT_BASE_URL);
   expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1");
   expect(doc.model).toBe("sonnet");
   expect((doc.permissions as Record<string, unknown>).allow).toEqual(["Bash"]);
 
-  const helper = join(home, "copilot-token.sh");
+  const helper = join(home, DIRECT_HELPER_NAME);
   const directScript = readFileSync(helper, "utf8");
   // The direct helper execs `agent auth --get` (the resolver) -- never `gh auth token`,
-  // never a baked token.
-  expect(directScript.startsWith("#!/bin/sh\nexec ")).toBe(true);
+  // never a baked token. POSIX is a #!/bin/sh script; Windows a @echo off .cmd.
+  expect(directScript.startsWith(WIN ? "@echo off\r\n" : "#!/bin/sh\nexec ")).toBe(true);
   expect(directScript).toContain("auth");
   expect(directScript).toContain("--get");
   expect(directScript).not.toContain("gh auth token");
-  if (process.platform !== "win32") {
+  if (!WIN) {
     expect(statSync(helper).mode & 0o100).not.toBe(0);
   }
 });
@@ -92,30 +96,30 @@ test("proxy mode writes proxy wiring (localhost base URL + a token helper), pres
   configureClaudeConfig(home, "proxy");
 
   const doc = readSettings(home);
-  expect(doc.apiKeyHelper).toBe(join(home, "copilot-proxy-token.sh"));
+  expect(doc.apiKeyHelper).toBe(join(home, PROXY_HELPER_NAME));
   const env = doc.env as Record<string, unknown>;
   expect(env.ANTHROPIC_BASE_URL).toBe(`http://localhost:${copilotApiResolvePort()}`);
   // Disable-betas is a direct-only knob; switching to proxy drops it.
   expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBeUndefined();
   expect(doc.model).toBe("sonnet"); // unrelated user key survives
 
-  const helper = join(home, "copilot-proxy-token.sh");
+  const helper = join(home, PROXY_HELPER_NAME);
   const script = readFileSync(helper, "utf8");
-  // The proxy helper execs the shared proxy-token resolver (with --yes); no literal token
-  // is baked in.
-  expect(script.startsWith("#!/bin/sh\n")).toBe(true);
-  expect(script).toContain("proxy-token.sh");
-  if (process.platform !== "win32") {
+  // The proxy helper runs the shared proxy-token resolver (with --yes); no literal token is
+  // baked in. POSIX execs proxy-token.sh; Windows is a .cmd that invokes the .ps1 twin.
+  expect(script.startsWith(WIN ? "@echo off\r\n" : "#!/bin/sh\n")).toBe(true);
+  expect(script).toContain(WIN ? "proxy-token.ps1" : "proxy-token.sh");
+  if (!WIN) {
     expect(statSync(helper).mode & 0o100).not.toBe(0);
   }
 });
 
 test("inspectClaudeWiring classifies direct / proxy / other / none / malformed (by exact path)", () => {
   const home = "/home/x/.claude";
-  // Build the managed helper paths with join() so they match inspectClaudeWiring's
-  // own path.join() on every OS (forward-slash literals fail the exact match on Windows).
-  const directHelper = join(home, "copilot-token.sh");
-  const proxyHelper = join(home, "copilot-proxy-token.sh");
+  // Build the managed helper paths with join() + the platform basename so they match
+  // inspectClaudeWiring's own path.join()/extension on every OS.
+  const directHelper = join(home, DIRECT_HELPER_NAME);
+  const proxyHelper = join(home, PROXY_HELPER_NAME);
 
   expect(
     inspectClaudeWiring(JSON.stringify({ apiKeyHelper: directHelper }), home).providerMode,
@@ -206,12 +210,12 @@ test("direct helper execs `agent auth --get` and never bakes a token, still clas
   configureClaudeConfig(home, "direct");
 
   const doc = readSettings(home);
-  expect(doc.apiKeyHelper).toBe(join(home, "copilot-token.sh"));
+  expect(doc.apiKeyHelper).toBe(join(home, DIRECT_HELPER_NAME));
   expect(
     inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home).providerMode,
   ).toBe("direct");
 
-  const script = readFileSync(join(home, "copilot-token.sh"), "utf8");
+  const script = readFileSync(join(home, DIRECT_HELPER_NAME), "utf8");
   expect(script).toContain("auth");
   expect(script).toContain("--get");
   expect(script).not.toContain("gh auth token");
@@ -226,7 +230,7 @@ test("runClaude with a stored token selects Direct WITHOUT baking it; --proxy st
   new CopilotEnvState().set({ githubToken: "ghu_stored", authProvider: "gh-token" });
   runClaude({});
   expect(read().providerMode).toBe("direct");
-  const helper = readFileSync(join(home, "copilot-token.sh"), "utf8");
+  const helper = readFileSync(join(home, DIRECT_HELPER_NAME), "utf8");
   expect(helper).not.toContain("ghu_stored");
   expect(helper).toContain("--get");
 

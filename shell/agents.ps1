@@ -27,8 +27,13 @@ function Invoke-Agent {
 
 # Apply the `env` output to the current session. It emits PowerShell-native
 # `$env:KEY = '...'` assignments AND `Remove-Item Env:KEY` clears; evaluate both.
+# -Quiet silences stderr -- used only by the eager startup call so bootstrap noise
+# ("Installing copilot-env node_modules ...") doesn't disrupt the prompt. The `agent`
+# wrapper omits -Quiet so a genuine env-refresh failure stays visible, matching the
+# POSIX twin (agents.bashrc: the wrapper's refresh is unsilenced; the eager source is 2>/dev/null).
 function Import-CopilotEnv {
-    $lines = Invoke-Agent env --format powershell 2>$null
+    param([switch]$Quiet)
+    $lines = if ($Quiet) { Invoke-Agent env --format powershell 2>$null } else { Invoke-Agent env --format powershell }
     if ($LASTEXITCODE -ne 0) { return }
     foreach ($line in $lines) {
         if ($line -match '^\s*(\$env:|Remove-Item )') { Invoke-Expression $line }
@@ -40,6 +45,7 @@ function Import-CopilotEnv {
 # source of truth -- `agent env`, which prints `$env:KEY = ...` / `Remove-Item
 # Env:KEY` lines (CODEX_HOME + the proxy ANTHROPIC_BASE_URL, set or cleared). No
 # per-subcommand logic; we only ever eval the dedicated, contract-stable `env` output.
+# The refresh is NOT -Quiet: a real failure should be visible (it stays non-fatal).
 function agent {
     Invoke-Agent @args
     if ($LASTEXITCODE -ne 0) { return }
@@ -49,4 +55,6 @@ function agent {
 # --- shell-startup side effects --------------------------------------------
 
 # Eagerly apply the managed env (CODEX_HOME + proxy ANTHROPIC_BASE_URL) for the current shell.
-Import-CopilotEnv
+# -Quiet so first-source bootstrap output doesn't break the prompt; a later agent/launcher
+# call will surface any genuine env-resolution failure.
+Import-CopilotEnv -Quiet

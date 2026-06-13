@@ -174,7 +174,7 @@ skipWin("a plain re-wire preserves an already-wired launchers block", () => {
   expect(rc.split(LAUNCHERS_MARKER).length - 1).toBe(1);
 });
 
-test("posixBlock safely quotes paths with shell metacharacters", () => {
+skipWin("posixBlock safely quotes paths with shell metacharacters", () => {
   // A path containing a single quote, $, backtick, and a space must round-trip
   // through `source` as the exact literal -- never expand or break parsing.
   const weird = "/tmp/we'ird $dir/`x`/agents.bashrc";

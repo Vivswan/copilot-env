@@ -2,11 +2,16 @@
 // backends, mirroring src/codex/config.ts but adapted to how Claude consumes
 // config (JSON settings.json + an apiKeyHelper script, no `model_provider`):
 //
-//   - direct: GitHub Copilot. apiKeyHelper -> copilot-token.sh, which execs
+//   - direct: GitHub Copilot. apiKeyHelper -> copilot-token.{sh,cmd}, which execs
 //     `agent auth --get` (provider-driven: gh-cli -> gh, copilot/gh-token -> stored token)
 //     and env.ANTHROPIC_BASE_URL = https://api.githubcopilot.com.
-//   - proxy:  the local copilot-api proxy. apiKeyHelper -> copilot-proxy-token.sh
+//   - proxy:  the local copilot-api proxy. apiKeyHelper -> copilot-proxy-token.{sh,cmd}
 //     (prints the proxy key) and env.ANTHROPIC_BASE_URL = http://localhost:<port>.
+//
+// The helper is a script FILE whose path Claude stores in apiKeyHelper (so health can read
+// it back and mode detection keys off the exact path). It must be runnable by bare path:
+// a POSIX `#!/bin/sh` script, or -- on Windows, where a `.sh` is not executable -- a `.cmd`
+// (cmd.exe runs it by path) that shells into PowerShell to reach the same resolver Codex uses.
 //
 // `agent env` re-exports ANTHROPIC_BASE_URL only for the proxy backend (to keep
 // the shell aligned with the live proxy port); direct is driven entirely by
@@ -33,17 +38,27 @@ import {
   type ManagedAgentMode,
   providerModeExitCode,
 } from "../utils/provider_mode.ts";
-import { AGENT_AUTH_GET_ARGS, agentLauncherCommand, PROXY_TOKEN_SCRIPT_SH } from "../utils/root.ts";
+import {
+  AGENT_AUTH_GET_ARGS,
+  agentLauncherCommand,
+  PROXY_TOKEN_SCRIPT_SH,
+  proxyTokenCommand,
+} from "../utils/root.ts";
 
 const logger = createStderrLogger();
+
+const WIN = process.platform === "win32";
 
 // The direct (GitHub Copilot) contract. One block so it is easy to adjust if
 // Copilot's Anthropic-compatible endpoint needs a different base URL/path or
 // extra headers. NOTE: Copilot-serving-Claude is not officially documented;
 // CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS is treated as a tested knob.
 export const DIRECT_BASE_URL = "https://api.githubcopilot.com";
-export const DIRECT_HELPER_NAME = "copilot-token.sh";
-export const PROXY_HELPER_NAME = "copilot-proxy-token.sh";
+// Helper file basenames. On Windows a `.sh` is not runnable by bare path, so the managed
+// helper is a `.cmd` (which cmd.exe executes). The path stored in apiKeyHelper -- and the
+// exact-path match in inspectClaudeWiring -- therefore carry the platform extension.
+export const DIRECT_HELPER_NAME = WIN ? "copilot-token.cmd" : "copilot-token.sh";
+export const PROXY_HELPER_NAME = WIN ? "copilot-proxy-token.cmd" : "copilot-proxy-token.sh";
 export const BASE_URL_ENV = "ANTHROPIC_BASE_URL";
 export const DISABLE_BETAS_ENV = "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS";
 
@@ -52,14 +67,32 @@ function shQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+/** Quote an argument for a Windows `.cmd` line: bare for plain flags/words, else double-quoted
+ *  (paths carry `:` and `\`). cmd.exe runs a quoted path fine; our args never contain a `"`. */
+function winQuote(s: string): string {
+  return /^[-A-Za-z0-9_.]+$/.test(s) ? s : `"${s}"`;
+}
+
+/** A Windows `.cmd` helper body: run `command args...` so its stdout is the credential. `@echo
+ *  off` keeps the command itself off stdout; CRLF endings so cmd.exe parses it reliably. Literal
+ *  `%` is doubled to `%%` -- in a batch file `%` triggers variable expansion even inside quotes,
+ *  so a checkout path containing `%` would otherwise be mangled. (`!` needs no escaping: we never
+ *  `setlocal enabledelayedexpansion`, so delayed expansion is off.) */
+function cmdHelperBody(command: string, args: readonly string[]): string {
+  const line = [command, ...args].map(winQuote).join(" ").replace(/%/g, "%%");
+  return `@echo off\r\n${line}\r\n`;
+}
+
 /**
- * The direct apiKeyHelper body: print the Direct credential on stdout. Claude runs
- * apiKeyHelper via /bin/sh and uses its stdout as the credential. We exec
- * `agent auth --get`, the provider-driven resolver (gh-cli -> gh, else the stored token), so
- * the token is never baked into this script -- it lives only in the state store.
+ * The direct apiKeyHelper body: print the Direct credential on stdout. Claude runs apiKeyHelper
+ * and uses its stdout as the credential. We exec `agent auth --get`, the provider-driven
+ * resolver (gh-cli -> gh, else the stored token), so the token is never baked into this script --
+ * it lives only in the state store. POSIX emits a `#!/bin/sh` script; Windows emits a `.cmd` that
+ * runs the same resolver via PowerShell (agentLauncherCommand wraps it as `powershell -File ...`).
  */
 function directHelperScript(): string {
   const { command, args } = agentLauncherCommand(AGENT_AUTH_GET_ARGS);
+  if (WIN) return cmdHelperBody(command, args);
   const line = [command, ...args].map(shQuote).join(" ");
   return `#!/bin/sh\nexec ${line}\n`;
 }
@@ -194,7 +227,8 @@ function saveSettings(settingsPath: string, doc: Record<string, unknown>): void 
   fs.writeFileSync(settingsPath, `${JSON.stringify(doc, null, 2)}\n`);
 }
 
-/** Write a managed apiKeyHelper script (prints a token on stdout), chmod 0700. */
+/** Write a managed apiKeyHelper script (prints a token on stdout), chmod 0700. The chmod is the
+ *  POSIX exec bit; on Windows it is a harmless near-no-op (a `.cmd` runs without it). */
 function writeHelperScript(helperPath: string, script: string): void {
   fs.writeFileSync(helperPath, script);
   try {
@@ -263,12 +297,18 @@ export function configureClaudeConfig(
 }
 
 /**
- * The proxy apiKeyHelper body: exec the SHARED `src/scripts/proxy-token.sh --yes`, which
- * (per the managed-lifecycle rules) ensures the proxy is up then prints its key. `--yes` is
- * the headless path (never prompt) -- Claude runs this on a timer. The same script backs
- * Codex's `auth.command`; the key is resolved at run time (nothing is baked in here).
+ * The proxy apiKeyHelper body: run the SHARED proxy-token resolver (`src/scripts/proxy-token.sh
+ * --yes`, or `.ps1` on Windows via proxyTokenCommand), which (per the managed-lifecycle rules)
+ * ensures the proxy is up then prints its key. `--yes` is the headless path (never prompt) --
+ * Claude runs this on a timer. The same resolver backs Codex's `auth.command`; the key is
+ * resolved at run time (nothing is baked in here). POSIX emits a `#!/bin/sh` script; Windows a
+ * `.cmd` that invokes PowerShell against the `.ps1` twin.
  */
 function proxyHelperScript(): string {
+  if (WIN) {
+    const { command, args } = proxyTokenCommand();
+    return cmdHelperBody(command, args);
+  }
   return `#!/bin/sh\nexec ${shQuote(PROXY_TOKEN_SCRIPT_SH)} --yes\n`;
 }
 

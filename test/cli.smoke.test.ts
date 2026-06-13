@@ -3,6 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/config.ts";
+
 // A throwaway COPILOT_API_HOME so the runtime probe sees no tracked pid/port. We pin the
 // default proxy port to 4199 via config (isolated from any real proxy on 4141 on this host).
 function isolatedEnv(extra: Record<string, string> = {}): Record<string, string> {
@@ -189,11 +191,11 @@ test("claude exposes and runs check mode", () => {
   mkdirSync(noneHome, { recursive: true });
   writeFileSync(
     join(directHome, "settings.json"),
-    JSON.stringify({ apiKeyHelper: join(directHome, "copilot-token.sh") }),
+    JSON.stringify({ apiKeyHelper: join(directHome, DIRECT_HELPER_NAME) }),
   );
   writeFileSync(
     join(proxyHome, "settings.json"),
-    JSON.stringify({ apiKeyHelper: join(proxyHome, "copilot-proxy-token.sh") }),
+    JSON.stringify({ apiKeyHelper: join(proxyHome, PROXY_HELPER_NAME) }),
   );
   writeFileSync(
     join(otherHome, "settings.json"),
@@ -558,7 +560,7 @@ test("health --scope claude covers only Claude wiring", () => {
   // providerMode "proxy", status ok.
   writeFileSync(
     join(home, "settings.json"),
-    JSON.stringify({ apiKeyHelper: join(home, "copilot-proxy-token.sh") }),
+    JSON.stringify({ apiKeyHelper: join(home, PROXY_HELPER_NAME) }),
   );
   const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", "claude", "--json"], {
     stdout: "pipe",

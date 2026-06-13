@@ -444,8 +444,11 @@ export function configureCodexConfig(
   codexHome?: string | null,
   options: ConfigureCodexConfigOptions = {},
 ): number {
-  const home = process.env.HOME || homedir();
-  codexHome = codexHome || process.env.CODEX_HOME || `${home}/.codex`;
+  // Derive the default home the SAME way the readers do (effectiveCodexHome,
+  // health/probe.ts): CODEX_HOME then homedir()/.codex via path.join -- no process.env.HOME
+  // precedence, no string-concatenated separators -- so the writer and checker produce
+  // byte-identical paths on Windows (else `C:\Users\x/.codex` vs `C:\Users\x\.codex`).
+  codexHome = codexHome || process.env.CODEX_HOME || path.join(homedir(), ".codex");
   // Low-level writer: absence of `proxy` means write a Direct config. The
   // never-silent-Direct guarantee lives UPSTREAM at resolveDirectMode() -- callers
   // must pass an already-resolved mode (an explicit flag or a passing probe);
@@ -461,7 +464,7 @@ export function configureCodexConfig(
     return 1;
   }
 
-  const hostConfig = `${codexHome}/config.toml`;
+  const hostConfig = path.join(codexHome, "config.toml");
 
   const doc = loadOrCreateConfig(hostConfig, mode);
 
@@ -511,8 +514,8 @@ export function configureCodexConfig(
   // proxy-token script; direct: `agent auth --get`), so nothing is ever baked into `.env`.
   // Scrub the legacy baked keys: a proxy `OPENAI_API_KEY` from the old env_key wiring,
   // and a direct `COPILOT_ENV_GH_TOKEN` from a still-older baked-token release.
-  removeEnvKey(`${codexHome}/.env`, CODEX_ENV_KEY);
-  removeEnvKey(`${codexHome}/.env`, DIRECT_ENV_KEY);
+  removeEnvKey(path.join(codexHome, ".env"), CODEX_ENV_KEY);
+  removeEnvKey(path.join(codexHome, ".env"), DIRECT_ENV_KEY);
 
   return 0;
 }

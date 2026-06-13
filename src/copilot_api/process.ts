@@ -148,6 +148,7 @@ export function launchDaemon(
   extraEnv?: Record<string, string>,
   githubToken?: string,
   patPassthrough?: boolean,
+  idleWatchdog?: boolean,
 ): number {
   /** Launch copilot-api as a detached daemon. Returns the PID. */
   const env: Record<string, string> = { ...process.env } as Record<string, string>;
@@ -157,13 +158,19 @@ export function launchDaemon(
   const logFd = openSync(logfile, "w");
   const devnull = openSync(devNull, "r");
   const entry = resolveCopilotApiEntry();
-  // bun flags go BEFORE the entry script. For a PAT, preload the passthrough shim,
-  // which wraps the daemon's globalThis.fetch to fake the editor token exchange so the
-  // PAT is used directly (see pat_passthrough_preload.ts). A runtime shim -- NOT a
-  // patch-package patch -- so it never pins the floated proxy version.
-  const bunFlags = patPassthrough
-    ? ["--preload", join(PROJECT_ROOT, "src/copilot_api/pat_passthrough_preload.ts")]
-    : [];
+  // bun flags go BEFORE the entry script, as `--preload <shim>` pairs (a runtime shim,
+  // NOT a patch-package patch, so neither pins the floated proxy version):
+  //  - PAT passthrough wraps the daemon's globalThis.fetch to fake the editor token
+  //    exchange so a PAT is used directly (see pat_passthrough_preload.ts).
+  //  - the idle watchdog arms an in-daemon timer that exits the process when idle, so the
+  //    server and its watchdog are one unit (see idle_watchdog.ts).
+  const bunFlags: string[] = [];
+  if (patPassthrough) {
+    bunFlags.push("--preload", join(PROJECT_ROOT, "src/scripts/pat_passthrough_preload.ts"));
+  }
+  if (idleWatchdog) {
+    bunFlags.push("--preload", join(PROJECT_ROOT, "src/scripts/idle_watchdog_preload.ts"));
+  }
   if (patPassthrough) {
     // The shim relies on copilot-api's DEFAULT path (which sends the vscode-chat editor
     // headers the token needs). An inherited COPILOT_API_OAUTH_APP=opencode would put

@@ -12,6 +12,8 @@ export async function runStop(): Promise<void> {
   if (pid === undefined) {
     // Not a crash -- just nothing to do. Friendly note, no stack trace, but a
     // non-zero exit so scripts can still tell "stopped" from "nothing running".
+    // Still clear any stale heartbeat so a fresh start is not seen as recently active.
+    state.set({ lastEnsureAt: null });
     consola.info("The proxy is not running on this host (nothing to stop).");
     process.exitCode = 1;
     return;
@@ -20,7 +22,7 @@ export async function runStop(): Promise<void> {
   // Confirm the tracked pid is still OUR daemon before signalling it -- the OS
   // may have recycled a stale pid onto an unrelated process.
   if (!(await isCopilotApiPid(pid))) {
-    state.set({ pid: null, port: null });
+    state.set({ pid: null, port: null, lastEnsureAt: null });
     consola.info(`The proxy (PID ${pid}) was already stopped; cleared stale tracking.`);
     process.exitCode = 1;
     return;
@@ -30,8 +32,9 @@ export async function runStop(): Promise<void> {
   // TerminateProcess, so this is a hard kill with no graceful SQLite flush.
   // SQLite's WAL recovery makes that safe; just don't expect clean teardown here on
   // Windows. graceMs:0 -- a single SIGTERM, no force-kill escalation.
+  // Killing the daemon also tears down its in-daemon idle watchdog (same process).
   await terminatePid(pid, 0);
-  state.set({ pid: null, port: null });
+  state.set({ pid: null, port: null, lastEnsureAt: null });
   consola.info(`Stopped the proxy (PID ${pid})`);
   consola.info(`   Bun env: ${PROJECT_ROOT}`);
 }

@@ -7,7 +7,7 @@ import { join } from "node:path";
 // token exchange for a PAT. It reads the token from `--github-token` in argv and only
 // acts on the exchange URL, so it must be exercised as a real preloaded subprocess
 // (`bun --preload`), which is how launchDaemon loads it.
-const SHIM = join(import.meta.dir, "..", "src", "copilot_api", "pat_passthrough_preload.ts");
+const SHIM = join(import.meta.dir, "..", "src", "scripts", "pat_passthrough_preload.ts");
 
 // A throwaway "exchange"/other URL on a refused port: if the shim intercepts, fetch
 // returns a synthetic body WITHOUT touching the socket; if it doesn't, the real fetch

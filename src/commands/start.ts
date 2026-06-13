@@ -7,6 +7,7 @@ import { consola } from "consola";
 import { CopilotAdminClient } from "../copilot_api/admin.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
+import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { generateAliases } from "../copilot_api/models.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import {
@@ -55,7 +56,7 @@ export function isPatToken(token: string): boolean {
 
 /**
  * Whether to load the PAT-passthrough preload shim into the daemon
- * (`src/copilot_api/pat_passthrough_preload.ts`). The shim intercepts copilot-api's
+ * (`src/scripts/pat_passthrough_preload.ts`). The shim intercepts copilot-api's
  * editor token exchange and hands the PAT back as the Copilot token, so the daemon
  * runs its normal `vscode-chat` path with the PAT as the bearer -- the only way a PAT
  * works through the proxy. It's a no-op for non-PAT tokens, so `--passthrough` can
@@ -114,12 +115,27 @@ async function proxyIsRunning(): Promise<boolean> {
   }
 }
 
-// Ensure the proxy is up: a NO-OP when it is already running (see proxyIsRunning),
-// otherwise bring it up by spawning a full `agent start`. We start ONLY when it's not
-// running, so a healthy proxy is never restarted. Any start output goes to OUR stderr,
-// never stdout.
+// Ensure the proxy is up FOR AN AGENT, gated on the managed lifecycle being enabled
+// (`agent init --auto-start`). When enabled: record the heartbeat and, if the proxy is
+// down, bring it up with a full `agent start` (which attaches the idle watchdog). When
+// NOT enabled: never auto-start -- if the proxy is already running (started manually) we
+// succeed so the resolver prints the key; otherwise signal "not running" so the resolver
+// skips the token (the user must `agent start` themselves). Output goes to stderr only.
 async function runStartEnsure(): Promise<void> {
-  if (await proxyIsRunning()) return; // already up + ours
+  const autoStart = new CopilotEnvState().autoStartEnabled();
+  if (autoStart) {
+    // Heartbeat: record that an agent's proxy resolver just ran. The idle watchdog counts
+    // this -- alongside real request traffic (the log mtime) -- as activity, so an open
+    // agent keeps the proxy alive even while it is briefly idle.
+    new CopilotEnvRunState().set({ lastEnsureAt: Date.now() });
+  }
+  if (await proxyIsRunning()) return; // already up + ours -> the resolver prints the key
+  if (!autoStart) {
+    // Auto-start not enabled: do not start the proxy. Signal "not running" so the
+    // agents' `start --ensure && auth --print-proxy-token` chain skips the token.
+    process.exitCode = 1;
+    return;
+  }
   const result = spawnSync(process.execPath, [join(PROJECT_ROOT, "src/cli.ts"), "start"], {
     stdio: ["ignore", 2, 2], // child stdout + stderr -> our stderr
     windowsHide: true,
@@ -436,7 +452,12 @@ export async function runStart(args: StartArgs): Promise<void> {
       "PAT passthrough off (--no-passthrough): using the standard editor token exchange.",
     );
   }
-  let pid = launchDaemon(port, logFile, daemonEnv, githubToken, patPassthrough);
+  // Managed lifecycle on (`agent init --auto-start`)? Preload the in-daemon idle watchdog
+  // so the proxy stops itself after the idle window. It lives in the daemon process, so
+  // the server and watchdog are one unit (no orphan either way), and every (re)start
+  // re-attaches it. With the flag off, the proxy never auto-starts and gets no watchdog.
+  const idleWatchdog = new CopilotEnvState().autoStartEnabled();
+  let pid = launchDaemon(port, logFile, daemonEnv, githubToken, patPassthrough, idleWatchdog);
 
   await sleep(1000);
   if (!pidAlive(pid)) {
@@ -463,7 +484,7 @@ export async function runStart(args: StartArgs): Promise<void> {
         throw new Error("could not find a free port after the retry.");
       }
       fs.writeFileSync(logFile, "");
-      pid = launchDaemon(port, logFile, daemonEnv, githubToken, patPassthrough);
+      pid = launchDaemon(port, logFile, daemonEnv, githubToken, patPassthrough, idleWatchdog);
       await sleep(1000);
       if (!pidAlive(pid)) {
         printLogTail(logFile, 20);
@@ -518,6 +539,10 @@ export async function runStart(args: StartArgs): Promise<void> {
   }
 
   consola.success(`The proxy is up on port ${port} (PID ${pid}).`);
+
+  // Seed the heartbeat so the in-daemon idle watchdog (preloaded above when idleWatchdog
+  // is set) does not consider a freshly started, quiet proxy idle before its first request.
+  if (idleWatchdog) state.set({ lastEnsureAt: Date.now() });
 
   // Blank the proxy's built-in extraPrompts now that config.json holds the
   // package's full default set. The setModelMappings POST below triggers the

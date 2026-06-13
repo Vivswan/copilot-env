@@ -96,7 +96,7 @@ test("auth --del clears the stored token and provider", async () => {
   isolate();
   state().set({ githubToken: "ghu_stored123", authProvider: "gh-token" });
   await runAuth({ del: true });
-  expect(state().read()).toEqual({ githubToken: null, authProvider: null });
+  expect(state().read()).toEqual({ githubToken: null, authProvider: null, autoStart: null });
 });
 
 test("auth --check: a configured provider reports authenticated, exit 0", async () => {
@@ -141,7 +141,11 @@ test("auth --provider gh-token stores the env token + provider, and does NOT con
   process.env.GH_TOKEN = "ghu_new_from_env";
   // An explicit provider always runs (not short-circuited by "already authenticated").
   await runAuth({ provider: "gh-token" });
-  expect(state().read()).toEqual({ githubToken: "ghu_new_from_env", authProvider: "gh-token" });
+  expect(state().read()).toEqual({
+    githubToken: "ghu_new_from_env",
+    authProvider: "gh-token",
+    autoStart: null,
+  });
   // auth only manages the credential -- configuring Codex/Claude is `agent init`'s job.
   expect(existsSync(join(claudeHome, "settings.json"))).toBe(false);
 });
@@ -151,7 +155,11 @@ test("auth --set <token> stores it verbatim (no env, no UI) and records gh-token
   delete process.env.GH_TOKEN;
   delete process.env.GITHUB_TOKEN;
   await runAuth({ set: "ghu_inline_value" });
-  expect(state().read()).toEqual({ githubToken: "ghu_inline_value", authProvider: "gh-token" });
+  expect(state().read()).toEqual({
+    githubToken: "ghu_inline_value",
+    authProvider: "gh-token",
+    autoStart: null,
+  });
 });
 
 test("auth --set rejects a conflicting --provider", async () => {

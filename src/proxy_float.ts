@@ -46,6 +46,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createConsola } from "consola";
 import { parse } from "smol-toml";
+import { CopilotEnvConfig } from "./copilot_api/env_config.ts";
 import {
   assertProxyConfigBounds,
   installedProxyVersion,
@@ -64,6 +65,24 @@ const PROXY_PKG = PROXY_PACKAGE_NAME;
 const PROXY_VERSION_ENV = "COPILOT_API_VERSION";
 const MIN_RELEASE_AGE_ENV = "COPILOT_API_MIN_RELEASE_AGE";
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+
+// The float runs at `bun install` postinstall, so config reads are best-effort: any failure
+// (missing/corrupt file) falls back to env/bunfig. `agent config` is the persistent home for
+// the proxy-version pin and the release-cooldown window (env still overrides per-invocation).
+function configProxyVersion(): string | undefined {
+  try {
+    return new CopilotEnvConfig().read().proxyVersion;
+  } catch {
+    return undefined;
+  }
+}
+function configReleaseCooldownSeconds(): number | undefined {
+  try {
+    return new CopilotEnvConfig().read().releaseCooldown;
+  } catch {
+    return undefined;
+  }
+}
 
 type ProxyConsolaOptions = NonNullable<Parameters<typeof createConsola>[0]> & {
   fancy?: boolean;
@@ -125,10 +144,9 @@ export function readBunMinimumReleaseAgeSeconds(root: string): number {
 }
 
 /**
- * The effective cooldown window in seconds: COPILOT_API_MIN_RELEASE_AGE when set
- * (a whole number of seconds; 0 disables the cooldown), otherwise bunfig.toml's
- * install.minimumReleaseAge. This is the single source the float and `--verify`
- * read, so the env var overrides the committed bunfig value per-invocation.
+ * The effective cooldown window in seconds. Precedence: COPILOT_API_MIN_RELEASE_AGE env (a
+ * whole number of seconds; 0 disables) > config `releaseCooldown` > bunfig.toml's
+ * install.minimumReleaseAge. The single source the float and `--verify` read.
  */
 export function resolveMinimumReleaseAgeSeconds(root: string): number {
   const raw = process.env[MIN_RELEASE_AGE_ENV]?.trim();
@@ -137,6 +155,10 @@ export function resolveMinimumReleaseAgeSeconds(root: string): number {
       throw new Error(`${MIN_RELEASE_AGE_ENV} must be a whole number of seconds (got '${raw}')`);
     }
     return Number.parseInt(raw, 10);
+  }
+  const configured = configReleaseCooldownSeconds();
+  if (configured !== undefined) {
+    return configured;
   }
   return readBunMinimumReleaseAgeSeconds(root);
 }
@@ -341,7 +363,7 @@ export function floatProxy(
   nowMs: number = Date.now(),
 ): void {
   assertProxyConfigBounds(config);
-  const override = process.env[PROXY_VERSION_ENV]?.trim();
+  const override = process.env[PROXY_VERSION_ENV]?.trim() || configProxyVersion();
 
   // An exact pin bypasses the cooldown entirely, so resolve the cooldown window
   // ONLY on the float path -- a bad COPILOT_API_MIN_RELEASE_AGE must not block a pin.
@@ -413,7 +435,7 @@ export function proxyFloatVerifyStatus(
     };
   }
 
-  const override = process.env[PROXY_VERSION_ENV]?.trim();
+  const override = process.env[PROXY_VERSION_ENV]?.trim() || configProxyVersion();
   if (override) return verifyPinnedOverride(installed, override);
 
   const effectiveConfig = config ?? readProjectConfig(root);

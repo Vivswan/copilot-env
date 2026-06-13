@@ -35,24 +35,33 @@ Only the *why* lives here; the mechanics are discoverable in the code.
   resolve it at fetch time via `agent auth --get`, provider-driven with **no implicit `gh`
   fallback**. `agent auth` is the credential front door; when auth is none we **ask, never
   silently fall back**.
-- **The managed proxy lifecycle is opt-in** (`agent init --auto-start` / `--no-auto-start`,
-  stored as `autoStart` in `CopilotEnvState`; read back via `init --get-auto-start`). The
-  shared resolver `src/scripts/proxy-token.{sh,ps1}` (run by Codex's `auth.command`, Claude's
-  `apiKeyHelper`, and the `cl`/`cx` launchers) is built from **honest primitives** rather than
-  a magic flag: `start --check` (is the proxy up?), `init --get-auto-start` (the gate),
-  `start` (launch), `start --record-event` (the watchdog heartbeat), `auth --print-proxy-token`
-  (a pure key printer). The resolver: if the proxy is down and the lifecycle is ON, auto-start
-  it; if OFF, only `--yes` callers (Codex/Claude, headless) skip starting while non-`--yes`
-  callers (the launcher) prompt; then it prints the key only if the proxy is up. Auto-stop is
-  an **in-daemon watchdog** (`src/scripts/idle_watchdog_preload.ts`, `bun --preload`-ed into
-  the proxy) gated on the same flag, so server and watchdog are one process and neither can
-  orphan the other. OFF (default): manage the proxy yourself with `agent start` / `agent stop`.
-  Idle window: `COPILOT_API_IDLE_TIMEOUT` seconds (default 3600; `0` disables).
+- **`agent config` is the typed preference store.** A `--set <key> <value>` / `--get [key]`
+  / `--del <key>` front-end over `CopilotEnvConfig` (`src/copilot_api/env_config.ts`, a
+  `.copilot-env-config.json` SEPARATE from the credential store), with a single key registry
+  as the source of truth: `auto-start`, `passthrough` (auto/on/off), `idle-timeout`,
+  `small-model`, `port`, `proxy-version`, `release-cooldown`, `update-cooldown`. Every read
+  site applies the same precedence: **explicit flag/env (per-invocation) > stored config >
+  built-in default** (e.g. `COPILOT_API_IDLE_TIMEOUT` env > config `idle-timeout` > 3600).
+  `proxy_float.ts` reads `proxy-version`/`release-cooldown` from it at install time (a
+  best-effort read that falls back to env/bunfig).
+- **The managed proxy lifecycle is opt-in** (the `auto-start` config key; `agent config
+  --set auto-start true`). The shared resolver `src/scripts/proxy-token.{sh,ps1}` (run by
+  Codex's `auth.command`, Claude's `apiKeyHelper`, and the `cl`/`cx` launchers) is built from
+  **honest primitives** rather than a magic flag: `start --check` (is the proxy up?), `config
+  --get auto-start` (the gate), `start` (launch), `start --record-event` (the watchdog
+  heartbeat), `auth --print-proxy-token` (a pure key printer). The resolver: if the proxy is
+  down and the lifecycle is ON, auto-start it; if OFF, only `--yes` callers (Codex/Claude,
+  headless) skip starting while non-`--yes` callers (the launcher) prompt; then it prints the
+  key only if the proxy is up. Auto-stop is an **in-daemon watchdog**
+  (`src/scripts/idle_watchdog_preload.ts`, `bun --preload`-ed into the proxy) gated on the
+  same flag, so server and watchdog are one process and neither can orphan the other. OFF
+  (default): manage the proxy yourself with `agent start` / `agent stop`. Idle window:
+  `COPILOT_API_IDLE_TIMEOUT` env / `idle-timeout` config (default 3600; `0` disables).
 - **A PAT works through a runtime shim.** A classic/fine-grained PAT can't perform copilot-api's
   editor token exchange (403) but is accepted directly under the `vscode-chat` integration. So
   `agent start` preloads `src/scripts/pat_passthrough_preload.ts`, which fakes the exchange so
-  the daemon uses the PAT as the bearer. Auto-on for PAT-shaped tokens; `--passthrough` /
-  `--no-passthrough` force it.
+  the daemon uses the PAT as the bearer. Auto-on for PAT-shaped tokens; force it either way
+  with the `passthrough` config key (`agent config --set passthrough on|off`).
 
 ## Repo map
 
@@ -62,8 +71,8 @@ Only the *why* lives here; the mechanics are discoverable in the code.
 - `install.sh`/`install.ps1` — one-line bootstrap installers: ensure bun, download + checksum
   the latest release archive, then hand off to release-local `src/install/installer.ts`.
 - `src/cli.ts` — Commander entry; delegates to `run*` functions.
-- `src/commands/` — command implementations (`init`/`auth`/`start`/`stop`/`health`/`env`/
-  `update`/`setup`); `init` and `auth` share `configure_agents.ts` to avoid a cycle.
+- `src/commands/` — command implementations (`init`/`auth`/`config`/`start`/`stop`/`health`/
+  `env`/`update`/`setup`); `init` and `auth` share `configure_agents.ts` to avoid a cycle.
 - `src/codex/`, `src/claude/` — per-agent config wiring (Codex farm/`--mobile`; Claude settings).
 - `src/copilot_api/` — proxy helpers: admin REST, JSON config/state, model aliases, per-host
   paths, daemon process control.
@@ -134,8 +143,9 @@ bun test              # test/**/*.test.ts
 bun run lint          # biome check (lint:sh / lint:ps for shell / PowerShell, skip-if-absent)
 bun run check         # biome check --write
 
-./bin/agent init      # set up Codex + Claude (auto-detect direct vs proxy; --direct/--proxy/--auto-start)
+./bin/agent init      # set up Codex + Claude (auto-detect direct vs proxy; --direct / --proxy)
 ./bin/agent auth      # manage the GitHub credential (--provider/--get/--del/--check)
+./bin/agent config    # get/set preferences (--set <key> <value> / --get [key] / --del <key>)
 ./bin/agent start     # start the daemon; also stop / health / env / cost / update / shell / codex / claude
 ```
 

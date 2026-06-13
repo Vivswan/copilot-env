@@ -164,7 +164,7 @@ function managedDirectProvider(codexExecVersion?: string | null) {
 //
 // `auth.command` runs the shared `src/scripts/proxy-token.sh --yes` (`.ps1` on Windows, via
 // `proxyTokenCommand`): it ensures the proxy is up (auto-starting it when the managed
-// lifecycle is on, `agent init --auto-start`) and then prints the proxy key. `--yes` is the
+// lifecycle is on, the `auto-start` config key) and then prints the proxy key. `--yes` is the
 // headless path (never prompt). Codex forbids `auth` together with `env_key` on one
 // provider, so proxy (like direct) resolves its key via the command, not an env var.
 function managedProxyProvider(baseUrl: string) {

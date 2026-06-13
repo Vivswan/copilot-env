@@ -57,7 +57,6 @@ test("3.3.3 (a): backfills gh-token for a stored token with no recorded provider
   expect(state().read()).toEqual({
     githubToken: "ghu_legacy",
     authProvider: "gh-token",
-    autoStart: null,
   });
 });
 
@@ -70,7 +69,6 @@ test("3.3.3 (b): imports copilot-api's token as copilot and scrubs its file", ()
   expect(state().read()).toEqual({
     githubToken: "ghu_from_copilot_api",
     authProvider: "copilot",
-    autoStart: null,
   });
   expect(existsSync(tokenFile)).toBe(false); // scrubbed
 });
@@ -83,7 +81,7 @@ test("3.3.3 is idempotent: a chosen gh-cli provider (no token) is never overwrit
   writeFileSync(tokenFile, "ghu_should_not_import\n");
   void migration.run();
   // gh-cli holds no token of its own and must not be clobbered by the import.
-  expect(state().read()).toEqual({ githubToken: null, authProvider: "gh-cli", autoStart: null });
+  expect(state().read()).toEqual({ githubToken: null, authProvider: "gh-cli" });
 });
 
 test("3.3.3 (codex): rewrites a legacy github-copilot-direct config to copilot-env", () => {

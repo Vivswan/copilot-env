@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { consola } from "consola";
 import { runPreflight } from "../autoupdate/preflight.ts";
 import { AutoupdateState, DEFAULT_AUTOUPDATE_COOLDOWN_DAYS } from "../autoupdate/state.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { resolveTarget } from "../install/resolve-release.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { isUpToDate } from "../utils/semver.ts";
@@ -32,7 +33,9 @@ export interface UpdateArgs {
 }
 
 export async function runUpdate(args: UpdateArgs): Promise<void> {
-  const cooldown = args.cooldown ?? null;
+  // `--cooldown` flag > config `updateCooldown` > none (immediate). So a stored default
+  // applies to a bare `agent update` while an explicit flag still wins per-invocation.
+  const cooldown = args.cooldown ?? new CopilotEnvConfig().read().updateCooldown ?? null;
   assertNonNegativeDays(cooldown);
 
   // Autoupdate management flags short-circuit the manual update flow.

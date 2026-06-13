@@ -30,6 +30,12 @@ export class CopilotApiPaths {
    */
   sharedStateFile: string;
   /**
+   * Account/machine-wide copilot-env PREFERENCES (`.copilot-env-config.json`), managed by
+   * `agent config` -- separate from the credential store above. Holds the user-tunable knobs
+   * (auto-start, passthrough, idle-timeout, small-model, port, proxy float pins, etc.).
+   */
+  envConfigFile: string;
+  /**
    * copilot-api's OWN device-login token file (`github_token`), written when the
    * proxy authenticates itself via the device flow. copilot-env never writes it
    * (we pass `--github-token` from `sharedStateFile`); we only read+scrub it when
@@ -49,6 +55,7 @@ export class CopilotApiPaths {
     this.logFile = join(runDir, ".log");
     this.sqliteDb = join(runDir, "copilot-api.sqlite");
     this.sharedStateFile = join(this.home, ".copilot-env-state.json");
+    this.envConfigFile = join(this.home, ".copilot-env-config.json");
     this.githubTokenFile = join(this.home, "github_token");
   }
 }

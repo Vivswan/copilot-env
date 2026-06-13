@@ -19,6 +19,7 @@ import { runCodex } from "./codex/config.ts";
 import { runCodexHost } from "./codex/host.ts";
 import { runCodexMobile } from "./codex/mobile.ts";
 import { runAuth } from "./commands/auth.ts";
+import { runConfig } from "./commands/config.ts";
 import { runEnv } from "./commands/env.ts";
 import { runHealth } from "./commands/health.ts";
 import { runInit } from "./commands/init.ts";
@@ -26,6 +27,7 @@ import { runShell } from "./commands/setup.ts";
 import { runStart } from "./commands/start.ts";
 import { runStop } from "./commands/stop.ts";
 import { runUpdate } from "./commands/update.ts";
+import { configKeysHelp } from "./copilot_api/env_config.ts";
 import { runCost } from "./usage/cost.ts";
 import { OPENROUTER_MODELS_URL } from "./usage/pricing.ts";
 import { bold, cyan, gray } from "./utils/ansi.ts";
@@ -110,10 +112,25 @@ program
 // command" handling -- so it works with no subcommand.
 program.on("option:full-help", () => {
   const sep = "─".repeat(72);
-  const parts = [program.helpInformation()];
+  // Render a command's FULL help -- including any `addHelpText('after', ...)` (e.g. the
+  // `config` key list), which `helpInformation()` omits because that text is emitted via
+  // help events during outputHelp(). Capture those events into a string.
+  const renderHelp = (cmd: Command): string => {
+    let out = "";
+    const saved = cmd.configureOutput();
+    cmd.configureOutput({
+      writeOut: (s) => {
+        out += s;
+      },
+    });
+    cmd.outputHelp();
+    cmd.configureOutput(saved);
+    return out;
+  };
+  const parts = [renderHelp(program)];
   for (const cmd of program.commands) {
     if (cmd.name() === "help") continue;
-    parts.push(`${sep}\nagent ${cmd.name()}\n${sep}\n${cmd.helpInformation()}`);
+    parts.push(`${sep}\nagent ${cmd.name()}\n${sep}\n${renderHelp(cmd)}`);
   }
   process.stdout.write(parts.join("\n"));
   process.exit(0);
@@ -139,22 +156,11 @@ program
   .description("Set up both Codex and Claude (auto-detect GitHub Copilot Direct vs the proxy).")
   .option("--direct", "Force both agents to GitHub Copilot Direct (no auto-detect probe).")
   .option("--proxy", "Force both agents to the local copilot-api proxy (no auto-detect probe).")
-  .option(
-    "--auto-start",
-    "Enable the managed proxy lifecycle: agents auto-start the proxy on open, and it auto-stops when idle.",
-  )
-  .option("--no-auto-start", "Disable the managed proxy lifecycle (manage the proxy yourself).")
-  .option(
-    "--get-auto-start",
-    "Report the managed-lifecycle flag and exit (0 enabled, 1 not), without configuring agents.",
-  )
   .action((opts: Opts) =>
     runSafe(() =>
       runInit({
         direct: Boolean(opts.direct),
         proxy: Boolean(opts.proxy),
-        autoStart: opts.autoStart as boolean | undefined,
-        getAutoStart: Boolean(opts.getAutoStart),
       }),
     ),
   );
@@ -206,14 +212,6 @@ program
     "Pin the proxy to this port instead of auto-resolving from the default (fails if it is busy).",
   )
   .option(
-    "--passthrough",
-    "Forward the GitHub token directly to Copilot, skipping the editor token exchange (needed for PATs; auto-enabled for PAT-shaped tokens).",
-  )
-  .option(
-    "--no-passthrough",
-    "Force the standard editor token exchange even for a PAT-shaped token.",
-  )
-  .option(
     "--record-event",
     "Record an activity heartbeat for the idle watchdog and exit, without launching (used by the proxy resolver).",
   )
@@ -223,7 +221,6 @@ program
       runStart({
         dryRun: Boolean(opts.dryRun),
         port: parsePort(opts.port),
-        passthrough: opts.passthrough as boolean | undefined,
         recordEvent: Boolean(opts.recordEvent),
         check: Boolean(opts.check),
       }),
@@ -234,6 +231,23 @@ program
   .command("stop")
   .description("Stop the proxy on this host.")
   .action(() => runSafe(() => runStop()));
+
+program
+  .command("config")
+  .description("Get/set copilot-env preferences (auto-start, passthrough, idle-timeout, ...).")
+  .option("--set <key...>", "Set a preference: --set <key> <value>.")
+  .option("--get [key]", "Print all preferences, or just one key's value.")
+  .option("--del <key>", "Delete a preference (revert to its default).")
+  .addHelpText("after", `\n${configKeysHelp()}`)
+  .action((opts: Opts) =>
+    runSafe(() =>
+      runConfig({
+        set: opts.set as string[] | undefined,
+        get: opts.get as string | boolean | undefined,
+        del: opts.del as string | undefined,
+      }),
+    ),
+  );
 
 program
   .command("health")

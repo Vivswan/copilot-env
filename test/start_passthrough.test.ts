@@ -18,7 +18,7 @@ test("isPatToken: ghp_/github_pat_ are PATs; gho_/ghu_/ghs_/empty are not", () =
 
 // --- usePatPassthrough -------------------------------------------------------
 
-test("usePatPassthrough: --passthrough/--no-passthrough force on/off regardless of token", () => {
+test("usePatPassthrough: an explicit force (config on/off) wins regardless of token", () => {
   expect(usePatPassthrough({ force: true, token: "gho_oauth" })).toBe(true);
   expect(usePatPassthrough({ force: true, token: undefined })).toBe(true);
   expect(usePatPassthrough({ force: false, token: "ghp_pat" })).toBe(false);

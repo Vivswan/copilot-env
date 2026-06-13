@@ -1,7 +1,7 @@
 // Preloaded into the copilot-api daemon (via `bun --preload`) when `agent start`
 // decides to use PAT passthrough (`usePatPassthrough` in start.ts: auto for a PAT-shaped
-// credential, or forced via `--passthrough`). A PAT can't perform copilot-api's editor
-// token exchange (`GET .../copilot_internal/v2/token` -> 403 "Resource not accessible by
+// credential, or forced via the `passthrough` config key). A PAT can't perform copilot-api's
+// editor token exchange (`GET .../copilot_internal/v2/token` -> 403 "Resource not accessible by
 // personal access token"), but IS accepted directly by api.githubcopilot.com under the
 // `vscode-chat` integration -- which copilot-api's DEFAULT path already sends.
 //
@@ -29,7 +29,8 @@ function tokenFromArgv(): string | null {
 }
 
 // Act whenever this shim was preloaded with a token. The decision to load it at all is
-// `usePatPassthrough` in start.ts (auto for a PAT, or forced via `--passthrough`), so the
+// `usePatPassthrough` in start.ts (auto for a PAT, or forced via the `passthrough` config
+// key), so the
 // shim does NOT re-check the token shape -- that would defeat a forced run for a token
 // start.ts couldn't classify (e.g. a legacy unprefixed classic PAT).
 const token = tokenFromArgv();

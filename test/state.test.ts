@@ -59,7 +59,7 @@ test("the auth provider round-trips and clears alongside the token", () => {
 
   // `--del` clears both keys at once.
   state.set({ githubToken: null, authProvider: null });
-  expect(state.read()).toEqual({ githubToken: null, authProvider: null, autoStart: null });
+  expect(state.read()).toEqual({ githubToken: null, authProvider: null });
 });
 
 test("the state lives in the shared home, independent of per-host .run state", () => {
@@ -67,30 +67,6 @@ test("the state lives in the shared home, independent of per-host .run state", (
   new CopilotEnvState().set({ githubToken: "ghu_shared" });
   // Stored beside config.json at the home root, not under .run/<host>/.
   expect(new CopilotEnvState().read().githubToken).toBe("ghu_shared");
-});
-
-test("the autoStart flag round-trips as a boolean and gates the managed lifecycle", () => {
-  tmpHome();
-  const state = new CopilotEnvState();
-  // Default (absent) is off.
-  expect(state.read().autoStart).toBeNull();
-  expect(state.autoStartEnabled()).toBe(false);
-
-  // `agent init --auto-start` enables it.
-  state.set({ autoStart: true });
-  expect(state.read().autoStart).toBe(true);
-  expect(state.autoStartEnabled()).toBe(true);
-
-  // `agent init --no-auto-start` disables it (stored false, not just absent).
-  state.set({ autoStart: false });
-  expect(state.read().autoStart).toBe(false);
-  expect(state.autoStartEnabled()).toBe(false);
-
-  // null clears the key entirely; it does NOT disturb the credential.
-  state.set({ githubToken: "ghu_keep", autoStart: true });
-  state.set({ autoStart: null });
-  expect(state.read().autoStart).toBeNull();
-  expect(state.read().githubToken).toBe("ghu_keep");
 });
 
 test("run-state clearIfPid clears the daemon tracking ONLY when the tracked pid matches", () => {

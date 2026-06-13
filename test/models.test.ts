@@ -47,12 +47,36 @@ test("qualifier ids get a dash alias and no bare base alias", () => {
   expect(aliases["claude-opus-4-7"]).toBeUndefined();
 });
 
-test("non-claude models are skipped entirely", () => {
+test("non-claude models produce no claude aliases, but GPTs get gpt-latest", () => {
   const catalog: CatalogModel[] = [
     { id: "gpt-5.5", is1m: false },
     { id: "gemini-2.5-pro", is1m: false },
   ];
   const aliases = generateAliases(catalog);
 
-  expect(Object.keys(aliases)).toHaveLength(0);
+  expect(aliases["gpt-latest"]).toBe("gpt-5.5");
+  expect(Object.keys(aliases)).toEqual(["gpt-latest"]);
+});
+
+test("gpt-latest picks the newest non-mini GPT (mini/nano excluded)", () => {
+  const catalog: CatalogModel[] = [
+    { id: "gpt-5", is1m: false },
+    { id: "gpt-5.5", is1m: false },
+    { id: "gpt-5-mini", is1m: false },
+    { id: "gpt-6-nano", is1m: false },
+    { id: "gpt-6", is1m: false },
+  ];
+  const aliases = generateAliases(catalog);
+
+  expect(aliases["gpt-latest"]).toBe("gpt-6");
+});
+
+test("gpt-latest is absent when every GPT is a mini/nano tier", () => {
+  const catalog: CatalogModel[] = [
+    { id: "gpt-5-mini", is1m: false },
+    { id: "gpt-5-nano", is1m: false },
+  ];
+  const aliases = generateAliases(catalog);
+
+  expect(aliases["gpt-latest"]).toBeUndefined();
 });

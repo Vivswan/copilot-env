@@ -30,6 +30,7 @@ interface ParsedModel {
 }
 
 const MODEL_ID_PATTERN = /^claude-([a-z]+)-(\d+\.\d+)(?:-(.+))?$/;
+const GPT_ID_PATTERN = /^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/;
 
 /** Compare two `major.minor` version strings; >0 when `a` is newer. */
 function compareVersion(a: string, b: string): number {
@@ -52,6 +53,7 @@ function compareVersion(a: string, b: string): number {
  * - qualifier ids    -> dash alias (`claude-opus-4-7-high` -> `claude-opus-4.7-high`)
  * - `opus`/`opus[1m]`-> newest opus version that has a 1m variant
  * - `sonnet`/`haiku` -> newest of that family (1m sibling preferred)
+ * - `gpt-latest`      -> newest non-mini GPT (the flagship)
  */
 export function generateAliases(catalog: CatalogModel[]): Record<string, string> {
   const parsed: ParsedModel[] = [];
@@ -101,7 +103,42 @@ export function generateAliases(catalog: CatalogModel[]): Record<string, string>
     }
   }
 
+  // `gpt-latest` -> the newest non-mini GPT, so a small-model/config pin that
+  // wants "whatever the current flagship GPT is" need not be re-set each release.
+  const gptLatest = newestGpt(catalog);
+  if (gptLatest) {
+    aliases["gpt-latest"] = gptLatest;
+  }
+
   return aliases;
+}
+
+/**
+ * Newest non-mini GPT id in the catalog (the flagship), or undefined. The
+ * reduced `mini`/`nano` tiers are excluded; on a version tie the bare id (no
+ * qualifier) wins, so `gpt-6` beats a hypothetical `gpt-6-<qualifier>`.
+ */
+function newestGpt(catalog: CatalogModel[]): string | undefined {
+  let best: { id: string; version: string; bare: boolean } | undefined;
+  for (const model of catalog) {
+    const match = GPT_ID_PATTERN.exec(model.id);
+    if (!match) {
+      continue;
+    }
+    const [, version, qualifier] = match;
+    if (version === undefined) {
+      continue;
+    }
+    if (qualifier !== undefined && /mini|nano/.test(qualifier)) {
+      continue; // a reduced tier is never the flagship
+    }
+    const bare = qualifier === undefined;
+    const cmp = best ? compareVersion(version, best.version) : 1;
+    if (!best || cmp > 0 || (cmp === 0 && bare && !best.bare)) {
+      best = { id: model.id, version, bare };
+    }
+  }
+  return best?.id;
 }
 
 /** Newest model of `family` matching `predicate`, by version. */

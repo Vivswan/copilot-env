@@ -68,7 +68,7 @@ agent stop                 # stop the daemon
 agent health               # full environment diagnosis (--scope runtime|proxy|setup|codex|claude, --json, --live)
 agent env                  # print shell exports for the calling shell (CODEX_HOME / proxy ANTHROPIC_BASE_URL)
 agent cost                 # estimated token spend across all per-host usage DBs
-agent update               # update to the latest release (--check / --cooldown)
+agent update               # update to the latest release (--check; cooldown via `agent config --set update-cooldown`)
 agent shell                # wire rc / $PROFILE; --launchers adds cl/co/cx, --clis installs the CLIs, --remove unwires
 agent codex                # configure Codex; no flag auto-detects the backend, --check reports it
 agent codex --direct       # force GitHub Copilot Direct (no auto-detect probe)

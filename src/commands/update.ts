@@ -36,7 +36,7 @@ export async function runUpdate(args: UpdateArgs): Promise<void> {
   // `agent config --set update-cooldown <days>`), else null (immediate). The config key is the
   // single knob -- there is no per-invocation flag.
   const cooldown = new CopilotEnvConfig().read().updateCooldown ?? null;
-  assertNonNegativeDays(cooldown);
+  assertNonNegativeDays(cooldown, "update-cooldown");
 
   // Autoupdate management flags short-circuit the manual update flow.
   if (args.autoStatus) return runAutoStatus();

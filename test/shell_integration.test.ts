@@ -214,6 +214,41 @@ test("posixLaunchersBlock sources the launchers file under its own marker", () =
   expect(block).not.toContain(MARKER);
 });
 
+test("env-refresh stderr parity: eager source is silenced, the agent wrapper's refresh is not (POSIX)", () => {
+  const posix = readFileSync(join(process.cwd(), "shell", "agents.bashrc"), "utf8");
+
+  // The eager startup `agent env` call silences stderr so bootstrap noise
+  // doesn't break the prompt's instant-prompt guard.
+  expect(posix).toMatch(/bin\/agent" env "\$@" 2>\/dev\/null/);
+
+  // The `agent` wrapper's refresh must NOT silence stderr -- a genuine failure
+  // should stay visible. Assert the refresh line and that it carries no redirect.
+  const body = shellFunctionBody(posix, "agent");
+  const refresh = body.split("\n").find((line) => line.includes('bin/agent" env)'));
+  expect(refresh).toBeDefined();
+  expect(refresh).toMatch(/_env="\$\("\$\{_COPILOT_AGENTS_DIR\}\/bin\/agent" env\)" && eval/);
+  expect(refresh).not.toContain("2>/dev/null");
+});
+
+test("env-refresh stderr parity: Import-CopilotEnv takes -Quiet, eager passes it, the agent wrapper omits it (PowerShell)", () => {
+  const powershell = readFileSync(join(process.cwd(), "shell", "agents.ps1"), "utf8");
+
+  // Import-CopilotEnv declares a [switch]$Quiet param that gates the 2>$null redirect.
+  expect(powershell).toMatch(/function Import-CopilotEnv\s*\{\s*param\(\[switch\]\$Quiet\)/);
+  expect(powershell).toMatch(/if \(\$Quiet\) \{ Invoke-Agent env --format powershell 2>\$null \}/);
+
+  // The eager startup call passes -Quiet to silence bootstrap noise.
+  expect(powershell).toMatch(/Import-CopilotEnv -Quiet/);
+
+  // The `agent` wrapper calls Import-CopilotEnv WITHOUT -Quiet so a real
+  // refresh failure stays visible (mirrors the POSIX unsilenced refresh).
+  const agentBody = shellFunctionBody(powershell, "agent");
+  const refresh = agentBody.split("\n").find((line) => line.includes("Import-CopilotEnv"));
+  expect(refresh).toBeDefined();
+  expect(refresh?.trim()).toBe("Import-CopilotEnv");
+  expect(refresh).not.toContain("-Quiet");
+});
+
 test("cx launchers start the proxy only for proxy-backed Codex configs", () => {
   const posix = readFileSync(join(process.cwd(), "shell", "agents.launchers.bashrc"), "utf8");
   const posixCx = shellFunctionBody(posix, "cx");

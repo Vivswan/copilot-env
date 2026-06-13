@@ -164,10 +164,15 @@ function ensureDict(parent: Record<string, unknown>, key: string): Record<string
  * process (the daemon, antivirus, the search indexer) holds the file open.
  * Retry briefly, then surface the original error.
  */
-function renameWithRetry(from: string, to: string, attempts = 5): void {
+export function renameWithRetry(
+  from: string,
+  to: string,
+  attempts = 5,
+  rename: (f: string, t: string) => void = renameSync,
+): void {
   for (let i = 0; i <= attempts; i++) {
     try {
-      renameSync(from, to);
+      rename(from, to);
       return;
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;

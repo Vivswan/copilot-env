@@ -368,17 +368,12 @@ program
     "Report update status and exit — no changes (0 up to date, 1 update available, 2 no release resolved).",
   )
   .option(
-    "--cooldown [days]",
-    "Adopt the newest release aged >= DAYS. Bare --cooldown uses 7 days.",
-    coerceDays,
-  )
-  .option(
     "--force",
     "Update even when this is a git checkout (.git present); the sync overwrites local files.",
   )
   .option(
     "--auto",
-    "Enable autoupdate: once a day, adopt the newest release aged >= cooldown (default 7) days, and apply once now.",
+    "Enable autoupdate: once a day, adopt the newest release aged >= the configured update-cooldown (default 7) days, and apply once now.",
   )
   .option("--no-auto", "Disable autoupdate.")
   .option(
@@ -389,7 +384,6 @@ program
     runSafe(() =>
       runUpdate({
         check: Boolean(opts.check),
-        cooldown: resolveCooldown(opts.cooldown, 7),
         force: Boolean(opts.force),
         auto: opts.auto === true,
         noAuto: opts.auto === false,

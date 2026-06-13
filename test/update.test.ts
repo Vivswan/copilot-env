@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import {
   parseReleasesJson,
   pickAged,
@@ -256,3 +255,7 @@ describe("source archive SHA256", () => {
     }
   });
 });
+
+// runUpdate resolves the cooldown inline from the stored config `update-cooldown` (set via
+// `agent config --set update-cooldown <days>`), else null (immediate) -- there is no flag and no
+// wrapper. The config-key round-trip is covered in env_config.test.ts; the `?? null` is trivial.

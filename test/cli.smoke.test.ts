@@ -587,7 +587,7 @@ test("update --help documents the autoupdate flags alongside the manual ones", (
   });
   const out = help.stdout.toString() + help.stderr.toString();
   expect(help.exitCode).toBe(0);
-  for (const flag of ["--auto", "--no-auto", "--auto-status", "--check", "--cooldown", "--force"]) {
+  for (const flag of ["--auto", "--no-auto", "--auto-status", "--check", "--force"]) {
     expect(out).toContain(flag);
   }
 });

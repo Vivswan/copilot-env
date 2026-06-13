@@ -80,3 +80,33 @@ test("gpt-latest is absent when every GPT is a mini/nano tier", () => {
 
   expect(aliases["gpt-latest"]).toBeUndefined();
 });
+
+test("gpt-latest tiebreak prefers the bare id over a same-version qualifier (bare first)", () => {
+  const catalog: CatalogModel[] = [
+    { id: "gpt-6", is1m: false },
+    { id: "gpt-6-foo", is1m: false },
+  ];
+  const aliases = generateAliases(catalog);
+
+  expect(aliases["gpt-latest"]).toBe("gpt-6");
+});
+
+test("gpt-latest tiebreak prefers the bare id even when the qualifier appears first", () => {
+  // Reversed order catches a 'last match wins' bug: the bare id must still win.
+  const catalog: CatalogModel[] = [
+    { id: "gpt-6-foo", is1m: false },
+    { id: "gpt-6", is1m: false },
+  ];
+  const aliases = generateAliases(catalog);
+
+  expect(aliases["gpt-latest"]).toBe("gpt-6");
+});
+
+test("a qualifier id like claude-opus-4.7-high gets no [1m] alias", () => {
+  const catalog: CatalogModel[] = [{ id: "claude-opus-4.7-high", is1m: false }];
+  const aliases = generateAliases(catalog);
+
+  expect(aliases["claude-opus-4-7-high"]).toBe("claude-opus-4.7-high");
+  expect(aliases["claude-opus-4-7-high[1m]"]).toBeUndefined();
+  expect(aliases["claude-opus-4.7-high[1m]"]).toBeUndefined();
+});

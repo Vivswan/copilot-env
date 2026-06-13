@@ -3,10 +3,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import {
+  armIdleWatchdog,
   DEFAULT_IDLE_TIMEOUT_SECONDS,
   defaultCheckIntervalMs,
   IDLE_TIMEOUT_ENV,
+  idleCheck,
   idleTimeoutMs,
   isIdle,
 } from "../src/scripts/idle_watchdog.ts";
@@ -77,4 +80,91 @@ test("isIdle: true exactly at and past the timeout boundary, false before it", (
   expect(isIdle(0, 999, timeout)).toBe(false); // 999ms idle < 1000
   expect(isIdle(0, 1000, timeout)).toBe(true); // exactly at the boundary
   expect(isIdle(0, 1500, timeout)).toBe(true); // past it
+});
+
+test("idleCheck: lifecycle OFF (auto-start unset) returns without exiting, even when idle", () => {
+  tmpHome();
+  // auto-start is unset (default false) in this fresh temp home -> the managed lifecycle is
+  // disabled, so idleCheck must disengage and leave the daemon running. idleCheck(0, 1) is
+  // long-idle + a 1ms timeout, which WOULD trip process.exit(0) if the OFF gate were removed.
+  // Stub process.exit so that regression throws (fails loudly) instead of silently terminating
+  // the whole `bun test` run with code 0 -- the bug this test exists to catch.
+  expect(new CopilotEnvConfig().autoStartEnabled()).toBe(false);
+  const realExit = process.exit;
+  let exited = false;
+  process.exit = ((code?: number): never => {
+    exited = true;
+    throw new Error(`idleCheck unexpectedly exited (${code})`);
+  }) as typeof process.exit;
+  try {
+    idleCheck(0, 1);
+  } finally {
+    process.exit = realExit;
+  }
+  expect(exited).toBe(false);
+});
+
+test("idleCheck: lifecycle OFF also short-circuits before touching run-state", () => {
+  tmpHome();
+  // Seed a run-state pid; the OFF early-return happens before clearIfPid, so the state must be
+  // left untouched. Guard process.exit too: a broken gate would clearIfPid THEN exit(0), which
+  // would end the runner before the assertions -- the stub turns that into a loud failure.
+  const state = new CopilotEnvRunState();
+  state.set({ pid: process.pid, port: 4141, lastEnsureAt: 1 });
+  const realExit = process.exit;
+  process.exit = ((code?: number): never => {
+    throw new Error(`idleCheck unexpectedly exited (${code})`);
+  }) as typeof process.exit;
+  try {
+    idleCheck(0, 1); // idle + tiny timeout, but lifecycle OFF -> no clear, no exit
+  } finally {
+    process.exit = realExit;
+  }
+  const after = state.read();
+  expect(after.pid).toBe(process.pid);
+  expect(after.port).toBe(4141);
+  expect(after.lastEnsureAt).toBe(1);
+});
+
+test("armIdleWatchdog: COPILOT_API_IDLE_TIMEOUT=0 arms no timer", () => {
+  tmpHome();
+  process.env[IDLE_TIMEOUT_ENV] = "0"; // timeoutMs <= 0 disables the watchdog
+  // Stub setInterval to detect whether a timer is armed; armIdleWatchdog must return before it.
+  const realSetInterval = globalThis.setInterval;
+  let armed = false;
+  globalThis.setInterval = ((): ReturnType<typeof realSetInterval> => {
+    armed = true;
+    return { unref() {} } as unknown as ReturnType<typeof realSetInterval>;
+  }) as typeof realSetInterval;
+  try {
+    armIdleWatchdog();
+  } finally {
+    globalThis.setInterval = realSetInterval;
+  }
+  expect(armed).toBe(false);
+});
+
+test("armIdleWatchdog: a positive timeout DOES arm an unref'd timer", () => {
+  tmpHome();
+  process.env[IDLE_TIMEOUT_ENV] = "5"; // positive -> watchdog enabled
+  const realSetInterval = globalThis.setInterval;
+  let armed = false;
+  let unrefCalled = false;
+  const fakeTimer = {
+    unref() {
+      unrefCalled = true;
+      return fakeTimer;
+    },
+  };
+  globalThis.setInterval = ((): ReturnType<typeof realSetInterval> => {
+    armed = true;
+    return fakeTimer as unknown as ReturnType<typeof realSetInterval>;
+  }) as typeof realSetInterval;
+  try {
+    armIdleWatchdog();
+  } finally {
+    globalThis.setInterval = realSetInterval;
+  }
+  expect(armed).toBe(true); // contrast with the timeout=0 case: here a timer IS armed
+  expect(unrefCalled).toBe(true); // the timer is unref'd so it never holds the loop open alone
 });

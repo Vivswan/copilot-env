@@ -192,15 +192,37 @@ function runNpm(args: string[], capture = false): string {
   return capture ? result.stdout.trim() : "";
 }
 
+/**
+ * Pure computation of how npm's global bin dir folds into PATH for a given
+ * platform. Platform-parameterized so it is testable on POSIX CI: on win32 the
+ * prefix IS the bin dir and the separator is ';'; elsewhere the bin dir is
+ * `${prefix}/bin` and the separator is ':'. Returns the bin dir, the resolved
+ * separator, and -- when the bin dir is not already on PATH -- the deliberate
+ * `Path`/`PATH` double-key assignments (Windows is case-insensitive about the
+ * variable name, so both are written to keep them in lockstep).
+ */
+export function computePathRefresh(
+  platform: NodeJS.Platform,
+  prefix: string,
+  currentPath: string,
+): { bin: string; separator: string; assignments: Record<string, string> } {
+  const isWin = platform === "win32";
+  const bin = isWin ? prefix : `${prefix}/bin`;
+  const separator = isWin ? ";" : ":";
+  if (currentPath.split(separator).includes(bin)) {
+    return { bin, separator, assignments: {} };
+  }
+  const next = `${bin}${separator}${currentPath}`;
+  return { bin, separator, assignments: { Path: next, PATH: next } };
+}
+
 function syncNpmGlobalBinToPath(): void {
   const prefix = runNpm(["prefix", "-g"], true);
   if (!prefix) return;
-  const bin = process.platform === "win32" ? prefix : `${prefix}/bin`;
-  const separator = process.platform === "win32" ? ";" : ":";
   const path = process.env.PATH ?? process.env.Path ?? "";
-  if (!path.split(separator).includes(bin)) {
-    process.env.PATH = `${bin}${separator}${path}`;
-    process.env.Path = process.env.PATH;
+  const { bin, assignments } = computePathRefresh(process.platform, prefix, path);
+  for (const [key, value] of Object.entries(assignments)) {
+    process.env[key] = value;
   }
   addWindowsUserPath(bin);
 }

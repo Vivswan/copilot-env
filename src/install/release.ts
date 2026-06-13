@@ -25,7 +25,17 @@ const PRESERVE = new Set([".git", "node_modules", ".autoupdate"]);
 // A complete release tree contains these. node-tar warns-and-SKIPS unrecoverable
 // entries rather than failing, so we verify the extract before the destructive sync:
 // a partial tree must never be allowed to prune the live checkout.
-const REQUIRED_FILES = ["package.json", "bun.lock", "bin/agent", "src/cli.ts"];
+export const REQUIRED_FILES = ["package.json", "bun.lock", "bin/agent", "src/cli.ts"];
+
+/** Throw unless `tree` contains every REQUIRED_FILES entry: a partial extract must
+ *  never reach the destructive mirror that prunes the live checkout. */
+export function assertReleaseComplete(tree: string): void {
+  for (const required of REQUIRED_FILES) {
+    if (!existsSync(join(tree, required))) {
+      throw new Error(`release archive is incomplete (missing ${required}); update aborted`);
+    }
+  }
+}
 
 /** True only if `p` is a real directory (NOT a symlink to one). Uses lstat so the
  *  sync never recurses through a link that points outside the checkout. */
@@ -40,7 +50,7 @@ const isRealDir = (p: string): boolean => {
 /** Make `dest` mirror `src` exactly: replace tracked files, recurse into dirs, and
  *  delete anything in `dest` not in `src` -- except `keep` names at the top level.
  *  Symlinks are copied verbatim (not dereferenced). */
-function mirror(src: string, dest: string, keep: Set<string>): void {
+export function mirror(src: string, dest: string, keep: Set<string>): void {
   const srcEntries = readdirSync(src, { withFileTypes: true });
   const srcNames = new Set(srcEntries.map((e) => e.name));
   for (const name of readdirSync(dest)) {
@@ -101,11 +111,7 @@ export async function applyRelease(
     mkdirSync(tree, { recursive: true });
     // strip:1 drops the `Vivswan-copilot-env-<sha>/` wrapper dir.
     await tarExtract({ file: tarball, cwd: tree, strip: 1 });
-    for (const required of REQUIRED_FILES) {
-      if (!existsSync(join(tree, required))) {
-        throw new Error(`release archive is incomplete (missing ${required}); update aborted`);
-      }
-    }
+    assertReleaseComplete(tree);
     mirror(tree, PROJECT_ROOT, PRESERVE);
   } finally {
     rmSync(tmp, { recursive: true, force: true });

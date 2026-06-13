@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runStart } from "../src/commands/start.ts";
+import { portListening, runStart } from "../src/commands/start.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 
 // The lifecycle primitives the proxy-token resolver orchestrates: `start --record-event`
@@ -28,6 +29,27 @@ function tmpHome(): void {
   process.env.COPILOT_API_HOME = dir;
 }
 
+// Open a loopback TCP server on an ephemeral port and resolve once it is accepting
+// connections. Mirrors the daemon's listening socket so portListening can probe a real port.
+function listenEphemeral(): Promise<{ server: Server; port: number }> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (address === null || typeof address === "string") {
+        reject(new Error("expected an AddressInfo from a TCP server"));
+        return;
+      }
+      resolve({ server, port: address.port });
+    });
+  });
+}
+
+function closeServer(server: Server): Promise<void> {
+  return new Promise((resolve) => server.close(() => resolve()));
+}
+
 test("start --record-event writes the lastEnsureAt heartbeat and never launches", async () => {
   tmpHome();
   expect(new CopilotEnvRunState().read().lastEnsureAt).toBeUndefined();
@@ -42,4 +64,51 @@ test("start --check exits non-zero when no proxy is tracked/running", async () =
   tmpHome();
   await runStart({ check: true });
   expect(process.exitCode).toBe(1);
+});
+
+// portListening is the liveness half of proxyStatus's UP-path composition. proxyStatus's
+// OTHER half (isCopilotApiPid) scans the OS process table for a `copilot-api ... start`
+// command line, which the bun test runner's own pid cannot satisfy -- so the full UP-path
+// through runStart({check:true}) is not reproducible in-test without a real daemon (see the
+// "stays DOWN" test below). These two tests pin the part that IS deterministic: the raw TCP
+// liveness probe against a real listening port vs. a dead one.
+test("portListening resolves true against a real listening loopback port", async () => {
+  const { server, port } = await listenEphemeral();
+  try {
+    expect(await portListening(port, 2000)).toBe(true);
+  } finally {
+    await closeServer(server);
+  }
+});
+
+test("portListening resolves false for a port with nothing listening", async () => {
+  // Grab an ephemeral port, then close the server so the port is free again. Nothing is
+  // listening, so the connect should error/refuse and the probe must report not-listening.
+  const { server, port } = await listenEphemeral();
+  await closeServer(server);
+  expect(await portListening(port, 1000)).toBe(false);
+});
+
+// The full UP-path (live pid + real listening port -> exit 0) requires proxyStatus's
+// isCopilotApiPid guard to pass, which means the seeded pid must be a process whose command
+// line matches `copilot-api ... start`. The test runner's pid does NOT, so even with a
+// genuinely listening port the probe stays DOWN. This asserts that the isCopilotApiPid guard
+// is load-bearing: a live-but-foreign pid plus a real port still yields exit 1, never a false
+// UP. (A true exit-0 path is covered end-to-end by the start/stop lifecycle against the fake
+// proxy, where the daemon's command line does match the guard.)
+test("start --check stays DOWN for a live pid + listening port that is not a copilot-api daemon", async () => {
+  tmpHome();
+  const { server, port } = await listenEphemeral();
+  try {
+    // process.pid is alive (pidAlive true) and the port genuinely listens, but the test
+    // runner is not a copilot-api daemon, so isCopilotApiPid(process.pid) is false.
+    new CopilotEnvRunState().set({ pid: process.pid, port });
+    expect(new CopilotEnvRunState().read().pid).toBe(process.pid);
+    expect(new CopilotEnvRunState().read().port).toBe(port);
+
+    await runStart({ check: true });
+    expect(process.exitCode).toBe(1);
+  } finally {
+    await closeServer(server);
+  }
 });

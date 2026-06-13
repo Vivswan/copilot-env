@@ -22,7 +22,6 @@ import { applyUpdate } from "./apply_update.ts";
 
 export interface UpdateArgs {
   check?: boolean;
-  cooldown?: number | null;
   force?: boolean;
   /** Enable autoupdate (and apply once immediately). */
   auto?: boolean;
@@ -33,9 +32,10 @@ export interface UpdateArgs {
 }
 
 export async function runUpdate(args: UpdateArgs): Promise<void> {
-  // `--cooldown` flag > config `updateCooldown` > none (immediate). So a stored default
-  // applies to a bare `agent update` while an explicit flag still wins per-invocation.
-  const cooldown = args.cooldown ?? new CopilotEnvConfig().read().updateCooldown ?? null;
+  // The update/autoupdate cooldown is the stored config `update-cooldown` (set via
+  // `agent config --set update-cooldown <days>`), else null (immediate). The config key is the
+  // single knob -- there is no per-invocation flag.
+  const cooldown = new CopilotEnvConfig().read().updateCooldown ?? null;
   assertNonNegativeDays(cooldown);
 
   // Autoupdate management flags short-circuit the manual update flow.

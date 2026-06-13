@@ -84,6 +84,32 @@ function checkTsFile(file: string, text: string, offenders: string[]): void {
   }
 }
 
+test("checkTsFile flags non-ASCII in a comment but not inside a string literal", () => {
+  // U+21D4 (double arrow), built at runtime so THIS file stays pure ASCII.
+  const arrow = String.fromCharCode(0x21d4);
+
+  // Non-ASCII in a comment -> 1 offender.
+  const inComment: string[] = [];
+  checkTsFile("synthetic.ts", `// ${arrow}\nconst a = 1;\n`, inComment);
+  expect(inComment.length).toBe(1);
+  expect(inComment[0]).toContain("U+21D4");
+
+  // Non-ASCII inside a string literal text -> 0 offenders (user-facing output).
+  const inString: string[] = [];
+  checkTsFile("synthetic.ts", `const a = "${arrow}";\n`, inString);
+  expect(inString).toEqual([]);
+
+  // Same char inside a template literal text -> also allowed.
+  const inTemplate: string[] = [];
+  checkTsFile("synthetic.ts", `const a = \`${arrow}\`;\n`, inTemplate);
+  expect(inTemplate).toEqual([]);
+
+  // Non-ASCII in an identifier (outside any string) -> flagged.
+  const inIdent: string[] = [];
+  checkTsFile("synthetic.ts", `const a${arrow} = 1;\n`, inIdent);
+  expect(inIdent.length).toBe(1);
+});
+
 test("source is ASCII outside string literals (non-ASCII allowed only in user output)", () => {
   const offenders: string[] = [];
   for (const root of ROOTS) {

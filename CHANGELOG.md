@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.3.6](https://github.com/Vivswan/copilot-env/compare/v3.3.5...v3.3.6) (2026-06-13)
+
+
+### Bug Fixes
+
+* backfill test coverage for the untested subsystems ([470b368](https://github.com/Vivswan/copilot-env/commit/470b3686c2f6b3d1a657824cdb76961f3f041210))
+* drop the redundant `agent update --cooldown` flag ([4765471](https://github.com/Vivswan/copilot-env/commit/476547170fbb0fcc6411290f1cecd8e14893cb31))
+* make the start --check probe activity-neutral for the idle watchdog ([0f621ac](https://github.com/Vivswan/copilot-env/commit/0f621ace21f692bd681c4f0777c237a172789a6d))
+* print a human-readable status from start --check ([d8658e9](https://github.com/Vivswan/copilot-env/commit/d8658e946d86cc5ca383e8a0d3bdfd67005b3f37))
+* reach the proxy at 127.0.0.1 and consolidate child-env PATH handling ([d450f91](https://github.com/Vivswan/copilot-env/commit/d450f9142a36128504a8071b62062123bc60b064))
+* several Windows incompatibilities (Claude helper, health probe, paths) ([897fcbd](https://github.com/Vivswan/copilot-env/commit/897fcbd2c0a8d4a321227f5ed59f457876362e19))
+
 ## [3.3.5](https://github.com/Vivswan/copilot-env/compare/v3.3.4...v3.3.5) (2026-06-13)
 
 

@@ -6,7 +6,9 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readlinkSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -67,9 +69,17 @@ export function mirror(src: string, dest: string, keep: Set<string>): void {
       if (!isRealDir(d)) rmSync(d, { recursive: true, force: true });
       mkdirSync(d, { recursive: true });
       mirror(s, d, new Set()); // the preserve list only applies at the checkout root
+    } else if (entry.isSymbolicLink()) {
+      // Recreate the link from its raw target so a RELATIVE target stays relative on every
+      // platform. cpSync({dereference:false}) absolutizes relative symlink targets on Linux,
+      // which would repoint the checkout's CLAUDE.md / .github/copilot-instructions.md (relative
+      // links to AGENTS.md) into the temp extract dir that is removed right after -- a broken
+      // link after `agent update`. Writing readlinkSync's string verbatim avoids that.
+      rmSync(d, { recursive: true, force: true });
+      symlinkSync(readlinkSync(s), d);
     } else {
       rmSync(d, { recursive: true, force: true });
-      cpSync(s, d, { dereference: false }); // copy files and symlinks verbatim
+      cpSync(s, d, { dereference: false }); // copy regular files verbatim
     }
   }
 }

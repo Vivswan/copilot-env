@@ -1,5 +1,6 @@
 // `agent start`: launches the proxy daemon, applies defaults, and syncs aliases.
 import * as fs from "node:fs";
+import { connect } from "node:net";
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
 import { CopilotAdminClient } from "../copilot_api/admin.ts";
@@ -106,12 +107,31 @@ async function proxyStatus(): Promise<{ up: boolean; port?: number }> {
     return { up: false };
   }
   const probePort = port ?? defaultProxyPort();
-  try {
-    await fetch(`http://localhost:${probePort}/`, { signal: AbortSignal.timeout(2000) });
-    return { up: true, port }; // any HTTP response (even an error status) means it's listening
-  } catch {
-    return { up: false };
-  }
+  return { up: await portListening(probePort), port };
+}
+
+// A raw TCP-connect liveness probe. It opens (and immediately closes) a loopback socket to
+// confirm the daemon is accepting connections WITHOUT sending an HTTP request -- the daemon
+// runs `--verbose` and logs every HTTP request to its log file, and the idle watchdog treats
+// that log's mtime as activity. An HTTP probe would therefore reset the idle clock on every
+// `--check`, so anything polling liveness (an open agent's resolver, a monitor) would pin the
+// proxy awake. A bare connect writes nothing the daemon logs, so liveness stays activity-neutral
+// while real proxied traffic still counts. Tries IPv4 then IPv6 loopback, mirroring fetch's
+// happy-eyeballs resolution of `localhost` so a daemon bound to either is detected.
+export function portListening(port: number, timeoutMs = 2000): Promise<boolean> {
+  const tryHost = (host: string): Promise<boolean> =>
+    new Promise((resolve) => {
+      const socket = connect({ host, port });
+      const finish = (ok: boolean): void => {
+        socket.destroy();
+        resolve(ok);
+      };
+      socket.setTimeout(timeoutMs);
+      socket.once("connect", () => finish(true));
+      socket.once("timeout", () => finish(false));
+      socket.once("error", () => finish(false));
+    });
+  return tryHost("127.0.0.1").then((ok) => (ok ? true : tryHost("::1")));
 }
 
 function applyDefaultConfig(config: CopilotApiConfig): void {

@@ -8,7 +8,6 @@ import * as fs from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
 import { parse, stringify } from "smol-toml";
-import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { copilotApiResolvePort, openaiBaseUrl } from "../copilot_api/port.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
@@ -28,7 +27,7 @@ import {
   type ManagedAgentMode,
   providerModeExitCode,
 } from "../utils/provider_mode.ts";
-import { AGENT_AUTH_GET_ARGS, agentLauncherCommand } from "../utils/root.ts";
+import { AGENT_AUTH_GET_ARGS, agentLauncherCommand, proxyTokenCommand } from "../utils/root.ts";
 
 const logger = createStderrLogger();
 
@@ -59,7 +58,6 @@ export interface CodexConfigArgs {
 interface ConfigureCodexConfigOptions {
   proxy?: boolean;
   baseUrl?: string;
-  apiKey?: string;
   codexExecVersion?: string | null;
   /** Suppress the "config written" info line (used by the temp-config probe). */
   quiet?: boolean;
@@ -67,7 +65,6 @@ interface ConfigureCodexConfigOptions {
 
 interface ProxyConfigOptions {
   baseUrl: string;
-  apiKey: string;
 }
 
 // === config.toml management ===
@@ -164,14 +161,30 @@ function managedDirectProvider(codexExecVersion?: string | null) {
 // same table is preserved by the merge). The return type is inferred (precise
 // string/boolean fields) -- only the parsed user config below is `unknown`,
 // because that TOML shape is arbitrary and we don't control it.
+//
+// `auth.command` runs the shared `scripts/proxy-token.sh` (`.ps1` on Windows, via
+// `proxyTokenCommand`): it ensures the proxy is up (starting it if down) and, only then,
+// prints the proxy key -- so opening Codex in proxy mode auto-starts the proxy. Codex
+// forbids `auth` together with `env_key` on one provider, so proxy (like direct)
+// resolves its key via the command, not an env var.
 function managedProxyProvider(baseUrl: string) {
+  const auth = proxyTokenCommand();
   return {
     "name": CODEX_PROVIDER_ID,
     "base_url": baseUrl,
-    "env_key": CODEX_ENV_KEY,
     "wire_api": "responses",
     "requires_openai_auth": false,
     "supports_websockets": false,
+    "auth": {
+      "command": auth.command,
+      "args": [...auth.args],
+      // Cold-starting the proxy runs a full child `agent start`: bun startup, the daemon's
+      // readiness wait (up to a ~120s ceiling), THEN model-alias sync + version logging
+      // before the key is printed. Give the first auth attempt headroom past all of that, so
+      // it does not time out after the proxy is ready but before `auth --print-proxy-token`.
+      "timeout_ms": 180000,
+      "refresh_interval_ms": 300000,
+    },
   };
 }
 
@@ -185,10 +198,27 @@ function managedProviderForMode(
   return managedProxyProvider(proxyOptions.baseUrl);
 }
 
-/** True iff `auth` is OUR managed direct auth block (command + args = the launcher's). */
-function isManagedDirectAuth(auth: unknown): boolean {
+/** True iff `auth` is OUR managed auth block for the given launcher args. */
+function isManagedAuth(auth: unknown, expectedArgs: readonly string[]): boolean {
   if (!isRecord(auth)) return false;
-  const expected = agentLauncherCommand(AGENT_AUTH_GET_ARGS);
+  const expected = agentLauncherCommand([...expectedArgs]);
+  return (
+    auth.command === expected.command &&
+    Array.isArray(auth.args) &&
+    auth.args.length === expected.args.length &&
+    auth.args.every((a, i) => a === expected.args[i])
+  );
+}
+
+/** True iff `auth` is OUR managed direct auth block (`agent auth --get`). */
+function isManagedDirectAuth(auth: unknown): boolean {
+  return isManagedAuth(auth, AGENT_AUTH_GET_ARGS);
+}
+
+/** True iff `auth` is OUR managed proxy auth block (runs the shared proxy-token script). */
+function isManagedProxyAuth(auth: unknown): boolean {
+  if (!isRecord(auth)) return false;
+  const expected = proxyTokenCommand();
   return (
     auth.command === expected.command &&
     Array.isArray(auth.args) &&
@@ -314,8 +344,15 @@ export function inspectCodexWiring(
       (providerMode === "proxy"
         ? baseUrlMatchesProxy(baseUrl, expectedPort)
         : providerMode === "direct" && baseUrl === DIRECT_BASE_URL);
+    // Proxy mode resolves its key (and auto-starts the proxy) via the managed
+    // `auth.command` (the shared proxy-token script), so it needs no `env_key`. A legacy
+    // proxy config still using `env_key` is also accepted (back-compat).
+    const proxyUsesManagedAuth =
+      providerMode === "proxy" && isRecord(table) && isManagedProxyAuth(table.auth);
     status.envKeyMatches =
-      providerMode === "direct" || (isRecord(table) && table.env_key === CODEX_ENV_KEY);
+      providerMode === "direct" ||
+      proxyUsesManagedAuth ||
+      (isRecord(table) && table.env_key === CODEX_ENV_KEY);
     // Direct mode resolves its bearer via the managed `auth.command` (agent auth
     // --get). Positively identify OUR launcher (command + args), not just any
     // auth.command -- a stale `gh auth token` block must NOT read as managed. Whether
@@ -327,7 +364,7 @@ export function inspectCodexWiring(
       status.providerSelected &&
       status.baseUrlMatches &&
       status.envKeyMatches &&
-      (providerMode === "direct" || status.tokenAvailable);
+      (providerMode === "direct" || proxyUsesManagedAuth || status.tokenAvailable);
   } catch {
     // Malformed TOML => leave everything but config/.env facts false.
   }
@@ -357,49 +394,6 @@ function loadOrCreateConfig(hostConfig: string, mode: ManagedAgentMode): Record<
     // fall through to the default template
   }
   return defaultConfig(mode);
-}
-
-// Set `key=value` in `$CODEX_HOME/.env` WITHOUT clobbering the rest of the
-// file: replace an existing assignment in place (dropping any duplicates so our
-// value is unambiguous regardless of dotenvy precedence), or append it when
-// absent. Comments, blank lines, and any other vars the user keeps there
-// survive. The file is (re)created mode 0600. Line endings are normalized to
-// "\n" (matching what we've always written). Used for the proxy key
-// (OPENAI_API_KEY); Direct no longer writes a token (it resolves via `agent auth
-// --get`), so the direct branch only ever scrubs the legacy key.
-function writeEnvKey(envFile: string, key: string, value: string): void {
-  const assignment = `${key}=${value}`;
-  const matcher = new RegExp(`^\\s*(?:export\\s+)?${key}\\s*=`);
-  let existing = "";
-  try {
-    existing = fs.readFileSync(envFile, "utf8");
-  } catch (e) {
-    // Only a missing file means "create fresh". Any other error (e.g. EACCES, a
-    // present-but-unreadable .env) must propagate rather than let us blindly
-    // overwrite a file we couldn't read.
-    if ((e as { code?: string }).code !== "ENOENT") throw e;
-  }
-  const lines = existing ? existing.split(/\r?\n/) : [];
-  if (lines.length && lines[lines.length - 1] === "") lines.pop(); // trailing newline
-  const out: string[] = [];
-  let written = false;
-  for (const line of lines) {
-    if (matcher.test(line)) {
-      if (!written) {
-        out.push(assignment); // replace the first occurrence in place
-        written = true;
-      }
-      continue; // drop this (and any later duplicate) assignment
-    }
-    out.push(line);
-  }
-  if (!written) out.push(assignment);
-  fs.writeFileSync(envFile, `${out.join("\n")}\n`);
-  try {
-    fs.chmodSync(envFile, 0o600);
-  } catch {
-    // pass
-  }
 }
 
 // Remove `key` from `$CODEX_HOME/.env` (any `export`-prefixed or duplicate
@@ -432,15 +426,11 @@ function validateProxyOptions(options: ConfigureCodexConfigOptions): ProxyConfig
     logger.warn("Warning: base_url not provided, skipping Codex config");
     return null;
   }
-  if (!options.apiKey) {
-    logger.warn("Warning: api_key not provided, skipping Codex config");
-    return null;
-  }
   if (!/^[A-Za-z0-9:/._-]+$/.test(options.baseUrl)) {
     logger.error(`Error: base_url contains invalid characters: ${options.baseUrl}`);
     return null;
   }
-  return { baseUrl: options.baseUrl, apiKey: options.apiKey };
+  return { baseUrl: options.baseUrl };
 }
 
 /**
@@ -503,13 +493,12 @@ export function configureCodexConfig(
     ...managedProviderForMode(mode, proxyOptions, options.codexExecVersion),
   };
   // Both modes share ONE `copilot-env` table, so the `...existing` spread would bleed
-  // the OTHER mode's managed keys when toggling. Scrub the cross-mode keys (managed
-  // values still win for keys present in both): direct drops the proxy `env_key`;
-  // proxy drops the direct `auth`/`http_headers`. User-added keys still survive.
-  if (mode === "direct") {
-    delete merged.env_key;
-  } else {
-    delete merged.auth;
+  // the OTHER mode's managed keys when toggling. Both modes resolve via `auth.command`
+  // and carry NO `env_key` (Codex also forbids `auth` + `env_key` on one provider), so
+  // always scrub `env_key`; `http_headers` is direct-only, so proxy scrubs it too.
+  // `auth` itself is set by both managed providers (the spread overwrites it).
+  delete merged.env_key;
+  if (mode !== "direct") {
     delete merged.http_headers;
   }
   providers[CODEX_PROVIDER_ID] = merged;
@@ -518,13 +507,12 @@ export function configureCodexConfig(
   fs.writeFileSync(hostConfig, stringify(doc));
   if (!options.quiet) logger.log(`  ✓ Codex config written → ${hostConfig}`);
 
-  if (proxyOptions !== null) {
-    writeEnvKey(`${codexHome}/.env`, CODEX_ENV_KEY, proxyOptions.apiKey);
-  } else {
-    // Direct: the token lives only in the state store (read via `agent auth --get`),
-    // so scrub any legacy baked token left by an older release.
-    removeEnvKey(`${codexHome}/.env`, DIRECT_ENV_KEY);
-  }
+  // Both modes resolve their key via the managed `auth.command` (proxy: the shared
+  // proxy-token script; direct: `agent auth --get`), so nothing is ever baked into `.env`.
+  // Scrub the legacy baked keys: a proxy `OPENAI_API_KEY` from the old env_key wiring,
+  // and a direct `COPILOT_ENV_GH_TOKEN` from a still-older baked-token release.
+  removeEnvKey(`${codexHome}/.env`, CODEX_ENV_KEY);
+  removeEnvKey(`${codexHome}/.env`, DIRECT_ENV_KEY);
 
   return 0;
 }
@@ -545,16 +533,9 @@ export function applyCodexConfig(
   let options: ConfigureCodexConfigOptions = {};
 
   if (mode === "proxy") {
-    const port = copilotApiResolvePort();
-    try {
-      options = {
-        proxy: true,
-        baseUrl: openaiBaseUrl(port),
-        apiKey: new CopilotApiConfig().ensureApiKey(),
-      };
-    } catch (e: unknown) {
-      throw new Error(`failed to persist auth token: ${errMessage(e)}`);
-    }
+    // The key is resolved at request time by the `auth.command` (the shared proxy-token
+    // script), so we only need the local proxy base URL here.
+    options = { proxy: true, baseUrl: openaiBaseUrl(copilotApiResolvePort()) };
   }
 
   if (configureCodexConfig(codexHome, options) !== 0) {

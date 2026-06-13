@@ -95,21 +95,22 @@ export interface StartArgs {
   check?: boolean;
 }
 
-// True when OUR proxy is genuinely up: the tracked, alive copilot-api pid AND the port
-// it actually recorded both confirm it. Reading pid AND port from the SAME run-state
-// snapshot ties the probe to the daemon's real listening port -- so a moved port (start
-// chose a different one) or a stranger on the default port can't produce a false result.
-async function proxyIsRunning(): Promise<boolean> {
+// Whether OUR proxy is genuinely up (and on which recorded port): the tracked, alive
+// copilot-api pid AND the port it actually recorded both confirm it. Reading pid AND port
+// from the SAME run-state snapshot ties the probe to the daemon's real listening port -- so
+// a moved port (start chose a different one) or a stranger on the default port can't produce
+// a false result, and the returned port matches what was probed.
+async function proxyStatus(): Promise<{ up: boolean; port?: number }> {
   const { pid, port } = new CopilotEnvRunState().read();
   if (pid === undefined || !pidAlive(pid) || !(await isCopilotApiPid(pid))) {
-    return false;
+    return { up: false };
   }
   const probePort = port ?? defaultProxyPort();
   try {
     await fetch(`http://localhost:${probePort}/`, { signal: AbortSignal.timeout(2000) });
-    return true; // any HTTP response (even an error status) means it's listening
+    return { up: true, port }; // any HTTP response (even an error status) means it's listening
   } catch {
-    return false;
+    return { up: false };
   }
 }
 
@@ -303,8 +304,16 @@ function assertProxyFloor(): void {
 /** `start`: launch copilot-api detached, wait for readiness, sync aliases. */
 export async function runStart(args: StartArgs): Promise<void> {
   if (args.check) {
-    // "Is the proxy up?" probe -- no launch. Used by the proxy resolver + launchers.
-    process.exitCode = (await proxyIsRunning()) ? 0 : 1;
+    // "Is the proxy up?" probe -- no launch. The exit code is the contract; every machine
+    // caller (the proxy resolver + cl/co/cx launchers) discards all output and reads only
+    // it. The status line is purely for a human running `start --check` directly.
+    const { up, port } = await proxyStatus();
+    if (up) {
+      consola.success(`proxy is running${port !== undefined ? ` on port ${port}` : ""}`);
+    } else {
+      consola.info("proxy is not running");
+    }
+    process.exitCode = up ? 0 : 1;
     return;
   }
   if (args.recordEvent) {

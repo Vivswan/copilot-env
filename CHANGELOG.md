@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.3.7](https://github.com/Vivswan/copilot-env/compare/v3.3.6...v3.3.7) (2026-06-14)
+
+
+### Bug Fixes
+
+* migrate existing configs from localhost to 127.0.0.1 on update ([9617977](https://github.com/Vivswan/copilot-env/commit/9617977783d8a77d5717ae5b9d7d1959edec4db1))
+* probe both loopback families concurrently in the liveness check ([54cfeda](https://github.com/Vivswan/copilot-env/commit/54cfeda5ff200011ce76d2ae59ca8060dfb73186))
+
 ## [3.3.6](https://github.com/Vivswan/copilot-env/compare/v3.3.5...v3.3.6) (2026-06-13)
 
 

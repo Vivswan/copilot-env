@@ -78,6 +78,23 @@ jobs:
         run: |
           bun src/cli.ts start
           bun src/cli.ts health --scope runtime
+          # Managed-lifecycle idempotency (auto-start on): a redundant `start` is a no-op -- it must
+          # keep the SAME daemon pid (not restart and disrupt a connected agent); `--force` launches
+          # a fresh daemon (new pid). In the default/unmanaged mode `start` still restarts. Capture
+          # `start` output (so a nonzero exit fails the step, not just grep) and compare pids.
+          readpid() { bun -e 'import {CopilotEnvRunState} from "./src/copilot_api/state.ts"; process.stdout.write(String(new CopilotEnvRunState().read().pid))'; }
+          bun src/cli.ts config --set auto-start true
+          pid_before=$(readpid)
+          out=$(bun src/cli.ts start)
+          echo "$out" | grep -q "already running" || { echo "::error::managed redundant start did not no-op on ${{ runner.os }}"; exit 1; }
+          pid_after=$(readpid)
+          [ "$pid_before" = "$pid_after" ] || { echo "::error::managed redundant start changed the pid ($pid_before -> $pid_after) on ${{ runner.os }}"; exit 1; }
+          bun src/cli.ts health --scope runtime
+          bun src/cli.ts start --force
+          pid_forced=$(readpid)
+          [ "$pid_after" != "$pid_forced" ] || { echo "::error::start --force did not relaunch a fresh daemon on ${{ runner.os }}"; exit 1; }
+          bun src/cli.ts health --scope runtime
+          bun src/cli.ts config --del auto-start
           bun src/cli.ts codex --proxy
           bun src/cli.ts claude --proxy
           bun src/cli.ts health --scope setup

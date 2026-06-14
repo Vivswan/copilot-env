@@ -216,6 +216,10 @@ program
     "Record an activity heartbeat for the idle watchdog and exit, without launching (used by the proxy resolver).",
   )
   .option("--check", "Exit 0 if the proxy is running, 1 otherwise; do not launch.")
+  .option(
+    "--force",
+    "Launch a fresh daemon (in the managed lifecycle, a plain start otherwise leaves a healthy proxy up).",
+  )
   .action((opts: Opts) =>
     runSafe(() =>
       runStart({
@@ -223,6 +227,7 @@ program
         port: parsePort(opts.port),
         recordEvent: Boolean(opts.recordEvent),
         check: Boolean(opts.check),
+        force: Boolean(opts.force),
       }),
     ),
   );

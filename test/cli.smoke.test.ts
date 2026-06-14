@@ -579,6 +579,19 @@ test("health --scope claude covers only Claude wiring", () => {
 
 // --- autoupdate management flags --------------------------------------------
 
+test("start --help documents its flags including --force", () => {
+  const help = Bun.spawnSync(["bun", "src/cli.ts", "start", "--help"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, CONSOLA_LEVEL: "5" },
+  });
+  const out = help.stdout.toString() + help.stderr.toString();
+  expect(help.exitCode).toBe(0);
+  for (const flag of ["--dry-run", "--port", "--record-event", "--check", "--force"]) {
+    expect(out).toContain(flag);
+  }
+});
+
 test("update --help documents the autoupdate flags alongside the manual ones", () => {
   const help = Bun.spawnSync(["bun", "src/cli.ts", "update", "--help"], {
     stdout: "pipe",

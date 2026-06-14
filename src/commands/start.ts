@@ -108,6 +108,14 @@ export interface StartArgs {
    * WITHOUT launching. The proxy resolver + shell launchers use this as the "is it up?" probe.
    */
   check?: boolean;
+  /**
+   * `--force`: launch a fresh daemon even when a healthy one is already running. Only relevant in
+   * the managed lifecycle (auto-start on), where a plain `start` is otherwise an idempotent no-op
+   * that leaves the running proxy up; in the unmanaged/default mode `start` always (re)starts. Use
+   * `--force` after changing the credential or a config key the daemon reads at startup (port,
+   * small-model, passthrough).
+   */
+  force?: boolean;
 }
 
 // Whether OUR proxy is genuinely up (and on which recorded port): the tracked, alive
@@ -385,6 +393,17 @@ export async function runStart(args: StartArgs): Promise<void> {
   const state = new CopilotEnvRunState();
 
   if (args.dryRun) {
+    if (
+      !args.force &&
+      args.port === undefined &&
+      new CopilotEnvConfig().autoStartEnabled() &&
+      (await proxyStatus()).up
+    ) {
+      consola.info(
+        "DRY RUN: proxy already running (managed lifecycle); would leave it up. --force forces one.",
+      );
+      return;
+    }
     const port = await resolveStartPort(args.port, false);
     const statePid = state.read().pid;
     const trackedPid = statePid !== undefined && pidAlive(statePid) ? statePid : null;
@@ -408,6 +427,27 @@ export async function runStart(args: StartArgs): Promise<void> {
   // Hard floor gate (before touching the running daemon): the postinstall float
   // is best-effort, so never launch on a sub-floor proxy.
   assertProxyFloor();
+
+  // Idempotent ONLY in the managed lifecycle (auto-start on): there the proxy is auto-started by
+  // the resolver and auto-stopped by the watchdog, so a redundant manual `start` should leave the
+  // running daemon (and any connected Codex/Claude) untouched rather than tearing it down and
+  // relaunching. In the unmanaged/default mode the user drives start/stop by hand, so `start` stays
+  // an explicit (re)start. Bump the heartbeat (a manual start is a keep-alive vs the idle watchdog).
+  // `--force` launches a fresh daemon either way (e.g. after a credential/config change), and an
+  // explicit `--port` is a reconfiguration request, so it always (re)launches rather than no-op'ing.
+  if (!args.force && args.port === undefined && new CopilotEnvConfig().autoStartEnabled()) {
+    const { up, port: livePort } = await proxyStatus();
+    if (up) {
+      state.set({ lastEnsureAt: Date.now() });
+      consola.success(
+        `Proxy already running${livePort !== undefined ? ` on port ${livePort}` : ""} — leaving it up.`,
+      );
+      consola.info(
+        "Run `agent start --force` to launch a fresh daemon (e.g. after a credential or config change).",
+      );
+      return;
+    }
+  }
 
   fs.mkdirSync(paths.home, { recursive: true });
   fs.mkdirSync(paths.runDir, { recursive: true });

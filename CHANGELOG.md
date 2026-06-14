@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.3.8](https://github.com/Vivswan/copilot-env/compare/v3.3.7...v3.3.8) (2026-06-14)
+
+
+### Bug Fixes
+
+* make `agent start` idempotent in the managed lifecycle ([594066f](https://github.com/Vivswan/copilot-env/commit/594066f016d28bfecd7da46ba3a9aca947ac66c0))
+* make the local proxy work for Codex on Windows ([219b80f](https://github.com/Vivswan/copilot-env/commit/219b80fd9ff193ae1f3ffb1c1f54fd667e21fcf1))
+* route gh-cli/gho_ credentials through the token passthrough ([c38f5c1](https://github.com/Vivswan/copilot-env/commit/c38f5c1be29108db5e9bbe04eab31dfe21a1cd42))
+
 ## [3.3.7](https://github.com/Vivswan/copilot-env/compare/v3.3.6...v3.3.7) (2026-06-14)
 
 

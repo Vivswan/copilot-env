@@ -116,8 +116,9 @@ async function proxyStatus(): Promise<{ up: boolean; port?: number }> {
 // that log's mtime as activity. An HTTP probe would therefore reset the idle clock on every
 // `--check`, so anything polling liveness (an open agent's resolver, a monitor) would pin the
 // proxy awake. A bare connect writes nothing the daemon logs, so liveness stays activity-neutral
-// while real proxied traffic still counts. Tries IPv4 then IPv6 loopback, mirroring fetch's
-// happy-eyeballs resolution of `localhost` so a daemon bound to either is detected.
+// while real proxied traffic still counts. Probes IPv4 and IPv6 loopback CONCURRENTLY and settles
+// on the FIRST success (so a healthy proxy returns immediately, mirroring fetch's localhost
+// happy-eyeballs) -- only a both-fail result waits, and at most one timeout, never two serial.
 export function portListening(port: number, timeoutMs = 2000): Promise<boolean> {
   const tryHost = (host: string): Promise<boolean> =>
     new Promise((resolve) => {
@@ -131,7 +132,16 @@ export function portListening(port: number, timeoutMs = 2000): Promise<boolean> 
       socket.once("timeout", () => finish(false));
       socket.once("error", () => finish(false));
     });
-  return tryHost("127.0.0.1").then((ok) => (ok ? true : tryHost("::1")));
+  return new Promise((resolve) => {
+    let remaining = 2;
+    for (const host of ["127.0.0.1", "::1"]) {
+      void tryHost(host).then((ok) => {
+        if (ok)
+          resolve(true); // first success wins; later resolve() calls are no-ops
+        else if (--remaining === 0) resolve(false); // both failed
+      });
+    }
+  });
 }
 
 function applyDefaultConfig(config: CopilotApiConfig): void {

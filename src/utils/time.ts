@@ -14,10 +14,10 @@ export function sleepSync(ms: number): void {
 }
 
 /**
- * Throw if `days` is set but not a non-negative whole number -- the shared
- * post-coercion `--cooldown` guard for `agent update` and `agent shell --clis`.
- * (cli.ts validates the raw string at Commander-coercion time; this guards the
- * already-parsed number.) `flag` names the option in the message.
+ * Throw if `days` is set but not a non-negative whole number -- the shared post-parse guard
+ * for the cooldown knobs: the config-driven `update-cooldown` (agent update) and the
+ * `agent shell --clis --cooldown` flag. (cli.ts validates the raw flag string at
+ * Commander-coercion time; this guards the already-parsed number.) `flag` names it in the message.
  */
 export function assertNonNegativeDays(days: number | null, flag = "--cooldown"): void {
   if (days !== null && (!Number.isInteger(days) || days < 0)) {

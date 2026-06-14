@@ -14,6 +14,7 @@ afterEach(() => {
   if (HAD_PATH_CASE) process.env.Path = SAVED_PATH_CASE;
   else delete process.env.Path;
   delete process.env.COPILOT_TEST_LEAK;
+  delete process.env.Copilot_Mixed_Var;
 });
 
 test("childPathPrepending puts dirs first, deduped, preserving the rest of PATH", () => {
@@ -42,11 +43,14 @@ test("childEnvWithPath drops any case-variant PATH key (the Windows Path/PATH co
 });
 
 test("childEnvWithPath applies extra and honors the omit predicate (case-insensitive)", () => {
-  process.env.COPILOT_TEST_LEAK = "leaked";
+  // The predicate receives the UPPERCASED key, so a mixed-case inherited var is matched by its
+  // uppercase form -- mirroring Windows' case-insensitive env names. The original-cased key must
+  // be dropped from the child env.
+  process.env.Copilot_Mixed_Var = "leaked";
   const env = childEnvWithPath([], {
     extra: { HOME_OVERRIDE: "/tmp/h" },
-    omit: (upper) => upper === "COPILOT_TEST_LEAK",
+    omit: (upper) => upper === "COPILOT_MIXED_VAR",
   });
   expect(env.HOME_OVERRIDE).toBe("/tmp/h");
-  expect(Object.hasOwn(env, "COPILOT_TEST_LEAK")).toBe(false);
+  expect(Object.hasOwn(env, "Copilot_Mixed_Var")).toBe(false);
 });

@@ -33,8 +33,8 @@ test("portListening: true while a socket is bound, false once it closes", async 
 });
 
 test("portListening: detects an IPv6-loopback-only listener too", async () => {
-  // The probe tries 127.0.0.1 then ::1, mirroring fetch's localhost resolution, so a daemon
-  // bound only to IPv6 loopback is still found. Skip if the host has no IPv6 loopback.
+  // The probe connects to 127.0.0.1 and ::1 concurrently and settles on the first success, so a
+  // daemon bound only to IPv6 loopback is still found. Skip if the host has no IPv6 loopback.
   let server: { port: number; close: () => Promise<void> };
   try {
     server = await listen("::1");

@@ -20,7 +20,7 @@ if (-not $script:AgentPs1) {
 }
 
 # Return $true if the local copilot proxy is reachable, $false otherwise.
-# Uses `agent start --check` (fast HTTP probe of OUR proxy, exit 0 = up).
+# Uses `agent start --check` (fast TCP-connect probe of OUR proxy, exit 0 = up).
 function Test-CopilotServer {
     & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 start --check *> $null
     return ($LASTEXITCODE -eq 0)

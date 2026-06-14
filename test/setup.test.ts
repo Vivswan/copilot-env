@@ -46,7 +46,7 @@ test("computePathRefresh on win32 writes BOTH Path and PATH with ';' and prepend
   expect(assignments.PATH?.startsWith(`${prefix};`)).toBe(true);
 });
 
-test("computePathRefresh on POSIX uses ':' and a ${prefix}/bin dir, prepended", () => {
+test("computePathRefresh on POSIX uses ':' and a <prefix>/bin dir, prepended", () => {
   const prefix = "/home/me/.npm-global";
   const old = "/usr/bin:/bin";
   const { bin, separator, assignments } = computePathRefresh("linux", prefix, old);

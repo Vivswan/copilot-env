@@ -28,8 +28,8 @@ curl -fsSL https://github.com/Vivswan/copilot-env/releases/latest/download/insta
 ```
 
 ```powershell
-# Windows
-irm https://github.com/Vivswan/copilot-env/releases/latest/download/install.ps1 | iex
+# Windows (runs from any shell -- cmd, PowerShell, or the Run dialog)
+powershell -c "irm https://github.com/Vivswan/copilot-env/releases/latest/download/install.ps1 | iex"
 ```
 
 Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, then wires your shell.
@@ -49,7 +49,7 @@ Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, the
   ```
 
   ```powershell
-  irm https://github.com/Vivswan/copilot-env/releases/download/v3.0.0/install.ps1 | iex
+  powershell -c "irm https://github.com/Vivswan/copilot-env/releases/download/v3.0.0/install.ps1 | iex"
   ```
 
 ### Install flags

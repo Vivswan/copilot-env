@@ -16,6 +16,7 @@ import {
   defaultProxyPort,
 } from "../copilot_api/port.ts";
 import {
+  classifyDaemonPid,
   getOrphanPids,
   isCopilotApiPid,
   launchDaemon,
@@ -125,7 +126,14 @@ export interface StartArgs {
 // a false result, and the returned port matches what was probed.
 async function proxyStatus(): Promise<{ up: boolean; port?: number }> {
   const { pid, port } = new CopilotEnvRunState().read();
-  if (pid === undefined || !pidAlive(pid) || !(await isCopilotApiPid(pid))) {
+  if (pid === undefined || !pidAlive(pid)) {
+    return { up: false };
+  }
+  // PID-reuse guard, but liveness-safe: only a CONFIDENT "no" (the recorded pid is gone or is a
+  // different, identifiable process) rules the proxy out. "unknown" -- the caller's token can't
+  // read the pid's command line, as in Codex's packaged/sandboxed app where WMI is unavailable --
+  // falls back to probing OUR recorded pid+port, so a healthy proxy isn't false-reported as down.
+  if ((await classifyDaemonPid(pid)) === "no") {
     return { up: false };
   }
   const probePort = port ?? defaultProxyPort();

@@ -201,6 +201,10 @@ test("windows execution policy command skips unavailable policy cmdlets", () => 
   expect(command).toContain("Get-Command Set-ExecutionPolicy -ErrorAction Stop");
   expect(command).toContain("catch");
   expect(command).toContain("exit 0");
+  // Desktop (5.1) inherits pwsh's PSModulePath when spawned from pwsh and the policy cmdlets
+  // fail to autoload; reset it to the machine default so they resolve. Core is left alone.
+  expect(command).toContain("$PSVersionTable.PSEdition -eq 'Desktop'");
+  expect(command).toContain("[Environment]::GetEnvironmentVariable('PSModulePath','Machine')");
   expect(command).toContain(
     "Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force",
   );

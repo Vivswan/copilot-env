@@ -4,6 +4,7 @@ import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { portListening, runStart } from "../src/commands/start.ts";
+import { classifyDaemonPid } from "../src/copilot_api/process.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 
 // The lifecycle primitives the proxy-token resolver orchestrates: `start --record-event`
@@ -67,10 +68,10 @@ test("start --check exits non-zero when no proxy is tracked/running", async () =
 });
 
 // portListening is the liveness half of proxyStatus's UP-path composition. proxyStatus's
-// OTHER half (isCopilotApiPid) scans the OS process table for a `copilot-api ... start`
-// command line, which the bun test runner's own pid cannot satisfy -- so the full UP-path
-// through runStart({check:true}) is not reproducible in-test without a real daemon (see the
-// "stays DOWN" test below). These two tests pin the part that IS deterministic: the raw TCP
+// OTHER half (classifyDaemonPid) checks the recorded pid's identity against a `copilot-api
+// ... start` command line, which the bun test runner's own pid cannot satisfy -- so the full
+// UP-path through runStart({check:true}) is not reproducible in-test without a real daemon (see
+// the "stays DOWN" test below). These two tests pin the part that IS deterministic: the raw TCP
 // liveness probe against a real listening port vs. a dead one.
 test("portListening resolves true against a real listening loopback port", async () => {
   const { server, port } = await listenEphemeral();
@@ -90,18 +91,20 @@ test("portListening resolves false for a port with nothing listening", async () 
 });
 
 // The full UP-path (live pid + real listening port -> exit 0) requires proxyStatus's
-// isCopilotApiPid guard to pass, which means the seeded pid must be a process whose command
-// line matches `copilot-api ... start`. The test runner's pid does NOT, so even with a
-// genuinely listening port the probe stays DOWN. This asserts that the isCopilotApiPid guard
-// is load-bearing: a live-but-foreign pid plus a real port still yields exit 1, never a false
-// UP. (A true exit-0 path is covered end-to-end by the start/stop lifecycle against the fake
-// proxy, where the daemon's command line does match the guard.)
+// classifyDaemonPid guard to NOT return "no", which means the seeded pid must be a process whose
+// command line matches `copilot-api ... start`. The test runner's pid is identifiable but does
+// NOT match, so classifyDaemonPid returns "no" and even a genuinely listening port stays DOWN.
+// This asserts the guard is load-bearing: a live-but-foreign, IDENTIFIABLE pid plus a real port
+// still yields exit 1, never a false UP. (A restricted token that cannot read the pid's command
+// line yields "unknown" -> the port probe decides; see the classifyDaemonPid unit test below. A
+// true exit-0 path is covered end-to-end by the start/stop lifecycle against the fake proxy,
+// where the daemon's command line does match.)
 test("start --check stays DOWN for a live pid + listening port that is not a copilot-api daemon", async () => {
   tmpHome();
   const { server, port } = await listenEphemeral();
   try {
-    // process.pid is alive (pidAlive true) and the port genuinely listens, but the test
-    // runner is not a copilot-api daemon, so isCopilotApiPid(process.pid) is false.
+    // process.pid is alive (pidAlive true) and the port genuinely listens, but the test runner
+    // is not a copilot-api daemon and IS identifiable, so classifyDaemonPid(process.pid) is "no".
     new CopilotEnvRunState().set({ pid: process.pid, port });
     expect(new CopilotEnvRunState().read().pid).toBe(process.pid);
     expect(new CopilotEnvRunState().read().port).toBe(port);
@@ -111,4 +114,15 @@ test("start --check stays DOWN for a live pid + listening port that is not a cop
   } finally {
     await closeServer(server);
   }
+});
+
+// classifyDaemonPid is the PID-identity half of proxyStatus. A definitive "no" (dead pid, or a
+// live but identifiable non-daemon) is what keeps the DOWN test above honest; "unknown" (a
+// restricted token that cannot read a command line) is reserved for sandboxed callers and is
+// exercised by proxyStatus's fall-through, not reproducible here.
+test("classifyDaemonPid returns 'no' for a dead pid and a live non-daemon pid", async () => {
+  const DEAD_PID = 2_147_483_646; // far above any real pid -> not running anywhere
+  expect(await classifyDaemonPid(DEAD_PID)).toBe("no");
+  // The test runner is alive and identifiable, but its command line is not `copilot-api ... start`.
+  expect(await classifyDaemonPid(process.pid)).toBe("no");
 });

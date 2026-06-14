@@ -482,11 +482,24 @@ export function configureCodexConfig(
     const features = isRecord(doc.features) ? doc.features : {};
     features.image_generation = false;
     doc.features = features;
-  } else if (isRecord(doc.features)) {
+  } else {
     // Proxy: image generation works via the proxy, so drop the direct-only
     // disable (and the whole [features] table if it has nothing else).
-    delete doc.features.image_generation;
-    if (Object.keys(doc.features).length === 0) delete doc.features;
+    if (isRecord(doc.features)) {
+      delete doc.features.image_generation;
+      if (Object.keys(doc.features).length === 0) delete doc.features;
+    }
+    // The proxy listens on loopback (127.0.0.1). Codex's native sandbox blocks loopback +
+    // outbound for its sandboxed subprocesses (including the auth.command) in "offline" mode, so
+    // the proxy-token resolver's liveness probe is refused and auth fails with exit 1. Enabling
+    // workspace-write network access is the documented toggle that stops those offline block
+    // rules (verified: it removes the codex_sandbox_offline_block_loopback firewall rule). This
+    // is a global sandbox key, not provider-scoped, so it also lets the model's sandboxed shell
+    // commands reach the network -- codex has no finer-grained per-command exemption. Direct mode
+    // needs no loopback, so it leaves this key untouched. Merge-preserve other keys in the table.
+    const sandboxWrite = isRecord(doc.sandbox_workspace_write) ? doc.sandbox_workspace_write : {};
+    sandboxWrite.network_access = true;
+    doc.sandbox_workspace_write = sandboxWrite;
   }
 
   const providers = isRecord(doc.model_providers) ? doc.model_providers : {};

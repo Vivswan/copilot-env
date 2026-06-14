@@ -155,7 +155,9 @@ function wireBlocks(
       consola.info(`Shell integration already wired in ${file} -- skipping.`);
       continue;
     }
-    mkdirSync(dirname(file), { recursive: true });
+    // OneDrive-backed Documents folders are reparse points; Node's recursive mkdir throws
+    // EEXIST on an existing reparse point instead of no-op'ing, so skip when it already exists.
+    if (!existsSync(dirname(file))) mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, next);
     consola.success(`Wired shell integration into ${file}`);
   }
@@ -228,6 +230,13 @@ export function windowsLaunchersBlock(launchersPs1: string): string {
 export function windowsExecutionPolicyCommand(): string {
   return (
     "$ErrorActionPreference='Stop'; " +
+    // When Windows PowerShell 5.1 is spawned as a child of pwsh 7 (the usual case -- the
+    // user runs `agent` from pwsh), it inherits pwsh's PSModulePath, loads pwsh's
+    // Microsoft.PowerShell.Security, and the policy cmdlets fail to autoload. Reset the
+    // Desktop edition to its own machine module path so the cmdlets resolve. Core (pwsh)
+    // resolves them fine, so leave its path alone.
+    "if ($PSVersionTable.PSEdition -eq 'Desktop') { " +
+    "$env:PSModulePath = [Environment]::GetEnvironmentVariable('PSModulePath','Machine') }; " +
     "try { " +
     "Get-Command Get-ExecutionPolicy -ErrorAction Stop | Out-Null; " +
     "Get-Command Set-ExecutionPolicy -ErrorAction Stop | Out-Null " +
@@ -288,17 +297,21 @@ function psEval(command: string): string {
 }
 
 // The profile dot-sources the unsigned agents.ps1; under Restricted/AllSigned the
-// profile would silently refuse to load it. Relax CurrentUser to RemoteSigned.
+// profile would silently refuse to load it. Relax CurrentUser to RemoteSigned. CurrentUser
+// policy keys are per-edition, so run it in each installed edition (5.1 + pwsh 7).
 function relaxWindowsExecutionPolicy(): void {
-  const result = spawnSync(
-    "powershell",
-    ["-NoProfile", "-Command", windowsExecutionPolicyCommand()],
-    { stdio: ["ignore", "inherit", "inherit"] },
-  );
-  if (result.error || result.status !== 0) {
-    consola.warn(
-      "Could not relax the execution policy; the profile may not load agents.ps1. " +
-        "Run: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned",
-    );
+  const command = windowsExecutionPolicyCommand();
+  for (const exe of ["powershell", "pwsh"]) {
+    const result = spawnSync(exe, ["-NoProfile", "-Command", command], {
+      stdio: ["ignore", "inherit", "inherit"],
+    });
+    // Edition not installed (pwsh-only or 5.1-only machine): nothing to relax there.
+    if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") continue;
+    if (result.error || result.status !== 0) {
+      consola.warn(
+        `Could not relax the ${exe} execution policy; the profile may not load agents.ps1. ` +
+          `Run: ${exe} -Command "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned"`,
+      );
+    }
   }
 }

@@ -40,8 +40,10 @@ export function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch (_e) {
-    return false;
+  } catch (e) {
+    // EPERM means the process EXISTS but this (restricted/sandboxed) token can't signal it --
+    // e.g. Codex's packaged app spawning our probe. That is still "alive"; only ESRCH is dead.
+    return (e as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
@@ -82,6 +84,43 @@ export function getOrphanPids(myPid: number, myPpid: number): Promise<number[]> 
  */
 export async function isCopilotApiPid(pid: number): Promise<boolean> {
   return (await listCopilotApiPids()).includes(pid);
+}
+
+/**
+ * Liveness-grade identity of `pid`: is it OUR copilot-api daemon, definitely some OTHER process
+ * (PID reuse), or UNKNOWABLE because the caller's token can't read its identity?
+ *   - "yes":     the command line confirms `copilot-api ... start`
+ *   - "no":      the pid is gone, or a different, identifiable process
+ *   - "unknown": the OS would not reveal the pid's command line -- a restricted/sandboxed caller
+ *                like Codex's packaged app, where WMI can't read other processes' command lines
+ *
+ * proxyStatus uses this so "unknown" falls back to the port probe instead of false-reporting a
+ * healthy proxy as down. isCopilotApiPid stays a plain boolean for the terminate/orphan paths,
+ * which must NOT act on an unconfirmed pid (a failed scan there correctly reads as "not ours").
+ */
+export async function classifyDaemonPid(pid: number): Promise<"yes" | "no" | "unknown"> {
+  if (process.platform === "win32") return classifyDaemonPidWindows(pid);
+  return (await listCopilotApiPidsPosix()).includes(pid) ? "yes" : "no";
+}
+
+async function classifyDaemonPidWindows(pid: number): Promise<"yes" | "no" | "unknown"> {
+  // Query the SPECIFIC pid so we can tell a "different process" (CommandLine present, no match)
+  // from "unreadable" (CommandLine null -- a restricted token). `pid` is our own integer from
+  // state, so inlining it is safe. A wholesale CIM failure (access denied) also reads "unknown".
+  const script =
+    `$p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}'; ` +
+    "if (-not $p) { 'no' } " +
+    "elseif ([string]::IsNullOrEmpty($p.CommandLine)) { 'unknown' } " +
+    "elseif ($p.CommandLine -match 'copilot-api.*\\bstart\\b') { 'yes' } " +
+    "else { 'no' }";
+  let stdout: string;
+  try {
+    ({ stdout } = await execa("powershell", ["-NoProfile", "-NonInteractive", "-Command", script]));
+  } catch {
+    return "unknown";
+  }
+  const verdict = stdout.trim();
+  return verdict === "yes" || verdict === "no" ? verdict : "unknown";
 }
 
 /** All copilot-api daemon pids of the current user (best-effort, no exclusions). */

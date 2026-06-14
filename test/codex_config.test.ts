@@ -83,6 +83,8 @@ test("enforces every managed field while preserving unknown user keys", () => {
   expect(doc.web_search).toBe("live");
   // Direct disables image generation via a top-level [features] table.
   expect(asRecord(doc.features).image_generation).toBe(false);
+  // Direct talks to a public host, not the loopback proxy, so it does NOT open the sandbox.
+  expect(doc.sandbox_workspace_write).toBeUndefined();
 
   const provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
   expect(provider.name).toBe("copilot-env");
@@ -224,6 +226,10 @@ test("proxy mode enforces every managed field while preserving unknown user keys
   expect(provider.requires_openai_auth).toBe(false);
   expect(provider.supports_websockets).toBe(false);
   expect(provider.user_extra).toBe("kept"); // user-added key in the table survives
+
+  // The proxy is on loopback; codex's sandbox blocks loopback unless workspace-write network
+  // access is granted, so proxy mode enables it (the auth.command's liveness probe needs it).
+  expect(asRecord(doc.sandbox_workspace_write).network_access).toBe(true);
 
   // A second, unrelated provider table is left fully intact.
   const other = asRecord(asRecord(doc.model_providers).other);

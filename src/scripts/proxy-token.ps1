@@ -11,13 +11,17 @@ $repo = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation
 $agent = Join-Path $repo 'bin/agent.ps1'
 $ps = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $agent)
 $yes = ($args.Count -ge 1 -and $args[0] -eq '--yes')
+$suppressedStart = $false
 
 & powershell @ps start --check *> $null
 if ($LASTEXITCODE -ne 0) {
   $autoStart = (& powershell @ps config --get auto-start 2> $null | Out-String).Trim()
   if ($autoStart -eq 'true') {
-    # Managed lifecycle on (config auto-start): auto-start without asking.
+    # Managed lifecycle on (config auto-start): auto-start without asking. Output suppressed so it
+    # can't pollute the eval'd token; remember we tried, to surface a hard failure below (else
+    # cl/cx exit silently on e.g. a bad credential).
     & powershell @ps start *> $null
+    $suppressedStart = $true
   } elseif (-not $yes) {
     # Unmanaged + interactive (launcher): offer to start.
     [Console]::Error.Write('copilot proxy not running. Start it now? [Y/n] ')
@@ -40,5 +44,10 @@ if ($LASTEXITCODE -ne 0) {
 if ($LASTEXITCODE -eq 0) {
   & powershell @ps auth --print-proxy-token
   exit $LASTEXITCODE
+}
+# Proxy still down. If we auto-started with output suppressed, the daemon's own error was hidden,
+# so surface a one-line pointer -- otherwise cl/cx exit silently with no clue why.
+if ($suppressedStart) {
+  [Console]::Error.WriteLine("copilot proxy failed to start (run 'agent start' to see the error).")
 }
 exit 1

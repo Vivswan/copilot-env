@@ -7,6 +7,7 @@ import { CopilotAdminClient } from "../copilot_api/admin.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import type { AuthProvider } from "../copilot_api/env_state.ts";
 import { generateAliases } from "../copilot_api/models.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import {
@@ -44,9 +45,10 @@ const DEFAULT_SMALL_MODEL = "gpt-5-mini";
 /**
  * Whether a GitHub token is a Personal Access Token by its prefix: `ghp_` (classic)
  * or `github_pat_` (fine-grained). PATs cannot perform copilot-api's editor token
- * exchange (`copilot_internal/v2/token` -> 403), so they need the PAT passthrough
- * shim; OAuth / app tokens (`gho_`/`ghu_`/`ghs_`/...) can, so they don't. Legacy
- * unprefixed 40-hex classic PATs are NOT detected here -- use `config passthrough on` for those.
+ * exchange (`copilot_internal/v2/token` -> 403), so they need the passthrough shim.
+ * (gh OAuth tokens, `gho_`, also can't exchange -- 404 -- but that decision lives in
+ * `usePatPassthrough`, not here.) Legacy unprefixed 40-hex classic PATs are NOT detected
+ * here -- use `config passthrough on` for those.
  */
 export function isPatToken(token: string): boolean {
   const t = token.trim();
@@ -56,21 +58,33 @@ export function isPatToken(token: string): boolean {
 /**
  * Whether to load the PAT-passthrough preload shim into the daemon
  * (`src/scripts/pat_passthrough_preload.ts`). The shim intercepts copilot-api's
- * editor token exchange and hands the PAT back as the Copilot token, so the daemon
- * runs its normal `vscode-chat` path with the PAT as the bearer -- the only way a PAT
- * works through the proxy. It's a no-op for non-PAT tokens, so the `passthrough` config
- * key (`on`) can force it for an undetected (e.g. legacy unprefixed) PAT, and `off` forces
- * it off.
+ * editor token exchange and hands the token back as the Copilot token, so the daemon
+ * runs its normal `vscode-chat` path with the token as the bearer -- the only way a
+ * credential that can't perform the exchange works through the proxy. Two such credentials:
+ * a PAT (`ghp_`/`github_pat_`, 403s the exchange) and a `gh-cli` OAuth token (404s the
+ * exchange) -- both are nonetheless accepted DIRECTLY as the Copilot bearer under vscode-chat.
+ * It's a no-op for tokens the exchange accepts (the `copilot` device-flow token), so the
+ * `passthrough` config key (`on`) can force it for an undetected credential and `off` forces it off.
  *
  * Precedence: an explicit `force` (resolved by the caller from the `passthrough` config:
- * on -> true, off -> false) wins; otherwise (`auto`/unset) auto-enable for a PAT-shaped token.
+ * on -> true, off -> false) wins; otherwise (`auto`/unset) auto-enable for the `gh-cli` provider
+ * or a PAT-shaped token.
  */
 export function usePatPassthrough(opts: {
   force: boolean | undefined;
   token: string | undefined;
+  provider?: AuthProvider | null;
 }): boolean {
+  if (opts.token === undefined) return false; // no token resolved -> the shim is a no-op anyway
   if (opts.force !== undefined) return opts.force;
-  return opts.token !== undefined && isPatToken(opts.token);
+  // The device-flow `copilot` token CAN perform the editor token exchange (and rotate the
+  // short-lived Copilot token), so never shim it -- regardless of shape. A PAT, a gh-cli login,
+  // or any `gho_` GitHub-OAuth token (e.g. a gh token pasted via gh-token) CANNOT perform the
+  // exchange (403/404) but ARE accepted directly as the Copilot bearer under vscode-chat, so they
+  // need the passthrough.
+  if (opts.provider === "copilot") return false;
+  if (opts.provider === "gh-cli") return true;
+  return isPatToken(opts.token) || opts.token.startsWith("gho_");
 }
 
 const DEFAULT_FLAGS: Record<string, unknown> = {
@@ -142,6 +156,18 @@ export function portListening(port: number, timeoutMs = 2000): Promise<boolean> 
       });
     }
   });
+}
+
+/** An actionable hint when the daemon died because the credential could not be exchanged for a
+ *  Copilot token (the daemon logs "Failed to get Copilot token" on a 404/403). A gh-cli/PAT
+ *  credential needs the passthrough; anything else needs a Copilot-capable login. */
+function copilotTokenFailureHint(log: string): string | null {
+  if (!/Failed to get Copilot token/i.test(log)) return null;
+  return (
+    "The credential was not accepted by Copilot's token exchange. For a gh-cli or PAT credential, " +
+    "enable passthrough (`agent config --set passthrough on`); otherwise re-authenticate with a " +
+    "Copilot-capable login (`agent auth --provider copilot`)."
+  );
 }
 
 function applyDefaultConfig(config: CopilotApiConfig): void {
@@ -448,21 +474,24 @@ export async function runStart(args: StartArgs): Promise<void> {
     await ensureAuthenticated();
     githubToken = credential.resolve() ?? undefined;
   }
-  // A PAT can't perform copilot-api's editor token exchange, so load the PAT passthrough
-  // shim (it fakes the exchange, handing the PAT straight through as the Copilot token).
-  // Precedence: config `passthrough` (on/off) > `auto` (shape-detect from the token). Set
-  // it with `agent config --set passthrough on|off`. Only meaningful when a token resolved.
+  // A gh-cli OAuth token or a PAT can't perform copilot-api's editor token exchange, so load the
+  // passthrough shim (it fakes the exchange, handing the token straight through as the Copilot
+  // bearer). Precedence: config `passthrough` (on/off) > `auto` (gh-cli provider or PAT shape).
+  // Set it with `agent config --set passthrough on|off`. Only meaningful when a token resolved.
   const cfgPassthrough = new CopilotEnvConfig().read().passthrough;
   const forcePassthrough =
     cfgPassthrough === "on" ? true : cfgPassthrough === "off" ? false : undefined;
-  const patPassthrough =
-    githubToken !== undefined && usePatPassthrough({ force: forcePassthrough, token: githubToken });
+  const patPassthrough = usePatPassthrough({
+    force: forcePassthrough,
+    token: githubToken,
+    provider: credential.provider(),
+  });
   if (patPassthrough) {
     consola.info(
-      "PAT passthrough on: faking the editor token exchange so the proxy uses the token directly.",
+      "Token passthrough on: faking the editor token exchange so the proxy uses the token directly.",
     );
   } else if (forcePassthrough === false) {
-    consola.info("PAT passthrough off: using the standard editor token exchange.");
+    consola.info("Token passthrough off: using the standard editor token exchange.");
   }
   // Managed lifecycle on (the `auto-start` config key)? Preload the in-daemon idle watchdog
   // so the proxy stops itself after the idle window. It lives in the daemon process, so
@@ -507,6 +536,8 @@ export async function runStart(args: StartArgs): Promise<void> {
       consola.success(`Started on port ${port} after retry.`);
     } else {
       printLogTail(logFile, 20);
+      const hint = copilotTokenFailureHint(logContent);
+      if (hint) consola.error(hint);
       throw new Error(`the proxy failed to start. See ${logFile}`);
     }
   }
@@ -521,6 +552,12 @@ export async function runStart(args: StartArgs): Promise<void> {
   let printedLogBytes = 0;
   for (let i = 0; i < maxWait; i++) {
     if (!pidAlive(pid)) {
+      try {
+        const hint = copilotTokenFailureHint(fs.readFileSync(logFile, "utf-8"));
+        if (hint) consola.error(hint);
+      } catch {
+        // best-effort: a missing/unreadable log just means no hint.
+      }
       throw new Error(`the proxy (PID ${pid}) exited during startup. See ${logFile}.`);
     }
     let logContent = "";

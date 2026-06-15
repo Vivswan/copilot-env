@@ -82,10 +82,6 @@ function releaseAsset(
   return null;
 }
 
-function releaseArchiveName(tag: string): string {
-  return `copilot-env-${tag}.tar.gz`;
-}
-
 /** Parse the GitHub `/releases` JSON into newest-first releases: published,
  *  non-prerelease, exact vX.Y.Z, with a tarball URL. Returns [] on anything
  *  unparseable. */
@@ -113,7 +109,7 @@ export function parseReleasesJson(
     if (typeof r.target_commitish !== "string" || !/^[0-9a-f]{40}$/i.test(r.target_commitish)) {
       continue;
     }
-    const archiveName = releaseArchiveName(r.tag_name);
+    const archiveName = `copilot-env-${r.tag_name}.tar.gz`;
     const useAssetApiUrl = r.draft === true;
     const sourceArchive = releaseAsset(r, archiveName, useAssetApiUrl);
     const tarballUrl =

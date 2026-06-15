@@ -91,13 +91,13 @@ export function generateAliases(catalog: CatalogModel[]): Record<string, string>
   }
 
   // Friendly shorthands.
-  const opus = newest(parsed, "opus", (p) => p.is1m) ?? newest(parsed, "opus", () => true);
+  const opus = newestPreferring1m(parsed, "opus");
   if (opus) {
     aliases.opus = opus.id;
     aliases[`opus${ONE_M_SUFFIX}`] = opus.id;
   }
   for (const family of ["sonnet", "haiku"]) {
-    const pick = newest(parsed, family, (p) => p.is1m) ?? newest(parsed, family, () => true);
+    const pick = newestPreferring1m(parsed, family);
     if (pick) {
       aliases[family] = pick.id;
     }
@@ -158,4 +158,9 @@ function newest(
     }
   }
   return best;
+}
+
+/** Newest model of `family`, preferring a 1m-context sibling and otherwise the newest of the family. */
+function newestPreferring1m(parsed: ParsedModel[], family: string): ParsedModel | undefined {
+  return newest(parsed, family, (p) => p.is1m) ?? newest(parsed, family, () => true);
 }

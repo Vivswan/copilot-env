@@ -8,12 +8,13 @@
 
 // biome-ignore lint/correctness/noUnresolvedImports: `bun:sqlite` is a bun runtime built-in (typed via @types/bun), not a resolvable file.
 import { Database } from "bun:sqlite";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { consola } from "consola";
 import { resolveHome } from "../copilot_api/paths.ts";
 import { errMessage } from "../utils/error.ts";
+import { isDir } from "../utils/fs.ts";
 
 const DB_FILENAME = "copilot-api.sqlite";
 
@@ -151,12 +152,4 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
   }
 
   return { byModel: totals, activeDays: activeDays.size };
-}
-
-function isDir(path: string): boolean {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
 }

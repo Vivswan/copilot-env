@@ -31,6 +31,7 @@ import {
   proxyVersionFloorStatus,
 } from "../copilot_api/version.ts";
 import { errMessage } from "../utils/error.ts";
+import { isRecord } from "../utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { ensureAuthenticated } from "./auth.ts";
@@ -217,7 +218,7 @@ function disableExtraPrompts(config: CopilotApiConfig): void {
   config.update((d) => {
     const current = d.extraPrompts;
     const blanked: Record<string, string> = {};
-    if (current && typeof current === "object" && !Array.isArray(current)) {
+    if (isRecord(current)) {
       for (const key of Object.keys(current)) {
         blanked[key] = "";
       }

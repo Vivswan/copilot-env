@@ -96,11 +96,15 @@ export class CopilotApiConfig {
     return randomBytes(32).toString("hex");
   }
 
+  /** The `auth` block narrowed to a record, or null when absent/ill-typed. */
+  private readAuth(): Record<string, unknown> | null {
+    const auth = this.load().auth;
+    return isRecord(auth) ? auth : null;
+  }
+
   /** Return ``auth.apiKeys[0]``, generating and persisting one if absent. */
   ensureApiKey(): string {
-    const data = this.load();
-    const authRaw = data.auth;
-    const auth = isRecord(authRaw) ? authRaw : null;
+    const auth = this.readAuth();
     if (auth) {
       const keys = auth.apiKeys;
       if (Array.isArray(keys) && keys.length > 0 && keys[0]) {
@@ -130,9 +134,7 @@ export class CopilotApiConfig {
    * updates); without it those routes reject every request.
    */
   ensureAdminApiKey(): string {
-    const data = this.load();
-    const authRaw = data.auth;
-    const auth = isRecord(authRaw) ? authRaw : null;
+    const auth = this.readAuth();
     if (auth && typeof auth.adminApiKey === "string" && auth.adminApiKey) {
       return auth.adminApiKey;
     }

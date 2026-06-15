@@ -46,7 +46,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createConsola } from "consola";
 import { parse } from "smol-toml";
-import { CopilotEnvConfig } from "./copilot_api/env_config.ts";
+import { CopilotEnvConfig, type CopilotEnvConfigData } from "./copilot_api/env_config.ts";
 import {
   assertProxyConfigBounds,
   installedProxyVersion,
@@ -70,19 +70,17 @@ const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 // The float runs at `bun install` postinstall, so config reads are best-effort: any failure
 // (missing/corrupt file) falls back to env/bunfig. `agent config` is the persistent home for
 // the proxy-version pin and the release-cooldown window (env still overrides per-invocation).
-function configProxyVersion(): string | undefined {
+function configRead(): CopilotEnvConfigData | undefined {
   try {
-    return new CopilotEnvConfig().read().proxyVersion;
+    return new CopilotEnvConfig().read();
   } catch {
     return undefined;
   }
 }
-function configReleaseCooldownSeconds(): number | undefined {
-  try {
-    return new CopilotEnvConfig().read().releaseCooldown;
-  } catch {
-    return undefined;
-  }
+
+/** Proxy-version override: an explicit env pin wins over the config pin (undefined if neither). */
+function resolveProxyVersionOverride(): string | undefined {
+  return process.env[PROXY_VERSION_ENV]?.trim() || configRead()?.proxyVersion;
 }
 
 type ProxyConsolaOptions = NonNullable<Parameters<typeof createConsola>[0]> & {
@@ -157,7 +155,7 @@ export function resolveMinimumReleaseAgeSeconds(root: string): number {
     }
     return Number.parseInt(raw, 10);
   }
-  const configured = configReleaseCooldownSeconds();
+  const configured = configRead()?.releaseCooldown;
   if (configured !== undefined) {
     return configured;
   }
@@ -364,7 +362,7 @@ export function floatProxy(
   nowMs: number = Date.now(),
 ): void {
   assertProxyConfigBounds(config);
-  const override = process.env[PROXY_VERSION_ENV]?.trim() || configProxyVersion();
+  const override = resolveProxyVersionOverride();
 
   // An exact pin bypasses the cooldown entirely, so resolve the cooldown window
   // ONLY on the float path -- a bad COPILOT_API_MIN_RELEASE_AGE must not block a pin.
@@ -436,7 +434,7 @@ export function proxyFloatVerifyStatus(
     };
   }
 
-  const override = process.env[PROXY_VERSION_ENV]?.trim() || configProxyVersion();
+  const override = resolveProxyVersionOverride();
   if (override) return verifyPinnedOverride(installed, override);
 
   const effectiveConfig = config ?? readProjectConfig(root);

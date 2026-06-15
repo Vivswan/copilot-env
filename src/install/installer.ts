@@ -54,14 +54,18 @@ function projectRoot(): string {
   return dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 }
 
+function agentLauncherPath(root: string): string {
+  return process.platform === "win32" ? join(root, "bin", "agent.ps1") : join(root, "bin", "agent");
+}
+
 function runAgent(root: string, args: string[]): void {
-  const agent =
-    process.platform === "win32" ? join(root, "bin", "agent.ps1") : join(root, "bin", "agent");
-  const command =
-    process.platform === "win32"
-      ? ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", agent, ...args]
-      : [agent, ...args];
-  const result = spawnSync(command[0] ?? "", command.slice(1), {
+  const agent = agentLauncherPath(root);
+  const win = process.platform === "win32";
+  const command = win ? "powershell" : agent;
+  const spawnArgs = win
+    ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", agent, ...args]
+    : args;
+  const result = spawnSync(command, spawnArgs, {
     cwd: root,
     stdio: args[0] === "env" ? ["ignore", "ignore", "inherit"] : "inherit",
     env: { ...process.env, HUSKY: "0" },
@@ -73,8 +77,7 @@ function runAgent(root: string, args: string[]): void {
 
 export function runInstall(options: InstallOptions): void {
   const root = projectRoot();
-  const agent =
-    process.platform === "win32" ? join(root, "bin", "agent.ps1") : join(root, "bin", "agent");
+  const agent = agentLauncherPath(root);
   if (!existsSync(agent)) throw new Error(`could not find agent launcher at ${agent}`);
 
   console.log("Bootstrapping copilot-env dependencies ...");

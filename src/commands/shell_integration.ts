@@ -36,18 +36,11 @@ export function runShellIntegration(args: ShellIntegrationArgs): void {
   const removeLaunchers = Boolean(args.removeLaunchers);
   const windows = process.platform === "win32";
 
-  if (remove) {
-    const removed = removeFrom(
-      windows ? windowsProfilePaths(Boolean(args.allHosts)) : rcFiles(true),
-    );
-    if (removed) consola.info(windows ? "Restart PowerShell." : "Restart your shell.");
-    return;
-  }
-  if (removeLaunchers) {
-    const removed = removeLaunchersFrom(
-      windows ? windowsProfilePaths(Boolean(args.allHosts)) : rcFiles(true),
-    );
-    if (removed) consola.info(windows ? "Restart PowerShell." : "Restart your shell.");
+  if (remove || removeLaunchers) {
+    const files = windows ? windowsProfilePaths(Boolean(args.allHosts)) : rcFiles(true);
+    const restartHint = windows ? "Restart PowerShell." : "Restart your shell.";
+    const removed = remove ? removeFrom(files) : removeLaunchersFrom(files);
+    if (removed) consola.info(restartHint);
     return;
   }
   const launchers = Boolean(args.launchers);

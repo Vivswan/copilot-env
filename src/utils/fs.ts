@@ -9,3 +9,12 @@ export function isFile(path: string): boolean {
     return false;
   }
 }
+
+/** True iff `path` exists and is a directory (any stat error => false). */
+export function isDir(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}

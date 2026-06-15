@@ -198,10 +198,12 @@ function managedProviderForMode(
   return managedProxyProvider(proxyOptions.baseUrl);
 }
 
-/** True iff `auth` is OUR managed auth block for the given launcher args. */
-function isManagedAuth(auth: unknown, expectedArgs: readonly string[]): boolean {
+/** True iff `auth` is OUR managed auth block: its command+args match `expected`. */
+function authMatches(
+  auth: unknown,
+  expected: { command: string; args: readonly string[] },
+): boolean {
   if (!isRecord(auth)) return false;
-  const expected = agentLauncherCommand([...expectedArgs]);
   return (
     auth.command === expected.command &&
     Array.isArray(auth.args) &&
@@ -212,19 +214,12 @@ function isManagedAuth(auth: unknown, expectedArgs: readonly string[]): boolean 
 
 /** True iff `auth` is OUR managed direct auth block (`agent auth --get`). */
 function isManagedDirectAuth(auth: unknown): boolean {
-  return isManagedAuth(auth, AGENT_AUTH_GET_ARGS);
+  return authMatches(auth, agentLauncherCommand(AGENT_AUTH_GET_ARGS));
 }
 
 /** True iff `auth` is OUR managed proxy auth block (runs the shared proxy-token script). */
 function isManagedProxyAuth(auth: unknown): boolean {
-  if (!isRecord(auth)) return false;
-  const expected = proxyTokenCommand();
-  return (
-    auth.command === expected.command &&
-    Array.isArray(auth.args) &&
-    auth.args.length === expected.args.length &&
-    auth.args.every((a, i) => a === expected.args[i])
-  );
+  return authMatches(auth, proxyTokenCommand());
 }
 
 // === wiring inspection (inverse of the write contract above) ===

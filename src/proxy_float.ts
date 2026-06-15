@@ -55,6 +55,7 @@ import {
   proxyVersionFloorStatus,
 } from "./copilot_api/version.ts";
 import { pickAgedVersion } from "./utils/aged_version.ts";
+import { assertNever } from "./utils/assert.ts";
 import { isRecord, parseJsonRecord } from "./utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
 import { PROJECT_ROOT } from "./utils/root.ts";
@@ -529,26 +530,27 @@ export function proxyInstallAssertStatus(
   config: ProjectConfig,
 ): ProxyInstallAssertStatus {
   const status = proxyVersionBoundsStatus(installedProxyVersion(root), config);
-  if (!status.ok && status.reason === "missing") {
-    return {
-      "ok": false,
-      "message":
-        "proxy float did not install @jeffreycao/copilot-api (module resolution failed) — the `bun install` postinstall (src/proxy_float.ts) is broken.",
-    };
-  }
-
-  if (!status.ok && status.reason === "belowFloor") {
-    return {
-      "ok": false,
-      "message": `installed @jeffreycao/copilot-api ${status.version} is below the ${status.floor} floor — the postinstall proxy float failed to reach the floor.`,
-    };
-  }
-
-  if (!status.ok && status.reason === "aboveCeiling") {
-    return {
-      "ok": false,
-      "message": `installed @jeffreycao/copilot-api ${status.version} is above the ${status.ceiling} ceiling — the postinstall proxy float overshot PROXY_MAX_VERSION.`,
-    };
+  if (!status.ok) {
+    switch (status.reason) {
+      case "missing":
+        return {
+          "ok": false,
+          "message":
+            "proxy float did not install @jeffreycao/copilot-api (module resolution failed) — the `bun install` postinstall (src/proxy_float.ts) is broken.",
+        };
+      case "belowFloor":
+        return {
+          "ok": false,
+          "message": `installed @jeffreycao/copilot-api ${status.version} is below the ${status.floor} floor — the postinstall proxy float failed to reach the floor.`,
+        };
+      case "aboveCeiling":
+        return {
+          "ok": false,
+          "message": `installed @jeffreycao/copilot-api ${status.version} is above the ${status.ceiling} ceiling — the postinstall proxy float overshot PROXY_MAX_VERSION.`,
+        };
+      default:
+        return assertNever(status);
+    }
   }
 
   const window =

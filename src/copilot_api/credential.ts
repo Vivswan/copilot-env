@@ -8,6 +8,7 @@
 import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { dirname } from "node:path";
+import { assertNever } from "../utils/assert.ts";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
 import { type AuthProvider, CopilotEnvState, type TokenProvider } from "./env_state.ts";
 import { CopilotApiPaths } from "./paths.ts";
@@ -73,8 +74,13 @@ export class Credential {
       case "copilot":
       case "gh-token":
         return githubToken;
-      default:
+      case null:
+        // No provider chosen (or one that read back as null): nothing resolves.
         return null;
+      default:
+        // read() validates authProvider against AUTH_PROVIDERS, so a corrupt/unknown
+        // value already became null above -- this arm is unreachable by construction.
+        return assertNever(authProvider);
     }
   }
 

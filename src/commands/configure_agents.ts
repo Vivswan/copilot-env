@@ -4,6 +4,7 @@
 import { effectiveClaudeProviderMode, runClaude } from "../claude/config.ts";
 import { effectiveCodexProviderMode, runCodex } from "../codex/config.ts";
 import { bold } from "../utils/ansi.ts";
+import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import type { AgentProviderMode } from "../utils/provider_mode.ts";
@@ -65,7 +66,8 @@ function modeLabel(mode: AgentProviderMode): string {
   if (mode === "direct") return "GitHub Copilot Direct";
   if (mode === "proxy") return "the local proxy";
   if (mode === "other") return "a custom provider (not managed)";
-  return "not configured";
+  if (mode === "none") return "not configured";
+  return assertNever(mode);
 }
 
 /** Print the result + what to do next, in a single box so it's easy to scan. */

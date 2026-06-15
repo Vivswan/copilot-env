@@ -23,6 +23,7 @@ import { homedir } from "node:os";
 import * as path from "node:path";
 import { Credential } from "../copilot_api/credential.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
+import { assertNever } from "../utils/assert.ts";
 import {
   assertSingleMode,
   CLAUDE_PROBE,
@@ -335,6 +336,8 @@ function providerModeDetail(mode: AgentProviderMode): string {
       return "custom Claude provider (not managed)";
     case "none":
       return "not configured (proxy is the default)";
+    default:
+      return assertNever(mode);
   }
 }
 

@@ -212,7 +212,7 @@ function printCostReport(
   const footerRows: Array<{
     label: string;
     reqs: string;
-    cats: CatCell[];
+    cats: [CatCell, CatCell, CatCell, CatCell];
     total: string;
     cost: string;
   }> = [
@@ -245,10 +245,10 @@ function printCostReport(
     },
   ];
   for (const f of footerRows) {
-    inputCol.push(f.cats[0] as CatCell);
-    outputCol.push(f.cats[1] as CatCell);
-    cacheReadCol.push(f.cats[2] as CatCell);
-    cacheWriteCol.push(f.cats[3] as CatCell);
+    inputCol.push(f.cats[0]);
+    outputCol.push(f.cats[1]);
+    cacheReadCol.push(f.cats[2]);
+    cacheWriteCol.push(f.cats[3]);
   }
 
   const inputCells = alignCatColumn(inputCol);

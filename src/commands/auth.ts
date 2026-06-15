@@ -197,7 +197,11 @@ async function loginWithGhToken(
     }
   } else {
     // `--set <token>` (verbatim) or `--set` bare (env-only, headless): never prompts.
-    token = tokenFromSetFlag(setValue) as string;
+    // setValue is non-undefined here, so tokenFromSetFlag only returns null for the
+    // literal `false` (which a boolean flag never produces) -- prove it rather than cast.
+    const setToken = tokenFromSetFlag(setValue);
+    if (setToken === null) throw new Error("`--set` requires a token value");
+    token = setToken;
     fromEnv = typeof setValue !== "string";
   }
   cred.store("gh-token", token);

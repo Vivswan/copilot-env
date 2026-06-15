@@ -374,6 +374,16 @@ function assertProxyFloor(): void {
   }
 }
 
+/**
+ * The cheap (sync) part of the managed-lifecycle "leave a running proxy up" gate, shared by
+ * the dry-run and live paths: only a no-op candidate when the lifecycle is managed AND this is
+ * not a forced or explicitly-ported (re)launch. The caller still confirms the proxy is actually
+ * up via `proxyStatus()` before short-circuiting.
+ */
+function isIdempotentNoOp(args: StartArgs): boolean {
+  return !args.force && args.port === undefined && new CopilotEnvConfig().autoStartEnabled();
+}
+
 /** `start`: launch copilot-api detached, wait for readiness, sync aliases. */
 export async function runStart(args: StartArgs): Promise<void> {
   if (args.check) {
@@ -402,12 +412,7 @@ export async function runStart(args: StartArgs): Promise<void> {
   const state = new CopilotEnvRunState();
 
   if (args.dryRun) {
-    if (
-      !args.force &&
-      args.port === undefined &&
-      new CopilotEnvConfig().autoStartEnabled() &&
-      (await proxyStatus()).up
-    ) {
+    if (isIdempotentNoOp(args) && (await proxyStatus()).up) {
       consola.info(
         "DRY RUN: proxy already running (managed lifecycle); would leave it up. --force forces one.",
       );
@@ -444,7 +449,7 @@ export async function runStart(args: StartArgs): Promise<void> {
   // an explicit (re)start. Bump the heartbeat (a manual start is a keep-alive vs the idle watchdog).
   // `--force` launches a fresh daemon either way (e.g. after a credential/config change), and an
   // explicit `--port` is a reconfiguration request, so it always (re)launches rather than no-op'ing.
-  if (!args.force && args.port === undefined && new CopilotEnvConfig().autoStartEnabled()) {
+  if (isIdempotentNoOp(args)) {
     const { up, port: livePort } = await proxyStatus();
     if (up) {
       state.set({ lastEnsureAt: Date.now() });

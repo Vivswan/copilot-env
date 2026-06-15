@@ -53,6 +53,43 @@ function describeDirectGhAuth(a: CodexDirectAuthFacts): {
   };
 }
 
+/**
+ * The shared direct-mode auth verdict for `checkCodex`/`checkClaude`: an identical
+ * three-way decision (stored token -> gh-cli -> no credential resolves) over the same
+ * facts. `wiringOk` is each agent's "rest of the wiring is correct" signal (Codex:
+ * `providerWired`; Claude: base URL matches) and `directFix` is its `agent <cli> --direct`
+ * repair hint. Returns the status, the auth detail line, and a fix that is present iff the
+ * status is "warn" (every warn path has a fix; the ok path has none). Each check wraps this
+ * with its own provider/base-url header lines.
+ */
+function directAuthVerdict(
+  f: { directUsesToken: boolean; provider?: string | null; directAuth: CodexDirectAuthFacts },
+  wiringOk: boolean,
+  directFix: string,
+): { status: "ok" | "warn"; authLine: string; fix?: string } {
+  if (f.directUsesToken) {
+    return {
+      status: wiringOk ? "ok" : "warn",
+      authLine: "auth: stored GitHub token (agent auth --get, no gh CLI)",
+      ...(wiringOk ? {} : { fix: directFix }),
+    };
+  }
+  if (f.provider === "gh-cli") {
+    const { ok: authOk, detail: authDetail, ghFix } = describeDirectGhAuth(f.directAuth);
+    const ok = wiringOk && authOk;
+    return {
+      status: ok ? "ok" : "warn",
+      authLine: authDetail,
+      ...(ok ? {} : { fix: wiringOk ? ghFix : directFix }),
+    };
+  }
+  return {
+    status: "warn",
+    authLine: "auth: no credential resolves via `agent auth --get` — run `agent auth`",
+    fix: wiringOk ? "agent auth" : directFix,
+  };
+}
+
 export function checkCliVersion(f: BootstrapFacts): CheckResult {
   return {
     id: "bootstrap.version",
@@ -364,47 +401,17 @@ export function checkCodex(f: CodexFacts): CheckResult {
   if (f.providerMode === "direct") {
     // A stored token means the resolver (`agent auth --get`) needs no `gh`; wiring
     // alone decides. Otherwise it falls back to `gh auth token`, which must work.
-    if (f.directUsesToken) {
-      const status = f.providerWired ? "ok" : "warn";
-      return {
-        ...base,
-        status,
-        detail: [
-          "provider: direct",
-          `config.toml: ${configPath}`,
-          `model_provider ${f.modelProvider ?? "(unset)"} (direct) → ${f.baseUrl ?? "(missing)"}`,
-          "auth: stored GitHub token (agent auth --get, no gh CLI)",
-        ].join("\n"),
-        ...(status === "ok" ? {} : { fix: "agent codex --direct" }),
-      };
-    }
-    // Not "uses token": only `gh-cli` resolves via gh, so probe-report gh for it.
-    // Any other provider (or none) means no credential resolves -- point at agent auth.
-    if (f.provider === "gh-cli") {
-      const { ok: authOk, detail: authDetail, ghFix } = describeDirectGhAuth(f.directAuth);
-      const status = f.providerWired && authOk ? "ok" : "warn";
-      return {
-        ...base,
-        status,
-        detail: [
-          "provider: direct",
-          `config.toml: ${configPath}`,
-          `model_provider ${f.modelProvider ?? "(unset)"} (direct) → ${f.baseUrl ?? "(missing)"}`,
-          authDetail,
-        ].join("\n"),
-        ...(status === "ok" ? {} : { fix: f.providerWired ? ghFix : "agent codex --direct" }),
-      };
-    }
+    const verdict = directAuthVerdict(f, f.providerWired, "agent codex --direct");
     return {
       ...base,
-      status: "warn",
+      status: verdict.status,
       detail: [
         "provider: direct",
         `config.toml: ${configPath}`,
         `model_provider ${f.modelProvider ?? "(unset)"} (direct) → ${f.baseUrl ?? "(missing)"}`,
-        "auth: no credential resolves via `agent auth --get` — run `agent auth`",
+        verdict.authLine,
       ].join("\n"),
-      fix: f.providerWired ? "agent auth" : "agent codex --direct",
+      ...(verdict.fix ? { fix: verdict.fix } : {}),
     };
   }
   // Config exists: report precisely which part of the wiring is off.
@@ -508,54 +515,20 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
     const baseOk = f.baseUrl === DIRECT_BASE_URL;
     // A stored token means the resolver (`agent auth --get`) needs no `gh`; only
     // the base URL must be right. Otherwise it falls back to `gh auth token`.
-    if (f.directUsesToken) {
-      const status = baseOk ? "ok" : "warn";
-      return {
-        ...base,
-        status,
-        detail: [
-          "provider: direct",
-          `settings.json: ${f.settingsPath}`,
-          `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${
-            baseOk ? "" : ` (expected ${DIRECT_BASE_URL})`
-          }`,
-          "auth: stored GitHub token (agent auth --get, no gh CLI)",
-        ].join("\n"),
-        ...(status === "ok" ? {} : { fix: "agent claude --direct" }),
-      };
-    }
-    // Not "uses token": only `gh-cli` resolves via gh. Probe-report gh for it; any
-    // other provider (or none) means no credential resolves -- point at agent auth.
-    if (f.provider === "gh-cli") {
-      const { ok: authOk, detail: authDetail, ghFix } = describeDirectGhAuth(f.directAuth);
-      const status = authOk && baseOk ? "ok" : "warn";
-      const fix = !baseOk ? "agent claude --direct" : ghFix;
-      return {
-        ...base,
-        status,
-        detail: [
-          "provider: direct",
-          `settings.json: ${f.settingsPath}`,
-          `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${
-            baseOk ? "" : ` (expected ${DIRECT_BASE_URL})`
-          }`,
-          authDetail,
-        ].join("\n"),
-        ...(status === "ok" ? {} : { fix }),
-      };
-    }
+    const verdict = directAuthVerdict(f, baseOk, "agent claude --direct");
+    const baseUrlLine = `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${
+      baseOk ? "" : ` (expected ${DIRECT_BASE_URL})`
+    }`;
     return {
       ...base,
-      status: "warn",
+      status: verdict.status,
       detail: [
         "provider: direct",
         `settings.json: ${f.settingsPath}`,
-        `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${
-          baseOk ? "" : ` (expected ${DIRECT_BASE_URL})`
-        }`,
-        "auth: no credential resolves via `agent auth --get` — run `agent auth`",
+        baseUrlLine,
+        verdict.authLine,
       ].join("\n"),
-      fix: !baseOk ? "agent claude --direct" : "agent auth",
+      ...(verdict.fix ? { fix: verdict.fix } : {}),
     };
   }
   if (f.providerMode === "proxy") {

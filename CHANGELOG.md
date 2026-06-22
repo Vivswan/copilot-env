@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.9](https://github.com/Vivswan/copilot-env/compare/v3.3.8...v3.3.9) (2026-06-22)
+
+
+### Bug Fixes
+
+* add Median/day, active-day coverage, and cost --per-day breakdown ([8b1d083](https://github.com/Vivswan/copilot-env/commit/8b1d0838ec5eb02a7032cefa066488332694ec0e))
+
 ## [3.3.8](https://github.com/Vivswan/copilot-env/compare/v3.3.7...v3.3.8) (2026-06-14)
 
 

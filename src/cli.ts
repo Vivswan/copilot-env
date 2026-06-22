@@ -292,16 +292,30 @@ program
   .description("Aggregate token usage across all per-host SQLite DBs and estimate cost.")
   .option("--days <days>", "Only include usage from the last N days (default: all).")
   .option("--json", "Emit a JSON object instead of a formatted report.")
+  .option("--per-day", "Also print a day-by-day cost/token breakdown.")
   .option(
     "--pricing-url <url>",
     "OpenRouter models API URL for live pricing.",
     OPENROUTER_MODELS_URL,
+  )
+  .addHelpText(
+    "after",
+    [
+      "",
+      "Active days: distinct UTC calendar days that recorded at least one request,",
+      "unioned across every per-host DB. The header also shows the inclusive",
+      "min..max calendar span and what percent of it was active. Avg/day divides",
+      "each total by the active-day count; Median/day takes the median of each",
+      "column independently across the active days (so columns need not sum, but",
+      "each is robust to a few outlier days). Idle days are never counted in either.",
+    ].join("\n"),
   )
   .action((opts: Opts) =>
     runSafe(() =>
       runCost({
         days: opts.days as string | undefined,
         json: Boolean(opts.json),
+        perDay: Boolean(opts.perDay),
         pricingUrl: String(opts.pricingUrl),
       }),
     ),

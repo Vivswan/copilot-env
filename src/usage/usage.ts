@@ -39,6 +39,7 @@ export interface ModelUsage {
 
 /** One aggregated `token_usage_events` row as returned by the grouped query. */
 interface UsageRow {
+  day: string;
   model: string;
   input: number;
   output: number;
@@ -47,10 +48,18 @@ interface UsageRow {
   events: number;
 }
 
-/** Aggregated usage plus the number of distinct UTC days that have data. */
+/**
+ * Aggregated usage plus a per-day breakdown.
+ *
+ * `perDay` maps each distinct UTC calendar day (YYYY-MM-DD) to that day's
+ * per-model token totals, unioned across every DB. `byModel` is the all-days
+ * roll-up and `activeDays` is `perDay.size` -- both derived from the same rows,
+ * kept as fields so callers don't recompute them.
+ */
 export interface UsageReport {
   byModel: Map<string, ModelUsage>;
   activeDays: number;
+  perDay: Map<string, Map<string, ModelUsage>>;
 }
 
 /**
@@ -88,9 +97,27 @@ export function discoverUsageDbs(home: string = resolveHome()): string[] {
  * is skipped with a warning rather than aborting the whole report.
  */
 export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
-  const totals = new Map<string, ModelUsage>();
-  const activeDays = new Set<string>();
+  const byModel = new Map<string, ModelUsage>();
+  const perDay = new Map<string, Map<string, ModelUsage>>();
   const since = sinceMs ?? null;
+
+  // Fold one grouped row into a model->usage map (the all-days roll-up or a
+  // single day's bucket), summing across DBs that share a model.
+  const accumulate = (target: Map<string, ModelUsage>, row: UsageRow): void => {
+    const prev = target.get(row.model) ?? {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheCreation: 0,
+      events: 0,
+    };
+    prev.input += row.input ?? 0;
+    prev.output += row.output ?? 0;
+    prev.cacheRead += row.cacheRead ?? 0;
+    prev.cacheCreation += row.cacheCreation ?? 0;
+    prev.events += row.events ?? 0;
+    target.set(row.model, prev);
+  };
 
   for (const path of dbPaths) {
     let db: Database | undefined;
@@ -101,9 +128,12 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
         `${pathToFileURL(path).href}?immutable=1`,
         SQLITE_OPEN_READONLY | SQLITE_OPEN_URI,
       );
+      // One grouped query by (day, model); byModel and activeDays both derive
+      // from it, so we never read the same rows twice.
       const rows = db
         .query(
-          `SELECT model,
+          `SELECT substr(created_at_utc, 1, 10)     AS day,
+                  model,
                   SUM(input_tokens)                 AS input,
                   SUM(output_tokens)                AS output,
                   SUM(cache_read_input_tokens)      AS cacheRead,
@@ -111,37 +141,23 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
                   COUNT(*)                          AS events
            FROM token_usage_events
            WHERE (?1 IS NULL OR created_at_ms >= ?1)
-           GROUP BY model`,
+           GROUP BY day, model`,
         )
         .all(since) as UsageRow[];
 
       for (const row of rows) {
-        const prev = totals.get(row.model) ?? {
-          input: 0,
-          output: 0,
-          cacheRead: 0,
-          cacheCreation: 0,
-          events: 0,
-        };
-        prev.input += row.input ?? 0;
-        prev.output += row.output ?? 0;
-        prev.cacheRead += row.cacheRead ?? 0;
-        prev.cacheCreation += row.cacheCreation ?? 0;
-        prev.events += row.events ?? 0;
-        totals.set(row.model, prev);
-      }
-
-      // Distinct UTC calendar days with data, unioned across all DBs.
-      const dayRows = db
-        .query(
-          `SELECT DISTINCT substr(created_at_utc, 1, 10) AS day
-           FROM token_usage_events
-           WHERE (?1 IS NULL OR created_at_ms >= ?1)`,
-        )
-        .all(since) as Array<{ day: string }>;
-      for (const { day } of dayRows) {
-        if (day) {
-          activeDays.add(day);
+        accumulate(byModel, row);
+        // Distinct UTC calendar days with data, unioned across all DBs. The
+        // daemon writes created_at_utc alongside created_at_ms on every row, so
+        // a null/empty day is not expected; such a row still counts toward
+        // byModel (the aggregate total) but is omitted from the per-day split.
+        if (row.day) {
+          let dayModels = perDay.get(row.day);
+          if (dayModels === undefined) {
+            dayModels = new Map<string, ModelUsage>();
+            perDay.set(row.day, dayModels);
+          }
+          accumulate(dayModels, row);
         }
       }
     } catch (e) {
@@ -151,5 +167,5 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
     }
   }
 
-  return { byModel: totals, activeDays: activeDays.size };
+  return { byModel, activeDays: perDay.size, perDay };
 }

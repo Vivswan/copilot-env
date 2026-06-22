@@ -57,6 +57,30 @@ test("readUsage sums tokens per model and counts distinct active days", () => {
   expect(report.activeDays).toBe(2);
 });
 
+test("readUsage exposes a per-day, per-model breakdown that reconciles with byModel", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  const path = join(dir, "copilot-api.sqlite");
+  seedUsageDb(path);
+
+  const report = readUsage([path]);
+
+  // perDay keys are the distinct UTC days; size matches activeDays.
+  expect([...report.perDay.keys()].sort()).toEqual(["2026-06-01", "2026-06-02"]);
+  expect(report.perDay.size).toBe(report.activeDays);
+
+  // 2026-06-01 carried both claude rows (100+100 input, 50+50 output, 0+10 cache read).
+  expect(report.perDay.get("2026-06-01")?.get("claude-opus-4.8")).toEqual({
+    input: 200,
+    output: 100,
+    cacheRead: 10,
+    cacheCreation: 0,
+    events: 2,
+  });
+  // 2026-06-02 carried only the gpt row.
+  expect(report.perDay.get("2026-06-02")?.get("gpt-5.5")?.input).toBe(200);
+  expect(report.perDay.get("2026-06-02")?.has("claude-opus-4.8")).toBe(false);
+});
+
 test("readUsage sums tokens by model and unions active days across two DBs", () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
   const pathA = join(dir, "a.sqlite");

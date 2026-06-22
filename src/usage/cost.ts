@@ -15,6 +15,7 @@ import { discoverUsageDbs, readUsage, type UsageReport } from "./usage.ts";
 export async function runCost(args: {
   days?: string;
   json?: boolean;
+  perDay?: boolean;
   pricingUrl?: string;
 }): Promise<void> {
   const dbPaths = discoverUsageDbs();
@@ -43,10 +44,19 @@ export async function runCost(args: {
   const estimate = estimateCost(report.byModel, pricing);
 
   if (args.json) {
-    console.log(JSON.stringify(buildCostJson(report, estimate, dbPaths.length, sinceMs), null, 2));
+    console.log(
+      JSON.stringify(
+        buildCostJson(report, estimate, pricing, dbPaths.length, sinceMs, Boolean(args.perDay)),
+        null,
+        2,
+      ),
+    );
     return;
   }
-  printCostReport(report, estimate, dbPaths.length, args.days);
+  printCostReport(report, estimate, pricing, dbPaths.length, args.days);
+  if (args.perDay) {
+    printPerDayReport(report, pricing, estimate);
+  }
 }
 
 /** Translate `--days N` into a unix-ms cutoff, or undefined for "all time". */
@@ -59,6 +69,104 @@ function parseDaysCutoff(days: string | undefined): number | undefined {
     throw new Error(`--days must be a positive number, got '${days}'`);
   }
   return Date.now() - n * MILLISECONDS_PER_DAY;
+}
+
+/** One day's totals across all models, including per-category cost. */
+export interface DayMetrics {
+  day: string;
+  reqs: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  total: number;
+  inputCost: number;
+  outputCost: number;
+  cacheReadCost: number;
+  cacheWriteCost: number;
+  cost: number;
+}
+
+/**
+ * Collapse the per-day, per-model breakdown into one DayMetrics per active day.
+ * Cost is priced per day (estimateCost is linear in tokens), but only for models
+ * the aggregate `estimate` actually priced: a model the aggregate excluded as
+ * unpriced (some non-zero bucket lacks a rate) must contribute $0 every day too,
+ * or summing the days would not reconcile with the aggregate totalUsd.
+ */
+export function computeDayMetrics(
+  report: UsageReport,
+  pricing: Map<string, PricingTier>,
+  estimate: CostEstimate,
+): DayMetrics[] {
+  const priced = new Set(Object.keys(estimate.perModel));
+  const out: DayMetrics[] = [];
+  for (const [day, dayModels] of report.perDay) {
+    const est = estimateCost(dayModels, pricing);
+    const m: DayMetrics = {
+      day,
+      reqs: 0,
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      total: 0,
+      inputCost: 0,
+      outputCost: 0,
+      cacheReadCost: 0,
+      cacheWriteCost: 0,
+      cost: 0,
+    };
+    for (const [model, u] of dayModels) {
+      m.reqs += u.events;
+      m.input += u.input;
+      m.output += u.output;
+      m.cacheRead += u.cacheRead;
+      m.cacheWrite += u.cacheCreation;
+      const c = est.perModel[model];
+      // A day's tokens are a subset of the aggregate's, so any model the
+      // aggregate priced is priced here too; gating on `priced` only drops the
+      // models the aggregate already excluded.
+      if (c !== undefined && priced.has(model)) {
+        m.inputCost += c.inputCostUsd;
+        m.outputCost += c.outputCostUsd;
+        m.cacheReadCost += c.cacheReadCostUsd;
+        m.cacheWriteCost += c.cacheCreationCostUsd;
+        m.cost += c.estimatedCostUsd;
+      }
+    }
+    m.total = m.input + m.output + m.cacheRead + m.cacheWrite;
+    out.push(m);
+  }
+  return out;
+}
+
+/** Median of a numeric sample (mean of the two middles when even). 0 if empty. */
+export function median(values: number[]): number {
+  if (values.length === 0) {
+    return 0;
+  }
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2 : sorted[mid]!;
+}
+
+/**
+ * Calendar span and density of the active days: how many distinct days carried
+ * usage out of the inclusive min..max calendar window, and what fraction of
+ * that window was active. `spanDays` is 0 (and `percent` 100) when no days.
+ */
+export function activeDayCoverage(report: UsageReport): { spanDays: number; percent: number } {
+  const days = [...report.perDay.keys()].sort();
+  if (days.length === 0) {
+    return { spanDays: 0, percent: 100 };
+  }
+  const first = days[0]!;
+  const last = days[days.length - 1]!;
+  const spanMs = Date.parse(`${last}T00:00:00Z`) - Date.parse(`${first}T00:00:00Z`);
+  const spanDays = Math.round(spanMs / MILLISECONDS_PER_DAY) + 1;
+  const percent = spanDays > 0 ? Math.round((days.length / spanDays) * 100) : 100;
+  return { spanDays, percent };
 }
 
 /** Format a token count with a K/M suffix. */
@@ -138,6 +246,7 @@ function alignCatColumn(cells: CatCell[]): string[] {
 function printCostReport(
   report: UsageReport,
   estimate: CostEstimate,
+  pricing: Map<string, PricingTier>,
   dbCount: number,
   days: string | undefined,
 ): void {
@@ -145,6 +254,8 @@ function printCostReport(
   const models = [...byModel.keys()].sort();
   const period = days ? `last ${days} days` : "all time";
   const div = activeDays > 0 ? activeDays : 1;
+  const dayMetrics = computeDayMetrics(report, pricing, estimate);
+  const med = (sel: (d: DayMetrics) => number): number => median(dayMetrics.map(sel));
 
   // Bare cost amount (no `$`; alignCatColumn re-adds it after padding).
   const money = (n: number): string => n.toFixed(2);
@@ -243,6 +354,30 @@ function printCostReport(
       total: activeDays > 0 ? formatTokens(Math.round(avg(sum.total))) : "N/A",
       cost: activeDays > 0 ? formatCurrency(estimate.totalUsd / div) : "N/A",
     },
+    {
+      label: "Median/day",
+      reqs: activeDays > 0 ? formatTokens(Math.round(med((d) => d.reqs))) : "N/A",
+      cats: [
+        {
+          tok: formatTokens(Math.round(med((d) => d.input))),
+          cost: money(med((d) => d.inputCost)),
+        },
+        {
+          tok: formatTokens(Math.round(med((d) => d.output))),
+          cost: money(med((d) => d.outputCost)),
+        },
+        {
+          tok: formatTokens(Math.round(med((d) => d.cacheRead))),
+          cost: money(med((d) => d.cacheReadCost)),
+        },
+        {
+          tok: formatTokens(Math.round(med((d) => d.cacheWrite))),
+          cost: money(med((d) => d.cacheWriteCost)),
+        },
+      ],
+      total: activeDays > 0 ? formatTokens(Math.round(med((d) => d.total))) : "N/A",
+      cost: activeDays > 0 ? formatCurrency(med((d) => d.cost)) : "N/A",
+    },
   ];
   for (const f of footerRows) {
     inputCol.push(f.cats[0]);
@@ -279,8 +414,13 @@ function printCostReport(
   ]);
 
   console.log();
+  const coverage = activeDayCoverage(report);
+  const activeDaysLabel =
+    activeDays > 0
+      ? `${activeDays} active day${activeDays === 1 ? "" : "s"} (${coverage.percent}% of a ${coverage.spanDays}-day span)`
+      : "0 active days";
   console.log(
-    `Usage by model - ${period} | ${dbCount} db${dbCount === 1 ? "" : "s"} | ${sum.reqs} requests | ${activeDays} active day${activeDays === 1 ? "" : "s"}`,
+    `Usage by model - ${period} | ${dbCount} db${dbCount === 1 ? "" : "s"} | ${sum.reqs} requests | ${activeDaysLabel}`,
   );
   console.log();
   printTable(
@@ -295,7 +435,102 @@ function printCostReport(
   }
   console.log();
   console.log(
-    "  Note: only proxy usage is recorded. Direct-wired Codex/Claude (GitHub Copilot Direct) bypasses the proxy and is not tracked here at all.",
+    "Note: only proxy usage is recorded. Direct-wired Codex/Claude (GitHub Copilot Direct) bypasses the proxy and is not tracked here at all.",
+  );
+  console.log();
+}
+
+/**
+ * Print a day-by-day table (one row per active day, oldest first) plus a TOTAL
+ * footer, sharing the main report's per-category token+cost sub-alignment.
+ */
+function printPerDayReport(
+  report: UsageReport,
+  pricing: Map<string, PricingTier>,
+  estimate: CostEstimate,
+): void {
+  const days = computeDayMetrics(report, pricing, estimate).sort((a, b) =>
+    a.day.localeCompare(b.day),
+  );
+  if (days.length === 0) {
+    return;
+  }
+  const money = (n: number): string => n.toFixed(2);
+
+  const labels: string[] = [];
+  const reqsCol: string[] = [];
+  const inputCol: CatCell[] = [];
+  const outputCol: CatCell[] = [];
+  const cacheReadCol: CatCell[] = [];
+  const cacheWriteCol: CatCell[] = [];
+  const totalCol: string[] = [];
+  const costCol: string[] = [];
+  const sum = { reqs: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 };
+
+  const pushRow = (label: string, d: DayMetrics): void => {
+    labels.push(label);
+    reqsCol.push(formatTokens(d.reqs));
+    inputCol.push({ tok: formatTokens(d.input), cost: money(d.inputCost) });
+    outputCol.push({ tok: formatTokens(d.output), cost: money(d.outputCost) });
+    cacheReadCol.push({ tok: formatTokens(d.cacheRead), cost: money(d.cacheReadCost) });
+    cacheWriteCol.push({ tok: formatTokens(d.cacheWrite), cost: money(d.cacheWriteCost) });
+    totalCol.push(formatTokens(d.total));
+    costCol.push(formatCurrency(d.cost));
+  };
+
+  for (const d of days) {
+    pushRow(d.day, d);
+    sum.reqs += d.reqs;
+    sum.input += d.input;
+    sum.output += d.output;
+    sum.cacheRead += d.cacheRead;
+    sum.cacheWrite += d.cacheWrite;
+    sum.total += d.total;
+    sum.cost += d.cost;
+  }
+  // TOTAL footer mirrors the per-day rows so the sub-alignment stays consistent.
+  const totalRow: DayMetrics = {
+    day: "TOTAL",
+    reqs: sum.reqs,
+    input: sum.input,
+    output: sum.output,
+    cacheRead: sum.cacheRead,
+    cacheWrite: sum.cacheWrite,
+    total: sum.total,
+    inputCost: days.reduce((s, d) => s + d.inputCost, 0),
+    outputCost: days.reduce((s, d) => s + d.outputCost, 0),
+    cacheReadCost: days.reduce((s, d) => s + d.cacheReadCost, 0),
+    cacheWriteCost: days.reduce((s, d) => s + d.cacheWriteCost, 0),
+    cost: sum.cost,
+  };
+  pushRow("TOTAL", totalRow);
+
+  const inputCells = alignCatColumn(inputCol);
+  const outputCells = alignCatColumn(outputCol);
+  const cacheReadCells = alignCatColumn(cacheReadCol);
+  const cacheWriteCells = alignCatColumn(cacheWriteCol);
+
+  const row = (i: number): string[] => [
+    labels[i] ?? "",
+    reqsCol[i] ?? "",
+    inputCells[i] ?? "",
+    outputCells[i] ?? "",
+    cacheReadCells[i] ?? "",
+    cacheWriteCells[i] ?? "",
+    totalCol[i] ?? "",
+    costCol[i] ?? "",
+  ];
+  const last = labels.length - 1;
+  const body = days.map((_, i) => row(i));
+  const footer = [row(last)];
+
+  console.log("Per-day breakdown");
+  console.log();
+  printTable(
+    ["Day", "Requests", "Input", "Output", "Cache Read", "Cache Write", "Total", "Cost"],
+    ["left", "right", "right", "right", "right", "right", "right", "right"],
+    body,
+    footer,
   );
   console.log();
 }
@@ -304,19 +539,44 @@ function printCostReport(
 function buildCostJson(
   report: UsageReport,
   estimate: CostEstimate,
+  pricing: Map<string, PricingTier>,
   dbCount: number,
   sinceMs: number | undefined,
+  perDay: boolean,
 ): Record<string, unknown> {
   const div = report.activeDays > 0 ? report.activeDays : 1;
+  const dayMetrics = computeDayMetrics(report, pricing, estimate);
+  const dayCosts = dayMetrics.map((d) => d.cost);
+  const coverage = activeDayCoverage(report);
   return {
     dbCount,
     sinceMs: sinceMs ?? null,
     activeDays: report.activeDays,
+    activeDaySpan: coverage.spanDays,
+    activeDayPercent: report.activeDays > 0 ? coverage.percent : null,
     usageByModel: Object.fromEntries(report.byModel),
     perModel: estimate.perModel,
     totalUsd: estimate.totalUsd,
     avgCostPerDayUsd:
       report.activeDays > 0 ? Math.round((estimate.totalUsd / div) * 10_000) / 10_000 : null,
+    medianCostPerDayUsd:
+      report.activeDays > 0 ? Math.round(median(dayCosts) * 10_000) / 10_000 : null,
+    ...(perDay
+      ? {
+          perDay: [...dayMetrics]
+            .sort((a, b) => a.day.localeCompare(b.day))
+            .map((d) => ({
+              day: d.day,
+              requests: d.reqs,
+              input: d.input,
+              output: d.output,
+              cacheRead: d.cacheRead,
+              cacheCreation: d.cacheWrite,
+              total: d.total,
+              costUsd: Math.round(d.cost * 10_000) / 10_000,
+            })),
+        }
+      : {}),
     unpriced: estimate.unpriced,
     note: "only proxy usage is recorded; direct GitHub Copilot usage is not tracked at all",
   };

@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { AutoupdateData } from "../autoupdate/state.ts";
 import { DIRECT_BASE_URL } from "../claude/config.ts";
 import type { ProxyVersionStatus } from "../copilot_api/version.ts";
-import { SECONDS_PER_DAY } from "../utils/time.ts";
+import { formatDuration, SECONDS_PER_DAY } from "../utils/time.ts";
 import { filterByScope } from "./aggregate.ts";
 import type {
   AuthFacts,
@@ -261,6 +261,60 @@ export function checkRuntimePaths(f: RuntimeFacts): CheckResult {
     status: "ok",
     detail: `state ${f.paths.stateFile}\nlog ${f.paths.logFile}`,
     value: { ...f.paths },
+  };
+}
+
+export function checkRuntimeWatchdog(f: RuntimeFacts): CheckResult {
+  const w = f.watchdog;
+  // Scoped to full + proxy, NOT the launchers' fast `runtime` probe (this is informational and
+  // reads the config + log mtime). Always "ok": it reports state, it never fails a run.
+  const base = {
+    id: "runtime.watchdog",
+    label: "Idle watchdog",
+    group: "runtime" as const,
+    scopes: ["full", "proxy"] as const,
+    status: "ok" as const,
+  };
+  if (!w.autoStart) {
+    return {
+      ...base,
+      detail: "off (auto-start false) -- no auto-start, no auto-stop",
+      value: { autoStart: false },
+    };
+  }
+  if (w.idleTimeoutMs <= 0) {
+    return {
+      ...base,
+      detail: "on; idle auto-stop disabled (idle-timeout 0) -- stays up until `agent stop`",
+      value: { autoStart: true, idleTimeoutMs: 0 },
+    };
+  }
+  // The in-daemon watchdog treats activity as the most recent of the heartbeat and the proxy
+  // log mtime; mirror that here. With neither recorded yet, idle/remaining are unknown -- the
+  // daemon's real baseline also includes a startedAtMs the probe cannot see, so don't fake a
+  // precise full-window remaining.
+  const lastActivity = Math.max(w.lastEnsureAt ?? 0, w.logMtimeMs ?? 0);
+  const idleMs = lastActivity > 0 ? Math.max(0, w.now - lastActivity) : null;
+  const remainingMs = idleMs === null ? null : Math.max(0, w.idleTimeoutMs - idleMs);
+  const ago = (at: number | null): string =>
+    at === null ? "none" : `${formatDuration(w.now - at)} ago`;
+  const detail = [
+    `auto-stops in ${remainingMs === null ? "unknown" : formatDuration(remainingMs)} (idle window ${formatDuration(w.idleTimeoutMs)})`,
+    `idle for ${idleMs === null ? "unknown (no activity recorded yet)" : formatDuration(idleMs)}`,
+    `last beat ${ago(w.lastEnsureAt)}`,
+    `last request ${ago(w.logMtimeMs)}`,
+  ].join("\n");
+  return {
+    ...base,
+    detail,
+    value: {
+      autoStart: true,
+      idleTimeoutMs: w.idleTimeoutMs,
+      lastEnsureAt: w.lastEnsureAt,
+      logMtimeMs: w.logMtimeMs,
+      idleMs,
+      remainingMs,
+    },
   };
 }
 
@@ -657,7 +711,7 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
   if (facts.proxy) out.push(checkProxyPackage(facts.proxy));
   if (facts.runtime) {
     out.push(checkRuntimePort(facts.runtime), checkRuntimePid(facts.runtime));
-    out.push(checkRuntimePaths(facts.runtime));
+    out.push(checkRuntimePaths(facts.runtime), checkRuntimeWatchdog(facts.runtime));
   }
   if (facts.shell) {
     out.push(checkShellIntegration(facts.shell), checkLaunchers(facts.shell));

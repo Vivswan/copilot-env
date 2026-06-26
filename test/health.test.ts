@@ -24,6 +24,7 @@ import {
   checkProxyPackage,
   checkRuntimePid,
   checkRuntimePort,
+  checkRuntimeWatchdog,
   checkShellIntegration,
   checkTool,
   evaluateAll,
@@ -60,6 +61,13 @@ const RUNTIME_OK: RuntimeFacts = {
     stateFile: "/h/.run/x/.state.json",
     logFile: "/h/.run/x/.log",
     sqliteDb: "/h/.run/x/db.sqlite",
+  },
+  watchdog: {
+    autoStart: false,
+    idleTimeoutMs: 3_600_000,
+    lastEnsureAt: null,
+    logMtimeMs: null,
+    now: 1_000_000_000,
   },
 };
 
@@ -238,6 +246,77 @@ test("runtime pid: stale/foreign and untracked fail, tracked ok", () => {
   expect(checkRuntimePort(foreign).status).toBe("ok");
   const untracked = { ...RUNTIME_OK, trackedPid: null, pidTracked: false, pidAlive: false };
   expect(checkRuntimePid(untracked).status).toBe("fail");
+});
+
+test("runtime watchdog: off, disabled, and active states are all ok with informative detail", () => {
+  // auto-start off -> reports off, never auto-stops.
+  const off = checkRuntimeWatchdog(RUNTIME_OK); // RUNTIME_OK has watchdog.autoStart=false
+  expect(off.status).toBe("ok");
+  expect(off.detail).toContain("off");
+  expect(off.value).toEqual({ autoStart: false });
+
+  // auto-start on but idle-timeout 0 -> auto-stop disabled.
+  const disabled = checkRuntimeWatchdog({
+    ...RUNTIME_OK,
+    watchdog: { ...RUNTIME_OK.watchdog, autoStart: true, idleTimeoutMs: 0 },
+  });
+  expect(disabled.detail).toContain("disabled");
+
+  // Active: window 1h, last beat 20m ago, no request traffic -> 40m remaining, 20m idle.
+  const now = 1_000_000_000;
+  const active = checkRuntimeWatchdog({
+    ...RUNTIME_OK,
+    watchdog: {
+      autoStart: true,
+      idleTimeoutMs: 3_600_000,
+      lastEnsureAt: now - 20 * 60_000,
+      logMtimeMs: null,
+      now,
+    },
+  });
+  expect(active.status).toBe("ok");
+  expect(active.detail).toContain("auto-stops in 40m");
+  expect(active.detail).toContain("idle for 20m");
+  expect(active.detail).toContain("last beat 20m ago");
+  expect(active.detail).toContain("last request none");
+  expect(active.value?.remainingMs).toBe(40 * 60_000);
+  expect(active.value?.idleMs).toBe(20 * 60_000);
+
+  // Idle past the window clamps remaining to 0; log mtime counts as the latest activity.
+  const expired = checkRuntimeWatchdog({
+    ...RUNTIME_OK,
+    watchdog: {
+      autoStart: true,
+      idleTimeoutMs: 600_000,
+      lastEnsureAt: now - 3_600_000,
+      logMtimeMs: now - 1_200_000, // 20m ago, more recent than the beat
+      now,
+    },
+  });
+  expect(expired.value?.idleMs).toBe(1_200_000);
+  expect(expired.value?.remainingMs).toBe(0);
+  expect(expired.detail).toContain("auto-stops in 0s");
+
+  // No activity recorded yet -> idle AND remaining are unknown (the daemon's real baseline
+  // includes a startedAtMs the probe can't see, so we don't fake a precise full window).
+  const fresh = checkRuntimeWatchdog({
+    ...RUNTIME_OK,
+    watchdog: {
+      autoStart: true,
+      idleTimeoutMs: 3_600_000,
+      lastEnsureAt: null,
+      logMtimeMs: null,
+      now,
+    },
+  });
+  expect(fresh.detail).toContain("idle for unknown");
+  expect(fresh.detail).toContain("auto-stops in unknown");
+  expect(fresh.value?.idleMs).toBeNull();
+  expect(fresh.value?.remainingMs).toBeNull();
+});
+
+test("runtime watchdog is scoped to full + proxy, not the launchers' fast runtime probe", () => {
+  expect(checkRuntimeWatchdog(RUNTIME_OK).scopes).toEqual(["full", "proxy"]);
 });
 
 // --- bootstrap checks -------------------------------------------------------

@@ -35,6 +35,7 @@ import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
+import { formatDuration } from "../utils/time.ts";
 import { ensureAuthenticated } from "./auth.ts";
 
 // --- Default config applied on every `start`. ---
@@ -190,21 +191,6 @@ function applyDefaultConfig(config: CopilotApiConfig): void {
   // Persist an admin key so the live `/admin/config/model-mappings` route (used
   // by syncModelAliases) accepts our request instead of 401-ing.
   config.ensureAdminApiKey();
-}
-
-/** A human idle window for the start banner: "1h", "30m", "1m30s", or "never" when disabled. */
-function formatIdleWindow(ms: number): string {
-  const total = Math.round(ms / 1000);
-  if (total <= 0) return "never (idle auto-stop disabled)";
-  const hours = Math.floor(total / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const seconds = total % 60;
-  const parts = [
-    hours > 0 ? `${hours}h` : "",
-    minutes > 0 ? `${minutes}m` : "",
-    seconds > 0 ? `${seconds}s` : "",
-  ].filter((p) => p !== "");
-  return parts.join("");
 }
 
 /**
@@ -661,7 +647,7 @@ export async function runStart(args: StartArgs): Promise<void> {
     const idleMs = idleTimeoutMs();
     if (idleMs > 0) {
       consola.info(
-        `Managed lifecycle on: auto-stops after ${formatIdleWindow(idleMs)} idle ` +
+        `Managed lifecycle on: auto-stops after ${formatDuration(idleMs)} idle ` +
           "(`agent config --set idle-timeout 0` disables auto-stop; `auto-start false` keeps it up).",
       );
     } else {

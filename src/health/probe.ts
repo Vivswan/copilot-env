@@ -4,7 +4,7 @@
 // command did). Pure sub-evaluators (evalShellFiles, evalCodex) take raw content
 // so they unit-test without touching the world.
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { type AutoupdateData, AutoupdateState } from "../autoupdate/state.ts";
@@ -23,6 +23,7 @@ import {
   MARKER,
   shellTargetFiles,
 } from "../commands/shell_integration.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
@@ -34,6 +35,7 @@ import {
   proxyVersionBoundsStatus,
 } from "../copilot_api/version.ts";
 import { nodeModulesFresh, resolveMinimumReleaseAgeSeconds } from "../proxy_float.ts";
+import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
 import {
   CLAUDE_PROBE,
@@ -77,6 +79,22 @@ export interface RuntimeFacts {
   paths: RuntimePaths;
   /** Both Codex and Claude are configured direct => the proxy is not required. */
   bothDirect: boolean;
+  /** Idle auto-stop watchdog state, observed from outside the daemon. */
+  watchdog: WatchdogFacts;
+}
+
+/**
+ * Idle-watchdog inputs the proxy exposes externally: the managed-lifecycle gate, the effective
+ * idle window, and the two activity signals the in-daemon watchdog uses (the `lastEnsureAt`
+ * heartbeat and the proxy log mtime). `now` is the snapshot the report computes "remaining"
+ * against, captured at probe time so the evaluator stays pure.
+ */
+export interface WatchdogFacts {
+  autoStart: boolean;
+  idleTimeoutMs: number;
+  lastEnsureAt: number | null;
+  logMtimeMs: number | null;
+  now: number;
 }
 
 export interface BootstrapFacts {
@@ -202,10 +220,16 @@ export interface ProbeDeps {
   root: string;
   resolvePort(): string;
   reach(url: string, timeoutMs: number): Promise<boolean>;
-  readState(): { port?: number; pid?: number; codexHome?: string };
+  readState(): { port?: number; pid?: number; codexHome?: string; lastEnsureAt?: number };
   isTrackedPid(pid: number): Promise<boolean>;
   isPidAlive(pid: number): boolean;
   paths(): RuntimePaths;
+  /** Idle-watchdog inputs (injected for deterministic tests). */
+  now(): number;
+  idleTimeoutMs(): number;
+  autoStartEnabled(): boolean;
+  /** Proxy log mtime in epoch ms (a watchdog activity signal), or null when absent. */
+  logMtimeMs(): number | null;
   commandResolved(command: string): string | null;
   agentClis(): readonly { command: string; name: string }[];
   shellTargets(): string[];
@@ -377,6 +401,16 @@ export function defaultProbeDeps(): ProbeDeps {
     readState: () => new CopilotEnvRunState().read(),
     isTrackedPid: isCopilotApiPid,
     isPidAlive: pidAlive,
+    now: () => Date.now(),
+    idleTimeoutMs: () => idleTimeoutMs(),
+    autoStartEnabled: () => new CopilotEnvConfig().autoStartEnabled(),
+    logMtimeMs: () => {
+      try {
+        return statSync(new CopilotApiPaths().logFile).mtimeMs;
+      } catch {
+        return null;
+      }
+    },
     paths: () => {
       const p = new CopilotApiPaths();
       return {
@@ -583,6 +617,13 @@ export async function gatherFacts(
           // When both agents are configured direct, no proxy is required, so a
           // down proxy must not read as a runtime failure.
           bothDirect: readProviderModes(deps, port).bothDirect,
+          watchdog: {
+            autoStart: deps.autoStartEnabled(),
+            idleTimeoutMs: deps.idleTimeoutMs(),
+            lastEnsureAt: state.lastEnsureAt ?? null,
+            logMtimeMs: deps.logMtimeMs(),
+            now: deps.now(),
+          },
         };
       })(),
     );

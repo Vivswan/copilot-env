@@ -110,3 +110,44 @@ test("a qualifier id like claude-opus-4.7-high gets no [1m] alias", () => {
   expect(aliases["claude-opus-4-7-high[1m]"]).toBeUndefined();
   expect(aliases["claude-opus-4.7-high[1m]"]).toBeUndefined();
 });
+
+// The live daemon catalog returns dash-form version ids (`claude-opus-4-8`),
+// not the dot form. These mirror that shape so the regex never silently drops
+// every Claude model again.
+test("dash-form catalog ids still produce the full alias set", () => {
+  const catalog: CatalogModel[] = [
+    { id: "claude-opus-4-8", is1m: true },
+    { id: "claude-sonnet-4-6", is1m: true },
+    { id: "claude-haiku-4-5", is1m: false },
+  ];
+  const aliases = generateAliases(catalog);
+
+  expect(aliases.opus).toBe("claude-opus-4-8");
+  expect(aliases["opus[1m]"]).toBe("claude-opus-4-8");
+  expect(aliases["claude-opus-4-8[1m]"]).toBe("claude-opus-4-8");
+  expect(aliases["claude-opus-4.8[1m]"]).toBe("claude-opus-4-8");
+  expect(aliases.sonnet).toBe("claude-sonnet-4-6");
+  expect(aliases.haiku).toBe("claude-haiku-4-5");
+});
+
+test("dash-form qualifier ids parse the version and qualifier apart", () => {
+  const catalog: CatalogModel[] = [{ id: "claude-opus-4-7-high", is1m: false }];
+  const aliases = generateAliases(catalog);
+
+  expect(aliases["claude-opus-4-7-high"]).toBe("claude-opus-4-7-high");
+  expect(aliases["claude-opus-4-7"]).toBeUndefined();
+});
+
+test("dash-form [1m] requests resolve to a distinct dash-form 1m sibling", () => {
+  const catalog: CatalogModel[] = [
+    { id: "claude-opus-4-8", is1m: false },
+    { id: "claude-opus-4-8-1m", is1m: true },
+  ];
+  const aliases = generateAliases(catalog);
+
+  expect(aliases["claude-opus-4-8"]).toBe("claude-opus-4-8");
+  expect(aliases["claude-opus-4-8[1m]"]).toBe("claude-opus-4-8-1m");
+  expect(aliases["claude-opus-4.8[1m]"]).toBe("claude-opus-4-8-1m");
+  expect(aliases.opus).toBe("claude-opus-4-8-1m");
+  expect(aliases["opus[1m]"]).toBe("claude-opus-4-8-1m");
+});

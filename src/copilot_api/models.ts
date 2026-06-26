@@ -29,7 +29,10 @@ interface ParsedModel {
   is1m: boolean;
 }
 
-const MODEL_ID_PATTERN = /^claude-([a-z]+)-(\d+\.\d+)(?:-(.+))?$/;
+// The version separator may arrive dash- or dot-form: the live catalog returns
+// `claude-opus-4-8`, while a hand-built dot-form id (`claude-opus-4.8`) is also
+// valid. We capture either and normalize to the canonical dot form below.
+const MODEL_ID_PATTERN = /^claude-([a-z]+)-(\d+[.-]\d+)(?:-(.+))?$/;
 const GPT_ID_PATTERN = /^gpt-(\d+(?:\.\d+)?)(?:-(.+))?$/;
 
 /** Compare two `major.minor` version strings; >0 when `a` is newer. */
@@ -62,10 +65,13 @@ export function generateAliases(catalog: CatalogModel[]): Record<string, string>
     if (!match) {
       continue; // non-claude (gpt/gemini/...) -- clients address these directly
     }
-    const [, family, version, qualifier] = match;
-    if (family === undefined || version === undefined) {
+    const [, family, rawVersion, qualifier] = match;
+    if (family === undefined || rawVersion === undefined) {
       continue;
     }
+    // Canonical version is dot-form ("4-8" -> "4.8") so sibling lookups and
+    // version compares stay separator-agnostic regardless of the catalog's form.
+    const version = rawVersion.replace("-", ".");
     parsed.push({ id: model.id, family, version, qualifier: qualifier ?? null, is1m: model.is1m });
   }
 

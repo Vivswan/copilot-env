@@ -45,11 +45,11 @@ Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, the
 - **Specific version:** replace `latest` with an exact release tag:
 
   ```bash
-  curl -fsSL https://github.com/Vivswan/copilot-env/releases/download/v3.0.0/install.sh | bash
+  curl -fsSL https://github.com/Vivswan/copilot-env/releases/download/vX.X.X/install.sh | bash
   ```
 
   ```powershell
-  powershell -c "irm https://github.com/Vivswan/copilot-env/releases/download/v3.0.0/install.ps1 | iex"
+  powershell -c "irm https://github.com/Vivswan/copilot-env/releases/download/vX.X.X/install.ps1 | iex"
   ```
 
 ### Install flags

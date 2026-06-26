@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.10](https://github.com/Vivswan/copilot-env/compare/v3.3.9...v3.3.10) (2026-06-26)
+
+
+### Bug Fixes
+
+* generate model aliases for dash-form catalog ids ([2d0d7dd](https://github.com/Vivswan/copilot-env/commit/2d0d7ddc88d704ffd3a192c2a96fc8f31ecbd4da))
+
 ## [3.3.9](https://github.com/Vivswan/copilot-env/compare/v3.3.8...v3.3.9) (2026-06-22)
 
 

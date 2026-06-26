@@ -2,7 +2,13 @@
 // src/copilot_api/env_config.ts). The CONFIG_REGISTRY there is the single source of truth for
 // the keys; this command just parses/validates `--set` values and formats `--get` output.
 import { consola } from "consola";
-import { CONFIG_REGISTRY, CopilotEnvConfig, configKeyDef } from "../copilot_api/env_config.ts";
+import {
+  CONFIG_REGISTRY,
+  type ConfigKeyDef,
+  CopilotEnvConfig,
+  configKeyDef,
+  isProxyProjected,
+} from "../copilot_api/env_config.ts";
 import { errMessage } from "../utils/error.ts";
 
 export interface ConfigArgs {
@@ -21,6 +27,14 @@ function unknownKeyError(cli: string): Error {
 
 function formatValue(value: boolean | number | string): string {
   return String(value);
+}
+
+/** Keys projected into the proxy's config.json are read only at `agent start`, so a running
+ *  daemon won't see the change until it restarts. Nudge the user when that applies. The hint
+ *  stays shell-neutral (no `&&`) for Windows PowerShell 5.1. */
+function noteRestartIfProjected(def: ConfigKeyDef): void {
+  if (!isProxyProjected(def)) return;
+  consola.info("Applies on the next proxy start; restart it: `agent stop`, then `agent start`.");
 }
 
 /** `agent config`: get (default/`--get`), set, or delete one preference. */
@@ -58,6 +72,7 @@ function runSet(pair: string[]): void {
   }
   new CopilotEnvConfig().set({ [def.key]: value });
   consola.success(`set ${def.cli} = ${formatValue(value)}`);
+  noteRestartIfProjected(def);
 }
 
 function runDel(cli: string): void {
@@ -65,6 +80,7 @@ function runDel(cli: string): void {
   if (def === undefined) throw unknownKeyError(cli);
   new CopilotEnvConfig().del(def.key);
   consola.success(`deleted ${def.cli} (reverted to default)`);
+  noteRestartIfProjected(def);
 }
 
 function runGet(get: string | boolean | undefined): void {

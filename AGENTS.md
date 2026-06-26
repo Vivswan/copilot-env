@@ -39,11 +39,19 @@ Only the *why* lives here; the mechanics are discoverable in the code.
   / `--del <key>` front-end over `CopilotEnvConfig` (`src/copilot_api/env_config.ts`, a
   `.copilot-env-config.json` SEPARATE from the credential store), with a single key registry
   as the source of truth: `auto-start`, `passthrough` (auto/on/off), `idle-timeout`,
-  `small-model`, `port`, `proxy-version`, `release-cooldown`, `update-cooldown`. Every read
-  site applies the same precedence: **explicit flag/env (per-invocation) > stored config >
-  built-in default** (e.g. `COPILOT_API_IDLE_TIMEOUT` env > config `idle-timeout` > 3600).
-  `proxy_float.ts` reads `proxy-version`/`release-cooldown` from it at install time (a
-  best-effort read that falls back to env/bunfig).
+  `small-model`, `responses-websocket`, `responses-websearch`, `messages-api`,
+  `responses-context-management`, `message-websearch-model`, `port`, `proxy-version`,
+  `release-cooldown`, `update-cooldown`. Registry entries marked for proxy projection are
+  **written into the proxy's own `config.json` at `agent start`** (`applyDefaultConfig` ->
+  `projectedProxyConfig`): a `proxyDefault` key (`small-model` + the three `responses-websocket`
+  /`responses-websearch`/`messages-api` flags) is force-written every start, while a
+  `proxyProjected` key (`responses-context-management`, `message-websearch-model`) is written
+  only when set so the proxy's own default otherwise stands. Either way a daemon restart is
+  needed (the `agent config` set/del prints that hint). Every read site applies the same
+  precedence: **explicit flag/env (per-invocation) > stored config > built-in default** (e.g.
+  `COPILOT_API_IDLE_TIMEOUT` env > config `idle-timeout` > 3600). `proxy_float.ts` reads
+  `proxy-version`/`release-cooldown` from it at install time (a best-effort read that falls
+  back to env/bunfig).
 - **The managed proxy lifecycle is opt-in** (the `auto-start` config key; `agent config
   --set auto-start true`). The shared resolver `src/scripts/proxy-token.{sh,ps1}` (run by
   Codex's `auth.command`, Claude's `apiKeyHelper`, and the `cl`/`cx` launchers) is built from

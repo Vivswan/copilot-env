@@ -6,7 +6,7 @@ import { consola } from "consola";
 import { CopilotAdminClient } from "../copilot_api/admin.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { CopilotEnvConfig, projectedProxyConfig } from "../copilot_api/env_config.ts";
 import type { AuthProvider } from "../copilot_api/env_state.ts";
 import { generateAliases } from "../copilot_api/models.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
@@ -30,6 +30,7 @@ import {
   PROXY_PACKAGE_NAME,
   proxyVersionFloorStatus,
 } from "../copilot_api/version.ts";
+import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
@@ -41,8 +42,6 @@ import { ensureAuthenticated } from "./auth.ts";
 // String literals here are external contracts (config-file keys, copilot-api
 // model ids). Do not change them during refactors.
 //
-
-const DEFAULT_SMALL_MODEL = "gpt-5-mini";
 
 /**
  * Whether a GitHub token is a Personal Access Token by its prefix: `ghp_` (classic)
@@ -88,12 +87,6 @@ export function usePatPassthrough(opts: {
   if (opts.provider === "gh-cli") return true;
   return isPatToken(opts.token) || opts.token.startsWith("gho_");
 }
-
-const DEFAULT_FLAGS: Record<string, unknown> = {
-  useMessagesApi: true,
-  useResponsesApiWebSocket: true,
-  useResponsesApiWebSearch: true,
-};
 
 export interface StartArgs {
   dryRun?: boolean;
@@ -188,16 +181,30 @@ function copilotTokenFailureHint(log: string): string | null {
 }
 
 function applyDefaultConfig(config: CopilotApiConfig): void {
-  // These are static defaults the daemon reads from config.json at startup.
-  // They have no admin REST endpoint, so they must be written to the file before
-  // launch (unlike model aliases, which are pushed live via CopilotAdminClient).
-  config.update((d) => {
-    d.smallModel = new CopilotEnvConfig().read().smallModel ?? DEFAULT_SMALL_MODEL;
-    Object.assign(d, DEFAULT_FLAGS);
-  });
+  // Project copilot-env's tunable proxy preferences (CONFIG_REGISTRY entries with a
+  // proxyDefault) into the daemon's config.json before launch. These are static defaults the
+  // daemon reads at startup and have no admin REST endpoint, so they must be written to the
+  // file here (unlike model aliases, pushed live via CopilotAdminClient). Unset preferences
+  // fall back to each key's built-in proxy default, so behavior is unchanged by default.
+  config.update((d) => Object.assign(d, projectedProxyConfig()));
   // Persist an admin key so the live `/admin/config/model-mappings` route (used
   // by syncModelAliases) accepts our request instead of 401-ing.
   config.ensureAdminApiKey();
+}
+
+/** A human idle window for the start banner: "1h", "30m", "1m30s", or "never" when disabled. */
+function formatIdleWindow(ms: number): string {
+  const total = Math.round(ms / 1000);
+  if (total <= 0) return "never (idle auto-stop disabled)";
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  const parts = [
+    hours > 0 ? `${hours}h` : "",
+    minutes > 0 ? `${minutes}m` : "",
+    seconds > 0 ? `${seconds}s` : "",
+  ].filter((p) => p !== "");
+  return parts.join("");
 }
 
 /**
@@ -645,7 +652,25 @@ export async function runStart(args: StartArgs): Promise<void> {
 
   // Seed the heartbeat so the in-daemon idle watchdog (preloaded above when idleWatchdog
   // is set) does not consider a freshly started, quiet proxy idle before its first request.
-  if (idleWatchdog) state.set({ lastEnsureAt: Date.now() });
+  // Also surface the auto-stop behavior, since a manual `start` arms the same watchdog and
+  // the proxy will exit on its own later -- silence here is a surprise (see `agent config`).
+  if (idleWatchdog) {
+    state.set({ lastEnsureAt: Date.now() });
+    // idle-timeout 0 disables auto-stop: armIdleWatchdog() then never arms a timer, so only
+    // promise auto-stop when a window is actually in effect.
+    const idleMs = idleTimeoutMs();
+    if (idleMs > 0) {
+      consola.info(
+        `Managed lifecycle on: auto-stops after ${formatIdleWindow(idleMs)} idle ` +
+          "(`agent config --set idle-timeout 0` disables auto-stop; `auto-start false` keeps it up).",
+      );
+    } else {
+      consola.info(
+        "Managed lifecycle on (auto-start); idle auto-stop disabled (idle-timeout 0) -- " +
+          "the proxy stays up until `agent stop`.",
+      );
+    }
+  }
 
   // Blank the proxy's built-in extraPrompts now that config.json holds the
   // package's full default set. The setModelMappings POST below triggers the

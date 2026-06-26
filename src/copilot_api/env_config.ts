@@ -22,6 +22,16 @@ export interface CopilotEnvConfigData {
   idleTimeout?: number;
   /** Small/fast model id the proxy uses. */
   smallModel?: string;
+  /** Proxy Responses-API transport: WebSocket (`true`) vs HTTP/SSE (`false`). */
+  useResponsesApiWebSocket?: boolean;
+  /** Proxy Responses-API web search feature. */
+  useResponsesApiWebSearch?: boolean;
+  /** Proxy Messages-API (Anthropic-shaped) endpoint. */
+  useMessagesApi?: boolean;
+  /** Proxy Responses-API server-side context management. */
+  useResponsesApiContextManagement?: boolean;
+  /** Model id the proxy uses for Messages-API web search. */
+  messageApiWebSearchModel?: string;
   /** Default proxy port. */
   port?: number;
   /** Pin the floated proxy to an exact version/tag. */
@@ -47,6 +57,14 @@ const CONFIG_SCHEMA = v.object({
   passthrough: v.fallback(v.optional(v.picklist(PASSTHROUGH_VALUES)), undefined),
   idleTimeout: v.fallback(v.optional(wholeSeconds), undefined),
   smallModel: v.fallback(v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))), undefined),
+  useResponsesApiWebSocket: v.fallback(v.optional(v.boolean()), undefined),
+  useResponsesApiWebSearch: v.fallback(v.optional(v.boolean()), undefined),
+  useMessagesApi: v.fallback(v.optional(v.boolean()), undefined),
+  useResponsesApiContextManagement: v.fallback(v.optional(v.boolean()), undefined),
+  messageApiWebSearchModel: v.fallback(
+    v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
+    undefined,
+  ),
   port: v.fallback(
     v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(65535))),
     undefined,
@@ -69,6 +87,19 @@ export interface ConfigKeyDef {
   parse: (raw: string) => ConfigValue;
   /** Built-in default when unset. Keep in sync with the read site that applies it. */
   defaultLabel: string;
+  /** Force-projected into the proxy config.json under `key` at `agent start` as
+   *  `stored ?? proxyDefault` (always written). Use for keys copilot-env has an opinion on. */
+  proxyDefault?: ConfigValue;
+  /** Opt-in projection: written into the proxy config.json under `key` ONLY when our store
+   *  holds a value, leaving the proxy's own default untouched otherwise. Use for keys we merely
+   *  expose without overriding. Mutually exclusive with `proxyDefault`. */
+  proxyProjected?: boolean;
+}
+
+/** Whether a registry entry is written into the proxy config.json at `agent start` (either
+ *  force-projected with a default, or opt-in projected when set). */
+export function isProxyProjected(def: ConfigKeyDef): boolean {
+  return def.proxyDefault !== undefined || def.proxyProjected === true;
 }
 
 const TRUE_WORDS = new Set(["true", "1", "yes", "on", "enable", "enabled"]);
@@ -131,6 +162,47 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     describe: "Small/fast model id the proxy uses",
     parse: parseNonEmpty,
     defaultLabel: "gpt-5-mini",
+    proxyDefault: "gpt-5-mini",
+  },
+  {
+    cli: "responses-websocket",
+    key: "useResponsesApiWebSocket",
+    describe: "Proxy Responses-API transport: WebSocket (true) vs HTTP/SSE (false)",
+    parse: parseBool,
+    defaultLabel: "true",
+    proxyDefault: true,
+  },
+  {
+    cli: "responses-websearch",
+    key: "useResponsesApiWebSearch",
+    describe: "Proxy Responses-API web search (bool)",
+    parse: parseBool,
+    defaultLabel: "true",
+    proxyDefault: true,
+  },
+  {
+    cli: "messages-api",
+    key: "useMessagesApi",
+    describe: "Proxy Messages-API (Anthropic-shaped) endpoint (bool)",
+    parse: parseBool,
+    defaultLabel: "true",
+    proxyDefault: true,
+  },
+  {
+    cli: "responses-context-management",
+    key: "useResponsesApiContextManagement",
+    describe: "Proxy Responses-API server-side context management (bool)",
+    parse: parseBool,
+    defaultLabel: "true (proxy default)",
+    proxyProjected: true,
+  },
+  {
+    cli: "message-websearch-model",
+    key: "messageApiWebSearchModel",
+    describe: "Model id the proxy uses for Messages-API web search",
+    parse: parseNonEmpty,
+    defaultLabel: "gpt-5-mini (proxy default)",
+    proxyProjected: true,
   },
   {
     cli: "port",
@@ -165,6 +237,28 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
 /** Look up a registry entry by its CLI (kebab) name. */
 export function configKeyDef(cli: string): ConfigKeyDef | undefined {
   return CONFIG_REGISTRY.find((d) => d.cli === cli.trim());
+}
+
+/**
+ * The proxy `config.json` keys this store projects, each resolved to its stored preference or
+ * its built-in proxy default. `agent start` writes these into the daemon's config before
+ * launch (see applyDefaultConfig in src/commands/start.ts); the storage key doubles as the
+ * proxy key, so no name mapping is needed.
+ */
+export function projectedProxyConfig(): Record<string, ConfigValue> {
+  const prefs = new CopilotEnvConfig().read();
+  const out: Record<string, ConfigValue> = {};
+  for (const def of CONFIG_REGISTRY) {
+    const stored = prefs[def.key];
+    if (def.proxyDefault !== undefined) {
+      // Force-projected: always written, falling back to copilot-env's chosen default.
+      out[def.key] = stored ?? def.proxyDefault;
+    } else if (def.proxyProjected && stored !== undefined) {
+      // Opt-in: written only when set, so the proxy's own default stands otherwise.
+      out[def.key] = stored;
+    }
+  }
+  return out;
 }
 
 /** A help block listing every config key with its built-in default, then its description. */

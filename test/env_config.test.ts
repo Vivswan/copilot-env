@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { runConfig } from "../src/commands/config.ts";
-import { CONFIG_REGISTRY, CopilotEnvConfig, configKeyDef } from "../src/copilot_api/env_config.ts";
+import {
+  CONFIG_REGISTRY,
+  CopilotEnvConfig,
+  configKeyDef,
+  isProxyProjected,
+  projectedProxyConfig,
+} from "../src/copilot_api/env_config.ts";
 
 // CopilotEnvConfig reads/writes the SHARED prefs store under COPILOT_API_HOME, so isolate
 // each test in a temp home.
@@ -35,6 +41,11 @@ test("each typed key round-trips and del() reverts it to undefined (default)", (
     passthrough: "on",
     idleTimeout: 120,
     smallModel: "gpt-5-mini",
+    useResponsesApiWebSocket: false,
+    useResponsesApiWebSearch: false,
+    useMessagesApi: false,
+    useResponsesApiContextManagement: false,
+    messageApiWebSearchModel: "gpt-5-mini",
     port: 4242,
     proxyVersion: "1.2.3",
     releaseCooldown: 86400,
@@ -45,6 +56,11 @@ test("each typed key round-trips and del() reverts it to undefined (default)", (
     passthrough: "on",
     idleTimeout: 120,
     smallModel: "gpt-5-mini",
+    useResponsesApiWebSocket: false,
+    useResponsesApiWebSearch: false,
+    useMessagesApi: false,
+    useResponsesApiContextManagement: false,
+    messageApiWebSearchModel: "gpt-5-mini",
     port: 4242,
     proxyVersion: "1.2.3",
     releaseCooldown: 86400,
@@ -115,15 +131,54 @@ test("runConfig --get <key> prints just the value to stdout (script-friendly)", 
   expect(written.join("")).toBe("gpt-5-mini\n");
 });
 
-test("the registry covers exactly the eight documented keys", () => {
+test("the registry covers exactly the documented keys, in order", () => {
   expect(CONFIG_REGISTRY.map((d) => d.cli)).toEqual([
     "auto-start",
     "passthrough",
     "idle-timeout",
     "small-model",
+    "responses-websocket",
+    "responses-websearch",
+    "messages-api",
+    "responses-context-management",
+    "message-websearch-model",
     "port",
     "proxy-version",
     "release-cooldown",
     "update-cooldown",
   ]);
+});
+
+test("projectedProxyConfig() force-projects the opinionated keys and opt-in keys only when set", () => {
+  tmpHome();
+  // Empty store -> the FORCE-projected keys (smallModel + the three flags) resolve to their
+  // built-in defaults; the OPT-IN keys (context-management, websearch-model) are absent so the
+  // proxy's own defaults stand.
+  expect(projectedProxyConfig()).toEqual({
+    smallModel: "gpt-5-mini",
+    useResponsesApiWebSocket: true,
+    useResponsesApiWebSearch: true,
+    useMessagesApi: true,
+  });
+  // A stored override on a force key is honored; a stored opt-in key now appears too.
+  new CopilotEnvConfig().set({
+    autoStart: true,
+    useResponsesApiWebSocket: false,
+    messageApiWebSearchModel: "gpt-5",
+  });
+  const projected = projectedProxyConfig();
+  expect(projected.useResponsesApiWebSocket).toBe(false);
+  expect(projected.messageApiWebSearchModel).toBe("gpt-5");
+  // Copilot-env-internal keys (autoStart) never leak into the proxy projection.
+  expect("autoStart" in projected).toBe(false);
+});
+
+test("isProxyProjected marks force + opt-in keys, not copilot-env-internal ones", () => {
+  expect(isProxyProjected(configKeyDef("responses-websocket")!)).toBe(true); // force
+  expect(isProxyProjected(configKeyDef("message-websearch-model")!)).toBe(true); // opt-in
+  expect(isProxyProjected(configKeyDef("auto-start")!)).toBe(false);
+  expect(configKeyDef("small-model")?.proxyDefault).toBe("gpt-5-mini");
+  expect(configKeyDef("responses-websocket")?.proxyDefault).toBe(true);
+  expect(configKeyDef("message-websearch-model")?.proxyDefault).toBeUndefined();
+  expect(configKeyDef("message-websearch-model")?.proxyProjected).toBe(true);
 });

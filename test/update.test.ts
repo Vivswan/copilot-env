@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,7 @@ import {
   pickLatest,
   pickTag,
   type Release,
+  resolveTarget,
 } from "../src/install/resolve-release.ts";
 import {
   parseSha256Checksum,
@@ -259,3 +260,51 @@ describe("source archive SHA256", () => {
 // runUpdate resolves the cooldown inline from the stored config `update-cooldown` (set via
 // `agent config --set update-cooldown <days>`), else null (immediate) -- there is no flag and no
 // wrapper. The config-key round-trip is covered in env_config.test.ts; the `?? null` is trivial.
+
+describe("resolveTarget retry (de-flakes the installer release lookup)", () => {
+  const realFetch = globalThis.fetch;
+  const realBase = process.env.COPILOT_ENV_RELEASE_RETRY_BASE_MS;
+  beforeEach(() => {
+    process.env.COPILOT_ENV_RELEASE_RETRY_BASE_MS = "0"; // no backoff delay in tests
+  });
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    if (realBase === undefined) delete process.env.COPILOT_ENV_RELEASE_RETRY_BASE_MS;
+    else process.env.COPILOT_ENV_RELEASE_RETRY_BASE_MS = realBase;
+  });
+
+  const releasesJson = JSON.stringify([rel("v1.0.0", "2026-06-01T00:00:00Z")]);
+
+  test("retries transient failures (a thrown error, then a 503) then succeeds", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      if (calls === 1) throw new Error("ECONNRESET");
+      if (calls === 2) return new Response("", { status: 503 });
+      return new Response(releasesJson, { status: 200 });
+    }) as unknown as typeof fetch;
+    const target = await resolveTarget(null);
+    expect(target?.tag).toBe("v1.0.0");
+    expect(calls).toBe(3);
+  });
+
+  test("gives up immediately on a non-retryable status (404)", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response("", { status: 404 });
+    }) as unknown as typeof fetch;
+    expect(await resolveTarget(null)).toBeNull();
+    expect(calls).toBe(1); // no retry on a 404
+  });
+
+  test("returns null after exhausting retries on a persistent 503", async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response("", { status: 503 });
+    }) as unknown as typeof fetch;
+    expect(await resolveTarget(null)).toBeNull();
+    expect(calls).toBe(4); // MAX_FETCH_ATTEMPTS
+  });
+});

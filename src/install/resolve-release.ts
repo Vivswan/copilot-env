@@ -155,6 +155,45 @@ export function pickTag(releases: Release[], tag: string): Release | null {
   return releases.find((r) => r.tag === normalized) ?? null;
 }
 
+// --- transient-failure retry around the GitHub API call ---------------------
+// The releases endpoint occasionally 5xx's, rate-limits, or drops the connection -- most
+// visibly the install.ps1 CI smoke job, whose resolver EXECUTION (unlike the resolver
+// download) had no retry, so one API blip aborted the whole install with "no release found".
+// A few backed-off retries turn those transients into a successful resolve. Self-contained:
+// no imports, only an inline sleep. Tests set COPILOT_ENV_RELEASE_RETRY_BASE_MS=0 for speed.
+const RETRYABLE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const MAX_FETCH_ATTEMPTS = 4;
+const RETRY_BASE_MS_ENV = "COPILOT_ENV_RELEASE_RETRY_BASE_MS";
+
+function retryBaseMs(): number {
+  const raw = process.env[RETRY_BASE_MS_ENV];
+  if (raw !== undefined && /^\d+$/.test(raw)) return Number.parseInt(raw, 10);
+  return 400;
+}
+
+const sleep = (ms: number): Promise<void> =>
+  ms <= 0 ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, ms));
+
+/** GET the releases JSON, retrying transient failures (network drop, 5xx, rate-limit) with
+ *  exponential backoff + jitter. Returns the body text, or null after exhausting attempts.
+ *  A non-retryable response (e.g. 401/404) gives up immediately -- retrying won't fix it. */
+async function fetchReleasesText(headers: Record<string, string>): Promise<string | null> {
+  const base = retryBaseMs();
+  for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt++) {
+    let retryable = true;
+    try {
+      const res = await fetch(RELEASES_API, { headers });
+      if (res.ok) return await res.text();
+      retryable = RETRYABLE_STATUSES.has(res.status);
+    } catch {
+      retryable = true; // network / DNS / connection reset
+    }
+    if (!retryable || attempt === MAX_FETCH_ATTEMPTS) return null;
+    await sleep(base * 2 ** (attempt - 1) + Math.floor(Math.random() * (base + 1)));
+  }
+  return null;
+}
+
 /** Fetch the releases and pick the target: the latest, or (with a cooldown) the newest
  *  release aged >= `cooldownDays`. Returns null when offline / the API errors / there is
  *  no eligible release. */
@@ -168,14 +207,8 @@ export async function resolveTarget(
     headers.Authorization = `Bearer ${token}`;
   }
   const includeDrafts = process.env[CI_INCLUDE_DRAFT_RELEASES_ENV] === "1";
-  let text: string;
-  try {
-    const res = await fetch(RELEASES_API, { headers });
-    if (!res.ok) return null;
-    text = await res.text();
-  } catch {
-    return null; // offline / API unreachable
-  }
+  const text = await fetchReleasesText(headers);
+  if (text === null) return null; // offline / API errored after retries
   const releases = parseReleasesJson(text, includeDrafts, exactTag !== null);
   if (releases.length === 0) return null;
   if (exactTag !== null) return pickTag(releases, exactTag);

@@ -1,5 +1,15 @@
 # Changelog
 
+## [3.3.11](https://github.com/Vivswan/copilot-env/compare/v3.3.10...v3.3.11) (2026-06-26)
+
+
+### Bug Fixes
+
+* add proxy identity and port-ownership checks to agent health ([5861ffd](https://github.com/Vivswan/copilot-env/commit/5861ffde0874b179c756ef41885d232b9a787fef))
+* expose tunable proxy config scalars via agent config ([461173d](https://github.com/Vivswan/copilot-env/commit/461173dc6b3669b1428861edeb9376ce192105b7))
+* report idle watchdog status in agent health ([35cb720](https://github.com/Vivswan/copilot-env/commit/35cb7208fb8bddd889e73a61b0526302682eb26c))
+* retry the release lookup so a transient GitHub API failure does not abort installs ([01aa5df](https://github.com/Vivswan/copilot-env/commit/01aa5dfdf6f9cc569ae720820d83870d0bf14c3b))
+
 ## [3.3.10](https://github.com/Vivswan/copilot-env/compare/v3.3.9...v3.3.10) (2026-06-26)
 
 

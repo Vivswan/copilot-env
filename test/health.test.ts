@@ -22,6 +22,8 @@ import {
   checkLaunchers,
   checkNodeModules,
   checkProxyPackage,
+  checkRuntimeIdentity,
+  checkRuntimeOrphan,
   checkRuntimePid,
   checkRuntimePort,
   checkRuntimeWatchdog,
@@ -54,6 +56,7 @@ const RUNTIME_OK: RuntimeFacts = {
   pidTracked: true,
   pidAlive: true,
   bothDirect: false,
+  identityConfirmed: true,
   paths: {
     home: "/h",
     configFile: "/h/config.json",
@@ -317,6 +320,79 @@ test("runtime watchdog: off, disabled, and active states are all ok with informa
 
 test("runtime watchdog is scoped to full + proxy, not the launchers' fast runtime probe", () => {
   expect(checkRuntimeWatchdog(RUNTIME_OK).scopes).toEqual(["full", "proxy"]);
+});
+
+test("runtime identity: confirmed ok, foreign warns, down/not-probed stays ok", () => {
+  // x-trace-id present -> confirmed copilot-api.
+  const ok = checkRuntimeIdentity(RUNTIME_OK); // identityConfirmed: true
+  expect(ok.status).toBe("ok");
+  expect(ok.detail).toContain("confirmed copilot-api");
+
+  // Reachable but no x-trace-id -> a foreign service squats the port.
+  const foreign = checkRuntimeIdentity({ ...RUNTIME_OK, identityConfirmed: false });
+  expect(foreign.status).toBe("warn");
+  expect(foreign.detail).toContain("non-copilot-api");
+  expect(foreign.fix).toContain("free the port");
+
+  // Not reachable / not probed -> ok (runtime.port owns the down verdict).
+  expect(
+    checkRuntimeIdentity({ ...RUNTIME_OK, reachable: false, identityConfirmed: null }).status,
+  ).toBe("ok");
+  expect(checkRuntimeIdentity({ ...RUNTIME_OK, identityConfirmed: null }).status).toBe("ok");
+  expect(checkRuntimeIdentity(RUNTIME_OK).scopes).toEqual(["full", "proxy"]);
+});
+
+test("runtime orphan: untracked-but-ours warns, foreign defers to identity, tracked ok", () => {
+  // Reachable copilot-api (or unknown) but no tracked pid, proxy required -> orphan warn.
+  const orphan = checkRuntimeOrphan({
+    ...RUNTIME_OK,
+    pidTracked: false,
+    trackedPid: null,
+    identityConfirmed: true,
+  });
+  expect(orphan.status).toBe("warn");
+  expect(orphan.detail).toContain("orphaned");
+  expect(orphan.fix).toContain("agent stop");
+
+  // A foreign listener is runtime.identity's verdict -> orphan must NOT also warn.
+  expect(
+    checkRuntimeOrphan({ ...RUNTIME_OK, pidTracked: false, identityConfirmed: false }).status,
+  ).toBe("ok");
+
+  // Foreign responder while our tracked pid is alive: orphan stays ok but must NOT claim the
+  // tracked daemon owns the port (that wording belongs to runtime.identity).
+  const foreignTracked = checkRuntimeOrphan({ ...RUNTIME_OK, identityConfirmed: false });
+  expect(foreignTracked.status).toBe("ok");
+  expect(foreignTracked.detail).not.toContain("tracked daemon");
+  expect(foreignTracked.detail).toContain("not copilot-api");
+
+  // Tracked daemon -> ok.
+  expect(checkRuntimeOrphan(RUNTIME_OK).status).toBe("ok");
+
+  // Both agents direct -> no proxy required -> a missing tracked pid is not an orphan.
+  expect(checkRuntimeOrphan({ ...RUNTIME_OK, pidTracked: false, bothDirect: true }).status).toBe(
+    "ok",
+  );
+});
+
+test("the identity probe (an extra request) is skipped in the launchers' fast runtime scope", async () => {
+  // runtime scope must stay minimal: reach is probed, but proxyIdentity is NOT called.
+  let identityCalls = 0;
+  const facts = await gatherFacts(
+    "runtime",
+    {},
+    {
+      resolvePort: () => "4141",
+      readState: () => ({ pid: undefined, port: 4141 }),
+      reach: async () => true,
+      proxyIdentity: async () => {
+        identityCalls++;
+        return true;
+      },
+    },
+  );
+  expect(identityCalls).toBe(0);
+  expect(facts.runtime?.identityConfirmed).toBeNull();
 });
 
 // --- bootstrap checks -------------------------------------------------------

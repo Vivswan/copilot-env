@@ -318,6 +318,83 @@ export function checkRuntimeWatchdog(f: RuntimeFacts): CheckResult {
   };
 }
 
+export function checkRuntimeIdentity(f: RuntimeFacts): CheckResult {
+  // Is whatever is reachable on the port actually copilot-api? checkRuntimePort only proves
+  // SOMETHING answers; a foreign service squatting the port would read green there while every
+  // agent request silently misroutes. Warn-only (never fails a run) and full+proxy scope.
+  const base = {
+    id: "runtime.identity",
+    label: "Proxy identity",
+    group: "runtime" as const,
+    scopes: ["full", "proxy"] as const,
+  };
+  if (!f.reachable || f.identityConfirmed === null) {
+    // Nothing reachable (runtime.port owns that verdict) or identity not probed.
+    return {
+      ...base,
+      status: "ok",
+      detail: f.reachable
+        ? "identity not probed"
+        : `not probed (nothing reachable on port ${f.port})`,
+      value: { reachable: f.reachable, confirmed: null },
+    };
+  }
+  if (f.identityConfirmed) {
+    return {
+      ...base,
+      status: "ok",
+      detail: `confirmed copilot-api on port ${f.port} (x-trace-id present)`,
+      value: { reachable: true, confirmed: true },
+    };
+  }
+  return {
+    ...base,
+    status: "warn",
+    detail: `a non-copilot-api service is listening on port ${f.port} (no x-trace-id); agent requests would misroute to it`,
+    fix: "free the port (stop the foreign process), then agent start",
+    value: { reachable: true, confirmed: false },
+  };
+}
+
+export function checkRuntimeOrphan(f: RuntimeFacts): CheckResult {
+  // Reconcile the otherwise-contradictory runtime.port (ok: reachable) + runtime.pid (fail: no
+  // tracked pid) when both describe the SAME state: copilot-api is on the port but is not the
+  // daemon we track. A foreign listener is runtime.identity's verdict, not an "orphan", so we
+  // defer that case to avoid double-warning. Pure (no I/O), full+proxy scope.
+  const base = {
+    id: "runtime.orphan",
+    label: "Proxy port ownership",
+    group: "runtime" as const,
+    scopes: ["full", "proxy"] as const,
+  };
+  const foreign = f.identityConfirmed === false;
+  const orphan = f.reachable && !f.pidTracked && !f.bothDirect && !foreign;
+  if (!orphan) {
+    // The detail must not claim the tracked daemon owns the port when identity says the
+    // responder is foreign (pidTracked only proves the saved pid is a copilot-api process,
+    // not that it owns THIS port) -- defer that wording to runtime.identity.
+    let detail: string;
+    if (foreign) {
+      detail = "port responder is not copilot-api (see proxy identity)";
+    } else if (f.reachable && f.pidTracked) {
+      detail = "port held by the tracked daemon";
+    } else {
+      detail = "no untracked copilot-api on the port";
+    }
+    return { ...base, status: "ok", detail, value: { orphan: false } };
+  }
+  // Orphan: reachable, untracked, proxy required, not a known-foreign responder. Identity is
+  // confirmed copilot-api or indeterminate (probe failed) -- don't over-claim "copilot-api".
+  const what = f.identityConfirmed === true ? "copilot-api" : "a process (identity unconfirmed)";
+  return {
+    ...base,
+    status: "warn",
+    detail: `${what} is on port ${f.port} but is not the tracked daemon (orphaned -- started outside 'agent start', or the run-state was cleared)`,
+    fix: "agent stop, then agent start (re-tracks the daemon)",
+    value: { orphan: true, trackedPid: f.trackedPid },
+  };
+}
+
 export function checkShellIntegration(f: ShellFacts): CheckResult {
   return {
     id: "setup.shell",
@@ -712,6 +789,7 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
   if (facts.runtime) {
     out.push(checkRuntimePort(facts.runtime), checkRuntimePid(facts.runtime));
     out.push(checkRuntimePaths(facts.runtime), checkRuntimeWatchdog(facts.runtime));
+    out.push(checkRuntimeIdentity(facts.runtime), checkRuntimeOrphan(facts.runtime));
   }
   if (facts.shell) {
     out.push(checkShellIntegration(facts.shell), checkLaunchers(facts.shell));

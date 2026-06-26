@@ -81,6 +81,10 @@ export interface RuntimeFacts {
   bothDirect: boolean;
   /** Idle auto-stop watchdog state, observed from outside the daemon. */
   watchdog: WatchdogFacts;
+  /** Identity of whatever is reachable on the port: true = copilot-api (x-trace-id present),
+   *  false = reachable but NOT copilot-api (likely a foreign listener), null = not probed
+   *  (port down, or the fast `runtime` scope which skips the extra request). */
+  identityConfirmed: boolean | null;
 }
 
 /**
@@ -220,6 +224,8 @@ export interface ProbeDeps {
   root: string;
   resolvePort(): string;
   reach(url: string, timeoutMs: number): Promise<boolean>;
+  /** Whether the responder at `url` carries copilot-api's x-trace-id identity header. */
+  proxyIdentity(url: string, timeoutMs: number): Promise<boolean | null>;
   readState(): { port?: number; pid?: number; codexHome?: string; lastEnsureAt?: number };
   isTrackedPid(pid: number): Promise<boolean>;
   isPidAlive(pid: number): boolean;
@@ -264,6 +270,18 @@ async function reachUrl(url: string, timeoutMs: number): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/** copilot-api stamps every response with an `x-trace-id` header. Use it as a cheap,
+ *  unauthenticated identity marker: true when present, false when the responder answered
+ *  without it (likely a foreign service squatting the port), null when nothing answered. */
+async function proxyIdentity(url: string, timeoutMs: number): Promise<boolean | null> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+    return res.headers.has("x-trace-id");
+  } catch {
+    return null;
   }
 }
 
@@ -398,6 +416,7 @@ export function defaultProbeDeps(): ProbeDeps {
     root,
     resolvePort: copilotApiResolvePort,
     reach: reachUrl,
+    proxyIdentity,
     readState: () => new CopilotEnvRunState().read(),
     isTrackedPid: isCopilotApiPid,
     isPidAlive: pidAlive,
@@ -607,6 +626,12 @@ export async function gatherFacts(
           deps.reach(`http://127.0.0.1:${port}/`, 2000),
           trackedPid !== null ? deps.isTrackedPid(trackedPid) : Promise.resolve(false),
         ]);
+        // Identity probe (an extra local request) only in the full/proxy scopes -- never the
+        // launchers' fast `runtime` probe. Only meaningful when something is reachable.
+        const identityConfirmed =
+          SCOPE_BOOTSTRAP.includes(scope) && reachable
+            ? await deps.proxyIdentity(`http://127.0.0.1:${port}/`, 2000)
+            : null;
         facts.runtime = {
           port,
           reachable,
@@ -617,6 +642,7 @@ export async function gatherFacts(
           // When both agents are configured direct, no proxy is required, so a
           // down proxy must not read as a runtime failure.
           bothDirect: readProviderModes(deps, port).bothDirect,
+          identityConfirmed,
           watchdog: {
             autoStart: deps.autoStartEnabled(),
             idleTimeoutMs: deps.idleTimeoutMs(),

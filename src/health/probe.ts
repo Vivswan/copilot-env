@@ -4,7 +4,7 @@
 // command did). Pure sub-evaluators (evalShellFiles, evalCodex) take raw content
 // so they unit-test without touching the world.
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { type AutoupdateData, AutoupdateState } from "../autoupdate/state.ts";
@@ -35,7 +35,7 @@ import {
   proxyVersionBoundsStatus,
 } from "../copilot_api/version.ts";
 import { nodeModulesFresh, resolveMinimumReleaseAgeSeconds } from "../proxy_float.ts";
-import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
+import { idleTimeoutMs, lastInferenceActivityMs } from "../scripts/idle_watchdog.ts";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
 import {
   CLAUDE_PROBE,
@@ -89,15 +89,17 @@ export interface RuntimeFacts {
 
 /**
  * Idle-watchdog inputs the proxy exposes externally: the managed-lifecycle gate, the effective
- * idle window, and the two activity signals the in-daemon watchdog uses (the `lastEnsureAt`
- * heartbeat and the proxy log mtime). `now` is the snapshot the report computes "remaining"
- * against, captured at probe time so the evaluator stays pure.
+ * idle window, and the two activity signals the in-daemon watchdog uses -- the `lastEnsureAt`
+ * heartbeat and `lastRequestMs`, the mtime of the proxy's inference handler logs (real model
+ * calls, NOT liveness `GET /` pings, so health's own probes never move it). `now` is the
+ * snapshot the report computes "remaining" against, captured at probe time so the evaluator
+ * stays pure.
  */
 export interface WatchdogFacts {
   autoStart: boolean;
   idleTimeoutMs: number;
   lastEnsureAt: number | null;
-  logMtimeMs: number | null;
+  lastRequestMs: number | null;
   now: number;
 }
 
@@ -234,8 +236,9 @@ export interface ProbeDeps {
   now(): number;
   idleTimeoutMs(): number;
   autoStartEnabled(): boolean;
-  /** Proxy log mtime in epoch ms (a watchdog activity signal), or null when absent. */
-  logMtimeMs(): number | null;
+  /** Mtime (epoch ms) of the proxy's inference handler logs -- the watchdog activity signal --
+   *  or null when there has been no real model call. NOT moved by liveness `GET /` pings. */
+  lastRequestMs(): number | null;
   commandResolved(command: string): string | null;
   agentClis(): readonly { command: string; name: string }[];
   shellTargets(): string[];
@@ -423,12 +426,9 @@ export function defaultProbeDeps(): ProbeDeps {
     now: () => Date.now(),
     idleTimeoutMs: () => idleTimeoutMs(),
     autoStartEnabled: () => new CopilotEnvConfig().autoStartEnabled(),
-    logMtimeMs: () => {
-      try {
-        return statSync(new CopilotApiPaths().logFile).mtimeMs;
-      } catch {
-        return null;
-      }
+    lastRequestMs: () => {
+      const m = lastInferenceActivityMs();
+      return m > 0 ? m : null;
     },
     paths: () => {
       const p = new CopilotApiPaths();
@@ -647,7 +647,9 @@ export async function gatherFacts(
             autoStart: deps.autoStartEnabled(),
             idleTimeoutMs: deps.idleTimeoutMs(),
             lastEnsureAt: state.lastEnsureAt ?? null,
-            logMtimeMs: deps.logMtimeMs(),
+            // Reads the inference handler-log mtime, which our own reach/identity GET / probes
+            // do NOT write to -- so health observing the proxy never moves these numbers.
+            lastRequestMs: deps.lastRequestMs(),
             now: deps.now(),
           },
         };

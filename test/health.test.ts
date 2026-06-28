@@ -69,7 +69,7 @@ const RUNTIME_OK: RuntimeFacts = {
     autoStart: false,
     idleTimeoutMs: 3_600_000,
     lastEnsureAt: null,
-    logMtimeMs: null,
+    lastRequestMs: null,
     now: 1_000_000_000,
   },
 };
@@ -273,7 +273,7 @@ test("runtime watchdog: off, disabled, and active states are all ok with informa
       autoStart: true,
       idleTimeoutMs: 3_600_000,
       lastEnsureAt: now - 20 * 60_000,
-      logMtimeMs: null,
+      lastRequestMs: null,
       now,
     },
   });
@@ -292,7 +292,7 @@ test("runtime watchdog: off, disabled, and active states are all ok with informa
       autoStart: true,
       idleTimeoutMs: 600_000,
       lastEnsureAt: now - 3_600_000,
-      logMtimeMs: now - 1_200_000, // 20m ago, more recent than the beat
+      lastRequestMs: now - 1_200_000, // 20m ago, more recent than the beat
       now,
     },
   });
@@ -308,7 +308,7 @@ test("runtime watchdog: off, disabled, and active states are all ok with informa
       autoStart: true,
       idleTimeoutMs: 3_600_000,
       lastEnsureAt: null,
-      logMtimeMs: null,
+      lastRequestMs: null,
       now,
     },
   });
@@ -393,6 +393,36 @@ test("the identity probe (an extra request) is skipped in the launchers' fast ru
   );
   expect(identityCalls).toBe(0);
   expect(facts.runtime?.identityConfirmed).toBeNull();
+});
+
+test("health's own proxy probes do not move the watchdog activity signal", async () => {
+  // lastRequestMs reads the inference handler logs, which health's reach/identity GET / requests
+  // never write to. So even though the proxy IS probed, the 'last request' / idle signal is the
+  // handler-log value, untouched -- observing the proxy can't reset the numbers.
+  let probes = 0;
+  const facts = await gatherFacts(
+    "proxy",
+    {},
+    {
+      resolvePort: () => "4141",
+      readState: () => ({ pid: 123, port: 4141, lastEnsureAt: 1000 }),
+      reach: async () => {
+        probes++;
+        return true;
+      },
+      proxyIdentity: async () => {
+        probes++;
+        return true;
+      },
+      lastRequestMs: () => 100, // a fixed, old "last real request" (handler-log mtime)
+      now: () => 5000,
+      autoStartEnabled: () => true,
+      idleTimeoutMs: () => 60_000,
+    },
+  );
+  expect(probes).toBeGreaterThan(0); // the proxy WAS probed (reach + identity)
+  expect(facts.runtime?.watchdog.lastRequestMs).toBe(100); // ...yet the signal is unchanged
+  expect(facts.runtime?.watchdog.now).toBe(5000);
 });
 
 // --- bootstrap checks -------------------------------------------------------

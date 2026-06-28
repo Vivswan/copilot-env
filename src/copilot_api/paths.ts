@@ -22,6 +22,10 @@ export class CopilotApiPaths {
   runDir: string;
   stateFile: string;
   logFile: string;
+  /** Directory where the proxy writes its per-endpoint handler logs. The watchdog activity
+   *  signal reads the INFERENCE ones (`responses-handler-*.log`, `messages-handler-*.log`) --
+   *  distinct from the daemon access `logFile`, which also records liveness `GET /` pings. */
+  logsDir: string;
   sqliteDb: string;
   /**
    * Shared (NOT per-host) copilot-env state under the copilot-api home -- holds
@@ -53,6 +57,8 @@ export class CopilotApiPaths {
     // tooling and read back by start/stop/env/health/port.
     this.stateFile = join(runDir, ".state.json");
     this.logFile = join(runDir, ".log");
+    // The proxy writes its inference handler logs to <home>/logs (shared, not per-host).
+    this.logsDir = join(this.home, "logs");
     this.sqliteDb = join(runDir, "copilot-api.sqlite");
     this.sharedStateFile = join(this.home, ".copilot-env-state.json");
     this.envConfigFile = join(this.home, ".copilot-env-config.json");

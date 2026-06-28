@@ -289,11 +289,11 @@ export function checkRuntimeWatchdog(f: RuntimeFacts): CheckResult {
       value: { autoStart: true, idleTimeoutMs: 0 },
     };
   }
-  // The in-daemon watchdog treats activity as the most recent of the heartbeat and the proxy
-  // log mtime; mirror that here. With neither recorded yet, idle/remaining are unknown -- the
-  // daemon's real baseline also includes a startedAtMs the probe cannot see, so don't fake a
-  // precise full-window remaining.
-  const lastActivity = Math.max(w.lastEnsureAt ?? 0, w.logMtimeMs ?? 0);
+  // The in-daemon watchdog treats activity as the most recent of the heartbeat and the last
+  // real model call (the inference handler-log mtime -- liveness GET / pings are NOT activity);
+  // mirror that here. With neither recorded yet, idle/remaining are unknown -- the daemon's real
+  // baseline also includes a startedAtMs the probe cannot see, so don't fake a precise window.
+  const lastActivity = Math.max(w.lastEnsureAt ?? 0, w.lastRequestMs ?? 0);
   const idleMs = lastActivity > 0 ? Math.max(0, w.now - lastActivity) : null;
   const remainingMs = idleMs === null ? null : Math.max(0, w.idleTimeoutMs - idleMs);
   const ago = (at: number | null): string =>
@@ -302,7 +302,7 @@ export function checkRuntimeWatchdog(f: RuntimeFacts): CheckResult {
     `auto-stops in ${remainingMs === null ? "unknown" : formatDuration(remainingMs)} (idle window ${formatDuration(w.idleTimeoutMs)})`,
     `idle for ${idleMs === null ? "unknown (no activity recorded yet)" : formatDuration(idleMs)}`,
     `last beat ${ago(w.lastEnsureAt)}`,
-    `last request ${ago(w.logMtimeMs)}`,
+    `last request ${ago(w.lastRequestMs)}`,
   ].join("\n");
   return {
     ...base,
@@ -311,7 +311,7 @@ export function checkRuntimeWatchdog(f: RuntimeFacts): CheckResult {
       autoStart: true,
       idleTimeoutMs: w.idleTimeoutMs,
       lastEnsureAt: w.lastEnsureAt,
-      logMtimeMs: w.logMtimeMs,
+      lastRequestMs: w.lastRequestMs,
       idleMs,
       remainingMs,
     },

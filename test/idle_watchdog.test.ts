@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
@@ -12,6 +12,7 @@ import {
   idleCheck,
   idleTimeoutMs,
   isIdle,
+  lastInferenceActivityMs,
 } from "../src/scripts/idle_watchdog.ts";
 
 const SAVED = process.env[IDLE_TIMEOUT_ENV];
@@ -34,6 +35,34 @@ function tmpHome(): void {
   dir = mkdtempSync(join(tmpdir(), "copilot-idle-"));
   process.env.COPILOT_API_HOME = dir;
 }
+
+test("lastInferenceActivityMs: newest responses/messages handler-log mtime; ignores other files", () => {
+  tmpHome();
+  const logs = join(dir, "logs");
+  mkdirSync(logs, { recursive: true });
+  const write = (name: string, mtimeSec: number) => {
+    const p = join(logs, name);
+    writeFileSync(p, "x");
+    utimesSync(p, mtimeSec, mtimeSec); // atime, mtime in seconds
+  };
+  // Inference logs: the newest of these two should win.
+  write("responses-handler-2026-06-26.log", 1000);
+  write("messages-handler-2026-06-27.log", 2000); // newest inference -> the answer
+  // Non-inference / non-matching files with EVEN NEWER mtimes must be ignored.
+  write("models-handler-2026-06-28.log", 9000); // model-list polling, not inference
+  write(".log", 9999); // the daemon access log (liveness GET / lands here)
+  write("notes.txt", 9999);
+
+  expect(lastInferenceActivityMs()).toBe(2000 * 1000); // mtimeMs of the newest inference log
+});
+
+test("lastInferenceActivityMs: returns 0 when there are no inference logs (or no logs dir)", () => {
+  tmpHome();
+  expect(lastInferenceActivityMs()).toBe(0); // logs dir absent
+  mkdirSync(join(dir, "logs"), { recursive: true });
+  writeFileSync(join(dir, "logs", ".log"), "x"); // only the access log, no handler logs
+  expect(lastInferenceActivityMs()).toBe(0);
+});
 
 test("idleTimeoutMs: default is 1 hour; the env knob overrides in whole seconds", () => {
   tmpHome();

@@ -3,14 +3,18 @@
 // the watchdog with it, and when the watchdog trips it stops the server by exiting the process
 // -- no separate pid, no orphan in either direction, and every daemon (re)start re-attaches it.
 //
-// Activity is the most recent of the proxy log mtime (real request traffic the daemon writes
-// under --verbose) and the `start --record-event` heartbeat (an open agent re-runs its proxy resolver
-// on a refresh interval). Idle past the timeout -> the daemon exits.
+// Activity is the most recent of the proxy's INFERENCE handler-log mtime (real model calls --
+// POST /v1/responses, /v1/messages -- which the daemon writes under <home>/logs) and the
+// `start --record-event` heartbeat (an open agent re-runs its proxy resolver on a refresh
+// interval). Liveness pings (GET /, GET /v1/models) are deliberately NOT activity: they go to
+// the daemon access log, not the handler logs, so `agent health` probes and shell/keepalive
+// pings never reset the idle timer. Idle past the timeout -> the daemon exits.
 //
 // This module is import-safe -- it never arms a timer on import, so unit tests can exercise the
 // pure helpers. idle_watchdog_preload.ts is the tiny `bun --preload` entry that arms it (and is
 // never imported by tests), the same split pat_passthrough_preload.ts gets from its own file.
-import { statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
@@ -54,13 +58,34 @@ export function isIdle(lastActivityMs: number, now: number, timeoutMs: number): 
   return now - lastActivityMs >= timeoutMs;
 }
 
-/** mtime (epoch ms) of the proxy log, or 0 when it is absent/unreadable. */
-function logMtimeMs(): number {
+/**
+ * The most recent mtime (epoch ms) across the proxy's INFERENCE handler logs -- the
+ * `responses-handler-*.log` (Codex) and `messages-handler-*.log` (Claude) files under
+ * <home>/logs -- or 0 when there are none. This is the activity signal the watchdog and
+ * `agent health` trust: it tracks real model calls but NOT liveness/model-list pings (GET /,
+ * GET /v1/models, which write the access log / models-handler logs instead), so observing the
+ * proxy never perturbs it. Per-file failures are skipped so one vanishing log can't zero it.
+ */
+export function lastInferenceActivityMs(): number {
+  const dir = new CopilotApiPaths().logsDir;
+  let names: string[];
   try {
-    return statSync(new CopilotApiPaths().logFile).mtimeMs;
+    names = readdirSync(dir);
   } catch {
-    return 0;
+    return 0; // logs dir absent => no inference yet
   }
+  let max = 0;
+  for (const name of names) {
+    if (!name.endsWith(".log")) continue;
+    if (!name.startsWith("responses-handler") && !name.startsWith("messages-handler")) continue;
+    try {
+      const m = statSync(join(dir, name)).mtimeMs;
+      if (m > max) max = m;
+    } catch {
+      // a file vanishing/locked mid-scan must not zero the signal for the others
+    }
+  }
+  return max;
 }
 
 /**
@@ -75,7 +100,7 @@ export function idleCheck(startedAtMs: number, timeoutMs: number): void {
   if (!new CopilotEnvConfig().autoStartEnabled()) return; // lifecycle disabled -> stay up
   const state = new CopilotEnvRunState();
   const snapshot = state.read();
-  const lastActivity = Math.max(startedAtMs, logMtimeMs(), snapshot.lastEnsureAt ?? 0);
+  const lastActivity = Math.max(startedAtMs, lastInferenceActivityMs(), snapshot.lastEnsureAt ?? 0);
   if (!isIdle(lastActivity, Date.now(), timeoutMs)) return;
   // Clear our run-state tracking, but ONLY if it still points at THIS daemon. clearIfPid
   // does the pid check INSIDE the atomic read-modify-write, so a newer daemon that replaced

@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.12](https://github.com/Vivswan/copilot-env/compare/v3.3.11...v3.3.12) (2026-06-28)
+
+
+### Bug Fixes
+
+* measure idle-watchdog activity from inference logs so health cannot perturb it ([5e75b85](https://github.com/Vivswan/copilot-env/commit/5e75b854b4b4e0953b353631265d21e6876127a3))
+
 ## [3.3.11](https://github.com/Vivswan/copilot-env/compare/v3.3.10...v3.3.11) (2026-06-26)
 
 

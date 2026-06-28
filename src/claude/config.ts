@@ -21,6 +21,7 @@
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
+import { codexUserAgent } from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
 import { assertNever } from "../utils/assert.ts";
@@ -62,6 +63,12 @@ export const DIRECT_HELPER_NAME = WIN ? "copilot-token.cmd" : "copilot-token.sh"
 export const PROXY_HELPER_NAME = WIN ? "copilot-proxy-token.cmd" : "copilot-proxy-token.sh";
 export const BASE_URL_ENV = "ANTHROPIC_BASE_URL";
 export const DISABLE_BETAS_ENV = "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS";
+// Direct only: GitHub Copilot's endpoint gates on an editor-client identity, so Direct mode
+// sends the same `Openai-Intent` + `codex_exec` User-Agent that Codex Direct does (see
+// src/codex/config.ts managedDirectProvider). Claude has no `http_headers` knob; it reads custom
+// request headers from this env var, newline-separated `Name: Value` pairs (the proxy speaks
+// native Anthropic and needs none, so proxy mode scrubs it).
+export const CUSTOM_HEADERS_ENV = "ANTHROPIC_CUSTOM_HEADERS";
 
 /** Single-quote a string for safe embedding in a /bin/sh command line. */
 function shQuote(s: string): string {
@@ -239,13 +246,29 @@ function writeHelperScript(helperPath: string, script: string): void {
   }
 }
 
+/**
+ * The Direct (GitHub Copilot) custom-headers value: an `ANTHROPIC_CUSTOM_HEADERS` string of
+ * newline-separated `Name: Value` pairs. Matches Codex Direct's `http_headers` exactly so
+ * Copilot's editor-client allowlist accepts Claude the same way -- the User-Agent is derived
+ * from the installed codex binary (codexUserAgent), falling back to a versionless `codex_exec`.
+ */
+function directCustomHeaders(): string {
+  return [`Openai-Intent: conversation-edits`, `User-Agent: ${codexUserAgent()}`].join("\n");
+}
+
 /** Set the managed `env` keys in place (preserving any other env vars). */
 function applyManagedEnv(doc: Record<string, unknown>, mode: ManagedAgentMode, baseUrl: string) {
   const env = isRecord(doc.env) ? doc.env : {};
   env[BASE_URL_ENV] = baseUrl;
-  // Disabling betas is a direct-only knob (the proxy speaks full Anthropic).
-  if (mode === "direct") env[DISABLE_BETAS_ENV] = "1";
-  else delete env[DISABLE_BETAS_ENV];
+  // Disabling betas and the editor-client headers are direct-only knobs (the proxy
+  // speaks full Anthropic and needs neither).
+  if (mode === "direct") {
+    env[DISABLE_BETAS_ENV] = "1";
+    env[CUSTOM_HEADERS_ENV] = directCustomHeaders();
+  } else {
+    delete env[DISABLE_BETAS_ENV];
+    delete env[CUSTOM_HEADERS_ENV];
+  }
   doc.env = env;
 }
 

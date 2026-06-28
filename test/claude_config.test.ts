@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  CUSTOM_HEADERS_ENV,
   cmdHelperBody,
   configureClaudeConfig,
   DIRECT_BASE_URL,
@@ -71,6 +72,11 @@ test("direct mode writes the managed apiKeyHelper + env and the token helper, pr
   const env = doc.env as Record<string, unknown>;
   expect(env.ANTHROPIC_BASE_URL).toBe(DIRECT_BASE_URL);
   expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1");
+  // Direct sends Copilot's editor-client headers (Openai-Intent + a codex_exec User-Agent
+  // derived from the installed codex binary -- versionless when codex is absent on CI).
+  const headers = env[CUSTOM_HEADERS_ENV] as string;
+  expect(headers).toContain("Openai-Intent: conversation-edits");
+  expect(headers).toMatch(/(^|\n)User-Agent: codex_exec/);
   expect(doc.model).toBe("sonnet");
   expect((doc.permissions as Record<string, unknown>).allow).toEqual(["Bash"]);
 
@@ -102,6 +108,8 @@ test("proxy mode writes proxy wiring (127.0.0.1 base URL + a token helper), pres
   expect(env.ANTHROPIC_BASE_URL).toBe(`http://127.0.0.1:${copilotApiResolvePort()}`);
   // Disable-betas is a direct-only knob; switching to proxy drops it.
   expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBeUndefined();
+  // The editor-client headers are likewise direct-only; proxy mode scrubs them.
+  expect(env[CUSTOM_HEADERS_ENV]).toBeUndefined();
   expect(doc.model).toBe("sonnet"); // unrelated user key survives
 
   const helper = join(home, PROXY_HELPER_NAME);

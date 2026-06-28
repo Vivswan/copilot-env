@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.13](https://github.com/Vivswan/copilot-env/compare/v3.3.12...v3.3.13) (2026-06-28)
+
+
+### Bug Fixes
+
+* send Copilot editor-client headers in Claude direct mode ([8ed3330](https://github.com/Vivswan/copilot-env/commit/8ed33305d8fd3816e87afb022e672f6930c5f37e))
+
 ## [3.3.12](https://github.com/Vivswan/copilot-env/compare/v3.3.11...v3.3.12) (2026-06-28)
 
 

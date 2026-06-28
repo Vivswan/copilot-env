@@ -136,14 +136,14 @@ async function proxyStatus(): Promise<{ up: boolean; port?: number }> {
 }
 
 // A raw TCP-connect liveness probe. It opens (and immediately closes) a loopback socket to
-// confirm the daemon is accepting connections WITHOUT sending an HTTP request -- the daemon
-// runs `--verbose` and logs every HTTP request to its log file, and the idle watchdog treats
-// that log's mtime as activity. An HTTP probe would therefore reset the idle clock on every
-// `--check`, so anything polling liveness (an open agent's resolver, a monitor) would pin the
-// proxy awake. A bare connect writes nothing the daemon logs, so liveness stays activity-neutral
-// while real proxied traffic still counts. Probes IPv4 and IPv6 loopback CONCURRENTLY and settles
-// on the FIRST success (so a healthy proxy returns immediately, mirroring fetch's localhost
-// happy-eyeballs) -- only a both-fail result waits, and at most one timeout, never two serial.
+// confirm the daemon is accepting connections WITHOUT sending an HTTP request -- so `--check`
+// (run by an open agent's resolver, a monitor, etc.) leaves no trace in the daemon access log.
+// The idle watchdog keys off the proxy's INFERENCE handler logs, not this access log, so a
+// liveness ping no longer resets the idle clock regardless; a bare connect still keeps the
+// access log clean and returns faster than an HTTP round-trip. Probes IPv4 and IPv6 loopback
+// CONCURRENTLY and settles on the FIRST success (so a healthy proxy returns immediately,
+// mirroring fetch's localhost happy-eyeballs) -- only a both-fail result waits, and at most one
+// timeout, never two serial.
 export function portListening(port: number, timeoutMs = 2000): Promise<boolean> {
   const tryHost = (host: string): Promise<boolean> =>
     new Promise((resolve) => {

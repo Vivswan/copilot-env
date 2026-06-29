@@ -98,6 +98,16 @@ function cx {
 # most-relaxed flag (Claude skips permission prompts; Copilot allows all; Codex
 # opens a full-access sandbox). Delegate to the base launcher so the
 # proxy/provider logic lives in one place.
-function clx { cl --dangerously-skip-permissions @args }
+# Scope IS_SANDBOX to the launch only (mirrors the POSIX subshell) so it doesn't
+# leak into the user's session: set it, then restore the prior value in finally.
+function clx {
+    $prev = $env:IS_SANDBOX
+    $env:IS_SANDBOX = '1'
+    try { cl --dangerously-skip-permissions @args }
+    finally {
+        if ($null -eq $prev) { Remove-Item Env:IS_SANDBOX -ErrorAction SilentlyContinue }
+        else { $env:IS_SANDBOX = $prev }
+    }
+}
 function cox { co --allow-all @args }
 function cxx { cx --sandbox danger-full-access @args }

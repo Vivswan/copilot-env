@@ -96,6 +96,9 @@ function cx {
 # most-relaxed flag (Claude skips permission prompts; Copilot allows all; Codex
 # opens a full-access sandbox). Delegate to the base launcher so the
 # proxy/provider logic lives in one place.
-function clx { cl --dangerously-skip-permissions "$@"; }
+# Run in a subshell so the IS_SANDBOX export is reliably visible to the child
+# claude process in both bash and zsh (zsh doesn't export a function-prefix
+# assignment to external commands) without leaking into the user's shell.
+function clx { ( export IS_SANDBOX=1; cl --dangerously-skip-permissions "$@" ); }
 function cox { co --allow-all "$@"; }
 function cxx { cx --sandbox danger-full-access "$@"; }

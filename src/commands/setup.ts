@@ -1,8 +1,9 @@
 // Setup domain logic for optional agent CLIs, launchers, and shell wiring helpers.
 import { spawnSync } from "node:child_process";
+import { dirname } from "node:path";
 import { consola } from "consola";
 import { pickAgedVersion } from "../utils/aged_version.ts";
-import { commandExists, resolveCommand } from "../utils/command.ts";
+import { childEnvWithPath, commandExists, resolveCommand } from "../utils/command.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { assertNonNegativeDays, MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { runShellIntegration } from "./shell_integration.ts";
@@ -183,9 +184,19 @@ function resolveNpm(): string {
 }
 
 function runNpm(args: string[], capture = false): string {
-  const result = spawnSync(resolveNpm(), args, {
+  const npm = resolveNpm();
+  // npm is a `#!/usr/bin/env node` shim. When resolveNpm finds it via the nvm
+  // fallback (the same process that just installed Node), the parent PATH does
+  // not yet include node's bin dir, so the shim's `node` lookup fails with
+  // "/usr/bin/env: 'node': No such file or directory". Prepend the resolved
+  // npm's own dir (== node's bin dir) to the child PATH so the shim resolves
+  // node. On Windows resolveNpm returns a bare command name (no separator), so
+  // there is nothing to prepend and npm is already on PATH.
+  const npmDir = npm.includes("/") || npm.includes("\\") ? dirname(npm) : null;
+  const result = spawnSync(npm, args, {
     encoding: "utf8",
     stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit",
+    env: childEnvWithPath([npmDir]),
   });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`npm ${args.join(" ")} failed`);

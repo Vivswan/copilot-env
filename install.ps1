@@ -174,8 +174,18 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'shell\agents.ps1'))) {
             Remove-Item -Recurse -Force $InstallDir
         }
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-        & tar -xzf $tgz --strip-components=1 -C $InstallDir
+        # tar.exe cannot create symlinks without Developer Mode/admin, so it errors and aborts
+        # the whole extract on the three doc links (CLAUDE.md, .github/*.md -> AGENTS.md).
+        # Exclude them, then materialize them as plain copies of AGENTS.md below.
+        & tar -xzf $tgz --strip-components=1 -C $InstallDir --exclude='*/CLAUDE.md' --exclude='*/.github/copilot-instructions.md' --exclude='*/.github/agents.md'
         if ($LASTEXITCODE -ne 0) { throw 'tar extraction of the release archive failed.' }
+        $agentsDoc = Join-Path $InstallDir 'AGENTS.md'
+        foreach ($link in @('CLAUDE.md', '.github\copilot-instructions.md', '.github\agents.md')) {
+            $dest = Join-Path $InstallDir $link
+            if ((Test-Path $agentsDoc) -and -not (Test-Path $dest)) {
+                Copy-Item -Force $agentsDoc $dest
+            }
+        }
         # Restore preserved autoupdate state. The release never ships .autoupdate
         # (gitignored), so the fresh tree has none — copy the backup into place.
         if (Test-Path $autoupdateBackup) {

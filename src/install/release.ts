@@ -29,6 +29,21 @@ const PRESERVE = new Set([".git", "node_modules", ".autoupdate"]);
 // a partial tree must never be allowed to prune the live checkout.
 export const REQUIRED_FILES = ["package.json", "bun.lock", "bin/agent", "src/cli.ts"];
 
+// Doc files shipped as symlinks -> AGENTS.md. tar.exe and node-tar both fail-and-skip
+// symlinks on Windows without Developer Mode, so these may be absent after extraction;
+// materialize them as plain copies of AGENTS.md so the checkout is complete on every OS.
+const DOC_LINKS = ["CLAUDE.md", ".github/copilot-instructions.md", ".github/agents.md"];
+
+/** Ensure each DOC_LINKS path exists under `root`, copying AGENTS.md in when missing. */
+function materializeDocLinks(root: string): void {
+  const agents = join(root, "AGENTS.md");
+  if (!existsSync(agents)) return;
+  for (const rel of DOC_LINKS) {
+    const dest = join(root, rel);
+    if (!existsSync(dest)) cpSync(agents, dest);
+  }
+}
+
 /** Throw unless `tree` contains every REQUIRED_FILES entry: a partial extract must
  *  never reach the destructive mirror that prunes the live checkout. */
 export function assertReleaseComplete(tree: string): void {
@@ -76,7 +91,13 @@ export function mirror(src: string, dest: string, keep: Set<string>): void {
       // links to AGENTS.md) into the temp extract dir that is removed right after -- a broken
       // link after `agent update`. Writing readlinkSync's string verbatim avoids that.
       rmSync(d, { recursive: true, force: true });
-      symlinkSync(readlinkSync(s), d);
+      try {
+        symlinkSync(readlinkSync(s), d);
+      } catch {
+        // Windows without Developer Mode/admin can't create symlinks (EPERM). Fall back to a
+        // plain copy of the link's real target so the doc files exist as content, not links.
+        cpSync(s, d, { dereference: true });
+      }
     } else {
       rmSync(d, { recursive: true, force: true });
       cpSync(s, d, { dereference: false }); // copy regular files verbatim
@@ -123,6 +144,7 @@ export async function applyRelease(
     await tarExtract({ file: tarball, cwd: tree, strip: 1 });
     assertReleaseComplete(tree);
     mirror(tree, PROJECT_ROOT, PRESERVE);
+    materializeDocLinks(PROJECT_ROOT); // backfill doc links that Windows tar skipped
   } finally {
     rmSync(tmp, { recursive: true, force: true });
   }

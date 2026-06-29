@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.14](https://github.com/Vivswan/copilot-env/compare/v3.3.13...v3.3.14) (2026-06-29)
+
+
+### Bug Fixes
+
+* materialize doc symlinks as copies so Windows install/update works ([#52](https://github.com/Vivswan/copilot-env/issues/52)) ([807ce59](https://github.com/Vivswan/copilot-env/commit/807ce592a43fa9db575ad12d9817f413ec2b9959))
+
 ## [3.3.13](https://github.com/Vivswan/copilot-env/compare/v3.3.12...v3.3.13) (2026-06-28)
 
 

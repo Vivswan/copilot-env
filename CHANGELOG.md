@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.3.15](https://github.com/Vivswan/copilot-env/compare/v3.3.14...v3.3.15) (2026-06-29)
+
+
+### Bug Fixes
+
+* **launchers:** run clx under IS_SANDBOX=1 ([255fadb](https://github.com/Vivswan/copilot-env/commit/255fadbe65ed8c747173cf00fe4b60470231e915))
+* **setup:** put node on PATH when running nvm-resolved npm ([6cfdc4a](https://github.com/Vivswan/copilot-env/commit/6cfdc4a11949fcd5df7f2096b1c6b4129c6da123))
+
 ## [3.3.14](https://github.com/Vivswan/copilot-env/compare/v3.3.13...v3.3.14) (2026-06-29)
 
 

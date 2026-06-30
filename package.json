@@ -16,7 +16,7 @@
     "lint:ps": "bash scripts/lint-ps.sh",
     "format": "biome format --write src bin test scripts",
     "check": "biome check --write src bin test scripts",
-    "postinstall": "bun src/proxy_float.ts && patch-package",
+    "postinstall": "bun src/proxy_float.ts && bun node_modules/patch-package/index.js",
     "prepare": "husky"
   },
   "dependencies": {

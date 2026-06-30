@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.3.16](https://github.com/Vivswan/copilot-env/compare/v3.3.15...v3.3.16) (2026-06-30)
+
+
+### Bug Fixes
+
+* **setup:** pin nvm default alias to the installed version, not lts/* ([00c255d](https://github.com/Vivswan/copilot-env/commit/00c255dcffff395f05bf1ebbc9e259511dd9f907))
+* **setup:** run patch-package under bun in postinstall ([2183107](https://github.com/Vivswan/copilot-env/commit/218310712d02b614c73dc9d1e84fdeedbca4a521))
+
 ## [3.3.15](https://github.com/Vivswan/copilot-env/compare/v3.3.14...v3.3.15) (2026-06-29)
 
 

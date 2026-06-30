@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 
-import { computePathRefresh, runShell } from "../src/commands/setup.ts";
+import {
+  buildNodePosixInstallScript,
+  computePathRefresh,
+  runShell,
+} from "../src/commands/setup.ts";
 
 // runShell's flag validation throws BEFORE any install or rc wiring, so these
 // need no filesystem/network isolation.
@@ -65,4 +69,20 @@ test("computePathRefresh is a no-op when the bin dir is already on PATH", () => 
   const { assignments } = computePathRefresh("linux", prefix, old);
   // Already present: nothing to assign, so neither key is rewritten.
   expect(assignments).toEqual({});
+});
+
+// The nvm install script must pin `default` to a LOCALLY resolvable version, not
+// the remote `lts/*` meta-alias. A remote default resolves to N/A offline, so
+// sourcing nvm.sh activates nothing and the resolveCommand nvm fallback (and the
+// whole CLI install) silently breaks. Guard against that regression.
+test("buildNodePosixInstallScript pins default to the installed version, not lts/*", () => {
+  const script = buildNodePosixInstallScript();
+  // Installs LTS, but never aliases default at the remote meta-alias.
+  expect(script).toContain("nvm install --lts");
+  expect(script).not.toContain("alias default 'lts/*'");
+  expect(script).not.toContain("alias default lts/*");
+  // default tracks the concrete active version, with a `node` (latest local) fallback.
+  expect(script).toContain('NODE_DEFAULT="$(nvm current)"');
+  expect(script).toContain('nvm alias default "$NODE_DEFAULT"');
+  expect(script).toContain("NODE_DEFAULT=node");
 });

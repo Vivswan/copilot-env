@@ -114,8 +114,15 @@ function addWindowsUserPath(directory: string): void {
   refreshWindowsPath();
 }
 
-function installNodePosix(): void {
-  const script = [
+/**
+ * The POSIX shell script that installs Node LTS via nvm and pins the `default`
+ * alias to the concrete installed version. Kept pure (no spawning) so a test can
+ * assert it never regresses to a remote meta-alias like `lts/*` -- which would
+ * leave `default` unresolvable offline and break the resolveCommand nvm
+ * fallback that every CLI install depends on.
+ */
+export function buildNodePosixInstallScript(): string {
+  return [
     "set -e",
     `NVM_VERSION=${quotePosix(NVM_VERSION)}`,
     'NVM_DIR="$' + '{NVM_DIR:-$HOME/.nvm}"',
@@ -127,9 +134,21 @@ function installNodePosix(): void {
     '. "$NVM_DIR/nvm.sh"',
     'echo "Installing/activating Node.js LTS via nvm ..."',
     "nvm install --lts",
-    "nvm alias default 'lts/*'",
+    // Alias `default` to the concrete version we just installed -- NOT the
+    // remote `lts/*` meta-alias, which needs `nvm ls-remote` LTS data and
+    // resolves to N/A when that is unavailable (offline / uncached). A broken
+    // default means sourcing nvm.sh activates no version, so `node`/`npm` never
+    // land on PATH and the resolveCommand nvm fallback (and thus the CLI
+    // install) silently fails. `nvm current` is the active version after the
+    // install above; fall back to `node` (latest installed) if it is empty.
+    'NODE_DEFAULT="$(nvm current)"',
+    '[ -n "$NODE_DEFAULT" ] && [ "$NODE_DEFAULT" != "none" ] || NODE_DEFAULT=node',
+    'nvm alias default "$NODE_DEFAULT"',
   ].join("\n");
-  const result = run("bash", ["-c", script]);
+}
+
+function installNodePosix(): void {
+  const result = run("bash", ["-c", buildNodePosixInstallScript()]);
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error("nvm failed to install/activate Node LTS.");
 }

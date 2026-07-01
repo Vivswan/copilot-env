@@ -29,7 +29,7 @@ jobs:
       # never runs on an empty string.
       pr_number: ${{ steps.release.outputs.pr && fromJSON(steps.release.outputs.pr).number }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Create installer assets
         id: installer-assets
@@ -111,7 +111,7 @@ jobs:
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -130,7 +130,7 @@ jobs:
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: oven-sh/setup-bun@v2
         with:

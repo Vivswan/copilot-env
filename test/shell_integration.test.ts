@@ -218,6 +218,27 @@ test("posixLaunchersBlock sources the launchers file under its own marker", () =
   expect(block).not.toContain(MARKER);
 });
 
+test("both launcher shell files exist for the env-emitted source directive", () => {
+  // env.ts emits `source <shell/agents.launchers.{bashrc,ps1}>`; keep both present so
+  // the wired path can never point at a missing file.
+  expect(readFileSync(join(process.cwd(), "shell", "agents.launchers.bashrc"), "utf8")).toContain(
+    "function cl",
+  );
+  expect(readFileSync(join(process.cwd(), "shell", "agents.launchers.ps1"), "utf8")).toContain(
+    "function cl",
+  );
+});
+
+test("the PowerShell agent wrapper's env filter accepts the launchers source line", () => {
+  // env.ts emits `if (Test-Path -LiteralPath '...') { . '...' }`; agents.ps1's
+  // Import-CopilotEnv filter must accept that shape (alongside $env:/Remove-Item),
+  // else the one-shot launchers source is silently dropped on Windows.
+  const ps1 = readFileSync(join(process.cwd(), "shell", "agents.ps1"), "utf8");
+  const filterLine = ps1.split("\n").find((l) => l.includes("$line -match"));
+  expect(filterLine).toBeDefined();
+  expect(filterLine).toContain("if \\(Test-Path ");
+});
+
 test("env-refresh stderr parity: eager source is silenced, the agent wrapper's refresh is not (POSIX)", () => {
   const posix = readFileSync(join(process.cwd(), "shell", "agents.bashrc"), "utf8");
 

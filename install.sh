@@ -13,6 +13,8 @@ RESOLVER_URL="https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/ins
 VERIFIER_URL="https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/verify-source-archive.ts"
 INSTALL_DIR_ARG=""
 SKIP_SHELL_INTEGRATION=false
+EXEC_SHELL=true
+[ -n "${COPILOT_ENV_NO_EXEC_SHELL:-}" ] && EXEC_SHELL=false
 AUTH_CURL_ARGS=(-H "User-Agent: copilot-env")
 if [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
     AUTH_TOKEN="${GH_TOKEN:-$GITHUB_TOKEN}"
@@ -36,6 +38,9 @@ Options:
                          from an existing checkout.
   --no-shell-integration Do not wire ~/.bashrc / ~/.zshrc. Run
                          `agent shell` later to enable it.
+  --no-exec-shell        Do not offer to reload your shell at the end. The
+                         offer is also skipped when non-interactive or under CI,
+                         or when $COPILOT_ENV_NO_EXEC_SHELL is set.
 
 To install a specific copilot-env version, download install.sh from that
 GitHub Release and run it. The main-branch installer resolves latest; release
@@ -86,6 +91,7 @@ while [ $# -gt 0 ]; do
             INSTALL_DIR_ARG="${1#*=}"
             [ -n "$INSTALL_DIR_ARG" ] || die "--dir= needs a value, e.g. --dir=/opt/copilot-env." ;;
         --no-shell-integration) SKIP_SHELL_INTEGRATION=true ;;
+        --no-exec-shell) EXEC_SHELL=false ;;
         *) die "unknown argument '$1' (try --help)" ;;
     esac
     shift
@@ -171,3 +177,27 @@ if [ "$SKIP_SHELL_INTEGRATION" = true ]; then
 fi
 
 bun "$REPO_DIR/src/install/installer.ts" "${INSTALLER_ARGS[@]}"
+
+# Offer to reload the shell so the freshly-wired integration takes effect without the
+# user opening a new terminal. Only when integration was wired, we are attached to a
+# real terminal, not under CI, and the caller did not opt out. A child process can't
+# source into its parent shell, so we hand off with `exec`: replacing this process with
+# an interactive shell attached to the tty makes it read the user's rc (where the
+# integration now lives). exec skips the EXIT trap, so clean up the temp dir first.
+if [ "$SKIP_SHELL_INTEGRATION" = false ] && [ "$EXEC_SHELL" = true ] && [ -z "${CI:-}" ] \
+    && [ -e /dev/tty ] && { [ -t 0 ] || [ -t 1 ]; }; then
+    printf 'Reload your shell now to activate copilot-env? [Y/n] ' >/dev/tty
+    _ans=""
+    IFS= read -r _ans </dev/tty || _ans="n"
+    case "$_ans" in
+        [Nn]*) : ;;
+        *)
+            [ -n "${_tmp:-}" ] && rm -rf "$_tmp"
+            _reload_shell="${SHELL:-/bin/sh}"
+            echo "Reloading $_reload_shell ..." >/dev/tty
+            # Interactive (no -l): a login bash reads .bash_profile, NOT the .bashrc we
+            # wired; an interactive shell attached to the tty reads .bashrc / .zshrc.
+            exec "$_reload_shell" </dev/tty >/dev/tty 2>/dev/tty
+            ;;
+    esac
+fi

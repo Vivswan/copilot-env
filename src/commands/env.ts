@@ -9,6 +9,12 @@
 // It NEVER touches a value the user set themselves (a foreign CODEX_HOME, or a
 // non-local ANTHROPIC_BASE_URL). Everything else lives in each agent's own config
 // file (Codex: config.toml + .env; Claude: settings.json + apiKeyHelper).
+//
+// It may ALSO emit one non-assignment directive: a `source` of the opt-in launchers
+// file when they are wired, so `cl`/`co`/`cx` become available in the CURRENT shell
+// right after `agent shell --launchers` (which runs through the `agent` wrapper that
+// evals this output) -- no restart. Sourcing just (re)defines those functions, so
+// re-emitting it on later commands is harmless.
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -19,7 +25,9 @@ import {
 } from "../claude/config.ts";
 import { getHostLocalCodexHome } from "../codex/host.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
+import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
+import { launchersWired } from "./shell_integration.ts";
 
 export interface EnvArgs {
   format?: string;
@@ -49,7 +57,8 @@ function isLocalProxyUrl(url: string): boolean {
 /**
  * `env`: print env directives for the calling shell. This is the only command
  * whose stdout is machine-readable (the shell `agent` wrapper evals it), so it
- * must emit ONLY assignment / unset directives -- never logs.
+ * must emit ONLY shell directives the wrapper is built to eval -- assignment /
+ * unset lines, plus the launchers `source` line below -- never logs.
  */
 export function runEnv(args: EnvArgs): void {
   const format = String(args.format ?? "posix").toLowerCase();
@@ -112,5 +121,24 @@ export function runEnv(args: EnvArgs): void {
       // the shell wrapper's `eval`. Embedded `'` -> `'\''`.
       console.log(`export ${directive.key}=${quotePosix(directive.value)}`);
     }
+  }
+
+  // Launchers source: after `agent shell --launchers` (run through the `agent`
+  // wrapper, which evals this output) pull the cl/co/cx launchers into the CURRENT
+  // shell so they work without a restart. Gated on the launchers being wired in the
+  // user's rc/profile, so we never auto-enable an opt-out user. Sourcing only
+  // (re)defines the launcher functions -- idempotent, and the file never calls
+  // `agent env`, so it cannot recurse.
+  if (launchersWired()) {
+    const launchers = join(
+      PROJECT_ROOT,
+      "shell",
+      isPowershell ? "agents.launchers.ps1" : "agents.launchers.bashrc",
+    );
+    console.log(
+      isPowershell
+        ? `if (Test-Path -LiteralPath ${quotePowerShell(launchers)}) { . ${quotePowerShell(launchers)} }`
+        : `[ -f ${quotePosix(launchers)} ] && . ${quotePosix(launchers)}`,
+    );
   }
 }

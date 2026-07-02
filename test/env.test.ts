@@ -1,10 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/config.ts";
 import { runEnv } from "../src/commands/env.ts";
+import { LAUNCHERS_MARKER } from "../src/commands/shell_integration.ts";
 
 const SAVED: Record<string, string | undefined> = {
   HOME: process.env.HOME,
@@ -51,6 +53,47 @@ function isolate(): string {
   mkdirSync(claudeHome, { recursive: true });
   process.env.CLAUDE_CONFIG_DIR = claudeHome;
   return claudeHome;
+}
+
+/** Write a $HOME/.bashrc that wires the opt-in launchers block. */
+function wireLaunchers(): void {
+  writeFileSync(
+    join(dir, ".bashrc"),
+    `${LAUNCHERS_MARKER}\nAGENTS_LAUNCHERS='/x/agents.launchers.bashrc'\n[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"\n`,
+  );
+}
+
+const isLaunchersSource = (l: string): boolean =>
+  l.includes("agents.launchers.bashrc") && l.includes("] && . ");
+
+/**
+ * Run `runEnv` in a CHILD bun process with HOME set at spawn time. `agent env` is
+ * always a fresh process in production, so its rc-file scan (os.homedir(), which Bun
+ * binds at startup and ignores later process.env.HOME mutation) resolves correctly
+ * only when HOME is in the spawn environment -- which in-process runEnv() can't fake.
+ */
+function childEnvLines(env: Record<string, string | undefined>): string[] {
+  const script = `import{runEnv}from${JSON.stringify(join(import.meta.dir, "..", "src/commands/env.ts"))};runEnv({format:"posix"});`;
+  const spawnEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries({ ...process.env, ...env })) {
+    if (v !== undefined) spawnEnv[k] = v;
+  }
+  const result = spawnSync(process.execPath, ["-e", script], { env: spawnEnv, encoding: "utf-8" });
+  if (result.status !== 0) throw new Error(`child env failed: ${result.stderr}`);
+  return result.stdout.split("\n").filter((l) => l.length > 0);
+}
+
+/** Base isolated env for a child `agent env`: no proxy state. */
+function childBaseEnv(): Record<string, string | undefined> {
+  const claudeHome = join(dir, ".claude");
+  mkdirSync(claudeHome, { recursive: true });
+  return {
+    HOME: dir,
+    COPILOT_API_HOME: join(dir, "gw"),
+    CLAUDE_CONFIG_DIR: claudeHome,
+    CODEX_HOME: undefined,
+    ANTHROPIC_BASE_URL: undefined,
+  };
 }
 
 function writeClaude(home: string, apiKeyHelper: string, baseUrl: string): void {
@@ -110,4 +153,17 @@ test("env does not unset a CODEX_HOME the user pointed elsewhere", () => {
   process.env.CODEX_HOME = join(dir, "my-own-codex"); // not the host farm path
   const lines = envLines();
   expect(lines.some((l) => l.includes("CODEX_HOME"))).toBe(false);
+});
+
+test("env emits a launchers source when the launchers are wired", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-env-cmd-"));
+  wireLaunchers();
+  const lines = childEnvLines(childBaseEnv());
+  expect(lines.some(isLaunchersSource)).toBe(true);
+});
+
+test("env skips the launchers source when the launchers are not wired", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-env-cmd-")); // no .bashrc / launchers marker
+  const lines = childEnvLines(childBaseEnv());
+  expect(lines.some(isLaunchersSource)).toBe(false);
 });

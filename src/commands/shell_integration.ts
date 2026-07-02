@@ -266,6 +266,50 @@ export function shellTargetFiles(): string[] {
   return [...new Set([...windowsProfilePaths(false), ...windowsProfilePaths(true)])];
 }
 
+/**
+ * Best-effort: are the opt-in launchers wired into this user's shell startup? Used
+ * by `agent env` (a hot path, run after every `agent` command and at shell startup)
+ * to decide whether to emit a one-shot directive that sources the launchers into the
+ * CURRENT shell right after `agent shell --launchers`, so cl/co/cx work without a
+ * restart. Deliberately CHEAP: on Windows it resolves the profile directory from env
+ * vars (USERPROFILE / OneDrive) rather than spawning PowerShell like
+ * shellTargetFiles(), so a redirected Documents folder may be missed -- in which case
+ * the auto-source simply doesn't fire and the printed "restart" hint still applies.
+ * Any read error resolves to false (no emission), never a throw into `agent env`.
+ */
+export function launchersWired(): boolean {
+  try {
+    const files = process.platform === "win32" ? cheapWindowsProfilePaths() : rcFiles(true);
+    return files.some(
+      (file) => existsSync(file) && hasMarker(readFileSync(file, "utf-8"), LAUNCHERS_MARKER),
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * PowerShell `$PROFILE` candidates resolved WITHOUT shelling out (see launchersWired).
+ * Covers the current-host and all-hosts profiles under the default Documents folder
+ * and its common OneDrive redirections.
+ */
+function cheapWindowsProfilePaths(): string[] {
+  const home = process.env.USERPROFILE ?? homedir();
+  const docRoots = [
+    join(home, "Documents"),
+    process.env.OneDrive ? join(process.env.OneDrive, "Documents") : "",
+    process.env.OneDriveConsumer ? join(process.env.OneDriveConsumer, "Documents") : "",
+  ].filter(Boolean);
+  const names = ["Microsoft.PowerShell_profile.ps1", "profile.ps1"];
+  const paths: string[] = [];
+  for (const root of docRoots) {
+    for (const sub of ["WindowsPowerShell", "PowerShell"]) {
+      for (const name of names) paths.push(join(root, sub, name));
+    }
+  }
+  return [...new Set(paths)];
+}
+
 // --- Windows (file ops in TS; PS only for what it must) ------------------------
 
 function windowsProfilePaths(allHosts: boolean): string[] {

@@ -9,7 +9,8 @@
 param(
     [switch]$AllHosts,
     [string]$InstallDir = '',
-    [switch]$NoShellIntegration
+    [switch]$NoShellIntegration,
+    [switch]$NoExecShell
 )
 
 $ErrorActionPreference = 'Stop'
@@ -206,3 +207,29 @@ if ($AllHosts) { $installerArgs += '--all-hosts' }
 
 & bun $Installer @installerArgs
 if ($LASTEXITCODE -ne 0) { throw 'copilot-env installer failed.' }
+
+# Offer to reload the shell so the freshly-wired integration takes effect without the
+# user opening a new window. Only when integration was wired, we can actually prompt on
+# a console (UserInteractive AND stdin not redirected -- the PowerShell equivalent of
+# the POSIX tty gate, so `pwsh -NonInteractive` / piped runs are skipped), not under CI,
+# and the caller did not opt out ($COPILOT_ENV_NO_EXEC_SHELL or -NoExecShell). PowerShell
+# has no `exec`, so the POSIX-matched behavior is a nested interactive shell: launching a
+# fresh PowerShell loads $PROFILE (where the integration now lives); when the user exits
+# it, control returns here.
+$execShell = -not $NoExecShell -and -not $env:COPILOT_ENV_NO_EXEC_SHELL
+$canPrompt = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
+if (-not $NoShellIntegration -and $execShell -and -not $env:CI -and $canPrompt) {
+    # Read-Host can still fail on hosts with no real console; skip the offer rather than
+    # abort a successful install if it does.
+    try {
+        $answer = Read-Host 'Reload your shell now to activate copilot-env? [Y/n]'
+    } catch {
+        $answer = 'n'
+    }
+    if ($answer -notmatch '^[Nn]') {
+        $shellExe = (Get-Process -Id $PID).Path
+        if (-not $shellExe) { $shellExe = 'powershell' }
+        Write-Host "Reloading $shellExe ..."
+        & $shellExe -NoLogo
+    }
+}

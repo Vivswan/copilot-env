@@ -33,6 +33,13 @@ test("opus shorthand prefix-matches a claude-opus entry", () => {
   expect(resolvePricingId("opus", CATALOG)).toBe("anthropic/claude-opus-4.8");
 });
 
+test("fable shorthand prefix-matches a claude-fable entry", () => {
+  const catalog = new Set<string>(["anthropic/claude-fable-5", "anthropic/claude-opus-4.8"]);
+  expect(resolvePricingId("fable", catalog)).toBe("anthropic/claude-fable-5");
+  // Single-number version: the [1m] strip applies, digit-dash-digit does not.
+  expect(resolvePricingId("claude-fable-5[1m]", catalog)).toBe("anthropic/claude-fable-5");
+});
+
 test("returns null when nothing matches", () => {
   expect(resolvePricingId("totally-unknown-model", CATALOG)).toBeNull();
 });

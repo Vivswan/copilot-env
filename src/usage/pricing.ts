@@ -79,6 +79,9 @@ export async function fetchPricing(
   return out;
 }
 
+/** Bare Anthropic family slugs that map to `claude-<family>` catalog stems. */
+const ANTHROPIC_FAMILY_SLUGS = new Set(["fable", "opus", "sonnet", "haiku"]);
+
 /** Map an internal model id onto an OpenRouter id, or null if none matches. */
 export function resolvePricingId(model: string, catalogIds: Set<string>): string | null {
   const normalized = normalizeModelName(model);
@@ -99,8 +102,7 @@ export function resolvePricingId(model: string, catalogIds: Set<string>): string
     return normalized;
   }
 
-  const candidates =
-    bare === "opus" || bare === "sonnet" || bare === "haiku" ? [`claude-${bare}`] : [bare];
+  const candidates = ANTHROPIC_FAMILY_SLUGS.has(bare) ? [`claude-${bare}`] : [bare];
 
   // Exact `provider/candidate`.
   for (const provider of providers) {
@@ -190,7 +192,7 @@ function normalizeModelName(model: string): string {
 
 /** Likely OpenRouter providers for a bare slug (no provider prefix). */
 function inferProviders(slug: string): string[] {
-  if (slug === "opus" || slug === "sonnet" || slug === "haiku" || slug.startsWith("claude-")) {
+  if (ANTHROPIC_FAMILY_SLUGS.has(slug) || slug.startsWith("claude-")) {
     return ["anthropic"];
   }
   if (slug.startsWith("gpt-")) {

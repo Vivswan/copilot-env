@@ -55,16 +55,28 @@ function isolate(): string {
   return claudeHome;
 }
 
-/** Write a $HOME/.bashrc that wires the opt-in launchers block. */
+/** Write a rc/profile file that wires the opt-in launchers block. */
 function wireLaunchers(): void {
-  writeFileSync(
-    join(dir, ".bashrc"),
-    `${LAUNCHERS_MARKER}\nAGENTS_LAUNCHERS='/x/agents.launchers.bashrc'\n[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"\n`,
-  );
+  if (process.platform === "win32") {
+    // On Windows, launchersWired() checks PowerShell profile paths under
+    // USERPROFILE/Documents/WindowsPowerShell/.
+    const psDir = join(dir, "Documents", "WindowsPowerShell");
+    mkdirSync(psDir, { recursive: true });
+    writeFileSync(
+      join(psDir, "Microsoft.PowerShell_profile.ps1"),
+      `${LAUNCHERS_MARKER}\n. '/x/agents.launchers.ps1'\n`,
+    );
+  } else {
+    writeFileSync(
+      join(dir, ".bashrc"),
+      `${LAUNCHERS_MARKER}\nAGENTS_LAUNCHERS='/x/agents.launchers.bashrc'\n[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"\n`,
+    );
+  }
 }
 
 const isLaunchersSource = (l: string): boolean =>
-  l.includes("agents.launchers.bashrc") && l.includes("] && . ");
+  (l.includes("agents.launchers.bashrc") && l.includes("] && . ")) ||
+  (l.includes("agents.launchers.ps1") && l.includes("Test-Path"));
 
 /**
  * Run `runEnv` in a CHILD bun process with HOME set at spawn time. `agent env` is
@@ -89,6 +101,7 @@ function childBaseEnv(): Record<string, string | undefined> {
   mkdirSync(claudeHome, { recursive: true });
   return {
     HOME: dir,
+    USERPROFILE: dir,
     COPILOT_API_HOME: join(dir, "gw"),
     CLAUDE_CONFIG_DIR: claudeHome,
     CODEX_HOME: undefined,

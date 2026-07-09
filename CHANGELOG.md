@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.3.17](https://github.com/Vivswan/copilot-env/compare/v3.3.16...v3.3.17) (2026-07-09)
+
+
+### Bug Fixes
+
+* **launchers:** activate cl/co/cx in the current shell after enabling ([d7e8704](https://github.com/Vivswan/copilot-env/commit/d7e870482c9ac37b0a24876d749471b189814b40))
+* **models:** handle single-number claude versions and best-of-class latest aliases ([b93d45f](https://github.com/Vivswan/copilot-env/commit/b93d45f2bcdfcc2001c1533e45f55f80634a5129))
+* **test:** wire PowerShell profile on Windows for launchers-wired env test ([#62](https://github.com/Vivswan/copilot-env/issues/62)) ([9e608b5](https://github.com/Vivswan/copilot-env/commit/9e608b5a1213d06376624ccbf9037923d1f3a2cb))
+
 ## [3.3.16](https://github.com/Vivswan/copilot-env/compare/v3.3.15...v3.3.16) (2026-06-30)
 
 

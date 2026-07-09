@@ -51,7 +51,12 @@ async function latestReleaseTag() {
     return ref;
   }
   try {
-    const response = await fetch(releaseApi, { headers: { "User-Agent": "copilot-env" } });
+    const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+    const headers = { "User-Agent": "copilot-env" };
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+    const response = await fetch(releaseApi, { headers });
     if (!response.ok) {
       console.warn(`::warning::could not check latest release for download smoke (HTTP ${response.status})`);
       return null;

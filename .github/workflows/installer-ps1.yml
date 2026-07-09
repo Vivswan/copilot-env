@@ -61,6 +61,9 @@ jobs:
           INSTALLER_ARGS: ${{ inputs.args }}
           RERUN: ${{ inputs.rerun }}
           DOWNLOAD_INSTALL: ${{ inputs.download-install }}
+          # Authenticate the installer's release-resolution API calls: anonymous
+          # requests share the runner IP pool's 60/hour limit and flake.
+          GH_TOKEN: ${{ github.token }}
 
       - name: Assert installer did not install optional CLIs
         run: node .github/scripts/installer-smoke.cjs assert-no-optional-clis

@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.19](https://github.com/Vivswan/copilot-env/compare/v3.3.18...v3.3.19) (2026-07-10)
+
+
+### Bug Fixes
+
+* **codex:** serve Copilot's real context windows via a generated model catalog ([0da824f](https://github.com/Vivswan/copilot-env/commit/0da824f36a6bf3cca923ca7dc081a956e23d1b05))
+
 ## [3.3.18](https://github.com/Vivswan/copilot-env/compare/v3.3.17...v3.3.18) (2026-07-10)
 
 

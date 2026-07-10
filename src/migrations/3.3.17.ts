@@ -45,10 +45,49 @@ function dropCodexImageGenerationDisable(): void {
   }
 }
 
+/**
+ * Raise the managed direct provider's `auth.timeout_ms` from 15000 (the value every
+ * release up to 3.3.17 wrote) to 30000: the auth command now also runs a bounded,
+ * at-most-daily model-catalog refresh after printing the token (a /models fetch plus
+ * a `codex debug models --bundled` dump), which can overrun the old budget. Without
+ * this, an existing install that only ever runs `agent update` keeps 15000 and Codex
+ * can time the auth command out on the one call per day that refreshes the catalog.
+ * Idempotent and surgical: only OUR selected provider's auth block, and only the
+ * exact 15000 the old writer produced -- any other value is user-tuned, not ours.
+ */
+function raiseCodexDirectAuthTimeout(): void {
+  const configPath = join(effectiveCodexHome(), "config.toml");
+  if (!existsSync(configPath)) return; // no Codex config -- nothing to heal
+  try {
+    const doc = parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    const providers = isRecord(doc.model_providers) ? doc.model_providers : null;
+    if (providers === null || !isRecord(providers[CODEX_PROVIDER_ID])) return; // not managed
+    if (doc.model_provider !== CODEX_PROVIDER_ID) return; // our table present but not selected
+    const auth = providers[CODEX_PROVIDER_ID].auth;
+    if (!isRecord(auth) || auth.timeout_ms !== 15000) return;
+    // The 15000 budget belongs to the DIRECT auth command (agent auth --get); the
+    // proxy resolver writes 180000 and different args. Match the args as a SUFFIX:
+    // POSIX invokes the launcher with exactly ["auth", "--get"], while Windows
+    // prepends the PowerShell boilerplate (-NoProfile ... -File agent.ps1) before
+    // the same two elements. Two distinct elements, not a joined string, so a
+    // lookalike single-element ["auth --get"] never matches.
+    if (!Array.isArray(auth.args) || auth.args.length < 2) return;
+    const [subcommand, flag] = auth.args.slice(-2);
+    if (subcommand !== "auth" || flag !== "--get") return;
+    auth.timeout_ms = 30000;
+    writeFileSync(configPath, stringify(doc));
+    consola.info(`Raised the Codex direct auth timeout to 30s in ${configPath}`);
+  } catch (e) {
+    consola.warn(`Could not raise the Codex direct auth timeout (non-fatal): ${errMessage(e)}`);
+  }
+}
+
 export const migration: Migration = {
   version: "3.3.17",
-  description: "drop the stale Codex image-generation disable (Copilot Direct serves it now)",
+  description:
+    "drop the stale Codex image-generation disable; raise the direct auth timeout for the catalog refresh",
   run: () => {
     dropCodexImageGenerationDisable();
+    raiseCodexDirectAuthTimeout();
   },
 };

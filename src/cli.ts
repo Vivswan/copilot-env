@@ -336,7 +336,7 @@ program
   .option("--delete-host", "With --host: remove the per-host CODEX_HOME and stop exporting it.")
   .option("--mobile", "Interactive: pair the Codex desktop app with its phone remote-control flow.")
   .action((opts: Opts) =>
-    runSafe(() => {
+    runSafe(async () => {
       const common = { direct: Boolean(opts.direct), proxy: Boolean(opts.proxy) };
       // --mobile is its own interactive flow (toggles config around app pairing).
       if (opts.mobile) {
@@ -345,15 +345,15 @@ program
       // --check is read-only: never build/delete the host farm or probe, even when
       // combined with --host/--delete-host. Route it to the check path first.
       if (opts.check) {
-        runCodex({ ...common, check: true });
+        await runCodex({ ...common, check: true });
         return;
       }
       // --host (and --delete-host, which only makes sense with it) route to the
       // per-host symlink farm; everything else configures the active CODEX_HOME.
       if (opts.host || opts.deleteHost) {
-        runCodexHost({ ...common, delete: Boolean(opts.deleteHost) });
+        await runCodexHost({ ...common, delete: Boolean(opts.deleteHost) });
       } else {
-        runCodex(common);
+        await runCodex(common);
       }
     }),
   );

@@ -7,6 +7,13 @@
 // `gh-cli` runs `gh auth token`, `copilot`/`gh-token` return this stored token, and
 // no recorded provider resolves to nothing -- there is no implicit `gh` fallback.
 // `agent auth --del` clears both fields.
+//
+// Also carries the (equally account-wide) Codex model-catalog refresh throttle
+// (`codexCatalogLastAttemptMs` + `codexCatalogCodexVersion`, src/codex/catalog.ts)
+// -- one shared state file rather than a second store for two small fields, and
+// exactly ONE write per due refresh: the underlying save is atomic per write but
+// has no cross-process lock, so every extra writer widens the lost-update window
+// with `agent auth --set`.
 import * as v from "valibot";
 import { CopilotApiConfig } from "./config.ts";
 import { CopilotApiPaths } from "./paths.ts";
@@ -26,6 +33,10 @@ export interface CopilotEnvStateData {
   githubToken: string | null;
   /** How the user authenticated, or null when unset/unrecognized. */
   authProvider: AuthProvider | null;
+  /** Epoch ms of the last Codex model-catalog generation ATTEMPT (0 if never). */
+  codexCatalogLastAttemptMs: number;
+  /** The codex CLI version the catalog was last generated against (null if never). */
+  codexCatalogCodexVersion: string | null;
 }
 
 // Mirror CopilotEnvRunState/AutoupdateState's patch spelling (`Data[K] | null`).
@@ -38,13 +49,19 @@ type EnvStatePatch = { [K in keyof CopilotEnvStateData]?: CopilotEnvStateData[K]
 const STATE_SCHEMA = v.object({
   githubToken: v.fallback(v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1))), null),
   authProvider: v.fallback(v.nullable(v.picklist(AUTH_PROVIDERS)), null),
+  codexCatalogLastAttemptMs: v.fallback(v.pipe(v.number(), v.finite(), v.minValue(0)), 0),
+  codexCatalogCodexVersion: v.fallback(
+    v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1))),
+    null,
+  ),
 });
 
 /**
  * Read/write helper for the shared `.copilot-env-state.json`. Backed by
  * CopilotApiConfig (the project's atomic JSON store: sorted keys, 0600, atomic
  * rename, Windows EPERM/EBUSY retry) and mirroring CopilotEnvRunState -- one I/O
- * implementation. Holds CREDENTIALS only; user preferences live in CopilotEnvConfig.
+ * implementation. Holds the credential + catalog-refresh state; user preferences
+ * live in CopilotEnvConfig.
  */
 export class CopilotEnvState {
   private readonly store: CopilotApiConfig;
@@ -59,18 +76,23 @@ export class CopilotEnvState {
   }
 
   /**
-   * Merge `patch`. Values are credentials/labels, so they're trimmed and a null/undefined
-   * OR blank value deletes the key -- a blank token is never meaningful, so it clears
-   * rather than persisting `""`.
+   * Merge `patch`. String values are credentials/labels, so they're trimmed and a
+   * null/undefined OR blank value deletes the key -- a blank token is never
+   * meaningful, so it clears rather than persisting `""`. Numeric values (the
+   * catalog attempt timestamp) are stored as-is; null/undefined deletes.
    */
   set(patch: EnvStatePatch): void {
     this.store.update((d) => {
       for (const key of Object.keys(patch) as (keyof EnvStatePatch)[]) {
         const value = patch[key];
-        if (value === null || value === undefined || value.trim() === "") {
+        if (
+          value === null ||
+          value === undefined ||
+          (typeof value === "string" && value.trim() === "")
+        ) {
           delete d[key];
         } else {
-          d[key] = value.trim();
+          d[key] = typeof value === "string" ? value.trim() : value;
         }
       }
     });

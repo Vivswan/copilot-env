@@ -41,22 +41,45 @@ export function readModelProvider(configToml: string): string | null {
   }
 }
 
+/** Read the configured `model_catalog_json` path (null when unset/malformed). Pure. */
+export function readModelCatalogJson(configToml: string): string | null {
+  try {
+    const doc = parse(configToml);
+    return isRecord(doc) && typeof doc.model_catalog_json === "string"
+      ? doc.model_catalog_json
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Remove the top-level `model_provider` key (so the app uses its default OpenAI
- * provider for pairing) and re-assert `requires_openai_auth = false`. Everything
- * else in the file is preserved. Pure.
+ * provider for pairing) and re-assert `requires_openai_auth = false`. The
+ * Copilot-patched `model_catalog_json` goes with it -- during pairing the app
+ * runs the real OpenAI provider, whose limits the patched catalog would
+ * misstate. Everything else in the file is preserved. Pure.
  */
 export function stripModelProvider(configToml: string): string {
   const doc = parse(configToml) as Record<string, unknown>;
   delete doc.model_provider;
+  delete doc.model_catalog_json;
   ensureNoForcedOpenaiAuth(doc);
   return stringify(doc);
 }
 
-/** Restore the top-level `model_provider` key to `provider`. Pure. */
-export function restoreModelProvider(configToml: string, provider: string): string {
+/**
+ * Restore the top-level `model_provider` key to `provider` (and, when captured,
+ * the `model_catalog_json` path stripped alongside it). Pure.
+ */
+export function restoreModelProvider(
+  configToml: string,
+  provider: string,
+  modelCatalogJson: string | null = null,
+): string {
   const doc = parse(configToml) as Record<string, unknown>;
   doc.model_provider = provider;
+  if (modelCatalogJson !== null) doc.model_catalog_json = modelCatalogJson;
   ensureNoForcedOpenaiAuth(doc);
   return stringify(doc);
 }
@@ -197,6 +220,8 @@ export async function runCodexMobile(): Promise<void> {
       "No model_provider is configured in config.toml — run `agent codex` first, then retry --mobile.",
     );
   }
+  // Captured alongside the provider so restore() puts BOTH keys back.
+  const catalogPath = readModelCatalogJson(original);
 
   const app = new CodexAppController();
 
@@ -236,7 +261,7 @@ export async function runCodexMobile(): Promise<void> {
     try {
       // Prefer re-applying onto the current file (the app may have edited it), but
       // fall back to the exact pre-flow config if it's now unreadable/invalid.
-      next = restoreModelProvider(fs.readFileSync(configPath, "utf8"), provider);
+      next = restoreModelProvider(fs.readFileSync(configPath, "utf8"), provider, catalogPath);
     } catch {
       next = original;
     }

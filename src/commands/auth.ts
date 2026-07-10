@@ -22,6 +22,8 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { consola } from "consola";
+import { type CodexCatalogDeps, refreshCodexModelCatalogIfStale } from "../codex/catalog.ts";
+import { ensureCodexCatalogReferenced } from "../codex/config.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import {
   AUTH_PROVIDERS,
@@ -247,7 +249,7 @@ async function authenticate(
 
 // --- sub-actions ------------------------------------------------------------
 
-function runGet(): void {
+async function runGet(catalogDeps?: CodexCatalogDeps): Promise<void> {
   const token = new Credential().resolve();
   if (token === null) {
     logger.error("no GitHub credential — run `agent auth` to log in");
@@ -257,18 +259,39 @@ function runGet(): void {
   // codeql[js/clear-text-logging] -- emitting the token on stdout IS this command's
   // contract (like `gh auth token`); the agent configs consume it.
   process.stdout.write(`${token}\n`);
+  // Codex re-runs `auth --get` every 300s, making it the freshness hook for the
+  // patched model catalog. AFTER the token is on stdout, best-effort + throttled
+  // (one attempt per day), never throws, stderr-only -- the token contract stays
+  // safe. The just-resolved token is reused so the refresh never re-runs `gh`.
+  await refreshCodexModelCatalogIfStale("direct", { directToken: token, ...catalogDeps });
+  // Self-heal a config whose wiring-time seed failed: add the catalog reference
+  // when a usable file exists but the managed config predates it. Runs on EVERY
+  // auth call (one cheap TOML read), not just after a regeneration -- a catalog
+  // generated during mobile pairing (provider stripped => the add is skipped)
+  // must still get referenced on the next call after pairing restores the
+  // provider, without waiting out the daily refresh throttle.
+  ensureCodexCatalogReferenced();
 }
 
 /**
- * `--print-proxy-token`: print the local copilot-api proxy's API key on stdout. A pure
- * printer -- the proxy-mode resolver (`src/scripts/proxy-token.sh`) runs this last, after
- * it has ensured the proxy is up. Distinct from `--get` (the upstream GitHub credential).
+ * `--print-proxy-token`: print the local copilot-api proxy's API key on stdout. The
+ * proxy-mode resolver (`src/scripts/proxy-token.sh`) runs this last, after it has
+ * ensured the proxy is up. Distinct from `--get` (the upstream GitHub credential).
+ * The key line is the ENTIRE stdout contract; after printing it this also runs the
+ * same best-effort daily model-catalog refresh as `--get` (stderr-only, never
+ * throws), sourced from the running proxy's /models.
  */
-function runPrintProxyToken(): void {
+async function runPrintProxyToken(catalogDeps?: CodexCatalogDeps): Promise<void> {
   const key = new CopilotApiConfig().ensureApiKey();
   // codeql[js/clear-text-logging] -- emitting the proxy key on stdout IS this command's
   // contract (the proxy-mode agents' auth.command / apiKeyHelper consume it).
   process.stdout.write(`${key}\n`);
+  // Same freshness hook as `--get`, sourced from the local proxy's /models (the
+  // resolver guarantees the proxy is up before this prints; a raw gh-cli token
+  // can 403 upstream, so proxy mode never fetches Copilot directly). The same
+  // every-call self-heal as `--get` follows (see runGet for why unconditional).
+  await refreshCodexModelCatalogIfStale("proxy", catalogDeps);
+  ensureCodexCatalogReferenced();
 }
 
 function runDel(): void {
@@ -317,7 +340,7 @@ export async function ensureAuthenticated(): Promise<void> {
  * `--provider` always runs (so it can switch the credential source). `--set [token]`
  * is the non-interactive gh-token path (provide the token inline, or via env).
  */
-export async function runAuth(args: AuthArgs): Promise<void> {
+export async function runAuth(args: AuthArgs, catalogDeps?: CodexCatalogDeps): Promise<void> {
   const subActions = [args.get, args.del, args.check, args.printProxyToken].filter(Boolean).length;
   if (subActions > 1) {
     throw new Error("--get, --del, --check, and --print-proxy-token are mutually exclusive");
@@ -328,11 +351,11 @@ export async function runAuth(args: AuthArgs): Promise<void> {
     );
   }
   if (args.printProxyToken) {
-    runPrintProxyToken();
+    await runPrintProxyToken(catalogDeps);
     return;
   }
   if (args.get) {
-    runGet();
+    await runGet(catalogDeps);
     return;
   }
   if (args.del) {

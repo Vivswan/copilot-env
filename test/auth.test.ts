@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
+import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { runAuth } from "../src/commands/auth.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 
@@ -94,7 +94,7 @@ test("auth: --provider rejects unknown values", async () => {
 test("auth --get prints the stored token to stdout (nothing else)", async () => {
   isolate();
   state().set({ githubToken: "ghu_stored123", authProvider: "gh-token" });
-  const out = await captureStdout(() => runAuth({ get: true }));
+  const out = await captureStdout(() => runAuth({ get: true }, NOOP_CATALOG_DEPS));
   expect(out).toBe("ghu_stored123\n");
 });
 
@@ -102,7 +102,12 @@ test("auth --del clears the stored token and provider", async () => {
   isolate();
   state().set({ githubToken: "ghu_stored123", authProvider: "gh-token" });
   await runAuth({ del: true });
-  expect(state().read()).toEqual({ githubToken: null, authProvider: null });
+  expect(state().read()).toEqual({
+    githubToken: null,
+    authProvider: null,
+    codexCatalogLastAttemptMs: 0,
+    codexCatalogCodexVersion: null,
+  });
 });
 
 test("auth --check: a configured provider reports authenticated, exit 0", async () => {
@@ -150,6 +155,8 @@ test("auth --provider gh-token stores the env token + provider, and does NOT con
   expect(state().read()).toEqual({
     githubToken: "ghu_new_from_env",
     authProvider: "gh-token",
+    codexCatalogLastAttemptMs: 0,
+    codexCatalogCodexVersion: null,
   });
   // auth only manages the credential -- configuring Codex/Claude is `agent init`'s job.
   expect(existsSync(join(claudeHome, "settings.json"))).toBe(false);
@@ -163,6 +170,8 @@ test("auth --set <token> stores it verbatim (no env, no UI) and records gh-token
   expect(state().read()).toEqual({
     githubToken: "ghu_inline_value",
     authProvider: "gh-token",
+    codexCatalogLastAttemptMs: 0,
+    codexCatalogCodexVersion: null,
   });
 });
 
@@ -176,4 +185,65 @@ test("auth --set rejects a conflicting --provider", async () => {
 test("auth --set cannot combine with --get/--del/--check", async () => {
   isolate();
   await expect(runAuth({ set: "ghu_x", get: true })).rejects.toThrow("cannot combine");
+});
+
+test("auth --get stdout stays EXACTLY the token even when the catalog refresh runs", async () => {
+  isolate();
+  state().set({ githubToken: "ghu_stored123", authProvider: "gh-token" });
+  const out = await captureStdout(() =>
+    runAuth(
+      { get: true },
+      {
+        nowMs: () => 1_700_000_000_000,
+        codexVersion: () => null, // lastAttemptMs 0 => due, so the refresh really runs
+        bundledCatalog: () => '{"models":[{"slug":"gpt-5.5","context_window":272000}]}',
+        fetchLimits: async () =>
+          new Map([["gpt-5.5", { maxContextWindowTokens: 1_050_000, maxPromptTokens: 922_000 }]]),
+      },
+    ),
+  );
+  expect(out).toBe("ghu_stored123\n");
+});
+
+test("auth --get succeeds (exit 0) even when the catalog refresh blows up", async () => {
+  isolate();
+  state().set({ githubToken: "ghu_stored123", authProvider: "gh-token" });
+  const out = await captureStdout(() =>
+    runAuth(
+      { get: true },
+      {
+        nowMs: () => 1_700_000_000_000,
+        codexVersion: () => null,
+        bundledCatalog: () => {
+          throw new Error("spawn exploded");
+        },
+        fetchLimits: async () => {
+          throw new Error("network exploded");
+        },
+      },
+    ),
+  );
+  expect(out).toBe("ghu_stored123\n");
+  expect(process.exitCode).toBe(0);
+});
+
+test("auth --print-proxy-token stdout stays EXACTLY the key even when the refresh runs", async () => {
+  isolate();
+  const first = await captureStdout(() =>
+    runAuth(
+      { printProxyToken: true },
+      {
+        nowMs: () => 1_700_000_000_000,
+        codexVersion: () => null, // due => the refresh really runs (and fails, harmlessly)
+        bundledCatalog: () => null,
+        fetchLimits: async () => {
+          throw new Error("proxy exploded");
+        },
+      },
+    ),
+  );
+  // ensureApiKey generates a stable 64-char hex key on first use; the line is the
+  // ENTIRE stdout, refresh failure or not.
+  expect(first).toMatch(/^[0-9a-f]{64}\n$/);
+  expect(process.exitCode).toBe(0);
 });

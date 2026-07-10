@@ -35,14 +35,14 @@ function safeMode<T>(read: () => T, fallback: T): T {
  * truth), so callers persist the token separately. Each agent's narration is
  * grouped under a header with blank-line spacing.
  */
-export function configureBothAgents(flags: BothFlags): {
+export async function configureBothAgents(flags: BothFlags): Promise<{
   codex: AgentProviderMode;
   claude: AgentProviderMode;
-} {
+}> {
   logger.log("");
   logger.log(bold("▸ Codex"));
   try {
-    runCodex(flags);
+    await runCodex(flags);
   } catch (e) {
     logger.warn(`  Could not configure Codex: ${errMessage(e)}`);
   }

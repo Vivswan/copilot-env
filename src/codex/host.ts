@@ -503,7 +503,7 @@ function buildCodexSymlinkFarm(codexHome: string): number {
  * succeeds, else proxy). With `--delete-host`, remove that per-host dir and clear
  * the state instead. No stdout.
  */
-export function runCodexHost(args: CodexHostArgs): void {
+export async function runCodexHost(args: CodexHostArgs): Promise<void> {
   if (!assertUnix("The CODEX_HOME symlink farm (host_codex)")) return;
   // Resolve to an absolute path: it gets persisted to state and re-exported into
   // future shells, so a cwd-relative value would later resolve against the wrong
@@ -532,7 +532,12 @@ export function runCodexHost(args: CodexHostArgs): void {
   logger.info(
     `Configuring the per-host Codex home for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} ...`,
   );
-  applyCodexConfig(codexHome, { proxy: !direct });
+  await applyCodexConfig(
+    codexHome,
+    { proxy: !direct },
+    // Reuse the just-resolved credential for the catalog seed's direct fetch.
+    ghToken === null ? undefined : { directToken: ghToken },
+  );
   // Persist the active CODEX_HOME (opt-in: only set because a codex command ran).
   state.set({ codexHome });
 }

@@ -46,6 +46,13 @@ export class CopilotApiPaths {
    * consolidating an existing proxy login into our single-source-of-truth store.
    */
   githubTokenFile: string;
+  /**
+   * The patched Codex model catalog (account-wide): the bundled `codex debug
+   * models` catalog with GitHub Copilot's live context-window limits overlaid.
+   * Referenced by absolute path from the managed Codex config.toml via its
+   * `model_catalog_json` key. Not dot-prefixed: Codex (and users) read it.
+   */
+  codexModelCatalogFile: string;
 
   constructor() {
     this.home = resolveHome();
@@ -63,5 +70,6 @@ export class CopilotApiPaths {
     this.sharedStateFile = join(this.home, ".copilot-env-state.json");
     this.envConfigFile = join(this.home, ".copilot-env-config.json");
     this.githubTokenFile = join(this.home, "github_token");
+    this.codexModelCatalogFile = join(this.home, "codex-model-catalog.json");
   }
 }

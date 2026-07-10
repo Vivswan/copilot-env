@@ -127,3 +127,73 @@ test("no Codex config at all is a no-op", () => {
   isolate();
   expect(() => void migration.run()).not.toThrow();
 });
+
+// --- the direct auth timeout raise (second 3.3.17 fix-up) ---------------------
+
+function writeDirectAuth(codexHome: string, timeoutMs: number, args = '["auth", "--get"]'): string {
+  const p = join(codexHome, "config.toml");
+  writeFileSync(
+    p,
+    [
+      'model_provider = "copilot-env"',
+      "",
+      "[model_providers.copilot-env]",
+      'base_url = "https://api.githubcopilot.com"',
+      "",
+      "[model_providers.copilot-env.auth]",
+      'command = "/x/agent"',
+      `args = ${args}`,
+      `timeout_ms = ${timeoutMs}`,
+      "refresh_interval_ms = 300000",
+      "",
+    ].join("\n"),
+  );
+  return p;
+}
+
+test("raises the managed direct auth timeout from 15000 to 30000", () => {
+  const codexHome = isolate();
+  const p = writeDirectAuth(codexHome, 15000);
+  void migration.run();
+  const doc = asRecord(parse(readFileSync(p, "utf8")));
+  const auth = asRecord(asRecord(asRecord(doc.model_providers)["copilot-env"]).auth);
+  expect(auth.timeout_ms).toBe(30000);
+  expect(auth.refresh_interval_ms).toBe(300000); // untouched sibling
+});
+
+test("a user-tuned timeout is not ours to change; nor is the proxy auth shape", () => {
+  const codexHome = isolate();
+  // Any value other than the exact 15000 the old writer produced stays.
+  let p = writeDirectAuth(codexHome, 20000);
+  let before = readFileSync(p, "utf8");
+  void migration.run();
+  expect(readFileSync(p, "utf8")).toBe(before);
+
+  // The proxy resolver's auth block (different args) is a different budget: 15000
+  // there would be user-authored, so it also stays.
+  p = writeDirectAuth(codexHome, 15000, '["--yes"]');
+  before = readFileSync(p, "utf8");
+  void migration.run();
+  expect(readFileSync(p, "utf8")).toBe(before);
+});
+
+test("the Windows launcher arg shape (PowerShell boilerplate) also gets the raise", () => {
+  const codexHome = isolate();
+  const p = writeDirectAuth(
+    codexHome,
+    15000,
+    '["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "C:/x/bin/agent.ps1", "auth", "--get"]',
+  );
+  void migration.run();
+  const doc = asRecord(parse(readFileSync(p, "utf8")));
+  const auth = asRecord(asRecord(asRecord(doc.model_providers)["copilot-env"]).auth);
+  expect(auth.timeout_ms).toBe(30000);
+});
+
+test("a single joined 'auth --get' element is NOT the managed shape and stays put", () => {
+  const codexHome = isolate();
+  const p = writeDirectAuth(codexHome, 15000, '["auth --get"]');
+  const before = readFileSync(p, "utf8");
+  void migration.run();
+  expect(readFileSync(p, "utf8")).toBe(before);
+});

@@ -45,6 +45,11 @@ export class CopilotAdminClient {
     return out;
   }
 
+  /** The raw `/models` body (untyped), for callers that need `capabilities.limits`. */
+  async getRawModels(): Promise<unknown> {
+    return this.request("/models");
+  }
+
   /** Read the daemon's current live model mappings (requires the admin key). */
   async getModelMappings(): Promise<Record<string, string>> {
     const body = await this.request("/admin/config/model-mappings", { admin: true });

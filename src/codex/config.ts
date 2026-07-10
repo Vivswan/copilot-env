@@ -3,15 +3,14 @@
 // fetches its bearer at runtime via an `auth.command` that runs `agent auth --get`
 // (provider-driven: gh-cli -> gh, copilot/gh-token -> the stored token) -- nothing is baked
 // into the config or `.env`.
-import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
 import { parse, stringify } from "smol-toml";
 import { Credential } from "../copilot_api/credential.ts";
+import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort, openaiBaseUrl } from "../copilot_api/port.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
-import { cliSpawn } from "../utils/command.ts";
 import {
   assertSingleMode,
   CODEX_PROBE,
@@ -28,6 +27,12 @@ import {
   providerModeExitCode,
 } from "../utils/provider_mode.ts";
 import { AGENT_AUTH_GET_ARGS, agentLauncherCommand, proxyTokenCommand } from "../utils/root.ts";
+import {
+  type CodexCatalogDeps,
+  generateCodexModelCatalog,
+  installedCodexVersion,
+  isCatalogFileUsable,
+} from "./catalog.ts";
 
 const logger = createStderrLogger();
 
@@ -77,29 +82,6 @@ interface ProxyConfigOptions {
 // The single source of truth for our managed direct Copilot provider table.
 // Re-applied on every direct-mode run (managed keys win; any user-added key in
 // the same table is preserved by the merge).
-function parseCodexVersion(output: string): string | null {
-  return output.match(/\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/)?.[0] ?? null;
-}
-
-let cachedCodexVersion: string | null | undefined;
-
-function installedCodexVersion(): string | null {
-  if (cachedCodexVersion !== undefined) return cachedCodexVersion;
-  // cliSpawn routes through cmd.exe on Windows so a codex.cmd shim is launchable.
-  const s = cliSpawn("codex", ["--version"]);
-  const result = spawnSync(s.file, s.args, {
-    encoding: "utf8",
-    timeout: 1000,
-    windowsHide: true,
-    shell: s.shell,
-  });
-  cachedCodexVersion =
-    result.error || result.status !== 0
-      ? null
-      : parseCodexVersion(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
-  return cachedCodexVersion;
-}
-
 export function codexUserAgent(version: string | null = installedCodexVersion()): string {
   return version ? `codex_exec/${version}` : "codex_exec";
 }
@@ -148,9 +130,11 @@ function managedDirectProvider(codexExecVersion?: string | null) {
     "auth": {
       "command": command,
       "args": [...args],
-      // Generous vs the old `gh` path (5s): the launcher may cold-start bun. The
-      // common warm case returns in well under a second; Codex refreshes lazily.
-      "timeout_ms": 15000,
+      // Generous vs the old `gh` path (5s): the launcher may cold-start bun, and a
+      // due (at most daily) model-catalog refresh adds a bounded /models fetch (5s)
+      // plus a `codex debug models --bundled` dump (8s) after the token prints.
+      // The common warm case returns in well under a second; Codex refreshes lazily.
+      "timeout_ms": 30000,
       "refresh_interval_ms": 300000,
     },
   };
@@ -485,6 +469,19 @@ export function configureCodexConfig(
     doc.sandbox_workspace_write = sandboxWrite;
   }
 
+  // Point Codex at the patched Copilot model catalog (src/codex/catalog.ts) --
+  // ONLY when the file is USABLE (exists and parses with at least one model):
+  // `model_catalog_json` REPLACES Codex's bundled catalog and a missing, empty,
+  // or unparseable file is a Codex STARTUP error, so a bad reference must be
+  // scrubbed rather than left behind. A failed refresh keeps a good file
+  // (generation never truncates), so a referenced file stays usable.
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  if (isCatalogFileUsable(catalogFile)) {
+    doc.model_catalog_json = catalogFile;
+  } else {
+    delete doc.model_catalog_json;
+  }
+
   const providers = isRecord(doc.model_providers) ? doc.model_providers : {};
   const existing = isRecord(providers[CODEX_PROVIDER_ID]) ? providers[CODEX_PROVIDER_ID] : {};
   const merged: Record<string, unknown> = {
@@ -522,10 +519,11 @@ export function configureCodexConfig(
  * Shared by `runCodexConfig` and codex_host's `runCodexHost`. Direct mode fetches
  * the bearer at runtime via `agent auth --get`; nothing is baked into the config.
  */
-export function applyCodexConfig(
+export async function applyCodexConfig(
   codexHome: string,
   args: Pick<CodexConfigArgs, "proxy"> = {},
-): void {
+  catalogDeps?: CodexCatalogDeps,
+): Promise<void> {
   // Caller passes an already-resolved mode; bare {} => Direct (see
   // configureCodexConfig). The never-silent-Direct guarantee is upstream at resolveDirectMode().
   const mode: ManagedAgentMode = args.proxy ? "proxy" : "direct";
@@ -536,6 +534,11 @@ export function applyCodexConfig(
     // script), so we only need the local proxy base URL here.
     options = { proxy: true, baseUrl: openaiBaseUrl(copilotApiResolvePort()) };
   }
+
+  // Seed the patched model catalog (best-effort, unthrottled) BEFORE the config
+  // write, so the very first wiring can already reference the file. The auth-time
+  // refresh (src/commands/auth.ts) keeps it fresh afterwards.
+  await generateCodexModelCatalog(mode, catalogDeps);
 
   if (configureCodexConfig(codexHome, options) !== 0) {
     throw new Error(
@@ -550,6 +553,37 @@ export function effectiveCodexHome(): string {
     process.env.CODEX_HOME ??
     path.join(homedir(), ".codex")
   );
+}
+
+/**
+ * Self-heal for the auth-time hooks: when a usable catalog exists but the managed
+ * config predates it (e.g. the wiring-time seed failed because the proxy was down
+ * or no credential existed yet, or the file was generated while mobile pairing had
+ * the provider stripped), add the `model_catalog_json` reference in place --
+ * WITHOUT re-running the full managed write, and only when the config currently
+ * selects OUR provider. The provider check keeps the key out during `agent codex
+ * --mobile` pairing, which strips `model_provider` to run the app on its default
+ * OpenAI provider (whose limits the patched catalog would misstate). Called on
+ * every auth resolution (one cheap TOML read; the write only fires when the key
+ * is actually missing). Best-effort: never throws.
+ */
+export function ensureCodexCatalogReferenced(): void {
+  try {
+    const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+    if (!isCatalogFileUsable(catalogFile)) return;
+    const configPath = path.join(effectiveCodexHome(), "config.toml");
+    const doc = parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    if (doc.model_provider !== CODEX_PROVIDER_ID) return;
+    // ADD-only: a present key -- ours or a user-pinned custom catalog path -- is
+    // never rewritten here. Enforcing OUR path over a custom one is the full
+    // managed write's job (configureCodexConfig), not a hot-path side effect.
+    if (doc.model_catalog_json !== undefined) return;
+    doc.model_catalog_json = catalogFile;
+    fs.writeFileSync(configPath, stringify(doc));
+  } catch {
+    // No config.toml (Codex never wired), unreadable TOML, or a write race:
+    // the next `agent codex`/`agent init` wiring writes the key anyway.
+  }
 }
 
 interface EffectiveCodexConfig {
@@ -636,7 +670,10 @@ export function detectCodexDirect(deps?: DirectProbeDeps): boolean {
  * Direct credential automatically; with no mode flag, its presence selects Direct
  * without probing.
  */
-export function runCodex(args: CodexConfigArgs): void {
+export async function runCodex(
+  args: CodexConfigArgs,
+  catalogDeps?: CodexCatalogDeps,
+): Promise<void> {
   assertSingleMode(args);
   if (args.check) {
     checkCodexConfig();
@@ -650,7 +687,10 @@ export function runCodex(args: CodexConfigArgs): void {
   logger.log(
     `  Configuring Codex for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} …`,
   );
-  applyCodexConfig(effectiveCodexHome(), { proxy: !direct });
+  // Reuse the just-resolved credential for the catalog seed's direct fetch so the
+  // gh-cli provider isn't shelled out to a second time.
+  const seedDeps = catalogDeps ?? (ghToken === null ? undefined : { directToken: ghToken });
+  await applyCodexConfig(effectiveCodexHome(), { proxy: !direct }, seedDeps);
 }
 
 /** The configured Codex provider mode at the effective CODEX_HOME (read-only). */

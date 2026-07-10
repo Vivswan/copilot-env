@@ -3,15 +3,17 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse } from "smol-toml";
-
+import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import {
   codexUserAgent,
   configureCodexConfig,
   DIRECT_ENV_KEY,
   detectCodexDirect,
+  ensureCodexCatalogReferenced,
   inspectCodexWiring,
   runCodex,
 } from "../src/codex/config.ts";
+import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { agentLauncherCommand, proxyTokenCommand } from "../src/utils/root.ts";
 
 const SAVED_HOME = process.env.HOME;
@@ -107,7 +109,7 @@ test("enforces every managed field while preserving unknown user keys", () => {
   const expected = agentLauncherCommand(["auth", "--get"]);
   expect(auth.command).toBe(expected.command);
   expect(auth.args).toEqual(expected.args);
-  expect(auth.timeout_ms).toBe(15000);
+  expect(auth.timeout_ms).toBe(30000);
   expect(auth.refresh_interval_ms).toBe(300000);
   // No baked token at rest.
   expect(provider.env_key).toBeUndefined();
@@ -308,7 +310,7 @@ test("formats Codex user-agent with dynamic version fallback", () => {
   expect(codexUserAgent(null)).toBe("codex_exec");
 });
 
-test("runCodex --proxy writes the proxy provider at CODEX_HOME", () => {
+test("runCodex --proxy writes the proxy provider at CODEX_HOME", async () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
   process.env.HOME = dir;
   process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
@@ -327,7 +329,7 @@ test("runCodex --proxy writes the proxy provider at CODEX_HOME", () => {
     ].join("\n"),
   );
 
-  runCodex({ proxy: true });
+  await runCodex({ proxy: true }, NOOP_CATALOG_DEPS);
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
@@ -340,7 +342,7 @@ test("runCodex --proxy writes the proxy provider at CODEX_HOME", () => {
   expect(existsSync(join(codexHome, ".env"))).toBe(false);
 });
 
-test("runCodex --proxy and --direct force the selected provider (no probe)", () => {
+test("runCodex --proxy and --direct force the selected provider (no probe)", async () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
   process.env.HOME = dir;
   process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
@@ -358,14 +360,14 @@ test("runCodex --proxy and --direct force the selected provider (no probe)", () 
     ].join("\n"),
   );
 
-  runCodex({ proxy: true });
+  await runCodex({ proxy: true }, NOOP_CATALOG_DEPS);
   let doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
   expect(asRecord(asRecord(doc.model_providers)["copilot-env"]).base_url).toBe(
     "http://127.0.0.1:4141/v1",
   );
 
-  runCodex({ direct: true });
+  await runCodex({ direct: true }, NOOP_CATALOG_DEPS);
   doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
   const directProvider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
@@ -373,7 +375,7 @@ test("runCodex --proxy and --direct force the selected provider (no probe)", () 
   // Toggling proxy -> direct must leave NO stale proxy-only key on the shared table.
   expect(directProvider.env_key).toBeUndefined();
 
-  expect(() => runCodex({ proxy: true, direct: true })).toThrow(
+  await expect(runCodex({ proxy: true, direct: true }, NOOP_CATALOG_DEPS)).rejects.toThrow(
     "--direct and --proxy are mutually exclusive",
   );
 });
@@ -453,4 +455,137 @@ test("proxy mode rejects a base_url containing invalid characters", () => {
     baseUrl: "http://bad url/v1",
   });
   expect(rc).toBe(1);
+});
+
+test("model_catalog_json is written when the catalog file exists (both modes)", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
+  process.env.HOME = dir;
+  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
+  const codexHome = join(dir, ".codex");
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  mkdirSync(join(dir, "copilot-api-home"), { recursive: true });
+  writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
+
+  expect(configureCodexConfig(codexHome, { codexExecVersion: "0.144.0" })).toBe(0);
+  let doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
+  expect(doc.model_catalog_json).toBe(catalogFile);
+
+  expect(
+    configureCodexConfig(codexHome, {
+      proxy: true,
+      baseUrl: "http://127.0.0.1:4141/v1",
+      codexExecVersion: "0.144.0",
+    }),
+  ).toBe(0);
+  doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
+  expect(doc.model_catalog_json).toBe(catalogFile);
+});
+
+test("a stale model_catalog_json is scrubbed when the catalog file is absent", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
+  process.env.HOME = dir;
+  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home"); // no catalog file here
+  const codexHome = join(dir, ".codex");
+  mkdirSync(codexHome, { recursive: true });
+  // Pre-seed a config referencing a catalog that no longer exists: a dangling
+  // model_catalog_json is a Codex STARTUP error, so the write must scrub it.
+  writeFileSync(
+    join(codexHome, "config.toml"),
+    ['model_catalog_json = "/nonexistent/codex-model-catalog.json"', ""].join("\n"),
+  );
+
+  expect(configureCodexConfig(codexHome, { codexExecVersion: "0.144.0" })).toBe(0);
+  const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
+  expect(doc.model_catalog_json).toBeUndefined();
+});
+
+test("a corrupt or empty catalog file is scrubbed like a missing one", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
+  process.env.HOME = dir;
+  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
+  const codexHome = join(dir, ".codex");
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  mkdirSync(join(dir, "copilot-api-home"), { recursive: true });
+  // Referencing a file Codex cannot parse is a startup error, same as a
+  // dangling path -- usability, not existence, gates the key.
+  writeFileSync(catalogFile, "{ corrupt");
+
+  expect(configureCodexConfig(codexHome, { codexExecVersion: "0.144.0" })).toBe(0);
+  const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
+  expect(doc.model_catalog_json).toBeUndefined();
+});
+
+test("ensureCodexCatalogReferenced self-heals a managed config missing the key", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
+  process.env.HOME = dir;
+  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
+  const codexHome = join(dir, ".codex");
+  process.env.CODEX_HOME = codexHome;
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  mkdirSync(join(dir, "copilot-api-home"), { recursive: true });
+  mkdirSync(codexHome, { recursive: true });
+
+  // The wiring-time seed failed (no catalog yet), so the managed config was
+  // written WITHOUT the key. The auth-time refresh later generates the file...
+  writeFileSync(
+    join(codexHome, "config.toml"),
+    ['model_provider = "copilot-env"', 'user_key = "kept"', ""].join("\n"),
+  );
+  writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
+
+  // ...and the post-refresh hook adds the reference in place.
+  ensureCodexCatalogReferenced();
+  const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
+  expect(doc.model_catalog_json).toBe(catalogFile);
+  expect(doc.user_key).toBe("kept");
+});
+
+test("ensureCodexCatalogReferenced never touches a config not on our provider", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
+  process.env.HOME = dir;
+  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
+  const codexHome = join(dir, ".codex");
+  process.env.CODEX_HOME = codexHome;
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  mkdirSync(join(dir, "copilot-api-home"), { recursive: true });
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
+
+  // No model_provider (the --mobile pairing shape) => leave the file alone.
+  const pairing = 'user_key = "kept"\n';
+  writeFileSync(join(codexHome, "config.toml"), pairing);
+  ensureCodexCatalogReferenced();
+  expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(pairing);
+
+  // A foreign provider => also untouched.
+  const foreign = 'model_provider = "openai"\n';
+  writeFileSync(join(codexHome, "config.toml"), foreign);
+  ensureCodexCatalogReferenced();
+  expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(foreign);
+
+  // No config.toml at all => a silent no-op.
+  rmSync(join(codexHome, "config.toml"));
+  ensureCodexCatalogReferenced();
+  expect(existsSync(join(codexHome, "config.toml"))).toBe(false);
+});
+
+test("ensureCodexCatalogReferenced is ADD-only: a user-pinned catalog path survives", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
+  process.env.HOME = dir;
+  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
+  const codexHome = join(dir, ".codex");
+  process.env.CODEX_HOME = codexHome;
+  mkdirSync(join(dir, "copilot-api-home"), { recursive: true });
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(new CopilotApiPaths().codexModelCatalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
+
+  const pinned = [
+    'model_provider = "copilot-env"',
+    'model_catalog_json = "/home/u/custom-catalog.json"',
+    "",
+  ].join("\n");
+  writeFileSync(join(codexHome, "config.toml"), pinned);
+
+  ensureCodexCatalogReferenced();
+  expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(pinned);
 });

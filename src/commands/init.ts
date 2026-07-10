@@ -34,7 +34,7 @@ export async function runInit(args: InitArgs): Promise<void> {
     await ensureAuthenticated();
   }
 
-  const { codex, claude } = configureBothAgents({ direct: args.direct, proxy: args.proxy });
+  const { codex, claude } = await configureBothAgents({ direct: args.direct, proxy: args.proxy });
 
   // A token is "in use" for guidance if one is now stored.
   printGuidance(codex, claude, new CopilotEnvState().read().githubToken !== null);

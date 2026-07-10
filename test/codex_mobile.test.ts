@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { parse } from "smol-toml";
 
 import {
+  readModelCatalogJson,
   readModelProvider,
   restoreModelProvider,
   stripModelProvider,
@@ -57,4 +58,30 @@ test("restoreModelProvider puts the provider back and round-trips through strip"
   // requires_openai_auth stays false after restore.
   const doc = asRecord(parse(restored));
   expect(asRecord(asRecord(doc.model_providers)["copilot-env"]).requires_openai_auth).toBe(false);
+});
+
+test("strip removes model_catalog_json; restore puts it back only when captured", () => {
+  // Top-level keys must precede any [table] in TOML, so prepend.
+  const config = `model_catalog_json = "/home/u/.local/share/copilot-api/codex-model-catalog.json"\n${CONFIG}`;
+  expect(readModelCatalogJson(config)).toBe(
+    "/home/u/.local/share/copilot-api/codex-model-catalog.json",
+  );
+
+  // Stripped alongside model_provider: pairing runs the real OpenAI provider,
+  // whose limits the Copilot-patched catalog would misstate.
+  const stripped = stripModelProvider(config);
+  expect(readModelCatalogJson(stripped)).toBe(null);
+
+  const restored = restoreModelProvider(
+    stripped,
+    "copilot-env",
+    "/home/u/.local/share/copilot-api/codex-model-catalog.json",
+  );
+  expect(readModelCatalogJson(restored)).toBe(
+    "/home/u/.local/share/copilot-api/codex-model-catalog.json",
+  );
+
+  // An absent key round-trips as absent (restore with null adds nothing).
+  const neverHad = restoreModelProvider(stripModelProvider(CONFIG), "copilot-env", null);
+  expect(readModelCatalogJson(neverHad)).toBe(null);
 });

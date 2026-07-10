@@ -59,7 +59,12 @@ test("the auth provider round-trips and clears alongside the token", () => {
 
   // `--del` clears both keys at once.
   state.set({ githubToken: null, authProvider: null });
-  expect(state.read()).toEqual({ githubToken: null, authProvider: null });
+  expect(state.read()).toEqual({
+    githubToken: null,
+    authProvider: null,
+    codexCatalogLastAttemptMs: 0,
+    codexCatalogCodexVersion: null,
+  });
 });
 
 test("the state lives in the shared home, independent of per-host .run state", () => {

@@ -9,7 +9,7 @@
 // token. copilot-api then proceeds down its normal default path -- correct vscode-chat
 // editor headers, the token as the bearer -- and `/models` + completions return 200.
 //
-// This is a RUNTIME shim, not a patch-package patch: it touches none of copilot-api's
+// This is a RUNTIME shim: it touches none of copilot-api's
 // files, so it never pins the floated proxy version. It depends only on copilot-api
 // using `globalThis.fetch` (the bun daemon does; `bindElectronFetch` only replaces it
 // inside the Electron app, never here) and on the exchange URL + `{ token, refresh_in }`

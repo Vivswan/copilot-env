@@ -19,11 +19,11 @@ Only the *why* lives here; the mechanics are discoverable in the code.
 - **In-place, no cache.** `bin/agent` installs `node_modules` into the checkout and runs
   `cli.ts` from there (resolution anchors at `PROJECT_ROOT`, `src/utils/root.ts`). Install
   noise goes to stderr so it never pollutes the `agent env` stdout the shell wrapper evals.
-- **The proxy floats; patching and floating are mutually exclusive.** `@jeffreycao/copilot-api`
+- **The proxy floats; we never patch it.** `@jeffreycao/copilot-api`
   is tracked as `latest`; `src/proxy_float.ts` (a `bun install` postinstall) overlays the
   newest release inside a supply-chain cooldown window, clamped to the floor/ceiling in
   `copilot-env.config`. The float is best-effort at install; `start.ts` enforces the floor as
-  a hard contract at launch. A `patch-package` patch pins one version, so we never patch —
+  a hard contract at launch. Patching the package would pin one version, so we never do —
   runtime needs are `bun --preload` shims instead (see the PAT shim below).
 - **`agent env` is the one machine-readable command.** The shell wrapper evals only `agent env`
   to refresh session state, so a new subcommand needs no wrapper change. Otherwise each agent's
@@ -115,8 +115,7 @@ refresh.
 - **camelCase** functions/vars, **PascalCase** types/classes, **CONSTANT_CASE** top-level
   constants; **snake_case only on object-literal keys** (external config keys), always quoted.
 - **No new deps without an explicit reason.** Current: `commander`, `consola`, `dotenv`,
-  `execa`, `semver`, `smol-toml`, `tar`, `valibot`, `which`, `ps-list`, `@jeffreycao/copilot-api`,
-  `patch-package`.
+  `execa`, `semver`, `smol-toml`, `tar`, `valibot`, `which`, `ps-list`, `@jeffreycao/copilot-api`.
 - **String literals are external contracts** — model ids, JSON keys, env var names, log
   markers: never rename them during refactors.
 - **ASCII source, except user-facing output.** Comments/identifiers/code are pure ASCII (no em

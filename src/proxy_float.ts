@@ -246,18 +246,6 @@ function resolveProxyTarget(ctx: FloatContext): Result<ProxyTarget> {
 
 // --- Install actions ----------------------------------------------------------
 
-function applyPatches(ctx: FloatContext): number {
-  const result = ctx.spawnRunner(
-    ctx.bun,
-    [join(ctx.root, "node_modules", "patch-package", "index.js")],
-    {
-      cwd: ctx.root,
-      stdio: ["ignore", process.stderr, "inherit"],
-    },
-  );
-  return result.status ?? 1;
-}
-
 function installProxySpec(ctx: FloatContext, spec: string, quiet = false): number {
   const result = ctx.spawnRunner(
     ctx.bun,
@@ -273,8 +261,7 @@ function installProxySpec(ctx: FloatContext, spec: string, quiet = false): numbe
     if (err) logger.warn(err);
   }
 
-  const status = result.status ?? 1;
-  return status === 0 ? applyPatches(ctx) : status;
+  return result.status ?? 1;
 }
 
 /** Log the proxy version now on disk after a (re)install. */

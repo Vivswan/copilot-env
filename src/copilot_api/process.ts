@@ -11,8 +11,8 @@ import { errMessage } from "../utils/error.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 
 // Resolve the bundled copilot-api entry by anchoring node's module resolution at
-// the in-place checkout where bootstrap installs the pinned dep + applies
-// patches. An explicit path anchor (not import.meta) so node walks up from a
+// the in-place checkout where bootstrap installs the pinned dep. An explicit path
+// anchor (not import.meta) so node walks up from a
 // stable directory looking for node_modules/.
 const rootRequire = createRequire(join(PROJECT_ROOT, "_anchor.js"));
 
@@ -197,8 +197,8 @@ export function launchDaemon(
   const logFd = openSync(logfile, "w");
   const devnull = openSync(devNull, "r");
   const entry = resolveCopilotApiEntry();
-  // bun flags go BEFORE the entry script, as `--preload <shim>` pairs (a runtime shim,
-  // NOT a patch-package patch, so neither pins the floated proxy version):
+  // bun flags go BEFORE the entry script, as `--preload <shim>` pairs (runtime shims
+  // that touch none of copilot-api's files, so neither pins the floated proxy version):
   //  - PAT passthrough wraps the daemon's globalThis.fetch to fake the editor token
   //    exchange so a PAT is used directly (see pat_passthrough_preload.ts).
   //  - the idle watchdog arms an in-daemon timer that exits the process when idle, so the

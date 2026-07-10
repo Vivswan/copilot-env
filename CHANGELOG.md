@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.18](https://github.com/Vivswan/copilot-env/compare/v3.3.17...v3.3.18) (2026-07-10)
+
+
+### Bug Fixes
+
+* **codex:** drop the Direct image-generation disable and its init caveat ([08fc1ad](https://github.com/Vivswan/copilot-env/commit/08fc1ada551c2dd526aa52ac5f6d96424d5de41c))
+
 ## [3.3.17](https://github.com/Vivswan/copilot-env/compare/v3.3.16...v3.3.17) (2026-07-09)
 
 

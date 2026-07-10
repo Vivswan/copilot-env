@@ -62,6 +62,9 @@ test("enforces every managed field while preserving unknown user keys", () => {
       "[my_custom]",
       'keep = "me"',
       "",
+      "[features]",
+      "image_generation = false",
+      "",
       "[model_providers.copilot-env]",
       'base_url = "https://stale.example"',
       'user_extra = "kept"',
@@ -81,7 +84,8 @@ test("enforces every managed field while preserving unknown user keys", () => {
   expect(asRecord(doc.my_custom).keep).toBe("me");
   expect(doc.model_provider).toBe("copilot-env");
   expect(doc.web_search).toBe("live");
-  // Direct disables image generation via a top-level [features] table.
+  // [features] is user content the writer never touches (the 3.3.17 migration heals
+  // the managed image-generation disable older releases wrote).
   expect(asRecord(doc.features).image_generation).toBe(false);
   // Direct talks to a public host, not the loopback proxy, so it does NOT open the sandbox.
   expect(doc.sandbox_workspace_write).toBeUndefined();
@@ -187,6 +191,10 @@ test("proxy mode enforces every managed field while preserving unknown user keys
       "[my_custom]",
       'keep = "me"',
       "",
+      "[features]",
+      "image_generation = false",
+      "user_feature = true",
+      "",
       "[model_providers.copilot-env]",
       'base_url = "http://stale:1/v1"',
       'env_key = "COPILOT_API_KEY"',
@@ -209,6 +217,10 @@ test("proxy mode enforces every managed field while preserving unknown user keys
   // Unknown user content survives, and our proxy is reselected as default.
   expect(asRecord(doc.my_custom).keep).toBe("me");
   expect(doc.model_provider).toBe("copilot-env");
+  expect(doc.web_search).toBe("live");
+  // [features] is user content the writer never touches, in proxy mode too.
+  expect(asRecord(doc.features).image_generation).toBe(false);
+  expect(asRecord(doc.features).user_feature).toBe(true);
 
   const provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
   expect(provider.base_url).toBe("http://localhost:4141/v1");
@@ -284,7 +296,7 @@ test("writes the managed direct default config when no provider section exists",
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
   expect(doc.web_search).toBe("live");
-  expect(asRecord(doc.features).image_generation).toBe(false);
+  expect(doc.features).toBeUndefined();
   const provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
   expect(provider.base_url).toBe("https://api.githubcopilot.com");
   expect(provider.supports_websockets).toBe(false);

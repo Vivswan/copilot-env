@@ -367,12 +367,12 @@ export function inspectCodexWiring(
 }
 
 // Seeded ONLY when no config.toml exists yet: select the requested provider and
-// disable telemetry. Provider TABLES are injected by the merge functions, so
-// they are intentionally absent here -- no duplication, no drift.
-function defaultConfig(mode: ManagedAgentMode): Record<string, unknown> {
+// disable telemetry. Provider TABLES are injected by the merge functions, and the
+// writer force-writes the managed top-level keys (web_search) right after loading,
+// so both are intentionally absent here -- no duplication, no drift.
+function defaultConfig(): Record<string, unknown> {
   return {
     "model_provider": CODEX_PROVIDER_ID,
-    ...(mode === "direct" ? { "web_search": "live" } : {}),
     "analytics": { "enabled": false },
     "feedback": { "enabled": false },
   };
@@ -380,7 +380,7 @@ function defaultConfig(mode: ManagedAgentMode): Record<string, unknown> {
 
 // Load the existing config at `hostConfig`, or seed the default template when
 // it is absent or unparseable.
-function loadOrCreateConfig(hostConfig: string, mode: ManagedAgentMode): Record<string, unknown> {
+function loadOrCreateConfig(hostConfig: string): Record<string, unknown> {
   try {
     if (fs.statSync(hostConfig).isFile()) {
       return parse(fs.readFileSync(hostConfig, "utf8")) as Record<string, unknown>;
@@ -388,7 +388,7 @@ function loadOrCreateConfig(hostConfig: string, mode: ManagedAgentMode): Record<
   } catch {
     // fall through to the default template
   }
-  return defaultConfig(mode);
+  return defaultConfig();
 }
 
 // Remove `key` from `$CODEX_HOME/.env` (any `export`-prefixed or duplicate
@@ -461,7 +461,7 @@ export function configureCodexConfig(
 
   const hostConfig = path.join(codexHome, "config.toml");
 
-  const doc = loadOrCreateConfig(hostConfig, mode);
+  const doc = loadOrCreateConfig(hostConfig);
 
   // Enforce our managed contract on every run: select the requested provider
   // as the default and (re)write EVERY managed field on its table --
@@ -470,20 +470,8 @@ export function configureCodexConfig(
   // same table; other providers, the [analytics]/[feedback] sections, and any
   // unknown top-level keys are left untouched.
   doc.model_provider = CODEX_PROVIDER_ID;
-  if (mode === "direct") {
-    doc.web_search = "live";
-    // Direct (GitHub Copilot) doesn't serve image generation; disable the feature
-    // so the app doesn't offer it. Merge so other [features] keys are preserved.
-    const features = isRecord(doc.features) ? doc.features : {};
-    features.image_generation = false;
-    doc.features = features;
-  } else {
-    // Proxy: image generation works via the proxy, so drop the direct-only
-    // disable (and the whole [features] table if it has nothing else).
-    if (isRecord(doc.features)) {
-      delete doc.features.image_generation;
-      if (Object.keys(doc.features).length === 0) delete doc.features;
-    }
+  doc.web_search = "live";
+  if (mode === "proxy") {
     // The proxy listens on loopback (127.0.0.1). Codex's native sandbox blocks loopback +
     // outbound for its sandboxed subprocesses (including the auth.command) in "offline" mode, so
     // the proxy-token resolver's liveness probe is refused and auth fails with exit 1. Enabling

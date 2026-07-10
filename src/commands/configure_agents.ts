@@ -116,16 +116,6 @@ export function printGuidance(
     section("Next steps", steps);
   }
 
-  // Codex-in-Direct caveat: Copilot Direct doesn't serve image generation, so the
-  // wrapper disables it (src/codex/config.ts). Point at the proxy escape hatch.
-  // Fold it into the bothDirect "Good to know"; otherwise give it its own section.
-  if (codex === "direct") {
-    const caveat =
-      "If you see a Codex image generation error, switch it to the proxy — `agent codex --proxy`, then `agent start`";
-    if (bothDirect) lines.push(`  • ${caveat}`);
-    else section("Good to know", [caveat]);
-  }
-
   if (bothDirect) {
     lines.push(
       "",

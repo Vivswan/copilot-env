@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.20](https://github.com/Vivswan/copilot-env/compare/v3.3.19...v3.3.20) (2026-07-10)
+
+
+### Bug Fixes
+
+* **deps:** remove patch-package entirely ([874edc4](https://github.com/Vivswan/copilot-env/commit/874edc4f8e169d2c7d8456ab47d6243d8cdde039))
+
 ## [3.3.19](https://github.com/Vivswan/copilot-env/compare/v3.3.18...v3.3.19) (2026-07-10)
 
 

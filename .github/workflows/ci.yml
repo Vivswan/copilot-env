@@ -198,9 +198,8 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     env:
       # A same-repo PR from release-please's branch namespace. The head-repo check
-      # matters: a fork can name its branch release-please--anything, and the
-      # release-please-branches ruleset (.github/settings.yml) only reserves the
-      # namespace inside THIS repo.
+      # matters: a fork can name its branch release-please--anything. Within this
+      # repo, only trusted collaborators and workflows can create branches at all.
       IS_RELEASE_PR: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--') && github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       - uses: actions/checkout@v7

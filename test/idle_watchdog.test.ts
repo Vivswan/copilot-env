@@ -110,6 +110,11 @@ test("idleTimeoutMs: 0 disables (<=0 means no watchdog); a malformed value falls
   process.env[IDLE_TIMEOUT_ENV] = "0";
   expect(idleTimeoutMs()).toBe(0);
 
+  // A negative value parses too (the env knob's contract: "0 or negative disables") -- a <=0
+  // result disables the watchdog via armIdleWatchdog, so it must NOT fall through to the default.
+  process.env[IDLE_TIMEOUT_ENV] = "-1";
+  expect(idleTimeoutMs()).toBe(-1000);
+
   // Non-numeric env -> falls through to config/default (a bad env must not crash the watchdog).
   process.env[IDLE_TIMEOUT_ENV] = "notanumber";
   expect(idleTimeoutMs()).toBe(DEFAULT_IDLE_TIMEOUT_SECONDS * 1000);

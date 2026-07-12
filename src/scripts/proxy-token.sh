@@ -21,10 +21,12 @@ suppressed_start=0
 
 if ! "$agent" start --check >/dev/null 2>&1; then
   if [ "$("$agent" config --get auto-start 2>/dev/null)" = "true" ]; then
-    # Managed lifecycle on (config auto-start): auto-start the proxy without asking. Output is
-    # suppressed so it can't pollute the eval'd token; remember we tried, to surface a hard
-    # failure below (else cl/cx would just exit silently on e.g. a bad credential).
-    "$agent" start >/dev/null 2>&1
+    # Managed lifecycle on (config auto-start): auto-start the proxy without asking. stdin is
+    # redirected from /dev/null so `agent start` runs NON-interactively -- otherwise, with no
+    # stored credential, it would render an auth prompt whose output is suppressed here (an
+    # invisible hang). Output is suppressed so it can't pollute the eval'd token; remember we
+    # tried, to surface a hard failure below (else cl/cx would exit silently on a bad credential).
+    "$agent" start </dev/null >/dev/null 2>&1
     suppressed_start=1
   elif [ "$yes" -ne 1 ]; then
     # Unmanaged + interactive (launcher): offer to start.

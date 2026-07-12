@@ -141,7 +141,11 @@ export interface ClaudeWiringStatus {
  */
 export function resolveClaudeHome(): string {
   if (process.env.CLAUDE_CONFIG_DIR) return process.env.CLAUDE_CONFIG_DIR;
-  return path.join(process.env.HOME || homedir(), ".claude");
+  // Use homedir() WITHOUT a process.env.HOME override, matching the codex-side contract
+  // (src/codex/config.ts): on Windows homedir() is %USERPROFILE% (where Claude Code reads),
+  // whereas HOME may be a Git-for-Windows/MSYS path -- the two must not diverge or `init`
+  // writes settings.json where Claude never looks. On POSIX homedir() already honors $HOME.
+  return path.join(homedir(), ".claude");
 }
 
 function settingsPathFor(claudeHome: string): string {

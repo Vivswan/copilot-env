@@ -17,20 +17,23 @@ $suppressedStart = $false
 if ($LASTEXITCODE -ne 0) {
   $autoStart = (& powershell @ps config --get auto-start 2> $null | Out-String).Trim()
   if ($autoStart -eq 'true') {
-    # Managed lifecycle on (config auto-start): auto-start without asking. Output suppressed so it
-    # can't pollute the eval'd token; remember we tried, to surface a hard failure below (else
-    # cl/cx exit silently on e.g. a bad credential).
-    & powershell @ps start *> $null
+    # Managed lifecycle on (config auto-start): auto-start without asking. Piping $null gives the
+    # child an empty (non-TTY) stdin so `agent start` runs NON-interactively -- otherwise, with no
+    # stored credential, it would render an auth prompt whose output is suppressed here (an
+    # invisible hang). Output suppressed so it can't pollute the eval'd token; remember we tried,
+    # to surface a hard failure below (else cl/cx exit silently on a bad credential).
+    $null | & powershell @ps start *> $null
     $suppressedStart = $true
   } elseif (-not $yes) {
     # Unmanaged + interactive (launcher): offer to start.
     [Console]::Error.Write('copilot proxy not running. Start it now? [Y/n] ')
     $ans = Read-Host
     if ($ans -eq '' -or $ans -match '^(y|Y|yes|Yes)$') {
-      # Discard stdout (the success stream) so it can't mix with the key; the proxy's
-      # progress goes to stderr (error stream), which stays visible. (`*>&2` is invalid
-      # PowerShell -- only merge-to-success `*>&1` exists.)
-      & powershell @ps start 1> $null
+      # Send the child's stdout (success stream, where consola progress goes) to OUR stderr so
+      # it stays VISIBLE while our stdout stays clean for the key -- matching the .sh twin's
+      # `>&2`. `1>&2` is INVALID in Windows PowerShell (you can only merge into stream 1), so
+      # pipe stdout through [Console]::Error.WriteLine (the repo's established pattern).
+      & powershell @ps start | ForEach-Object { [Console]::Error.WriteLine($_) }
     } else {
       [Console]::Error.WriteLine("Continuing without the proxy; proxy-backed agents need it (run 'agent start').")
     }

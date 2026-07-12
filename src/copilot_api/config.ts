@@ -1,17 +1,10 @@
 // File-backed proxy config helper for config.json and persistent API keys.
 import { randomBytes } from "node:crypto";
-import {
-  chmodSync,
-  linkSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { consola } from "consola";
 
+import { releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
 import { isFile } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { sleepSync } from "../utils/time.ts";
@@ -26,150 +19,27 @@ const LOAD_RETRY_MS = 4;
 
 // --- cross-process advisory lock for update()'s read-modify-write ---
 //
-// A `<file>.lock` sidecar serializes concurrent update() calls to the SAME store file across
-// processes (the CLI, the daemon shims, several shells at once) so their load-mutate-saves
-// don't lost-update one another -- e.g. a `start --record-event` heartbeat clobbering a fresh
-// pid/port, an `auth --del` being undone by a concurrent catalog-throttle write, or two
-// ensureApiKey callers each minting a key.
-//
-// It is a BEST-EFFORT advisory lock, not a hard mutex: perfect cross-process mutual exclusion
-// needs OS advisory locks (flock/fcntl) that the portable Node/bun fs API doesn't expose, so we
-// build on atomic filesystem primitives (linkSync to publish, renameSync to steal) and accept a
-// vanishingly small residual race that also requires a CRASHED holder plus precisely-timed
-// racers. In the COMMON path (no crash) it is exact. Two backstops keep a crashed or leaked lock
-// from wedging the store forever: after LOCK_WAIT_MS we proceed WITHOUT the lock rather than
-// deadlock a command, and a lock whose holder pid is dead (or which is older than LOCK_STALE_MS)
-// is reclaimed. Because a real update() is a millisecond-scale read-modify-write, a LIVE holder
-// is never seen stale and the wait effectively never expires -- the backstops only ever reclaim
-// a dead holder.
+// update() takes a best-effort `<file>.lock` (shared implementation in utils/file_lock.ts) so
+// concurrent read-modify-writes to the SAME store file across processes (the CLI, the daemon
+// shims, several shells at once) don't lost-update one another -- e.g. a `start --record-event`
+// heartbeat clobbering a fresh pid/port, an `auth --del` undone by a concurrent catalog-throttle
+// write, or two ensureApiKey callers each minting a key. It is BEST-EFFORT, not a hard mutex:
+// after a bounded wait we proceed WITHOUT the lock rather than deadlock a command, and a lock
+// whose holder pid is dead or is older than LOCK_STALE_MS is reclaimed. Since a real update() is
+// a millisecond-scale read-modify-write, a live holder is never seen stale and the wait
+// effectively never expires -- the backstops only ever reclaim a crashed/leaked lock.
 const LOCK_STALE_MS = 10_000;
 const LOCK_WAIT_MS = 4_000;
 const LOCK_RETRY_MS = 15;
 
-/** Alive check without importing the heavier process.ts (avoids a module cycle). EPERM means
- *  the pid exists but this token can't signal it -- still alive. */
-function pidAliveLocal(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-/** Create the lock file with its content already in place. Writes a unique temp file, then
- *  hard-links it to `lockPath` -- linkSync is atomic and fails EEXIST if the lock is held, and
- *  a successful link exposes the FULLY-WRITTEN file in one step (so a concurrent reader never
- *  sees an empty lock and mistakes a live holder for stale). Returns false if held or on any
- *  error (treated as "couldn't lock" -- never throws out of a store write). */
-function tryCreateLock(lockPath: string): boolean {
-  const tmp = `${lockPath}.tmp.${process.pid}.${Date.now()}`;
-  try {
-    writeFileSync(tmp, `${process.pid}\n${Date.now()}\n`);
-  } catch {
-    return false;
-  }
-  try {
-    linkSync(tmp, lockPath);
-    return true;
-  } catch {
-    return false; // EEXIST (held) or an unexpected error -> proceed as unlocked
-  } finally {
-    try {
-      rmSync(tmp, { force: true }); // the hard link keeps the inode; the temp name is disposable
-    } catch {
-      // ignore
-    }
-  }
-}
-
-/** Read the lock file's raw marker (`${pid}\n${ts}\n`), or null if absent/unreadable. */
-function readLockRaw(lockPath: string): string | null {
-  try {
-    return readFileSync(lockPath, "utf8");
-  } catch {
-    return null;
-  }
-}
-
-/** Whether a raw lock marker is stale: its holder pid is dead or it is older than
- *  LOCK_STALE_MS. A malformed marker reads stale (reclaim). */
-function markerStale(raw: string): boolean {
-  const [pidStr, tsStr] = raw.split("\n");
-  const pid = Number.parseInt(pidStr ?? "", 10);
-  const ts = Number.parseInt(tsStr ?? "", 10);
-  if (Number.isNaN(pid) || pid <= 0 || Number.isNaN(ts)) return true;
-  return Date.now() - ts > LOCK_STALE_MS || !pidAliveLocal(pid);
-}
-
-/** Acquire the lock, stealing a stale one, within a bounded wait. Returns whether it is held
- *  (false => the caller proceeds unlocked). */
+/** Acquire the store lock within a bounded SYNC wait (update() is synchronous), proceeding
+ *  unlocked if it can't -- best-effort, never deadlocks. */
 function acquireStoreLock(lockPath: string): boolean {
-  // Ensure the store directory exists so the lock's temp-file write can't ENOENT-fail forever
-  // on the first write to a fresh home (save() creates it too, but that runs AFTER this).
-  try {
-    mkdirSync(dirname(lockPath), { recursive: true });
-  } catch {
-    // if we can't even create the dir, tryCreateLock will fail and we proceed unlocked
-  }
   const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
-    if (tryCreateLock(lockPath)) return true;
-    const observed = readLockRaw(lockPath);
-    if (observed !== null && markerStale(observed)) {
-      // Steal, but ONLY the exact stale lock we observed. renameSync atomically yanks whatever
-      // is at lockPath; we then confirm the yanked marker MATCHES `observed`. If it does, the
-      // stale lock was ours to reclaim -> drop it. If it does NOT (a fresh holder replaced the
-      // stale lock between our read and the rename -- the race a plain rename-steal would lose),
-      // restore it via linkSync, which fails EEXIST rather than clobbering a lock a third
-      // process may have created meanwhile, and do NOT steal. Then re-create exclusively;
-      // linkSync in tryCreateLock means at most one winner.
-      const claimed = `${lockPath}.steal.${process.pid}.${Date.now()}`;
-      let yanked: string | null = null;
-      try {
-        renameSync(lockPath, claimed);
-        yanked = readLockRaw(claimed);
-      } catch {
-        yanked = null; // someone else already moved/removed it
-      }
-      if (yanked !== null) {
-        if (yanked === observed) {
-          try {
-            rmSync(claimed, { force: true }); // reclaimed the stale lock
-          } catch {
-            // ignore
-          }
-        } else {
-          // Yanked a DIFFERENT (fresh) lock -> put it back without clobbering, don't steal.
-          // linkSync fails (EEXIST, or any other fs error) rather than overwriting a lock a
-          // third process may have created meanwhile; on failure we simply don't restore and
-          // the yanked holder re-locks on its next update.
-          try {
-            linkSync(claimed, lockPath);
-          } catch {
-            // lockPath re-occupied / fs error -> leave it; the yanked holder re-locks next update
-          }
-          try {
-            rmSync(claimed, { force: true });
-          } catch {
-            // ignore
-          }
-        }
-      }
-      if (tryCreateLock(lockPath)) return true;
-    }
+    if (tryAcquireFileLock(lockPath, LOCK_STALE_MS)) return true;
     if (Date.now() >= deadline) return false;
     sleepSync(LOCK_RETRY_MS);
-  }
-}
-
-/** Release the lock, but only if it is still OURS (pid match) -- never delete a successor's. */
-function releaseStoreLock(lockPath: string): void {
-  try {
-    const pid = Number.parseInt(readFileSync(lockPath, "utf8").split("\n")[0] ?? "", 10);
-    if (pid === process.pid) rmSync(lockPath, { force: true });
-  } catch {
-    // gone / unreadable -> nothing to release
   }
 }
 
@@ -283,7 +153,7 @@ export class CopilotApiConfig {
       this.save(data);
       return data;
     } finally {
-      if (held) releaseStoreLock(lockPath);
+      if (held) releaseFileLock(lockPath);
     }
   }
 

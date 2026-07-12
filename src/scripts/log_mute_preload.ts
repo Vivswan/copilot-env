@@ -2,13 +2,13 @@
 // key is false (`agent config --set proxy-logs false`). launchDaemon always starts the proxy
 // with `--verbose`, so its handler loggers append full request/response payload dumps under
 // <home>/logs -- gigabytes per week on a busy proxy. This shim intercepts
-// `fs.createWriteStream` for paths inside that directory and swaps in a sink that DISCARDS
-// the content but still touches the file's mtime on every flush.
+// `fs.createWriteStream` for paths inside that directory and swaps in a sink that discards
+// every chunk, so the files are never created and the directory stays empty.
 //
-// The mtime touch is load-bearing, not cosmetic: the idle watchdog (idle_watchdog.ts) and
-// `agent health` read the INFERENCE handler logs' mtimes as the "last real model call"
-// activity signal. Discarding writes without the touch would starve that signal and let the
-// managed lifecycle auto-stop a proxy that is actively serving requests.
+// Pure discard is safe because activity detection does not read these logs: the idle
+// watchdog and `agent health` get their inference-activity signal from the in-daemon
+// inference observer (inference_activity_preload.ts, always loaded), which watches inbound
+// requests directly.
 //
 // This is a RUNTIME shim: it touches none of copilot-api's files, so it never pins the
 // floated proxy version. It depends only on copilot-api opening its handler log streams via
@@ -34,34 +34,15 @@ function isUnderLogsDir(target: unknown): boolean {
   return typeof target === "string" && normalizeCase(resolve(target)).startsWith(LOGS_PREFIX);
 }
 
-/** Best-effort: ensure the log file exists and bump its mtime (the activity signal). A
- *  persistent failure would starve the idle watchdog's inference signal, so it is worth one
- *  warning per file in the daemon log -- but never more (this runs on every flush). */
-const warnedTouchFailures = new Set<string>();
-function touchLogFile(path: string): void {
-  try {
-    fs.closeSync(fs.openSync(path, "a"));
-    const now = new Date();
-    fs.utimesSync(path, now, now);
-  } catch (e) {
-    // a failed touch only degrades the idle signal; never break the daemon over it
-    if (!warnedTouchFailures.has(path)) {
-      warnedTouchFailures.add(path);
-      console.warn(`log mute: could not touch ${path} (the idle-activity signal degrades):`, e);
-    }
-  }
-}
-
-/** A Writable that discards every chunk, touching the log file instead of growing it. */
-function muteSink(path: string): fs.WriteStream {
+/** A Writable that discards every chunk. The proxy's logger only uses the surface Writable
+ *  already provides (write/end/destroyed/on("error")), so presenting it as a WriteStream is
+ *  safe for its call sites. */
+function muteSink(): fs.WriteStream {
   const sink = new Writable({
     write(_chunk, _encoding, callback): void {
-      touchLogFile(path);
       callback();
     },
   });
-  // The proxy's logger only uses the surface Writable already provides (write/end/destroyed/
-  // on("error")), so presenting the sink as a WriteStream is safe for its call sites.
   return sink as unknown as fs.WriteStream;
 }
 
@@ -70,6 +51,6 @@ const mutedCreateWriteStream = (
   ...args: Parameters<typeof fs.createWriteStream>
 ): fs.WriteStream => {
   const [path] = args;
-  return isUnderLogsDir(path) ? muteSink(String(path)) : realCreateWriteStream(...args);
+  return isUnderLogsDir(path) ? muteSink() : realCreateWriteStream(...args);
 };
 fs.createWriteStream = mutedCreateWriteStream as typeof fs.createWriteStream;

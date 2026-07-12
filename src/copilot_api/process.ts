@@ -200,13 +200,18 @@ export function launchDaemon(
   const entry = resolveCopilotApiEntry();
   // bun flags go BEFORE the entry script, as `--preload <shim>` pairs (runtime shims
   // that touch none of copilot-api's files, so neither pins the floated proxy version):
+  //  - the inference-activity observer (ALWAYS loaded) wraps Bun.serve so inbound inference
+  //    POSTs are recorded for the idle watchdog and `agent health` (see inference_activity.ts).
   //  - PAT passthrough wraps the daemon's globalThis.fetch to fake the editor token
   //    exchange so a PAT is used directly (see pat_passthrough_preload.ts).
   //  - the idle watchdog arms an in-daemon timer that exits the process when idle, so the
   //    server and its watchdog are one unit (see idle_watchdog.ts).
-  //  - the log mute discards the daemon's handler-log writes under <home>/logs while still
-  //    touching their mtimes, the watchdog/health activity signal (see log_mute_preload.ts).
-  const bunFlags: string[] = [];
+  //  - the log mute discards the daemon's handler-log writes under <home>/logs
+  //    (see log_mute_preload.ts).
+  const bunFlags: string[] = [
+    "--preload",
+    join(PROJECT_ROOT, "src/scripts/inference_activity_preload.ts"),
+  ];
   if (patPassthrough) {
     bunFlags.push("--preload", join(PROJECT_ROOT, "src/scripts/pat_passthrough_preload.ts"));
   }

@@ -3,21 +3,20 @@
 // the watchdog with it, and when the watchdog trips it stops the server by exiting the process
 // -- no separate pid, no orphan in either direction, and every daemon (re)start re-attaches it.
 //
-// Activity is the most recent of the proxy's INFERENCE handler-log mtime (real model calls --
-// POST /v1/responses, /v1/messages -- which the daemon writes under <home>/logs) and the
+// Activity is the most recent of the in-process inference observer's mark (inbound inference
+// POSTs -- /v1/responses, /v1/messages, etc. -- seen at the request layer; see
+// inference_activity.ts) and the
 // `start --record-event` heartbeat (an open agent re-runs its proxy resolver on a refresh
-// interval). Liveness pings (GET /, GET /v1/models) are deliberately NOT activity: they go to
-// the daemon access log, not the handler logs, so `agent health` probes and shell/keepalive
-// pings never reset the idle timer. Idle past the timeout -> the daemon exits.
+// interval). Liveness pings (GET /, GET /v1/models) are deliberately NOT activity -- the
+// observer only marks inference POSTs -- so `agent health` probes and shell/keepalive pings
+// never reset the idle timer. Idle past the timeout -> the daemon exits.
 //
 // This module is import-safe -- it never arms a timer on import, so unit tests can exercise the
 // pure helpers. idle_watchdog_preload.ts is the tiny `bun --preload` entry that arms it (and is
 // never imported by tests), the same split pat_passthrough_preload.ts gets from its own file.
-import { readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
+import { lastObservedInferenceMs } from "./inference_activity.ts";
 
 /** Env knob: idle timeout in whole seconds. `0` (or negative) disables the watchdog. */
 export const IDLE_TIMEOUT_ENV = "COPILOT_API_IDLE_TIMEOUT";
@@ -59,53 +58,29 @@ export function isIdle(lastActivityMs: number, now: number, timeoutMs: number): 
 }
 
 /**
- * The most recent mtime (epoch ms) across the proxy's INFERENCE handler logs -- the
- * `responses-handler-*.log` (Codex) and `messages-handler-*.log` (Claude) files under
- * <home>/logs -- or 0 when there are none. This is the activity signal the watchdog and
- * `agent health` trust: it tracks real model calls but NOT liveness/model-list pings (GET /,
- * GET /v1/models, which write the access log / models-handler logs instead), so observing the
- * proxy never perturbs it. Per-file failures are skipped so one vanishing log can't zero it.
- */
-export function lastInferenceActivityMs(): number {
-  const dir = new CopilotApiPaths().logsDir;
-  let names: string[];
-  try {
-    names = readdirSync(dir);
-  } catch {
-    return 0; // logs dir absent => no inference yet
-  }
-  let max = 0;
-  for (const name of names) {
-    if (!name.endsWith(".log")) continue;
-    if (!name.startsWith("responses-handler") && !name.startsWith("messages-handler")) continue;
-    try {
-      const m = statSync(join(dir, name)).mtimeMs;
-      if (m > max) max = m;
-    } catch {
-      // a file vanishing/locked mid-scan must not zero the signal for the others
-    }
-  }
-  return max;
-}
-
-/**
  * One idle check, run on the interval inside the daemon. If the managed lifecycle was
  * turned off (the `auto-start` config key set to false) we disengage and leave the daemon
  * running.
  * Otherwise, when idle past the timeout, clear our run-state tracking (best-effort) and
  * stop the server by exiting this process. `startedAtMs` floors activity so a freshly
  * launched, quiet daemon is not considered idle before its first request/heartbeat.
+ * Activity: the in-process observer's mark (same process, always current -- the persisted
+ * `.activity.json` copy exists for out-of-process readers, not for us) and the run-state
+ * `lastEnsureAt` resolver heartbeat.
  */
 export function idleCheck(startedAtMs: number, timeoutMs: number): void {
   if (!new CopilotEnvConfig().autoStartEnabled()) return; // lifecycle disabled -> stay up
   const state = new CopilotEnvRunState();
   const snapshot = state.read();
-  const lastActivity = Math.max(startedAtMs, lastInferenceActivityMs(), snapshot.lastEnsureAt ?? 0);
+  const lastActivity = Math.max(startedAtMs, lastObservedInferenceMs(), snapshot.lastEnsureAt ?? 0);
   if (!isIdle(lastActivity, Date.now(), timeoutMs)) return;
   // Clear our run-state tracking, but ONLY if it still points at THIS daemon. clearIfPid
   // does the pid check INSIDE the atomic read-modify-write, so a newer daemon that replaced
   // us between ticks can't have its freshly written pid/port clobbered. We exit either way
-  // (this daemon is idle / has been replaced).
+  // (this daemon is idle / has been replaced). The persisted `.activity.json` mark is left
+  // alone on purpose: it can't be pid-guarded (separate file), so deleting it here could
+  // clobber a successor daemon's mark -- `agent stop` (explicit teardown) removes it instead,
+  // and a leftover mark is only ever a health-display detail.
   try {
     state.clearIfPid(process.pid);
   } catch {

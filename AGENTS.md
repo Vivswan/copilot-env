@@ -62,7 +62,11 @@ Only the *why* lives here; the mechanics are discoverable in the code.
   headless) skip starting while non-`--yes` callers (the launcher) prompt; then it prints the
   key only if the proxy is up. Auto-stop is an **in-daemon watchdog**
   (`src/scripts/idle_watchdog_preload.ts`, `bun --preload`-ed into the proxy) gated on the
-  same flag, so server and watchdog are one process and neither can orphan the other. OFF
+  same flag, so server and watchdog are one process and neither can orphan the other. Its
+  activity signal is an always-loaded **inbound-request observer**
+  (`src/scripts/inference_activity_preload.ts`, wrapping `Bun.serve`): only inference POSTs
+  count, so health/liveness pings never reset the idle clock -- and muting the proxy's
+  verbose handler logs (`proxy-logs false`) can't starve it. OFF
   (default): manage the proxy yourself with `agent start` / `agent stop`. Idle window:
   `COPILOT_API_IDLE_TIMEOUT` env / `idle-timeout` config (default 3600; `0` disables).
 - **A PAT works through a runtime shim.** A classic/fine-grained PAT can't perform copilot-api's
@@ -85,8 +89,9 @@ Only the *why* lives here; the mechanics are discoverable in the code.
 - `src/copilot_api/` — proxy helpers: admin REST, JSON config/state, model aliases, per-host
   paths, daemon process control.
 - `src/scripts/` — runtime scripts that run as their OWN process or preload, NOT CLI handlers:
-  `proxy-token.{sh,ps1}` (proxy-mode credential resolver) and the two `bun --preload` daemon
-  shims `pat_passthrough_preload.ts` + `idle_watchdog_preload.ts`.
+  `proxy-token.{sh,ps1}` (proxy-mode credential resolver) and the `bun --preload` daemon
+  shims: `inference_activity_preload.ts` (always), `pat_passthrough_preload.ts`,
+  `idle_watchdog_preload.ts`, `log_mute_preload.ts` (each conditional).
 - `src/install/`, `src/migrations/`, `src/usage/`, `src/utils/` — release download/verify,
   version-step fix-ups, `cost` reporting, generic helpers.
 - `copilot-env.config` — proxy-float floor/ceiling. `test/` — `bun test` units + a start/stop

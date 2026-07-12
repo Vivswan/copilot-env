@@ -4,7 +4,7 @@
 // command did). Pure sub-evaluators (evalShellFiles, evalCodex) take raw content
 // so they unit-test without touching the world.
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { type AutoupdateData, AutoupdateState } from "../autoupdate/state.ts";
@@ -35,7 +35,8 @@ import {
   proxyVersionBoundsStatus,
 } from "../copilot_api/version.ts";
 import { nodeModulesFresh, resolveMinimumReleaseAgeSeconds } from "../proxy_float.ts";
-import { idleTimeoutMs, lastInferenceActivityMs } from "../scripts/idle_watchdog.ts";
+import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
+import { persistedInferenceMs } from "../scripts/inference_activity.ts";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
 import {
   CLAUDE_PROBE,
@@ -89,11 +90,12 @@ export interface RuntimeFacts {
 
 /**
  * Idle-watchdog inputs the proxy exposes externally: the managed-lifecycle gate, the effective
- * idle window, and the two activity signals the in-daemon watchdog uses -- the `lastEnsureAt`
- * heartbeat and `lastRequestMs`, the mtime of the proxy's inference handler logs (real model
- * calls, NOT liveness `GET /` pings, so health's own probes never move it). `now` is the
- * snapshot the report computes "remaining" against, captured at probe time so the evaluator
- * stays pure.
+ * idle window, and the two activity signals -- the `lastEnsureAt` heartbeat and
+ * `lastRequestMs`, the most recent inference request as recorded by the daemon's in-process
+ * observer (`.activity.json`), with the inference handler-log mtimes as a fallback for
+ * daemons started by an older copilot-env. Neither moves on liveness `GET /` pings, so
+ * health's own probes never perturb what they report. `now` is the snapshot the report
+ * computes "remaining" against, captured at probe time so the evaluator stays pure.
  */
 export interface WatchdogFacts {
   autoStart: boolean;
@@ -236,8 +238,9 @@ export interface ProbeDeps {
   now(): number;
   idleTimeoutMs(): number;
   autoStartEnabled(): boolean;
-  /** Mtime (epoch ms) of the proxy's inference handler logs -- the watchdog activity signal --
-   *  or null when there has been no real model call. NOT moved by liveness `GET /` pings. */
+  /** Epoch ms of the most recent inference request -- the daemon observer's persisted mark
+   *  (`.activity.json`), falling back to handler-log mtimes for older daemons -- or null when
+   *  there has been none. NOT moved by liveness `GET /` pings. */
   lastRequestMs(): number | null;
   commandResolved(command: string): string | null;
   agentClis(): readonly { command: string; name: string }[];
@@ -264,6 +267,37 @@ export interface ProbeDeps {
   /** `--live` end-to-end prompts against the configured Codex/Claude homes. */
   codexLive(home: string): Promise<LiveProbeFacts>;
   claudeLive(home: string): Promise<LiveProbeFacts>;
+}
+
+/**
+ * Fallback `lastRequestMs` source: the newest mtime (epoch ms) across the proxy's inference
+ * handler logs (`responses-handler-*.log` / `messages-handler-*.log` under <home>/logs), or 0
+ * when there are none. Daemons launched by THIS copilot-env persist activity to
+ * `.activity.json` via the in-process inference observer; the log mtimes only matter for a
+ * daemon started by an older copilot-env (and say nothing when `proxy-logs` is off, which
+ * discards the files). Per-file failures are skipped so one vanishing log can't zero the
+ * signal. Exported for tests.
+ */
+export function inferenceHandlerLogMtimeMs(): number {
+  const dir = new CopilotApiPaths().logsDir;
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return 0; // logs dir absent => nothing recorded
+  }
+  let max = 0;
+  for (const name of names) {
+    if (!name.endsWith(".log")) continue;
+    if (!name.startsWith("responses-handler") && !name.startsWith("messages-handler")) continue;
+    try {
+      const m = statSync(join(dir, name)).mtimeMs;
+      if (m > max) max = m;
+    } catch {
+      // a file vanishing/locked mid-scan must not zero the signal for the others
+    }
+  }
+  return max;
 }
 
 /** Probe the URL: any HTTP response (even an error status) means "reachable". */
@@ -427,7 +461,7 @@ export function defaultProbeDeps(): ProbeDeps {
     idleTimeoutMs: () => idleTimeoutMs(),
     autoStartEnabled: () => new CopilotEnvConfig().autoStartEnabled(),
     lastRequestMs: () => {
-      const m = lastInferenceActivityMs();
+      const m = Math.max(persistedInferenceMs(), inferenceHandlerLogMtimeMs());
       return m > 0 ? m : null;
     },
     paths: () => {
@@ -647,8 +681,9 @@ export async function gatherFacts(
             autoStart: deps.autoStartEnabled(),
             idleTimeoutMs: deps.idleTimeoutMs(),
             lastEnsureAt: state.lastEnsureAt ?? null,
-            // Reads the inference handler-log mtime, which our own reach/identity GET / probes
-            // do NOT write to -- so health observing the proxy never moves these numbers.
+            // The observer's persisted mark (+ log-mtime fallback); our own reach/identity
+            // GET / probes are not inference POSTs, so health observing the proxy never
+            // moves these numbers.
             lastRequestMs: deps.lastRequestMs(),
             now: deps.now(),
           },

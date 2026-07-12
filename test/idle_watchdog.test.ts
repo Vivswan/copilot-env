@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
@@ -12,14 +12,18 @@ import {
   idleCheck,
   idleTimeoutMs,
   isIdle,
-  lastInferenceActivityMs,
 } from "../src/scripts/idle_watchdog.ts";
+import {
+  markInference,
+  resetInferenceActivityForTests,
+} from "../src/scripts/inference_activity.ts";
 
 const SAVED = process.env[IDLE_TIMEOUT_ENV];
 const SAVED_HOME = process.env.COPILOT_API_HOME;
 let dir = "";
 
 afterEach(() => {
+  resetInferenceActivityForTests();
   if (SAVED === undefined) delete process.env[IDLE_TIMEOUT_ENV];
   else process.env[IDLE_TIMEOUT_ENV] = SAVED;
   if (SAVED_HOME === undefined) delete process.env.COPILOT_API_HOME;
@@ -36,32 +40,48 @@ function tmpHome(): void {
   process.env.COPILOT_API_HOME = dir;
 }
 
-test("lastInferenceActivityMs: newest responses/messages handler-log mtime; ignores other files", () => {
+test("idleCheck: recent observed inference keeps a long-started daemon alive", () => {
   tmpHome();
-  const logs = join(dir, "logs");
-  mkdirSync(logs, { recursive: true });
-  const write = (name: string, mtimeSec: number) => {
-    const p = join(logs, name);
-    writeFileSync(p, "x");
-    utimesSync(p, mtimeSec, mtimeSec); // atime, mtime in seconds
-  };
-  // Inference logs: the newest of these two should win.
-  write("responses-handler-2026-06-26.log", 1000);
-  write("messages-handler-2026-06-27.log", 2000); // newest inference -> the answer
-  // Non-inference / non-matching files with EVEN NEWER mtimes must be ignored.
-  write("models-handler-2026-06-28.log", 9000); // model-list polling, not inference
-  write(".log", 9999); // the daemon access log (liveness GET / lands here)
-  write("notes.txt", 9999);
-
-  expect(lastInferenceActivityMs()).toBe(2000 * 1000); // mtimeMs of the newest inference log
+  // Managed lifecycle ON, started long ago, tiny timeout -- WOULD exit if idle. A fresh
+  // in-memory inference mark (what the observer records on a real model call) must hold it up.
+  new CopilotEnvConfig().set({ autoStart: true });
+  const state = new CopilotEnvRunState();
+  state.set({ pid: process.pid, port: 4141 });
+  markInference(Date.now());
+  const realExit = process.exit;
+  process.exit = ((code?: number): never => {
+    throw new Error(`idleCheck unexpectedly exited (${code})`);
+  }) as typeof process.exit;
+  try {
+    idleCheck(0, 60_000); // started at epoch, 1-minute window: only the mark is recent
+  } finally {
+    process.exit = realExit;
+  }
+  expect(state.read().pid).toBe(process.pid); // never cleared -- the daemon stayed up
 });
 
-test("lastInferenceActivityMs: returns 0 when there are no inference logs (or no logs dir)", () => {
+test("idleCheck: with no activity past the window, clears run state and exits", () => {
   tmpHome();
-  expect(lastInferenceActivityMs()).toBe(0); // logs dir absent
-  mkdirSync(join(dir, "logs"), { recursive: true });
-  writeFileSync(join(dir, "logs", ".log"), "x"); // only the access log, no handler logs
-  expect(lastInferenceActivityMs()).toBe(0);
+  new CopilotEnvConfig().set({ autoStart: true });
+  const state = new CopilotEnvRunState();
+  state.set({ pid: process.pid, port: 4141, lastEnsureAt: 1 });
+  const realExit = process.exit;
+  let exitCode: number | undefined = -1;
+  process.exit = ((code?: number): never => {
+    exitCode = code;
+    throw new Error("exit"); // idleCheck ends here, like the real process.exit
+  }) as typeof process.exit;
+  try {
+    expect(() => idleCheck(2, 1)).toThrow("exit"); // all marks ancient -> idle -> exit(0)
+  } finally {
+    process.exit = realExit;
+  }
+  expect(exitCode).toBe(0);
+  // clearIfPid wiped the daemon tracking (pid matches this process).
+  const after = state.read();
+  expect(after.pid).toBeUndefined();
+  expect(after.port).toBeUndefined();
+  expect(after.lastEnsureAt).toBeUndefined();
 });
 
 test("idleTimeoutMs: default is 1 hour; the env knob overrides in whole seconds", () => {

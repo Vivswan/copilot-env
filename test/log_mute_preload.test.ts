@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -35,8 +36,8 @@ function runPreloaded(home: string, script: string): string {
 }
 
 // Mirrors the proxy logger's own usage: append-mode stream, write(content, cb), end().
-// The handler log is SEEDED by the test with an old mtime before this runs, so the fresh
-// mtime assertion proves the sink's utimes touch, not just file creation.
+// Writes go to a seeded handler log AND a never-created one, plus a control file outside
+// the logs dir.
 const TARGET_SCRIPT = `
 import fs from "node:fs";
 import { join } from "node:path";
@@ -47,31 +48,35 @@ const muted = fs.createWriteStream(join(logsDir, "responses-handler-2026-01-01.l
 });
 await new Promise((r) => muted.write("HUGE PAYLOAD DUMP\\n", r));
 await new Promise((r) => muted.end(r));
+const fresh = fs.createWriteStream(join(logsDir, "messages-handler-2026-01-01.log"), {
+  flags: "a",
+});
+await new Promise((r) => fresh.write("ANOTHER DUMP\\n", r));
+await new Promise((r) => fresh.end(r));
 const real = fs.createWriteStream(join(home, "outside.log"), { flags: "a" });
 await new Promise((r) => real.write("real content\\n", r));
 await new Promise((r) => real.end(r));
 console.log("DONE");
 `;
 
-test("writes under <home>/logs are discarded but the file's mtime is bumped", () => {
+test("writes under <home>/logs are discarded outright (no growth, no file creation)", () => {
   const home = mkdtempSync(join(tmpdir(), "copilot-logmute-"));
   try {
-    // Seed the handler log EMPTY with an hour-old mtime: if the sink's touch were a no-op,
-    // file creation alone could not satisfy the freshness assertion below.
-    const handlerLog = join(home, "logs", "responses-handler-2026-01-01.log");
+    // Seed one handler log EMPTY with an hour-old mtime: pure discard must leave it exactly
+    // as-is (the old touch behavior would have bumped the mtime).
+    const seeded = join(home, "logs", "responses-handler-2026-01-01.log");
     mkdirSync(join(home, "logs"), { recursive: true });
-    writeFileSync(handlerLog, "");
+    writeFileSync(seeded, "");
     const hourAgo = new Date(Date.now() - 3_600_000);
-    utimesSync(handlerLog, hourAgo, hourAgo);
+    utimesSync(seeded, hourAgo, hourAgo);
+    const seededMtime = statSync(seeded).mtimeMs;
 
-    const before = Date.now();
     expect(runPreloaded(home, TARGET_SCRIPT)).toBe("DONE");
 
-    // The handler log was "written" through the sink: still EMPTY, mtime bumped -- the idle
-    // watchdog / `agent health` activity signal survives with zero disk growth.
-    expect(statSync(handlerLog).size).toBe(0);
-    // Allow one second of filesystem timestamp granularity.
-    expect(statSync(handlerLog).mtimeMs).toBeGreaterThanOrEqual(before - 1000);
+    // Seeded file: still empty, mtime untouched. Unseeded file: never created at all.
+    expect(statSync(seeded).size).toBe(0);
+    expect(statSync(seeded).mtimeMs).toBe(seededMtime);
+    expect(existsSync(join(home, "logs", "messages-handler-2026-01-01.log"))).toBe(false);
 
     // A stream OUTSIDE the logs dir goes through the real fs.createWriteStream untouched.
     expect(readFileSync(join(home, "outside.log"), "utf8")).toBe("real content\n");

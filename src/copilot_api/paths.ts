@@ -21,10 +21,20 @@ export class CopilotApiPaths {
   configFile: string;
   runDir: string;
   stateFile: string;
+  /**
+   * The daemon's inference-activity mark (`.run/<host>/.activity.json`), written ONLY by the
+   * in-daemon observer (src/scripts/inference_activity.ts) and read by `agent health`. A
+   * separate file from `.state.json` on purpose: the CLI and the daemon write state
+   * concurrently, and CopilotApiConfig.update() is atomic per replacement but not across
+   * load-mutate-save -- a single-writer file sidesteps the lost-update race entirely.
+   */
+  activityFile: string;
   logFile: string;
-  /** Directory where the proxy writes its per-endpoint handler logs. The watchdog activity
-   *  signal reads the INFERENCE ones (`responses-handler-*.log`, `messages-handler-*.log`) --
-   *  distinct from the daemon access `logFile`, which also records liveness `GET /` pings. */
+  /** Directory where the proxy writes its per-endpoint handler logs -- distinct from the
+   *  daemon access `logFile`, which also records liveness `GET /` pings. `agent health` reads
+   *  the INFERENCE ones (`responses-handler-*.log`, `messages-handler-*.log`) as a fallback
+   *  activity signal for daemons started by an older copilot-env; the `proxy-logs` config key
+   *  (off) discards writes here entirely. */
   logsDir: string;
   sqliteDb: string;
   /**
@@ -63,6 +73,7 @@ export class CopilotApiPaths {
     // Our own per-host state (port + pid + active CODEX_HOME), written by this
     // tooling and read back by start/stop/env/health/port.
     this.stateFile = join(runDir, ".state.json");
+    this.activityFile = join(runDir, ".activity.json");
     this.logFile = join(runDir, ".log");
     // The proxy writes its inference handler logs to <home>/logs (shared, not per-host).
     this.logsDir = join(this.home, "logs");

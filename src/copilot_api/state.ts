@@ -13,8 +13,11 @@ export interface CopilotEnvRunStateData {
   codexHome?: string;
   /**
    * Epoch ms of the most recent `start --record-event` heartbeat (an agent's proxy
-   * resolver ran). The in-daemon idle watchdog treats this -- alongside the proxy log
-   * mtime -- as activity that resets the idle timer. Cleared by `stop` and on idle auto-stop.
+   * resolver ran). The in-daemon idle watchdog treats this -- alongside the observed
+   * inference activity -- as activity that resets the idle timer. Cleared by `stop` and on
+   * idle auto-stop. (The observer's own mark lives in `.activity.json`, NOT here: this file
+   * has concurrent CLI writers and the store is not atomic across load-mutate-save, so the
+   * daemon never writes it outside clearIfPid.)
    */
   lastEnsureAt?: number;
 }

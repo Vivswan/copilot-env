@@ -138,9 +138,10 @@ async function proxyStatus(): Promise<{ up: boolean; port?: number }> {
 // A raw TCP-connect liveness probe. It opens (and immediately closes) a loopback socket to
 // confirm the daemon is accepting connections WITHOUT sending an HTTP request -- so `--check`
 // (run by an open agent's resolver, a monitor, etc.) leaves no trace in the daemon access log.
-// The idle watchdog keys off the proxy's INFERENCE handler logs, not this access log, so a
-// liveness ping no longer resets the idle clock regardless; a bare connect still keeps the
-// access log clean and returns faster than an HTTP round-trip. Probes IPv4 and IPv6 loopback
+// The idle watchdog keys off the daemon's inbound-request observer (inference POSTs only),
+// not this access log, so a liveness ping never resets the idle clock regardless; a bare
+// connect still keeps the access log clean and returns faster than an HTTP round-trip.
+// Probes IPv4 and IPv6 loopback
 // CONCURRENTLY and settles on the FIRST success (so a healthy proxy returns immediately,
 // mirroring fetch's localhost happy-eyeballs) -- only a both-fail result waits, and at most one
 // timeout, never two serial.
@@ -546,8 +547,8 @@ export async function runStart(args: StartArgs): Promise<void> {
   // re-attaches it. With the flag off, the proxy never auto-starts and gets no watchdog.
   const idleWatchdog = new CopilotEnvConfig().autoStartEnabled();
   // `proxy-logs false` mutes the daemon's verbose handler logs: a preload shim discards the
-  // writes under <home>/logs but keeps touching the files' mtimes, since the idle watchdog
-  // and `agent health` read those mtimes as the inference-activity signal.
+  // writes under <home>/logs. Activity detection is unaffected -- the always-loaded inference
+  // observer watches inbound requests, not log files.
   const muteProxyLogs = new CopilotEnvConfig().read().proxyLogs === false;
   if (muteProxyLogs) {
     consola.info("Proxy request logs off: discarding writes under <home>/logs (`proxy-logs`).");

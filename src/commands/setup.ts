@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { consola } from "consola";
 import { pickAgedVersion } from "../utils/aged_version.ts";
 import { childEnvWithPath, commandExists, resolveCommand } from "../utils/command.ts";
+import { errMessage } from "../utils/error.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { assertNonNegativeDays, MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { runShellIntegration } from "./shell_integration.ts";
@@ -321,7 +322,17 @@ export function installAgentClis(options: InstallClisOptions): void {
   }
 
   syncNpmGlobalBinToPath();
-  for (const cli of AGENT_CLIS) installCli(cli, options);
+  // Best-effort per CLI: a single package failing (npm error, unreachable registry, a
+  // rejected aged-version lookup) must NOT abort the whole run -- installCli/resolveAgedVersion
+  // throw, and an uncaught throw here would skip the remaining CLIs AND the shell-integration
+  // wiring runShell does after this. Warn and continue so the surrounding `agent shell` finishes.
+  for (const cli of AGENT_CLIS) {
+    try {
+      installCli(cli, options);
+    } catch (e) {
+      consola.warn(`Could not install ${cli.name} (${errMessage(e)}); continuing.`);
+    }
+  }
   syncNpmGlobalBinToPath();
 }
 

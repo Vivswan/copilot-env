@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.4.16/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.1/schema.json",
   "vcs": {
     "enabled": false
   },
@@ -35,7 +35,7 @@
       "project": "all"
     },
     "rules": {
-      "recommended": true,
+      "preset": "recommended",
       "correctness": {
         "noUnusedImports": "error",
         "noUnusedVariables": "error"
@@ -53,11 +53,14 @@
           "options": {
             "strictCase": false,
             "conventions": [
-              { "selector": { "kind": "function" }, "formats": ["camelCase"] },
+              { "selector": { "kind": "function" }, "formats": ["camelCase", "PascalCase"] },
               { "selector": { "kind": "objectLiteralMethod" }, "formats": ["camelCase"] },
               { "selector": { "kind": "classMethod" }, "formats": ["camelCase"] },
               { "selector": { "kind": "classProperty" }, "formats": ["camelCase"] },
-              { "selector": { "kind": "variable" }, "formats": ["camelCase", "CONSTANT_CASE"] },
+              {
+                "selector": { "kind": "variable" },
+                "formats": ["camelCase", "CONSTANT_CASE", "PascalCase"]
+              },
               { "selector": { "kind": "functionParameter" }, "formats": ["camelCase"] },
               { "selector": { "kind": "class" }, "formats": ["PascalCase"] },
               { "selector": { "kind": "interface" }, "formats": ["PascalCase"] },

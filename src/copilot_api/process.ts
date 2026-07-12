@@ -200,6 +200,9 @@ export function launchDaemon(
   const entry = resolveCopilotApiEntry();
   // bun flags go BEFORE the entry script, as `--preload <shim>` pairs (runtime shims
   // that touch none of copilot-api's files, so neither pins the floated proxy version):
+  //  - the token-argv shim (FIRST, when a token is passed) splices the GitHub token from an
+  //    env var into process.argv so it stays off the world-readable command line (see
+  //    token_argv_preload.ts); it must precede the PAT shim, which reads the token from argv.
   //  - the inference-activity observer (ALWAYS loaded) wraps Bun.serve so inbound inference
   //    POSTs are recorded for the idle watchdog and `agent health` (see inference_activity.ts).
   //  - PAT passthrough wraps the daemon's globalThis.fetch to fake the editor token
@@ -208,10 +211,11 @@ export function launchDaemon(
   //    server and its watchdog are one unit (see idle_watchdog.ts).
   //  - the log mute discards the daemon's handler-log writes under <home>/logs
   //    (see log_mute_preload.ts).
-  const bunFlags: string[] = [
-    "--preload",
-    join(PROJECT_ROOT, "src/scripts/inference_activity_preload.ts"),
-  ];
+  const bunFlags: string[] = [];
+  if (githubToken) {
+    bunFlags.push("--preload", join(PROJECT_ROOT, "src/scripts/token_argv_preload.ts"));
+  }
+  bunFlags.push("--preload", join(PROJECT_ROOT, "src/scripts/inference_activity_preload.ts"));
   if (patPassthrough) {
     bunFlags.push("--preload", join(PROJECT_ROOT, "src/scripts/pat_passthrough_preload.ts"));
   }
@@ -228,12 +232,14 @@ export function launchDaemon(
     delete env.COPILOT_API_OAUTH_APP;
   }
   const args = [...bunFlags, entry, "start", "--verbose", "--port", String(port)];
-  // A token provisioned via `agent auth` (stored in our state) is handed to the
-  // daemon as `--github-token`: copilot-api uses it in-memory and does NOT write it
-  // to its own github_token file, so an existing device-flow login is untouched. The
-  // preload shim above also reads the PAT from this flag.
+  // A token provisioned via `agent auth` (stored in our state) is handed to the daemon
+  // through the ENVIRONMENT (owner-only), NOT the argv -- the token_argv_preload above
+  // splices it back onto process.argv in-process as `--github-token`, so the proxy uses it
+  // in-memory (never writing its own github_token file, leaving a device-flow login
+  // untouched) while the secret stays off the world-readable command line. The PAT shim
+  // reads the spliced flag too.
   if (githubToken) {
-    args.push("--github-token", githubToken);
+    env.COPILOT_ENV_DAEMON_GH_TOKEN = githubToken;
   }
   const proc = spawn(process.execPath, args, {
     stdio: [devnull, logFd, logFd],

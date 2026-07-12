@@ -64,7 +64,17 @@ export class CopilotApiConfig {
     const tmp = join(dirname(this.path), `${basename(this.path)}.tmp.${process.pid}`);
     try {
       const sorted = sortKeys(data);
-      writeFileSync(tmp, `${JSON.stringify(sorted, null, 2)}\n`);
+      // Create the temp file 0600 FROM THE START so a secret it may hold (the GitHub token,
+      // the proxy admin key) is never briefly world-readable at the default umask -- the
+      // rename then publishes an already-restricted inode, with no 0644 window. The explicit
+      // chmod re-asserts 0600 in case a looser temp file from a crashed prior run is reused
+      // (writeFileSync truncates but does not tighten an existing file's mode).
+      writeFileSync(tmp, `${JSON.stringify(sorted, null, 2)}\n`, { mode: 0o600 });
+      try {
+        chmodSync(tmp, 0o600);
+      } catch {
+        // non-POSIX (Windows): file mode is a no-op there
+      }
       renameWithRetry(tmp, this.path);
     } catch (err) {
       try {

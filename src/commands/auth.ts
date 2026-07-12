@@ -36,6 +36,7 @@ import { resolveCopilotApiEntry } from "../copilot_api/process.ts";
 import { GH_TOKEN_ENV_VARS, ghTokenFromEnv, tokenFromSetFlag } from "../utils/direct_probe.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { stopTrackedProxy } from "./stop.ts";
 
 // Narration to stderr so `--get`'s stdout stays a clean machine-readable token.
 const logger = createStderrLogger();
@@ -294,9 +295,23 @@ async function runPrintProxyToken(catalogDeps?: CodexCatalogDeps): Promise<void>
   ensureCodexCatalogReferenced();
 }
 
-function runDel(): void {
+async function runDel(): Promise<void> {
   if (new Credential().clear()) {
-    logger.success("De-authenticated. Run `agent auth` to log in again.");
+    // A running daemon holds the (now-cleared) token in memory and has already exchanged it
+    // for a Copilot bearer, so it would keep serving inference until it idled out. De-auth
+    // must sever that too -- stop the tracked daemon, escalating to SIGKILL and VERIFYING it
+    // died (graceMs > 0) so we never falsely report the credential's access as revoked.
+    const { signalled, stopped } = await stopTrackedProxy(2000);
+    if (!signalled) {
+      logger.success("De-authenticated. Run `agent auth` to log in again.");
+    } else if (stopped) {
+      logger.success("De-authenticated and stopped the proxy. Run `agent auth` to log in again.");
+    } else {
+      logger.warn(
+        "De-authenticated, but the proxy is still running and may keep serving the old " +
+          "credential -- stop it with `agent stop`.",
+      );
+    }
   } else {
     logger.info("Nothing to clear — not authenticated. Run `agent auth` to log in.");
   }
@@ -359,7 +374,7 @@ export async function runAuth(args: AuthArgs, catalogDeps?: CodexCatalogDeps): P
     return;
   }
   if (args.del) {
-    runDel();
+    await runDel();
     return;
   }
   if (args.check) {

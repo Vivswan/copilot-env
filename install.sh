@@ -16,9 +16,12 @@ SKIP_SHELL_INTEGRATION=false
 EXEC_SHELL=true
 [ -n "${COPILOT_ENV_NO_EXEC_SHELL:-}" ] && EXEC_SHELL=false
 AUTH_CURL_ARGS=(-H "User-Agent: copilot-env")
+# A GH token (for higher rate limits / private access) is passed to curl via a 0600 header
+# FILE below, never on the command line -- a bearer token in argv is world-readable via
+# `ps`/`/proc/<pid>/cmdline` while curl runs. Only detect it here; the file is written once
+# $_tmp exists. (The PowerShell installer already keeps it off argv via a headers hashtable.)
 if [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
     AUTH_TOKEN="${GH_TOKEN:-$GITHUB_TOKEN}"
-    AUTH_CURL_ARGS+=(-H "Authorization: Bearer $AUTH_TOKEN")
 fi
 ASSET_CURL_ARGS=("${AUTH_CURL_ARGS[@]}" -H "Accept: application/octet-stream")
 
@@ -170,6 +173,17 @@ else
     refuse_dangerous_install_dir
     _tmp="$(mktemp -d)"
     trap 'rm -rf "$_tmp"' EXIT
+    # Write the bearer token to a 0600 header file and hand it to curl with `-H @file`
+    # (curl >= 7.55) so it stays off the world-readable command line.
+    if [ -n "${AUTH_TOKEN:-}" ]; then
+        _hdr="$_tmp/auth-header"
+        _old_umask="$(umask)"
+        umask 0177
+        printf 'Authorization: Bearer %s\n' "$AUTH_TOKEN" > "$_hdr"
+        umask "$_old_umask"
+        AUTH_CURL_ARGS+=(-H "@$_hdr")
+        ASSET_CURL_ARGS+=(-H "@$_hdr")
+    fi
     echo "Resolving the copilot-env release ..."
     retry "Download release resolver" curl -fsSL "${AUTH_CURL_ARGS[@]}" "$RESOLVER_URL" -o "$_tmp/resolve-release.ts"
     retry "Download archive verifier" curl -fsSL "${AUTH_CURL_ARGS[@]}" "$VERIFIER_URL" -o "$_tmp/verify-source-archive.ts"

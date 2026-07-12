@@ -77,7 +77,7 @@ test("enforces every managed field while preserving unknown user keys", () => {
       "",
     ].join("\n"),
   );
-  writeFileSync(join(codexHome, ".env"), "OPENAI_API_KEY=old\n");
+  writeFileSync(join(codexHome, ".env"), "OPENAI_API_KEY=user\nCOPILOT_ENV_GH_TOKEN=ghp_legacy\n");
 
   const rc = configureCodexConfig(codexHome, { codexExecVersion: "0.139.0" });
   expect(rc).toBe(0);
@@ -118,8 +118,10 @@ test("enforces every managed field while preserving unknown user keys", () => {
   expect(other.base_url).toBe("http://other/v1");
   expect(other.env_key).toBe("OTHER_KEY");
 
-  // Direct resolves via auth.command; any stale proxy OPENAI_API_KEY in .env is scrubbed.
-  expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe("");
+  // Direct resolves via auth.command. The user's OPENAI_API_KEY is preserved (its name
+  // collides with copilot-env's legacy key, so we never scrub it); only the copilot-env-owned
+  // COPILOT_ENV_GH_TOKEN is removed.
+  expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe("OPENAI_API_KEY=user\n");
 });
 
 test("direct uses the launcher auth.command (no env_key, no token at rest), classified direct", () => {
@@ -254,24 +256,50 @@ test("proxy mode enforces every managed field while preserving unknown user keys
   expect(existsSync(join(codexHome, ".env"))).toBe(false);
 });
 
-test("proxy mode scrubs a stale OPENAI_API_KEY from .env, preserving other lines", () => {
+test("refuses to overwrite an unparseable config.toml (preserves the user's file)", () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
   process.env.HOME = dir;
   const codexHome = join(dir, ".codex");
   mkdirSync(codexHome, { recursive: true });
 
-  // A .env left by the old env_key wiring (incl. a look-alike + commented key + an
-  // `export` form). Proxy now resolves via auth.command, so the real OPENAI_API_KEY
-  // assignments are scrubbed while everything else survives.
+  // Real user content plus one TOML syntax error (an unbalanced quote from a hand edit).
+  const original = [
+    "[mcp_servers.mine]",
+    'command = "my-server',
+    "",
+    "[model_providers.myopenai]",
+    'base_url = "https://api.openai.com/v1"',
+    "",
+  ].join("\n");
+  const configPath = join(codexHome, "config.toml");
+  writeFileSync(configPath, original);
+
+  // The write must throw rather than clobber the file with the default template.
+  expect(() =>
+    configureCodexConfig(codexHome, { proxy: true, baseUrl: "http://localhost:4141/v1" }),
+  ).toThrow(/not valid TOML|refusing to overwrite/);
+  // The user's file is left exactly as it was.
+  expect(readFileSync(configPath, "utf8")).toBe(original);
+});
+
+test("proxy mode preserves the user's OPENAI_API_KEY but scrubs the copilot-env legacy key", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
+  process.env.HOME = dir;
+  const codexHome = join(dir, ".codex");
+  mkdirSync(codexHome, { recursive: true });
+
+  // OPENAI_API_KEY is the standard name a Codex user keeps for their OWN OpenAI provider;
+  // its name collides with copilot-env's old env_key wiring, so it must NOT be scrubbed
+  // (a leftover managed value is harmless -- the managed provider uses auth.command). Only
+  // the copilot-env-OWNED legacy key (COPILOT_ENV_GH_TOKEN) is scrubbed.
   writeFileSync(
     join(codexHome, ".env"),
     [
       "# my secrets",
       "FOO=bar",
-      "OPENAI_API_KEY_SUFFIX=keep",
-      "#OPENAI_API_KEY=disabled",
-      "export OPENAI_API_KEY=old1",
-      "OPENAI_API_KEY=old2",
+      "OPENAI_API_KEY=sk-user-personal",
+      "export OPENAI_API_KEY=sk-user-export",
+      "COPILOT_ENV_GH_TOKEN=ghp_legacy",
       "",
     ].join("\n"),
   );
@@ -280,10 +308,15 @@ test("proxy mode scrubs a stale OPENAI_API_KEY from .env, preserving other lines
     configureCodexConfig(codexHome, { proxy: true, baseUrl: "http://localhost:4141/v1" }),
   ).toBe(0);
 
+  // The user's OPENAI_API_KEY lines survive; the copilot-env legacy token is removed.
   expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe(
-    ["# my secrets", "FOO=bar", "OPENAI_API_KEY_SUFFIX=keep", "#OPENAI_API_KEY=disabled", ""].join(
-      "\n",
-    ),
+    [
+      "# my secrets",
+      "FOO=bar",
+      "OPENAI_API_KEY=sk-user-personal",
+      "export OPENAI_API_KEY=sk-user-export",
+      "",
+    ].join("\n"),
   );
 });
 

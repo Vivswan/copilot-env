@@ -362,17 +362,25 @@ function defaultConfig(): Record<string, unknown> {
   };
 }
 
-// Load the existing config at `hostConfig`, or seed the default template when
-// it is absent or unparseable.
+// Load the existing config at `hostConfig`, or seed the default template when it is absent
+// or empty. A present-but-UNPARSEABLE file throws rather than letting the caller clobber a
+// config it could not read -- a hand-edit typo must never cost the user their whole
+// config.toml (mcp_servers, custom providers, model pins). Mirrors the Claude side's
+// loadSettings refuse-to-overwrite contract.
 function loadOrCreateConfig(hostConfig: string): Record<string, unknown> {
+  let text: string;
   try {
-    if (fs.statSync(hostConfig).isFile()) {
-      return parse(fs.readFileSync(hostConfig, "utf8")) as Record<string, unknown>;
-    }
-  } catch {
-    // fall through to the default template
+    text = fs.readFileSync(hostConfig, "utf8");
+  } catch (e) {
+    if ((e as { code?: string }).code === "ENOENT") return defaultConfig();
+    throw e; // EISDIR / permission / etc. -- fail loudly, don't overwrite blindly
   }
-  return defaultConfig();
+  if (text.trim() === "") return defaultConfig();
+  try {
+    return parse(text) as Record<string, unknown>;
+  } catch (e) {
+    throw new Error(`${hostConfig} is not valid TOML; refusing to overwrite it (${errMessage(e)})`);
+  }
 }
 
 // Remove `key` from `$CODEX_HOME/.env` (any `export`-prefixed or duplicate
@@ -503,11 +511,12 @@ export function configureCodexConfig(
   fs.writeFileSync(hostConfig, stringify(doc));
   if (!options.quiet) logger.log(`  ✓ Codex config written → ${hostConfig}`);
 
-  // Both modes resolve their key via the managed `auth.command` (proxy: the shared
-  // proxy-token script; direct: `agent auth --get`), so nothing is ever baked into `.env`.
-  // Scrub the legacy baked keys: a proxy `OPENAI_API_KEY` from the old env_key wiring,
-  // and a direct `COPILOT_ENV_GH_TOKEN` from a still-older baked-token release.
-  removeEnvKey(path.join(codexHome, ".env"), CODEX_ENV_KEY);
+  // Scrub only the copilot-env-OWNED legacy key: a `COPILOT_ENV_GH_TOKEN` baked by a
+  // still-older direct-token release. We deliberately do NOT scrub OPENAI_API_KEY: its name
+  // collides with the standard OpenAI key a Codex user keeps in $CODEX_HOME/.env for their
+  // own provider, and a leftover managed value is harmless anyway (the managed provider
+  // resolves via `auth.command` and carries no `env_key`). Removing it by name would destroy
+  // the user's personal key on every write.
   removeEnvKey(path.join(codexHome, ".env"), DIRECT_ENV_KEY);
 
   return 0;

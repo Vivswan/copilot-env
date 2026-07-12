@@ -361,7 +361,9 @@ test("shell --clis --no-prereqs: optional-valued --cooldown parses, no install",
     });
     expect(proc.exitCode).toBe(0);
   }
-}, 20_000);
+  // Three cold `bun src/cli.ts` spawns; on a loaded Windows CI runner each cold start + TS
+  // load can take several seconds, so allow generous headroom to avoid flaky timeouts.
+}, 90_000);
 
 test("the merged commands are gone; --gh-token is off the per-agent commands", () => {
   const rootHelp = Bun.spawnSync(["bun", "src/cli.ts", "--help"], {

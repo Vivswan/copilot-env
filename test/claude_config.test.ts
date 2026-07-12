@@ -152,38 +152,45 @@ test("inspectClaudeWiring classifies direct / proxy / other / none / malformed (
   const proxyHelper = join(home, PROXY_HELPER_NAME);
 
   expect(
-    inspectClaudeWiring(JSON.stringify({ apiKeyHelper: directHelper }), home).providerMode,
+    inspectClaudeWiring(JSON.stringify({ apiKeyHelper: directHelper }), home, 4141).providerMode,
   ).toBe("direct");
   expect(
-    inspectClaudeWiring(JSON.stringify({ apiKeyHelper: proxyHelper }), home).providerMode,
+    inspectClaudeWiring(JSON.stringify({ apiKeyHelper: proxyHelper }), home, 4141).providerMode,
   ).toBe("proxy");
 
   // A foreign helper sharing our basename but elsewhere is NOT ours.
   expect(
-    inspectClaudeWiring(JSON.stringify({ apiKeyHelper: "/opt/company/copilot-token.sh" }), home)
-      .providerMode,
+    inspectClaudeWiring(
+      JSON.stringify({ apiKeyHelper: "/opt/company/copilot-token.sh" }),
+      home,
+      4141,
+    ).providerMode,
   ).toBe("other");
   // A custom base URL with no managed helper is also "other".
   expect(
     inspectClaudeWiring(
       JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://other.example" } }),
       home,
+      4141,
     ).providerMode,
   ).toBe("other");
 
-  expect(inspectClaudeWiring("{}", home).providerMode).toBe("none");
-  expect(inspectClaudeWiring(JSON.stringify({ model: "sonnet" }), home).providerMode).toBe("none");
+  expect(inspectClaudeWiring("{}", home, 4141).providerMode).toBe("none");
+  expect(inspectClaudeWiring(JSON.stringify({ model: "sonnet" }), home, 4141).providerMode).toBe(
+    "none",
+  );
 
-  const absent = inspectClaudeWiring(null, home);
+  const absent = inspectClaudeWiring(null, home, 4141);
   expect(absent.providerMode).toBe("none");
   expect(absent.settingsExists).toBe(false);
 
-  expect(inspectClaudeWiring("{not json", home).providerMode).toBe("other");
+  expect(inspectClaudeWiring("{not json", home, 4141).providerMode).toBe("other");
 });
 
 test("runClaude --direct/--proxy round-trip cleans the other mode; mutual exclusion throws", () => {
   const home = tmpHome();
-  const read = () => inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home);
+  const read = () =>
+    inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home, 4141);
 
   runClaude({ direct: true });
   expect(read().providerMode).toBe("direct");
@@ -242,7 +249,7 @@ test("direct helper execs `agent auth --get` and never bakes a token, still clas
   const doc = readSettings(home);
   expect(doc.apiKeyHelper).toBe(join(home, DIRECT_HELPER_NAME));
   expect(
-    inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home).providerMode,
+    inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home, 4141).providerMode,
   ).toBe("direct");
 
   const script = readFileSync(join(home, DIRECT_HELPER_NAME), "utf8");
@@ -253,7 +260,8 @@ test("direct helper execs `agent auth --get` and never bakes a token, still clas
 
 test("runClaude with a stored token selects Direct WITHOUT baking it; --proxy still wins", () => {
   const home = tmpHome(); // also points COPILOT_API_HOME at an isolated dir
-  const read = () => inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home);
+  const read = () =>
+    inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home, 4141);
 
   // A configured credential selects Direct with NO probe -- but the helper resolves
   // it at fetch time (`agent auth --get`), so it's never written to disk.

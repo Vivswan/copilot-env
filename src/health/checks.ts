@@ -378,6 +378,14 @@ export function checkRuntimeOrphan(f: RuntimeFacts): CheckResult {
       detail = "port responder is not copilot-api (see proxy identity)";
     } else if (f.reachable && f.pidTracked) {
       detail = "port held by the tracked daemon";
+    } else if (f.bothDirect && f.reachable) {
+      // An untracked copilot-api IS reachable on the port, but both agents are configured
+      // direct, so no proxy is required -- the both-direct gate (not the facts) is why this
+      // isn't an orphan warning. Say that, rather than the false "no untracked copilot-api".
+      detail =
+        f.identityConfirmed === true
+          ? `an untracked copilot-api is on port ${f.port}, but both agents are direct (no proxy required)`
+          : `a process is on port ${f.port}, but both agents are direct (no proxy required)`;
     } else {
       detail = "no untracked copilot-api on the port";
     }
@@ -663,18 +671,26 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
     };
   }
   if (f.providerMode === "proxy") {
-    // Proxy-backed via settings.json (apiKeyHelper prints the proxy token,
-    // base URL points at localhost). Runtime reachability is the proxy check's
-    // job; here we just confirm the wiring is present.
+    // Proxy-backed via settings.json (apiKeyHelper prints the proxy token, base URL points at
+    // the local proxy). Runtime reachability is the proxy check's job; here we confirm the
+    // wiring is present AND that ANTHROPIC_BASE_URL actually points at the resolved proxy port
+    // -- a stale base URL (e.g. after `config port` changed and the daemon rebound) would send
+    // Claude to the wrong/absent port, so it must not read green. Mirrors the Codex check.
+    const baseUrlOk = f.baseUrl !== null && f.baseUrlMatches;
     return {
       ...base,
-      status: "ok",
+      status: baseUrlOk ? "ok" : "warn",
       detail: [
         "provider: proxy",
         `settings.json: ${f.settingsPath}`,
-        `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}`,
+        `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${baseUrlOk ? "" : " (does not match the resolved proxy port)"}`,
         `apiKeyHelper → ${f.helperPath ?? "(missing)"}`,
       ].join("\n"),
+      ...(baseUrlOk
+        ? {}
+        : {
+            fix: "Re-run `agent init` (or `agent claude`) to repoint ANTHROPIC_BASE_URL at the current proxy port.",
+          }),
     };
   }
   if (f.providerMode === "other") {

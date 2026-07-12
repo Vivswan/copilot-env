@@ -128,8 +128,24 @@ export interface ClaudeWiringStatus {
   helperPath: string | null;
   /** `env.ANTHROPIC_BASE_URL`, if present. */
   baseUrl: string | null;
+  /** In proxy mode, whether `baseUrl` points at the resolved local proxy (host+port). */
+  baseUrlMatches: boolean;
   /** Which backend the current settings select. */
   providerMode: AgentProviderMode;
+}
+
+/** Whether `baseUrl` is the managed Claude proxy URL for `expectedPort`:
+ *  `http://127.0.0.1:<port>` (loopback, no path -- unlike Codex's `/v1`). Tolerates a trailing
+ *  slash and accepts `localhost` too. */
+function claudeBaseUrlMatchesProxy(baseUrl: string, expectedPort: number): boolean {
+  try {
+    const u = new URL(baseUrl);
+    const isLocal = u.hostname === "localhost" || u.hostname === "127.0.0.1";
+    const path = u.pathname.replace(/\/$/, ""); // tolerate a trailing slash
+    return u.protocol === "http:" && isLocal && u.port === String(expectedPort) && path === "";
+  } catch {
+    return false;
+  }
 }
 
 // --- paths ------------------------------------------------------------------
@@ -176,11 +192,13 @@ function proxyHelperPath(claudeHome: string): string {
 export function inspectClaudeWiring(
   settingsText: string | null,
   claudeHome: string,
+  expectedPort: number,
 ): ClaudeWiringStatus {
   const status: ClaudeWiringStatus = {
     settingsExists: settingsText !== null,
     helperPath: null,
     baseUrl: null,
+    baseUrlMatches: false,
     providerMode: "none",
   };
   if (settingsText === null || settingsText.trim() === "") return status;
@@ -200,6 +218,7 @@ export function inspectClaudeWiring(
   const baseUrl = env ? readStringField(env, BASE_URL_ENV) : null;
   status.helperPath = helperPath;
   status.baseUrl = baseUrl;
+  status.baseUrlMatches = baseUrl !== null && claudeBaseUrlMatchesProxy(baseUrl, expectedPort);
 
   if (helperPath === directHelperPath(claudeHome)) {
     status.providerMode = "direct";
@@ -372,7 +391,11 @@ function providerModeDetail(mode: AgentProviderMode): string {
 function checkClaudeConfig(): void {
   const claudeHome = resolveClaudeHome();
   const settingsPath = settingsPathFor(claudeHome);
-  const status = inspectClaudeWiring(readTextOrNull(settingsPath), claudeHome);
+  const status = inspectClaudeWiring(
+    readTextOrNull(settingsPath),
+    claudeHome,
+    Number(copilotApiResolvePort()),
+  );
   console.log(
     `Claude provider mode: ${status.providerMode} (${providerModeDetail(status.providerMode)})`,
   );
@@ -429,5 +452,9 @@ export function runClaude(args: ClaudeConfigArgs): void {
 /** The configured Claude provider mode at the effective Claude home (read-only). */
 export function effectiveClaudeProviderMode(): AgentProviderMode {
   const claudeHome = resolveClaudeHome();
-  return inspectClaudeWiring(readTextOrNull(settingsPathFor(claudeHome)), claudeHome).providerMode;
+  return inspectClaudeWiring(
+    readTextOrNull(settingsPathFor(claudeHome)),
+    claudeHome,
+    Number(copilotApiResolvePort()),
+  ).providerMode;
 }

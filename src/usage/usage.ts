@@ -119,20 +119,9 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
     target.set(row.model, prev);
   };
 
-  for (const path of dbPaths) {
-    let db: Database | undefined;
-    try {
-      // Build a proper file URI (pathToFileURL handles Windows drive letters /
-      // backslashes); immutable=1 skips locking for this read-only snapshot.
-      db = new Database(
-        `${pathToFileURL(path).href}?immutable=1`,
-        SQLITE_OPEN_READONLY | SQLITE_OPEN_URI,
-      );
-      // One grouped query by (day, model); byModel and activeDays both derive
-      // from it, so we never read the same rows twice.
-      const rows = db
-        .query(
-          `SELECT substr(created_at_utc, 1, 10)     AS day,
+  // One grouped query by (day, model); byModel and activeDays both derive from it, so we
+  // never read the same rows twice.
+  const QUERY = `SELECT substr(created_at_utc, 1, 10)     AS day,
                   model,
                   SUM(input_tokens)                 AS input,
                   SUM(output_tokens)                AS output,
@@ -141,29 +130,51 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
                   COUNT(*)                          AS events
            FROM token_usage_events
            WHERE (?1 IS NULL OR created_at_ms >= ?1)
-           GROUP BY day, model`,
-        )
-        .all(since) as UsageRow[];
+           GROUP BY day, model`;
 
-      for (const row of rows) {
-        accumulate(byModel, row);
-        // Distinct UTC calendar days with data, unioned across all DBs. The
-        // daemon writes created_at_utc alongside created_at_ms on every row, so
-        // a null/empty day is not expected; such a row still counts toward
-        // byModel (the aggregate total) but is omitted from the per-day split.
-        if (row.day) {
-          let dayModels = perDay.get(row.day);
-          if (dayModels === undefined) {
-            dayModels = new Map<string, ModelUsage>();
-            perDay.set(row.day, dayModels);
-          }
-          accumulate(dayModels, row);
-        }
+  for (const path of dbPaths) {
+    // The daemon runs the usage DB in WAL mode and only checkpoints on close, so rows written
+    // since the last checkpoint live in the -wal file. Open read-only WITHOUT `immutable` so
+    // SQLite consults the -wal (an immutable open ignores it -- undercounting recent usage, or
+    // "no such table" on a fresh DB whose schema is still only in the WAL). SQLite can defer a
+    // WAL/-shm error to query PREPARE/EXEC time, so the immutable fallback wraps the WHOLE
+    // open+query, not just the open: a read-only-FS DB where the -shm can't be created falls
+    // back to an immutable snapshot (misses un-checkpointed rows, but beats failing the report).
+    // pathToFileURL handles Windows drive letters / backslashes.
+    const uri = pathToFileURL(path).href;
+    let rows: UsageRow[] | undefined;
+    let lastErr: unknown;
+    for (const dbUri of [uri, `${uri}?immutable=1`]) {
+      let db: Database | undefined;
+      try {
+        db = new Database(dbUri, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI);
+        rows = db.query(QUERY).all(since) as UsageRow[];
+        break;
+      } catch (e) {
+        lastErr = e;
+      } finally {
+        db?.close();
       }
-    } catch (e) {
-      consola.warn(`could not read ${path} (${errMessage(e)}).`);
-    } finally {
-      db?.close();
+    }
+    if (rows === undefined) {
+      consola.warn(`could not read ${path} (${errMessage(lastErr)}).`);
+      continue;
+    }
+
+    for (const row of rows) {
+      accumulate(byModel, row);
+      // Distinct UTC calendar days with data, unioned across all DBs. The
+      // daemon writes created_at_utc alongside created_at_ms on every row, so
+      // a null/empty day is not expected; such a row still counts toward
+      // byModel (the aggregate total) but is omitted from the per-day split.
+      if (row.day) {
+        let dayModels = perDay.get(row.day);
+        if (dayModels === undefined) {
+          dayModels = new Map<string, ModelUsage>();
+          perDay.set(row.day, dayModels);
+        }
+        accumulate(dayModels, row);
+      }
     }
   }
 

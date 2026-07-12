@@ -599,6 +599,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
     settingsExists: true,
     helperPath: join("/h/.claude", "copilot-token.sh"),
     baseUrl: "https://api.githubcopilot.com",
+    baseUrlMatches: false,
     providerMode: "direct",
     directAuth: { command: "/bin/gh", authenticated: true },
     directUsesToken: false,
@@ -637,11 +638,12 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   expect(staleBase.detail).toContain("(missing)");
   expect(staleBase.fix).toBe("agent claude --direct");
 
-  // Proxy: proxy-backed via settings.json (localhost base URL + proxy helper).
+  // Proxy: proxy-backed via settings.json (localhost base URL matching the resolved port).
   const proxy = checkClaude({
     ...direct,
     helperPath: join("/h/.claude", "copilot-proxy-token.sh"),
     baseUrl: "http://localhost:4141",
+    baseUrlMatches: true,
     providerMode: "proxy",
     directAuth: { command: null, authenticated: false },
   });
@@ -649,6 +651,20 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   expect(proxy.detail).toContain("provider: proxy");
   expect(proxy.detail).toContain("ANTHROPIC_BASE_URL → http://localhost:4141");
   expect(proxy.detail).toContain("apiKeyHelper → ");
+
+  // Proxy but the base URL points at the WRONG port (stale after `config port` changed):
+  // must warn, not read green, with a repoint fix.
+  const proxyStale = checkClaude({
+    ...direct,
+    helperPath: join("/h/.claude", "copilot-proxy-token.sh"),
+    baseUrl: "http://localhost:4141",
+    baseUrlMatches: false,
+    providerMode: "proxy",
+    directAuth: { command: null, authenticated: false },
+  });
+  expect(proxyStale.status).toBe("warn");
+  expect(proxyStale.detail).toContain("does not match the resolved proxy port");
+  expect(proxyStale.fix).toContain("agent init");
 
   // Never configured: informational; cl defaults it to the proxy.
   const none = checkClaude({
@@ -706,6 +722,7 @@ test("direct + stored token reports ok with gh absent (no gh requirement)", () =
     settingsExists: true,
     helperPath: join("/h/.claude", "copilot-token.sh"),
     baseUrl: "https://api.githubcopilot.com",
+    baseUrlMatches: false,
     providerMode: "direct",
     directAuth: { command: null, authenticated: false },
     directUsesToken: true,
@@ -1007,6 +1024,7 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       settingsExists: false,
       helperPath: null,
       baseUrl: null,
+      baseUrlMatches: false,
       providerMode: "none",
       directAuth: { command: null, authenticated: false },
       directUsesToken: false,

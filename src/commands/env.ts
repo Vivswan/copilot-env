@@ -24,6 +24,7 @@ import {
   resolveClaudeHome,
 } from "../claude/config.ts";
 import { getHostLocalCodexHome } from "../codex/host.ts";
+import { copilotApiResolvePort } from "../copilot_api/port.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
@@ -87,7 +88,11 @@ export function runEnv(args: EnvArgs): void {
   // longer proxy, clear it so it can't override the now-direct settings.json; never
   // touch a non-local URL the user set.
   const claudeHome = resolveClaudeHome();
-  const claude = inspectClaudeWiring(readTextOrNull(join(claudeHome, "settings.json")), claudeHome);
+  const claude = inspectClaudeWiring(
+    readTextOrNull(join(claudeHome, "settings.json")),
+    claudeHome,
+    Number(copilotApiResolvePort()),
+  );
   const proxyUrl =
     claude.providerMode === "proxy" &&
     claude.baseUrl &&

@@ -7,7 +7,11 @@ import { spawn } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { type AutoupdateData, AutoupdateState } from "../autoupdate/state.ts";
+import {
+  type AutoupdateData,
+  AutoupdateState,
+  DEFAULT_AUTOUPDATE_COOLDOWN_DAYS,
+} from "../autoupdate/state.ts";
 import {
   type ClaudeWiringStatus,
   directHelperResolvesViaAgent,
@@ -497,7 +501,15 @@ export function defaultProbeDeps(): ProbeDeps {
     claudeHome: () => resolveClaudeHome(),
     hostCodexHome: getHostLocalCodexHome,
     dirExists: (path: string) => existsSync(path),
-    readAutoupdate: () => new AutoupdateState().read(),
+    readAutoupdate: () => {
+      // Report the LIVE update-cooldown config (what the preflight actually uses), not the
+      // value snapshotted into state at enable time -- so `agent health` matches
+      // `agent update --auto-status`.
+      const s = new AutoupdateState().read();
+      const cooldownDays =
+        new CopilotEnvConfig().read().updateCooldown ?? DEFAULT_AUTOUPDATE_COOLDOWN_DAYS;
+      return { ...s, cooldownDays };
+    },
     nodeModulesPresent: () => existsSync(join(root, "node_modules")),
     nodeModulesFresh: () => {
       try {
@@ -574,7 +586,7 @@ export function evalClaude(
   settingsText: string | null,
   directAuth: CodexDirectAuthFacts = { command: null, authenticated: false },
   directUsesToken = false,
-  wiring: ClaudeWiringStatus = inspectClaudeWiring(settingsText, home),
+  wiring: ClaudeWiringStatus = inspectClaudeWiring(settingsText, home, 0),
 ): ClaudeFacts {
   return {
     home,
@@ -600,6 +612,7 @@ function readProviderModes(deps: ProbeDeps, port: number): { bothDirect: boolean
   const claudeMode = inspectClaudeWiring(
     deps.readFileSafe(join(claudeHome, "settings.json")),
     claudeHome,
+    port,
   ).providerMode;
   return { bothDirect: codexMode === "direct" && claudeMode === "direct" };
 }
@@ -759,7 +772,7 @@ export async function gatherFacts(
       (async () => {
         const home = deps.claudeHome();
         const settingsText = deps.readFileSafe(join(home, "settings.json"));
-        const wiring = inspectClaudeWiring(settingsText, home);
+        const wiring = inspectClaudeWiring(settingsText, home, port);
         // Managed iff the apiKeyHelper truly execs `agent auth --get` (not a stale/
         // foreign/missing helper); directAuthFor then decides the gh probe.
         const usesManagedResolver =

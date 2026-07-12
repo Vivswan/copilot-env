@@ -78,14 +78,78 @@ function Test-ExternalCommand {
     return [bool](Get-Command $Command -ErrorAction SilentlyContinue)
 }
 
+function Resolve-PhysicalPath {
+    param([string]$Path)
+    # A non-existent path cannot be a reparse/8.3 alias of an existing directory and is never
+    # the target of Remove-Item, so its lexical full path is sufficient.
+    $full = [System.IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $full)) { return $full }
+    # Existing path (the only kind Remove-Item can delete): resolve the TRUE physical path --
+    # ALL reparse points including INTERMEDIATE junctions, plus 8.3 short names -- via Win32
+    # GetFinalPathNameByHandle. That is the only PS 5.1-compatible way to canonicalize
+    # intermediate components. If the resolver can't be loaded or the call fails, FAIL CLOSED:
+    # refuse to delete a directory we cannot prove is not the profile. (A machine locked down
+    # enough to block Add-Type also blocks the [System.IO.Path] static calls this script relies
+    # on elsewhere, so there is no weaker-but-working fallback to prefer.)
+    if (-not ('Ce_PathResolver' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+public static class Ce_PathResolver {
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr sec, uint disp, uint flags, IntPtr tmpl);
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern uint GetFinalPathNameByHandleW(SafeFileHandle h, StringBuilder buf, uint len, uint flags);
+    public static string Resolve(string path) {
+        const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000; // required to open a directory handle
+        const uint OPEN_EXISTING = 3;
+        const uint SHARE_ALL = 0x07;
+        using (var h = CreateFileW(path, 0, SHARE_ALL, IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero)) {
+            if (h.IsInvalid) return null;
+            var sb = new StringBuilder(1024);
+            uint n = GetFinalPathNameByHandleW(h, sb, (uint)sb.Capacity, 0);
+            if (n == 0) return null;
+            if (n > sb.Capacity) { sb = new StringBuilder((int)n); n = GetFinalPathNameByHandleW(h, sb, (uint)sb.Capacity, 0); if (n == 0) return null; }
+            var s = sb.ToString();
+            if (s.StartsWith(@"\\?\UNC\")) return @"\\" + s.Substring(8);
+            if (s.StartsWith(@"\\?\")) return s.Substring(4);
+            return s;
+        }
+    }
+}
+'@
+    }
+    $physical = [Ce_PathResolver]::Resolve($full)
+    if (-not $physical) {
+        throw "Refusing to replace install directory '$InstallDir': could not resolve its physical path."
+    }
+    return $physical
+}
+
 function Resolve-SafeInstallDir {
-    $resolved = [System.IO.Path]::GetFullPath($InstallDir)
-    $userHome = [System.IO.Path]::GetFullPath($env:USERPROFILE)
+    $sep = [System.IO.Path]::DirectorySeparatorChar
+    $alt = [System.IO.Path]::AltDirectorySeparatorChar
+    # Reject wildcard characters up front: PowerShell's Remove-Item/Test-Path expand them,
+    # so an input like 'C:\Users\*' would otherwise pass the guard and then delete every
+    # match. (The POSIX twin is safe here because it quotes every use of the path.)
+    if ([System.Management.Automation.WildcardPattern]::ContainsWildcardCharacters($InstallDir)) {
+        throw "Refusing to replace unsafe install directory '$InstallDir' (contains wildcard characters)."
+    }
+    # Resolve physically (all reparse points + 8.3 short names) so an alias of the profile
+    # directory cannot slip past the home guard, then trim trailing separators (never past
+    # the path root) on both sides so 'C:\Users\me\' -ieq 'C:\Users\me'.
+    $resolved = Resolve-PhysicalPath $InstallDir
     $root = [System.IO.Path]::GetPathRoot($resolved)
-    if (-not $resolved -or $resolved -eq $root -or $resolved -eq $userHome) {
+    $normResolved = if ($resolved.Length -gt $root.Length) { $resolved.TrimEnd($sep, $alt) } else { $resolved }
+    $userHome = Resolve-PhysicalPath $env:USERPROFILE
+    $homeRoot = [System.IO.Path]::GetPathRoot($userHome)
+    $normHome = if ($userHome.Length -gt $homeRoot.Length) { $userHome.TrimEnd($sep, $alt) } else { $userHome }
+    if (-not $normResolved -or $normResolved -eq $root -or $normResolved -ieq $normHome) {
         throw "Refusing to replace unsafe install directory '$InstallDir'."
     }
-    return $resolved
+    return $normResolved
 }
 
 function Resolve-ReleaseTarget {
@@ -165,14 +229,19 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'shell\agents.ps1'))) {
         }
         & bun @verifyArgs
         if ($LASTEXITCODE -ne 0) { throw 'release archive verification failed.' }
-        # Preserve opt-in autoupdate state across the destructive replace below.
+        # Preserve opt-in autoupdate state and the user's local .env overrides across the
+        # destructive replace below (both gitignored, so a release tree never ships them).
         $autoupdateBackup = Join-Path $tmp '.autoupdate-backup'
         if (Test-Path (Join-Path $InstallDir '.autoupdate')) {
             Copy-Item -Recurse -Force (Join-Path $InstallDir '.autoupdate') $autoupdateBackup
         }
-        if (Test-Path $InstallDir) {
+        $envBackup = Join-Path $tmp '.env-backup'
+        if (Test-Path (Join-Path $InstallDir '.env')) {
+            Copy-Item -Force (Join-Path $InstallDir '.env') $envBackup
+        }
+        if (Test-Path -LiteralPath $InstallDir) {
             Write-Host "Removing previous copilot-env install at $InstallDir ..."
-            Remove-Item -Recurse -Force $InstallDir
+            Remove-Item -LiteralPath $InstallDir -Recurse -Force
         }
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
         # tar.exe cannot create symlinks without Developer Mode/admin, so it errors and aborts
@@ -191,6 +260,10 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'shell\agents.ps1'))) {
         # (gitignored), so the fresh tree has none — copy the backup into place.
         if (Test-Path $autoupdateBackup) {
             Copy-Item -Recurse -Force $autoupdateBackup (Join-Path $InstallDir '.autoupdate')
+        }
+        # Restore the preserved .env (the documented supply-chain pin / env overrides).
+        if (Test-Path $envBackup) {
+            Copy-Item -Force $envBackup (Join-Path $InstallDir '.env')
         }
     } finally {
         Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue

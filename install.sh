@@ -74,8 +74,52 @@ retry() {
     done
 }
 
+# Canonicalize a directory for the safety guard below: return a clean ABSOLUTE path with
+# the existing prefix resolved via cd+pwd -P (so symlinks and the "//" root alias collapse)
+# and any not-yet-existing trailing components re-appended. Rejects an unresolved "."/".."
+# component and returns empty when it cannot canonicalize, so the guard refuses rather than
+# risk `rm -rf` on the wrong target. `set -e`-safe: every command substitution that can fail
+# is guarded, so a missing parent never aborts the script.
+canonical_dir() {
+    _p="$1"
+    [ -n "$_p" ] || { printf '\n'; return 0; }
+    case "$_p" in
+        /*) ;;
+        *) _p="$PWD/$_p" ;;
+    esac
+    # Peel not-yet-existing trailing components (rejecting . and ..) down to an existing dir.
+    _tail=""
+    while [ ! -d "$_p" ]; do
+        _leaf=$(basename -- "$_p")
+        case "$_leaf" in
+            .|..) printf '\n'; return 0 ;;
+        esac
+        if [ -n "$_tail" ]; then _tail="$_leaf/$_tail"; else _tail="$_leaf"; fi
+        _next=$(dirname -- "$_p")
+        [ "$_next" != "$_p" ] || { printf '\n'; return 0; } # walked off the root, nothing existed
+        _p="$_next"
+    done
+    # Resolve the existing base; collapse any "//" (POSIX root alias) to "/".
+    _base=$( CDPATH= cd -- "$_p" 2>/dev/null && pwd -P ) || { printf '\n'; return 0; }
+    _base=$(printf '%s' "$_base" | sed 's://*:/:g')
+    if [ -n "$_tail" ]; then
+        printf '%s/%s\n' "$_base" "$_tail"
+    else
+        printf '%s\n' "$_base"
+    fi
+}
+
 refuse_dangerous_install_dir() {
-    if [ -z "$INSTALL_DIR" ] || [ "$INSTALL_DIR" = "/" ] || [ "$INSTALL_DIR" = "$HOME" ]; then
+    _canon=$(canonical_dir "$INSTALL_DIR")
+    _home=$(canonical_dir "$HOME")
+    # Refuse anything that is not a clean absolute path (empty => could not canonicalize),
+    # any filesystem root (a path that is its own parent, covering "/", "//", drive roots),
+    # and the user's home directory.
+    case "$_canon" in
+        /*) ;;
+        *) die "refusing to replace unsafe install directory '$INSTALL_DIR'." ;;
+    esac
+    if [ "$_canon" = "$(dirname -- "$_canon")" ] || [ "$_canon" = "$_home" ]; then
         die "refusing to replace unsafe install directory '$INSTALL_DIR'."
     fi
 }
@@ -119,6 +163,10 @@ if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/shell/agents.bashrc" ]; then
     REPO_DIR="$SELF_DIR"
     echo "Using existing checkout at $REPO_DIR"
 else
+    # Canonicalize to a clean absolute path BEFORE the guard and the destructive
+    # `rm -rf`/`mkdir`/`tar` below all use the same safe value (only on this download
+    # path; the existing-checkout branch above ignores --dir entirely).
+    INSTALL_DIR="$(canonical_dir "$INSTALL_DIR")"
     refuse_dangerous_install_dir
     _tmp="$(mktemp -d)"
     trap 'rm -rf "$_tmp"' EXIT
@@ -146,9 +194,13 @@ else
         VERIFY_ARGS+=("$_sha256")
     fi
     bun "$_tmp/verify-source-archive.ts" "${VERIFY_ARGS[@]}"
-    # Preserve opt-in autoupdate state across the destructive replace below.
+    # Preserve opt-in autoupdate state and the user's local `.env` overrides across the
+    # destructive replace below (both are gitignored, so a release tree never ships them).
     if [ -d "$INSTALL_DIR/.autoupdate" ]; then
         cp -a "$INSTALL_DIR/.autoupdate" "$_tmp/.autoupdate-backup"
+    fi
+    if [ -f "$INSTALL_DIR/.env" ]; then
+        cp -a "$INSTALL_DIR/.env" "$_tmp/.env-backup"
     fi
     if [ -e "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; then
         echo "Removing previous copilot-env install at $INSTALL_DIR ..."
@@ -162,6 +214,10 @@ else
     if [ -d "$_tmp/.autoupdate-backup" ]; then
         mkdir -p "$INSTALL_DIR/.autoupdate"
         cp -a "$_tmp/.autoupdate-backup/." "$INSTALL_DIR/.autoupdate/"
+    fi
+    # Restore the preserved .env (the documented supply-chain pin / env overrides).
+    if [ -f "$_tmp/.env-backup" ]; then
+        cp -a "$_tmp/.env-backup" "$INSTALL_DIR/.env"
     fi
     REPO_DIR="$INSTALL_DIR"
 fi

@@ -20,9 +20,12 @@ import { verifySourceArchiveEntry, verifySourceArchiveSha256 } from "./verify-so
 // Files that live in the checkout but are NOT shipped in a release: keep them across
 // an update. node_modules is restored by `bun install`; .git is the clone's VCS dir;
 // .autoupdate holds the opt-in autoupdate state/lock, which must survive the very
-// update it triggers. Everything else under the checkout is release-tracked source, so
-// the sync may prune it -- removing files a new release dropped, plus OS junk.
-const PRESERVE = new Set([".git", "node_modules", ".autoupdate"]);
+// update it triggers; .env is the user's documented local override file (the proxy
+// float pin COPILOT_API_VERSION / COPILOT_API_MIN_RELEASE_AGE), gitignored so never in
+// a release tree -- pruning it would silently drop the user's supply-chain pin. Everything
+// else under the checkout is release-tracked source, so the sync may prune it -- removing
+// files a new release dropped, plus OS junk.
+export const PRESERVE = new Set([".git", "node_modules", ".autoupdate", ".env"]);
 
 // A complete release tree contains these. node-tar warns-and-SKIPS unrecoverable
 // entries rather than failing, so we verify the extract before the destructive sync:

@@ -12,7 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assertReleaseComplete, mirror, REQUIRED_FILES } from "../src/install/release.ts";
+import { assertReleaseComplete, mirror, PRESERVE, REQUIRED_FILES } from "../src/install/release.ts";
 
 // POSIX-only because symlink creation is unreliable on Windows without privilege.
 const skipWin = test.skipIf(process.platform === "win32");
@@ -73,6 +73,15 @@ describe("mirror", () => {
 
     expect(existsSync(join(dest, "keep.ts"))).toBe(true);
     expect(existsSync(join(dest, "stale.ts"))).toBe(false);
+  });
+
+  test("the preserve list keeps every non-shipped checkout file across an update", () => {
+    // These live in the checkout but are gitignored, so a release tree never ships them;
+    // applyRelease must never prune them. `.env` in particular holds the documented proxy
+    // pin (COPILOT_API_VERSION), and its loss would silently un-pin the proxy float.
+    for (const name of [".git", "node_modules", ".autoupdate", ".env"]) {
+      expect(PRESERVE.has(name)).toBe(true);
+    }
   });
 
   test("preserves a `keep` name at the top level even when src lacks it", () => {

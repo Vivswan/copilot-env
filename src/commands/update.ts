@@ -2,6 +2,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { consola } from "consola";
+import { acquireLock, releaseLock } from "../autoupdate/lock.ts";
 import { runPreflight } from "../autoupdate/preflight.ts";
 import { AutoupdateState, DEFAULT_AUTOUPDATE_COOLDOWN_DAYS } from "../autoupdate/state.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -48,9 +49,12 @@ export async function runUpdate(args: UpdateArgs): Promise<void> {
 
 function runAutoStatus(): void {
   const s = new AutoupdateState().read();
+  // The cooldown ACTUALLY used is the live `update-cooldown` config (see preflight), so show
+  // that rather than the value snapshotted into state when autoupdate was last enabled.
+  const cooldown = new CopilotEnvConfig().read().updateCooldown ?? DEFAULT_AUTOUPDATE_COOLDOWN_DAYS;
   const last = s.lastCheckMs > 0 ? new Date(s.lastCheckMs).toISOString() : "never";
   consola.info(
-    `Autoupdate: ${s.enabled ? "enabled" : "disabled"} | cooldown ${s.cooldownDays}d | ` +
+    `Autoupdate: ${s.enabled ? "enabled" : "disabled"} | cooldown ${cooldown}d | ` +
       `last check ${last} | last result: ${s.lastResult || "(none)"}`,
   );
 }
@@ -108,5 +112,27 @@ async function runManualUpdate(args: {
   }
 
   consola.start(`Updating copilot-env ${current} -> ${target.tag} ...`);
-  await applyUpdate(current, target);
+  // Take the autoupdate lock so a manual update can't race a concurrent autoupdate preflight
+  // (triggered by `agent start` in another shell) applying a release onto the same checkout --
+  // two simultaneous mirrors/migrations would corrupt the tree.
+  if (!acquireLock(Date.now())) {
+    consola.warn("Another update is already in progress (autoupdate); skipping this run.");
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    // Re-validate UNDER the lock: a concurrent preflight may have applied a NEWER release
+    // between our resolve above and acquiring the lock. Re-read the on-disk version (fresh --
+    // packageVersion() is not cached) and re-resolve, so we never apply a now-stale target
+    // that would DOWNGRADE the checkout (releases only ever move forward).
+    const currentNow = `v${packageVersion()}`;
+    const targetNow = await resolveTarget(args.cooldown);
+    if (!targetNow || isUpToDate(currentNow, targetNow.tag)) {
+      consola.success(`copilot-env is already up to date (${currentNow}).`);
+      return;
+    }
+    await applyUpdate(currentNow, targetNow);
+  } finally {
+    releaseLock();
+  }
 }

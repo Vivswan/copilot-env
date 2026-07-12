@@ -53,8 +53,19 @@ export async function applyUpdate(
 
   await applyRelease(target.tarballUrl, target.sourceSha, target.sourceSha256);
 
-  // Refresh deps for the new release.
-  bunInstallFrozen(stdio);
+  // Refresh deps for the new release. If this FAILS we still run migrations below and only
+  // THEN surface the error: applyRelease has already moved the on-disk version forward, so a
+  // later `agent update` would see "up to date" and skip the due migrations forever. Migrations
+  // ARE idempotent and only mutate local config/state, so running them after a failed install is
+  // safe -- though they import external deps (consola, valibot, ...) and so may themselves fail
+  // to load if node_modules is broken; that stays best-effort (a warn), and the deps self-heal
+  // on the next `agent` invocation (bin/agent reinstalls) or a later successful update.
+  let installError: unknown;
+  try {
+    bunInstallFrozen(stdio);
+  } catch (e) {
+    installError = e;
+  }
 
   // Run post-update migrations in a FRESH process so they load from the new release on
   // disk -- this process still holds the pre-update code in memory. Best-effort: a
@@ -68,6 +79,11 @@ export async function applyUpdate(
   );
   if (migrate.status !== 0) {
     logger.warn("Post-update migrations reported a problem; see the output above.");
+  }
+
+  // Surface a dependency-install failure now that migrations have had their chance to run.
+  if (installError) {
+    throw installError;
   }
 
   logger.success(

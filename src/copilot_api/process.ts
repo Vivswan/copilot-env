@@ -188,6 +188,7 @@ export function launchDaemon(
   githubToken?: string,
   patPassthrough?: boolean,
   idleWatchdog?: boolean,
+  muteProxyLogs?: boolean,
 ): number {
   /** Launch copilot-api as a detached daemon. Returns the PID. */
   const env: Record<string, string> = { ...process.env } as Record<string, string>;
@@ -203,12 +204,17 @@ export function launchDaemon(
   //    exchange so a PAT is used directly (see pat_passthrough_preload.ts).
   //  - the idle watchdog arms an in-daemon timer that exits the process when idle, so the
   //    server and its watchdog are one unit (see idle_watchdog.ts).
+  //  - the log mute discards the daemon's handler-log writes under <home>/logs while still
+  //    touching their mtimes, the watchdog/health activity signal (see log_mute_preload.ts).
   const bunFlags: string[] = [];
   if (patPassthrough) {
     bunFlags.push("--preload", join(PROJECT_ROOT, "src/scripts/pat_passthrough_preload.ts"));
   }
   if (idleWatchdog) {
     bunFlags.push("--preload", join(PROJECT_ROOT, "src/scripts/idle_watchdog_preload.ts"));
+  }
+  if (muteProxyLogs) {
+    bunFlags.push("--preload", join(PROJECT_ROOT, "src/scripts/log_mute_preload.ts"));
   }
   if (patPassthrough) {
     // The shim relies on copilot-api's DEFAULT path (which sends the vscode-chat editor

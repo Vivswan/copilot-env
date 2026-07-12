@@ -109,7 +109,7 @@ export interface StartArgs {
    * the managed lifecycle (auto-start on), where a plain `start` is otherwise an idempotent no-op
    * that leaves the running proxy up; in the unmanaged/default mode `start` always (re)starts. Use
    * `--force` after changing the credential or a config key the daemon reads at startup (port,
-   * small-model, passthrough).
+   * small-model, passthrough, proxy-logs).
    */
   force?: boolean;
 }
@@ -545,7 +545,22 @@ export async function runStart(args: StartArgs): Promise<void> {
   // the server and watchdog are one unit (no orphan either way), and every (re)start
   // re-attaches it. With the flag off, the proxy never auto-starts and gets no watchdog.
   const idleWatchdog = new CopilotEnvConfig().autoStartEnabled();
-  let pid = launchDaemon(port, logFile, daemonEnv, githubToken, patPassthrough, idleWatchdog);
+  // `proxy-logs false` mutes the daemon's verbose handler logs: a preload shim discards the
+  // writes under <home>/logs but keeps touching the files' mtimes, since the idle watchdog
+  // and `agent health` read those mtimes as the inference-activity signal.
+  const muteProxyLogs = new CopilotEnvConfig().read().proxyLogs === false;
+  if (muteProxyLogs) {
+    consola.info("Proxy request logs off: discarding writes under <home>/logs (`proxy-logs`).");
+  }
+  let pid = launchDaemon(
+    port,
+    logFile,
+    daemonEnv,
+    githubToken,
+    patPassthrough,
+    idleWatchdog,
+    muteProxyLogs,
+  );
 
   await sleep(1000);
   if (!pidAlive(pid)) {
@@ -572,7 +587,15 @@ export async function runStart(args: StartArgs): Promise<void> {
         throw new Error("could not find a free port after the retry.");
       }
       fs.writeFileSync(logFile, "");
-      pid = launchDaemon(port, logFile, daemonEnv, githubToken, patPassthrough, idleWatchdog);
+      pid = launchDaemon(
+        port,
+        logFile,
+        daemonEnv,
+        githubToken,
+        patPassthrough,
+        idleWatchdog,
+        muteProxyLogs,
+      );
       await sleep(1000);
       if (!pidAlive(pid)) {
         printLogTail(logFile, 20);

@@ -20,6 +20,8 @@ export interface CopilotEnvConfigData {
   passthrough?: PassthroughPref;
   /** Idle auto-stop window in whole seconds (`0` disables). */
   idleTimeout?: number;
+  /** Proxy request logging under `<home>/logs` (`false` discards the writes). */
+  proxyLogs?: boolean;
   /** Small/fast model id the proxy uses. */
   smallModel?: string;
   /** Proxy Responses-API transport: WebSocket (`true`) vs HTTP/SSE (`false`). */
@@ -56,6 +58,7 @@ const CONFIG_SCHEMA = v.object({
   autoStart: v.fallback(v.optional(v.boolean()), undefined),
   passthrough: v.fallback(v.optional(v.picklist(PASSTHROUGH_VALUES)), undefined),
   idleTimeout: v.fallback(v.optional(wholeSeconds), undefined),
+  proxyLogs: v.fallback(v.optional(v.boolean()), undefined),
   smallModel: v.fallback(v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))), undefined),
   useResponsesApiWebSocket: v.fallback(v.optional(v.boolean()), undefined),
   useResponsesApiWebSearch: v.fallback(v.optional(v.boolean()), undefined),
@@ -94,6 +97,10 @@ export interface ConfigKeyDef {
    *  holds a value, leaving the proxy's own default untouched otherwise. Use for keys we merely
    *  expose without overriding. Mutually exclusive with `proxyDefault`. */
   proxyProjected?: boolean;
+  /** Read by `agent start`'s launch wiring (NOT projected into the proxy config.json), yet
+   *  still applied only when a daemon launches -- so a change deserves the same restart hint
+   *  the projected keys get. */
+  restartToApply?: boolean;
 }
 
 /** Whether a registry entry is written into the proxy config.json at `agent start` (either
@@ -148,6 +155,7 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     describe: "PAT passthrough default: auto | on | off",
     parse: (r) => parseEnum(r, PASSTHROUGH_VALUES),
     defaultLabel: "auto",
+    restartToApply: true,
   },
   {
     cli: "idle-timeout",
@@ -155,6 +163,15 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     describe: "Idle auto-stop window in seconds (0 disables)",
     parse: (r) => parseWholeNumber(r, 0, MAX_SECONDS),
     defaultLabel: "3600",
+    restartToApply: true,
+  },
+  {
+    cli: "proxy-logs",
+    key: "proxyLogs",
+    describe: "Proxy request logging under <home>/logs (false discards the writes)",
+    parse: parseBool,
+    defaultLabel: "true",
+    restartToApply: true,
   },
   {
     cli: "small-model",
@@ -210,6 +227,7 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     describe: "Default proxy port (1-65535)",
     parse: (r) => parseWholeNumber(r, 1, 65535),
     defaultLabel: "4141 (then next free)",
+    restartToApply: true,
   },
   {
     cli: "proxy-version",

@@ -40,6 +40,7 @@ test("each typed key round-trips and del() reverts it to undefined (default)", (
     autoStart: true,
     passthrough: "on",
     idleTimeout: 120,
+    proxyLogs: false,
     smallModel: "gpt-5-mini",
     useResponsesApiWebSocket: false,
     useResponsesApiWebSearch: false,
@@ -55,6 +56,7 @@ test("each typed key round-trips and del() reverts it to undefined (default)", (
     autoStart: true,
     passthrough: "on",
     idleTimeout: 120,
+    proxyLogs: false,
     smallModel: "gpt-5-mini",
     useResponsesApiWebSocket: false,
     useResponsesApiWebSearch: false,
@@ -88,6 +90,7 @@ test("the registry parsers accept valid input and reject bad input with a clear 
   expect(configKeyDef("auto-start")?.parse("off")).toBe(false);
   expect(configKeyDef("passthrough")?.parse("AUTO")).toBe("auto");
   expect(configKeyDef("idle-timeout")?.parse("300")).toBe(300);
+  expect(configKeyDef("proxy-logs")?.parse("false")).toBe(false);
   expect(configKeyDef("port")?.parse("4141")).toBe(4141);
 
   expect(() => configKeyDef("auto-start")?.parse("maybe")).toThrow();
@@ -136,6 +139,7 @@ test("the registry covers exactly the documented keys, in order", () => {
     "auto-start",
     "passthrough",
     "idle-timeout",
+    "proxy-logs",
     "small-model",
     "responses-websocket",
     "responses-websearch",
@@ -177,6 +181,16 @@ test("isProxyProjected marks force + opt-in keys, not copilot-env-internal ones"
   expect(isProxyProjected(configKeyDef("responses-websocket")!)).toBe(true); // force
   expect(isProxyProjected(configKeyDef("message-websearch-model")!)).toBe(true); // opt-in
   expect(isProxyProjected(configKeyDef("auto-start")!)).toBe(false);
+  // proxy-logs is launch wiring, not a projection -- but it still needs a daemon restart,
+  // like the other keys `agent start` reads when launching (passthrough, idle-timeout, port).
+  expect(isProxyProjected(configKeyDef("proxy-logs")!)).toBe(false);
+  expect(configKeyDef("proxy-logs")?.restartToApply).toBe(true);
+  expect(configKeyDef("passthrough")?.restartToApply).toBe(true);
+  expect(configKeyDef("idle-timeout")?.restartToApply).toBe(true);
+  expect(configKeyDef("port")?.restartToApply).toBe(true);
+  // auto-start stays unmarked: the resolver and the in-daemon watchdog read it live (though
+  // ATTACHING a watchdog to an already-running unmanaged daemon still takes a relaunch).
+  expect(configKeyDef("auto-start")?.restartToApply).toBeUndefined();
   expect(configKeyDef("small-model")?.proxyDefault).toBe("gpt-5-mini");
   expect(configKeyDef("responses-websocket")?.proxyDefault).toBe(true);
   expect(configKeyDef("message-websearch-model")?.proxyDefault).toBeUndefined();

@@ -341,4 +341,42 @@ describe("resolveTarget retry (de-flakes the installer release lookup)", () => {
     expect(await resolveTarget(null)).toBeNull();
     expect(calls).toBe(4); // MAX_FETCH_ATTEMPTS
   });
+
+  // The CI-only endpoint override is load-bearing for the release-PR installer smoke
+  // (.github/scripts/release-pr-smoke.cjs serves a simulated release from localhost);
+  // pin its contract: loopback-only, never forwards the GH credential, and a
+  // non-loopback override is ignored in favor of the real API.
+  test("COPILOT_ENV_CI_RELEASES_API_URL: loopback-only redirect, no credential forwarded", async () => {
+    const realOverride = process.env.COPILOT_ENV_CI_RELEASES_API_URL;
+    const realGhToken = process.env.GH_TOKEN;
+    const calls: { url: string; auth: string | undefined }[] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const headers = (init?.headers ?? {}) as Record<string, string>;
+      calls.push({ url: String(input), auth: headers.Authorization });
+      return new Response(releasesJson, { status: 200 });
+    }) as unknown as typeof fetch;
+    try {
+      process.env.GH_TOKEN = "gho_test_token";
+      process.env.COPILOT_ENV_CI_RELEASES_API_URL = "http://127.0.0.1:9/releases";
+      expect((await resolveTarget(null))?.tag).toBe("v1.0.0");
+      process.env.COPILOT_ENV_CI_RELEASES_API_URL = "https://evil.example.com/releases";
+      expect((await resolveTarget(null))?.tag).toBe("v1.0.0");
+      delete process.env.COPILOT_ENV_CI_RELEASES_API_URL;
+      expect((await resolveTarget(null))?.tag).toBe("v1.0.0");
+    } finally {
+      if (realOverride === undefined) delete process.env.COPILOT_ENV_CI_RELEASES_API_URL;
+      else process.env.COPILOT_ENV_CI_RELEASES_API_URL = realOverride;
+      if (realGhToken === undefined) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = realGhToken;
+    }
+    const realApi = "https://api.github.com/repos/Vivswan/copilot-env/releases?per_page=100";
+    expect(calls.map((c) => c.url)).toEqual([
+      "http://127.0.0.1:9/releases", // loopback override honored
+      realApi, // non-loopback override refused -> real API
+      realApi, // no override -> real API
+    ]);
+    expect(calls[0]?.auth).toBeUndefined(); // credential never sent to an override
+    expect(calls[1]?.auth).toBe("Bearer gho_test_token");
+    expect(calls[2]?.auth).toBe("Bearer gho_test_token");
+  });
 });

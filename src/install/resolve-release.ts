@@ -25,11 +25,31 @@
 // An explicit --tag can resolve a prerelease because the user asked for that tag.
 // Set COPILOT_ENV_CI_INCLUDE_DRAFT_RELEASES=1 only in release CI smoke tests;
 // normal installs intentionally ignore draft releases.
+// COPILOT_ENV_CI_RELEASES_API_URL points discovery at a stand-in releases
+// endpoint; it exists only for the release-PR installer smoke in CI, which
+// serves a simulated release for the not-yet-published tag from localhost.
+// Only loopback URLs are honored, and no Authorization header is ever sent to
+// an override -- so the hook cannot redirect a real install to an attacker
+// endpoint or leak a GH_TOKEN to one.
 
 const SECONDS_PER_DAY = 24 * 60 * 60;
 // per_page=100 reads every release in one page (this repo will not exceed that for
 // years), so cooldown selection sees the whole eligible set, not just the first 30.
 const RELEASES_API = "https://api.github.com/repos/Vivswan/copilot-env/releases?per_page=100";
+const CI_RELEASES_API_URL_ENV = "COPILOT_ENV_CI_RELEASES_API_URL";
+const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "[::1]", "localhost"]);
+
+function releasesApiUrl(): string {
+  const override = process.env[CI_RELEASES_API_URL_ENV];
+  if (override) {
+    try {
+      if (LOOPBACK_HOSTNAMES.has(new URL(override).hostname)) return override;
+    } catch {
+      // fall through to the real API on an unparseable override
+    }
+  }
+  return RELEASES_API;
+}
 const GH = {
   Accept: "application/vnd.github+json",
   "X-GitHub-Api-Version": "2026-03-10",
@@ -177,12 +197,15 @@ const sleep = (ms: number): Promise<void> =>
 /** GET the releases JSON, retrying transient failures (network drop, 5xx, rate-limit) with
  *  exponential backoff + jitter. Returns the body text, or null after exhausting attempts.
  *  A non-retryable response (e.g. 401/404) gives up immediately -- retrying won't fix it. */
-async function fetchReleasesText(headers: Record<string, string>): Promise<string | null> {
+async function fetchReleasesText(
+  url: string,
+  headers: Record<string, string>,
+): Promise<string | null> {
   const base = retryBaseMs();
   for (let attempt = 1; attempt <= MAX_FETCH_ATTEMPTS; attempt++) {
     let retryable = true;
     try {
-      const res = await fetch(RELEASES_API, { headers });
+      const res = await fetch(url, { headers });
       if (res.ok) return await res.text();
       retryable = RETRYABLE_STATUSES.has(res.status);
     } catch {
@@ -201,13 +224,15 @@ export async function resolveTarget(
   cooldownDays: number | null,
   exactTag: string | null = null,
 ): Promise<Release | null> {
+  const url = releasesApiUrl();
   const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
   const headers: Record<string, string> = { ...GH };
-  if (token) {
+  // Never attach the credential to a CI override endpoint -- only the real API.
+  if (token && url === RELEASES_API) {
     headers.Authorization = `Bearer ${token}`;
   }
   const includeDrafts = process.env[CI_INCLUDE_DRAFT_RELEASES_ENV] === "1";
-  const text = await fetchReleasesText(headers);
+  const text = await fetchReleasesText(url, headers);
   if (text === null) return null; // offline / API errored after retries
   const releases = parseReleasesJson(text, includeDrafts, exactTag !== null);
   if (releases.length === 0) return null;

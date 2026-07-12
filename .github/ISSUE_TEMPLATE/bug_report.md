@@ -25,4 +25,4 @@ What you expected to happen instead.
 - OS:
 - bun version (`bun --version`):
 - node version (`node --version`):
-- copilot-env commit:
+- copilot-env version (`agent --version`; for dev checkouts, the git commit):

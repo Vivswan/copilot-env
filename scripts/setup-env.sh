@@ -7,8 +7,7 @@
 # point so they can't drift:
 #   - .github/workflows/copilot-setup-steps.yml  (GitHub Copilot coding agent)
 #   - .devcontainer/devcontainer.json            (Codespaces / Dev Containers)
-#   - .claude/settings.json SessionStart hook    (Claude Code worktrees)
-#   - Codex Cloud: point its environment setup script here
+#   - .codex/environments/environment.toml       (Codex Cloud environment setup)
 #   - humans / a fresh `git worktree add`
 #
 # bun + deps only -- it does NOT install the agent CLIs or start the proxy.

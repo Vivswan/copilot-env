@@ -11,7 +11,7 @@ Thanks for your interest in improving copilot-env! This guide covers how to set 
 ```bash
 git clone https://github.com/<your-fork>/copilot-env.git
 cd copilot-env
-bun install
+bash scripts/setup-env.sh   # scripts/setup-env.ps1 on Windows; runs bun install --frozen-lockfile
 ```
 
 ## Running checks

@@ -70,10 +70,13 @@ Only the *why* lives here; the mechanics are discoverable in the code.
   (default): manage the proxy yourself with `agent start` / `agent stop`. Idle window:
   `COPILOT_API_IDLE_TIMEOUT` env / `idle-timeout` config (default 3600; `0` disables).
 - **A PAT works through a runtime shim.** A classic/fine-grained PAT can't perform copilot-api's
-  editor token exchange (403) but is accepted directly under the `vscode-chat` integration. So
-  `agent start` preloads `src/scripts/pat_passthrough_preload.ts`, which fakes the exchange so
-  the daemon uses the PAT as the bearer. Auto-on for PAT-shaped tokens; force it either way
-  with the `passthrough` config key (`agent config --set passthrough on|off`).
+  editor token exchange (403, and `gh`-CLI/`gho_` OAuth tokens 404 it) but is accepted directly
+  under the `vscode-chat` integration. So `agent start` preloads
+  `src/scripts/pat_passthrough_preload.ts`, which fakes the exchange so the daemon uses the
+  token as the bearer. Auto-on for PAT-shaped tokens (`ghp_`/`github_pat_`), `gho_` tokens, and
+  the `gh-cli` provider; the device-flow `copilot` token is never auto-shimmed. Force it either
+  way with the `passthrough` config key (`agent config --set passthrough on|off`) — e.g. `on`
+  for a legacy unprefixed 40-hex classic PAT, which auto-detection misses.
 
 ## Repo map
 
@@ -84,16 +87,22 @@ Only the *why* lives here; the mechanics are discoverable in the code.
   the latest release archive, then hand off to release-local `src/install/installer.ts`.
 - `src/cli.ts` — Commander entry; delegates to `run*` functions.
 - `src/commands/` — command implementations (`init`/`auth`/`config`/`start`/`stop`/`health`/
-  `env`/`update`/`setup`); `init` and `auth` share `configure_agents.ts` to avoid a cycle.
+  `env`/`update`, plus `setup`+`shell_integration` behind `agent shell` and `apply_update`
+  shared by `agent update` and the autoupdate preflight); `init` configures both agents via
+  `configure_agents.ts` (`auth` manages the credential only and never configures agents).
 - `src/codex/`, `src/claude/` — per-agent config wiring (Codex farm/`--mobile`; Claude settings).
 - `src/copilot_api/` — proxy helpers: admin REST, JSON config/state, model aliases, per-host
   paths, daemon process control.
 - `src/scripts/` — runtime scripts that run as their OWN process or preload, NOT CLI handlers:
   `proxy-token.{sh,ps1}` (proxy-mode credential resolver) and the `bun --preload` daemon
-  shims: `inference_activity_preload.ts` (always), `pat_passthrough_preload.ts`,
-  `idle_watchdog_preload.ts`, `log_mute_preload.ts` (each conditional).
-- `src/install/`, `src/migrations/`, `src/usage/`, `src/utils/` — release download/verify,
-  version-step fix-ups, `cost` reporting, generic helpers.
+  shims: `token_argv_preload.ts` (first when a token is handed off; splices it from an env var
+  onto in-process argv so it stays off process listings), `inference_activity_preload.ts`
+  (always), `pat_passthrough_preload.ts`, `idle_watchdog_preload.ts`, `log_mute_preload.ts`
+  (each conditional).
+- `src/install/`, `src/migrations/`, `src/autoupdate/`, `src/health/`, `src/usage/`,
+  `src/utils/` — release download/verify, version-step fix-ups, the `agent start`-time
+  autoupdate preflight, the `agent health` check/probe/report engine, `cost` reporting,
+  generic helpers.
 - `copilot-env.config` — proxy-float floor/ceiling. `test/` — `bun test` units + a start/stop
   lifecycle against `test/copilot-api-fake.mjs`.
 
@@ -102,8 +111,9 @@ Only the *why* lives here; the mechanics are discoverable in the code.
 Every agent/dev environment and fresh `git worktree` initializes through **one** idempotent
 script — `scripts/setup-env.sh` (`.ps1` on Windows) — so no entry point drifts. It runs
 `bun install --frozen-lockfile` (which fires the best-effort float; no agent CLIs). It is
-invoked by the Copilot coding agent, Codespaces/Dev Containers, the Claude/Codex worktree
-`SessionStart` hooks, and humans.
+invoked by the Copilot coding agent (`.github/workflows/copilot-setup-steps.yml`),
+Codespaces/Dev Containers (`.devcontainer/devcontainer.json`), the Codex Cloud environment
+setup (`.codex/environments/environment.toml`), and humans.
 
 ## Migrations
 

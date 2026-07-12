@@ -11,11 +11,19 @@ and for Codex, and report estimated token spend.
 TypeScript port of the original Python `copilot-api` helper. Runs on **Linux,
 macOS, and Windows**.
 
-- **Lifecycle**: `start` / `stop` the local proxy with one command.
+- **Lifecycle**: `start` / `stop` the local proxy with one command — or opt in
+  to the managed lifecycle (`auto-start`) that starts the proxy when an agent
+  needs it and stops it after an idle window.
 - **Zero setup**: auto-installs [bun](https://bun.sh), dependencies, and the
   proxy on first run. No global installs to manage.
-- **Shell + Codex wiring**: point your tools at the local proxy automatically;
-  write `~/.codex` config; build a per-host `CODEX_HOME` farm (Linux/macOS).
+- **Codex + Claude wiring**: point both CLIs at the local proxy or GitHub
+  Copilot Direct automatically; write `~/.codex` / `~/.claude` config; build a
+  per-host `CODEX_HOME` farm (Linux/macOS).
+- **One credential**: `agent auth` manages the GitHub Copilot token (device
+  flow, `gh` CLI, or a stored PAT) as the single source of truth; PATs work
+  through an automatic passthrough shim.
+- **Typed preferences**: `agent config` gets/sets every knob — lifecycle,
+  ports, proxy feature flags, model ids — with one precedence rule everywhere.
 - **Cost reporting**: estimated spend from per-host usage DBs via live OpenRouter pricing.
 - **Controlled floating**: the proxy floats to the newest cooldown-aged release
   within configured bounds; every other dependency is pinned via `bun.lock`.
@@ -63,9 +71,11 @@ Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, the
 
 ```bash
 agent init                 # set up BOTH Codex + Claude (auto-detect direct vs the proxy) + next-step guidance
-agent start                # launch the daemon and sync aliases (--dry-run to preview, --port to pin)
+agent auth                 # manage the GitHub Copilot credential (--provider copilot|gh-cli|gh-token, --set, --get, --del, --check)
+agent config               # get/set preferences (--set <key> <value> / --get [key] / --del <key>; see Configuration below)
+agent start                # launch the daemon and sync aliases (--dry-run to preview, --port to pin, --check to probe)
 agent stop                 # stop the daemon
-agent health               # full environment diagnosis (--scope runtime|proxy|setup|codex|claude, --json, --live)
+agent health               # full environment diagnosis (--scope full|runtime|proxy|setup|auth|codex|claude, --json, --live)
 agent env                  # print shell exports for the calling shell (CODEX_HOME / proxy ANTHROPIC_BASE_URL)
 agent cost                 # estimated token spend across all per-host usage DBs
 agent update               # update to the latest release (--check; cooldown via `agent config --set update-cooldown`)
@@ -92,9 +102,9 @@ The installer wires the `agent` wrapper into your shell and exports the proxy en
 
 The `cl` / `co` / `cx` launchers are opt-in:
 
-- `cl` runs Claude.
+- `cl` reads the configured Claude provider (`agent claude --check`), starts the proxy for proxy-backed or not-yet-configured setups (re-syncing the port/token), then Claude.
 - `co` runs Copilot.
-- `cx` reads the configured Codex provider (`agent codex --check`), starts the proxy only for proxy-backed configs (re-syncing the port/token), then Codex.
+- `cx` does the same as `cl` for Codex (`agent codex --check`), then Codex.
 
 Each has a more-permissive variant that adds the agent's most-relaxed flag: `clx` (`--dangerously-skip-permissions`), `cox` (`--allow-all`), `cxx` (`--sandbox danger-full-access`).
 
@@ -121,22 +131,101 @@ source ~/.copilot-env/shell/agents.launchers.bashrc
 . ~/.copilot-env/shell/agents.launchers.ps1
 ```
 
+### Managed proxy lifecycle (auto-start)
+
+By default you manage the proxy yourself with `agent start` / `agent stop`.
+Opt in to the managed lifecycle instead:
+
+```bash
+agent config --set auto-start true
+```
+
+With `auto-start` on:
+
+- **Auto-start:** whenever Codex, Claude, or the `cl`/`cx` launchers need the
+  proxy and it is down, it is started automatically (the shared credential
+  resolver handles this — no manual `agent start`).
+- **Idle auto-stop:** a watchdog inside the daemon stops the proxy after an
+  idle window. Inference requests and the resolver's session heartbeats count
+  as activity; health and liveness pings never keep it alive. Configure the
+  window with `agent config --set idle-timeout <seconds>` (default `3600`;
+  `0` disables) or the `COPILOT_API_IDLE_TIMEOUT` env var.
+
+With `auto-start` off, the launchers prompt before starting a downed proxy;
+headless callers (Codex/Claude config hooks) never start it implicitly.
+
+### Configuration
+
+`agent config` is the typed preference store. Every read site applies the same
+precedence: **explicit flag/env (per-invocation) > stored config > built-in
+default**.
+
+```bash
+agent config --get                    # print all preferences
+agent config --set auto-start true    # set one
+agent config --del idle-timeout       # revert one to its default
+```
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `auto-start` | `false` | Managed proxy lifecycle: auto-start on agent open + idle auto-stop. |
+| `passthrough` | `auto` | PAT passthrough: `auto` / `on` / `off` (see below). |
+| `idle-timeout` | `3600` | Idle auto-stop window in seconds (`0` disables). |
+| `proxy-logs` | `true` | Proxy request logging under `<home>/logs` (`false` discards the writes). |
+| `small-model` | `gpt-5-mini` | Small/fast model id the proxy uses. |
+| `responses-websocket` | `true` | Proxy Responses-API transport: WebSocket vs HTTP/SSE. |
+| `responses-websearch` | `true` | Proxy Responses-API web search. |
+| `messages-api` | `true` | Proxy Messages-API (Anthropic-shaped) endpoint. |
+| `responses-context-management` | proxy default | Proxy Responses-API server-side context management. |
+| `message-websearch-model` | proxy default | Model id the proxy uses for Messages-API web search. |
+| `port` | `4141` | Default proxy port (then next free unless `strict-port`). |
+| `min-port` / `max-port` | `1024` / `65535` | Allowed proxy port range. |
+| `strict-port` | `false` | Fail `start` when the default port is busy instead of auto-incrementing. |
+| `proxy-version` | latest (floated) | Pin the floated proxy to a version/tag. |
+| `release-cooldown` | bunfig `minimumReleaseAge` | Proxy float supply-chain cooldown in seconds. |
+| `update-cooldown` | none | `agent update` cooldown in days. |
+
+Proxy-side keys (`small-model`, the `responses-*`/`messages-api` flags,
+`message-websearch-model`) are projected into the proxy's own `config.json` at
+`agent start`, so changing them needs a daemon restart to take effect.
+
+### Authentication
+
+`agent auth` is the credential front door — one GitHub Copilot credential,
+resolved at fetch time (agent configs never store a copy; `gh-cli` holds no
+token of its own and defers to the machine's `gh` login):
+
+- `--provider copilot` — GitHub device flow (`read:user` scope).
+- `--provider gh-cli` — use the machine's existing `gh` login.
+- `--provider gh-token` — store `$COPILOT_GITHUB_TOKEN`/`$GH_TOKEN`/`$GITHUB_TOKEN`
+  (first set wins; headless servers); `--set [token]` stores one non-interactively.
+- `--get` / `--del` / `--check` — print, clear, or check that a credential resolves.
+
+Classic and fine-grained PATs can't perform the proxy's editor token exchange,
+so `agent start` transparently enables a passthrough shim for PAT-shaped
+tokens that uses the PAT as the bearer directly. Force it either way with
+`agent config --set passthrough on|off`.
+
 ### Environment overrides
 
 copilot-env loads local defaults from root `.env` when running its TypeScript
-entry points; already-set shell environment variables take precedence. The
-proxy float reads these values:
+entry points; already-set shell environment variables take precedence, and env
+vars take precedence over stored `agent config` values.
 
+- `COPILOT_API_IDLE_TIMEOUT=<seconds>`: override the managed-lifecycle idle
+  window for this invocation (beats the `idle-timeout` config key).
 - `COPILOT_API_VERSION=<version|tag>`: pin the proxy to a specific release
-  (bypasses the floor and cooldown).
+  (bypasses the cooldown and float bounds at install; `agent start` still
+  refuses a proxy below the version floor. The `proxy-version` config key is
+  the persistent equivalent).
 - `COPILOT_API_MIN_RELEASE_AGE=<seconds>`: override the cooldown window
-  (`0` = no cooldown), taking precedence over `bunfig.toml`'s
-  `install.minimumReleaseAge`.
+  (`0` = no cooldown), taking precedence over the `release-cooldown` config
+  key and `bunfig.toml`'s `install.minimumReleaseAge`.
 
-Without `COPILOT_API_VERSION`, the proxy float reads npm publish times, picks
-the newest version at least the cooldown window old (`COPILOT_API_MIN_RELEASE_AGE`
-if set, else `bunfig.toml`'s `install.minimumReleaseAge`), and clamps it to the
-bounds in `copilot-env.config`.
+Without a pin, the proxy float reads npm publish times, picks the newest
+version at least the cooldown window old (env var, else `release-cooldown`
+config, else `bunfig.toml`'s `install.minimumReleaseAge`), and clamps it to
+the bounds in `copilot-env.config`.
 
 ## Development
 
@@ -157,8 +246,8 @@ bun run check       # biome check --write src bin test scripts
 ```
 
 - **Env init:** `scripts/setup-env.sh` (`setup-env.ps1` on Windows) is the single
-  initializer; the Copilot coding agent, Codespaces / Dev Containers, and
-  Claude/Codex worktrees all run it.
+  initializer; the Copilot coding agent, Codespaces / Dev Containers, and the
+  Codex Cloud environment setup all run it.
 - **More docs:** conventions, the proxy float/cooldown model, and a file-by-file
   breakdown live in [`AGENTS.md`](./AGENTS.md).
 

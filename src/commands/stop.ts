@@ -1,6 +1,6 @@
 // `agent stop`: terminates the tracked local proxy daemon.
 import { consola } from "consola";
-import { isCopilotApiPid, pidAlive, terminatePid } from "../copilot_api/process.ts";
+import { classifyDaemonPid, pidAlive, terminatePid } from "../copilot_api/process.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { clearPersistedInferenceActivity } from "../scripts/inference_activity.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
@@ -10,8 +10,8 @@ import { PROJECT_ROOT } from "../utils/root.ts";
  * persisted activity mark. Quiet (no logging, no exit code) -- the shared core of `agent stop`
  * and the de-authenticate teardown. `graceMs > 0` waits that long and escalates to SIGKILL if
  * the daemon is still alive (use it when the caller must be sure it stopped, e.g. de-auth);
- * `0` sends a single SIGTERM without waiting. Returns the tracked pid, whether we signalled it
- * (it was confirmed ours), and whether it is confirmed stopped afterwards.
+ * `0` sends a single SIGTERM without waiting. Returns the tracked pid, whether we signalled it,
+ * and whether it is confirmed stopped afterwards.
  */
 export async function stopTrackedProxy(
   graceMs = 0,
@@ -25,27 +25,31 @@ export async function stopTrackedProxy(
     clearPersistedInferenceActivity();
     return { signalled: false, stopped: true };
   }
-  // Confirm the tracked pid is still OUR daemon before signalling it -- the OS may have
-  // recycled a stale pid onto an unrelated process. On Windows there are no POSIX signals:
-  // Node maps SIGTERM to an unconditional TerminateProcess (a hard kill; SQLite WAL recovery
-  // makes that safe). Killing the daemon also tears down its in-daemon idle watchdog.
-  const ours = await isCopilotApiPid(trackedPid);
-  if (ours) {
+  // Classify the tracked pid before signalling it -- the OS may have recycled a stale pid onto
+  // an unrelated process. Signal on "yes" (confirmed ours) AND "unknown" (a restricted/sandboxed
+  // token that can't read the pid's identity, e.g. Windows Constrained Language Mode): the
+  // tracked pid is almost certainly still our daemon, and treating "unknown" as "already gone"
+  // would leave a live daemon running while reporting it stopped. Only a confident "no" skips the
+  // signal. On Windows there are no POSIX signals: SIGTERM maps to TerminateProcess (a hard kill;
+  // SQLite WAL recovery makes that safe). Killing the daemon also tears down its idle watchdog.
+  const cls = await classifyDaemonPid(trackedPid);
+  const signalled = cls === "yes" || cls === "unknown";
+  if (signalled) {
     await terminatePid(trackedPid, graceMs);
   }
-  // "stopped" = the tracked daemon is no longer alive as our process. A pid that is NOT ours
-  // (already gone / replaced) counts as stopped. With graceMs 0 (no wait) a just-SIGTERMed
-  // process can still be alive for a tick, so a caller needing certainty passes graceMs > 0
-  // (waited + SIGKILL) before this check.
-  const stopped = !ours || !pidAlive(trackedPid);
-  // Preserve the pid/port tracking ONLY when we actually waited (graceMs > 0) and the daemon
-  // is confirmed still alive -- a genuinely stuck daemon that a follow-up `agent stop` must be
-  // able to target. Otherwise clear it (the graceMs 0 path can't confirm death, so it stays
-  // optimistic, exactly as `agent stop` always has). Activity marks are cleared either way.
+  // "stopped" = the tracked daemon is no longer alive as our process. A confident "no" (already
+  // gone / replaced) counts as stopped. With graceMs 0 (no wait) a just-SIGTERMed process can
+  // still be alive for a tick, so a caller needing certainty passes graceMs > 0 (waited + SIGKILL)
+  // before this check.
+  const stopped = !signalled || !pidAlive(trackedPid);
+  // Preserve the pid/port tracking ONLY when we actually waited (graceMs > 0) and the daemon is
+  // confirmed still alive -- a genuinely stuck daemon a follow-up `agent stop` must be able to
+  // target. Otherwise clear it (the graceMs 0 path can't confirm death, so it stays optimistic,
+  // exactly as `agent stop` always has). Activity marks are cleared either way.
   const keepTracking = graceMs > 0 && !stopped;
   state.set(keepTracking ? { lastEnsureAt: null } : { pid: null, port: null, lastEnsureAt: null });
   clearPersistedInferenceActivity();
-  return { trackedPid, signalled: ours, stopped };
+  return { trackedPid, signalled, stopped };
 }
 
 /** `stop`: terminate the proxy daemon tracked on this host. */

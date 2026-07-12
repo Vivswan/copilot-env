@@ -11,6 +11,11 @@ import { CopilotApiPaths } from "./paths.ts";
 
 const logger = consola.withTag("copilot_api.config");
 
+// Bounded backoff for reading config.json across the daemon's non-atomic write (see load()):
+// ~5 attempts x 4ms = up to ~16ms of retry, far longer than a truncate-then-write window.
+const LOAD_RETRY_ATTEMPTS = 5;
+const LOAD_RETRY_MS = 4;
+
 /**
  * Atomic JSON store for `~/.local/share/copilot-api/` files: the proxy's
  * `config.json` and the small state files (`CopilotEnvState`, `CopilotEnvRunState`,
@@ -38,24 +43,43 @@ export class CopilotApiConfig {
     if (!isFile(this.path)) {
       return {};
     }
-    let raw: string;
-    try {
-      raw = readFileSync(this.path, "utf8");
-    } catch (e) {
-      logger.warn(`could not read ${this.path}: ${String(e)}`);
+    // The proxy DAEMON writes config.json non-atomically (a plain truncate-then-write in the
+    // floated package), so a concurrent read can momentarily see it empty or half-written.
+    // Retry a few times before concluding it is really empty/corrupt -- otherwise update()'s
+    // save would persist the emptied doc and WIPE the daemon's keys (api key, admin key,
+    // providers). Only config.json needs this: our own stores (state, prefs) write via atomic
+    // rename, so a reader never sees a partial state from us. The window is sub-millisecond, so
+    // a short bounded backoff closes it at negligible cost.
+    const retryTransient = basename(this.path) === "config.json";
+    const maxAttempts = retryTransient ? LOAD_RETRY_ATTEMPTS : 1;
+    for (let attempt = 1; ; attempt++) {
+      let raw: string;
+      try {
+        raw = readFileSync(this.path, "utf8");
+      } catch (e) {
+        logger.warn(`could not read ${this.path}: ${String(e)}`);
+        return {};
+      }
+      if (raw.trim()) {
+        try {
+          const data: unknown = JSON.parse(raw);
+          return isRecord(data) ? data : {};
+        } catch (e) {
+          if (attempt < maxAttempts) {
+            sleepSync(LOAD_RETRY_MS);
+            continue;
+          }
+          logger.warn(`${this.path} is not valid JSON (${String(e)}); treating as empty`);
+          return {};
+        }
+      }
+      // Empty read: retry (a transient truncate window) before accepting it as genuinely empty.
+      if (attempt < maxAttempts) {
+        sleepSync(LOAD_RETRY_MS);
+        continue;
+      }
       return {};
     }
-    if (!raw.trim()) {
-      return {};
-    }
-    let data: unknown;
-    try {
-      data = JSON.parse(raw);
-    } catch (e) {
-      logger.warn(`${this.path} is not valid JSON (${String(e)}); treating as empty`);
-      return {};
-    }
-    return isRecord(data) ? data : {};
   }
 
   /** Atomically write ``data`` to disk with mode 0600. */

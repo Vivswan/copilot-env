@@ -136,10 +136,22 @@ async function listCopilotApiPidsWindows(): Promise<number[]> {
   // The `copilot-api.*start` pattern (copilot-api before a word-bounded start)
   // mirrors the POSIX match. Single quotes only, so the script passes through
   // argv quoting unmangled.
+  //
+  // Restrict to the CURRENT user's processes (GetOwner Domain+User == $env:USERDOMAIN/$env:USERNAME)
+  // to mirror the POSIX `psList({ all: false })` (`pgrep -u me`): otherwise, from an elevated
+  // shell, the scan would list OTHER users' daemons and the orphan sweep could kill them. Both
+  // env vars (not `[WindowsIdentity]::GetCurrent()`, which is blocked under Constrained Language
+  // Mode) keep this working everywhere, and matching Domain too avoids a same-username collision
+  // across a local account and a domain account. A process whose owner can't be read (GetOwner
+  // ReturnValue != 0) is excluded -- safer to skip an unconfirmed process than to signal another
+  // user's.
   const script =
     "Get-CimInstance Win32_Process | Where-Object { " +
     "($_.Name -eq 'node.exe' -or $_.Name -eq 'bun.exe') " +
     "-and $_.CommandLine -match 'copilot-api.*\\bstart\\b' " +
+    "} | Where-Object { " +
+    "$o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue; " +
+    "$o -and $o.ReturnValue -eq 0 -and $o.User -eq $env:USERNAME -and $o.Domain -eq $env:USERDOMAIN " +
     "} | ForEach-Object { $_.ProcessId }";
   let stdout: string;
   try {

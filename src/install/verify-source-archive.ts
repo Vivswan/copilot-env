@@ -90,6 +90,15 @@ if (import.meta.main) {
     if (expectedSha256Arg) {
       const hash = verifySourceArchiveSha256(archive, expectedSha256(expectedSha256Arg));
       process.stdout.write(`Verified release archive SHA256: ${hash}\n`);
+    } else if (process.env.COPILOT_ENV_ALLOW_UNVERIFIED_RELEASE !== "1") {
+      // Fail closed: without a SHA256 the only check is the archive root-dir name, which an
+      // attacker serving a tampered tarball can forge -- not real integrity. A normal release
+      // always ships a checksummed source asset, so a missing checksum means a broken release or
+      // a tampered download; refuse rather than replace the install unverified.
+      throw new Error(
+        "release archive has no verifiable SHA256 checksum; refusing (the release may be missing " +
+          "its uploaded source asset). Set COPILOT_ENV_ALLOW_UNVERIFIED_RELEASE=1 to override.",
+      );
     }
     const prefix = verifySourceArchiveEntry(firstTarEntry(archive), expectedSha);
     process.stdout.write(`Verified release archive source marker: ${prefix}\n`);

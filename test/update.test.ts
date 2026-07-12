@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -251,6 +251,40 @@ describe("source archive SHA256", () => {
       expect(() =>
         verifySourceArchiveSha256(file, `${"0".repeat(64)}  copilot-env-v3.0.0.tar.gz`),
       ).toThrow("SHA256 mismatch");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the verifier CLI fails closed when a release has no SHA256 (unless overridden)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "copilot-env-nodigest-"));
+    try {
+      // A valid GitHub-style source archive: root dir carries the commit-sha prefix.
+      const sha = "6c5ae7f0000000000000000000000000000000ab";
+      mkdirSync(join(dir, "Vivswan-copilot-env-6c5ae7f"), { recursive: true });
+      writeFileSync(join(dir, "Vivswan-copilot-env-6c5ae7f", "package.json"), "{}");
+      const archive = join(dir, "release.tgz");
+      const tar = Bun.spawnSync(["tar", "-czf", archive, "-C", dir, "Vivswan-copilot-env-6c5ae7f"]);
+      expect(tar.exitCode).toBe(0);
+
+      const verifier = join(import.meta.dir, "..", "src", "install", "verify-source-archive.ts");
+      const run = (env: Record<string, string>) =>
+        Bun.spawnSync(["bun", verifier, archive, sha], {
+          stdout: "pipe",
+          stderr: "pipe",
+          env: { ...process.env, ...env },
+        });
+
+      // No SHA256 arg and no override -> refuse with a clear message (the archive root-dir check
+      // alone is forgeable, so it is not treated as real integrity).
+      const refused = run({ COPILOT_ENV_ALLOW_UNVERIFIED_RELEASE: "" });
+      expect(refused.exitCode).toBe(1);
+      expect(refused.stderr.toString()).toContain("no verifiable SHA256 checksum");
+
+      // The documented escape hatch lets it through (entry check only).
+      const overridden = run({ COPILOT_ENV_ALLOW_UNVERIFIED_RELEASE: "1" });
+      expect(overridden.exitCode).toBe(0);
+      expect(overridden.stdout.toString()).toContain("source marker");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

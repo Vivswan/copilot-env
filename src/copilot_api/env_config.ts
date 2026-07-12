@@ -36,6 +36,12 @@ export interface CopilotEnvConfigData {
   messageApiWebSearchModel?: string;
   /** Default proxy port. */
   port?: number;
+  /** Lower bound of the allowed proxy port range (default 1024). */
+  minPort?: number;
+  /** Upper bound of the allowed proxy port range (default 65535). */
+  maxPort?: number;
+  /** Fail `agent start` when the default/configured port is busy instead of auto-incrementing. */
+  strictPort?: boolean;
   /** Pin the floated proxy to an exact version/tag. */
   proxyVersion?: string;
   /** Proxy float supply-chain cooldown in whole seconds. */
@@ -72,6 +78,15 @@ const CONFIG_SCHEMA = v.object({
     v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(65535))),
     undefined,
   ),
+  minPort: v.fallback(
+    v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(65535))),
+    undefined,
+  ),
+  maxPort: v.fallback(
+    v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(65535))),
+    undefined,
+  ),
+  strictPort: v.fallback(v.optional(v.boolean()), undefined),
   proxyVersion: v.fallback(v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))), undefined),
   releaseCooldown: v.fallback(v.optional(wholeSeconds), undefined),
   updateCooldown: v.fallback(v.optional(wholeDays), undefined),
@@ -227,6 +242,30 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     describe: "Default proxy port (1-65535)",
     parse: (r) => parseWholeNumber(r, 1, 65535),
     defaultLabel: "4141 (then next free)",
+    restartToApply: true,
+  },
+  {
+    cli: "min-port",
+    key: "minPort",
+    describe: "Lower bound of the allowed proxy port range (1-65535)",
+    parse: (r) => parseWholeNumber(r, 1, 65535),
+    defaultLabel: "1024",
+    restartToApply: true,
+  },
+  {
+    cli: "max-port",
+    key: "maxPort",
+    describe: "Upper bound of the allowed proxy port range (1-65535)",
+    parse: (r) => parseWholeNumber(r, 1, 65535),
+    defaultLabel: "65535",
+    restartToApply: true,
+  },
+  {
+    cli: "strict-port",
+    key: "strictPort",
+    describe: "Fail start when the default port is busy instead of auto-incrementing (bool)",
+    parse: parseBool,
+    defaultLabel: "false",
     restartToApply: true,
   },
   {

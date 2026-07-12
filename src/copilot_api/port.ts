@@ -7,13 +7,39 @@ import { CopilotEnvRunState } from "./state.ts";
 /** The built-in proxy port when nothing (config `port`, a running daemon, or `--port`) overrides it. */
 export const BUILTIN_PROXY_PORT = 4141;
 
+/** Built-in bounds of the allowed proxy port range, used when the `min-port`/`max-port` config
+ *  keys are unset. Privileged ports (<1024) are excluded by default. */
+export const DEFAULT_MIN_PROXY_PORT = 1024;
+export const DEFAULT_MAX_PROXY_PORT = 65535;
+
+/** The configured lower bound of the allowed proxy port range (`agent config --set min-port`),
+ *  else the built-in default. */
+export function minProxyPort(): number {
+  return new CopilotEnvConfig().read().minPort ?? DEFAULT_MIN_PROXY_PORT;
+}
+
+/** The configured upper bound of the allowed proxy port range (`agent config --set max-port`),
+ *  else the built-in default. */
+export function maxProxyPort(): number {
+  return new CopilotEnvConfig().read().maxPort ?? DEFAULT_MAX_PROXY_PORT;
+}
+
+/** Whether `port` is within the allowed proxy range [min-port, max-port] (config-driven). */
+export function proxyPortInRange(port: number): boolean {
+  return Number.isInteger(port) && port >= minProxyPort() && port <= maxProxyPort();
+}
+
 /** The default proxy port: the configured `port` (`agent config --set port`), else the built-in. */
 export function defaultProxyPort(): number {
   return new CopilotEnvConfig().read().port ?? BUILTIN_PROXY_PORT;
 }
 
 export async function copilotApiPortAvailable(port: number): Promise<boolean> {
-  if (port < 1024 || port > 65535) {
+  // An out-of-range port is never "available" to us: the proxy runs unprivileged (so binding
+  // <1024 fails anyway) and the range is a deliberate policy. Callers that surface a busy
+  // message should check proxyPortInRange first to distinguish "outside the allowed range" from
+  // "held by another process" -- the two are different user problems.
+  if (!proxyPortInRange(port)) {
     return false;
   }
   return new Promise<boolean>((resolve) => {
@@ -33,13 +59,19 @@ export async function copilotApiPortAvailable(port: number): Promise<boolean> {
 
 export async function copilotApiFindPort(start: number = defaultProxyPort()): Promise<number> {
   const maxAttempts = 50;
-  for (let port = start; port < Math.min(start + maxAttempts, 65536); port++) {
+  // Search only within the configured range: clamp the base into [min, max] and never scan past
+  // the ceiling, so the automatic search can't wander outside the allowed range.
+  const min = minProxyPort();
+  const max = maxProxyPort();
+  const from = Math.min(Math.max(start, min), max);
+  const to = Math.min(from + maxAttempts, max + 1);
+  for (let port = from; port < to; port++) {
     if (await copilotApiPortAvailable(port)) {
       return port;
     }
   }
   throw new Error(
-    `no free port found in range ${start}-${start + maxAttempts}; free a port or run \`agent config --set port <n>\` to start the search elsewhere`,
+    `no free port found in range ${from}-${to - 1}; free a port or run \`agent config --set port <n>\` to start the search elsewhere`,
   );
 }
 

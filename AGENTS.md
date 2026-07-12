@@ -40,8 +40,8 @@ Only the *why* lives here; the mechanics are discoverable in the code.
   `.copilot-env-config.json` SEPARATE from the credential store), with a single key registry
   as the source of truth: `auto-start`, `passthrough` (auto/on/off), `idle-timeout`,
   `proxy-logs`, `small-model`, `responses-websocket`, `responses-websearch`, `messages-api`,
-  `responses-context-management`, `message-websearch-model`, `port`, `proxy-version`,
-  `release-cooldown`, `update-cooldown`. Registry entries marked for proxy projection are
+  `responses-context-management`, `message-websearch-model`, `port`, `min-port`, `max-port`,
+  `strict-port`, `proxy-version`, `release-cooldown`, `update-cooldown`. Registry entries marked for proxy projection are
   **written into the proxy's own `config.json` at `agent start`** (`applyDefaultConfig` ->
   `projectedProxyConfig`): a `proxyDefault` key (`small-model` + the three `responses-websocket`
   /`responses-websearch`/`messages-api` flags) is force-written every start, while a

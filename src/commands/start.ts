@@ -14,6 +14,9 @@ import {
   copilotApiFindPort,
   copilotApiPortAvailable,
   defaultProxyPort,
+  maxProxyPort,
+  minProxyPort,
+  proxyPortInRange,
 } from "../copilot_api/port.ts";
 import {
   classifyDaemonPid,
@@ -314,7 +317,20 @@ async function logProxyVersion(): Promise<void> {
  * Read-only (just probes availability), so it's safe to call from `--dry-run`.
  */
 async function resolveStartPort(pinned: number | undefined, announce: boolean): Promise<number> {
+  const min = minProxyPort();
+  const max = maxProxyPort();
+  if (min > max) {
+    throw new Error(
+      `invalid port range: min-port (${min}) is greater than max-port (${max}); fix it with \`agent config --set min-port <n>\` / \`--set max-port <n>\`.`,
+    );
+  }
   if (pinned !== undefined) {
+    if (!proxyPortInRange(pinned)) {
+      // Distinguish "outside the allowed range" from "busy" -- different problems.
+      throw new Error(
+        `requested port ${pinned} is out of range; the proxy port must be between ${min} and ${max} (\`agent config --set min-port/max-port\` to change the range).`,
+      );
+    }
     if (!(await copilotApiPortAvailable(pinned))) {
       throw new Error(
         `requested port ${pinned} is busy (held by another process). Free it or pick another --port.`,
@@ -323,9 +339,20 @@ async function resolveStartPort(pinned: number | undefined, announce: boolean): 
     return pinned;
   }
   // No hard `--port` pin: the auto-resolve base is the default proxy port (config `port`,
-  // else the built-in 4141) -- a SOFT default that moves to the next free port if busy.
+  // else the built-in 4141) -- a SOFT default that moves to the next free port if busy,
+  // unless `strict-port` is set (then a busy default is fatal, no auto-increment).
   const def = defaultProxyPort();
+  if (!proxyPortInRange(def)) {
+    throw new Error(
+      `configured port ${def} is outside the allowed range ${min}-${max}; run \`agent config --set port <n>\` within the range, or adjust min-port/max-port.`,
+    );
+  }
   if (await copilotApiPortAvailable(def)) return def;
+  if (new CopilotEnvConfig().read().strictPort === true) {
+    throw new Error(
+      `port ${def} is busy and auto-increment is disabled (\`strict-port\`); free it, pick another \`--port\`, or set \`agent config --set strict-port false\`.`,
+    );
+  }
   if (announce) consola.warn(`Port ${def} is busy (held by another process/user).`);
   let port: number;
   try {
@@ -572,11 +599,14 @@ export async function runStart(args: StartArgs): Promise<void> {
       logContent = "";
     }
     if (/address already in use|EADDRINUSE|bind.*failed/i.test(logContent)) {
-      if (args.port !== undefined) {
-        // Pinned port lost the race to another process: fail rather than moving.
+      const strictPort = new CopilotEnvConfig().read().strictPort === true;
+      if (args.port !== undefined || strictPort) {
+        // A pinned port -- or any port under strict-port -- that loses the race fails rather
+        // than silently moving to a different port.
         printLogTail(logFile, 20);
         throw new Error(
-          `requested port ${port} was taken by another process just before launch. See ${logFile}`,
+          `port ${port} was taken by another process just before launch` +
+            `${strictPort && args.port === undefined ? " (strict-port is on, so no auto-increment)" : ""}. See ${logFile}`,
         );
       }
       consola.warn(

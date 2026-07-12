@@ -103,7 +103,7 @@ canonical_dir() {
         _p="$_next"
     done
     # Resolve the existing base; collapse any "//" (POSIX root alias) to "/".
-    _base=$( CDPATH= cd -- "$_p" 2>/dev/null && pwd -P ) || { printf '\n'; return 0; }
+    _base=$( CDPATH='' cd -- "$_p" 2>/dev/null && pwd -P ) || { printf '\n'; return 0; }
     _base=$(printf '%s' "$_base" | sed 's://*:/:g')
     if [ -n "$_tail" ]; then
         printf '%s/%s\n' "$_base" "$_tail"

@@ -11,6 +11,7 @@ import {
   patchModelCatalog,
   refreshCodexModelCatalogIfStale,
 } from "../src/codex/catalog.ts";
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
@@ -33,6 +34,10 @@ afterEach(() => {
 function isolate(): void {
   dir = mkdtempSync(join(tmpdir(), "copilot-catalog-"));
   process.env.COPILOT_API_HOME = dir;
+  // The catalog is opt-in (default false); these tests exercise the enabled
+  // machinery, so flip it on in the isolated home. The disabled-gate tests
+  // below undo this per-test.
+  new CopilotEnvConfig().set({ codexModelCatalog: true });
 }
 
 function limitsOf(entries: [string, CopilotModelLimits][]): Map<string, CopilotModelLimits> {
@@ -348,4 +353,42 @@ test("a failed post-upgrade regeneration does not retry on the next same-version
 
   expect(await refreshCodexModelCatalogIfStale("direct", deps)).toBe(false);
   expect(calls).toBe(1); // throttled: same version, fresh attempt timestamp
+});
+
+// --- the opt-in gate ----------------------------------------------------------
+
+test("generate is a no-op when the catalog is not opted in", async () => {
+  isolate();
+  new CopilotEnvConfig().del("codexModelCatalog");
+  const ok = await generateCodexModelCatalog("direct", {
+    bundledCatalog: () => {
+      throw new Error("must not be called");
+    },
+    fetchLimits: async () => {
+      throw new Error("must not be called");
+    },
+  });
+  expect(ok).toBe(false);
+  expect(existsSync(new CopilotApiPaths().codexModelCatalogFile)).toBe(false);
+});
+
+test("refresh is a no-op when disabled: no throttle state write", async () => {
+  isolate();
+  new CopilotEnvConfig().set({ codexModelCatalog: false });
+  const ok = await refreshCodexModelCatalogIfStale("direct", {
+    nowMs: () => 1_000_000,
+    codexVersion: () => "1.0.0",
+    bundledCatalog: () => {
+      throw new Error("must not be called");
+    },
+    fetchLimits: async () => {
+      throw new Error("must not be called");
+    },
+  });
+  expect(ok).toBe(false);
+  // The gate sits BEFORE the attempt recording: a disabled install must never
+  // re-create the throttle fields the cleanup deleted.
+  const state = new CopilotEnvState().read();
+  expect(state.codexCatalogLastAttemptMs).toBe(0);
+  expect(state.codexCatalogCodexVersion).toBeNull();
 });

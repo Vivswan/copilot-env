@@ -13,6 +13,7 @@ import { execa } from "execa";
 import { parse, stringify } from "smol-toml";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { isCatalogFileUsable } from "./catalog.ts";
 import { CODEX_PROVIDER_ID, effectiveCodexHome } from "./config.ts";
 
 const logger = createStderrLogger();
@@ -257,13 +258,21 @@ export async function runCodexMobile(): Promise<void> {
   const restore = (): void => {
     if (restored) return;
     restored = true;
+    // Re-check the captured catalog path at restore time: a disable of the
+    // opt-in catalog mid-pairing deletes the file, and restoring a dangling
+    // reference would be a Codex startup error.
+    const catalog = catalogPath !== null && isCatalogFileUsable(catalogPath) ? catalogPath : null;
     let next: string;
     try {
       // Prefer re-applying onto the current file (the app may have edited it), but
-      // fall back to the exact pre-flow config if it's now unreadable/invalid.
-      next = restoreModelProvider(fs.readFileSync(configPath, "utf8"), provider, catalogPath);
+      // fall back to the pre-flow config if it's now unreadable/invalid.
+      next = restoreModelProvider(fs.readFileSync(configPath, "utf8"), provider, catalog);
     } catch {
-      next = original;
+      // Rebuild from `original` through the same strip+restore pair so the
+      // catalog guard applies to the fallback too (`original` may carry the
+      // now-dangling path verbatim). `original` parsed at flow start
+      // (readModelProvider), so the pure rewrites cannot throw here.
+      next = restoreModelProvider(stripModelProvider(original), provider, catalog);
     }
     fs.writeFileSync(configPath, next);
   };
@@ -275,7 +284,14 @@ export async function runCodexMobile(): Promise<void> {
       restore();
     } catch {
       try {
-        fs.writeFileSync(configPath, original);
+        // Same guarded rebuild as restore()'s fallback, NOT `original` verbatim
+        // (which may carry a catalog path deleted mid-pairing).
+        const catalog =
+          catalogPath !== null && isCatalogFileUsable(catalogPath) ? catalogPath : null;
+        fs.writeFileSync(
+          configPath,
+          restoreModelProvider(stripModelProvider(original), provider, catalog),
+        );
       } catch {
         // give up -- the backup file is the last resort
       }

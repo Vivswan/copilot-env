@@ -1,10 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parse } from "smol-toml";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { runAuth } from "../src/commands/auth.ts";
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
+import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 
 const SAVED = {
   HOME: process.env.HOME,
@@ -49,6 +52,12 @@ function isolate(): { claudeHome: string } {
 
 function state(): CopilotEnvState {
   return new CopilotEnvState();
+}
+
+// The catalog is opt-in (default false); the refresh-path tests flip it on so
+// the auth-time refresh really runs.
+function enableCatalog(): void {
+  new CopilotEnvConfig().set({ codexModelCatalog: true });
 }
 
 /** Capture process.stdout.write output while awaiting `fn`. */
@@ -189,6 +198,7 @@ test("auth --set cannot combine with --get/--del/--check", async () => {
 
 test("auth --get stdout stays EXACTLY the token even when the catalog refresh runs", async () => {
   isolate();
+  enableCatalog();
   state().set({ githubToken: "ghu_stored123", authProvider: "gh-token" });
   const out = await captureStdout(() =>
     runAuth(
@@ -207,6 +217,7 @@ test("auth --get stdout stays EXACTLY the token even when the catalog refresh ru
 
 test("auth --get succeeds (exit 0) even when the catalog refresh blows up", async () => {
   isolate();
+  enableCatalog();
   state().set({ githubToken: "ghu_stored123", authProvider: "gh-token" });
   const out = await captureStdout(() =>
     runAuth(
@@ -229,6 +240,7 @@ test("auth --get succeeds (exit 0) even when the catalog refresh blows up", asyn
 
 test("auth --print-proxy-token stdout stays EXACTLY the key even when the refresh runs", async () => {
   isolate();
+  enableCatalog();
   const first = await captureStdout(() =>
     runAuth(
       { printProxyToken: true },
@@ -246,4 +258,57 @@ test("auth --print-proxy-token stdout stays EXACTLY the key even when the refres
   // ENTIRE stdout, refresh failure or not.
   expect(first).toMatch(/^[0-9a-f]{64}\n$/);
   expect(process.exitCode).toBe(0);
+});
+
+test("disabled: auth --get removes the catalog artifacts and stdout stays EXACTLY the token", async () => {
+  isolate();
+  // Opt-in NOT set: pre-seed the artifacts a pre-opt-in release left behind.
+  const codexHome = join(dir, ".codex");
+  mkdirSync(codexHome, { recursive: true });
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  mkdirSync(join(dir, "proxy-home"), { recursive: true });
+  writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
+  writeFileSync(
+    join(codexHome, "config.toml"),
+    ['model_provider = "copilot-env"', `model_catalog_json = "${catalogFile}"`, ""].join("\n"),
+  );
+  state().set({
+    githubToken: "ghu_stored123",
+    authProvider: "gh-token",
+    codexCatalogLastAttemptMs: 123,
+    codexCatalogCodexVersion: "1.0.0",
+  });
+
+  const out = await captureStdout(() => runAuth({ get: true }, NOOP_CATALOG_DEPS));
+
+  expect(out).toBe("ghu_stored123\n");
+  expect(process.exitCode).toBe(0);
+  const doc = parse(readFileSync(join(codexHome, "config.toml"), "utf8")) as Record<
+    string,
+    unknown
+  >;
+  expect(doc.model_catalog_json).toBeUndefined();
+  expect(existsSync(catalogFile)).toBe(false);
+  expect(state().read().codexCatalogLastAttemptMs).toBe(0);
+  expect(state().read().codexCatalogCodexVersion).toBeNull();
+});
+
+test("disabled: auth --print-proxy-token runs the same cleanup", async () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  mkdirSync(codexHome, { recursive: true });
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  mkdirSync(join(dir, "proxy-home"), { recursive: true });
+  writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
+  writeFileSync(join(codexHome, "config.toml"), `model_catalog_json = "${catalogFile}"\n`);
+
+  const out = await captureStdout(() => runAuth({ printProxyToken: true }, NOOP_CATALOG_DEPS));
+
+  expect(out).toMatch(/^[0-9a-f]{64}\n$/);
+  const doc = parse(readFileSync(join(codexHome, "config.toml"), "utf8")) as Record<
+    string,
+    unknown
+  >;
+  expect(doc.model_catalog_json).toBeUndefined();
+  expect(existsSync(catalogFile)).toBe(false);
 });

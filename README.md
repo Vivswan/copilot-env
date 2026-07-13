@@ -184,10 +184,16 @@ agent config --del idle-timeout       # revert one to its default
 | `proxy-version` | latest (floated) | Pin the floated proxy to a version/tag. |
 | `release-cooldown` | bunfig `minimumReleaseAge` | Proxy float supply-chain cooldown in seconds. |
 | `update-cooldown` | none | `agent update` cooldown in days. |
+| `codex-model-catalog` | `false` | Patched Codex model catalog serving Copilot's real context windows (opt-in). |
 
 Proxy-side keys (`small-model`, the `responses-*`/`messages-api` flags,
 `message-websearch-model`) are projected into the proxy's own `config.json` at
 `agent start`, so changing them needs a daemon restart to take effect.
+
+`codex-model-catalog` applies at the next Codex auth refresh (within ~5
+minutes) or `agent codex`/`agent init` wiring; turning it off also removes the
+generated `codex-model-catalog.json` and the managed `model_catalog_json`
+reference from the Codex config.
 
 ### Authentication
 

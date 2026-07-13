@@ -23,7 +23,7 @@ import { readFileSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { consola } from "consola";
 import { type CodexCatalogDeps, refreshCodexModelCatalogIfStale } from "../codex/catalog.ts";
-import { ensureCodexCatalogReferenced } from "../codex/config.ts";
+import { syncCodexCatalogReference } from "../codex/config.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import {
   AUTH_PROVIDERS,
@@ -265,13 +265,14 @@ async function runGet(catalogDeps?: CodexCatalogDeps): Promise<void> {
   // (one attempt per day), never throws, stderr-only -- the token contract stays
   // safe. The just-resolved token is reused so the refresh never re-runs `gh`.
   await refreshCodexModelCatalogIfStale("direct", { directToken: token, ...catalogDeps });
-  // Self-heal a config whose wiring-time seed failed: add the catalog reference
-  // when a usable file exists but the managed config predates it. Runs on EVERY
-  // auth call (one cheap TOML read), not just after a regeneration -- a catalog
-  // generated during mobile pairing (provider stripped => the add is skipped)
-  // must still get referenced on the next call after pairing restores the
-  // provider, without waiting out the daily refresh throttle.
-  ensureCodexCatalogReferenced();
+  // Keep the managed config in step with the opt-in catalog preference on EVERY
+  // auth call (one cheap TOML read), not just after a regeneration: enabled, it
+  // self-heals a config whose wiring-time seed failed (e.g. a catalog generated
+  // during mobile pairing -- provider stripped => the add is skipped -- must get
+  // referenced on the next call after pairing restores the provider, without
+  // waiting out the daily refresh throttle); disabled, it removes the catalog
+  // artifacts -- Codex re-runs auth every 300s, so a disable lands within minutes.
+  syncCodexCatalogReference();
 }
 
 /**
@@ -290,9 +291,10 @@ async function runPrintProxyToken(catalogDeps?: CodexCatalogDeps): Promise<void>
   // Same freshness hook as `--get`, sourced from the local proxy's /models (the
   // resolver guarantees the proxy is up before this prints; a raw gh-cli token
   // can 403 upstream, so proxy mode never fetches Copilot directly). The same
-  // every-call self-heal as `--get` follows (see runGet for why unconditional).
+  // every-call sync as `--get` follows (see runGet: self-heal when the catalog
+  // is enabled, artifact cleanup when disabled).
   await refreshCodexModelCatalogIfStale("proxy", catalogDeps);
-  ensureCodexCatalogReferenced();
+  syncCodexCatalogReference();
 }
 
 async function runDel(): Promise<void> {

@@ -31,9 +31,14 @@ function formatValue(value: boolean | number | string): string {
 
 /** Keys projected into the proxy's config.json -- or read by `agent start`'s launch wiring
  *  (`restartToApply`) -- take effect only when a daemon launches, so a running proxy won't see
- *  the change until it restarts. Nudge the user when that applies. The hint stays
- *  shell-neutral (no `&&`) for Windows PowerShell 5.1. */
-function noteRestartIfNeeded(def: ConfigKeyDef): void {
+ *  the change until it restarts. Nudge the user when that applies. Keys applied through some
+ *  other mechanism carry their own `applyHint`. The hints stay shell-neutral (no `&&`) for
+ *  Windows PowerShell 5.1. */
+function noteHowItApplies(def: ConfigKeyDef): void {
+  if (def.applyHint !== undefined) {
+    consola.info(def.applyHint);
+    return;
+  }
   if (!isProxyProjected(def) && def.restartToApply !== true) return;
   consola.info("Applies on the next proxy start; restart it: `agent stop`, then `agent start`.");
 }
@@ -73,7 +78,7 @@ function runSet(pair: string[]): void {
   }
   new CopilotEnvConfig().set({ [def.key]: value });
   consola.success(`set ${def.cli} = ${formatValue(value)}`);
-  noteRestartIfNeeded(def);
+  noteHowItApplies(def);
 }
 
 function runDel(cli: string): void {
@@ -81,7 +86,7 @@ function runDel(cli: string): void {
   if (def === undefined) throw unknownKeyError(cli);
   new CopilotEnvConfig().del(def.key);
   consola.success(`deleted ${def.cli} (reverted to default)`);
-  noteRestartIfNeeded(def);
+  noteHowItApplies(def);
 }
 
 function runGet(get: string | boolean | undefined): void {

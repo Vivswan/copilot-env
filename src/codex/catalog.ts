@@ -16,6 +16,10 @@
 // ATTEMPT per day -- attempt, not success, so a broken upstream cannot retry
 // inside every Codex auth refresh and its bounded auth timeout budget (the
 // managed direct provider allows 30s per auth call).
+//
+// The whole feature is OPT-IN (`agent config --set codex-model-catalog true`):
+// when disabled, generation and refresh are no-ops here, and the config writer
+// / auth-time sync (src/codex/config.ts) remove the artifacts.
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,6 +28,7 @@ import { isDue } from "../autoupdate/due.ts";
 import { CopilotAdminClient } from "../copilot_api/admin.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { ONE_M_SUFFIX } from "../copilot_api/models.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
@@ -231,12 +236,14 @@ async function defaultFetchLimits(
  * on any miss, and never deletes or truncates an existing file -- a stale
  * catalog keeps serving until a refresh succeeds. Limits are fetched FIRST
  * (cheap fail: no credential / proxy down skips the codex spawn entirely).
+ * A no-op unless the opt-in `codex-model-catalog` preference is enabled.
  */
 export async function generateCodexModelCatalog(
   source: CatalogSource,
   deps: CodexCatalogDeps = {},
 ): Promise<boolean> {
   try {
+    if (!new CopilotEnvConfig().codexModelCatalogEnabled()) return false;
     const fetchLimits =
       deps.fetchLimits ?? ((s: CatalogSource) => defaultFetchLimits(s, deps.directToken));
     const limits = await fetchLimits(source);
@@ -288,13 +295,16 @@ export function isCatalogFileUsable(filePath: string): boolean {
  * exactly ONE write per due refresh (the store has no cross-process lock, so
  * extra writes widen the lost-update window with concurrent credential writes).
  * Returns true when a catalog was regenerated this call. All errors swallowed;
- * stderr-only narration.
+ * stderr-only narration. A no-op -- BEFORE any state write, so a disabled
+ * install never re-creates the throttle fields cleanup deleted -- unless the
+ * opt-in `codex-model-catalog` preference is enabled.
  */
 export async function refreshCodexModelCatalogIfStale(
   source: CatalogSource,
   deps: CodexCatalogDeps = {},
 ): Promise<boolean> {
   try {
+    if (!new CopilotEnvConfig().codexModelCatalogEnabled()) return false;
     const now = deps.nowMs?.() ?? Date.now();
     const state = new CopilotEnvState();
     const recorded = state.read();

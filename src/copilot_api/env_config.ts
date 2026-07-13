@@ -48,6 +48,8 @@ export interface CopilotEnvConfigData {
   releaseCooldown?: number;
   /** copilot-env update cooldown in whole days. */
   updateCooldown?: number;
+  /** Patched Codex model catalog with Copilot's real context windows (opt-in). */
+  codexModelCatalog?: boolean;
 }
 
 type ConfigPatch = { [K in keyof CopilotEnvConfigData]?: CopilotEnvConfigData[K] | null };
@@ -90,6 +92,7 @@ const CONFIG_SCHEMA = v.object({
   proxyVersion: v.fallback(v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))), undefined),
   releaseCooldown: v.fallback(v.optional(wholeSeconds), undefined),
   updateCooldown: v.fallback(v.optional(wholeDays), undefined),
+  codexModelCatalog: v.fallback(v.optional(v.boolean()), undefined),
 });
 
 export type ConfigKey = keyof CopilotEnvConfigData;
@@ -116,6 +119,9 @@ export interface ConfigKeyDef {
    *  still applied only when a daemon launches -- so a change deserves the same restart hint
    *  the projected keys get. */
   restartToApply?: boolean;
+  /** Printed by `agent config` set/del INSTEAD of the proxy-restart hint, for keys that apply
+   *  through some other mechanism than a daemon launch. */
+  applyHint?: string;
 }
 
 /** Whether a registry entry is written into the proxy config.json at `agent start` (either
@@ -289,6 +295,15 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     parse: (r) => parseWholeNumber(r, 0, MAX_DAYS),
     defaultLabel: "none (immediate)",
   },
+  {
+    cli: "codex-model-catalog",
+    key: "codexModelCatalog",
+    describe: "Patched Codex model catalog with Copilot's real context windows (bool)",
+    parse: parseBool,
+    defaultLabel: "false",
+    applyHint:
+      "Applies at the next Codex auth refresh (within ~5 minutes) or `agent codex`/`agent init` wiring.",
+  },
 ];
 
 /** Look up a registry entry by its CLI (kebab) name. */
@@ -348,6 +363,11 @@ export class CopilotEnvConfig {
   /** Whether the managed proxy lifecycle (auto-start + idle auto-stop) is enabled. */
   autoStartEnabled(): boolean {
     return this.read().autoStart === true;
+  }
+
+  /** Whether the patched Codex model catalog is enabled (opt-in, default off). */
+  codexModelCatalogEnabled(): boolean {
+    return this.read().codexModelCatalog === true;
   }
 
   /**

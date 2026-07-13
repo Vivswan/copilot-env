@@ -54,6 +54,7 @@ test("each typed key round-trips and del() reverts it to undefined (default)", (
     proxyVersion: "1.2.3",
     releaseCooldown: 86400,
     updateCooldown: 7,
+    codexModelCatalog: true,
   });
   expect(cfg.read()).toEqual({
     autoStart: true,
@@ -73,14 +74,20 @@ test("each typed key round-trips and del() reverts it to undefined (default)", (
     proxyVersion: "1.2.3",
     releaseCooldown: 86400,
     updateCooldown: 7,
+    codexModelCatalog: true,
   });
   expect(cfg.autoStartEnabled()).toBe(true);
+  expect(cfg.codexModelCatalogEnabled()).toBe(true);
 
   cfg.del("autoStart");
   expect(cfg.read().autoStart).toBeUndefined();
   expect(cfg.autoStartEnabled()).toBe(false);
   // Deleting one key leaves the others intact.
   expect(cfg.read().port).toBe(4242);
+
+  cfg.del("codexModelCatalog");
+  expect(cfg.read().codexModelCatalog).toBeUndefined();
+  expect(cfg.codexModelCatalogEnabled()).toBe(false);
 });
 
 test("the read schema is lenient: ill-typed / out-of-range stored values fall back to default", () => {
@@ -98,11 +105,13 @@ test("the registry parsers accept valid input and reject bad input with a clear 
   expect(configKeyDef("idle-timeout")?.parse("300")).toBe(300);
   expect(configKeyDef("proxy-logs")?.parse("false")).toBe(false);
   expect(configKeyDef("port")?.parse("4141")).toBe(4141);
+  expect(configKeyDef("codex-model-catalog")?.parse("yes")).toBe(true);
 
   expect(() => configKeyDef("auto-start")?.parse("maybe")).toThrow();
   expect(() => configKeyDef("passthrough")?.parse("sometimes")).toThrow();
   expect(() => configKeyDef("idle-timeout")?.parse("-5")).toThrow();
   expect(() => configKeyDef("port")?.parse("70000")).toThrow(); // out of range
+  expect(() => configKeyDef("codex-model-catalog")?.parse("bogus")).toThrow();
   expect(configKeyDef("nope")).toBeUndefined();
 });
 
@@ -159,6 +168,7 @@ test("the registry covers exactly the documented keys, in order", () => {
     "proxy-version",
     "release-cooldown",
     "update-cooldown",
+    "codex-model-catalog",
   ]);
 });
 
@@ -204,4 +214,9 @@ test("isProxyProjected marks force + opt-in keys, not copilot-env-internal ones"
   expect(configKeyDef("responses-websocket")?.proxyDefault).toBe(true);
   expect(configKeyDef("message-websearch-model")?.proxyDefault).toBeUndefined();
   expect(configKeyDef("message-websearch-model")?.proxyProjected).toBe(true);
+  // codex-model-catalog is copilot-env-internal (read at auth/wiring time, never
+  // projected into the proxy) and needs no daemon restart.
+  expect(isProxyProjected(configKeyDef("codex-model-catalog")!)).toBe(false);
+  expect(configKeyDef("codex-model-catalog")?.restartToApply).toBeUndefined();
+  expect(configKeyDef("codex-model-catalog")?.defaultLabel).toBe("false");
 });

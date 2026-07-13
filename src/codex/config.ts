@@ -8,6 +8,8 @@ import { homedir } from "node:os";
 import * as path from "node:path";
 import { parse, stringify } from "smol-toml";
 import { Credential } from "../copilot_api/credential.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort, openaiBaseUrl } from "../copilot_api/port.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
@@ -478,13 +480,17 @@ export function configureCodexConfig(
   }
 
   // Point Codex at the patched Copilot model catalog (src/codex/catalog.ts) --
-  // ONLY when the file is USABLE (exists and parses with at least one model):
+  // ONLY when the feature is opted in (`agent config --set codex-model-catalog
+  // true`) AND the file is USABLE (exists and parses with at least one model):
   // `model_catalog_json` REPLACES Codex's bundled catalog and a missing, empty,
   // or unparseable file is a Codex STARTUP error, so a bad reference must be
   // scrubbed rather than left behind. A failed refresh keeps a good file
-  // (generation never truncates), so a referenced file stays usable.
+  // (generation never truncates), so a referenced file stays usable. Disabled
+  // means an unconditional delete (even of a user-pinned custom path): the
+  // full managed write owns this key wholesale, and the managed contract when
+  // the feature is off is "no catalog key".
   const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-  if (isCatalogFileUsable(catalogFile)) {
+  if (new CopilotEnvConfig().codexModelCatalogEnabled() && isCatalogFileUsable(catalogFile)) {
     doc.model_catalog_json = catalogFile;
   } else {
     delete doc.model_catalog_json;
@@ -554,6 +560,11 @@ export async function applyCodexConfig(
       `Codex config write failed for ${codexHome} (see the logged warning above for the cause)`,
     );
   }
+
+  // When the catalog is disabled the write above only stripped the key in THIS
+  // home; the sync also deletes the generated file and clears the throttle
+  // state, so a wiring pass finishes the opt-out immediately.
+  syncCodexCatalogReference();
 }
 
 export function effectiveCodexHome(): string {
@@ -565,27 +576,53 @@ export function effectiveCodexHome(): string {
 }
 
 /**
- * Self-heal for the auth-time hooks: when a usable catalog exists but the managed
- * config predates it (e.g. the wiring-time seed failed because the proxy was down
- * or no credential existed yet, or the file was generated while mobile pairing had
- * the provider stripped), add the `model_catalog_json` reference in place --
- * WITHOUT re-running the full managed write, and only when the config currently
- * selects OUR provider. The provider check keeps the key out during `agent codex
- * --mobile` pairing, which strips `model_provider` to run the app on its default
- * OpenAI provider (whose limits the patched catalog would misstate). Called on
- * every auth resolution (one cheap TOML read; the write only fires when the key
- * is actually missing). Best-effort: never throws.
+ * Auth-time sync: keep the managed config's `model_catalog_json` in step with the
+ * opt-in `codex-model-catalog` preference. Called on every auth resolution (one
+ * cheap TOML read; writes only fire when something is actually out of step).
+ * Best-effort: never throws, stderr-only.
+ *
+ * ENABLED -- self-heal: when a usable catalog exists but the managed config
+ * predates it (e.g. the wiring-time seed failed because the proxy was down or no
+ * credential existed yet, or the file was generated while mobile pairing had the
+ * provider stripped), add the reference in place -- WITHOUT re-running the full
+ * managed write, and only when the config currently selects OUR provider. The
+ * provider check keeps the key out during `agent codex --mobile` pairing, which
+ * strips `model_provider` to run the app on its default OpenAI provider (whose
+ * limits the patched catalog would misstate). ADD-only: a present key -- ours or
+ * a user-pinned custom catalog path -- is never rewritten here; enforcing OUR
+ * path over a custom one is the full managed write's job (configureCodexConfig).
+ *
+ * DISABLED -- cleanup: strip the reference from every known Codex config, then
+ * delete the generated file, then clear the refresh-throttle state. "Every
+ * known config" sweeps the active home, the default ~/.codex, and the per-host
+ * symlink-farm homes (~/.codex/hosts/*): all of them reference the ONE
+ * account-wide file, so stripping only the active home could leave a dangling
+ * reference elsewhere. The reference is stripped only when its value IS our
+ * generated path (the value match alone proves ownership -- no provider check,
+ * because leaving our reference behind while the file goes would break Codex
+ * startup; a user-pinned custom path survives). Strip-BEFORE-delete keeps the
+ * dangling-reference window to the one unavoidable TOCTOU sliver (a Codex that
+ * read the old config but has not opened the file yet); anything wider --
+ * every config on disk -- always sees (reference + file) or (no reference).
+ * Deletion FAILS CLOSED: when any config is unreadable for a reason other
+ * than "no config.toml", when the farm directory cannot be enumerated, or
+ * when a NON-matching reference still resolves to the same file (a case
+ * variant / symlinked spelling of our path), the file is kept this round; a
+ * possibly-live reference to a deleted file is a Codex startup error, and
+ * Codex re-runs auth every 300s, so the retry is near. Steady state is
+ * write-free.
  */
-export function ensureCodexCatalogReferenced(): void {
+export function syncCodexCatalogReference(): void {
   try {
     const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+    if (!new CopilotEnvConfig().codexModelCatalogEnabled()) {
+      cleanupCodexCatalogArtifacts(catalogFile);
+      return;
+    }
     if (!isCatalogFileUsable(catalogFile)) return;
     const configPath = path.join(effectiveCodexHome(), "config.toml");
     const doc = parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
     if (doc.model_provider !== CODEX_PROVIDER_ID) return;
-    // ADD-only: a present key -- ours or a user-pinned custom catalog path -- is
-    // never rewritten here. Enforcing OUR path over a custom one is the full
-    // managed write's job (configureCodexConfig), not a hot-path side effect.
     if (doc.model_catalog_json !== undefined) return;
     doc.model_catalog_json = catalogFile;
     fs.writeFileSync(configPath, stringify(doc));
@@ -593,6 +630,95 @@ export function ensureCodexCatalogReferenced(): void {
     // No config.toml (Codex never wired), unreadable TOML, or a write race:
     // the next `agent codex`/`agent init` wiring writes the key anyway.
   }
+}
+
+/** Every config.toml that may reference the account-wide catalog file: the
+ *  active home (run state / CODEX_HOME env), the default ~/.codex, and each
+ *  per-host symlink-farm home (whose config.toml is a host-LOCAL seeded copy,
+ *  not a symlink -- each needs its own strip). The farm root resolves like its
+ *  creator (HOME in src/utils/hostname.ts): process.env.HOME then homedir().
+ *  `complete` is false when the farm directory exists but cannot be
+ *  enumerated -- unseen configs may still hold references, so deletion must
+ *  not proceed on that sweep. */
+function codexCatalogConfigCandidates(): { configs: string[]; complete: boolean } {
+  const homes = new Set<string>([effectiveCodexHome()]);
+  // The default home resolves via homedir() (the effectiveCodexHome contract);
+  // the farm root via process.env.HOME first (its creator's contract, HOME in
+  // src/utils/hostname.ts). They usually agree, but can differ (e.g. HOME set
+  // on Windows), so sweep BOTH -- the Set dedupes the common case.
+  homes.add(path.join(homedir(), ".codex"));
+  const farmRoot = path.join(process.env.HOME || homedir(), ".codex");
+  homes.add(farmRoot);
+  let complete = true;
+  try {
+    const hostsDir = path.join(farmRoot, "hosts");
+    for (const entry of fs.readdirSync(hostsDir, { withFileTypes: true })) {
+      if (entry.isDirectory()) homes.add(path.join(hostsDir, entry.name));
+    }
+  } catch (e) {
+    // No farm directory (ENOENT/ENOTDIR): the two base homes cover everything.
+    // Any OTHER failure (EACCES, I/O) hides farm configs that may reference
+    // the file, so the sweep is incomplete.
+    if (isRecord(e) && e.code !== "ENOENT" && e.code !== "ENOTDIR") complete = false;
+  }
+  return { configs: [...homes].map((home) => path.join(home, "config.toml")), complete };
+}
+
+/** True when `value` is a non-identical spelling of `catalogFile` that still
+ *  resolves to the same file (case variant, symlink, relative segmenting).
+ *  Exact matches are handled upstream; a resolve failure (the path does not
+ *  exist) means it cannot denote our existing file. */
+function resolvesToCatalogFile(value: unknown, catalogFile: string): boolean {
+  if (typeof value !== "string" || value === catalogFile) return false;
+  try {
+    return fs.realpathSync(value) === fs.realpathSync(catalogFile);
+  } catch {
+    return false;
+  }
+}
+
+/** The disabled branch of syncCodexCatalogReference: strip our reference from
+ *  every candidate config, delete the generated file, clear the throttle state
+ *  -- in that order, each step skipped when already clean so the 300s auth
+ *  cadence stays write-free. */
+function cleanupCodexCatalogArtifacts(catalogFile: string): void {
+  const { configs, complete } = codexCatalogConfigCandidates();
+  let deletionSafe = complete;
+  for (const configPath of configs) {
+    try {
+      const doc = parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+      if (doc.model_catalog_json === catalogFile) {
+        delete doc.model_catalog_json;
+        fs.writeFileSync(configPath, stringify(doc));
+      } else if (resolvesToCatalogFile(doc.model_catalog_json, catalogFile)) {
+        // An alternate spelling of OUR path (case variant on Windows, a
+        // symlinked home): not provably ours to strip, but deleting the file
+        // would dangle it -- keep the file.
+        deletionSafe = false;
+      }
+    } catch (e) {
+      // ENOENT (Codex never wired there) cannot hold a reference; any other
+      // failure might, so keep the file until every readable config proves it
+      // unreferenced.
+      if (!isFileMissingError(e)) deletionSafe = false;
+    }
+  }
+  if (deletionSafe && fs.existsSync(catalogFile)) {
+    try {
+      fs.rmSync(catalogFile, { force: true });
+    } catch (e) {
+      logger.warn(`codex model catalog cleanup failed: ${errMessage(e)}`);
+    }
+  }
+  const state = new CopilotEnvState();
+  const recorded = state.read();
+  if (recorded.codexCatalogLastAttemptMs !== 0 || recorded.codexCatalogCodexVersion !== null) {
+    state.set({ codexCatalogLastAttemptMs: null, codexCatalogCodexVersion: null });
+  }
+}
+
+function isFileMissingError(e: unknown): boolean {
+  return isRecord(e) && e.code === "ENOENT";
 }
 
 interface EffectiveCodexConfig {

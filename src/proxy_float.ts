@@ -18,9 +18,13 @@
 // cooldown window (in seconds) from bunfig.toml's install.minimumReleaseAge.
 //
 // Current resolution:
-// 1. COPILOT_API_VERSION set -> install exactly that version/tag. This bypasses
+// 1. Both Codex and Claude wired Direct (GitHub Copilot, no local proxy) -> the
+//    float, --verify, and --assert-installed are no-ops: the proxy is unused, so
+//    checking npm for updates is wasted network/install work. An explicit
+//    COPILOT_API_VERSION env pin overrides this and forces the normal path.
+// 2. COPILOT_API_VERSION set -> install exactly that version/tag. This bypasses
 //    copilot-env.config bounds and the cooldown.
-// 2. Default float -> read npm publish-time metadata (`bun pm view ... time`),
+// 3. Default float -> read npm publish-time metadata (`bun pm view ... time`),
 //    pick the newest stable x.y.z release at least the cooldown window old
 //    (COPILOT_API_MIN_RELEASE_AGE seconds if set, else bunfig.toml
 //    install.minimumReleaseAge; 0 disables the cooldown), then clamp it to
@@ -46,7 +50,14 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createConsola } from "consola";
 import { parse } from "smol-toml";
+import {
+  DIRECT_BASE_URL as CLAUDE_DIRECT_BASE_URL,
+  inspectClaudeWiring,
+  resolveClaudeHome,
+} from "./claude/config.ts";
+import { effectiveCodexHome, inspectCodexWiring } from "./codex/config.ts";
 import { CopilotEnvConfig, type CopilotEnvConfigData } from "./copilot_api/env_config.ts";
+import { copilotApiResolvePort } from "./copilot_api/port.ts";
 import {
   assertProxyConfigBounds,
   installedProxyVersion,
@@ -548,7 +559,55 @@ export function proxyInstallAssertStatus(
   };
 }
 
+// --- Direct-only detection -----------------------------------------------------
+
+function readTextOrNull(filePath: string): string | null {
+  try {
+    return readFileSync(filePath, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when BOTH Codex and Claude are wired Direct (GitHub Copilot, no local
+ * proxy), so floating the unused proxy would be wasted network/install work.
+ * Best-effort: any read/parse failure counts as "not direct-only" so the float
+ * still runs whenever the wiring is uncertain ("none"/"other"/"proxy" all float).
+ * The homes are injectable for tests; the defaults match the effective-home
+ * precedence used by `agent env` and health.
+ */
+export function bothAgentsWiredDirect(codexHome?: string, claudeHome?: string): boolean {
+  try {
+    const expectedPort = Number(copilotApiResolvePort());
+    const codexMode = inspectCodexWiring(
+      readTextOrNull(join(codexHome ?? effectiveCodexHome(), "config.toml")),
+      null,
+      expectedPort,
+      false,
+    ).providerMode;
+    if (codexMode !== "direct") return false;
+
+    const effectiveClaudeHome = claudeHome ?? resolveClaudeHome();
+    // The mode alone keys off apiKeyHelper; also require the managed Direct base
+    // URL so a mixed config (direct helper + proxy ANTHROPIC_BASE_URL) still floats.
+    const claudeWiring = inspectClaudeWiring(
+      readTextOrNull(join(effectiveClaudeHome, "settings.json")),
+      effectiveClaudeHome,
+      expectedPort,
+    );
+    return (
+      claudeWiring.providerMode === "direct" && claudeWiring.baseUrl === CLAUDE_DIRECT_BASE_URL
+    );
+  } catch {
+    return false;
+  }
+}
+
 // --- Postinstall / verify/assert entry ---------------------------------------
+
+const DIRECT_ONLY_SKIP_MESSAGE =
+  "proxy float skipped: Codex and Claude are both wired Direct; the local proxy is unused";
 
 function main(): void {
   const root = PROJECT_ROOT;
@@ -562,7 +621,17 @@ function main(): void {
     process.exit(2);
   }
 
+  // An explicit env pin is per-invocation intent, so it always forces the normal
+  // path; otherwise a Direct-only wiring makes every mode a no-op (the local
+  // proxy is unused). A stored `proxy-version` config pin does NOT force it: the
+  // config only matters once an agent is wired to the proxy again.
+  const envPinned = Boolean(process.env[PROXY_VERSION_ENV]?.trim());
+
   if (args[0] === "--assert-installed") {
+    if (!envPinned && bothAgentsWiredDirect()) {
+      console.log(DIRECT_ONLY_SKIP_MESSAGE);
+      process.exit(0);
+    }
     try {
       const status = proxyInstallAssertStatus(root, readProjectConfig(root));
       if (status.ok) {
@@ -579,6 +648,12 @@ function main(): void {
 
   if (args[0] === "--verify") {
     try {
+      // The freshness check still gates a real dependency install; only the
+      // proxy-target resolution (the npm metadata read) is skipped when Direct-only.
+      if (!envPinned && nodeModulesFresh(root) && bothAgentsWiredDirect()) {
+        logger.success(`up to date: ${DIRECT_ONLY_SKIP_MESSAGE}`);
+        process.exit(0);
+      }
       const config = readProjectConfig(root);
       // Don't pre-resolve the cooldown: proxyFloatVerifyStatus resolves it
       // internally AFTER its pin check, so a COPILOT_API_VERSION pin (which
@@ -595,6 +670,10 @@ function main(): void {
   }
 
   try {
+    if (!envPinned && bothAgentsWiredDirect()) {
+      logger.info(DIRECT_ONLY_SKIP_MESSAGE);
+      return;
+    }
     const config = readProjectConfig(root);
     floatProxy(root, process.execPath, config);
   } catch (error) {

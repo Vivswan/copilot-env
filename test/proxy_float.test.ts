@@ -3,8 +3,10 @@ import type { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/config.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import {
+  bothAgentsWiredDirect,
   floatProxy,
   nodeModulesFresh,
   proxyFloatUpToDate,
@@ -429,5 +431,95 @@ describe("nodeModulesFresh", () => {
   test("true when bun.lock is absent (nothing to compare against)", () => {
     mkdirSync(join(dir, "node_modules"), { recursive: true });
     expect(nodeModulesFresh(dir)).toBe(true);
+  });
+});
+
+// bothAgentsWiredDirect backs the Direct-only no-op in the proxy_float entry
+// points: when neither agent uses the local proxy, the float is skipped.
+describe("bothAgentsWiredDirect", () => {
+  const CODEX_DIRECT_TOML = [
+    'model_provider = "copilot-env"',
+    "",
+    "[model_providers.copilot-env]",
+    'base_url = "https://api.githubcopilot.com"',
+    "",
+  ].join("\n");
+
+  function writeCodexHome(configToml: string | null): string {
+    const home = join(dir, "codex-home");
+    mkdirSync(home, { recursive: true });
+    if (configToml !== null) writeFileSync(join(home, "config.toml"), configToml);
+    return home;
+  }
+
+  function writeClaudeHome(
+    helperName: string | null,
+    baseUrl: string | null = "https://api.githubcopilot.com",
+  ): string {
+    const home = join(dir, "claude-home");
+    mkdirSync(home, { recursive: true });
+    if (helperName !== null) {
+      const settings: Record<string, unknown> = { "apiKeyHelper": join(home, helperName) };
+      if (baseUrl !== null) settings.env = { "ANTHROPIC_BASE_URL": baseUrl };
+      writeFileSync(join(home, "settings.json"), JSON.stringify(settings));
+    }
+    return home;
+  }
+
+  test("true when Codex is direct-wired and Claude points at the direct helper", () => {
+    const codexHome = writeCodexHome(CODEX_DIRECT_TOML);
+    const claudeHome = writeClaudeHome(DIRECT_HELPER_NAME);
+    expect(bothAgentsWiredDirect(codexHome, claudeHome)).toBe(true);
+  });
+
+  test("false on a mixed Claude config (direct helper but a proxy ANTHROPIC_BASE_URL)", () => {
+    const codexHome = writeCodexHome(CODEX_DIRECT_TOML);
+    const claudeHome = writeClaudeHome(DIRECT_HELPER_NAME, "http://127.0.0.1:4141");
+    expect(bothAgentsWiredDirect(codexHome, claudeHome)).toBe(false);
+  });
+
+  test("false when the Claude direct base URL is missing (partially managed config)", () => {
+    const codexHome = writeCodexHome(CODEX_DIRECT_TOML);
+    const claudeHome = writeClaudeHome(DIRECT_HELPER_NAME, null);
+    expect(bothAgentsWiredDirect(codexHome, claudeHome)).toBe(false);
+  });
+
+  test("false when Claude is proxy-wired even though Codex is direct", () => {
+    const codexHome = writeCodexHome(CODEX_DIRECT_TOML);
+    const claudeHome = writeClaudeHome(PROXY_HELPER_NAME);
+    expect(bothAgentsWiredDirect(codexHome, claudeHome)).toBe(false);
+  });
+
+  test("false when Codex is proxy-wired (env_key provider) even though Claude is direct", () => {
+    const codexHome = writeCodexHome(
+      [
+        'model_provider = "copilot-env"',
+        "",
+        "[model_providers.copilot-env]",
+        'base_url = "http://127.0.0.1:4141/v1"',
+        'env_key = "OPENAI_API_KEY"',
+        "",
+      ].join("\n"),
+    );
+    const claudeHome = writeClaudeHome(DIRECT_HELPER_NAME);
+    expect(bothAgentsWiredDirect(codexHome, claudeHome)).toBe(false);
+  });
+
+  test("false when Codex is unconfigured (missing config.toml)", () => {
+    expect(bothAgentsWiredDirect(writeCodexHome(null), writeClaudeHome(DIRECT_HELPER_NAME))).toBe(
+      false,
+    );
+  });
+
+  test("false when Claude is unconfigured (missing settings.json)", () => {
+    expect(bothAgentsWiredDirect(writeCodexHome(CODEX_DIRECT_TOML), writeClaudeHome(null))).toBe(
+      false,
+    );
+  });
+
+  test("false on unparseable configs (uncertain wiring floats normally)", () => {
+    const codexHome = writeCodexHome("model_provider = [broken");
+    const claudeHome = writeClaudeHome(DIRECT_HELPER_NAME);
+    expect(bothAgentsWiredDirect(codexHome, claudeHome)).toBe(false);
   });
 });

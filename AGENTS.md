@@ -23,7 +23,10 @@ Only the *why* lives here; the mechanics are discoverable in the code.
   is tracked as `latest`; `src/proxy_float.ts` (a `bun install` postinstall) overlays the
   newest release inside a supply-chain cooldown window, clamped to the floor/ceiling in
   `copilot-env.config`. The float is best-effort at install; `start.ts` enforces the floor as
-  a hard contract at launch. Patching the package would pin one version, so we never do —
+  a hard contract at launch. When BOTH Codex and Claude are wired Direct the float (and its
+  `--verify`/`--assert-installed` modes) is a no-op — the local proxy is unused, so no npm
+  check runs; an explicit `COPILOT_API_VERSION` env pin forces the normal path. Patching the
+  package would pin one version, so we never do —
   runtime needs are `bun --preload` shims instead (see the PAT shim below).
 - **`agent env` is the one machine-readable command.** The shell wrapper evals only `agent env`
   to refresh session state, so a new subcommand needs no wrapper change. Otherwise each agent's

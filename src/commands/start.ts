@@ -414,8 +414,9 @@ function assertProxyFloor(): void {
   if (!status.ok && status.reason === "belowFloor") {
     throw new Error(
       `${PROXY_PACKAGE_NAME} ${status.version} is below the required ${status.floor} floor — the proxy ` +
-        `float (bun install postinstall) likely failed (offline?). Re-run 'bun install' online, ` +
-        `or set COPILOT_API_VERSION to a known-good release.`,
+        `float (bun install postinstall) likely failed (offline?) or was skipped because both ` +
+        `agents are wired Direct. Re-run 'bun install' online, set COPILOT_API_VERSION to a ` +
+        `known-good release, or rewire an agent to the proxy ('agent init --proxy') first.`,
     );
   }
 }

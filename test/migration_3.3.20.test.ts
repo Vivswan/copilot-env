@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parse } from "smol-toml";
+import { parse, stringify } from "smol-toml";
 
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
@@ -48,12 +48,13 @@ test("removes the catalog file, the config.toml reference, and the throttle stat
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
   writeFileSync(
     join(codexHome, "config.toml"),
-    [
-      'model_provider = "copilot-env"',
-      `model_catalog_json = "${catalogFile}"`,
-      'user_key = "kept"',
-      "",
-    ].join("\n"),
+    // stringify, not a hand-written template: a raw Windows path inside a TOML
+    // basic string reads as escape sequences.
+    stringify({
+      "model_provider": "copilot-env",
+      "model_catalog_json": catalogFile,
+      "user_key": "kept",
+    }),
   );
   new CopilotEnvState().set({ codexCatalogLastAttemptMs: 123, codexCatalogCodexVersion: "1.0.0" });
 
@@ -79,7 +80,7 @@ test("a user who opted in BEFORE updating keeps the catalog (the sync heals, not
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
   writeFileSync(
     join(codexHome, "config.toml"),
-    ['model_provider = "copilot-env"', `model_catalog_json = "${catalogFile}"`, ""].join("\n"),
+    stringify({ "model_provider": "copilot-env", "model_catalog_json": catalogFile }),
   );
 
   await migration.run();

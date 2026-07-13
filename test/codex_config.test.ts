@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parse } from "smol-toml";
+import { parse, stringify } from "smol-toml";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import {
   codexUserAgent,
@@ -655,7 +655,9 @@ test("disabled: configureCodexConfig scrubs model_catalog_json even when the fil
   // Opt-in NOT set: a perfectly usable file must still not be referenced.
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
   mkdirSync(codexHome, { recursive: true });
-  writeFileSync(join(codexHome, "config.toml"), `model_catalog_json = "${catalogFile}"\n`);
+  // stringify, not a hand-written template: a raw Windows path inside a TOML
+  // basic string reads as escape sequences.
+  writeFileSync(join(codexHome, "config.toml"), stringify({ "model_catalog_json": catalogFile }));
 
   expect(configureCodexConfig(codexHome, { codexExecVersion: "0.144.0" })).toBe(0);
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
@@ -674,12 +676,11 @@ test("disabled: sync strips our reference, deletes the file, and clears the thro
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
   writeFileSync(
     join(codexHome, "config.toml"),
-    [
-      'model_provider = "copilot-env"',
-      `model_catalog_json = "${catalogFile}"`,
-      'user_key = "kept"',
-      "",
-    ].join("\n"),
+    stringify({
+      "model_provider": "copilot-env",
+      "model_catalog_json": catalogFile,
+      "user_key": "kept",
+    }),
   );
   new CopilotEnvState().set({ codexCatalogLastAttemptMs: 123, codexCatalogCodexVersion: "1.0.0" });
 
@@ -706,7 +707,7 @@ test("disabled: sync also strips per-host farm configs referencing the shared fi
   const farmHome = join(codexHome, "hosts", "otherhost");
   mkdirSync(farmHome, { recursive: true });
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
-  const referencing = `model_catalog_json = "${catalogFile}"\n`;
+  const referencing = stringify({ "model_catalog_json": catalogFile });
   writeFileSync(join(codexHome, "config.toml"), referencing);
   writeFileSync(join(farmHome, "config.toml"), referencing);
 
@@ -798,7 +799,7 @@ test("disabled: a symlinked spelling of our path blocks deletion (fail closed)",
   // strip, but deleting the file would dangle it.
   const alias = join(dir, "catalog-alias.json");
   symlinkSync(catalogFile, alias);
-  const pinned = `model_catalog_json = "${alias}"\n`;
+  const pinned = stringify({ "model_catalog_json": alias });
   writeFileSync(join(codexHome, "config.toml"), pinned);
 
   syncCodexCatalogReference();

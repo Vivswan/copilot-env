@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parse } from "smol-toml";
+import { parse, stringify } from "smol-toml";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { runAuth } from "../src/commands/auth.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
@@ -270,7 +270,9 @@ test("disabled: auth --get removes the catalog artifacts and stdout stays EXACTL
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
   writeFileSync(
     join(codexHome, "config.toml"),
-    ['model_provider = "copilot-env"', `model_catalog_json = "${catalogFile}"`, ""].join("\n"),
+    // stringify, not a hand-written template: a raw Windows path inside a TOML
+    // basic string reads as escape sequences.
+    stringify({ "model_provider": "copilot-env", "model_catalog_json": catalogFile }),
   );
   state().set({
     githubToken: "ghu_stored123",
@@ -300,7 +302,7 @@ test("disabled: auth --print-proxy-token runs the same cleanup", async () => {
   const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
   mkdirSync(join(dir, "proxy-home"), { recursive: true });
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
-  writeFileSync(join(codexHome, "config.toml"), `model_catalog_json = "${catalogFile}"\n`);
+  writeFileSync(join(codexHome, "config.toml"), stringify({ "model_catalog_json": catalogFile }));
 
   const out = await captureStdout(() => runAuth({ printProxyToken: true }, NOOP_CATALOG_DEPS));
 

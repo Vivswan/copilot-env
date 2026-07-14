@@ -41,10 +41,10 @@ Only the *why* lives here; the mechanics are discoverable in the code.
 - **`agent config` is the typed preference store.** A `--set <key> <value>` / `--get [key]`
   / `--del <key>` front-end over `CopilotEnvConfig` (`src/copilot_api/env_config.ts`, a
   `.copilot-env-config.json` SEPARATE from the credential store), with a single key registry
-  as the source of truth: `auto-start`, `passthrough` (auto/on/off), `idle-timeout`,
-  `proxy-logs`, `small-model`, `responses-websocket`, `responses-websearch`, `messages-api`,
-  `responses-context-management`, `message-websearch-model`, `port`, `min-port`, `max-port`,
-  `strict-port`, `proxy-version`, `release-cooldown`, `update-cooldown`, `codex-model-catalog`.
+  as the source of truth (alphabetical): `auto-start`, `codex-model-catalog`, `idle-timeout`,
+  `max-port`, `message-websearch-model`, `messages-api`, `min-port`, `passthrough` (auto/on/off),
+  `port`, `proxy-logs`, `proxy-version`, `release-cooldown`, `responses-context-management`,
+  `responses-websearch`, `responses-websocket`, `small-model`, `strict-port`, `update-cooldown`.
   Registry entries marked for proxy projection are
   **written into the proxy's own `config.json` at `agent start`** (`applyDefaultConfig` ->
   `projectedProxyConfig`): a `proxyDefault` key (`small-model` + the three `responses-websocket`

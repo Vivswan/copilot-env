@@ -169,22 +169,22 @@ agent config --del idle-timeout       # revert one to its default
 | Key | Default | Effect |
 | --- | --- | --- |
 | `auto-start` | `false` | Managed proxy lifecycle: auto-start on agent open + idle auto-stop. |
-| `passthrough` | `auto` | PAT passthrough: `auto` / `on` / `off` (see below). |
+| `codex-model-catalog` | `false` | Patched Codex model catalog serving Copilot's real context windows (opt-in). |
 | `idle-timeout` | `3600` | Idle auto-stop window in seconds (`0` disables). |
-| `proxy-logs` | `true` | Proxy request logging under `<home>/logs` (`false` discards the writes). |
-| `small-model` | `gpt-5-mini` | Small/fast model id the proxy uses. |
-| `responses-websocket` | `true` | Proxy Responses-API transport: WebSocket vs HTTP/SSE. |
-| `responses-websearch` | `true` | Proxy Responses-API web search. |
-| `messages-api` | `true` | Proxy Messages-API (Anthropic-shaped) endpoint. |
-| `responses-context-management` | proxy default | Proxy Responses-API server-side context management. |
-| `message-websearch-model` | proxy default | Model id the proxy uses for Messages-API web search. |
-| `port` | `4141` | Default proxy port (then next free unless `strict-port`). |
 | `min-port` / `max-port` | `1024` / `65535` | Allowed proxy port range. |
-| `strict-port` | `false` | Fail `start` when the default port is busy instead of auto-incrementing. |
+| `message-websearch-model` | proxy default | Model id the proxy uses for Messages-API web search. |
+| `messages-api` | `true` | Proxy Messages-API (Anthropic-shaped) endpoint. |
+| `passthrough` | `auto` | PAT passthrough: `auto` / `on` / `off` (see below). |
+| `port` | `4141` | Default proxy port (then next free unless `strict-port`). |
+| `proxy-logs` | `true` | Proxy request logging under `<home>/logs` (`false` discards the writes). |
 | `proxy-version` | latest (floated) | Pin the floated proxy to a version/tag. |
 | `release-cooldown` | bunfig `minimumReleaseAge` | Proxy float supply-chain cooldown in seconds. |
+| `responses-context-management` | proxy default | Proxy Responses-API server-side context management. |
+| `responses-websearch` | `true` | Proxy Responses-API web search. |
+| `responses-websocket` | `true` | Proxy Responses-API transport: WebSocket vs HTTP/SSE. |
+| `small-model` | `gpt-5-mini` | Small/fast model id the proxy uses. |
+| `strict-port` | `false` | Fail `start` when the default port is busy instead of auto-incrementing. |
 | `update-cooldown` | none | `agent update` cooldown in days. |
-| `codex-model-catalog` | `false` | Patched Codex model catalog serving Copilot's real context windows (opt-in). |
 
 Proxy-side keys (`small-model`, the `responses-*`/`messages-api` flags,
 `message-websearch-model`) are projected into the proxy's own `config.json` at

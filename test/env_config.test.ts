@@ -149,27 +149,30 @@ test("runConfig --get <key> prints just the value to stdout (script-friendly)", 
   expect(written.join("")).toBe("gpt-5-mini\n");
 });
 
-test("the registry covers exactly the documented keys, in order", () => {
-  expect(CONFIG_REGISTRY.map((d) => d.cli)).toEqual([
+test("the registry covers exactly the documented keys, in alphabetical order", () => {
+  const clis = CONFIG_REGISTRY.map((d) => d.cli);
+  expect(clis).toEqual([
     "auto-start",
-    "passthrough",
+    "codex-model-catalog",
     "idle-timeout",
-    "proxy-logs",
-    "small-model",
-    "responses-websocket",
-    "responses-websearch",
-    "messages-api",
-    "responses-context-management",
-    "message-websearch-model",
-    "port",
-    "min-port",
     "max-port",
-    "strict-port",
+    "message-websearch-model",
+    "messages-api",
+    "min-port",
+    "passthrough",
+    "port",
+    "proxy-logs",
     "proxy-version",
     "release-cooldown",
+    "responses-context-management",
+    "responses-websearch",
+    "responses-websocket",
+    "small-model",
+    "strict-port",
     "update-cooldown",
-    "codex-model-catalog",
   ]);
+  // The display order IS alphabetical -- a new key must be inserted in place.
+  expect(clis).toEqual([...clis].sort());
 });
 
 test("projectedProxyConfig() force-projects the opinionated keys and opt-in keys only when set", () => {

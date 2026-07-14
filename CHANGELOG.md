@@ -1,5 +1,32 @@
 # Changelog
 
+## [3.4.0](https://github.com/Vivswan/copilot-env/compare/v3.3.20...v3.4.0) (2026-07-14)
+
+
+### Features
+
+* **codex:** make the model catalog opt-in via the codex-model-catalog config key ([2190c24](https://github.com/Vivswan/copilot-env/commit/2190c24549f364a2f03bff0f1a5f149829ba5147))
+* **config:** configurable proxy port range (min-port/max-port) and strict-port ([8cc54eb](https://github.com/Vivswan/copilot-env/commit/8cc54eb275af65a75916656d3cc49f26a51f11e5))
+
+
+### Bug Fixes
+
+* **codex:** stop destroying the user's config.toml and OPENAI_API_KEY ([a9d947e](https://github.com/Vivswan/copilot-env/commit/a9d947ec9086a3bc9fc1f69aa1ea1d0640c4410d))
+* **config:** add a proxy-logs key that mutes the daemon's handler logs ([a5c11b5](https://github.com/Vivswan/copilot-env/commit/a5c11b5b625a80a75c21431e3d9bc360e810d6a8))
+* **config:** serialize the JSON store's update() across processes ([38d5a66](https://github.com/Vivswan/copilot-env/commit/38d5a66b2c197a8295533606e5ba28c5b21fbd0a))
+* **daemon:** correct pid identity, config-read race, and Windows owner scope ([ed8143d](https://github.com/Vivswan/copilot-env/commit/ed8143dd37cc32e4bee6daea1b3f307238e86aad))
+* **daemon:** serialize concurrent agent start so they don't reap each other's daemon ([3a1b687](https://github.com/Vivswan/copilot-env/commit/3a1b687f433a487fa6a1f8487b8b3990feec0646))
+* **float:** make the proxy float a no-op when both agents are wired Direct ([160b10e](https://github.com/Vivswan/copilot-env/commit/160b10e82511b67f76d90f1170c7ab3a85f65249))
+* **health:** validate Claude proxy URL, correct orphan detail, read WAL usage rows ([cf98f71](https://github.com/Vivswan/copilot-env/commit/cf98f710c12af984e27ae10276b2ef9bd0f5d9b9))
+* **install:** fail closed when a release has no verifiable SHA256 ([25af603](https://github.com/Vivswan/copilot-env/commit/25af603bf17a108ce45f11099ea73cbf5f2eb58b))
+* **install:** prevent home-directory deletion and preserve .env on update ([0c4a504](https://github.com/Vivswan/copilot-env/commit/0c4a5042e0c84f453a63c8e2c1f219ffd88cc642))
+* **install:** use CDPATH='' prefix to satisfy shellcheck SC1007 ([0b75e57](https://github.com/Vivswan/copilot-env/commit/0b75e5711cac1b6a20432e83cd69fceea4eb7f49))
+* **scripts:** resolver prompt visibility/parity, negative idle-timeout, Claude home ([19185e3](https://github.com/Vivswan/copilot-env/commit/19185e39edcb44a92d0715cd1cc7f7a341d40041))
+* **security:** keep the GitHub token off process listings and tighten teardown ([4fef374](https://github.com/Vivswan/copilot-env/commit/4fef374b464cc662d7f2cf1933a73fc1db1b4bca))
+* **setup:** a failed CLI install no longer aborts shell integration wiring ([ae1b4fd](https://github.com/Vivswan/copilot-env/commit/ae1b4fd8e1a7d3de4ca9eca581b81c19498997bb))
+* **update:** run due migrations on install failure, honor live cooldown, lock manual updates ([873daf3](https://github.com/Vivswan/copilot-env/commit/873daf3c96f2a0e6648dea45ff775910fef96643))
+* **watchdog:** observe inference requests directly instead of handler-log mtimes ([43760b2](https://github.com/Vivswan/copilot-env/commit/43760b21577a309b17764548223e4782cb12ed8c))
+
 ## [3.3.20](https://github.com/Vivswan/copilot-env/compare/v3.3.19...v3.3.20) (2026-07-10)
 
 

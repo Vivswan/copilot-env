@@ -2,6 +2,7 @@
 import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
+import { discoverCodexSessionRoots, readCodexSessions } from "./codex_sessions.ts";
 import {
   type CostEstimate,
   estimateCost,
@@ -9,25 +10,44 @@ import {
   OPENROUTER_MODELS_URL,
   type PricingTier,
 } from "./pricing.ts";
-import { discoverUsageDbs, readUsage, type UsageReport } from "./usage.ts";
+import { discoverUsageDbs, mergeUsageReports, readUsage, type UsageReport } from "./usage.ts";
 
-/** `cost`: aggregate per-host SQLite usage and estimate spend. */
+/**
+ * The default table merges the proxy DBs (proxied traffic) with the Codex
+ * session logs (ALL Codex traffic, Direct included); Codex-through-the-proxy
+ * appears in both, so merged totals can double count it. This note closes
+ * every run.
+ */
+const SOURCES_NOTE =
+  "Note: merges two sources -- the proxy DBs (proxied traffic: Codex + Claude) and Codex session logs (all Codex traffic, Direct included). Codex-through-the-proxy appears in both, so totals can double count it; use --sources for per-source tables. Direct-wired Claude is untracked.";
+
+const EMPTY_REPORT: UsageReport = { byModel: new Map(), activeDays: 0, perDay: new Map() };
+
+/** `cost`: aggregate per-host SQLite + Codex session usage and estimate spend. */
 export async function runCost(args: {
   days?: string;
   json?: boolean;
   perDay?: boolean;
   pricingUrl?: string;
+  sources?: boolean;
 }): Promise<void> {
+  const sinceMs = parseDaysCutoff(args.days);
+
   const dbPaths = discoverUsageDbs();
-  if (dbPaths.length === 0) {
+  const proxyReport = dbPaths.length > 0 ? readUsage(dbPaths, sinceMs) : EMPTY_REPORT;
+
+  const sessionRoots = discoverCodexSessionRoots();
+  const codexByProvider =
+    sessionRoots.length > 0
+      ? await readCodexSessions(sessionRoots, sinceMs)
+      : new Map<string, UsageReport>();
+
+  if (dbPaths.length === 0 && codexByProvider.size === 0) {
     consola.warn(
-      "WARNING: no copilot-api usage databases found; start the proxy with 'agent start' and make some requests, then re-run 'agent cost'.",
+      "WARNING: no copilot-api usage databases and no Codex session logs found; start the proxy with 'agent start' and make some requests, then re-run 'agent cost'.",
     );
     return;
   }
-
-  const sinceMs = parseDaysCutoff(args.days);
-  const report = readUsage(dbPaths, sinceMs);
 
   // Best-effort pricing: a fetch failure still yields a token-only report.
   let pricing = new Map<string, PricingTier>();
@@ -41,21 +61,130 @@ export async function runCost(args: {
 
   // ModelUsage is a structural superset of UsageTokens, so the read-only
   // estimateCost reads report.byModel directly -- no per-model copy needed.
-  const estimate = estimateCost(report.byModel, pricing);
+  const proxyEstimate = estimateCost(proxyReport.byModel, pricing);
+  const codexProviders = [...codexByProvider.keys()].sort();
 
   if (args.json) {
+    const codexSessions = {
+      roots: sessionRoots.length,
+      providers: Object.fromEntries(
+        codexProviders.map((provider) => {
+          const report = codexByProvider.get(provider) ?? EMPTY_REPORT;
+          return [
+            provider,
+            buildSourceJson(report, estimateCost(report.byModel, pricing), pricing, {
+              perDay: Boolean(args.perDay),
+            }),
+          ];
+        }),
+      ),
+    };
     console.log(
       JSON.stringify(
-        buildCostJson(report, estimate, pricing, dbPaths.length, sinceMs, Boolean(args.perDay)),
+        buildCostJson(
+          proxyReport,
+          proxyEstimate,
+          pricing,
+          dbPaths.length,
+          sinceMs,
+          Boolean(args.perDay),
+          codexSessions,
+        ),
         null,
         2,
       ),
     );
     return;
   }
-  printCostReport(report, estimate, pricing, dbPaths.length, args.days);
-  if (args.perDay) {
-    printPerDayReport(report, pricing, estimate);
+
+  if (args.sources) {
+    printSeparateReports(
+      { report: proxyReport, estimate: proxyEstimate, dbCount: dbPaths.length },
+      codexByProvider,
+      { pricing, days: args.days, perDay: Boolean(args.perDay), roots: sessionRoots.length },
+    );
+  } else {
+    printCombinedView(
+      { report: proxyReport, estimate: proxyEstimate, dbCount: dbPaths.length },
+      codexByProvider,
+      { pricing, days: args.days, perDay: Boolean(args.perDay), roots: sessionRoots.length },
+    );
+  }
+
+  console.log(SOURCES_NOTE);
+  console.log();
+}
+
+/** Shared per-call context for the two report layouts. */
+interface ReportOpts {
+  pricing: Map<string, PricingTier>;
+  days: string | undefined;
+  perDay: boolean;
+  roots: number;
+}
+
+interface ProxySource {
+  report: UsageReport;
+  estimate: CostEstimate;
+  dbCount: number;
+}
+
+/** `--sources`: one full table (with day stats) per source and Codex provider. */
+function printSeparateReports(
+  proxy: ProxySource,
+  codexByProvider: Map<string, UsageReport>,
+  opts: ReportOpts,
+): void {
+  if (proxy.dbCount > 0) {
+    printCostReport(proxy.report, proxy.estimate, opts.pricing, {
+      title: "Proxy usage by model",
+      sourceLabel: `${proxy.dbCount} db${proxy.dbCount === 1 ? "" : "s"}`,
+      days: opts.days,
+    });
+    if (opts.perDay) {
+      printPerDayReport(proxy.report, opts.pricing, proxy.estimate, "Per-day breakdown (proxy)");
+    }
+  } else {
+    console.log();
+    console.log("No proxy usage databases found; skipping the proxy section.");
+  }
+
+  for (const provider of [...codexByProvider.keys()].sort()) {
+    const report = codexByProvider.get(provider) ?? EMPTY_REPORT;
+    const estimate = estimateCost(report.byModel, opts.pricing);
+    printCostReport(report, estimate, opts.pricing, {
+      title: `Codex sessions (provider: ${provider}) by model`,
+      sourceLabel: `${opts.roots} root${opts.roots === 1 ? "" : "s"}`,
+      days: opts.days,
+    });
+    if (opts.perDay) {
+      printPerDayReport(report, opts.pricing, estimate, `Per-day breakdown (codex: ${provider})`);
+    }
+  }
+}
+
+/** Default layout: the classic single table over the union of both sources. */
+function printCombinedView(
+  proxy: ProxySource,
+  codexByProvider: Map<string, UsageReport>,
+  opts: ReportOpts,
+): void {
+  const merged = mergeUsageReports([proxy.report, ...codexByProvider.values()]);
+  const estimate = estimateCost(merged.byModel, opts.pricing);
+  const parts: string[] = [];
+  if (proxy.dbCount > 0) {
+    parts.push(`${proxy.dbCount} proxy db${proxy.dbCount === 1 ? "" : "s"}`);
+  }
+  if (opts.roots > 0) {
+    parts.push(`${opts.roots} codex session root${opts.roots === 1 ? "" : "s"}`);
+  }
+  printCostReport(merged, estimate, opts.pricing, {
+    title: "Usage by model",
+    sourceLabel: parts.join(" + "),
+    days: opts.days,
+  });
+  if (opts.perDay) {
+    printPerDayReport(merged, opts.pricing, estimate, "Per-day breakdown");
   }
 }
 
@@ -242,17 +371,16 @@ function alignCatColumn(cells: CatCell[]): string[] {
   });
 }
 
-/** Print the by-model usage + cost report as one table (tokens with $ per category). */
+/** Print one source's by-model usage + cost table (tokens with $ per category). */
 function printCostReport(
   report: UsageReport,
   estimate: CostEstimate,
   pricing: Map<string, PricingTier>,
-  dbCount: number,
-  days: string | undefined,
+  opts: { title: string; sourceLabel: string; days: string | undefined },
 ): void {
   const { byModel, activeDays } = report;
   const models = [...byModel.keys()].sort();
-  const period = days ? `last ${days} days` : "all time";
+  const period = opts.days ? `last ${opts.days} days` : "all time";
   const div = activeDays > 0 ? activeDays : 1;
   const dayMetrics = computeDayMetrics(report, pricing, estimate);
   const med = (sel: (d: DayMetrics) => number): number => median(dayMetrics.map(sel));
@@ -420,7 +548,7 @@ function printCostReport(
       ? `${activeDays} active day${activeDays === 1 ? "" : "s"} (${coverage.percent}% of a ${coverage.spanDays}-day span)`
       : "0 active days";
   console.log(
-    `Usage by model - ${period} | ${dbCount} db${dbCount === 1 ? "" : "s"} | ${sum.reqs} requests | ${activeDaysLabel}`,
+    `${opts.title} - ${period} | ${opts.sourceLabel} | ${sum.reqs} requests | ${activeDaysLabel}`,
   );
   console.log();
   printTable(
@@ -434,10 +562,6 @@ function printCostReport(
     console.log(`  Unpriced (excluded from total): ${estimate.unpriced.join(", ")}`);
   }
   console.log();
-  console.log(
-    "Note: only proxy usage is recorded. Direct-wired Codex/Claude (GitHub Copilot Direct) bypasses the proxy and is not tracked here at all.",
-  );
-  console.log();
 }
 
 /**
@@ -448,6 +572,7 @@ function printPerDayReport(
   report: UsageReport,
   pricing: Map<string, PricingTier>,
   estimate: CostEstimate,
+  title: string,
 ): void {
   const days = computeDayMetrics(report, pricing, estimate).sort((a, b) =>
     a.day.localeCompare(b.day),
@@ -524,7 +649,7 @@ function printPerDayReport(
   const body = days.map((_, i) => row(i));
   const footer = [row(last)];
 
-  console.log("Per-day breakdown");
+  console.log(title);
   console.log();
   printTable(
     ["Day", "Requests", "Input", "Output", "Cache Read", "Cache Write", "Total", "Cost"],
@@ -535,22 +660,18 @@ function printPerDayReport(
   console.log();
 }
 
-/** Build the `--json` payload. */
-function buildCostJson(
+/** Build one source's usage/cost JSON block (shared by the proxy and each provider). */
+function buildSourceJson(
   report: UsageReport,
   estimate: CostEstimate,
   pricing: Map<string, PricingTier>,
-  dbCount: number,
-  sinceMs: number | undefined,
-  perDay: boolean,
+  opts: { perDay: boolean },
 ): Record<string, unknown> {
   const div = report.activeDays > 0 ? report.activeDays : 1;
   const dayMetrics = computeDayMetrics(report, pricing, estimate);
   const dayCosts = dayMetrics.map((d) => d.cost);
   const coverage = activeDayCoverage(report);
   return {
-    dbCount,
-    sinceMs: sinceMs ?? null,
     activeDays: report.activeDays,
     activeDaySpan: coverage.spanDays,
     activeDayPercent: report.activeDays > 0 ? coverage.percent : null,
@@ -561,7 +682,7 @@ function buildCostJson(
       report.activeDays > 0 ? Math.round((estimate.totalUsd / div) * 10_000) / 10_000 : null,
     medianCostPerDayUsd:
       report.activeDays > 0 ? Math.round(median(dayCosts) * 10_000) / 10_000 : null,
-    ...(perDay
+    ...(opts.perDay
       ? {
           perDay: [...dayMetrics]
             .sort((a, b) => a.day.localeCompare(b.day))
@@ -578,6 +699,28 @@ function buildCostJson(
         }
       : {}),
     unpriced: estimate.unpriced,
-    note: "only proxy usage is recorded; direct GitHub Copilot usage is not tracked at all",
+  };
+}
+
+/**
+ * Build the `--json` payload. The top-level keys keep their historical
+ * proxy-report shape; the Codex session source is the added `codexSessions`
+ * key so existing consumers are unaffected.
+ */
+function buildCostJson(
+  report: UsageReport,
+  estimate: CostEstimate,
+  pricing: Map<string, PricingTier>,
+  dbCount: number,
+  sinceMs: number | undefined,
+  perDay: boolean,
+  codexSessions: { roots: number; providers: Record<string, Record<string, unknown>> },
+): Record<string, unknown> {
+  return {
+    dbCount,
+    sinceMs: sinceMs ?? null,
+    ...buildSourceJson(report, estimate, pricing, { perDay }),
+    codexSessions,
+    note: "top-level keys cover proxied traffic only; codexSessions covers ALL Codex traffic (proxy and Direct), so the two overlap when Codex is proxy-wired -- never sum them; Direct Claude usage is untracked",
   };
 }

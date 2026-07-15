@@ -170,3 +170,40 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
 
   return { byModel, activeDays: perDay.size, perDay };
 }
+
+/** Sum several usage reports into one (models and days unioned). */
+export function mergeUsageReports(reports: Iterable<UsageReport>): UsageReport {
+  const byModel = new Map<string, ModelUsage>();
+  const perDay = new Map<string, Map<string, ModelUsage>>();
+  const add = (target: Map<string, ModelUsage>, model: string, u: ModelUsage): void => {
+    const prev = target.get(model) ?? {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheCreation: 0,
+      events: 0,
+    };
+    prev.input += u.input;
+    prev.output += u.output;
+    prev.cacheRead += u.cacheRead;
+    prev.cacheCreation += u.cacheCreation;
+    prev.events += u.events;
+    target.set(model, prev);
+  };
+  for (const report of reports) {
+    for (const [model, u] of report.byModel) {
+      add(byModel, model, u);
+    }
+    for (const [day, dayModels] of report.perDay) {
+      let target = perDay.get(day);
+      if (target === undefined) {
+        target = new Map<string, ModelUsage>();
+        perDay.set(day, target);
+      }
+      for (const [model, u] of dayModels) {
+        add(target, model, u);
+      }
+    }
+  }
+  return { byModel, activeDays: perDay.size, perDay };
+}

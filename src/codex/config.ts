@@ -638,15 +638,13 @@ export function syncCodexCatalogReference(): void {
   }
 }
 
-/** Every config.toml that may reference the account-wide catalog file: the
+/** Every Codex home that may hold per-home state (config.toml, sessions): the
  *  active home (run state / CODEX_HOME env), the default ~/.codex, and each
- *  per-host symlink-farm home (whose config.toml is a host-LOCAL seeded copy,
- *  not a symlink -- each needs its own strip). The farm root resolves like its
- *  creator (HOME in src/utils/hostname.ts): process.env.HOME then homedir().
- *  `complete` is false when the farm directory exists but cannot be
- *  enumerated -- unseen configs may still hold references, so deletion must
- *  not proceed on that sweep. */
-function codexCatalogConfigCandidates(): { configs: string[]; complete: boolean } {
+ *  per-host symlink-farm home. The farm root resolves like its creator (HOME
+ *  in src/utils/hostname.ts): process.env.HOME then homedir(). `complete` is
+ *  false when the farm directory exists but cannot be enumerated -- unseen
+ *  homes may still hold state. */
+export function knownCodexHomes(): { homes: string[]; complete: boolean } {
   const homes = new Set<string>([effectiveCodexHome()]);
   // The default home resolves via homedir() (the effectiveCodexHome contract);
   // the farm root via process.env.HOME first (its creator's contract, HOME in
@@ -663,11 +661,21 @@ function codexCatalogConfigCandidates(): { configs: string[]; complete: boolean 
     }
   } catch (e) {
     // No farm directory (ENOENT/ENOTDIR): the two base homes cover everything.
-    // Any OTHER failure (EACCES, I/O) hides farm configs that may reference
-    // the file, so the sweep is incomplete.
+    // Any OTHER failure (EACCES, I/O) hides farm homes that may hold state,
+    // so the sweep is incomplete.
     if (isRecord(e) && e.code !== "ENOENT" && e.code !== "ENOTDIR") complete = false;
   }
-  return { configs: [...homes].map((home) => path.join(home, "config.toml")), complete };
+  return { homes: [...homes], complete };
+}
+
+/** Every config.toml that may reference the account-wide catalog file: one per
+ *  known Codex home (a farm home's config.toml is a host-LOCAL seeded copy,
+ *  not a symlink -- each needs its own strip). An incomplete home sweep means
+ *  unseen configs may still hold references, so deletion must not proceed on
+ *  that sweep. */
+function codexCatalogConfigCandidates(): { configs: string[]; complete: boolean } {
+  const { homes, complete } = knownCodexHomes();
+  return { configs: homes.map((home) => path.join(home, "config.toml")), complete };
 }
 
 /** True when `value` is a non-identical spelling of `catalogFile` that still

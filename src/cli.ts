@@ -262,10 +262,16 @@ program
 
 program
   .command("cost")
-  .description("Aggregate token usage across all per-host SQLite DBs and estimate cost.")
+  .description(
+    "Aggregate token usage (per-host proxy SQLite DBs + Codex session logs) and estimate cost.",
+  )
   .option("--days <days>", "Only include usage from the last N days (default: all).")
   .option("--json", "Emit a JSON object instead of a formatted report.")
   .option("--per-day", "Also print a day-by-day cost/token breakdown.")
+  .option(
+    "--sources",
+    "Print full per-source tables (proxy + each Codex provider) with day stats instead of the combined table.",
+  )
   .option(
     "--pricing-url <url>",
     "OpenRouter models API URL for live pricing.",
@@ -275,8 +281,13 @@ program
     "after",
     [
       "",
+      "Sources: the proxy's per-host SQLite DBs (proxied traffic only) and the Codex",
+      "CLI's local session logs (ALL Codex traffic, Direct included). The default table",
+      "merges both, so Codex-through-the-proxy can be double counted; use --sources",
+      "for per-source tables.",
+      "",
       "Active days: distinct UTC calendar days that recorded at least one request,",
-      "unioned across every per-host DB. The header also shows the inclusive",
+      "unioned across the displayed sources. The header also shows the inclusive",
       "min..max calendar span and what percent of it was active. Avg/day divides",
       "each total by the active-day count; Median/day takes the median of each",
       "column independently across the active days (so columns need not sum, but",
@@ -289,6 +300,7 @@ program
       json: Boolean(opts.json),
       perDay: Boolean(opts.perDay),
       pricingUrl: String(opts.pricingUrl),
+      sources: Boolean(opts.sources),
     }),
   );
 

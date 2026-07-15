@@ -534,7 +534,7 @@ export async function runCodexHost(args: CodexHostArgs): Promise<void> {
   );
   await applyCodexConfig(
     codexHome,
-    { proxy: !direct },
+    direct ? "direct" : "proxy",
     // Reuse the just-resolved credential for the catalog seed's direct fetch.
     ghToken === null ? undefined : { directToken: ghToken },
   );

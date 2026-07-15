@@ -229,14 +229,14 @@ test("both launcher shell files exist for the env-emitted source directive", () 
   );
 });
 
-test("the PowerShell agent wrapper's env filter accepts the launchers source line", () => {
-  // env.ts emits `if (Test-Path -LiteralPath '...') { . '...' }`; agents.ps1's
-  // Import-CopilotEnv filter must accept that shape (alongside $env:/Remove-Item),
-  // else the one-shot launchers source is silently dropped on Windows.
+test("the PowerShell agent wrapper evals every env line, mirroring the POSIX eval", () => {
+  // agents.bashrc evals the whole `agent env` output unconditionally; the PS
+  // wrapper must do the same (Invoke-Expression on every non-blank line, no
+  // shape-matching filter), so a new upstream directive shape is never
+  // silently dropped on Windows.
   const ps1 = readFileSync(join(process.cwd(), "shell", "agents.ps1"), "utf8");
-  const filterLine = ps1.split("\n").find((l) => l.includes("$line -match"));
-  expect(filterLine).toBeDefined();
-  expect(filterLine).toContain("if \\(Test-Path ");
+  expect(ps1).toContain("Invoke-Expression");
+  expect(ps1).not.toContain("$line -match");
 });
 
 test("env-refresh stderr parity: eager source is silenced, the agent wrapper's refresh is not (POSIX)", () => {
@@ -276,32 +276,40 @@ test("env-refresh stderr parity: Import-CopilotEnv takes -Quiet, eager passes it
 
 test("cx launchers start the proxy only for proxy-backed Codex configs", () => {
   const posix = readFileSync(join(process.cwd(), "shell", "agents.launchers.bashrc"), "utf8");
-  const posixCx = shellFunctionBody(posix, "cx");
+  // cl/cx delegate the provider sync to the shared helper.
+  expect(shellFunctionBody(posix, "cx")).toContain("_copilot_wire_provider codex cx Codex");
+  expect(shellFunctionBody(posix, "cl")).toContain("_copilot_wire_provider claude cl Claude");
   // Check-only: read the configured provider (no live probe), and re-sync proxy.
-  expect(posixCx).toContain("codex --check");
-  expect(posixCx).toContain("codex --proxy");
-  expect(posixCx).toContain("_codex_provider_status");
-  expect(posixCx).toContain("-eq 0");
-  expect(posixCx).toContain("-eq 2");
-  expect(posixCx).toContain("_copilot_ensure_server");
-  expect(posixCx).not.toContain("--json");
-  expect(posixCx).not.toContain("jq");
+  const posixWire = shellFunctionBody(posix, "_copilot_wire_provider");
+  expect(posixWire).toContain("--check");
+  expect(posixWire).toContain("--proxy");
+  expect(posixWire).toContain("_copilot_provider_status");
+  expect(posixWire).toContain("-eq 0");
+  expect(posixWire).toContain("-eq 2");
+  expect(posixWire).toContain("_copilot_ensure_server");
+  expect(posixWire).not.toContain("--json");
+  expect(posixWire).not.toContain("jq");
   expect(posix).not.toContain("_copilot_codex_config_file");
   expect(posix).not.toContain("_copilot_codex_uses_proxy");
   // The launcher reconfigures proxy only; it never runs the live auto-detect.
-  expect(posixCx).not.toContain("--auto");
+  expect(posixWire).not.toContain("--auto");
 
   const powershell = readFileSync(join(process.cwd(), "shell", "agents.launchers.ps1"), "utf8");
-  const powershellCx = shellFunctionBody(powershell, "cx");
-  expect(powershellCx).toContain("codex --check");
-  expect(powershellCx).toContain("codex --proxy");
-  expect(powershellCx).toContain("$codexProviderStatus");
-  expect(powershellCx).toContain("$codexProviderStatus -eq 2");
-  expect(powershellCx).toContain("$codexProviderStatus -ne 0");
-  expect(powershellCx).toContain("Confirm-CopilotServer");
-  expect(powershellCx).not.toContain("--json");
-  expect(powershellCx).not.toContain("jq");
+  expect(shellFunctionBody(powershell, "cx")).toContain(
+    "Sync-AgentProvider -Agent codex -Launcher cx -Display Codex",
+  );
+  expect(shellFunctionBody(powershell, "cl")).toContain(
+    "Sync-AgentProvider -Agent claude -Launcher cl -Display Claude",
+  );
+  const powershellWire = shellFunctionBody(powershell, "Sync-AgentProvider");
+  expect(powershellWire).toContain("--check");
+  expect(powershellWire).toContain("--proxy");
+  expect(powershellWire).toContain("$status -eq 2");
+  expect(powershellWire).toContain("$status -ne 0");
+  expect(powershellWire).toContain("Confirm-CopilotServer");
+  expect(powershellWire).not.toContain("--json");
+  expect(powershellWire).not.toContain("jq");
   expect(powershell).not.toContain("Get-CodexConfigPath");
   expect(powershell).not.toContain("Test-CodexProxyProvider");
-  expect(powershellCx).not.toContain("--auto");
+  expect(powershellWire).not.toContain("--auto");
 });

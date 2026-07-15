@@ -16,8 +16,8 @@
 // APP_DIR the same way CopilotApiPaths does (COPILOT_API_HOME or the shared default). The
 // load decision lives in start.ts; here we act unconditionally on load.
 import fs from "node:fs";
+import { devNull } from "node:os";
 import { resolve, sep } from "node:path";
-import { Writable } from "node:stream";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 
 /** Case-normalize for the path-prefix check (Windows paths are case-insensitive). */
@@ -34,19 +34,15 @@ function isUnderLogsDir(target: unknown): boolean {
   return typeof target === "string" && normalizeCase(resolve(target)).startsWith(LOGS_PREFIX);
 }
 
-/** A Writable that discards every chunk. The proxy's logger only uses the surface Writable
- *  already provides (write/end/destroyed/on("error")), so presenting it as a WriteStream is
- *  safe for its call sites. */
+const realCreateWriteStream = fs.createWriteStream;
+
+/** Discard sink: a real WriteStream opened on the OS null device (/dev/null on POSIX,
+ *  \\.\nul on Windows), so every WriteStream member the proxy's logger might touch
+ *  behaves genuinely. */
 function muteSink(): fs.WriteStream {
-  const sink = new Writable({
-    write(_chunk, _encoding, callback): void {
-      callback();
-    },
-  });
-  return sink as unknown as fs.WriteStream;
+  return realCreateWriteStream(devNull);
 }
 
-const realCreateWriteStream = fs.createWriteStream;
 const mutedCreateWriteStream = (
   ...args: Parameters<typeof fs.createWriteStream>
 ): fs.WriteStream => {

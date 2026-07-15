@@ -285,7 +285,8 @@ test("runtime watchdog: off, disabled, and active states are all ok with informa
   expect(active.value?.remainingMs).toBe(40 * 60_000);
   expect(active.value?.idleMs).toBe(20 * 60_000);
 
-  // Idle past the window clamps remaining to 0; log mtime counts as the latest activity.
+  // Idle past the window clamps remaining to 0; the persisted request mark counts as the
+  // latest activity.
   const expired = checkRuntimeWatchdog({
     ...RUNTIME_OK,
     watchdog: {
@@ -396,9 +397,10 @@ test("the identity probe (an extra request) is skipped in the launchers' fast ru
 });
 
 test("health's own proxy probes do not move the watchdog activity signal", async () => {
-  // lastRequestMs reads the inference handler logs, which health's reach/identity GET / requests
-  // never write to. So even though the proxy IS probed, the 'last request' / idle signal is the
-  // handler-log value, untouched -- observing the proxy can't reset the numbers.
+  // lastRequestMs reads the observer's persisted `.activity.json` mark, which health's
+  // reach/identity GET / requests never move (only inference POSTs mark it). So even though
+  // the proxy IS probed, the 'last request' / idle signal is the persisted value, untouched --
+  // observing the proxy can't reset the numbers.
   let probes = 0;
   const facts = await gatherFacts(
     "proxy",
@@ -414,7 +416,7 @@ test("health's own proxy probes do not move the watchdog activity signal", async
         probes++;
         return true;
       },
-      lastRequestMs: () => 100, // a fixed, old "last real request" (handler-log mtime)
+      lastRequestMs: () => 100, // a fixed, old "last real request" (the persisted mark)
       now: () => 5000,
       autoStartEnabled: () => true,
       idleTimeoutMs: () => 60_000,

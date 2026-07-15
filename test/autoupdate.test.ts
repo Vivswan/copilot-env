@@ -5,11 +5,18 @@ import { join } from "node:path";
 
 import { isDue, shouldRunPreflight } from "../src/autoupdate/due.ts";
 import { acquireLock, releaseLock } from "../src/autoupdate/lock.ts";
-import { AutoupdateState } from "../src/autoupdate/state.ts";
+import {
+  AutoupdateState,
+  DEFAULT_AUTOUPDATE_COOLDOWN_DAYS,
+  effectiveUpdateCooldownDays,
+} from "../src/autoupdate/state.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 
+const SAVED_HOME = process.env.COPILOT_API_HOME;
 let dir = "";
 afterEach(() => {
+  if (SAVED_HOME === undefined) delete process.env.COPILOT_API_HOME;
+  else process.env.COPILOT_API_HOME = SAVED_HOME;
   if (dir) rmSync(dir, { recursive: true, force: true });
   dir = "";
 });
@@ -20,19 +27,18 @@ function tmp(name: string): string {
 
 // --- AutoupdateState --------------------------------------------------------
 
-test("AutoupdateState defaults to disabled with a 7-day cooldown when absent", () => {
+test("AutoupdateState defaults to disabled when absent", () => {
   const s = new AutoupdateState(tmp("state.json")).read();
-  expect(s).toEqual({ enabled: false, cooldownDays: 7, lastCheckMs: 0, lastResult: "" });
+  expect(s).toEqual({ enabled: false, lastCheckMs: 0, lastResult: "" });
 });
 
-test("AutoupdateState round-trips enable/cooldown/result and preserves unknown keys", () => {
+test("AutoupdateState round-trips enable/result and preserves unknown keys", () => {
   const path = tmp("state.json");
   writeFileSync(path, JSON.stringify({ keep: "me" }));
   const state = new AutoupdateState(path);
-  state.set({ enabled: true, cooldownDays: 14, lastCheckMs: 1234, lastResult: "updated v1.2.3" });
+  state.set({ enabled: true, lastCheckMs: 1234, lastResult: "updated v1.2.3" });
   expect(new AutoupdateState(path).read()).toEqual({
     enabled: true,
-    cooldownDays: 14,
     lastCheckMs: 1234,
     lastResult: "updated v1.2.3",
   });
@@ -40,26 +46,38 @@ test("AutoupdateState round-trips enable/cooldown/result and preserves unknown k
   expect(JSON.parse(readFileSync(path, "utf-8")).keep).toBe("me");
 });
 
-test("AutoupdateState disable flips enabled without clobbering cooldown", () => {
+test("AutoupdateState disable flips enabled without clobbering the last result", () => {
   const path = tmp("state.json");
   const state = new AutoupdateState(path);
-  state.set({ enabled: true, cooldownDays: 3 });
+  state.set({ enabled: true, lastResult: "up to date" });
   state.set({ enabled: false });
-  expect(new AutoupdateState(path).read()).toMatchObject({ enabled: false, cooldownDays: 3 });
+  expect(new AutoupdateState(path).read()).toMatchObject({
+    enabled: false,
+    lastResult: "up to date",
+  });
 });
 
 test("AutoupdateState coerces ill-typed fields back to safe defaults", () => {
   const path = tmp("state.json");
+  // `cooldownDays` is a legacy key (pre-live-cooldown releases snapshotted it);
+  // the lenient schema simply ignores it.
   writeFileSync(
     path,
-    JSON.stringify({ enabled: "yes", cooldownDays: -5, lastCheckMs: "soon", lastResult: 42 }),
+    JSON.stringify({ enabled: "yes", cooldownDays: 14, lastCheckMs: "soon", lastResult: 42 }),
   );
   expect(new AutoupdateState(path).read()).toEqual({
     enabled: false, // only `true` enables
-    cooldownDays: 7, // negative -> default
     lastCheckMs: 0, // non-number -> 0
     lastResult: "", // non-string -> ""
   });
+});
+
+test("effectiveUpdateCooldownDays: the live update-cooldown config, else the 7-day default", () => {
+  tmp("unused"); // creates an isolated dir; point the shared prefs store at it
+  process.env.COPILOT_API_HOME = dir;
+  expect(effectiveUpdateCooldownDays()).toBe(DEFAULT_AUTOUPDATE_COOLDOWN_DAYS); // unset -> default
+  writeFileSync(join(dir, ".copilot-env-config.json"), JSON.stringify({ updateCooldown: 3 }));
+  expect(effectiveUpdateCooldownDays()).toBe(3); // read live, never snapshotted
 });
 
 test("AutoupdateState writes a 0600 file (POSIX)", () => {

@@ -34,14 +34,7 @@ export function defaultProxyPort(): number {
   return new CopilotEnvConfig().read().port ?? BUILTIN_PROXY_PORT;
 }
 
-export async function copilotApiPortAvailable(port: number): Promise<boolean> {
-  // An out-of-range port is never "available" to us: the proxy runs unprivileged (so binding
-  // <1024 fails anyway) and the range is a deliberate policy. Callers that surface a busy
-  // message should check proxyPortInRange first to distinguish "outside the allowed range" from
-  // "held by another process" -- the two are different user problems.
-  if (!proxyPortInRange(port)) {
-    return false;
-  }
+async function portFree(port: number): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const s = new net.Socket();
     let settled = false;
@@ -57,6 +50,15 @@ export async function copilotApiPortAvailable(port: number): Promise<boolean> {
   });
 }
 
+/** Probe whether the proxy can bind `port`. Out-of-range is its own verdict: the proxy runs
+ *  unprivileged (binding <1024 fails anyway) and the range is a deliberate policy. */
+export async function checkProxyPort(port: number): Promise<"free" | "busy" | "out-of-range"> {
+  if (!proxyPortInRange(port)) {
+    return "out-of-range";
+  }
+  return (await portFree(port)) ? "free" : "busy";
+}
+
 export async function copilotApiFindPort(start: number = defaultProxyPort()): Promise<number> {
   const maxAttempts = 50;
   // Search only within the configured range: clamp the base into [min, max] and never scan past
@@ -66,7 +68,7 @@ export async function copilotApiFindPort(start: number = defaultProxyPort()): Pr
   const from = Math.min(Math.max(start, min), max);
   const to = Math.min(from + maxAttempts, max + 1);
   for (let port = from; port < to; port++) {
-    if (await copilotApiPortAvailable(port)) {
+    if (await portFree(port)) {
       return port;
     }
   }
@@ -82,10 +84,17 @@ export function copilotApiResolvePort(): string {
   return statePort !== undefined ? String(statePort) : String(defaultProxyPort());
 }
 
-/** The OpenAI-wire proxy base URL for `port` (single source for the emitted string). Uses the
- *  127.0.0.1 literal, not `localhost`: the daemon binds IPv4, and on Windows `localhost` resolves
- *  to ::1 first with no IPv4 fallback -- so a `localhost` base_url would make the agent CLI
- *  ECONNREFUSED against the proxy. Matches the 127.0.0.1 the liveness probes already use. */
+/** The proxy's loopback origin for `port` (single source for the emitted string, no path, no
+ *  trailing slash). Uses the 127.0.0.1 literal, not `localhost`: the daemon binds 0.0.0.0
+ *  (IPv4), but on Windows `localhost` resolves to ::1 first with no IPv4 fallback in fetch or
+ *  the agent CLIs -- so a `localhost` URL would ECONNREFUSED (or read DOWN) while the proxy is
+ *  up. 127.0.0.1 always hits the IPv4 listener. */
+export function proxyLoopbackOrigin(port: number | string): string {
+  return `http://127.0.0.1:${port}`;
+}
+
+/** The OpenAI-wire proxy base URL for `port`: the loopback origin plus the `/v1` path contract.
+ *  Host rationale on proxyLoopbackOrigin. */
 export function openaiBaseUrl(port: string): string {
-  return `http://127.0.0.1:${port}/v1`;
+  return `${proxyLoopbackOrigin(port)}/v1`;
 }

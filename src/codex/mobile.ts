@@ -254,25 +254,26 @@ export async function runCodexMobile(): Promise<void> {
     logger.warn(`Could not write a backup at ${backupPath}; proceeding from memory.`);
   }
 
+  const usableCatalog = (): string | null =>
+    // Re-check at write time: disabling the opt-in catalog mid-pairing deletes the
+    // file, and restoring a dangling reference is a Codex startup error.
+    catalogPath !== null && isCatalogFileUsable(catalogPath) ? catalogPath : null;
+  const rebuildFromOriginal = (): string =>
+    // Strip+restore so the catalog guard applies (`original` may carry the deleted
+    // path verbatim); the pure rewrites cannot throw -- `original` parsed at flow start.
+    restoreModelProvider(stripModelProvider(original), provider, usableCatalog());
+
   let restored = false;
   const restore = (): void => {
     if (restored) return;
     restored = true;
-    // Re-check the captured catalog path at restore time: a disable of the
-    // opt-in catalog mid-pairing deletes the file, and restoring a dangling
-    // reference would be a Codex startup error.
-    const catalog = catalogPath !== null && isCatalogFileUsable(catalogPath) ? catalogPath : null;
     let next: string;
     try {
       // Prefer re-applying onto the current file (the app may have edited it), but
       // fall back to the pre-flow config if it's now unreadable/invalid.
-      next = restoreModelProvider(fs.readFileSync(configPath, "utf8"), provider, catalog);
+      next = restoreModelProvider(fs.readFileSync(configPath, "utf8"), provider, usableCatalog());
     } catch {
-      // Rebuild from `original` through the same strip+restore pair so the
-      // catalog guard applies to the fallback too (`original` may carry the
-      // now-dangling path verbatim). `original` parsed at flow start
-      // (readModelProvider), so the pure rewrites cannot throw here.
-      next = restoreModelProvider(stripModelProvider(original), provider, catalog);
+      next = rebuildFromOriginal();
     }
     fs.writeFileSync(configPath, next);
   };
@@ -284,14 +285,7 @@ export async function runCodexMobile(): Promise<void> {
       restore();
     } catch {
       try {
-        // Same guarded rebuild as restore()'s fallback, NOT `original` verbatim
-        // (which may carry a catalog path deleted mid-pairing).
-        const catalog =
-          catalogPath !== null && isCatalogFileUsable(catalogPath) ? catalogPath : null;
-        fs.writeFileSync(
-          configPath,
-          restoreModelProvider(stripModelProvider(original), provider, catalog),
-        );
+        fs.writeFileSync(configPath, rebuildFromOriginal());
       } catch {
         // give up -- the backup file is the last resort
       }

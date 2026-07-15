@@ -16,13 +16,6 @@ SKIP_SHELL_INTEGRATION=false
 EXEC_SHELL=true
 [ -n "${COPILOT_ENV_NO_EXEC_SHELL:-}" ] && EXEC_SHELL=false
 AUTH_CURL_ARGS=(-H "User-Agent: copilot-env")
-# A GH token (for higher rate limits / private access) is passed to curl via a 0600 header
-# FILE below, never on the command line -- a bearer token in argv is world-readable via
-# `ps`/`/proc/<pid>/cmdline` while curl runs. Only detect it here; the file is written once
-# $_tmp exists. (The PowerShell installer already keeps it off argv via a headers hashtable.)
-if [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
-    AUTH_TOKEN="${GH_TOKEN:-$GITHUB_TOKEN}"
-fi
 ASSET_CURL_ARGS=("${AUTH_CURL_ARGS[@]}" -H "Accept: application/octet-stream")
 
 usage() {
@@ -112,17 +105,19 @@ canonical_dir() {
     fi
 }
 
-refuse_dangerous_install_dir() {
-    _canon=$(canonical_dir "$INSTALL_DIR")
+# Canonicalize $1 into INSTALL_DIR and refuse unsafe targets (uncanonicalizable, any
+# filesystem root, the user's home). Mirrors Resolve-SafeInstallDir in install.ps1.
+resolve_safe_install_dir() {
+    INSTALL_DIR=$(canonical_dir "$1")
     _home=$(canonical_dir "$HOME")
     # Refuse anything that is not a clean absolute path (empty => could not canonicalize),
     # any filesystem root (a path that is its own parent, covering "/", "//", drive roots),
     # and the user's home directory.
-    case "$_canon" in
+    case "$INSTALL_DIR" in
         /*) ;;
         *) die "refusing to replace unsafe install directory '$INSTALL_DIR'." ;;
     esac
-    if [ "$_canon" = "$(dirname -- "$_canon")" ] || [ "$_canon" = "$_home" ]; then
+    if [ "$INSTALL_DIR" = "$(dirname -- "$INSTALL_DIR")" ] || [ "$INSTALL_DIR" = "$_home" ]; then
         die "refusing to replace unsafe install directory '$INSTALL_DIR'."
     fi
 }
@@ -166,20 +161,19 @@ if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/shell/agents.bashrc" ]; then
     REPO_DIR="$SELF_DIR"
     echo "Using existing checkout at $REPO_DIR"
 else
-    # Canonicalize to a clean absolute path BEFORE the guard and the destructive
-    # `rm -rf`/`mkdir`/`tar` below all use the same safe value (only on this download
-    # path; the existing-checkout branch above ignores --dir entirely).
-    INSTALL_DIR="$(canonical_dir "$INSTALL_DIR")"
-    refuse_dangerous_install_dir
+    # Vet and canonicalize the target (download path only; the existing-checkout
+    # branch above ignores --dir entirely).
+    resolve_safe_install_dir "$INSTALL_DIR"
     _tmp="$(mktemp -d)"
     trap 'rm -rf "$_tmp"' EXIT
-    # Write the bearer token to a 0600 header file and hand it to curl with `-H @file`
-    # (curl >= 7.55) so it stays off the world-readable command line.
-    if [ -n "${AUTH_TOKEN:-}" ]; then
+    # A GH token (higher rate limits / private access) must stay off curl's command
+    # line: argv is world-readable via `ps`/`/proc/<pid>/cmdline` while curl runs, so
+    # write it to a 0600 header file and pass `-H @file` (curl >= 7.55).
+    if [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
         _hdr="$_tmp/auth-header"
         _old_umask="$(umask)"
         umask 0177
-        printf 'Authorization: Bearer %s\n' "$AUTH_TOKEN" > "$_hdr"
+        printf 'Authorization: Bearer %s\n' "${GH_TOKEN:-$GITHUB_TOKEN}" > "$_hdr"
         umask "$_old_umask"
         AUTH_CURL_ARGS+=(-H "@$_hdr")
         ASSET_CURL_ARGS+=(-H "@$_hdr")

@@ -25,21 +25,21 @@ function Invoke-Agent {
     & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 @args
 }
 
-# Apply the `env` output to the current session. It emits PowerShell-native
-# `$env:KEY = '...'` assignments AND `Remove-Item Env:KEY` clears; it may also emit a
-# one-shot `if (Test-Path ...) { . '...' }` that dot-sources the opt-in launchers into
-# this session (so cl/co/cx work right after `agent shell --launchers`). Evaluate all
-# three shapes. -Quiet silences stderr -- used only by the eager startup call so
-# bootstrap noise ("Installing copilot-env node_modules ...") doesn't disrupt the
-# prompt. The `agent` wrapper omits -Quiet so a genuine env-refresh failure stays
-# visible, matching the POSIX twin (agents.bashrc: the wrapper's refresh is unsilenced;
-# the eager source is 2>/dev/null).
+# Apply the `env` output to the current session: evaluate every non-blank line of
+# the contract-stable `agent env --format powershell` stdout, mirroring the POSIX
+# twin's unconditional eval (agents.bashrc). env stdout carries ONLY shell directives
+# (see src/commands/env.ts); install noise goes to stderr. -Quiet silences stderr --
+# used only by the eager startup call so bootstrap noise ("Installing copilot-env
+# node_modules ...") doesn't disrupt the prompt. The `agent` wrapper omits -Quiet so
+# a genuine env-refresh failure stays visible, matching the POSIX twin
+# (agents.bashrc: the wrapper's refresh is unsilenced; the eager source is
+# 2>/dev/null).
 function Import-CopilotEnv {
     param([switch]$Quiet)
     $lines = if ($Quiet) { Invoke-Agent env --format powershell 2>$null } else { Invoke-Agent env --format powershell }
     if ($LASTEXITCODE -ne 0) { return }
     foreach ($line in $lines) {
-        if ($line -match '^\s*(\$env:|Remove-Item |if \(Test-Path )') { Invoke-Expression $line }
+        if (-not [string]::IsNullOrWhiteSpace($line)) { Invoke-Expression $line }
     }
 }
 

@@ -8,9 +8,13 @@
 import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { dirname } from "node:path";
-import { assertNever } from "../utils/assert.ts";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
-import { type AuthProvider, CopilotEnvState, type TokenProvider } from "./env_state.ts";
+import {
+  AUTH_PROVIDERS,
+  type AuthProvider,
+  CopilotEnvState,
+  type TokenProvider,
+} from "./env_state.ts";
 import { CopilotApiPaths } from "./paths.ts";
 
 // The provider vocabulary is defined with the store that persists it (env_state);
@@ -22,6 +26,37 @@ export { AUTH_PROVIDERS } from "./env_state.ts";
 export interface CredentialStatus {
   provider: AuthProvider | null;
   resolves: boolean;
+}
+
+export type CredentialSource = "stored-token" | "gh-cli" | "none";
+
+// Adding a provider to AUTH_PROVIDERS forces an entry here (the Record is
+// exhaustive at compile time); "stored-token" additionally requires the token
+// to actually be present.
+const PROVIDER_SOURCE: Record<AuthProvider, Exclude<CredentialSource, "none">> = {
+  "copilot": "stored-token",
+  "gh-cli": "gh-cli",
+  "gh-token": "stored-token",
+};
+
+function isAuthProvider(provider: string): provider is AuthProvider {
+  return (AUTH_PROVIDERS as readonly string[]).includes(provider);
+}
+
+/**
+ * Where the Direct credential comes from for a recorded provider -- the single
+ * classification behind `Credential.resolve()` and the health gh-probe gating.
+ * A null or unrecognized provider (stale state from a newer release) is "none",
+ * fail-closed: no implicit gh fallback. Takes `string | null` so health's raw
+ * provider facts feed it without casts.
+ */
+export function credentialSource(
+  provider: string | null,
+  hasStoredToken: boolean,
+): CredentialSource {
+  if (provider === null || !isAuthProvider(provider)) return "none";
+  const source = PROVIDER_SOURCE[provider];
+  return source === "stored-token" && !hasStoredToken ? "none" : source;
 }
 
 /** Run `gh auth token` (nvm-safe), returning the trimmed token or null. */
@@ -68,19 +103,13 @@ export class Credential {
    */
   resolve(): string | null {
     const { githubToken, authProvider } = this.state.read();
-    switch (authProvider) {
+    switch (credentialSource(authProvider, githubToken !== null)) {
+      case "stored-token":
+        return githubToken;
       case "gh-cli":
         return ghAuthToken();
-      case "copilot":
-      case "gh-token":
-        return githubToken;
-      case null:
-        // No provider chosen (or one that read back as null): nothing resolves.
+      case "none":
         return null;
-      default:
-        // read() validates authProvider against AUTH_PROVIDERS, so a corrupt/unknown
-        // value already became null above -- this arm is unreachable by construction.
-        return assertNever(authProvider);
     }
   }
 

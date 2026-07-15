@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { extract as tarExtract, list as tarList } from "tar";
 import { PROJECT_ROOT } from "../utils/root.ts";
-import { verifySourceArchiveEntry, verifySourceArchiveSha256 } from "./verify-source-archive.ts";
+import { verifyArchiveSha256OrRefuse, verifySourceArchiveEntry } from "./verify-source-archive.ts";
 
 // Files that live in the checkout but are NOT shipped in a release: keep them across
 // an update. node_modules is restored by `bun install`; .git is the clone's VCS dir;
@@ -113,19 +113,7 @@ async function verifySourceArchive(
   expectedSha: string,
   expectedSha256: string | null,
 ): Promise<void> {
-  if (expectedSha256) {
-    verifySourceArchiveSha256(file, expectedSha256);
-  } else if (process.env.COPILOT_ENV_ALLOW_UNVERIFIED_RELEASE !== "1") {
-    // Fail closed: without an asset SHA256 the only remaining check is the archive's root-dir
-    // name, which an attacker serving a malicious tarball (e.g. via a TLS-intercepting proxy)
-    // can trivially forge -- so it is NOT real integrity. A normal release always uploads the
-    // checksummed source asset, so a null digest means the release is missing that asset (a
-    // release bug) or the download was tampered with; refuse it rather than install unverified.
-    throw new Error(
-      "release archive has no verifiable SHA256 checksum (the release is missing its uploaded " +
-        "source asset); refusing to install it. Set COPILOT_ENV_ALLOW_UNVERIFIED_RELEASE=1 to override.",
-    );
-  }
+  verifyArchiveSha256OrRefuse(file, expectedSha256);
   let firstEntry: string | null = null;
   await tarList({
     file,

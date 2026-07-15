@@ -21,6 +21,7 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { Writable } from "node:stream";
 import { consola } from "consola";
 import { type CodexCatalogDeps, refreshCodexModelCatalogIfStale } from "../codex/catalog.ts";
 import { syncCodexCatalogReference } from "../codex/config.ts";
@@ -136,23 +137,20 @@ function loginWithCopilot(cred: Credential): void {
 /**
  * Read a line from the terminal WITHOUT echoing it -- for pasting a secret token so
  * it never lingers on screen or in scrollback. consola's text prompt echoes input
- * and has no masked variant, so we drive readline directly and suppress its output
- * write (the canonical `_writeToOutput` hook: print the one-time query, swallow the
- * echoed keystrokes). Narration stays on stderr like the rest of this command, so
- * `--get`'s stdout contract is untouched.
+ * and has no masked variant, so we drive readline with a muted output stream (echo
+ * is discarded) and print the query to stderr ourselves, keeping `--get`'s stdout
+ * contract untouched.
  */
 function readSecret(query: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const rl = createInterface({ input: process.stdin, output: process.stderr, terminal: true });
-    let prompted = false;
-    (rl as unknown as { _writeToOutput: (s: string) => void })._writeToOutput = () => {
-      if (!prompted) {
-        process.stderr.write(query);
-        prompted = true;
-      }
-      // Swallow everything else (the echoed keystrokes / line re-renders).
-    };
-    rl.question(query, (answer) => {
+    const muted = new Writable({
+      write(_chunk, _encoding, callback) {
+        callback();
+      },
+    });
+    const rl = createInterface({ input: process.stdin, output: muted, terminal: true });
+    process.stderr.write(query);
+    rl.question("", (answer) => {
       process.stderr.write("\n");
       rl.close();
       resolve(answer);

@@ -45,23 +45,6 @@ disableConsolaTimestamps();
 /** Commander hands action callbacks an options bag of mixed-typed values. */
 type Opts = Record<string, unknown>;
 
-/**
- * Run a command action, rendering any thrown Error as a friendly one-line
- * message (no stack trace) with a non-zero exit code. Commander surfaces a
- * rejected action as an unhandled error; intercepting here -- inside the action --
- * keeps an unexpected platform/arg/IO failure reading as `x <message>` instead
- * of dumping a Bun stack frame at the user. runSafe never rethrows, so the
- * action resolves cleanly and the exit code is carried by process.exitCode.
- */
-async function runSafe(action: () => void | Promise<void>): Promise<void> {
-  try {
-    await action();
-  } catch (e) {
-    consola.error(errMessage(e));
-    process.exitCode = 1;
-  }
-}
-
 function parseNonNegativeDays(raw: string, flag: string): number {
   if (!/^\d+$/.test(raw)) {
     throw new Error(`${flag} expects a non-negative whole number of days (got '${raw}')`);
@@ -157,12 +140,10 @@ program
   .option("--direct", "Force both agents to GitHub Copilot Direct (no auto-detect probe).")
   .option("--proxy", "Force both agents to the local copilot-api proxy (no auto-detect probe).")
   .action((opts: Opts) =>
-    runSafe(() =>
-      runInit({
-        direct: Boolean(opts.direct),
-        proxy: Boolean(opts.proxy),
-      }),
-    ),
+    runInit({
+      direct: Boolean(opts.direct),
+      proxy: Boolean(opts.proxy),
+    }),
   );
 
 program
@@ -191,16 +172,14 @@ program
     "Print the local proxy's API key to stdout (used by the proxy-mode resolver after it ensures the proxy).",
   )
   .action((opts: Opts) =>
-    runSafe(() =>
-      runAuth({
-        provider: opts.provider as string | undefined,
-        set: opts.set as string | boolean | undefined,
-        get: Boolean(opts.get),
-        del: Boolean(opts.del),
-        check: Boolean(opts.check),
-        printProxyToken: Boolean(opts.printProxyToken),
-      }),
-    ),
+    runAuth({
+      provider: opts.provider as string | undefined,
+      set: opts.set as string | boolean | undefined,
+      get: Boolean(opts.get),
+      del: Boolean(opts.del),
+      check: Boolean(opts.check),
+      printProxyToken: Boolean(opts.printProxyToken),
+    }),
   );
 
 program
@@ -221,21 +200,19 @@ program
     "Launch a fresh daemon (in the managed lifecycle, a plain start otherwise leaves a healthy proxy up).",
   )
   .action((opts: Opts) =>
-    runSafe(() =>
-      runStart({
-        dryRun: Boolean(opts.dryRun),
-        port: parsePort(opts.port),
-        recordEvent: Boolean(opts.recordEvent),
-        check: Boolean(opts.check),
-        force: Boolean(opts.force),
-      }),
-    ),
+    runStart({
+      dryRun: Boolean(opts.dryRun),
+      port: parsePort(opts.port),
+      recordEvent: Boolean(opts.recordEvent),
+      check: Boolean(opts.check),
+      force: Boolean(opts.force),
+    }),
   );
 
 program
   .command("stop")
   .description("Stop the proxy on this host.")
-  .action(() => runSafe(() => runStop()));
+  .action(() => runStop());
 
 program
   .command("config")
@@ -245,13 +222,11 @@ program
   .option("--del <key>", "Delete a preference (revert to its default).")
   .addHelpText("after", `\n${configKeysHelp()}`)
   .action((opts: Opts) =>
-    runSafe(() =>
-      runConfig({
-        set: opts.set as string[] | undefined,
-        get: opts.get as string | boolean | undefined,
-        del: opts.del as string | undefined,
-      }),
-    ),
+    runConfig({
+      set: opts.set as string[] | undefined,
+      get: opts.get as string | boolean | undefined,
+      del: opts.del as string | undefined,
+    }),
   );
 
 program
@@ -271,9 +246,7 @@ program
     "Also run a live read-only prompt through Codex/Claude to verify the configured backend end-to-end (codex/claude/full scopes).",
   )
   .action((opts: Opts) =>
-    runSafe(() =>
-      runHealth({ scope: String(opts.scope), json: Boolean(opts.json), live: Boolean(opts.live) }),
-    ),
+    runHealth({ scope: String(opts.scope), json: Boolean(opts.json), live: Boolean(opts.live) }),
   );
 
 program
@@ -285,7 +258,7 @@ program
       "or 'powershell' (`$env:KEY = '...'`, Invoke-Expression-able by PowerShell).",
     "posix",
   )
-  .action((opts: Opts) => runSafe(() => runEnv({ format: String(opts.format) })));
+  .action((opts: Opts) => runEnv({ format: String(opts.format) }));
 
 program
   .command("cost")
@@ -311,14 +284,12 @@ program
     ].join("\n"),
   )
   .action((opts: Opts) =>
-    runSafe(() =>
-      runCost({
-        days: opts.days as string | undefined,
-        json: Boolean(opts.json),
-        perDay: Boolean(opts.perDay),
-        pricingUrl: String(opts.pricingUrl),
-      }),
-    ),
+    runCost({
+      days: opts.days as string | undefined,
+      json: Boolean(opts.json),
+      perDay: Boolean(opts.perDay),
+      pricingUrl: String(opts.pricingUrl),
+    }),
   );
 
 program
@@ -335,28 +306,26 @@ program
   .option("--host", "(Linux/macOS) Build the per-host CODEX_HOME symlink farm and wire its config.")
   .option("--delete-host", "With --host: remove the per-host CODEX_HOME and stop exporting it.")
   .option("--mobile", "Interactive: pair the Codex desktop app with its phone remote-control flow.")
-  .action((opts: Opts) =>
-    runSafe(async () => {
-      const common = { direct: Boolean(opts.direct), proxy: Boolean(opts.proxy) };
-      // --mobile is its own interactive flow (toggles config around app pairing).
-      if (opts.mobile) {
-        return runCodexMobile();
-      }
-      // --check is read-only: never build/delete the host farm or probe, even when
-      // combined with --host/--delete-host. Route it to the check path first.
-      if (opts.check) {
-        await runCodex({ ...common, check: true });
-        return;
-      }
-      // --host (and --delete-host, which only makes sense with it) route to the
-      // per-host symlink farm; everything else configures the active CODEX_HOME.
-      if (opts.host || opts.deleteHost) {
-        await runCodexHost({ ...common, delete: Boolean(opts.deleteHost) });
-      } else {
-        await runCodex(common);
-      }
-    }),
-  );
+  .action(async (opts: Opts) => {
+    const common = { direct: Boolean(opts.direct), proxy: Boolean(opts.proxy) };
+    // --mobile is its own interactive flow (toggles config around app pairing).
+    if (opts.mobile) {
+      return runCodexMobile();
+    }
+    // --check is read-only: never build/delete the host farm or probe, even when
+    // combined with --host/--delete-host. Route it to the check path first.
+    if (opts.check) {
+      await runCodex({ ...common, check: true });
+      return;
+    }
+    // --host (and --delete-host, which only makes sense with it) route to the
+    // per-host symlink farm; everything else configures the active CODEX_HOME.
+    if (opts.host || opts.deleteHost) {
+      await runCodexHost({ ...common, delete: Boolean(opts.deleteHost) });
+    } else {
+      await runCodex(common);
+    }
+  });
 
 program
   .command("claude")
@@ -370,13 +339,11 @@ program
     "Report the configured provider and exit — no changes, no probe (0 direct, 1 other, 2 proxy/none).",
   )
   .action((opts: Opts) =>
-    runSafe(() =>
-      runClaude({
-        check: Boolean(opts.check),
-        direct: Boolean(opts.direct),
-        proxy: Boolean(opts.proxy),
-      }),
-    ),
+    runClaude({
+      check: Boolean(opts.check),
+      direct: Boolean(opts.direct),
+      proxy: Boolean(opts.proxy),
+    }),
   );
 
 program
@@ -400,15 +367,13 @@ program
     "Report autoupdate status and exit (enabled, cooldown, last check, last result).",
   )
   .action((opts: Opts) =>
-    runSafe(() =>
-      runUpdate({
-        check: Boolean(opts.check),
-        force: Boolean(opts.force),
-        auto: opts.auto === true,
-        noAuto: opts.auto === false,
-        autoStatus: Boolean(opts.autoStatus),
-      }),
-    ),
+    runUpdate({
+      check: Boolean(opts.check),
+      force: Boolean(opts.force),
+      auto: opts.auto === true,
+      noAuto: opts.auto === false,
+      autoStatus: Boolean(opts.autoStatus),
+    }),
   );
 
 program
@@ -435,20 +400,19 @@ program
     "Unwire the integration (and launchers); with --launchers, remove only the launcher block.",
   )
   .action((opts: Opts) =>
-    runSafe(() =>
-      runShell({
-        remove: Boolean(opts.remove),
-        launchers: Boolean(opts.launchers),
-        clis: Boolean(opts.clis),
-        cooldown: resolveCooldown(opts.cooldown, 7),
-        noSudo: opts.sudo === false,
-        noPrereqs: opts.prereqs === false,
-        allHosts: Boolean(opts.allHosts),
-      }),
-    ),
+    runShell({
+      remove: Boolean(opts.remove),
+      launchers: Boolean(opts.launchers),
+      clis: Boolean(opts.clis),
+      cooldown: resolveCooldown(opts.cooldown, 7),
+      noSudo: opts.sudo === false,
+      noPrereqs: opts.prereqs === false,
+      allHosts: Boolean(opts.allHosts),
+    }),
   );
 
 if (import.meta.main) {
+  // Single error renderer for both option-coercion and action errors.
   program.parseAsync(process.argv).catch((e: unknown) => {
     consola.error(errMessage(e));
     // Set exitCode (not process.exit) so pending stderr writes flush.

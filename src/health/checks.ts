@@ -1,13 +1,14 @@
 // Pure evaluators: HealthFacts -> CheckResult[]. No I/O -- every input is a fact
 // gathered by probe.ts, so each check is independently unit-testable.
 import { join } from "node:path";
-import type { AutoupdateData } from "../autoupdate/state.ts";
 import { DIRECT_BASE_URL } from "../claude/config.ts";
+import { credentialSource } from "../copilot_api/credential.ts";
 import type { ProxyVersionStatus } from "../copilot_api/version.ts";
 import { formatDuration, SECONDS_PER_DAY } from "../utils/time.ts";
 import { filterByScope } from "./aggregate.ts";
 import type {
   AuthFacts,
+  AutoupdateStatus,
   BootstrapFacts,
   ClaudeFacts,
   CliFacts,
@@ -267,7 +268,7 @@ export function checkRuntimePaths(f: RuntimeFacts): CheckResult {
 export function checkRuntimeWatchdog(f: RuntimeFacts): CheckResult {
   const w = f.watchdog;
   // Scoped to full + proxy, NOT the launchers' fast `runtime` probe (this is informational and
-  // reads the config + log mtime). Always "ok": it reports state, it never fails a run.
+  // reads the config + activity file). Always "ok": it reports state, it never fails a run.
   const base = {
     id: "runtime.watchdog",
     label: "Idle watchdog",
@@ -290,9 +291,10 @@ export function checkRuntimeWatchdog(f: RuntimeFacts): CheckResult {
     };
   }
   // The in-daemon watchdog treats activity as the most recent of the heartbeat and the last
-  // real model call (the inference handler-log mtime -- liveness GET / pings are NOT activity);
-  // mirror that here. With neither recorded yet, idle/remaining are unknown -- the daemon's real
-  // baseline also includes a startedAtMs the probe cannot see, so don't fake a precise window.
+  // real model call (the observer's persisted `.activity.json` mark -- liveness GET / pings are
+  // NOT activity); mirror that here. With neither recorded yet, idle/remaining are unknown --
+  // the daemon's real baseline also includes a startedAtMs the probe cannot see, so don't fake
+  // a precise window.
   const lastActivity = Math.max(w.lastEnsureAt ?? 0, w.lastRequestMs ?? 0);
   const idleMs = lastActivity > 0 ? Math.max(0, w.now - lastActivity) : null;
   const remainingMs = idleMs === null ? null : Math.max(0, w.idleTimeoutMs - idleMs);
@@ -467,9 +469,8 @@ export function checkAuth(f: AuthFacts): CheckResult {
     scopes: AUTH,
     value: { storedToken: f.storedToken, ghAuthenticated: f.ghAuthenticated, provider: f.provider },
   };
-  // Provider-driven, matching `Credential.resolve()`: no provider => not auth (no
-  // implicit gh fallback); gh-cli resolves via gh; copilot/gh-token via the stored
-  // token. A chosen-but-unresolved provider is a warn, not OK.
+  // Provider classification owned by credentialSource() (credential.ts); a
+  // chosen-but-unresolved provider is a warn, not OK.
   if (f.provider === null) {
     return {
       ...base,
@@ -481,7 +482,8 @@ export function checkAuth(f: AuthFacts): CheckResult {
       fix: "agent auth",
     };
   }
-  const resolves = f.provider === "gh-cli" ? f.ghAuthenticated : f.storedToken;
+  const source = credentialSource(f.provider, f.storedToken);
+  const resolves = source === "gh-cli" ? f.ghAuthenticated : source === "stored-token";
   if (resolves) {
     const how = f.provider === "gh-cli" ? "gh CLI (`gh auth token`)" : "stored GitHub token";
     return {
@@ -717,7 +719,7 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
 }
 
 /** Report opt-in autoupdate status (mirrors `agent update --auto-status`). */
-export function checkAutoupdate(f: AutoupdateData): CheckResult {
+export function checkAutoupdate(f: AutoupdateStatus): CheckResult {
   const base = {
     id: "setup.autoupdate",
     label: "Autoupdate",

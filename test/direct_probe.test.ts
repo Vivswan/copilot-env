@@ -33,12 +33,11 @@ test("CLAUDE_PROBE pairs --bare with --settings so the apiKeyHelper is loaded", 
   expect(args[i + 1]).toMatch(/[\\/]tmp[\\/]home[\\/]settings\.json$/);
 });
 
-// A throwaway descriptor: clears one provider var, points at a fake home env var.
+// A throwaway descriptor pointing at a fake home env var.
 const FAKE_DESCRIPTOR: ProbeDescriptor = {
   cli: "claude",
   homeEnvVar: "CLAUDE_CONFIG_DIR",
   args: (prompt) => ["-p", prompt],
-  clearEnv: ["ANTHROPIC_AUTH_TOKEN"],
 };
 
 type RunProbe = (cliPath: string, args: string[], env: Record<string, string>) => ProbeOutcome;
@@ -209,7 +208,7 @@ test("probeDirectWorks falls back after exhausting retries", () => {
 // --- probeDirectWorks: env sanitization -------------------------------------
 
 test("probeDirectWorks strips provider/CLI env families but keeps gh auth", () => {
-  process.env.ANTHROPIC_AUTH_TOKEN = "leaked-token"; // also in FAKE_DESCRIPTOR.clearEnv
+  process.env.ANTHROPIC_AUTH_TOKEN = "leaked-token";
   process.env.OPENAI_BASE_URL = "http://proxy.local";
   process.env.CODEX_API_KEY = "leaked-codex";
   process.env.CLAUDE_CODE_FOO = "leaked-claude";
@@ -229,7 +228,7 @@ test("probeDirectWorks strips provider/CLI env families but keeps gh auth", () =
     expect(ok).toBe(true);
     expect(seen).not.toBeNull();
     const env = seen as unknown as Record<string, string>;
-    // Every OPENAI_*/ANTHROPIC_*/CODEX_*/CLAUDE_* var is gone (prefix + clearEnv),
+    // Every OPENAI_*/ANTHROPIC_*/CODEX_*/CLAUDE_* var is gone (by prefix),
     // case-insensitively...
     expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
     expect(env.OPENAI_BASE_URL).toBeUndefined();

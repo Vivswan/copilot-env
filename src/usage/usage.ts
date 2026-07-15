@@ -7,7 +7,7 @@
 // read all of them read-only and aggregate token counts by model.
 
 // biome-ignore lint/correctness/noUnresolvedImports: `bun:sqlite` is a bun runtime built-in (typed via @types/bun), not a resolvable file.
-import { Database } from "bun:sqlite";
+import { constants, Database } from "bun:sqlite";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -17,16 +17,6 @@ import { errMessage } from "../utils/error.ts";
 import { isDir } from "../utils/fs.ts";
 
 const DB_FILENAME = "copilot-api.sqlite";
-
-// Raw SQLite open flags. We open via URI (`file:...?immutable=1`) so SQLite
-// skips all locking -- the proxy DBs live on NFS where POSIX shared locks
-// fail with SQLITE_PROTOCOL ("locking protocol"), and the daemon is actively
-// writing to them. `immutable=1` promises SQLite the file won't change for
-// the connection's lifetime, which is the right semantic for a best-effort
-// reporting snapshot: a concurrent write may yield slightly stale data, but
-// never an error.
-const SQLITE_OPEN_READONLY = 0x00000001;
-const SQLITE_OPEN_URI = 0x00000040;
 
 /** Per-model token totals, summed across every DB. */
 export interface ModelUsage {
@@ -147,7 +137,7 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
     for (const dbUri of [uri, `${uri}?immutable=1`]) {
       let db: Database | undefined;
       try {
-        db = new Database(dbUri, SQLITE_OPEN_READONLY | SQLITE_OPEN_URI);
+        db = new Database(dbUri, constants.SQLITE_OPEN_READONLY | constants.SQLITE_OPEN_URI);
         rows = db.query(QUERY).all(since) as UsageRow[];
         break;
       } catch (e) {

@@ -5,16 +5,24 @@
 // so there's no second I/O implementation.
 import * as v from "valibot";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { autoupdateStateFile } from "./paths.ts";
 
 /** Default release cooldown for autoupdate: adopt releases at least this old. */
 export const DEFAULT_AUTOUPDATE_COOLDOWN_DAYS = 7;
 
+/**
+ * The effective autoupdate cooldown is always the live `update-cooldown` config, so
+ * `agent config --set update-cooldown N` takes effect on the next run; it is never
+ * snapshotted into state.
+ */
+export function effectiveUpdateCooldownDays(): number {
+  return new CopilotEnvConfig().read().updateCooldown ?? DEFAULT_AUTOUPDATE_COOLDOWN_DAYS;
+}
+
 export interface AutoupdateData {
   /** Whether the once-per-day self-update preflight is active. */
   enabled: boolean;
-  /** Adopt the newest release aged >= this many days. */
-  cooldownDays: number;
   /** Epoch ms of the last completed check (0 if never). */
   lastCheckMs: number;
   /** Human summary of the last check, e.g. "updated v1.2.3" / "up to date". */
@@ -27,10 +35,6 @@ type AutoupdatePatch = { [K in keyof AutoupdateData]?: AutoupdateData[K] | null 
 // than throwing. `lastCheckMs` must be finite (rejects NaN/Infinity).
 const AUTOUPDATE_SCHEMA = v.object({
   enabled: v.fallback(v.boolean(), false),
-  cooldownDays: v.fallback(
-    v.pipe(v.number(), v.integer(), v.minValue(0)),
-    DEFAULT_AUTOUPDATE_COOLDOWN_DAYS,
-  ),
   lastCheckMs: v.fallback(v.pipe(v.number(), v.finite(), v.minValue(0)), 0),
   lastResult: v.fallback(v.string(), ""),
 });

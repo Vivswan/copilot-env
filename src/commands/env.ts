@@ -111,8 +111,8 @@ export function runEnv(args: EnvArgs): void {
 
   for (const directive of directives) {
     if ("unset" in directive) {
-      // Clear the var. The POSIX wrapper evals everything; the PowerShell wrapper
-      // also honors Remove-Item lines (see shell/agents.ps1).
+      // Clear the var. Both wrappers eval every emitted directive
+      // (agents.bashrc's unconditional eval; agents.ps1's Import-CopilotEnv).
       console.log(
         isPowershell
           ? `Remove-Item -LiteralPath Env:${directive.key} -ErrorAction SilentlyContinue`

@@ -63,7 +63,6 @@ export interface CodexConfigArgs {
 }
 
 interface ConfigureCodexConfigOptions {
-  proxy?: boolean;
   baseUrl?: string;
   codexExecVersion?: string | null;
   /** Suppress the "config written" info line (used by the temp-config probe). */
@@ -183,6 +182,21 @@ function managedProviderForMode(
   if (proxyOptions === null) throw new Error("proxy options are required for proxy mode");
   return managedProxyProvider(proxyOptions.baseUrl);
 }
+
+// Every key either managed provider table sets, plus the legacy `env_key`
+// (Codex forbids `auth` + `env_key` on one provider; older releases wrote it
+// and codexTableMode still reads it for back-compat). Derived from the
+// factories so a new mode-specific managed key can never reintroduce
+// cross-mode bleed on the shared table; a RETIRED managed key must be kept
+// here explicitly (like `env_key`) or old configs retain it as a user key.
+// (The proxy baseUrl argument is only embedded in the returned object, never
+// validated or fetched, so any placeholder string is safe; only Object.keys
+// is used.)
+const MANAGED_PROVIDER_KEYS: ReadonlySet<string> = new Set([
+  ...Object.keys(managedDirectProvider(null)),
+  ...Object.keys(managedProxyProvider("http://managed-keys.invalid")),
+  "env_key",
+]);
 
 /** True iff `auth` is OUR managed auth block: its command+args match `expected`. */
 function authMatches(
@@ -423,26 +437,17 @@ function validateProxyOptions(options: ConfigureCodexConfigOptions): ProxyConfig
 }
 
 /**
- * Write the managed `config.toml` at `codexHome`. Direct mode is the default and
- * touches `.env` only when a `--gh-token` is baked in (writing COPILOT_ENV_GH_TOKEN,
- * mode 0600); a gh-direct write (no token) scrubs any leftover COPILOT_ENV_GH_TOKEN.
- * Proxy mode writes a `.env` holding the proxy API key. Returns 0 on success.
- * Exported for unit testing.
+ * Write the managed `config.toml` at `codexHome` for the given (already-resolved)
+ * `mode`, and scrub the legacy baked `COPILOT_ENV_GH_TOKEN` from `.env`. Neither
+ * mode bakes a credential -- both resolve it at fetch time via `auth.command`.
+ * Returns 0 on success. Exported for unit testing.
  */
 export function configureCodexConfig(
-  codexHome?: string | null,
+  codexHome: string | null | undefined,
+  mode: ManagedAgentMode,
   options: ConfigureCodexConfigOptions = {},
 ): number {
-  // Derive the default home the SAME way the readers do (effectiveCodexHome,
-  // health/probe.ts): CODEX_HOME then homedir()/.codex via path.join -- no process.env.HOME
-  // precedence, no string-concatenated separators -- so the writer and checker produce
-  // byte-identical paths on Windows (else `C:\Users\x/.codex` vs `C:\Users\x\.codex`).
-  codexHome = codexHome || process.env.CODEX_HOME || path.join(homedir(), ".codex");
-  // Low-level writer: absence of `proxy` means write a Direct config. The
-  // never-silent-Direct guarantee lives UPSTREAM at resolveDirectMode() -- callers
-  // must pass an already-resolved mode (an explicit flag or a passing probe);
-  // the only intentional bare-Direct use is the throwaway probe config itself.
-  const mode: ManagedAgentMode = options.proxy ? "proxy" : "direct";
+  codexHome = codexHome || defaultCodexHome();
   const proxyOptions = mode === "proxy" ? validateProxyOptions(options) : null;
   if (mode === "proxy" && proxyOptions === null) return 1;
 
@@ -498,20 +503,17 @@ export function configureCodexConfig(
 
   const providers = isRecord(doc.model_providers) ? doc.model_providers : {};
   const existing = isRecord(providers[CODEX_PROVIDER_ID]) ? providers[CODEX_PROVIDER_ID] : {};
-  const merged: Record<string, unknown> = {
-    ...existing,
+  // Both modes share ONE `copilot-env` table: strip every managed key from the
+  // existing table BEFORE spreading, so toggling modes can never bleed the
+  // OTHER mode's keys. User-added keys survive; managed keys are re-derived
+  // from the factories each run.
+  const userKeys = Object.fromEntries(
+    Object.entries(existing).filter(([key]) => !MANAGED_PROVIDER_KEYS.has(key)),
+  );
+  providers[CODEX_PROVIDER_ID] = {
+    ...userKeys,
     ...managedProviderForMode(mode, proxyOptions, options.codexExecVersion),
   };
-  // Both modes share ONE `copilot-env` table, so the `...existing` spread would bleed
-  // the OTHER mode's managed keys when toggling. Both modes resolve via `auth.command`
-  // and carry NO `env_key` (Codex also forbids `auth` + `env_key` on one provider), so
-  // always scrub `env_key`; `http_headers` is direct-only, so proxy scrubs it too.
-  // `auth` itself is set by both managed providers (the spread overwrites it).
-  delete merged.env_key;
-  if (mode !== "direct") {
-    delete merged.http_headers;
-  }
-  providers[CODEX_PROVIDER_ID] = merged;
   doc.model_providers = providers;
 
   fs.writeFileSync(hostConfig, stringify(doc));
@@ -536,18 +538,15 @@ export function configureCodexConfig(
  */
 export async function applyCodexConfig(
   codexHome: string,
-  args: Pick<CodexConfigArgs, "proxy"> = {},
+  mode: ManagedAgentMode,
   catalogDeps?: CodexCatalogDeps,
 ): Promise<void> {
-  // Caller passes an already-resolved mode; bare {} => Direct (see
-  // configureCodexConfig). The never-silent-Direct guarantee is upstream at resolveDirectMode().
-  const mode: ManagedAgentMode = args.proxy ? "proxy" : "direct";
   let options: ConfigureCodexConfigOptions = {};
 
   if (mode === "proxy") {
     // The key is resolved at request time by the `auth.command` (the shared proxy-token
     // script), so we only need the local proxy base URL here.
-    options = { proxy: true, baseUrl: openaiBaseUrl(copilotApiResolvePort()) };
+    options = { baseUrl: openaiBaseUrl(copilotApiResolvePort()) };
   }
 
   // Seed the patched model catalog (best-effort, unthrottled) BEFORE the config
@@ -555,7 +554,7 @@ export async function applyCodexConfig(
   // refresh (src/commands/auth.ts) keeps it fresh afterwards.
   await generateCodexModelCatalog(mode, catalogDeps);
 
-  if (configureCodexConfig(codexHome, options) !== 0) {
+  if (configureCodexConfig(codexHome, mode, options) !== 0) {
     throw new Error(
       `Codex config write failed for ${codexHome} (see the logged warning above for the cause)`,
     );
@@ -567,12 +566,19 @@ export async function applyCodexConfig(
   syncCodexCatalogReference();
 }
 
+/**
+ * The default Codex home: $CODEX_HOME, else homedir()/.codex. Deliberately no
+ * process.env.HOME precedence (on Windows homedir() is %USERPROFILE%, where Codex
+ * reads, while HOME may be a Git-for-Windows/MSYS path) and path.join, not string
+ * concat, so every writer and checker produces byte-identical paths. `||` (not
+ * `??`) treats an empty CODEX_HOME as unset.
+ */
+export function defaultCodexHome(): string {
+  return process.env.CODEX_HOME || path.join(homedir(), ".codex");
+}
+
 export function effectiveCodexHome(): string {
-  return (
-    new CopilotEnvRunState().read().codexHome ??
-    process.env.CODEX_HOME ??
-    path.join(homedir(), ".codex")
-  );
+  return new CopilotEnvRunState().read().codexHome ?? defaultCodexHome();
 }
 
 /**
@@ -787,7 +793,7 @@ export function detectCodexDirect(deps?: DirectProbeDeps): boolean {
   return probeDirectWorks(
     CODEX_PROBE,
     (tmpHome) => {
-      configureCodexConfig(tmpHome, { quiet: true });
+      configureCodexConfig(tmpHome, "direct", { quiet: true });
     },
     deps,
   );
@@ -825,7 +831,7 @@ export async function runCodex(
   // Reuse the just-resolved credential for the catalog seed's direct fetch so the
   // gh-cli provider isn't shelled out to a second time.
   const seedDeps = catalogDeps ?? (ghToken === null ? undefined : { directToken: ghToken });
-  await applyCodexConfig(effectiveCodexHome(), { proxy: !direct }, seedDeps);
+  await applyCodexConfig(effectiveCodexHome(), direct ? "direct" : "proxy", seedDeps);
 }
 
 /** The configured Codex provider mode at the effective CODEX_HOME (read-only). */

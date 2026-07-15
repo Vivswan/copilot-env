@@ -12,12 +12,11 @@ import type { AuthProvider } from "../copilot_api/env_state.ts";
 import { generateAliases } from "../copilot_api/models.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import {
+  checkProxyPort,
   copilotApiFindPort,
-  copilotApiPortAvailable,
   defaultProxyPort,
   maxProxyPort,
   minProxyPort,
-  proxyPortInRange,
 } from "../copilot_api/port.ts";
 import {
   classifyDaemonPid,
@@ -350,29 +349,33 @@ async function resolveStartPort(pinned: number | undefined, announce: boolean): 
     );
   }
   if (pinned !== undefined) {
-    if (!proxyPortInRange(pinned)) {
-      // Distinguish "outside the allowed range" from "busy" -- different problems.
-      throw new Error(
-        `requested port ${pinned} is out of range; the proxy port must be between ${min} and ${max} (\`agent config --set min-port/max-port\` to change the range).`,
-      );
+    switch (await checkProxyPort(pinned)) {
+      case "out-of-range":
+        throw new Error(
+          `requested port ${pinned} is out of range; the proxy port must be between ${min} and ${max} (\`agent config --set min-port/max-port\` to change the range).`,
+        );
+      case "busy":
+        throw new Error(
+          `requested port ${pinned} is busy (held by another process). Free it or pick another --port.`,
+        );
+      case "free":
+        return pinned;
     }
-    if (!(await copilotApiPortAvailable(pinned))) {
-      throw new Error(
-        `requested port ${pinned} is busy (held by another process). Free it or pick another --port.`,
-      );
-    }
-    return pinned;
   }
   // No hard `--port` pin: the auto-resolve base is the default proxy port (config `port`,
   // else the built-in 4141) -- a SOFT default that moves to the next free port if busy,
   // unless `strict-port` is set (then a busy default is fatal, no auto-increment).
   const def = defaultProxyPort();
-  if (!proxyPortInRange(def)) {
-    throw new Error(
-      `configured port ${def} is outside the allowed range ${min}-${max}; run \`agent config --set port <n>\` within the range, or adjust min-port/max-port.`,
-    );
+  switch (await checkProxyPort(def)) {
+    case "free":
+      return def;
+    case "out-of-range":
+      throw new Error(
+        `configured port ${def} is outside the allowed range ${min}-${max}; run \`agent config --set port <n>\` within the range, or adjust min-port/max-port.`,
+      );
+    case "busy":
+      break; // fall through to strict-port / auto-increment below
   }
-  if (await copilotApiPortAvailable(def)) return def;
   if (new CopilotEnvConfig().read().strictPort === true) {
     throw new Error(
       `port ${def} is busy and auto-increment is disabled (\`strict-port\`); free it, pick another \`--port\`, or set \`agent config --set strict-port false\`.`,
@@ -496,24 +499,8 @@ export async function runStart(args: StartArgs): Promise<void> {
   // an explicit (re)start. Bump the heartbeat (a manual start is a keep-alive vs the idle watchdog).
   // `--force` launches a fresh daemon either way (e.g. after a credential/config change), and an
   // explicit `--port` is a reconfiguration request, so it always (re)launches rather than no-op'ing.
-  if (isIdempotentNoOp(args)) {
-    const { up, port: livePort } = await proxyStatus();
-    if (up) {
-      state.set({ lastEnsureAt: Date.now() });
-      consola.success(
-        `Proxy already running${livePort !== undefined ? ` on port ${livePort}` : ""} — leaving it up.`,
-      );
-      consola.info(
-        "Run `agent start --force` to launch a fresh daemon (e.g. after a credential or config change).",
-      );
-      return;
-    }
-  }
 
-  // Serialize the launch critical section (orphan sweep + spawn + readiness wait): two
-  // concurrent `agent start` would otherwise each reap the OTHER's freshly launched daemon.
-  // The run dir holds the lock; ensure it exists first. After acquiring, RE-CHECK the
-  // idempotent no-op, since a start we waited on may have just brought the proxy up.
+  // Serialize the launch critical section (see acquireStartLock); the run dir holds the lock.
   fs.mkdirSync(paths.runDir, { recursive: true });
   const startLockPath = join(paths.runDir, ".start.lock");
   await acquireStartLock(startLockPath);
@@ -533,7 +520,6 @@ export async function runStart(args: StartArgs): Promise<void> {
     }
 
     fs.mkdirSync(paths.home, { recursive: true });
-    fs.mkdirSync(paths.runDir, { recursive: true });
     applyDefaultConfig(config);
     consola.start("Cleaning up existing proxy processes ...");
 

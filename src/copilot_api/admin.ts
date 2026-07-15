@@ -7,6 +7,7 @@
 
 import { isRecord } from "../utils/json.ts";
 import { type CatalogModel, ONE_M_SUFFIX } from "./models.ts";
+import { proxyLoopbackOrigin } from "./port.ts";
 
 const ONE_M_TOKENS = 1_000_000;
 const FETCH_TIMEOUT_MS = 5000;
@@ -24,7 +25,7 @@ export class CopilotAdminClient {
   private readonly adminKey: string;
 
   constructor(opts: { port: number; apiKey: string; adminKey: string }) {
-    this.baseUrl = `http://127.0.0.1:${opts.port}`;
+    this.baseUrl = proxyLoopbackOrigin(opts.port);
     this.apiKey = opts.apiKey;
     this.adminKey = opts.adminKey;
   }

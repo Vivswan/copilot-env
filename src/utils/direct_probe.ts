@@ -8,8 +8,8 @@
 // home and run the agent CLI's own read-only smoke prompt against it; exit 0 means
 // direct works. Cheap gates (CLI present, gh authenticated) run first so the
 // common "no gh auth" case -- e.g. CI -- returns instantly without a model call. Two
-// guards keep the live test honest: the child env is SANITIZED (the descriptor's
-// provider vars are dropped) so a leaked shell export can't hijack auth, and the
+// guards keep the live test honest: the child env is SANITIZED (the provider env
+// families are dropped) so a leaked shell export can't hijack auth, and the
 // single live call is RETRIED so a transient blip doesn't silently flip a working
 // Direct setup to proxy.
 import { spawnSync } from "node:child_process";
@@ -62,15 +62,6 @@ export interface ProbeDescriptor {
    * `--settings <home>/settings.json` to load its managed apiKeyHelper.
    */
   args: (prompt: string, home: string) => string[];
-  /**
-   * Escape hatch: EXTRA exact env-var names to delete from the probe child beyond
-   * the families cleared by prefix (see PROVIDER_ENV_PREFIXES). The prefixes cover
-   * every case today, so both descriptors leave this empty -- but if some future var
-   * hijacks the CLI's auth/routing yet doesn't share a provider prefix, list it here
-   * rather than widening the prefixes. The health probe (src/health/probe.ts)
-   * deliberately does NOT clear any of this: it tests the real, resolved env.
-   */
-  clearEnv: string[];
 }
 
 /**
@@ -95,8 +86,6 @@ export const CODEX_PROBE: ProbeDescriptor = {
   // --skip-git-repo-check was not specified.") -- making Direct detection fail
   // purely based on where `agent init` was invoked.
   args: (prompt) => ["exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", prompt],
-  // OPENAI_*/CODEX_* are cleared by prefix; nothing extra needed today.
-  clearEnv: [],
 };
 
 export const CLAUDE_PROBE: ProbeDescriptor = {
@@ -120,8 +109,6 @@ export const CLAUDE_PROBE: ProbeDescriptor = {
     "stream-json",
     prompt,
   ],
-  // ANTHROPIC_*/CLAUDE_* are cleared by prefix; nothing extra needed today.
-  clearEnv: [],
 };
 
 /**
@@ -279,8 +266,8 @@ function defaultRunProbe(
   env: Record<string, string>,
 ): ProbeOutcome {
   const s = cliSpawn(cliPath, args);
-  // `env` is the COMPLETE child environment (process.env minus the descriptor's
-  // cleared provider vars, plus the temp home + PATH) -- built by probeDirectWorks.
+  // `env` is the COMPLETE child environment (process.env minus the provider env
+  // families, plus the temp home + PATH) -- built by probeDirectWorks.
   // Spawn with it verbatim; do NOT re-merge process.env or the cleared vars return.
   // Capture stdout/stderr (not stdio:"ignore") so a failure carries a real reason
   // instead of silently flipping the user to the proxy. A generous maxBuffer keeps
@@ -353,20 +340,12 @@ export function probeDirectWorks(
   try {
     tmpHome = mkdtempSync(join(tmpdir(), `copilot-env-${descriptor.cli}-`));
     writeDirectConfig(tmpHome);
-    // Build the COMPLETE child environment via the shared helper: every inherited var EXCEPT the
-    // provider vars (so a leaked ANTHROPIC_AUTH_TOKEN, OPENAI_BASE_URL, or any OPENAI_*/ANTHROPIC_*
-    // export can't hijack where the "direct" test routes or authenticates), plus the temp home and
-    // a PATH that puts the resolved CLI's and gh's bin dirs first (the CLI may be a node-shim whose
-    // direct config shells out to `gh` by name, so an nvm-only toolchain must be reachable even if
-    // the parent never sourced nvm). GH_*/GITHUB_* are deliberately KEPT -- Direct authenticates via
-    // `gh auth token`. The omit predicate matches case-INSENSITIVELY (Windows env names are
-    // case-insensitive, so `OpenAI_BASE_URL` must be stripped too); childEnvWithPath upcases each
-    // key for us and handles the PATH-casing dedup centrally.
-    const cleared = new Set(descriptor.clearEnv.map((name) => name.toUpperCase()));
+    // Sanitized COMPLETE child env: provider families stripped case-insensitively
+    // (why: see PROVIDER_ENV_PREFIXES), temp home set, and the resolved CLI's and
+    // gh's bin dirs put first on PATH (why: see childEnvWithPath/childPathPrepending).
     const childEnv = childEnvWithPath([dirname(cliPath), dirname(ghPath)], {
       extra: { [descriptor.homeEnvVar]: tmpHome },
-      omit: (upper) =>
-        cleared.has(upper) || PROVIDER_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix)),
+      omit: (upper) => PROVIDER_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix)),
     });
 
     // The smoke call is a single live model call, so a transient blip (a fast

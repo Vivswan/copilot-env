@@ -63,6 +63,27 @@ export function verifySourceArchiveSha256(archive: string, expected: string): st
   return actual;
 }
 
+/** Fail-closed SHA256 gate. Without an asset SHA256 the only remaining check is the
+ *  archive's root-dir name, which an attacker serving a tampered tarball (e.g. via a
+ *  TLS-intercepting proxy) can trivially forge -- not real integrity. A normal release
+ *  always uploads the checksummed source asset, so a null digest means the release is
+ *  missing that asset (a release bug) or the download was tampered with; refuse unless
+ *  COPILOT_ENV_ALLOW_UNVERIFIED_RELEASE=1. Returns the verified hash, or null when the
+ *  override allowed skipping. */
+export function verifyArchiveSha256OrRefuse(
+  archive: string,
+  expected: string | null,
+): string | null {
+  if (expected) return verifySourceArchiveSha256(archive, expected);
+  if (process.env.COPILOT_ENV_ALLOW_UNVERIFIED_RELEASE !== "1") {
+    throw new Error(
+      "release archive has no verifiable SHA256 checksum (the release is missing its uploaded " +
+        "source asset); refusing to install it. Set COPILOT_ENV_ALLOW_UNVERIFIED_RELEASE=1 to override.",
+    );
+  }
+  return null;
+}
+
 function firstTarEntry(archive: string): string {
   const result = spawnSync("tar", ["-tzf", archive], { encoding: "utf8" });
   if (result.error) throw result.error;
@@ -87,19 +108,11 @@ if (import.meta.main) {
     process.exit(2);
   }
   try {
-    if (expectedSha256Arg) {
-      const hash = verifySourceArchiveSha256(archive, expectedSha256(expectedSha256Arg));
-      process.stdout.write(`Verified release archive SHA256: ${hash}\n`);
-    } else if (process.env.COPILOT_ENV_ALLOW_UNVERIFIED_RELEASE !== "1") {
-      // Fail closed: without a SHA256 the only check is the archive root-dir name, which an
-      // attacker serving a tampered tarball can forge -- not real integrity. A normal release
-      // always ships a checksummed source asset, so a missing checksum means a broken release or
-      // a tampered download; refuse rather than replace the install unverified.
-      throw new Error(
-        "release archive has no verifiable SHA256 checksum; refusing (the release may be missing " +
-          "its uploaded source asset). Set COPILOT_ENV_ALLOW_UNVERIFIED_RELEASE=1 to override.",
-      );
-    }
+    const hash = verifyArchiveSha256OrRefuse(
+      archive,
+      expectedSha256Arg ? expectedSha256(expectedSha256Arg) : null,
+    );
+    if (hash) process.stdout.write(`Verified release archive SHA256: ${hash}\n`);
     const prefix = verifySourceArchiveEntry(firstTarEntry(archive), expectedSha);
     process.stdout.write(`Verified release archive source marker: ${prefix}\n`);
   } catch (e) {

@@ -23,7 +23,7 @@ import { homedir } from "node:os";
 import * as path from "node:path";
 import { codexUserAgent } from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
-import { copilotApiResolvePort } from "../copilot_api/port.ts";
+import { copilotApiResolvePort, proxyLoopbackOrigin } from "../copilot_api/port.ts";
 import { assertNever } from "../utils/assert.ts";
 import {
   assertSingleMode,
@@ -336,10 +336,10 @@ export function configureClaudeConfig(
   const port = copilotApiResolvePort();
   writeHelperScript(proxyHelperPath(claudeHome), proxyHelperScript());
   doc.apiKeyHelper = proxyHelperPath(claudeHome);
-  // 127.0.0.1, not `localhost`: the daemon binds IPv4, and on Windows the Claude CLI resolves
-  // `localhost` to ::1 first with no IPv4 fallback -> ECONNREFUSED while health reads green.
-  // In lockstep with openaiBaseUrl(); env.ts's isLocalProxyUrl already accepts 127.0.0.1.
-  applyManagedEnv(doc, "proxy", `http://127.0.0.1:${port}`);
+  // proxyLoopbackOrigin (no path, no trailing slash -- the shape claudeBaseUrlMatchesProxy
+  // expects); env.ts's isLocalProxyUrl accepts it. Host rationale (127.0.0.1, never localhost)
+  // on the helper in port.ts.
+  applyManagedEnv(doc, "proxy", proxyLoopbackOrigin(port));
   saveSettings(settingsPath, doc);
   if (!quiet) {
     logger.log(`  ✓ Claude config written → ${settingsPath} (proxy mode → port ${port})`);

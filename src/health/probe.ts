@@ -4,13 +4,12 @@
 // command did). Pure sub-evaluators (evalShellFiles, evalCodex) take raw content
 // so they unit-test without touching the world.
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   type AutoupdateData,
   AutoupdateState,
-  DEFAULT_AUTOUPDATE_COOLDOWN_DAYS,
+  effectiveUpdateCooldownDays,
 } from "../autoupdate/state.ts";
 import {
   type ClaudeWiringStatus,
@@ -18,7 +17,12 @@ import {
   inspectClaudeWiring,
   resolveClaudeHome,
 } from "../claude/config.ts";
-import { CODEX_ENV_KEY, type CodexWiringStatus, inspectCodexWiring } from "../codex/config.ts";
+import {
+  CODEX_ENV_KEY,
+  type CodexWiringStatus,
+  defaultCodexHome,
+  inspectCodexWiring,
+} from "../codex/config.ts";
 import { getHostLocalCodexHome } from "../codex/host.ts";
 import { AGENT_CLIS } from "../commands/setup.ts";
 import {
@@ -27,10 +31,11 @@ import {
   MARKER,
   shellTargetFiles,
 } from "../commands/shell_integration.ts";
+import { credentialSource } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
-import { copilotApiResolvePort } from "../copilot_api/port.ts";
+import { copilotApiResolvePort, proxyLoopbackOrigin } from "../copilot_api/port.ts";
 import { isCopilotApiPid, pidAlive } from "../copilot_api/process.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import {
@@ -95,11 +100,10 @@ export interface RuntimeFacts {
 /**
  * Idle-watchdog inputs the proxy exposes externally: the managed-lifecycle gate, the effective
  * idle window, and the two activity signals -- the `lastEnsureAt` heartbeat and
- * `lastRequestMs`, the most recent inference request as recorded by the daemon's in-process
- * observer (`.activity.json`), with the inference handler-log mtimes as a fallback for
- * daemons started by an older copilot-env. Neither moves on liveness `GET /` pings, so
- * health's own probes never perturb what they report. `now` is the snapshot the report
- * computes "remaining" against, captured at probe time so the evaluator stays pure.
+ * `lastRequestMs`, the in-process observer's persisted `.activity.json` mark. Neither moves on
+ * liveness `GET /` pings, so health's own probes never perturb what they report. `now` is the
+ * snapshot the report computes "remaining" against, captured at probe time so the evaluator
+ * stays pure.
  */
 export interface WatchdogFacts {
   autoStart: boolean;
@@ -197,6 +201,13 @@ export interface CodexHostFacts {
   active: boolean;
 }
 
+/**
+ * Autoupdate status for health: the persisted state plus the effective cooldown,
+ * which is the LIVE `update-cooldown` config (never snapshotted into state) -- so
+ * `agent health` matches `agent update --auto-status`.
+ */
+export type AutoupdateStatus = AutoupdateData & { cooldownDays: number };
+
 export interface HealthFacts {
   runtime?: RuntimeFacts;
   bootstrap?: BootstrapFacts;
@@ -210,7 +221,7 @@ export interface HealthFacts {
   claude?: ClaudeFacts;
   codexLive?: LiveProbeFacts;
   claudeLive?: LiveProbeFacts;
-  autoupdate?: AutoupdateData;
+  autoupdate?: AutoupdateStatus;
 }
 
 /**
@@ -242,9 +253,9 @@ export interface ProbeDeps {
   now(): number;
   idleTimeoutMs(): number;
   autoStartEnabled(): boolean;
-  /** Epoch ms of the most recent inference request -- the daemon observer's persisted mark
-   *  (`.activity.json`), falling back to handler-log mtimes for older daemons -- or null when
-   *  there has been none. NOT moved by liveness `GET /` pings. */
+  /** Epoch ms of the most recent inference request -- the in-process observer's persisted
+   *  `.activity.json` mark -- or null when there has been none. NOT moved by liveness
+   *  `GET /` pings. */
   lastRequestMs(): number | null;
   commandResolved(command: string): string | null;
   agentClis(): readonly { command: string; name: string }[];
@@ -263,7 +274,7 @@ export interface ProbeDeps {
   claudeHome(): string;
   hostCodexHome(): string;
   dirExists(path: string): boolean;
-  readAutoupdate(): AutoupdateData;
+  readAutoupdate(): AutoupdateStatus;
   nodeModulesPresent(): boolean;
   nodeModulesFresh(): boolean;
   bunVersion(): string | null;
@@ -271,37 +282,6 @@ export interface ProbeDeps {
   /** `--live` end-to-end prompts against the configured Codex/Claude homes. */
   codexLive(home: string): Promise<LiveProbeFacts>;
   claudeLive(home: string): Promise<LiveProbeFacts>;
-}
-
-/**
- * Fallback `lastRequestMs` source: the newest mtime (epoch ms) across the proxy's inference
- * handler logs (`responses-handler-*.log` / `messages-handler-*.log` under <home>/logs), or 0
- * when there are none. Daemons launched by THIS copilot-env persist activity to
- * `.activity.json` via the in-process inference observer; the log mtimes only matter for a
- * daemon started by an older copilot-env (and say nothing when `proxy-logs` is off, which
- * discards the files). Per-file failures are skipped so one vanishing log can't zero the
- * signal. Exported for tests.
- */
-export function inferenceHandlerLogMtimeMs(): number {
-  const dir = new CopilotApiPaths().logsDir;
-  let names: string[];
-  try {
-    names = readdirSync(dir);
-  } catch {
-    return 0; // logs dir absent => nothing recorded
-  }
-  let max = 0;
-  for (const name of names) {
-    if (!name.endsWith(".log")) continue;
-    if (!name.startsWith("responses-handler") && !name.startsWith("messages-handler")) continue;
-    try {
-      const m = statSync(join(dir, name)).mtimeMs;
-      if (m > max) max = m;
-    } catch {
-      // a file vanishing/locked mid-scan must not zero the signal for the others
-    }
-  }
-  return max;
 }
 
 /** Probe the URL: any HTTP response (even an error status) means "reachable". */
@@ -465,7 +445,7 @@ export function defaultProbeDeps(): ProbeDeps {
     idleTimeoutMs: () => idleTimeoutMs(),
     autoStartEnabled: () => new CopilotEnvConfig().autoStartEnabled(),
     lastRequestMs: () => {
-      const m = Math.max(persistedInferenceMs(), inferenceHandlerLogMtimeMs());
+      const m = persistedInferenceMs();
       return m > 0 ? m : null;
     },
     paths: () => {
@@ -487,11 +467,8 @@ export function defaultProbeDeps(): ProbeDeps {
     projectConfig: () => readProjectConfig(root),
     proxyCooldownSeconds: () => resolveMinimumReleaseAgeSeconds(root),
     // Effective CODEX_HOME, matching runCodexConfig / env.ts precedence:
-    // per-host state override, then $CODEX_HOME, then the default ~/.codex.
-    codexHome: () =>
-      new CopilotEnvRunState().read().codexHome ??
-      process.env.CODEX_HOME ??
-      join(homedir(), ".codex"),
+    // per-host state override, then the default resolution.
+    codexHome: () => new CopilotEnvRunState().read().codexHome ?? defaultCodexHome(),
     codexTokenInEnviron: () => Boolean(process.env[CODEX_ENV_KEY]),
     codexDirectAuth,
     storedTokenPresent: () => new CopilotEnvState().read().githubToken !== null,
@@ -501,15 +478,10 @@ export function defaultProbeDeps(): ProbeDeps {
     claudeHome: () => resolveClaudeHome(),
     hostCodexHome: getHostLocalCodexHome,
     dirExists: (path: string) => existsSync(path),
-    readAutoupdate: () => {
-      // Report the LIVE update-cooldown config (what the preflight actually uses), not the
-      // value snapshotted into state at enable time -- so `agent health` matches
-      // `agent update --auto-status`.
-      const s = new AutoupdateState().read();
-      const cooldownDays =
-        new CopilotEnvConfig().read().updateCooldown ?? DEFAULT_AUTOUPDATE_COOLDOWN_DAYS;
-      return { ...s, cooldownDays };
-    },
+    readAutoupdate: () => ({
+      ...new AutoupdateState().read(),
+      cooldownDays: effectiveUpdateCooldownDays(),
+    }),
     nodeModulesPresent: () => existsSync(join(root, "node_modules")),
     nodeModulesFresh: () => {
       try {
@@ -636,25 +608,18 @@ export async function gatherFacts(
     (directAuthCache ??= deps.codexDirectAuth());
 
   // Skip the (~5s) gh probe -- and report Direct as "uses token" -- only when the
-  // config truly resolves via the managed `agent auth --get` (`managed`) AND a
-  // token is stored; otherwise probe gh (a stale/foreign config still needs it).
-  // Shared by the Codex and Claude scope jobs so the gating stays identical.
-  // Decide the Direct gh-auth facts for an agent whose config is `managed` (execs
-  // `agent auth --get`), provider-aware to match `Credential.resolve()`:
-  //   - copilot/gh-token with a stored token -> resolves via the token, skip gh.
-  //   - gh-cli -> resolves via gh, so probe it (a leftover token does NOT count).
-  //   - otherwise -> no credential resolves (report unauthenticated, no probe).
+  // config is `managed` (execs `agent auth --get`) AND the credential classifies as
+  // stored-token; gh-cli classifies to a live gh probe. Shared by the Codex and
+  // Claude scope jobs so the gating stays identical. Classification is owned by
+  // credentialSource() (credential.ts) -- a leftover token with no provider is
+  // "none": no gh probe (no implicit fallback), and Direct never reads green.
   const directAuthFor = async (
     managed: boolean,
   ): Promise<{ directAuth: CodexDirectAuthFacts; noGhNeeded: boolean }> => {
-    const provider = deps.authProvider();
-    // Mirror `Credential.resolve()` EXACTLY: only copilot/gh-token resolve via the
-    // stored token (gh unneeded). A null/unknown provider does NOT resolve even with
-    // a leftover token, so it still needs the gh check rather than reading green.
-    const noGhNeeded =
-      managed && (provider === "copilot" || provider === "gh-token") && deps.storedTokenPresent();
-    const probeGh = !noGhNeeded && provider === "gh-cli";
-    const directAuth = probeGh ? await sharedDirectAuth() : { command: null, authenticated: false };
+    const source = credentialSource(deps.authProvider(), deps.storedTokenPresent());
+    const noGhNeeded = managed && source === "stored-token";
+    const directAuth =
+      source === "gh-cli" ? await sharedDirectAuth() : { command: null, authenticated: false };
     return { directAuth, noGhNeeded };
   };
 
@@ -665,19 +630,18 @@ export async function gatherFacts(
       (async () => {
         const state = deps.readState();
         const trackedPid = state.pid ?? null;
+        // proxyLoopbackOrigin, matching portListening: a localhost probe reads DOWN on Windows
+        // while the proxy is up.
+        const probeUrl = `${proxyLoopbackOrigin(port)}/`;
         const [reachable, pidTracked] = await Promise.all([
-          // Probe 127.0.0.1, not `localhost`: the daemon binds 0.0.0.0 (IPv4), but on Windows
-          // `localhost` resolves to ::1 first and the runtime's fetch does not fall back to
-          // IPv4 -- so a `localhost` probe would report the proxy DOWN while it is up. 127.0.0.1
-          // always hits the IPv4 listener (matching admin.ts and start.ts's portListening).
-          deps.reach(`http://127.0.0.1:${port}/`, 2000),
+          deps.reach(probeUrl, 2000),
           trackedPid !== null ? deps.isTrackedPid(trackedPid) : Promise.resolve(false),
         ]);
         // Identity probe (an extra local request) only in the full/proxy scopes -- never the
         // launchers' fast `runtime` probe. Only meaningful when something is reachable.
         const identityConfirmed =
           SCOPE_BOOTSTRAP.includes(scope) && reachable
-            ? await deps.proxyIdentity(`http://127.0.0.1:${port}/`, 2000)
+            ? await deps.proxyIdentity(probeUrl, 2000)
             : null;
         facts.runtime = {
           port,
@@ -694,9 +658,8 @@ export async function gatherFacts(
             autoStart: deps.autoStartEnabled(),
             idleTimeoutMs: deps.idleTimeoutMs(),
             lastEnsureAt: state.lastEnsureAt ?? null,
-            // The observer's persisted mark (+ log-mtime fallback); our own reach/identity
-            // GET / probes are not inference POSTs, so health observing the proxy never
-            // moves these numbers.
+            // The observer's persisted mark; our own reach/identity GET / probes are not
+            // inference POSTs, so health observing the proxy never moves these numbers.
             lastRequestMs: deps.lastRequestMs(),
             now: deps.now(),
           },
@@ -791,13 +754,15 @@ export async function gatherFacts(
   if (SCOPE_AUTH.includes(scope)) {
     jobs.push(
       (async () => {
-        // The credential state, agent-independent. `gh` is a credential ONLY for the
-        // `gh-cli` provider (matching `Credential.resolve()` -- no implicit fallback),
-        // so only probe it then. Reuses the shared (cached) gh probe -- no extra spawn.
+        // The credential state, agent-independent. gh is a credential ONLY when
+        // credentialSource() says gh-cli (no implicit fallback); reuses the shared
+        // (cached) gh probe -- no extra spawn.
         const provider = deps.authProvider();
         const storedToken = deps.storedTokenPresent();
         const ghAuthenticated =
-          provider === "gh-cli" ? (await sharedDirectAuth()).authenticated : false;
+          credentialSource(provider, storedToken) === "gh-cli"
+            ? (await sharedDirectAuth()).authenticated
+            : false;
         facts.auth = { storedToken, ghAuthenticated, provider };
       })(),
     );

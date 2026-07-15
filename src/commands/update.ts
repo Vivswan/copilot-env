@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { consola } from "consola";
 import { acquireLock, releaseLock } from "../autoupdate/lock.ts";
 import { runPreflight } from "../autoupdate/preflight.ts";
-import { AutoupdateState, DEFAULT_AUTOUPDATE_COOLDOWN_DAYS } from "../autoupdate/state.ts";
+import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/state.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { resolveTarget } from "../install/resolve-release.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
@@ -42,16 +42,14 @@ export async function runUpdate(args: UpdateArgs): Promise<void> {
   // Autoupdate management flags short-circuit the manual update flow.
   if (args.autoStatus) return runAutoStatus();
   if (args.noAuto) return runDisableAuto();
-  if (args.auto) return runEnableAuto(cooldown);
+  if (args.auto) return runEnableAuto();
 
   await runManualUpdate({ check: args.check, cooldown, force: args.force });
 }
 
 function runAutoStatus(): void {
   const s = new AutoupdateState().read();
-  // The cooldown ACTUALLY used is the live `update-cooldown` config (see preflight), so show
-  // that rather than the value snapshotted into state when autoupdate was last enabled.
-  const cooldown = new CopilotEnvConfig().read().updateCooldown ?? DEFAULT_AUTOUPDATE_COOLDOWN_DAYS;
+  const cooldown = effectiveUpdateCooldownDays();
   const last = s.lastCheckMs > 0 ? new Date(s.lastCheckMs).toISOString() : "never";
   consola.info(
     `Autoupdate: ${s.enabled ? "enabled" : "disabled"} | cooldown ${cooldown}d | ` +
@@ -64,10 +62,10 @@ function runDisableAuto(): void {
   consola.success("Autoupdate disabled.");
 }
 
-async function runEnableAuto(cooldown: number | null): Promise<void> {
-  const cooldownDays = cooldown ?? DEFAULT_AUTOUPDATE_COOLDOWN_DAYS;
+async function runEnableAuto(): Promise<void> {
+  const cooldownDays = effectiveUpdateCooldownDays();
   const state = new AutoupdateState();
-  state.set({ enabled: true, cooldownDays });
+  state.set({ enabled: true });
   consola.success(`Autoupdate enabled (cooldown ${cooldownDays}d). Checking now ...`);
   // Enable + apply now: run the daily routine once immediately, forcing past the
   // once-per-day gate. Failures are recorded in state and never throw out.

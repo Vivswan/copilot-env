@@ -6,7 +6,6 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { applyUpdate } from "../commands/apply_update.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { resolveTarget } from "../install/resolve-release.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -15,7 +14,7 @@ import { isUpToDate } from "../utils/semver.ts";
 import { packageVersion } from "../utils/version.ts";
 import { isDue } from "./due.ts";
 import { acquireLock, releaseLock } from "./lock.ts";
-import { AutoupdateState, DEFAULT_AUTOUPDATE_COOLDOWN_DAYS } from "./state.ts";
+import { AutoupdateState, effectiveUpdateCooldownDays } from "./state.ts";
 
 const logger = createStderrLogger();
 
@@ -39,12 +38,7 @@ export async function runPreflight(opts: PreflightOptions): Promise<void> {
     return;
   }
   try {
-    // Read the LIVE `update-cooldown` config (not the value snapshotted into state when
-    // autoupdate was enabled), so `agent config --set update-cooldown N` takes effect on the
-    // next run rather than being ignored until autoupdate is re-enabled.
-    const cooldownDays =
-      new CopilotEnvConfig().read().updateCooldown ?? DEFAULT_AUTOUPDATE_COOLDOWN_DAYS;
-    await checkAndApply(state, cooldownDays, opts.nowMs);
+    await checkAndApply(state, effectiveUpdateCooldownDays(), opts.nowMs);
   } finally {
     releaseLock();
   }

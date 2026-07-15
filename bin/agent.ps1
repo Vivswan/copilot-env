@@ -59,15 +59,13 @@ if ($needInstall) {
     (Get-Item (Join-Path $Snap 'node_modules')).LastWriteTime = Get-Date
 }
 
-# Opt-in autoupdate preflight: ONLY on `agent start` (a deliberate, less-frequent
-# action), and only when ENABLED (state file says so). Non-fatal so a failed
-# self-update never blocks the start. The TS routine enforces the once-per-day
-# cadence and writes all of its output (incl. child processes) to stderr.
+# Opt-in autoupdate preflight: ONLY on `agent start`, run before cli.ts loads so a
+# swapped release is what dispatches. preflight.ts gates on the state file's
+# `enabled` flag and the once-per-day cadence; the file-exists test just keeps the
+# no-spawn fast path for users who never opted in. Non-fatal; output to stderr.
 $Sub = if ($args.Count -gt 0) { $args[0] } else { '' }
 $AuState = Join-Path $Snap '.autoupdate\state.json'
-if ($Sub -eq 'start' -and `
-        (Test-Path $AuState) -and `
-        (Select-String -Path $AuState -Pattern '"enabled": true' -Quiet)) {
+if ($Sub -eq 'start' -and (Test-Path $AuState -PathType Leaf)) {
     # Non-fatal: write the failure to stderr (stdout stays pure) and continue.
     # Not Write-Error -- $ErrorActionPreference is 'Stop', which would re-throw. Pipe any stdout
     # the child emits to stderr (the PowerShell-valid equivalent of the POSIX twin's `>&2`; a

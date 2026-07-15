@@ -1,17 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  utimesSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { inferenceHandlerLogMtimeMs } from "../src/health/probe.ts";
 import {
   clearPersistedInferenceActivity,
   isInferenceRequest,
@@ -127,37 +117,6 @@ test("the preloaded observer marks inference POSTs through a real Bun.serve, not
   expect(out.afterGet).toBe(0); // GETs are not activity
   expect(out.afterPost).toBeGreaterThanOrEqual(before); // the POST marked, in memory...
   expect(out.persisted).toBe(out.afterPost); // ...and the first mark persisted to the file
-});
-
-// The health fallback for daemons started by an OLDER copilot-env (no observer): the newest
-// inference handler-log mtime. Restored here from the old watchdog tests -- the function
-// moved to probe.ts when the watchdog switched to the observer.
-test("inferenceHandlerLogMtimeMs: newest responses/messages handler-log mtime; ignores other files", () => {
-  tmpHome();
-  const logs = join(dir, "logs");
-  mkdirSync(logs, { recursive: true });
-  const write = (name: string, mtimeSec: number) => {
-    const p = join(logs, name);
-    writeFileSync(p, "x");
-    utimesSync(p, mtimeSec, mtimeSec); // atime, mtime in seconds
-  };
-  // Inference logs: the newest of these two should win.
-  write("responses-handler-2026-06-26.log", 1000);
-  write("messages-handler-2026-06-27.log", 2000); // newest inference -> the answer
-  // Non-inference / non-matching files with EVEN NEWER mtimes must be ignored.
-  write("models-handler-2026-06-28.log", 9000); // model-list polling, not inference
-  write(".log", 9999); // the daemon access log (liveness GET / lands here)
-  write("notes.txt", 9999);
-
-  expect(inferenceHandlerLogMtimeMs()).toBe(2000 * 1000); // mtimeMs of the newest inference log
-});
-
-test("inferenceHandlerLogMtimeMs: 0 when there are no inference logs (or no logs dir)", () => {
-  tmpHome();
-  expect(inferenceHandlerLogMtimeMs()).toBe(0); // logs dir absent
-  mkdirSync(join(dir, "logs"), { recursive: true });
-  writeFileSync(join(dir, "logs", ".log"), "x"); // only the access log, no handler logs
-  expect(inferenceHandlerLogMtimeMs()).toBe(0);
 });
 
 // Drift alarm for the floated proxy stack: the observer intercepts `Bun.serve`, which only

@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.4.1](https://github.com/Vivswan/copilot-env/compare/v3.4.0...v3.4.1) (2026-07-15)
+
+
+### Bug Fixes
+
+* **cost:** count Claude Code usage from local transcripts ([b4b45a6](https://github.com/Vivswan/copilot-env/commit/b4b45a65edd3c0b1be1727291aa9baa611b38d62))
+* **cost:** count Codex usage from local session rollout logs ([25dda2a](https://github.com/Vivswan/copilot-env/commit/25dda2ab69d1333ef0f3285f84645dbdec53b16c))
+
 ## [3.4.0](https://github.com/Vivswan/copilot-env/compare/v3.3.20...v3.4.0) (2026-07-14)
 
 

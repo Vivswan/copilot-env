@@ -263,14 +263,14 @@ program
 program
   .command("cost")
   .description(
-    "Aggregate token usage (per-host proxy SQLite DBs + Codex session logs) and estimate cost.",
+    "Aggregate token usage (proxy SQLite DBs + Codex session logs + Claude transcripts) and estimate cost.",
   )
   .option("--days <days>", "Only include usage from the last N days (default: all).")
   .option("--json", "Emit a JSON object instead of a formatted report.")
   .option("--per-day", "Also print a day-by-day cost/token breakdown.")
   .option(
     "--sources",
-    "Print full per-source tables (proxy + each Codex provider) with day stats instead of the combined table.",
+    "Print full per-source tables (proxy + each Codex provider + Claude) with day stats instead of the combined table.",
   )
   .option(
     "--pricing-url <url>",
@@ -281,10 +281,10 @@ program
     "after",
     [
       "",
-      "Sources: the proxy's per-host SQLite DBs (proxied traffic only) and the Codex",
-      "CLI's local session logs (ALL Codex traffic, Direct included). The default table",
-      "merges both, so Codex-through-the-proxy can be double counted; use --sources",
-      "for per-source tables.",
+      "Sources: the proxy's per-host SQLite DBs (proxied traffic only), the Codex CLI's",
+      "local session logs, and Claude Code's local transcripts (each agent's FULL",
+      "traffic, Direct included). The default table merges all three, so traffic",
+      "through the proxy can be double counted; use --sources for per-source tables.",
       "",
       "Active days: distinct UTC calendar days that recorded at least one request,",
       "unioned across the displayed sources. The header also shows the inclusive",

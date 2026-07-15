@@ -2,6 +2,7 @@
 import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
+import { discoverClaudeSessionRoots, readClaudeSessions } from "./claude_sessions.ts";
 import { discoverCodexSessionRoots, readCodexSessions } from "./codex_sessions.ts";
 import {
   type CostEstimate,
@@ -13,13 +14,13 @@ import {
 import { discoverUsageDbs, mergeUsageReports, readUsage, type UsageReport } from "./usage.ts";
 
 /**
- * The default table merges the proxy DBs (proxied traffic) with the Codex
- * session logs (ALL Codex traffic, Direct included); Codex-through-the-proxy
- * appears in both, so merged totals can double count it. This note closes
- * every run.
+ * The default table merges the proxy DBs (proxied traffic) with the Codex and
+ * Claude session logs (ALL of each agent's traffic, Direct included); traffic
+ * through the proxy appears in both its agent's logs and the proxy DB, so
+ * merged totals can double count it. This note closes every run.
  */
 const SOURCES_NOTE =
-  "Note: merges two sources -- the proxy DBs (proxied traffic: Codex + Claude) and Codex session logs (all Codex traffic, Direct included). Codex-through-the-proxy appears in both, so totals can double count it; use --sources for per-source tables. Direct-wired Claude is untracked.";
+  "Note: merges three sources -- the proxy DBs (proxied traffic) plus Codex session logs and Claude transcripts (each agent's full traffic, Direct included). Traffic through the proxy appears twice, so totals can double count it; use --sources for per-source tables.\nDisclaimer: these numbers are approximate -- gathered from local logs and priced at public OpenRouter rates; actual billing may differ.";
 
 const EMPTY_REPORT: UsageReport = { byModel: new Map(), activeDays: 0, perDay: new Map() };
 
@@ -42,9 +43,13 @@ export async function runCost(args: {
       ? await readCodexSessions(sessionRoots, sinceMs)
       : new Map<string, UsageReport>();
 
-  if (dbPaths.length === 0 && codexByProvider.size === 0) {
+  const claudeRoots = discoverClaudeSessionRoots();
+  const claudeReport =
+    claudeRoots.length > 0 ? await readClaudeSessions(claudeRoots, sinceMs) : EMPTY_REPORT;
+
+  if (dbPaths.length === 0 && codexByProvider.size === 0 && claudeReport.byModel.size === 0) {
     consola.warn(
-      "WARNING: no copilot-api usage databases and no Codex session logs found; start the proxy with 'agent start' and make some requests, then re-run 'agent cost'.",
+      "WARNING: no copilot-api usage databases, Codex session logs, or Claude transcripts found; start the proxy with 'agent start' and make some requests, then re-run 'agent cost'.",
     );
     return;
   }
@@ -79,6 +84,12 @@ export async function runCost(args: {
         }),
       ),
     };
+    const claudeSessions = {
+      roots: claudeRoots.length,
+      ...buildSourceJson(claudeReport, estimateCost(claudeReport.byModel, pricing), pricing, {
+        perDay: Boolean(args.perDay),
+      }),
+    };
     console.log(
       JSON.stringify(
         buildCostJson(
@@ -89,6 +100,7 @@ export async function runCost(args: {
           sinceMs,
           Boolean(args.perDay),
           codexSessions,
+          claudeSessions,
         ),
         null,
         2,
@@ -97,16 +109,19 @@ export async function runCost(args: {
     return;
   }
 
+  const claude = { report: claudeReport, roots: claudeRoots.length };
   if (args.sources) {
     printSeparateReports(
       { report: proxyReport, estimate: proxyEstimate, dbCount: dbPaths.length },
       codexByProvider,
+      claude,
       { pricing, days: args.days, perDay: Boolean(args.perDay), roots: sessionRoots.length },
     );
   } else {
     printCombinedView(
       { report: proxyReport, estimate: proxyEstimate, dbCount: dbPaths.length },
       codexByProvider,
+      claude,
       { pricing, days: args.days, perDay: Boolean(args.perDay), roots: sessionRoots.length },
     );
   }
@@ -129,10 +144,16 @@ interface ProxySource {
   dbCount: number;
 }
 
+interface ClaudeSource {
+  report: UsageReport;
+  roots: number;
+}
+
 /** `--sources`: one full table (with day stats) per source and Codex provider. */
 function printSeparateReports(
   proxy: ProxySource,
   codexByProvider: Map<string, UsageReport>,
+  claude: ClaudeSource,
   opts: ReportOpts,
 ): void {
   if (proxy.dbCount > 0) {
@@ -161,15 +182,28 @@ function printSeparateReports(
       printPerDayReport(report, opts.pricing, estimate, `Per-day breakdown (codex: ${provider})`);
     }
   }
+
+  if (claude.roots > 0) {
+    const estimate = estimateCost(claude.report.byModel, opts.pricing);
+    printCostReport(claude.report, estimate, opts.pricing, {
+      title: "Claude sessions by model",
+      sourceLabel: `${claude.roots} root${claude.roots === 1 ? "" : "s"}`,
+      days: opts.days,
+    });
+    if (opts.perDay) {
+      printPerDayReport(claude.report, opts.pricing, estimate, "Per-day breakdown (claude)");
+    }
+  }
 }
 
-/** Default layout: the classic single table over the union of both sources. */
+/** Default layout: the classic single table over the union of all sources. */
 function printCombinedView(
   proxy: ProxySource,
   codexByProvider: Map<string, UsageReport>,
+  claude: ClaudeSource,
   opts: ReportOpts,
 ): void {
-  const merged = mergeUsageReports([proxy.report, ...codexByProvider.values()]);
+  const merged = mergeUsageReports([proxy.report, ...codexByProvider.values(), claude.report]);
   const estimate = estimateCost(merged.byModel, opts.pricing);
   const parts: string[] = [];
   if (proxy.dbCount > 0) {
@@ -177,6 +211,9 @@ function printCombinedView(
   }
   if (opts.roots > 0) {
     parts.push(`${opts.roots} codex session root${opts.roots === 1 ? "" : "s"}`);
+  }
+  if (claude.roots > 0) {
+    parts.push(`${claude.roots} claude projects root${claude.roots === 1 ? "" : "s"}`);
   }
   printCostReport(merged, estimate, opts.pricing, {
     title: "Usage by model",
@@ -379,7 +416,12 @@ function printCostReport(
   opts: { title: string; sourceLabel: string; days: string | undefined },
 ): void {
   const { byModel, activeDays } = report;
-  const models = [...byModel.keys()].sort();
+  // Most expensive first; unpriced models sink to the bottom, ties by name.
+  const models = [...byModel.keys()].sort((a, b) => {
+    const costA = estimate.perModel[a]?.estimatedCostUsd ?? -1;
+    const costB = estimate.perModel[b]?.estimatedCostUsd ?? -1;
+    return costB - costA || a.localeCompare(b);
+  });
   const period = opts.days ? `last ${opts.days} days` : "all time";
   const div = activeDays > 0 ? activeDays : 1;
   const dayMetrics = computeDayMetrics(report, pricing, estimate);
@@ -715,12 +757,14 @@ function buildCostJson(
   sinceMs: number | undefined,
   perDay: boolean,
   codexSessions: { roots: number; providers: Record<string, Record<string, unknown>> },
+  claudeSessions: Record<string, unknown>,
 ): Record<string, unknown> {
   return {
     dbCount,
     sinceMs: sinceMs ?? null,
     ...buildSourceJson(report, estimate, pricing, { perDay }),
     codexSessions,
-    note: "top-level keys cover proxied traffic only; codexSessions covers ALL Codex traffic (proxy and Direct), so the two overlap when Codex is proxy-wired -- never sum them; Direct Claude usage is untracked",
+    claudeSessions,
+    note: "approximate numbers gathered from local logs, priced at public OpenRouter rates (actual billing may differ); top-level keys cover proxied traffic only, while codexSessions/claudeSessions cover each agent's FULL traffic (proxy and Direct), so they overlap the proxy keys when an agent is proxy-wired -- never sum them",
   };
 }

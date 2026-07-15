@@ -252,8 +252,7 @@ bun run check       # biome check --write src bin test scripts
 ```
 
 - **Env init:** `scripts/setup-env.sh` (`setup-env.ps1` on Windows) is the single
-  initializer; the Copilot coding agent, Codespaces / Dev Containers, and the
-  Codex Cloud environment setup all run it.
+  initializer; the Copilot coding agent and Codespaces / Dev Containers both run it.
 - **More docs:** conventions, the proxy float/cooldown model, and a file-by-file
   breakdown live in [`AGENTS.md`](./AGENTS.md).
 

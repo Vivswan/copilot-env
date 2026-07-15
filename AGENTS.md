@@ -116,8 +116,7 @@ Every agent/dev environment and fresh `git worktree` initializes through **one**
 script — `scripts/setup-env.sh` (`.ps1` on Windows) — so no entry point drifts. It runs
 `bun install --frozen-lockfile` (which fires the best-effort float; no agent CLIs). It is
 invoked by the Copilot coding agent (`.github/workflows/copilot-setup-steps.yml`),
-Codespaces/Dev Containers (`.devcontainer/devcontainer.json`), the Codex Cloud environment
-setup (`.codex/environments/environment.toml`), and humans.
+Codespaces/Dev Containers (`.devcontainer/devcontainer.json`), and humans.
 
 ## Migrations
 

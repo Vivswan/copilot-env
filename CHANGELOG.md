@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.2](https://github.com/Vivswan/copilot-env/compare/v3.4.1...v3.4.2) (2026-07-15)
+
+
+### Bug Fixes
+
+* **cost:** merge model id spellings and price dated snapshot ids ([401abb3](https://github.com/Vivswan/copilot-env/commit/401abb3095735e102d5c0086c6c2356426a26b70))
+
 ## [3.4.1](https://github.com/Vivswan/copilot-env/compare/v3.4.0...v3.4.1) (2026-07-15)
 
 

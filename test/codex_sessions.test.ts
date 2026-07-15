@@ -94,6 +94,29 @@ test("readCodexSessions attributes turns to the model in effect and splits cache
   expect(report?.activeDays).toBe(2);
 });
 
+test("readCodexSessions keys rows by the canonical model spelling", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const root = join(dir, "sessions");
+  writeRollout(root, "2026-06-01", "aaa", [
+    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
+    // Dashed claude id via turn_context folds into the dotted canonical row.
+    turnContext("2026-06-01T10:00:01.000Z", "claude-opus-4-8"),
+    tokenCount("2026-06-01T10:00:05.000Z", usage(10, 0, 2), usage(10, 0, 2)),
+    // A thread_settings_applied model switch canonicalizes the same way.
+    rolloutLine("2026-06-01T10:01:00.000Z", "event_msg", {
+      type: "thread_settings_applied",
+      thread_settings: { model: "claude-haiku-4-5-20251001" },
+    }),
+    tokenCount("2026-06-01T10:01:05.000Z", usage(30, 0, 7), usage(20, 0, 5)),
+  ]);
+
+  const byProvider = await readCodexSessions([root]);
+  const report = byProvider.get("copilot-env");
+  expect(report?.byModel.get("claude-opus-4.8")?.events).toBe(1);
+  expect(report?.byModel.get("claude-haiku-4.5")?.events).toBe(1);
+  expect(report?.byModel.size).toBe(2);
+});
+
 test("readCodexSessions groups sessions by model_provider (absent = default)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
   const root = join(dir, "sessions");

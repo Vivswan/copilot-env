@@ -15,6 +15,7 @@ import { consola } from "consola";
 import { resolveHome } from "../copilot_api/paths.ts";
 import { errMessage } from "../utils/error.ts";
 import { isDir } from "../utils/fs.ts";
+import { canonicalModelName } from "./pricing.ts";
 
 const DB_FILENAME = "copilot-api.sqlite";
 
@@ -93,8 +94,8 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
 
   // Fold one grouped row into a model->usage map (the all-days roll-up or a
   // single day's bucket), summing across DBs that share a model.
-  const accumulate = (target: Map<string, ModelUsage>, row: UsageRow): void => {
-    const prev = target.get(row.model) ?? {
+  const accumulate = (target: Map<string, ModelUsage>, model: string, row: UsageRow): void => {
+    const prev = target.get(model) ?? {
       input: 0,
       output: 0,
       cacheRead: 0,
@@ -106,7 +107,7 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
     prev.cacheRead += row.cacheRead ?? 0;
     prev.cacheCreation += row.cacheCreation ?? 0;
     prev.events += row.events ?? 0;
-    target.set(row.model, prev);
+    target.set(model, prev);
   };
 
   // One grouped query by (day, model); byModel and activeDays both derive from it, so we
@@ -152,7 +153,9 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
     }
 
     for (const row of rows) {
-      accumulate(byModel, row);
+      // Sources spell the same model differently; key rows by the shared form.
+      const model = canonicalModelName(row.model);
+      accumulate(byModel, model, row);
       // Distinct UTC calendar days with data, unioned across all DBs. The
       // daemon writes created_at_utc alongside created_at_ms on every row, so
       // a null/empty day is not expected; such a row still counts toward
@@ -163,7 +166,7 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
           dayModels = new Map<string, ModelUsage>();
           perDay.set(row.day, dayModels);
         }
-        accumulate(dayModels, row);
+        accumulate(dayModels, model, row);
       }
     }
   }

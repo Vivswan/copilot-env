@@ -31,6 +31,7 @@ import { errMessage } from "../utils/error.ts";
 import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
+import { canonicalModelName } from "./pricing.ts";
 import type { ModelUsage, UsageReport } from "./usage.ts";
 
 /** Error placeholders carry this model id and no real usage attribution. */
@@ -193,10 +194,13 @@ async function parseTranscriptFile(
       if (!isRecord(message.usage)) {
         continue;
       }
-      const model = typeof message.model === "string" ? message.model : "unknown";
-      if (model === SYNTHETIC_MODEL) {
+      const rawModel = typeof message.model === "string" ? message.model : "unknown";
+      if (rawModel === SYNTHETIC_MODEL) {
         continue;
       }
+      // Transcripts log Anthropic's dashed, date-snapshotted ids; key rows by
+      // the canonical spelling so they merge with the proxy's Copilot ids.
+      const model = canonicalModelName(rawModel);
       const tsMs = typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : Number.NaN;
       if (sinceMs !== undefined && !(tsMs >= sinceMs)) {
         continue; // outside the window (or unparseable timestamp under a cutoff)

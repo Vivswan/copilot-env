@@ -27,6 +27,7 @@ import { errMessage } from "../utils/error.ts";
 import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
+import { canonicalModelName } from "./pricing.ts";
 import type { ModelUsage, UsageReport } from "./usage.ts";
 
 const SESSION_SUBDIRS = ["sessions", "archived_sessions"];
@@ -295,7 +296,7 @@ async function parseRolloutFile(
 
     if (isTurnContext && parsed.type === "turn_context") {
       if (typeof payload.model === "string" && payload.model !== "") {
-        model = payload.model;
+        model = canonicalModelName(payload.model);
       }
       continue;
     }
@@ -307,7 +308,7 @@ async function parseRolloutFile(
     if (isSettings && payload.type === "thread_settings_applied") {
       const settings = payload.thread_settings;
       if (isRecord(settings) && typeof settings.model === "string" && settings.model !== "") {
-        model = settings.model;
+        model = canonicalModelName(settings.model);
       }
       continue;
     }

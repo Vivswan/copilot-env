@@ -81,6 +81,39 @@ test("readUsage exposes a per-day, per-model breakdown that reconciles with byMo
   expect(report.perDay.get("2026-06-02")?.has("claude-opus-4.8")).toBe(false);
 });
 
+test("readUsage folds divergent spellings of one model into the canonical row", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  const path = join(dir, "copilot-api.sqlite");
+  const db = new Database(path);
+  db.run(`CREATE TABLE token_usage_events (
+    model TEXT NOT NULL,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_input_tokens INTEGER,
+    cache_creation_input_tokens INTEGER,
+    created_at_ms INTEGER,
+    created_at_utc TEXT
+  )`);
+  const insert = db.prepare("INSERT INTO token_usage_events VALUES (?, ?, ?, ?, ?, ?, ?)");
+  // Anthropic dashed, Copilot dotted, and dated-snapshot ids of one model.
+  insert.run("claude-opus-4-8", 1, 2, 0, 0, 1, "2026-06-01T00:00:00Z");
+  insert.run("claude-opus-4.8", 10, 20, 0, 0, 2, "2026-06-01T01:00:00Z");
+  insert.run("claude-opus-4-8-20260101", 100, 200, 0, 0, 3, "2026-06-01T02:00:00Z");
+  db.close();
+
+  const report = readUsage([path]);
+
+  expect(report.byModel.get("claude-opus-4.8")).toEqual({
+    input: 111,
+    output: 222,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 3,
+  });
+  expect(report.byModel.size).toBe(1);
+  expect(report.perDay.get("2026-06-01")?.get("claude-opus-4.8")?.events).toBe(3);
+});
+
 test("readUsage sums tokens by model and unions active days across two DBs", () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
   const pathA = join(dir, "a.sqlite");

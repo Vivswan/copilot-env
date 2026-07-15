@@ -82,6 +82,44 @@ export async function fetchPricing(
 /** Bare Anthropic family slugs that map to `claude-<family>` catalog stems. */
 const ANTHROPIC_FAMILY_SLUGS = new Set(["fable", "opus", "sonnet", "haiku"]);
 
+/**
+ * Canonical spelling of a model id, shared by every usage reader so the same
+ * model keys the same row no matter which source recorded it: the proxy logs
+ * Copilot's dotted ids (`claude-opus-4.8`) while agent transcripts log
+ * Anthropic's dashed, sometimes date-snapshotted ids (`claude-opus-4-8`,
+ * `claude-haiku-4-5-20251001`). Lowercases, drops whitespace and trailing
+ * asterisks, normalizes any 1M-context marker (`[1m]`/`.1m`/`-1m`) to a
+ * trailing `-1m` (kept distinct: 1M usage is a different offering), and, for
+ * claude ids only, strips a `-YYYYMMDD` snapshot date and converts
+ * digit-dash-digit to dots.
+ */
+export function canonicalModelName(model: string): string {
+  let n = (model || "").trim().toLowerCase().replace(/\*+$/, "").replace(/\s+/g, "-");
+  // Detach the known terminal qualifiers (upstream ids can end in
+  // `-1m-internal`) so the digit-dash-digit dotting cannot mangle the 1m
+  // marker in ids like `claude-opus-4-7-1m-internal`.
+  const internal = n.endsWith("-internal");
+  if (internal) {
+    n = n.slice(0, -"-internal".length);
+  }
+  const oneM = n.endsWith(ONE_M_SUFFIX) || /(-|\.)1m$/.test(n);
+  n = n.replace(ONE_M_SUFFIX, "").replace(/(-|\.)1m$/, "");
+  // The dash/dot and dated-snapshot respellings are Anthropic/Copilot claude
+  // conventions; other vendors' ids are legitimately dashed (gpt-4-0314) or
+  // date-suffixed, so only claude ids are rewritten.
+  const slash = n.indexOf("/");
+  const provider = slash >= 0 ? n.slice(0, slash + 1) : "";
+  let bare = slash >= 0 ? n.slice(slash + 1) : n;
+  if (bare.startsWith("claude-")) {
+    bare = bare.replace(/-20\d{6}$/, "").replace(/(?<=\d)-(?=\d)/g, ".");
+  }
+  n = provider + bare;
+  if (oneM) {
+    n += "-1m";
+  }
+  return internal ? `${n}-internal` : n;
+}
+
 /** Map an internal model id onto an OpenRouter id, or null if none matches. */
 export function resolvePricingId(model: string, catalogIds: Set<string>): string | null {
   const normalized = normalizeModelName(model);
@@ -175,19 +213,11 @@ export function estimateCost(
 
 // ---------- internals ----------
 
-/** Lowercase, drop `[1m]`/`-1m`/`.1m` and trailing `-internal`, and convert digit-dash-digit to dots. */
+/** Pricing-lookup form: the canonical spelling minus the -internal/1m markers. */
 function normalizeModelName(model: string): string {
-  let n = (model || "").toLowerCase().replace(/\*+$/, "").replace(/\s+/g, "-");
-  n = n
-    .replace(ONE_M_SUFFIX, "")
+  return canonicalModelName(model)
     .replace(/-internal$/, "")
-    .replace(/(-|\.)1m$/, "");
-  const toDot = (s: string): string => s.replace(/(?<=\d)-(?=\d)/g, ".");
-  if (n.includes("/")) {
-    const [provider, ...rest] = n.split("/");
-    return `${provider}/${toDot(rest.join("/"))}`;
-  }
-  return toDot(n);
+    .replace(/-1m$/, "");
 }
 
 /** Likely OpenRouter providers for a bare slug (no provider prefix). */

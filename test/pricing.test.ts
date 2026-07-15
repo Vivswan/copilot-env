@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import {
+  canonicalModelName,
   estimateCost,
   type PricingTier,
   resolvePricingId,
@@ -27,6 +28,39 @@ test("infers the provider for a gpt id", () => {
 
 test("normalizes [1m] and digit-dash before matching", () => {
   expect(resolvePricingId("claude-opus-4-8[1m]", CATALOG)).toBe("anthropic/claude-opus-4.8");
+});
+
+test("resolves a dated Anthropic snapshot id onto its base model", () => {
+  const catalog = new Set<string>(["anthropic/claude-haiku-4.5"]);
+  expect(resolvePricingId("claude-haiku-4-5-20251001", catalog)).toBe("anthropic/claude-haiku-4.5");
+});
+
+test("canonicalModelName unifies the source spellings of one model", () => {
+  // Anthropic dashed vs Copilot dotted vs dated snapshot: one canonical key.
+  expect(canonicalModelName("claude-opus-4-8")).toBe("claude-opus-4.8");
+  expect(canonicalModelName("claude-opus-4.8")).toBe("claude-opus-4.8");
+  expect(canonicalModelName("claude-haiku-4-5-20251001")).toBe("claude-haiku-4.5");
+  // The 1M-context marker survives as `-1m` (a distinct offering), undotted,
+  // and a trailing `-internal` qualifier never mangles it (upstream ids can
+  // end in `-1m-internal`).
+  expect(canonicalModelName("claude-opus-4-6-1m")).toBe("claude-opus-4.6-1m");
+  expect(canonicalModelName("claude-fable-5[1m]")).toBe("claude-fable-5-1m");
+  expect(canonicalModelName("claude-opus-4-7-1m-internal")).toBe("claude-opus-4.7-1m-internal");
+  // Provider prefixes survive; the dash-to-dot and date-strip rewrites are
+  // scoped to claude ids, so legitimately dashed or date-suffixed ids from
+  // other vendors are never respelled.
+  expect(canonicalModelName("openai/gpt-5.5")).toBe("openai/gpt-5.5");
+  expect(canonicalModelName("gpt-5.6-sol")).toBe("gpt-5.6-sol");
+  expect(canonicalModelName("openai/gpt-4-0314")).toBe("openai/gpt-4-0314");
+  expect(canonicalModelName("meta-llama/llama-3-8b")).toBe("meta-llama/llama-3-8b");
+  expect(canonicalModelName("vendor/widget-20251001")).toBe("vendor/widget-20251001");
+});
+
+test("resolves a -1m-internal id onto its base model", () => {
+  const catalog = new Set<string>(["anthropic/claude-opus-4.7"]);
+  expect(resolvePricingId("claude-opus-4-7-1m-internal", catalog)).toBe(
+    "anthropic/claude-opus-4.7",
+  );
 });
 
 test("opus shorthand prefix-matches a claude-opus entry", () => {

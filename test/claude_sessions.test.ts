@@ -49,10 +49,13 @@ test("readClaudeSessions maps the four usage buckets and buckets by UTC day", as
     '{"type":"user","message":{"role":"user","content":"hi"}}',
     assistantLine("2026-06-01T10:00:00.000Z", "claude-opus-4-8", "msg_1", usage(10, 20, 300, 40)),
     assistantLine("2026-06-02T00:00:01.000Z", "claude-fable-5", "msg_2", usage(5, 6, 0, 0)),
+    // Dated Anthropic snapshot ids fold into the canonical (dotted) row.
+    assistantLine("2026-06-02T00:00:02.000Z", "claude-haiku-4-5-20251001", "msg_3", usage(1, 2)),
   ]);
 
   const report = await readClaudeSessions([root]);
-  expect(report.byModel.get("claude-opus-4-8")).toEqual({
+  // Rows are keyed canonically (dashed transcript ids become dotted).
+  expect(report.byModel.get("claude-opus-4.8")).toEqual({
     input: 10,
     output: 20,
     cacheRead: 300,
@@ -60,6 +63,7 @@ test("readClaudeSessions maps the four usage buckets and buckets by UTC day", as
     events: 1,
   });
   expect(report.byModel.get("claude-fable-5")?.events).toBe(1);
+  expect(report.byModel.get("claude-haiku-4.5")?.events).toBe(1);
   expect([...report.perDay.keys()].sort()).toEqual(["2026-06-01", "2026-06-02"]);
   expect(report.activeDays).toBe(2);
 });
@@ -81,7 +85,7 @@ test("readClaudeSessions books a streamed message at its final (max) usage snaps
   ]);
 
   const report = await readClaudeSessions([root]);
-  expect(report.byModel.get("claude-opus-4-8")).toEqual({
+  expect(report.byModel.get("claude-opus-4.8")).toEqual({
     input: 10,
     output: 20,
     cacheRead: 300,
@@ -108,7 +112,7 @@ test("readClaudeSessions counts a resume-copied message once across files", asyn
   ]);
 
   const report = await readClaudeSessions([root]);
-  expect(report.byModel.get("claude-opus-4-8")).toEqual({
+  expect(report.byModel.get("claude-opus-4.8")).toEqual({
     input: 11,
     output: 22,
     cacheRead: 0,
@@ -127,7 +131,7 @@ test("readClaudeSessions finds nested subagent transcripts", async () => {
   );
 
   const report = await readClaudeSessions([root]);
-  expect(report.byModel.get("claude-opus-4-8")?.events).toBe(1);
+  expect(report.byModel.get("claude-opus-4.8")?.events).toBe(1);
 });
 
 test("readClaudeSessions skips synthetic models, usage-less and torn lines; id-less lines count", async () => {
@@ -143,7 +147,7 @@ test("readClaudeSessions skips synthetic models, usage-less and torn lines; id-l
 
   const report = await readClaudeSessions([root]);
   // Only the two id-less lines count (each unconditionally); nothing synthetic.
-  expect(report.byModel.get("claude-opus-4-8")).toEqual({
+  expect(report.byModel.get("claude-opus-4.8")).toEqual({
     input: 20,
     output: 40,
     cacheRead: 0,
@@ -171,7 +175,7 @@ test("readClaudeSessions applies the sinceMs cutoff per event and skips stale fi
 
   const sinceMs = Date.parse("2026-06-02T00:00:00Z");
   const report = await readClaudeSessions([root], sinceMs);
-  expect(report.byModel.get("claude-opus-4-8")).toEqual({
+  expect(report.byModel.get("claude-opus-4.8")).toEqual({
     input: 10,
     output: 20,
     cacheRead: 0,

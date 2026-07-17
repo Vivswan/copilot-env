@@ -25,14 +25,12 @@ import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { isDue } from "../autoupdate/due.ts";
-import { CopilotAdminClient } from "../copilot_api/admin.ts";
+import { type CatalogSource, fetchRawModels } from "../copilot_api/catalog.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
-import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { ONE_M_SUFFIX } from "../copilot_api/models.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
-import { copilotApiResolvePort } from "../copilot_api/port.ts";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
@@ -40,15 +38,12 @@ import { createStderrLogger } from "../utils/logger.ts";
 
 const logger = createStderrLogger();
 
-// Copilot Direct accepts a bearer under the vscode-chat integration (the same
-// integration the proxy uses upstream); /models returns the live catalog.
-const DIRECT_MODELS_URL = "https://api.githubcopilot.com/models";
-const DIRECT_FETCH_TIMEOUT_MS = 5000;
 // The bundled dump is local-only (no network) but may cold-start the codex CLI.
 const BUNDLED_DUMP_TIMEOUT_MS = 8000;
 
-/** Where the limits come from: upstream Copilot (direct) or the running local proxy. */
-export type CatalogSource = "direct" | "proxy";
+// Where the limits come from; the shared fetch (copilot_api/catalog.ts) owns
+// the two roads to the raw `/models` body.
+export type { CatalogSource } from "../copilot_api/catalog.ts";
 
 function parseCodexVersion(output: string): string | null {
   return output.match(/\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/)?.[0] ?? null;
@@ -206,26 +201,7 @@ async function defaultFetchLimits(
   directToken?: string,
 ): Promise<Map<string, CopilotModelLimits> | null> {
   try {
-    if (source === "proxy") {
-      const config = new CopilotApiConfig();
-      const admin = new CopilotAdminClient({
-        port: Number(copilotApiResolvePort()),
-        apiKey: config.ensureApiKey(),
-        adminKey: config.ensureAdminApiKey(),
-      });
-      return parseCopilotLimits(await admin.getRawModels());
-    }
-    const token = directToken ?? new Credential().resolve();
-    if (token === null) return null;
-    const res = await fetch(DIRECT_MODELS_URL, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Copilot-Integration-Id": "vscode-chat",
-      },
-      signal: AbortSignal.timeout(DIRECT_FETCH_TIMEOUT_MS),
-    });
-    if (!res.ok) return null;
-    return parseCopilotLimits(await res.json());
+    return parseCopilotLimits(await fetchRawModels(source, { directToken }));
   } catch {
     return null;
   }

@@ -76,6 +76,7 @@ agent config               # get/set preferences (--set <key> <value> / --get [k
 agent start                # launch the daemon and sync aliases (--dry-run to preview, --port to pin, --check to probe)
 agent stop                 # stop the daemon
 agent health               # full environment diagnosis (--scope full|runtime|proxy|setup|auth|codex|claude, --json, --live)
+agent models               # list the model ids + names Copilot serves (--proxy / --direct / --json; no flag auto-picks)
 agent env                  # print shell exports for the calling shell (CODEX_HOME / proxy ANTHROPIC_BASE_URL)
 agent cost                 # estimated token spend across all per-host usage DBs
 agent update               # update to the latest release (--check; cooldown via `agent config --set update-cooldown`)

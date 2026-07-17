@@ -145,8 +145,9 @@ export interface StartArgs {
 // copilot-api pid AND the port it actually recorded both confirm it. Reading pid AND port
 // from the SAME run-state snapshot ties the probe to the daemon's real listening port -- so
 // a moved port (start chose a different one) or a stranger on the default port can't produce
-// a false result, and the returned port matches what was probed.
-async function proxyStatus(): Promise<{ up: boolean; port?: number }> {
+// a false result, and the returned port matches what was probed. Exported for the other
+// commands that need the same "is it up?" answer (`agent models` source auto-pick).
+export async function proxyStatus(): Promise<{ up: boolean; port?: number }> {
   const { pid, port } = new CopilotEnvRunState().read();
   if (pid === undefined || !pidAlive(pid)) {
     return { up: false };
@@ -159,7 +160,10 @@ async function proxyStatus(): Promise<{ up: boolean; port?: number }> {
     return { up: false };
   }
   const probePort = port ?? defaultProxyPort();
-  return { up: await portListening(probePort), port };
+  // Return the port actually probed (not the raw state field, which can be
+  // absent): callers reuse it for follow-up requests, so probe and fetch must
+  // name the same port.
+  return { up: await portListening(probePort), port: probePort };
 }
 
 // A raw TCP-connect liveness probe. It opens (and immediately closes) a loopback socket to

@@ -91,12 +91,12 @@ Only the *why* lives here; the mechanics are discoverable in the code.
   the latest release archive, then hand off to release-local `src/install/installer.ts`.
 - `src/cli.ts` — Commander entry; delegates to `run*` functions.
 - `src/commands/` — command implementations (`init`/`auth`/`config`/`start`/`stop`/`health`/
-  `env`/`update`, plus `setup`+`shell_integration` behind `agent shell` and `apply_update`
+  `models`/`env`/`update`, plus `setup`+`shell_integration` behind `agent shell` and `apply_update`
   shared by `agent update` and the autoupdate preflight); `init` configures both agents via
   `configure_agents.ts` (`auth` manages the credential only and never configures agents).
 - `src/codex/`, `src/claude/` — per-agent config wiring (Codex farm/`--mobile`; Claude settings).
-- `src/copilot_api/` — proxy helpers: admin REST, JSON config/state, model aliases, per-host
-  paths, daemon process control.
+- `src/copilot_api/` — proxy helpers: admin REST, raw catalog fetch (proxy or Direct), JSON
+  config/state, model aliases, per-host paths, daemon process control.
 - `src/scripts/` — runtime scripts that run as their OWN process or preload, NOT CLI handlers:
   `proxy-token.{sh,ps1}` (proxy-mode credential resolver) and the `bun --preload` daemon
   shims: `token_argv_preload.ts` (first when a token is handed off; splices it from an env var
@@ -171,7 +171,7 @@ bun run check         # biome check --write
 ./bin/agent init      # set up Codex + Claude (auto-detect direct vs proxy; --direct / --proxy)
 ./bin/agent auth      # manage the GitHub credential (--provider/--get/--del/--check)
 ./bin/agent config    # get/set preferences (--set <key> <value> / --get [key] / --del <key>)
-./bin/agent start     # start the daemon; also stop / health / env / cost / update / shell / codex / claude
+./bin/agent start     # start the daemon; also stop / health / models / env / cost / update / shell / codex / claude
 ```
 
 The husky `pre-commit` hook and CI run the same gate (lint-staged + typecheck + tests + the

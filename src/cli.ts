@@ -23,6 +23,7 @@ import { runConfig } from "./commands/config.ts";
 import { runEnv } from "./commands/env.ts";
 import { runHealth } from "./commands/health.ts";
 import { runInit } from "./commands/init.ts";
+import { runModels } from "./commands/models.ts";
 import { runShell } from "./commands/setup.ts";
 import { runStart } from "./commands/start.ts";
 import { runStop } from "./commands/stop.ts";
@@ -247,6 +248,22 @@ program
   )
   .action((opts: Opts) =>
     runHealth({ scope: String(opts.scope), json: Boolean(opts.json), live: Boolean(opts.live) }),
+  );
+
+program
+  .command("models")
+  .description(
+    "List the model ids + names GitHub Copilot serves (auto-picks: the running proxy, else Direct).",
+  )
+  .option("--proxy", "Read the running local proxy's catalog (fails if the proxy is down).")
+  .option("--direct", "Fetch upstream from GitHub Copilot Direct with the resolved credential.")
+  .option("--json", "Emit a JSON object ({source, models}) instead of the table.")
+  .action((opts: Opts) =>
+    runModels({
+      direct: Boolean(opts.direct),
+      proxy: Boolean(opts.proxy),
+      json: Boolean(opts.json),
+    }),
   );
 
 program

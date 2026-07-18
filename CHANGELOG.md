@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.3](https://github.com/Vivswan/copilot-env/compare/v3.4.2...v3.4.3) (2026-07-17)
+
+
+### Bug Fixes
+
+* **cli:** add agent models to list the Copilot model catalog ([222c20d](https://github.com/Vivswan/copilot-env/commit/222c20d9d70995cd539a6a640d7b964bdeb2063b))
+
 ## [3.4.2](https://github.com/Vivswan/copilot-env/compare/v3.4.1...v3.4.2) (2026-07-15)
 
 

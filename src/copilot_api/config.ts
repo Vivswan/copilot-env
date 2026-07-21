@@ -9,6 +9,7 @@ import { isFile } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { sleepSync } from "../utils/time.ts";
 import { CopilotApiPaths } from "./paths.ts";
+import type { Profile } from "./profile.ts";
 
 const logger = consola.withTag("copilot_api.config");
 
@@ -62,6 +63,11 @@ export class CopilotApiConfig {
       path = new CopilotApiPaths().configFile;
     }
     this.path = path;
+  }
+
+  /** The proxy config for `profile`'s daemon home (null = the effective home). */
+  static forProfile(profile: Profile): CopilotApiConfig {
+    return new CopilotApiConfig(new CopilotApiPaths(profile).configFile);
   }
 
   // ---------- low-level I/O ----------

@@ -23,7 +23,12 @@ import { homedir } from "node:os";
 import * as path from "node:path";
 import { codexUserAgent } from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
-import { copilotApiResolvePort, proxyLoopbackOrigin } from "../copilot_api/port.ts";
+import {
+  copilotApiResolvePort,
+  proxyLoopbackOrigin,
+  reserveProfilePort,
+} from "../copilot_api/port.ts";
+import { type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import {
   assertSingleMode,
@@ -41,10 +46,11 @@ import {
   providerModeExitCode,
 } from "../utils/provider_mode.ts";
 import {
-  AGENT_AUTH_GET_ARGS,
+  agentAuthGetArgs,
   agentLauncherCommand,
   PROXY_TOKEN_SCRIPT_SH,
   proxyTokenCommand,
+  proxyTokenScriptArgs,
 } from "../utils/root.ts";
 
 const logger = createStderrLogger();
@@ -58,7 +64,10 @@ const WIN = process.platform === "win32";
 export const DIRECT_BASE_URL = "https://api.githubcopilot.com";
 // Helper file basenames. On Windows a `.sh` is not runnable by bare path, so the managed
 // helper is a `.cmd` (which cmd.exe executes). The path stored in apiKeyHelper -- and the
-// exact-path match in inspectClaudeWiring -- therefore carry the platform extension.
+// exact-path match in inspectClaudeWiring -- therefore carry the platform extension. A
+// NAMED profile suffixes the stem (`copilot-token-work.sh`), keeping the default names
+// (external contracts) byte-identical.
+const HELPER_EXT = WIN ? "cmd" : "sh";
 export const DIRECT_HELPER_NAME = WIN ? "copilot-token.cmd" : "copilot-token.sh";
 export const PROXY_HELPER_NAME = WIN ? "copilot-proxy-token.cmd" : "copilot-proxy-token.sh";
 export const BASE_URL_ENV = "ANTHROPIC_BASE_URL";
@@ -93,13 +102,14 @@ export function cmdHelperBody(command: string, args: readonly string[]): string 
 
 /**
  * The direct apiKeyHelper body: print the Direct credential on stdout. Claude runs apiKeyHelper
- * and uses its stdout as the credential. We exec `agent auth --get`, the provider-driven
- * resolver (gh-cli -> gh, else the stored token), so the token is never baked into this script --
- * it lives only in the state store. POSIX emits a `#!/bin/sh` script; Windows emits a `.cmd` that
- * runs the same resolver via PowerShell (agentLauncherCommand wraps it as `powershell -File ...`).
+ * and uses its stdout as the credential. We exec `agent auth --get` (with `--profile <name>`
+ * for a named profile), the provider-driven resolver (gh-cli -> gh, else the stored token), so
+ * the token is never baked into this script -- it lives only in the state store. POSIX emits a
+ * `#!/bin/sh` script; Windows emits a `.cmd` that runs the same resolver via PowerShell
+ * (agentLauncherCommand wraps it as `powershell -File ...`).
  */
-function directHelperScript(): string {
-  const { command, args } = agentLauncherCommand(AGENT_AUTH_GET_ARGS);
+function directHelperScript(profile: Profile = null): string {
+  const { command, args } = agentLauncherCommand(agentAuthGetArgs(profile));
   if (WIN) return cmdHelperBody(command, args);
   const line = [command, ...args].map(shQuote).join(" ");
   return `#!/bin/sh\nexec ${line}\n`;
@@ -164,27 +174,38 @@ export function resolveClaudeHome(): string {
   return path.join(homedir(), ".claude");
 }
 
-function settingsPathFor(claudeHome: string): string {
-  return path.join(claudeHome, "settings.json");
+/** The profile's filename suffix: `""` for the default, `-<name>` for a named profile. */
+function profileSuffix(profile: Profile): string {
+  return profile === null ? "" : `-${profile}`;
 }
 
-function directHelperPath(claudeHome: string): string {
-  return path.join(claudeHome, DIRECT_HELPER_NAME);
+/** `settings.json`, or `settings-<name>.json` for a named profile. Launch a named
+ *  profile with `claude --settings <this path>` (the `cl --profile <name>` launcher
+ *  resolves it via `agent profile --settings-for <name>`). */
+export function settingsPathFor(claudeHome: string, profile: Profile = null): string {
+  return path.join(claudeHome, `settings${profileSuffix(profile)}.json`);
 }
 
-function proxyHelperPath(claudeHome: string): string {
-  return path.join(claudeHome, PROXY_HELPER_NAME);
+function directHelperPath(claudeHome: string, profile: Profile = null): string {
+  if (profile === null) return path.join(claudeHome, DIRECT_HELPER_NAME);
+  return path.join(claudeHome, `copilot-token-${profile}.${HELPER_EXT}`);
+}
+
+function proxyHelperPath(claudeHome: string, profile: Profile = null): string {
+  if (profile === null) return path.join(claudeHome, PROXY_HELPER_NAME);
+  return path.join(claudeHome, `copilot-proxy-token-${profile}.${HELPER_EXT}`);
 }
 
 // --- wiring inspection (pure) -----------------------------------------------
 
 /**
- * Inspect raw settings.json content against the managed contract. Pure (no I/O):
- * the caller passes the file text (null = absent) plus the home, from which the
- * two managed helper paths are derived. Mode is keyed off the EXACT apiKeyHelper
- * path so a user's own same-named helper is never mistaken for ours:
- *   - direct: apiKeyHelper === <home>/copilot-token.sh
- *   - proxy:  apiKeyHelper === <home>/copilot-proxy-token.sh
+ * Inspect raw settings content against the managed contract for `profile` (default
+ * profile = settings.json, named = settings-<name>.json). Pure (no I/O): the caller
+ * passes the file text (null = absent) plus the home, from which the two managed
+ * helper paths are derived. Mode is keyed off the EXACT apiKeyHelper path so a
+ * user's own same-named helper is never mistaken for ours:
+ *   - direct: apiKeyHelper === <home>/copilot-token[-<profile>].sh
+ *   - proxy:  apiKeyHelper === <home>/copilot-proxy-token[-<profile>].sh
  *   - other:  a foreign apiKeyHelper, a custom ANTHROPIC_BASE_URL, or malformed
  *             JSON (a config we must not clobber)
  *   - none:   no relevant keys (absent/empty) -- unconfigured; proxy is default
@@ -193,6 +214,7 @@ export function inspectClaudeWiring(
   settingsText: string | null,
   claudeHome: string,
   expectedPort: number,
+  profile: Profile = null,
 ): ClaudeWiringStatus {
   const status: ClaudeWiringStatus = {
     settingsExists: settingsText !== null,
@@ -220,9 +242,9 @@ export function inspectClaudeWiring(
   status.baseUrl = baseUrl;
   status.baseUrlMatches = baseUrl !== null && claudeBaseUrlMatchesProxy(baseUrl, expectedPort);
 
-  if (helperPath === directHelperPath(claudeHome)) {
+  if (helperPath === directHelperPath(claudeHome, profile)) {
     status.providerMode = "direct";
-  } else if (helperPath === proxyHelperPath(claudeHome)) {
+  } else if (helperPath === proxyHelperPath(claudeHome, profile)) {
     status.providerMode = "proxy";
   } else if (helperPath !== null || baseUrl !== null) {
     // A foreign apiKeyHelper or a custom base URL the user set -- not ours.
@@ -279,8 +301,17 @@ function directCustomHeaders(): string {
   return [`Openai-Intent: conversation-edits`, `User-Agent: ${codexUserAgent()}`].join("\n");
 }
 
-/** Set the managed `env` keys in place (preserving any other env vars). */
-function applyManagedEnv(doc: Record<string, unknown>, mode: ManagedAgentMode, baseUrl: string) {
+/** Set the managed `env` keys in place (preserving any other env vars). A NAMED
+ *  profile's settings file is LAYERED over the user's settings.json by `claude
+ *  --settings`, and Claude merges env shallowly -- so where the default proxy write
+ *  can simply delete the direct-only keys, a named proxy profile must explicitly
+ *  BLANK them, or a direct default underneath would bleed its headers through. */
+function applyManagedEnv(
+  doc: Record<string, unknown>,
+  mode: ManagedAgentMode,
+  baseUrl: string,
+  profile: Profile = null,
+) {
   const env = isRecord(doc.env) ? doc.env : {};
   env[BASE_URL_ENV] = baseUrl;
   // Disabling betas and the editor-client headers are direct-only knobs (the proxy
@@ -288,41 +319,82 @@ function applyManagedEnv(doc: Record<string, unknown>, mode: ManagedAgentMode, b
   if (mode === "direct") {
     env[DISABLE_BETAS_ENV] = "1";
     env[CUSTOM_HEADERS_ENV] = directCustomHeaders();
-  } else {
+  } else if (profile === null) {
     delete env[DISABLE_BETAS_ENV];
     delete env[CUSTOM_HEADERS_ENV];
+  } else {
+    env[DISABLE_BETAS_ENV] = "";
+    env[CUSTOM_HEADERS_ENV] = "";
   }
   doc.env = env;
 }
 
 /**
- * Apply the managed Claude wiring at `claudeHome`. Direct writes the apiKeyHelper
- * that execs `agent auth --get` (the single credential resolver) + the Copilot
- * base URL; proxy resolves the local proxy port + token, writes a helper that
- * prints that token, and points the base URL at 127.0.0.1. Either way the merge
+ * Apply the managed Claude wiring at `claudeHome` for `profile` (default =
+ * settings.json; named = settings-<name>.json, launched via `claude --settings`).
+ * Direct writes the apiKeyHelper that execs `agent auth --get [--profile <name>]`
+ * (the credential resolver for the addressed slot) + the Copilot base URL; proxy
+ * resolves the profile's proxy port, writes a helper that runs the shared
+ * proxy-token resolver, and points the base URL at 127.0.0.1. Either way the merge
  * is surgical (only managed keys change) and the OTHER mode's settings are
- * overwritten so switching modes is clean. Throws on an unwritable home /
- * malformed settings.json / unresolvable proxy token.
+ * overwritten so switching modes is clean. A named DIRECT profile requires its own
+ * credential (named profiles never fall back to the default one). Throws on an
+ * unwritable home / malformed settings / unresolvable proxy token.
  */
+/** Options for configureClaudeConfig (mirrors ConfigureCodexConfigOptions). */
+export interface ConfigureClaudeConfigOptions {
+  /** Suppress the "config written" info line (used by the temp-config probe). */
+  quiet?: boolean;
+  /** Wire a NAMED profile's settings-<name>.json instead of the default settings.json. */
+  profile?: Profile;
+}
+
 export function configureClaudeConfig(
   claudeHome: string,
   mode: ManagedAgentMode,
-  quiet = false,
+  options: ConfigureClaudeConfigOptions = {},
 ): void {
+  const quiet = options.quiet ?? false;
+  const profile = options.profile ?? null;
+  // Cheap provider-presence gate (no `gh` spawn -- runClaude already did the full resolve
+  // and fail-fasts on it; this backstops direct API callers like --settings-for).
+  if (
+    profile !== null &&
+    mode === "direct" &&
+    new Credential(undefined, profile).provider() === null
+  ) {
+    throw new Error(
+      `${profileLabel(profile)} has no credential of its own (a named profile never falls back ` +
+        `to the default credential) — run \`agent auth --profile ${profile}\` first.`,
+    );
+  }
   try {
     fs.mkdirSync(claudeHome, { recursive: true });
   } catch (e) {
     throw new Error(`could not create Claude config directory ${claudeHome}: ${errMessage(e)}`);
   }
 
-  const settingsPath = settingsPathFor(claudeHome);
+  const settingsPath = settingsPathFor(claudeHome, profile);
   const doc = loadSettings(settingsPath);
+  // NAMED profiles only: never take over a pre-existing settings-<name>.json wired to
+  // something we don't manage -- a foreign apiKeyHelper OR a custom base URL (the user's
+  // own file that predates the profile). The DEFAULT settings.json keeps its historical
+  // contract: an explicit mode write reclaims even a custom config.
+  if (profile !== null) {
+    const current = inspectClaudeWiring(JSON.stringify(doc), claudeHome, 0, profile);
+    if (current.providerMode === "other") {
+      throw new Error(
+        `${settingsPath} is wired to something copilot-env does not manage; refusing to ` +
+          `overwrite it (pick a different profile name or remove the file first)`,
+      );
+    }
+  }
 
   if (mode === "direct") {
     // The helper execs `agent auth --get`; the token is never baked here.
-    writeHelperScript(directHelperPath(claudeHome), directHelperScript());
-    doc.apiKeyHelper = directHelperPath(claudeHome);
-    applyManagedEnv(doc, "direct", DIRECT_BASE_URL);
+    writeHelperScript(directHelperPath(claudeHome, profile), directHelperScript(profile));
+    doc.apiKeyHelper = directHelperPath(claudeHome, profile);
+    applyManagedEnv(doc, "direct", DIRECT_BASE_URL, profile);
     saveSettings(settingsPath, doc);
     if (!quiet) {
       logger.log(`  ✓ Claude config written → ${settingsPath} (direct: GitHub Copilot)`);
@@ -332,14 +404,16 @@ export function configureClaudeConfig(
 
   // proxy: write a helper that runs the shared proxy-token resolver (ensures the proxy is
   // up per the managed-lifecycle rules, then prints its key). The key is resolved at
-  // helper-run time (not baked in).
-  const port = copilotApiResolvePort();
-  writeHelperScript(proxyHelperPath(claudeHome), proxyHelperScript());
-  doc.apiKeyHelper = proxyHelperPath(claudeHome);
+  // helper-run time (not baked in). A named profile RESERVES its stable port here (this is
+  // a write path; read-only checks peek without recording) so concurrent profile daemons
+  // never share a port.
+  const port = profile === null ? copilotApiResolvePort() : String(reserveProfilePort(profile));
+  writeHelperScript(proxyHelperPath(claudeHome, profile), proxyHelperScript(profile));
+  doc.apiKeyHelper = proxyHelperPath(claudeHome, profile);
   // proxyLoopbackOrigin (no path, no trailing slash -- the shape claudeBaseUrlMatchesProxy
   // expects); env.ts's isLocalProxyUrl accepts it. Host rationale (127.0.0.1, never localhost)
   // on the helper in port.ts.
-  applyManagedEnv(doc, "proxy", proxyLoopbackOrigin(port));
+  applyManagedEnv(doc, "proxy", proxyLoopbackOrigin(port), profile);
   saveSettings(settingsPath, doc);
   if (!quiet) {
     logger.log(`  ✓ Claude config written → ${settingsPath} (proxy mode → port ${port})`);
@@ -348,18 +422,19 @@ export function configureClaudeConfig(
 
 /**
  * The proxy apiKeyHelper body: run the SHARED proxy-token resolver (`src/scripts/proxy-token.sh
- * --yes`, or `.ps1` on Windows via proxyTokenCommand), which (per the managed-lifecycle rules)
- * ensures the proxy is up then prints its key. `--yes` is the headless path (never prompt) --
- * Claude runs this on a timer. The same resolver backs Codex's `auth.command`; the key is
- * resolved at run time (nothing is baked in here). POSIX emits a `#!/bin/sh` script; Windows a
- * `.cmd` that invokes PowerShell against the `.ps1` twin.
+ * --yes [--profile <name>]`, or `.ps1` on Windows via proxyTokenCommand), which (per the
+ * managed-lifecycle rules) ensures the addressed proxy is up then prints its key. `--yes` is
+ * the headless path (never prompt) -- Claude runs this on a timer. The same resolver backs
+ * Codex's `auth.command`; the key is resolved at run time (nothing is baked in here). POSIX
+ * emits a `#!/bin/sh` script; Windows a `.cmd` that invokes PowerShell against the `.ps1` twin.
  */
-function proxyHelperScript(): string {
+function proxyHelperScript(profile: Profile = null): string {
   if (WIN) {
-    const { command, args } = proxyTokenCommand();
+    const { command, args } = proxyTokenCommand(profile);
     return cmdHelperBody(command, args);
   }
-  return `#!/bin/sh\nexec ${shQuote(PROXY_TOKEN_SCRIPT_SH)} --yes\n`;
+  const line = [PROXY_TOKEN_SCRIPT_SH, ...proxyTokenScriptArgs(profile)].map(shQuote).join(" ");
+  return `#!/bin/sh\nexec ${line}\n`;
 }
 
 // --- the `--check` provider report ------------------------------------------
@@ -408,6 +483,22 @@ function checkClaudeConfig(): void {
 }
 
 /**
+ * Remove a NAMED profile's managed Claude artifacts: its helper scripts (ours by
+ * name) and its settings-<name>.json -- the latter only when it is actually OURS
+ * (managed direct/proxy wiring); a foreign same-named file the user owns is left
+ * alone. Used by `agent profile --del`.
+ */
+export function removeClaudeProfile(claudeHome: string, name: string): void {
+  const settingsPath = settingsPathFor(claudeHome, name);
+  const status = inspectClaudeWiring(readTextOrNull(settingsPath), claudeHome, 0, name);
+  if (status.providerMode === "direct" || status.providerMode === "proxy") {
+    fs.rmSync(settingsPath, { force: true });
+  }
+  fs.rmSync(directHelperPath(claudeHome, name), { force: true });
+  fs.rmSync(proxyHelperPath(claudeHome, name), { force: true });
+}
+
+/**
  * Live auto-detect: does GitHub Copilot Direct work for Claude on this machine?
  * Writes a throwaway direct config (settings.json + gh apiKeyHelper) and runs
  * `claude -p` against it (see src/utils/direct_probe.ts). False => write proxy.
@@ -416,7 +507,7 @@ export function detectClaudeDirect(deps?: DirectProbeDeps): boolean {
   return probeDirectWorks(
     CLAUDE_PROBE,
     (tmpHome) => {
-      configureClaudeConfig(tmpHome, "direct", true);
+      configureClaudeConfig(tmpHome, "direct", { quiet: true });
     },
     deps,
   );
@@ -429,7 +520,7 @@ export function detectClaudeDirect(deps?: DirectProbeDeps): boolean {
  * `claude -p` probe, else the proxy). A GitHub token provisioned via `agent auth`
  * (in the shared store) selects Direct without probing when no mode flag is given.
  * `--check` reports the configured mode (exit 0 direct / 2 proxy|none / 1 other)
- * without a probe.
+ * without a probe. (Named profiles are managed by `agent profile`, not here.)
  */
 export function runClaude(args: ClaudeConfigArgs): void {
   assertSingleMode(args);

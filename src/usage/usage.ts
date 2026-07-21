@@ -8,11 +8,12 @@
 
 // biome-ignore lint/correctness/noUnresolvedImports: `bun:sqlite` is a bun runtime built-in (typed via @types/bun), not a resolvable file.
 import { constants, Database } from "bun:sqlite";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { consola } from "consola";
 import { resolveHome } from "../copilot_api/paths.ts";
+import { isValidProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { isDir } from "../utils/fs.ts";
 import { canonicalModelName } from "./pricing.ts";
@@ -53,11 +54,9 @@ export interface UsageReport {
   perDay: Map<string, Map<string, ModelUsage>>;
 }
 
-/**
- * Locate every usage DB under `home`: the legacy top-level file plus one per
- * host directory under `.run/`. Only paths that exist on disk are returned.
- */
-export function discoverUsageDbs(home: string = resolveHome()): string[] {
+/** The usage DBs directly under ONE daemon home: the legacy top-level file plus
+ *  one per host directory under `.run/`. Only paths that exist are returned. */
+function usageDbsUnderHome(home: string): string[] {
   const paths: string[] = [];
 
   const legacy = join(home, DB_FILENAME);
@@ -80,6 +79,47 @@ export function discoverUsageDbs(home: string = resolveHome()): string[] {
   }
 
   return paths;
+}
+
+/**
+ * Locate every usage DB under `home`: the root daemon home's DBs (legacy
+ * top-level file plus one per host directory under `.run/`) AND every named
+ * profile daemon's isolated home under `<home>/profiles/<name>` -- each profile
+ * proxy records its own traffic in its own DB, and the cost report covers all
+ * of them. Only valid profile names are swept (a stray hand-made folder is not
+ * a daemon home), and the result is realpath-deduped so a symlinked alias can
+ * never double-count a DB. Only paths that exist on disk are returned.
+ */
+export function discoverUsageDbs(home: string = resolveHome()): string[] {
+  const paths = usageDbsUnderHome(home);
+
+  const profilesDir = join(home, "profiles");
+  let profiles: string[] = [];
+  try {
+    profiles = readdirSync(profilesDir);
+  } catch {
+    profiles = []; // no profiles dir yet
+  }
+  for (const profile of profiles.sort()) {
+    if (!isValidProfileName(profile)) continue;
+    const profileHome = join(profilesDir, profile);
+    if (isDir(profileHome)) {
+      paths.push(...usageDbsUnderHome(profileHome));
+    }
+  }
+
+  const seen = new Set<string>();
+  return paths.filter((path) => {
+    let canonical = path;
+    try {
+      canonical = realpathSync(path);
+    } catch {
+      // unresolvable path: fall back to the literal spelling
+    }
+    if (seen.has(canonical)) return false;
+    seen.add(canonical);
+    return true;
+  });
 }
 
 /**

@@ -1,51 +1,73 @@
-const { createHash } = require("node:crypto");
-const { mkdtempSync, readFileSync, writeFileSync } = require("node:fs");
-const { tmpdir } = require("node:os");
-const { join } = require("node:path");
-const { spawnSync } = require("node:child_process");
+// Download a published release's installer asset, verify its GitHub-reported
+// SHA256 digest, run it against a temp install dir, and confirm the installed
+// launcher. The post-release counterpart of release-pr-smoke.ts.
+// Run by release-please.yml: bun .github/scripts/release-installer-smoke.ts <vX.Y.Z> <owner/repo>
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const isWindows = process.platform === "win32";
 
-function usage() {
-  console.error("usage: release-installer-smoke.cjs <vX.Y.Z> <owner/repo>");
+interface ReleaseAsset {
+  name?: string;
+  url?: string;
+  browser_download_url?: string;
+  digest?: string;
+}
+
+interface Release {
+  tag_name?: string;
+  draft?: boolean;
+  assets?: ReleaseAsset[];
+}
+
+function usage(): never {
+  console.error("usage: release-installer-smoke.ts <vX.Y.Z> <owner/repo>");
   process.exit(2);
 }
 
-function authHeaders(extra = {}) {
-  const headers = { "User-Agent": "copilot-env" };
+function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const headers: Record<string, string> = { "User-Agent": "copilot-env" };
   const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
   if (token) headers.Authorization = `Bearer ${token}`;
   return { ...headers, ...extra };
 }
 
-async function download(url, path, headers = authHeaders()) {
+async function download(
+  url: string,
+  path: string,
+  headers: Record<string, string> = authHeaders(),
+): Promise<void> {
   const res = await fetch(url, { headers });
   if (!res.ok) throw new Error(`failed to download ${url} (HTTP ${res.status})`);
   writeFileSync(path, new Uint8Array(await res.arrayBuffer()));
 }
 
-function sha256File(path) {
+function sha256File(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-function normalizeDigest(value) {
+function normalizeDigest(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const match = value.match(/^sha256:([0-9a-f]{64})$/i);
-  return match ? match[1].toLowerCase() : null;
+  const digest = match?.[1];
+  return digest !== undefined ? digest.toLowerCase() : null;
 }
 
-function verifyDigest(file, expected) {
+function verifyDigest(file: string, expected: string): void {
   const actual = sha256File(file);
   if (actual !== expected) {
     throw new Error(`${file}: SHA256 mismatch: expected ${expected}, got ${actual}`);
   }
 }
 
-function sleep(ms) {
+function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function runCommand(command, args) {
+function runCommand(command: string, args: string[]): void {
   const result = spawnSync(command, args, { stdio: "inherit" });
   if (result.error) throw result.error;
   if (result.status !== 0) {
@@ -53,10 +75,10 @@ function runCommand(command, args) {
   }
 }
 
-async function fetchJson(url) {
+async function fetchJson(url: string): Promise<unknown> {
   const res = await fetch(url, {
     headers: authHeaders({
-      Accept: "application/vnd.github+json",
+      "Accept": "application/vnd.github+json",
       "X-GitHub-Api-Version": "2026-03-10",
     }),
   });
@@ -64,24 +86,30 @@ async function fetchJson(url) {
   return res.json();
 }
 
-async function fetchRelease(tag, repository) {
+async function fetchRelease(tag: string, repository: string): Promise<Release | null> {
   const byTag = await fetchJson(`https://api.github.com/repos/${repository}/releases/tags/${tag}`);
-  if (byTag) return byTag;
+  if (byTag) return byTag as Release;
 
-  const releases = await fetchJson(`https://api.github.com/repos/${repository}/releases?per_page=100`);
+  const releases = await fetchJson(
+    `https://api.github.com/repos/${repository}/releases?per_page=100`,
+  );
   if (Array.isArray(releases)) {
-    return releases.find((release) => release?.tag_name === tag) ?? null;
+    return (releases as Release[]).find((release) => release?.tag_name === tag) ?? null;
   }
   return null;
 }
 
-function releaseAsset(release, name) {
-  return Array.isArray(release?.assets)
+function releaseAsset(release: Release, name: string): ReleaseAsset | null {
+  return Array.isArray(release.assets)
     ? (release.assets.find((item) => item?.name === name) ?? null)
     : null;
 }
 
-async function fetchReleaseWithDigests(tag, repository, assetNames) {
+async function fetchReleaseWithDigests(
+  tag: string,
+  repository: string,
+  assetNames: string[],
+): Promise<Release> {
   let lastMissing = assetNames;
   for (let attempt = 1; attempt <= 12; attempt++) {
     const release = await fetchRelease(tag, repository);
@@ -101,7 +129,12 @@ async function fetchReleaseWithDigests(tag, repository, assetNames) {
   throw new Error(`release ${tag} assets have no SHA256 digest: ${lastMissing.join(", ")}`);
 }
 
-async function downloadReleaseAsset(tag, repository, dir, scriptName) {
+async function downloadReleaseAsset(
+  tag: string,
+  repository: string,
+  dir: string,
+  scriptName: string,
+): Promise<string> {
   const release = await fetchReleaseWithDigests(tag, repository, [
     scriptName,
     `copilot-env-${tag}.tar.gz`,
@@ -120,12 +153,12 @@ async function downloadReleaseAsset(tag, repository, dir, scriptName) {
 
   const installer = join(dir, scriptName);
   const headers =
-    assetUrl === asset.url ? authHeaders({ Accept: "application/octet-stream" }) : authHeaders();
+    assetUrl === asset.url ? authHeaders({ "Accept": "application/octet-stream" }) : authHeaders();
   await download(assetUrl, installer, headers);
   return digest;
 }
 
-async function main(tag, repository) {
+async function main(tag: string, repository: string): Promise<void> {
   const tmp = mkdtempSync(join(tmpdir(), "copilot-env-release-smoke-"));
   const scriptName = isWindows ? "install.ps1" : "install.sh";
   const installer = join(tmp, scriptName);
@@ -153,18 +186,13 @@ async function main(tag, repository) {
   }
 }
 
-async function runMain() {
+async function runMain(): Promise<void> {
   const [tag, repository] = process.argv.slice(2);
   if (!tag || !repository) usage();
   await main(tag, repository);
 }
 
-try {
-  runMain().catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exit(1);
-  });
-} catch (error) {
+runMain().catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
-}
+});

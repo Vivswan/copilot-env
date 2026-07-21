@@ -11,7 +11,8 @@ import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
-import { copilotApiResolvePort, openaiBaseUrl } from "../copilot_api/port.ts";
+import { copilotApiResolvePort, openaiBaseUrl, reserveProfilePort } from "../copilot_api/port.ts";
+import { assertProfileName, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import {
   assertSingleMode,
@@ -28,7 +29,12 @@ import {
   type ManagedAgentMode,
   providerModeExitCode,
 } from "../utils/provider_mode.ts";
-import { AGENT_AUTH_GET_ARGS, agentLauncherCommand, proxyTokenCommand } from "../utils/root.ts";
+import {
+  AGENT_AUTH_GET_ARGS,
+  agentAuthGetArgs,
+  agentLauncherCommand,
+  proxyTokenCommand,
+} from "../utils/root.ts";
 import {
   type CodexCatalogDeps,
   generateCodexModelCatalog,
@@ -48,6 +54,14 @@ const logger = createStderrLogger();
 export const CODEX_PROVIDER_ID = "copilot-env";
 export const CODEX_ENV_KEY = "OPENAI_API_KEY";
 const DIRECT_BASE_URL = "https://api.githubcopilot.com";
+
+/** The managed provider id for `profile`: the unsuffixed `copilot-env` contract for the
+ *  default, `copilot-env-<name>` for a named profile. A named profile is selected via
+ *  Codex's NATIVE `[profiles.<name>]` table (`codex --profile <name>`), whose
+ *  `model_provider` points here -- the top-level default selection is never touched. */
+export function codexProviderId(profile: Profile = null): string {
+  return profile === null ? CODEX_PROVIDER_ID : `${CODEX_PROVIDER_ID}-${profile}`;
+}
 // Legacy: an older copilot-env baked the Direct bearer into this .env key. Direct
 // mode no longer bakes a token (it resolves at runtime via `agent auth --get`), so
 // this name now exists ONLY so configureCodexConfig can scrub a token left at rest
@@ -67,6 +81,8 @@ interface ConfigureCodexConfigOptions {
   codexExecVersion?: string | null;
   /** Suppress the "config written" info line (used by the temp-config probe). */
   quiet?: boolean;
+  /** Wire a NAMED profile's tables instead of the default selection. */
+  profile?: Profile;
 }
 
 interface ProxyConfigOptions {
@@ -111,15 +127,15 @@ function isManagedProviderMode(mode: AgentProviderMode): mode is ManagedAgentMod
 }
 
 // The managed direct (GitHub Copilot) provider table. The bearer is fetched via
-// `auth.command` -> `agent auth --get` (provider-driven: gh-cli -> `gh auth token`,
-// copilot/gh-token -> the stored token), so the token is never baked into the config.
-// Codex re-runs the command on `refresh_interval_ms`, so it always tracks the
+// `auth.command` -> `agent auth --get [--profile <name>]` (provider-driven: gh-cli ->
+// `gh auth token`, copilot/gh-token -> the stored token), so the token is never baked into
+// the config. Codex re-runs the command on `refresh_interval_ms`, so it always tracks the
 // current credential. Re-applied on every direct-mode run (managed keys win; any
 // user-added key in the same table is preserved by the merge).
-function managedDirectProvider(codexExecVersion?: string | null) {
-  const { command, args } = agentLauncherCommand(AGENT_AUTH_GET_ARGS);
+function managedDirectProvider(codexExecVersion?: string | null, profile: Profile = null) {
+  const { command, args } = agentLauncherCommand(agentAuthGetArgs(profile));
   return {
-    "name": CODEX_PROVIDER_ID,
+    "name": codexProviderId(profile),
     "base_url": DIRECT_BASE_URL,
     "wire_api": "responses",
     "supports_websockets": false,
@@ -152,10 +168,10 @@ function managedDirectProvider(codexExecVersion?: string | null) {
 // lifecycle is on, the `auto-start` config key) and then prints the proxy key. `--yes` is the
 // headless path (never prompt). Codex forbids `auth` together with `env_key` on one
 // provider, so proxy (like direct) resolves its key via the command, not an env var.
-function managedProxyProvider(baseUrl: string) {
-  const auth = proxyTokenCommand();
+function managedProxyProvider(baseUrl: string, profile: Profile = null) {
+  const auth = proxyTokenCommand(profile);
   return {
-    "name": CODEX_PROVIDER_ID,
+    "name": codexProviderId(profile),
     "base_url": baseUrl,
     "wire_api": "responses",
     "requires_openai_auth": false,
@@ -177,10 +193,11 @@ function managedProviderForMode(
   mode: ManagedAgentMode,
   proxyOptions: ProxyConfigOptions | null,
   codexExecVersion?: string | null,
+  profile: Profile = null,
 ) {
-  if (mode === "direct") return managedDirectProvider(codexExecVersion);
+  if (mode === "direct") return managedDirectProvider(codexExecVersion, profile);
   if (proxyOptions === null) throw new Error("proxy options are required for proxy mode");
-  return managedProxyProvider(proxyOptions.baseUrl);
+  return managedProxyProvider(proxyOptions.baseUrl, profile);
 }
 
 // Every key either managed provider table sets, plus the legacy `env_key`
@@ -264,19 +281,29 @@ export interface CodexWiringStatus {
 }
 
 /**
+ * True when `baseUrl` is an http loopback URL whose path is `/v1` (the shape the managed
+ * proxy contract writes via openaiBaseUrl), regardless of port. The strict per-port match
+ * below layers the expected-port equality on top.
+ */
+function isLoopbackV1BaseUrl(baseUrl: string): { matches: boolean; port: string } {
+  try {
+    const u = new URL(baseUrl);
+    const isLocal = u.hostname === "localhost" || u.hostname === "127.0.0.1";
+    const path = u.pathname.replace(/\/$/, ""); // tolerate a trailing slash
+    return { matches: u.protocol === "http:" && isLocal && path === "/v1", port: u.port };
+  } catch {
+    return { matches: false, port: "" };
+  }
+}
+
+/**
  * True when `baseUrl` matches the managed proxy contract: an http localhost
  * URL on `expectedPort` whose path is `/v1` (what configureCodexConfig writes via
  * openaiBaseUrl). A bare host, https, or a non-/v1 path is NOT a match.
  */
 function baseUrlMatchesProxy(baseUrl: string, expectedPort: number): boolean {
-  try {
-    const u = new URL(baseUrl);
-    const isLocal = u.hostname === "localhost" || u.hostname === "127.0.0.1";
-    const path = u.pathname.replace(/\/$/, ""); // tolerate a trailing slash
-    return u.protocol === "http:" && isLocal && u.port === String(expectedPort) && path === "/v1";
-  } catch {
-    return false;
-  }
+  const { matches, port } = isLoopbackV1BaseUrl(baseUrl);
+  return matches && port === String(expectedPort);
 }
 
 /**
@@ -440,7 +467,13 @@ function validateProxyOptions(options: ConfigureCodexConfigOptions): ProxyConfig
  * Write the managed `config.toml` at `codexHome` for the given (already-resolved)
  * `mode`, and scrub the legacy baked `COPILOT_ENV_GH_TOKEN` from `.env`. Neither
  * mode bakes a credential -- both resolve it at fetch time via `auth.command`.
- * Returns 0 on success. Exported for unit testing.
+ *
+ * DEFAULT profile: selects `copilot-env` via the top-level `model_provider` and owns the
+ * top-level managed keys (web_search, catalog reference). NAMED profile
+ * (`options.profile`): writes ONLY `[model_providers.copilot-env-<name>]` plus the native
+ * `[profiles.<name>]` selector -- the top-level default selection is never touched, so
+ * `codex --profile <name>` and plain `codex` coexist. Returns 0 on success. Exported for
+ * unit testing.
  */
 export function configureCodexConfig(
   codexHome: string | null | undefined,
@@ -448,6 +481,8 @@ export function configureCodexConfig(
   options: ConfigureCodexConfigOptions = {},
 ): number {
   codexHome = codexHome || defaultCodexHome();
+  const profile = options.profile ?? null;
+  const providerId = codexProviderId(profile);
   const proxyOptions = mode === "proxy" ? validateProxyOptions(options) : null;
   if (mode === "proxy" && proxyOptions === null) return 1;
 
@@ -460,6 +495,16 @@ export function configureCodexConfig(
 
   const hostConfig = path.join(codexHome, "config.toml");
 
+  // "Had content" (not just "existed"): loadOrCreateConfig also seeds the default
+  // template for an EMPTY/whitespace file, and the template's `model_provider` must not
+  // survive a named-profile write that never creates the unsuffixed table.
+  const configHadContent = (() => {
+    try {
+      return fs.readFileSync(hostConfig, "utf8").trim() !== "";
+    } catch {
+      return false;
+    }
+  })();
   const doc = loadOrCreateConfig(hostConfig);
 
   // Enforce our managed contract on every run: select the requested provider
@@ -467,9 +512,17 @@ export function configureCodexConfig(
   // overwriting a stale value (e.g. an old env_key) and filling any managed key
   // the file lacks. Spreading `existing` first preserves user-added keys in the
   // same table; other providers, the [analytics]/[feedback] sections, and any
-  // unknown top-level keys are left untouched.
-  doc.model_provider = CODEX_PROVIDER_ID;
-  doc.web_search = "live";
+  // unknown top-level keys are left untouched. The top-level managed keys are the
+  // DEFAULT selection's alone -- a named-profile write leaves them be.
+  if (profile === null) {
+    doc.model_provider = CODEX_PROVIDER_ID;
+    doc.web_search = "live";
+  } else if (!configHadContent) {
+    // A named-profile write that had to seed a fresh config must not leave the
+    // template's default `model_provider` pointing at a `copilot-env` table this
+    // write never creates -- an unknown provider reference is a Codex startup error.
+    delete doc.model_provider;
+  }
   if (mode === "proxy") {
     // The proxy listens on loopback (127.0.0.1). Codex's native sandbox blocks loopback +
     // outbound for its sandboxed subprocesses (including the auth.command) in "offline" mode, so
@@ -493,31 +546,48 @@ export function configureCodexConfig(
   // (generation never truncates), so a referenced file stays usable. Disabled
   // means an unconditional delete (even of a user-pinned custom path): the
   // full managed write owns this key wholesale, and the managed contract when
-  // the feature is off is "no catalog key".
-  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-  if (new CopilotEnvConfig().codexModelCatalogEnabled() && isCatalogFileUsable(catalogFile)) {
-    doc.model_catalog_json = catalogFile;
-  } else {
-    delete doc.model_catalog_json;
+  // the feature is off is "no catalog key". (Account-wide, so the DEFAULT
+  // selection's write owns it; named-profile writes leave it alone.)
+  if (profile === null) {
+    const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+    if (new CopilotEnvConfig().codexModelCatalogEnabled() && isCatalogFileUsable(catalogFile)) {
+      doc.model_catalog_json = catalogFile;
+    } else {
+      delete doc.model_catalog_json;
+    }
   }
 
   const providers = isRecord(doc.model_providers) ? doc.model_providers : {};
-  const existing = isRecord(providers[CODEX_PROVIDER_ID]) ? providers[CODEX_PROVIDER_ID] : {};
-  // Both modes share ONE `copilot-env` table: strip every managed key from the
+  const existing = isRecord(providers[providerId]) ? providers[providerId] : {};
+  // Both modes share ONE table per profile: strip every managed key from the
   // existing table BEFORE spreading, so toggling modes can never bleed the
   // OTHER mode's keys. User-added keys survive; managed keys are re-derived
   // from the factories each run.
   const userKeys = Object.fromEntries(
     Object.entries(existing).filter(([key]) => !MANAGED_PROVIDER_KEYS.has(key)),
   );
-  providers[CODEX_PROVIDER_ID] = {
+  providers[providerId] = {
     ...userKeys,
-    ...managedProviderForMode(mode, proxyOptions, options.codexExecVersion),
+    ...managedProviderForMode(mode, proxyOptions, options.codexExecVersion, profile),
   };
   doc.model_providers = providers;
 
+  if (profile !== null) {
+    // The native profile selector: `codex --profile <name>` flips ONLY the provider;
+    // user keys in the same [profiles.<name>] table (model pins etc.) survive.
+    const profilesTable = isRecord(doc.profiles) ? doc.profiles : {};
+    const existingProfile = isRecord(profilesTable[profile]) ? profilesTable[profile] : {};
+    profilesTable[profile] = { ...existingProfile, "model_provider": providerId };
+    doc.profiles = profilesTable;
+  }
+
   fs.writeFileSync(hostConfig, stringify(doc));
-  if (!options.quiet) logger.log(`  ✓ Codex config written → ${hostConfig}`);
+  if (!options.quiet) {
+    logger.log(
+      `  ✓ Codex config written → ${hostConfig}` +
+        `${profile === null ? "" : ` (${profileLabel(profile)}; launch with \`codex --profile ${profile}\`)`}`,
+    );
+  }
 
   // Scrub only the copilot-env-OWNED legacy key: a `COPILOT_ENV_GH_TOKEN` baked by a
   // still-older direct-token release. We deliberately do NOT scrub OPENAI_API_KEY: its name
@@ -532,27 +602,32 @@ export function configureCodexConfig(
 
 /**
  * Resolve baseUrl/apiKey from the local proxy and write the Codex config at
- * `codexHome`. Pure config write -- the caller persists CODEX_HOME to state.
- * Shared by `runCodexConfig` and codex_host's `runCodexHost`. Direct mode fetches
- * the bearer at runtime via `agent auth --get`; nothing is baked into the config.
+ * `codexHome` for `profile` (null = the default selection). Pure config write -- the
+ * caller persists CODEX_HOME to state. Shared by `runCodexConfig` and codex_host's
+ * `runCodexHost`. Direct mode fetches the bearer at runtime via `agent auth --get`;
+ * nothing is baked into the config.
  */
 export async function applyCodexConfig(
   codexHome: string,
   mode: ManagedAgentMode,
   catalogDeps?: CodexCatalogDeps,
+  profile: Profile = null,
 ): Promise<void> {
-  let options: ConfigureCodexConfigOptions = {};
+  let options: ConfigureCodexConfigOptions = { profile };
 
   if (mode === "proxy") {
     // The key is resolved at request time by the `auth.command` (the shared proxy-token
-    // script), so we only need the local proxy base URL here.
-    options = { baseUrl: openaiBaseUrl(copilotApiResolvePort()) };
+    // script), so we only need the local proxy base URL here -- reserving the addressed
+    // profile's stable port (this is a write path; read-only checks peek without recording).
+    const port = profile === null ? copilotApiResolvePort() : String(reserveProfilePort(profile));
+    options = { profile, baseUrl: openaiBaseUrl(port) };
   }
 
   // Seed the patched model catalog (best-effort, unthrottled) BEFORE the config
   // write, so the very first wiring can already reference the file. The auth-time
-  // refresh (src/commands/auth.ts) keeps it fresh afterwards.
-  await generateCodexModelCatalog(mode, catalogDeps);
+  // refresh (src/commands/auth.ts) keeps it fresh afterwards. Account-wide, keyed
+  // to the default credential -- named-profile writes never touch it.
+  if (profile === null) await generateCodexModelCatalog(mode, catalogDeps);
 
   if (configureCodexConfig(codexHome, mode, options) !== 0) {
     throw new Error(
@@ -563,7 +638,7 @@ export async function applyCodexConfig(
   // When the catalog is disabled the write above only stripped the key in THIS
   // home; the sync also deletes the generated file and clears the throttle
   // state, so a wiring pass finishes the opt-out immediately.
-  syncCodexCatalogReference();
+  if (profile === null) syncCodexCatalogReference();
 }
 
 /**
@@ -793,6 +868,42 @@ function checkCodexConfig(): void {
 }
 
 /**
+ * Remove the managed artifacts of a NAMED profile from `codexHome`'s config.toml:
+ * the `[model_providers.copilot-env-<name>]` table (ours by name) and the
+ * `[profiles.<name>]` selector -- the latter only when it still points at our
+ * provider id (a user-repointed selector is no longer ours to delete). No-op when
+ * the config is absent; a present-but-unparseable file throws (never blind-write).
+ * Used by `agent profile --del`.
+ */
+export function removeCodexProfile(codexHome: string, name: string): void {
+  assertProfileName(name);
+  const configPath = path.join(codexHome, "config.toml");
+  let doc: Record<string, unknown>;
+  try {
+    doc = parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+  } catch (e) {
+    if ((e as { code?: string }).code === "ENOENT") return;
+    throw new Error(`${configPath} is not readable/valid TOML: ${errMessage(e)}`);
+  }
+  const providerId = codexProviderId(name);
+  let changed = false;
+  const providers = isRecord(doc.model_providers) ? doc.model_providers : {};
+  if (providers[providerId] !== undefined) {
+    delete providers[providerId];
+    changed = true;
+    if (Object.keys(providers).length === 0) delete doc.model_providers;
+  }
+  const profiles = isRecord(doc.profiles) ? doc.profiles : {};
+  const selector = profiles[name];
+  if (isRecord(selector) && selector.model_provider === providerId) {
+    delete profiles[name];
+    changed = true;
+    if (Object.keys(profiles).length === 0) delete doc.profiles;
+  }
+  if (changed) fs.writeFileSync(configPath, stringify(doc));
+}
+
+/**
  * Live auto-detect: does GitHub Copilot Direct work for Codex on this machine?
  * Writes a throwaway direct config and runs `codex exec --sandbox read-only`
  * against it (see src/utils/direct_probe.ts). False => the caller writes proxy.
@@ -817,7 +928,7 @@ export function detectCodexDirect(deps?: DirectProbeDeps): boolean {
  *
  * A GitHub token provisioned via `agent auth` (in the shared store) is used as the
  * Direct credential automatically; with no mode flag, its presence selects Direct
- * without probing.
+ * without probing. (Named profiles are managed by `agent profile`, not here.)
  */
 export async function runCodex(
   args: CodexConfigArgs,

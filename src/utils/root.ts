@@ -2,6 +2,7 @@
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Profile } from "../copilot_api/profile.ts";
 
 /**
  * Walk up from this module's own directory to the nearest ancestor holding a
@@ -36,25 +37,47 @@ const AGENT_LAUNCHER_PS1: string = join(PROJECT_ROOT, "bin", "agent.ps1");
  */
 export const AGENT_AUTH_GET_ARGS: readonly string[] = ["auth", "--get"];
 
+/** `AGENT_AUTH_GET_ARGS` addressed at `profile` (null = the default credential). */
+export function agentAuthGetArgs(profile: Profile = null): string[] {
+  return profile === null
+    ? [...AGENT_AUTH_GET_ARGS]
+    : [...AGENT_AUTH_GET_ARGS, "--profile", profile];
+}
+
 /** The shared proxy-token scripts (ensure the proxy + print its key); .ps1 is the
  *  Windows parity. Referenced by Codex's `auth.command` and Claude's `apiKeyHelper`. */
 export const PROXY_TOKEN_SCRIPT_SH: string = join(PROJECT_ROOT, "src", "scripts", "proxy-token.sh");
 const PROXY_TOKEN_SCRIPT_PS1: string = join(PROJECT_ROOT, "src", "scripts", "proxy-token.ps1");
+
+/** The proxy-token script arguments for the HEADLESS path at `profile`:
+ *  `--yes` (never prompt), plus the profile selector when named. */
+export function proxyTokenScriptArgs(profile: Profile = null): string[] {
+  return profile === null ? ["--yes"] : ["--yes", "--profile", profile];
+}
 
 /**
  * The platform `{ command, args }` to run the shared proxy-token script as a NATIVE
  * subprocess (Codex's `auth.command`): `/bin/sh <script>.sh --yes` on POSIX,
  * `powershell -File <script>.ps1 --yes` on Windows. `--yes` selects the headless path
  * (never prompt) -- Codex/Claude run this on a timer and can't answer a prompt.
+ * `profile` routes the resolver at that profile's daemon.
  */
-export function proxyTokenCommand(): { command: string; args: string[] } {
+export function proxyTokenCommand(profile: Profile = null): { command: string; args: string[] } {
+  const scriptArgs = proxyTokenScriptArgs(profile);
   if (process.platform === "win32") {
     return {
       command: "powershell",
-      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", PROXY_TOKEN_SCRIPT_PS1, "--yes"],
+      args: [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        PROXY_TOKEN_SCRIPT_PS1,
+        ...scriptArgs,
+      ],
     };
   }
-  return { command: "/bin/sh", args: [PROXY_TOKEN_SCRIPT_SH, "--yes"] };
+  return { command: "/bin/sh", args: [PROXY_TOKEN_SCRIPT_SH, ...scriptArgs] };
 }
 
 /**

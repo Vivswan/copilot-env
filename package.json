@@ -11,11 +11,11 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test --timeout 15000",
-    "lint": "biome check src bin test scripts",
+    "lint": "biome check src bin test scripts .github/scripts",
     "lint:sh": "bash scripts/lint-sh.sh",
     "lint:ps": "bash scripts/lint-ps.sh",
-    "format": "biome format --write src bin test scripts",
-    "check": "biome check --write src bin test scripts",
+    "format": "biome format --write src bin test scripts .github/scripts",
+    "check": "biome check --write src bin test scripts .github/scripts",
     "postinstall": "bun src/proxy_float.ts",
     "prepare": "husky"
   },
@@ -54,6 +54,7 @@
     "src/**/*.ts": "biome check --write --no-errors-on-unmatched",
     "test/**/*.ts": "biome check --write --no-errors-on-unmatched",
     "scripts/**/*.ts": "biome check --write --no-errors-on-unmatched",
+    ".github/scripts/**/*.ts": "biome check --write --no-errors-on-unmatched",
     "bin/**/*": "biome check --write --no-errors-on-unmatched",
     "biome.json": "biome check --write --no-errors-on-unmatched"
   }

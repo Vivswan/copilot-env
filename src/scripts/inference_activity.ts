@@ -22,6 +22,7 @@
 import { rmSync } from "node:fs";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
+import type { Profile } from "../copilot_api/profile.ts";
 
 /** Persist the in-memory mark into the activity file at most this often (the file is for
  *  out-of-process readers like `agent health`; the watchdog reads memory directly). */
@@ -94,12 +95,13 @@ export function persistedInferenceMs(): number {
   }
 }
 
-/** Best-effort removal of the persisted mark; `agent stop` calls this so a stopped daemon
- *  does not read as recently active. The idle auto-stop deliberately does NOT (the file
- *  cannot be pid-guarded, so an old daemon exiting could clobber its successor's mark). */
-export function clearPersistedInferenceActivity(): void {
+/** Best-effort removal of the persisted mark; `agent stop` calls this (per daemon, so with
+ *  the profile whose daemon it stopped) so a stopped daemon does not read as recently
+ *  active. The idle auto-stop deliberately does NOT (the file cannot be pid-guarded, so an
+ *  old daemon exiting could clobber its successor's mark). */
+export function clearPersistedInferenceActivity(profile: Profile = null): void {
   try {
-    rmSync(new CopilotApiPaths().activityFile, { force: true });
+    rmSync(new CopilotApiPaths(profile).activityFile, { force: true });
   } catch {
     // best-effort: a stale mark only staleness-skews the health display
   }

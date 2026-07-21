@@ -57,6 +57,7 @@ import {
 } from "./claude/config.ts";
 import { effectiveCodexHome, inspectCodexWiring } from "./codex/config.ts";
 import { CopilotEnvConfig, type CopilotEnvConfigData } from "./copilot_api/env_config.ts";
+import { profileHomeNames } from "./copilot_api/paths.ts";
 import { copilotApiResolvePort } from "./copilot_api/port.ts";
 import {
   assertProxyConfigBounds,
@@ -571,7 +572,8 @@ function readTextOrNull(filePath: string): string | null {
 
 /**
  * True when BOTH Codex and Claude are wired Direct (GitHub Copilot, no local
- * proxy), so floating the unused proxy would be wasted network/install work.
+ * proxy) AND no named profile uses the proxy, so floating the unused proxy would
+ * be wasted network/install work.
  * Best-effort: any read/parse failure counts as "not direct-only" so the float
  * still runs whenever the wiring is uncertain ("none"/"other"/"proxy" all float).
  * The homes are injectable for tests; the defaults match the effective-home
@@ -579,6 +581,10 @@ function readTextOrNull(filePath: string): string | null {
  */
 export function bothAgentsWiredDirect(codexHome?: string, claudeHome?: string): boolean {
   try {
+    // A named profile's daemon home is created only by PROXY wiring or `agent start
+    // --profile` (direct profiles never make one), so any profile home means a local
+    // proxy is in use regardless of how the DEFAULT selections are wired.
+    if (profileHomeNames().length > 0) return false;
     const expectedPort = Number(copilotApiResolvePort());
     const codexMode = inspectCodexWiring(
       readTextOrNull(join(codexHome ?? effectiveCodexHome(), "config.toml")),

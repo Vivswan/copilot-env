@@ -56,7 +56,7 @@ jobs:
           bun-version: 1.3.14
 
       - name: Run install.ps1 ${{ inputs.args }}
-        run: node .github/scripts/installer-smoke.cjs run-install
+        run: bun .github/scripts/installer-smoke.ts run-install
         env:
           INSTALLER_ARGS: ${{ inputs.args }}
           RERUN: ${{ inputs.rerun }}
@@ -66,7 +66,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Assert installer did not install optional CLIs
-        run: node .github/scripts/installer-smoke.cjs assert-no-optional-clis
+        run: bun .github/scripts/installer-smoke.ts assert-no-optional-clis
         env:
           INSTALLER_ARGS: ${{ inputs.args }}
 
@@ -81,7 +81,7 @@ jobs:
         run: ./bin/agent.ps1 shell --launchers
 
       - name: Verify install.ps1 outcome
-        run: node .github/scripts/installer-smoke.cjs verify-outcome
+        run: bun .github/scripts/installer-smoke.ts verify-outcome
         env:
           INSTALLER_ARGS: ${{ inputs.args }}
           EXPECT_CLIS: ${{ inputs.expect-clis }}

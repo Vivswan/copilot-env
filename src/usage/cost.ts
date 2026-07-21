@@ -127,7 +127,9 @@ export async function runCost(args: {
   }
 
   console.log(SOURCES_NOTE);
-  console.log();
+  // Blank separators are console.log("") throughout this file: bun's NO-ARG
+  // console.log() prints nothing at all (node would print a newline).
+  console.log("");
 }
 
 /** Shared per-call context for the two report layouts. */
@@ -166,7 +168,7 @@ function printSeparateReports(
       printPerDayReport(proxy.report, opts.pricing, proxy.estimate, "Per-day breakdown (proxy)");
     }
   } else {
-    console.log();
+    console.log("");
     console.log("No proxy usage databases found; skipping the proxy section.");
   }
 
@@ -583,7 +585,7 @@ function printCostReport(
     f.cost,
   ]);
 
-  console.log();
+  console.log("");
   const coverage = activeDayCoverage(report);
   const activeDaysLabel =
     activeDays > 0
@@ -592,7 +594,7 @@ function printCostReport(
   console.log(
     `${opts.title} - ${period} | ${opts.sourceLabel} | ${sum.reqs} requests | ${activeDaysLabel}`,
   );
-  console.log();
+  console.log("");
   printTable(
     ["Model", "Requests", "Input", "Output", "Cache Read", "Cache Write", "Total", "Cost"],
     ["left", "right", "right", "right", "right", "right", "right", "right"],
@@ -600,10 +602,10 @@ function printCostReport(
     footer,
   );
   if (estimate.unpriced.length > 0) {
-    console.log();
+    console.log("");
     console.log(`  Unpriced (excluded from total): ${estimate.unpriced.join(", ")}`);
   }
-  console.log();
+  console.log("");
 }
 
 /**
@@ -692,14 +694,14 @@ function printPerDayReport(
   const footer = [row(last)];
 
   console.log(title);
-  console.log();
+  console.log("");
   printTable(
     ["Day", "Requests", "Input", "Output", "Cache Read", "Cache Write", "Total", "Cost"],
     ["left", "right", "right", "right", "right", "right", "right", "right"],
     body,
     footer,
   );
-  console.log();
+  console.log("");
 }
 
 /** Build one source's usage/cost JSON block (shared by the proxy and each provider). */

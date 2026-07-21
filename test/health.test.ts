@@ -738,7 +738,12 @@ test("direct + stored token reports ok with gh absent (no gh requirement)", () =
 // --- auth (credential) check ------------------------------------------------
 
 test("checkAuth: a stored token reports ok", () => {
-  const res = checkAuth({ storedToken: true, ghAuthenticated: false, provider: "gh-token" });
+  const res = checkAuth({
+    storedToken: true,
+    ghAuthenticated: false,
+    provider: "gh-token",
+    profiles: {},
+  });
   expect(res.group).toBe("auth");
   expect(res.status).toBe("ok");
   expect(res.detail).toContain("stored GitHub token");
@@ -747,13 +752,23 @@ test("checkAuth: a stored token reports ok", () => {
 });
 
 test("checkAuth: no stored token but gh authed reports ok (falls back to gh)", () => {
-  const res = checkAuth({ storedToken: false, ghAuthenticated: true, provider: "gh-cli" });
+  const res = checkAuth({
+    storedToken: false,
+    ghAuthenticated: true,
+    provider: "gh-cli",
+    profiles: {},
+  });
   expect(res.status).toBe("ok");
   expect(res.detail).toContain("gh CLI");
 });
 
 test("checkAuth: neither stored token nor gh reports warn with the agent auth fix", () => {
-  const res = checkAuth({ storedToken: false, ghAuthenticated: false, provider: null });
+  const res = checkAuth({
+    storedToken: false,
+    ghAuthenticated: false,
+    provider: null,
+    profiles: {},
+  });
   expect(res.status).toBe("warn");
   expect(res.detail).toContain("not authenticated");
   expect(res.fix).toBe("agent auth");

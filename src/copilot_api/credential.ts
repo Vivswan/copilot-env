@@ -9,6 +9,8 @@ import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
+import { releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
+import { sleepSync } from "../utils/time.ts";
 import {
   AUTH_PROVIDERS,
   type AuthProvider,
@@ -16,6 +18,7 @@ import {
   type TokenProvider,
 } from "./env_state.ts";
 import { CopilotApiPaths } from "./paths.ts";
+import type { Profile } from "./profile.ts";
 
 // The provider vocabulary is defined with the store that persists it (env_state);
 // re-export it here so the auth command layer keeps importing it from `Credential`.
@@ -78,20 +81,26 @@ export function ghAuthToken(): string | null {
 /**
  * The Direct GitHub credential, keyed off the recorded provider. Construct freely
  * (it's a thin facade over `CopilotEnvState`); pass an existing state instance only
- * to share one read/write cursor.
+ * to share one read/write cursor. `profile` addresses that named profile's slot
+ * instead of the default (top-level) credential; the store's
+ * readCredential/setCredential pair is the single routing point, and a named
+ * profile NEVER falls back to the default credential (ask, never silently fall
+ * back).
  */
 export class Credential {
   private readonly state: CopilotEnvState;
+  private readonly profile: Profile;
 
-  constructor(state: CopilotEnvState = new CopilotEnvState()) {
+  constructor(state: CopilotEnvState = new CopilotEnvState(), profile: Profile = null) {
     this.state = state;
+    this.profile = profile;
   }
 
   /** The recorded provider, or null when one was never chosen / is unrecognized. */
   provider(): AuthProvider | null {
     // CopilotEnvState validates `authProvider` against the picklist on read, so an
     // unknown/corrupt value already reads back as null -- no extra guard needed here.
-    return this.state.read().authProvider;
+    return this.state.readCredential(this.profile).authProvider;
   }
 
   /**
@@ -102,7 +111,7 @@ export class Credential {
    *   - none / unknown   -> null (the caller prompts / errors; never silently gh)
    */
   resolve(): string | null {
-    const { githubToken, authProvider } = this.state.read();
+    const { githubToken, authProvider } = this.state.readCredential(this.profile);
     switch (credentialSource(authProvider, githubToken !== null)) {
       case "stored-token":
         return githubToken;
@@ -130,27 +139,45 @@ export class Credential {
 
   /** Record a token-backed provider (copilot/gh-token) together with its token. */
   store(provider: TokenProvider, token: string): void {
-    this.state.set({ githubToken: token, authProvider: provider });
+    this.state.setCredential(this.profile, { githubToken: token, authProvider: provider });
   }
 
   /** Record `gh-cli`: rely on the machine's `gh` login, hold no token of our own. */
   useGhCli(): void {
-    this.state.set({ githubToken: null, authProvider: "gh-cli" });
+    this.state.setCredential(this.profile, { githubToken: null, authProvider: "gh-cli" });
   }
 
   /**
-   * De-authenticate: clear our store AND scrub copilot-api's own device-login file
-   * (else a detached proxy could keep using that stale upstream token). Returns
-   * whether anything was actually cleared.
+   * De-authenticate: clear our store AND -- default profile only -- scrub
+   * copilot-api's own device-login file (else a detached proxy could keep using
+   * that stale upstream token; a named profile's device-flow login already
+   * scrubbed it at login time). The scrub briefly takes the same login lock the
+   * device flow holds (bounded wait), so a `--del` racing a mid-login cannot
+   * delete the token between its creation and its read; if a live login holds
+   * the lock past the bound we skip the scrub rather than hang (the login's own
+   * scrub covers the file). Returns whether anything was actually cleared.
    */
   clear(): boolean {
-    const { githubToken, authProvider } = this.state.read();
+    const { githubToken, authProvider } = this.state.readCredential(this.profile);
     const had = githubToken !== null || authProvider !== null;
-    this.state.set({ githubToken: null, authProvider: null });
-    try {
-      rmSync(new CopilotApiPaths().githubTokenFile, { force: true });
-    } catch {
-      // best-effort
+    this.state.setCredential(this.profile, { githubToken: null, authProvider: null });
+    if (this.profile === null) {
+      const tokenFile = new CopilotApiPaths().githubTokenFile;
+      const lockPath = `${tokenFile}.login.lock`;
+      const deadline = Date.now() + 2000;
+      let held = false;
+      for (;;) {
+        held = tryAcquireFileLock(lockPath, Number.POSITIVE_INFINITY);
+        if (held || Date.now() >= deadline) break;
+        sleepSync(100);
+      }
+      try {
+        if (held) rmSync(tokenFile, { force: true });
+      } catch {
+        // best-effort
+      } finally {
+        if (held) releaseFileLock(lockPath);
+      }
     }
     return had;
   }

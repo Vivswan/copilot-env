@@ -462,12 +462,31 @@ export function checkTool(name: "node" | "npm", resolved: string | null): CheckR
 }
 
 export function checkAuth(f: AuthFacts): CheckResult {
+  // Named profiles surface as a detail line only (their hard-fail resolution is a
+  // per-profile concern; the default credential drives this check's status).
+  const profileNames = Object.keys(f.profiles).sort();
+  const profilesLine =
+    profileNames.length === 0
+      ? []
+      : [
+          `named profiles: ${profileNames
+            .map((name) => {
+              const slot = f.profiles[name];
+              return `${name} (${slot?.provider ?? "no auth"}, ${slot?.mode ?? "no mode"})`;
+            })
+            .join(", ")}`,
+        ];
   const base = {
     id: "setup.auth",
     label: "Authentication",
     group: "auth" as const,
     scopes: AUTH,
-    value: { storedToken: f.storedToken, ghAuthenticated: f.ghAuthenticated, provider: f.provider },
+    value: {
+      storedToken: f.storedToken,
+      ghAuthenticated: f.ghAuthenticated,
+      provider: f.provider,
+      profiles: f.profiles,
+    },
   };
   // Provider classification owned by credentialSource() (credential.ts); a
   // chosen-but-unresolved provider is a warn, not OK.
@@ -478,6 +497,7 @@ export function checkAuth(f: AuthFacts): CheckResult {
       detail: [
         "not authenticated: no credential provider is configured",
         "run `agent auth` (Direct won't work; the proxy can still device-login on `agent start`)",
+        ...profilesLine,
       ].join("\n"),
       fix: "agent auth",
     };
@@ -492,6 +512,7 @@ export function checkAuth(f: AuthFacts): CheckResult {
       detail: [
         `credential: ${how} (provider: ${f.provider})`,
         "resolved by `agent auth --get` for Direct; passed to the proxy on `agent start`",
+        ...profilesLine,
       ].join("\n"),
     };
   }
@@ -503,6 +524,7 @@ export function checkAuth(f: AuthFacts): CheckResult {
       f.provider === "gh-cli"
         ? "`gh` is unauthenticated — run `gh auth login`, or `agent auth` to switch provider"
         : "the stored token is missing — run `agent auth` to re-provision",
+      ...profilesLine,
     ].join("\n"),
     fix: "agent auth",
   };

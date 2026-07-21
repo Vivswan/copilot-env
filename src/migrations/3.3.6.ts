@@ -83,7 +83,7 @@ function repointClaudeConfig(): void {
   const mode = MANAGED_HELPERS[basename(helperPath)];
   if (mode === undefined || join(home, basename(helperPath)) !== helperPath) return;
   try {
-    configureClaudeConfig(home, mode, true);
+    configureClaudeConfig(home, mode, { quiet: true });
     consola.info(`Re-pointed the Claude ${mode} config to 127.0.0.1 in ${settingsPath}`);
   } catch (e) {
     consola.warn(`Could not re-point the Claude config (non-fatal): ${errMessage(e)}`);

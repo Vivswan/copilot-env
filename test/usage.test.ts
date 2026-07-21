@@ -227,6 +227,30 @@ test("discoverUsageDbs finds the legacy file plus per-host DBs", () => {
   expect(found).toHaveLength(2);
 });
 
+test("discoverUsageDbs also sweeps named profile daemon homes", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+
+  const defaultHost = join(dir, ".run", "host-a");
+  mkdirSync(defaultHost, { recursive: true });
+  const defaultDb = join(defaultHost, "copilot-api.sqlite");
+  writeFileSync(defaultDb, "");
+
+  // A named profile's isolated daemon home carries its own per-host DB.
+  const profileHost = join(dir, "profiles", "work", ".run", "host-a");
+  mkdirSync(profileHost, { recursive: true });
+  const profileDb = join(profileHost, "copilot-api.sqlite");
+  writeFileSync(profileDb, "");
+
+  // A profile home with no DB yet contributes nothing.
+  mkdirSync(join(dir, "profiles", "fresh"), { recursive: true });
+
+  const found = discoverUsageDbs(dir);
+
+  expect(found).toContain(defaultDb);
+  expect(found).toContain(profileDb);
+  expect(found).toHaveLength(2);
+});
+
 test("discoverUsageDbs excludes a stray .run file and a host dir missing the sqlite", () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
 

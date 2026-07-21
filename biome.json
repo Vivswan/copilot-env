@@ -9,6 +9,7 @@
       "**/bin/**/*",
       "**/test/**/*.ts",
       "**/scripts/**/*.ts",
+      "**/.github/scripts/**/*.ts",
       "!**/node_modules",
       "!**/dist"
     ]
@@ -65,6 +66,10 @@
               { "selector": { "kind": "class" }, "formats": ["PascalCase"] },
               { "selector": { "kind": "interface" }, "formats": ["PascalCase"] },
               { "selector": { "kind": "typeAlias" }, "formats": ["PascalCase"] },
+              {
+                "selector": { "kind": "typeProperty" },
+                "formats": ["camelCase", "snake_case", "CONSTANT_CASE", "PascalCase"]
+              },
               {
                 "selector": { "kind": "objectLiteralProperty" },
                 "formats": ["camelCase", "snake_case", "CONSTANT_CASE", "PascalCase"]

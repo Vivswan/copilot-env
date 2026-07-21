@@ -2,6 +2,7 @@
 import * as v from "valibot";
 import { CopilotApiConfig } from "./config.ts";
 import { CopilotApiPaths } from "./paths.ts";
+import type { Profile } from "./profile.ts";
 
 /** Per-host runtime state we persist (`.run/<host>/.state.json`). */
 export interface CopilotEnvRunStateData {
@@ -50,6 +51,11 @@ export class CopilotEnvRunState {
     this.store = new CopilotApiConfig(path ?? new CopilotApiPaths().stateFile);
   }
 
+  /** The run state for `profile`'s daemon (null = the default daemon's state). */
+  static forProfile(profile: Profile): CopilotEnvRunState {
+    return new CopilotEnvRunState(new CopilotApiPaths(profile).stateFile);
+  }
+
   /** Current state; absent or ill-typed/out-of-range fields come back `undefined`. */
   read(): CopilotEnvRunStateData {
     return v.parse(RUN_STATE_SCHEMA, this.store.load());
@@ -70,17 +76,19 @@ export class CopilotEnvRunState {
   }
 
   /**
-   * Atomically clear the daemon tracking (`pid`/`port`/`lastEnsureAt`) ONLY if the recorded
-   * pid is still `pid`. The check runs INSIDE the read-modify-write, so it tests the value at
-   * write time, not a stale snapshot -- a daemon that has been replaced by a newer one cannot
-   * clobber its successor's freshly written pid/port. Used by the in-daemon idle watchdog when
-   * it auto-stops the proxy.
+   * Atomically clear the daemon tracking (`pid`/`lastEnsureAt`, and `port` unless
+   * `keepPort`) ONLY if the recorded pid is still `pid`. The check runs INSIDE the
+   * read-modify-write, so it tests the value at write time, not a stale snapshot -- a daemon
+   * that has been replaced by a newer one cannot clobber its successor's freshly written
+   * pid/port. Used by the in-daemon idle watchdog when it auto-stops the proxy; a NAMED
+   * profile's daemon passes `keepPort` because its port is the profile's stable
+   * reservation (the baked agent wiring points at it).
    */
-  clearIfPid(pid: number): void {
+  clearIfPid(pid: number, keepPort = false): void {
     this.store.update((d) => {
       if (d.pid !== pid) return;
       delete d.pid;
-      delete d.port;
+      if (!keepPort) delete d.port;
       delete d.lastEnsureAt;
     });
   }

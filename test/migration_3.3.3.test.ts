@@ -57,6 +57,7 @@ test("3.3.3 (a): backfills gh-token for a stored token with no recorded provider
   expect(state().read()).toEqual({
     githubToken: "ghu_legacy",
     authProvider: "gh-token",
+    profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogCodexVersion: null,
   });
@@ -71,6 +72,7 @@ test("3.3.3 (b): imports copilot-api's token as copilot and scrubs its file", ()
   expect(state().read()).toEqual({
     githubToken: "ghu_from_copilot_api",
     authProvider: "copilot",
+    profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogCodexVersion: null,
   });
@@ -88,6 +90,7 @@ test("3.3.3 is idempotent: a chosen gh-cli provider (no token) is never overwrit
   expect(state().read()).toEqual({
     githubToken: null,
     authProvider: "gh-cli",
+    profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogCodexVersion: null,
   });

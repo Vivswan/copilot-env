@@ -472,6 +472,15 @@ describe("bothAgentsWiredDirect", () => {
     expect(bothAgentsWiredDirect(codexHome, claudeHome)).toBe(true);
   });
 
+  test("false when a named profile home exists (a proxy profile uses the daemon)", () => {
+    const codexHome = writeCodexHome(CODEX_DIRECT_TOML);
+    const claudeHome = writeClaudeHome(DIRECT_HELPER_NAME);
+    // Profile homes are created only by proxy wiring / `agent start --profile`,
+    // so their presence means the local proxy is in use despite direct defaults.
+    mkdirSync(join(dir, "profiles", "work"), { recursive: true });
+    expect(bothAgentsWiredDirect(codexHome, claudeHome)).toBe(false);
+  });
+
   test("false on a mixed Claude config (direct helper but a proxy ANTHROPIC_BASE_URL)", () => {
     const codexHome = writeCodexHome(CODEX_DIRECT_TOML);
     const claudeHome = writeClaudeHome(DIRECT_HELPER_NAME, "http://127.0.0.1:4141");

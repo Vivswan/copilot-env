@@ -62,6 +62,7 @@ test("the auth provider round-trips and clears alongside the token", () => {
   expect(state.read()).toEqual({
     githubToken: null,
     authProvider: null,
+    profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogCodexVersion: null,
   });

@@ -19,9 +19,14 @@ macOS, and Windows**.
 - **Codex + Claude wiring**: point both CLIs at the local proxy or GitHub
   Copilot Direct automatically; write `~/.codex` / `~/.claude` config; build a
   per-host `CODEX_HOME` farm (Linux/macOS).
-- **One credential**: `agent auth` manages the GitHub Copilot token (device
-  flow, `gh` CLI, or a stored PAT) as the single source of truth; PATs work
-  through an automatic passthrough shim.
+- **One credential per setup**: `agent auth` manages the GitHub Copilot token
+  (device flow, `gh` CLI, or a stored PAT) as the single source of truth for the
+  default setup — and one slot per named profile; PATs work through an automatic
+  passthrough shim.
+- **Named profiles**: `agent profile` bundles ONE credential + ONE mode (direct
+  or proxy) into both agents, so several sessions run at once — direct beside
+  proxy, or a second GitHub account — each proxy profile with its own daemon on
+  its own port. Launch with `cl --profile <name>` / `cx --profile <name>`.
 - **Typed preferences**: `agent config` gets/sets every knob — lifecycle,
   ports, proxy feature flags, model ids — with one precedence rule everywhere.
 - **Cost reporting**: estimated spend from per-host usage DBs via live OpenRouter pricing.
@@ -71,14 +76,15 @@ Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, the
 
 ```bash
 agent init                 # set up BOTH Codex + Claude (auto-detect direct vs the proxy) + next-step guidance
-agent auth                 # manage the GitHub Copilot credential (--provider copilot|gh-cli|gh-token, --set, --get, --del, --check)
+agent auth                 # manage the GitHub Copilot credential (--provider copilot|gh-cli|gh-token, --set, --get, --del, --check; --profile <name> addresses a named profile's slot, --list shows every slot)
+agent profile              # manage named profiles: --add <name> --direct|--proxy (one credential + one mode, both agents), --del <name>, --list, --check <name>
 agent config               # get/set preferences (--set <key> <value> / --get [key] / --del <key>; see Configuration below)
-agent start                # launch the daemon and sync aliases (--dry-run to preview, --port to pin, --check to probe)
-agent stop                 # stop the daemon
+agent start                # launch the daemon and sync aliases (--dry-run to preview, --port to pin, --check to probe, --profile <name> for a profile's daemon)
+agent stop                 # stop the daemon (--profile <name> for one profile's daemon, --all for every daemon)
 agent health               # full environment diagnosis (--scope full|runtime|proxy|setup|auth|codex|claude, --json, --live)
 agent models               # list the model ids + names Copilot serves (--proxy / --direct / --json; no flag auto-picks)
 agent env                  # print shell exports for the calling shell (CODEX_HOME / proxy ANTHROPIC_BASE_URL)
-agent cost                 # estimated token spend across all per-host usage DBs
+agent cost                 # estimated token spend across all usage DBs (default + profile daemons)
 agent update               # update to the latest release (--check; cooldown via `agent config --set update-cooldown`)
 agent shell                # wire rc / $PROFILE; --launchers adds cl/co/cx, --clis installs the CLIs, --remove unwires
 agent codex                # configure Codex; no flag auto-detects the backend, --check reports it
@@ -106,6 +112,7 @@ The `cl` / `co` / `cx` launchers are opt-in:
 - `cl` reads the configured Claude provider (`agent claude --check`), starts the proxy for proxy-backed or not-yet-configured setups (re-syncing the port/token), then Claude.
 - `co` runs Copilot.
 - `cx` does the same as `cl` for Codex (`agent codex --check`), then Codex.
+- `cl --profile <name>` / `cx --profile <name>` (leading arguments) launch under a named profile instead: the profile's wiring is honored as-is, its own daemon is ensured when proxy-mode, and the default setup is untouched.
 
 Each has a more-permissive variant that adds the agent's most-relaxed flag: `clx` (`--dangerously-skip-permissions`), `cox` (`--allow-all`), `cxx` (`--sandbox danger-full-access`).
 
@@ -212,6 +219,26 @@ Classic and fine-grained PATs can't perform the proxy's editor token exchange,
 so `agent start` transparently enables a passthrough shim for PAT-shaped
 tokens that uses the PAT as the bearer directly. Force it either way with
 `agent config --set passthrough on|off`.
+
+### Profiles
+
+A profile is an atomic unit — ONE credential + ONE mode (direct or proxy,
+never both) — always wired into BOTH agents, so several sessions run at once
+without touching the default setup:
+
+```bash
+agent profile --add work --proxy --provider gh-token --set   # own credential + mode + both agents, one command
+cl --profile work        # Claude under the profile (its own proxy daemon, own port)
+cx --profile work        # Codex under the same profile
+agent profile --list     # NAME  MODE  PROVIDER  DAEMON
+agent profile --del work # stop its daemon, clear its credential, strip both agents' wiring
+```
+
+Named profiles hard-fail rather than falling back to the default credential;
+re-authenticate one with `agent auth --profile <name>`. A proxy-mode profile
+gets its own daemon in an isolated home (`<copilot-api home>/profiles/<name>`)
+on a stable reserved port, managed via `agent start/stop --profile <name>`.
+Re-running `--add` with the other mode flag switches the profile's mode.
 
 ### Environment overrides
 

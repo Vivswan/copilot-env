@@ -16,5 +16,11 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "bin/**/*", "test/**/*.ts", "scripts/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "bin/**/*",
+    "test/**/*.ts",
+    "scripts/**/*.ts",
+    ".github/scripts/**/*.ts"
+  ]
 }

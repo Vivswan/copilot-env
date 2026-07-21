@@ -33,7 +33,7 @@ import {
 } from "../commands/shell_integration.ts";
 import { credentialSource } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { CopilotEnvState } from "../copilot_api/env_state.ts";
+import { type AuthProvider, CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort, proxyLoopbackOrigin } from "../copilot_api/port.ts";
 import { isCopilotApiPid, pidAlive } from "../copilot_api/process.ts";
@@ -235,6 +235,8 @@ export interface AuthFacts {
   ghAuthenticated: boolean;
   /** The recorded auth provider (`copilot` | `gh-cli` | `gh-token`), or null. */
   provider: string | null;
+  /** Named profiles: name -> recorded provider + mode (never tokens). */
+  profiles: Record<string, { provider: AuthProvider | null; mode: ProfileMode | null }>;
 }
 
 // --- injectable I/O surface -------------------------------------------------
@@ -271,6 +273,8 @@ export interface ProbeDeps {
   storedTokenPresent(): boolean;
   /** The recorded auth provider (`copilot` | `gh-cli` | `gh-token`), or null. */
   authProvider(): string | null;
+  /** Named profiles: name -> recorded provider + mode (never tokens). */
+  authProfiles(): Record<string, { provider: AuthProvider | null; mode: ProfileMode | null }>;
   claudeHome(): string;
   hostCodexHome(): string;
   dirExists(path: string): boolean;
@@ -473,6 +477,13 @@ export function defaultProbeDeps(): ProbeDeps {
     codexDirectAuth,
     storedTokenPresent: () => new CopilotEnvState().read().githubToken !== null,
     authProvider: () => new CopilotEnvState().read().authProvider,
+    authProfiles: () =>
+      Object.fromEntries(
+        Object.entries(new CopilotEnvState().read().profiles).map(([name, slot]) => [
+          name,
+          { provider: slot.authProvider, mode: slot.mode },
+        ]),
+      ),
     // Claude's direct mode also authenticates via `gh auth token`, so it reuses
     // the same probe. Effective Claude home matches resolveClaudeHome precedence.
     claudeHome: () => resolveClaudeHome(),
@@ -763,7 +774,7 @@ export async function gatherFacts(
           credentialSource(provider, storedToken) === "gh-cli"
             ? (await sharedDirectAuth()).authenticated
             : false;
-        facts.auth = { storedToken, ghAuthenticated, provider };
+        facts.auth = { storedToken, ghAuthenticated, provider, profiles: deps.authProfiles() };
       })(),
     );
   }

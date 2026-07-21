@@ -38,6 +38,21 @@ Only the *why* lives here; the mechanics are discoverable in the code.
   resolve it at fetch time via `agent auth --get`, provider-driven with **no implicit `gh`
   fallback**. `agent auth` is the credential front door; when auth is none we **ask, never
   silently fall back**.
+- **Profiles are opt-in atomic units; the default path never changes.** `agent profile` is
+  the single front door: a profile = ONE credential + ONE mode (direct or proxy, never
+  both), always wired into BOTH agents (`agent profile --add <name> --direct|--proxy`,
+  `--del`, `--list`, `--check`; the store's profile slot -- credential + `mode` in the SAME
+  `.copilot-env-state.json` -- is the source of truth, and the per-agent artifacts are
+  derived: an overlay `settings-<name>.json` + per-profile apiKeyHelper for Claude, native
+  `[profiles.<name>]` + `[model_providers.copilot-env-<name>]` for Codex). Named profiles
+  **hard-fail, never falling back to the default credential**; launch via `cl --profile
+  <name>` / `cx --profile <name>` (or raw `claude --settings <path>` / `codex --profile
+  <name>`), with `agent auth --profile <name>` as the re-auth path. A proxy-mode profile
+  gets its **own daemon** in an isolated home (`<home>/profiles/<name>` -- own
+  config.json/apiKeys/sqlite/run-state, a stable reserved port, `COPILOT_ENV_ROOT_HOME`
+  pointing the in-daemon preloads back at the shared account-wide files); `agent start/stop
+  --profile <name>` manage it, `agent stop --all` sweeps everything, and the orphan sweep
+  never signals another profile's tracked daemon.
 - **`agent config` is the typed preference store.** A `--set <key> <value>` / `--get [key]`
   / `--del <key>` front-end over `CopilotEnvConfig` (`src/copilot_api/env_config.ts`, a
   `.copilot-env-config.json` SEPARATE from the credential store), with a single key registry
@@ -90,7 +105,7 @@ Only the *why* lives here; the mechanics are discoverable in the code.
 - `install.sh`/`install.ps1` — one-line bootstrap installers: ensure bun, download + checksum
   the latest release archive, then hand off to release-local `src/install/installer.ts`.
 - `src/cli.ts` — Commander entry; delegates to `run*` functions.
-- `src/commands/` — command implementations (`init`/`auth`/`config`/`start`/`stop`/`health`/
+- `src/commands/` — command implementations (`init`/`auth`/`profile`/`config`/`start`/`stop`/`health`/
   `models`/`env`/`update`, plus `setup`+`shell_integration` behind `agent shell` and `apply_update`
   shared by `agent update` and the autoupdate preflight); `init` configures both agents via
   `configure_agents.ts` (`auth` manages the credential only and never configures agents).
@@ -171,6 +186,7 @@ bun run check         # biome check --write
 ./bin/agent init      # set up Codex + Claude (auto-detect direct vs proxy; --direct / --proxy)
 ./bin/agent auth      # manage the GitHub credential (--provider/--get/--del/--check)
 ./bin/agent config    # get/set preferences (--set <key> <value> / --get [key] / --del <key>)
+./bin/agent profile   # manage named profiles (--add <name> --direct|--proxy / --del / --list)
 ./bin/agent start     # start the daemon; also stop / health / models / env / cost / update / shell / codex / claude
 ```
 

@@ -24,6 +24,7 @@ import { runEnv } from "./commands/env.ts";
 import { runHealth } from "./commands/health.ts";
 import { runInit } from "./commands/init.ts";
 import { runModels } from "./commands/models.ts";
+import { runProfile } from "./commands/profile.ts";
 import { runShell } from "./commands/setup.ts";
 import { runStart } from "./commands/start.ts";
 import { runStop } from "./commands/stop.ts";
@@ -172,6 +173,12 @@ program
     "--print-proxy-token",
     "Print the local proxy's API key to stdout (used by the proxy-mode resolver after it ensures the proxy).",
   )
+  .option(
+    "--profile <name>",
+    "Address a named credential profile instead of the default (named profiles never " +
+      "fall back to the default credential).",
+  )
+  .option("--list", "List the default + named credential profiles (providers only, never tokens).")
   .action((opts: Opts) =>
     runAuth({
       provider: opts.provider as string | undefined,
@@ -180,6 +187,62 @@ program
       del: Boolean(opts.del),
       check: Boolean(opts.check),
       printProxyToken: Boolean(opts.printProxyToken),
+      profile: opts.profile as string | undefined,
+      list: Boolean(opts.list),
+    }),
+  );
+
+program
+  .command("profile")
+  .description(
+    "Manage named profiles: one credential + one mode (direct or proxy), wired into BOTH agents.",
+  )
+  .option(
+    "--add <name>",
+    "Create (or re-wire) a profile: acquires its own credential, records the mode, " +
+      "wires Codex + Claude. Re-add with the other mode flag to switch modes.",
+  )
+  .option(
+    "--del <name>",
+    "Delete a profile everywhere: stop its daemon, clear its credential, strip both " +
+      "agents' wiring, remove its daemon home.",
+  )
+  .option("--list", "List every profile with its provider, mode, and daemon status.")
+  .option(
+    "--check <name>",
+    "Report the profile's mode and exit (0 direct, 2 proxy, 1 no such profile) — the launcher probe.",
+  )
+  .option(
+    "--settings-for <name>",
+    "Re-sync the profile's Claude settings file and print its absolute path (the `cl --profile` hook).",
+  )
+  .option(
+    "--sync",
+    "Refresh every profile's wiring against the live proxy ports (the `cx --profile` hook).",
+  )
+  .option("--direct", "With --add: wire the profile to GitHub Copilot Direct.")
+  .option("--proxy", "With --add: wire the profile to its own local proxy daemon.")
+  .option(
+    "--provider <provider>",
+    "With --add: how the profile authenticates ('copilot' | 'gh-cli' | 'gh-token'); no flag prompts.",
+  )
+  .option(
+    "--set [token]",
+    "With --add: non-interactive gh-token — store this token verbatim, or read " +
+      "$GH_TOKEN/$GITHUB_TOKEN when given no value.",
+  )
+  .action((opts: Opts) =>
+    runProfile({
+      add: opts.add as string | undefined,
+      del: opts.del as string | undefined,
+      list: Boolean(opts.list),
+      check: opts.check as string | undefined,
+      settingsFor: opts.settingsFor as string | undefined,
+      sync: Boolean(opts.sync),
+      direct: Boolean(opts.direct),
+      proxy: Boolean(opts.proxy),
+      provider: opts.provider as string | undefined,
+      set: opts.set as string | boolean | undefined,
     }),
   );
 
@@ -200,6 +263,10 @@ program
     "--force",
     "Launch a fresh daemon (in the managed lifecycle, a plain start otherwise leaves a healthy proxy up).",
   )
+  .option(
+    "--profile <name>",
+    "Operate on the named profile's isolated daemon (own home/port, the profile's own credential).",
+  )
   .action((opts: Opts) =>
     runStart({
       dryRun: Boolean(opts.dryRun),
@@ -207,13 +274,18 @@ program
       recordEvent: Boolean(opts.recordEvent),
       check: Boolean(opts.check),
       force: Boolean(opts.force),
+      profile: opts.profile as string | undefined,
     }),
   );
 
 program
   .command("stop")
   .description("Stop the proxy on this host.")
-  .action(() => runStop());
+  .option("--profile <name>", "Stop the named profile's daemon instead of the default.")
+  .option("--all", "Stop the default daemon and every named profile's daemon.")
+  .action((opts: Opts) =>
+    runStop({ profile: opts.profile as string | undefined, all: Boolean(opts.all) }),
+  );
 
 program
   .command("config")
@@ -298,10 +370,11 @@ program
     "after",
     [
       "",
-      "Sources: the proxy's per-host SQLite DBs (proxied traffic only), the Codex CLI's",
-      "local session logs, and Claude Code's local transcripts (each agent's FULL",
-      "traffic, Direct included). The default table merges all three, so traffic",
-      "through the proxy can be double counted; use --sources for per-source tables.",
+      "Sources: the proxy's per-host SQLite DBs (default + every profile daemon home;",
+      "proxied traffic only), the Codex CLI's local session logs, and Claude Code's local",
+      "transcripts (each agent's FULL traffic, Direct included). The default table merges",
+      "all three, so traffic through the proxy can be double counted; use --sources for",
+      "per-source tables.",
       "",
       "Active days: distinct UTC calendar days that recorded at least one request,",
       "unioned across the displayed sources. The header also shows the inclusive",

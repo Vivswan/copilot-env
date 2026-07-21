@@ -1,7 +1,10 @@
-const { execFileSync } = require("node:child_process");
-const { readFileSync } = require("node:fs");
+// Validate that every commit subject in the push/PR range is a Conventional
+// Commit (the release automation derives versions from the prefixes).
+// Run by CI: bun .github/scripts/validate-commit-names.ts
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 
-const allowedTypes = [
+const ALLOWED_TYPES = [
   "build",
   "chore",
   "ci",
@@ -15,20 +18,26 @@ const allowedTypes = [
   "test",
 ];
 
-const conventionalSubject = new RegExp(
-  `^(${allowedTypes.join("|")})(\\([A-Za-z0-9._/-]+\\))?!?: .+`,
+const CONVENTIONAL_SUBJECT = new RegExp(
+  `^(${ALLOWED_TYPES.join("|")})(\\([A-Za-z0-9._/-]+\\))?!?: .+`,
 );
-const zeroSha = /^0{40}$/;
+const ZERO_SHA = /^0{40}$/;
 
-function subject(message) {
-  return String(message ?? "").split(/\r?\n/, 1)[0].trim();
+interface CommitRef {
+  sha: string;
+  subject: string;
 }
 
-function isMergeSubject(value) {
+function subject(message: unknown): string {
+  const firstLine = String(message ?? "").split(/\r?\n/, 1)[0];
+  return (firstLine ?? "").trim();
+}
+
+function isMergeSubject(value: string): boolean {
   return /^Merge (pull request|branch|remote-tracking branch)\b/.test(value);
 }
 
-function git(args) {
+function git(args: string[]): string {
   return execFileSync("git", args, { encoding: "utf8" }).trim();
 }
 
@@ -36,7 +45,7 @@ function git(args) {
 // orphans the old tip (and a shallow clone may never fetch it), so `before`
 // can name a commit that no longer exists -- `git rev-list before..after`
 // would then fail fatally. We use this to fall back to the push payload.
-function revExists(rev) {
+function revExists(rev: string): boolean {
   try {
     // stdio "ignore" keeps git's "fatal: Not a valid object name" off the log
     // -- a missing `before` is an expected, handled case, not an error.
@@ -47,24 +56,36 @@ function revExists(rev) {
   }
 }
 
-function shasInRange(range) {
+function shasInRange(range: string): string[] {
   const output = git(["rev-list", "--reverse", range]);
   return output ? output.split(/\r?\n/) : [];
 }
 
-function commitSubject(sha) {
+function commitSubject(sha: string): string {
   return subject(git(["show", "-s", "--format=%s", sha]));
 }
 
-function eventPayload() {
+interface PushCommit {
+  id?: string;
+  message?: string;
+}
+
+interface EventPayload {
+  pull_request?: { base?: { sha?: string }; head?: { sha?: string } };
+  before?: string;
+  after?: string;
+  commits?: PushCommit[];
+}
+
+function eventPayload(): EventPayload {
   const eventPath = process.env.GITHUB_EVENT_PATH;
   if (!eventPath) {
     throw new Error("GITHUB_EVENT_PATH is required.");
   }
-  return JSON.parse(readFileSync(eventPath, "utf8"));
+  return JSON.parse(readFileSync(eventPath, "utf8")) as EventPayload;
 }
 
-function listCommits() {
+function listCommits(): CommitRef[] {
   const eventName = process.env.GITHUB_EVENT_NAME;
   const payload = eventPayload();
 
@@ -86,14 +107,14 @@ function listCommits() {
     // Only diff a range when both endpoints are real and reachable here;
     // otherwise (new branch, or a force-push that orphaned `before`) validate
     // the commits GitHub listed in this push payload instead.
-    if (before && after && !zeroSha.test(before) && revExists(before) && revExists(after)) {
+    if (before && after && !ZERO_SHA.test(before) && revExists(before) && revExists(after)) {
       return shasInRange(`${before}..${after}`).map((sha) => ({
         sha,
         subject: commitSubject(sha),
       }));
     }
     return (payload.commits ?? []).map((commit) => ({
-      sha: commit.id,
+      sha: commit.id ?? "",
       subject: subject(commit.message),
     }));
   }
@@ -101,10 +122,10 @@ function listCommits() {
   return [];
 }
 
-function validateCommitNames() {
+function validateCommitNames(): void {
   const commits = listCommits();
   const checked = commits.filter((commit) => !isMergeSubject(commit.subject));
-  const failures = checked.filter((commit) => !conventionalSubject.test(commit.subject));
+  const failures = checked.filter((commit) => !CONVENTIONAL_SUBJECT.test(commit.subject));
 
   console.log(`Checked ${checked.length} non-merge commit subject(s).`);
 

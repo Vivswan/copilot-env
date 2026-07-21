@@ -61,6 +61,23 @@ test("start --record-event writes the lastEnsureAt heartbeat and never launches"
   expect(new CopilotEnvRunState().read().pid).toBeUndefined(); // no daemon was started
 });
 
+test("start --record-event --profile heartbeats ONLY the profile's run state", async () => {
+  tmpHome();
+  // A real proxy profile always has run state before its resolver heartbeats (the
+  // port reservation writes it); a profile WITHOUT state must not be fabricated.
+  CopilotEnvRunState.forProfile("work").set({ port: 4242 });
+  await runStart({ recordEvent: true, profile: "work" });
+
+  expect(typeof CopilotEnvRunState.forProfile("work").read().lastEnsureAt).toBe("number");
+  expect(new CopilotEnvRunState().read().lastEnsureAt).toBeUndefined();
+});
+
+test("start --check --profile exits non-zero when that profile's daemon is not running", async () => {
+  tmpHome();
+  await runStart({ check: true, profile: "work" });
+  expect(process.exitCode).toBe(1);
+});
+
 test("start --check exits non-zero when no proxy is tracked/running", async () => {
   tmpHome();
   await runStart({ check: true });

@@ -21,8 +21,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
       - name: Validate commit subjects
-        run: node .github/scripts/validate-commit-names.cjs
+        run: bun .github/scripts/validate-commit-names.ts
 
   check:
     name: ${{ matrix.os }}
@@ -63,48 +67,15 @@ jobs:
       - name: Test
         run: bun test --timeout 15000
 
-      # End-to-end daemon lifecycle on every OS: process.ts spawns a detached
-      # daemon, `start` waits for it to listen + syncs aliases, `stop` verifies
-      # the tracked pid is ours and signals it. `health --scope runtime` is the
-      # cross-check: it must pass (exit 0) while the daemon is up and fail (exit
-      # 1) once it's down, so start/stop and the runtime probe verify each other.
-      # COPILOT_API_ENTRY points at a fake proxy so no Copilot auth is needed.
-      # `shell: bash` runs on the Windows runner too (git-bash); -e is on, so any
-      # unexpected non-zero (and the inverted post-stop check) fails the step.
+      # End-to-end daemon lifecycle on every OS (script: .github/scripts/lifecycle-smoke.sh):
+      # default daemon start/stop/health cross-checks, managed-lifecycle idempotency, and the
+      # named-profile daemon cycle -- against a fake proxy, so no Copilot auth is needed.
+      # `shell: bash` runs on the Windows runner too (git-bash).
       - name: Start/stop + health lifecycle (fake proxy)
         shell: bash
         env:
           COPILOT_API_ENTRY: ${{ github.workspace }}/test/copilot-api-fake.mjs
-        run: |
-          bun src/cli.ts start
-          bun src/cli.ts health --scope runtime
-          # Managed-lifecycle idempotency (auto-start on): a redundant `start` is a no-op -- it must
-          # keep the SAME daemon pid (not restart and disrupt a connected agent); `--force` launches
-          # a fresh daemon (new pid). In the default/unmanaged mode `start` still restarts. Capture
-          # `start` output (so a nonzero exit fails the step, not just grep) and compare pids.
-          readpid() { bun -e 'import {CopilotEnvRunState} from "./src/copilot_api/state.ts"; process.stdout.write(String(new CopilotEnvRunState().read().pid))'; }
-          bun src/cli.ts config --set auto-start true
-          pid_before=$(readpid)
-          out=$(bun src/cli.ts start)
-          echo "$out" | grep -q "already running" || { echo "::error::managed redundant start did not no-op on ${{ runner.os }}"; exit 1; }
-          pid_after=$(readpid)
-          [ "$pid_before" = "$pid_after" ] || { echo "::error::managed redundant start changed the pid ($pid_before -> $pid_after) on ${{ runner.os }}"; exit 1; }
-          bun src/cli.ts health --scope runtime
-          bun src/cli.ts start --force
-          pid_forced=$(readpid)
-          [ "$pid_after" != "$pid_forced" ] || { echo "::error::start --force did not relaunch a fresh daemon on ${{ runner.os }}"; exit 1; }
-          bun src/cli.ts health --scope runtime
-          bun src/cli.ts config --del auto-start
-          bun src/cli.ts codex --proxy
-          bun src/cli.ts claude --proxy
-          bun src/cli.ts health --scope setup
-          echo "health OK while running on ${{ runner.os }}"
-          bun src/cli.ts stop
-          if bun src/cli.ts health --scope runtime; then
-            echo "::error::health reported healthy after stop on ${{ runner.os }}"
-            exit 1
-          fi
-          echo "start/stop + health OK on ${{ runner.os }}"
+        run: bash .github/scripts/lifecycle-smoke.sh
 
       - name: Shell lint (shellcheck)
         if: runner.os == 'Linux'
@@ -212,7 +183,7 @@ jobs:
 
       - name: Simulate the pending release and run the installer against it
         if: ${{ env.IS_RELEASE_PR == 'true' }}
-        run: node .github/scripts/release-pr-smoke.cjs
+        run: bun .github/scripts/release-pr-smoke.ts
 
   # Single aggregate gate: this is the ONLY CI context branch protection requires,
   # so adding/renaming matrix jobs never desyncs .github/settings.yml. Runs always

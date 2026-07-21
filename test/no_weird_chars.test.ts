@@ -14,7 +14,7 @@ import ts from "typescript";
 // a `/'/`-style pattern would otherwise be mistaken for a string. Non-code files
 // (shell, toml, bin scripts) must be pure ASCII. This file is itself pure ASCII.
 
-const ROOTS = ["src", "test", "scripts", "bin", "shell"];
+const ROOTS = ["src", "test", "scripts", "bin", "shell", ".github/scripts"];
 const SKIP_DIRS = new Set(["node_modules", ".git"]);
 const TS_EXTS = new Set([".ts", ".mts", ".cts", ".tsx", ".mjs", ".js", ".jsx"]);
 const OTHER_EXTS = new Set([".sh", ".ps1", ".bashrc", ".toml"]);

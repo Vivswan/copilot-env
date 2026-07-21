@@ -1,28 +1,50 @@
-// `agent stop`: terminates the tracked local proxy daemon.
+// `agent stop`: terminates the tracked local proxy daemon(s).
+import { existsSync } from "node:fs";
 import { consola } from "consola";
+import { CopilotApiPaths, profileHomeNames } from "../copilot_api/paths.ts";
 import { classifyDaemonPid, pidAlive, terminatePid } from "../copilot_api/process.ts";
+import { assertProfileName, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { clearPersistedInferenceActivity } from "../scripts/inference_activity.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 
+export interface StopArgs {
+  /** `--profile <name>`: stop that named profile's daemon instead of the default. */
+  profile?: string;
+  /** `--all`: stop the default daemon AND every named profile's daemon. */
+  all?: boolean;
+}
+
 /**
- * Terminate the tracked proxy daemon if it is ours, clearing our run-state tracking and the
- * persisted activity mark. Quiet (no logging, no exit code) -- the shared core of `agent stop`
- * and the de-authenticate teardown. `graceMs > 0` waits that long and escalates to SIGKILL if
- * the daemon is still alive (use it when the caller must be sure it stopped, e.g. de-auth);
- * `0` sends a single SIGTERM without waiting. Returns the tracked pid, whether we signalled it,
- * and whether it is confirmed stopped afterwards.
+ * Terminate `profile`'s tracked proxy daemon if it is ours, clearing our run-state tracking
+ * and the persisted activity mark. Quiet (no logging, no exit code) -- the shared core of
+ * `agent stop` and the de-authenticate teardown. `graceMs > 0` waits that long and escalates
+ * to SIGKILL if the daemon is still alive (use it when the caller must be sure it stopped,
+ * e.g. de-auth); `0` sends a single SIGTERM without waiting. Returns the tracked pid, whether
+ * we signalled it, and whether it is confirmed stopped afterwards.
  */
 export async function stopTrackedProxy(
   graceMs = 0,
+  profile: Profile = null,
 ): Promise<{ trackedPid?: number; signalled: boolean; stopped: boolean }> {
-  const state = new CopilotEnvRunState();
+  const state = CopilotEnvRunState.forProfile(profile);
+  // A named profile's `port` is its stable reservation (the baked agent wiring points at
+  // it), so stopping the daemon must NOT release it -- only the default's port tracking
+  // reverts to the configured/built-in default on stop.
+  const clearPort = profile === null ? { port: null } : {};
   const trackedPid = state.read().pid;
   if (trackedPid === undefined) {
-    // Nothing tracked. Still clear any stale activity marks so a fresh start is not seen as
-    // recently active.
-    state.set({ lastEnsureAt: null });
-    clearPersistedInferenceActivity();
+    // Nothing tracked. Still clear any stale activity marks so a fresh start is not seen
+    // as recently active. The activity-file removal is safe unconditionally (rmSync
+    // creates nothing), but the STATE write runs for a NAMED profile only when its state
+    // already exists on disk: the store's atomic write mkdirs its parent, so an
+    // unconditional write here would FABRICATE a phantom profile home for a typo'd
+    // `agent stop --profile <name>` (which profile --list / stop --all / the proxy float
+    // would then all see).
+    if (profile === null || existsSync(new CopilotApiPaths(profile).stateFile)) {
+      state.set({ lastEnsureAt: null });
+    }
+    clearPersistedInferenceActivity(profile);
     return { signalled: false, stopped: true };
   }
   // Classify the tracked pid before signalling it -- the OS may have recycled a stale pid onto
@@ -47,27 +69,45 @@ export async function stopTrackedProxy(
   // target. Otherwise clear it (the graceMs 0 path can't confirm death, so it stays optimistic,
   // exactly as `agent stop` always has). Activity marks are cleared either way.
   const keepTracking = graceMs > 0 && !stopped;
-  state.set(keepTracking ? { lastEnsureAt: null } : { pid: null, port: null, lastEnsureAt: null });
-  clearPersistedInferenceActivity();
+  state.set(
+    keepTracking ? { lastEnsureAt: null } : { pid: null, ...clearPort, lastEnsureAt: null },
+  );
+  clearPersistedInferenceActivity(profile);
   return { trackedPid, signalled, stopped };
 }
 
-/** `stop`: terminate the proxy daemon tracked on this host. */
-export async function runStop(): Promise<void> {
-  const { trackedPid, signalled } = await stopTrackedProxy();
-
+/** Stop one daemon and report the outcome. Returns true when something was stopped. */
+async function stopOne(profile: Profile): Promise<boolean> {
+  const { trackedPid, signalled } = await stopTrackedProxy(0, profile);
+  const what = profile === null ? "proxy" : `${profileLabel(profile)} proxy`;
   if (trackedPid === undefined) {
-    // Not a crash -- just nothing to do. Friendly note, no stack trace, but a
-    // non-zero exit so scripts can still tell "stopped" from "nothing running".
-    consola.info("The proxy is not running on this host (nothing to stop).");
-    process.exitCode = 1;
-    return;
+    consola.info(`The ${what} is not running on this host (nothing to stop).`);
+    return false;
   }
   if (!signalled) {
-    consola.info(`The proxy (PID ${trackedPid}) was already stopped; cleared stale tracking.`);
+    consola.info(`The ${what} (PID ${trackedPid}) was already stopped; cleared stale tracking.`);
+    return false;
+  }
+  consola.info(`Stopped the ${what} (PID ${trackedPid})`);
+  return true;
+}
+
+/** `stop`: terminate the proxy daemon(s) tracked on this host. */
+export async function runStop(args: StopArgs = {}): Promise<void> {
+  if (args.all && args.profile !== undefined) {
+    throw new Error("--all stops every daemon; it does not combine with --profile");
+  }
+  const profiles: Profile[] = args.all ? [null, ...profileHomeNames()] : [args.profile ?? null];
+  if (args.profile !== undefined) assertProfileName(args.profile);
+  let stoppedAny = false;
+  for (const profile of profiles) {
+    if (await stopOne(profile)) stoppedAny = true;
+  }
+  if (!stoppedAny) {
+    // Not a crash -- just nothing to do. Friendly note, no stack trace, but a
+    // non-zero exit so scripts can still tell "stopped" from "nothing running".
     process.exitCode = 1;
     return;
   }
-  consola.info(`Stopped the proxy (PID ${trackedPid})`);
   consola.info(`   Bun env: ${PROJECT_ROOT}`);
 }

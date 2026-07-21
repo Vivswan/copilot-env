@@ -1,13 +1,13 @@
 // Simulated release-install smoke for the rolling release-please PR.
 //
-// The real release smoke (release-installer-smoke.cjs) can only run AFTER
+// The real release smoke (release-installer-smoke.ts) can only run AFTER
 // release-please tags and uploads the assets -- so a packaging bug (broken
 // archive, installer/resolver mismatch) is found only once a draft release
 // already exists, stranding a burned version number. This script gives the
 // release PR the same end-to-end coverage BEFORE merge by simulating the
 // pending release from the working tree:
 //
-//   1. `release-assets.cjs prepare/validate` pins the installers to the
+//   1. `release-assets.ts prepare/validate` pins the installers to the
 //      pending tag (the exact mechanics the release workflow will run).
 //   2. `git archive HEAD` builds the source archive with the same wrapper-dir
 //      SHA marker shape as a GitHub tarball.
@@ -18,19 +18,23 @@
 //      COPILOT_ENV_CI_RELEASES_API_URL hook in resolve-release.ts, exercising
 //      resolve -> download -> verify -> extract -> bundled installer.
 //
-// Usage: node .github/scripts/release-pr-smoke.cjs
-
-const { spawn, spawnSync, execFileSync } = require("node:child_process");
-const { createHash } = require("node:crypto");
-const { existsSync, mkdtempSync, readFileSync, writeFileSync } = require("node:fs");
-const { createServer } = require("node:http");
-const { tmpdir } = require("node:os");
-const { join, resolve } = require("node:path");
+// Usage: bun .github/scripts/release-pr-smoke.ts
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 const isWindows = process.platform === "win32";
-const repoRoot = resolve(__dirname, "..", "..");
+const repoRoot = resolve(import.meta.dir, "..", "..");
 
-function run(command, args, options = {}) {
+interface RunOptions {
+  env?: Record<string, string | undefined>;
+}
+
+function run(command: string, args: string[], options: RunOptions = {}): void {
   const proc = spawnSync(command, args, { stdio: "inherit", cwd: repoRoot, ...options });
   if (proc.error) throw proc.error;
   if (proc.status !== 0) {
@@ -41,7 +45,7 @@ function run(command, args, options = {}) {
 // The installer talks to the HTTP stand-in served by THIS process, so it must run
 // async: spawnSync would block the event loop and deadlock the installer's first
 // request against a server that can never respond.
-function runAsync(command, args, options = {}) {
+function runAsync(command: string, args: string[], options: RunOptions = {}): Promise<void> {
   return new Promise((resolvePromise, reject) => {
     const proc = spawn(command, args, { stdio: "inherit", cwd: repoRoot, ...options });
     proc.on("error", reject);
@@ -52,7 +56,7 @@ function runAsync(command, args, options = {}) {
   });
 }
 
-function pin(path, needle, replacement) {
+function pin(path: string, needle: string, replacement: string): void {
   const before = readFileSync(path, "utf8");
   if (!before.includes(needle)) {
     throw new Error(`${path}: expected pinned text not found: ${needle}`);
@@ -60,12 +64,20 @@ function pin(path, needle, replacement) {
   writeFileSync(path, before.split(needle).join(replacement));
 }
 
-function sha256File(path) {
+function sha256File(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-async function main() {
-  const version = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")).version;
+function packageVersion(path: string): string {
+  const pkg = JSON.parse(readFileSync(path, "utf8")) as { version?: unknown };
+  if (typeof pkg.version !== "string") {
+    throw new Error(`${path}: package.json has no version string`);
+  }
+  return pkg.version;
+}
+
+async function main(): Promise<void> {
+  const version = packageVersion(join(repoRoot, "package.json"));
   const tag = `v${version}`;
   const headSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" })
     .trim()
@@ -77,8 +89,8 @@ async function main() {
 
   // 1. Pin the installers exactly as the release workflow does, and validate the pins.
   const assetsEnv = { ...process.env, RELEASE_ASSETS_DIR: assetsDir };
-  run("node", [".github/scripts/release-assets.cjs", "prepare", tag], { env: assetsEnv });
-  run("node", [".github/scripts/release-assets.cjs", "validate", tag], { env: assetsEnv });
+  run("bun", [".github/scripts/release-assets.ts", "prepare", tag], { env: assetsEnv });
+  run("bun", [".github/scripts/release-assets.ts", "validate", tag], { env: assetsEnv });
 
   // 2. Build the pending source archive: same wrapper-dir SHA marker shape as a
   // GitHub tarball (verify-source-archive.ts checks the root dir's trailing hex
@@ -101,24 +113,25 @@ async function main() {
       join(repoRoot, "src", "install", name),
     ]),
   );
+  let baseUrl = "";
   const server = createServer((req, res) => {
-    const path = (req.url ?? "").split("?")[0];
+    const path = (req.url ?? "").split("?")[0] ?? "";
     if (path.startsWith("/repos/")) {
       res.setHeader("Content-Type", "application/json");
       res.end(
         JSON.stringify([
           {
-            tag_name: tag,
-            draft: false,
-            prerelease: false,
-            target_commitish: headSha,
-            published_at: new Date().toISOString(),
-            assets: [
+            "tag_name": tag,
+            "draft": false,
+            "prerelease": false,
+            "target_commitish": headSha,
+            "published_at": new Date().toISOString(),
+            "assets": [
               {
-                name: archiveName,
-                browser_download_url: `${baseUrl}/assets/${archiveName}`,
-                url: `${baseUrl}/assets/${archiveName}`,
-                digest: `sha256:${archiveSha256}`,
+                "name": archiveName,
+                "browser_download_url": `${baseUrl}/assets/${archiveName}`,
+                "url": `${baseUrl}/assets/${archiveName}`,
+                "digest": `sha256:${archiveSha256}`,
               },
             ],
           },
@@ -126,8 +139,9 @@ async function main() {
       );
       return;
     }
-    if (rawFiles.has(path)) {
-      res.end(readFileSync(rawFiles.get(path)));
+    const rawFile = rawFiles.get(path);
+    if (rawFile !== undefined) {
+      res.end(readFileSync(rawFile));
       return;
     }
     if (path === `/assets/${archiveName}`) {
@@ -137,8 +151,8 @@ async function main() {
     res.statusCode = 404;
     res.end("not found");
   });
-  await new Promise((ready) => server.listen(0, "127.0.0.1", ready));
-  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  await new Promise<void>((ready) => server.listen(0, "127.0.0.1", ready));
+  baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   console.log(`simulating release ${tag} (${headSha.slice(0, 7)}) at ${baseUrl}`);
 
   // Point the prepared installer's pinned raw downloads at the stand-in server.
@@ -176,9 +190,7 @@ async function main() {
   if (!existsSync(agent) || !readFileSync(agent, "utf8").includes("copilot-env")) {
     throw new Error(`installed agent launcher was not found at ${agent}`);
   }
-  const installedVersion = JSON.parse(
-    readFileSync(join(installDir, "package.json"), "utf8"),
-  ).version;
+  const installedVersion = packageVersion(join(installDir, "package.json"));
   if (installedVersion !== version) {
     throw new Error(
       `installed version ${installedVersion} does not match the pending release ${version}`,
@@ -187,7 +199,7 @@ async function main() {
   console.log(`release-PR smoke OK: ${scriptName} installed pending ${tag} end to end`);
 }
 
-main().catch((error) => {
+main().catch((error: unknown) => {
   console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
 });

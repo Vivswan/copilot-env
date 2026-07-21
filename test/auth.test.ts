@@ -114,6 +114,7 @@ test("auth --del clears the stored token and provider", async () => {
   expect(state().read()).toEqual({
     githubToken: null,
     authProvider: null,
+    profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogCodexVersion: null,
   });
@@ -164,6 +165,7 @@ test("auth --provider gh-token stores the env token + provider, and does NOT con
   expect(state().read()).toEqual({
     githubToken: "ghu_new_from_env",
     authProvider: "gh-token",
+    profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogCodexVersion: null,
   });
@@ -179,6 +181,7 @@ test("auth --set <token> stores it verbatim (no env, no UI) and records gh-token
   expect(state().read()).toEqual({
     githubToken: "ghu_inline_value",
     authProvider: "gh-token",
+    profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogCodexVersion: null,
   });

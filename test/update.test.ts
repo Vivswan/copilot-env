@@ -343,7 +343,7 @@ describe("resolveTarget retry (de-flakes the installer release lookup)", () => {
   });
 
   // The CI-only endpoint override is load-bearing for the release-PR installer smoke
-  // (.github/scripts/release-pr-smoke.cjs serves a simulated release from localhost);
+  // (.github/scripts/release-pr-smoke.ts serves a simulated release from localhost);
   // pin its contract: loopback-only, never forwards the GH credential, and a
   // non-loopback override is ignored in favor of the real API.
   test("COPILOT_ENV_CI_RELEASES_API_URL: loopback-only redirect, no credential forwarded", async () => {

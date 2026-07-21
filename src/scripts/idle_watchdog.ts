@@ -15,6 +15,7 @@
 // pure helpers. idle_watchdog_preload.ts is the tiny `bun --preload` entry that arms it (and is
 // never imported by tests), the same split pat_passthrough_preload.ts gets from its own file.
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { ROOT_HOME_ENV } from "../copilot_api/paths.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { lastObservedInferenceMs } from "./inference_activity.ts";
 
@@ -80,12 +81,14 @@ export function idleCheck(startedAtMs: number, timeoutMs: number): void {
   // Clear our run-state tracking, but ONLY if it still points at THIS daemon. clearIfPid
   // does the pid check INSIDE the atomic read-modify-write, so a newer daemon that replaced
   // us between ticks can't have its freshly written pid/port clobbered. We exit either way
-  // (this daemon is idle / has been replaced). The persisted `.activity.json` mark is left
+  // (this daemon is idle / has been replaced). A profile daemon (ROOT_HOME_ENV set at
+  // spawn) keeps its `port` -- that's the profile's stable reservation, which the baked
+  // agent wiring points at. The persisted `.activity.json` mark is left
   // alone on purpose: it can't be pid-guarded (separate file), so deleting it here could
   // clobber a successor daemon's mark -- `agent stop` (explicit teardown) removes it instead,
   // and a leftover mark is only ever a health-display detail.
   try {
-    state.clearIfPid(process.pid);
+    state.clearIfPid(process.pid, process.env[ROOT_HOME_ENV] !== undefined);
   } catch {
     // best-effort: a failed state clear must not stop us from exiting
   }

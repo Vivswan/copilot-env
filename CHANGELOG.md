@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.5.0](https://github.com/Vivswan/copilot-env/compare/v3.4.3...v3.5.0) (2026-07-21)
+
+
+### Features
+
+* named profiles for concurrent per-credential agent sessions ([8c4aa26](https://github.com/Vivswan/copilot-env/commit/8c4aa2638a4133a4f64db1d98f259ee588e0045f))
+
 ## [3.4.3](https://github.com/Vivswan/copilot-env/compare/v3.4.2...v3.4.3) (2026-07-17)
 
 

@@ -2,9 +2,11 @@ name: release-please
 
 # Versioned GitHub releases from Conventional Commits. CI calls this workflow
 # after `all-green` succeeds on main. release-please opens/updates ONE rolling
-# "release PR" that bumps the version (semver derived from feat:/fix:/feat!:
-# prefixes) and regenerates CHANGELOG.md. Merging that PR is what tags vX.Y.Z
-# + publishes the GitHub Release -- a plain push to main releases nothing.
+# "release PR" that bumps the version (feat:/fix: gate WHETHER a release
+# happens; the bump is always the next PATCH -- `always-bump-patch` in
+# release-please-config.json) and regenerates CHANGELOG.md. Merging that PR is
+# what tags vX.Y.Z + publishes the GitHub Release -- a plain push to main
+# releases nothing.
 on:
   workflow_call:
 

@@ -1,5 +1,6 @@
 // Validate that every commit subject in the push/PR range is a Conventional
-// Commit (the release automation derives versions from the prefixes).
+// Commit (the release automation reads the prefixes to decide WHETHER a
+// release happens; the version always bumps the patch).
 // Run by CI: bun .github/scripts/validate-commit-names.ts
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";

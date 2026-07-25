@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.5.1](https://github.com/Vivswan/copilot-env/compare/v3.5.0...v3.5.1) (2026-07-25)
+
+
+### Features
+
+* add agent uninstall command ([1e9ec71](https://github.com/Vivswan/copilot-env/commit/1e9ec71fb8a1f08151af8ed061b56c40c2ac0797))
+* **codex:** fall back to the newest npm release for the codex_exec User-Agent version ([b6fcfc5](https://github.com/Vivswan/copilot-env/commit/b6fcfc5d9aea62c1b98f75f41fbf3ee1aaad290a))
+
 ## [3.5.0](https://github.com/Vivswan/copilot-env/compare/v3.4.3...v3.5.0) (2026-07-21)
 
 

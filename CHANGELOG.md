@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.5.2](https://github.com/Vivswan/copilot-env/compare/v3.5.1...v3.5.2) (2026-07-25)
+
+
+### Features
+
+* probe the Copilot client integration id per credential ([e510e19](https://github.com/Vivswan/copilot-env/commit/e510e192e73b4753387de56405247935eca9ba81))
+
 ## [3.5.1](https://github.com/Vivswan/copilot-env/compare/v3.5.0...v3.5.1) (2026-07-25)
 
 

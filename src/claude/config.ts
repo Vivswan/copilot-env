@@ -295,7 +295,8 @@ function writeHelperScript(helperPath: string, script: string): void {
  * The Direct (GitHub Copilot) custom-headers value: an `ANTHROPIC_CUSTOM_HEADERS` string of
  * newline-separated `Name: Value` pairs. Matches Codex Direct's `http_headers` exactly so
  * Copilot's editor-client allowlist accepts Claude the same way -- the User-Agent is derived
- * from the installed codex binary (codexUserAgent), falling back to a versionless `codex_exec`.
+ * from the installed codex binary (codexUserAgent), falling back to the newest @openai/codex
+ * npm release, then to a versionless `codex_exec`.
  */
 function directCustomHeaders(): string {
   return [`Openai-Intent: conversation-edits`, `User-Agent: ${codexUserAgent()}`].join("\n");

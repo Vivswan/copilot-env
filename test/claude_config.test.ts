@@ -73,7 +73,8 @@ test("direct mode writes the managed apiKeyHelper + env and the token helper, pr
   expect(env.ANTHROPIC_BASE_URL).toBe(DIRECT_BASE_URL);
   expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1");
   // Direct sends Copilot's editor-client headers (Openai-Intent + a codex_exec User-Agent
-  // derived from the installed codex binary -- versionless when codex is absent on CI).
+  // derived from the installed codex binary; versionless when codex is absent here --
+  // the runtime npm-latest fallback is disabled under NODE_ENV=test).
   const headers = env[CUSTOM_HEADERS_ENV] as string;
   expect(headers).toContain("Openai-Intent: conversation-edits");
   expect(headers).toMatch(/(^|\n)User-Agent: codex_exec/);

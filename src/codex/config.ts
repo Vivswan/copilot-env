@@ -37,8 +37,8 @@ import {
 } from "../utils/root.ts";
 import {
   type CodexCatalogDeps,
+  codexUserAgentVersion,
   generateCodexModelCatalog,
-  installedCodexVersion,
   isCatalogFileUsable,
 } from "./catalog.ts";
 
@@ -99,7 +99,7 @@ interface ProxyConfigOptions {
 // The single source of truth for our managed direct Copilot provider table.
 // Re-applied on every direct-mode run (managed keys win; any user-added key in
 // the same table is preserved by the merge).
-export function codexUserAgent(version: string | null = installedCodexVersion()): string {
+export function codexUserAgent(version: string | null = codexUserAgentVersion()): string {
   return version ? `codex_exec/${version}` : "codex_exec";
 }
 

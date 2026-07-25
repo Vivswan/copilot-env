@@ -69,6 +69,40 @@ export function installedCodexVersion(): string | null {
   return cachedCodexVersion;
 }
 
+let cachedNpmCodexVersion: string | null | undefined;
+
+/** The newest @openai/codex release on npm (cached per process), or null when
+ *  npm is missing/unreachable. */
+function latestNpmCodexVersion(): string | null {
+  // Never under `bun test` (it sets NODE_ENV=test): this is a live npm query,
+  // and tests must stay network-free and deterministic.
+  if (process.env.NODE_ENV === "test") return null;
+  if (cachedNpmCodexVersion !== undefined) return cachedNpmCodexVersion;
+  const s = cliSpawn("npm", ["view", "@openai/codex", "version"]);
+  const result = spawnSync(s.file, s.args, {
+    encoding: "utf8",
+    timeout: 5000,
+    windowsHide: true,
+    shell: s.shell,
+  });
+  cachedNpmCodexVersion =
+    result.error || result.status !== 0 ? null : parseCodexVersion(result.stdout ?? "");
+  return cachedNpmCodexVersion;
+}
+
+/**
+ * The codex version to advertise in the managed `codex_exec` User-Agent: the
+ * installed CLI's, else the newest npm release, else null (versionless UA).
+ * Copilot Direct gates on an editor-client identity, and a real current version
+ * is a stronger identity than a bare `codex_exec` -- so a machine without the
+ * codex CLI (e.g. Claude-only Direct) still advertises a plausible one. Both
+ * lookups are best-effort and cached per process; fully offline stays null,
+ * exactly the pre-fallback behavior.
+ */
+export function codexUserAgentVersion(): string | null {
+  return installedCodexVersion() ?? latestNpmCodexVersion();
+}
+
 export interface CopilotModelLimits {
   maxContextWindowTokens: number;
   maxPromptTokens: number;

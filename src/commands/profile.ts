@@ -15,9 +15,16 @@ import {
   resolveClaudeHome,
   settingsPathFor,
 } from "../claude/config.ts";
-import { configureCodexConfig, effectiveCodexHome, removeCodexProfile } from "../codex/config.ts";
+import {
+  configureCodexConfig,
+  effectiveCodexHome,
+  probeDirectIntegrationId,
+  removeCodexProfile,
+} from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
+import { CODEX_IDENTITY_NAME } from "../copilot_api/integration_identity.ts";
 import { profileHome, profileHomeNames } from "../copilot_api/paths.ts";
 import { openaiBaseUrl, reserveProfilePort } from "../copilot_api/port.ts";
 import { assertProfileName, profileLabel } from "../copilot_api/profile.ts";
@@ -57,11 +64,16 @@ function storedMode(name: string): ProfileMode | null {
 }
 
 /** Wire BOTH agents for `name` at `mode`. Order and resilience mirror
- *  configureBothAgents: try each, report per-agent, fail if either failed. */
-function wireBothAgents(name: string, mode: ProfileMode, quiet: boolean): void {
+ *  configureBothAgents: try each, report per-agent, fail if either failed. Direct mode
+ *  resolves the client identity as pin > persisted slot > probe, persisting a freshly
+ *  probed non-default id so a later launcher `--sync` replays it offline (a null slot
+ *  means "re-derive", which is network-free for the non-PAT common case). */
+async function wireBothAgents(name: string, mode: ProfileMode, quiet: boolean): Promise<void> {
+  const directIntegrationId =
+    mode === "direct" ? await resolveAndPersistDirectIdentity(name) : undefined;
   const failures: string[] = [];
   try {
-    configureClaudeConfig(resolveClaudeHome(), mode, { quiet, profile: name });
+    configureClaudeConfig(resolveClaudeHome(), mode, { quiet, profile: name, directIntegrationId });
   } catch (e) {
     failures.push(`Claude: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -69,7 +81,7 @@ function wireBothAgents(name: string, mode: ProfileMode, quiet: boolean): void {
     const options =
       mode === "proxy"
         ? { profile: name, quiet, baseUrl: openaiBaseUrl(String(reserveProfilePort(name))) }
-        : { profile: name, quiet };
+        : { profile: name, quiet, directIntegrationId };
     if (configureCodexConfig(effectiveCodexHome(), mode, options) !== 0) {
       failures.push("Codex: config write failed (see the logged warning above)");
     }
@@ -79,6 +91,27 @@ function wireBothAgents(name: string, mode: ProfileMode, quiet: boolean): void {
   if (failures.length > 0) {
     throw new Error(`could not wire ${profileLabel(name)}:\n  ${failures.join("\n  ")}`);
   }
+}
+
+/**
+ * The direct client identity header to bake for `name`: the config pin, else the
+ * persisted slot value, else a fresh probe (always persisted, so the launcher hot path
+ * -- `--settings-for` / `--sync` on every `cl --profile` -- never re-probes).
+ *
+ * The slot stores the identity NAME, not the header value, so "probed, the default won"
+ * (CODEX_IDENTITY_NAME) is distinguishable from "never probed" (null). Only a named
+ * integration is a real header; the default sends none. A credential change clears the
+ * slot (CopilotEnvState.setCredential), which is what re-arms the probe.
+ * Throws if the credential is rejected under every identity.
+ */
+async function resolveAndPersistDirectIdentity(name: string): Promise<string | null> {
+  const pin = new CopilotEnvConfig().pinnedIntegrationId();
+  if (pin !== null) return pin;
+  const stored = new CopilotEnvState().readProfileSlot(name).integrationIdentity;
+  if (stored !== null) return stored === CODEX_IDENTITY_NAME ? null : stored;
+  const probed = await probeDirectIntegrationId(name);
+  new CopilotEnvState().setProfileIntegrationIdentity(name, probed ?? CODEX_IDENTITY_NAME);
+  return probed;
 }
 
 /**
@@ -125,7 +158,9 @@ async function runAdd(name: string, args: ProfileArgs): Promise<void> {
     `  Configuring ${profileLabel(name)} for ` +
       `${mode === "direct" ? "GitHub Copilot Direct" : "the local copilot-api proxy"} (both agents) …`,
   );
-  wireBothAgents(name, mode, false);
+  // wireBothAgents resolves+persists the direct client identity (a rejected credential
+  // throws here, before the store commits the mode below, so the profile stays unwired).
+  await wireBothAgents(name, mode, false);
   // The store commit is LAST -- it is the success marker. If wiring threw above, the
   // store keeps the previous mode (or no profile at all), so `--check` and `--sync`
   // keep answering for the last fully-applied state and a later `--sync` re-derives
@@ -303,7 +338,7 @@ function runCheck(name: string): void {
  * live proxy port (mode from the store) and print its ABSOLUTE PATH on stdout --
  * the machine contract `cl --profile <name>` evals into `claude --settings <path>`.
  */
-function runSettingsFor(name: string): void {
+async function runSettingsFor(name: string): Promise<void> {
   const mode = storedMode(name);
   if (mode === null) {
     throw new Error(
@@ -311,7 +346,12 @@ function runSettingsFor(name: string): void {
     );
   }
   const claudeHome = resolveClaudeHome();
-  configureClaudeConfig(claudeHome, mode, { quiet: true, profile: name });
+  configureClaudeConfig(claudeHome, mode, {
+    quiet: true,
+    profile: name,
+    directIntegrationId:
+      mode === "direct" ? await resolveAndPersistDirectIdentity(name) : undefined,
+  });
   process.stdout.write(`${settingsPathFor(claudeHome, name)}\n`);
 }
 
@@ -319,14 +359,14 @@ function runSettingsFor(name: string): void {
  *  Launcher plumbing (`cx --profile` runs it pre-launch); quiet and per-profile
  *  resilient (one broken profile never blocks the rest), never touches the
  *  default wiring -- but any failure still exits non-zero so callers can warn. */
-function runSync(): void {
+async function runSync(): Promise<void> {
   let synced = 0;
   let failed = 0;
   for (const name of new CopilotEnvState().profileNames()) {
     const mode = storedMode(name);
     if (mode === null) continue;
     try {
-      wireBothAgents(name, mode, true);
+      await wireBothAgents(name, mode, true);
       synced++;
     } catch (e) {
       failed++;

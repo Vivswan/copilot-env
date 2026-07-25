@@ -743,6 +743,7 @@ test("checkAuth: a stored token reports ok", () => {
     ghAuthenticated: false,
     provider: "gh-token",
     profiles: {},
+    pinnedIntegrationId: null,
   });
   expect(res.group).toBe("auth");
   expect(res.status).toBe("ok");
@@ -757,6 +758,7 @@ test("checkAuth: no stored token but gh authed reports ok (falls back to gh)", (
     ghAuthenticated: true,
     provider: "gh-cli",
     profiles: {},
+    pinnedIntegrationId: null,
   });
   expect(res.status).toBe("ok");
   expect(res.detail).toContain("gh CLI");
@@ -768,6 +770,7 @@ test("checkAuth: neither stored token nor gh reports warn with the agent auth fi
     ghAuthenticated: false,
     provider: null,
     profiles: {},
+    pinnedIntegrationId: null,
   });
   expect(res.status).toBe("warn");
   expect(res.detail).toContain("not authenticated");

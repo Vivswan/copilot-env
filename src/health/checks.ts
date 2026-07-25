@@ -472,9 +472,18 @@ export function checkAuth(f: AuthFacts): CheckResult {
           `named profiles: ${profileNames
             .map((name) => {
               const slot = f.profiles[name];
-              return `${name} (${slot?.provider ?? "no auth"}, ${slot?.mode ?? "no mode"})`;
+              const identity = slot?.integrationIdentity ? `, ${slot.integrationIdentity}` : "";
+              return `${name} (${slot?.provider ?? "no auth"}, ${slot?.mode ?? "no mode"}${identity})`;
             })
             .join(", ")}`,
+        ];
+  // The Copilot client identity: a pin overrides the per-credential probe (the knob a
+  // fine-grained PAT needs -- copilot-developer-cli -- when auto-detection is off).
+  const identityLine =
+    f.pinnedIntegrationId === null
+      ? []
+      : [
+          `Copilot integration id pinned to '${f.pinnedIntegrationId}' (\`agent config integration-id\`)`,
         ];
   const base = {
     id: "setup.auth",
@@ -486,6 +495,7 @@ export function checkAuth(f: AuthFacts): CheckResult {
       ghAuthenticated: f.ghAuthenticated,
       provider: f.provider,
       profiles: f.profiles,
+      pinnedIntegrationId: f.pinnedIntegrationId,
     },
   };
   // Provider classification owned by credentialSource() (credential.ts); a
@@ -498,6 +508,7 @@ export function checkAuth(f: AuthFacts): CheckResult {
         "not authenticated: no credential provider is configured",
         "run `agent auth` (Direct won't work; the proxy can still device-login on `agent start`)",
         ...profilesLine,
+        ...identityLine,
       ].join("\n"),
       fix: "agent auth",
     };
@@ -513,6 +524,7 @@ export function checkAuth(f: AuthFacts): CheckResult {
         `credential: ${how} (provider: ${f.provider})`,
         "resolved by `agent auth --get` for Direct; passed to the proxy on `agent start`",
         ...profilesLine,
+        ...identityLine,
       ].join("\n"),
     };
   }
@@ -525,6 +537,7 @@ export function checkAuth(f: AuthFacts): CheckResult {
         ? "`gh` is unauthenticated — run `gh auth login`, or `agent auth` to switch provider"
         : "the stored token is missing — run `agent auth` to re-provision",
       ...profilesLine,
+      ...identityLine,
     ].join("\n"),
     fix: "agent auth",
   };

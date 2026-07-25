@@ -119,6 +119,8 @@ test("enforces every managed field while preserving unknown user keys", () => {
   const headers = asRecord(provider.http_headers);
   expect(headers["Openai-Intent"]).toBe("conversation-edits");
   expect(headers["User-Agent"]).toBe("codex_exec/0.139.0");
+  // No probed identity passed -> no Copilot-Integration-Id header (default identity).
+  expect(headers["Copilot-Integration-Id"]).toBeUndefined();
 
   // Direct fetches the bearer via `auth.command` -> the agent launcher `auth --get`.
   const auth = asRecord(provider.auth);
@@ -138,6 +140,23 @@ test("enforces every managed field while preserving unknown user keys", () => {
   // collides with copilot-env's legacy key, so we never scrub it); only the copilot-env-owned
   // COPILOT_ENV_GH_TOKEN is removed.
   expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe("OPENAI_API_KEY=user\n");
+});
+
+test("direct bakes a probed Copilot-Integration-Id into http_headers when passed", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
+  process.env.HOME = dir;
+  const codexHome = join(dir, ".codex");
+  mkdirSync(codexHome, { recursive: true });
+
+  const rc = configureCodexConfig(codexHome, "direct", {
+    codexExecVersion: "0.139.0",
+    directIntegrationId: "copilot-developer-cli",
+  });
+  expect(rc).toBe(0);
+  const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
+  const headers = asRecord(asRecord(asRecord(doc.model_providers)["copilot-env"]).http_headers);
+  expect(headers["Copilot-Integration-Id"]).toBe("copilot-developer-cli");
+  expect(headers["User-Agent"]).toBe("codex_exec/0.139.0");
 });
 
 test("direct uses the launcher auth.command (no env_key, no token at rest), classified direct", () => {

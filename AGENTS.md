@@ -14,124 +14,74 @@ unless the user says otherwise. Each POSIX/PowerShell pair stays feature-matched
 
 ## Architecture: the non-obvious decisions
 
-Only the *why* lives here; the mechanics are discoverable in the code.
+Only the *why* lives here — the code is the source of truth for mechanics, key lists, and
+file layouts. Don't restate here what a reader can grep.
 
 - **In-place, no cache.** `bin/agent` installs `node_modules` into the checkout and runs
-  `cli.ts` from there (resolution anchors at `PROJECT_ROOT`, `src/utils/root.ts`). Install
-  noise goes to stderr so it never pollutes the `agent env` stdout the shell wrapper evals.
-- **The proxy floats; we never patch it.** `@jeffreycao/copilot-api`
-  is tracked as `latest`; `src/proxy_float.ts` (a `bun install` postinstall) overlays the
-  newest release inside a supply-chain cooldown window, clamped to the floor/ceiling in
-  `copilot-env.config`. The float is best-effort at install; `start.ts` enforces the floor as
-  a hard contract at launch. When BOTH Codex and Claude are wired Direct the float (and its
-  `--verify`/`--assert-installed` modes) is a no-op — the local proxy is unused, so no npm
-  check runs; an explicit `COPILOT_API_VERSION` env pin forces the normal path. Patching the
-  package would pin one version, so we never do —
-  runtime needs are `bun --preload` shims instead (see the PAT shim below).
-- **`agent env` is the one machine-readable command.** The shell wrapper evals only `agent env`
-  to refresh session state, so a new subcommand needs no wrapper change. Otherwise each agent's
-  proxy/direct wiring lives in its own config file (`~/.codex/config.toml`,
-  `~/.claude/settings.json`).
-- **One credential, resolved not baked.** The GitHub Copilot token is the single source of
-  truth in `CopilotEnvState` (`src/copilot_api/env_state.ts`), an account-wide file under the
-  copilot-api home (not per-host `.run/` state). Agent Direct configs never store a copy; they
-  resolve it at fetch time via `agent auth --get`, provider-driven with **no implicit `gh`
-  fallback**. `agent auth` is the credential front door; when auth is none we **ask, never
-  silently fall back**.
-- **Profiles are opt-in atomic units; the default path never changes.** `agent profile` is
-  the single front door: a profile = ONE credential + ONE mode (direct or proxy, never
-  both), always wired into BOTH agents (`agent profile --add <name> --direct|--proxy`,
-  `--del`, `--list`, `--check`; the store's profile slot -- credential + `mode` in the SAME
-  `.copilot-env-state.json` -- is the source of truth, and the per-agent artifacts are
-  derived: an overlay `settings-<name>.json` + per-profile apiKeyHelper for Claude, native
-  `[profiles.<name>]` + `[model_providers.copilot-env-<name>]` for Codex). Named profiles
-  **hard-fail, never falling back to the default credential**; launch via `cl --profile
-  <name>` / `cx --profile <name>` (or raw `claude --settings <path>` / `codex --profile
-  <name>`), with `agent auth --profile <name>` as the re-auth path. A proxy-mode profile
-  gets its **own daemon** in an isolated home (`<home>/profiles/<name>` -- own
-  config.json/apiKeys/sqlite/run-state, a stable reserved port, `COPILOT_ENV_ROOT_HOME`
-  pointing the in-daemon preloads back at the shared account-wide files); `agent start/stop
-  --profile <name>` manage it, `agent stop --all` sweeps everything, and the orphan sweep
-  never signals another profile's tracked daemon.
-- **`agent config` is the typed preference store.** A `--set <key> <value>` / `--get [key]`
-  / `--del <key>` front-end over `CopilotEnvConfig` (`src/copilot_api/env_config.ts`, a
-  `.copilot-env-config.json` SEPARATE from the credential store), with a single key registry
-  as the source of truth (alphabetical): `auto-start`, `codex-model-catalog`, `idle-timeout`,
-  `max-port`, `message-websearch-model`, `messages-api`, `min-port`, `passthrough` (auto/on/off),
-  `port`, `proxy-logs`, `proxy-version`, `release-cooldown`, `responses-context-management`,
-  `responses-websearch`, `responses-websocket`, `small-model`, `strict-port`, `update-cooldown`.
-  Registry entries marked for proxy projection are
-  **written into the proxy's own `config.json` at `agent start`** (`applyDefaultConfig` ->
-  `projectedProxyConfig`): a `proxyDefault` key (`small-model` + the three `responses-websocket`
-  /`responses-websearch`/`messages-api` flags) is force-written every start, while a
-  `proxyProjected` key (`responses-context-management`, `message-websearch-model`) is written
-  only when set so the proxy's own default otherwise stands. Either way a daemon restart is
-  needed (the `agent config` set/del prints that hint). Every read site applies the same
-  precedence: **explicit flag/env (per-invocation) > stored config > built-in default** (e.g.
-  `COPILOT_API_IDLE_TIMEOUT` env > config `idle-timeout` > 3600). `proxy_float.ts` reads
-  `proxy-version`/`release-cooldown` from it at install time (a best-effort read that falls
-  back to env/bunfig).
-- **The managed proxy lifecycle is opt-in** (the `auto-start` config key; `agent config
-  --set auto-start true`). The shared resolver `src/scripts/proxy-token.{sh,ps1}` (run by
-  Codex's `auth.command`, Claude's `apiKeyHelper`, and the `cl`/`cx` launchers) is built from
-  **honest primitives** rather than a magic flag: `start --check` (is the proxy up?), `config
-  --get auto-start` (the gate), `start` (launch), `start --record-event` (the watchdog
-  heartbeat), `auth --print-proxy-token` (a pure key printer). The resolver: if the proxy is
-  down and the lifecycle is ON, auto-start it; if OFF, only `--yes` callers (Codex/Claude,
-  headless) skip starting while non-`--yes` callers (the launcher) prompt; then it prints the
-  key only if the proxy is up. Auto-stop is an **in-daemon watchdog**
-  (`src/scripts/idle_watchdog_preload.ts`, `bun --preload`-ed into the proxy) gated on the
-  same flag, so server and watchdog are one process and neither can orphan the other. Its
-  activity signal is an always-loaded **inbound-request observer**
-  (`src/scripts/inference_activity_preload.ts`, wrapping `Bun.serve`): only inference POSTs
-  count, so health/liveness pings never reset the idle clock -- and muting the proxy's
-  verbose handler logs (`proxy-logs false`) can't starve it. OFF
-  (default): manage the proxy yourself with `agent start` / `agent stop`. Idle window:
-  `COPILOT_API_IDLE_TIMEOUT` env / `idle-timeout` config (default 3600; `0` disables).
-- **A PAT works through a runtime shim.** A classic/fine-grained PAT can't perform copilot-api's
-  editor token exchange (403, and `gh`-CLI/`gho_` OAuth tokens 404 it) but is accepted directly
-  under the `vscode-chat` integration. So `agent start` preloads
-  `src/scripts/pat_passthrough_preload.ts`, which fakes the exchange so the daemon uses the
-  token as the bearer. Auto-on for PAT-shaped tokens (`ghp_`/`github_pat_`), `gho_` tokens, and
-  the `gh-cli` provider; the device-flow `copilot` token is never auto-shimmed. Force it either
-  way with the `passthrough` config key (`agent config --set passthrough on|off`) — e.g. `on`
-  for a legacy unprefixed 40-hex classic PAT, which auto-detection misses.
+  `cli.ts` from there. Install noise goes to stderr so it never pollutes the `agent env`
+  stdout the shell wrapper evals.
+- **The proxy floats; we never patch it.** `@jeffreycao/copilot-api` is tracked as `latest`
+  and overlaid inside a supply-chain cooldown window (`src/proxy_float.ts`), clamped by
+  `copilot-env.config`. Patching the package would pin one version, so runtime needs are
+  `bun --preload` shims instead. Two agents wired Direct means no proxy, so no npm check runs.
+- **`agent env` is the one machine-readable command.** The shell wrapper evals only that, so
+  a new subcommand needs no wrapper change. Each agent's wiring otherwise lives in its own
+  config file (`~/.codex/config.toml`, `~/.claude/settings.json`).
+- **One credential, resolved not baked.** The token is the single source of truth in
+  `CopilotEnvState`; Direct configs never store a copy, they resolve it at fetch time via
+  `agent auth --get`. Provider-driven with **no implicit `gh` fallback** — when auth is none
+  we **ask, never silently fall back**.
+- **Profiles are opt-in atomic units; the default path never changes.** A profile = ONE
+  credential + ONE mode (never both), always wired into BOTH agents. The store slot is the
+  source of truth and the per-agent artifacts are *derived* from it, which is what lets one
+  command create/check/delete a profile atomically. Named profiles **hard-fail rather than
+  falling back** to the default credential. A proxy-mode profile gets its own daemon in an
+  isolated home so concurrent daemons never contend.
+- **`agent config` is the typed preference store**, separate from the credential store, with
+  a single key registry as the source of truth (`agent config --help` lists the keys). Some
+  keys project into the proxy's own `config.json` at `agent start`, so they need a daemon
+  restart. Every read site applies the same precedence: **explicit flag/env > stored config >
+  built-in default**.
+- **The managed proxy lifecycle is opt-in** (`auto-start`). The shared resolver
+  `src/scripts/proxy-token.{sh,ps1}` is built from **honest primitives** (is-it-up, the gate,
+  launch, heartbeat, print-key) rather than one magic flag, so each step is independently
+  testable. Auto-stop is an **in-daemon** watchdog preload: server and watchdog are one
+  process, so neither can orphan the other. Its activity signal counts only inference
+  requests, so health pings can't keep it alive and muted logs can't starve it.
+- **PATs need two runtime workarounds, both because Copilot treats them as a distinct
+  credential class.** A PAT can't perform copilot-api's editor token exchange, so a preload
+  fakes it and the daemon uses the token directly. And the inference hosts gate on a
+  `Copilot-Integration-Id` that a PAT is only accepted under (`copilot-developer-cli`), so
+  the identity is **probed per credential** rather than assumed — baked into Direct configs,
+  or rewritten onto the daemon's calls by the same preload. Non-PAT credentials skip the
+  probe entirely. `passthrough` and `integration-id` force either decision by hand.
 
 ## Repo map
 
 - `bin/agent`(`.ps1`) — self-bootstrapping launchers (install bun + deps, dispatch `cli.ts`).
 - `shell/` — shell integration (the `agent` wrapper + eager `agent env`) and the opt-in
   `cl`/`co`/`cx` launchers; pure runtime wiring, never installs.
-- `install.sh`/`install.ps1` — one-line bootstrap installers: ensure bun, download + checksum
-  the latest release archive, then hand off to release-local `src/install/installer.ts`.
+- `install.sh`/`install.ps1` — one-line bootstrap installers, handing off to release-local
+  `src/install/installer.ts`.
 - `src/cli.ts` — Commander entry; delegates to `run*` functions.
-- `src/commands/` — command implementations (`init`/`auth`/`profile`/`config`/`start`/`stop`/`health`/
-  `models`/`env`/`update`, plus `setup`+`shell_integration` behind `agent shell` and `apply_update`
-  shared by `agent update` and the autoupdate preflight); `init` configures both agents via
-  `configure_agents.ts` (`auth` manages the credential only and never configures agents).
-- `src/codex/`, `src/claude/` — per-agent config wiring (Codex farm/`--mobile`; Claude settings).
-- `src/copilot_api/` — proxy helpers: admin REST, raw catalog fetch (proxy or Direct), JSON
-  config/state, model aliases, per-host paths, daemon process control.
-- `src/scripts/` — runtime scripts that run as their OWN process or preload, NOT CLI handlers:
-  `proxy-token.{sh,ps1}` (proxy-mode credential resolver) and the `bun --preload` daemon
-  shims: `token_argv_preload.ts` (first when a token is handed off; splices it from an env var
-  onto in-process argv so it stays off process listings), `inference_activity_preload.ts`
-  (always), `pat_passthrough_preload.ts`, `idle_watchdog_preload.ts`, `log_mute_preload.ts`
-  (each conditional).
+- `src/commands/` — one file per command; `init` configures both agents, `auth` manages the
+  credential only and never configures agents.
+- `src/codex/`, `src/claude/` — per-agent config wiring.
+- `src/copilot_api/` — proxy helpers: admin REST, catalog fetch, JSON config/state, model
+  aliases, per-host paths, daemon process control, client-identity probe.
+- `src/scripts/` — things that run as their OWN process or `bun --preload`, NOT CLI handlers:
+  the proxy-token resolver and the daemon shims.
 - `src/install/`, `src/migrations/`, `src/autoupdate/`, `src/health/`, `src/usage/`,
-  `src/utils/` — release download/verify, version-step fix-ups, the `agent start`-time
-  autoupdate preflight, the `agent health` check/probe/report engine, `cost` reporting,
-  generic helpers.
+  `src/utils/` — release download/verify, version-step fix-ups, the update preflight, the
+  health engine, cost reporting, generic helpers.
 - `copilot-env.config` — proxy-float floor/ceiling. `test/` — `bun test` units + a start/stop
   lifecycle against `test/copilot-api-fake.mjs`.
 
 ## Agent & dev environment init
 
 Every agent/dev environment and fresh `git worktree` initializes through **one** idempotent
-script — `scripts/setup-env.sh` (`.ps1` on Windows) — so no entry point drifts. It runs
-`bun install --frozen-lockfile` (which fires the best-effort float; no agent CLIs). It is
-invoked by the Copilot coding agent (`.github/workflows/copilot-setup-steps.yml`),
-Codespaces/Dev Containers (`.devcontainer/devcontainer.json`), and humans.
+script — `scripts/setup-env.sh` (`.ps1` on Windows) — so no entry point drifts. It is invoked
+by the Copilot coding agent, Codespaces/Dev Containers, and humans.
 
 ## Migrations
 

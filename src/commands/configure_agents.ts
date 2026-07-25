@@ -50,7 +50,7 @@ export async function configureBothAgents(flags: BothFlags): Promise<{
   logger.log("");
   logger.log(bold("▸ Claude"));
   try {
-    runClaude(flags);
+    await runClaude(flags);
   } catch (e) {
     logger.warn(`  Could not configure Claude: ${errMessage(e)}`);
   }

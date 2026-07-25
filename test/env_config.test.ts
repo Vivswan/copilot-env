@@ -155,6 +155,7 @@ test("the registry covers exactly the documented keys, in alphabetical order", (
     "auto-start",
     "codex-model-catalog",
     "idle-timeout",
+    "integration-id",
     "max-port",
     "message-websearch-model",
     "messages-api",

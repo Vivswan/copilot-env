@@ -10,6 +10,10 @@ import { parse, stringify } from "smol-toml";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
+import {
+  INTEGRATION_ID_HEADER,
+  resolveDirectIntegrationId,
+} from "../copilot_api/integration_identity.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort, openaiBaseUrl, reserveProfilePort } from "../copilot_api/port.ts";
 import { assertProfileName, type Profile, profileLabel } from "../copilot_api/profile.ts";
@@ -83,6 +87,8 @@ interface ConfigureCodexConfigOptions {
   quiet?: boolean;
   /** Wire a NAMED profile's tables instead of the default selection. */
   profile?: Profile;
+  /** Direct mode: the probed `Copilot-Integration-Id` to bake, or null to send none. */
+  directIntegrationId?: string | null;
 }
 
 interface ProxyConfigOptions {
@@ -132,18 +138,27 @@ function isManagedProviderMode(mode: AgentProviderMode): mode is ManagedAgentMod
 // the config. Codex re-runs the command on `refresh_interval_ms`, so it always tracks the
 // current credential. Re-applied on every direct-mode run (managed keys win; any
 // user-added key in the same table is preserved by the merge).
-function managedDirectProvider(codexExecVersion?: string | null, profile: Profile = null) {
+function managedDirectProvider(
+  codexExecVersion?: string | null,
+  profile: Profile = null,
+  directIntegrationId?: string | null,
+) {
   const { command, args } = agentLauncherCommand(agentAuthGetArgs(profile));
+  const httpHeaders: Record<string, string> = {
+    "Openai-Intent": "conversation-edits",
+    "User-Agent": codexUserAgent(codexExecVersion),
+  };
+  // The probed client identity (integration_identity.ts): most credentials need
+  // none (the Codex UA suffices), but a fine-grained PAT is only accepted under
+  // `copilot-developer-cli`. Omitted when null so the default stays byte-identical.
+  if (directIntegrationId) httpHeaders[INTEGRATION_ID_HEADER] = directIntegrationId;
   return {
     "name": codexProviderId(profile),
     "base_url": DIRECT_BASE_URL,
     "wire_api": "responses",
     "supports_websockets": false,
     "requires_openai_auth": false,
-    "http_headers": {
-      "Openai-Intent": "conversation-edits",
-      "User-Agent": codexUserAgent(codexExecVersion),
-    },
+    "http_headers": httpHeaders,
     "auth": {
       "command": command,
       "args": [...args],
@@ -194,8 +209,10 @@ function managedProviderForMode(
   proxyOptions: ProxyConfigOptions | null,
   codexExecVersion?: string | null,
   profile: Profile = null,
+  directIntegrationId?: string | null,
 ) {
-  if (mode === "direct") return managedDirectProvider(codexExecVersion, profile);
+  if (mode === "direct")
+    return managedDirectProvider(codexExecVersion, profile, directIntegrationId);
   if (proxyOptions === null) throw new Error("proxy options are required for proxy mode");
   return managedProxyProvider(proxyOptions.baseUrl, profile);
 }
@@ -568,7 +585,13 @@ export function configureCodexConfig(
   );
   providers[providerId] = {
     ...userKeys,
-    ...managedProviderForMode(mode, proxyOptions, options.codexExecVersion, profile),
+    ...managedProviderForMode(
+      mode,
+      proxyOptions,
+      options.codexExecVersion,
+      profile,
+      options.directIntegrationId,
+    ),
   };
   doc.model_providers = providers;
 
@@ -621,6 +644,11 @@ export async function applyCodexConfig(
     // profile's stable port (this is a write path; read-only checks peek without recording).
     const port = profile === null ? copilotApiResolvePort() : String(reserveProfilePort(profile));
     options = { profile, baseUrl: openaiBaseUrl(port) };
+  } else {
+    // Direct: bake the client identity this credential is accepted under (probe, or the
+    // `integration-id` config pin). Throws with the real reason when nothing works, so a
+    // dead direct credential fails the wiring instead of writing a config that 400s.
+    options.directIntegrationId = await probeDirectIntegrationId(profile);
   }
 
   // Seed the patched model catalog (best-effort, unthrottled) BEFORE the config
@@ -639,6 +667,23 @@ export async function applyCodexConfig(
   // home; the sync also deletes the generated file and clears the throttle
   // state, so a wiring pass finishes the opt-out immediately.
   if (profile === null) syncCodexCatalogReference();
+}
+
+/**
+ * The direct-mode `Copilot-Integration-Id` for `profile`'s credential: the
+ * `integration-id` config pin, else a live probe (integration_identity.ts). Both
+ * agents bake the result identically (Claude via ANTHROPIC_CUSTOM_HEADERS, Codex via
+ * http_headers). `token` skips a redundant credential resolve when the caller already
+ * has one. Throws when the credential is rejected under every known identity.
+ */
+export function probeDirectIntegrationId(
+  profile: Profile = null,
+  token?: string | null,
+): Promise<string | null> {
+  const resolved = token !== undefined ? token : new Credential(undefined, profile).resolve();
+  return resolveDirectIntegrationId(resolved, codexUserAgent(), {
+    pinned: new CopilotEnvConfig().pinnedIntegrationId(),
+  });
 }
 
 /**

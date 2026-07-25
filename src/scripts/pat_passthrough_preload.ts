@@ -2,12 +2,18 @@
 // decides to use PAT passthrough (`usePatPassthrough` in start.ts: auto for a PAT-shaped
 // credential, or forced via the `passthrough` config key). A PAT can't perform copilot-api's
 // editor token exchange (`GET .../copilot_internal/v2/token` -> 403 "Resource not accessible by
-// personal access token"), but IS accepted directly by api.githubcopilot.com under the
-// `vscode-chat` integration -- which copilot-api's DEFAULT path already sends.
+// personal access token"), but IS accepted directly by the Copilot API hosts under the
+// right client-integration identity (which identity depends on the token class -- see
+// src/copilot_api/integration_identity.ts).
 //
-// So we intercept ONLY the exchange request and return the token itself as the Copilot
-// token. copilot-api then proceeds down its normal default path -- correct vscode-chat
-// editor headers, the token as the bearer -- and `/models` + completions return 200.
+// The shim does two things, both inside one fetch wrap:
+//   1. Intercept ONLY the exchange request and return the token itself as the Copilot
+//      token. copilot-api then proceeds down its normal default path with the token as
+//      the bearer.
+//   2. When `agent start`'s identity probe picked a NON-default integration id (a
+//      fine-grained PAT needs `copilot-developer-cli`; copilot-api hardcodes
+//      `vscode-chat`), rewrite the `Copilot-Integration-Id` header on requests to the
+//      *.githubcopilot.com hosts to the probed value from COPILOT_ENV_DAEMON_INTEGRATION_ID.
 //
 // This is a RUNTIME shim: it touches none of copilot-api's
 // files, so it never pins the floated proxy version. It depends only on copilot-api
@@ -18,6 +24,10 @@
 
 const TOKEN_FLAG = "--github-token";
 const EXCHANGE_PATH = "/copilot_internal/v2/token";
+// Same value as DAEMON_INTEGRATION_ID_ENV (integration_identity.ts); preloads stay
+// import-free so a shim never drags CLI modules into the daemon process.
+const INTEGRATION_ID_ENV = "COPILOT_ENV_DAEMON_INTEGRATION_ID";
+const INTEGRATION_ID_HEADER = "Copilot-Integration-Id";
 // The PAT never expires the way a minted Copilot token does; pick a long refresh so the
 // loop rarely re-runs (each re-run just hits this same interceptor again -- harmless).
 const REFRESH_IN_SECONDS = 21_600;
@@ -28,6 +38,35 @@ function tokenFromArgv(): string | null {
   return i >= 0 && i + 1 < process.argv.length ? (process.argv[i + 1] ?? null) : null;
 }
 
+/** True for the Copilot inference hosts (api.githubcopilot.com and the per-plan
+ *  api.business./api.enterprise. variants) -- the hosts that gate on the integration id.
+ *  Exported for unit testing (importing this module without `--github-token` in argv is a
+ *  no-op: the wrap below never installs). */
+export function isCopilotApiHost(url: string): boolean {
+  try {
+    const host = new URL(url).hostname;
+    return host === "githubcopilot.com" || host.endsWith(".githubcopilot.com");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The request's effective headers with `integrationId` swapped in. Works for every
+ * fetch calling shape because `init.headers` (when present) or the Request's own
+ * headers are the effective set, and passing the result back through `init`
+ * overrides exactly that set and nothing else. Exported for unit testing.
+ */
+export function headersWithIntegrationId(
+  input: Parameters<typeof fetch>[0],
+  init: Parameters<typeof fetch>[1],
+  integrationId: string,
+): Headers {
+  const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : {}));
+  headers.set(INTEGRATION_ID_HEADER, integrationId);
+  return headers;
+}
+
 // Act whenever this shim was preloaded with a token. The decision to load it at all is
 // `usePatPassthrough` in start.ts (auto for a PAT, or forced via the `passthrough` config
 // key), so the
@@ -35,6 +74,9 @@ function tokenFromArgv(): string | null {
 // start.ts couldn't classify (e.g. a legacy unprefixed classic PAT).
 const token = tokenFromArgv();
 if (token !== null) {
+  // The probed integration id (start.ts). Empty/absent (the default identity worked,
+  // or the probe was inconclusive) => no header rewrite, byte-identical to the old shim.
+  const integrationId = process.env[INTEGRATION_ID_ENV]?.trim() || null;
   const originalFetch = globalThis.fetch;
   const wrapped = (
     input: Parameters<typeof fetch>[0],
@@ -50,6 +92,12 @@ if (token !== null) {
           headers: { "content-type": "application/json" },
         }),
       );
+    }
+    if (integrationId !== null && isCopilotApiHost(url)) {
+      return originalFetch(input, {
+        ...init,
+        headers: headersWithIntegrationId(input, init, integrationId),
+      });
     }
     return originalFetch(input, init);
   };

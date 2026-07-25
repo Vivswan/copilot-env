@@ -21,8 +21,9 @@
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
-import { codexUserAgent } from "../codex/config.ts";
+import { codexUserAgent, probeDirectIntegrationId } from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
+import { INTEGRATION_ID_HEADER } from "../copilot_api/integration_identity.ts";
 import {
   copilotApiResolvePort,
   proxyLoopbackOrigin,
@@ -296,10 +297,14 @@ function writeHelperScript(helperPath: string, script: string): void {
  * newline-separated `Name: Value` pairs. Matches Codex Direct's `http_headers` exactly so
  * Copilot's editor-client allowlist accepts Claude the same way -- the User-Agent is derived
  * from the installed codex binary (codexUserAgent), falling back to the newest @openai/codex
- * npm release, then to a versionless `codex_exec`.
+ * npm release, then to a versionless `codex_exec`. `integrationId` (the probed client
+ * identity) is appended only when set -- most credentials need none, but a fine-grained PAT
+ * is only accepted under `copilot-developer-cli`.
  */
-function directCustomHeaders(): string {
-  return [`Openai-Intent: conversation-edits`, `User-Agent: ${codexUserAgent()}`].join("\n");
+function directCustomHeaders(integrationId?: string | null): string {
+  const pairs = [`Openai-Intent: conversation-edits`, `User-Agent: ${codexUserAgent()}`];
+  if (integrationId) pairs.push(`${INTEGRATION_ID_HEADER}: ${integrationId}`);
+  return pairs.join("\n");
 }
 
 /** Set the managed `env` keys in place (preserving any other env vars). A NAMED
@@ -312,6 +317,7 @@ function applyManagedEnv(
   mode: ManagedAgentMode,
   baseUrl: string,
   profile: Profile = null,
+  directIntegrationId?: string | null,
 ) {
   const env = isRecord(doc.env) ? doc.env : {};
   env[BASE_URL_ENV] = baseUrl;
@@ -319,7 +325,7 @@ function applyManagedEnv(
   // speaks full Anthropic and needs neither).
   if (mode === "direct") {
     env[DISABLE_BETAS_ENV] = "1";
-    env[CUSTOM_HEADERS_ENV] = directCustomHeaders();
+    env[CUSTOM_HEADERS_ENV] = directCustomHeaders(directIntegrationId);
   } else if (profile === null) {
     delete env[DISABLE_BETAS_ENV];
     delete env[CUSTOM_HEADERS_ENV];
@@ -348,6 +354,8 @@ export interface ConfigureClaudeConfigOptions {
   quiet?: boolean;
   /** Wire a NAMED profile's settings-<name>.json instead of the default settings.json. */
   profile?: Profile;
+  /** Direct mode: the probed `Copilot-Integration-Id` to bake, or null to send none. */
+  directIntegrationId?: string | null;
 }
 
 export function configureClaudeConfig(
@@ -395,7 +403,7 @@ export function configureClaudeConfig(
     // The helper execs `agent auth --get`; the token is never baked here.
     writeHelperScript(directHelperPath(claudeHome, profile), directHelperScript(profile));
     doc.apiKeyHelper = directHelperPath(claudeHome, profile);
-    applyManagedEnv(doc, "direct", DIRECT_BASE_URL, profile);
+    applyManagedEnv(doc, "direct", DIRECT_BASE_URL, profile, options.directIntegrationId);
     saveSettings(settingsPath, doc);
     if (!quiet) {
       logger.log(`  ✓ Claude config written → ${settingsPath} (direct: GitHub Copilot)`);
@@ -552,7 +560,7 @@ export function detectClaudeDirect(deps?: DirectProbeDeps): boolean {
  * `--check` reports the configured mode (exit 0 direct / 2 proxy|none / 1 other)
  * without a probe. (Named profiles are managed by `agent profile`, not here.)
  */
-export function runClaude(args: ClaudeConfigArgs): void {
+export async function runClaude(args: ClaudeConfigArgs): Promise<void> {
   assertSingleMode(args);
   if (args.check) {
     checkClaudeConfig();
@@ -567,7 +575,11 @@ export function runClaude(args: ClaudeConfigArgs): void {
   logger.log(
     `  Configuring Claude for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} …`,
   );
-  configureClaudeConfig(claudeHome, direct ? "direct" : "proxy");
+  // Direct bakes the client identity this credential is accepted under (shared with
+  // Codex Direct); proxy needs none. Reuses the already-resolved token so gh-cli isn't
+  // spawned twice.
+  const directIntegrationId = direct ? await probeDirectIntegrationId(null, ghToken) : undefined;
+  configureClaudeConfig(claudeHome, direct ? "direct" : "proxy", { directIntegrationId });
 }
 
 /** The configured Claude provider mode at the effective Claude home (read-only). */

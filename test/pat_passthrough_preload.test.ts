@@ -14,6 +14,7 @@ const SHIM = join(import.meta.dir, "..", "src", "scripts", "pat_passthrough_prel
 // fails fast (connection refused) and the target prints PASSTHROUGH.
 const EXCHANGE_URL = "http://127.0.0.1:1/copilot_internal/v2/token";
 const OTHER_URL = "http://127.0.0.1:1/other";
+const MODELS_URL = "https://api.githubcopilot.com/models";
 
 function runPreloaded(
   url: string,
@@ -76,4 +77,46 @@ test("the wrap acts for ANY token shape (the load decision is start.ts's job, no
 
 test("non-exchange URLs are never intercepted", () => {
   expect(runPreloaded(OTHER_URL, "ghp_secret123")).toBe("PASSTHROUGH");
+});
+
+// --- integration-id rewrite (pure helpers) ----------------------------------
+// Importing the preload without `--github-token` in argv is a no-op (the fetch wrap never
+// installs), so its exported helpers can be unit-tested directly.
+import {
+  headersWithIntegrationId,
+  isCopilotApiHost,
+} from "../src/scripts/pat_passthrough_preload.ts";
+
+test("isCopilotApiHost: only the Copilot inference hosts match", () => {
+  expect(isCopilotApiHost("https://api.githubcopilot.com/models")).toBe(true);
+  expect(isCopilotApiHost("https://api.enterprise.githubcopilot.com/v1/messages")).toBe(true);
+  expect(isCopilotApiHost("https://api.business.githubcopilot.com/responses")).toBe(true);
+  expect(isCopilotApiHost("https://api.github.com/copilot_internal/user")).toBe(false);
+  expect(isCopilotApiHost("http://127.0.0.1:4141/models")).toBe(false);
+  expect(isCopilotApiHost("not a url")).toBe(false);
+});
+
+test("headersWithIntegrationId: overrides the id across every fetch input shape", () => {
+  // init.headers present -> overridden.
+  expect(
+    headersWithIntegrationId(
+      MODELS_URL,
+      { headers: { "Copilot-Integration-Id": "vscode-chat" } },
+      "copilot-developer-cli",
+    ).get("Copilot-Integration-Id"),
+  ).toBe("copilot-developer-cli");
+  // Headers on the Request itself (no init) -> still overridden.
+  expect(
+    headersWithIntegrationId(
+      new Request(MODELS_URL, { headers: { "Copilot-Integration-Id": "vscode-chat" } }),
+      undefined,
+      "copilot-developer-cli",
+    ).get("Copilot-Integration-Id"),
+  ).toBe("copilot-developer-cli");
+  // No headers anywhere -> set fresh.
+  expect(
+    headersWithIntegrationId(MODELS_URL, undefined, "copilot-developer-cli").get(
+      "Copilot-Integration-Id",
+    ),
+  ).toBe("copilot-developer-cli");
 });

@@ -78,6 +78,8 @@ test("direct mode writes the managed apiKeyHelper + env and the token helper, pr
   const headers = env[CUSTOM_HEADERS_ENV] as string;
   expect(headers).toContain("Openai-Intent: conversation-edits");
   expect(headers).toMatch(/(^|\n)User-Agent: codex_exec/);
+  // No probed identity passed -> no Copilot-Integration-Id line (default identity).
+  expect(headers).not.toContain("Copilot-Integration-Id");
   expect(doc.model).toBe("sonnet");
   expect((doc.permissions as Record<string, unknown>).allow).toEqual(["Bash"]);
 
@@ -92,6 +94,14 @@ test("direct mode writes the managed apiKeyHelper + env and the token helper, pr
   if (!WIN) {
     expect(statSync(helper).mode & 0o100).not.toBe(0);
   }
+});
+
+test("direct bakes a probed Copilot-Integration-Id into ANTHROPIC_CUSTOM_HEADERS when passed", () => {
+  const home = tmpHome();
+  configureClaudeConfig(home, "direct", { directIntegrationId: "copilot-developer-cli" });
+  const headers = (readSettings(home).env as Record<string, unknown>)[CUSTOM_HEADERS_ENV] as string;
+  expect(headers).toContain("Copilot-Integration-Id: copilot-developer-cli");
+  expect(headers).toContain("Openai-Intent: conversation-edits");
 });
 
 test("proxy mode writes proxy wiring (127.0.0.1 base URL + a token helper), preserving user keys", () => {
@@ -188,28 +198,28 @@ test("inspectClaudeWiring classifies direct / proxy / other / none / malformed (
   expect(inspectClaudeWiring("{not json", home, 4141).providerMode).toBe("other");
 });
 
-test("runClaude --direct/--proxy round-trip cleans the other mode; mutual exclusion throws", () => {
+test("runClaude --direct/--proxy round-trip cleans the other mode; mutual exclusion throws", async () => {
   const home = tmpHome();
   const read = () =>
     inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home, 4141);
 
-  runClaude({ direct: true });
+  await runClaude({ direct: true });
   expect(read().providerMode).toBe("direct");
   expect(
     (readSettings(home).env as Record<string, unknown>).CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS,
   ).toBe("1");
 
-  runClaude({ proxy: true });
+  await runClaude({ proxy: true });
   expect(read().providerMode).toBe("proxy");
   // Switching to proxy drops the direct-only disable-betas knob.
   expect(
     (readSettings(home).env as Record<string, unknown>).CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS,
   ).toBeUndefined();
 
-  runClaude({ direct: true });
+  await runClaude({ direct: true });
   expect(read().providerMode).toBe("direct");
 
-  expect(() => runClaude({ proxy: true, direct: true })).toThrow(
+  await expect(runClaude({ proxy: true, direct: true })).rejects.toThrow(
     "--direct and --proxy are mutually exclusive",
   );
 });
@@ -259,7 +269,7 @@ test("direct helper execs `agent auth --get` and never bakes a token, still clas
   expect(script).not.toContain("gh auth token");
 });
 
-test("runClaude with a stored token selects Direct WITHOUT baking it; --proxy still wins", () => {
+test("runClaude with a stored token selects Direct WITHOUT baking it; --proxy still wins", async () => {
   const home = tmpHome(); // also points COPILOT_API_HOME at an isolated dir
   const read = () =>
     inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home, 4141);
@@ -267,13 +277,13 @@ test("runClaude with a stored token selects Direct WITHOUT baking it; --proxy st
   // A configured credential selects Direct with NO probe -- but the helper resolves
   // it at fetch time (`agent auth --get`), so it's never written to disk.
   new CopilotEnvState().set({ githubToken: "ghu_stored", authProvider: "gh-token" });
-  runClaude({});
+  await runClaude({});
   expect(read().providerMode).toBe("direct");
   const helper = readFileSync(join(home, DIRECT_HELPER_NAME), "utf8");
   expect(helper).not.toContain("ghu_stored");
   expect(helper).toContain("--get");
 
   // --proxy still wins: proxy mode (the stored token is only used by the proxy).
-  runClaude({ proxy: true });
+  await runClaude({ proxy: true });
   expect(read().providerMode).toBe("proxy");
 });

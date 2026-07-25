@@ -59,6 +59,15 @@ export interface ProfileCredentialData {
 /** A profile's full slot: its credential plus its single wiring mode. */
 export interface ProfileSlotData extends ProfileCredentialData {
   mode: ProfileMode | null;
+  /**
+   * The probed direct-mode client identity NAME (an IntegrationIdentity name from
+   * integration_identity.ts, e.g. `codex` for the default or `copilot-developer-cli`),
+   * or null when never probed. Storing the NAME -- not the header value -- lets
+   * "probed, the default won" be distinguished from "unknown", so the launcher hot path
+   * (`--settings-for`/`--sync` on every profile launch) replays instead of re-probing.
+   * It is a cache derived from the credential: `setCredential` clears it.
+   */
+  integrationIdentity: string | null;
 }
 
 /** The fields persisted in `.copilot-env-state.json` (absent/blank read back as null). */
@@ -90,6 +99,7 @@ const PROFILE_SCHEMA = v.object({
   githubToken: v.fallback(v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1))), null),
   authProvider: v.fallback(v.nullable(v.picklist(AUTH_PROVIDERS)), null),
   mode: v.fallback(v.nullable(v.picklist(PROFILE_MODES)), null),
+  integrationIdentity: v.fallback(v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1))), null),
 });
 
 // Lenient read schema: each field validates the value we own and FALLS BACK rather
@@ -108,7 +118,7 @@ const STATE_SCHEMA = v.object({
 });
 
 function emptyProfile(): ProfileSlotData {
-  return { githubToken: null, authProvider: null, mode: null };
+  return { githubToken: null, authProvider: null, mode: null, integrationIdentity: null };
 }
 
 /**
@@ -183,19 +193,27 @@ export class CopilotEnvState {
    * cleared is removed outright, and an empty map drops the `profiles` key --
    * so a store that never used profiles stays byte-identical to the
    * pre-profile format. A named profile's `mode` is untouched here (it is not
-   * a credential field); `setProfileMode` owns it.
+   * a credential field); `setProfileMode` owns it. The derived
+   * `integrationIdentity` IS cleared, though: it is a probe result keyed to the
+   * credential, so any credential change (re-auth, deletion) must invalidate it
+   * -- the next wiring re-derives it.
    */
   setCredential(profile: Profile, patch: ProfileCredentialPatch): void {
     if (profile === null) {
       this.set(patch);
       return;
     }
-    this.mergeProfileSlot(profile, patch);
+    this.mergeProfileSlot(profile, { ...patch, integrationIdentity: null });
   }
 
   /** Record (or clear, with null) a NAMED profile's single wiring mode. */
   setProfileMode(name: string, mode: ProfileMode | null): void {
     this.mergeProfileSlot(name, { mode });
+  }
+
+  /** Record (or clear, with null) a NAMED profile's probed direct-mode identity. */
+  setProfileIntegrationIdentity(name: string, integrationIdentity: string | null): void {
+    this.mergeProfileSlot(name, { integrationIdentity });
   }
 
   private mergeProfileSlot(name: string, patch: ProfilePatch): void {

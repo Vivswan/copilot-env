@@ -235,8 +235,13 @@ export interface AuthFacts {
   ghAuthenticated: boolean;
   /** The recorded auth provider (`copilot` | `gh-cli` | `gh-token`), or null. */
   provider: string | null;
-  /** Named profiles: name -> recorded provider + mode (never tokens). */
-  profiles: Record<string, { provider: AuthProvider | null; mode: ProfileMode | null }>;
+  /** Named profiles: name -> recorded provider + mode + baked direct identity (never tokens). */
+  profiles: Record<
+    string,
+    { provider: AuthProvider | null; mode: ProfileMode | null; integrationIdentity: string | null }
+  >;
+  /** The `integration-id` config pin (integration_identity.ts), or null when probing. */
+  pinnedIntegrationId: string | null;
 }
 
 // --- injectable I/O surface -------------------------------------------------
@@ -273,8 +278,13 @@ export interface ProbeDeps {
   storedTokenPresent(): boolean;
   /** The recorded auth provider (`copilot` | `gh-cli` | `gh-token`), or null. */
   authProvider(): string | null;
-  /** Named profiles: name -> recorded provider + mode (never tokens). */
-  authProfiles(): Record<string, { provider: AuthProvider | null; mode: ProfileMode | null }>;
+  /** Named profiles: name -> recorded provider + mode + baked direct identity (never tokens). */
+  authProfiles(): Record<
+    string,
+    { provider: AuthProvider | null; mode: ProfileMode | null; integrationIdentity: string | null }
+  >;
+  /** The `integration-id` config pin, or null when unset/`auto`. */
+  pinnedIntegrationId(): string | null;
   claudeHome(): string;
   hostCodexHome(): string;
   dirExists(path: string): boolean;
@@ -481,9 +491,14 @@ export function defaultProbeDeps(): ProbeDeps {
       Object.fromEntries(
         Object.entries(new CopilotEnvState().read().profiles).map(([name, slot]) => [
           name,
-          { provider: slot.authProvider, mode: slot.mode },
+          {
+            provider: slot.authProvider,
+            mode: slot.mode,
+            integrationIdentity: slot.integrationIdentity,
+          },
         ]),
       ),
+    pinnedIntegrationId: () => new CopilotEnvConfig().pinnedIntegrationId(),
     // Claude's direct mode also authenticates via `gh auth token`, so it reuses
     // the same probe. Effective Claude home matches resolveClaudeHome precedence.
     claudeHome: () => resolveClaudeHome(),
@@ -774,7 +789,13 @@ export async function gatherFacts(
           credentialSource(provider, storedToken) === "gh-cli"
             ? (await sharedDirectAuth()).authenticated
             : false;
-        facts.auth = { storedToken, ghAuthenticated, provider, profiles: deps.authProfiles() };
+        facts.auth = {
+          storedToken,
+          ghAuthenticated,
+          provider,
+          profiles: deps.authProfiles(),
+          pinnedIntegrationId: deps.pinnedIntegrationId(),
+        };
       })(),
     );
   }

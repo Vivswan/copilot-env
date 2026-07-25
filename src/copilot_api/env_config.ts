@@ -18,6 +18,11 @@ export interface CopilotEnvConfigData {
   autoStart?: boolean;
   /** PAT passthrough default for `agent start`. */
   passthrough?: PassthroughPref;
+  /**
+   * Pin the Copilot `Copilot-Integration-Id` client identity (e.g.
+   * `copilot-developer-cli`), overriding the per-credential probe. `auto`/unset probes.
+   */
+  integrationId?: string;
   /** Idle auto-stop window in whole seconds (`0` disables). */
   idleTimeout?: number;
   /** Proxy request logging under `<home>/logs` (`false` discards the writes). */
@@ -65,6 +70,7 @@ const wholeDays = v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(MAX_
 const CONFIG_SCHEMA = v.object({
   autoStart: v.fallback(v.optional(v.boolean()), undefined),
   passthrough: v.fallback(v.optional(v.picklist(PASSTHROUGH_VALUES)), undefined),
+  integrationId: v.fallback(v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))), undefined),
   idleTimeout: v.fallback(v.optional(wholeSeconds), undefined),
   proxyLogs: v.fallback(v.optional(v.boolean()), undefined),
   smallModel: v.fallback(v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))), undefined),
@@ -187,6 +193,16 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     parse: (r) => parseWholeNumber(r, 0, MAX_SECONDS),
     defaultLabel: "3600",
     restartToApply: true,
+  },
+  {
+    cli: "integration-id",
+    key: "integrationId",
+    describe:
+      "Pin the Copilot client identity (Copilot-Integration-Id), or `auto` to probe per credential",
+    parse: parseNonEmpty,
+    defaultLabel: "auto (probe per credential)",
+    applyHint:
+      "Applies at the next `agent start` (proxy) and `agent init`/`agent profile --add` (direct wiring).",
   },
   {
     cli: "max-port",
@@ -369,6 +385,16 @@ export class CopilotEnvConfig {
   /** Whether the patched Codex model catalog is enabled (opt-in, default off). */
   codexModelCatalogEnabled(): boolean {
     return this.read().codexModelCatalog === true;
+  }
+
+  /**
+   * The pinned Copilot-Integration-Id, or null when unset / `auto` (the probe decides).
+   * The sentinel `auto` reads as null so `--set integration-id auto` restores probing
+   * without a separate `--del`.
+   */
+  pinnedIntegrationId(): string | null {
+    const value = this.read().integrationId;
+    return value === undefined || value.toLowerCase() === "auto" ? null : value;
   }
 
   /**

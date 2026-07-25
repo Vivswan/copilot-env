@@ -94,3 +94,23 @@ test("run-state clearIfPid clears the daemon tracking ONLY when the tracked pid 
   expect(after.port).toBeUndefined();
   expect(after.lastEnsureAt).toBeUndefined();
 });
+
+test("a named profile's integrationIdentity is a credential-derived cache: setCredential clears it", () => {
+  tmpHome();
+  const state = new CopilotEnvState();
+  state.setProfileMode("work", "direct");
+  state.setCredential("work", { githubToken: "github_pat_x", authProvider: "gh-token" });
+  state.setProfileIntegrationIdentity("work", "copilot-developer-cli");
+  expect(state.readProfileSlot("work").integrationIdentity).toBe("copilot-developer-cli");
+
+  // Re-auth (any credential write) invalidates the derived identity, so a stale id can
+  // never outlive the credential it was probed for -- the next wiring re-derives it.
+  state.setCredential("work", { githubToken: "github_pat_y", authProvider: "gh-token" });
+  expect(state.readProfileSlot("work").integrationIdentity).toBeNull();
+  expect(state.readProfileSlot("work").mode).toBe("direct"); // mode is untouched
+
+  // Clearing the credential (deletion path) with the mode also cleared empties the slot.
+  state.setProfileMode("work", null);
+  state.setCredential("work", { githubToken: null, authProvider: null });
+  expect(state.profileNames()).toEqual([]);
+});

@@ -9,6 +9,11 @@ import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig, projectedProxyConfig } from "../copilot_api/env_config.ts";
 import type { AuthProvider } from "../copilot_api/env_state.ts";
+import {
+  DAEMON_INTEGRATION_ID_ENV,
+  isPatShapedToken,
+  resolvePassthroughIntegrationId,
+} from "../copilot_api/integration_identity.ts";
 import { generateAliases } from "../copilot_api/models.ts";
 import {
   CopilotApiPaths,
@@ -86,23 +91,25 @@ async function acquireStartLock(lockPath: string): Promise<void> {
  * exchange (`copilot_internal/v2/token` -> 403), so they need the passthrough shim.
  * (gh OAuth tokens, `gho_`, also can't exchange -- 404 -- but that decision lives in
  * `usePatPassthrough`, not here.) Legacy unprefixed 40-hex classic PATs are NOT detected
- * here -- use `config passthrough on` for those.
+ * here -- use `config passthrough on` for those. Delegates to the shared shape predicate
+ * so this and the identity probe can never disagree about what a PAT looks like.
  */
 export function isPatToken(token: string): boolean {
-  const t = token.trim();
-  return t.startsWith("ghp_") || t.startsWith("github_pat_");
+  return isPatShapedToken(token);
 }
 
 /**
  * Whether to load the PAT-passthrough preload shim into the daemon
  * (`src/scripts/pat_passthrough_preload.ts`). The shim intercepts copilot-api's
  * editor token exchange and hands the token back as the Copilot token, so the daemon
- * runs its normal `vscode-chat` path with the token as the bearer -- the only way a
+ * runs its normal path with the token as the bearer -- the only way a
  * credential that can't perform the exchange works through the proxy. Two such credentials:
  * a PAT (`ghp_`/`github_pat_`, 403s the exchange) and a `gh-cli` OAuth token (404s the
- * exchange) -- both are nonetheless accepted DIRECTLY as the Copilot bearer under vscode-chat.
- * It's a no-op for tokens the exchange accepts (the `copilot` device-flow token), so the
- * `passthrough` config key (`on`) can force it for an undetected credential and `off` forces it off.
+ * exchange) -- both are nonetheless accepted DIRECTLY as the Copilot bearer (a PAT under
+ * `copilot-developer-cli`, resolved by the identity probe; other credentials under the
+ * default `vscode-chat`). It's a no-op for tokens the exchange accepts (the `copilot`
+ * device-flow token), so the `passthrough` config key (`on`) can force it for an
+ * undetected credential and `off` forces it off.
  *
  * Precedence: an explicit `force` (resolved by the caller from the `passthrough` config:
  * on -> true, off -> false) wins; otherwise (`auto`/unset) auto-enable for the `gh-cli` provider
@@ -698,6 +705,21 @@ export async function runStart(args: StartArgs): Promise<void> {
       );
     } else if (forcePassthrough === false) {
       consola.info("Token passthrough off: using the standard editor token exchange.");
+    }
+    // A passthrough bearer is only accepted under a client-integration identity that
+    // matches its token class (a fine-grained PAT needs `copilot-developer-cli`;
+    // copilot-api sends `vscode-chat`). Resolve it NOW, before launching, so an
+    // unusable credential fails here with the real reason instead of an opaque
+    // daemon-side "Failed to get models" -- and hand a non-default pick to the
+    // passthrough preload, which rewrites the header on the daemon's upstream calls.
+    if (patPassthrough && githubToken !== undefined) {
+      const integrationId = await resolvePassthroughIntegrationId(githubToken, {
+        pinned: new CopilotEnvConfig().pinnedIntegrationId(),
+      });
+      // Set it unconditionally (not only for a non-default pick): launchDaemon spreads
+      // process.env, so a stale value already in the launcher's environment would otherwise
+      // leak into the daemon. daemonEnv wins, so an explicit value always controls the preload.
+      daemonEnv[DAEMON_INTEGRATION_ID_ENV] = integrationId;
     }
     // Managed lifecycle on (the `auto-start` config key)? Preload the in-daemon idle watchdog
     // so the proxy stops itself after the idle window. It lives in the daemon process, so

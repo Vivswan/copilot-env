@@ -188,7 +188,7 @@ bun run check         # biome check --write
 ./bin/agent auth      # manage the GitHub credential (--provider/--get/--del/--check)
 ./bin/agent config    # get/set preferences (--set <key> <value> / --get [key] / --del <key>)
 ./bin/agent profile   # manage named profiles (--add <name> --direct|--proxy / --del / --list)
-./bin/agent start     # start the daemon; also stop / health / models / env / cost / update / shell / codex / claude
+./bin/agent start     # start the daemon; also stop / health / models / env / cost / update / shell / codex / claude / uninstall
 ```
 
 The husky `pre-commit` hook and CI run the same gate (lint-staged + typecheck + tests + the

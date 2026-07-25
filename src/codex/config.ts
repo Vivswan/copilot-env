@@ -904,6 +904,59 @@ export function removeCodexProfile(codexHome: string, name: string): void {
 }
 
 /**
+ * Remove the DEFAULT selection's managed artifacts from `codexHome`'s config.toml:
+ * the `[model_providers.copilot-env]` table (ours by name), the top-level
+ * `model_provider` selector (only while it still points at our id -- a
+ * user-repointed selector is no longer ours to delete), the managed
+ * `model_catalog_json` reference (only when it denotes the account-wide generated
+ * catalog file, which the caller is about to delete -- a dangling reference is a
+ * Codex startup error), and `web_search` (only the managed `"live"` value, and only
+ * when the selector was still ours). Also scrubs the legacy baked
+ * `COPILOT_ENV_GH_TOKEN` from `.env` (never OPENAI_API_KEY -- see
+ * configureCodexConfig). No-op when the config is absent; a present-but-unparseable
+ * file throws (never blind-write). Used by `agent uninstall`.
+ */
+export function removeCodexDefaultWiring(codexHome: string): void {
+  const configPath = path.join(codexHome, "config.toml");
+  let doc: Record<string, unknown> | null;
+  try {
+    doc = parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+  } catch (e) {
+    if ((e as { code?: string }).code === "ENOENT") doc = null;
+    else throw new Error(`${configPath} is not readable/valid TOML: ${errMessage(e)}`);
+  }
+  if (doc !== null) {
+    let changed = false;
+    const providers = isRecord(doc.model_providers) ? doc.model_providers : {};
+    if (providers[CODEX_PROVIDER_ID] !== undefined) {
+      delete providers[CODEX_PROVIDER_ID];
+      changed = true;
+      if (Object.keys(providers).length === 0) delete doc.model_providers;
+    }
+    let selectorWasOurs = false;
+    if (doc.model_provider === CODEX_PROVIDER_ID) {
+      delete doc.model_provider;
+      selectorWasOurs = true;
+      changed = true;
+    }
+    const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+    if (
+      doc.model_catalog_json === catalogFile ||
+      resolvesToCatalogFile(doc.model_catalog_json, catalogFile)
+    ) {
+      delete doc.model_catalog_json;
+      changed = true;
+    }
+    if (selectorWasOurs && doc.web_search === "live") {
+      delete doc.web_search;
+      changed = true;
+    }
+    if (changed) fs.writeFileSync(configPath, stringify(doc));
+  }
+  removeEnvKey(path.join(codexHome, ".env"), DIRECT_ENV_KEY);
+}
+
+/**
  * Live auto-detect: does GitHub Copilot Direct work for Codex on this machine?
  * Writes a throwaway direct config and runs `codex exec --sandbox read-only`
  * against it (see src/utils/direct_probe.ts). False => the caller writes proxy.

@@ -142,10 +142,32 @@ async function runAdd(name: string, args: ProfileArgs): Promise<void> {
 }
 
 /**
- * `--del <name>`: remove the profile EVERYWHERE, in dependency order: stop its
- * daemon (it holds the credential in memory), strip both agents' artifacts,
- * clear the store slot (credential + mode), and remove its isolated daemon home
- * (config/apiKeys/run-state/sqlite/logs + the port reservation).
+ * The shared profile teardown, in dependency order: stop its daemon (it holds the
+ * credential in memory; a signalled-but-unstoppable daemon throws BEFORE anything
+ * is deleted), strip both agents' artifacts, clear the store slot (credential +
+ * mode), and remove its isolated daemon home (config/apiKeys/run-state/sqlite/
+ * logs + the port reservation). Used by `agent profile --del` and `agent
+ * uninstall`.
+ */
+export async function deleteProfileEverywhere(name: string): Promise<void> {
+  const { signalled, stopped } = await stopTrackedProxy(2000, name);
+  if (signalled && !stopped) {
+    throw new Error(
+      `${profileLabel(name)}'s proxy daemon did not stop; retry, or stop it manually ` +
+        `(\`agent stop --profile ${name}\`) before deleting`,
+    );
+  }
+  removeClaudeProfile(resolveClaudeHome(), name);
+  removeCodexProfile(effectiveCodexHome(), name);
+  const state = new CopilotEnvState();
+  state.setCredential(name, { githubToken: null, authProvider: null });
+  state.setProfileMode(name, null);
+  rmSync(profileHome(name), { recursive: true, force: true });
+}
+
+/**
+ * `--del <name>`: remove the profile EVERYWHERE via deleteProfileEverywhere,
+ * guarded so a profile that never existed sweeps nothing.
  */
 async function runDel(name: string): Promise<void> {
   // Sweep NOTHING for a profile that never existed: a foreign same-named
@@ -160,19 +182,7 @@ async function runDel(name: string): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  const { signalled, stopped } = await stopTrackedProxy(2000, name);
-  if (signalled && !stopped) {
-    throw new Error(
-      `${profileLabel(name)}'s proxy daemon did not stop; retry, or stop it manually ` +
-        `(\`agent stop --profile ${name}\`) before deleting`,
-    );
-  }
-  removeClaudeProfile(resolveClaudeHome(), name);
-  removeCodexProfile(effectiveCodexHome(), name);
-  const state = new CopilotEnvState();
-  state.setCredential(name, { githubToken: null, authProvider: null });
-  state.setProfileMode(name, null);
-  rmSync(profileHome(name), { recursive: true, force: true });
+  await deleteProfileEverywhere(name);
   consola.success(`Deleted ${profileLabel(name)} (credential, wiring, daemon home).`);
 }
 

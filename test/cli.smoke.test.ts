@@ -53,6 +53,7 @@ test("`cli.ts --help` loads the CLI and exits 0", () => {
   expect(proc.exitCode).toBe(0);
   expect(output).toContain("start");
   expect(output).toContain("shell");
+  expect(output).toContain("uninstall");
   // `init` is the headline command and appears first in the COMMANDS list.
   expect(output).toContain("init");
   expect(output.indexOf("init")).toBeLessThan(output.indexOf("start"));
@@ -327,6 +328,30 @@ test("the launcher / CLI-install flags live on shell, not init", () => {
   expect(initOut).toContain("--direct");
   expect(initOut).not.toContain("--gh-token");
   expect(shellOut).not.toContain("--gh-token");
+});
+
+test("uninstall: help surfaces the flags; a non-TTY run without --yes refuses", () => {
+  const help = Bun.spawnSync(["bun", "src/cli.ts", "uninstall", "--help"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, CONSOLA_LEVEL: "5" },
+  });
+  expect(help.exitCode).toBe(0);
+  const helpOutput = help.stdout.toString() + help.stderr.toString();
+  for (const flag of ["--yes", "--dry-run", "--force"]) {
+    expect(helpOutput).toContain(flag);
+  }
+
+  // Spawned without a TTY and without --yes: the confirmation guard must bail
+  // with a clear pointer to --yes (exit 1) instead of hanging on a prompt.
+  const refused = Bun.spawnSync(["bun", "src/cli.ts", "uninstall"], {
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+    env: isolatedEnv(),
+  });
+  expect(refused.exitCode).toBe(1);
+  expect(refused.stderr.toString()).toContain("--yes");
 });
 
 test("shell --help surfaces the install/launcher flags", () => {

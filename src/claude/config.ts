@@ -499,6 +499,35 @@ export function removeClaudeProfile(claudeHome: string, name: string): void {
 }
 
 /**
+ * Remove the DEFAULT profile's managed Claude artifacts: the managed settings.json
+ * keys (apiKeyHelper + the managed env vars), stripped only while apiKeyHelper
+ * still points at the managed helper (inspectClaudeWiring reports direct/proxy) --
+ * that helper is what makes the whole managed key set ours, exactly as an explicit
+ * mode write would reclaim it; a foreign apiKeyHelper (`other`) leaves settings.json
+ * alone. Helper scripts are removed by name (mirrors removeClaudeProfile). The
+ * strip is surgical so every other user setting (permissions, model, hooks)
+ * survives; an emptied env object is dropped, and a doc emptied entirely removes
+ * settings.json itself. Used by `agent uninstall`.
+ */
+export function removeClaudeDefaultWiring(claudeHome: string): void {
+  const settingsPath = settingsPathFor(claudeHome);
+  const status = inspectClaudeWiring(readTextOrNull(settingsPath), claudeHome, 0);
+  if (status.providerMode === "direct" || status.providerMode === "proxy") {
+    const doc = loadSettings(settingsPath);
+    delete doc.apiKeyHelper;
+    const env = isRecord(doc.env) ? doc.env : {};
+    delete env[BASE_URL_ENV];
+    delete env[DISABLE_BETAS_ENV];
+    delete env[CUSTOM_HEADERS_ENV];
+    if (Object.keys(env).length === 0) delete doc.env;
+    if (Object.keys(doc).length === 0) fs.rmSync(settingsPath, { force: true });
+    else saveSettings(settingsPath, doc);
+  }
+  fs.rmSync(directHelperPath(claudeHome), { force: true });
+  fs.rmSync(proxyHelperPath(claudeHome), { force: true });
+}
+
+/**
  * Live auto-detect: does GitHub Copilot Direct work for Claude on this machine?
  * Writes a throwaway direct config (settings.json + gh apiKeyHelper) and runs
  * `claude -p` against it (see src/utils/direct_probe.ts). False => write proxy.

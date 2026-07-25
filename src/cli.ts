@@ -28,6 +28,7 @@ import { runProfile } from "./commands/profile.ts";
 import { runShell } from "./commands/setup.ts";
 import { runStart } from "./commands/start.ts";
 import { runStop } from "./commands/stop.ts";
+import { runUninstall } from "./commands/uninstall.ts";
 import { runUpdate } from "./commands/update.ts";
 import { configKeysHelp } from "./copilot_api/env_config.ts";
 import { runCost } from "./usage/cost.ts";
@@ -510,6 +511,23 @@ program
       noSudo: opts.sudo === false,
       noPrereqs: opts.prereqs === false,
       allHosts: Boolean(opts.allHosts),
+    }),
+  );
+
+program
+  .command("uninstall")
+  .description(
+    "Remove copilot-env from this machine: daemons, profiles, agent wiring, " +
+      "shell integration, data, and the install itself.",
+  )
+  .option("--yes", "Skip the confirmation prompt (headless use).")
+  .option("--dry-run", "Print what would be removed without changing anything.")
+  .option("--force", "Also delete the install directory when it is a git checkout (.git present).")
+  .action((opts: Opts) =>
+    runUninstall({
+      yes: Boolean(opts.yes),
+      dryRun: Boolean(opts.dryRun),
+      force: Boolean(opts.force),
     }),
   );
 

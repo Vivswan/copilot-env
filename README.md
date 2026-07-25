@@ -55,6 +55,9 @@ Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, the
 - **Next:** restart your shell, then `agent start`.
 - **Optional:** run `agent shell --clis --launchers` for Claude/Copilot/Codex CLIs and `cl` / `co` / `cx`.
 - **Update later:** `agent update`.
+- **Uninstall:** `agent uninstall` removes everything copilot-env manages (daemons, profiles,
+  agent wiring, shell integration, credentials, data, and the install itself). It does not
+  remove the agent CLIs (`claude` / `copilot` / `codex`) or bun.
 - **Specific version:** replace `latest` with an exact release tag:
 
   ```bash
@@ -87,6 +90,7 @@ agent env                  # print shell exports for the calling shell (CODEX_HO
 agent cost                 # estimated token spend across all usage DBs (default + profile daemons)
 agent update               # update to the latest release (--check; cooldown via `agent config --set update-cooldown`)
 agent shell                # wire rc / $PROFILE; --launchers adds cl/co/cx, --clis installs the CLIs, --remove unwires
+agent uninstall            # remove copilot-env entirely (--yes headless, --dry-run preview, --force to delete a git checkout)
 agent codex                # configure Codex; no flag auto-detects the backend, --check reports it
 agent codex --direct       # force GitHub Copilot Direct (no auto-detect probe)
 agent codex --check        # print provider mode; exits 0 direct, 2 proxy, 1 other

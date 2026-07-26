@@ -50,7 +50,7 @@ jobs:
           bash -n release-assets/install.sh
           pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content -Raw release-assets/install.ps1)) | Out-Null"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: installer-assets
           path: release-assets/

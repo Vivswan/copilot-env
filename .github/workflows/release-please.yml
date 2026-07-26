@@ -1,24 +1,33 @@
-name: release-please
+# This file is managed by Vivswan/repo-platform.
+# Local edits may be replaced during template updates.
+#
+# The release-please machinery: cuts releases by accumulating conventional
+# commits on main into a release PR; merging that PR tags and publishes the
+# release. Called from the repo-owned release.yml pipeline, downstream of
+# the all-green gate, so releases and release-PR refreshes only happen on a
+# green main. Repo-specific jobs before/after the release belong in
+# release.yml, wired to the outputs below.
+#
+# Without the REPO_PLATFORM_TOKEN secret the release PR is created by the
+# default GITHUB_TOKEN and needs a close/reopen to run its checks.
 
-# Versioned GitHub releases from Conventional Commits. CI calls this workflow
-# after `all-green` succeeds on main. release-please opens/updates ONE rolling
-# "release PR" that bumps the version (feat:/fix: gate WHETHER a release
-# happens; the bump is always the next PATCH -- `always-bump-patch` in
-# release-please-config.json) and regenerates CHANGELOG.md. Merging that PR is
-# what tags vX.Y.Z + publishes the GitHub Release -- a plain push to main
-# releases nothing.
+name: Release Please
+
 on:
   workflow_call:
+    outputs:
+      release_created:
+        description: "'true' when this run just published a release"
+        value: ${{ jobs.release-please.outputs.release_created }}
+      tag_name:
+        description: The tag of the release that was just published
+        value: ${{ jobs.release-please.outputs.tag_name }}
 
+# The effective token comes from the calling job; declaring the needs here
+# documents them and caps a caller that grants more.
 permissions:
-  contents: write       # create the tag + release, push the changelog/version bump
-  pull-requests: write  # open/update the release PR
-  issues: write         # release-please's `autorelease:` labels (label = issues API)
-
-# Two concurrent passes would race on the release PR; serialize them.
-concurrency:
-  group: release-please
-  cancel-in-progress: false
+  contents: write
+  pull-requests: write
 
 jobs:
   release-please:
@@ -26,145 +35,24 @@ jobs:
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
-      # The open rolling release PR's number, or '' when there is none. `pr` is a
-      # JSON object only when a release PR exists; `&&` short-circuits so fromJSON
-      # never runs on an empty string.
-      pr_number: ${{ steps.release.outputs.pr && fromJSON(steps.release.outputs.pr).number }}
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.14
-
-      - name: Create installer assets
-        id: installer-assets
-        run: |
-          tag="v$(bun --print "require('./package.json').version")"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          bun .github/scripts/release-assets.ts prepare "$tag"
-
-      - name: Validate installer assets
+      # A green run releases only the head it tested: if main moved on, skip
+      # and let the newer push's own run release (after its CI passes).
+      # gh api (not anonymous ls-remote) so private repositories work too.
+      - name: Check this run tested the current head
+        id: head
         env:
-          TAG: ${{ steps.installer-assets.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          bun .github/scripts/release-assets.ts validate "$TAG"
-          bash -n release-assets/install.sh
-          pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content -Raw release-assets/install.ps1)) | Out-Null"
-
-      # release-please opens/updates the rolling release PR. It is created with
-      # RELEASE_PLEASE_TOKEN (a PAT or GitHub App token) when that secret is set, so
-      # GitHub runs CI on the release PR like a normal PR. PRs opened by the built-in
-      # GITHUB_TOKEN never trigger workflows (a recursion guard) -- that is why the
-      # required `all-green` check used to sit unmet on the release PR. Falls back to
-      # GITHUB_TOKEN when the secret is absent: the release PR still opens, but CI
-      # won't run on it (admin-merge) until you add the token. See AGENTS.md > Releases.
-      - id: release
-        uses: googleapis/release-please-action@v5
-        with:
-          token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
-
-      - name: Verify prepared asset tag
-        if: ${{ steps.release.outputs.release_created == 'true' }}
-        env:
-          TAG: ${{ steps.release.outputs.tag_name }}
-          PREPARED_TAG: ${{ steps.installer-assets.outputs.tag }}
-        run: |
-          if [ "$PREPARED_TAG" != "$TAG" ]; then
-            echo "::error::prepared installer assets are for $PREPARED_TAG, but release-please created $TAG"
-            exit 1
+          head="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+          if [ "$head" = "$GITHUB_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::main moved to ${head:0:7} since this run started; the newer run releases"
+            echo "current=false" >> "$GITHUB_OUTPUT"
           fi
-
-      - name: Create release archive asset
-        if: ${{ steps.release.outputs.release_created == 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.release.outputs.tag_name }}
-        run: |
-          bun .github/scripts/release-assets.ts create-archive "$TAG" "${{ github.repository }}"
-          bun .github/scripts/release-assets.ts validate "$TAG"
-
-      - name: Upload installer assets
-        if: ${{ steps.release.outputs.release_created == 'true' }}
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.release.outputs.tag_name }}
-        run: |
-          gh release upload "$TAG" \
-            release-assets/install.sh \
-            release-assets/install.ps1 \
-            "release-assets/copilot-env-$TAG.tar.gz" \
-            --clobber
-
-  # Assign + request the code owner on the rolling release PR. That PR is opened
-  # by GITHUB_TOKEN, so it never fires auto-assign's `on: pull_request` trigger
-  # (recursion guard) -- drive it explicitly by number through the reusable
-  # assign-pr workflow. Runs whenever a release PR is open (created or updated);
-  # the called job is idempotent. Skipped when there is no open release PR.
-  assign-release-pr:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.pr_number != '' }}
-    permissions:
-      issues: write
-      pull-requests: write
-    uses: ./.github/workflows/assign-pr.yml
-    with:
-      pr_number: ${{ needs.release-please.outputs.pr_number }}
-
-  release-installer-smoke-linux:
-    name: release install.sh smoke
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: oven-sh/setup-bun@v2
+      - uses: googleapis/release-please-action@v5
+        id: release
+        if: steps.head.outputs.current == 'true'
         with:
-          bun-version: 1.3.14
-
-      - name: Smoke uploaded install.sh asset
-        timeout-minutes: 20
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
-          COPILOT_ENV_CI_INCLUDE_DRAFT_RELEASES: "1"
-        run: bun .github/scripts/release-installer-smoke.ts "${{ needs.release-please.outputs.tag_name }}" "${{ github.repository }}"
-
-  release-installer-smoke-windows:
-    name: release install.ps1 smoke
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.14
-
-      - name: Smoke uploaded install.ps1 asset
-        timeout-minutes: 20
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
-          COPILOT_ENV_CI_INCLUDE_DRAFT_RELEASES: "1"
-        run: bun .github/scripts/release-installer-smoke.ts "${{ needs.release-please.outputs.tag_name }}" "${{ github.repository }}"
-
-  publish-release:
-    name: publish release
-    needs:
-      - release-please
-      - release-installer-smoke-linux
-      - release-installer-smoke-windows
-    if: >-
-      ${{
-        needs.release-please.outputs.release_created == 'true' &&
-        needs.release-installer-smoke-linux.result == 'success' &&
-        needs.release-installer-smoke-windows.result == 'success'
-      }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Publish release
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.release-please.outputs.tag_name }}
-        run: gh release edit "$TAG" --repo "${{ github.repository }}" --draft=false --prerelease=false --latest
+          token: ${{ secrets.REPO_PLATFORM_TOKEN || github.token }}

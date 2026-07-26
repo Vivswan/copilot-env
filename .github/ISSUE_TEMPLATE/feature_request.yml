@@ -1,0 +1,24 @@
+name: Feature request
+description: Suggest an idea or improvement for copilot-env
+labels: [enhancement]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What problem are you trying to solve?
+      description: The motivation matters more than the mechanism; describe the workflow that hurts today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution (optional)
+      description: The change or feature you would like, e.g. a new `agent` subcommand, config key, or wiring behavior.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or workarounds you've tried (optional)
+    validations:
+      required: false

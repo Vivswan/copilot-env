@@ -1,8 +1,60 @@
-# copilot-env
+# AGENTS.md
 
-Local copilot-api proxy lifecycle + config helper (a TypeScript port of the Python
-`copilot-api`). It wraps a floating `@jeffreycao/copilot-api` proxy and wires the Codex and
-Claude CLIs to either that local proxy or GitHub Copilot Direct.
+This file provides guidance to AI coding agents working in this repository.
+`CLAUDE.md`, `.github/copilot-instructions.md`, and `.github/agents.md` are
+symlinks to this file, so edit only here.
+
+## Project
+
+copilot-env: Local copilot-api proxy lifecycle + config helper (TypeScript).
+
+## Toolchain
+
+- Runtime and package manager: bun (`bun install`, `bun test`, `bun run <script>`)
+- See `package.json` scripts for the available commands.
+
+## Conventions
+
+- PR titles and commit subjects must be Conventional Commits (`feat:`, `fix:`,
+  `feat!:`, `chore:`, ...). PRs are squash-merged, so the PR title becomes the
+  commit subject and drives release-please versioning. CI validates both
+  (the ci.yml pr-title job + validate-commit-names).
+- CI gates on a single required check named `all-green` in the managed
+  `.github/workflows/ci.yml`. This repository's own test/lint jobs belong in
+  `.github/workflows/checks.yml` (repo-owned, called inside the gate); do not
+  edit ci.yml, template sync overwrites it. The `release` job runs on top
+  of the gate (`needs: all-green`); the release pipeline is repo-owned in
+  `.github/workflows/release.yml` (pre/post-release jobs go there, around the
+  managed release-please machinery).
+- No typographic look-alike characters (curly quotes, em-dashes, invisible
+  unicode). CI enforces this with the check-typography action; use plain ASCII
+  punctuation.
+
+## Managed by repo-platform
+
+- Files whose header says "managed by Vivswan/repo-platform"
+  arrive via sync PRs pushed by that repository. Do not edit them here;
+  change them in Vivswan/repo-platform and let the next sync
+  PR deliver the update.
+- Repository settings (description, topics, labels, rulesets, merge policy)
+  are applied from Vivswan/repo-platform: by the
+  `settings/repos/` file named after this repository over there when one
+  exists, otherwise by this repository's own `.github/settings.yml`. Do not
+  change settings by hand in the GitHub UI; edit the settings file.
+- Repo-owned escape hatches stay local: `.github/workflows/checks.yml` and
+  `.github/workflows/release.yml`, `.gitignore`'s marked LOCAL section,
+  `.typography-allow.local` (typography exemptions; the managed
+  `.typography-allow` is overwritten by sync), and the repository-specific
+  section below.
+- Module selection is this repository's own: edit the `modules` list in
+  `.repo-platform.yml` and the next sync PR applies the change.
+
+## Repository-specific guidance
+
+copilot-env is a local copilot-api proxy lifecycle + config helper (a
+TypeScript port of the Python `copilot-api`). It wraps a floating
+`@jeffreycao/copilot-api` proxy and wires the Codex and Claude CLIs to either
+that local proxy or GitHub Copilot Direct.
 
 **Cross-platform is non-negotiable.** Everything must work on Linux, macOS, and Windows
 unless the user says otherwise. Each POSIX/PowerShell pair stays feature-matched: `bin/agent`
@@ -10,11 +62,9 @@ unless the user says otherwise. Each POSIX/PowerShell pair stays feature-matched
 `src/scripts/proxy-token.sh` ⇄ `.ps1`. Prefer the platform helpers (`agentLauncherCommand`,
 `proxyTokenCommand` in `src/utils/root.ts`) over hardcoding a shell.
 
-`CLAUDE.md` and `.github/copilot-instructions.md` are symlinks to this file.
+### Architecture: the non-obvious decisions
 
-## Architecture: the non-obvious decisions
-
-Only the *why* lives here — the code is the source of truth for mechanics, key lists, and
+Only the *why* lives here - the code is the source of truth for mechanics, key lists, and
 file layouts. Don't restate here what a reader can grep.
 
 - **In-place, no cache.** `bin/agent` installs `node_modules` into the checkout and runs
@@ -29,7 +79,7 @@ file layouts. Don't restate here what a reader can grep.
   config file (`~/.codex/config.toml`, `~/.claude/settings.json`).
 - **One credential, resolved not baked.** The token is the single source of truth in
   `CopilotEnvState`; Direct configs never store a copy, they resolve it at fetch time via
-  `agent auth --get`. Provider-driven with **no implicit `gh` fallback** — when auth is none
+  `agent auth --get`. Provider-driven with **no implicit `gh` fallback** - when auth is none
   we **ask, never silently fall back**.
 - **Profiles are opt-in atomic units; the default path never changes.** A profile = ONE
   credential + ONE mode (never both), always wired into BOTH agents. The store slot is the
@@ -52,81 +102,85 @@ file layouts. Don't restate here what a reader can grep.
   credential class.** A PAT can't perform copilot-api's editor token exchange, so a preload
   fakes it and the daemon uses the token directly. And the inference hosts gate on a
   `Copilot-Integration-Id` that a PAT is only accepted under (`copilot-developer-cli`), so
-  the identity is **probed per credential** rather than assumed — baked into Direct configs,
+  the identity is **probed per credential** rather than assumed - baked into Direct configs,
   or rewritten onto the daemon's calls by the same preload. Non-PAT credentials skip the
   probe entirely. `passthrough` and `integration-id` force either decision by hand.
 
-## Repo map
+### Repo map
 
-- `bin/agent`(`.ps1`) — self-bootstrapping launchers (install bun + deps, dispatch `cli.ts`).
-- `shell/` — shell integration (the `agent` wrapper + eager `agent env`) and the opt-in
+- `bin/agent`(`.ps1`) - self-bootstrapping launchers (install bun + deps, dispatch `cli.ts`).
+- `shell/` - shell integration (the `agent` wrapper + eager `agent env`) and the opt-in
   `cl`/`co`/`cx` launchers; pure runtime wiring, never installs.
-- `install.sh`/`install.ps1` — one-line bootstrap installers, handing off to release-local
+- `install.sh`/`install.ps1` - one-line bootstrap installers, handing off to release-local
   `src/install/installer.ts`.
-- `src/cli.ts` — Commander entry; delegates to `run*` functions.
-- `src/commands/` — one file per command; `init` configures both agents, `auth` manages the
+- `src/cli.ts` - Commander entry; delegates to `run*` functions.
+- `src/commands/` - one file per command; `init` configures both agents, `auth` manages the
   credential only and never configures agents.
-- `src/codex/`, `src/claude/` — per-agent config wiring.
-- `src/copilot_api/` — proxy helpers: admin REST, catalog fetch, JSON config/state, model
+- `src/codex/`, `src/claude/` - per-agent config wiring.
+- `src/copilot_api/` - proxy helpers: admin REST, catalog fetch, JSON config/state, model
   aliases, per-host paths, daemon process control, client-identity probe.
-- `src/scripts/` — things that run as their OWN process or `bun --preload`, NOT CLI handlers:
+- `src/scripts/` - things that run as their OWN process or `bun --preload`, NOT CLI handlers:
   the proxy-token resolver and the daemon shims.
 - `src/install/`, `src/migrations/`, `src/autoupdate/`, `src/health/`, `src/usage/`,
-  `src/utils/` — release download/verify, version-step fix-ups, the update preflight, the
+  `src/utils/` - release download/verify, version-step fix-ups, the update preflight, the
   health engine, cost reporting, generic helpers.
-- `copilot-env.config` — proxy-float floor/ceiling. `test/` — `bun test` units + a start/stop
+- `copilot-env.config` - proxy-float floor/ceiling. `test/` - `bun test` units + a start/stop
   lifecycle against `test/copilot-api-fake.mjs`.
 
-## Agent & dev environment init
+### Agent & dev environment init
 
 Every agent/dev environment and fresh `git worktree` initializes through **one** idempotent
-script — `scripts/setup-env.sh` (`.ps1` on Windows) — so no entry point drifts. It is invoked
+script - `scripts/setup-env.sh` (`.ps1` on Windows) - so no entry point drifts. It is invoked
 by the Copilot coding agent, Codespaces/Dev Containers, and humans.
 
-## Migrations
+### Migrations
 
 `src/migrations/` carries one-time, idempotent fix-ups for existing installs, one file per step
-named for the release it migrates **away from** (`1.2.1.ts`) — authored against the current
+named for the release it migrates **away from** (`1.2.1.ts`) - authored against the current
 version, never predicting the next. `agent update` runs the due ones (`[old, new)`) in a fresh
 process after swapping in the new release; failures are non-fatal. The transition that *adds* a
-subsystem can't auto-run via update — that one is covered by the installer's `agent shell`
+subsystem can't auto-run via update - that one is covered by the installer's `agent shell`
 refresh.
 
-## Conventions
+### Project conventions
 
-- **No `any`** — biome's `noExplicitAny` is `error`.
+- **No `any`** - biome's `noExplicitAny` is `error`.
 - **camelCase** functions/vars, **PascalCase** types/classes, **CONSTANT_CASE** top-level
   constants; **snake_case only on object-literal keys** (external config keys), always quoted.
 - **No new deps without an explicit reason.** Current: `commander`, `consola`, `dotenv`,
   `execa`, `semver`, `smol-toml`, `tar`, `valibot`, `which`, `ps-list`, `@jeffreycao/copilot-api`.
-- **String literals are external contracts** — model ids, JSON keys, env var names, log
+- **String literals are external contracts** - model ids, JSON keys, env var names, log
   markers: never rename them during refactors.
-- **ASCII source, except user-facing output.** Comments/identifiers/code are pure ASCII (no em
-  dashes, arrows, ellipses); non-ASCII only inside string/template literals. Enforced by
-  `test/no_weird_chars.test.ts`.
+- **ASCII source, and no typographic look-alikes anywhere.** Comments/identifiers/code are
+  pure ASCII; non-ASCII only inside string/template literals (`test/no_weird_chars.test.ts`),
+  and even there no em dashes, curly quotes, or ellipses (the check-typography gate).
 - **bun** (runtime), **biome** (format/lint), **tsc** (typecheck), **shellcheck** /
   **PSScriptAnalyzer**. No bundler.
 - **Never add "Generated by", "Co-Authored-By", "claude", "codex", or "copilot" lines** anywhere.
-- **Conventional Commits** — `feat:`/`fix:` release, `chore:`/`docs:`/`refactor:`/`test:`/`ci:`
+- **Conventional Commits** - `feat:`/`fix:` release, `chore:`/`docs:`/`refactor:`/`test:`/`ci:`
   don't. The prefix only gates WHETHER a release happens: the version always bumps the
   **patch** (release-please `versioning: always-bump-patch`), never minor/major.
-- **Run `/rubber-duck-review` before any commit** — an independent cross-model review of the
+- **Run `/rubber-duck-review` before any commit** - an independent cross-model review of the
   pending changes, then commit.
 
-## Releases
+### Releases
 
-Versioned via [release-please](.github/workflows/release-please.yml): pushes to `main` update one
-rolling **release PR**; merging it tags `vX.Y.Z` and publishes the GitHub Release. Ordinary
-pushes release nothing. Installers and `agent update` install the newest release tag, not `main`.
+Versioned via release-please: pushes to `main` update one rolling **release PR**; merging it
+tags `vX.Y.Z` and publishes the GitHub Release. Ordinary pushes release nothing. Installers
+and `agent update` install the newest release tag, not `main`. The repo-owned
+`.github/workflows/release.yml` wraps the managed release-please machinery: it pins the
+installer assets before the release, then uploads them to the draft release, smokes the real
+uploaded assets on Linux + Windows, and only then publishes.
 
 - **Releases only ever move forward.** A published version is immutable: never re-release,
   overwrite, or pin a future release back to it. Each new release must be **> the latest tag**.
   Leave `release-as` absent; with `always-bump-patch` every release is the next patch version.
-- The release PR needs `RELEASE_PLEASE_TOKEN` (a PAT/App token) to run CI like a normal PR.
-  Without it, the built-in `GITHUB_TOKEN` can't trigger the workflows, so `all-green` sits unmet
-  and you merge with admin bypass (the code already passed CI into `main`).
+- The release PR needs the `REPO_PLATFORM_TOKEN` secret (a PAT/App token) to run CI like a
+  normal PR. Without it, the built-in `GITHUB_TOKEN` can't trigger the workflows, so
+  `all-green` sits unmet; close/reopen the PR to trigger CI, or merge with admin bypass
+  (the code already passed CI into `main`).
 
-## Commands
+### Commands
 
 ```bash
 bun run typecheck     # tsc --noEmit
@@ -141,6 +195,6 @@ bun run check         # biome check --write
 ./bin/agent start     # start the daemon; also stop / health / models / env / cost / update / shell / codex / claude / uninstall
 ```
 
-The husky `pre-commit` hook and CI run the same gate (lint-staged + typecheck + tests + the
-skip-if-absent shell/PS linters); CI adds a Linux/macOS/Windows matrix plus lifecycle and
-installer jobs.
+The husky `pre-commit` hook runs the same gate as the `check` job in `checks.yml` (lint-staged +
+typecheck + tests + the skip-if-absent shell/PS linters); `checks.yml` adds a Linux/macOS/Windows
+matrix plus lifecycle and installer jobs.

@@ -1,6 +1,6 @@
 name: installer-sh smoke
 
-# Reusable, single-scenario install.sh smoke. The caller (ci.yml) invokes this
+# Reusable, single-scenario install.sh smoke. The caller (checks.yml) invokes this
 # once per (OS, flag) combination, so each scenario runs as its OWN job on a
 # fresh runner -- separate $HOME, separate rc files. Scenarios can never share or
 # clobber each other's state, which is exactly why no "strip the marker first"

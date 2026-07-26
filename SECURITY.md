@@ -1,29 +1,28 @@
-# Security Policy
+# Security policy
 
-## Supported Versions
+## Supported versions
 
-Only the latest published release is supported. `copilot-env` ships versioned
-GitHub Releases (tagged `vX.Y.Z` via release-please) and is not published to a
+Only the latest published release is supported. `copilot-env` ships versioned GitHub
+Releases (tagged `vX.Y.Z` via release-please) and is not published to a
 package registry. Security fixes land in the next release. Install from the
 latest GitHub Release asset (`install.sh` / `install.ps1`), or run
 `agent update` to upgrade to the newest release tag.
 
-## Reporting a Vulnerability
+## Reporting a vulnerability
 
-Please report security issues privately through GitHub's private vulnerability
-reporting. Go to the repository's **Security** tab and choose
-**"Report a vulnerability"**, or use this link:
+**Do not open a public issue for security problems.**
 
-https://github.com/Vivswan/copilot-env/security/advisories/new
+Report vulnerabilities privately via
+[GitHub Security Advisories](https://github.com/vivswan/copilot-env/security/advisories/new)
+("Report a vulnerability"). Include reproduction steps and the affected
+version. Reports are acknowledged on a best-effort basis, typically within a
+few days; as a small, volunteer-maintained project we cannot commit to a fixed
+response or remediation timeline. A confirmed fix ships in the next release.
 
-Do **not** open public issues, pull requests, or discussions for security
-reports.
+Never include real credentials in a report; redact everything that looks like
+a key.
 
-We aim to acknowledge new reports on a best-effort basis, typically within a
-few days. As a small, volunteer-maintained project we cannot commit to a fixed
-response or remediation timeline.
-
-## Security Model / Scope
+## Security model / scope
 
 `copilot-env` is a local CLI that manages a `@jeffreycao/copilot-api` proxy on
 your own machine. Its security posture:
@@ -47,7 +46,7 @@ your own machine. Its security posture:
   `minimumReleaseAge` fallback in `bunfig.toml`; override the window with the
   `release-cooldown` config key or `COPILOT_API_MIN_RELEASE_AGE`, or bypass it
   by pinning via the `proxy-version` config key or `COPILOT_API_VERSION`),
-  clamped to the version floor/ceiling in `copilot-env.config` — and `agent
+  clamped to the version floor/ceiling in `copilot-env.config` - and `agent
   start` refuses to launch a proxy below that floor regardless of how it was
   installed. Every other dependency is pinned via the committed `bun.lock`
   for reproducible installs.

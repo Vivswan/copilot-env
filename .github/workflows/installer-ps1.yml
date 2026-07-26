@@ -1,6 +1,6 @@
 name: installer-ps1 smoke
 
-# Reusable, single-scenario install.ps1 smoke (Windows). The caller (ci.yml)
+# Reusable, single-scenario install.ps1 smoke (Windows). The caller (checks.yml)
 # invokes this once per flag combination, so each scenario runs as its OWN job on
 # a fresh runner -- separate profile, separate $HOME. Scenarios can never share or
 # clobber each other's state, so expect-wiring=false asserts the absence of

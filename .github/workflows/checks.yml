@@ -1,0 +1,168 @@
+# Repo-owned CI checks, called by the managed ci.yml inside the all-green
+# gate: every job here must pass before all-green goes green. Generated once
+# by Vivswan/repo-platform and never overwritten by template
+# sync, so edit freely: multiple jobs, matrices, and further local reusable
+# workflows all work.
+#
+# Two limits from running inside the `checks` caller: jobs here get no
+# secrets and are capped at the caller's permissions (contents: read), and
+# all-green only sees the aggregate result, so a job skipped by its own
+# `if:` does not fail the gate. A check that needs secrets, more
+# permissions, or must never be skippable, belongs in its own workflow wired
+# into the ruleset via .github/settings.yml.
+
+name: Checks
+
+on:
+  workflow_call:
+
+jobs:
+  check:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        env:
+          HUSKY: "0"
+
+      # Guard the postinstall proxy float: `bun install` above runs
+      # src/proxy_float.ts as its postinstall, which is best-effort (never
+      # fails the install). Without this check a silently broken float would slip
+      # through CI, since the start/stop lifecycle below uses a FAKE proxy
+      # (COPILOT_API_ENTRY) and never resolves the real one. This asserts the
+      # float actually installed @jeffreycao/copilot-api within config bounds, on every OS.
+      - name: Verify proxy float installed the proxy
+        run: bun src/proxy_float.ts --assert-installed
+
+      - name: Typecheck
+        if: runner.os == 'Linux'
+        run: bun run typecheck
+
+      - name: Lint + format (biome check)
+        if: runner.os == 'Linux'
+        run: bun run lint
+
+      - name: Test
+        run: bun test --timeout 15000
+
+      # End-to-end daemon lifecycle on every OS (script: .github/scripts/lifecycle-smoke.sh):
+      # default daemon start/stop/health cross-checks, managed-lifecycle idempotency, and the
+      # named-profile daemon cycle -- against a fake proxy, so no Copilot auth is needed.
+      # `shell: bash` runs on the Windows runner too (git-bash).
+      - name: Start/stop + health lifecycle (fake proxy)
+        shell: bash
+        env:
+          COPILOT_API_ENTRY: ${{ github.workspace }}/test/copilot-api-fake.mjs
+        run: bash .github/scripts/lifecycle-smoke.sh
+
+      - name: Shell lint (shellcheck)
+        if: runner.os == 'Linux'
+        run: bun run lint:sh
+
+      - name: PowerShell lint (PSScriptAnalyzer)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            Register-PSRepository -Default
+          }
+          Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
+          bun run lint:ps
+
+  # Each install.sh scenario runs as its OWN isolated job (fresh runner, fresh
+  # $HOME) via the reusable installer-sh.yml. The default bootstrap path runs on
+  # both Linux and macOS; optional setup variants run on one POSIX OS because the
+  # detailed block/flag behavior is covered by unit tests.
+  install-sh:
+    name: install.sh ${{ matrix.name }} / ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-latest, name: "default", args: "", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: true, rerun: true}
+          - {os: macos-latest, name: "default", args: "", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: true, rerun: true}
+          - {os: ubuntu-latest, name: "download path", args: "--no-shell-integration", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: false, rerun: true, download-install: true}
+          - {os: ubuntu-latest, name: "setup-clis", args: "", setup-clis: true, setup-launchers: false, expect-clis: true, expect-wiring: true, rerun: false}
+          - {os: ubuntu-latest, name: "setup-launchers", args: "", setup-clis: false, setup-launchers: true, expect-clis: false, expect-wiring: true, rerun: false}
+          - {os: ubuntu-latest, name: "--no-shell-integration", args: "--no-shell-integration", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: false, rerun: false}
+    uses: ./.github/workflows/installer-sh.yml
+    with:
+      os: ${{ matrix.os }}
+      args: ${{ matrix.args }}
+      setup-clis: ${{ matrix.setup-clis }}
+      setup-launchers: ${{ matrix.setup-launchers }}
+      expect-clis: ${{ matrix.expect-clis }}
+      expect-wiring: ${{ matrix.expect-wiring }}
+      rerun: ${{ matrix.rerun }}
+      download-install: ${{ matrix.download-install || false }}
+
+  # Windows parity: each install.ps1 scenario as its OWN isolated job via the
+  # reusable installer-ps1.yml. Git + Node/npm are preinstalled on windows-latest.
+  #   default / setup-clis / no-shell-integration : bun provided by setup-bun,
+  #     exercising checkout detection, profile wiring, and moved setup paths.
+  install-ps1:
+    name: install.ps1 ${{ matrix.scenario.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - {name: "default", args: "", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: true, rerun: true}
+          - {name: "download path", args: "-NoShellIntegration", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: false, rerun: true, download-install: true}
+          - {name: "setup-clis", args: "", setup-clis: true, setup-launchers: false, expect-clis: true, expect-wiring: true, rerun: false}
+          - {name: "-NoShellIntegration", args: "-NoShellIntegration", setup-clis: false, setup-launchers: false, expect-clis: false, expect-wiring: false, rerun: false}
+    uses: ./.github/workflows/installer-ps1.yml
+    with:
+      args: ${{ matrix.scenario.args }}
+      setup-clis: ${{ matrix.scenario.setup-clis }}
+      setup-launchers: ${{ matrix.scenario.setup-launchers }}
+      expect-clis: ${{ matrix.scenario.expect-clis }}
+      expect-wiring: ${{ matrix.scenario.expect-wiring }}
+      rerun: ${{ matrix.scenario.rerun }}
+      download-install: ${{ matrix.scenario.download-install || false }}
+
+  # Pre-merge release smoke, exercised on the rolling release-please PR ONLY:
+  # simulate the pending release from the working tree (pin the installers,
+  # git-archive HEAD, serve a localhost stand-in of the GitHub releases API) and
+  # run the full installer against it on both platforms. Catches packaging and
+  # installer bugs BEFORE the tag exists; the post-release smoke in release.yml
+  # still gates publishing with the real uploaded assets. The job itself always
+  # runs and the release-PR condition lives on the STEPS, so everywhere else it
+  # is a seconds-long no-op reporting success -- keeping the aggregate `checks`
+  # result the gate sees honest.
+  release-pr-smoke:
+    name: release-pr smoke / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      # A same-repo PR from release-please's branch namespace. The head-repo check
+      # matters: a fork can name its branch release-please--anything. Within this
+      # repo, only trusted collaborators and workflows can create branches at all.
+      IS_RELEASE_PR: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--') && github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@v7
+        if: ${{ env.IS_RELEASE_PR == 'true' }}
+
+      - uses: oven-sh/setup-bun@v2
+        if: ${{ env.IS_RELEASE_PR == 'true' }}
+        with:
+          bun-version: 1.3.14
+
+      - name: Simulate the pending release and run the installer against it
+        if: ${{ env.IS_RELEASE_PR == 'true' }}
+        run: bun .github/scripts/release-pr-smoke.ts

@@ -31,6 +31,15 @@ labels:
   - name: dependencies
     color: "0366d6"
     description: Dependency updates
+  # Dependabot's default per-ecosystem labels: without a `labels:` override in
+  # dependabot.yml it applies these and recreates them if missing, so leaving
+  # them undeclared would make the settings sync delete/recreate them forever.
+  - name: github_actions
+    color: "000000"
+    description: Pull requests that update GitHub Actions code
+  - name: javascript
+    color: "168700"
+    description: Pull requests that update javascript code
   - name: bug
     color: "d73a4a"
     description: Something isn't working
@@ -52,9 +61,7 @@ labels:
 # Branch ruleset for the default branch. Admins (RepositoryRole id 5) are in
 # the bypass list, so direct pushes to main still work. The single required
 # status check is `all-green` (ci.yml), which `needs:` every gating CI job - the
-# list stays stable when jobs are added or renamed. "Require code quality
-# results" is NOT a documented ruleset rule type (public preview, no published
-# REST schema) - enable it in the UI if wanted (Settings -> Rules -> Rulesets).
+# list stays stable when jobs are added or renamed.
 rulesets:
   - name: main
     target: branch
@@ -98,6 +105,13 @@ rulesets:
         parameters:
           review_on_push: true
           review_draft_pull_requests: true
+      # "Require code quality results" is a public-preview rule with no
+      # published REST schema; it is live on the repo (enabled by the old
+      # settings), so it stays declared to keep the sync from stripping it.
+      # `warnings` (plural) is the enum the live API stores.
+      - type: code_quality
+        parameters:
+          severity: warnings
     bypass_actors:
       - actor_id: 5
         actor_type: RepositoryRole

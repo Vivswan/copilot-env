@@ -2,11 +2,7 @@
 
 ## Supported versions
 
-Only the latest published release is supported. `copilot-env` ships versioned GitHub
-Releases (tagged `vX.Y.Z` via release-please) and is not published to a
-package registry. Security fixes land in the next release. Install from the
-latest GitHub Release asset (`install.sh` / `install.ps1`), or run
-`agent update` to upgrade to the newest release tag.
+Only the latest release is supported.
 
 ## Reporting a vulnerability
 
@@ -59,3 +55,8 @@ your own machine. Its security posture:
   start` refuses to launch a proxy below that floor regardless of how it was
   installed. Every other dependency is pinned via the committed `bun.lock`
   for reproducible installs.
+- **Releases, not a registry.** `copilot-env` ships as versioned GitHub
+  Releases (tagged `vX.Y.Z` via release-please) and is not published to any
+  package registry. To pick up fixes, install from the latest release's
+  `install.sh` / `install.ps1` asset, or run `agent update` to move to the
+  newest release tag.

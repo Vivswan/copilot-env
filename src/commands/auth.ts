@@ -75,16 +75,16 @@ function asProvider(provider: string): AuthProvider {
 async function chooseProvider(): Promise<AuthProvider> {
   if (!process.stdin.isTTY) {
     throw new Error(
-      "not a terminal — pass --provider copilot|gh-cli|gh-token (e.g. `agent auth --provider gh-token`)",
+      "not a terminal - pass --provider copilot|gh-cli|gh-token (e.g. `agent auth --provider gh-token`)",
     );
   }
   const value = await consola.prompt("How should GitHub Copilot authenticate?", {
     type: "select",
     options: [
-      { label: "copilot — device-flow browser login (read:user scope)", value: "copilot" },
-      { label: "gh-cli — use the machine's `gh auth login`", value: "gh-cli" },
+      { label: "copilot - device-flow browser login (read:user scope)", value: "copilot" },
+      { label: "gh-cli - use the machine's `gh auth login`", value: "gh-cli" },
       {
-        label: "gh-token — store $COPILOT_GITHUB_TOKEN / $GH_TOKEN / $GITHUB_TOKEN (headless)",
+        label: "gh-token - store $COPILOT_GITHUB_TOKEN / $GH_TOKEN / $GITHUB_TOKEN (headless)",
         value: "gh-token",
       },
     ],
@@ -114,7 +114,7 @@ function loginWithCopilot(cred: Credential): void {
     entry = resolveCopilotApiEntry();
   } catch (e) {
     throw new Error(
-      `cannot run the device-flow login — copilot-api is not installed (${errMessage(e)}). ` +
+      `cannot run the device-flow login - copilot-api is not installed (${errMessage(e)}). ` +
         "Re-run the agent launcher to install dependencies, or use `agent auth --provider gh-token`.",
     );
   }
@@ -245,7 +245,7 @@ function loginWithGhCli(cred: Credential): void {
   // Verify gh works BEFORE recording -- otherwise a failed gh check would point
   // `--get` at a `gh` that can't produce a token.
   if (ghAuthToken() === null) {
-    throw new Error("gh is not authenticated — run `gh auth login`, then retry `agent auth`");
+    throw new Error("gh is not authenticated - run `gh auth login`, then retry `agent auth`");
   }
   cred.useGhCli();
   logger.success("  Using the gh CLI login as the Direct credential.");
@@ -283,8 +283,8 @@ async function runGet(profile: Profile, catalogDeps?: CodexCatalogDeps): Promise
   if (token === null) {
     logger.error(
       profile === null
-        ? "no GitHub credential — run `agent auth` to log in"
-        : `no GitHub credential for ${profileLabel(profile)} — run \`agent auth --profile ${profile}\` ` +
+        ? "no GitHub credential - run `agent auth` to log in"
+        : `no GitHub credential for ${profileLabel(profile)} - run \`agent auth --profile ${profile}\` ` +
             "to log in (a named profile never falls back to the default credential)",
     );
     process.exitCode = 1;
@@ -372,10 +372,10 @@ async function runDel(profile: Profile): Promise<void> {
       );
     }
   } else if (profile === null) {
-    logger.info("Nothing to clear — not authenticated. Run `agent auth` to log in.");
+    logger.info("Nothing to clear - not authenticated. Run `agent auth` to log in.");
   } else {
     logger.info(
-      `Nothing to clear for ${profileLabel(profile)} — not authenticated. Run ` +
+      `Nothing to clear for ${profileLabel(profile)} - not authenticated. Run ` +
         `\`agent auth --profile ${profile}\` to log in.`,
     );
   }
@@ -390,7 +390,7 @@ function runCheck(profile: Profile): void {
   const flag = profile === null ? "" : ` --profile ${profile}`;
   const label = profile === null ? "" : ` (${profileLabel(profile)})`;
   if (provider === null) {
-    console.log(`not authenticated${label} — run \`agent auth${flag}\``);
+    console.log(`not authenticated${label} - run \`agent auth${flag}\``);
     process.exitCode = 1;
   } else if (resolves) {
     console.log(`authenticated (${provider})${label}`);
@@ -398,7 +398,7 @@ function runCheck(profile: Profile): void {
   } else {
     // e.g. gh-cli selected but `gh` is no longer authenticated.
     console.log(
-      `provider '${provider}' selected but no credential resolves${label} — run \`agent auth${flag}\``,
+      `provider '${provider}' selected but no credential resolves${label} - run \`agent auth${flag}\``,
     );
     process.exitCode = 1;
   }
@@ -432,8 +432,8 @@ export async function ensureAuthenticated(profile: Profile = null): Promise<void
   if (new Credential(undefined, profile).isAuthenticated()) return;
   logger.log(
     profile === null
-      ? "  Not authenticated yet — let's log in to GitHub Copilot."
-      : `  ${profileLabel(profile)} is not authenticated yet — let's log in to GitHub Copilot.`,
+      ? "  Not authenticated yet - let's log in to GitHub Copilot."
+      : `  ${profileLabel(profile)} is not authenticated yet - let's log in to GitHub Copilot.`,
   );
   await authenticate(undefined, undefined, profile);
 }

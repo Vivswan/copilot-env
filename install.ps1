@@ -257,7 +257,7 @@ if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'shell\agents.ps1'))) {
             }
         }
         # Restore preserved autoupdate state. The release never ships .autoupdate
-        # (gitignored), so the fresh tree has none — copy the backup into place.
+        # (gitignored), so the fresh tree has none - copy the backup into place.
         if (Test-Path $autoupdateBackup) {
             Copy-Item -Recurse -Force $autoupdateBackup (Join-Path $InstallDir '.autoupdate')
         }

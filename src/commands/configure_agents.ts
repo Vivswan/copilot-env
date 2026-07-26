@@ -92,32 +92,32 @@ export function printGuidance(
   if (anyProxy) {
     lines.push("", "At least one agent uses the local proxy.");
     section("Start the proxy", [
-      "`agent start` — launch the daemon",
-      "`agent shell --launchers` — `cl` / `cx` then auto-start it for you",
-      "`agent cost` — report proxy usage",
+      "`agent start` - launch the daemon",
+      "`agent shell --launchers` - `cl` / `cx` then auto-start it for you",
+      "`agent cost` - report proxy usage",
     ]);
   } else if (bothDirect) {
-    const tail = usedToken ? " (using your GitHub token — no `gh` CLI needed)." : ".";
-    lines.push("", `Both agents use GitHub Copilot Direct — no local proxy needed${tail}`);
+    const tail = usedToken ? " (using your GitHub token - no `gh` CLI needed)." : ".";
+    lines.push("", `Both agents use GitHub Copilot Direct - no local proxy needed${tail}`);
     section("Run the agents", [
-      "Just use `claude` and `codex` — no `agent start` / `agent stop`",
-      "`agent shell --launchers` — optional `cl` / `co` / `cx` shortcuts",
+      "Just use `claude` and `codex` - no `agent start` / `agent stop`",
+      "`agent shell --launchers` - optional `cl` / `co` / `cx` shortcuts",
     ]);
     section("Good to know", [
-      "`agent cost` reports proxy usage only — Direct usage won't appear",
+      "`agent cost` reports proxy usage only - Direct usage won't appear",
       "Model aliases come from the proxy; in Direct, use the provider's exact ids",
     ]);
   } else {
-    lines.push("", "Mixed setup — the agents aren't configured the same way.");
+    lines.push("", "Mixed setup - the agents aren't configured the same way.");
     const steps = ["Anything unconfigured? Re-run `agent init` or check `agent health`"];
     if (codex === "direct" || claude === "direct") {
-      steps.unshift("The Direct agent needs no proxy — run it directly");
+      steps.unshift("The Direct agent needs no proxy - run it directly");
     }
     section("Next steps", steps);
   }
 
   section("Profiles (optional)", [
-    "Run several sessions at once — direct, proxy, or another account.",
+    "Run several sessions at once - direct, proxy, or another account.",
     "A profile = one credential + one mode, wired into BOTH agents:",
     "`agent profile --add <name> --direct|--proxy` → `cl --profile <name>` / `cx --profile <name>`",
     "`agent profile --list` / `--del <name>` manage them.",

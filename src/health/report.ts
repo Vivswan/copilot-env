@@ -32,7 +32,7 @@ function glyph(status: CheckStatus): string {
 
 /** Print a grouped, human-readable diagnostic report to stdout. */
 export function renderReport(scope: HealthScope, results: CheckResult[]): void {
-  console.log(bold(`copilot-env health — scope: ${scope}`));
+  console.log(bold(`copilot-env health - scope: ${scope}`));
   for (const group of GROUP_ORDER) {
     const inGroup = results.filter((r) => r.group === group);
     if (inGroup.length === 0) continue;

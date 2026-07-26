@@ -1043,7 +1043,7 @@ export async function runCodex(
   const ghToken = new Credential().resolve();
   const direct = resolveDirectMode(args, ghToken, detectCodexDirect);
   logger.log(
-    `  Configuring Codex for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} …`,
+    `  Configuring Codex for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} ...`,
   );
   // Reuse the just-resolved credential for the catalog seed's direct fetch so the
   // gh-cli provider isn't shelled out to a second time.

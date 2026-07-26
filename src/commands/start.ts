@@ -461,7 +461,7 @@ function assertProxyFloor(): void {
   const version = installedProxyVersion();
   if (version === null) {
     throw new Error(
-      `${PROXY_PACKAGE_NAME} is not installed or its package.json is unreadable — run 'bun install' to (re)install the proxy.`,
+      `${PROXY_PACKAGE_NAME} is not installed or its package.json is unreadable - run 'bun install' to (re)install the proxy.`,
     );
   }
   let config: ProjectConfig;
@@ -473,7 +473,7 @@ function assertProxyFloor(): void {
   const status = proxyVersionFloorStatus(version, config);
   if (!status.ok && status.reason === "belowFloor") {
     throw new Error(
-      `${PROXY_PACKAGE_NAME} ${status.version} is below the required ${status.floor} floor — the proxy ` +
+      `${PROXY_PACKAGE_NAME} ${status.version} is below the required ${status.floor} floor - the proxy ` +
         `float (bun install postinstall) likely failed (offline?) or was skipped because both ` +
         `agents are wired Direct. Re-run 'bun install' online, set COPILOT_API_VERSION to a ` +
         `known-good release, or rewire an agent to the proxy ('agent init --proxy') first.`,
@@ -598,7 +598,7 @@ export async function runStart(args: StartArgs): Promise<void> {
       if (up) {
         state.set({ lastEnsureAt: Date.now() });
         consola.success(
-          `Proxy already running${livePort !== undefined ? ` on port ${livePort}` : ""} — leaving it up.`,
+          `Proxy already running${livePort !== undefined ? ` on port ${livePort}` : ""} - leaving it up.`,
         );
         consola.info(
           `Run \`agent start${profileFlag} --force\` to launch a fresh daemon (e.g. after a credential or config change).`,
@@ -904,7 +904,7 @@ export async function runStart(args: StartArgs): Promise<void> {
             "Next steps",
             "",
             "  • Launch an agent:  `cl` (Claude) / `cx` (Codex) / `co` (Copilot)",
-            "    …or run `claude` / `codex` directly.",
+            "    ...or run `claude` / `codex` directly.",
             "  • Install those launchers:  `agent shell --launchers`",
             "  • `agent cost` reports proxy usage  ·  `agent stop` stops the proxy.",
           ].join("\n")
@@ -912,7 +912,7 @@ export async function runStart(args: StartArgs): Promise<void> {
             "Next steps",
             "",
             `  • Launch an agent under this profile:  \`cl --profile ${profile}\` / \`cx --profile ${profile}\``,
-            `    …or \`claude --settings <path from agent profile --settings-for ${profile}>\` / \`codex --profile ${profile}\`.`,
+            `    ...or \`claude --settings <path from agent profile --settings-for ${profile}>\` / \`codex --profile ${profile}\`.`,
             `  • \`agent stop --profile ${profile}\` stops this daemon (\`agent stop --all\` stops every one).`,
           ].join("\n"),
     );

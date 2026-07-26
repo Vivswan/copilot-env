@@ -374,7 +374,7 @@ export function configureClaudeConfig(
   ) {
     throw new Error(
       `${profileLabel(profile)} has no credential of its own (a named profile never falls back ` +
-        `to the default credential) — run \`agent auth --profile ${profile}\` first.`,
+        `to the default credential) - run \`agent auth --profile ${profile}\` first.`,
     );
   }
   try {
@@ -573,7 +573,7 @@ export async function runClaude(args: ClaudeConfigArgs): Promise<void> {
   const ghToken = new Credential().resolve();
   const direct = resolveDirectMode(args, ghToken, detectClaudeDirect);
   logger.log(
-    `  Configuring Claude for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} …`,
+    `  Configuring Claude for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} ...`,
   );
   // Direct bakes the client identity this credential is accepted under (shared with
   // Codex Direct); proxy needs none. Reuses the already-resolved token so gh-cli isn't

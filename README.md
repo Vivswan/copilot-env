@@ -11,7 +11,7 @@ and for Codex, and report estimated token spend.
 TypeScript port of the original Python `copilot-api` helper. Runs on **Linux,
 macOS, and Windows**.
 
-- **Lifecycle**: `start` / `stop` the local proxy with one command — or opt in
+- **Lifecycle**: `start` / `stop` the local proxy with one command - or opt in
   to the managed lifecycle (`auto-start`) that starts the proxy when an agent
   needs it and stops it after an idle window.
 - **Zero setup**: auto-installs [bun](https://bun.sh), dependencies, and the
@@ -21,14 +21,14 @@ macOS, and Windows**.
   per-host `CODEX_HOME` farm (Linux/macOS).
 - **One credential per setup**: `agent auth` manages the GitHub Copilot token
   (device flow, `gh` CLI, or a stored PAT) as the single source of truth for the
-  default setup — and one slot per named profile; PATs work through an automatic
+  default setup - and one slot per named profile; PATs work through an automatic
   passthrough shim.
 - **Named profiles**: `agent profile` bundles ONE credential + ONE mode (direct
-  or proxy) into both agents, so several sessions run at once — direct beside
-  proxy, or a second GitHub account — each proxy profile with its own daemon on
+  or proxy) into both agents, so several sessions run at once - direct beside
+  proxy, or a second GitHub account - each proxy profile with its own daemon on
   its own port. Launch with `cl --profile <name>` / `cx --profile <name>`.
-- **Typed preferences**: `agent config` gets/sets every knob — lifecycle,
-  ports, proxy feature flags, model ids — with one precedence rule everywhere.
+- **Typed preferences**: `agent config` gets/sets every knob - lifecycle,
+  ports, proxy feature flags, model ids - with one precedence rule everywhere.
 - **Cost reporting**: estimated spend from per-host usage DBs via live OpenRouter pricing.
 - **Controlled floating**: the proxy floats to the newest cooldown-aged release
   within configured bounds; every other dependency is pinned via `bun.lock`.
@@ -156,7 +156,7 @@ With `auto-start` on:
 
 - **Auto-start:** whenever Codex, Claude, or the `cl`/`cx` launchers need the
   proxy and it is down, it is started automatically (the shared credential
-  resolver handles this — no manual `agent start`).
+  resolver handles this - no manual `agent start`).
 - **Idle auto-stop:** a watchdog inside the daemon stops the proxy after an
   idle window. Inference requests and the resolver's session heartbeats count
   as activity; health and liveness pings never keep it alive. Configure the
@@ -209,15 +209,15 @@ reference from the Codex config.
 
 ### Authentication
 
-`agent auth` is the credential front door — one GitHub Copilot credential,
+`agent auth` is the credential front door - one GitHub Copilot credential,
 resolved at fetch time (agent configs never store a copy; `gh-cli` holds no
 token of its own and defers to the machine's `gh` login):
 
-- `--provider copilot` — GitHub device flow (`read:user` scope).
-- `--provider gh-cli` — use the machine's existing `gh` login.
-- `--provider gh-token` — store `$COPILOT_GITHUB_TOKEN`/`$GH_TOKEN`/`$GITHUB_TOKEN`
+- `--provider copilot` - GitHub device flow (`read:user` scope).
+- `--provider gh-cli` - use the machine's existing `gh` login.
+- `--provider gh-token` - store `$COPILOT_GITHUB_TOKEN`/`$GH_TOKEN`/`$GITHUB_TOKEN`
   (first set wins; headless servers); `--set [token]` stores one non-interactively.
-- `--get` / `--del` / `--check` — print, clear, or check that a credential resolves.
+- `--get` / `--del` / `--check` - print, clear, or check that a credential resolves.
 
 Classic and fine-grained PATs can't perform the proxy's editor token exchange,
 so `agent start` transparently enables a passthrough shim for PAT-shaped
@@ -226,8 +226,8 @@ tokens that uses the PAT as the bearer directly. Force it either way with
 
 ### Profiles
 
-A profile is an atomic unit — ONE credential + ONE mode (direct or proxy,
-never both) — always wired into BOTH agents, so several sessions run at once
+A profile is an atomic unit - ONE credential + ONE mode (direct or proxy,
+never both) - always wired into BOTH agents, so several sessions run at once
 without touching the default setup:
 
 ```bash

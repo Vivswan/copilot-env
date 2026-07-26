@@ -27,7 +27,7 @@ test("usePatPassthrough: an explicit force (config on/off) wins regardless of to
   expect(usePatPassthrough({ force: true, token: undefined })).toBe(false);
 });
 
-test("usePatPassthrough: auto — on for a PAT-shaped OR gho_ OAuth token, off otherwise", () => {
+test("usePatPassthrough: auto - on for a PAT-shaped OR gho_ OAuth token, off otherwise", () => {
   expect(usePatPassthrough({ force: undefined, token: "ghp_pat" })).toBe(true);
   expect(usePatPassthrough({ force: undefined, token: "github_pat_x" })).toBe(true);
   // A gho_ GitHub-OAuth token can't do the exchange (404) but works directly -> passthrough.
@@ -37,7 +37,7 @@ test("usePatPassthrough: auto — on for a PAT-shaped OR gho_ OAuth token, off o
   expect(usePatPassthrough({ force: undefined, token: undefined })).toBe(false);
 });
 
-test("usePatPassthrough: provider scoping — gh-cli auto-on, copilot never, gh-token by token shape", () => {
+test("usePatPassthrough: provider scoping - gh-cli auto-on, copilot never, gh-token by token shape", () => {
   expect(usePatPassthrough({ force: undefined, token: "gho_oauth", provider: "gh-cli" })).toBe(
     true,
   );

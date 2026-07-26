@@ -249,7 +249,7 @@ export function summarizeProbeFailure(
   // plus a hint of the last line.
   if (errorMessage) return truncateReason(errorMessage);
   const last = lines[lines.length - 1];
-  const tail = last ? ` — last output: ${truncateReason(last)}` : "";
+  const tail = last ? ` - last output: ${truncateReason(last)}` : "";
   if (signal) return `killed by ${signal}${tail}`;
   return `exit ${status ?? "?"}${tail}`;
 }
@@ -257,7 +257,7 @@ export function summarizeProbeFailure(
 /** One-line, length-bounded reason string (codex error bodies can be huge). */
 function truncateReason(line: string): string {
   const MAX = 200;
-  return line.length > MAX ? `${line.slice(0, MAX)}…` : line;
+  return line.length > MAX ? `${line.slice(0, MAX)}...` : line;
 }
 
 function defaultRunProbe(
@@ -315,7 +315,7 @@ export function probeDirectWorks(
   const retries = deps.retries ?? DEFAULT_PROBE_RETRIES;
   const retryDelayMs = deps.retryDelayMs ?? DEFAULT_PROBE_RETRY_DELAY_MS;
 
-  logger.log(`  Probing GitHub Copilot Direct for ${descriptor.cli} …`);
+  logger.log(`  Probing GitHub Copilot Direct for ${descriptor.cli} ...`);
 
   const cliPath = resolve(descriptor.cli);
   if (cliPath === null) {
@@ -327,13 +327,13 @@ export function probeDirectWorks(
     logger.log("    • GitHub CLI (gh) not found → using the local proxy");
     return false;
   }
-  logger.log("    • checking gh authentication …");
+  logger.log("    • checking gh authentication ...");
   if (!ghAuthOk(ghPath)) {
     logger.log("    • gh is not authenticated (run `gh auth login`) → using the local proxy");
     return false;
   }
   logger.log(
-    `    • running a read-only smoke prompt through ${descriptor.cli} (live model call, a few seconds) …`,
+    `    • running a read-only smoke prompt through ${descriptor.cli} (live model call, a few seconds) ...`,
   );
 
   let tmpHome: string | null = null;
@@ -357,7 +357,7 @@ export function probeDirectWorks(
     for (let attempt = 0; attempt <= retries; attempt++) {
       if (attempt > 0) {
         logger.log(
-          `    • smoke prompt failed${lastDetail ? ` (${lastDetail})` : ""}; retrying (attempt ${attempt + 1} of ${retries + 1}) …`,
+          `    • smoke prompt failed${lastDetail ? ` (${lastDetail})` : ""}; retrying (attempt ${attempt + 1} of ${retries + 1}) ...`,
         );
         sleepSync(retryDelayMs * attempt);
       }

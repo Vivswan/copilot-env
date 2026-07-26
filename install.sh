@@ -217,7 +217,7 @@ else
     mkdir -p "$INSTALL_DIR"
     tar -xzf "$_tmp/release.tgz" --strip-components=1 -C "$INSTALL_DIR"
     # Restore preserved autoupdate state. The release never ships .autoupdate (it's
-    # gitignored), so the freshly-extracted tree has none — copy the backup's
+    # gitignored), so the freshly-extracted tree has none - copy the backup's
     # contents into a fresh dir (no destructive pre-clean of $INSTALL_DIR needed).
     if [ -d "$_tmp/.autoupdate-backup" ]; then
         mkdir -p "$INSTALL_DIR/.autoupdate"

@@ -156,7 +156,7 @@ program
     "--provider <provider>",
     "How to authenticate (no flag => interactive choice): 'copilot' (device flow, " +
       "read:user scope), 'gh-cli' (use the machine's gh login), or 'gh-token' " +
-      "(store $GH_TOKEN/$GITHUB_TOKEN — for headless servers).",
+      "(store $GH_TOKEN/$GITHUB_TOKEN - for headless servers).",
   )
   .option(
     "--set [token]",
@@ -211,7 +211,7 @@ program
   .option("--list", "List every profile with its provider, mode, and daemon status.")
   .option(
     "--check <name>",
-    "Report the profile's mode and exit (0 direct, 2 proxy, 1 no such profile) — the launcher probe.",
+    "Report the profile's mode and exit (0 direct, 2 proxy, 1 no such profile) - the launcher probe.",
   )
   .option(
     "--settings-for <name>",
@@ -229,7 +229,7 @@ program
   )
   .option(
     "--set [token]",
-    "With --add: non-interactive gh-token — store this token verbatim, or read " +
+    "With --add: non-interactive gh-token - store this token verbatim, or read " +
       "$GH_TOKEN/$GITHUB_TOKEN when given no value.",
   )
   .action((opts: Opts) =>
@@ -404,7 +404,7 @@ program
   .option("--proxy", "Force the local copilot-api proxy (no auto-detect probe).")
   .option(
     "--check",
-    "Report the configured provider and exit — no changes, no probe (0 direct, 1 other, 2 proxy/none).",
+    "Report the configured provider and exit - no changes, no probe (0 direct, 1 other, 2 proxy/none).",
   )
   .option("--host", "(Linux/macOS) Build the per-host CODEX_HOME symlink farm and wire its config.")
   .option("--delete-host", "With --host: remove the per-host CODEX_HOME and stop exporting it.")
@@ -439,7 +439,7 @@ program
   .option("--proxy", "Force the local copilot-api proxy (no auto-detect probe).")
   .option(
     "--check",
-    "Report the configured provider and exit — no changes, no probe (0 direct, 1 other, 2 proxy/none).",
+    "Report the configured provider and exit - no changes, no probe (0 direct, 1 other, 2 proxy/none).",
   )
   .action((opts: Opts) =>
     runClaude({
@@ -454,7 +454,7 @@ program
   .description("Update the copilot-env checkout to the latest GitHub release.")
   .option(
     "--check",
-    "Report update status and exit — no changes (0 up to date, 1 update available, 2 no release resolved).",
+    "Report update status and exit - no changes (0 up to date, 1 update available, 2 no release resolved).",
   )
   .option(
     "--force",

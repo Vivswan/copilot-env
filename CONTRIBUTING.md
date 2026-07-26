@@ -4,7 +4,7 @@ Thanks for your interest in improving copilot-env! This guide covers how to set 
 
 ## Prerequisites
 
-- [bun](https://bun.sh) — runtime and test runner
+- [bun](https://bun.sh) - runtime and test runner
 
 ## Setup
 
@@ -32,17 +32,17 @@ A husky pre-commit hook runs lint-staged (biome) + typecheck + `bun test` + shel
 
 ## Code style
 
-Conventions live in [AGENTS.md](AGENTS.md) — please read it before contributing. In short:
+Conventions live in [AGENTS.md](AGENTS.md) - please read it before contributing. In short:
 
 - biome enforces formatting and linting (run `bun run format` / `bun run lint`).
-- No `any` — biome's `noExplicitAny` is an error.
+- No `any` - biome's `noExplicitAny` is an error.
 
 ## Submitting a pull request
 
 1. Fork the repo and create a branch for your change.
 2. Make sure `bun test`, `bun run typecheck`, and `bun run lint` all pass.
 3. Follow the conventions in [AGENTS.md](AGENTS.md).
-4. Open a PR. Merges to `main` are squash-only — keep your PR description meaningful, since it becomes the squash commit message.
+4. Open a PR. Merges to `main` are squash-only - keep your PR description meaningful, since it becomes the squash commit message.
 
 ## Security
 

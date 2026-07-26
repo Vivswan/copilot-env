@@ -197,13 +197,13 @@ export async function runCodexMobile(): Promise<void> {
   // other platforms BEFORE touching any config (mirrors host.ts's assertUnix).
   if (process.platform !== "darwin" && process.platform !== "win32") {
     logger.info(
-      `The ${APP_NAME} desktop app isn't available on ${process.platform} — \`codex --mobile\` is macOS/Windows only.`,
+      `The ${APP_NAME} desktop app isn't available on ${process.platform} - \`codex --mobile\` is macOS/Windows only.`,
     );
     process.exitCode = 1;
     return;
   }
   if (!process.stdin.isTTY) {
-    throw new Error("`agent codex --mobile` is interactive — run it in a terminal.");
+    throw new Error("`agent codex --mobile` is interactive - run it in a terminal.");
   }
 
   const home = effectiveCodexHome();
@@ -218,7 +218,7 @@ export async function runCodexMobile(): Promise<void> {
   const provider = readModelProvider(original);
   if (provider === null) {
     throw new Error(
-      "No model_provider is configured in config.toml — run `agent codex` first, then retry --mobile.",
+      "No model_provider is configured in config.toml - run `agent codex` first, then retry --mobile.",
     );
   }
   // Captured alongside the provider so restore() puts BOTH keys back.
@@ -239,7 +239,7 @@ export async function runCodexMobile(): Promise<void> {
       initial: true,
     });
     if (!close) {
-      logger.info("Aborted — the app must be closed to re-pair. Nothing was changed.");
+      logger.info("Aborted - the app must be closed to re-pair. Nothing was changed.");
       return;
     }
     await app.quit();

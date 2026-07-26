@@ -86,7 +86,7 @@ function directAuthVerdict(
   }
   return {
     status: "warn",
-    authLine: "auth: no credential resolves via `agent auth --get` — run `agent auth`",
+    authLine: "auth: no credential resolves via `agent auth --get` - run `agent auth`",
     fix: wiringOk ? "agent auth" : directFix,
   };
 }
@@ -534,8 +534,8 @@ export function checkAuth(f: AuthFacts): CheckResult {
     detail: [
       `provider '${f.provider}' is selected but no credential resolves`,
       f.provider === "gh-cli"
-        ? "`gh` is unauthenticated — run `gh auth login`, or `agent auth` to switch provider"
-        : "the stored token is missing — run `agent auth` to re-provision",
+        ? "`gh` is unauthenticated - run `gh auth login`, or `agent auth` to switch provider"
+        : "the stored token is missing - run `agent auth` to re-provision",
       ...profilesLine,
       ...identityLine,
     ].join("\n"),
@@ -609,7 +609,7 @@ export function checkCodex(f: CodexFacts): CheckResult {
     // is missing/foreign, and there's no legacy env_key token either.
     detail = [
       "provider: proxy",
-      withConfigPath("copilot-env proxy is not fully wired — run `agent codex --proxy`"),
+      withConfigPath("copilot-env proxy is not fully wired - run `agent codex --proxy`"),
     ].join("\n");
   }
   if (detail !== null) {

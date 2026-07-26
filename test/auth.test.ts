@@ -128,7 +128,7 @@ test("auth --check: a configured provider reports authenticated, exit 0", async 
   expect(process.exitCode).toBe(0);
 });
 
-test("auth (bare) is idempotent on a RECORDED provider — no re-auth, no config writes", async () => {
+test("auth (bare) is idempotent on a RECORDED provider - no re-auth, no config writes", async () => {
   const { claudeHome } = isolate();
   state().set({ githubToken: "ghu_stored123", authProvider: "copilot" });
   // A recorded provider => runAuth returns WITHOUT prompting, acquiring, or configuring.

@@ -522,7 +522,7 @@ export async function runCodexHost(args: CodexHostArgs): Promise<void> {
   logger.info("Preparing CODEX_HOME (building symlink farm)...");
   if (buildCodexSymlinkFarm(codexHome) !== 0) {
     throw new Error(
-      `Failed to build the CODEX_HOME symlink farm at ${codexHome} (a filesystem operation under it or ~/.codex failed — check permissions and free space)`,
+      `Failed to build the CODEX_HOME symlink farm at ${codexHome} (a filesystem operation under it or ~/.codex failed - check permissions and free space)`,
     );
   }
   // --direct/--proxy force the mode; with no flag a configured credential

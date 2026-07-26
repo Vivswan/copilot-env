@@ -533,17 +533,17 @@ export function proxyInstallAssertStatus(
         return {
           "ok": false,
           "message":
-            "proxy float did not install @jeffreycao/copilot-api (module resolution failed) — the `bun install` postinstall (src/proxy_float.ts) is broken.",
+            "proxy float did not install @jeffreycao/copilot-api (module resolution failed) - the `bun install` postinstall (src/proxy_float.ts) is broken.",
         };
       case "belowFloor":
         return {
           "ok": false,
-          "message": `installed @jeffreycao/copilot-api ${status.version} is below the ${status.floor} floor — the postinstall proxy float failed to reach the floor.`,
+          "message": `installed @jeffreycao/copilot-api ${status.version} is below the ${status.floor} floor - the postinstall proxy float failed to reach the floor.`,
         };
       case "aboveCeiling":
         return {
           "ok": false,
-          "message": `installed @jeffreycao/copilot-api ${status.version} is above the ${status.ceiling} ceiling — the postinstall proxy float overshot PROXY_MAX_VERSION.`,
+          "message": `installed @jeffreycao/copilot-api ${status.version} is above the ${status.ceiling} ceiling - the postinstall proxy float overshot PROXY_MAX_VERSION.`,
         };
       default:
         return assertNever(status);

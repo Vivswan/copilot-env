@@ -156,7 +156,7 @@ async function runAdd(name: string, args: ProfileArgs): Promise<void> {
   }
   logger.log(
     `  Configuring ${profileLabel(name)} for ` +
-      `${mode === "direct" ? "GitHub Copilot Direct" : "the local copilot-api proxy"} (both agents) …`,
+      `${mode === "direct" ? "GitHub Copilot Direct" : "the local copilot-api proxy"} (both agents) ...`,
   );
   // wireBothAgents resolves+persists the direct client identity (a rejected credential
   // throws here, before the store commits the mode below, so the profile stays unwired).
@@ -213,7 +213,7 @@ async function runDel(name: string): Promise<void> {
     new Credential(undefined, name).provider() !== null ||
     profileHomeNames().includes(name);
   if (!existed) {
-    consola.info(`${profileLabel(name)} does not exist — nothing to delete.`);
+    consola.info(`${profileLabel(name)} does not exist - nothing to delete.`);
     process.exitCode = 1;
     return;
   }
@@ -316,14 +316,14 @@ function runCheck(name: string): void {
   const slot = new CopilotEnvState().readProfileSlot(name);
   if (slot.mode === null) {
     console.log(
-      `${profileLabel(name)} does not exist — create it with \`agent profile --add ${name} --direct|--proxy\``,
+      `${profileLabel(name)} does not exist - create it with \`agent profile --add ${name} --direct|--proxy\``,
     );
     process.exitCode = 1;
     return;
   }
   if (slot.authProvider === null) {
     console.log(
-      `${profileLabel(name)} has no credential — repair it with \`agent auth --profile ${name}\` ` +
+      `${profileLabel(name)} has no credential - repair it with \`agent auth --profile ${name}\` ` +
         `or \`agent profile --add ${name}\``,
     );
     process.exitCode = 1;
@@ -342,7 +342,7 @@ async function runSettingsFor(name: string): Promise<void> {
   const mode = storedMode(name);
   if (mode === null) {
     throw new Error(
-      `${profileLabel(name)} does not exist — create it with \`agent profile --add ${name} --direct|--proxy\``,
+      `${profileLabel(name)} does not exist - create it with \`agent profile --add ${name} --direct|--proxy\``,
     );
   }
   const claudeHome = resolveClaudeHome();

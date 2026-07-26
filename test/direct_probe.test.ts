@@ -87,8 +87,8 @@ test("summarizeProbeFailure reports the raw exit when nothing else is available"
 test("summarizeProbeFailure truncates an oversized reason line", () => {
   const huge = `error: ${"x".repeat(500)}`;
   const reason = summarizeProbeFailure(1, null, undefined, huge, "");
-  expect(reason.length).toBeLessThanOrEqual(201); // 200 chars + the ellipsis
-  expect(reason.endsWith("…")).toBe(true);
+  expect(reason.length).toBeLessThanOrEqual(203); // 200 chars + the "..." marker
+  expect(reason.endsWith("...")).toBe(true);
 });
 
 // --- assertSingleMode -------------------------------------------------------

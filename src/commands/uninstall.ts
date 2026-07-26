@@ -105,7 +105,7 @@ export async function runUninstall(args: UninstallArgs, deps: UninstallDeps = {}
   // Confirm before touching (or even enumerating) anything.
   if (!args.yes && !args.dryRun) {
     if (!process.stdin.isTTY) {
-      throw new Error("not a terminal — pass --yes to uninstall non-interactively");
+      throw new Error("not a terminal - pass --yes to uninstall non-interactively");
     }
     const confirmed = await consola.prompt(
       "Remove copilot-env from this machine (daemons, profiles, agent wiring, " +
@@ -113,7 +113,7 @@ export async function runUninstall(args: UninstallArgs, deps: UninstallDeps = {}
       { type: "confirm", initial: false },
     );
     if (confirmed !== true) {
-      consola.info("Uninstall aborted — nothing was changed.");
+      consola.info("Uninstall aborted - nothing was changed.");
       process.exitCode = 1;
       return;
     }
@@ -209,7 +209,7 @@ export async function runUninstall(args: UninstallArgs, deps: UninstallDeps = {}
   let checkoutRemains = false;
   if (skipCheckout) {
     consola.info(
-      `${PROJECT_ROOT} is a git checkout; leaving it in place — delete it yourself, ` +
+      `${PROJECT_ROOT} is a git checkout; leaving it in place - delete it yourself, ` +
         "or re-run with --force.",
     );
   } else {

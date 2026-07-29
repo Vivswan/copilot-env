@@ -124,17 +124,28 @@ const STATE_SCHEMA = v.object({
     v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1))),
     null,
   ),
-  webSearchDenyOwnedPaths: v.fallback(v.array(v.pipe(v.string(), v.trim(), v.minLength(1))), []),
+  // ownedPathList owns the shape; the fallback only covers an ABSENT key (the
+  // pipe itself never issues -- junk entries are dropped inside the transform).
+  webSearchDenyOwnedPaths: v.fallback(v.pipe(v.unknown(), v.transform(ownedPathList)), []),
 });
 
 function emptyProfile(): ProfileSlotData {
   return { githubToken: null, authProvider: null, mode: null, integrationIdentity: null };
 }
 
-/** The raw owned-paths list from an untyped store document (junk entries dropped). */
-function ownedPathList(d: Record<string, unknown>): string[] {
-  return Array.isArray(d.webSearchDenyOwnedPaths)
-    ? d.webSearchDenyOwnedPaths.filter((p): p is string => typeof p === "string" && p !== "")
+/**
+ * THE parser for the owned-paths entry: junk entries (non-strings, blanks) are
+ * dropped INDIVIDUALLY, never the whole list, and survivors come back TRIMMED so
+ * a hand-padded entry still matches the exact-path ownership checks. Both the
+ * read schema above and the in-place update paths below go through it, so the
+ * two can never disagree about the entry's shape.
+ */
+function ownedPathList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value
+        .filter((p): p is string => typeof p === "string")
+        .map((p) => p.trim())
+        .filter((p) => p !== "")
     : [];
 }
 
@@ -241,7 +252,7 @@ export class CopilotEnvState {
   /** Record that we added the WebSearch deny to `settingsPath` (atomic, idempotent). */
   addWebSearchDenyOwnedPath(settingsPath: string): void {
     this.store.update((d) => {
-      const list = ownedPathList(d).filter((p) => p !== settingsPath);
+      const list = ownedPathList(d.webSearchDenyOwnedPaths).filter((p) => p !== settingsPath);
       list.push(settingsPath);
       d.webSearchDenyOwnedPaths = list;
     });
@@ -250,7 +261,7 @@ export class CopilotEnvState {
   /** Forget ownership for `settingsPath`; an emptied list drops the key entirely. */
   removeWebSearchDenyOwnedPath(settingsPath: string): void {
     this.store.update((d) => {
-      const list = ownedPathList(d).filter((p) => p !== settingsPath);
+      const list = ownedPathList(d.webSearchDenyOwnedPaths).filter((p) => p !== settingsPath);
       if (list.length === 0) delete d.webSearchDenyOwnedPaths;
       else d.webSearchDenyOwnedPaths = list;
     });

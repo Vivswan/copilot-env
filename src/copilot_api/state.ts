@@ -50,6 +50,8 @@ export class CopilotEnvRunState {
   /** The named profile this state belongs to (null = default) -- gates setIfExists. */
   private readonly profile: Profile;
 
+  /** Takes the PROFILE, not a file path (unlike sibling CopilotApiConfig): the store
+   *  path is derived from it, so path and profile can never disagree. */
   constructor(profile: Profile = null) {
     this.store = new CopilotApiConfig(new CopilotApiPaths(profile).stateFile);
     this.profile = profile;

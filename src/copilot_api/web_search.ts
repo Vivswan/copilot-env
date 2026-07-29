@@ -6,11 +6,12 @@
 // -> client identity -> one POST -> answer text with a `Sources:` list. It stays in
 // the copilot_api layer (like admin.ts / catalog.ts, the other REST clients) so the
 // MCP server remains a thin protocol adapter over it.
-import { GH_TOKEN_ENV_VARS, ghTokenFromEnv } from "../utils/direct_probe.ts";
+import { ghTokenEnvVarsList, ghTokenFromEnv } from "../utils/direct_probe.ts";
 import { isRecord } from "../utils/json.ts";
 import { Credential } from "./credential.ts";
 import { CopilotEnvConfig } from "./env_config.ts";
 import {
+  CODEX_EXEC_USER_AGENT,
   DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
   type ProbeFetch,
@@ -27,12 +28,13 @@ import { type Profile, profileLabel } from "./profile.ts";
 export const DEFAULT_WEB_SEARCH_MODEL = "gpt-5.6-sol";
 
 /**
- * Version-free User-Agent for /responses calls. The Codex client's own UA (which
- * this endpoint normally sees) lives in the codex layer, which this module must
- * not import; its version-free fallback is this same literal, and the module-local
- * PROBE_USER_AGENT in integration_identity.ts is precedent for staying version-free.
+ * Version-free User-Agent for /responses calls: the shared Codex product token
+ * from integration_identity.ts. The VERSIONED form this endpoint normally sees
+ * lives in the codex layer (codexUserAgent), which this module must not import;
+ * staying version-free mirrors the module-local PROBE_USER_AGENT precedent in
+ * integration_identity.ts.
  */
-const RESPONSES_USER_AGENT = "codex_exec";
+const RESPONSES_USER_AGENT = CODEX_EXEC_USER_AGENT;
 
 const WEB_SEARCH_TIMEOUT_MS = 120_000;
 
@@ -113,7 +115,7 @@ export function resolveWebSearchCredential(profile: Profile = null): string {
     if (fromEnv !== null) return fromEnv;
   }
   throw new Error(
-    `no GitHub credential - run \`agent auth\` to log in or set one of ${GH_TOKEN_ENV_VARS.join(" / ")}`,
+    `no GitHub credential - run \`agent auth\` to log in or set one of ${ghTokenEnvVarsList()}`,
   );
 }
 

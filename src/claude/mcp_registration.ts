@@ -9,11 +9,11 @@
 // Everything here is BEST-EFFORT and must never fail the wiring that calls it:
 // Claude Code rewrites this file constantly and owns its schema, so a malformed
 // or surprising document is warned about and left alone, never clobbered.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { consola } from "consola";
-import { renameWithRetry } from "../copilot_api/config.ts";
+import { atomicWriteFile } from "../copilot_api/config.ts";
 import { MCP_SERVER_NAME } from "../mcp/server.ts";
 import { isRecord } from "../utils/json.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
@@ -31,18 +31,27 @@ const logger = consola.withTag("claude.mcp");
 export type McpRegistrationStatus = "absent" | "ours-current" | "ours-stale" | "foreign";
 
 /**
+ * The `$CLAUDE_CONFIG_DIR` override (Claude Code's own knob), or null when
+ * unset/empty. THE single reader of that env var: claudeJsonPath and
+ * resolveClaudeHome (config.ts, which imports this module) both derive from it,
+ * with different fallbacks. Resolved to an absolute path because the web-search
+ * deny ownership record keys on the exact string, so a relative override must
+ * not drift with the cwd between a write and a later removal.
+ */
+export function claudeConfigDirOverride(): string | null {
+  const override = process.env.CLAUDE_CONFIG_DIR;
+  return override !== undefined && override !== "" ? resolve(override) : null;
+}
+
+/**
  * Claude Code's user-scope state file. CLAUDE_CONFIG_DIR relocates it alongside
  * settings.json (version-dependent Claude Code behavior -- true of current
- * releases); homedir() deliberately without an $HOME override, matching
- * resolveClaudeHome in config.ts (Windows resolves %USERPROFILE%, where Claude
- * Code actually reads).
+ * releases); the fallback is homedir() ITSELF (not `~/.claude`), deliberately
+ * without an $HOME override (Windows resolves %USERPROFILE%, where Claude Code
+ * actually reads).
  */
 export function claudeJsonPath(): string {
-  const override = process.env.CLAUDE_CONFIG_DIR;
-  // resolve() for the same reason as resolveClaudeHome: a relative override must
-  // not drift with the cwd between the write and a later removal.
-  const dir = override !== undefined && override !== "" ? resolve(override) : homedir();
-  return join(dir, ".claude.json");
+  return join(claudeConfigDirOverride() ?? homedir(), ".claude.json");
 }
 
 function managedEntry(): Record<string, unknown> {
@@ -113,22 +122,17 @@ function loadClaudeJson(): ClaudeJsonDoc | null {
 }
 
 /**
- * Write back atomically (temp + rename -- never a torn file), skipping the write
- * when nothing changed byte-for-byte. Claude Code writes this file WITHOUT a
- * trailing newline, so the serialization mirrors whatever convention the source
- * text had -- otherwise the unchanged-skip could never match a file Claude wrote.
+ * Write back atomically (the shared atomicWriteFile recipe -- never a torn file),
+ * skipping the write when nothing changed byte-for-byte. Claude Code writes this
+ * file WITHOUT a trailing newline, so the serialization mirrors whatever
+ * convention the source text had -- otherwise the unchanged-skip could never
+ * match a file Claude wrote.
  */
 function saveClaudeJson(loaded: ClaudeJsonDoc): void {
   const newline = loaded.raw === "" || loaded.raw.endsWith("\n");
   const text = `${JSON.stringify(loaded.doc, null, 2)}${newline ? "\n" : ""}`;
   if (text === loaded.raw) return;
-  mkdirSync(dirname(loaded.path), { recursive: true });
-  const tmp = join(
-    dirname(loaded.path),
-    `${basename(loaded.path)}.tmp.${process.pid}.${Date.now()}`,
-  );
-  writeFileSync(tmp, text);
-  renameWithRetry(tmp, loaded.path);
+  atomicWriteFile(loaded.path, text);
 }
 
 /**

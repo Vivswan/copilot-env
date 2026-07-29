@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -114,4 +114,18 @@ test("a named profile's integrationIdentity is a credential-derived cache: setCr
   state.setProfileMode("work", null);
   state.setCredential("work", { githubToken: null, authProvider: null });
   expect(state.profileNames()).toEqual([]);
+});
+
+test("webSearchDenyOwnedPaths drops junk entries individually and trims survivors", () => {
+  tmpHome();
+  // Hand-edited state: junk siblings must not nuke the real entry, and a padded
+  // path must read back trimmed so exact-path ownership checks still match.
+  writeFileSync(
+    join(dir, ".copilot-env-state.json"),
+    `${JSON.stringify({ webSearchDenyOwnedPaths: ["/a/settings.json", 123, "", null, "  /b/settings.json  "] })}\n`,
+  );
+  expect(new CopilotEnvState().read().webSearchDenyOwnedPaths).toEqual([
+    "/a/settings.json",
+    "/b/settings.json",
+  ]);
 });

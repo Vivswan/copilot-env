@@ -29,6 +29,11 @@ function parseMcpAction(args: McpArgs): McpAction {
     return { kind: "remove" };
   }
   const profile = args.profile?.trim() ?? "";
+  if (args.profile !== undefined && profile === "") {
+    // A supplied-but-blank --profile (e.g. an unset shell var) must never silently
+    // serve the default credential; `profile: null` is only reachable via an ABSENT flag.
+    throw new Error("--profile expects a profile name; omit it for the default credential");
+  }
   if (profile !== "") assertProfileName(profile);
   const model = args.model?.trim() ?? "";
   if (args.model !== undefined && model === "") {

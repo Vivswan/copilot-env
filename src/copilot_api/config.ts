@@ -117,23 +117,11 @@ export class CopilotApiConfig {
 
   /** Atomically write ``data`` to disk with mode 0600. */
   save(data: Record<string, unknown>): void {
-    mkdirSync(dirname(this.path), { recursive: true });
-    const tmp = join(dirname(this.path), `${basename(this.path)}.tmp.${process.pid}.${Date.now()}`);
-    try {
-      const sorted = sortKeys(data);
-      // Freshly named per write and created 0600 from the start, so a secret it may hold (the
-      // GitHub token, the proxy admin key) is never briefly readable at the default umask -- the
-      // rename publishes an already-restricted inode.
-      writeFileSync(tmp, `${JSON.stringify(sorted, null, 2)}\n`, { mode: 0o600 });
-      renameWithRetry(tmp, this.path);
-    } catch (err) {
-      try {
-        rmSync(tmp, { force: true });
-      } catch {
-        // ignore
-      }
-      throw err;
-    }
+    const sorted = sortKeys(data);
+    // Created 0600 from the start, so a secret it may hold (the GitHub token, the
+    // proxy admin key) is never briefly readable at the default umask -- the
+    // rename publishes an already-restricted inode.
+    atomicWriteFile(this.path, `${JSON.stringify(sorted, null, 2)}\n`, 0o600);
     try {
       chmodSync(this.path, 0o600);
     } catch {
@@ -234,6 +222,30 @@ function ensureDict(parent: Record<string, unknown>, key: string): Record<string
   const fresh: Record<string, unknown> = {};
   parent[key] = fresh;
   return fresh;
+}
+
+/**
+ * THE atomic file-write recipe: write to a fresh same-directory temp file
+ * (`<name>.tmp.<pid>.<now>`, unique per writer), then renameWithRetry over the
+ * target -- a reader never sees a torn file. The temp file is removed on failure.
+ * `mode` (when given) restricts the temp file from creation, so the rename
+ * publishes an already-restricted inode. Shared by the JSON store's save and
+ * saveClaudeJson (src/claude/mcp_registration.ts).
+ */
+export function atomicWriteFile(path: string, text: string, mode?: number): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = join(dirname(path), `${basename(path)}.tmp.${process.pid}.${Date.now()}`);
+  try {
+    writeFileSync(tmp, text, mode === undefined ? undefined : { mode });
+    renameWithRetry(tmp, path);
+  } catch (err) {
+    try {
+      rmSync(tmp, { force: true });
+    } catch {
+      // ignore
+    }
+    throw err;
+  }
 }
 
 /**

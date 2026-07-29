@@ -11,6 +11,7 @@ import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import {
+  CODEX_EXEC_USER_AGENT,
   DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
   resolveDirectIntegrationId,
@@ -116,7 +117,7 @@ interface ProxyConfigOptions {
 // Re-applied on every direct-mode run (managed keys win; any user-added key in
 // the same table is preserved by the merge).
 export function codexUserAgent(version: string | null = codexUserAgentVersion()): string {
-  return version ? `codex_exec/${version}` : "codex_exec";
+  return version ? `${CODEX_EXEC_USER_AGENT}/${version}` : CODEX_EXEC_USER_AGENT;
 }
 
 /**

@@ -165,6 +165,12 @@ export function ghTokenEnvVarsLabel(separator = "/"): string {
   return GH_TOKEN_ENV_VARS.map((name) => `$${name}`).join(separator);
 }
 
+/** GH_TOKEN_ENV_VARS as bare names for error messages ("COPILOT_GITHUB_TOKEN / GH_TOKEN / ..."),
+ *  same resolver order as the label. */
+export function ghTokenEnvVarsList(): string {
+  return GH_TOKEN_ENV_VARS.join(" / ");
+}
+
 /** First non-empty (trimmed) token among GH_TOKEN_ENV_VARS, or null when none is set. */
 export function ghTokenFromEnv(env: NodeJS.ProcessEnv = process.env): string | null {
   for (const name of GH_TOKEN_ENV_VARS) {
@@ -187,7 +193,7 @@ export function tokenFromSetFlag(flag: string | boolean | undefined): string | n
   if (flag === true) {
     const fromEnv = ghTokenFromEnv();
     if (fromEnv) return fromEnv;
-    throw new Error(`no GitHub token found: set one of ${GH_TOKEN_ENV_VARS.join(" / ")}`);
+    throw new Error(`no GitHub token found: set one of ${ghTokenEnvVarsList()}`);
   }
   const token = flag.trim();
   if (token === "") throw new Error("the provided GitHub token is empty");

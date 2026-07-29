@@ -37,8 +37,8 @@ import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { resolveCopilotApiEntry } from "../copilot_api/process.ts";
 import { assertProfileName, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import {
-  GH_TOKEN_ENV_VARS,
   ghTokenEnvVarsLabel,
+  ghTokenEnvVarsList,
   ghTokenFromEnv,
   tokenFromSetFlag,
 } from "../utils/direct_probe.ts";
@@ -197,7 +197,7 @@ function readSecret(query: string): Promise<string> {
 async function promptForGhToken(): Promise<string> {
   if (!process.stdin.isTTY) {
     throw new Error(
-      `no GitHub token found: pass \`--set <token>\` or set one of ${GH_TOKEN_ENV_VARS.join(" / ")}`,
+      `no GitHub token found: pass \`--set <token>\` or set one of ${ghTokenEnvVarsList()}`,
     );
   }
   const token = (await readSecret("Paste your Copilot-enabled GitHub token: ")).trim();

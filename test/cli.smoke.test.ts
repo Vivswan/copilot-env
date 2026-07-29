@@ -84,6 +84,18 @@ test("cli.ts mcp --help exposes the server flags; --remove rejects serve-only fl
   expect(conflict.stderr.toString()).toContain("--remove takes no --profile/--model");
 });
 
+test("cli.ts mcp --profile '' hard-fails instead of serving the default credential", () => {
+  // A supplied-but-blank --profile (an unset shell var in `--profile "$P"`) must
+  // never silently resolve the DEFAULT credential (the named-profile hard-fail rule).
+  const blank = Bun.spawnSync(["bun", "src/cli.ts", "mcp", "--profile", ""], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, CONSOLA_LEVEL: "5" },
+  });
+  expect(blank.exitCode).not.toBe(0);
+  expect(blank.stderr.toString()).toContain("--profile expects a profile name");
+});
+
 for (const args of [["shell"]] as const) {
   test(`cli.ts ${args.join(" ")} --help loads command help and exits 0`, () => {
     const proc = Bun.spawnSync(["bun", "src/cli.ts", ...args, "--help"], {

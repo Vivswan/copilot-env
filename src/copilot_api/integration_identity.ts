@@ -33,6 +33,11 @@ export const COPILOT_CLI_INTEGRATION_ID = "copilot-developer-cli";
 export const COPILOT_SANDBOX_INTEGRATION_ID = "copilot-developer-sandbox";
 /** The name of Direct mode's default identity (Codex CLI impersonation, no id header). */
 export const CODEX_IDENTITY_NAME = "codex";
+/** The Codex CLI's User-Agent product token -- the client identity Copilot's direct
+ *  endpoints are addressed under. Owned here (the layer-neutral home of the direct
+ *  client identity) so codexUserAgent (codex layer, which appends `/<version>`) and
+ *  the /responses web-search client (this layer, version-free) derive from ONE spelling. */
+export const CODEX_EXEC_USER_AGENT = "codex_exec";
 
 /**
  * Env var carrying the probed integration id into the proxy daemon; the

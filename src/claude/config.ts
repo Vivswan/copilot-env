@@ -59,7 +59,11 @@ import {
   proxyTokenCommand,
   proxyTokenScriptArgs,
 } from "../utils/root.ts";
-import { registerClaudeMcpServer, removeClaudeMcpRegistration } from "./mcp_registration.ts";
+import {
+  claudeConfigDirOverride,
+  registerClaudeMcpServer,
+  removeClaudeMcpRegistration,
+} from "./mcp_registration.ts";
 
 const logger = createStderrLogger();
 
@@ -165,13 +169,13 @@ function claudeBaseUrlMatchesProxy(baseUrl: string, expectedPort: number): boole
 
 /**
  * Resolve the effective Claude home: `$CLAUDE_CONFIG_DIR` (Claude Code's own
- * override), else `~/.claude` (`%USERPROFILE%\.claude` on Windows). This is the
- * single knob -- there is no per-command override flag.
+ * override, via the shared claudeConfigDirOverride reader), else `~/.claude`
+ * (`%USERPROFILE%\.claude` on Windows). This is the single knob -- there is no
+ * per-command override flag.
  */
 export function resolveClaudeHome(): string {
-  // Resolved to an absolute path: the web-search deny ownership record keys on this
-  // exact string, so a relative CLAUDE_CONFIG_DIR must not drift with the cwd.
-  if (process.env.CLAUDE_CONFIG_DIR) return path.resolve(process.env.CLAUDE_CONFIG_DIR);
+  const override = claudeConfigDirOverride();
+  if (override !== null) return override;
   // Use homedir() WITHOUT a process.env.HOME override, matching the codex-side contract
   // (src/codex/config.ts): on Windows homedir() is %USERPROFILE% (where Claude Code reads),
   // whereas HOME may be a Git-for-Windows/MSYS path -- the two must not diverge or `init`
@@ -283,6 +287,13 @@ function loadSettings(settingsPath: string): Record<string, unknown> {
 function saveSettings(settingsPath: string, doc: Record<string, unknown>): void {
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
   fs.writeFileSync(settingsPath, `${JSON.stringify(doc, null, 2)}\n`);
+}
+
+/** Persist a STRIPPED settings doc: a doc emptied entirely removes the file
+ *  itself (never a lone `{}` left behind), anything else is saved. */
+function saveOrRemoveSettings(settingsPath: string, doc: Record<string, unknown>): void {
+  if (Object.keys(doc).length === 0) fs.rmSync(settingsPath, { force: true });
+  else saveSettings(settingsPath, doc);
 }
 
 /** Write a managed apiKeyHelper script (prints a token on stdout), chmod 0700. The chmod is the
@@ -468,8 +479,7 @@ export function syncDefaultWebSearchWiring(claudeHome = resolveClaudeHome()): vo
     settingsPath,
   );
   if (JSON.stringify(doc) !== before) {
-    if (Object.keys(doc).length === 0) fs.rmSync(settingsPath, { force: true });
-    else saveSettings(settingsPath, doc);
+    saveOrRemoveSettings(settingsPath, doc);
   }
   commit();
 }
@@ -681,8 +691,7 @@ export function removeClaudeDefaultWiring(claudeHome: string): void {
     delete env[CUSTOM_HEADERS_ENV];
     if (Object.keys(env).length === 0) delete doc.env;
     const commit = stripManagedWebSearchDeny(doc, settingsPath);
-    if (Object.keys(doc).length === 0) fs.rmSync(settingsPath, { force: true });
-    else saveSettings(settingsPath, doc);
+    saveOrRemoveSettings(settingsPath, doc);
     commit();
   }
   fs.rmSync(directHelperPath(claudeHome), { force: true });

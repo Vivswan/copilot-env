@@ -7,7 +7,7 @@ import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { assertSingleMode, resolveDirectMode } from "../utils/direct_probe.ts";
 import { isFile } from "../utils/fs.ts";
-import { codexFarmHostsDir, getSanitizedHostname, homeDir } from "../utils/hostname.ts";
+import { codexFarmHostsDir, getSanitizedHostname } from "../utils/hostname.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { applyCodexConfig, detectCodexDirect } from "./config.ts";
 
@@ -421,7 +421,7 @@ function buildCodexSymlinkFarm(codexHome: string): number {
     "version.json", // Codex home layout/schema version marker.
   ];
 
-  const sharedRoot = `${homeDir()}/.codex`;
+  const sharedRoot = path.dirname(codexFarmHostsDir());
   primeSharedCodexHomeIfMissing(sharedRoot);
   try {
     fs.mkdirSync(sharedRoot, { recursive: true });

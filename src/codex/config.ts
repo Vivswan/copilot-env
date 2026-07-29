@@ -26,7 +26,6 @@ import {
 import { assertProfileName, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import {
-  assertSingleMode,
   CODEX_PROBE,
   type DirectProbeDeps,
   probeDirectWorks,
@@ -40,6 +39,7 @@ import {
   type AgentProviderMode,
   type ManagedAgentMode,
   providerModeExitCode,
+  type RequestedMode,
 } from "../utils/provider_mode.ts";
 import {
   AGENT_AUTH_GET_ARGS,
@@ -87,8 +87,8 @@ export const DIRECT_ENV_KEY = "COPILOT_ENV_GH_TOKEN";
 
 export interface CodexConfigArgs {
   check?: boolean;
-  direct?: boolean;
-  proxy?: boolean;
+  /** `--direct`/`--proxy`, parsed once at the CLI boundary (auto = neither). */
+  mode: RequestedMode;
 }
 
 interface ConfigureCodexConfigOptions {
@@ -1023,7 +1023,6 @@ export async function runCodex(
   args: CodexConfigArgs,
   catalogDeps?: CodexCatalogDeps,
 ): Promise<void> {
-  assertSingleMode(args);
   if (args.check) {
     checkCodexConfig();
     return;
@@ -1032,7 +1031,7 @@ export async function runCodex(
   // Resolve it provider-aware (gh-cli -> gh, copilot/gh-token -> stored token, none ->
   // null) so a recorded-but-broken provider correctly falls through to the probe.
   const ghToken = new Credential().resolve();
-  const direct = resolveDirectMode(args, ghToken, detectCodexDirect);
+  const direct = resolveDirectMode(args.mode, ghToken, detectCodexDirect);
   logger.log(
     `  Configuring Codex for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} ...`,
   );

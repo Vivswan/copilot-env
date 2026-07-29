@@ -5,18 +5,19 @@ import { execaSync } from "execa";
 import which from "which";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
-import { assertSingleMode, resolveDirectMode } from "../utils/direct_probe.ts";
+import { resolveDirectMode } from "../utils/direct_probe.ts";
 import { isFile } from "../utils/fs.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../utils/hostname.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import type { RequestedMode } from "../utils/provider_mode.ts";
 import { applyCodexConfig, detectCodexDirect } from "./config.ts";
 
 const logger = createStderrLogger();
 
 export interface CodexHostArgs {
   delete?: boolean;
-  direct?: boolean;
-  proxy?: boolean;
+  /** `--direct`/`--proxy`, parsed once at the CLI boundary (auto = neither). */
+  mode: RequestedMode;
 }
 
 // The per-host CODEX_HOME (<farm root>/<hostname>). On Linux/macOS it builds and
@@ -510,7 +511,6 @@ export async function runCodexHost(args: CodexHostArgs): Promise<void> {
   // directory.
   const codexHome = path.resolve(getHostLocalCodexHome());
   const state = new CopilotEnvRunState();
-  assertSingleMode(args);
 
   if (args.delete) {
     fs.rmSync(codexHome, { recursive: true, force: true });
@@ -528,7 +528,7 @@ export async function runCodexHost(args: CodexHostArgs): Promise<void> {
   // --direct/--proxy force the mode; with no flag a configured credential
   // (`agent auth`, resolved provider-aware) selects Direct, else probe.
   const ghToken = new Credential().resolve();
-  const direct = resolveDirectMode(args, ghToken, detectCodexDirect);
+  const direct = resolveDirectMode(args.mode, ghToken, detectCodexDirect);
   logger.info(
     `Configuring the per-host Codex home for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} ...`,
   );

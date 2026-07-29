@@ -218,30 +218,26 @@ test("inspectClaudeWiring classifies direct / proxy / other / none / malformed (
   expect(inspectClaudeWiring("{not json", home, 4141).providerMode).toBe("other");
 });
 
-test("runClaude --direct/--proxy round-trip cleans the other mode; mutual exclusion throws", async () => {
+test("runClaude direct/proxy round-trip cleans the other mode", async () => {
   const home = tmpHome();
   const read = () =>
     inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home, 4141);
 
-  await runClaude({ direct: true });
+  await runClaude({ mode: "direct" });
   expect(read().providerMode).toBe("direct");
   expect(
     (readSettings(home).env as Record<string, unknown>).CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS,
   ).toBe("1");
 
-  await runClaude({ proxy: true });
+  await runClaude({ mode: "proxy" });
   expect(read().providerMode).toBe("proxy");
   // Switching to proxy drops the direct-only disable-betas knob.
   expect(
     (readSettings(home).env as Record<string, unknown>).CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS,
   ).toBeUndefined();
 
-  await runClaude({ direct: true });
+  await runClaude({ mode: "direct" });
   expect(read().providerMode).toBe("direct");
-
-  await expect(runClaude({ proxy: true, direct: true })).rejects.toThrow(
-    "--direct and --proxy are mutually exclusive",
-  );
 });
 
 test("detectClaudeDirect: true only when CLI+gh present, gh authed, and the probe succeeds", () => {
@@ -297,14 +293,14 @@ test("runClaude with a stored token selects Direct WITHOUT baking it; --proxy st
   // A configured credential selects Direct with NO probe -- but the helper resolves
   // it at fetch time (`agent auth --get`), so it's never written to disk.
   new CopilotEnvState().set({ githubToken: "ghu_stored", authProvider: "gh-token" });
-  await runClaude({});
+  await runClaude({ mode: "auto" });
   expect(read().providerMode).toBe("direct");
   const helper = readFileSync(join(home, DIRECT_HELPER_NAME), "utf8");
   expect(helper).not.toContain("ghu_stored");
   expect(helper).toContain("--get");
 
   // --proxy still wins: proxy mode (the stored token is only used by the proxy).
-  await runClaude({ proxy: true });
+  await runClaude({ mode: "proxy" });
   expect(read().providerMode).toBe("proxy");
 });
 

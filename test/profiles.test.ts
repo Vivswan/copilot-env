@@ -368,7 +368,7 @@ test("profile --sync refreshes wiring from the STORE mode and never touches mode
   ).toBe(0);
   expect(readToml(join(codexHome, "config.toml")).model_provider).toBeUndefined();
 
-  await runProfile({ sync: true });
+  await runProfile({ sync: true, mode: "auto" });
 
   const doc = readToml(join(codexHome, "config.toml"));
   expect(doc.model_provider).toBeUndefined(); // still untouched
@@ -380,21 +380,21 @@ test("profile --sync refreshes wiring from the STORE mode and never touches mode
 
 test("profile --check is store-driven: exit 1 unknown/incomplete, 2 proxy, 0 direct", async () => {
   tmpProxyHome();
-  await runProfile({ check: "ghost" });
+  await runProfile({ check: "ghost", mode: "auto" });
   expect(process.exitCode).toBe(1);
   process.exitCode = 0;
   const state = new CopilotEnvState();
   // Mode without credential is INCOMPLETE under the atomic model: never launchable.
   state.setProfileMode("fast", "proxy");
-  await runProfile({ check: "fast" });
+  await runProfile({ check: "fast", mode: "auto" });
   expect(process.exitCode).toBe(1);
   process.exitCode = 0;
   new Credential(state, "fast").store("gh-token", "ghp_fast");
-  await runProfile({ check: "fast" });
+  await runProfile({ check: "fast", mode: "auto" });
   expect(process.exitCode).toBe(2);
   process.exitCode = 0;
   state.setProfileMode("fast", "direct");
-  await runProfile({ check: "fast" });
+  await runProfile({ check: "fast", mode: "auto" });
   expect(process.exitCode).toBe(0);
 });
 
@@ -426,7 +426,7 @@ test("profile --add wires both agents atomically; --del removes everything", asy
   tmpProxyHome();
   const claudeHome = tmpClaudeHome();
   const codexHome = tmpCodexHome();
-  await runProfile({ add: "work", proxy: true, set: "ghp_worktoken" });
+  await runProfile({ add: "work", mode: "proxy", set: "ghp_worktoken" });
 
   const state = new CopilotEnvState();
   expect(state.readProfileSlot("work").mode).toBe("proxy");
@@ -440,7 +440,7 @@ test("profile --add wires both agents atomically; --del removes everything", asy
   );
 
   // Mode switch: re-add with the other flag flips BOTH agents (one mode, never both).
-  await runProfile({ add: "work", direct: true });
+  await runProfile({ add: "work", mode: "direct" });
   expect(state.readProfileSlot("work").mode).toBe("direct");
   const flipped = readToml(join(codexHome, "config.toml"));
   const flippedTable = (flipped.model_providers as Record<string, Record<string, unknown>>)[
@@ -448,7 +448,7 @@ test("profile --add wires both agents atomically; --del removes everything", asy
   ];
   expect(flippedTable?.base_url).toBe("https://api.githubcopilot.com");
 
-  await runProfile({ del: "work" });
+  await runProfile({ del: "work", mode: "auto" });
   expect(state.readProfileSlot("work")).toEqual({
     githubToken: null,
     authProvider: null,
@@ -464,18 +464,19 @@ test("profile --add wires both agents atomically; --del removes everything", asy
   expect(existsSync(profileHome("work"))).toBe(false);
 });
 
-test("profile --add requires a mode for a new profile and rejects both flags", async () => {
+test("profile --add requires a mode for a new profile", async () => {
   tmpProxyHome();
   tmpClaudeHome();
   tmpCodexHome();
-  expect(runProfile({ add: "work", set: "ghp_x" })).rejects.toThrow(/--direct or --proxy/);
-  expect(runProfile({ add: "work", direct: true, proxy: true, set: "ghp_x" })).rejects.toThrow(
-    /mutually exclusive/,
+  expect(runProfile({ add: "work", mode: "auto", set: "ghp_x" })).rejects.toThrow(
+    /--direct or --proxy/,
   );
+  // The contradictory --direct --proxy pair never reaches runProfile anymore: the
+  // CLI boundary parse rejects it (see provider_mode.test.ts / cli.smoke.test.ts).
   // Same conflict contract as `agent auth`: --set is the gh-token path; a different
   // explicit provider must error, never be silently coerced to gh-token.
   expect(
-    runProfile({ add: "work", proxy: true, provider: "copilot", set: "ghp_x" }),
+    runProfile({ add: "work", mode: "proxy", provider: "copilot", set: "ghp_x" }),
   ).rejects.toThrow(/--set only applies/);
 });
 
@@ -507,7 +508,7 @@ test("a direct profile probes the client identity ONCE, persisting the verdict f
     );
   });
 
-  await runProfile({ add: "work", direct: true, set: "ghp_worktoken" });
+  await runProfile({ add: "work", mode: "direct", set: "ghp_worktoken" });
   const state = new CopilotEnvState();
   // The DEFAULT identity won, and that verdict is persisted (as the identity NAME) so it
   // is distinguishable from "never probed" -- the launcher hot path must not re-probe.
@@ -516,15 +517,15 @@ test("a direct profile probes the client identity ONCE, persisting the verdict f
   expect(afterAdd).toBeGreaterThan(0);
 
   // `--settings-for` and `--sync` are the per-launch replay paths: no further network.
-  await runProfile({ settingsFor: "work" });
-  await runProfile({ sync: true });
+  await runProfile({ settingsFor: "work", mode: "auto" });
+  await runProfile({ sync: true, mode: "auto" });
   expect(probes).toBe(afterAdd);
   expect(existsSync(settingsPathFor(claudeHome, "work"))).toBe(true);
 
   // A credential change invalidates the cached verdict, re-arming the probe.
   new Credential(state, "work").store("gh-token", "ghp_rotated");
   expect(state.readProfileSlot("work").integrationIdentity).toBeNull();
-  await runProfile({ sync: true });
+  await runProfile({ sync: true, mode: "auto" });
   expect(probes).toBeGreaterThan(afterAdd);
 });
 
@@ -546,7 +547,7 @@ test("a direct profile bakes a non-default probed identity into BOTH agents", as
     );
   });
 
-  await runProfile({ add: "work", direct: true, set: "github_pat_worktoken" });
+  await runProfile({ add: "work", mode: "direct", set: "github_pat_worktoken" });
   expect(new CopilotEnvState().readProfileSlot("work").integrationIdentity).toBe(
     "copilot-developer-cli",
   );

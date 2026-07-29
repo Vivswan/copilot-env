@@ -318,6 +318,35 @@ test("init configures both agents and rejects --direct + --proxy", () => {
   expect(conflict.stderr.toString()).toContain("--direct and --proxy are mutually exclusive");
 });
 
+test("profile rejects --direct + --proxy at the CLI boundary with its own wording", () => {
+  const conflict = Bun.spawnSync(
+    ["bun", "src/cli.ts", "profile", "--add", "work", "--direct", "--proxy"],
+    { stdout: "pipe", stderr: "pipe", env: isolatedEnv() },
+  );
+  expect(conflict.exitCode).toBe(1);
+  expect(conflict.stderr.toString()).toContain(
+    "--direct and --proxy are mutually exclusive (a profile has ONE mode)",
+  );
+});
+
+test("the mode conflict is rejected at the boundary on every command that takes the pair", () => {
+  // Boundary parse runs before any per-command logic, so even invocations whose
+  // command would error later (non---add profile, --mobile) reject the pair first.
+  for (const argv of [
+    ["models", "--direct", "--proxy"],
+    ["profile", "--list", "--direct", "--proxy"],
+    ["codex", "--mobile", "--direct", "--proxy"],
+  ]) {
+    const conflict = Bun.spawnSync(["bun", "src/cli.ts", ...argv], {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: isolatedEnv(),
+    });
+    expect(conflict.exitCode).toBe(1);
+    expect(conflict.stderr.toString()).toContain("--direct and --proxy are mutually exclusive");
+  }
+});
+
 test("codex --mobile refuses to run (non-TTY, or unsupported platform)", () => {
   // Spawned without a TTY: the interactive pairing flow must bail with a clear
   // message + exit 1 instead of hanging on a prompt. On macOS/Windows that's the

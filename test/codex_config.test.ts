@@ -394,7 +394,7 @@ test("runCodex --proxy writes the proxy provider at CODEX_HOME", async () => {
     ].join("\n"),
   );
 
-  await runCodex({ proxy: true }, NOOP_CATALOG_DEPS);
+  await runCodex({ mode: "proxy" }, NOOP_CATALOG_DEPS);
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
@@ -425,24 +425,20 @@ test("runCodex --proxy and --direct force the selected provider (no probe)", asy
     ].join("\n"),
   );
 
-  await runCodex({ proxy: true }, NOOP_CATALOG_DEPS);
+  await runCodex({ mode: "proxy" }, NOOP_CATALOG_DEPS);
   let doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
   expect(asRecord(asRecord(doc.model_providers)["copilot-env"]).base_url).toBe(
     "http://127.0.0.1:4141/v1",
   );
 
-  await runCodex({ direct: true }, NOOP_CATALOG_DEPS);
+  await runCodex({ mode: "direct" }, NOOP_CATALOG_DEPS);
   doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
   const directProvider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
   expect(directProvider.base_url).toBe("https://api.githubcopilot.com");
   // Toggling proxy -> direct must leave NO stale proxy-only key on the shared table.
   expect(directProvider.env_key).toBeUndefined();
-
-  await expect(runCodex({ proxy: true, direct: true }, NOOP_CATALOG_DEPS)).rejects.toThrow(
-    "--direct and --proxy are mutually exclusive",
-  );
 });
 
 test("toggling direct <-> proxy swaps the mode-specific keys on the shared table", () => {

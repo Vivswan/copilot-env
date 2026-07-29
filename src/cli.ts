@@ -38,6 +38,7 @@ import { bold, cyan, gray } from "./utils/ansi.ts";
 import { ghTokenEnvVarsLabel } from "./utils/direct_probe.ts";
 import { errMessage } from "./utils/error.ts";
 import { disableConsolaTimestamps } from "./utils/logger.ts";
+import { parseModeFlags } from "./utils/provider_mode.ts";
 import { packageVersion } from "./utils/version.ts";
 
 // Drop consola's right-aligned wall-clock timestamp from all command output.
@@ -144,12 +145,7 @@ program
   .description("Set up both Codex and Claude (auto-detect GitHub Copilot Direct vs the proxy).")
   .option("--direct", "Force both agents to GitHub Copilot Direct (no auto-detect probe).")
   .option("--proxy", "Force both agents to the local copilot-api proxy (no auto-detect probe).")
-  .action((opts: Opts) =>
-    runInit({
-      direct: Boolean(opts.direct),
-      proxy: Boolean(opts.proxy),
-    }),
-  );
+  .action((opts: Opts) => runInit({ mode: parseModeFlags(opts) }));
 
 program
   .command("auth")
@@ -242,8 +238,10 @@ program
       check: opts.check as string | undefined,
       settingsFor: opts.settingsFor as string | undefined,
       sync: Boolean(opts.sync),
-      direct: Boolean(opts.direct),
-      proxy: Boolean(opts.proxy),
+      mode: parseModeFlags(
+        opts,
+        "--direct and --proxy are mutually exclusive (a profile has ONE mode)",
+      ),
       provider: opts.provider as string | undefined,
       set: opts.set as string | boolean | undefined,
     }),
@@ -335,8 +333,7 @@ program
   .option("--json", "Emit a JSON object ({source, models}) instead of the table.")
   .action((opts: Opts) =>
     runModels({
-      direct: Boolean(opts.direct),
-      proxy: Boolean(opts.proxy),
+      mode: parseModeFlags(opts),
       json: Boolean(opts.json),
     }),
   );
@@ -412,7 +409,7 @@ program
   .option("--delete-host", "With --host: remove the per-host CODEX_HOME and stop exporting it.")
   .option("--mobile", "Interactive: pair the Codex desktop app with its phone remote-control flow.")
   .action(async (opts: Opts) => {
-    const common = { direct: Boolean(opts.direct), proxy: Boolean(opts.proxy) };
+    const common = { mode: parseModeFlags(opts) };
     // --mobile is its own interactive flow (toggles config around app pairing).
     if (opts.mobile) {
       return runCodexMobile();
@@ -446,8 +443,7 @@ program
   .action((opts: Opts) =>
     runClaude({
       check: Boolean(opts.check),
-      direct: Boolean(opts.direct),
-      proxy: Boolean(opts.proxy),
+      mode: parseModeFlags(opts),
     }),
   );
 

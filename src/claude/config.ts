@@ -38,7 +38,6 @@ import {
 import { type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import {
-  assertSingleMode,
   CLAUDE_PROBE,
   type DirectProbeDeps,
   probeDirectWorks,
@@ -51,6 +50,7 @@ import {
   type AgentProviderMode,
   type ManagedAgentMode,
   providerModeExitCode,
+  type RequestedMode,
 } from "../utils/provider_mode.ts";
 import {
   agentAuthGetArgs,
@@ -141,8 +141,8 @@ export function directHelperResolvesViaAgent(helperBody: string | null): boolean
 
 export interface ClaudeConfigArgs {
   check?: boolean;
-  direct?: boolean;
-  proxy?: boolean;
+  /** `--direct`/`--proxy`, parsed once at the CLI boundary (auto = neither). */
+  mode: RequestedMode;
 }
 
 export interface ClaudeWiringStatus {
@@ -723,7 +723,6 @@ export function detectClaudeDirect(deps?: DirectProbeDeps): boolean {
  * without a probe. (Named profiles are managed by `agent profile`, not here.)
  */
 export async function runClaude(args: ClaudeConfigArgs): Promise<void> {
-  assertSingleMode(args);
   if (args.check) {
     checkClaudeConfig();
     return;
@@ -733,7 +732,7 @@ export async function runClaude(args: ClaudeConfigArgs): Promise<void> {
   // Resolve it provider-aware (gh-cli -> gh, copilot/gh-token -> stored token, none ->
   // null); the helper re-resolves at fetch time via `agent auth --get`.
   const ghToken = new Credential().resolve();
-  const direct = resolveDirectMode(args, ghToken, detectClaudeDirect);
+  const direct = resolveDirectMode(args.mode, ghToken, detectClaudeDirect);
   logger.log(
     `  Configuring Claude for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} ...`,
   );

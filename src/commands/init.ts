@@ -6,13 +6,13 @@
 // live in `agent shell`.
 
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
-import { assertSingleMode } from "../utils/direct_probe.ts";
+import type { RequestedMode } from "../utils/provider_mode.ts";
 import { ensureAuthenticated } from "./auth.ts";
 import { configureBothAgents, printGuidance } from "./configure_agents.ts";
 
 export interface InitArgs {
-  direct?: boolean;
-  proxy?: boolean;
+  /** `--direct`/`--proxy`, parsed once at the CLI boundary (auto = neither). */
+  mode: RequestedMode;
 }
 
 /**
@@ -24,17 +24,15 @@ export interface InitArgs {
  * `agent config --set auto-start <bool>`.)
  */
 export async function runInit(args: InitArgs): Promise<void> {
-  assertSingleMode(args); // --direct/--proxy mutually exclusive (fail fast, before auth)
-
   // A credential is only needed for a Direct-capable setup. `--proxy` opts out of
   // Direct entirely (the daemon handles its own auth on `agent start`), so don't
   // prompt there. Otherwise ensure auth first -- when none, ask; never silently fall
   // back. Throws (propagated) if login fails, so we never configure half-broken.
-  if (!args.proxy) {
+  if (args.mode !== "proxy") {
     await ensureAuthenticated();
   }
 
-  const { codex, claude } = await configureBothAgents({ direct: args.direct, proxy: args.proxy });
+  const { codex, claude } = await configureBothAgents(args.mode);
 
   // A token is "in use" for guidance if one is now stored.
   printGuidance(codex, claude, new CopilotEnvState().read().githubToken !== null);

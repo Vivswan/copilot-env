@@ -16,9 +16,11 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { assertNever } from "./assert.ts";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "./command.ts";
 import { errMessage } from "./error.ts";
 import { createStderrLogger } from "./logger.ts";
+import type { RequestedMode } from "./provider_mode.ts";
 import { sleepSync } from "./time.ts";
 
 // Probe progress goes to stderr (consola), never stdout: the `--check`/`env`
@@ -136,19 +138,6 @@ export interface DirectProbeDeps {
   retryDelayMs?: number;
 }
 
-/** The mutually-exclusive provider-mode flags every agent command accepts. */
-export interface ModeFlags {
-  direct?: boolean;
-  proxy?: boolean;
-}
-
-/** Reject both --direct and --proxy on the same invocation. */
-export function assertSingleMode(flags: ModeFlags): void {
-  if (flags.direct && flags.proxy) {
-    throw new Error("--direct and --proxy are mutually exclusive");
-  }
-}
-
 /**
  * Env var names checked (in order, most specific first) for a `gh-token` value, so
  * the secret stays out of argv / shell history. COPILOT_GITHUB_TOKEN is the
@@ -202,20 +191,27 @@ export function tokenFromSetFlag(flag: string | boolean | undefined): string | n
 
 /**
  * Decide whether to write DIRECT (true) or PROXY (false), honoring a provisioned
- * token (the shared store's githubToken): `--proxy` => proxy, `--direct` =>
- * direct, and with NO mode flag a present token selects Direct (we already hold a
- * credential, so no probe is needed) while no token falls back to the live
- * `detectDirect` probe.
+ * token (the shared store's githubToken): "proxy" => proxy, "direct" => direct,
+ * and on "auto" a present token selects Direct (we already hold a credential, so
+ * no probe is needed) while no token falls back to the live `detectDirect` probe.
+ * Total over RequestedMode -- the contradictory flag pair cannot reach here (it is
+ * rejected once, at the CLI boundary parse).
  */
 export function resolveDirectMode(
-  flags: ModeFlags,
+  mode: RequestedMode,
   ghToken: string | null,
   detectDirect: () => boolean,
 ): boolean {
-  if (flags.proxy) return false;
-  if (flags.direct) return true;
-  if (ghToken !== null) return true;
-  return detectDirect();
+  switch (mode) {
+    case "proxy":
+      return false;
+    case "direct":
+      return true;
+    case "auto":
+      return ghToken !== null || detectDirect();
+    default:
+      return assertNever(mode);
+  }
 }
 
 /** Cap on one `gh auth token` call, shared by every "is gh authenticated?" probe. */

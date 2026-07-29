@@ -11,11 +11,12 @@ import { copilotApiResolvePort } from "../copilot_api/port.ts";
 import { bold, cyan, gray } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
+import type { RequestedMode } from "../utils/provider_mode.ts";
 import { proxyStatus } from "./start.ts";
 
 export interface ModelsArgs {
-  direct?: boolean;
-  proxy?: boolean;
+  /** `--direct`/`--proxy`, parsed once at the CLI boundary (auto = neither). */
+  mode: RequestedMode;
   json?: boolean;
 }
 
@@ -159,16 +160,18 @@ export function renderModelTable(models: ModelListEntry[]): string {
 
 /**
  * Resolve which catalog to read (and, for the proxy, the port its liveness was
- * just confirmed on). Explicit flags win; with neither, the proxy is preferred
+ * just confirmed on). A forced mode wins; on "auto", the proxy is preferred
  * when it is genuinely up (so the listing reflects what the proxy-wired agents
  * actually see), else Direct.
  */
-async function resolveSource(args: ModelsArgs): Promise<{ source: CatalogSource; port?: number }> {
-  if (args.direct) {
+async function resolveSource(
+  mode: RequestedMode,
+): Promise<{ source: CatalogSource; port?: number }> {
+  if (mode === "direct") {
     return { source: "direct" };
   }
   const { up, port } = await proxyStatus();
-  if (args.proxy) {
+  if (mode === "proxy") {
     if (!up) {
       throw new Error("the local proxy is not running (run `agent start`, or use --direct)");
     }
@@ -185,10 +188,7 @@ function sourceLabel(source: CatalogSource, port?: number): string {
 
 /** `models`: fetch the live catalog and print it as a table (or `--json`). */
 export async function runModels(args: ModelsArgs): Promise<void> {
-  if (args.direct && args.proxy) {
-    throw new Error("--direct and --proxy are mutually exclusive");
-  }
-  const { source, port } = await resolveSource(args);
+  const { source, port } = await resolveSource(args.mode);
   const label = sourceLabel(source, port);
   let models: ModelListEntry[];
   try {

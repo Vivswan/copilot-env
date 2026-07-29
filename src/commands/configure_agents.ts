@@ -7,17 +7,11 @@ import { bold } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import type { AgentProviderMode } from "../utils/provider_mode.ts";
+import type { AgentProviderMode, RequestedMode } from "../utils/provider_mode.ts";
 
 // All output goes to stderr (one logger) so it interleaves deterministically with
 // the per-agent probe/config narration (also stderr) and never pollutes any stdout.
 const logger = createStderrLogger();
-
-/** Force flags shared by both agents (no flag => each auto-detects). */
-export interface BothFlags {
-  direct?: boolean;
-  proxy?: boolean;
-}
 
 /** Read a provider mode, treating any read error as "other" (never throws). */
 function safeMode<T>(read: () => T, fallback: T): T {
@@ -30,19 +24,20 @@ function safeMode<T>(read: () => T, fallback: T): T {
 
 /**
  * Configure both agents, resiliently (a failure on one only warns, the other
- * still runs), and report the resulting modes. `runCodex`/`runClaude` read the
- * provisioned GitHub token from the shared store themselves (the single source of
- * truth), so callers persist the token separately. Each agent's narration is
- * grouped under a header with blank-line spacing.
+ * still runs), and report the resulting modes. `mode` is the requested wiring
+ * shared by both agents ("auto" = each auto-detects). `runCodex`/`runClaude`
+ * read the provisioned GitHub token from the shared store themselves (the single
+ * source of truth), so callers persist the token separately. Each agent's
+ * narration is grouped under a header with blank-line spacing.
  */
-export async function configureBothAgents(flags: BothFlags): Promise<{
+export async function configureBothAgents(mode: RequestedMode): Promise<{
   codex: AgentProviderMode;
   claude: AgentProviderMode;
 }> {
   logger.log("");
   logger.log(bold("▸ Codex"));
   try {
-    await runCodex(flags);
+    await runCodex({ mode });
   } catch (e) {
     logger.warn(`  Could not configure Codex: ${errMessage(e)}`);
   }
@@ -50,7 +45,7 @@ export async function configureBothAgents(flags: BothFlags): Promise<{
   logger.log("");
   logger.log(bold("▸ Claude"));
   try {
-    await runClaude(flags);
+    await runClaude({ mode });
   } catch (e) {
     logger.warn(`  Could not configure Claude: ${errMessage(e)}`);
   }

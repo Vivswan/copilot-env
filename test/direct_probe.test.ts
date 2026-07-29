@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 
 import {
-  assertSingleMode,
   CLAUDE_PROBE,
   CODEX_PROBE,
   DEFAULT_PROBE_RETRIES,
@@ -91,17 +90,6 @@ test("summarizeProbeFailure truncates an oversized reason line", () => {
   expect(reason.endsWith("...")).toBe(true);
 });
 
-// --- assertSingleMode -------------------------------------------------------
-
-test("assertSingleMode allows zero or one mode flag, rejects both", () => {
-  expect(() => assertSingleMode({})).not.toThrow();
-  expect(() => assertSingleMode({ direct: true })).not.toThrow();
-  expect(() => assertSingleMode({ proxy: true })).not.toThrow();
-  expect(() => assertSingleMode({ direct: true, proxy: true })).toThrow(
-    "--direct and --proxy are mutually exclusive",
-  );
-});
-
 // --- tokenFromSetFlag (flag -> token string | null) ---------------------------
 
 test("tokenFromSetFlag: undefined -> null, string -> trimmed literal, bare -> env, else throws", () => {
@@ -164,15 +152,15 @@ test("ghTokenFromEnv: precedence COPILOT_GITHUB_TOKEN > GH_TOKEN > GITHUB_TOKEN,
 
 // --- resolveDirectMode (mode + provisioned token) ---------------------------
 
-test("resolveDirectMode: a stored token selects Direct only when no mode flag wins", () => {
+test("resolveDirectMode: a stored token selects Direct only when no forced mode wins", () => {
   const probe = () => false; // probe says "not direct" so token-vs-probe is visible
-  // --proxy / --direct win over a stored token.
-  expect(resolveDirectMode({ proxy: true }, "ghu_x", probe)).toBe(false);
-  expect(resolveDirectMode({ direct: true }, null, probe)).toBe(true);
-  // No mode flag: a present token selects Direct without probing; no token probes.
-  expect(resolveDirectMode({}, "ghu_x", probe)).toBe(true);
-  expect(resolveDirectMode({}, null, probe)).toBe(false);
-  expect(resolveDirectMode({}, null, () => true)).toBe(true);
+  // A forced "proxy" / "direct" wins over a stored token.
+  expect(resolveDirectMode("proxy", "ghu_x", probe)).toBe(false);
+  expect(resolveDirectMode("direct", null, probe)).toBe(true);
+  // "auto": a present token selects Direct without probing; no token probes.
+  expect(resolveDirectMode("auto", "ghu_x", probe)).toBe(true);
+  expect(resolveDirectMode("auto", null, probe)).toBe(false);
+  expect(resolveDirectMode("auto", null, () => true)).toBe(true);
 });
 
 // --- probeDirectWorks: retry on transient failure ---------------------------

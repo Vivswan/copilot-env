@@ -15,6 +15,31 @@ export type AgentProviderMode = "direct" | "proxy" | "other" | "none";
 export type ManagedAgentMode = Extract<AgentProviderMode, "direct" | "proxy">;
 
 /**
+ * What a command invocation asked for: one forced managed mode, or auto-detect.
+ * This is the ONLY shape the `--direct`/`--proxy` pair takes past the CLI
+ * boundary, so the contradictory "both flags" state is unrepresentable
+ * downstream and consumers are total over three cases instead of re-checking
+ * two booleans. What "auto" means stays per-command (init/codex/claude live-
+ * probe, models prefers a running proxy, profile --add is sticky).
+ */
+export type RequestedMode = ManagedAgentMode | "auto";
+
+/**
+ * Parse the Commander `--direct`/`--proxy` booleans ONCE, at the CLI boundary,
+ * into RequestedMode -- the single place the mutual exclusion is rejected.
+ * `message` lets a command keep its own wording (profile's "ONE mode" suffix).
+ */
+export function parseModeFlags(
+  opts: { direct?: unknown; proxy?: unknown },
+  message = "--direct and --proxy are mutually exclusive",
+): RequestedMode {
+  if (opts.direct && opts.proxy) throw new Error(message);
+  if (opts.direct) return "direct";
+  if (opts.proxy) return "proxy";
+  return "auto";
+}
+
+/**
  * The `agent codex --check` / `agent claude --check` exit code -- a launcher
  * contract the `cl`/`cx` wrappers read: 0 = direct (launch as-is), 1 = other
  * (a custom config the launcher must NOT take over), 2 = proxy or none (the proxy

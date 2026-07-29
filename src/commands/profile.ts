@@ -30,6 +30,7 @@ import { openaiBaseUrl, reserveProfilePort } from "../copilot_api/port.ts";
 import { assertProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { cyan, gray, green, yellow } from "../utils/ansi.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import type { RequestedMode } from "../utils/provider_mode.ts";
 import { authenticate } from "./auth.ts";
 import { proxyStatus } from "./start.ts";
 import { stopTrackedProxy } from "./stop.ts";
@@ -50,9 +51,9 @@ export interface ProfileArgs {
   settingsFor?: string;
   /** `--sync`: refresh every profile's wiring against the live ports (launcher plumbing). */
   sync?: boolean;
-  /** `--direct` / `--proxy`: the mode for `--add` (exactly one; sticky on re-add). */
-  direct?: boolean;
-  proxy?: boolean;
+  /** `--direct`/`--proxy` for `--add`, parsed once at the CLI boundary
+   *  (auto = neither; sticky from the store on a re-add). */
+  mode: RequestedMode;
   /** `--provider` / `--set`: non-interactive credential acquisition for `--add`. */
   provider?: string;
   set?: string | boolean;
@@ -122,9 +123,6 @@ async function resolveAndPersistDirectIdentity(name: string): Promise<string | n
  * flag SWITCHES the profile (one mode, never both).
  */
 async function runAdd(name: string, args: ProfileArgs): Promise<void> {
-  if (args.direct && args.proxy) {
-    throw new Error("--direct and --proxy are mutually exclusive (a profile has ONE mode)");
-  }
   // Same conflict contract as `agent auth`: `--set` IS the gh-token path, so an
   // explicit different provider must error, never be silently coerced.
   if (args.set !== undefined && args.provider !== undefined) {
@@ -133,7 +131,7 @@ async function runAdd(name: string, args: ProfileArgs): Promise<void> {
     }
   }
   const previous = storedMode(name);
-  const mode: ProfileMode | null = args.direct ? "direct" : args.proxy ? "proxy" : previous;
+  const mode: ProfileMode | null = args.mode === "auto" ? previous : args.mode;
   if (mode === null) {
     throw new Error(
       `pass --direct or --proxy: ${profileLabel(name)} does not exist yet, and a profile ` +
@@ -389,7 +387,7 @@ export async function runProfile(args: ProfileArgs): Promise<void> {
         "--settings-for <name>, --sync",
     );
   }
-  if ((args.direct || args.proxy) && args.add === undefined) {
+  if (args.mode !== "auto" && args.add === undefined) {
     throw new Error("--direct/--proxy only apply to --add (a profile's mode is set there)");
   }
   if ((args.provider !== undefined || args.set !== undefined) && args.add === undefined) {

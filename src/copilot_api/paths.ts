@@ -2,6 +2,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { isDir } from "../utils/fs.ts";
 import { getSanitizedHostname } from "../utils/hostname.ts";
 import { assertProfileName, isValidProfileName, type Profile } from "./profile.ts";
 
@@ -15,6 +16,41 @@ export const DEFAULT_HOME: string = join(homedir(), ".local", "share", "copilot-
 /** The effective copilot-api home: `$COPILOT_API_HOME` or the default data dir. */
 export function resolveHome(): string {
   return process.env.COPILOT_API_HOME || DEFAULT_HOME;
+}
+
+/** Directory under a daemon home that holds the per-host runtime dirs (`.run/<host>/`). */
+export const RUN_DIR_NAME = ".run";
+
+/** Basename of the proxy's SQLite DB (`token_usage_events` etc.), one per host dir; a
+ *  legacy top-level copy may predate the per-host split. */
+export const SQLITE_DB_FILENAME = "copilot-api.sqlite";
+
+/** The usage DBs directly under ONE daemon home: the legacy top-level file plus
+ *  one per host directory under `.run/`. Only paths that exist are returned.
+ *  Lives here so `agent cost`'s sweep follows any future move of the DB layout. */
+export function usageDbsUnderHome(home: string): string[] {
+  const paths: string[] = [];
+
+  const legacy = join(home, SQLITE_DB_FILENAME);
+  if (existsSync(legacy)) {
+    paths.push(legacy);
+  }
+
+  const runDir = join(home, RUN_DIR_NAME);
+  let hosts: string[] = [];
+  try {
+    hosts = readdirSync(runDir);
+  } catch {
+    hosts = []; // no .run dir yet
+  }
+  for (const host of hosts) {
+    const candidate = join(runDir, host, SQLITE_DB_FILENAME);
+    if (isDir(join(runDir, host)) && existsSync(candidate)) {
+      paths.push(candidate);
+    }
+  }
+
+  return paths;
 }
 
 // --- profile homes ------------------------------------------------------------
@@ -142,7 +178,7 @@ export class CopilotApiPaths {
     this.home = profile === null ? resolveHome() : profileHome(profile);
     const rootHome = resolveRootHome();
     const hostname = getSanitizedHostname();
-    const runDir = join(this.home, ".run", hostname);
+    const runDir = join(this.home, RUN_DIR_NAME, hostname);
     this.configFile = join(this.home, "config.json");
     this.runDir = runDir;
     // Our own per-host state (port + pid + active CODEX_HOME), written by this
@@ -152,7 +188,7 @@ export class CopilotApiPaths {
     this.logFile = join(runDir, ".log");
     // The proxy writes its inference handler logs to <home>/logs (shared, not per-host).
     this.logsDir = join(this.home, "logs");
-    this.sqliteDb = join(runDir, "copilot-api.sqlite");
+    this.sqliteDb = join(runDir, SQLITE_DB_FILENAME);
     this.sharedStateFile = join(rootHome, ".copilot-env-state.json");
     this.envConfigFile = join(rootHome, ".copilot-env-config.json");
     this.githubTokenFile = join(rootHome, "github_token");

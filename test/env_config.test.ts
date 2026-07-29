@@ -7,10 +7,18 @@ import { runConfig } from "../src/commands/config.ts";
 import {
   CONFIG_REGISTRY,
   CopilotEnvConfig,
+  configDefaultLabel,
   configKeyDef,
   isProxyProjected,
   projectedProxyConfig,
 } from "../src/copilot_api/env_config.ts";
+import {
+  BUILTIN_PROXY_PORT,
+  DEFAULT_MAX_PROXY_PORT,
+  DEFAULT_MIN_PROXY_PORT,
+} from "../src/copilot_api/port.ts";
+import { DEFAULT_WEB_SEARCH_MODEL } from "../src/copilot_api/web_search.ts";
+import { DEFAULT_IDLE_TIMEOUT_SECONDS } from "../src/scripts/idle_watchdog.ts";
 
 // CopilotEnvConfig reads/writes the SHARED prefs store under COPILOT_API_HOME, so isolate
 // each test in a temp home.
@@ -231,5 +239,39 @@ test("isProxyProjected marks force + opt-in keys, not copilot-env-internal ones"
   // projected into the proxy) and needs no daemon restart.
   expect(isProxyProjected(configKeyDef("codex-model-catalog")!)).toBe(false);
   expect(configKeyDef("codex-model-catalog")?.restartToApply).toBeUndefined();
-  expect(configKeyDef("codex-model-catalog")?.defaultLabel).toBe("false");
+  expect(configDefaultLabel(configKeyDef("codex-model-catalog")!)).toBe("false");
+});
+
+test("registry defaults are single-sourced: labels derive from the owned default value", () => {
+  for (const def of CONFIG_REGISTRY) {
+    // One source per entry: an owned value (defaultValue or proxyDefault, never both) OR a
+    // hand-written label for defaults owned elsewhere (proxy-internal / composite).
+    const owned = def.defaultValue ?? def.proxyDefault;
+    if (owned !== undefined) {
+      expect(def.defaultValue === undefined || def.proxyDefault === undefined).toBe(true);
+      expect(def.defaultLabel).toBeUndefined();
+      expect(configDefaultLabel(def)).toBe(`${owned}${def.defaultSuffix ?? ""}`);
+    } else {
+      expect(def.defaultLabel).toBeTruthy();
+      expect(def.defaultSuffix).toBeUndefined();
+    }
+    // Every key still renders a non-empty default in `--help` / `--get`.
+    expect(configDefaultLabel(def).length).toBeGreaterThan(0);
+  }
+
+  // The read sites consume the registry's values, so these pins guard ONE fact each.
+  expect(BUILTIN_PROXY_PORT).toBe(4141);
+  expect(DEFAULT_MIN_PROXY_PORT).toBe(1024);
+  expect(DEFAULT_MAX_PROXY_PORT).toBe(65535);
+  expect(DEFAULT_IDLE_TIMEOUT_SECONDS).toBe(3600);
+
+  // Rendered labels keep their exact wording (external contract of `--help` / `--get`).
+  expect(configDefaultLabel(configKeyDef("port")!)).toBe("4141 (then next free)");
+  expect(configDefaultLabel(configKeyDef("integration-id")!)).toBe("auto (probe per credential)");
+  expect(configDefaultLabel(configKeyDef("small-model")!)).toBe("gpt-5-mini");
+  // The composite websearch label's mcp half is owned by web_search.ts (which imports
+  // env_config, so the registry cannot reference it); pin the copy instead.
+  expect(configDefaultLabel(configKeyDef("message-websearch-model")!)).toBe(
+    `gpt-5-mini (proxy) / ${DEFAULT_WEB_SEARCH_MODEL} (mcp)`,
+  );
 });

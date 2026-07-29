@@ -6,6 +6,7 @@ import {
   CONFIG_REGISTRY,
   type ConfigKeyDef,
   CopilotEnvConfig,
+  configDefaultLabel,
   configKeyDef,
   isProxyProjected,
 } from "../copilot_api/env_config.ts";
@@ -105,7 +106,8 @@ function runGet(get: string | boolean | undefined): void {
   const width = CONFIG_REGISTRY.reduce((m, d) => Math.max(m, d.cli.length), 0);
   const rows = CONFIG_REGISTRY.map((def) => {
     const value = data[def.key];
-    const shown = value === undefined ? `(default: ${def.defaultLabel})` : formatValue(value);
+    const shown =
+      value === undefined ? `(default: ${configDefaultLabel(def)})` : formatValue(value);
     return `  ${def.cli.padEnd(width)}  ${shown}`;
   });
   consola.log(`copilot-env config:\n${rows.join("\n")}`);

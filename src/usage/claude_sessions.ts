@@ -32,7 +32,7 @@ import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { canonicalModelName } from "./pricing.ts";
-import type { ModelUsage, UsageReport } from "./usage.ts";
+import { addDayUsage, addUsage, type TokenBuckets, type UsageReport } from "./usage.ts";
 
 /** Error placeholders carry this model id and no real usage attribution. */
 const SYNTHETIC_MODEL = "<synthetic>";
@@ -142,14 +142,6 @@ function collectTranscriptFiles(
   }
 }
 
-/** The four priced token buckets of one message. */
-interface TokenBuckets {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheCreation: number;
-}
-
 /** Map one assistant `message.usage` onto the report's token buckets. */
 function tokenBuckets(usage: Record<string, unknown>): TokenBuckets {
   // Non-finite or negative counts (hostile or torn lines) never enter a report.
@@ -242,46 +234,19 @@ async function parseTranscriptFile(
         }
       }
 
-      accumulate(report.byModel, model, buckets, isNewMessage);
+      // A repeated id is the same message continuing (streaming) or copied
+      // (resume/fork), so only the FIRST occurrence counts as an event.
+      addUsage(report.byModel, model, buckets, isNewMessage ? 1 : 0);
       const day =
         typeof parsed.timestamp === "string" && /^\d{4}-\d{2}-\d{2}/.test(parsed.timestamp)
           ? parsed.timestamp.slice(0, 10)
           : undefined;
       if (day !== undefined) {
-        let dayModels = report.perDay.get(day);
-        if (dayModels === undefined) {
-          dayModels = new Map<string, ModelUsage>();
-          report.perDay.set(day, dayModels);
-        }
-        accumulate(dayModels, model, buckets, isNewMessage);
+        addDayUsage(report.perDay, day, model, buckets, isNewMessage ? 1 : 0);
       }
       report.activeDays = report.perDay.size;
     }
   } finally {
     rl.close();
   }
-}
-
-/** Fold one message's (possibly delta) buckets into a model->usage map. */
-function accumulate(
-  target: Map<string, ModelUsage>,
-  model: string,
-  b: TokenBuckets,
-  isNewMessage: boolean,
-): void {
-  const prev = target.get(model) ?? {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheCreation: 0,
-    events: 0,
-  };
-  prev.input += b.input;
-  prev.output += b.output;
-  prev.cacheRead += b.cacheRead;
-  prev.cacheCreation += b.cacheCreation;
-  if (isNewMessage) {
-    prev.events += 1;
-  }
-  target.set(model, prev);
 }

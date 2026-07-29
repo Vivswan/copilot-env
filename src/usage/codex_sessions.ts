@@ -28,7 +28,7 @@ import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { canonicalModelName } from "./pricing.ts";
-import type { ModelUsage, UsageReport } from "./usage.ts";
+import { addDayUsage, addUsage, type TokenBuckets, type UsageReport } from "./usage.ts";
 
 const SESSION_SUBDIRS = ["sessions", "archived_sessions"];
 const ROLLOUT_FILE = /^rollout-(\d{4})-(\d{2})-(\d{2})T.*\.jsonl(\.zst)?$/;
@@ -190,13 +190,6 @@ async function* rolloutLines(file: string): AsyncGenerator<string> {
   }
 }
 
-interface TokenBuckets {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheCreation: number;
-}
-
 /** Map one `last_token_usage` object onto the proxy report's token buckets. */
 function tokenBuckets(last: Record<string, unknown>): TokenBuckets {
   // Non-finite or negative counts (hostile or torn lines) never enter a report.
@@ -212,23 +205,6 @@ function tokenBuckets(last: Record<string, unknown>): TokenBuckets {
     output: num(last.output_tokens),
     cacheCreation: 0, // no cache-write bucket in the Responses usage payload
   };
-}
-
-/** Fold one event's buckets into a model->usage map. */
-function accumulate(target: Map<string, ModelUsage>, model: string, b: TokenBuckets): void {
-  const prev = target.get(model) ?? {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheCreation: 0,
-    events: 0,
-  };
-  prev.input += b.input;
-  prev.output += b.output;
-  prev.cacheRead += b.cacheRead;
-  prev.cacheCreation += b.cacheCreation;
-  prev.events += 1;
-  target.set(model, prev);
 }
 
 /**
@@ -345,18 +321,13 @@ async function parseRolloutFile(
       providers.set(provider, report);
     }
     const buckets = tokenBuckets(last);
-    accumulate(report.byModel, model, buckets);
+    addUsage(report.byModel, model, buckets, 1);
     const day =
       typeof parsed.timestamp === "string" && /^\d{4}-\d{2}-\d{2}/.test(parsed.timestamp)
         ? parsed.timestamp.slice(0, 10)
         : undefined;
     if (day !== undefined) {
-      let dayModels = report.perDay.get(day);
-      if (dayModels === undefined) {
-        dayModels = new Map<string, ModelUsage>();
-        report.perDay.set(day, dayModels);
-      }
-      accumulate(dayModels, model, buckets);
+      addDayUsage(report.perDay, day, model, buckets, 1);
     }
     report.activeDays = report.perDay.size;
   }

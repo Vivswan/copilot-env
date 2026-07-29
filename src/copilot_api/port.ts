@@ -4,18 +4,20 @@ import { join } from "node:path";
 
 import { releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
 import { sleepSync } from "../utils/time.ts";
-import { CopilotEnvConfig } from "./env_config.ts";
+import { CopilotEnvConfig, configDefaultNumber } from "./env_config.ts";
 import { profileHomeNames, resolveRootHome } from "./paths.ts";
 import type { Profile } from "./profile.ts";
 import { CopilotEnvRunState } from "./state.ts";
 
-/** The built-in proxy port when nothing (config `port`, a running daemon, or `--port`) overrides it. */
-export const BUILTIN_PROXY_PORT = 4141;
+/** The built-in proxy port when nothing (config `port`, a running daemon, or `--port`)
+ *  overrides it. The value is owned by the config registry's `port` entry. */
+export const BUILTIN_PROXY_PORT = configDefaultNumber("port");
 
 /** Built-in bounds of the allowed proxy port range, used when the `min-port`/`max-port` config
- *  keys are unset. Privileged ports (<1024) are excluded by default. */
-export const DEFAULT_MIN_PROXY_PORT = 1024;
-export const DEFAULT_MAX_PROXY_PORT = 65535;
+ *  keys are unset (values owned by the config registry). Privileged ports (<1024) are excluded
+ *  by default. */
+export const DEFAULT_MIN_PROXY_PORT = configDefaultNumber("min-port");
+export const DEFAULT_MAX_PROXY_PORT = configDefaultNumber("max-port");
 
 /** The configured lower bound of the allowed proxy port range (`agent config --set min-port`),
  *  else the built-in default. */

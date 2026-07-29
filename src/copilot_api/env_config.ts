@@ -108,17 +108,27 @@ export type ConfigKey = keyof CopilotEnvConfigData;
 type ConfigValue = boolean | number | string;
 
 /** One config key: its CLI name (kebab), storage key (camel), help text, a parser from the
- *  `--set <value>` string to the stored value (throws a clear message on bad input), and a
- *  human-readable label for the built-in default (shown in `--help` / `--get`). */
+ *  `--set <value>` string to the stored value (throws a clear message on bad input), and the
+ *  built-in default the read site applies -- rendered into `--help` / `--get` by
+ *  configDefaultLabel, so the reported default can never drift from the applied one. */
 export interface ConfigKeyDef {
   cli: string;
   key: ConfigKey;
   describe: string;
   parse: (raw: string) => ConfigValue;
-  /** Built-in default when unset. Keep in sync with the read site that applies it. */
-  defaultLabel: string;
+  /** Built-in default applied by the read site when the key is unset. THE owned copy:
+   *  read sites (port.ts, idle_watchdog.ts, the helpers below) consume it via the
+   *  configDefault* accessors, and the rendered default label derives from it. */
+  defaultValue?: ConfigValue;
+  /** Extra wording appended after the derived default value in `--help` / `--get`. */
+  defaultSuffix?: string;
+  /** Hand-written default label for keys with no single value this registry owns (an
+   *  external, proxy-owned, or composite default). Only read when neither `defaultValue`
+   *  nor `proxyDefault` is set. */
+  defaultLabel?: string;
   /** Force-projected into the proxy config.json under `key` at `agent start` as
-   *  `stored ?? proxyDefault` (always written). Use for keys copilot-env has an opinion on. */
+   *  `stored ?? proxyDefault` (always written). Use for keys copilot-env has an opinion on.
+   *  Doubles as the rendered default, so no separate `defaultValue` is needed. */
   proxyDefault?: ConfigValue;
   /** Opt-in projection: written into the proxy config.json under `key` ONLY when our store
    *  holds a value, leaving the proxy's own default untouched otherwise. Use for keys we merely
@@ -131,6 +141,18 @@ export interface ConfigKeyDef {
   /** Printed by `agent config` set/del INSTEAD of the proxy-restart hint, for keys that apply
    *  through some other mechanism than a daemon launch. */
   applyHint?: string;
+}
+
+/** The "built-in default" label shown in `--help` / `--get`: the owned default value
+ *  (`defaultValue`, else `proxyDefault`) plus any suffix, else the hand-written label.
+ *  An entry with none of the three is a programmer error, same as configDefaultNumber. */
+export function configDefaultLabel(def: ConfigKeyDef): string {
+  const value = def.defaultValue ?? def.proxyDefault;
+  if (value !== undefined) return `${value}${def.defaultSuffix ?? ""}`;
+  if (def.defaultLabel === undefined) {
+    throw new Error(`config key '${def.cli}' has no built-in default to render`);
+  }
+  return def.defaultLabel;
 }
 
 /** Whether a registry entry is written into the proxy config.json at `agent start` (either
@@ -172,20 +194,20 @@ function parseNonEmpty(raw: string): string {
 
 /** The single source of truth for config keys, ordered ALPHABETICALLY by CLI name (the
  *  `--get` / `--help` display order; a test pins it, so insert new keys in place). */
-export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
+const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "auto-start",
     key: "autoStart",
     describe: "Managed proxy lifecycle: auto-start on agent open + idle auto-stop (bool)",
     parse: parseBool,
-    defaultLabel: "false",
+    defaultValue: false,
   },
   {
     cli: "codex-model-catalog",
     key: "codexModelCatalog",
     describe: "Patched Codex model catalog with Copilot's real context windows (bool)",
     parse: parseBool,
-    defaultLabel: "false",
+    defaultValue: false,
     applyHint:
       "Applies at the next Codex auth refresh (within ~5 minutes) or `agent codex`/`agent init` wiring.",
   },
@@ -194,7 +216,7 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     key: "idleTimeout",
     describe: "Idle auto-stop window in seconds (0 disables)",
     parse: (r) => parseWholeNumber(r, 0, MAX_SECONDS),
-    defaultLabel: "3600",
+    defaultValue: 3600,
     restartToApply: true,
   },
   {
@@ -203,7 +225,8 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     describe:
       "Pin the Copilot client identity (Copilot-Integration-Id), or `auto` to probe per credential",
     parse: parseNonEmpty,
-    defaultLabel: "auto (probe per credential)",
+    defaultValue: "auto",
+    defaultSuffix: " (probe per credential)",
     applyHint:
       "Applies at the next `agent start` (proxy) and `agent init`/`agent profile --add` (direct wiring).",
   },
@@ -212,7 +235,7 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     key: "maxPort",
     describe: "Upper bound of the allowed proxy port range (1-65535)",
     parse: (r) => parseWholeNumber(r, 1, 65535),
-    defaultLabel: "65535",
+    defaultValue: 65535,
     restartToApply: true,
   },
   {
@@ -220,6 +243,9 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     key: "messageApiWebSearchModel",
     describe: "Model id for web search: the proxy's Messages-API path and the MCP web_search tool",
     parse: parseNonEmpty,
+    // Composite: the proxy half is the proxy's OWN default; the mcp half is
+    // DEFAULT_WEB_SEARCH_MODEL in web_search.ts (which imports this module, so it cannot be
+    // referenced here) -- a registry test pins the label to that constant.
     defaultLabel: "gpt-5-mini (proxy) / gpt-5.6-sol (mcp)",
     proxyProjected: true,
     applyHint:
@@ -230,7 +256,6 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     key: "useMessagesApi",
     describe: "Proxy Messages-API (Anthropic-shaped) endpoint (bool)",
     parse: parseBool,
-    defaultLabel: "true",
     proxyDefault: true,
   },
   {
@@ -238,7 +263,7 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     key: "minPort",
     describe: "Lower bound of the allowed proxy port range (1-65535)",
     parse: (r) => parseWholeNumber(r, 1, 65535),
-    defaultLabel: "1024",
+    defaultValue: 1024,
     restartToApply: true,
   },
   {
@@ -246,7 +271,7 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     key: "passthrough",
     describe: "PAT passthrough default: auto | on | off",
     parse: (r) => parseEnum(r, PASSTHROUGH_VALUES),
-    defaultLabel: "auto",
+    defaultValue: "auto",
     restartToApply: true,
   },
   {
@@ -254,7 +279,8 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     key: "port",
     describe: "Default proxy port (1-65535)",
     parse: (r) => parseWholeNumber(r, 1, 65535),
-    defaultLabel: "4141 (then next free)",
+    defaultValue: 4141,
+    defaultSuffix: " (then next free)",
     restartToApply: true,
   },
   {
@@ -262,7 +288,7 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     key: "proxyLogs",
     describe: "Proxy request logging under <home>/logs (false discards the writes)",
     parse: parseBool,
-    defaultLabel: "true",
+    defaultValue: true,
     restartToApply: true,
   },
   {
@@ -292,7 +318,6 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     key: "useResponsesApiWebSearch",
     describe: "Proxy Responses-API web search (bool)",
     parse: parseBool,
-    defaultLabel: "true",
     proxyDefault: true,
   },
   {
@@ -300,7 +325,6 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     key: "useResponsesApiWebSocket",
     describe: "Proxy Responses-API transport: WebSocket (true) vs HTTP/SSE (false)",
     parse: parseBool,
-    defaultLabel: "true",
     proxyDefault: true,
   },
   {
@@ -308,7 +332,6 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     key: "smallModel",
     describe: "Small/fast model id the proxy uses",
     parse: parseNonEmpty,
-    defaultLabel: "gpt-5-mini",
     proxyDefault: "gpt-5-mini",
   },
   {
@@ -316,7 +339,7 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     key: "strictPort",
     describe: "Fail start when the default port is busy instead of auto-incrementing (bool)",
     parse: parseBool,
-    defaultLabel: "false",
+    defaultValue: false,
     restartToApply: true,
   },
   {
@@ -332,14 +355,43 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     describe:
       "Wire the copilot-env MCP server (web_search) and the WebSearch deny into Claude on direct writes (bool)",
     parse: parseBool,
-    defaultLabel: "true",
+    defaultValue: true,
     applyHint: "Applies at the next `agent claude`/`agent init` direct wiring.",
   },
-];
+] as const satisfies readonly ConfigKeyDef[];
+
+/** A registry CLI key name; the configDefault* accessors take this instead of a bare
+ *  string so a typo'd key is a compile error, not a module-load throw. */
+export type ConfigCli = (typeof CONFIG_REGISTRY_LITERAL)[number]["cli"];
+
+/** The literal list above, widened so consumers see the uniform ConfigKeyDef shape. */
+export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = CONFIG_REGISTRY_LITERAL;
 
 /** Look up a registry entry by its CLI (kebab) name. */
 export function configKeyDef(cli: string): ConfigKeyDef | undefined {
   return CONFIG_REGISTRY.find((d) => d.cli === cli.trim());
+}
+
+/** The registry's built-in numeric default for `cli` (`defaultValue`, else `proxyDefault` --
+ *  the same resolution the rendered label uses), for the read sites that apply it
+ *  (port bounds, idle timeout). A missing or non-numeric entry is a programmer error. */
+export function configDefaultNumber(cli: ConfigCli): number {
+  const def = configKeyDef(cli);
+  const value = def?.defaultValue ?? def?.proxyDefault;
+  if (typeof value !== "number") {
+    throw new Error(`config key '${cli}' has no numeric built-in default`);
+  }
+  return value;
+}
+
+/** The registry's built-in boolean default for `cli` (same contract as configDefaultNumber). */
+export function configDefaultBoolean(cli: ConfigCli): boolean {
+  const def = configKeyDef(cli);
+  const value = def?.defaultValue ?? def?.proxyDefault;
+  if (typeof value !== "boolean") {
+    throw new Error(`config key '${cli}' has no boolean built-in default`);
+  }
+  return value;
 }
 
 /**
@@ -367,7 +419,7 @@ export function projectedProxyConfig(): Record<string, ConfigValue> {
 /** A help block listing every config key with its built-in default, then its description. */
 export function configKeysHelp(): string {
   const cliWidth = CONFIG_REGISTRY.reduce((m, d) => Math.max(m, d.cli.length), 0);
-  const defaults = CONFIG_REGISTRY.map((d) => `default: ${d.defaultLabel}`);
+  const defaults = CONFIG_REGISTRY.map((d) => `default: ${configDefaultLabel(d)}`);
   const defWidth = defaults.reduce((m, s) => Math.max(m, s.length), 0);
   const rows = CONFIG_REGISTRY.map(
     (d, i) => `  ${d.cli.padEnd(cliWidth)}  ${defaults[i]?.padEnd(defWidth)}  ${d.describe}`,
@@ -393,17 +445,17 @@ export class CopilotEnvConfig {
 
   /** Whether the managed proxy lifecycle (auto-start + idle auto-stop) is enabled. */
   autoStartEnabled(): boolean {
-    return this.read().autoStart === true;
+    return this.read().autoStart ?? configDefaultBoolean("auto-start");
   }
 
   /** Whether the patched Codex model catalog is enabled (opt-in, default off). */
   codexModelCatalogEnabled(): boolean {
-    return this.read().codexModelCatalog === true;
+    return this.read().codexModelCatalog ?? configDefaultBoolean("codex-model-catalog");
   }
 
   /** Whether direct Claude wiring registers the MCP server + WebSearch deny (default ON). */
   wireMcpEnabled(): boolean {
-    return this.read().wireMcp !== false;
+    return this.read().wireMcp ?? configDefaultBoolean("wire-mcp");
   }
 
   /**

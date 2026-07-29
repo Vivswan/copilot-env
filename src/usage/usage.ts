@@ -4,39 +4,43 @@
 // database (`<home>/.run/<hostname>/copilot-api.sqlite`). Running the proxy on
 // several machines therefore yields several DBs; a legacy top-level
 // `<home>/copilot-api.sqlite` may also exist from before the per-host split. We
-// read all of them read-only and aggregate token counts by model.
+// read all of them read-only and aggregate token counts by model. The DB layout
+// itself is owned by src/copilot_api/paths.ts; this module only sweeps it.
 
 // biome-ignore lint/correctness/noUnresolvedImports: `bun:sqlite` is a bun runtime built-in (typed via @types/bun), not a resolvable file.
 import { constants, Database } from "bun:sqlite";
-import { existsSync, readdirSync, realpathSync } from "node:fs";
+import { readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { consola } from "consola";
-import { resolveHome } from "../copilot_api/paths.ts";
+import { PROFILES_DIR_NAME, resolveHome, usageDbsUnderHome } from "../copilot_api/paths.ts";
 import { isValidProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { isDir } from "../utils/fs.ts";
 import { canonicalModelName } from "./pricing.ts";
 
-const DB_FILENAME = "copilot-api.sqlite";
-
-/** Per-model token totals, summed across every DB. */
-export interface ModelUsage {
+/** The four priced token buckets every usage source reduces one event to. */
+export interface TokenBuckets {
   input: number;
   output: number;
   cacheRead: number;
   cacheCreation: number;
+}
+
+/** Per-model token totals, summed across every DB. */
+export interface ModelUsage extends TokenBuckets {
   events: number;
 }
 
-/** One aggregated `token_usage_events` row as returned by the grouped query. */
+/** One aggregated `token_usage_events` row as returned by the grouped query. The SUM()
+ *  columns and the substr() day are null when a group has no non-null inputs. */
 interface UsageRow {
-  day: string;
+  day: string | null;
   model: string;
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheCreation: number;
+  input: number | null;
+  output: number | null;
+  cacheRead: number | null;
+  cacheCreation: number | null;
   events: number;
 }
 
@@ -54,31 +58,48 @@ export interface UsageReport {
   perDay: Map<string, Map<string, ModelUsage>>;
 }
 
-/** The usage DBs directly under ONE daemon home: the legacy top-level file plus
- *  one per host directory under `.run/`. Only paths that exist are returned. */
-function usageDbsUnderHome(home: string): string[] {
-  const paths: string[] = [];
+/**
+ * Fold one source's token buckets into a model->usage map, seeding a zero-valued record
+ * the first time a model appears. `events` is this occurrence's event-count increment (a
+ * grouped SQL row carries its COUNT, a session line counts 1, a streaming delta 0). The
+ * ONE fold every usage source shares -- add a token bucket here and every source folds it.
+ */
+export function addUsage(
+  target: Map<string, ModelUsage>,
+  model: string,
+  buckets: TokenBuckets,
+  events: number,
+): void {
+  const prev = target.get(model) ?? {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 0,
+  };
+  prev.input += buckets.input;
+  prev.output += buckets.output;
+  prev.cacheRead += buckets.cacheRead;
+  prev.cacheCreation += buckets.cacheCreation;
+  prev.events += events;
+  target.set(model, prev);
+}
 
-  const legacy = join(home, DB_FILENAME);
-  if (existsSync(legacy)) {
-    paths.push(legacy);
+/** addUsage into the per-day split: fold into `perDay[day]`, creating the day's
+ *  model->usage map the first time that day appears. */
+export function addDayUsage(
+  perDay: Map<string, Map<string, ModelUsage>>,
+  day: string,
+  model: string,
+  buckets: TokenBuckets,
+  events: number,
+): void {
+  let dayModels = perDay.get(day);
+  if (dayModels === undefined) {
+    dayModels = new Map<string, ModelUsage>();
+    perDay.set(day, dayModels);
   }
-
-  const runDir = join(home, ".run");
-  let hosts: string[] = [];
-  try {
-    hosts = readdirSync(runDir);
-  } catch {
-    hosts = []; // no .run dir yet
-  }
-  for (const host of hosts) {
-    const candidate = join(runDir, host, DB_FILENAME);
-    if (isDir(join(runDir, host)) && existsSync(candidate)) {
-      paths.push(candidate);
-    }
-  }
-
-  return paths;
+  addUsage(dayModels, model, buckets, events);
 }
 
 /**
@@ -93,7 +114,7 @@ function usageDbsUnderHome(home: string): string[] {
 export function discoverUsageDbs(home: string = resolveHome()): string[] {
   const paths = usageDbsUnderHome(home);
 
-  const profilesDir = join(home, "profiles");
+  const profilesDir = join(home, PROFILES_DIR_NAME);
   let profiles: string[] = [];
   try {
     profiles = readdirSync(profilesDir);
@@ -132,23 +153,13 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
   const perDay = new Map<string, Map<string, ModelUsage>>();
   const since = sinceMs ?? null;
 
-  // Fold one grouped row into a model->usage map (the all-days roll-up or a
-  // single day's bucket), summing across DBs that share a model.
-  const accumulate = (target: Map<string, ModelUsage>, model: string, row: UsageRow): void => {
-    const prev = target.get(model) ?? {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheCreation: 0,
-      events: 0,
-    };
-    prev.input += row.input ?? 0;
-    prev.output += row.output ?? 0;
-    prev.cacheRead += row.cacheRead ?? 0;
-    prev.cacheCreation += row.cacheCreation ?? 0;
-    prev.events += row.events ?? 0;
-    target.set(model, prev);
-  };
+  // Normalize one grouped row's nullable SUM columns into the shared fold's buckets.
+  const rowBuckets = (row: UsageRow): TokenBuckets => ({
+    input: row.input ?? 0,
+    output: row.output ?? 0,
+    cacheRead: row.cacheRead ?? 0,
+    cacheCreation: row.cacheCreation ?? 0,
+  });
 
   // One grouped query by (day, model); byModel and activeDays both derive from it, so we
   // never read the same rows twice.
@@ -195,18 +206,14 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
     for (const row of rows) {
       // Sources spell the same model differently; key rows by the shared form.
       const model = canonicalModelName(row.model);
-      accumulate(byModel, model, row);
+      const buckets = rowBuckets(row);
+      addUsage(byModel, model, buckets, row.events ?? 0);
       // Distinct UTC calendar days with data, unioned across all DBs. The
       // daemon writes created_at_utc alongside created_at_ms on every row, so
       // a null/empty day is not expected; such a row still counts toward
       // byModel (the aggregate total) but is omitted from the per-day split.
       if (row.day) {
-        let dayModels = perDay.get(row.day);
-        if (dayModels === undefined) {
-          dayModels = new Map<string, ModelUsage>();
-          perDay.set(row.day, dayModels);
-        }
-        accumulate(dayModels, model, row);
+        addDayUsage(perDay, row.day, model, buckets, row.events ?? 0);
       }
     }
   }
@@ -218,33 +225,15 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
 export function mergeUsageReports(reports: Iterable<UsageReport>): UsageReport {
   const byModel = new Map<string, ModelUsage>();
   const perDay = new Map<string, Map<string, ModelUsage>>();
-  const add = (target: Map<string, ModelUsage>, model: string, u: ModelUsage): void => {
-    const prev = target.get(model) ?? {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheCreation: 0,
-      events: 0,
-    };
-    prev.input += u.input;
-    prev.output += u.output;
-    prev.cacheRead += u.cacheRead;
-    prev.cacheCreation += u.cacheCreation;
-    prev.events += u.events;
-    target.set(model, prev);
-  };
   for (const report of reports) {
     for (const [model, u] of report.byModel) {
-      add(byModel, model, u);
+      addUsage(byModel, model, u, u.events);
     }
     for (const [day, dayModels] of report.perDay) {
-      let target = perDay.get(day);
-      if (target === undefined) {
-        target = new Map<string, ModelUsage>();
-        perDay.set(day, target);
-      }
+      // A day with an empty model map still counts as active in the union.
+      if (!perDay.has(day)) perDay.set(day, new Map());
       for (const [model, u] of dayModels) {
-        add(target, model, u);
+        addDayUsage(perDay, day, model, u, u.events);
       }
     }
   }

@@ -35,7 +35,7 @@ export const REQUIRED_FILES = ["package.json", "bun.lock", "bin/agent", "src/cli
 // Doc files shipped as symlinks -> AGENTS.md. tar.exe and node-tar both fail-and-skip
 // symlinks on Windows without Developer Mode, so these may be absent after extraction;
 // materialize them as plain copies of AGENTS.md so the checkout is complete on every OS.
-const DOC_LINKS = ["CLAUDE.md", ".github/copilot-instructions.md", ".github/agents.md"];
+export const DOC_LINKS = ["CLAUDE.md", ".github/copilot-instructions.md", ".github/agents.md"];
 
 /** Ensure each DOC_LINKS path exists under `root`, copying AGENTS.md in when missing. */
 function materializeDocLinks(root: string): void {

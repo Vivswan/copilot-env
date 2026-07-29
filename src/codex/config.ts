@@ -32,6 +32,7 @@ import {
   resolveDirectMode,
 } from "../utils/direct_probe.ts";
 import { errMessage } from "../utils/error.ts";
+import { codexFarmHostsDir } from "../utils/hostname.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import {
@@ -750,22 +751,21 @@ export function syncCodexCatalogReference(): void {
 
 /** Every Codex home that may hold per-home state (config.toml, sessions): the
  *  active home (run state / CODEX_HOME env), the default ~/.codex, and each
- *  per-host symlink-farm home. The farm root resolves like its creator (HOME
- *  in src/utils/hostname.ts): process.env.HOME then homedir(). `complete` is
- *  false when the farm directory exists but cannot be enumerated -- unseen
- *  homes may still hold state. */
+ *  per-host symlink-farm home, enumerated through the farm layout's owner
+ *  (codexFarmHostsDir in src/utils/hostname.ts). `complete` is false when the
+ *  farm directory exists but cannot be enumerated -- unseen homes may still
+ *  hold state. */
 export function knownCodexHomes(): { homes: string[]; complete: boolean } {
   const homes = new Set<string>([effectiveCodexHome()]);
   // The default home resolves via homedir() (the effectiveCodexHome contract);
-  // the farm root via process.env.HOME first (its creator's contract, HOME in
-  // src/utils/hostname.ts). They usually agree, but can differ (e.g. HOME set
+  // the farm root via its creator's contract (codexFarmHostsDir on homeDir,
+  // process.env.HOME first). They usually agree, but can differ (e.g. HOME set
   // on Windows), so sweep BOTH -- the Set dedupes the common case.
   homes.add(path.join(homedir(), ".codex"));
-  const farmRoot = path.join(process.env.HOME || homedir(), ".codex");
-  homes.add(farmRoot);
+  const hostsDir = codexFarmHostsDir();
+  homes.add(path.dirname(hostsDir));
   let complete = true;
   try {
-    const hostsDir = path.join(farmRoot, "hosts");
     for (const entry of fs.readdirSync(hostsDir, { withFileTypes: true })) {
       if (entry.isDirectory()) homes.add(path.join(hostsDir, entry.name));
     }

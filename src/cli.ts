@@ -35,6 +35,7 @@ import { configKeysHelp } from "./copilot_api/env_config.ts";
 import { runCost } from "./usage/cost.ts";
 import { OPENROUTER_MODELS_URL } from "./usage/pricing.ts";
 import { bold, cyan, gray } from "./utils/ansi.ts";
+import { ghTokenEnvVarsLabel } from "./utils/direct_probe.ts";
 import { errMessage } from "./utils/error.ts";
 import { disableConsolaTimestamps } from "./utils/logger.ts";
 import { packageVersion } from "./utils/version.ts";
@@ -157,11 +158,11 @@ program
     "--provider <provider>",
     "How to authenticate (no flag => interactive choice): 'copilot' (device flow, " +
       "read:user scope), 'gh-cli' (use the machine's gh login), or 'gh-token' " +
-      "(store $GH_TOKEN/$GITHUB_TOKEN - for headless servers).",
+      `(store ${ghTokenEnvVarsLabel()} - for headless servers).`,
   )
   .option(
     "--set [token]",
-    "Non-interactive gh-token: store this token verbatim, or read $GH_TOKEN/$GITHUB_TOKEN " +
+    `Non-interactive gh-token: store this token verbatim, or read ${ghTokenEnvVarsLabel()} ` +
       "when given no value. Implies --provider gh-token.",
   )
   .option(
@@ -231,7 +232,7 @@ program
   .option(
     "--set [token]",
     "With --add: non-interactive gh-token - store this token verbatim, or read " +
-      "$GH_TOKEN/$GITHUB_TOKEN when given no value.",
+      `${ghTokenEnvVarsLabel()} when given no value.`,
   )
   .action((opts: Opts) =>
     runProfile({

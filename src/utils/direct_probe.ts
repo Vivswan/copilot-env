@@ -156,6 +156,15 @@ export function assertSingleMode(flags: ModeFlags): void {
  */
 export const GH_TOKEN_ENV_VARS = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] as const;
 
+/**
+ * GH_TOKEN_ENV_VARS as a `$VAR` fragment for help text and prompt labels, in
+ * resolver order, so user-facing docs can never drift from what ghTokenFromEnv
+ * actually reads (and in which precedence).
+ */
+export function ghTokenEnvVarsLabel(separator = "/"): string {
+  return GH_TOKEN_ENV_VARS.map((name) => `$${name}`).join(separator);
+}
+
 /** First non-empty (trimmed) token among GH_TOKEN_ENV_VARS, or null when none is set. */
 export function ghTokenFromEnv(env: NodeJS.ProcessEnv = process.env): string | null {
   for (const name of GH_TOKEN_ENV_VARS) {

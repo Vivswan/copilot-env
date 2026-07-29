@@ -7,7 +7,7 @@ import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { assertSingleMode, resolveDirectMode } from "../utils/direct_probe.ts";
 import { isFile } from "../utils/fs.ts";
-import { getSanitizedHostname, HOME } from "../utils/hostname.ts";
+import { codexFarmHostsDir, getSanitizedHostname, homeDir } from "../utils/hostname.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { applyCodexConfig, detectCodexDirect } from "./config.ts";
 
@@ -19,11 +19,11 @@ export interface CodexHostArgs {
   proxy?: boolean;
 }
 
-// The per-host CODEX_HOME (~/.codex/hosts/<hostname>). On Linux/macOS it builds and
+// The per-host CODEX_HOME (<farm root>/<hostname>). On Linux/macOS it builds and
 // inspects the shared-state symlink farm. Exported so `agent health` can report
 // the per-host directory without rebuilding the path.
 export function getHostLocalCodexHome(): string {
-  return path.join(HOME, ".codex", "hosts", getSanitizedHostname());
+  return path.join(codexFarmHostsDir(), getSanitizedHostname());
 }
 
 /**
@@ -421,7 +421,7 @@ function buildCodexSymlinkFarm(codexHome: string): number {
     "version.json", // Codex home layout/schema version marker.
   ];
 
-  const sharedRoot = `${HOME}/.codex`;
+  const sharedRoot = `${homeDir()}/.codex`;
   primeSharedCodexHomeIfMissing(sharedRoot);
   try {
     fs.mkdirSync(sharedRoot, { recursive: true });

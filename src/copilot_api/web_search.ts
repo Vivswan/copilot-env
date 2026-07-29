@@ -6,7 +6,7 @@
 // -> client identity -> one POST -> answer text with a `Sources:` list. It stays in
 // the copilot_api layer (like admin.ts / catalog.ts, the other REST clients) so the
 // MCP server remains a thin protocol adapter over it.
-import { ghTokenFromEnv } from "../utils/direct_probe.ts";
+import { GH_TOKEN_ENV_VARS, ghTokenFromEnv } from "../utils/direct_probe.ts";
 import { isRecord } from "../utils/json.ts";
 import { Credential } from "./credential.ts";
 import { CopilotEnvConfig } from "./env_config.ts";
@@ -112,7 +112,9 @@ export function resolveWebSearchCredential(profile: Profile = null): string {
     const fromEnv = ghTokenFromEnv();
     if (fromEnv !== null) return fromEnv;
   }
-  throw new Error("no GitHub credential - run `agent auth` to log in or set GH_TOKEN");
+  throw new Error(
+    `no GitHub credential - run \`agent auth\` to log in or set one of ${GH_TOKEN_ENV_VARS.join(" / ")}`,
+  );
 }
 
 /** Search the web through Copilot's /responses endpoint; returns cited answer text. */

@@ -34,7 +34,7 @@ export interface UninstallArgs {
 /**
  * Test seam (the repo's deps pattern, e.g. DirectProbeDeps): these three targets
  * resolve to REAL machine paths that test env vars cannot redirect -- homedir()
- * ignores `$HOME` on Windows, the farm path captures `HOME` at module import, and
+ * ignores `$HOME` on Windows, the farm path resolves under that same homedir(), and
  * the Windows shell removal edits the actual `$PROFILE` -- so tests inject
  * substitutes.
  */

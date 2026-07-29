@@ -36,7 +36,12 @@ import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { resolveCopilotApiEntry } from "../copilot_api/process.ts";
 import { assertProfileName, type Profile, profileLabel } from "../copilot_api/profile.ts";
-import { GH_TOKEN_ENV_VARS, ghTokenFromEnv, tokenFromSetFlag } from "../utils/direct_probe.ts";
+import {
+  GH_TOKEN_ENV_VARS,
+  ghTokenEnvVarsLabel,
+  ghTokenFromEnv,
+  tokenFromSetFlag,
+} from "../utils/direct_probe.ts";
 import { errMessage } from "../utils/error.ts";
 import { releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -84,7 +89,7 @@ async function chooseProvider(): Promise<AuthProvider> {
       { label: "copilot - device-flow browser login (read:user scope)", value: "copilot" },
       { label: "gh-cli - use the machine's `gh auth login`", value: "gh-cli" },
       {
-        label: "gh-token - store $COPILOT_GITHUB_TOKEN / $GH_TOKEN / $GITHUB_TOKEN (headless)",
+        label: `gh-token - store ${ghTokenEnvVarsLabel(" / ")} (headless)`,
         value: "gh-token",
       },
     ],

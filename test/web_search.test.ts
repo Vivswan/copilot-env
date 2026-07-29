@@ -219,7 +219,7 @@ test("resolveWebSearchCredential falls back to env ONLY when no provider is reco
 test("resolveWebSearchCredential errors with a pointer when nothing resolves", () => {
   tmpHome();
   expect(() => resolveWebSearchCredential(null)).toThrow(
-    /run `agent auth` to log in or set GH_TOKEN/,
+    /run `agent auth` to log in or set one of COPILOT_GITHUB_TOKEN \/ GH_TOKEN \/ GITHUB_TOKEN/,
   );
 });
 

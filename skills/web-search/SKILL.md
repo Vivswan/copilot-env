@@ -13,14 +13,7 @@ through GitHub Copilot's Responses API instead of the builtin WebSearch.
 
 ## When to Use
 
-Use this skill when:
-
-- the user asks about current events, releases, prices, versions, or anything
-  newer than your knowledge cutoff
-- the builtin WebSearch tool is denied or returns
-  `The use of the web search tool is not supported` (Claude Code wired to
-  GitHub Copilot Direct)
-- a `mcp__copilot-env__web_search` tool is available
+Whenever web search is needed.
 
 ## Workflow
 

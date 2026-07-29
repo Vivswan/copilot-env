@@ -116,6 +116,12 @@ test("direct bakes a probed Copilot-Integration-Id into ANTHROPIC_CUSTOM_HEADERS
   const headers = (readSettings(home).env as Record<string, unknown>)[CUSTOM_HEADERS_ENV] as string;
   expect(headers).toContain("Copilot-Integration-Id: copilot-developer-cli");
   expect(headers).toContain("Openai-Intent: conversation-edits");
+  // Pin the exact line order the serializer emits (the probe validates this same set).
+  expect(headers.split("\n").map((line) => line.split(":")[0])).toEqual([
+    "Openai-Intent",
+    "User-Agent",
+    "Copilot-Integration-Id",
+  ]);
 });
 
 test("proxy mode writes proxy wiring (127.0.0.1 base URL + a token helper), preserving user keys", () => {

@@ -11,11 +11,17 @@ import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import {
-  INTEGRATION_ID_HEADER,
+  DEFAULT_COPILOT_API_BASE,
+  directClientHeaders,
   resolveDirectIntegrationId,
 } from "../copilot_api/integration_identity.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
-import { copilotApiResolvePort, openaiBaseUrl, reserveProfilePort } from "../copilot_api/port.ts";
+import {
+  copilotApiResolvePort,
+  matchesProxyOrigin,
+  openaiBaseUrl,
+  reserveProfilePort,
+} from "../copilot_api/port.ts";
 import { assertProfileName, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import {
@@ -57,7 +63,10 @@ const logger = createStderrLogger();
 // rewrites existing configs to `copilot-env`; nothing here knows that legacy name.)
 export const CODEX_PROVIDER_ID = "copilot-env";
 export const CODEX_ENV_KEY = "OPENAI_API_KEY";
-const DIRECT_BASE_URL = "https://api.githubcopilot.com";
+// Direct mode's base_url: the same individual-plan host the identity probe hits
+// (integration_identity.ts owns the literal -- the probe's verdict must be
+// rendered against the host the agents actually bake).
+const DIRECT_BASE_URL = DEFAULT_COPILOT_API_BASE;
 
 /** The managed provider id for `profile`: the unsuffixed `copilot-env` contract for the
  *  default, `copilot-env-<name>` for a named profile. A named profile is selected via
@@ -144,14 +153,11 @@ function managedDirectProvider(
   directIntegrationId?: string | null,
 ) {
   const { command, args } = agentLauncherCommand(agentAuthGetArgs(profile));
-  const httpHeaders: Record<string, string> = {
-    "Openai-Intent": "conversation-edits",
-    "User-Agent": codexUserAgent(codexExecVersion),
-  };
-  // The probed client identity (integration_identity.ts): most credentials need
-  // none (the Codex UA suffices), but a fine-grained PAT is only accepted under
-  // `copilot-developer-cli`. Omitted when null so the default stays byte-identical.
-  if (directIntegrationId) httpHeaders[INTEGRATION_ID_HEADER] = directIntegrationId;
+  // The client-identity headers, via the shared builder the probe validates
+  // (integration_identity.ts): most credentials carry no integration id (the Codex
+  // UA suffices; the builder omits it when null, keeping the default byte-identical),
+  // but a fine-grained PAT is only accepted under `copilot-developer-cli`.
+  const httpHeaders = directClientHeaders(codexUserAgent(codexExecVersion), directIntegrationId);
   return {
     "name": codexProviderId(profile),
     "base_url": DIRECT_BASE_URL,
@@ -298,29 +304,13 @@ export interface CodexWiringStatus {
 }
 
 /**
- * True when `baseUrl` is an http loopback URL whose path is `/v1` (the shape the managed
- * proxy contract writes via openaiBaseUrl), regardless of port. The strict per-port match
- * below layers the expected-port equality on top.
- */
-function isLoopbackV1BaseUrl(baseUrl: string): { matches: boolean; port: string } {
-  try {
-    const u = new URL(baseUrl);
-    const isLocal = u.hostname === "localhost" || u.hostname === "127.0.0.1";
-    const path = u.pathname.replace(/\/$/, ""); // tolerate a trailing slash
-    return { matches: u.protocol === "http:" && isLocal && path === "/v1", port: u.port };
-  } catch {
-    return { matches: false, port: "" };
-  }
-}
-
-/**
  * True when `baseUrl` matches the managed proxy contract: an http localhost
  * URL on `expectedPort` whose path is `/v1` (what configureCodexConfig writes via
- * openaiBaseUrl). A bare host, https, or a non-/v1 path is NOT a match.
+ * openaiBaseUrl; the shared grammar lives in port.ts next to the writers). A bare
+ * host, https, or a non-/v1 path is NOT a match.
  */
 function baseUrlMatchesProxy(baseUrl: string, expectedPort: number): boolean {
-  const { matches, port } = isLoopbackV1BaseUrl(baseUrl);
-  return matches && port === String(expectedPort);
+  return matchesProxyOrigin(baseUrl, expectedPort, "/v1");
 }
 
 /**

@@ -203,3 +203,34 @@ export function proxyLoopbackOrigin(port: number | string): string {
 export function openaiBaseUrl(port: string): string {
   return `${proxyLoopbackOrigin(port)}/v1`;
 }
+
+/** Parse `url` as a candidate managed local-proxy URL -- the read-side inverse of the
+ *  writers above. An http URL on `127.0.0.1` (what we write) or `localhost` (a hand-edit
+ *  that still means the local proxy) yields its port and path (trailing slash tolerated);
+ *  anything else is null. Each read site layers its own expected port/path on top --
+ *  matchesProxyOrigin for the strict per-port checks, a bare null-test for the
+ *  port-agnostic ones (`agent env`). */
+export function parseLoopbackProxyUrl(url: string): { port: string; path: string } | null {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:") return null;
+    if (u.hostname !== "localhost" && u.hostname !== "127.0.0.1") return null;
+    return { port: u.port, path: u.pathname.replace(/\/$/, "") };
+  } catch {
+    return null;
+  }
+}
+
+/** The two written path contracts: "" for the bare origin Claude bakes (proxyLoopbackOrigin),
+ *  "/v1" for Codex's OpenAI-wire base (openaiBaseUrl). */
+export type ProxyPathContract = "" | "/v1";
+
+/** Whether `url` is the managed proxy URL for `expectedPort` with exactly `expectedPath`. */
+export function matchesProxyOrigin(
+  url: string,
+  expectedPort: number,
+  expectedPath: ProxyPathContract,
+): boolean {
+  const parsed = parseLoopbackProxyUrl(url);
+  return parsed !== null && parsed.port === String(expectedPort) && parsed.path === expectedPath;
+}

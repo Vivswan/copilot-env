@@ -24,7 +24,7 @@ import {
   resolveClaudeHome,
 } from "../claude/config.ts";
 import { getHostLocalCodexHome } from "../codex/host.ts";
-import { copilotApiResolvePort } from "../copilot_api/port.ts";
+import { copilotApiResolvePort, parseLoopbackProxyUrl } from "../copilot_api/port.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
@@ -45,14 +45,12 @@ function readTextOrNull(path: string): string | null {
   }
 }
 
-/** True for an http://localhost or http://127.0.0.1 URL -- the proxy shape we write. */
+/** True for an http://localhost or http://127.0.0.1 URL -- the proxy shape we write.
+ *  Deliberately port- and path-agnostic (the shared grammar in port.ts, bare null-test):
+ *  this gates both setting AND clearing the var, and a stale URL on an old port must
+ *  still read as ours to clear. */
 function isLocalProxyUrl(url: string): boolean {
-  try {
-    const u = new URL(url);
-    return u.protocol === "http:" && (u.hostname === "localhost" || u.hostname === "127.0.0.1");
-  } catch {
-    return false;
-  }
+  return parseLoopbackProxyUrl(url) !== null;
 }
 
 /**

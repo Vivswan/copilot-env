@@ -25,9 +25,13 @@ import { codexUserAgent, probeDirectIntegrationId } from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
-import { INTEGRATION_ID_HEADER } from "../copilot_api/integration_identity.ts";
+import {
+  DEFAULT_COPILOT_API_BASE,
+  directClientHeaders,
+} from "../copilot_api/integration_identity.ts";
 import {
   copilotApiResolvePort,
+  matchesProxyOrigin,
   proxyLoopbackOrigin,
   reserveProfilePort,
 } from "../copilot_api/port.ts";
@@ -65,7 +69,9 @@ const WIN = process.platform === "win32";
 // Copilot's Anthropic-compatible endpoint needs a different base URL/path or
 // extra headers. NOTE: Copilot-serving-Claude is not officially documented;
 // CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS is treated as a tested knob.
-export const DIRECT_BASE_URL = "https://api.githubcopilot.com";
+// The base URL literal is owned by integration_identity.ts (the identity probe
+// must render its verdict against the same host the agents bake).
+export const DIRECT_BASE_URL = DEFAULT_COPILOT_API_BASE;
 // Helper file basenames. On Windows a `.sh` is not runnable by bare path, so the managed
 // helper is a `.cmd` (which cmd.exe executes). The path stored in apiKeyHelper -- and the
 // exact-path match in inspectClaudeWiring -- therefore carry the platform extension. A
@@ -150,16 +156,9 @@ export interface ClaudeWiringStatus {
 
 /** Whether `baseUrl` is the managed Claude proxy URL for `expectedPort`:
  *  `http://127.0.0.1:<port>` (loopback, no path -- unlike Codex's `/v1`). Tolerates a trailing
- *  slash and accepts `localhost` too. */
+ *  slash and accepts `localhost` too (the shared grammar in port.ts, next to the writers). */
 function claudeBaseUrlMatchesProxy(baseUrl: string, expectedPort: number): boolean {
-  try {
-    const u = new URL(baseUrl);
-    const isLocal = u.hostname === "localhost" || u.hostname === "127.0.0.1";
-    const path = u.pathname.replace(/\/$/, ""); // tolerate a trailing slash
-    return u.protocol === "http:" && isLocal && u.port === String(expectedPort) && path === "";
-  } catch {
-    return false;
-  }
+  return matchesProxyOrigin(baseUrl, expectedPort, "");
 }
 
 // --- paths ------------------------------------------------------------------
@@ -299,17 +298,17 @@ function writeHelperScript(helperPath: string, script: string): void {
 
 /**
  * The Direct (GitHub Copilot) custom-headers value: an `ANTHROPIC_CUSTOM_HEADERS` string of
- * newline-separated `Name: Value` pairs. Matches Codex Direct's `http_headers` exactly so
- * Copilot's editor-client allowlist accepts Claude the same way -- the User-Agent is derived
- * from the installed codex binary (codexUserAgent), falling back to the newest @openai/codex
- * npm release, then to a versionless `codex_exec`. `integrationId` (the probed client
- * identity) is appended only when set -- most credentials need none, but a fine-grained PAT
- * is only accepted under `copilot-developer-cli`.
+ * newline-separated `Name: Value` pairs, serialized from the SAME builder Codex Direct bakes
+ * as `http_headers` (directClientHeaders) so Copilot's editor-client allowlist accepts Claude
+ * the same way -- the User-Agent is derived from the installed codex binary (codexUserAgent),
+ * falling back to the newest @openai/codex npm release, then to a versionless `codex_exec`.
+ * `integrationId` (the probed client identity) is included only when set -- most credentials
+ * need none, but a fine-grained PAT is only accepted under `copilot-developer-cli`.
  */
 function directCustomHeaders(integrationId?: string | null): string {
-  const pairs = [`Openai-Intent: conversation-edits`, `User-Agent: ${codexUserAgent()}`];
-  if (integrationId) pairs.push(`${INTEGRATION_ID_HEADER}: ${integrationId}`);
-  return pairs.join("\n");
+  return Object.entries(directClientHeaders(codexUserAgent(), integrationId))
+    .map(([name, value]) => `${name}: ${value}`)
+    .join("\n");
 }
 
 /** Set the managed `env` keys in place (preserving any other env vars). A NAMED

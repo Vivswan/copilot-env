@@ -107,6 +107,27 @@ export const PASSTHROUGH_IDENTITY_CANDIDATES: readonly [
 ];
 
 /**
+ * The header set a DIRECT-mode client presents to the Copilot endpoint: the
+ * `Openai-Intent` + User-Agent pair, plus the probed `Copilot-Integration-Id` when
+ * one is required (omitted when null, so the default identity stays byte-identical).
+ * THE single builder: the probe candidates below and every writer that bakes the
+ * result (Codex `http_headers`, Claude ANTHROPIC_CUSTOM_HEADERS, the /responses
+ * web-search client) go through it, so the probe can never validate a header set
+ * the agents don't actually send.
+ */
+export function directClientHeaders(
+  userAgent: string,
+  integrationId?: string | null,
+): Record<string, string> {
+  const headers: Record<string, string> = {
+    "Openai-Intent": "conversation-edits",
+    "User-Agent": userAgent,
+  };
+  if (integrationId) headers[INTEGRATION_ID_HEADER] = integrationId;
+  return headers;
+}
+
+/**
  * Candidates for DIRECT mode (the headers baked into the agents' own configs): the
  * Codex CLI impersonation both agents have always sent first, then the same plus the
  * Copilot CLI integration id (the PAT-compatible variant). `userAgent` is the
@@ -116,19 +137,15 @@ export const PASSTHROUGH_IDENTITY_CANDIDATES: readonly [
 export function directIdentityCandidates(
   userAgent: string,
 ): [IntegrationIdentity, ...IntegrationIdentity[]] {
-  const base: Record<string, string> = {
-    "Openai-Intent": "conversation-edits",
-    "User-Agent": userAgent,
-  };
   return [
-    { name: CODEX_IDENTITY_NAME, headers: base },
+    { name: CODEX_IDENTITY_NAME, headers: directClientHeaders(userAgent) },
     {
       name: COPILOT_CLI_INTEGRATION_ID,
-      headers: { ...base, [INTEGRATION_ID_HEADER]: COPILOT_CLI_INTEGRATION_ID },
+      headers: directClientHeaders(userAgent, COPILOT_CLI_INTEGRATION_ID),
     },
     {
       name: COPILOT_SANDBOX_INTEGRATION_ID,
-      headers: { ...base, [INTEGRATION_ID_HEADER]: COPILOT_SANDBOX_INTEGRATION_ID },
+      headers: directClientHeaders(userAgent, COPILOT_SANDBOX_INTEGRATION_ID),
     },
   ];
 }

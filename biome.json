@@ -11,7 +11,8 @@
       "**/scripts/**/*.ts",
       "**/.github/scripts/**/*.ts",
       "!**/node_modules",
-      "!**/dist"
+      "!**/dist",
+      "!**/.claude"
     ]
   },
   "formatter": {

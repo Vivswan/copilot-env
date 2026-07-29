@@ -12,7 +12,7 @@ import { Credential } from "./credential.ts";
 import { CopilotEnvConfig } from "./env_config.ts";
 import {
   DEFAULT_COPILOT_API_BASE,
-  INTEGRATION_ID_HEADER,
+  directClientHeaders,
   type ProbeFetch,
   resolveDirectIntegrationId,
 } from "./integration_identity.ts";
@@ -138,10 +138,8 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
   const headers: Record<string, string> = {
     "Authorization": `Bearer ${token}`,
     "Content-Type": "application/json",
-    "Openai-Intent": "conversation-edits",
-    "User-Agent": RESPONSES_USER_AGENT,
+    ...directClientHeaders(RESPONSES_USER_AGENT, integrationId),
   };
-  if (integrationId !== null) headers[INTEGRATION_ID_HEADER] = integrationId;
   const url = `${DEFAULT_COPILOT_API_BASE}/responses`;
   const fetchImpl: ProbeFetch = opts.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
   const timeout = AbortSignal.timeout(opts.timeoutMs ?? WEB_SEARCH_TIMEOUT_MS);

@@ -196,7 +196,7 @@ test("webSearch surfaces non-2xx as a legible error", async () => {
     new Response("model unsupported", { status: 400, statusText: "Bad Request" }),
   ]);
 
-  expect(webSearch("q", { fetchImpl: stub.fetchImpl })).rejects.toThrow(
+  await expect(webSearch("q", { fetchImpl: stub.fetchImpl })).rejects.toThrow(
     "POST https://api.githubcopilot.com/responses returned 400 Bad Request model unsupported",
   );
 });
@@ -261,12 +261,12 @@ test("a cancelled call stops waiting for a cold PAT probe instead of sitting it 
   // MCP cancellations carry a plain string.
   const plain = new AbortController();
   plain.abort();
-  expect(webSearch("q", { fetchImpl: neverFetch, signal: plain.signal })).rejects.toThrow(
+  await expect(webSearch("q", { fetchImpl: neverFetch, signal: plain.signal })).rejects.toThrow(
     /aborted|cancelled/i,
   );
   const reasoned = new AbortController();
   reasoned.abort("client went away");
-  expect(webSearch("q", { fetchImpl: neverFetch, signal: reasoned.signal })).rejects.toThrow(
+  await expect(webSearch("q", { fetchImpl: neverFetch, signal: reasoned.signal })).rejects.toThrow(
     "web_search was cancelled: client went away",
   );
 });

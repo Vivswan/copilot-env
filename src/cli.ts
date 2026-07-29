@@ -27,7 +27,7 @@ import { runMcp } from "./commands/mcp.ts";
 import { runModels } from "./commands/models.ts";
 import { runProfile } from "./commands/profile.ts";
 import { runShell } from "./commands/setup.ts";
-import { runStart } from "./commands/start.ts";
+import { parseStartAction, runStart } from "./commands/start.ts";
 import { runStop } from "./commands/stop.ts";
 import { runUninstall } from "./commands/uninstall.ts";
 import { runUpdate } from "./commands/update.ts";
@@ -269,14 +269,16 @@ program
     "Operate on the named profile's isolated daemon (own home/port, the profile's own credential).",
   )
   .action((opts: Opts) =>
-    runStart({
-      dryRun: Boolean(opts.dryRun),
-      port: parsePort(opts.port),
-      recordEvent: Boolean(opts.recordEvent),
-      check: Boolean(opts.check),
-      force: Boolean(opts.force),
-      profile: opts.profile as string | undefined,
-    }),
+    runStart(
+      parseStartAction({
+        dryRun: Boolean(opts.dryRun),
+        port: parsePort(opts.port),
+        recordEvent: Boolean(opts.recordEvent),
+        check: Boolean(opts.check),
+        force: Boolean(opts.force),
+        profile: opts.profile as string | undefined,
+      }),
+    ),
   );
 
 program

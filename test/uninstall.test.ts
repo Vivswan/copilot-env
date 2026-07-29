@@ -94,21 +94,29 @@ test("uninstall removes everything managed and preserves user config", async () 
       "\n",
     ),
   );
-  configureCodexConfig(codexHome, "proxy", { quiet: true, baseUrl: "http://127.0.0.1:4199/v1" });
+  configureCodexConfig(codexHome, {
+    mode: "proxy",
+    quiet: true,
+    baseUrl: "http://127.0.0.1:4199/v1",
+  });
 
   // Default credential + a named direct profile (credential, mode, both agents, home).
   new Credential().store("gh-token", "ghp_default");
   new Credential(undefined, WORK).store("gh-token", "ghp_work");
   new CopilotEnvState().setProfileMode(WORK, "direct");
   configureClaudeConfig(claudeHome, "direct", { quiet: true, profile: WORK });
-  configureCodexConfig(codexHome, "direct", { quiet: true, profile: WORK });
+  configureCodexConfig(codexHome, { mode: "direct", quiet: true, profile: WORK });
   mkdirSync(profileHome(WORK), { recursive: true });
 
   // A second Codex home (e.g. a farm home from when it was the effective one)
   // that carries BOTH default and profile wiring: the sweep must clean it too.
   const codexHome2 = join(dir, ".codex-farm");
-  configureCodexConfig(codexHome2, "proxy", { quiet: true, baseUrl: "http://127.0.0.1:4199/v1" });
-  configureCodexConfig(codexHome2, "direct", { quiet: true, profile: WORK });
+  configureCodexConfig(codexHome2, {
+    mode: "proxy",
+    quiet: true,
+    baseUrl: "http://127.0.0.1:4199/v1",
+  });
+  configureCodexConfig(codexHome2, { mode: "direct", quiet: true, profile: WORK });
 
   const deps = tmpDeps(codexHome);
   deps.codexHomes = [codexHome, codexHome2];
@@ -201,7 +209,11 @@ test("uninstall --dry-run changes nothing", async () => {
   const { proxyHome, claudeHome, codexHome } = tmpHomes();
   mkdirSync(claudeHome, { recursive: true });
   configureClaudeConfig(claudeHome, "direct", { quiet: true });
-  configureCodexConfig(codexHome, "proxy", { quiet: true, baseUrl: "http://127.0.0.1:4199/v1" });
+  configureCodexConfig(codexHome, {
+    mode: "proxy",
+    quiet: true,
+    baseUrl: "http://127.0.0.1:4199/v1",
+  });
   new Credential().store("gh-token", "ghp_default");
 
   const deps = tmpDeps(codexHome);

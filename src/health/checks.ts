@@ -3,6 +3,7 @@
 import { join } from "node:path";
 import { DIRECT_BASE_URL } from "../claude/config.ts";
 import { credentialSource } from "../copilot_api/credential.ts";
+import type { AuthProvider } from "../copilot_api/env_state.ts";
 import type { ProxyVersionStatus } from "../copilot_api/version.ts";
 import { formatDuration, SECONDS_PER_DAY } from "../utils/time.ts";
 import { filterByScope } from "./aggregate.ts";
@@ -64,7 +65,11 @@ function describeDirectGhAuth(a: CodexDirectAuthFacts): {
  * with its own provider/base-url header lines.
  */
 function directAuthVerdict(
-  f: { directUsesToken: boolean; provider?: string | null; directAuth: CodexDirectAuthFacts },
+  f: {
+    directUsesToken: boolean;
+    provider?: AuthProvider | null;
+    directAuth: CodexDirectAuthFacts;
+  },
   wiringOk: boolean,
   directFix: string,
 ): { status: "ok" | "warn"; authLine: string; fix?: string } {
@@ -563,7 +568,9 @@ export function checkCodex(f: CodexFacts): CheckResult {
       envKeyInEnviron: f.envKeyInEnviron,
       tokenAvailable: f.tokenAvailable,
       directAuth: f.directAuth,
-      directUsesToken: f.directUsesToken,
+      // The store-aware "Direct needs no gh" verdict, under the key this JSON
+      // report has always used.
+      directUsesToken: f.directNeedsNoGh,
     },
   };
   // No config at the effective CODEX_HOME: the user hasn't wired Codex -- fine.
@@ -577,7 +584,11 @@ export function checkCodex(f: CodexFacts): CheckResult {
   if (f.providerMode === "direct") {
     // A stored token means the resolver (`agent auth --get`) needs no `gh`; wiring
     // alone decides. Otherwise it falls back to `gh auth token`, which must work.
-    const verdict = directAuthVerdict(f, f.providerWired, "agent codex --direct");
+    const verdict = directAuthVerdict(
+      { directUsesToken: f.directNeedsNoGh, provider: f.provider, directAuth: f.directAuth },
+      f.providerWired,
+      "agent codex --direct",
+    );
     return {
       ...base,
       status: verdict.status,
@@ -803,19 +814,22 @@ function checkAgentLive(agent: "codex" | "claude", f: LiveProbeFacts): CheckResu
     label: meta.label,
     group: meta.group,
     scopes: meta.scopes,
-    value: { ran: f.ran, ok: f.ok, cli: f.cli },
+    // The JSON report's historical shape: ran/ok/cli, derived from the probe kind.
+    value: {
+      ran: f.kind !== "skipped",
+      ok: f.kind === "ok",
+      cli: f.kind === "skipped" ? null : f.cli,
+    },
   };
-  if (!f.ran) {
+  if (f.kind === "skipped") {
     return { ...base, status: "ok", detail: `skipped (${agent} CLI not installed)` };
   }
-  return f.ok
+  return f.kind === "ok"
     ? { ...base, status: "ok", detail: `read-only prompt responded via ${f.cli}` }
     : {
         ...base,
         status: "warn",
-        detail: `read-only prompt failed (${f.cli})${
-          f.detail ? `\n${f.detail}` : "; the configured backend did not answer"
-        }`,
+        detail: `read-only prompt failed (${f.cli})\n${f.detail}`,
         fix: `agent ${agent}`,
       };
 }

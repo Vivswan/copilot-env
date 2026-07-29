@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { portListening, runStart } from "../src/commands/start.ts";
+import { parseStartAction, portListening, runStart } from "../src/commands/start.ts";
 import { classifyDaemonPid } from "../src/copilot_api/process.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
@@ -59,7 +59,7 @@ test("start --record-event writes the lastEnsureAt heartbeat and never launches"
   tmpHome();
   expect(new CopilotEnvRunState().read().lastEnsureAt).toBeUndefined();
 
-  await runStart({ recordEvent: true });
+  await runStart({ kind: "record-event" });
 
   expect(typeof new CopilotEnvRunState().read().lastEnsureAt).toBe("number");
   expect(new CopilotEnvRunState().read().pid).toBeUndefined(); // no daemon was started
@@ -70,28 +70,69 @@ test("start --record-event --profile heartbeats ONLY the profile's run state", a
   // A real proxy profile always has run state before its resolver heartbeats (the
   // port reservation writes it); a profile WITHOUT state must not be fabricated.
   CopilotEnvRunState.forProfile(WORK).set({ port: 4242 });
-  await runStart({ recordEvent: true, profile: "work" });
+  await runStart({ kind: "record-event", profile: "work" });
 
   expect(typeof CopilotEnvRunState.forProfile(WORK).read().lastEnsureAt).toBe("number");
   expect(new CopilotEnvRunState().read().lastEnsureAt).toBeUndefined();
 });
 
+// parseStartAction is the CLI boundary: exactly one of check / record-event / launch.
+// A conflicting flag combination is rejected there, never resolved by dispatch order
+// (the old silent-if-order shape dropped `--record-event` when `--check` was present).
+test("parseStartAction rejects conflicting mode flags at the boundary", () => {
+  const CONFLICT =
+    "--check and --record-event are mutually exclusive and cannot combine with --dry-run/--port/--force";
+  expect(() => parseStartAction({ check: true, recordEvent: true })).toThrow(CONFLICT);
+  expect(() => parseStartAction({ check: true, force: true })).toThrow(CONFLICT);
+  expect(() => parseStartAction({ check: true, dryRun: true })).toThrow(CONFLICT);
+  expect(() => parseStartAction({ recordEvent: true, port: 4141 })).toThrow(CONFLICT);
+  expect(() => parseStartAction({ check: true, recordEvent: true, dryRun: true })).toThrow(
+    CONFLICT,
+  );
+});
+
+test("parseStartAction parses each valid flag shape into its single action", () => {
+  expect(parseStartAction({ check: true, profile: "work" })).toEqual({
+    kind: "check",
+    profile: "work",
+  });
+  expect(parseStartAction({ recordEvent: true })).toEqual({
+    kind: "record-event",
+    profile: undefined,
+  });
+  // A launch keeps its knobs; --dry-run with --force/--port stays a valid combination.
+  expect(parseStartAction({ dryRun: true, force: true, port: 4141 })).toEqual({
+    kind: "launch",
+    dryRun: true,
+    force: true,
+    port: 4141,
+    profile: undefined,
+  });
+  expect(parseStartAction({})).toEqual({
+    kind: "launch",
+    dryRun: false,
+    force: false,
+    port: undefined,
+    profile: undefined,
+  });
+});
+
 test("start --check --profile exits non-zero when that profile's daemon is not running", async () => {
   tmpHome();
-  await runStart({ check: true, profile: "work" });
+  await runStart({ kind: "check", profile: "work" });
   expect(process.exitCode).toBe(1);
 });
 
 test("start --check exits non-zero when no proxy is tracked/running", async () => {
   tmpHome();
-  await runStart({ check: true });
+  await runStart({ kind: "check" });
   expect(process.exitCode).toBe(1);
 });
 
 // portListening is the liveness half of proxyStatus's UP-path composition. proxyStatus's
 // OTHER half (classifyDaemonPid) checks the recorded pid's identity against a `copilot-api
 // ... start` command line, which the bun test runner's own pid cannot satisfy -- so the full
-// UP-path through runStart({check:true}) is not reproducible in-test without a real daemon (see
+// UP-path through runStart({kind:"check"}) is not reproducible in-test without a real daemon (see
 // the "stays DOWN" test below). These two tests pin the part that IS deterministic: the raw TCP
 // liveness probe against a real listening port vs. a dead one.
 test("portListening resolves true against a real listening loopback port", async () => {
@@ -130,7 +171,7 @@ test("start --check stays DOWN for a live pid + listening port that is not a cop
     expect(new CopilotEnvRunState().read().pid).toBe(process.pid);
     expect(new CopilotEnvRunState().read().port).toBe(port);
 
-    await runStart({ check: true });
+    await runStart({ kind: "check" });
     expect(process.exitCode).toBe(1);
   } finally {
     await closeServer(server);

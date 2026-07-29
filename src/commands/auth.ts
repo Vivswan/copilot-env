@@ -76,6 +76,74 @@ function asProvider(provider: string): AuthProvider {
   throw new Error(`--provider must be one of: ${AUTH_PROVIDERS.join(", ")} (got '${provider}')`);
 }
 
+/** Where a gh-token comes from: `--set <token>` (verbatim, no UI / no env), bare `--set`
+ *  (the GH token env vars only -- headless, never prompts), or no `--set` at all (prefer
+ *  the env vars, else prompt for it in a TTY). The token itself is read at acquisition
+ *  time (loginWithGhToken), so error timing is unchanged from the raw-flag days. */
+type GhTokenSource =
+  | { kind: "inline"; token: string }
+  | { kind: "env" }
+  | { kind: "env-or-prompt" };
+
+/** A credential acquisition with the provider already settled (interactively or by flag). */
+type ResolvedAcquisition =
+  | { kind: "provider"; provider: Exclude<AuthProvider, "gh-token"> }
+  | { kind: "gh-token"; source: GhTokenSource };
+
+/**
+ * How to acquire a credential, parsed ONCE from the raw `--provider`/`--set` flag pair by
+ * `parseAcquisition` (the shared boundary for `agent auth` and `agent profile --add`).
+ * A `--set` token can only ever travel inside the gh-token variant, so `authenticate`
+ * cannot receive one under a non-gh-token provider and silently drop it.
+ */
+export type CredentialAcquisition = { kind: "choose" } | ResolvedAcquisition;
+
+/** Map a settled provider name onto its acquisition: gh-token logs in via the
+ *  env-else-prompt token flow; copilot/gh-cli carry the provider itself. */
+function acquisitionForProvider(provider: AuthProvider): ResolvedAcquisition {
+  return provider === "gh-token"
+    ? { kind: "gh-token", source: { kind: "env-or-prompt" } }
+    : { kind: "provider", provider };
+}
+
+/**
+ * Parse the raw `--provider [name]` / `--set [token]` flag pair into a
+ * CredentialAcquisition -- the ONE place the "--set implies gh-token (and rejects a
+ * conflicting provider)" rule lives, shared by `agent auth` and `agent profile --add`.
+ *
+ * The two commands intentionally differ on which error wins for `--set x --provider
+ * bogus`: `agent auth` validates the provider name first (so an unknown name gets the
+ * "--provider must be one of" error), while `agent profile --add` treats ANY non-gh-token
+ * string as the --set conflict (`setConflictWins`). Both keep their exact messages.
+ */
+export function parseAcquisition(
+  provider: string | undefined,
+  set: string | boolean | undefined,
+  opts: { setConflictWins?: boolean } = {},
+): CredentialAcquisition {
+  if (set !== undefined) {
+    const isGhToken =
+      provider === undefined ||
+      (opts.setConflictWins
+        ? provider.trim().toLowerCase() === "gh-token"
+        : asProvider(provider) === "gh-token");
+    if (!isGhToken) {
+      throw new Error("--set only applies to `--provider gh-token`");
+    }
+    // Commander's `--set [token]` never produces `false` today, but a future
+    // negatable flag must not silently turn into "read the env".
+    if (set === false) {
+      throw new Error("`--set` requires a token value");
+    }
+    return {
+      kind: "gh-token",
+      source: typeof set === "string" ? { kind: "inline", token: set } : { kind: "env" },
+    };
+  }
+  if (provider === undefined) return { kind: "choose" };
+  return acquisitionForProvider(asProvider(provider));
+}
+
 /** Interactive provider picker for bare `agent auth`. Errors out without a TTY. */
 async function chooseProvider(): Promise<AuthProvider> {
   if (!process.stdin.isTTY) {
@@ -206,18 +274,15 @@ async function promptForGhToken(): Promise<string> {
 }
 
 /**
- * `gh-token`: store a token.
- *   - `--set <token>` : the value verbatim (no UI / no env).
- *   - `--set` (bare)  : read $COPILOT_GITHUB_TOKEN/$GH_TOKEN/$GITHUB_TOKEN, error if none set (headless).
- *   - no `--set`      : prefer those env vars, else prompt for it in a TTY.
+ * `gh-token`: store a token, from wherever `source` says it comes:
+ *   - inline (`--set <token>`) : the value verbatim (no UI / no env).
+ *   - env (bare `--set`)       : read $COPILOT_GITHUB_TOKEN/$GH_TOKEN/$GITHUB_TOKEN, error if none set (headless).
+ *   - env-or-prompt (no `--set`): prefer those env vars, else prompt for it in a TTY.
  */
-async function loginWithGhToken(
-  cred: Credential,
-  setValue: string | boolean | undefined,
-): Promise<void> {
+async function loginWithGhToken(cred: Credential, source: GhTokenSource): Promise<void> {
   let token: string;
   let fromEnv = true;
-  if (setValue === undefined) {
+  if (source.kind === "env-or-prompt") {
     // Interactive / no-`--set` path: prefer the environment, but when no token var is
     // set, prompt for the token instead of erroring out.
     const envToken = ghTokenFromEnv();
@@ -229,12 +294,8 @@ async function loginWithGhToken(
     }
   } else {
     // `--set <token>` (verbatim) or `--set` bare (env-only, headless): never prompts.
-    // setValue is non-undefined here, so tokenFromSetFlag only returns null for the
-    // literal `false` (which a boolean flag never produces) -- prove it rather than cast.
-    const setToken = tokenFromSetFlag(setValue);
-    if (setToken === null) throw new Error("`--set` requires a token value");
-    token = setToken;
-    fromEnv = typeof setValue !== "string";
+    token = tokenFromSetFlag(source.kind === "inline" ? source.token : true);
+    fromEnv = source.kind !== "inline";
   }
   cred.store("gh-token", token);
   logger.success(
@@ -256,28 +317,28 @@ function loginWithGhCli(cred: Credential): void {
 }
 
 /**
- * Authenticate: pick the provider (explicit `--provider`, else interactive
- * choice), acquire + record the credential into `profile`'s slot. `setValue` is
- * the `--set [token]` value for gh-token (verbatim string, or true/undefined =>
- * env). Does NOT configure the agents -- that is `agent init` / `agent profile`'s
- * job (`agent profile --add` reuses this to attach a profile's own credential).
- * Throws on failure.
+ * Authenticate: settle the provider (a parsed acquisition, or the interactive choice
+ * for `choose`), acquire + record the credential into `profile`'s slot. Does NOT
+ * configure the agents -- that is `agent init` / `agent profile`'s job (`agent profile
+ * --add` reuses this to attach a profile's own credential). Throws on failure.
  */
 export async function authenticate(
-  providerArg: string | undefined,
-  setValue: string | boolean | undefined,
+  acquisition: CredentialAcquisition,
   profile: Profile,
 ): Promise<AuthProvider> {
-  const provider = providerArg !== undefined ? asProvider(providerArg) : await chooseProvider();
+  const resolved =
+    acquisition.kind === "choose" ? acquisitionForProvider(await chooseProvider()) : acquisition;
   const cred = new Credential(undefined, profile);
-  if (provider === "copilot") {
+  if (resolved.kind === "gh-token") {
+    await loginWithGhToken(cred, resolved.source);
+    return "gh-token";
+  }
+  if (resolved.provider === "copilot") {
     loginWithCopilot(cred);
-  } else if (provider === "gh-token") {
-    await loginWithGhToken(cred, setValue);
   } else {
     loginWithGhCli(cred);
   }
-  return provider;
+  return resolved.provider;
 }
 
 // --- sub-actions ------------------------------------------------------------
@@ -439,7 +500,7 @@ export async function ensureAuthenticated(profile: Profile = null): Promise<void
       ? "  Not authenticated yet - let's log in to GitHub Copilot."
       : `  ${profileLabel(profile)} is not authenticated yet - let's log in to GitHub Copilot.`,
   );
-  await authenticate(undefined, undefined, profile);
+  await authenticate({ kind: "choose" }, profile);
 }
 
 /**
@@ -491,18 +552,16 @@ export async function runAuth(args: AuthArgs, catalogDeps?: CodexCatalogDeps): P
     return;
   }
 
-  // `--set` is the non-interactive gh-token path: it implies `--provider gh-token`
-  // (and rejects a conflicting provider). Bare `agent auth` (no --provider, no --set)
-  // is idempotent only when the recorded provider STILL RESOLVES: if so, report it
-  // and how to change it; otherwise run the auth flow (prompt) -- covering both "no
-  // provider yet" and "provider chosen but broken (e.g. gh-cli after gh logout)".
-  // `gh` is never silently used without the `gh-cli` choice, and `agent auth --del`
-  // clears the provider so the next run starts fresh. An explicit `--provider` always runs.
-  if (args.set !== undefined) {
-    if (args.provider !== undefined && asProvider(args.provider) !== "gh-token") {
-      throw new Error("--set only applies to `--provider gh-token`");
-    }
-  } else if (args.provider === undefined) {
+  // `--set` is the non-interactive gh-token path: parseAcquisition makes it imply
+  // `--provider gh-token` (and rejects a conflicting provider). Bare `agent auth`
+  // (no --provider, no --set) is idempotent only when the recorded provider STILL
+  // RESOLVES: if so, report it and how to change it; otherwise run the auth flow
+  // (prompt) -- covering both "no provider yet" and "provider chosen but broken
+  // (e.g. gh-cli after gh logout)". `gh` is never silently used without the `gh-cli`
+  // choice, and `agent auth --del` clears the provider so the next run starts fresh.
+  // An explicit `--provider` always runs.
+  const acquisition = parseAcquisition(args.provider, args.set);
+  if (acquisition.kind === "choose") {
     const { provider, resolves } = new Credential(undefined, profile).status();
     if (provider !== null && resolves) {
       if (profile === null) {
@@ -522,11 +581,7 @@ export async function runAuth(args: AuthArgs, catalogDeps?: CodexCatalogDeps): P
     }
   }
 
-  const provider = await authenticate(
-    args.set !== undefined ? "gh-token" : args.provider,
-    args.set,
-    profile,
-  );
+  const provider = await authenticate(acquisition, profile);
   logger.success(
     profile === null
       ? `Authenticated (${provider}). Run \`agent init\` to configure Codex and Claude.`

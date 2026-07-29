@@ -174,7 +174,11 @@ export function ghTokenFromEnv(env: NodeJS.ProcessEnv = process.env): string | n
  * (`true`) reads the GH_TOKEN_ENV_VARS in order, so the secret stays out of argv /
  * shell history; a string value is used verbatim (trimmed); `undefined`/`false`
  * => `null` (not requested). Throws when a token was requested but none resolved.
+ * The narrow overload proves that a definite request (string | true) always yields
+ * a token or throws -- callers holding one never handle a null.
  */
+export function tokenFromSetFlag(flag: string | true): string;
+export function tokenFromSetFlag(flag: string | boolean | undefined): string | null;
 export function tokenFromSetFlag(flag: string | boolean | undefined): string | null {
   // undefined/false = not requested (false should never come from a boolean flag,
   // but treat it as absence rather than the literal token "false").

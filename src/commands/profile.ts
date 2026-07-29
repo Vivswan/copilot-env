@@ -31,8 +31,8 @@ import { type ProfileName, parseProfileName, profileLabel } from "../copilot_api
 import { cyan, gray, green, yellow } from "../utils/ansi.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import type { RequestedMode } from "../utils/provider_mode.ts";
-import { authenticate } from "./auth.ts";
-import { proxyStatus } from "./start.ts";
+import { authenticate, parseAcquisition } from "./auth.ts";
+import { type ProxyStatus, proxyStatus } from "./start.ts";
 import { stopTrackedProxy } from "./stop.ts";
 
 // Narration to stderr so `--settings-for`'s stdout stays a clean machine-readable path.
@@ -79,11 +79,11 @@ async function wireBothAgents(name: ProfileName, mode: ProfileMode, quiet: boole
     failures.push(`Claude: ${e instanceof Error ? e.message : String(e)}`);
   }
   try {
-    const options =
+    const request =
       mode === "proxy"
-        ? { profile: name, quiet, baseUrl: openaiBaseUrl(String(reserveProfilePort(name))) }
-        : { profile: name, quiet, directIntegrationId };
-    configureCodexConfig(effectiveCodexHome(), mode, options);
+        ? { mode, profile: name, quiet, baseUrl: openaiBaseUrl(String(reserveProfilePort(name))) }
+        : { mode, profile: name, quiet, directIntegrationId };
+    configureCodexConfig(effectiveCodexHome(), request);
   } catch (e) {
     failures.push(`Codex: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -122,12 +122,10 @@ async function resolveAndPersistDirectIdentity(name: ProfileName): Promise<strin
  */
 async function runAdd(name: ProfileName, args: ProfileArgs): Promise<void> {
   // Same conflict contract as `agent auth`: `--set` IS the gh-token path, so an
-  // explicit different provider must error, never be silently coerced.
-  if (args.set !== undefined && args.provider !== undefined) {
-    if (args.provider.trim().toLowerCase() !== "gh-token") {
-      throw new Error("--set only applies to `--provider gh-token`");
-    }
-  }
+  // explicit different provider must error, never be silently coerced. Here the
+  // --set conflict wins even over a bogus provider name (setConflictWins) -- the
+  // two commands intentionally report that combination differently.
+  const acquisition = parseAcquisition(args.provider, args.set, { setConflictWins: true });
   const previous = storedMode(name);
   const mode: ProfileMode | null = args.mode === "auto" ? previous : args.mode;
   if (mode === null) {
@@ -139,8 +137,8 @@ async function runAdd(name: ProfileName, args: ProfileArgs): Promise<void> {
   // The profile's OWN credential (never the default's): reuse a resolving slot,
   // acquire otherwise. Explicit --provider/--set always (re)provisions.
   const cred = new Credential(undefined, name);
-  if (args.provider !== undefined || args.set !== undefined || !cred.isAuthenticated()) {
-    await authenticate(args.set !== undefined ? "gh-token" : args.provider, args.set, name);
+  if (acquisition.kind !== "choose" || !cred.isAuthenticated()) {
+    await authenticate(acquisition, name);
   } else {
     logger.log(`  Reusing ${profileLabel(name)}'s existing credential (${cred.provider()}).`);
   }
@@ -223,7 +221,7 @@ export interface ProfileListRow {
   name: string;
   provider: string | null;
   mode: ProfileMode | null;
-  daemon: { up: boolean; port?: number } | null;
+  daemon: ProxyStatus | null;
 }
 
 /**
@@ -259,9 +257,7 @@ export function renderProfileTable(rows: ProfileListRow[]): string {
       r.daemon === null
         ? gray("-")
         : r.daemon.up
-          ? // A tracked-but-portless daemon is not expected, but the type allows
-            // it; never render a literal "port undefined".
-            green(r.daemon.port === undefined ? "up" : `up (port ${r.daemon.port})`)
+          ? green(`up (port ${r.daemon.port})`)
           : gray("down");
     const cells = [
       `     ${cyan(r.name.padEnd(nameWidth))}`,
@@ -288,11 +284,7 @@ async function runList(): Promise<void> {
   const rows: ProfileListRow[] = await Promise.all(
     names.map(async (name): Promise<ProfileListRow> => {
       const slot = state.readProfileSlot(name);
-      let daemon: ProfileListRow["daemon"] = null;
-      if (slot.mode === "proxy") {
-        const { up, port } = await proxyStatus(name);
-        daemon = { up, port };
-      }
+      const daemon = slot.mode === "proxy" ? await proxyStatus(name) : null;
       return { name, provider: slot.authProvider, mode: slot.mode, daemon };
     }),
   );

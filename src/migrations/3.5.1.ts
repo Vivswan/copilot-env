@@ -75,7 +75,8 @@ export const migration: Migration = {
     }
     if (codexDirect) {
       try {
-        configureCodexConfig(effectiveCodexHome(), "direct", {
+        configureCodexConfig(effectiveCodexHome(), {
+          mode: "direct",
           quiet: true,
           directIntegrationId: integrationId,
         });

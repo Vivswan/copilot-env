@@ -480,6 +480,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
     tokenAvailable: true,
     directAuth: { command: "/bin/gh", authenticated: true },
     directUsesToken: false,
+    directNeedsNoGh: false,
     provider: "gh-cli",
   };
   // No config at all -> ok (user never wired Codex).
@@ -711,6 +712,7 @@ test("direct + stored token reports ok with gh absent (no gh requirement)", () =
     tokenAvailable: false,
     directAuth: { command: null, authenticated: false },
     directUsesToken: true,
+    directNeedsNoGh: true,
   };
   const codexRes = checkCodex(codexToken);
   expect(codexRes.status).toBe("ok");
@@ -780,19 +782,17 @@ test("checkAuth: neither stored token nor gh reports warn with the agent auth fi
 // --- live (--live) checks ---------------------------------------------------
 
 test("checkCodexLive/checkClaudeLive: ok responds, fail warns, missing skips", () => {
-  expect(checkCodexLive({ ran: true, ok: true, cli: "/bin/codex" }).status).toBe("ok");
-  const codexFail = checkCodexLive({ ran: true, ok: false, cli: "/bin/codex" });
+  expect(checkCodexLive({ kind: "ok", cli: "/bin/codex" }).status).toBe("ok");
+  const codexFail = checkCodexLive({ kind: "failed", cli: "/bin/codex", detail: "exit 1" });
   expect(codexFail.status).toBe("warn");
   expect(codexFail.fix).toBe("agent codex");
-  const codexSkip = checkCodexLive({ ran: false, ok: false, cli: null });
+  const codexSkip = checkCodexLive({ kind: "skipped" });
   expect(codexSkip.status).toBe("ok");
   expect(codexSkip.detail).toContain("skipped");
 
-  // When the probe captured output, the full error is surfaced verbatim (no
-  // generic "did not answer" placeholder).
+  // The captured output is surfaced verbatim (a failed probe ALWAYS carries it).
   const codexFailWithDetail = checkCodexLive({
-    ran: true,
-    ok: false,
+    kind: "failed",
     cli: "/bin/codex",
     detail: '{"type":"turn.failed","error":{"message":"401 Unauthorized"}}',
   });
@@ -800,26 +800,25 @@ test("checkCodexLive/checkClaudeLive: ok responds, fail warns, missing skips", (
   expect(codexFailWithDetail.detail).toContain("401 Unauthorized");
   expect(codexFailWithDetail.detail).not.toContain("did not answer");
 
-  expect(checkClaudeLive({ ran: true, ok: true, cli: "/bin/claude" }).status).toBe("ok");
-  const claudeFail = checkClaudeLive({ ran: true, ok: false, cli: "/bin/claude" });
+  expect(checkClaudeLive({ kind: "ok", cli: "/bin/claude" }).status).toBe("ok");
+  const claudeFail = checkClaudeLive({ kind: "failed", cli: "/bin/claude", detail: "exit 1" });
   expect(claudeFail.status).toBe("warn");
   expect(claudeFail.fix).toBe("agent claude");
   // Claude surfaces the full captured error too (symmetric with codex).
   const claudeFailWithDetail = checkClaudeLive({
-    ran: true,
-    ok: false,
+    kind: "failed",
     cli: "/bin/claude",
     detail: "API Error: 401 invalid x-api-key",
   });
   expect(claudeFailWithDetail.detail).toContain("401 invalid x-api-key");
   expect(claudeFailWithDetail.detail).not.toContain("did not answer");
-  expect(checkClaudeLive({ ran: false, ok: false, cli: null }).status).toBe("ok");
+  expect(checkClaudeLive({ kind: "skipped" }).status).toBe("ok");
 });
 
 test("evaluateAll(full) includes the live checks only when their facts are present", () => {
   const facts: HealthFacts = {
-    codexLive: { ran: true, ok: true, cli: "/bin/codex" },
-    claudeLive: { ran: true, ok: false, cli: "/bin/claude" },
+    codexLive: { kind: "ok", cli: "/bin/codex" },
+    claudeLive: { kind: "failed", cli: "/bin/claude", detail: "exit 1" },
   };
   const ids = evaluateAll("full", facts).map((r) => r.id);
   expect(ids).toContain("codex.live");
@@ -1000,6 +999,7 @@ test("evaluateAll(codex) yields only the Codex wiring check", () => {
       tokenAvailable: false,
       directAuth: { command: null, authenticated: false },
       directUsesToken: false,
+      directNeedsNoGh: false,
     },
     codexHost: { supported: false, hostHome: "/h/.codex/hosts/box", exists: false, active: false },
   };
@@ -1036,6 +1036,7 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       tokenAvailable: false,
       directAuth: { command: null, authenticated: false },
       directUsesToken: false,
+      directNeedsNoGh: false,
     },
     codexHost: { supported: false, hostHome: "/h/.codex/hosts/box", exists: false, active: false },
     claude: {

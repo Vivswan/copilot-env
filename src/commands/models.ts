@@ -6,8 +6,7 @@
 // auto-picks -- the proxy when it is up, Direct otherwise. `--json` emits a
 // machine-readable `{source, models}` object instead of the table.
 import { consola } from "consola";
-import { type CatalogSource, fetchRawModels } from "../copilot_api/catalog.ts";
-import { copilotApiResolvePort } from "../copilot_api/port.ts";
+import { fetchRawModels } from "../copilot_api/catalog.ts";
 import { bold, cyan, gray } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
@@ -158,41 +157,46 @@ export function renderModelTable(models: ModelListEntry[]): string {
   return lines.join("\n");
 }
 
+/** The resolved catalog road: Direct, or the running proxy with the port its
+ *  liveness was just confirmed on (a proxy source ALWAYS carries that port). */
+type ResolvedSource = { source: "direct" } | { source: "proxy"; port: number };
+
 /**
  * Resolve which catalog to read (and, for the proxy, the port its liveness was
  * just confirmed on). A forced mode wins; on "auto", the proxy is preferred
  * when it is genuinely up (so the listing reflects what the proxy-wired agents
  * actually see), else Direct.
  */
-async function resolveSource(
-  mode: RequestedMode,
-): Promise<{ source: CatalogSource; port?: number }> {
+async function resolveSource(mode: RequestedMode): Promise<ResolvedSource> {
   if (mode === "direct") {
     return { source: "direct" };
   }
-  const { up, port } = await proxyStatus();
+  const status = await proxyStatus();
   if (mode === "proxy") {
-    if (!up) {
+    if (!status.up) {
       throw new Error("the local proxy is not running (run `agent start`, or use --direct)");
     }
-    return { source: "proxy", port };
+    return { source: "proxy", port: status.port };
   }
-  return up ? { source: "proxy", port } : { source: "direct" };
+  return status.up ? { source: "proxy", port: status.port } : { source: "direct" };
 }
 
-function sourceLabel(source: CatalogSource, port?: number): string {
-  return source === "proxy"
-    ? `the local proxy (port ${port ?? copilotApiResolvePort()})`
+function sourceLabel(resolved: ResolvedSource): string {
+  return resolved.source === "proxy"
+    ? `the local proxy (port ${resolved.port})`
     : "GitHub Copilot Direct";
 }
 
 /** `models`: fetch the live catalog and print it as a table (or `--json`). */
 export async function runModels(args: ModelsArgs): Promise<void> {
-  const { source, port } = await resolveSource(args.mode);
-  const label = sourceLabel(source, port);
+  const resolved = await resolveSource(args.mode);
+  const { source } = resolved;
+  const label = sourceLabel(resolved);
   let models: ModelListEntry[];
   try {
-    models = parseModelList(await fetchRawModels(source, { port }));
+    models = parseModelList(
+      await fetchRawModels(source, resolved.source === "proxy" ? { port: resolved.port } : {}),
+    );
   } catch (e) {
     const hint =
       source === "proxy" ? "check `agent health` (or use --direct)" : "see `agent auth --check`";

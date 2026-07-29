@@ -159,22 +159,28 @@ export interface CodexDirectAuthFacts {
 
 /**
  * Result of a `--live` end-to-end prompt against an agent CLI's CONFIGURED home.
- * `ran` is false when the CLI isn't installed (the check is skipped, not failed).
+ * Skipped when the CLI isn't installed (not a failure); a probe that RAN always
+ * names the resolved CLI, and a failure always carries the captured reason + a
+ * tail of the real CLI output -- a skipped-yet-ok result is unrepresentable.
  */
-export interface LiveProbeFacts {
-  ran: boolean;
-  ok: boolean;
-  cli: string | null;
-  /** On failure (`ok: false`): the captured reason + a tail of the real CLI output. */
-  detail?: string;
-}
+export type LiveProbeFacts =
+  | { kind: "skipped" }
+  | { kind: "ok"; cli: string }
+  | { kind: "failed"; cli: string; detail: string };
 
 /** Codex wiring facts: the home being inspected plus the wiring contract status. */
 export type CodexFacts = CodexWiringStatus & {
   home: string;
   directAuth: CodexDirectAuthFacts;
   /** Recorded auth provider -- lets the check frame a non-gh-cli credential miss. */
-  provider?: string | null;
+  provider?: AuthProvider | null;
+  /**
+   * Direct mode only: the managed resolver (`agent auth --get`) needs no `gh` login --
+   * the wiring execs it AND the store classifies the credential as a stored token.
+   * Distinct from the wiring's own `directUsesToken` (a pure CONFIG fact: the direct
+   * table carries the managed auth.command); computed by directAuthFor from the store.
+   */
+  directNeedsNoGh: boolean;
 };
 
 /** Claude wiring facts: the home + settings.json contract + gh-auth (for direct). */
@@ -183,7 +189,7 @@ export type ClaudeFacts = ClaudeWiringStatus & {
   settingsPath: string;
   directAuth: CodexDirectAuthFacts;
   /** Recorded auth provider -- lets the check frame a non-gh-cli credential miss. */
-  provider?: string | null;
+  provider?: AuthProvider | null;
   /**
    * Direct mode only: true when a GitHub token is provisioned in the store, so the
    * resolver (`agent auth --get`) needs no `gh` login. Always false outside direct.
@@ -235,7 +241,7 @@ export interface AuthFacts {
   storedToken: boolean;
   ghAuthenticated: boolean;
   /** The recorded auth provider (`copilot` | `gh-cli` | `gh-token`), or null. */
-  provider: string | null;
+  provider: AuthProvider | null;
   /** Named profiles: name -> recorded provider + mode + baked direct identity (never tokens). */
   profiles: Record<
     string,
@@ -278,7 +284,7 @@ export interface ProbeDeps {
   /** True when a GitHub token is provisioned in the store (Direct needs no gh then). */
   storedTokenPresent(): boolean;
   /** The recorded auth provider (`copilot` | `gh-cli` | `gh-token`), or null. */
-  authProvider(): string | null;
+  authProvider(): AuthProvider | null;
   /** Named profiles: name -> recorded provider + mode + baked direct identity (never tokens). */
   authProfiles(): Record<
     string,
@@ -394,7 +400,7 @@ function runLiveCli(
   homeEnvVar: string,
 ): Promise<LiveProbeFacts> {
   const resolved = resolveCommand(cli);
-  if (resolved === null) return Promise.resolve({ ran: false, ok: false, cli: null });
+  if (resolved === null) return Promise.resolve({ kind: "skipped" });
   const ghPath = resolveCommand("gh");
   return new Promise((resolve) => {
     const s = cliSpawn(resolved, args);
@@ -425,19 +431,17 @@ function runLiveCli(
     });
     child.on("error", (e: Error) =>
       resolve({
-        ran: true,
-        ok: false,
+        kind: "failed",
         cli: resolved,
         detail: formatLiveFailure(null, null, e.message, out, err),
       }),
     );
     child.on("close", (code, signal) => {
       if (code === 0) {
-        resolve({ ran: true, ok: true, cli: resolved });
+        resolve({ kind: "ok", cli: resolved });
       } else {
         resolve({
-          ran: true,
-          ok: false,
+          kind: "failed",
           cli: resolved,
           detail: formatLiveFailure(code, signal, undefined, out, err),
         });
@@ -564,6 +568,7 @@ export function evalCodex(
   expectedPort: number,
   envKeyInEnviron: boolean,
   directAuth: CodexDirectAuthFacts = { command: null, authenticated: false },
+  directNeedsNoGh = false,
   // The caller (gatherFacts) already inspected the wiring to gate the gh probe;
   // accept it to avoid a second parse. Tests call without it and parse internally.
   wiring: CodexWiringStatus = inspectCodexWiring(
@@ -576,6 +581,7 @@ export function evalCodex(
   return {
     home,
     directAuth,
+    directNeedsNoGh,
     ...wiring,
   };
 }
@@ -740,6 +746,9 @@ export async function gatherFacts(
         const envText = deps.readFileSafe(join(home, ".env"));
         const wiring = inspectCodexWiring(configToml, envText, port, deps.codexTokenInEnviron());
         const { directAuth, noGhNeeded } = await directAuthFor(wiring.directUsesToken);
+        // The wiring's `directUsesToken` stays a pure CONFIG fact; the store-aware
+        // "Direct needs no gh" verdict travels on its own field (`directNeedsNoGh`,
+        // the meaning checkCodex consumes).
         const codexFacts = evalCodex(
           home,
           configToml,
@@ -747,12 +756,10 @@ export async function gatherFacts(
           port,
           deps.codexTokenInEnviron(),
           directAuth,
+          noGhNeeded,
           wiring,
         );
-        // Re-scope `directUsesToken` from the wiring's config meaning ("the direct
-        // table carries the managed auth.command") to the store-aware "Direct needs
-        // no gh" -- the meaning checkCodex consumes.
-        facts.codex = { ...codexFacts, directUsesToken: noGhNeeded, provider: deps.authProvider() };
+        facts.codex = { ...codexFacts, provider: deps.authProvider() };
       })(),
     );
   }

@@ -496,7 +496,7 @@ export function syncDefaultWebSearchWiring(claudeHome = resolveClaudeHome()): vo
  * credential (named profiles never fall back to the default one). Throws on an
  * unwritable home / malformed settings / unresolvable proxy token.
  */
-/** Options for configureClaudeConfig (mirrors ConfigureCodexConfigOptions). */
+/** Options for configureClaudeConfig (mirrors the Codex writer's common knobs). */
 export interface ConfigureClaudeConfigOptions {
   /** Suppress the "config written" info line (used by the temp-config probe). */
   quiet?: boolean;

@@ -91,20 +91,31 @@ export interface CodexConfigArgs {
   mode: RequestedMode;
 }
 
-interface ConfigureCodexConfigOptions {
-  baseUrl?: string;
+/** The mode-dependent half of a Codex config write: direct carries the (optional)
+ *  probed client-identity header, proxy ALWAYS carries a base URL -- a proxy write
+ *  without one is unrepresentable, so nothing downstream re-checks for it. */
+type CodexModeRequest =
+  | {
+      mode: "direct";
+      /** Direct mode: the probed `Copilot-Integration-Id` to bake, or null to send none. */
+      directIntegrationId?: string | null;
+    }
+  | { mode: "proxy"; baseUrl: string };
+
+/** The mode-independent knobs of a Codex config write. */
+interface CodexWriteCommon {
   codexExecVersion?: string | null;
   /** Suppress the "config written" info line (used by the temp-config probe). */
   quiet?: boolean;
   /** Wire a NAMED profile's tables instead of the default selection. */
   profile?: Profile;
-  /** Direct mode: the probed `Copilot-Integration-Id` to bake, or null to send none. */
-  directIntegrationId?: string | null;
 }
 
-interface ProxyConfigOptions {
-  baseUrl: string;
-}
+/** One managed Codex config write: the mode variant plus the common knobs (spelled as a
+ *  top-level union so the discriminant narrows at every consumer). */
+export type CodexWriteRequest =
+  | (Extract<CodexModeRequest, { mode: "direct" }> & CodexWriteCommon)
+  | (Extract<CodexModeRequest, { mode: "proxy" }> & CodexWriteCommon);
 
 // === config.toml management ===
 //
@@ -213,16 +224,13 @@ function managedProxyProvider(baseUrl: string, profile: Profile = null) {
 }
 
 function managedProviderForMode(
-  mode: ManagedAgentMode,
-  proxyOptions: ProxyConfigOptions | null,
+  request: CodexModeRequest,
   codexExecVersion?: string | null,
   profile: Profile = null,
-  directIntegrationId?: string | null,
 ) {
-  if (mode === "direct")
-    return managedDirectProvider(codexExecVersion, profile, directIntegrationId);
-  if (proxyOptions === null) throw new Error("proxy options are required for proxy mode");
-  return managedProxyProvider(proxyOptions.baseUrl, profile);
+  if (request.mode === "direct")
+    return managedDirectProvider(codexExecVersion, profile, request.directIntegrationId);
+  return managedProxyProvider(request.baseUrl, profile);
 }
 
 // Every key either managed provider table sets, plus the legacy `env_key`
@@ -460,24 +468,27 @@ function removeEnvKey(envFile: string, key: string): void {
   }
 }
 
-function validateProxyOptions(options: ConfigureCodexConfigOptions): ProxyConfigOptions {
-  if (!options.baseUrl) {
+/** Parse step for the proxy variant: reject an empty or malformed base URL before
+ *  anything is written, returning the validated variant the provider factory consumes. */
+function validateProxyOptions(request: { baseUrl: string }): CodexModeRequest {
+  if (!request.baseUrl) {
     throw new Error("base_url not provided for the Codex proxy config");
   }
-  if (!/^[A-Za-z0-9:/._-]+$/.test(options.baseUrl)) {
-    throw new Error(`base_url contains invalid characters: ${options.baseUrl}`);
+  if (!/^[A-Za-z0-9:/._-]+$/.test(request.baseUrl)) {
+    throw new Error(`base_url contains invalid characters: ${request.baseUrl}`);
   }
-  return { baseUrl: options.baseUrl };
+  return { mode: "proxy", baseUrl: request.baseUrl };
 }
 
 /**
  * Write the managed `config.toml` at `codexHome` for the given (already-resolved)
- * `mode`, and scrub the legacy baked `COPILOT_ENV_GH_TOKEN` from `.env`. Neither
- * mode bakes a credential -- both resolve it at fetch time via `auth.command`.
+ * write request (mode + its mode-dependent fields), and scrub the legacy baked
+ * `COPILOT_ENV_GH_TOKEN` from `.env`. Neither mode bakes a credential -- both resolve
+ * it at fetch time via `auth.command`.
  *
  * DEFAULT profile: selects `copilot-env` via the top-level `model_provider` and owns the
  * top-level managed keys (web_search, catalog reference). NAMED profile
- * (`options.profile`): writes ONLY `[model_providers.copilot-env-<name>]` plus the native
+ * (`request.profile`): writes ONLY `[model_providers.copilot-env-<name>]` plus the native
  * `[profiles.<name>]` selector -- the top-level default selection is never touched, so
  * `codex --profile <name>` and plain `codex` coexist. Throws when the write cannot
  * proceed (unusable proxy options, an uncreatable config directory, an unparseable
@@ -485,13 +496,15 @@ function validateProxyOptions(options: ConfigureCodexConfigOptions): ProxyConfig
  */
 export function configureCodexConfig(
   codexHome: string | null | undefined,
-  mode: ManagedAgentMode,
-  options: ConfigureCodexConfigOptions = {},
+  request: CodexWriteRequest,
 ): void {
   codexHome = codexHome || defaultCodexHome();
-  const profile = options.profile ?? null;
+  const profile = request.profile ?? null;
   const providerId = codexProviderId(profile);
-  const proxyOptions = mode === "proxy" ? validateProxyOptions(options) : null;
+  // Parse the proxy variant up front (the union already guarantees a base URL exists;
+  // this rejects an empty/malformed one) so nothing below sees an unvalidated URL.
+  const modeRequest: CodexModeRequest =
+    request.mode === "proxy" ? validateProxyOptions(request) : request;
 
   try {
     fs.mkdirSync(codexHome, { recursive: true });
@@ -529,7 +542,7 @@ export function configureCodexConfig(
     // write never creates -- an unknown provider reference is a Codex startup error.
     delete doc.model_provider;
   }
-  if (mode === "proxy") {
+  if (request.mode === "proxy") {
     // The proxy listens on loopback (127.0.0.1). Codex's native sandbox blocks loopback +
     // outbound for its sandboxed subprocesses (including the auth.command) in "offline" mode, so
     // the proxy-token resolver's liveness probe is refused and auth fails with exit 1. Enabling
@@ -574,13 +587,7 @@ export function configureCodexConfig(
   );
   providers[providerId] = {
     ...userKeys,
-    ...managedProviderForMode(
-      mode,
-      proxyOptions,
-      options.codexExecVersion,
-      profile,
-      options.directIntegrationId,
-    ),
+    ...managedProviderForMode(modeRequest, request.codexExecVersion, profile),
   };
   doc.model_providers = providers;
 
@@ -594,7 +601,7 @@ export function configureCodexConfig(
   }
 
   fs.writeFileSync(hostConfig, stringify(doc));
-  if (!options.quiet) {
+  if (!request.quiet) {
     logger.log(
       `  ✓ Codex config written → ${hostConfig}` +
         `${profile === null ? "" : ` (${profileLabel(profile)}; launch with \`codex --profile ${profile}\`)`}`,
@@ -623,19 +630,19 @@ export async function applyCodexConfig(
   catalogDeps?: CodexCatalogDeps,
   profile: Profile = null,
 ): Promise<void> {
-  let options: ConfigureCodexConfigOptions = { profile };
+  let request: CodexWriteRequest;
 
   if (mode === "proxy") {
     // The key is resolved at request time by the `auth.command` (the shared proxy-token
     // script), so we only need the local proxy base URL here -- reserving the addressed
     // profile's stable port (this is a write path; read-only checks peek without recording).
     const port = profile === null ? copilotApiResolvePort() : String(reserveProfilePort(profile));
-    options = { profile, baseUrl: openaiBaseUrl(port) };
+    request = { mode, profile, baseUrl: openaiBaseUrl(port) };
   } else {
     // Direct: bake the client identity this credential is accepted under (probe, or the
     // `integration-id` config pin). Throws with the real reason when nothing works, so a
     // dead direct credential fails the wiring instead of writing a config that 400s.
-    options.directIntegrationId = await probeDirectIntegrationId(profile);
+    request = { mode, profile, directIntegrationId: await probeDirectIntegrationId(profile) };
   }
 
   // Seed the patched model catalog (best-effort, unthrottled) BEFORE the config
@@ -644,7 +651,7 @@ export async function applyCodexConfig(
   // to the default credential -- named-profile writes never touch it.
   if (profile === null) await generateCodexModelCatalog(mode, catalogDeps);
 
-  configureCodexConfig(codexHome, mode, options);
+  configureCodexConfig(codexHome, request);
 
   // When the catalog is disabled the write above only stripped the key in THIS
   // home; the sync also deletes the generated file and clears the throttle
@@ -991,7 +998,7 @@ export function detectCodexDirect(deps?: DirectProbeDeps): boolean {
   return probeDirectWorks(
     CODEX_PROBE,
     (tmpHome) => {
-      configureCodexConfig(tmpHome, "direct", { quiet: true });
+      configureCodexConfig(tmpHome, { mode: "direct", quiet: true });
     },
     deps,
   );

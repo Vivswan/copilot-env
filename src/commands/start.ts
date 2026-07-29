@@ -132,7 +132,11 @@ export function usePatPassthrough(opts: {
   return isPatToken(opts.token) || opts.token.startsWith("gho_");
 }
 
-export interface StartArgs {
+/** Raw `agent start` flag values, exactly as Commander hands them over. Parsed ONCE by
+ *  `parseStartAction` at the CLI boundary into a StartAction -- runStart never dispatches
+ *  on these directly, so a conflicting combination is rejected instead of resolved by
+ *  if-order. */
+export interface StartFlags {
   dryRun?: boolean;
   /** Pin the proxy to this port instead of auto-resolving (fails if busy). */
   port?: number;
@@ -163,15 +167,52 @@ export interface StartArgs {
   profile?: string;
 }
 
+/**
+ * What ONE `agent start` invocation does -- exactly one of the liveness check, the
+ * heartbeat record, or a (possibly dry-run) launch, each addressing `profile`'s daemon.
+ * The launch-only knobs (`dryRun`/`force`/`port`) live on the launch variant alone, so
+ * `--check --record-event` (or a probe combined with a launch flag) is unrepresentable
+ * past the boundary parse and the dispatch order in runStart is not load-bearing.
+ */
+export type StartAction =
+  | { kind: "check"; profile?: string }
+  | { kind: "record-event"; profile?: string }
+  | { kind: "launch"; dryRun: boolean; force: boolean; port?: number; profile?: string };
+
+/** Parse the raw flags into a StartAction (the CLI boundary). `--check` and
+ *  `--record-event` are standalone probes -- the proxy resolver invokes each in its own
+ *  `agent start` call -- so combining them with each other or with a launch-only flag
+ *  is an error here, never a silently dropped heartbeat. */
+export function parseStartAction(flags: StartFlags): StartAction {
+  const probes = (flags.check ? 1 : 0) + (flags.recordEvent ? 1 : 0);
+  const launchFlags = Boolean(flags.dryRun) || Boolean(flags.force) || flags.port !== undefined;
+  if (probes > 1 || (probes === 1 && launchFlags)) {
+    throw new Error(
+      "--check and --record-event are mutually exclusive and cannot combine with --dry-run/--port/--force",
+    );
+  }
+  if (flags.check) return { kind: "check", profile: flags.profile };
+  if (flags.recordEvent) return { kind: "record-event", profile: flags.profile };
+  return {
+    kind: "launch",
+    dryRun: Boolean(flags.dryRun),
+    force: Boolean(flags.force),
+    port: flags.port,
+    profile: flags.profile,
+  };
+}
+
+/** The `proxyStatus` verdict: a proxy reported up ALWAYS carries the port it was probed
+ *  on, so no consumer ever has to handle a tracked-but-portless "up" daemon. */
+export type ProxyStatus = { up: false } | { up: true; port: number };
+
 // Whether OUR proxy for `profile` is genuinely up (and on which recorded port): the tracked,
 // alive copilot-api pid AND the port it actually recorded both confirm it. Reading pid AND port
 // from the SAME run-state snapshot ties the probe to the daemon's real listening port -- so
 // a moved port (start chose a different one) or a stranger on the default port can't produce
 // a false result, and the returned port matches what was probed. Exported for the other
 // commands that need the same "is it up?" answer (`agent models` source auto-pick).
-export async function proxyStatus(
-  profile: Profile = null,
-): Promise<{ up: boolean; port?: number }> {
+export async function proxyStatus(profile: Profile = null): Promise<ProxyStatus> {
   const { pid, port } = CopilotEnvRunState.forProfile(profile).read();
   if (pid === undefined || !pidAlive(pid)) {
     return { up: false };
@@ -190,7 +231,7 @@ export async function proxyStatus(
   // Return the port actually probed (not the raw state field, which can be
   // absent): callers reuse it for follow-up requests, so probe and fetch must
   // name the same port.
-  return { up: await portListening(probePort), port: probePort };
+  return (await portListening(probePort)) ? { up: true, port: probePort } : { up: false };
 }
 
 // A raw TCP-connect liveness probe. It opens (and immediately closes) a loopback socket to
@@ -487,8 +528,8 @@ function assertProxyFloor(): void {
  * not a forced or explicitly-ported (re)launch. The caller still confirms the proxy is actually
  * up via `proxyStatus()` before short-circuiting.
  */
-function isIdempotentNoOp(args: StartArgs): boolean {
-  return !args.force && args.port === undefined && new CopilotEnvConfig().autoStartEnabled();
+function isIdempotentNoOp(action: { force: boolean; port?: number }): boolean {
+  return !action.force && action.port === undefined && new CopilotEnvConfig().autoStartEnabled();
 }
 
 /** Tracked daemon pids across the default and every profile's run state -- the set the
@@ -504,22 +545,22 @@ function trackedDaemonPids(): Set<number> {
 }
 
 /** `start`: launch copilot-api detached, wait for readiness, sync aliases. */
-export async function runStart(args: StartArgs): Promise<void> {
-  const profile: Profile = args.profile === undefined ? null : parseProfileName(args.profile);
-  if (args.check) {
+export async function runStart(action: StartAction): Promise<void> {
+  const profile: Profile = action.profile === undefined ? null : parseProfileName(action.profile);
+  if (action.kind === "check") {
     // "Is the proxy up?" probe -- no launch. The exit code is the contract; every machine
     // caller (the proxy resolver + cl/co/cx launchers) discards all output and reads only
     // it. The status line is purely for a human running `start --check` directly.
-    const { up, port } = await proxyStatus(profile);
-    if (up) {
-      consola.success(`proxy is running${port !== undefined ? ` on port ${port}` : ""}`);
+    const status = await proxyStatus(profile);
+    if (status.up) {
+      consola.success(`proxy is running on port ${status.port}`);
     } else {
       consola.info("proxy is not running");
     }
-    process.exitCode = up ? 0 : 1;
+    process.exitCode = status.up ? 0 : 1;
     return;
   }
-  if (args.recordEvent) {
+  if (action.kind === "record-event") {
     // Record an activity heartbeat for the idle watchdog and return -- no launch. The
     // proxy resolver calls this on each token fetch so an open agent stays "active".
     // setIfExists: a typo'd `--profile <name>` must not fabricate a phantom profile home.
@@ -532,14 +573,14 @@ export async function runStart(args: StartArgs): Promise<void> {
   const logFile = paths.logFile;
   const state = CopilotEnvRunState.forProfile(profile);
 
-  if (args.dryRun) {
-    if (isIdempotentNoOp(args) && (await proxyStatus(profile)).up) {
+  if (action.dryRun) {
+    if (isIdempotentNoOp(action) && (await proxyStatus(profile)).up) {
       consola.info(
         "DRY RUN: proxy already running (managed lifecycle); would leave it up. --force forces one.",
       );
       return;
     }
-    const port = await resolveStartPort(args.port, false, profile, false);
+    const port = await resolveStartPort(action.port, false, profile, false);
     const statePid = state.read().pid;
     const trackedPid = statePid !== undefined && pidAlive(statePid) ? statePid : null;
     const keep = trackedDaemonPids();
@@ -587,13 +628,11 @@ export async function runStart(args: StartArgs): Promise<void> {
   // Every human-facing follow-up command must address THIS daemon.
   const profileFlag = profile === null ? "" : ` --profile ${profile}`;
   try {
-    if (isIdempotentNoOp(args)) {
-      const { up, port: livePort } = await proxyStatus(profile);
-      if (up) {
+    if (isIdempotentNoOp(action)) {
+      const status = await proxyStatus(profile);
+      if (status.up) {
         state.set({ lastEnsureAt: Date.now() });
-        consola.success(
-          `Proxy already running${livePort !== undefined ? ` on port ${livePort}` : ""} - leaving it up.`,
-        );
+        consola.success(`Proxy already running on port ${status.port} - leaving it up.`);
         consola.info(
           `Run \`agent start${profileFlag} --force\` to launch a fresh daemon (e.g. after a credential or config change).`,
         );
@@ -652,7 +691,7 @@ export async function runStart(args: StartArgs): Promise<void> {
 
     await sleep(1000);
 
-    let port = await resolveStartPort(args.port, true, profile, true);
+    let port = await resolveStartPort(action.port, true, profile, true);
 
     fs.writeFileSync(logFile, "");
     const daemonEnv: Record<string, string> = { COPILOT_API_SQLITE_DB_PATH: paths.sqliteDb };
@@ -749,13 +788,13 @@ export async function runStart(args: StartArgs): Promise<void> {
         // `strict-port` steers the DEFAULT daemon only (same exemption as resolveStartPort):
         // a named profile's reservation is soft, so a bind race retries on another port.
         const strictPort = profile === null && new CopilotEnvConfig().read().strictPort === true;
-        if (args.port !== undefined || strictPort) {
+        if (action.port !== undefined || strictPort) {
           // A pinned port -- or any port under strict-port -- that loses the race fails rather
           // than silently moving to a different port.
           printLogTail(logFile, 20);
           throw new Error(
             `port ${port} was taken by another process just before launch` +
-              `${strictPort && args.port === undefined ? " (strict-port is on, so no auto-increment)" : ""}. See ${logFile}`,
+              `${strictPort && action.port === undefined ? " (strict-port is on, so no auto-increment)" : ""}. See ${logFile}`,
           );
         }
         consola.warn(

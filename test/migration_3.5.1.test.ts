@@ -58,7 +58,7 @@ function isolateDirect(token: string): { claudeHome: string; codexHome: string }
   new Credential().store("gh-token", token);
   // Pre-3.5.2 wiring: direct, with NO directIntegrationId baked.
   configureClaudeConfig(claudeHome, "direct", { quiet: true });
-  configureCodexConfig(codexHome, "direct", { quiet: true, codexExecVersion: "0.139.0" });
+  configureCodexConfig(codexHome, { mode: "direct", quiet: true, codexExecVersion: "0.139.0" });
   return { claudeHome, codexHome };
 }
 

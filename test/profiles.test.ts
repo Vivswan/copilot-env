@@ -309,11 +309,11 @@ test("a Codex profile writes [profiles.<name>] + its provider table, leaving the
   const state = new CopilotEnvState();
   new Credential(state, WORK).store("gh-token", "ghp_work");
 
-  configureCodexConfig(codexHome, "direct", { quiet: true });
+  configureCodexConfig(codexHome, { mode: "direct", quiet: true });
   const before = readToml(join(codexHome, "config.toml"));
   expect(before.model_provider).toBe("copilot-env");
 
-  configureCodexConfig(codexHome, "direct", { quiet: true, profile: WORK });
+  configureCodexConfig(codexHome, { mode: "direct", quiet: true, profile: WORK });
   const doc = readToml(join(codexHome, "config.toml"));
   expect(doc.model_provider).toBe("copilot-env"); // untouched
   const profiles = doc.profiles as Record<string, Record<string, unknown>>;
@@ -331,7 +331,8 @@ test("a Codex profile writes [profiles.<name>] + its provider table, leaving the
 test("a Codex profile write on a FRESH config leaves no dangling default model_provider", () => {
   tmpProxyHome();
   const codexHome = tmpCodexHome();
-  configureCodexConfig(codexHome, "proxy", {
+  configureCodexConfig(codexHome, {
+    mode: "proxy",
     quiet: true,
     profile: FAST,
     baseUrl: `http://127.0.0.1:${copilotApiResolvePort(FAST)}/v1`,
@@ -350,7 +351,7 @@ test("a Codex profile write on an EMPTY config file also leaves no dangling mode
   const codexHome = tmpCodexHome();
   mkdirSync(codexHome, { recursive: true });
   writeFileSync(join(codexHome, "config.toml"), "   \n");
-  configureCodexConfig(codexHome, "direct", { quiet: true, profile: FAST });
+  configureCodexConfig(codexHome, { mode: "direct", quiet: true, profile: FAST });
   const doc = readToml(join(codexHome, "config.toml"));
   expect(doc.model_provider).toBeUndefined();
 });
@@ -364,7 +365,8 @@ test("profile --sync refreshes wiring from the STORE mode and never touches mode
   const port = copilotApiResolvePort(FAST);
   // Seed a deliberately stale codex table; leave the top-level provider unset
   // (the --mobile pairing state) to prove sync never touches it.
-  configureCodexConfig(codexHome, "proxy", {
+  configureCodexConfig(codexHome, {
+    mode: "proxy",
     quiet: true,
     profile: FAST,
     baseUrl: "http://127.0.0.1:1/v1",
@@ -405,7 +407,6 @@ test("renderProfileTable aligns columns under a header and flags incomplete slot
   const table = renderProfileTable([
     { name: "fast", provider: "gh-cli", mode: "proxy", daemon: { up: true, port: 4142 } },
     { name: "idle", provider: "gh-cli", mode: "proxy", daemon: { up: false } },
-    { name: "warm", provider: "gh-cli", mode: "proxy", daemon: { up: true } },
     { name: "work", provider: "gh-token", mode: "direct", daemon: null },
     { name: "broken", provider: null, mode: null, daemon: null },
   ]);
@@ -417,12 +418,10 @@ test("renderProfileTable aligns columns under a header and flags incomplete slot
   expect(lines[0]).toBe("     NAME      MODE          PROVIDER         DAEMON");
   expect(lines[1]).toBe("     fast      proxy         gh-cli           up (port 4142)");
   expect(lines[2]).toBe("     idle      proxy         gh-cli           down");
-  // A tracked-but-portless daemon renders a bare "up", never "port undefined".
-  expect(lines[3]).toBe("     warm      proxy         gh-cli           up");
   // A direct profile has no daemon: "-", never a blank that reads as missing data.
-  expect(lines[4]).toBe("     work      direct        gh-token         -");
+  expect(lines[3]).toBe("     work      direct        gh-token         -");
   // Missing mode/credential surface as repairable gaps, not blanks.
-  expect(lines[5]).toBe("     broken    incomplete    no credential    -");
+  expect(lines[4]).toBe("     broken    incomplete    no credential    -");
 });
 
 test("profile --add wires both agents atomically; --del removes everything", async () => {
@@ -488,7 +487,7 @@ test("stop/record-event against a never-existing profile fabricate NOTHING", asy
   await runStop({ profile: "typo" });
   expect(process.exitCode).toBe(1);
   process.exitCode = 0;
-  await runStart({ recordEvent: true, profile: "typo" });
+  await runStart({ kind: "record-event", profile: "typo" });
   // Neither command may materialize a phantom profile home (profile --list,
   // stop --all, and the proxy float all enumerate profile homes).
   expect(existsSync(profileHome(TYPO))).toBe(false);

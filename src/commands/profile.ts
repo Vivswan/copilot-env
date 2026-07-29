@@ -83,9 +83,7 @@ async function wireBothAgents(name: string, mode: ProfileMode, quiet: boolean): 
       mode === "proxy"
         ? { profile: name, quiet, baseUrl: openaiBaseUrl(String(reserveProfilePort(name))) }
         : { profile: name, quiet, directIntegrationId };
-    if (configureCodexConfig(effectiveCodexHome(), mode, options) !== 0) {
-      failures.push("Codex: config write failed (see the logged warning above)");
-    }
+    configureCodexConfig(effectiveCodexHome(), mode, options);
   } catch (e) {
     failures.push(`Codex: ${e instanceof Error ? e.message : String(e)}`);
   }

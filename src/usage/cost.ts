@@ -22,7 +22,7 @@ import { discoverUsageDbs, mergeUsageReports, readUsage, type UsageReport } from
 const SOURCES_NOTE =
   "Note: merges three sources -- the proxy DBs (proxied traffic) plus Codex session logs and Claude transcripts (each agent's full traffic, Direct included). Traffic through the proxy appears twice, so totals can double count it; use --sources for per-source tables.\nDisclaimer: these numbers are approximate -- gathered from local logs and priced at public OpenRouter rates; actual billing may differ.";
 
-const EMPTY_REPORT: UsageReport = { byModel: new Map(), activeDays: 0, perDay: new Map() };
+const EMPTY_REPORT: UsageReport = { byModel: new Map(), perDay: new Map() };
 
 /** `cost`: aggregate per-host SQLite + Codex session usage and estimate spend. */
 export async function runCost(args: {
@@ -417,7 +417,8 @@ function printCostReport(
   pricing: Map<string, PricingTier>,
   opts: { title: string; sourceLabel: string; days: string | undefined },
 ): void {
-  const { byModel, activeDays } = report;
+  const { byModel } = report;
+  const activeDays = report.perDay.size;
   // Most expensive first; unpriced models sink to the bottom, ties by name.
   const models = [...byModel.keys()].sort((a, b) => {
     const costA = estimate.perModel[a]?.estimatedCostUsd ?? -1;
@@ -711,21 +712,21 @@ function buildSourceJson(
   pricing: Map<string, PricingTier>,
   opts: { perDay: boolean },
 ): Record<string, unknown> {
-  const div = report.activeDays > 0 ? report.activeDays : 1;
+  const activeDays = report.perDay.size;
+  const div = activeDays > 0 ? activeDays : 1;
   const dayMetrics = computeDayMetrics(report, pricing, estimate);
   const dayCosts = dayMetrics.map((d) => d.cost);
   const coverage = activeDayCoverage(report);
   return {
-    activeDays: report.activeDays,
+    activeDays,
     activeDaySpan: coverage.spanDays,
-    activeDayPercent: report.activeDays > 0 ? coverage.percent : null,
+    activeDayPercent: activeDays > 0 ? coverage.percent : null,
     usageByModel: Object.fromEntries(report.byModel),
     perModel: estimate.perModel,
     totalUsd: estimate.totalUsd,
     avgCostPerDayUsd:
-      report.activeDays > 0 ? Math.round((estimate.totalUsd / div) * 10_000) / 10_000 : null,
-    medianCostPerDayUsd:
-      report.activeDays > 0 ? Math.round(median(dayCosts) * 10_000) / 10_000 : null,
+      activeDays > 0 ? Math.round((estimate.totalUsd / div) * 10_000) / 10_000 : null,
+    medianCostPerDayUsd: activeDays > 0 ? Math.round(median(dayCosts) * 10_000) / 10_000 : null,
     ...(opts.perDay
       ? {
           perDay: [...dayMetrics]

@@ -95,8 +95,7 @@ test("enforces every managed field while preserving unknown user keys", () => {
   );
   writeFileSync(join(codexHome, ".env"), "OPENAI_API_KEY=user\nCOPILOT_ENV_GH_TOKEN=ghp_legacy\n");
 
-  const rc = configureCodexConfig(codexHome, "direct", { codexExecVersion: "0.139.0" });
-  expect(rc).toBe(0);
+  configureCodexConfig(codexHome, "direct", { codexExecVersion: "0.139.0" });
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(asRecord(doc.my_custom).keep).toBe("me");
@@ -148,11 +147,10 @@ test("direct bakes a probed Copilot-Integration-Id into http_headers when passed
   const codexHome = join(dir, ".codex");
   mkdirSync(codexHome, { recursive: true });
 
-  const rc = configureCodexConfig(codexHome, "direct", {
+  configureCodexConfig(codexHome, "direct", {
     codexExecVersion: "0.139.0",
     directIntegrationId: "copilot-developer-cli",
   });
-  expect(rc).toBe(0);
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   const headers = asRecord(asRecord(asRecord(doc.model_providers)["copilot-env"]).http_headers);
   expect(headers["Copilot-Integration-Id"]).toBe("copilot-developer-cli");
@@ -164,8 +162,7 @@ test("direct uses the launcher auth.command (no env_key, no token at rest), clas
   process.env.HOME = dir;
   const codexHome = join(dir, ".codex");
 
-  const rc = configureCodexConfig(codexHome, "direct", { codexExecVersion: "0.139.0" });
-  expect(rc).toBe(0);
+  configureCodexConfig(codexHome, "direct", { codexExecVersion: "0.139.0" });
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
@@ -246,10 +243,9 @@ test("proxy mode enforces every managed field while preserving unknown user keys
     ].join("\n"),
   );
 
-  const rc = configureCodexConfig(codexHome, "proxy", {
+  configureCodexConfig(codexHome, "proxy", {
     baseUrl: "http://localhost:4141/v1",
   });
-  expect(rc).toBe(0);
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   // Unknown user content survives, and our proxy is reselected as default.
@@ -338,7 +334,7 @@ test("proxy mode preserves the user's OPENAI_API_KEY but scrubs the copilot-env 
     ].join("\n"),
   );
 
-  expect(configureCodexConfig(codexHome, "proxy", { baseUrl: "http://localhost:4141/v1" })).toBe(0);
+  configureCodexConfig(codexHome, "proxy", { baseUrl: "http://localhost:4141/v1" });
 
   // The user's OPENAI_API_KEY lines survive; the copilot-env legacy token is removed.
   expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe(
@@ -357,8 +353,7 @@ test("writes the managed direct default config when no provider section exists",
   process.env.HOME = dir;
   const codexHome = join(dir, ".codex");
 
-  const rc = configureCodexConfig(codexHome, "direct", { codexExecVersion: "0.139.0" });
-  expect(rc).toBe(0);
+  configureCodexConfig(codexHome, "direct", { codexExecVersion: "0.139.0" });
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
@@ -447,7 +442,7 @@ test("toggling direct <-> proxy swaps the mode-specific keys on the shared table
   const codexHome = join(dir, ".codex");
 
   // Start direct: the table carries the managed auth (agent auth --get) + http_headers.
-  expect(configureCodexConfig(codexHome, "direct", { codexExecVersion: "0.139.0" })).toBe(0);
+  configureCodexConfig(codexHome, "direct", { codexExecVersion: "0.139.0" });
   let provider = asRecord(
     asRecord(asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8"))).model_providers)[
       "copilot-env"
@@ -459,11 +454,9 @@ test("toggling direct <-> proxy swaps the mode-specific keys on the shared table
   // Switch to proxy on the SAME table: the proxy auth (/bin/sh -c ensure + print)
   // replaces the direct auth, env_key stays absent, and direct-only http_headers is
   // scrubbed.
-  expect(
-    configureCodexConfig(codexHome, "proxy", {
-      baseUrl: "http://localhost:4141/v1",
-    }),
-  ).toBe(0);
+  configureCodexConfig(codexHome, "proxy", {
+    baseUrl: "http://localhost:4141/v1",
+  });
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
   provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
@@ -510,10 +503,11 @@ test("proxy mode rejects a base_url containing invalid characters", () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
   process.env.HOME = dir;
 
-  const rc = configureCodexConfig(join(dir, ".codex"), "proxy", {
-    baseUrl: "http://bad url/v1",
-  });
-  expect(rc).toBe(1);
+  expect(() =>
+    configureCodexConfig(join(dir, ".codex"), "proxy", {
+      baseUrl: "http://bad url/v1",
+    }),
+  ).toThrow("base_url contains invalid characters: http://bad url/v1");
 });
 
 test("model_catalog_json is written when enabled and the catalog file exists (both modes)", () => {
@@ -526,16 +520,14 @@ test("model_catalog_json is written when enabled and the catalog file exists (bo
   enableCatalog();
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
 
-  expect(configureCodexConfig(codexHome, "direct", { codexExecVersion: "0.144.0" })).toBe(0);
+  configureCodexConfig(codexHome, "direct", { codexExecVersion: "0.144.0" });
   let doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_catalog_json).toBe(catalogFile);
 
-  expect(
-    configureCodexConfig(codexHome, "proxy", {
-      baseUrl: "http://127.0.0.1:4141/v1",
-      codexExecVersion: "0.144.0",
-    }),
-  ).toBe(0);
+  configureCodexConfig(codexHome, "proxy", {
+    baseUrl: "http://127.0.0.1:4141/v1",
+    codexExecVersion: "0.144.0",
+  });
   doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_catalog_json).toBe(catalogFile);
 });
@@ -554,7 +546,7 @@ test("a stale model_catalog_json is scrubbed when the catalog file is absent", (
     ['model_catalog_json = "/nonexistent/codex-model-catalog.json"', ""].join("\n"),
   );
 
-  expect(configureCodexConfig(codexHome, "direct", { codexExecVersion: "0.144.0" })).toBe(0);
+  configureCodexConfig(codexHome, "direct", { codexExecVersion: "0.144.0" });
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_catalog_json).toBeUndefined();
 });
@@ -571,7 +563,7 @@ test("a corrupt or empty catalog file is scrubbed like a missing one", () => {
   // dangling path -- usability, not existence, gates the key.
   writeFileSync(catalogFile, "{ corrupt");
 
-  expect(configureCodexConfig(codexHome, "direct", { codexExecVersion: "0.144.0" })).toBe(0);
+  configureCodexConfig(codexHome, "direct", { codexExecVersion: "0.144.0" });
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_catalog_json).toBeUndefined();
 });
@@ -668,7 +660,7 @@ test("disabled: configureCodexConfig scrubs model_catalog_json even when the fil
   // basic string reads as escape sequences.
   writeFileSync(join(codexHome, "config.toml"), stringify({ "model_catalog_json": catalogFile }));
 
-  expect(configureCodexConfig(codexHome, "direct", { codexExecVersion: "0.144.0" })).toBe(0);
+  configureCodexConfig(codexHome, "direct", { codexExecVersion: "0.144.0" });
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_catalog_json).toBeUndefined();
 });

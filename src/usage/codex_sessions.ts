@@ -317,7 +317,7 @@ async function parseRolloutFile(
 
     let report = providers.get(provider);
     if (report === undefined) {
-      report = { byModel: new Map(), activeDays: 0, perDay: new Map() };
+      report = { byModel: new Map(), perDay: new Map() };
       providers.set(provider, report);
     }
     const buckets = tokenBuckets(last);
@@ -329,7 +329,6 @@ async function parseRolloutFile(
     if (day !== undefined) {
       addDayUsage(report.perDay, day, model, buckets, 1);
     }
-    report.activeDays = report.perDay.size;
   }
 
   if (sessionId !== undefined && ownHashes.size > 0) {

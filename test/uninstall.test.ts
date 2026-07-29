@@ -90,25 +90,21 @@ test("uninstall removes everything managed and preserves user config", async () 
       "\n",
     ),
   );
-  expect(
-    configureCodexConfig(codexHome, "proxy", { quiet: true, baseUrl: "http://127.0.0.1:4199/v1" }),
-  ).toBe(0);
+  configureCodexConfig(codexHome, "proxy", { quiet: true, baseUrl: "http://127.0.0.1:4199/v1" });
 
   // Default credential + a named direct profile (credential, mode, both agents, home).
   new Credential().store("gh-token", "ghp_default");
   new Credential(undefined, "work").store("gh-token", "ghp_work");
   new CopilotEnvState().setProfileMode("work", "direct");
   configureClaudeConfig(claudeHome, "direct", { quiet: true, profile: "work" });
-  expect(configureCodexConfig(codexHome, "direct", { quiet: true, profile: "work" })).toBe(0);
+  configureCodexConfig(codexHome, "direct", { quiet: true, profile: "work" });
   mkdirSync(profileHome("work"), { recursive: true });
 
   // A second Codex home (e.g. a farm home from when it was the effective one)
   // that carries BOTH default and profile wiring: the sweep must clean it too.
   const codexHome2 = join(dir, ".codex-farm");
-  expect(
-    configureCodexConfig(codexHome2, "proxy", { quiet: true, baseUrl: "http://127.0.0.1:4199/v1" }),
-  ).toBe(0);
-  expect(configureCodexConfig(codexHome2, "direct", { quiet: true, profile: "work" })).toBe(0);
+  configureCodexConfig(codexHome2, "proxy", { quiet: true, baseUrl: "http://127.0.0.1:4199/v1" });
+  configureCodexConfig(codexHome2, "direct", { quiet: true, profile: "work" });
 
   const deps = tmpDeps(codexHome);
   deps.codexHomes = [codexHome, codexHome2];
@@ -201,9 +197,7 @@ test("uninstall --dry-run changes nothing", async () => {
   const { proxyHome, claudeHome, codexHome } = tmpHomes();
   mkdirSync(claudeHome, { recursive: true });
   configureClaudeConfig(claudeHome, "direct", { quiet: true });
-  expect(
-    configureCodexConfig(codexHome, "proxy", { quiet: true, baseUrl: "http://127.0.0.1:4199/v1" }),
-  ).toBe(0);
+  configureCodexConfig(codexHome, "proxy", { quiet: true, baseUrl: "http://127.0.0.1:4199/v1" });
   new Credential().store("gh-token", "ghp_default");
 
   const deps = tmpDeps(codexHome);

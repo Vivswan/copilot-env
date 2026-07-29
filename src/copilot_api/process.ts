@@ -212,7 +212,7 @@ export function launchDaemon(
   muteProxyLogs?: boolean,
 ): number {
   /** Launch copilot-api as a detached daemon. Returns the PID. */
-  const env: Record<string, string> = { ...process.env } as Record<string, string>;
+  const env: NodeJS.ProcessEnv = { ...process.env };
   if (extraEnv) {
     Object.assign(env, extraEnv);
   }

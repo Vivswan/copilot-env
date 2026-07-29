@@ -28,10 +28,11 @@ import {
   probeDirectIntegrationId,
 } from "../codex/config.ts";
 import { errMessage } from "../utils/error.ts";
+import type { AgentProviderMode } from "../utils/provider_mode.ts";
 import type { Migration } from "./index.ts";
 
 /** The configured mode of an agent, treating any read error as "not ours to touch". */
-function safeMode(read: () => string): string {
+function safeMode(read: () => AgentProviderMode): AgentProviderMode {
   try {
     return read();
   } catch {

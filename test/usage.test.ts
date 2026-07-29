@@ -54,7 +54,7 @@ test("readUsage sums tokens per model and counts distinct active days", () => {
     events: 2,
   });
   expect(report.byModel.get("gpt-5.5")?.input).toBe(200);
-  expect(report.activeDays).toBe(2);
+  expect(report.perDay.size).toBe(2);
 });
 
 test("readUsage exposes a per-day, per-model breakdown that reconciles with byModel", () => {
@@ -64,9 +64,8 @@ test("readUsage exposes a per-day, per-model breakdown that reconciles with byMo
 
   const report = readUsage([path]);
 
-  // perDay keys are the distinct UTC days; size matches activeDays.
+  // perDay keys are the distinct UTC days.
   expect([...report.perDay.keys()].sort()).toEqual(["2026-06-01", "2026-06-02"]);
-  expect(report.perDay.size).toBe(report.activeDays);
 
   // 2026-06-01 carried both claude rows (100+100 input, 50+50 output, 0+10 cache read).
   expect(report.perDay.get("2026-06-01")?.get("claude-opus-4.8")).toEqual({
@@ -152,7 +151,7 @@ test("readUsage sums tokens by model and unions active days across two DBs", () 
   expect(report.byModel.get("gpt-5.5")?.input).toBe(200);
   expect(report.byModel.get("gemini-3.0")?.input).toBe(9);
   // Distinct days: 2026-06-01 (both DBs), 2026-06-02 (A), 2026-06-03 (B) = 3.
-  expect(report.activeDays).toBe(3);
+  expect(report.perDay.size).toBe(3);
 });
 
 test("readUsage sinceMs filters older rows from token totals and active days", () => {
@@ -168,7 +167,7 @@ test("readUsage sinceMs filters older rows from token totals and active days", (
   expect(report.byModel.get("gpt-5.5")?.input).toBe(200);
   expect(report.byModel.get("gpt-5.5")?.events).toBe(1);
   // Only 2026-06-02 survives the cutoff.
-  expect(report.activeDays).toBe(1);
+  expect(report.perDay.size).toBe(1);
 });
 
 test("readUsage skips a missing DB and still reports the readable ones", () => {
@@ -180,7 +179,7 @@ test("readUsage skips a missing DB and still reports the readable ones", () => {
   const report = readUsage([missing, good]);
 
   expect(report.byModel.get("gpt-5.5")?.input).toBe(200);
-  expect(report.activeDays).toBe(2);
+  expect(report.perDay.size).toBe(2);
 });
 
 test("readUsage skips a corrupt DB file without throwing", () => {
@@ -196,7 +195,7 @@ test("readUsage skips a corrupt DB file without throwing", () => {
   // The good DB still contributes its full totals; the corrupt one is dropped.
   expect(report.byModel.get("claude-opus-4.8")?.input).toBe(200);
   expect(report.byModel.get("gpt-5.5")?.input).toBe(200);
-  expect(report.activeDays).toBe(2);
+  expect(report.perDay.size).toBe(2);
 });
 
 test("readUsage on an all-corrupt set returns an empty report, no throw", () => {
@@ -207,7 +206,7 @@ test("readUsage on an all-corrupt set returns an empty report, no throw", () => 
   const report = readUsage([corrupt]);
 
   expect(report.byModel.size).toBe(0);
-  expect(report.activeDays).toBe(0);
+  expect(report.perDay.size).toBe(0);
 });
 
 test("discoverUsageDbs finds the legacy file plus per-host DBs", () => {

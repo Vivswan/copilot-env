@@ -49,12 +49,12 @@ interface UsageRow {
  *
  * `perDay` maps each distinct UTC calendar day (YYYY-MM-DD) to that day's
  * per-model token totals, unioned across every DB. `byModel` is the all-days
- * roll-up and `activeDays` is `perDay.size` -- both derived from the same rows,
- * kept as fields so callers don't recompute them.
+ * roll-up -- derived from the same rows, kept as a field so callers don't
+ * recompute it. The active-day count is `perDay.size`, always read from the
+ * map itself.
  */
 export interface UsageReport {
   byModel: Map<string, ModelUsage>;
-  activeDays: number;
   perDay: Map<string, Map<string, ModelUsage>>;
 }
 
@@ -161,7 +161,7 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
     cacheCreation: row.cacheCreation ?? 0,
   });
 
-  // One grouped query by (day, model); byModel and activeDays both derive from it, so we
+  // One grouped query by (day, model); byModel and perDay both derive from it, so we
   // never read the same rows twice.
   const QUERY = `SELECT substr(created_at_utc, 1, 10)     AS day,
                   model,
@@ -218,7 +218,7 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
     }
   }
 
-  return { byModel, activeDays: perDay.size, perDay };
+  return { byModel, perDay };
 }
 
 /** Sum several usage reports into one (models and days unioned). */
@@ -237,5 +237,5 @@ export function mergeUsageReports(reports: Iterable<UsageReport>): UsageReport {
       }
     }
   }
-  return { byModel, activeDays: perDay.size, perDay };
+  return { byModel, perDay };
 }

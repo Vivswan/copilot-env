@@ -91,7 +91,7 @@ test("readCodexSessions attributes turns to the model in effect and splits cache
   });
   // Days come from the per-line UTC timestamps, not the file's date path.
   expect([...(report?.perDay.keys() ?? [])].sort()).toEqual(["2026-06-01", "2026-06-02"]);
-  expect(report?.activeDays).toBe(2);
+  expect(report?.perDay.size).toBe(2);
 });
 
 test("readCodexSessions keys rows by the canonical model spelling", async () => {

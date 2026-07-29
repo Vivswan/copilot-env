@@ -65,7 +65,7 @@ test("readClaudeSessions maps the four usage buckets and buckets by UTC day", as
   expect(report.byModel.get("claude-fable-5")?.events).toBe(1);
   expect(report.byModel.get("claude-haiku-4.5")?.events).toBe(1);
   expect([...report.perDay.keys()].sort()).toEqual(["2026-06-01", "2026-06-02"]);
-  expect(report.activeDays).toBe(2);
+  expect(report.perDay.size).toBe(2);
 });
 
 test("readClaudeSessions books a streamed message at its final (max) usage snapshot", async () => {

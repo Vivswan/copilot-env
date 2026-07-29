@@ -8,7 +8,7 @@ function usage(partial: Partial<ModelUsage>): ModelUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, events: 0, ...partial };
 }
 
-/** A report with a per-day, per-model breakdown; byModel/activeDays derived. */
+/** A report with a per-day, per-model breakdown; byModel derived. */
 function makeReport(perDay: Record<string, Record<string, ModelUsage>>): UsageReport {
   const perDayMap = new Map<string, Map<string, ModelUsage>>();
   const byModel = new Map<string, ModelUsage>();
@@ -27,7 +27,7 @@ function makeReport(perDay: Record<string, Record<string, ModelUsage>>): UsageRe
     }
     perDayMap.set(day, dayMap);
   }
-  return { byModel, activeDays: perDayMap.size, perDay: perDayMap };
+  return { byModel, perDay: perDayMap };
 }
 
 test("median handles odd, even, and empty samples", () => {

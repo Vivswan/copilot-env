@@ -83,7 +83,7 @@ export async function readClaudeSessions(roots: string[], sinceMs?: number): Pro
     collectTranscriptFiles(root, 1, sinceMs, files);
   }
 
-  const report: UsageReport = { byModel: new Map(), activeDays: 0, perDay: new Map() };
+  const report: UsageReport = { byModel: new Map(), perDay: new Map() };
   // One map across ALL files: streaming repeats a message.id within a file
   // (with a GROWING output_tokens snapshot) and resume/fork copies it across
   // files. Each id books the running per-bucket max -- later occurrences add
@@ -244,7 +244,6 @@ async function parseTranscriptFile(
       if (day !== undefined) {
         addDayUsage(report.perDay, day, model, buckets, isNewMessage ? 1 : 0);
       }
-      report.activeDays = report.perDay.size;
     }
   } finally {
     rl.close();

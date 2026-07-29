@@ -302,11 +302,11 @@ test("a Codex profile writes [profiles.<name>] + its provider table, leaving the
   const state = new CopilotEnvState();
   new Credential(state, "work").store("gh-token", "ghp_work");
 
-  expect(configureCodexConfig(codexHome, "direct", { quiet: true })).toBe(0);
+  configureCodexConfig(codexHome, "direct", { quiet: true });
   const before = readToml(join(codexHome, "config.toml"));
   expect(before.model_provider).toBe("copilot-env");
 
-  expect(configureCodexConfig(codexHome, "direct", { quiet: true, profile: "work" })).toBe(0);
+  configureCodexConfig(codexHome, "direct", { quiet: true, profile: "work" });
   const doc = readToml(join(codexHome, "config.toml"));
   expect(doc.model_provider).toBe("copilot-env"); // untouched
   const profiles = doc.profiles as Record<string, Record<string, unknown>>;
@@ -324,13 +324,11 @@ test("a Codex profile writes [profiles.<name>] + its provider table, leaving the
 test("a Codex profile write on a FRESH config leaves no dangling default model_provider", () => {
   tmpProxyHome();
   const codexHome = tmpCodexHome();
-  expect(
-    configureCodexConfig(codexHome, "proxy", {
-      quiet: true,
-      profile: "fast",
-      baseUrl: `http://127.0.0.1:${copilotApiResolvePort("fast")}/v1`,
-    }),
-  ).toBe(0);
+  configureCodexConfig(codexHome, "proxy", {
+    quiet: true,
+    profile: "fast",
+    baseUrl: `http://127.0.0.1:${copilotApiResolvePort("fast")}/v1`,
+  });
   const doc = readToml(join(codexHome, "config.toml"));
   expect(doc.model_provider).toBeUndefined();
   const providers = doc.model_providers as Record<string, Record<string, unknown>>;
@@ -345,7 +343,7 @@ test("a Codex profile write on an EMPTY config file also leaves no dangling mode
   const codexHome = tmpCodexHome();
   mkdirSync(codexHome, { recursive: true });
   writeFileSync(join(codexHome, "config.toml"), "   \n");
-  expect(configureCodexConfig(codexHome, "direct", { quiet: true, profile: "fast" })).toBe(0);
+  configureCodexConfig(codexHome, "direct", { quiet: true, profile: "fast" });
   const doc = readToml(join(codexHome, "config.toml"));
   expect(doc.model_provider).toBeUndefined();
 });
@@ -359,13 +357,11 @@ test("profile --sync refreshes wiring from the STORE mode and never touches mode
   const port = copilotApiResolvePort("fast");
   // Seed a deliberately stale codex table; leave the top-level provider unset
   // (the --mobile pairing state) to prove sync never touches it.
-  expect(
-    configureCodexConfig(codexHome, "proxy", {
-      quiet: true,
-      profile: "fast",
-      baseUrl: "http://127.0.0.1:1/v1",
-    }),
-  ).toBe(0);
+  configureCodexConfig(codexHome, "proxy", {
+    quiet: true,
+    profile: "fast",
+    baseUrl: "http://127.0.0.1:1/v1",
+  });
   expect(readToml(join(codexHome, "config.toml")).model_provider).toBeUndefined();
 
   await runProfile({ sync: true, mode: "auto" });

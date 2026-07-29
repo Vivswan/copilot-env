@@ -25,12 +25,17 @@ import { verifyArchiveSha256OrRefuse, verifySourceArchiveEntry } from "./verify-
 // a release tree -- pruning it would silently drop the user's supply-chain pin. Everything
 // else under the checkout is release-tracked source, so the sync may prune it -- removing
 // files a new release dropped, plus OS junk.
-export const PRESERVE = new Set([".git", "node_modules", ".autoupdate", ".env"]);
+export const PRESERVE: ReadonlySet<string> = new Set([
+  ".git",
+  "node_modules",
+  ".autoupdate",
+  ".env",
+]);
 
 // A complete release tree contains these. node-tar warns-and-SKIPS unrecoverable
 // entries rather than failing, so we verify the extract before the destructive sync:
 // a partial tree must never be allowed to prune the live checkout.
-export const REQUIRED_FILES = ["package.json", "bun.lock", "bin/agent", "src/cli.ts"];
+export const REQUIRED_FILES = ["package.json", "bun.lock", "bin/agent", "src/cli.ts"] as const;
 
 // Doc files shipped as symlinks -> AGENTS.md. tar.exe and node-tar both fail-and-skip
 // symlinks on Windows without Developer Mode, so these may be absent after extraction;
@@ -70,7 +75,7 @@ const isRealDir = (p: string): boolean => {
 /** Make `dest` mirror `src` exactly: replace tracked files, recurse into dirs, and
  *  delete anything in `dest` not in `src` -- except `keep` names at the top level.
  *  Symlinks are copied verbatim (not dereferenced). */
-export function mirror(src: string, dest: string, keep: Set<string>): void {
+export function mirror(src: string, dest: string, keep: ReadonlySet<string>): void {
   const srcEntries = readdirSync(src, { withFileTypes: true });
   const srcNames = new Set(srcEntries.map((e) => e.name));
   for (const name of readdirSync(dest)) {

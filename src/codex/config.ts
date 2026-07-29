@@ -460,14 +460,12 @@ function removeEnvKey(envFile: string, key: string): void {
   }
 }
 
-function validateProxyOptions(options: ConfigureCodexConfigOptions): ProxyConfigOptions | null {
+function validateProxyOptions(options: ConfigureCodexConfigOptions): ProxyConfigOptions {
   if (!options.baseUrl) {
-    logger.warn("Warning: base_url not provided, skipping Codex config");
-    return null;
+    throw new Error("base_url not provided for the Codex proxy config");
   }
   if (!/^[A-Za-z0-9:/._-]+$/.test(options.baseUrl)) {
-    logger.error(`Error: base_url contains invalid characters: ${options.baseUrl}`);
-    return null;
+    throw new Error(`base_url contains invalid characters: ${options.baseUrl}`);
   }
   return { baseUrl: options.baseUrl };
 }
@@ -481,25 +479,24 @@ function validateProxyOptions(options: ConfigureCodexConfigOptions): ProxyConfig
  * top-level managed keys (web_search, catalog reference). NAMED profile
  * (`options.profile`): writes ONLY `[model_providers.copilot-env-<name>]` plus the native
  * `[profiles.<name>]` selector -- the top-level default selection is never touched, so
- * `codex --profile <name>` and plain `codex` coexist. Returns 0 on success. Exported for
- * unit testing.
+ * `codex --profile <name>` and plain `codex` coexist. Throws when the write cannot
+ * proceed (unusable proxy options, an uncreatable config directory, an unparseable
+ * existing config). Exported for unit testing.
  */
 export function configureCodexConfig(
   codexHome: string | null | undefined,
   mode: ManagedAgentMode,
   options: ConfigureCodexConfigOptions = {},
-): number {
+): void {
   codexHome = codexHome || defaultCodexHome();
   const profile = options.profile ?? null;
   const providerId = codexProviderId(profile);
   const proxyOptions = mode === "proxy" ? validateProxyOptions(options) : null;
-  if (mode === "proxy" && proxyOptions === null) return 1;
 
   try {
     fs.mkdirSync(codexHome, { recursive: true });
   } catch (e) {
-    logger.warn(`Warning: Could not create Codex config directory ${codexHome}: ${errMessage(e)}`);
-    return 1;
+    throw new Error(`could not create Codex config directory ${codexHome}: ${errMessage(e)}`);
   }
 
   const hostConfig = path.join(codexHome, "config.toml");
@@ -611,16 +608,14 @@ export function configureCodexConfig(
   // resolves via `auth.command` and carries no `env_key`). Removing it by name would destroy
   // the user's personal key on every write.
   removeEnvKey(path.join(codexHome, ".env"), DIRECT_ENV_KEY);
-
-  return 0;
 }
 
 /**
  * Resolve baseUrl/apiKey from the local proxy and write the Codex config at
- * `codexHome` for `profile` (null = the default selection). Pure config write -- the
- * caller persists CODEX_HOME to state. Shared by `runCodexConfig` and codex_host's
- * `runCodexHost`. Direct mode fetches the bearer at runtime via `agent auth --get`;
- * nothing is baked into the config.
+ * `codexHome` for `profile` (null = the default selection); throws with the cause
+ * when the write cannot proceed. The caller persists CODEX_HOME to state. Shared by
+ * `runCodexConfig` and codex_host's `runCodexHost`. Direct mode fetches the bearer
+ * at runtime via `agent auth --get`; nothing is baked into the config.
  */
 export async function applyCodexConfig(
   codexHome: string,
@@ -649,11 +644,7 @@ export async function applyCodexConfig(
   // to the default credential -- named-profile writes never touch it.
   if (profile === null) await generateCodexModelCatalog(mode, catalogDeps);
 
-  if (configureCodexConfig(codexHome, mode, options) !== 0) {
-    throw new Error(
-      `Codex config write failed for ${codexHome} (see the logged warning above for the cause)`,
-    );
-  }
+  configureCodexConfig(codexHome, mode, options);
 
   // When the catalog is disabled the write above only stripped the key in THIS
   // home; the sync also deletes the generated file and clears the throttle

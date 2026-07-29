@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import { consola } from "consola";
 import { pickAgedVersion } from "../utils/aged_version.ts";
+import { assertNever } from "../utils/assert.ts";
 import { childEnvWithPath, commandExists, resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
@@ -51,12 +52,21 @@ export interface ShellArgs {
   allHosts?: boolean;
 }
 
-/** Options for installing the optional agent CLIs (the `agent shell --clis` path). */
-export interface InstallClisOptions {
+/**
+ * Parsed intent for the `agent shell --clis` path: either verify prerequisites/CLIs
+ * only, or install with a cooldown and sudo policy. A union so the internal
+ * representation cannot carry the --no-sudo/--no-prereqs conflict runShell rejects
+ * at the flag boundary.
+ */
+export type CliSetup = { mode: "verify-only" } | CliInstall;
+
+type CliInstall = {
+  mode: "install";
+  /** Install npm releases aged >= N days (null = latest). */
   cooldown: number | null;
+  /** Avoid sudo/system package managers. */
   noSudo: boolean;
-  noPrereqs: boolean;
-}
+};
 
 function run(
   command: string,
@@ -174,15 +184,9 @@ function installNodeWindows(): void {
   refreshWindowsPath();
 }
 
-function ensureNpm(options: InstallClisOptions): boolean {
+function ensureNpm(options: CliInstall): boolean {
   const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
   if (commandExists(npmCommand)) return true;
-
-  if (options.noPrereqs) {
-    warnMissing(process.platform === "win32" ? "npm.cmd" : "node", "Node.js");
-    warnMissing(npmCommand, "npm");
-    return false;
-  }
 
   if (process.platform === "win32" && options.noSudo) {
     consola.warn(
@@ -280,7 +284,7 @@ function resolveAgedVersion(packageName: string, days: number): string {
   return version;
 }
 
-function installCli(cli: (typeof AGENT_CLIS)[number], options: InstallClisOptions): void {
+function installCli(cli: (typeof AGENT_CLIS)[number], options: CliInstall): void {
   if (commandExists(cli.command)) {
     consola.info(`${cli.name} already installed.`);
     return;
@@ -303,37 +307,43 @@ function installCli(cli: (typeof AGENT_CLIS)[number], options: InstallClisOption
 }
 
 /**
- * Install (or with `noPrereqs`, just verify) the optional agent CLIs -- the
+ * Install (or in verify-only mode, just verify) the optional agent CLIs -- the
  * `agent shell --clis` path. Best-effort: a missing/uninstallable toolchain warns
  * rather than throwing, so the surrounding `agent shell` run still wires the
  * integration. Does NOT wire the rc blocks -- `runShell` owns that ordering.
  */
-export function installAgentClis(options: InstallClisOptions): void {
-  if (options.noPrereqs) {
-    warnMissing(process.platform === "win32" ? "npm.cmd" : "node", "Node.js");
-    warnMissing(process.platform === "win32" ? "npm.cmd" : "npm", "npm");
-    for (const cli of AGENT_CLIS) warnMissing(cli.command, cli.name);
-    return;
-  }
-
-  if (!ensureNpm(options)) {
-    for (const cli of AGENT_CLIS) warnMissing(cli.command, cli.name);
-    return;
-  }
-
-  syncNpmGlobalBinToPath();
-  // Best-effort per CLI: a single package failing (npm error, unreachable registry, a
-  // rejected aged-version lookup) must NOT abort the whole run -- installCli/resolveAgedVersion
-  // throw, and an uncaught throw here would skip the remaining CLIs AND the shell-integration
-  // wiring runShell does after this. Warn and continue so the surrounding `agent shell` finishes.
-  for (const cli of AGENT_CLIS) {
-    try {
-      installCli(cli, options);
-    } catch (e) {
-      consola.warn(`Could not install ${cli.name} (${errMessage(e)}); continuing.`);
+export function installAgentClis(setup: CliSetup): void {
+  switch (setup.mode) {
+    case "verify-only": {
+      warnMissing(process.platform === "win32" ? "npm.cmd" : "node", "Node.js");
+      warnMissing(process.platform === "win32" ? "npm.cmd" : "npm", "npm");
+      for (const cli of AGENT_CLIS) warnMissing(cli.command, cli.name);
+      return;
     }
+    case "install": {
+      if (!ensureNpm(setup)) {
+        for (const cli of AGENT_CLIS) warnMissing(cli.command, cli.name);
+        return;
+      }
+
+      syncNpmGlobalBinToPath();
+      // Best-effort per CLI: a single package failing (npm error, unreachable registry, a
+      // rejected aged-version lookup) must NOT abort the whole run -- installCli/resolveAgedVersion
+      // throw, and an uncaught throw here would skip the remaining CLIs AND the shell-integration
+      // wiring runShell does after this. Warn and continue so the surrounding `agent shell` finishes.
+      for (const cli of AGENT_CLIS) {
+        try {
+          installCli(cli, setup);
+        } catch (e) {
+          consola.warn(`Could not install ${cli.name} (${errMessage(e)}); continuing.`);
+        }
+      }
+      syncNpmGlobalBinToPath();
+      return;
+    }
+    default:
+      assertNever(setup);
   }
-  syncNpmGlobalBinToPath();
 }
 
 /**
@@ -365,8 +375,11 @@ export function runShell(args: ShellArgs): void {
     assertNonNegativeDays(cooldown);
   }
 
-  // Opt-in CLI install (add path only).
-  if (clis) installAgentClis({ cooldown, noSudo, noPrereqs });
+  // Opt-in CLI install (add path only). The flag conflict was rejected above, so
+  // the parsed CliSetup carries either verify-only intent or the install knobs.
+  if (clis) {
+    installAgentClis(noPrereqs ? { mode: "verify-only" } : { mode: "install", cooldown, noSudo });
+  }
 
   // Wire / unwire the rc block(s).
   if (remove) {

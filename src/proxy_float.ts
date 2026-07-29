@@ -60,7 +60,6 @@ import { CopilotEnvConfig, type CopilotEnvConfigData } from "./copilot_api/env_c
 import { profileHomeNames } from "./copilot_api/paths.ts";
 import { copilotApiResolvePort } from "./copilot_api/port.ts";
 import {
-  assertProxyConfigBounds,
   installedProxyVersion,
   PROXY_PACKAGE_NAME,
   proxyVersionBoundsStatus,
@@ -360,7 +359,6 @@ export function floatProxy(
   spawnRunner: SpawnSyncRunner = spawnSync,
   nowMs: number = Date.now(),
 ): void {
-  assertProxyConfigBounds(config);
   const override = resolveProxyVersionOverride();
 
   // An exact pin bypasses the cooldown entirely, so resolve the cooldown window
@@ -439,7 +437,6 @@ export function proxyFloatVerifyStatus(
   const effectiveConfig = config ?? readProjectConfig(root);
   const effectiveMinimumReleaseAgeSeconds =
     minimumReleaseAgeSeconds ?? resolveMinimumReleaseAgeSeconds(root);
-  assertProxyConfigBounds(effectiveConfig);
 
   const target = resolveProxyTarget({
     "root": root,
@@ -615,66 +612,62 @@ export function bothAgentsWiredDirect(codexHome?: string, claudeHome?: string): 
 const DIRECT_ONLY_SKIP_MESSAGE =
   "proxy float skipped: Codex and Claude are both wired Direct; the local proxy is unused";
 
-function main(): void {
-  const root = PROJECT_ROOT;
-  const args = process.argv.slice(2);
+type ProxyFloatMode = "float" | "verify" | "assert";
 
-  if (
-    args.length > 1 ||
-    (args[0] !== undefined && !["--verify", "--assert-installed"].includes(args[0]))
-  ) {
-    logger.error("usage: bun src/proxy_float.ts [--verify | --assert-installed]");
-    process.exit(2);
+/** Parse argv into the one mode this invocation runs in; anything else is a usage error. */
+function parseMode(args: string[]): ProxyFloatMode {
+  if (args.length === 0) return "float";
+  if (args.length === 1) {
+    if (args[0] === "--verify") return "verify";
+    if (args[0] === "--assert-installed") return "assert";
   }
+  logger.error("usage: bun src/proxy_float.ts [--verify | --assert-installed]");
+  process.exit(2);
+}
 
-  // An explicit env pin is per-invocation intent, so it always forces the normal
-  // path; otherwise a Direct-only wiring makes every mode a no-op (the local
-  // proxy is unused). A stored `proxy-version` config pin does NOT force it: the
-  // config only matters once an agent is wired to the proxy again.
-  const envPinned = Boolean(process.env[PROXY_VERSION_ENV]?.trim());
+function mainAssertInstalled(root: string, envPinned: boolean): never {
+  if (!envPinned && bothAgentsWiredDirect()) {
+    console.log(DIRECT_ONLY_SKIP_MESSAGE);
+    process.exit(0);
+  }
+  try {
+    const status = proxyInstallAssertStatus(root, readProjectConfig(root));
+    if (status.ok) {
+      console.log(status.message);
+    } else {
+      console.error(`::error::${status.message}`);
+    }
+    process.exit(status.ok ? 0 : 1);
+  } catch (error) {
+    console.error(`::error::${error instanceof Error ? error.message : String(error)}`);
+    process.exit(1);
+  }
+}
 
-  if (args[0] === "--assert-installed") {
-    if (!envPinned && bothAgentsWiredDirect()) {
-      console.log(DIRECT_ONLY_SKIP_MESSAGE);
+function mainVerify(root: string, envPinned: boolean): never {
+  try {
+    // The freshness check still gates a real dependency install; only the
+    // proxy-target resolution (the npm metadata read) is skipped when Direct-only.
+    if (!envPinned && nodeModulesFresh(root) && bothAgentsWiredDirect()) {
+      logger.success(`up to date: ${DIRECT_ONLY_SKIP_MESSAGE}`);
       process.exit(0);
     }
-    try {
-      const status = proxyInstallAssertStatus(root, readProjectConfig(root));
-      if (status.ok) {
-        console.log(status.message);
-      } else {
-        console.error(`::error::${status.message}`);
-      }
-      process.exit(status.ok ? 0 : 1);
-    } catch (error) {
-      console.error(`::error::${error instanceof Error ? error.message : String(error)}`);
-      process.exit(1);
-    }
+    const config = readProjectConfig(root);
+    // Don't pre-resolve the cooldown: proxyFloatVerifyStatus resolves it
+    // internally AFTER its pin check, so a COPILOT_API_VERSION pin (which
+    // bypasses the cooldown) isn't blocked by a bad COPILOT_API_MIN_RELEASE_AGE.
+    const status = proxyFloatVerifyStatus(root, process.execPath, config);
+    status.upToDate ? logger.success(status.message) : logger.info(status.message);
+    process.exit(status.upToDate ? 0 : 1);
+  } catch (error) {
+    logger.warn(
+      `install needed: verify failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exit(1); // uncertain -> install
   }
+}
 
-  if (args[0] === "--verify") {
-    try {
-      // The freshness check still gates a real dependency install; only the
-      // proxy-target resolution (the npm metadata read) is skipped when Direct-only.
-      if (!envPinned && nodeModulesFresh(root) && bothAgentsWiredDirect()) {
-        logger.success(`up to date: ${DIRECT_ONLY_SKIP_MESSAGE}`);
-        process.exit(0);
-      }
-      const config = readProjectConfig(root);
-      // Don't pre-resolve the cooldown: proxyFloatVerifyStatus resolves it
-      // internally AFTER its pin check, so a COPILOT_API_VERSION pin (which
-      // bypasses the cooldown) isn't blocked by a bad COPILOT_API_MIN_RELEASE_AGE.
-      const status = proxyFloatVerifyStatus(root, process.execPath, config);
-      status.upToDate ? logger.success(status.message) : logger.info(status.message);
-      process.exit(status.upToDate ? 0 : 1);
-    } catch (error) {
-      logger.warn(
-        `install needed: verify failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-      process.exit(1); // uncertain -> install
-    }
-  }
-
+function mainFloat(root: string, envPinned: boolean): void {
   try {
     if (!envPinned && bothAgentsWiredDirect()) {
       logger.info(DIRECT_ONLY_SKIP_MESSAGE);
@@ -684,6 +677,31 @@ function main(): void {
     floatProxy(root, process.execPath, config);
   } catch (error) {
     logger.warn(`proxy float skipped: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function main(): void {
+  const root = PROJECT_ROOT;
+  const mode = parseMode(process.argv.slice(2));
+
+  // An explicit env pin is per-invocation intent, so it always forces the normal
+  // path; otherwise a Direct-only wiring makes every mode a no-op (the local
+  // proxy is unused). A stored `proxy-version` config pin does NOT force it: the
+  // config only matters once an agent is wired to the proxy again.
+  const envPinned = Boolean(process.env[PROXY_VERSION_ENV]?.trim());
+
+  switch (mode) {
+    case "assert":
+      mainAssertInstalled(root, envPinned);
+      break;
+    case "verify":
+      mainVerify(root, envPinned);
+      break;
+    case "float":
+      mainFloat(root, envPinned);
+      break;
+    default:
+      assertNever(mode);
   }
 }
 

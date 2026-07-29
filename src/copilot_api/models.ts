@@ -186,7 +186,7 @@ function newestGpt(catalog: CatalogModel[]): string | undefined {
     if (version === undefined) {
       continue;
     }
-    if (qualifier !== undefined && qualifier.split("-").some((t) => REDUCED_GPT_TIERS.has(t))) {
+    if (qualifier?.split("-").some((t) => REDUCED_GPT_TIERS.has(t))) {
       continue; // a reduced tier is never the flagship
     }
     const bare = qualifier === undefined;

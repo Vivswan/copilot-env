@@ -1,6 +1,7 @@
 // Parser for copilot-env.config proxy floor/ceiling settings.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { versionLessThan } from "./semver.ts";
 
 export const PROJECT_CONFIG_FILE = "copilot-env.config";
 
@@ -53,9 +54,20 @@ export function parseProjectConfig(content: string, source = PROJECT_CONFIG_FILE
     }
   }
 
+  const proxyMinVersion = requiredValue(raw, "PROXY_MIN_VERSION", source);
+  const proxyMaxVersion = optionalValue(raw.PROXY_MAX_VERSION);
+  // Reject an inverted window here at the parse boundary: this parser is the only
+  // PRODUCTION producer of a ProjectConfig, so consumers never see floor > ceiling
+  // (the type itself stays structural; tests build literals directly).
+  if (proxyMaxVersion !== null && versionLessThan(proxyMaxVersion, proxyMinVersion)) {
+    throw new Error(
+      `PROXY_MAX_VERSION (${proxyMaxVersion}) is below PROXY_MIN_VERSION (${proxyMinVersion})`,
+    );
+  }
+
   return {
-    "proxyMinVersion": requiredValue(raw, "PROXY_MIN_VERSION", source),
-    "proxyMaxVersion": optionalValue(raw.PROXY_MAX_VERSION),
+    "proxyMinVersion": proxyMinVersion,
+    "proxyMaxVersion": proxyMaxVersion,
   };
 }
 

@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  assertProxyConfigBounds,
   installedProxyVersion,
   proxyVersionBoundsStatus,
   proxyVersionFloorStatus,
@@ -89,14 +88,5 @@ describe("proxy version status", () => {
       "ok": true,
       "version": "1.10.30",
     });
-  });
-
-  test("rejects an inverted configured version window", () => {
-    expect(() =>
-      assertProxyConfigBounds({
-        "proxyMinVersion": "1.10.30",
-        "proxyMaxVersion": "1.10.0",
-      }),
-    ).toThrow("PROXY_MAX_VERSION (1.10.0) is below PROXY_MIN_VERSION (1.10.30)");
   });
 });

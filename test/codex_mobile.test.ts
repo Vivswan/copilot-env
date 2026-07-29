@@ -47,7 +47,7 @@ test("stripModelProvider removes model_provider, forces requires_openai_auth=fal
   expect(asRecord(providers["copilot-env"]).requires_openai_auth).toBe(false);
   // The provider tables themselves survive.
   expect(asRecord(providers["copilot-env"]).base_url).toBe("http://localhost:4141/v1");
-  expect(asRecord(providers["other"]).base_url).toBe("https://api.githubcopilot.com");
+  expect(asRecord(providers.other).base_url).toBe("https://api.githubcopilot.com");
 });
 
 test("restoreModelProvider puts the provider back and round-trips through strip", () => {

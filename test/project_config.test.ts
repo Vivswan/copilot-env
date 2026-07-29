@@ -48,4 +48,10 @@ PROXY_MAX_VERSION=null
       "PROXY_MIN_VERSION is required",
     );
   });
+
+  test("rejects an inverted configured version window", () => {
+    expect(() =>
+      parseProjectConfig("PROXY_MIN_VERSION=1.10.30\nPROXY_MAX_VERSION=1.10.0", "fixture"),
+    ).toThrow("PROXY_MAX_VERSION (1.10.0) is below PROXY_MIN_VERSION (1.10.30)");
+  });
 });

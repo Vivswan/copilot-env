@@ -23,17 +23,6 @@ export function installedProxyVersion(root: string = PROJECT_ROOT): string | nul
   return readPackageVersion(packagePath);
 }
 
-export function assertProxyConfigBounds(config: ProjectConfig): void {
-  if (
-    config.proxyMaxVersion !== null &&
-    versionLessThan(config.proxyMaxVersion, config.proxyMinVersion)
-  ) {
-    throw new Error(
-      `PROXY_MAX_VERSION (${config.proxyMaxVersion}) is below PROXY_MIN_VERSION (${config.proxyMinVersion})`,
-    );
-  }
-}
-
 export function proxyVersionFloorStatus(
   version: string | null,
   config: Pick<ProjectConfig, "proxyMinVersion">,

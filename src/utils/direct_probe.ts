@@ -203,17 +203,38 @@ export function resolveDirectMode(
   return detectDirect();
 }
 
-function defaultGhAuthOk(ghPath: string): boolean {
-  // Spawn gh's RESOLVED path (not the bare name), with gh's bin dir on PATH, so an
-  // nvm-only gh (or a node-shim gh) found via the nvm fallback is runnable here.
-  // cliSpawn routes through cmd.exe on Windows so a .cmd/.exe shim is launchable.
+/** Cap on one `gh auth token` call, shared by every "is gh authenticated?" probe. */
+export const GH_AUTH_TIMEOUT_MS = 5000;
+
+/**
+ * The ONE recipe for probing gh's login: spawn `gh auth token` at gh's RESOLVED
+ * path (not the bare name), with gh's bin dir on PATH, so an nvm-only gh (or a
+ * node-shim gh) found via the nvm fallback is runnable; cliSpawn routes through
+ * cmd.exe on Windows so a .cmd/.exe shim is launchable. Success = exit 0. Shared
+ * by the token capture (copilot_api/credential.ts), the detect gate below, and
+ * the health probe (health/probe.ts), so the command and its GH_AUTH_TIMEOUT_MS
+ * budget never drift between them. Callers pick their own stdio (capture the
+ * token vs. keep it out of process memory).
+ */
+export function ghAuthTokenSpawnSpec(ghPath: string): {
+  file: string;
+  args: string[];
+  shell: boolean;
+  timeout: number;
+  env: Record<string, string>;
+} {
   const s = cliSpawn(ghPath, ["auth", "token"]);
+  return { ...s, timeout: GH_AUTH_TIMEOUT_MS, env: childEnvWithPath([dirname(ghPath)]) };
+}
+
+function defaultGhAuthOk(ghPath: string): boolean {
+  const s = ghAuthTokenSpawnSpec(ghPath);
   const result = spawnSync(s.file, s.args, {
     stdio: "ignore",
-    timeout: 5000,
+    timeout: s.timeout,
     windowsHide: true,
     shell: s.shell,
-    env: childEnvWithPath([dirname(ghPath)]),
+    env: s.env,
   });
   return !result.error && result.status === 0;
 }

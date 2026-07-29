@@ -193,6 +193,15 @@ async function listCopilotApiPidsPosix(): Promise<number[]> {
   return pids;
 }
 
+/**
+ * Env var carrying the provisioned GitHub token into the proxy daemon; the
+ * token-argv preload (src/scripts/token_argv_preload.ts) reads it and splices it
+ * onto process.argv as `--github-token`, keeping the secret off the
+ * world-readable command line. The preload stays import-free, so it re-declares
+ * this value as a literal -- test/token_argv_preload.test.ts pins the two together.
+ */
+export const DAEMON_GH_TOKEN_ENV = "COPILOT_ENV_DAEMON_GH_TOKEN";
+
 export function launchDaemon(
   port: number,
   logfile: string,
@@ -251,7 +260,7 @@ export function launchDaemon(
   // untouched) while the secret stays off the world-readable command line. The PAT shim
   // reads the spliced flag too.
   if (githubToken) {
-    env.COPILOT_ENV_DAEMON_GH_TOKEN = githubToken;
+    env[DAEMON_GH_TOKEN_ENV] = githubToken;
   }
   const proc = spawn(process.execPath, args, {
     stdio: [devnull, logFd, logFd],

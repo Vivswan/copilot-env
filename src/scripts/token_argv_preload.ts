@@ -15,6 +15,8 @@
 // This is a RUNTIME shim: it touches none of copilot-api's files, so it never pins the
 // floated proxy version. It must load before pat_passthrough_preload (which reads the token
 // from argv at module-load time); launchDaemon orders the `--preload` flags accordingly.
+// Same value as DAEMON_GH_TOKEN_ENV (process.ts); preloads stay import-free so a
+// shim never drags CLI modules into the daemon process.
 const ENV_KEY = "COPILOT_ENV_DAEMON_GH_TOKEN";
 const FLAG = "--github-token";
 

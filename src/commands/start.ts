@@ -523,13 +523,8 @@ export async function runStart(args: StartArgs): Promise<void> {
   if (args.recordEvent) {
     // Record an activity heartbeat for the idle watchdog and return -- no launch. The
     // proxy resolver calls this on each token fetch so an open agent stays "active".
-    // NAMED profiles only heartbeat state that already exists: the store's atomic write
-    // mkdirs its parent, so an unconditional write would FABRICATE a phantom profile
-    // home for a typo'd `--profile <name>` (a real proxy profile always has its state
-    // file -- the port reservation wrote it).
-    if (profile === null || fs.existsSync(new CopilotApiPaths(profile).stateFile)) {
-      CopilotEnvRunState.forProfile(profile).set({ lastEnsureAt: Date.now() });
-    }
+    // setIfExists: a typo'd `--profile <name>` must not fabricate a phantom profile home.
+    CopilotEnvRunState.forProfile(profile).setIfExists({ lastEnsureAt: Date.now() });
     return;
   }
   const paths = new CopilotApiPaths(profile);

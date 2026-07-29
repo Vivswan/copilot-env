@@ -121,6 +121,14 @@ export class CopilotApiPaths {
    */
   githubTokenFile: string;
   /**
+   * The mutex guarding `githubTokenFile` (`github_token.login.lock`): a device-flow
+   * login (auth.ts) holds it across its whole spawn+read+scrub, and the de-auth
+   * scrub (credential.ts) briefly takes the same lock, so `--del` cannot race a
+   * mid-login token write. Derived here, next to the file it guards, so the two
+   * sites can never drift onto different lock paths.
+   */
+  githubTokenLoginLock: string;
+  /**
    * The patched Codex model catalog (account-wide): the bundled `codex debug
    * models` catalog with GitHub Copilot's live context-window limits overlaid.
    * Referenced by absolute path from the managed Codex config.toml via its
@@ -148,6 +156,7 @@ export class CopilotApiPaths {
     this.sharedStateFile = join(rootHome, ".copilot-env-state.json");
     this.envConfigFile = join(rootHome, ".copilot-env-config.json");
     this.githubTokenFile = join(rootHome, "github_token");
+    this.githubTokenLoginLock = `${this.githubTokenFile}.login.lock`;
     this.codexModelCatalogFile = join(rootHome, "codex-model-catalog.json");
   }
 }

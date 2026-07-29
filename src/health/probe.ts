@@ -50,6 +50,7 @@ import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts"
 import {
   CLAUDE_PROBE,
   CODEX_PROBE,
+  ghAuthTokenSpawnSpec,
   PROBE_PROMPT,
   PROBE_TIMEOUT_MS,
 } from "../utils/direct_probe.ts";
@@ -333,18 +334,18 @@ function codexDirectAuth(): Promise<CodexDirectAuthFacts> {
   if (command === null) return Promise.resolve({ command: null, authenticated: false });
   // Async (non-blocking) so it runs concurrently with the other probes under
   // gatherFacts' Promise.all, instead of freezing the event loop for the whole
-  // `gh auth token` call. Spawn gh's RESOLVED path (not the bare name) so an
-  // nvm-only gh resolveCommand found via the nvm fallback is runnable here.
-  // stdio:"ignore" keeps the printed token out of our process memory. A timeout
-  // (SIGTERM) or any non-zero exit => authenticated:false.
+  // `gh auth token` call. ghAuthTokenSpawnSpec owns the spawn recipe (resolved path,
+  // gh's bin dir on PATH, the shared timeout). stdio:"ignore" keeps the printed
+  // token out of our process memory. A timeout (SIGTERM) or any non-zero exit =>
+  // authenticated:false.
   return new Promise((resolve) => {
-    const s = cliSpawn(command, ["auth", "token"]);
+    const s = ghAuthTokenSpawnSpec(command);
     const child = spawn(s.file, s.args, {
       stdio: "ignore",
-      timeout: 5000,
+      timeout: s.timeout,
       windowsHide: true,
       shell: s.shell,
-      env: childEnvWithPath([dirname(command)]),
+      env: s.env,
     });
     child.on("error", () => resolve({ command, authenticated: false }));
     child.on("close", (code) => resolve({ command, authenticated: code === 0 }));

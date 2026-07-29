@@ -1,7 +1,6 @@
 // `agent stop`: terminates the tracked local proxy daemon(s).
-import { existsSync } from "node:fs";
 import { consola } from "consola";
-import { CopilotApiPaths, profileHomeNames } from "../copilot_api/paths.ts";
+import { profileHomeNames } from "../copilot_api/paths.ts";
 import { classifyDaemonPid, pidAlive, terminatePid } from "../copilot_api/process.ts";
 import { assertProfileName, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
@@ -36,14 +35,9 @@ export async function stopTrackedProxy(
   if (trackedPid === undefined) {
     // Nothing tracked. Still clear any stale activity marks so a fresh start is not seen
     // as recently active. The activity-file removal is safe unconditionally (rmSync
-    // creates nothing), but the STATE write runs for a NAMED profile only when its state
-    // already exists on disk: the store's atomic write mkdirs its parent, so an
-    // unconditional write here would FABRICATE a phantom profile home for a typo'd
-    // `agent stop --profile <name>` (which profile --list / stop --all / the proxy float
-    // would then all see).
-    if (profile === null || existsSync(new CopilotApiPaths(profile).stateFile)) {
-      state.set({ lastEnsureAt: null });
-    }
+    // creates nothing), and setIfExists keeps the state write from fabricating a phantom
+    // profile home for a typo'd `agent stop --profile <name>`.
+    state.setIfExists({ lastEnsureAt: null });
     clearPersistedInferenceActivity(profile);
     return { signalled: false, stopped: true };
   }

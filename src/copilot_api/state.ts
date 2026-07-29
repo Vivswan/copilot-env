@@ -1,4 +1,5 @@
 // Per-host state persistence for the proxy pid, port, and active CODEX_HOME.
+import { existsSync } from "node:fs";
 import * as v from "valibot";
 import { CopilotApiConfig } from "./config.ts";
 import { CopilotApiPaths } from "./paths.ts";
@@ -46,14 +47,17 @@ const RUN_STATE_SCHEMA = v.object({
  */
 export class CopilotEnvRunState {
   private readonly store: CopilotApiConfig;
+  /** The named profile this state belongs to (null = default) -- gates setIfExists. */
+  private readonly profile: Profile;
 
-  constructor(path?: string) {
-    this.store = new CopilotApiConfig(path ?? new CopilotApiPaths().stateFile);
+  constructor(profile: Profile = null) {
+    this.store = new CopilotApiConfig(new CopilotApiPaths(profile).stateFile);
+    this.profile = profile;
   }
 
   /** The run state for `profile`'s daemon (null = the default daemon's state). */
   static forProfile(profile: Profile): CopilotEnvRunState {
-    return new CopilotEnvRunState(new CopilotApiPaths(profile).stateFile);
+    return new CopilotEnvRunState(profile);
   }
 
   /** Current state; absent or ill-typed/out-of-range fields come back `undefined`. */
@@ -73,6 +77,19 @@ export class CopilotEnvRunState {
         }
       }
     });
+  }
+
+  /**
+   * Like `set`, but a NAMED profile's write lands only when its state file already
+   * exists on disk (the default profile always writes). The store's atomic write
+   * mkdirs the file's parent, so an unconditional write would FABRICATE a phantom
+   * profile home for a typo'd `--profile <name>` -- one that profile --list /
+   * stop --all / the proxy float would then all see. A real proxy profile always
+   * has its state file (the port reservation wrote it).
+   */
+  setIfExists(patch: StatePatch): void {
+    if (this.profile !== null && !existsSync(this.store.path)) return;
+    this.set(patch);
   }
 
   /**

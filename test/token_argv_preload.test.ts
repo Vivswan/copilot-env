@@ -2,13 +2,14 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DAEMON_GH_TOKEN_ENV } from "../src/copilot_api/process.ts";
 
-// The shim reads the GitHub token from COPILOT_ENV_DAEMON_GH_TOKEN and splices it into
+// The shim reads the GitHub token from DAEMON_GH_TOKEN_ENV and splices it into
 // process.argv as `--github-token <token>`, keeping it off the launch command line. It must
 // be exercised as a real preloaded subprocess (`bun --preload`), which is how launchDaemon
 // loads it -- and BEFORE the PAT shim, which reads the token from argv.
 const SHIM = join(import.meta.dir, "..", "src", "scripts", "token_argv_preload.ts");
-const ENV_KEY = "COPILOT_ENV_DAEMON_GH_TOKEN";
+const ENV_KEY = DAEMON_GH_TOKEN_ENV;
 
 function runPreloaded(token: string | undefined): { argv: string[]; envHadKey: boolean } {
   const dir = mkdtempSync(join(tmpdir(), "copilot-tokenargv-"));
@@ -38,6 +39,15 @@ function runPreloaded(token: string | undefined): { argv: string[]; envHadKey: b
     rmSync(dir, { recursive: true, force: true });
   }
 }
+
+test("the preload's copied env-var literal stays in step with launchDaemon's (drift guard)", async () => {
+  // The shim stays import-free (a preload must not drag CLI modules into the daemon), so
+  // it re-declares the env var launchDaemon sets as a literal. This source-text check makes
+  // a rename on either side fail loudly here instead of silently launching the daemon with
+  // no credential.
+  const shim = await Bun.file(SHIM).text();
+  expect(shim).toContain(`const ENV_KEY = "${DAEMON_GH_TOKEN_ENV}"`);
+});
 
 test("splices the token from the env var into argv as --github-token, then scrubs the env", () => {
   const out = runPreloaded("ghp_secret123");

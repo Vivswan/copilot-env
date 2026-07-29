@@ -118,8 +118,7 @@ function loginWithCopilot(cred: Credential): void {
         "Re-run the agent launcher to install dependencies, or use `agent auth --provider gh-token`.",
     );
   }
-  const tokenFile = new CopilotApiPaths().githubTokenFile;
-  const lockPath = `${tokenFile}.login.lock`;
+  const { githubTokenFile: tokenFile, githubTokenLoginLock: lockPath } = new CopilotApiPaths();
   let noticed = false;
   while (!tryAcquireFileLock(lockPath, Number.POSITIVE_INFINITY)) {
     if (!noticed) {

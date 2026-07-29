@@ -7,8 +7,8 @@
 // `runAuth`) stays in `src/commands/auth.ts`, the thin layer on top of this.
 import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
-import { dirname } from "node:path";
-import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
+import { resolveCommand } from "../utils/command.ts";
+import { ghAuthTokenSpawnSpec } from "../utils/direct_probe.ts";
 import { releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
 import { sleepSync } from "../utils/time.ts";
 import {
@@ -66,13 +66,13 @@ export function credentialSource(
 export function ghAuthToken(): string | null {
   const ghPath = resolveCommand("gh");
   if (ghPath === null) return null;
-  const s = cliSpawn(ghPath, ["auth", "token"]);
+  const s = ghAuthTokenSpawnSpec(ghPath);
   const result = spawnSync(s.file, s.args, {
     encoding: "utf8",
-    timeout: 5000,
+    timeout: s.timeout,
     windowsHide: true,
     shell: s.shell,
-    env: childEnvWithPath([dirname(ghPath)]),
+    env: s.env,
   });
   if (result.error || result.status !== 0) return null;
   return (result.stdout ?? "").trim() || null;
@@ -162,8 +162,7 @@ export class Credential {
     const had = githubToken !== null || authProvider !== null;
     this.state.setCredential(this.profile, { githubToken: null, authProvider: null });
     if (this.profile === null) {
-      const tokenFile = new CopilotApiPaths().githubTokenFile;
-      const lockPath = `${tokenFile}.login.lock`;
+      const { githubTokenFile: tokenFile, githubTokenLoginLock: lockPath } = new CopilotApiPaths();
       const deadline = Date.now() + 2000;
       let held = false;
       for (;;) {

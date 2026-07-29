@@ -19,7 +19,7 @@ import * as v from "valibot";
 import { isRecord } from "../utils/json.ts";
 import { CopilotApiConfig } from "./config.ts";
 import { CopilotApiPaths } from "./paths.ts";
-import type { Profile } from "./profile.ts";
+import { isValidProfileName, type Profile, type ProfileName, parseProfileName } from "./profile.ts";
 
 // The provider vocabulary lives HERE, with the store that persists `authProvider`,
 // so env_state can validate it at the read boundary without importing from the
@@ -201,18 +201,31 @@ export class CopilotEnvState {
     if (profile === null) {
       return { githubToken: data.githubToken, authProvider: data.authProvider };
     }
-    const { githubToken, authProvider } = data.profiles[profile] ?? emptyProfile();
+    // Object.hasOwn, not `?? emptyProfile()` alone: the profiles record carries
+    // Object.prototype, so a name like "constructor" would otherwise resolve up the
+    // chain to a truthy function instead of the empty slot.
+    const slot = Object.hasOwn(data.profiles, profile) ? data.profiles[profile] : undefined;
+    const { githubToken, authProvider } = slot ?? emptyProfile();
     return { githubToken, authProvider };
   }
 
   /** The full slot for a NAMED profile (credential + mode); never-created reads empty. */
-  readProfileSlot(name: string): ProfileSlotData {
-    return this.read().profiles[name] ?? emptyProfile();
+  readProfileSlot(name: ProfileName): ProfileSlotData {
+    const profiles = this.read().profiles;
+    // Own-property check for the same prototype-chain reason as readCredential.
+    return (Object.hasOwn(profiles, name) ? profiles[name] : undefined) ?? emptyProfile();
   }
 
-  /** Every named profile in the store, sorted. */
-  profileNames(): string[] {
-    return Object.keys(this.read().profiles).sort();
+  /** Every named profile in the store, sorted. The `profiles` map lives in the
+   *  user-editable state file, so its keys are a trust boundary: a key that is
+   *  not a valid profile name (a hand-edited/corrupted file) is skipped -- the
+   *  same sweep semantic as profileHomeNames' filter -- so an invalid key can
+   *  never reach a path join. */
+  profileNames(): ProfileName[] {
+    return Object.keys(this.read().profiles)
+      .filter((name) => isValidProfileName(name))
+      .map((name) => parseProfileName(name))
+      .sort();
   }
 
   /**
@@ -235,12 +248,12 @@ export class CopilotEnvState {
   }
 
   /** Record (or clear, with null) a NAMED profile's single wiring mode. */
-  setProfileMode(name: string, mode: ProfileMode | null): void {
+  setProfileMode(name: ProfileName, mode: ProfileMode | null): void {
     this.mergeProfileSlot(name, { mode });
   }
 
   /** Record (or clear, with null) a NAMED profile's probed direct-mode identity. */
-  setProfileIntegrationIdentity(name: string, integrationIdentity: string | null): void {
+  setProfileIntegrationIdentity(name: ProfileName, integrationIdentity: string | null): void {
     this.mergeProfileSlot(name, { integrationIdentity });
   }
 
@@ -267,10 +280,12 @@ export class CopilotEnvState {
     });
   }
 
-  private mergeProfileSlot(name: string, patch: ProfilePatch): void {
+  private mergeProfileSlot(name: ProfileName, patch: ProfilePatch): void {
     this.store.update((d) => {
       const profiles = isRecord(d.profiles) ? d.profiles : {};
-      const slotRaw = profiles[name];
+      // Own-property read (see readProfileSlot); isRecord would also reject an
+      // inherited function, but say what we mean.
+      const slotRaw = Object.hasOwn(profiles, name) ? profiles[name] : undefined;
       const slot: Record<string, unknown> = isRecord(slotRaw) ? slotRaw : {};
       for (const key of Object.keys(patch) as (keyof ProfilePatch)[]) {
         const value = patch[key];

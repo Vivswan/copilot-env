@@ -6,7 +6,7 @@ import { releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
 import { sleepSync } from "../utils/time.ts";
 import { CopilotEnvConfig, configDefaultNumber } from "./env_config.ts";
 import { profileHomeNames, resolveRootHome } from "./paths.ts";
-import type { Profile } from "./profile.ts";
+import type { Profile, ProfileName } from "./profile.ts";
 import { CopilotEnvRunState } from "./state.ts";
 
 /** The built-in proxy port when nothing (config `port`, a running daemon, or `--port`)
@@ -164,7 +164,7 @@ const PORT_LOCK_RETRY_MS = 15;
  * -- a reserver that raced it simply finds ITS port busy at its own start and moves too,
  * so collisions self-heal at bind time.
  */
-export function reserveProfilePort(profile: string): number {
+export function reserveProfilePort(profile: ProfileName): number {
   const state = CopilotEnvRunState.forProfile(profile);
   const recorded = state.read().port;
   if (recorded !== undefined) return recorded;

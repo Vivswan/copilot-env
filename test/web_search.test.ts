@@ -5,6 +5,7 @@ import { join } from "node:path";
 
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import { parseProfileName } from "../src/copilot_api/profile.ts";
 import {
   DEFAULT_WEB_SEARCH_MODEL,
   parseResponsesOutput,
@@ -227,7 +228,7 @@ test("a named profile hard-fails instead of using the default credential or env"
   tmpHome();
   new Credential(undefined, null).store("gh-token", "gho_default");
   process.env.GH_TOKEN = "gho_env";
-  expect(() => resolveWebSearchCredential("work")).toThrow(
+  expect(() => resolveWebSearchCredential(parseProfileName("work"))).toThrow(
     /never falls back to the default credential/,
   );
 });

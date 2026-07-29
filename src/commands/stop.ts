@@ -2,7 +2,7 @@
 import { consola } from "consola";
 import { profileHomeNames } from "../copilot_api/paths.ts";
 import { classifyDaemonPid, pidAlive, terminatePid } from "../copilot_api/process.ts";
-import { assertProfileName, type Profile, profileLabel } from "../copilot_api/profile.ts";
+import { type Profile, parseProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { clearPersistedInferenceActivity } from "../scripts/inference_activity.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
@@ -91,8 +91,8 @@ export async function runStop(args: StopArgs = {}): Promise<void> {
   if (args.all && args.profile !== undefined) {
     throw new Error("--all stops every daemon; it does not combine with --profile");
   }
-  const profiles: Profile[] = args.all ? [null, ...profileHomeNames()] : [args.profile ?? null];
-  if (args.profile !== undefined) assertProfileName(args.profile);
+  const named: Profile = args.profile === undefined ? null : parseProfileName(args.profile);
+  const profiles: Profile[] = args.all ? [null, ...profileHomeNames()] : [named];
   let stoppedAny = false;
   for (const profile of profiles) {
     if (await stopOne(profile)) stoppedAny = true;

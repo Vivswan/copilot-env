@@ -35,7 +35,7 @@ import {
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { resolveCopilotApiEntry } from "../copilot_api/process.ts";
-import { assertProfileName, type Profile, profileLabel } from "../copilot_api/profile.ts";
+import { type Profile, parseProfileName, profileLabel } from "../copilot_api/profile.ts";
 import {
   ghTokenEnvVarsLabel,
   ghTokenEnvVarsList,
@@ -416,7 +416,7 @@ function runList(): void {
     provider === null ? "not authenticated" : `${provider}${resolves ? "" : " (does not resolve)"}`;
   const defaultCred = new Credential(state);
   rows.push(["default", describe(defaultCred.provider(), defaultCred.isAuthenticated())]);
-  for (const name of Object.keys(state.read().profiles).sort()) {
+  for (const name of state.profileNames()) {
     const cred = new Credential(state, name);
     rows.push([name, describe(cred.provider(), cred.isAuthenticated())]);
   }
@@ -473,8 +473,7 @@ export async function runAuth(args: AuthArgs, catalogDeps?: CodexCatalogDeps): P
     runList();
     return;
   }
-  const profile: Profile = args.profile ?? null;
-  if (profile !== null) assertProfileName(profile);
+  const profile: Profile = args.profile === undefined ? null : parseProfileName(args.profile);
   if (args.printProxyToken) {
     await runPrintProxyToken(profile, catalogDeps);
     return;

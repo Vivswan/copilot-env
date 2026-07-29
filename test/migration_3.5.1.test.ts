@@ -13,12 +13,16 @@ import { codexProviderId, configureCodexConfig } from "../src/codex/config.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { setIntegrationProbeFetch } from "../src/copilot_api/integration_identity.ts";
+import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { migration } from "../src/migrations/3.5.1.ts";
 import { isRecord } from "../src/utils/json.ts";
 
 // The 3.5.1 migration re-bakes the probed Copilot client identity into DIRECT agent
 // configs, healing an install whose PAT credential predates identity probing. It writes
 // to real config homes, so isolate everything under a temp HOME.
+// A branded fixture name: parseProfileName is the only mint for ProfileName.
+const WORK = parseProfileName("work");
+
 const SAVED = {
   HOME: process.env.HOME,
   CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
@@ -161,12 +165,12 @@ test("a proxy-mode install is skipped entirely (no probe, no writes)", async () 
 test("the store's profile slots are untouched (named profiles self-heal on next launch)", async () => {
   isolateDirect("github_pat_x");
   const state = new CopilotEnvState();
-  state.setProfileMode("work", "direct");
+  state.setProfileMode(WORK, "direct");
   patOnlyEndpoint();
 
   await migration.run();
   // No integrationIdentity written for the profile: a null slot already means "re-derive",
   // and every `cl`/`cx --profile` launch re-wires it.
-  expect(state.readProfileSlot("work").integrationIdentity).toBeNull();
-  expect(state.readProfileSlot("work").mode).toBe("direct");
+  expect(state.readProfileSlot(WORK).integrationIdentity).toBeNull();
+  expect(state.readProfileSlot(WORK).mode).toBe("direct");
 });

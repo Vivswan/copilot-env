@@ -5,11 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { portListening, runStart } from "../src/commands/start.ts";
 import { classifyDaemonPid } from "../src/copilot_api/process.ts";
+import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 
 // The lifecycle primitives the proxy-token resolver orchestrates: `start --record-event`
 // (heartbeat) and `start --check` (is-it-up probe). Each is isolated in a temp
 // COPILOT_API_HOME and resets the shared process.exitCode.
+// A branded fixture name: parseProfileName is the only mint for ProfileName.
+const WORK = parseProfileName("work");
+
 const SAVED_HOME = process.env.COPILOT_API_HOME;
 let dir = "";
 
@@ -65,10 +69,10 @@ test("start --record-event --profile heartbeats ONLY the profile's run state", a
   tmpHome();
   // A real proxy profile always has run state before its resolver heartbeats (the
   // port reservation writes it); a profile WITHOUT state must not be fabricated.
-  CopilotEnvRunState.forProfile("work").set({ port: 4242 });
+  CopilotEnvRunState.forProfile(WORK).set({ port: 4242 });
   await runStart({ recordEvent: true, profile: "work" });
 
-  expect(typeof CopilotEnvRunState.forProfile("work").read().lastEnsureAt).toBe("number");
+  expect(typeof CopilotEnvRunState.forProfile(WORK).read().lastEnsureAt).toBe("number");
   expect(new CopilotEnvRunState().read().lastEnsureAt).toBeUndefined();
 });
 

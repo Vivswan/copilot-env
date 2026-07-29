@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { isDir } from "../utils/fs.ts";
 import { getSanitizedHostname } from "../utils/hostname.ts";
-import { assertProfileName, isValidProfileName, type Profile } from "./profile.ts";
+import { isValidProfileName, type Profile, type ProfileName, parseProfileName } from "./profile.ts";
 
 // Mirror the proxy's own default (`@jeffreycao/copilot-api` lib/paths.ts):
 //   path.join(os.homedir(), ".local", "share", "copilot-api")
@@ -79,26 +79,27 @@ export function resolveRootHome(): string {
   return process.env[ROOT_HOME_ENV] || resolveHome();
 }
 
-/** A named profile's isolated daemon home under the root. */
-export function profileHome(name: string): string {
-  assertProfileName(name);
+/** A named profile's isolated daemon home under the root. `ProfileName` is the
+ *  proof the segment is safe to join (parsed at the producer boundaries). */
+export function profileHome(name: ProfileName): string {
   return join(resolveRootHome(), PROFILES_DIR_NAME, name);
 }
 
 /** Names of profiles that have a daemon home on disk (sorted; missing dir = none).
  *  Complements the credential store's `profiles` map: a proxy-mode profile can
  *  exist here with no credential of its own, and vice versa. Directories that are
- *  not valid profile names (a stray hand-made folder) are skipped -- every
- *  downstream path constructor validates and would otherwise throw mid-sweep.
+ *  not valid profile names (a stray hand-made folder) are skipped -- they are not
+ *  profile homes; the survivors are minted into `ProfileName` so every downstream
+ *  path constructor can trust them.
  *  Only a MISSING dir reads as "no profiles": any other enumeration failure
  *  (permissions, I/O) propagates, because callers use this list to avoid port
  *  collisions and to protect tracked daemons from the orphan sweep -- an
  *  incomplete answer there is worse than an error. */
-export function profileHomeNames(): string[] {
+export function profileHomeNames(): ProfileName[] {
   try {
     return readdirSync(join(resolveRootHome(), PROFILES_DIR_NAME), { withFileTypes: true })
       .filter((entry) => entry.isDirectory() && isValidProfileName(entry.name))
-      .map((entry) => entry.name)
+      .map((entry) => parseProfileName(entry.name))
       .sort();
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
@@ -108,7 +109,7 @@ export function profileHomeNames(): string[] {
 }
 
 /** True when the named profile has a daemon home on disk. */
-export function profileHomeExists(name: string): boolean {
+export function profileHomeExists(name: ProfileName): boolean {
   return existsSync(profileHome(name));
 }
 

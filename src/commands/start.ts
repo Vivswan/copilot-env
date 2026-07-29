@@ -40,7 +40,7 @@ import {
   printLogTail,
   terminatePid,
 } from "../copilot_api/process.ts";
-import { assertProfileName, type Profile, profileLabel } from "../copilot_api/profile.ts";
+import { type Profile, parseProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import {
   installedProxyVersion,
@@ -496,7 +496,7 @@ function isIdempotentNoOp(args: StartArgs): boolean {
  *  daemon is not an orphan). */
 function trackedDaemonPids(): Set<number> {
   const pids = new Set<number>();
-  for (const profile of [null, ...profileHomeNames()] as Profile[]) {
+  for (const profile of [null, ...profileHomeNames()]) {
     const pid = CopilotEnvRunState.forProfile(profile).read().pid;
     if (pid !== undefined) pids.add(pid);
   }
@@ -505,8 +505,7 @@ function trackedDaemonPids(): Set<number> {
 
 /** `start`: launch copilot-api detached, wait for readiness, sync aliases. */
 export async function runStart(args: StartArgs): Promise<void> {
-  const profile: Profile = args.profile ?? null;
-  if (profile !== null) assertProfileName(profile);
+  const profile: Profile = args.profile === undefined ? null : parseProfileName(args.profile);
   if (args.check) {
     // "Is the proxy up?" probe -- no launch. The exit code is the contract; every machine
     // caller (the proxy resolver + cl/co/cx launchers) discards all output and reads only

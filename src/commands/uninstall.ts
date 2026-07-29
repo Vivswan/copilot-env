@@ -14,7 +14,7 @@ import { knownCodexHomes, removeCodexDefaultWiring, removeCodexProfile } from ".
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { profileHomeNames, resolveRootHome } from "../copilot_api/paths.ts";
-import { type Profile, profileLabel } from "../copilot_api/profile.ts";
+import { type ProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
@@ -54,7 +54,7 @@ function removeShellIntegrationEverywhere(): void {
 
 /** Names of every named profile: the store's slots unioned with on-disk daemon
  *  homes (mirrors `agent profile --list`), so a half-created profile is swept too. */
-function allProfileNames(): string[] {
+function allProfileNames(): ProfileName[] {
   return [...new Set([...new CopilotEnvState().profileNames(), ...profileHomeNames()])].sort();
 }
 
@@ -81,8 +81,8 @@ function manualRemoveCommand(dir: string): string {
 
 /** Stop the default daemon plus every profile's. A signalled-but-unstoppable
  *  daemon throws, so the caller aborts instead of deleting under a live proxy. */
-async function stopAllDaemons(profiles: string[]): Promise<void> {
-  for (const profile of [null, ...profiles] as Profile[]) {
+async function stopAllDaemons(profiles: ProfileName[]): Promise<void> {
+  for (const profile of [null, ...profiles]) {
     const { signalled, stopped } = await stopTrackedProxy(2000, profile);
     if (signalled && !stopped) {
       throw new Error(

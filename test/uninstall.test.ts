@@ -20,8 +20,12 @@ import { runUninstall, type UninstallDeps } from "../src/commands/uninstall.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { profileHome } from "../src/copilot_api/paths.ts";
+import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { isRecord } from "../src/utils/json.ts";
+
+// A branded fixture name: parseProfileName is the only mint for ProfileName.
+const WORK = parseProfileName("work");
 
 const SAVED = {
   HOME: process.env.HOME,
@@ -94,17 +98,17 @@ test("uninstall removes everything managed and preserves user config", async () 
 
   // Default credential + a named direct profile (credential, mode, both agents, home).
   new Credential().store("gh-token", "ghp_default");
-  new Credential(undefined, "work").store("gh-token", "ghp_work");
-  new CopilotEnvState().setProfileMode("work", "direct");
-  configureClaudeConfig(claudeHome, "direct", { quiet: true, profile: "work" });
-  configureCodexConfig(codexHome, "direct", { quiet: true, profile: "work" });
-  mkdirSync(profileHome("work"), { recursive: true });
+  new Credential(undefined, WORK).store("gh-token", "ghp_work");
+  new CopilotEnvState().setProfileMode(WORK, "direct");
+  configureClaudeConfig(claudeHome, "direct", { quiet: true, profile: WORK });
+  configureCodexConfig(codexHome, "direct", { quiet: true, profile: WORK });
+  mkdirSync(profileHome(WORK), { recursive: true });
 
   // A second Codex home (e.g. a farm home from when it was the effective one)
   // that carries BOTH default and profile wiring: the sweep must clean it too.
   const codexHome2 = join(dir, ".codex-farm");
   configureCodexConfig(codexHome2, "proxy", { quiet: true, baseUrl: "http://127.0.0.1:4199/v1" });
-  configureCodexConfig(codexHome2, "direct", { quiet: true, profile: "work" });
+  configureCodexConfig(codexHome2, "direct", { quiet: true, profile: WORK });
 
   const deps = tmpDeps(codexHome);
   deps.codexHomes = [codexHome, codexHome2];
@@ -113,8 +117,8 @@ test("uninstall removes everything managed and preserves user config", async () 
   expect(process.exitCode ?? 0).toBe(0);
 
   // Named profile artifacts gone.
-  expect(existsSync(settingsPathFor(claudeHome, "work"))).toBe(false);
-  expect(existsSync(profileHome("work"))).toBe(false);
+  expect(existsSync(settingsPathFor(claudeHome, WORK))).toBe(false);
+  expect(existsSync(profileHome(WORK))).toBe(false);
 
   // Claude: managed keys stripped, user key survives, helper scripts gone.
   const settings = JSON.parse(readFileSync(settingsPathFor(claudeHome), "utf8")) as Record<

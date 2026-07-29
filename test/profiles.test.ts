@@ -21,11 +21,18 @@ import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { setIntegrationProbeFetch } from "../src/copilot_api/integration_identity.ts";
 import { CopilotApiPaths, profileHome, profileHomeNames } from "../src/copilot_api/paths.ts";
 import { copilotApiResolvePort, reserveProfilePort } from "../src/copilot_api/port.ts";
-import { assertProfileName } from "../src/copilot_api/profile.ts";
+import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { isRecord } from "../src/utils/json.ts";
 
 const WIN = process.platform === "win32";
+
+// Branded fixture names: parseProfileName is the only mint for ProfileName.
+const WORK = parseProfileName("work");
+const FAST = parseProfileName("fast");
+const GH_ALT = parseProfileName("gh-alt");
+const ALT = parseProfileName("alt");
+const TYPO = parseProfileName("typo");
 
 const SAVED = {
   HOME: process.env.HOME,
@@ -83,19 +90,19 @@ function tmpCodexHome(): string {
 
 // --- profile names ------------------------------------------------------------
 
-test("assertProfileName accepts kebab names and rejects reserved/invalid ones", () => {
-  assertProfileName("work");
-  assertProfileName("gh-alt2");
+test("parseProfileName accepts kebab names and rejects reserved/invalid ones", () => {
+  parseProfileName("work");
+  parseProfileName("gh-alt2");
   for (const bad of ["default", "direct", "proxy", "all"]) {
-    expect(() => assertProfileName(bad)).toThrow(/reserved/);
+    expect(() => parseProfileName(bad)).toThrow(/reserved/);
   }
   for (const bad of ["", "-x", "Work", "a b", "x".repeat(33)]) {
-    expect(() => assertProfileName(bad)).toThrow(/invalid profile name/);
+    expect(() => parseProfileName(bad)).toThrow(/invalid profile name/);
   }
   // Windows reserved device names can't be directories there; cross-platform means
   // they're invalid everywhere.
   for (const bad of ["con", "nul", "prn", "aux", "com1", "lpt9"]) {
-    expect(() => assertProfileName(bad)).toThrow(/reserved device name/);
+    expect(() => parseProfileName(bad)).toThrow(/reserved device name/);
   }
 });
 
@@ -105,7 +112,7 @@ test("named credential slots are isolated and never fall back to the default", (
   tmpProxyHome();
   const state = new CopilotEnvState();
   new Credential(state).store("gh-token", "ghp_default");
-  const work = new Credential(state, "work");
+  const work = new Credential(state, WORK);
 
   // Hard-fail: no slot of its own -> null, even though the default resolves.
   expect(work.resolve()).toBeNull();
@@ -133,7 +140,7 @@ test("a store that never used profiles keeps the pre-profile on-disk shape", () 
   expect(Object.keys(raw)).toEqual(["authProvider", "githubToken"]);
 
   // Creating then fully clearing a profile drops the `profiles` key again.
-  const work = new Credential(state, "work");
+  const work = new Credential(state, WORK);
   work.store("gh-token", "ghp_work");
   work.clear();
   const raw2 = JSON.parse(readFileSync(new CopilotApiPaths().sharedStateFile, "utf8")) as Record<
@@ -148,9 +155,9 @@ test("a store that never used profiles keeps the pre-profile on-disk shape", () 
 test("profile paths isolate the daemon home but share the account-wide files", () => {
   const root = tmpProxyHome();
   const def = new CopilotApiPaths();
-  const work = new CopilotApiPaths("work");
+  const work = new CopilotApiPaths(WORK);
   expect(work.home).toBe(join(root, "profiles", "work"));
-  expect(work.home).toBe(profileHome("work"));
+  expect(work.home).toBe(profileHome(WORK));
   expect(work.configFile.startsWith(work.home)).toBe(true);
   expect(work.sqliteDb.startsWith(work.home)).toBe(true);
   expect(work.stateFile.startsWith(work.home)).toBe(true);
@@ -176,26 +183,26 @@ test("reserveProfilePort records stable, distinct ports; resolve peeks read-only
   const defaultPort = Number(copilotApiResolvePort());
   // Read-only peek: reports the candidate WITHOUT creating any state on disk
   // (--check/--dry-run callers must never mutate).
-  const peek = Number(copilotApiResolvePort("work"));
+  const peek = Number(copilotApiResolvePort(WORK));
   expect(peek).not.toBe(defaultPort);
-  expect(CopilotEnvRunState.forProfile("work").read().port).toBeUndefined();
+  expect(CopilotEnvRunState.forProfile(WORK).read().port).toBeUndefined();
   expect(profileHomeNames()).toEqual([]);
 
-  const work = reserveProfilePort("work");
-  const alt = reserveProfilePort("gh-alt");
+  const work = reserveProfilePort(WORK);
+  const alt = reserveProfilePort(GH_ALT);
   expect(work).toBe(peek);
   expect(alt).not.toBe(defaultPort);
   expect(alt).not.toBe(work);
   // Stable: re-reserving and resolving both return the recorded reservation.
-  expect(reserveProfilePort("work")).toBe(work);
-  expect(Number(copilotApiResolvePort("work"))).toBe(work);
-  expect(CopilotEnvRunState.forProfile("work").read().port).toBe(work);
-  expect(profileHomeNames()).toEqual(["gh-alt", "work"]);
+  expect(reserveProfilePort(WORK)).toBe(work);
+  expect(Number(copilotApiResolvePort(WORK))).toBe(work);
+  expect(CopilotEnvRunState.forProfile(WORK).read().port).toBe(work);
+  expect(profileHomeNames()).toEqual([GH_ALT, WORK]);
 });
 
 test("clearIfPid keeps a profile daemon's port reservation when asked", () => {
   tmpProxyHome();
-  const state = CopilotEnvRunState.forProfile("work");
+  const state = CopilotEnvRunState.forProfile(WORK);
   state.set({ pid: 4242, port: 5555 });
   state.clearIfPid(4242, true);
   expect(state.read()).toEqual({ port: 5555 });
@@ -210,16 +217,16 @@ test("a direct Claude profile writes settings-<name>.json + a --profile helper, 
   tmpProxyHome();
   const home = tmpClaudeHome();
   const state = new CopilotEnvState();
-  new Credential(state, "work").store("gh-token", "ghp_work");
+  new Credential(state, WORK).store("gh-token", "ghp_work");
 
   // Pre-existing default settings must stay byte-identical.
   configureClaudeConfig(home, "direct", { quiet: true });
   const defaultBefore = readFileSync(settingsPathFor(home), "utf8");
 
-  configureClaudeConfig(home, "direct", { quiet: true, profile: "work" });
+  configureClaudeConfig(home, "direct", { quiet: true, profile: WORK });
 
   expect(readFileSync(settingsPathFor(home), "utf8")).toBe(defaultBefore);
-  const doc = JSON.parse(readFileSync(settingsPathFor(home, "work"), "utf8")) as Record<
+  const doc = JSON.parse(readFileSync(settingsPathFor(home, WORK), "utf8")) as Record<
     string,
     unknown
   >;
@@ -233,8 +240,8 @@ test("a direct Claude profile writes settings-<name>.json + a --profile helper, 
   const status = inspectClaudeWiring(
     JSON.stringify(doc),
     home,
-    Number(copilotApiResolvePort("work")),
-    "work",
+    Number(copilotApiResolvePort(WORK)),
+    WORK,
   );
   expect(status.providerMode).toBe("direct");
   // The default inspector must NOT recognize the profile file as managed.
@@ -245,22 +252,22 @@ test("a direct Claude profile without its own credential is refused", () => {
   tmpProxyHome();
   const home = tmpClaudeHome();
   new Credential().store("gh-token", "ghp_default"); // default cred must NOT satisfy it
-  expect(() => configureClaudeConfig(home, "direct", { quiet: true, profile: "work" })).toThrow(
+  expect(() => configureClaudeConfig(home, "direct", { quiet: true, profile: WORK })).toThrow(
     /no credential of its own/,
   );
-  expect(existsSync(settingsPathFor(home, "work"))).toBe(false);
+  expect(existsSync(settingsPathFor(home, WORK))).toBe(false);
 });
 
 test("a proxy Claude profile bakes ITS reserved port and blanks the direct-only env keys", () => {
   tmpProxyHome();
   const home = tmpClaudeHome();
-  configureClaudeConfig(home, "proxy", { quiet: true, profile: "fast" });
-  const doc = JSON.parse(readFileSync(settingsPathFor(home, "fast"), "utf8")) as Record<
+  configureClaudeConfig(home, "proxy", { quiet: true, profile: FAST });
+  const doc = JSON.parse(readFileSync(settingsPathFor(home, FAST), "utf8")) as Record<
     string,
     unknown
   >;
   const env = isRecord(doc.env) ? doc.env : {};
-  expect(env.ANTHROPIC_BASE_URL).toBe(`http://127.0.0.1:${copilotApiResolvePort("fast")}`);
+  expect(env.ANTHROPIC_BASE_URL).toBe(`http://127.0.0.1:${copilotApiResolvePort(FAST)}`);
   // Blanked (not deleted): the overlay layers over a possibly-direct default.
   expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("");
   expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe("");
@@ -274,18 +281,18 @@ test("a foreign settings-<name>.json is never taken over", () => {
   const home = tmpClaudeHome();
   configureClaudeConfig(home, "proxy", { quiet: true }); // creates the home
   writeFileSync(
-    settingsPathFor(home, "work"),
+    settingsPathFor(home, WORK),
     JSON.stringify({ apiKeyHelper: "/somewhere/else.sh" }),
   );
-  expect(() => configureClaudeConfig(home, "proxy", { quiet: true, profile: "work" })).toThrow(
+  expect(() => configureClaudeConfig(home, "proxy", { quiet: true, profile: WORK })).toThrow(
     /refusing to overwrite/,
   );
   // A custom base URL ALONE (no apiKeyHelper) is also foreign wiring.
   writeFileSync(
-    settingsPathFor(home, "alt"),
+    settingsPathFor(home, ALT),
     JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://my-gateway.example" } }),
   );
-  expect(() => configureClaudeConfig(home, "proxy", { quiet: true, profile: "alt" })).toThrow(
+  expect(() => configureClaudeConfig(home, "proxy", { quiet: true, profile: ALT })).toThrow(
     /refusing to overwrite/,
   );
 });
@@ -300,19 +307,19 @@ test("a Codex profile writes [profiles.<name>] + its provider table, leaving the
   tmpProxyHome();
   const codexHome = tmpCodexHome();
   const state = new CopilotEnvState();
-  new Credential(state, "work").store("gh-token", "ghp_work");
+  new Credential(state, WORK).store("gh-token", "ghp_work");
 
   configureCodexConfig(codexHome, "direct", { quiet: true });
   const before = readToml(join(codexHome, "config.toml"));
   expect(before.model_provider).toBe("copilot-env");
 
-  configureCodexConfig(codexHome, "direct", { quiet: true, profile: "work" });
+  configureCodexConfig(codexHome, "direct", { quiet: true, profile: WORK });
   const doc = readToml(join(codexHome, "config.toml"));
   expect(doc.model_provider).toBe("copilot-env"); // untouched
   const profiles = doc.profiles as Record<string, Record<string, unknown>>;
-  expect(profiles.work?.model_provider).toBe(codexProviderId("work"));
+  expect(profiles.work?.model_provider).toBe(codexProviderId(WORK));
   const providers = doc.model_providers as Record<string, Record<string, unknown>>;
-  const table = providers[codexProviderId("work")];
+  const table = providers[codexProviderId(WORK)];
   expect(table).toBeDefined();
   const auth = table?.auth as Record<string, unknown>;
   expect(JSON.stringify(auth.args)).toContain("--profile");
@@ -326,13 +333,13 @@ test("a Codex profile write on a FRESH config leaves no dangling default model_p
   const codexHome = tmpCodexHome();
   configureCodexConfig(codexHome, "proxy", {
     quiet: true,
-    profile: "fast",
-    baseUrl: `http://127.0.0.1:${copilotApiResolvePort("fast")}/v1`,
+    profile: FAST,
+    baseUrl: `http://127.0.0.1:${copilotApiResolvePort(FAST)}/v1`,
   });
   const doc = readToml(join(codexHome, "config.toml"));
   expect(doc.model_provider).toBeUndefined();
   const providers = doc.model_providers as Record<string, Record<string, unknown>>;
-  expect(providers[codexProviderId("fast")]).toBeDefined();
+  expect(providers[codexProviderId(FAST)]).toBeDefined();
   // Proxy profiles force the global sandbox loopback exemption (auth.command needs it).
   const sandbox = doc.sandbox_workspace_write as Record<string, unknown>;
   expect(sandbox.network_access).toBe(true);
@@ -343,7 +350,7 @@ test("a Codex profile write on an EMPTY config file also leaves no dangling mode
   const codexHome = tmpCodexHome();
   mkdirSync(codexHome, { recursive: true });
   writeFileSync(join(codexHome, "config.toml"), "   \n");
-  configureCodexConfig(codexHome, "direct", { quiet: true, profile: "fast" });
+  configureCodexConfig(codexHome, "direct", { quiet: true, profile: FAST });
   const doc = readToml(join(codexHome, "config.toml"));
   expect(doc.model_provider).toBeUndefined();
 });
@@ -352,14 +359,14 @@ test("profile --sync refreshes wiring from the STORE mode and never touches mode
   tmpProxyHome();
   const claudeHome = tmpClaudeHome();
   const codexHome = tmpCodexHome();
-  new Credential(undefined, "fast").store("gh-token", "ghp_fast");
-  new CopilotEnvState().setProfileMode("fast", "proxy");
-  const port = copilotApiResolvePort("fast");
+  new Credential(undefined, FAST).store("gh-token", "ghp_fast");
+  new CopilotEnvState().setProfileMode(FAST, "proxy");
+  const port = copilotApiResolvePort(FAST);
   // Seed a deliberately stale codex table; leave the top-level provider unset
   // (the --mobile pairing state) to prove sync never touches it.
   configureCodexConfig(codexHome, "proxy", {
     quiet: true,
-    profile: "fast",
+    profile: FAST,
     baseUrl: "http://127.0.0.1:1/v1",
   });
   expect(readToml(join(codexHome, "config.toml")).model_provider).toBeUndefined();
@@ -369,9 +376,9 @@ test("profile --sync refreshes wiring from the STORE mode and never touches mode
   const doc = readToml(join(codexHome, "config.toml"));
   expect(doc.model_provider).toBeUndefined(); // still untouched
   const providers = doc.model_providers as Record<string, Record<string, unknown>>;
-  expect(providers[codexProviderId("fast")]?.base_url).toBe(`http://127.0.0.1:${port}/v1`);
+  expect(providers[codexProviderId(FAST)]?.base_url).toBe(`http://127.0.0.1:${port}/v1`);
   // The Claude side was (re)written too -- one sync covers both agents.
-  expect(existsSync(settingsPathFor(claudeHome, "fast"))).toBe(true);
+  expect(existsSync(settingsPathFor(claudeHome, FAST))).toBe(true);
 });
 
 test("profile --check is store-driven: exit 1 unknown/incomplete, 2 proxy, 0 direct", async () => {
@@ -381,15 +388,15 @@ test("profile --check is store-driven: exit 1 unknown/incomplete, 2 proxy, 0 dir
   process.exitCode = 0;
   const state = new CopilotEnvState();
   // Mode without credential is INCOMPLETE under the atomic model: never launchable.
-  state.setProfileMode("fast", "proxy");
+  state.setProfileMode(FAST, "proxy");
   await runProfile({ check: "fast", mode: "auto" });
   expect(process.exitCode).toBe(1);
   process.exitCode = 0;
-  new Credential(state, "fast").store("gh-token", "ghp_fast");
+  new Credential(state, FAST).store("gh-token", "ghp_fast");
   await runProfile({ check: "fast", mode: "auto" });
   expect(process.exitCode).toBe(2);
   process.exitCode = 0;
-  state.setProfileMode("fast", "direct");
+  state.setProfileMode(FAST, "direct");
   await runProfile({ check: "fast", mode: "auto" });
   expect(process.exitCode).toBe(0);
 });
@@ -425,39 +432,39 @@ test("profile --add wires both agents atomically; --del removes everything", asy
   await runProfile({ add: "work", mode: "proxy", set: "ghp_worktoken" });
 
   const state = new CopilotEnvState();
-  expect(state.readProfileSlot("work").mode).toBe("proxy");
-  expect(state.readProfileSlot("work").authProvider).toBe("gh-token");
-  expect(existsSync(settingsPathFor(claudeHome, "work"))).toBe(true);
+  expect(state.readProfileSlot(WORK).mode).toBe("proxy");
+  expect(state.readProfileSlot(WORK).authProvider).toBe("gh-token");
+  expect(existsSync(settingsPathFor(claudeHome, WORK))).toBe(true);
   const doc = readToml(join(codexHome, "config.toml"));
   const providers = doc.model_providers as Record<string, Record<string, unknown>>;
-  expect(providers[codexProviderId("work")]).toBeDefined();
+  expect(providers[codexProviderId(WORK)]).toBeDefined();
   expect((doc.profiles as Record<string, Record<string, unknown>>).work?.model_provider).toBe(
-    codexProviderId("work"),
+    codexProviderId(WORK),
   );
 
   // Mode switch: re-add with the other flag flips BOTH agents (one mode, never both).
   await runProfile({ add: "work", mode: "direct" });
-  expect(state.readProfileSlot("work").mode).toBe("direct");
+  expect(state.readProfileSlot(WORK).mode).toBe("direct");
   const flipped = readToml(join(codexHome, "config.toml"));
   const flippedTable = (flipped.model_providers as Record<string, Record<string, unknown>>)[
-    codexProviderId("work")
+    codexProviderId(WORK)
   ];
   expect(flippedTable?.base_url).toBe("https://api.githubcopilot.com");
 
   await runProfile({ del: "work", mode: "auto" });
-  expect(state.readProfileSlot("work")).toEqual({
+  expect(state.readProfileSlot(WORK)).toEqual({
     githubToken: null,
     authProvider: null,
     mode: null,
     integrationIdentity: null,
   });
-  expect(existsSync(settingsPathFor(claudeHome, "work"))).toBe(false);
+  expect(existsSync(settingsPathFor(claudeHome, WORK))).toBe(false);
   const after = readToml(join(codexHome, "config.toml"));
   expect(
-    (after.model_providers as Record<string, unknown> | undefined)?.[codexProviderId("work")],
+    (after.model_providers as Record<string, unknown> | undefined)?.[codexProviderId(WORK)],
   ).toBeUndefined();
   expect(after.profiles).toBeUndefined();
-  expect(existsSync(profileHome("work"))).toBe(false);
+  expect(existsSync(profileHome(WORK))).toBe(false);
 });
 
 test("profile --add requires a mode for a new profile", async () => {
@@ -484,7 +491,7 @@ test("stop/record-event against a never-existing profile fabricate NOTHING", asy
   await runStart({ recordEvent: true, profile: "typo" });
   // Neither command may materialize a phantom profile home (profile --list,
   // stop --all, and the proxy float all enumerate profile homes).
-  expect(existsSync(profileHome("typo"))).toBe(false);
+  expect(existsSync(profileHome(TYPO))).toBe(false);
   expect(profileHomeNames()).toEqual([]);
 });
 
@@ -508,7 +515,7 @@ test("a direct profile probes the client identity ONCE, persisting the verdict f
   const state = new CopilotEnvState();
   // The DEFAULT identity won, and that verdict is persisted (as the identity NAME) so it
   // is distinguishable from "never probed" -- the launcher hot path must not re-probe.
-  expect(state.readProfileSlot("work").integrationIdentity).toBe("codex");
+  expect(state.readProfileSlot(WORK).integrationIdentity).toBe("codex");
   const afterAdd = probes;
   expect(afterAdd).toBeGreaterThan(0);
 
@@ -516,11 +523,11 @@ test("a direct profile probes the client identity ONCE, persisting the verdict f
   await runProfile({ settingsFor: "work", mode: "auto" });
   await runProfile({ sync: true, mode: "auto" });
   expect(probes).toBe(afterAdd);
-  expect(existsSync(settingsPathFor(claudeHome, "work"))).toBe(true);
+  expect(existsSync(settingsPathFor(claudeHome, WORK))).toBe(true);
 
   // A credential change invalidates the cached verdict, re-arming the probe.
-  new Credential(state, "work").store("gh-token", "ghp_rotated");
-  expect(state.readProfileSlot("work").integrationIdentity).toBeNull();
+  new Credential(state, WORK).store("gh-token", "ghp_rotated");
+  expect(state.readProfileSlot(WORK).integrationIdentity).toBeNull();
   await runProfile({ sync: true, mode: "auto" });
   expect(probes).toBeGreaterThan(afterAdd);
 });
@@ -544,17 +551,17 @@ test("a direct profile bakes a non-default probed identity into BOTH agents", as
   });
 
   await runProfile({ add: "work", mode: "direct", set: "github_pat_worktoken" });
-  expect(new CopilotEnvState().readProfileSlot("work").integrationIdentity).toBe(
+  expect(new CopilotEnvState().readProfileSlot(WORK).integrationIdentity).toBe(
     "copilot-developer-cli",
   );
   // Claude: the header rides ANTHROPIC_CUSTOM_HEADERS in the profile's settings overlay.
-  const settings = JSON.parse(readFileSync(settingsPathFor(claudeHome, "work"), "utf8"));
+  const settings = JSON.parse(readFileSync(settingsPathFor(claudeHome, WORK), "utf8"));
   expect(settings.env.ANTHROPIC_CUSTOM_HEADERS).toContain(
     "Copilot-Integration-Id: copilot-developer-cli",
   );
   // Codex: the same identity in the profile provider's http_headers.
   const doc = readToml(join(codexHome, "config.toml"));
   const providers = doc.model_providers as Record<string, Record<string, unknown>>;
-  const headers = providers[codexProviderId("work")]?.http_headers as Record<string, string>;
+  const headers = providers[codexProviderId(WORK)]?.http_headers as Record<string, string>;
   expect(headers["Copilot-Integration-Id"]).toBe("copilot-developer-cli");
 });

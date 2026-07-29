@@ -27,7 +27,7 @@ import { CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
 import { CODEX_IDENTITY_NAME } from "../copilot_api/integration_identity.ts";
 import { profileHome, profileHomeNames } from "../copilot_api/paths.ts";
 import { openaiBaseUrl, reserveProfilePort } from "../copilot_api/port.ts";
-import { assertProfileName, profileLabel } from "../copilot_api/profile.ts";
+import { type ProfileName, parseProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { cyan, gray, green, yellow } from "../utils/ansi.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import type { RequestedMode } from "../utils/provider_mode.ts";
@@ -60,7 +60,7 @@ export interface ProfileArgs {
 }
 
 /** The profile's recorded mode from the store (the source of truth), or null. */
-function storedMode(name: string): ProfileMode | null {
+function storedMode(name: ProfileName): ProfileMode | null {
   return new CopilotEnvState().readProfileSlot(name).mode;
 }
 
@@ -69,7 +69,7 @@ function storedMode(name: string): ProfileMode | null {
  *  resolves the client identity as pin > persisted slot > probe, persisting a freshly
  *  probed non-default id so a later launcher `--sync` replays it offline (a null slot
  *  means "re-derive", which is network-free for the non-PAT common case). */
-async function wireBothAgents(name: string, mode: ProfileMode, quiet: boolean): Promise<void> {
+async function wireBothAgents(name: ProfileName, mode: ProfileMode, quiet: boolean): Promise<void> {
   const directIntegrationId =
     mode === "direct" ? await resolveAndPersistDirectIdentity(name) : undefined;
   const failures: string[] = [];
@@ -103,7 +103,7 @@ async function wireBothAgents(name: string, mode: ProfileMode, quiet: boolean): 
  * slot (CopilotEnvState.setCredential), which is what re-arms the probe.
  * Throws if the credential is rejected under every identity.
  */
-async function resolveAndPersistDirectIdentity(name: string): Promise<string | null> {
+async function resolveAndPersistDirectIdentity(name: ProfileName): Promise<string | null> {
   const pin = new CopilotEnvConfig().pinnedIntegrationId();
   if (pin !== null) return pin;
   const stored = new CopilotEnvState().readProfileSlot(name).integrationIdentity;
@@ -120,7 +120,7 @@ async function resolveAndPersistDirectIdentity(name: string): Promise<string | n
  * the store on a re-add), and BOTH agents wired. Re-running with the other mode
  * flag SWITCHES the profile (one mode, never both).
  */
-async function runAdd(name: string, args: ProfileArgs): Promise<void> {
+async function runAdd(name: ProfileName, args: ProfileArgs): Promise<void> {
   // Same conflict contract as `agent auth`: `--set` IS the gh-token path, so an
   // explicit different provider must error, never be silently coerced.
   if (args.set !== undefined && args.provider !== undefined) {
@@ -180,7 +180,7 @@ async function runAdd(name: string, args: ProfileArgs): Promise<void> {
  * logs + the port reservation). Used by `agent profile --del` and `agent
  * uninstall`.
  */
-export async function deleteProfileEverywhere(name: string): Promise<void> {
+export async function deleteProfileEverywhere(name: ProfileName): Promise<void> {
   const { signalled, stopped } = await stopTrackedProxy(2000, name);
   if (signalled && !stopped) {
     throw new Error(
@@ -200,7 +200,7 @@ export async function deleteProfileEverywhere(name: string): Promise<void> {
  * `--del <name>`: remove the profile EVERYWHERE via deleteProfileEverywhere,
  * guarded so a profile that never existed sweeps nothing.
  */
-async function runDel(name: string): Promise<void> {
+async function runDel(name: ProfileName): Promise<void> {
   // Sweep NOTHING for a profile that never existed: a foreign same-named
   // settings-<name>.json or a hand-made [model_providers.copilot-env-<name>]
   // is not ours to delete unless the store/home says the profile was real.
@@ -308,7 +308,7 @@ async function runList(): Promise<void> {
 /** `--check <name>`: the launcher contract, driven by the STORE slot.
  *  Exit 0 = direct, 2 = proxy (ensure the daemon), 1 = no such profile OR an
  *  incomplete one (mode without credential) -- never start a daemon for it. */
-function runCheck(name: string): void {
+function runCheck(name: ProfileName): void {
   const slot = new CopilotEnvState().readProfileSlot(name);
   if (slot.mode === null) {
     console.log(
@@ -334,7 +334,7 @@ function runCheck(name: string): void {
  * live proxy port (mode from the store) and print its ABSOLUTE PATH on stdout --
  * the machine contract `cl --profile <name>` evals into `claude --settings <path>`.
  */
-async function runSettingsFor(name: string): Promise<void> {
+async function runSettingsFor(name: ProfileName): Promise<void> {
   const mode = storedMode(name);
   if (mode === null) {
     throw new Error(
@@ -393,12 +393,10 @@ export async function runProfile(args: ProfileArgs): Promise<void> {
       "--provider/--set only apply to --add (re-auth an existing profile with `agent auth --profile <name>`)",
     );
   }
-  const named = args.add ?? args.del ?? args.check ?? args.settingsFor;
-  if (named !== undefined) assertProfileName(named);
-  if (args.add !== undefined) return runAdd(args.add, args);
-  if (args.del !== undefined) return runDel(args.del);
-  if (args.check !== undefined) return runCheck(args.check);
-  if (args.settingsFor !== undefined) return runSettingsFor(args.settingsFor);
+  if (args.add !== undefined) return runAdd(parseProfileName(args.add), args);
+  if (args.del !== undefined) return runDel(parseProfileName(args.del));
+  if (args.check !== undefined) return runCheck(parseProfileName(args.check));
+  if (args.settingsFor !== undefined) return runSettingsFor(parseProfileName(args.settingsFor));
   if (args.sync) return runSync();
   return runList();
 }

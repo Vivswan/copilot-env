@@ -35,7 +35,7 @@ import {
   proxyLoopbackOrigin,
   reserveProfilePort,
 } from "../copilot_api/port.ts";
-import { type Profile, profileLabel } from "../copilot_api/profile.ts";
+import { type Profile, type ProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import {
   CLAUDE_PROBE,
@@ -657,7 +657,7 @@ function checkClaudeConfig(): void {
  * (managed direct/proxy wiring); a foreign same-named file the user owns is left
  * alone. Used by `agent profile --del`.
  */
-export function removeClaudeProfile(claudeHome: string, name: string): void {
+export function removeClaudeProfile(claudeHome: string, name: ProfileName): void {
   const settingsPath = settingsPathFor(claudeHome, name);
   const status = inspectClaudeWiring(readTextOrNull(settingsPath), claudeHome, 0, name);
   if (status.providerMode === "direct" || status.providerMode === "proxy") {

@@ -5,7 +5,7 @@
 import { resolveClaudeHome, syncDefaultWebSearchWiring } from "../claude/config.ts";
 import { removeClaudeMcpRegistration } from "../claude/mcp_registration.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { assertProfileName, type Profile } from "../copilot_api/profile.ts";
+import { type Profile, parseProfileName } from "../copilot_api/profile.ts";
 import { runMcpServer } from "../mcp/server.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 
@@ -34,14 +34,14 @@ function parseMcpAction(args: McpArgs): McpAction {
     // serve the default credential; `profile: null` is only reachable via an ABSENT flag.
     throw new Error("--profile expects a profile name; omit it for the default credential");
   }
-  if (profile !== "") assertProfileName(profile);
+  const name: Profile = profile === "" ? null : parseProfileName(profile);
   const model = args.model?.trim() ?? "";
   if (args.model !== undefined && model === "") {
     throw new Error("--model expects a non-empty model id");
   }
   return {
     kind: "serve",
-    profile: profile === "" ? null : profile,
+    profile: name,
     model: model === "" ? undefined : model,
   };
 }

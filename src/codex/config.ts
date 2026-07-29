@@ -23,7 +23,7 @@ import {
   openaiBaseUrl,
   reserveProfilePort,
 } from "../copilot_api/port.ts";
-import { assertProfileName, type Profile, profileLabel } from "../copilot_api/profile.ts";
+import { type Profile, type ProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import {
   CODEX_PROBE,
@@ -902,8 +902,7 @@ function checkCodexConfig(): void {
  * the config is absent; a present-but-unparseable file throws (never blind-write).
  * Used by `agent profile --del`.
  */
-export function removeCodexProfile(codexHome: string, name: string): void {
-  assertProfileName(name);
+export function removeCodexProfile(codexHome: string, name: ProfileName): void {
   const configPath = path.join(codexHome, "config.toml");
   let doc: Record<string, unknown>;
   try {

@@ -60,8 +60,10 @@ if ! agent_scoped start --check >/dev/null 2>&1; then
     # Unmanaged + interactive (launcher): offer to start.
     printf 'copilot proxy not running. Start it now? [Y/n] ' >&2
     read -r ans
+    # Accept y/yes in any letter case (plus empty = default). The .ps1 twin's
+    # `-match '^(y|yes)$'` is case-insensitive; keep the answer sets identical.
     case "$ans" in
-      ''|y|Y|yes|Yes) agent_scoped start >&2 ;;
+      ''|[yY]|[yY][eE][sS]) agent_scoped start >&2 ;;
       *) echo "Continuing without the proxy; proxy-backed agents need it (run '$start_hint')." >&2 ;;
     esac
   fi

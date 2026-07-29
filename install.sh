@@ -8,6 +8,8 @@
 
 set -eu
 
+# The next three lines are rewritten to the release tag by .github/scripts/release-assets.ts
+# (byte-exact needles; test/installer_pinning.test.ts guards the match).
 INSTALL_REF="${COPILOT_ENV_INSTALL_REF:-latest}"
 RESOLVER_URL="https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/resolve-release.ts"
 VERIFIER_URL="https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/verify-source-archive.ts"

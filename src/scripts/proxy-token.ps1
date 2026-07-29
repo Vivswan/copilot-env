@@ -44,7 +44,9 @@ if ($LASTEXITCODE -ne 0) {
     # Unmanaged + interactive (launcher): offer to start.
     [Console]::Error.Write('copilot proxy not running. Start it now? [Y/n] ')
     $ans = Read-Host
-    if ($ans -eq '' -or $ans -match '^(y|Y|yes|Yes)$') {
+    # `-match` is case-insensitive: y/yes in any letter case (plus empty = default),
+    # the same answer set as the .sh twin's case patterns.
+    if ($ans -eq '' -or $ans -match '^(y|yes)$') {
       # Send the child's stdout (success stream, where consola progress goes) to OUR stderr so
       # it stays VISIBLE while our stdout stays clean for the key -- matching the .sh twin's
       # `>&2`. `1>&2` is INVALID in Windows PowerShell (you can only merge into stream 1), so

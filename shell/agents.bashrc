@@ -35,5 +35,6 @@ function agent {
 # current shell. Silence stderr so the bootstrap's informational output
 # ("Installing copilot-env node_modules ...") doesn't break Powerlevel10k's
 # instant-prompt guard on first source. If env resolution fails, a later
-# `agent`/launcher call will surface the error.
-eval "$("${_COPILOT_AGENTS_DIR}/bin/agent" env "$@" 2>/dev/null)"
+# `agent`/launcher call will surface the error. No arguments are forwarded --
+# `env` takes none, and the ps1 twin's eager call passes none either.
+eval "$("${_COPILOT_AGENTS_DIR}/bin/agent" env 2>/dev/null)"

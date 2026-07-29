@@ -18,13 +18,6 @@
 $script:AgentsDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $script:AgentPs1 = Join-Path $script:AgentsDir 'bin\agent.ps1'
 
-# Return $true if the local copilot proxy is reachable, $false otherwise.
-# Uses `agent start --check` (fast TCP-connect probe of OUR proxy, exit 0 = up).
-function Test-CopilotServer {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 start --check *> $null
-    return ($LASTEXITCODE -eq 0)
-}
-
 function Assert-AgentCli {
     param([Parameter(Mandatory)][string]$Command)
     if (Get-Command $Command -ErrorAction SilentlyContinue) { return $true }
@@ -35,10 +28,13 @@ function Assert-AgentCli {
 # Ensure the proxy is up before launching a proxy-backed agent. Delegates to the shared
 # resolver (src/scripts/proxy-token.ps1) WITHOUT `--yes`, so an unmanaged + down proxy
 # prompts the user (the managed path starts it silently). stdout (the key) is discarded;
-# only the prompt/start noise shows.
+# only the prompt/start noise shows. Returns $true when the resolver's exit code says the
+# proxy is reachable -- the same contract the POSIX twin (`_copilot_ensure_server ||
+# return`) and Confirm-CopilotProfileServer trust.
 function Confirm-CopilotServer {
     $resolver = Join-Path $script:AgentsDir 'src\scripts\proxy-token.ps1'
     & powershell -NoProfile -ExecutionPolicy Bypass -File $resolver 1> $null
+    return ($LASTEXITCODE -eq 0)
 }
 
 # --- agent launchers -------------------------------------------------------
@@ -61,10 +57,11 @@ function Sync-AgentProvider {
     & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 $Agent --check *> $null
     $status = $LASTEXITCODE
     if ($status -eq 2) {
-        Confirm-CopilotServer
-        # Bail if the proxy is still down (declined / failed) -- don't re-sync
-        # proxy config against a stale port or launch into a dead proxy.
-        if (-not (Test-CopilotServer)) { return $false }
+        # Bail if the proxy is still down (declined / failed): don't re-sync
+        # proxy config against a stale port or launch into a dead proxy. The
+        # resolver's exit code is the reachability signal (no re-probe),
+        # matching the POSIX twin.
+        if (-not (Confirm-CopilotServer)) { return $false }
         agent $Agent --proxy | Out-Host
         if ($LASTEXITCODE -ne 0) { return $false }
     } elseif ($status -ne 0) {
@@ -96,6 +93,9 @@ function Confirm-CopilotProfileServer {
 
 function cl {
     if (-not (Assert-AgentCli claude)) { return }
+    # The managed Claude launch flag set, stated ONCE for both branches below
+    # (profile and default); the bashrc twin states it once in _copilot_claude_launch.
+    $claudeFlags = @('--permission-mode', 'auto', '--enable-auto-mode')
     # `cl --profile <name>` (leading args only): launch Claude under the named profile via
     # `claude --settings <profile file>`. The profile's wiring is honored as-is (no
     # auto-"fixing"); `agent profile --settings-for` re-syncs its baked proxy port and
@@ -111,7 +111,7 @@ function cl {
         $env:CLAUDE_CODE_NO_FLICKER = '1'
         $prevBase = $env:ANTHROPIC_BASE_URL
         Remove-Item Env:ANTHROPIC_BASE_URL -ErrorAction SilentlyContinue
-        try { & claude --settings $settings --permission-mode auto --enable-auto-mode @rest }
+        try { & claude --settings $settings @claudeFlags @rest }
         finally {
             if ($null -ne $prevBase) { $env:ANTHROPIC_BASE_URL = $prevBase }
         }
@@ -119,7 +119,7 @@ function cl {
     }
     if (-not (Sync-AgentProvider -Agent claude -Launcher cl -Display Claude)) { return }
     $env:CLAUDE_CODE_NO_FLICKER = '1'
-    & claude --permission-mode auto --enable-auto-mode @args
+    & claude @claudeFlags @args
 }
 
 function co {

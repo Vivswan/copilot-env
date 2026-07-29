@@ -31,71 +31,80 @@ function assertIncludes(path: string, text: string): void {
   console.log(`${path}: contains ${text}`);
 }
 
+interface InstallerPin {
+  needle: string;
+  pinned: (tag: string) => string;
+}
+
+// The lines this script rewrites to the release tag, one entry per pinned line:
+// `needle` is the unpinned line as it appears in the repo installer (byte-exact)
+// and `pinned(tag)` is the release-asset form -- prepare() replaces the first
+// with the second, validate() asserts the second. The needles MUST stay
+// byte-for-byte in sync with install.sh/install.ps1;
+// test/installer_pinning.test.ts pins that match at PR time so an installer
+// reformat fails in CI instead of at release.
+export const INSTALLER_PINS: Record<"install.sh" | "install.ps1", InstallerPin[]> = {
+  "install.sh": [
+    {
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the ${...} is install.sh's own shell placeholder being pinned, not a JS template.
+      needle: 'INSTALL_REF="${COPILOT_ENV_INSTALL_REF:-latest}"',
+      pinned: (tag) => `INSTALL_REF="\${COPILOT_ENV_INSTALL_REF:-${tag}}"`,
+    },
+    {
+      needle:
+        'RESOLVER_URL="https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/resolve-release.ts"',
+      pinned: (tag) =>
+        `RESOLVER_URL="https://raw.githubusercontent.com/Vivswan/copilot-env/${tag}/src/install/resolve-release.ts"`,
+    },
+    {
+      needle:
+        'VERIFIER_URL="https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/verify-source-archive.ts"',
+      pinned: (tag) =>
+        `VERIFIER_URL="https://raw.githubusercontent.com/Vivswan/copilot-env/${tag}/src/install/verify-source-archive.ts"`,
+    },
+  ],
+  "install.ps1": [
+    {
+      needle:
+        "$InstallRef = if ($env:COPILOT_ENV_INSTALL_REF) { $env:COPILOT_ENV_INSTALL_REF } else { 'latest' }",
+      pinned: (tag) =>
+        `$InstallRef = if ($env:COPILOT_ENV_INSTALL_REF) { $env:COPILOT_ENV_INSTALL_REF } else { '${tag}' }`,
+    },
+    {
+      needle:
+        "$ResolverUrl = 'https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/resolve-release.ts'",
+      pinned: (tag) =>
+        `$ResolverUrl = 'https://raw.githubusercontent.com/Vivswan/copilot-env/${tag}/src/install/resolve-release.ts'`,
+    },
+    {
+      needle:
+        "$VerifierUrl = 'https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/verify-source-archive.ts'",
+      pinned: (tag) =>
+        `$VerifierUrl = 'https://raw.githubusercontent.com/Vivswan/copilot-env/${tag}/src/install/verify-source-archive.ts'`,
+    },
+  ],
+};
+
 function prepare(tag: string): void {
   mkdirSync(OUT_DIR, { recursive: true });
   copyFileSync("install.sh", join(OUT_DIR, "install.sh"));
   copyFileSync("install.ps1", join(OUT_DIR, "install.ps1"));
 
-  const shPath = join(OUT_DIR, "install.sh");
-  pin(
-    shPath,
-    // biome-ignore lint/suspicious/noTemplateCurlyInString: the ${...} is install.sh's own shell placeholder being pinned, not a JS template.
-    'INSTALL_REF="${COPILOT_ENV_INSTALL_REF:-latest}"',
-    `INSTALL_REF="\${COPILOT_ENV_INSTALL_REF:-${tag}}"`,
-  );
-  pin(
-    shPath,
-    'RESOLVER_URL="https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/resolve-release.ts"',
-    `RESOLVER_URL="https://raw.githubusercontent.com/Vivswan/copilot-env/${tag}/src/install/resolve-release.ts"`,
-  );
-  pin(
-    shPath,
-    'VERIFIER_URL="https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/verify-source-archive.ts"',
-    `VERIFIER_URL="https://raw.githubusercontent.com/Vivswan/copilot-env/${tag}/src/install/verify-source-archive.ts"`,
-  );
-
-  const psPath = join(OUT_DIR, "install.ps1");
-  pin(
-    psPath,
-    "$InstallRef = if ($env:COPILOT_ENV_INSTALL_REF) { $env:COPILOT_ENV_INSTALL_REF } else { 'latest' }",
-    `$InstallRef = if ($env:COPILOT_ENV_INSTALL_REF) { $env:COPILOT_ENV_INSTALL_REF } else { '${tag}' }`,
-  );
-  pin(
-    psPath,
-    "$ResolverUrl = 'https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/resolve-release.ts'",
-    `$ResolverUrl = 'https://raw.githubusercontent.com/Vivswan/copilot-env/${tag}/src/install/resolve-release.ts'`,
-  );
-  pin(
-    psPath,
-    "$VerifierUrl = 'https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/verify-source-archive.ts'",
-    `$VerifierUrl = 'https://raw.githubusercontent.com/Vivswan/copilot-env/${tag}/src/install/verify-source-archive.ts'`,
-  );
+  for (const [file, pins] of Object.entries(INSTALLER_PINS)) {
+    const path = join(OUT_DIR, file);
+    for (const { needle, pinned } of pins) {
+      pin(path, needle, pinned(tag));
+    }
+  }
 }
 
 function validate(tag: string): void {
-  const shPath = join(OUT_DIR, "install.sh");
-  const psPath = join(OUT_DIR, "install.ps1");
-  assertIncludes(shPath, `INSTALL_REF="\${COPILOT_ENV_INSTALL_REF:-${tag}}"`);
-  assertIncludes(
-    shPath,
-    `https://raw.githubusercontent.com/Vivswan/copilot-env/${tag}/src/install/resolve-release.ts`,
-  );
-  assertIncludes(
-    shPath,
-    `https://raw.githubusercontent.com/Vivswan/copilot-env/${tag}/src/install/verify-source-archive.ts`,
-  );
-  assertIncludes(
-    psPath,
-    `$InstallRef = if ($env:COPILOT_ENV_INSTALL_REF) { $env:COPILOT_ENV_INSTALL_REF } else { '${tag}' }`,
-  );
-  assertIncludes(
-    psPath,
-    `https://raw.githubusercontent.com/Vivswan/copilot-env/${tag}/src/install/resolve-release.ts`,
-  );
-  assertIncludes(
-    psPath,
-    `https://raw.githubusercontent.com/Vivswan/copilot-env/${tag}/src/install/verify-source-archive.ts`,
-  );
+  for (const [file, pins] of Object.entries(INSTALLER_PINS)) {
+    const path = join(OUT_DIR, file);
+    for (const { pinned } of pins) {
+      assertIncludes(path, pinned(tag));
+    }
+  }
 }
 
 async function download(url: string, path: string): Promise<void> {
@@ -130,7 +139,11 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});
+// Importable (test/installer_pinning.test.ts reads INSTALLER_PINS); only run
+// the CLI when invoked directly.
+if (import.meta.main) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+}

@@ -88,14 +88,41 @@ function _copilot_ensure_profile_server {
     "${_COPILOT_AGENTS_DIR}/src/scripts/proxy-token.sh" --profile "$1" >/dev/null
 }
 
+# Shared Claude launch for cl's two branches, so the managed flag set is stated
+# ONCE per file (the ps1 twin states it once in cl's $claudeFlags array).
+# `set --` prepends the flags portably (bash + zsh; a plain string variable
+# would not word-split under zsh). The profile form scrubs ANTHROPIC_BASE_URL:
+# the shell may carry the DEFAULT proxy's URL (from `agent env`), which would
+# override the profile's own env block.
+# Usage: _copilot_claude_launch profile <settings-file> [args...]
+#        _copilot_claude_launch default [args...]
+function _copilot_claude_launch {
+    _copilot_launch_mode="$1"
+    shift
+    if [ "$_copilot_launch_mode" = "profile" ]; then
+        _copilot_launch_settings="$1"
+        shift
+    fi
+    set -- --permission-mode auto --enable-auto-mode "$@"
+    export CLAUDE_CODE_NO_FLICKER=1
+    if [ "$_copilot_launch_mode" = "profile" ]; then
+        unset _copilot_launch_mode
+        command env -u ANTHROPIC_BASE_URL claude --settings "$_copilot_launch_settings" "$@"
+        _copilot_status=$?
+        unset _copilot_launch_settings
+        return "$_copilot_status"
+    fi
+    unset _copilot_launch_mode
+    command claude "$@"
+}
+
 function cl {
     _copilot_require_cli claude || return 1
     # `cl --profile <name>` (leading args only): launch Claude under the named profile via
     # `claude --settings <profile file>`. The profile's wiring is honored as-is (no
     # auto-"fixing"); `agent profile --settings-for` re-syncs its baked proxy port and
-    # prints the settings path. ANTHROPIC_BASE_URL is unset for the launch: the shell may
-    # carry the DEFAULT proxy's URL (from `agent env`), which would override the profile's
-    # own env block.
+    # prints the settings path. The launch itself (flags + the profile branch's
+    # ANTHROPIC_BASE_URL scrub) lives in _copilot_claude_launch.
     if [ "${1-}" = "--profile" ] && [ -n "${2-}" ]; then
         _copilot_profile="$2"
         shift 2
@@ -105,16 +132,13 @@ function cl {
             return 1
         fi
         unset _copilot_profile
-        export CLAUDE_CODE_NO_FLICKER=1
-        command env -u ANTHROPIC_BASE_URL claude --settings "$_copilot_settings" \
-            --permission-mode auto --enable-auto-mode "$@"
+        _copilot_claude_launch profile "$_copilot_settings" "$@"
         _copilot_status=$?
         unset _copilot_settings
         return "$_copilot_status"
     fi
     _copilot_wire_provider claude cl Claude || return $?
-    export CLAUDE_CODE_NO_FLICKER=1
-    command claude --permission-mode auto --enable-auto-mode "$@"
+    _copilot_claude_launch default "$@"
 }
 
 function co {

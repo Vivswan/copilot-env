@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { INSTALLER_PINS } from "../.github/scripts/release-assets.ts";
 import { DOC_LINKS, PRESERVE } from "../src/install/release.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 
@@ -77,4 +78,32 @@ test("install.ps1 re-materializes exactly the DOC_LINKS symlinks", () => {
     .map((match) => (match[1] ?? "").replaceAll("\\", "/"))
     .sort();
   expect(copied).toEqual([...DOC_LINKS].sort());
+});
+
+// The release pipeline (release-assets.ts prepare) rewrites a handful of installer
+// lines to the release tag by byte-exact needle. Nothing runs that script at PR time,
+// so without this guard a cosmetic reformat of those lines merges green and breaks
+// the main-branch release with "placeholder not found". Pin the needles here instead.
+test("release-assets.ts pin needles match install.sh byte-for-byte", () => {
+  for (const { needle } of INSTALLER_PINS["install.sh"]) {
+    expect(installSh).toContain(needle);
+  }
+});
+
+test("release-assets.ts pin needles match install.ps1 byte-for-byte", () => {
+  for (const { needle } of INSTALLER_PINS["install.ps1"]) {
+    expect(installPs1).toContain(needle);
+  }
+});
+
+test("release-assets.ts pinned() forms carry the tag and drop the main ref", () => {
+  // validate() derives from the same pinned() as prepare(), so it cannot catch a
+  // bad transform; this guards the realistic typo class at PR time instead.
+  for (const pins of Object.values(INSTALLER_PINS)) {
+    for (const { pinned } of pins) {
+      const form = pinned("v9.9.9-test");
+      expect(form).toContain("v9.9.9-test");
+      expect(form).not.toContain("/main/");
+    }
+  }
 });

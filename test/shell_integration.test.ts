@@ -243,8 +243,9 @@ test("env-refresh stderr parity: eager source is silenced, the agent wrapper's r
   const posix = readFileSync(join(process.cwd(), "shell", "agents.bashrc"), "utf8");
 
   // The eager startup `agent env` call silences stderr so bootstrap noise
-  // doesn't break the prompt's instant-prompt guard.
-  expect(posix).toMatch(/bin\/agent" env "\$@" 2>\/dev\/null/);
+  // doesn't break the prompt's instant-prompt guard. It forwards NO arguments
+  // (matching the ps1 twin's eager Import-CopilotEnv -Quiet).
+  expect(posix).toMatch(/bin\/agent" env 2>\/dev\/null/);
 
   // The `agent` wrapper's refresh must NOT silence stderr -- a genuine failure
   // should stay visible. Assert the refresh line and that it carries no redirect.
@@ -312,4 +313,17 @@ test("cx launchers start the proxy only for proxy-backed Codex configs", () => {
   expect(powershell).not.toContain("Get-CodexConfigPath");
   expect(powershell).not.toContain("Test-CodexProxyProvider");
   expect(powershellWire).not.toContain("--auto");
+});
+
+test("the cl launchers state the same Claude flag set on both platforms", () => {
+  // Each launcher spells the shared flag set once; this pin keeps the pair from
+  // drifting apart again on the next edit.
+  const posix = readFileSync(join(process.cwd(), "shell", "agents.launchers.bashrc"), "utf8");
+  const powershell = readFileSync(join(process.cwd(), "shell", "agents.launchers.ps1"), "utf8");
+  const posixSet = posix.match(/set -- (--[a-z- ]+?) "\$@"/)?.[1]?.split(" ") ?? [];
+  const psSet = [
+    ...(powershell.match(/\$claudeFlags = @\(([^)]*)\)/)?.[1] ?? "").matchAll(/'([^']+)'/g),
+  ].map((m) => m[1]);
+  expect(posixSet.length).toBeGreaterThan(0);
+  expect(psSet).toEqual(posixSet);
 });

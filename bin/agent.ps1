@@ -2,7 +2,7 @@
 # bin/agent: installs bun if missing, installs node_modules in-place in the
 # checkout only when a read-only `proxy_float.ts --verify` says it's needed
 # (stale float / missing or out-of-sync node_modules), then runs the cli.ts
-# dispatcher (start / stop / env / cost / codex / claude).
+# dispatcher (cli.ts owns the subcommand list; see `agent --help`).
 # The `agent` function in agents.ps1 turns `agent env` output into session state.
 #
 # No cache: node_modules lives directly in the checkout and cli.ts runs from there.

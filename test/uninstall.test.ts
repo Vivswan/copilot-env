@@ -14,6 +14,7 @@ import {
   PROXY_HELPER_NAME,
   settingsPathFor,
 } from "../src/claude/config.ts";
+import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
 import { configureCodexConfig } from "../src/codex/config.ts";
 import { runUninstall, type UninstallDeps } from "../src/commands/uninstall.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
@@ -126,6 +127,11 @@ test("uninstall removes everything managed and preserves user config", async () 
   >;
   expect(settings.apiKeyHelper).toBeUndefined();
   expect(settings.env).toBeUndefined();
+  // The MCP + WebSearch-deny pair the direct wiring added is fully taken back.
+  expect(settings.permissions).toBeUndefined();
+  expect(
+    (JSON.parse(readFileSync(claudeJsonPath(), "utf8")) as Record<string, unknown>).mcpServers,
+  ).toBeUndefined();
   expect(settings.model).toBe("opus");
   expect(existsSync(join(claudeHome, DIRECT_HELPER_NAME))).toBe(false);
   expect(existsSync(join(claudeHome, PROXY_HELPER_NAME))).toBe(false);

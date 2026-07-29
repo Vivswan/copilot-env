@@ -29,6 +29,10 @@ macOS, and Windows**.
   its own port. Launch with `cl --profile <name>` / `cx --profile <name>`.
 - **Typed preferences**: `agent config` gets/sets every knob - lifecycle,
   ports, proxy feature flags, model ids - with one precedence rule everywhere.
+- **Web search for Claude Code on Direct**: the builtin WebSearch does not work
+  against Copilot's Anthropic endpoint, so direct wiring registers the
+  copilot-env MCP server (`agent mcp`), whose `web_search` tool searches
+  through Copilot's Responses API instead.
 - **Cost reporting**: estimated spend from per-host usage DBs via live OpenRouter pricing.
 - **Controlled floating**: the proxy floats to the newest cooldown-aged release
   within configured bounds; every other dependency is pinned via `bun.lock`.
@@ -87,6 +91,7 @@ agent stop                 # stop the daemon (--profile <name> for one profile's
 agent health               # full environment diagnosis (--scope full|runtime|proxy|setup|auth|codex|claude, --json, --live)
 agent models               # list the model ids + names Copilot serves (--proxy / --direct / --json; no flag auto-picks)
 agent env                  # print shell exports for the calling shell (CODEX_HOME / proxy ANTHROPIC_BASE_URL)
+agent mcp                  # run the copilot-env MCP stdio server (web_search; --profile, --model; --remove unwires)
 agent cost                 # estimated token spend across all usage DBs (default + profile daemons)
 agent update               # update to the latest release (--check; cooldown via `agent config --set update-cooldown`)
 agent shell                # wire rc / $PROFILE; --launchers adds cl/co/cx, --clis installs the CLIs, --remove unwires
@@ -166,6 +171,60 @@ With `auto-start` on:
 With `auto-start` off, the launchers prompt before starting a downed proxy;
 headless callers (Codex/Claude config hooks) never start it implicitly.
 
+### Web search for Claude Code
+
+Claude Code wired to GitHub Copilot Direct cannot use its builtin WebSearch:
+Copilot's Anthropic-compatible endpoint rejects the server-side search tool
+with a 400. Copilot's own Responses API does serve web search, so copilot-env
+ships an MCP stdio server (`agent mcp`) whose `web_search` tool proxies
+through it and returns a cited answer with a `Sources:` list.
+
+Wiring Claude direct (`agent init`, `agent claude --direct`) sets this up by
+itself: it registers the server in Claude Code's user scope and denies the
+broken builtin, and a proxy write takes both back (through the local proxy
+the builtin WebSearch works, so nothing is needed there). The pair is opt-out:
+
+```bash
+agent mcp --remove                  # unregister + restore the builtin + remember the opt-out
+agent config --set wire-mcp true    # opt back in (applies on the next direct wiring)
+```
+
+The search model follows `message-websearch-model` (default `gpt-5.6-sol` on
+this surface), read on every call - no restart:
+
+```bash
+agent config --set message-websearch-model gpt-5.6-sol
+```
+
+The server is client-agnostic. Register it in Codex, Cursor, or any other MCP
+client by pointing at the launcher (Codex itself needs no MCP for search - it
+speaks the Responses API natively):
+
+```jsonc
+{
+  "mcpServers": {
+    "copilot-env": {
+      "type": "stdio",
+      "command": "/path/to/copilot-env/bin/agent",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+It resolves the `agent auth` credential; without one it falls back to
+`COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, so a bare clone works:
+`GH_TOKEN=... bin/agent mcp`. The registered server uses the default
+credential; a named profile that needs its own registers a second entry with
+`--profile <name>`.
+
+The repo also doubles as a Claude Code plugin and a skills collection: the
+plugin (`.claude-plugin/` + the root `.mcp.json`) bundles the MCP server, and
+`npx skills add Vivswan/copilot-env` installs the companion
+[`web-search` skill](./skills/web-search). The plugin's bundled registration
+runs `bin/agent`, a POSIX script - on Windows, wire through `agent init` or
+register `bin\agent.ps1` by hand instead.
+
 ### Configuration
 
 `agent config` is the typed preference store. Every read site applies the same
@@ -184,7 +243,7 @@ agent config --del idle-timeout       # revert one to its default
 | `codex-model-catalog` | `false` | Patched Codex model catalog serving Copilot's real context windows (opt-in). |
 | `idle-timeout` | `3600` | Idle auto-stop window in seconds (`0` disables). |
 | `min-port` / `max-port` | `1024` / `65535` | Allowed proxy port range. |
-| `message-websearch-model` | proxy default | Model id the proxy uses for Messages-API web search. |
+| `message-websearch-model` | per surface | Web-search model id: the proxy's Messages-API path (default `gpt-5-mini`) and the MCP `web_search` tool (default `gpt-5.6-sol`). |
 | `messages-api` | `true` | Proxy Messages-API (Anthropic-shaped) endpoint. |
 | `passthrough` | `auto` | PAT passthrough: `auto` / `on` / `off` (see below). |
 | `port` | `4141` | Default proxy port (then next free unless `strict-port`). |
@@ -197,10 +256,13 @@ agent config --del idle-timeout       # revert one to its default
 | `small-model` | `gpt-5-mini` | Small/fast model id the proxy uses. |
 | `strict-port` | `false` | Fail `start` when the default port is busy instead of auto-incrementing. |
 | `update-cooldown` | none | `agent update` cooldown in days. |
+| `wire-mcp` | `true` | Wire the copilot-env MCP server + WebSearch deny into Claude on direct writes. |
 
 Proxy-side keys (`small-model`, the `responses-*`/`messages-api` flags,
 `message-websearch-model`) are projected into the proxy's own `config.json` at
-`agent start`, so changing them needs a daemon restart to take effect.
+`agent start`, so changing them needs a daemon restart to take effect - except
+that the MCP `web_search` tool reads `message-websearch-model` fresh on every
+call.
 
 `codex-model-catalog` applies at the next Codex auth refresh (within ~5
 minutes) or `agent codex`/`agent init` wiring; turning it off also removes the
@@ -243,6 +305,11 @@ re-authenticate one with `agent auth --profile <name>`. A proxy-mode profile
 gets its own daemon in an isolated home (`<copilot-api home>/profiles/<name>`)
 on a stable reserved port, managed via `agent start/stop --profile <name>`.
 Re-running `--add` with the other mode flag switches the profile's mode.
+One web-search caveat: a DIRECT profile over a PROXY default has no search
+path in Claude (the builtin 400s on Direct, and the machine-global MCP server
+is only registered while the default wiring is direct) - register the server
+by hand there if you need it, under a name other than `copilot-env` (wiring
+writes reclaim that name).
 
 ### Environment overrides
 

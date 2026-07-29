@@ -23,6 +23,7 @@ import { runConfig } from "./commands/config.ts";
 import { runEnv } from "./commands/env.ts";
 import { runHealth } from "./commands/health.ts";
 import { runInit } from "./commands/init.ts";
+import { runMcp } from "./commands/mcp.ts";
 import { runModels } from "./commands/models.ts";
 import { runProfile } from "./commands/profile.ts";
 import { runShell } from "./commands/setup.ts";
@@ -446,6 +447,23 @@ program
       check: Boolean(opts.check),
       direct: Boolean(opts.direct),
       proxy: Boolean(opts.proxy),
+    }),
+  );
+
+program
+  .command("mcp")
+  .description(
+    "Run the copilot-env MCP stdio server (web_search via GitHub Copilot /responses); " +
+      "register it in Claude, Codex, or any MCP client.",
+  )
+  .option("--remove", "Unregister from Claude Code, lift the managed WebSearch deny, and opt out.")
+  .option("--profile <name>", "Resolve the credential from this named profile (never falls back).")
+  .option("--model <id>", "Web-search model for this process (overrides message-websearch-model).")
+  .action((opts: Opts) =>
+    runMcp({
+      remove: Boolean(opts.remove),
+      profile: opts.profile === undefined ? undefined : String(opts.profile),
+      model: opts.model === undefined ? undefined : String(opts.model),
     }),
   );
 

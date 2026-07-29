@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { consola } from "consola";
 import { removeClaudeDefaultWiring, resolveClaudeHome, settingsPathFor } from "../claude/config.ts";
+import { removeClaudeMcpRegistration } from "../claude/mcp_registration.ts";
 import { knownCodexHomes, removeCodexDefaultWiring, removeCodexProfile } from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
@@ -181,8 +182,14 @@ export async function runUninstall(args: UninstallArgs, deps: UninstallDeps = {}
     );
   }
 
-  // 4. Default Claude wiring (surgical: only managed keys; helper scripts by name).
+  // 4. Default Claude wiring (surgical: only managed keys; helper scripts by name),
+  //    plus the copilot-env MCP registration in Claude's global ~/.claude.json.
   removeClaudeDefaultWiring(claudeHome);
+  try {
+    removeClaudeMcpRegistration();
+  } catch (e) {
+    consola.warn(`could not remove the copilot-env MCP registration: ${String(e)}`);
+  }
   consola.info("Removed the copilot-env Claude wiring.");
 
   // 5. The default credential (named profiles were cleared in step 2), BEFORE

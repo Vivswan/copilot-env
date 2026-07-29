@@ -60,6 +60,7 @@ test("3.3.3 (a): backfills gh-token for a stored token with no recorded provider
     profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogCodexVersion: null,
+    webSearchDenyOwnedPaths: [],
   });
 });
 
@@ -75,6 +76,7 @@ test("3.3.3 (b): imports copilot-api's token as copilot and scrubs its file", ()
     profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogCodexVersion: null,
+    webSearchDenyOwnedPaths: [],
   });
   expect(existsSync(tokenFile)).toBe(false); // scrubbed
 });
@@ -93,6 +95,7 @@ test("3.3.3 is idempotent: a chosen gh-cli provider (no token) is never overwrit
     profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogCodexVersion: null,
+    webSearchDenyOwnedPaths: [],
   });
 });
 

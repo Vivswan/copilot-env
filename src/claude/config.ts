@@ -23,6 +23,8 @@ import { homedir } from "node:os";
 import * as path from "node:path";
 import { codexUserAgent, probeDirectIntegrationId } from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { INTEGRATION_ID_HEADER } from "../copilot_api/integration_identity.ts";
 import {
   copilotApiResolvePort,
@@ -53,6 +55,7 @@ import {
   proxyTokenCommand,
   proxyTokenScriptArgs,
 } from "../utils/root.ts";
+import { registerClaudeMcpServer, removeClaudeMcpRegistration } from "./mcp_registration.ts";
 
 const logger = createStderrLogger();
 
@@ -167,7 +170,9 @@ function claudeBaseUrlMatchesProxy(baseUrl: string, expectedPort: number): boole
  * single knob -- there is no per-command override flag.
  */
 export function resolveClaudeHome(): string {
-  if (process.env.CLAUDE_CONFIG_DIR) return process.env.CLAUDE_CONFIG_DIR;
+  // Resolved to an absolute path: the web-search deny ownership record keys on this
+  // exact string, so a relative CLAUDE_CONFIG_DIR must not drift with the cwd.
+  if (process.env.CLAUDE_CONFIG_DIR) return path.resolve(process.env.CLAUDE_CONFIG_DIR);
   // Use homedir() WITHOUT a process.env.HOME override, matching the codex-side contract
   // (src/codex/config.ts): on Windows homedir() is %USERPROFILE% (where Claude Code reads),
   // whereas HOME may be a Git-for-Windows/MSYS path -- the two must not diverge or `init`
@@ -336,6 +341,140 @@ function applyManagedEnv(
   doc.env = env;
 }
 
+/** The builtin tool denied on Direct (Copilot's host 400s it; the MCP tool replaces it). */
+export const WEBSEARCH_DENY_RULE = "WebSearch";
+
+/**
+ * Deferred state writes for the web-search pair. The document mutations happen
+ * eagerly, but the ownership record in the copilot-env state (and the registration
+ * removal on the take-back path) must only land once the settings doc is actually
+ * persisted -- run the returned commit AFTER a successful save, so a failed write
+ * leaves store and file consistent and a retry can still recover.
+ */
+type WebSearchPairCommit = () => void;
+const NO_COMMIT: WebSearchPairCommit = () => {};
+
+/**
+ * Add `WebSearch` to `permissions.deny`. Ownership is recorded (post-save) as the
+ * exact settings PATH the entry was added to -- a deny the user already had, or one
+ * living in a different CLAUDE_CONFIG_DIR, is never claimed, so the removal path can
+ * only ever take back ours. Preserves every other permissions entry (allow, foreign
+ * deny rules, order); a malformed `permissions`/`deny` is warned about and left
+ * alone, never replaced.
+ */
+function addManagedWebSearchDeny(
+  doc: Record<string, unknown>,
+  settingsPath: string,
+): WebSearchPairCommit {
+  if (doc.permissions !== undefined && !isRecord(doc.permissions)) {
+    logger.warn("settings.json permissions is not an object; leaving it alone (no WebSearch deny)");
+    return NO_COMMIT;
+  }
+  const permissions = isRecord(doc.permissions) ? doc.permissions : {};
+  if (permissions.deny !== undefined && !Array.isArray(permissions.deny)) {
+    logger.warn("settings.json permissions.deny is not an array; leaving permissions alone");
+    return NO_COMMIT;
+  }
+  const deny: unknown[] = Array.isArray(permissions.deny) ? permissions.deny : [];
+  // Already present: either the user's own rule (never claim it) or ours from an
+  // earlier write (the ownership record already says so).
+  if (deny.includes(WEBSEARCH_DENY_RULE)) return NO_COMMIT;
+  deny.push(WEBSEARCH_DENY_RULE);
+  permissions.deny = deny;
+  doc.permissions = permissions;
+  // The record lands post-save on purpose: if the settings write fails, an
+  // unclaimed marker would let a deny the USER adds later become ours to delete.
+  // The inverse failure (save ok, record write fails) merely orphans OUR entry --
+  // the user removes one line by hand -- which is the acceptable direction.
+  return () => new CopilotEnvState().addWebSearchDenyOwnedPath(settingsPath);
+}
+
+/** Remove OUR `WebSearch` deny entry (ownership-gated by exact settings path),
+ *  dropping emptied objects; the ownership record clears post-save. */
+function stripManagedWebSearchDeny(
+  doc: Record<string, unknown>,
+  settingsPath: string,
+): WebSearchPairCommit {
+  const state = new CopilotEnvState();
+  if (!state.ownsWebSearchDeny(settingsPath)) return NO_COMMIT;
+  const permissions = isRecord(doc.permissions) ? doc.permissions : null;
+  if (permissions !== null && Array.isArray(permissions.deny)) {
+    const filtered = permissions.deny.filter((rule) => rule !== WEBSEARCH_DENY_RULE);
+    if (filtered.length > 0) permissions.deny = filtered;
+    else delete permissions.deny;
+    if (Object.keys(permissions).length === 0) delete doc.permissions;
+  }
+  return () => state.removeWebSearchDenyOwnedPath(settingsPath);
+}
+
+/**
+ * The web-search pair for the DEFAULT profile: the `copilot-env` MCP server
+ * registration (in Claude's global `~/.claude.json`) and the builtin-WebSearch
+ * deny (in the settings doc). They move together as one unit -- registration
+ * FIRST, and the deny only stands while the registration is confirmed, so a
+ * machine is never left with the builtin denied and no replacement (a failed
+ * registration takes an existing managed deny back OUT). Direct with `wire-mcp`
+ * on wires the pair; proxy, or `wire-mcp` off, takes both back (the floated
+ * proxy serves web search itself, so the builtin works there).
+ *
+ * Default profile only by nature: `~/.claude.json` is global and deny rules
+ * UNION across settings layers (a named proxy profile over a direct default
+ * could never un-deny), so named profiles never carry the pair -- when the
+ * default is direct, their sessions inherit it from the default layer.
+ *
+ * Returns the post-save commit (see WebSearchPairCommit).
+ */
+function applyWebSearchPair(
+  doc: Record<string, unknown>,
+  mode: ManagedAgentMode,
+  settingsPath: string,
+): WebSearchPairCommit {
+  if (mode === "direct" && new CopilotEnvConfig().wireMcpEnabled()) {
+    if (registerClaudeMcpServer()) {
+      return addManagedWebSearchDeny(doc, settingsPath);
+    }
+    logger.warn(
+      "copilot-env MCP registration failed; removing the managed WebSearch deny so the " +
+        "builtin stays reachable (it will 400 on Copilot Direct) - fix ~/.claude.json, " +
+        "then rewire with `agent claude --direct`",
+    );
+    return stripManagedWebSearchDeny(doc, settingsPath);
+  }
+  const commit = stripManagedWebSearchDeny(doc, settingsPath);
+  // The registration is removed post-save too: if the settings write fails, the
+  // machine keeps the consistent old state (deny + server) instead of losing only
+  // the server half.
+  return () => {
+    commit();
+    removeClaudeMcpRegistration();
+  };
+}
+
+/**
+ * Re-derive the web-search pair for the CURRENT default wiring: ours-and-direct
+ * applies it (per `wire-mcp`), proxy/none takes it back, a foreign settings.json
+ * is never touched. The load-modify-save is skipped when nothing changed.
+ * Shared by the 3.5.2 migration (existing installs never rewire on update) and
+ * `agent mcp --remove` (which stores `wire-mcp false` first, making this strip).
+ */
+export function syncDefaultWebSearchWiring(claudeHome = resolveClaudeHome()): void {
+  const settingsPath = settingsPathFor(claudeHome);
+  const status = inspectClaudeWiring(readTextOrNull(settingsPath), claudeHome, 0);
+  if (status.providerMode === "other") return;
+  const doc = loadSettings(settingsPath);
+  const before = JSON.stringify(doc);
+  const commit = applyWebSearchPair(
+    doc,
+    status.providerMode === "direct" ? "direct" : "proxy",
+    settingsPath,
+  );
+  if (JSON.stringify(doc) !== before) {
+    if (Object.keys(doc).length === 0) fs.rmSync(settingsPath, { force: true });
+    else saveSettings(settingsPath, doc);
+  }
+  commit();
+}
+
 /**
  * Apply the managed Claude wiring at `claudeHome` for `profile` (default =
  * settings.json; named = settings-<name>.json, launched via `claude --settings`).
@@ -404,7 +543,14 @@ export function configureClaudeConfig(
     writeHelperScript(directHelperPath(claudeHome, profile), directHelperScript(profile));
     doc.apiKeyHelper = directHelperPath(claudeHome, profile);
     applyManagedEnv(doc, "direct", DIRECT_BASE_URL, profile, options.directIntegrationId);
+    // The MCP + deny pair is machine-global (default profile, the REAL Claude home
+    // only -- the throwaway detect-probe home must not touch ~/.claude.json).
+    const commit =
+      profile === null && claudeHome === resolveClaudeHome()
+        ? applyWebSearchPair(doc, "direct", settingsPath)
+        : NO_COMMIT;
     saveSettings(settingsPath, doc);
+    commit();
     if (!quiet) {
       logger.log(`  ✓ Claude config written → ${settingsPath} (direct: GitHub Copilot)`);
     }
@@ -423,7 +569,12 @@ export function configureClaudeConfig(
   // expects); env.ts's isLocalProxyUrl accepts it. Host rationale (127.0.0.1, never localhost)
   // on the helper in port.ts.
   applyManagedEnv(doc, "proxy", proxyLoopbackOrigin(port), profile);
+  const commit =
+    profile === null && claudeHome === resolveClaudeHome()
+      ? applyWebSearchPair(doc, "proxy", settingsPath)
+      : NO_COMMIT;
   saveSettings(settingsPath, doc);
+  commit();
   if (!quiet) {
     logger.log(`  ✓ Claude config written → ${settingsPath} (proxy mode → port ${port})`);
   }
@@ -509,14 +660,15 @@ export function removeClaudeProfile(claudeHome: string, name: string): void {
 
 /**
  * Remove the DEFAULT profile's managed Claude artifacts: the managed settings.json
- * keys (apiKeyHelper + the managed env vars), stripped only while apiKeyHelper
- * still points at the managed helper (inspectClaudeWiring reports direct/proxy) --
+ * keys (apiKeyHelper + the managed env vars + OUR WebSearch deny entry, when the
+ * ownership record says we added it), stripped only while apiKeyHelper still
+ * points at the managed helper (inspectClaudeWiring reports direct/proxy) --
  * that helper is what makes the whole managed key set ours, exactly as an explicit
  * mode write would reclaim it; a foreign apiKeyHelper (`other`) leaves settings.json
  * alone. Helper scripts are removed by name (mirrors removeClaudeProfile). The
- * strip is surgical so every other user setting (permissions, model, hooks)
- * survives; an emptied env object is dropped, and a doc emptied entirely removes
- * settings.json itself. Used by `agent uninstall`.
+ * strip is surgical so every other user setting (model, hooks, the user's own
+ * permissions entries) survives; an emptied env object is dropped, and a doc
+ * emptied entirely removes settings.json itself. Used by `agent uninstall`.
  */
 export function removeClaudeDefaultWiring(claudeHome: string): void {
   const settingsPath = settingsPathFor(claudeHome);
@@ -529,8 +681,10 @@ export function removeClaudeDefaultWiring(claudeHome: string): void {
     delete env[DISABLE_BETAS_ENV];
     delete env[CUSTOM_HEADERS_ENV];
     if (Object.keys(env).length === 0) delete doc.env;
+    const commit = stripManagedWebSearchDeny(doc, settingsPath);
     if (Object.keys(doc).length === 0) fs.rmSync(settingsPath, { force: true });
     else saveSettings(settingsPath, doc);
+    commit();
   }
   fs.rmSync(directHelperPath(claudeHome), { force: true });
   fs.rmSync(proxyHelperPath(claudeHome), { force: true });

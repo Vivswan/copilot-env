@@ -54,12 +54,34 @@ test("`cli.ts --help` loads the CLI and exits 0", () => {
   expect(output).toContain("start");
   expect(output).toContain("shell");
   expect(output).toContain("uninstall");
+  expect(output).toContain("mcp");
   // `init` is the headline command and appears first in the COMMANDS list.
   expect(output).toContain("init");
   expect(output.indexOf("init")).toBeLessThan(output.indexOf("start"));
   // Flat command tree: there is no nested `setup` parent, and the root help
   // surfaces the global --version flag.
   expect(output).toContain("--version");
+});
+
+test("cli.ts mcp --help exposes the server flags; --remove rejects serve-only flags", () => {
+  const help = Bun.spawnSync(["bun", "src/cli.ts", "mcp", "--help"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, CONSOLA_LEVEL: "5" },
+  });
+  const output = help.stdout.toString() + help.stderr.toString();
+  expect(help.exitCode).toBe(0);
+  expect(output).toContain("--remove");
+  expect(output).toContain("--profile");
+  expect(output).toContain("--model");
+
+  const conflict = Bun.spawnSync(["bun", "src/cli.ts", "mcp", "--remove", "--model", "x"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, CONSOLA_LEVEL: "5" },
+  });
+  expect(conflict.exitCode).not.toBe(0);
+  expect(conflict.stderr.toString()).toContain("--remove takes no --profile/--model");
 });
 
 for (const args of [["shell"]] as const) {

@@ -55,6 +55,8 @@ export interface CopilotEnvConfigData {
   updateCooldown?: number;
   /** Patched Codex model catalog with Copilot's real context windows (opt-in). */
   codexModelCatalog?: boolean;
+  /** Wire the copilot-env MCP server (+ WebSearch deny) into Claude on direct writes. */
+  wireMcp?: boolean;
 }
 
 type ConfigPatch = { [K in keyof CopilotEnvConfigData]?: CopilotEnvConfigData[K] | null };
@@ -99,6 +101,7 @@ const CONFIG_SCHEMA = v.object({
   releaseCooldown: v.fallback(v.optional(wholeSeconds), undefined),
   updateCooldown: v.fallback(v.optional(wholeDays), undefined),
   codexModelCatalog: v.fallback(v.optional(v.boolean()), undefined),
+  wireMcp: v.fallback(v.optional(v.boolean()), undefined),
 });
 
 export type ConfigKey = keyof CopilotEnvConfigData;
@@ -215,10 +218,12 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
   {
     cli: "message-websearch-model",
     key: "messageApiWebSearchModel",
-    describe: "Model id the proxy uses for Messages-API web search",
+    describe: "Model id for web search: the proxy's Messages-API path and the MCP web_search tool",
     parse: parseNonEmpty,
-    defaultLabel: "gpt-5-mini (proxy default)",
+    defaultLabel: "gpt-5-mini (proxy) / gpt-5.6-sol (mcp)",
     proxyProjected: true,
+    applyHint:
+      "Proxy surface applies on the next `agent start`; the MCP web_search tool reads it on every call.",
   },
   {
     cli: "messages-api",
@@ -321,6 +326,15 @@ export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = [
     parse: (r) => parseWholeNumber(r, 0, MAX_DAYS),
     defaultLabel: "none (immediate)",
   },
+  {
+    cli: "wire-mcp",
+    key: "wireMcp",
+    describe:
+      "Wire the copilot-env MCP server (web_search) and the WebSearch deny into Claude on direct writes (bool)",
+    parse: parseBool,
+    defaultLabel: "true",
+    applyHint: "Applies at the next `agent claude`/`agent init` direct wiring.",
+  },
 ];
 
 /** Look up a registry entry by its CLI (kebab) name. */
@@ -385,6 +399,11 @@ export class CopilotEnvConfig {
   /** Whether the patched Codex model catalog is enabled (opt-in, default off). */
   codexModelCatalogEnabled(): boolean {
     return this.read().codexModelCatalog === true;
+  }
+
+  /** Whether direct Claude wiring registers the MCP server + WebSearch deny (default ON). */
+  wireMcpEnabled(): boolean {
+    return this.read().wireMcp !== false;
   }
 
   /**

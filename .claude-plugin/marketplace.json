@@ -1,0 +1,18 @@
+{
+  "name": "copilot-env",
+  "owner": {
+    "name": "Vivswan Shah",
+    "email": "58091053+Vivswan@users.noreply.github.com"
+  },
+  "metadata": {
+    "description": "copilot-env: GitHub Copilot wiring for Codex and Claude Code, plus web search over the Copilot Responses API"
+  },
+  "plugins": [
+    {
+      "name": "copilot-env",
+      "description": "Web search for Claude Code on GitHub Copilot Direct: the copilot-env MCP server (web_search via /responses) and its companion skill",
+      "homepage": "https://github.com/Vivswan/copilot-env",
+      "source": "./"
+    }
+  ]
+}

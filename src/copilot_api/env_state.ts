@@ -82,6 +82,15 @@ export interface CopilotEnvStateData {
   codexCatalogLastAttemptMs: number;
   /** The codex CLI version the catalog was last generated against (null if never). */
   codexCatalogCodexVersion: string | null;
+  /**
+   * The settings.json PATHS whose `permissions.deny` copilot-env itself ADDED the
+   * `WebSearch` entry to (the direct-wiring pair in src/claude/config.ts). Keying
+   * ownership to the exact files means a deny the user already had - or one in a
+   * different CLAUDE_CONFIG_DIR - is never ours to remove, and wiring one Claude
+   * home never forgets ownership taken in another; a proxy switch / uninstall /
+   * `agent mcp --remove` only ever takes back the entry we put in THAT file.
+   */
+  webSearchDenyOwnedPaths: string[];
 }
 
 // Mirror CopilotEnvRunState/AutoupdateState's patch spelling (`Data[K] | null`).
@@ -115,10 +124,18 @@ const STATE_SCHEMA = v.object({
     v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1))),
     null,
   ),
+  webSearchDenyOwnedPaths: v.fallback(v.array(v.pipe(v.string(), v.trim(), v.minLength(1))), []),
 });
 
 function emptyProfile(): ProfileSlotData {
   return { githubToken: null, authProvider: null, mode: null, integrationIdentity: null };
+}
+
+/** The raw owned-paths list from an untyped store document (junk entries dropped). */
+function ownedPathList(d: Record<string, unknown>): string[] {
+  return Array.isArray(d.webSearchDenyOwnedPaths)
+    ? d.webSearchDenyOwnedPaths.filter((p): p is string => typeof p === "string" && p !== "")
+    : [];
 }
 
 /**
@@ -214,6 +231,29 @@ export class CopilotEnvState {
   /** Record (or clear, with null) a NAMED profile's probed direct-mode identity. */
   setProfileIntegrationIdentity(name: string, integrationIdentity: string | null): void {
     this.mergeProfileSlot(name, { integrationIdentity });
+  }
+
+  /** Whether WE added the WebSearch deny to this exact settings file. */
+  ownsWebSearchDeny(settingsPath: string): boolean {
+    return this.read().webSearchDenyOwnedPaths.includes(settingsPath);
+  }
+
+  /** Record that we added the WebSearch deny to `settingsPath` (atomic, idempotent). */
+  addWebSearchDenyOwnedPath(settingsPath: string): void {
+    this.store.update((d) => {
+      const list = ownedPathList(d).filter((p) => p !== settingsPath);
+      list.push(settingsPath);
+      d.webSearchDenyOwnedPaths = list;
+    });
+  }
+
+  /** Forget ownership for `settingsPath`; an emptied list drops the key entirely. */
+  removeWebSearchDenyOwnedPath(settingsPath: string): void {
+    this.store.update((d) => {
+      const list = ownedPathList(d).filter((p) => p !== settingsPath);
+      if (list.length === 0) delete d.webSearchDenyOwnedPaths;
+      else d.webSearchDenyOwnedPaths = list;
+    });
   }
 
   private mergeProfileSlot(name: string, patch: ProfilePatch): void {

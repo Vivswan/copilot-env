@@ -55,6 +55,7 @@ test("each typed key round-trips and del() reverts it to undefined (default)", (
     releaseCooldown: 86400,
     updateCooldown: 7,
     codexModelCatalog: true,
+    wireMcp: false,
   });
   expect(cfg.read()).toEqual({
     autoStart: true,
@@ -75,9 +76,11 @@ test("each typed key round-trips and del() reverts it to undefined (default)", (
     releaseCooldown: 86400,
     updateCooldown: 7,
     codexModelCatalog: true,
+    wireMcp: false,
   });
   expect(cfg.autoStartEnabled()).toBe(true);
   expect(cfg.codexModelCatalogEnabled()).toBe(true);
+  expect(cfg.wireMcpEnabled()).toBe(false);
 
   cfg.del("autoStart");
   expect(cfg.read().autoStart).toBeUndefined();
@@ -88,6 +91,11 @@ test("each typed key round-trips and del() reverts it to undefined (default)", (
   cfg.del("codexModelCatalog");
   expect(cfg.read().codexModelCatalog).toBeUndefined();
   expect(cfg.codexModelCatalogEnabled()).toBe(false);
+
+  // wire-mcp is opt-OUT: unset reads as enabled.
+  cfg.del("wireMcp");
+  expect(cfg.read().wireMcp).toBeUndefined();
+  expect(cfg.wireMcpEnabled()).toBe(true);
 });
 
 test("the read schema is lenient: ill-typed / out-of-range stored values fall back to default", () => {
@@ -171,6 +179,7 @@ test("the registry covers exactly the documented keys, in alphabetical order", (
     "small-model",
     "strict-port",
     "update-cooldown",
+    "wire-mcp",
   ]);
   // The display order IS alphabetical -- a new key must be inserted in place.
   expect(clis).toEqual([...clis].sort());

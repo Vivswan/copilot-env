@@ -1,0 +1,28 @@
+{
+  "name": "web-search",
+  "description": "Search the web through GitHub Copilot's Responses API via the copilot-env MCP server.",
+  "author": {
+    "name": "Vivswan Shah",
+    "email": "58091053+Vivswan@users.noreply.github.com",
+    "url": "https://vivswan.github.io/"
+  },
+  "homepage": "https://github.com/Vivswan/copilot-env/tree/main/skills/web-search",
+  "repository": "https://github.com/Vivswan/copilot-env",
+  "license": "MIT",
+  "keywords": ["agent-skills", "web-search", "copilot", "mcp"],
+  "skills": "./",
+  "interface": {
+    "displayName": "Web Search via Copilot",
+    "shortDescription": "Search the web through GitHub Copilot.",
+    "longDescription": "Answers questions that need current information by searching through GitHub Copilot's Responses API, using the copilot-env MCP server's web_search tool with a documented fallback when the tool is not registered.",
+    "developerName": "Vivswan",
+    "category": "Developer Tools",
+    "capabilities": ["Read"],
+    "websiteURL": "https://github.com/Vivswan/copilot-env/tree/main/skills/web-search",
+    "defaultPrompt": [
+      "Search the web for the latest bun release notes.",
+      "What changed in the newest TypeScript version?"
+    ],
+    "brandColor": "#0F766E"
+  }
+}

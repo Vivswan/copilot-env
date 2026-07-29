@@ -1,5 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,8 +20,14 @@ import {
   detectClaudeDirect,
   inspectClaudeWiring,
   PROXY_HELPER_NAME,
+  removeClaudeDefaultWiring,
   runClaude,
+  syncDefaultWebSearchWiring,
+  WEBSEARCH_DENY_RULE,
 } from "../src/claude/config.ts";
+import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
+import { runMcp } from "../src/commands/mcp.ts";
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { copilotApiResolvePort } from "../src/copilot_api/port.ts";
 
@@ -286,4 +300,181 @@ test("runClaude with a stored token selects Direct WITHOUT baking it; --proxy st
   // --proxy still wins: proxy mode (the stored token is only used by the proxy).
   await runClaude({ proxy: true });
   expect(read().providerMode).toBe("proxy");
+});
+
+// --- the MCP + WebSearch-deny pair (default profile, direct wiring) -----------
+
+function readClaudeJson(): Record<string, unknown> {
+  return JSON.parse(readFileSync(claudeJsonPath(), "utf8"));
+}
+
+function denyOf(doc: Record<string, unknown>): unknown {
+  const permissions = doc.permissions as Record<string, unknown> | undefined;
+  return permissions?.deny;
+}
+
+test("a direct default write registers the MCP server and denies the builtin WebSearch; proxy takes both back", () => {
+  const home = tmpHome();
+
+  configureClaudeConfig(home, "direct");
+  expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
+  const servers = readClaudeJson().mcpServers as Record<string, unknown>;
+  expect(servers["copilot-env"]).toMatchObject({ "type": "stdio" });
+  expect(new CopilotEnvState().read().webSearchDenyOwnedPaths).toEqual([
+    join(home, "settings.json"),
+  ]);
+
+  // Foreign permissions entries survive; ours joins them.
+  const seeded = readSettings(home);
+  seeded.permissions = { allow: ["Bash"], deny: ["Foreign", WEBSEARCH_DENY_RULE] };
+  writeFileSync(join(home, "settings.json"), `${JSON.stringify(seeded, null, 2)}\n`);
+  configureClaudeConfig(home, "direct");
+  expect(denyOf(readSettings(home))).toEqual(["Foreign", WEBSEARCH_DENY_RULE]);
+  expect((readSettings(home).permissions as Record<string, unknown>).allow).toEqual(["Bash"]);
+
+  // The proxy write removes only OUR deny entry and the registration.
+  configureClaudeConfig(home, "proxy");
+  const after = readSettings(home);
+  expect(denyOf(after)).toEqual(["Foreign"]);
+  expect(readClaudeJson().mcpServers).toBeUndefined();
+  expect(new CopilotEnvState().read().webSearchDenyOwnedPaths).toEqual([]);
+});
+
+test("a pre-existing user WebSearch deny is never claimed nor removed", () => {
+  const home = tmpHome();
+  // Seed the user's own deny BEFORE any managed write.
+  mkdirSync(home, { recursive: true });
+  writeFileSync(
+    join(home, "settings.json"),
+    `${JSON.stringify({ permissions: { deny: [WEBSEARCH_DENY_RULE] } }, null, 2)}\n`,
+  );
+  configureClaudeConfig(home, "direct");
+  expect(new CopilotEnvState().read().webSearchDenyOwnedPaths).toEqual([]);
+
+  configureClaudeConfig(home, "proxy");
+  expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]); // user policy survives
+});
+
+test("registration failure (foreign .claude.json entry) skips the deny - never deny without a server", () => {
+  const home = tmpHome();
+  mkdirSync(home, { recursive: true });
+  writeFileSync(
+    claudeJsonPath(),
+    `${JSON.stringify({
+      mcpServers: { "copilot-env": { "type": "stdio", "command": "npx", "args": ["other"] } },
+    })}\n`,
+  );
+  configureClaudeConfig(home, "direct");
+  expect(denyOf(readSettings(home))).toBeUndefined();
+  expect(new CopilotEnvState().read().webSearchDenyOwnedPaths).toEqual([]);
+});
+
+test("wire-mcp false: a direct write wires nothing and clears prior managed artifacts", () => {
+  const home = tmpHome();
+  configureClaudeConfig(home, "direct");
+  expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
+
+  new CopilotEnvConfig().set({ wireMcp: false });
+  configureClaudeConfig(home, "direct");
+  const doc = readSettings(home);
+  expect(doc.permissions).toBeUndefined();
+  expect(readClaudeJson().mcpServers).toBeUndefined();
+  expect(new CopilotEnvState().read().webSearchDenyOwnedPaths).toEqual([]);
+});
+
+test("removeClaudeDefaultWiring strips our deny and deletes settings.json when emptied", () => {
+  const home = tmpHome();
+  configureClaudeConfig(home, "direct");
+  // The managed keys + our deny are ALL the file holds -> uninstall removes the file.
+  removeClaudeDefaultWiring(home);
+  expect(existsSync(join(home, "settings.json"))).toBe(false);
+  expect(new CopilotEnvState().read().webSearchDenyOwnedPaths).toEqual([]);
+});
+
+test("removeClaudeDefaultWiring keeps user keys and drops an emptied permissions object", () => {
+  const home = tmpHome();
+  configureClaudeConfig(home, "direct");
+  const seeded = readSettings(home);
+  seeded.model = "opus";
+  writeFileSync(join(home, "settings.json"), `${JSON.stringify(seeded, null, 2)}\n`);
+
+  removeClaudeDefaultWiring(home);
+  const doc = readSettings(home);
+  expect(doc.model).toBe("opus");
+  expect(doc.permissions).toBeUndefined();
+  expect(doc.apiKeyHelper).toBeUndefined();
+});
+
+test("syncDefaultWebSearchWiring applies the pair to existing direct wiring (the migration path)", () => {
+  const home = tmpHome();
+  configureClaudeConfig(home, "direct");
+  // Simulate a pre-3.5.2 install: wiring exists but the pair does not.
+  const doc = readSettings(home);
+  delete doc.permissions;
+  writeFileSync(join(home, "settings.json"), `${JSON.stringify(doc, null, 2)}\n`);
+  rmSync(claudeJsonPath(), { force: true });
+  new CopilotEnvState().set({ webSearchDenyOwnedPaths: null });
+
+  syncDefaultWebSearchWiring(home);
+  expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
+  expect((readClaudeJson().mcpServers as Record<string, unknown>)["copilot-env"]).toBeDefined();
+
+  // Byte-idempotent: a second run rewrites nothing.
+  const before = statSync(join(home, "settings.json")).mtimeMs;
+  syncDefaultWebSearchWiring(home);
+  expect(statSync(join(home, "settings.json")).mtimeMs).toBe(before);
+});
+
+test("runMcp --remove takes back the pair and stores a durable wire-mcp opt-out", async () => {
+  const home = tmpHome();
+  configureClaudeConfig(home, "direct");
+  expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
+
+  await runMcp({ remove: true });
+  expect(denyOf(readSettings(home))).toBeUndefined();
+  expect(readClaudeJson().mcpServers).toBeUndefined();
+  expect(new CopilotEnvConfig().read().wireMcp).toBe(false);
+
+  // A later direct write respects the stored opt-out.
+  configureClaudeConfig(home, "direct");
+  expect(denyOf(readSettings(home))).toBeUndefined();
+});
+
+test("registration failure with a PRIOR managed deny strips it - never denied without a server", () => {
+  const home = tmpHome();
+  configureClaudeConfig(home, "direct");
+  expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
+
+  // ~/.claude.json turns malformed (Claude Code rewrites it constantly).
+  writeFileSync(claudeJsonPath(), "{ not json");
+  configureClaudeConfig(home, "direct");
+  expect(denyOf(readSettings(home))).toBeUndefined();
+  expect(new CopilotEnvState().read().webSearchDenyOwnedPaths).toEqual([]);
+});
+
+test("a malformed permissions value (non-object) is never replaced", () => {
+  const home = tmpHome();
+  configureClaudeConfig(home, "direct");
+  const seeded = readSettings(home);
+  seeded.permissions = "everything";
+  writeFileSync(join(home, "settings.json"), `${JSON.stringify(seeded, null, 2)}\n`);
+
+  configureClaudeConfig(home, "direct");
+  expect(readSettings(home).permissions).toBe("everything");
+});
+
+test("ownership is keyed to the settings path: a stale marker never strips another home's deny", () => {
+  const home = tmpHome();
+  configureClaudeConfig(home, "direct"); // marker now points at THIS home's settings.json
+
+  // Same store, different Claude home holding the USER'S OWN deny.
+  const otherHome = join(dir, ".claude-other");
+  process.env.CLAUDE_CONFIG_DIR = otherHome;
+  mkdirSync(otherHome, { recursive: true });
+  writeFileSync(
+    join(otherHome, "settings.json"),
+    `${JSON.stringify({ permissions: { deny: [WEBSEARCH_DENY_RULE] } }, null, 2)}\n`,
+  );
+  configureClaudeConfig(otherHome, "proxy");
+  expect(denyOf(readSettings(otherHome))).toEqual([WEBSEARCH_DENY_RULE]); // user policy survives
 });

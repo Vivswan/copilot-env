@@ -11,6 +11,16 @@ export function disableConsolaTimestamps(): void {
   consola.options.formatOptions = { ...consola.options.formatOptions, ...NO_DATE };
 }
 
+/**
+ * Route the shared global `consola` to stderr. The MCP stdio server owns stdout as a
+ * JSON-RPC stream, and library code it calls logs through the global consola (e.g.
+ * the integration-identity narration) -- one stray info line would corrupt the
+ * protocol, so the server redirects everything before its first request.
+ */
+export function redirectConsolaToStderr(): void {
+  consola.options.stdout = process.stderr;
+}
+
 /** A consola that writes to stderr (keeping stdout machine-readable), no timestamp. */
 export function createStderrLogger(): ConsolaInstance {
   return createConsola({

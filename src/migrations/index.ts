@@ -21,6 +21,7 @@ import { migration as v336 } from "./3.3.6.ts";
 import { migration as v3317 } from "./3.3.17.ts";
 import { migration as v3320 } from "./3.3.20.ts";
 import { migration as v351 } from "./3.5.1.ts";
+import { migration as v352 } from "./3.5.2.ts";
 
 /**
  * One step in the version history, named for the release it migrates AWAY FROM (so a
@@ -39,7 +40,7 @@ export interface Migration {
 
 // One file per version step (named for the from-version), registered in ascending order;
 // `dueMigrations` re-sorts defensively, so order here is for readability only.
-const MIGRATIONS: Migration[] = [v121, v320, v333, v336, v3317, v3320, v351];
+const MIGRATIONS: Migration[] = [v121, v320, v333, v336, v3317, v3320, v351, v352];
 
 /**
  * The migrations whose (from-)version falls in the half-open range [from, to), sorted

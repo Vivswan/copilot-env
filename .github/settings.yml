@@ -112,13 +112,21 @@ rulesets:
         parameters:
           review_on_push: true
           review_draft_pull_requests: true
+      # "Require code quality results" is a public-preview rule with no
+      # published REST schema; it is live on the repo (enabled by the old
+      # settings), so it stays declared to keep the sync from stripping it.
+      # `warnings` (plural) is the enum the live API stores.
+      - type: code_quality
+        parameters:
+          severity: warnings
     bypass_actors:
       - actor_id: 5
         actor_type: RepositoryRole
         bypass_mode: always
 
-  # vX.Y.Z release tags are immutable: repo-platform's push sync pins
-  # against them and release artifacts reference them.
+  # vX.Y.Z release tags are immutable: releases only ever move forward, the
+  # installers and `agent update` install by release tag, and repo-platform's
+  # push sync pins against them.
   - name: release-tags
     target: tag
     enforcement: active

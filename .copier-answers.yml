@@ -5,6 +5,7 @@ _src_path: gh:Vivswan/repo-platform
 channel: staging
 description: Local copilot-api proxy lifecycle + config helper (TypeScript).
 github_username: Vivswan
+homepage: https://github.com/Vivswan/copilot-env
 modules:
 - agents
 - bun
@@ -15,3 +16,4 @@ modules:
 private: false
 project_name: copilot-env
 project_slug: copilot-env
+topics: bun,claude-code,cli,codex,copilot,copilot-api,proxy,typescript

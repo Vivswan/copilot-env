@@ -10,5 +10,12 @@
   "repository": "https://github.com/Vivswan/copilot-env",
   "license": "MIT",
   "keywords": ["copilot", "web-search", "mcp", "claude-code", "agent-skills"],
-  "skills": ["./skills/web-search"]
+  "skills": ["./skills/web-search"],
+  "mcpServers": {
+    "copilot-env": {
+      "type": "stdio",
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/agent",
+      "args": ["mcp", "--serve"]
+    }
+  }
 }

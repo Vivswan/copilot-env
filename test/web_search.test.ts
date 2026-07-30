@@ -5,10 +5,12 @@ import { join } from "node:path";
 
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import { generateAliases, parseCatalogModels } from "../src/copilot_api/models.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import {
   DEFAULT_WEB_SEARCH_MODEL,
   parseResponsesOutput,
+  resetWebSearchAliasCache,
   resolveWebSearchCredential,
   webSearch,
 } from "../src/copilot_api/web_search.ts";
@@ -176,18 +178,117 @@ test("webSearch sends the pinned integration id without probing", async () => {
   expect(headers["Copilot-Integration-Id"]).toBe("copilot-developer-cli");
 });
 
+/** A raw direct-catalog body for the alias-resolution tests. */
+function catalogFixture(): unknown {
+  return {
+    "data": [{ "id": "gpt-6" }, { "id": "gpt-6-mini" }, { "id": "claude-fable-5" }],
+  };
+}
+
+const MODELS_URL = "https://api.githubcopilot.com/models";
+
 test("webSearch model precedence: explicit beats stored beats built-in default", async () => {
   tmpHome();
   new Credential(undefined, null).store("gh-token", "gho_stored");
   new CopilotEnvConfig().set({ messageApiWebSearchModel: "stored-model" });
 
-  const stored = fetchStub([okJson(responsesFixture())]);
+  // A configured model consults the live catalog first (alias resolution); an
+  // unknown value passes through to the POST unchanged.
+  const stored = fetchStub([okJson(catalogFixture()), okJson(responsesFixture())]);
   await webSearch("q", { fetchImpl: stored.fetchImpl });
-  expect(JSON.parse(String(stored.calls[0]?.init.body)).model).toBe("stored-model");
+  expect(stored.calls[0]?.url).toBe(MODELS_URL);
+  expect(JSON.parse(String(stored.calls[1]?.init.body)).model).toBe("stored-model");
 
-  const explicit = fetchStub([okJson(responsesFixture())]);
+  const explicit = fetchStub([okJson(catalogFixture()), okJson(responsesFixture())]);
   await webSearch("q", { fetchImpl: explicit.fetchImpl, model: "flag-model" });
-  expect(JSON.parse(String(explicit.calls[0]?.init.body)).model).toBe("flag-model");
+  expect(JSON.parse(String(explicit.calls[1]?.init.body)).model).toBe("flag-model");
+});
+
+test("webSearch resolves catalog aliases for the stored model (the proxy's semantics)", async () => {
+  tmpHome();
+  new Credential(undefined, null).store("gh-token", "gho_stored");
+  new CopilotEnvConfig().set({ messageApiWebSearchModel: "gpt-latest" });
+  const stub = fetchStub([okJson(catalogFixture()), okJson(responsesFixture())]);
+
+  await webSearch("q", { fetchImpl: stub.fetchImpl });
+
+  expect(stub.calls[0]?.url).toBe(MODELS_URL);
+  expect(JSON.parse(String(stub.calls[1]?.init.body)).model).toBe("gpt-6");
+});
+
+test("webSearch resolves aliases for the explicit --model flag too", async () => {
+  tmpHome();
+  new Credential(undefined, null).store("gh-token", "gho_stored");
+  const stub = fetchStub([okJson(catalogFixture()), okJson(responsesFixture())]);
+
+  await webSearch("q", { fetchImpl: stub.fetchImpl, model: "claude-latest" });
+
+  expect(JSON.parse(String(stub.calls[1]?.init.body)).model).toBe("claude-fable-5");
+});
+
+test("webSearch sends the raw value when the catalog fetch fails (best-effort)", async () => {
+  tmpHome();
+  new Credential(undefined, null).store("gh-token", "gho_stored");
+  new CopilotEnvConfig().set({ messageApiWebSearchModel: "gpt-latest" });
+  const stub = fetchStub([
+    new Response("nope", { status: 500, statusText: "Internal Server Error" }),
+    okJson(responsesFixture()),
+  ]);
+
+  const answer = await webSearch("q", { fetchImpl: stub.fetchImpl });
+
+  expect(answer).toContain("Bun 1.3 shipped.");
+  expect(JSON.parse(String(stub.calls[1]?.init.body)).model).toBe("gpt-latest");
+});
+
+test("webSearch passes an exact catalog id through unchanged", async () => {
+  tmpHome();
+  new Credential(undefined, null).store("gh-token", "gho_stored");
+  const stub = fetchStub([okJson(catalogFixture()), okJson(responsesFixture())]);
+
+  await webSearch("q", { fetchImpl: stub.fetchImpl, model: "gpt-6" });
+
+  expect(JSON.parse(String(stub.calls[1]?.init.body)).model).toBe("gpt-6");
+});
+
+test("the alias catalog is memoized per token, and a failed fetch is retried", async () => {
+  // The injected-fetchImpl seam bypasses the memo, so this test stubs the GLOBAL
+  // fetch to exercise the memo itself: failure eviction (a rejected catalog fetch
+  // must not stick) and the single shared fetch across subsequent calls.
+  tmpHome();
+  new Credential(undefined, null).store("gh-token", "gho_stored");
+  new CopilotEnvConfig().set({ messageApiWebSearchModel: "gpt-latest" });
+  const responses = [
+    new Response("nope", { status: 500, statusText: "Internal Server Error" }), // catalog: fails
+    okJson(responsesFixture()), // POST 1 (raw pass-through)
+    okJson(catalogFixture()), // catalog: retried after eviction
+    okJson(responsesFixture()), // POST 2 (resolved)
+    okJson(responsesFixture()), // POST 3 (memo hit: no catalog call)
+  ];
+  const calls: CapturedRequest[] = [];
+  const realFetch = globalThis.fetch;
+  resetWebSearchAliasCache();
+  try {
+    globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(input), init: init ?? {} });
+      const next = responses.shift();
+      if (next === undefined) throw new Error("global fetch stub exhausted");
+      return Promise.resolve(next);
+    }) as typeof fetch;
+    await webSearch("q");
+    await webSearch("q");
+    await webSearch("q");
+  } finally {
+    globalThis.fetch = realFetch;
+    resetWebSearchAliasCache();
+  }
+  expect(calls.filter((c) => c.url === MODELS_URL)).toHaveLength(2);
+  const posts = calls.filter((c) => c.url === "https://api.githubcopilot.com/responses");
+  expect(posts.map((c) => JSON.parse(String(c.init.body)).model)).toEqual([
+    "gpt-latest",
+    "gpt-6",
+    "gpt-6",
+  ]);
 });
 
 test("webSearch surfaces non-2xx as a legible error", async () => {
@@ -270,4 +371,36 @@ test("a cancelled call stops waiting for a cold PAT probe instead of sitting it 
   await expect(webSearch("q", { fetchImpl: neverFetch, signal: reasoned.signal })).rejects.toThrow(
     "web_search was cancelled: client went away",
   );
+});
+
+test("a cancelled call stops waiting for the alias catalog fetch too", async () => {
+  // A CONFIGURED model routes through the alias-resolution race at the top of
+  // webSearch; a hanging catalog fetch must not outlive the client's cancellation.
+  tmpHome();
+  new Credential(undefined, null).store("gh-token", "gho_stored");
+  new CopilotEnvConfig().set({ messageApiWebSearchModel: "gpt-latest" });
+  const neverFetch = () => new Promise<Response>(() => {});
+
+  const reasoned = new AbortController();
+  reasoned.abort("client went away");
+  await expect(webSearch("q", { fetchImpl: neverFetch, signal: reasoned.signal })).rejects.toThrow(
+    "web_search was cancelled: client went away",
+  );
+});
+
+test("DEFAULT_WEB_SEARCH_MODEL is a raw catalog id, never an alias", () => {
+  // The default path deliberately skips alias resolution (fetch-free), so the
+  // default must never be a value the alias map would remap (e.g. `gpt-latest`).
+  const aliases = generateAliases(
+    parseCatalogModels({
+      "data": [
+        { "id": DEFAULT_WEB_SEARCH_MODEL },
+        { "id": "gpt-6" },
+        { "id": "gpt-6-mini" },
+        { "id": "claude-fable-5" },
+        { "id": "claude-opus-4.8" },
+      ],
+    }),
+  );
+  expect(aliases[DEFAULT_WEB_SEARCH_MODEL]).toBeUndefined();
 });

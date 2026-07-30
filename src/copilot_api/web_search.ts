@@ -2,12 +2,14 @@
 // its builtin WebSearch (an Anthropic server-side tool Copilot's compat layer
 // rejects with a 400), but `POST /responses` with `tools: [{"type":"web_search"}]`
 // executes the search on Copilot's backend and returns a cited answer. This module
-// is the plain client behind the `agent mcp` server's `web_search` tool: credential
-// -> client identity -> one POST -> answer text with a `Sources:` list. It stays in
-// the copilot_api layer (like admin.ts / catalog.ts, the other REST clients) so the
-// MCP server remains a thin protocol adapter over it.
+// is the plain client behind the `agent mcp --serve` server's `web_search` tool:
+// credential -> client identity -> one POST -> answer text with a `Sources:` list.
+// It stays in the copilot_api layer (like admin.ts / catalog.ts, the other REST
+// clients) so the MCP server remains a thin protocol adapter over it.
 import { ghTokenEnvVarsList, ghTokenFromEnv } from "../utils/direct_probe.ts";
 import { isRecord } from "../utils/json.ts";
+import { createStderrLogger } from "../utils/logger.ts";
+import { fetchRawModels } from "./catalog.ts";
 import { Credential } from "./credential.ts";
 import { CopilotEnvConfig } from "./env_config.ts";
 import {
@@ -17,13 +19,17 @@ import {
   type ProbeFetch,
   resolveDirectIntegrationId,
 } from "./integration_identity.ts";
+import { generateAliases, parseCatalogModels } from "./models.ts";
 import { type Profile, profileLabel } from "./profile.ts";
+
+const logger = createStderrLogger();
 
 /**
  * Built-in default model for THIS surface when `message-websearch-model` is unset.
  * Deliberately different from the proxy's own default for the same stored key
  * (the Messages-API path defaults to a small model inside the proxy); one stored
- * override drives both surfaces.
+ * override drives both surfaces. Must remain a RAW catalog id, never an alias:
+ * the default path skips alias resolution so it stays fetch-free.
  */
 export const DEFAULT_WEB_SEARCH_MODEL = "gpt-5.6-sol";
 
@@ -92,11 +98,62 @@ export interface WebSearchOptions {
   signal?: AbortSignal;
 }
 
+// Memoized per token so a long-lived MCP server pays the catalog fetch once.
+// Injected fetchImpl bypasses the memo (the probeMemo precedent in
+// integration_identity.ts): test stubs sharing a token must not collide.
+const aliasMemo = new Map<string, Promise<Record<string, string>>>();
+
+/** Test hook: drop the alias memo (mirrors resetIntegrationIdentityCache). */
+export function resetWebSearchAliasCache(): void {
+  aliasMemo.clear();
+}
+
+function catalogAliases(token: string, fetchImpl?: ProbeFetch): Promise<Record<string, string>> {
+  const build = async () =>
+    generateAliases(
+      parseCatalogModels(await fetchRawModels("direct", { directToken: token, fetchImpl })),
+    );
+  if (fetchImpl !== undefined) return build();
+  let pending = aliasMemo.get(token);
+  if (pending === undefined) {
+    pending = build();
+    // A failed fetch must not poison the memo for a long-lived server: drop it
+    // so the next call retries.
+    pending.catch(() => aliasMemo.delete(token));
+    aliasMemo.set(token, pending);
+  }
+  return pending;
+}
+
+/**
+ * Resolve a catalog-derived alias (`gpt-latest`, `claude-latest`, `opus[1m]`, ...)
+ * the way the proxy does for the same stored key (start.ts), so the ONE
+ * `message-websearch-model` value drives both surfaces. BEST-EFFORT: on catalog
+ * failure warn and send the raw value (what this client always did). A lookup
+ * miss is a pass-through -- generateAliases skips identity mappings, so an exact
+ * catalog id sails through unchanged.
+ */
+async function resolveWebSearchModel(
+  model: string,
+  token: string,
+  fetchImpl?: ProbeFetch,
+): Promise<string> {
+  try {
+    return (await catalogAliases(token, fetchImpl))[model] ?? model;
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e);
+    logger.warn(
+      `could not resolve '${model}' against the live catalog (${detail}); sending it as-is`,
+    );
+    return model;
+  }
+}
+
 /**
  * The GitHub token the search runs under, or throw with a pointed message.
  * Provider-driven like every other read of the credential; the ONE extra rule here
  * is an explicit env fallback (GH_TOKEN et al.) when the default slot has no
- * provider recorded at all -- that keeps a bare clone (`GH_TOKEN=... bin/agent mcp`)
+ * provider recorded at all -- that keeps a bare clone (`GH_TOKEN=... bin/agent mcp --serve`)
  * working without `agent auth`, while a recorded-but-broken provider still errors
  * instead of silently switching credentials.
  */
@@ -123,10 +180,14 @@ export function resolveWebSearchCredential(profile: Profile = null): string {
 export async function webSearch(query: string, opts: WebSearchOptions = {}): Promise<string> {
   const profile = opts.profile ?? null;
   const token = resolveWebSearchCredential(profile);
+  const configured = opts.model ?? new CopilotEnvConfig().read().messageApiWebSearchModel ?? null;
+  // Only a configured value can be an alias; the built-in default is maintained
+  // as a raw catalog id, so the default path stays fetch-free. Like the probe
+  // below, a cancelled call stops WAITING but leaves the memo filling.
   const model =
-    opts.model ??
-    new CopilotEnvConfig().read().messageApiWebSearchModel ??
-    DEFAULT_WEB_SEARCH_MODEL;
+    configured === null
+      ? DEFAULT_WEB_SEARCH_MODEL
+      : await raceWithAbort(resolveWebSearchModel(configured, token, opts.fetchImpl), opts.signal);
   // The probe stays MEMOIZED (a per-credential result the next call reuses), so no
   // fetch is injected in production -- instead a cancelled tool call merely stops
   // WAITING for a cold PAT probe (raceWithAbort below); the probe runs on and fills

@@ -14,6 +14,7 @@ import { CopilotEnvConfig } from "./env_config.ts";
 import {
   DEFAULT_COPILOT_API_BASE,
   INTEGRATION_ID_HEADER,
+  type ProbeFetch,
   resolvePassthroughIntegrationId,
 } from "./integration_identity.ts";
 import { copilotApiResolvePort } from "./port.ts";
@@ -38,6 +39,8 @@ export interface FetchRawModelsOptions {
    * otherwise the recorded/configured port is resolved here.
    */
   port?: number;
+  /** Injection seam for tests (direct source only: the identity probe and the GET). */
+  fetchImpl?: ProbeFetch;
 }
 
 /** Fetch the raw `/models` body from `source`. */
@@ -66,8 +69,10 @@ export async function fetchRawModels(
   const integrationId = await resolvePassthroughIntegrationId(token, {
     pinned: new CopilotEnvConfig().pinnedIntegrationId(),
     apiBase: DEFAULT_COPILOT_API_BASE,
+    fetchImpl: opts.fetchImpl,
   });
-  const res = await fetch(DIRECT_MODELS_URL, {
+  const fetchImpl: ProbeFetch = opts.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
+  const res = await fetchImpl(DIRECT_MODELS_URL, {
     headers: {
       Authorization: `Bearer ${token}`,
       [INTEGRATION_ID_HEADER]: integrationId,

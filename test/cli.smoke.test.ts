@@ -71,6 +71,7 @@ test("cli.ts mcp --help exposes the server flags; --remove rejects serve-only fl
   });
   const output = help.stdout.toString() + help.stderr.toString();
   expect(help.exitCode).toBe(0);
+  expect(output).toContain("--serve");
   expect(output).toContain("--remove");
   expect(output).toContain("--profile");
   expect(output).toContain("--model");
@@ -82,12 +83,47 @@ test("cli.ts mcp --help exposes the server flags; --remove rejects serve-only fl
   });
   expect(conflict.exitCode).not.toBe(0);
   expect(conflict.stderr.toString()).toContain("--remove takes no --profile/--model");
+
+  const serveRemove = Bun.spawnSync(["bun", "src/cli.ts", "mcp", "--serve", "--remove"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, CONSOLA_LEVEL: "5" },
+  });
+  expect(serveRemove.exitCode).not.toBe(0);
+  expect(serveRemove.stderr.toString()).toContain("mutually exclusive");
+
+  // Serve-only flags without --serve must not silently start a server (or anything).
+  const statusModel = Bun.spawnSync(["bun", "src/cli.ts", "mcp", "--model", "x"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, CONSOLA_LEVEL: "5" },
+  });
+  expect(statusModel.exitCode).not.toBe(0);
+  expect(statusModel.stderr.toString()).toContain("apply to --serve");
 });
 
-test("cli.ts mcp --profile '' hard-fails instead of serving the default credential", () => {
+test("cli.ts mcp (bare) prints the wiring status and exits 0", () => {
+  // Hermetic homes: a temp CLAUDE_CONFIG_DIR (no registration) and an isolated
+  // copilot-env home, so the status never reads or creates real user state.
+  const claudeDir = mkdtempSync(join(tmpdir(), "copilot-mcp-status-"));
+  const status = Bun.spawnSync(["bun", "src/cli.ts", "mcp"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: isolatedEnv({ CLAUDE_CONFIG_DIR: claudeDir }),
+  });
+  const output = status.stderr.toString();
+  expect(status.exitCode).toBe(0);
+  expect(output).toContain("not registered");
+  expect(output).toContain("wire-mcp: true (default)");
+  expect(output).toContain("--serve");
+  // Read-only: the status must not create .claude.json.
+  expect(existsSync(join(claudeDir, ".claude.json"))).toBe(false);
+});
+
+test("cli.ts mcp --serve --profile '' hard-fails instead of serving the default credential", () => {
   // A supplied-but-blank --profile (an unset shell var in `--profile "$P"`) must
   // never silently resolve the DEFAULT credential (the named-profile hard-fail rule).
-  const blank = Bun.spawnSync(["bun", "src/cli.ts", "mcp", "--profile", ""], {
+  const blank = Bun.spawnSync(["bun", "src/cli.ts", "mcp", "--serve", "--profile", ""], {
     stdout: "pipe",
     stderr: "pipe",
     env: { ...process.env, CONSOLA_LEVEL: "5" },

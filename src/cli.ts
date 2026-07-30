@@ -472,14 +472,22 @@ program
 program
   .command("mcp")
   .description(
-    "Run the copilot-env MCP stdio server (web_search via GitHub Copilot /responses); " +
-      "register it in Claude, Codex, or any MCP client.",
+    "Status of the copilot-env MCP server wiring; --serve runs the stdio server " +
+      "(web_search via GitHub Copilot /responses) for Claude, Codex, or any MCP client.",
   )
+  .option("--serve", "Run the MCP stdio server on stdio (the argv MCP clients register).")
   .option("--remove", "Unregister from Claude Code, lift the managed WebSearch deny, and opt out.")
-  .option("--profile <name>", "Resolve the credential from this named profile (never falls back).")
-  .option("--model <id>", "Web-search model for this process (overrides message-websearch-model).")
+  .option(
+    "--profile <name>",
+    "With --serve: resolve the credential from this named profile (never falls back).",
+  )
+  .option(
+    "--model <id>",
+    "With --serve: web-search model for this process (overrides message-websearch-model).",
+  )
   .action((opts: Opts) =>
     runMcp({
+      serve: Boolean(opts.serve),
       remove: Boolean(opts.remove),
       profile: opts.profile === undefined ? undefined : String(opts.profile),
       model: opts.model === undefined ? undefined : String(opts.model),

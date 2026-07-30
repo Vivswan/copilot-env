@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 
-import { type CatalogModel, generateAliases } from "../src/copilot_api/models.ts";
+import {
+  type CatalogModel,
+  generateAliases,
+  parseCatalogModels,
+} from "../src/copilot_api/models.ts";
 
 test("base id gets a dash alias and a [1m] alias that falls back to itself", () => {
   const catalog: CatalogModel[] = [{ id: "claude-opus-4.8", is1m: false }];
@@ -382,4 +386,40 @@ test("reduced GPT tiers match whole qualifier tokens, not substrings", () => {
     { id: "gpt-5.6-mini-high", is1m: false },
   ];
   expect(generateAliases(reduced)["gpt-latest"]).toBe("gpt-5.5");
+});
+
+test("parseCatalogModels strips the [1m] suffix and flags the entry 1m", () => {
+  const body = { "data": [{ "id": "claude-opus-4.8[1m]" }, { "id": "claude-opus-4.8" }] };
+  expect(parseCatalogModels(body)).toEqual([
+    { id: "claude-opus-4.8", is1m: true },
+    { id: "claude-opus-4.8", is1m: false },
+  ]);
+});
+
+test("parseCatalogModels reads a 1M context window from capabilities.limits", () => {
+  const body = {
+    "data": [
+      {
+        "id": "claude-fable-5",
+        "capabilities": { "limits": { "max_context_window_tokens": 1_000_000 } },
+      },
+      {
+        "id": "gpt-5.6-sol",
+        "capabilities": { "limits": { "max_context_window_tokens": 400_000 } },
+      },
+    ],
+  };
+  expect(parseCatalogModels(body)).toEqual([
+    { id: "claude-fable-5", is1m: true },
+    { id: "gpt-5.6-sol", is1m: false },
+  ]);
+});
+
+test("parseCatalogModels skips malformed entries and bodies, never throws", () => {
+  expect(parseCatalogModels(undefined)).toEqual([]);
+  expect(parseCatalogModels("nope")).toEqual([]);
+  expect(parseCatalogModels({ "data": "nope" })).toEqual([]);
+  expect(parseCatalogModels({ "data": [null, 5, { "id": 7 }, { "id": "gpt-6" }] })).toEqual([
+    { id: "gpt-6", is1m: false },
+  ]);
 });

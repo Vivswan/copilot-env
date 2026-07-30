@@ -107,7 +107,7 @@ file layouts. Don't restate here what a reader can grep.
   probe entirely. `passthrough` and `integration-id` force either decision by hand.
 - **Web search on Claude Direct is an MCP tool, not the builtin.** Copilot's Anthropic
   endpoint rejects Claude's server-side WebSearch, but `/responses` executes `web_search`
-  server-side - so `agent mcp` serves it as a tool and a direct default write wires the
+  server-side - so `agent mcp --serve` serves it as a tool and a direct default write wires the
   **register-then-deny pair** (registration in `~/.claude.json` first, the `WebSearch` deny
   only on success, never denied without a replacement; gated by `wire-mcp`, default on).
   Deny **ownership is recorded** in the state store so removal never deletes a deny the user
@@ -128,15 +128,19 @@ file layouts. Don't restate here what a reader can grep.
 - `src/copilot_api/` - proxy helpers: admin REST, catalog fetch, JSON config/state, model
   aliases, per-host paths, daemon process control, client-identity probe, the /responses
   web-search client.
-- `src/mcp/` - the copilot-env MCP stdio server behind `agent mcp` (first tool: web_search).
+- `src/mcp/` - the copilot-env MCP stdio server behind `agent mcp --serve` (first tool:
+  web_search); bare `agent mcp` is the human status command.
 - `src/scripts/` - things that run as their OWN process or `bun --preload`, NOT CLI handlers:
   the proxy-token resolver and the daemon shims.
 - `src/install/`, `src/migrations/`, `src/autoupdate/`, `src/health/`, `src/usage/`,
   `src/utils/` - release download/verify, version-step fix-ups, the update preflight, the
   health engine, cost reporting, generic helpers.
-- `.claude-plugin/` + root `.mcp.json` + `skills/` - the repo's plugin/skill distribution
-  surface (Claude marketplace installs and `npx skills add`); plain content, guarded by
-  `test/skills_manifests.test.ts`. The root `.mcp.json` is POSIX-only by decision.
+- `.claude-plugin/` (plugin manifest, including the inline `mcpServers` entry) + `skills/` -
+  the repo's plugin/skill distribution surface (Claude marketplace installs and
+  `npx skills add`); plain content, guarded by `test/skills_manifests.test.ts`. The inline
+  MCP entry is POSIX-only by decision, and it must stay inside `plugin.json`: a root
+  `.mcp.json` would be read as project-scope MCP config by any `claude` session in this
+  checkout and conflict with the user-scope registration.
 - `copilot-env.config` - proxy-float floor/ceiling. `test/` - `bun test` units + a start/stop
   lifecycle against `test/copilot-api-fake.mjs`.
 
@@ -162,7 +166,7 @@ refresh.
   constants; **snake_case only on object-literal keys** (external config keys), always quoted.
 - **No new deps without an explicit reason.** Current: `commander`, `consola`, `dotenv`,
   `execa`, `semver`, `smol-toml`, `tar`, `valibot`, `which`, `ps-list`,
-  `@jeffreycao/copilot-api`, `@modelcontextprotocol/sdk` (the `agent mcp` stdio server;
+  `@jeffreycao/copilot-api`, `@modelcontextprotocol/sdk` (the `agent mcp --serve` stdio server;
   already resolved in `bun.lock` transitively via the proxy, so pinning it directly added
   no lockfile surface).
 - **String literals are external contracts** - model ids, JSON keys, env var names, log

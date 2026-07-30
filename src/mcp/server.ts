@@ -1,7 +1,8 @@
-// The copilot-env MCP stdio server: the process behind `agent mcp`, registered in
-// Claude Code (and registerable in Codex, Cursor, or any MCP client). One tool so
-// far, `web_search`, proxying through Copilot's /responses endpoint -- the fix for
-// Claude Code wired Direct, whose builtin WebSearch the Copilot host rejects.
+// The copilot-env MCP stdio server: the process behind `agent mcp --serve`,
+// registered in Claude Code (and registerable in Codex, Cursor, or any MCP client).
+// One tool so far, `web_search`, proxying through Copilot's /responses endpoint --
+// the fix for Claude Code wired Direct, whose builtin WebSearch the Copilot host
+// rejects.
 // Server name "copilot-env" on purpose: clients namespace tools by server, so the
 // tool surfaces as `mcp__copilot-env__web_search` and future tools join under the
 // same name without any re-registration.

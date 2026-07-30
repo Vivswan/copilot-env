@@ -31,7 +31,7 @@ macOS, and Windows**.
   ports, proxy feature flags, model ids - with one precedence rule everywhere.
 - **Web search for Claude Code on Direct**: the builtin WebSearch does not work
   against Copilot's Anthropic endpoint, so direct wiring registers the
-  copilot-env MCP server (`agent mcp`), whose `web_search` tool searches
+  copilot-env MCP server (`agent mcp --serve`), whose `web_search` tool searches
   through Copilot's Responses API instead.
 - **Cost reporting**: estimated spend from per-host usage DBs via live OpenRouter pricing.
 - **Controlled floating**: the proxy floats to the newest cooldown-aged release
@@ -91,7 +91,7 @@ agent stop                 # stop the daemon (--profile <name> for one profile's
 agent health               # full environment diagnosis (--scope full|runtime|proxy|setup|auth|codex|claude, --json, --live)
 agent models               # list the model ids + names Copilot serves (--proxy / --direct / --json; no flag auto-picks)
 agent env                  # print shell exports for the calling shell (CODEX_HOME / proxy ANTHROPIC_BASE_URL)
-agent mcp                  # run the copilot-env MCP stdio server (web_search; --profile, --model; --remove unwires)
+agent mcp                  # MCP wiring status (--serve runs the stdio server; --remove unwires)
 agent cost                 # estimated token spend across all usage DBs (default + profile daemons)
 agent update               # update to the latest release (--check; cooldown via `agent config --set update-cooldown`)
 agent shell                # wire rc / $PROFILE; --launchers adds cl/co/cx, --clis installs the CLIs, --remove unwires
@@ -176,8 +176,9 @@ headless callers (Codex/Claude config hooks) never start it implicitly.
 Claude Code wired to GitHub Copilot Direct cannot use its builtin WebSearch:
 Copilot's Anthropic-compatible endpoint rejects the server-side search tool
 with a 400. Copilot's own Responses API does serve web search, so copilot-env
-ships an MCP stdio server (`agent mcp`) whose `web_search` tool proxies
-through it and returns a cited answer with a `Sources:` list.
+ships an MCP stdio server (`agent mcp --serve`) whose `web_search` tool proxies
+through it and returns a cited answer with a `Sources:` list (bare `agent mcp`
+prints the wiring status).
 
 Wiring Claude direct (`agent init`, `agent claude --direct`) sets this up by
 itself: it registers the server in Claude Code's user scope and denies the
@@ -206,7 +207,7 @@ speaks the Responses API natively):
     "copilot-env": {
       "type": "stdio",
       "command": "/path/to/copilot-env/bin/agent",
-      "args": ["mcp"]
+      "args": ["mcp", "--serve"]
     }
   }
 }
@@ -214,12 +215,12 @@ speaks the Responses API natively):
 
 It resolves the `agent auth` credential; without one it falls back to
 `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, so a bare clone works:
-`GH_TOKEN=... bin/agent mcp`. The registered server uses the default
+`GH_TOKEN=... bin/agent mcp --serve`. The registered server uses the default
 credential; a named profile that needs its own registers a second entry with
 `--profile <name>`.
 
 The repo also doubles as a Claude Code plugin and a skills collection: the
-plugin (`.claude-plugin/` + the root `.mcp.json`) bundles the MCP server, and
+plugin (`.claude-plugin/`) bundles the MCP server inline in its manifest, and
 `npx skills add Vivswan/copilot-env` installs the companion
 [`web-search` skill](./skills/web-search). The plugin's bundled registration
 runs `bin/agent`, a POSIX script - on Windows, wire through `agent init` or

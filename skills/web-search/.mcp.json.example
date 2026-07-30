@@ -3,7 +3,7 @@
     "copilot-env": {
       "type": "stdio",
       "command": "/path/to/copilot-env/bin/agent",
-      "args": ["mcp"]
+      "args": ["mcp", "--serve"]
     }
   }
 }

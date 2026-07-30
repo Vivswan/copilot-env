@@ -6,10 +6,9 @@
 // alias-derivation logic stays pure in `models.ts`.
 
 import { isRecord } from "../utils/json.ts";
-import { type CatalogModel, ONE_M_SUFFIX } from "./models.ts";
+import { type CatalogModel, parseCatalogModels } from "./models.ts";
 import { proxyLoopbackOrigin } from "./port.ts";
 
-const ONE_M_TOKENS = 1_000_000;
 const FETCH_TIMEOUT_MS = 5000;
 
 interface RequestOptions {
@@ -32,18 +31,7 @@ export class CopilotAdminClient {
 
   /** Fetch the live catalog, normalizing the display-only `[1m]` suffix. */
   async getModels(): Promise<CatalogModel[]> {
-    const body = await this.request("/models");
-    const data = isRecord(body) && Array.isArray(body.data) ? body.data : [];
-    const out: CatalogModel[] = [];
-    for (const entry of data) {
-      if (!isRecord(entry) || typeof entry.id !== "string") {
-        continue;
-      }
-      const suffixed = entry.id.endsWith(ONE_M_SUFFIX);
-      const rawId = suffixed ? entry.id.slice(0, -ONE_M_SUFFIX.length) : entry.id;
-      out.push({ id: rawId, is1m: suffixed || contextWindow(entry) === ONE_M_TOKENS });
-    }
-    return out;
+    return parseCatalogModels(await this.request("/models"));
   }
 
   /** The raw `/models` body (untyped), for callers that need `capabilities.limits`. */
@@ -99,18 +87,4 @@ export class CopilotAdminClient {
     }
     return res.json();
   }
-}
-
-/** Read `capabilities.limits.max_context_window_tokens` defensively. */
-function contextWindow(entry: Record<string, unknown>): number | undefined {
-  const capabilities = entry.capabilities;
-  if (!isRecord(capabilities)) {
-    return undefined;
-  }
-  const limits = capabilities.limits;
-  if (!isRecord(limits)) {
-    return undefined;
-  }
-  const tokens = limits.max_context_window_tokens;
-  return typeof tokens === "number" ? tokens : undefined;
 }

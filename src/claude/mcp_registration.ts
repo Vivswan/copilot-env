@@ -2,9 +2,9 @@
 // That list lives in `~/.claude.json` (the file `claude mcp add --scope user`
 // writes) -- NOT settings.json, which is why this sits beside but apart from
 // src/claude/config.ts. Registration is default-profile-only by nature: the file
-// is global to the machine, and the registered entry runs `agent mcp` with no
-// `--profile`, so the server resolves the default credential (a named profile
-// that wants its own credential registers its own entry by hand).
+// is global to the machine, and the registered entry runs `agent mcp --serve`
+// with no `--profile`, so the server resolves the default credential (a named
+// profile that wants its own credential registers its own entry by hand).
 //
 // Everything here is BEST-EFFORT and must never fail the wiring that calls it:
 // Claude Code rewrites this file constantly and owns its schema, so a malformed
@@ -54,9 +54,27 @@ export function claudeJsonPath(): string {
   return join(claudeConfigDirOverride() ?? homedir(), ".claude.json");
 }
 
+/** The subcommand argv the managed registration runs (the current shape). */
+const CURRENT_MCP_SUBARGS: readonly string[] = ["mcp", "--serve"];
+
+/**
+ * The pre-release shape: bare `agent mcp` used to BE the server before it
+ * became the status command. Classified ours-stale so a direct rewire upgrades
+ * it and `--remove`/uninstall delete it.
+ */
+const LEGACY_MCP_SUBARGS: readonly string[] = ["mcp"];
+
 function managedEntry(): Record<string, unknown> {
-  const { command, args } = agentLauncherCommand(["mcp"]);
+  const { command, args } = agentLauncherCommand(CURRENT_MCP_SUBARGS);
   return { "type": "stdio", "command": command, "args": args };
+}
+
+function sameStrings(a: readonly unknown[], b: readonly string[]): boolean {
+  return a.length === b.length && b.every((v, i) => a[i] === v);
+}
+
+function knownSubargs(trailing: readonly unknown[]): boolean {
+  return sameStrings(trailing, CURRENT_MCP_SUBARGS) || sameStrings(trailing, LEGACY_MCP_SUBARGS);
 }
 
 /** Classify the entry under our name (see McpRegistrationStatus). */
@@ -67,14 +85,12 @@ export function classifyMcpEntry(entry: unknown): McpRegistrationStatus {
   if (entry.type !== undefined && entry.type !== "stdio") return "foreign";
   const { command, args } = entry;
   if (typeof command !== "string" || !Array.isArray(args)) return "foreign";
-  const managed = agentLauncherCommand(["mcp"]);
-  const sameArgs =
-    args.length === managed.args.length && args.every((a, i) => a === managed.args[i]);
-  if (command === managed.command && sameArgs) return "ours-current";
+  const managed = agentLauncherCommand(CURRENT_MCP_SUBARGS);
+  if (command === managed.command && sameStrings(args, managed.args)) return "ours-current";
   if (process.platform === "win32") {
-    // Our launcher path lives inside the argv (after -File); compare against the
-    // CURRENT managed argv by position, requiring only the path element to differ
-    // and to still end in bin/agent.ps1 -- a moved checkout, not a foreign tool.
+    // Split the managed argv at -File: the flag prefix must match verbatim, the
+    // path element must still end in bin/agent.ps1 (a moved checkout, not a
+    // foreign tool), and the trailing subargs must be the current or legacy shape.
     const fileIdx = managed.args.indexOf("-File");
     const shape =
       command
@@ -82,15 +98,17 @@ export function classifyMcpEntry(entry: unknown): McpRegistrationStatus {
         .replace(/\.exe$/, "")
         .endsWith("powershell") &&
       fileIdx >= 0 &&
-      args.length === managed.args.length &&
-      args.every((a, i) => i === fileIdx + 1 || a === managed.args[i]) &&
+      managed.args.slice(0, fileIdx + 1).every((a, i) => args[i] === a) &&
       typeof args[fileIdx + 1] === "string" &&
-      /[\\/]bin[\\/]agent\.ps1$/i.test(String(args[fileIdx + 1]));
+      /[\\/]bin[\\/]agent\.ps1$/i.test(String(args[fileIdx + 1])) &&
+      knownSubargs(args.slice(fileIdx + 2));
     return shape ? "ours-stale" : "foreign";
   }
-  // POSIX: same argv, and a command that ends in bin/agent (the checkout layout) --
-  // a bare `agent` from someone's PATH is NOT claimed.
-  const shape = sameArgs && /[\\/]bin[\\/]agent$/.test(command);
+  // POSIX: a command that ends in bin/agent (the checkout layout -- a bare
+  // `agent` from someone's PATH is NOT claimed) running the current or legacy
+  // subargs. The current checkout's own path with the legacy argv lands here
+  // too: ours-stale, upgraded by the next register.
+  const shape = /[\\/]bin[\\/]agent$/.test(command) && knownSubargs(args);
   return shape ? "ours-stale" : "foreign";
 }
 
@@ -133,6 +151,24 @@ function saveClaudeJson(loaded: ClaudeJsonDoc): void {
   const text = `${JSON.stringify(loaded.doc, null, 2)}${newline ? "\n" : ""}`;
   if (text === loaded.raw) return;
   atomicWriteFile(loaded.path, text);
+}
+
+/** What `agent mcp` (status) reports about the registration. */
+export interface McpRegistrationInspection {
+  /** The `.claude.json` path inspected. */
+  path: string;
+  /** Entry classification, or "unreadable" when the file could not be read/parsed. */
+  status: McpRegistrationStatus | "unreadable";
+}
+
+/** Read-only registration lookup for the status command; never creates the file. */
+export function inspectMcpRegistration(): McpRegistrationInspection {
+  const path = claudeJsonPath();
+  const loaded = loadClaudeJson(); // already warns on unreadable/malformed
+  if (loaded === null) return { path, status: "unreadable" };
+  const servers = loaded.doc.mcpServers;
+  const entry = isRecord(servers) ? servers[MCP_SERVER_NAME] : undefined;
+  return { path, status: classifyMcpEntry(entry) };
 }
 
 /**

@@ -12,8 +12,12 @@
 // skipped: an unmapped id that already equals a catalog id passes through
 // unchanged, so they would be no-ops.
 
+import { isRecord } from "../utils/json.ts";
+
 /** The display-only 1M-context suffix on catalog ids (single source of truth). */
 export const ONE_M_SUFFIX = "[1m]";
+
+const ONE_M_TOKENS = 1_000_000;
 
 /** A catalog entry, with the display-only `[1m]` suffix stripped from `id`. */
 export interface CatalogModel {
@@ -21,6 +25,39 @@ export interface CatalogModel {
   id: string;
   /** Whether this model exposes a 1M-token context window. */
   is1m: boolean;
+}
+
+/**
+ * Parse a raw `/models` body (proxy and direct serve the same shape) into
+ * `CatalogModel[]`, normalizing the display-only `[1m]` suffix. Malformed
+ * entries are skipped, never thrown on.
+ */
+export function parseCatalogModels(body: unknown): CatalogModel[] {
+  const data = isRecord(body) && Array.isArray(body.data) ? body.data : [];
+  const out: CatalogModel[] = [];
+  for (const entry of data) {
+    if (!isRecord(entry) || typeof entry.id !== "string") {
+      continue;
+    }
+    const suffixed = entry.id.endsWith(ONE_M_SUFFIX);
+    const rawId = suffixed ? entry.id.slice(0, -ONE_M_SUFFIX.length) : entry.id;
+    out.push({ id: rawId, is1m: suffixed || contextWindow(entry) === ONE_M_TOKENS });
+  }
+  return out;
+}
+
+/** Read `capabilities.limits.max_context_window_tokens` defensively. */
+function contextWindow(entry: Record<string, unknown>): number | undefined {
+  const capabilities = entry.capabilities;
+  if (!isRecord(capabilities)) {
+    return undefined;
+  }
+  const limits = capabilities.limits;
+  if (!isRecord(limits)) {
+    return undefined;
+  }
+  const tokens = limits.max_context_window_tokens;
+  return typeof tokens === "number" ? tokens : undefined;
 }
 
 /** A `claude-<family>-<version>[-<qualifier>]` id, decomposed. */

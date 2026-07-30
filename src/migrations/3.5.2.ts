@@ -1,9 +1,9 @@
 // Migration from 3.5.2: wire the web-search pair into EXISTING direct Claude installs.
 //
-// 3.5.3 introduces the copilot-env MCP server (`agent mcp`) with a `web_search` tool
-// backed by Copilot's /responses endpoint, because Claude Code wired Direct cannot use
-// its builtin WebSearch (the Copilot host rejects the Anthropic server-side tool with a
-// 400). A direct write now registers the server in Claude's ~/.claude.json and denies
+// 3.5.3 introduces the copilot-env MCP server (`agent mcp --serve`) with a `web_search`
+// tool backed by Copilot's /responses endpoint, because Claude Code wired Direct cannot
+// use its builtin WebSearch (the Copilot host rejects the Anthropic server-side tool with
+// a 400). A direct write now registers the server in Claude's ~/.claude.json and denies
 // the broken builtin in settings.json -- but existing installs only rewire on
 // `agent init`/`agent claude`/`agent profile`, so an install that merely runs
 // `agent update` would never gain the pair. Re-derive it here.

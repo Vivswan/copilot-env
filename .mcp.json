@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "copilot-env": {
-      "type": "stdio",
-      "command": "${CLAUDE_PLUGIN_ROOT}/bin/agent",
-      "args": ["mcp"]
-    }
-  }
-}

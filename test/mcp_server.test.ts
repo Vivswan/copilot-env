@@ -40,7 +40,7 @@ class McpClient {
   readonly stdoutLines: string[] = [];
 
   constructor(args: string[] = []) {
-    this.proc = Bun.spawn(["bun", "src/cli.ts", "mcp", ...args], {
+    this.proc = Bun.spawn(["bun", "src/cli.ts", "mcp", "--serve", ...args], {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",

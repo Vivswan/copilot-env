@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   classifyMcpEntry,
   claudeJsonPath,
+  inspectMcpRegistration,
   registerClaudeMcpServer,
   removeClaudeMcpRegistration,
 } from "../src/claude/mcp_registration.ts";
@@ -34,6 +35,12 @@ function readDoc(): Record<string, unknown> {
 }
 
 function managedEntry(): Record<string, unknown> {
+  const { command, args } = agentLauncherCommand(["mcp", "--serve"]);
+  return { "type": "stdio", "command": command, "args": args };
+}
+
+/** The pre-release registration: bare `agent mcp` (no --serve) as the server argv. */
+function legacyEntry(): Record<string, unknown> {
   const { command, args } = agentLauncherCommand(["mcp"]);
   return { "type": "stdio", "command": command, "args": args };
 }
@@ -175,9 +182,85 @@ test("a bare `agent` from someone's PATH is foreign, not ours-stale", () => {
     "foreign",
   );
   expect(
+    classifyMcpEntry({ "type": "stdio", "command": "agent", "args": ["mcp", "--serve"] }),
+  ).toBe("foreign");
+  expect(
     classifyMcpEntry({ "type": "stdio", "command": "/usr/local/agent", "args": ["mcp"] }),
   ).toBe("foreign");
   expect(
     classifyMcpEntry({ "type": "stdio", "command": "/elsewhere/bin/agent", "args": ["mcp"] }),
   ).toBe("ours-stale");
+});
+
+test("the legacy bare-mcp argv is ours-stale and register upgrades it", () => {
+  const home = tmpConfigDir();
+  // The pre-release shape under the CURRENT checkout path: same launcher, no --serve.
+  expect(classifyMcpEntry(legacyEntry())).toBe("ours-stale");
+  writeFileSync(
+    join(home, ".claude.json"),
+    `${JSON.stringify({ "mcpServers": { "copilot-env": legacyEntry() } })}\n`,
+  );
+  expect(registerClaudeMcpServer()).toBe(true);
+  expect((readDoc().mcpServers as Record<string, unknown>)["copilot-env"]).toEqual(managedEntry());
+});
+
+test("the legacy argv from a moved checkout is ours-stale; other subargs are foreign", () => {
+  const legacy = legacyEntry();
+  const moved =
+    process.platform === "win32"
+      ? {
+          ...legacy,
+          "args": (legacy.args as string[]).map((a) =>
+            /[\\/]bin[\\/]agent\.ps1$/i.test(a) ? "C:\\somewhere\\else\\bin\\agent.ps1" : a,
+          ),
+        }
+      : { ...legacy, "command": "/somewhere/else/bin/agent" };
+  expect(classifyMcpEntry(moved)).toBe("ours-stale");
+
+  const managed = managedEntry();
+  const otherSubargs = {
+    ...managed,
+    "args": (managed.args as string[]).map((a) => (a === "--serve" ? "--verbose" : a)),
+  };
+  expect(classifyMcpEntry(otherSubargs)).toBe("foreign");
+});
+
+test("remove deletes a legacy registration too", () => {
+  const home = tmpConfigDir();
+  writeFileSync(
+    join(home, ".claude.json"),
+    `${JSON.stringify({ "mcpServers": { "copilot-env": legacyEntry() } })}\n`,
+  );
+  expect(removeClaudeMcpRegistration()).toBe(true);
+  expect(readDoc().mcpServers).toBeUndefined();
+});
+
+test("malformed launcher argvs are foreign, never reclaimed", () => {
+  const managed = managedEntry();
+  const args = managed.args as string[];
+  // Extra trailing argument after the known subargs.
+  expect(classifyMcpEntry({ ...managed, "args": [...args, "extra"] })).toBe("foreign");
+  // Truncated argv (the subargs are gone entirely).
+  expect(classifyMcpEntry({ ...managed, "args": args.slice(0, -2) })).toBe("foreign");
+  if (process.platform === "win32") {
+    const fileIdx = args.indexOf("-File");
+    // Missing script path: -File runs straight into the subargs.
+    const missingPath = [...args.slice(0, fileIdx + 1), ...args.slice(fileIdx + 2)];
+    expect(classifyMcpEntry({ ...managed, "args": missingPath })).toBe("foreign");
+    // A mutated flag prefix is not our launcher shape.
+    const mutatedPrefix = args.map((a) => (a === "-NoProfile" ? "-Profile" : a));
+    expect(classifyMcpEntry({ ...managed, "args": mutatedPrefix })).toBe("foreign");
+  }
+});
+
+test("inspectMcpRegistration reports path and status without creating the file", () => {
+  const home = tmpConfigDir();
+  expect(inspectMcpRegistration()).toEqual({ path: claudeJsonPath(), status: "absent" });
+  expect(existsSync(claudeJsonPath())).toBe(false);
+
+  registerClaudeMcpServer();
+  expect(inspectMcpRegistration().status).toBe("ours-current");
+
+  writeFileSync(join(home, ".claude.json"), "{ not json");
+  expect(inspectMcpRegistration().status).toBe("unreadable");
 });

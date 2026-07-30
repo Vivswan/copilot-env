@@ -6,7 +6,7 @@ import { PROJECT_ROOT } from "../src/utils/root.ts";
 
 // The skills + plugin folder is plain content (no code), so this guard only pins the
 // invariants installs depend on: manifests parse, listed paths exist, names line up,
-// and the plugin-root .mcp.json launches `bin/agent mcp`.
+// and the plugin manifest's inline mcpServers entry launches `bin/agent mcp --serve`.
 
 function readJson(path: string): Record<string, unknown> {
   return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
@@ -46,18 +46,23 @@ test("every skill's SKILL.md frontmatter names the skill after its folder", () =
   }
 });
 
-test("the plugin-root .mcp.json registers bin/agent mcp under the server name", () => {
-  const doc = readJson(join(PROJECT_ROOT, ".mcp.json"));
-  const servers = doc.mcpServers as Record<string, { command: string; args: string[] }>;
+test("plugin.json's inline mcpServers entry registers bin/agent mcp --serve", () => {
+  const plugin = readJson(join(PROJECT_ROOT, ".claude-plugin", "plugin.json"));
+  const servers = plugin.mcpServers as Record<string, { command: string; args: string[] }>;
   const entry = servers["copilot-env"];
   expect(entry).toBeDefined();
   // biome-ignore lint/suspicious/noTemplateCurlyInString: the raw ${CLAUDE_PLUGIN_ROOT} text IS the contract Claude expands at install time
   expect(entry?.command).toBe("${CLAUDE_PLUGIN_ROOT}/bin/agent");
-  expect(entry?.args).toEqual(["mcp"]);
+  expect(entry?.args).toEqual(["mcp", "--serve"]);
+  // The MCP config must stay INSIDE plugin.json: a root .mcp.json is read as
+  // project-scope config by any `claude` session in this checkout, where
+  // ${CLAUDE_PLUGIN_ROOT} is unset and the entry conflicts with the user-scope
+  // registration `agent init` writes.
+  expect(existsSync(join(PROJECT_ROOT, ".mcp.json"))).toBe(false);
 });
 
-test("the skill folder's .mcp.json.example parses and points at bin/agent mcp", () => {
+test("the skill folder's .mcp.json.example parses and points at bin/agent mcp --serve", () => {
   const doc = readJson(join(PROJECT_ROOT, "skills", "web-search", ".mcp.json.example"));
   const servers = doc.mcpServers as Record<string, { command: string; args: string[] }>;
-  expect(servers["copilot-env"]?.args).toEqual(["mcp"]);
+  expect(servers["copilot-env"]?.args).toEqual(["mcp", "--serve"]);
 });

@@ -18,7 +18,11 @@ Whenever web search is needed.
 ## Workflow
 
 1. Call `mcp__copilot-env__web_search` with a `query` string. Keep the query
-   short and specific, as you would type into a search engine.
+   short and specific, as you would type into a search engine. Installed as a
+   Claude Code plugin instead of via the wiring writes, the same tool appears
+   under the plugin-namespaced name
+   `mcp__plugin_copilot-env_copilot-env__web_search`; call whichever is
+   present.
 2. The tool returns a concise answer followed by a `Sources:` list of cited
    URLs. Relay the answer and keep the source URLs when the user needs to
    verify or read further.
@@ -34,7 +38,7 @@ Whenever web search is needed.
 When the `mcp__copilot-env__web_search` tool is not registered:
 
 - From a copilot-env checkout, register the server in Claude Code:
-  `claude mcp add --scope user copilot-search -- <checkout>/bin/agent mcp`
+  `claude mcp add --scope user copilot-search -- <checkout>/bin/agent mcp --serve`
   (see `.mcp.json.example` in this folder for the JSON shape other MCP
   clients accept). Register a hand-made entry under a name OTHER than
   `copilot-env`: copilot-env's own wiring writes reclaim and remove the

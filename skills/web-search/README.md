@@ -1,7 +1,7 @@
 # web-search
 
 Web search for AI coding agents through GitHub Copilot's Responses API,
-backed by the copilot-env MCP server (`agent mcp`).
+backed by the copilot-env MCP server (`agent mcp --serve`).
 
 Claude Code wired directly to `api.githubcopilot.com` cannot use its builtin
 WebSearch: the Copilot host rejects Anthropic's server-side search tool with a
@@ -25,14 +25,14 @@ that name when switching modes):
     "copilot-search": {
       "type": "stdio",
       "command": "/path/to/copilot-env/bin/agent",
-      "args": ["mcp"]
+      "args": ["mcp", "--serve"]
     }
   }
 }
 ```
 
 On Windows, run the PowerShell launcher instead:
-`powershell -NoProfile -ExecutionPolicy Bypass -File <checkout>/bin/agent.ps1 mcp`.
+`powershell -NoProfile -ExecutionPolicy Bypass -File <checkout>/bin/agent.ps1 mcp --serve`.
 
 The launcher self-bootstraps: on a fresh clone the FIRST spawn installs bun
 and `node_modules` before the server answers, which can outlast an MCP
@@ -43,8 +43,8 @@ client's startup window. If the first connection times out, run
 
 The server resolves the copilot-env credential (`agent auth`). Without one it
 reads `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN` from the
-environment, so a bare clone works with `GH_TOKEN=... bin/agent mcp`. The
-registered server always uses the default credential; a named profile that
+environment, so a bare clone works with `GH_TOKEN=... bin/agent mcp --serve`.
+The registered server always uses the default credential; a named profile that
 needs its own can register a second entry with `--profile <name>`.
 
 ## Configuration

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 
 import {
   CLAUDE_PROBE,
+  CODEX_CATALOG_NOISE_RE,
   CODEX_PROBE,
   DEFAULT_PROBE_RETRIES,
   ghTokenFromEnv,
@@ -12,6 +13,16 @@ import {
   summarizeProbeFailure,
   tokenFromSetFlag,
 } from "../src/utils/direct_probe.ts";
+
+// The ONE catalog-noise filter both failure formatters share (summarizeProbeFailure
+// here, formatLiveFailure in src/health/probe.ts): catalog dump lines match, a real
+// failure line never does.
+test("CODEX_CATALOG_NOISE_RE matches catalog dump lines and not real errors", () => {
+  expect(CODEX_CATALOG_NOISE_RE.test('{"object": "model", "id": "gpt-5.5"}')).toBe(true);
+  expect(CODEX_CATALOG_NOISE_RE.test('"capabilities": {"family": "gpt"}')).toBe(true);
+  expect(CODEX_CATALOG_NOISE_RE.test('"model_picker_enabled": true')).toBe(true);
+  expect(CODEX_CATALOG_NOISE_RE.test("ERROR: 401 Unauthorized")).toBe(false);
+});
 
 // --- probe args --------------------------------------------------------------
 

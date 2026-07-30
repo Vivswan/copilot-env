@@ -44,6 +44,7 @@ import {
   resolveDirectMode,
 } from "../utils/direct_probe.ts";
 import { errMessage } from "../utils/error.ts";
+import { readTextOrNull } from "../utils/fs.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import {
@@ -607,14 +608,6 @@ function proxyHelperScript(profile: Profile = null): string {
 }
 
 // --- the `--check` provider report ------------------------------------------
-
-function readTextOrNull(filePath: string): string | null {
-  try {
-    return fs.readFileSync(filePath, "utf8");
-  } catch {
-    return null;
-  }
-}
 
 function providerModeDetail(mode: AgentProviderMode): string {
   switch (mode) {

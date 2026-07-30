@@ -28,7 +28,13 @@ import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { canonicalModelName } from "./pricing.ts";
-import { addDayUsage, addUsage, type TokenBuckets, type UsageReport } from "./usage.ts";
+import {
+  addDayUsage,
+  addUsage,
+  sanitizeTokenCount,
+  type TokenBuckets,
+  type UsageReport,
+} from "./usage.ts";
 
 const SESSION_SUBDIRS = ["sessions", "archived_sessions"];
 const ROLLOUT_FILE = /^rollout-(\d{4})-(\d{2})-(\d{2})T.*\.jsonl(\.zst)?$/;
@@ -192,9 +198,8 @@ async function* rolloutLines(file: string): AsyncGenerator<string> {
 
 /** Map one `last_token_usage` object onto the proxy report's token buckets. */
 function tokenBuckets(last: Record<string, unknown>): TokenBuckets {
-  // Non-finite or negative counts (hostile or torn lines) never enter a report.
-  const num = (v: unknown): number =>
-    typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0;
+  // sanitizeTokenCount (usage.ts): hostile or torn counts never enter a report.
+  const num = sanitizeTokenCount;
   const cached = num(last.cached_input_tokens);
   return {
     // Codex reports input INCLUSIVE of the cached tokens; the pricing buckets

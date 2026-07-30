@@ -12,6 +12,7 @@ import {
   idleCheck,
   idleTimeoutMs,
   isIdle,
+  lastActivityMs,
 } from "../src/scripts/idle_watchdog.ts";
 import {
   markInference,
@@ -127,6 +128,17 @@ test("defaultCheckIntervalMs: a quarter of the window, clamped to [1s, 60s]", ()
   expect(defaultCheckIntervalMs(5000)).toBe(1250);
   // Tiny windows clamp up to the 1s floor.
   expect(defaultCheckIntervalMs(1000)).toBe(1000);
+});
+
+// The shared activity rule: the daemon's idleCheck and the health report's watchdog
+// check both derive "last activity" from this one function, with different signals
+// available (health cannot see startedAtMs).
+test("lastActivityMs: picks the most recent signal; absent signals don't count", () => {
+  expect(lastActivityMs({ startedAtMs: 100, inferenceMs: 300, ensureAtMs: 200 })).toBe(300);
+  expect(lastActivityMs({ startedAtMs: 500, inferenceMs: 300, ensureAtMs: null })).toBe(500);
+  expect(lastActivityMs({ inferenceMs: null, ensureAtMs: 200 })).toBe(200);
+  // No signal at all reads as 0 ("no activity recorded").
+  expect(lastActivityMs({ inferenceMs: null, ensureAtMs: null })).toBe(0);
 });
 
 test("isIdle: true exactly at and past the timeout boundary, false before it", () => {

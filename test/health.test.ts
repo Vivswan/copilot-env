@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
+import { parseProfileName } from "../src/copilot_api/profile.ts";
 
 import {
   buildHealthJson,
@@ -1059,4 +1060,26 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
   expect(ids).toContain("setup.codex-host");
   expect(ids).toContain("setup.claude");
   expect(ids).toContain("setup.autoupdate");
+});
+
+test("checkAuth renders the named-profiles detail line from the swept facts", () => {
+  // The producer sweeps the store via profileNames(), so only validated names
+  // arrive here (pinned in state.test.ts); this pins the non-empty rendering.
+  const res = checkAuth({
+    storedToken: true,
+    ghAuthenticated: false,
+    provider: "gh-token",
+    profiles: {
+      [parseProfileName("fast")]: { provider: null, mode: "proxy", integrationIdentity: null },
+      [parseProfileName("work")]: {
+        provider: "gh-token",
+        mode: "direct",
+        integrationIdentity: "copilot-developer-cli",
+      },
+    },
+    pinnedIntegrationId: null,
+  });
+  expect(res.detail).toContain(
+    "named profiles: fast (no auth, proxy), work (gh-token, direct, copilot-developer-cli)",
+  );
 });

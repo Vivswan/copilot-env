@@ -5,6 +5,7 @@ import { DIRECT_BASE_URL } from "../claude/config.ts";
 import { credentialSource } from "../copilot_api/credential.ts";
 import type { AuthProvider } from "../copilot_api/env_state.ts";
 import type { ProxyVersionStatus } from "../copilot_api/version.ts";
+import { lastActivityMs } from "../scripts/idle_watchdog.ts";
 import { formatDuration, SECONDS_PER_DAY } from "../utils/time.ts";
 import { filterByScope } from "./aggregate.ts";
 import type {
@@ -295,12 +296,12 @@ export function checkRuntimeWatchdog(f: RuntimeFacts): CheckResult {
       value: { autoStart: true, idleTimeoutMs: 0 },
     };
   }
-  // The in-daemon watchdog treats activity as the most recent of the heartbeat and the last
-  // real model call (the observer's persisted `.activity.json` mark -- liveness GET / pings are
-  // NOT activity); mirror that here. With neither recorded yet, idle/remaining are unknown --
-  // the daemon's real baseline also includes a startedAtMs the probe cannot see, so don't fake
-  // a precise window.
-  const lastActivity = Math.max(w.lastEnsureAt ?? 0, w.lastRequestMs ?? 0);
+  // The shared activity rule (lastActivityMs, owned by the in-daemon watchdog): the most
+  // recent of the heartbeat and the last real model call (the observer's persisted
+  // `.activity.json` mark -- liveness GET / pings are NOT activity). With neither recorded
+  // yet, idle/remaining are unknown -- the daemon's real baseline also includes a
+  // startedAtMs the probe cannot see, so don't fake a precise window.
+  const lastActivity = lastActivityMs({ inferenceMs: w.lastRequestMs, ensureAtMs: w.lastEnsureAt });
   const idleMs = lastActivity > 0 ? Math.max(0, w.now - lastActivity) : null;
   const remainingMs = idleMs === null ? null : Math.max(0, w.idleTimeoutMs - idleMs);
   const ago = (at: number | null): string =>
@@ -469,16 +470,17 @@ export function checkTool(name: "node" | "npm", resolved: string | null): CheckR
 export function checkAuth(f: AuthFacts): CheckResult {
   // Named profiles surface as a detail line only (their hard-fail resolution is a
   // per-profile concern; the default credential drives this check's status).
-  const profileNames = Object.keys(f.profiles).sort();
+  const profileEntries = Object.entries(f.profiles).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0,
+  );
   const profilesLine =
-    profileNames.length === 0
+    profileEntries.length === 0
       ? []
       : [
-          `named profiles: ${profileNames
-            .map((name) => {
-              const slot = f.profiles[name];
-              const identity = slot?.integrationIdentity ? `, ${slot.integrationIdentity}` : "";
-              return `${name} (${slot?.provider ?? "no auth"}, ${slot?.mode ?? "no mode"}${identity})`;
+          `named profiles: ${profileEntries
+            .map(([name, slot]) => {
+              const identity = slot.integrationIdentity ? `, ${slot.integrationIdentity}` : "";
+              return `${name} (${slot.provider ?? "no auth"}, ${slot.mode ?? "no mode"}${identity})`;
             })
             .join(", ")}`,
         ];

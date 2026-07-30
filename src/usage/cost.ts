@@ -10,6 +10,7 @@ import {
   fetchPricing,
   OPENROUTER_MODELS_URL,
   type PricingTier,
+  roundUsd,
 } from "./pricing.ts";
 import { discoverUsageDbs, mergeUsageReports, readUsage, type UsageReport } from "./usage.ts";
 
@@ -724,9 +725,8 @@ function buildSourceJson(
     usageByModel: Object.fromEntries(report.byModel),
     perModel: estimate.perModel,
     totalUsd: estimate.totalUsd,
-    avgCostPerDayUsd:
-      activeDays > 0 ? Math.round((estimate.totalUsd / div) * 10_000) / 10_000 : null,
-    medianCostPerDayUsd: activeDays > 0 ? Math.round(median(dayCosts) * 10_000) / 10_000 : null,
+    avgCostPerDayUsd: activeDays > 0 ? roundUsd(estimate.totalUsd / div) : null,
+    medianCostPerDayUsd: activeDays > 0 ? roundUsd(median(dayCosts)) : null,
     ...(opts.perDay
       ? {
           perDay: [...dayMetrics]
@@ -739,7 +739,7 @@ function buildSourceJson(
               cacheRead: d.cacheRead,
               cacheCreation: d.cacheWrite,
               total: d.total,
-              costUsd: Math.round(d.cost * 10_000) / 10_000,
+              costUsd: roundUsd(d.cost),
             })),
         }
       : {}),

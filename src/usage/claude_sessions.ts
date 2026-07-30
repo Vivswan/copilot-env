@@ -32,7 +32,13 @@ import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { canonicalModelName } from "./pricing.ts";
-import { addDayUsage, addUsage, type TokenBuckets, type UsageReport } from "./usage.ts";
+import {
+  addDayUsage,
+  addUsage,
+  sanitizeTokenCount,
+  type TokenBuckets,
+  type UsageReport,
+} from "./usage.ts";
 
 /** Error placeholders carry this model id and no real usage attribution. */
 const SYNTHETIC_MODEL = "<synthetic>";
@@ -144,9 +150,8 @@ function collectTranscriptFiles(
 
 /** Map one assistant `message.usage` onto the report's token buckets. */
 function tokenBuckets(usage: Record<string, unknown>): TokenBuckets {
-  // Non-finite or negative counts (hostile or torn lines) never enter a report.
-  const num = (v: unknown): number =>
-    typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0;
+  // sanitizeTokenCount (usage.ts): hostile or torn counts never enter a report.
+  const num = sanitizeTokenCount;
   return {
     // Unlike Codex, Claude's input_tokens already excludes the cache buckets.
     input: num(usage.input_tokens),

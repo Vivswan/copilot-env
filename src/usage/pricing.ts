@@ -200,15 +200,15 @@ export function estimateCost(
 
     perModel[model] = {
       pricingReference: reference,
-      estimatedCostUsd: round(estimatedCostUsd),
-      inputCostUsd: round(inputCostUsd),
-      outputCostUsd: round(outputCostUsd),
-      cacheReadCostUsd: round(cacheReadCostUsd),
-      cacheCreationCostUsd: round(cacheCreationCostUsd),
+      estimatedCostUsd: roundUsd(estimatedCostUsd),
+      inputCostUsd: roundUsd(inputCostUsd),
+      outputCostUsd: roundUsd(outputCostUsd),
+      cacheReadCostUsd: roundUsd(cacheReadCostUsd),
+      cacheCreationCostUsd: roundUsd(cacheCreationCostUsd),
     };
   }
 
-  return { perModel, totalUsd: round(totalUsd), unpriced: unpriced.sort() };
+  return { perModel, totalUsd: roundUsd(totalUsd), unpriced: unpriced.sort() };
 }
 
 // ---------- internals ----------
@@ -309,6 +309,9 @@ function perMillion(value: unknown): number | undefined {
   return Number.isFinite(num) ? num * PER_MILLION : undefined;
 }
 
-function round(value: number): number {
+/** The ONE precision every reported USD amount uses: 4 decimal places. cost.ts routes
+ *  its derived per-day/average figures through this too, so the `--json` payload can
+ *  never mix precisions between the totals and the fields derived from them. */
+export function roundUsd(value: number): number {
   return Math.round(value * 10_000) / 10_000;
 }

@@ -15,7 +15,7 @@
 // right after `agent shell --launchers` (which runs through the `agent` wrapper that
 // evals this output) -- no restart. Sourcing just (re)defines those functions, so
 // re-emitting it on later commands is harmless.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   BASE_URL_ENV,
@@ -26,6 +26,7 @@ import {
 import { getHostLocalCodexHome } from "../codex/host.ts";
 import { copilotApiResolvePort, parseLoopbackProxyUrl } from "../copilot_api/port.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
+import { readTextOrNull } from "../utils/fs.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { launchersWired } from "./shell_integration.ts";
@@ -36,14 +37,6 @@ export interface EnvArgs {
 
 /** A shell directive: assign a value, or clear the var entirely. */
 type EnvDirective = { key: string; value: string } | { key: string; unset: true };
-
-function readTextOrNull(path: string): string | null {
-  try {
-    return readFileSync(path, "utf-8");
-  } catch {
-    return null;
-  }
-}
 
 /** True for an http://localhost or http://127.0.0.1 URL -- the proxy shape we write.
  *  Deliberately port- and path-agnostic (the shared grammar in port.ts, bare null-test):

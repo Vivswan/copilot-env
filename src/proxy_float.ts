@@ -67,6 +67,7 @@ import {
 } from "./copilot_api/version.ts";
 import { pickAgedVersion } from "./utils/aged_version.ts";
 import { assertNever } from "./utils/assert.ts";
+import { readTextOrNull } from "./utils/fs.ts";
 import { isRecord, parseJsonRecord } from "./utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
 import { PROJECT_ROOT } from "./utils/root.ts";
@@ -558,14 +559,6 @@ export function proxyInstallAssertStatus(
 }
 
 // --- Direct-only detection -----------------------------------------------------
-
-function readTextOrNull(filePath: string): string | null {
-  try {
-    return readFileSync(filePath, "utf8");
-  } catch {
-    return null;
-  }
-}
 
 /**
  * True when BOTH Codex and Claude are wired Direct (GitHub Copilot, no local

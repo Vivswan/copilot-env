@@ -8,6 +8,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { execa } from "execa";
 import psList from "ps-list";
 import { errMessage } from "../utils/error.ts";
+import { pidAlive } from "../utils/pid.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 
 // Resolve the bundled copilot-api entry by anchoring node's module resolution at
@@ -35,17 +36,9 @@ export function resolveCopilotApiEntry(): string {
   }
 }
 
-export function pidAlive(pid: number): boolean {
-  /** Check if a process is alive. */
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    // EPERM means the process EXISTS but this (restricted/sandboxed) token can't signal it --
-    // e.g. Codex's packaged app spawning our probe. That is still "alive"; only ESRCH is dead.
-    return (e as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
+// The pid-liveness primitive lives in utils/pid.ts (the file-lock staleness check
+// shares it); re-export it here so lifecycle callers keep their one import site.
+export { pidAlive };
 
 /**
  * Terminate `pid`: SIGTERM, then -- when `graceMs > 0` -- wait that long and SIGKILL

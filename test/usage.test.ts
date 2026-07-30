@@ -4,7 +4,19 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { discoverUsageDbs, readUsage } from "../src/usage/usage.ts";
+import { discoverUsageDbs, readUsage, sanitizeTokenCount } from "../src/usage/usage.ts";
+
+// The ONE token-count sanitization rule both session readers apply: only a finite
+// positive number passes; hostile or torn values become 0.
+test("sanitizeTokenCount clamps non-finite, negative, and non-number counts to 0", () => {
+  expect(sanitizeTokenCount(42)).toBe(42);
+  expect(sanitizeTokenCount(0)).toBe(0);
+  expect(sanitizeTokenCount(-5)).toBe(0);
+  expect(sanitizeTokenCount(Number.NaN)).toBe(0);
+  expect(sanitizeTokenCount(Number.POSITIVE_INFINITY)).toBe(0);
+  expect(sanitizeTokenCount("7")).toBe(0);
+  expect(sanitizeTokenCount(undefined)).toBe(0);
+});
 
 let dir = "";
 

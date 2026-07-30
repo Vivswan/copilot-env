@@ -27,6 +27,13 @@ export interface TokenBuckets {
   cacheCreation: number;
 }
 
+/** Clamp one raw token count for the report: only a finite positive number passes.
+ *  Non-finite or negative counts (hostile or torn lines) never enter a report --
+ *  the ONE sanitization rule every session reader applies to its buckets. */
+export function sanitizeTokenCount(v: unknown): number {
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0;
+}
+
 /** Per-model token totals, summed across every DB. */
 export interface ModelUsage extends TokenBuckets {
   events: number;

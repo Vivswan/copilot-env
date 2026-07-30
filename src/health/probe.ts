@@ -4,7 +4,7 @@
 // command did). Pure sub-evaluators (evalShellFiles, evalCodex) take raw content
 // so they unit-test without touching the world.
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   type AutoupdateData,
@@ -37,6 +37,7 @@ import { type AuthProvider, CopilotEnvState, type ProfileMode } from "../copilot
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort, proxyLoopbackOrigin } from "../copilot_api/port.ts";
 import { isCopilotApiPid, pidAlive } from "../copilot_api/process.ts";
+import type { ProfileName } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import {
   installedProxyVersion,
@@ -49,12 +50,14 @@ import { persistedInferenceMs } from "../scripts/inference_activity.ts";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
 import {
   CLAUDE_PROBE,
+  CODEX_CATALOG_NOISE_RE,
   CODEX_PROBE,
   ghAuthTokenSpawnSpec,
   PROBE_PROMPT,
   PROBE_TIMEOUT_MS,
 } from "../utils/direct_probe.ts";
 import { errMessage } from "../utils/error.ts";
+import { readTextOrNull } from "../utils/fs.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { packageVersion } from "../utils/version.ts";
@@ -231,6 +234,16 @@ export interface HealthFacts {
   autoupdate?: AutoupdateStatus;
 }
 
+/** One named profile's facts: recorded provider + mode + baked direct identity
+ *  (never tokens). The ProfileName key documents intent (TS erases a branded index
+ *  to string); the actual guarantee is the producer, which sweeps the store via
+ *  profileNames(), so a hand-edited invalid key never reaches the report. */
+export type ProfileAuthFacts = {
+  provider: AuthProvider | null;
+  mode: ProfileMode | null;
+  integrationIdentity: string | null;
+};
+
 /**
  * The GitHub credential state, independent of any one agent: a token provisioned
  * in the store (`agent auth`), and/or a usable `gh` login. Direct resolves the
@@ -242,11 +255,8 @@ export interface AuthFacts {
   ghAuthenticated: boolean;
   /** The recorded auth provider (`copilot` | `gh-cli` | `gh-token`), or null. */
   provider: AuthProvider | null;
-  /** Named profiles: name -> recorded provider + mode + baked direct identity (never tokens). */
-  profiles: Record<
-    string,
-    { provider: AuthProvider | null; mode: ProfileMode | null; integrationIdentity: string | null }
-  >;
+  /** Named profiles, keyed by validated name. */
+  profiles: Record<ProfileName, ProfileAuthFacts>;
   /** The `integration-id` config pin (integration_identity.ts), or null when probing. */
   pinnedIntegrationId: string | null;
 }
@@ -286,10 +296,7 @@ export interface ProbeDeps {
   /** The recorded auth provider (`copilot` | `gh-cli` | `gh-token`), or null. */
   authProvider(): AuthProvider | null;
   /** Named profiles: name -> recorded provider + mode + baked direct identity (never tokens). */
-  authProfiles(): Record<
-    string,
-    { provider: AuthProvider | null; mode: ProfileMode | null; integrationIdentity: string | null }
-  >;
+  authProfiles(): Record<ProfileName, ProfileAuthFacts>;
   /** The `integration-id` config pin, or null when unset/`auto`. */
   pinnedIntegrationId(): string | null;
   claudeHome(): string;
@@ -322,14 +329,6 @@ async function proxyIdentity(url: string, timeoutMs: number): Promise<boolean | 
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
     return res.headers.has("x-trace-id");
-  } catch {
-    return null;
-  }
-}
-
-function readFileSafe(path: string): string | null {
-  try {
-    return readFileSync(path, "utf-8");
   } catch {
     return null;
   }
@@ -376,7 +375,7 @@ function formatLiveFailure(
   const lines = `${stderr}\n${stdout}`
     .split(/\r?\n/)
     .map((l) => l.trimEnd())
-    .filter((l) => l.trim() && !/"capabilities"|"object":\s*"model"|model_picker/.test(l));
+    .filter((l) => l.trim() && !CODEX_CATALOG_NOISE_RE.test(l));
   if (lines.length) return lines.join("\n");
   if (errorMessage) return errorMessage;
   if (code === null && signal) {
@@ -481,7 +480,7 @@ export function defaultProbeDeps(): ProbeDeps {
     commandResolved: resolveCommand,
     agentClis: () => AGENT_CLIS,
     shellTargets: shellTargetFiles,
-    readFileSafe,
+    readFileSafe: readTextOrNull,
     installedProxyVersion: () => installedProxyVersion(root),
     projectConfig: () => readProjectConfig(root),
     proxyCooldownSeconds: () => resolveMinimumReleaseAgeSeconds(root),
@@ -492,17 +491,21 @@ export function defaultProbeDeps(): ProbeDeps {
     codexDirectAuth,
     storedTokenPresent: () => new CopilotEnvState().read().githubToken !== null,
     authProvider: () => new CopilotEnvState().read().authProvider,
-    authProfiles: () =>
-      Object.fromEntries(
-        Object.entries(new CopilotEnvState().read().profiles).map(([name, slot]) => [
-          name,
-          {
-            provider: slot.authProvider,
-            mode: slot.mode,
-            integrationIdentity: slot.integrationIdentity,
-          },
-        ]),
-      ),
+    authProfiles: () => {
+      // Sweep via profileNames() (the store's validated, sorted view), never the raw
+      // record: its keys are a trust boundary, and only profileNames() mints the brand.
+      const store = new CopilotEnvState();
+      const profiles: Record<ProfileName, ProfileAuthFacts> = {};
+      for (const name of store.profileNames()) {
+        const slot = store.readProfileSlot(name);
+        profiles[name] = {
+          provider: slot.authProvider,
+          mode: slot.mode,
+          integrationIdentity: slot.integrationIdentity,
+        };
+      }
+      return profiles;
+    },
     pinnedIntegrationId: () => new CopilotEnvConfig().pinnedIntegrationId(),
     // Claude's direct mode also authenticates via `gh auth token`, so it reuses
     // the same probe. Effective Claude home matches resolveClaudeHome precedence.

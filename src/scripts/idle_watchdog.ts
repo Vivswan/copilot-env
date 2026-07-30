@@ -58,8 +58,25 @@ export function defaultCheckIntervalMs(timeoutMs: number): number {
 }
 
 /** Whether `now` is at least `timeoutMs` past the last activity. */
-export function isIdle(lastActivityMs: number, now: number, timeoutMs: number): boolean {
-  return now - lastActivityMs >= timeoutMs;
+export function isIdle(lastActiveMs: number, now: number, timeoutMs: number): boolean {
+  return now - lastActiveMs >= timeoutMs;
+}
+
+/**
+ * THE activity rule: last activity is the most recent of the available signals --
+ * the daemon-start floor, the inference mark, and the `lastEnsureAt` resolver
+ * heartbeat. An absent signal (null/undefined) simply doesn't count; with none at
+ * all the result is 0 ("no activity recorded"). Shared by idleCheck below and the
+ * health report's watchdog check (src/health/checks.ts) -- which passes the signals
+ * it can observe from OUTSIDE the daemon -- so adding or dropping a signal changes
+ * the daemon and the displayed idle/remaining numbers together.
+ */
+export function lastActivityMs(signals: {
+  startedAtMs?: number;
+  inferenceMs: number | null;
+  ensureAtMs: number | null;
+}): number {
+  return Math.max(signals.startedAtMs ?? 0, signals.inferenceMs ?? 0, signals.ensureAtMs ?? 0);
 }
 
 /**
@@ -77,7 +94,11 @@ export function idleCheck(startedAtMs: number, timeoutMs: number): void {
   if (!new CopilotEnvConfig().autoStartEnabled()) return; // lifecycle disabled -> stay up
   const state = new CopilotEnvRunState();
   const snapshot = state.read();
-  const lastActivity = Math.max(startedAtMs, lastObservedInferenceMs(), snapshot.lastEnsureAt ?? 0);
+  const lastActivity = lastActivityMs({
+    startedAtMs,
+    inferenceMs: lastObservedInferenceMs(),
+    ensureAtMs: snapshot.lastEnsureAt ?? null,
+  });
   if (!isIdle(lastActivity, Date.now(), timeoutMs)) return;
   // Clear our run-state tracking, but ONLY if it still points at THIS daemon. clearIfPid
   // does the pid check INSIDE the atomic read-modify-write, so a newer daemon that replaced

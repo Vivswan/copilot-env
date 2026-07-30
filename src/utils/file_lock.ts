@@ -19,27 +19,14 @@
 // `staleMs` is finite -- older than staleMs. Pass `Infinity` to reclaim ONLY a dead holder and
 // never age-steal a live one (right for a lock a live process may legitimately hold for a long
 // time, e.g. `agent start` blocking on interactive auth).
-import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-
-/** Alive check via a null signal. EPERM means the pid exists but this token can't signal it --
- *  still alive; only ESRCH (thrown as a non-EPERM error) means dead. */
-function pidAliveLocal(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
+import { readTextOrNull } from "./fs.ts";
+import { pidAlive } from "./pid.ts";
 
 /** Read the lock file's raw marker (`${pid}\n${ts}\n`), or null if absent/unreadable. */
 function readLockRaw(lockPath: string): string | null {
-  try {
-    return readFileSync(lockPath, "utf8");
-  } catch {
-    return null;
-  }
+  return readTextOrNull(lockPath);
 }
 
 /** Whether a raw lock marker is stale: malformed, its holder pid is dead, or (finite staleMs
@@ -49,7 +36,7 @@ function markerStale(raw: string, staleMs: number): boolean {
   const pid = Number.parseInt(pidStr ?? "", 10);
   const ts = Number.parseInt(tsStr ?? "", 10);
   if (Number.isNaN(pid) || pid <= 0 || Number.isNaN(ts)) return true;
-  if (!pidAliveLocal(pid)) return true;
+  if (!pidAlive(pid)) return true;
   return Number.isFinite(staleMs) && Date.now() - ts > staleMs;
 }
 

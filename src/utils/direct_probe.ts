@@ -254,6 +254,14 @@ function defaultGhAuthOk(ghPath: string): boolean {
   return !result.error && result.status === 0;
 }
 
+/**
+ * Recognizes codex's giant model-catalog dump in probe output (noise, never the
+ * failure reason). The ONE filter both probe failure formatters apply --
+ * summarizeProbeFailure below and formatLiveFailure in src/health/probe.ts -- so
+ * a catalog format change upstream is accommodated in one place.
+ */
+export const CODEX_CATALOG_NOISE_RE = /"capabilities"|"object":\s*"model"|model_picker/;
+
 /** Collapse a probe child's output to one concise, human-readable failure reason. */
 export function summarizeProbeFailure(
   status: number | null,
@@ -273,7 +281,7 @@ export function summarizeProbeFailure(
   const lines = `${stderr}\n${stdout}`
     .split(/\r?\n/)
     .map((l) => l.trim())
-    .filter((l) => l && !/"capabilities"|"object":\s*"model"|model_picker/.test(l));
+    .filter((l) => l && !CODEX_CATALOG_NOISE_RE.test(l));
   const MARKER =
     /\b(error|unauthor|forbidden|denied|invalid|expired|panic|disconnect|refused|quota|rate.?limit|[45]\d\d|stdin)\b/i;
   for (let i = lines.length - 1; i >= 0; i--) {

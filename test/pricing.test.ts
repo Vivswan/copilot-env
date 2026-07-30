@@ -5,8 +5,19 @@ import {
   estimateCost,
   type PricingTier,
   resolvePricingId,
+  roundUsd,
   type UsageTokens,
 } from "../src/usage/pricing.ts";
+
+// The ONE reported-USD precision: 4 decimal places, half-up. cost.ts's derived
+// per-day/average fields route through the same helper, so the --json payload can
+// never mix precisions.
+test("roundUsd pins the 4-decimal USD rounding rule", () => {
+  expect(roundUsd(1.23456)).toBe(1.2346);
+  expect(roundUsd(0.00004)).toBe(0);
+  expect(roundUsd(0.00005)).toBe(0.0001);
+  expect(roundUsd(12)).toBe(12);
+});
 
 const CATALOG = new Set<string>([
   "anthropic/claude-opus-4.8",

@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.5.3](https://github.com/Vivswan/copilot-env/compare/v3.5.2...v3.5.3) (2026-07-30)
+
+
+### Features
+
+* reshape agent mcp around --serve and resolve web-search model aliases ([da57ba5](https://github.com/Vivswan/copilot-env/commit/da57ba562cf133f300457ffe4fbcfa75cb827f91))
+* web search for Claude Code on Copilot Direct via agent mcp ([a18c9ac](https://github.com/Vivswan/copilot-env/commit/a18c9ac2f958845e0ff9a7bda2a5ec337a5d4dce))
+
+
+### Bug Fixes
+
+* bucket agent cost per-day usage by the user's local timezone ([d7b0bac](https://github.com/Vivswan/copilot-env/commit/d7b0bacf282ad382190083de5e2f95cc2a1e3a93))
+* derive gh-token env-var help from the resolver registry ([6cfcc77](https://github.com/Vivswan/copilot-env/commit/6cfcc77efa18df84ad1dcb6ccf5107724518c4f6))
+* exempt the proxy version bounds from health when the float itself skips ([ecfad36](https://github.com/Vivswan/copilot-env/commit/ecfad36b64282f1c7ab4202861e986ff2ae7c60d))
+* feature-match the POSIX/PowerShell launcher and prompt pairs ([7321170](https://github.com/Vivswan/copilot-env/commit/732117024bc2b3b53bcf358a78ff25bb4217818f))
+* reject empty mcp --profile and single-source MCP feature helpers ([6c965fe](https://github.com/Vivswan/copilot-env/commit/6c965feb918f55d07e026c3a11e54279ce4906eb))
+
 ## [3.5.2](https://github.com/Vivswan/copilot-env/compare/v3.5.1...v3.5.2) (2026-07-25)
 
 

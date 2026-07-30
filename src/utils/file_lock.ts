@@ -1,6 +1,6 @@
-// Shared best-effort cross-process advisory file lock, used by both the JSON-store update()
-// serialization (src/copilot_api/config.ts) and the `agent start` critical-section lock
-// (src/commands/start.ts). It is NOT a hard mutex: perfect cross-process mutual exclusion needs
+// Shared best-effort cross-process advisory file lock (consumers range from the JSON-store
+// update() serialization to the `agent start` critical section and the device-flow login
+// mutex). It is NOT a hard mutex: perfect cross-process mutual exclusion needs
 // OS advisory locks (flock/fcntl) that the portable Node/bun fs API doesn't expose, so it builds
 // on atomic filesystem primitives -- linkSync to PUBLISH the lock (never observed half-written)
 // and an identity-verified renameSync to STEAL a stale one -- and accepts a residual race that

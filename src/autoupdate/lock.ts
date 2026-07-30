@@ -13,7 +13,7 @@
 // which is what keeps the release path from racing a successor.
 import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { pidAlive } from "../copilot_api/process.ts";
+import { pidAlive } from "../utils/pid.ts";
 import { autoupdateLockFile } from "./paths.ts";
 
 // 30 minutes -- chosen to dwarf any real update (see the invariant above).

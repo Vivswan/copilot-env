@@ -9,6 +9,7 @@ import {
   bothAgentsWiredDirect,
   floatProxy,
   nodeModulesFresh,
+  proxyFloatSkips,
   proxyFloatUpToDate,
   proxyFloatVerifyStatus,
   proxyInstallAssertStatus,
@@ -470,6 +471,23 @@ describe("bothAgentsWiredDirect", () => {
     const codexHome = writeCodexHome(CODEX_DIRECT_TOML);
     const claudeHome = writeClaudeHome(DIRECT_HELPER_NAME);
     expect(bothAgentsWiredDirect(codexHome, claudeHome)).toBe(true);
+  });
+
+  test("proxyFloatSkips: direct-only skips, but a COPILOT_API_VERSION pin forces the float", () => {
+    const codexHome = writeCodexHome(CODEX_DIRECT_TOML);
+    const claudeHome = writeClaudeHome(DIRECT_HELPER_NAME);
+    const saved = process.env.COPILOT_API_VERSION;
+    try {
+      delete process.env.COPILOT_API_VERSION;
+      expect(proxyFloatSkips(codexHome, claudeHome)).toBe(true);
+      // An env pin is per-invocation intent: the float must run (and health's
+      // bounds exemption must not fire) even on a direct-only machine.
+      process.env.COPILOT_API_VERSION = "1.2.3";
+      expect(proxyFloatSkips(codexHome, claudeHome)).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.COPILOT_API_VERSION;
+      else process.env.COPILOT_API_VERSION = saved;
+    }
   });
 
   test("false when a named profile home exists (a proxy profile uses the daemon)", () => {

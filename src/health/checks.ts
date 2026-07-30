@@ -167,6 +167,7 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
     // Version + cooldown as separate lines -> rendered as `-` sub-items.
     detail = `${PROXY_PACKAGE_NAME} ${bounds.version}\nfloat ${floatCooldownLabel(f.cooldownSeconds)}`;
   } else if (bounds.reason === "missing") {
+    // A missing package is a broken install in any mode; the fix always works.
     status = "fail";
     detail = `${PROXY_PACKAGE_NAME} is not installed`;
     fix = "bun install --frozen-lockfile";
@@ -179,6 +180,17 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
     detail = `proxy ${bounds.version} is above the ceiling ${bounds.ceiling}`;
     fix = "agent update";
   }
+  let exempted = false;
+  if (!bounds.ok && bounds.reason !== "missing" && f.floatSkips) {
+    // The float itself skips (proxyFloatSkips: proxy unused, no env pin), so
+    // the bounds are unenforceable -- the suggested fixes would not move the
+    // version -- and must not read as a failure. A proxy rewire (or a proxy
+    // profile) re-enables the float, which enforces them again.
+    exempted = true;
+    status = "ok";
+    detail = `${detail}; not enforced (Codex + Claude are both direct, so the proxy float skips)`;
+    fix = undefined;
+  }
   return {
     id: "proxy.package",
     label: "Proxy package",
@@ -187,7 +199,14 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
     status,
     detail,
     ...(fix ? { fix } : {}),
-    value: { version: f.version, cooldownSeconds: f.cooldownSeconds },
+    // floatSkips is stamped only when it changed the verdict, mirroring the
+    // runtime checks' bothDirect stamp, so --json consumers can tell
+    // "in bounds" from "out of bounds but exempted".
+    value: {
+      version: f.version,
+      cooldownSeconds: f.cooldownSeconds,
+      ...(exempted ? { floatSkips: true } : {}),
+    },
   };
 }
 

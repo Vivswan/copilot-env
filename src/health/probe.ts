@@ -45,7 +45,11 @@ import {
   type ProxyVersionStatus,
   proxyVersionBoundsStatus,
 } from "../copilot_api/version.ts";
-import { nodeModulesFresh, resolveMinimumReleaseAgeSeconds } from "../proxy_float.ts";
+import {
+  nodeModulesFresh,
+  proxyFloatSkips,
+  resolveMinimumReleaseAgeSeconds,
+} from "../proxy_float.ts";
 import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
 import { persistedInferenceMs } from "../scripts/inference_activity.ts";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
@@ -131,6 +135,13 @@ export interface ProxyFacts {
   configError: string | null;
   // The proxy float's cooldown window in seconds (null if it couldn't be read).
   cooldownSeconds: number | null;
+  // The float's own skip predicate (proxyFloatSkips: both agents Direct, no
+  // proxy-profile homes, managed Direct base URL, no COPILOT_API_VERSION env
+  // pin). When it skips, the version bounds are unenforceable and must not
+  // read as a failure. Deliberately NOT the runtime checks' bothDirect: that
+  // one answers "does the default setup need a proxy on this port?", which
+  // stays true even when a named proxy profile runs its own daemon.
+  floatSkips: boolean;
 }
 
 export interface ShellFileFact {
@@ -723,12 +734,17 @@ export async function gatherFacts(
         }
         // Reading copilot-env.config can throw on a malformed/missing file; turn
         // that into a proxy-check failure rather than crashing the whole report.
+        // The exemption uses the float's OWN skip predicate (not the runtime
+        // checks' looser both-direct read) so health and the float can never
+        // disagree about whether the bounds are enforced.
+        const floatSkips = proxyFloatSkips(deps.codexHome(), deps.claudeHome());
         try {
           facts.proxy = {
             version,
             bounds: proxyVersionBoundsStatus(version, deps.projectConfig()),
             configError: null,
             cooldownSeconds,
+            floatSkips,
           };
         } catch (e) {
           facts.proxy = {
@@ -736,6 +752,7 @@ export async function gatherFacts(
             bounds: null,
             configError: errMessage(e),
             cooldownSeconds,
+            floatSkips,
           };
         }
       })(),

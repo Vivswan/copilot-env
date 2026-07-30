@@ -618,8 +618,22 @@ function parseMode(args: string[]): ProxyFloatMode {
   process.exit(2);
 }
 
-function mainAssertInstalled(root: string, envPinned: boolean): never {
-  if (!envPinned && bothAgentsWiredDirect()) {
+/**
+ * True when the float's entry points skip: Direct-only wiring
+ * (bothAgentsWiredDirect) and no COPILOT_API_VERSION env pin. An explicit env
+ * pin is per-invocation intent, so it always forces the normal path; a stored
+ * `proxy-version` config pin does NOT force it (the config only matters once an
+ * agent is wired to the proxy again). Health's proxy-package check keys its
+ * "bounds not enforced" exemption on THIS predicate so it can never disagree
+ * with the float.
+ */
+export function proxyFloatSkips(codexHome?: string, claudeHome?: string): boolean {
+  const envPinned = Boolean(process.env[PROXY_VERSION_ENV]?.trim());
+  return !envPinned && bothAgentsWiredDirect(codexHome, claudeHome);
+}
+
+function mainAssertInstalled(root: string): never {
+  if (proxyFloatSkips()) {
     console.log(DIRECT_ONLY_SKIP_MESSAGE);
     process.exit(0);
   }
@@ -637,11 +651,11 @@ function mainAssertInstalled(root: string, envPinned: boolean): never {
   }
 }
 
-function mainVerify(root: string, envPinned: boolean): never {
+function mainVerify(root: string): never {
   try {
     // The freshness check still gates a real dependency install; only the
     // proxy-target resolution (the npm metadata read) is skipped when Direct-only.
-    if (!envPinned && nodeModulesFresh(root) && bothAgentsWiredDirect()) {
+    if (nodeModulesFresh(root) && proxyFloatSkips()) {
       logger.success(`up to date: ${DIRECT_ONLY_SKIP_MESSAGE}`);
       process.exit(0);
     }
@@ -660,9 +674,9 @@ function mainVerify(root: string, envPinned: boolean): never {
   }
 }
 
-function mainFloat(root: string, envPinned: boolean): void {
+function mainFloat(root: string): void {
   try {
-    if (!envPinned && bothAgentsWiredDirect()) {
+    if (proxyFloatSkips()) {
       logger.info(DIRECT_ONLY_SKIP_MESSAGE);
       return;
     }
@@ -677,21 +691,15 @@ function main(): void {
   const root = PROJECT_ROOT;
   const mode = parseMode(process.argv.slice(2));
 
-  // An explicit env pin is per-invocation intent, so it always forces the normal
-  // path; otherwise a Direct-only wiring makes every mode a no-op (the local
-  // proxy is unused). A stored `proxy-version` config pin does NOT force it: the
-  // config only matters once an agent is wired to the proxy again.
-  const envPinned = Boolean(process.env[PROXY_VERSION_ENV]?.trim());
-
   switch (mode) {
     case "assert":
-      mainAssertInstalled(root, envPinned);
+      mainAssertInstalled(root);
       break;
     case "verify":
-      mainVerify(root, envPinned);
+      mainVerify(root);
       break;
     case "float":
-      mainFloat(root, envPinned);
+      mainFloat(root);
       break;
     default:
       assertNever(mode);

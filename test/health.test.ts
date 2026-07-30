@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DIRECT_HELPER_NAME } from "../src/claude/config.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 
 import {
@@ -145,6 +148,7 @@ test("proxy package: missing and below-floor fail, above-ceiling warns, in-bound
       bounds: { ok: false, reason: "missing", version: null },
       configError: null,
       cooldownSeconds: 604800,
+      floatSkips: false,
     }).status,
   ).toBe("fail");
   expect(
@@ -153,6 +157,7 @@ test("proxy package: missing and below-floor fail, above-ceiling warns, in-bound
       bounds: { ok: false, reason: "belowFloor", version: "1.0.0", floor: "1.10.0" },
       configError: null,
       cooldownSeconds: 604800,
+      floatSkips: false,
     }).status,
   ).toBe("fail");
   const above = checkProxyPackage({
@@ -160,6 +165,7 @@ test("proxy package: missing and below-floor fail, above-ceiling warns, in-bound
     bounds: { ok: false, reason: "aboveCeiling", version: "2.0.0", ceiling: "1.99.0" },
     configError: null,
     cooldownSeconds: 604800,
+    floatSkips: false,
   });
   expect(above.status).toBe("warn");
   expect(above.fix).toBe("agent update");
@@ -169,8 +175,74 @@ test("proxy package: missing and below-floor fail, above-ceiling warns, in-bound
       bounds: { ok: true, version: "1.10.5" },
       configError: null,
       cooldownSeconds: 604800,
+      floatSkips: false,
     }).status,
   ).toBe("ok");
+});
+
+test("proxy package bounds are not enforced when both agents are direct", () => {
+  // The float skips when Codex + Claude are both wired Direct (the proxy is
+  // unused), so out-of-bounds versions must read ok with a note, not fail --
+  // the suggested fixes could not move the version anyway.
+  const below = checkProxyPackage({
+    version: "1.0.0",
+    bounds: { ok: false, reason: "belowFloor", version: "1.0.0", floor: "1.10.0" },
+    configError: null,
+    cooldownSeconds: 604800,
+    floatSkips: true,
+  });
+  expect(below.status).toBe("ok");
+  expect(below.detail).toContain("not enforced (Codex + Claude are both direct");
+  expect(below.fix).toBeUndefined();
+  // The exemption is machine-readable for --json consumers (mirrors the
+  // runtime checks' bothDirect stamp).
+  expect((below.value as Record<string, unknown>).floatSkips).toBe(true);
+
+  const above = checkProxyPackage({
+    version: "2.0.0",
+    bounds: { ok: false, reason: "aboveCeiling", version: "2.0.0", ceiling: "1.99.0" },
+    configError: null,
+    cooldownSeconds: 604800,
+    floatSkips: true,
+  });
+  expect(above.status).toBe("ok");
+  expect(above.fix).toBeUndefined();
+
+  // A missing package is a broken install in any mode: the exemption must not
+  // swallow it (bun install genuinely fixes it, float or no float).
+  const missing = checkProxyPackage({
+    version: null,
+    bounds: { ok: false, reason: "missing", version: null },
+    configError: null,
+    cooldownSeconds: 604800,
+    floatSkips: true,
+  });
+  expect(missing.status).toBe("fail");
+  expect(missing.fix).toBe("bun install --frozen-lockfile");
+
+  // An in-bounds proxy on a direct-only machine reads plain ok: no note glued
+  // onto the version/cooldown detail, no floatSkips stamp.
+  const inBounds = checkProxyPackage({
+    version: "1.10.5",
+    bounds: { ok: true, version: "1.10.5" },
+    configError: null,
+    cooldownSeconds: 604800,
+    floatSkips: true,
+  });
+  expect(inBounds.status).toBe("ok");
+  expect(inBounds.detail).not.toContain("not enforced");
+  expect((inBounds.value as Record<string, unknown>).floatSkips).toBeUndefined();
+
+  // An unreadable copilot-env.config stays a failure in any mode: the early
+  // return fires before the exemption, and its fix is actionable regardless.
+  const badConfig = checkProxyPackage({
+    version: "1.10.5",
+    bounds: null,
+    configError: "bad config",
+    cooldownSeconds: 604800,
+    floatSkips: true,
+  });
+  expect(badConfig.status).toBe("fail");
 });
 
 test("proxy package detail shows the float cooldown window", () => {
@@ -180,6 +252,7 @@ test("proxy package detail shows the float cooldown window", () => {
       bounds: { ok: true, version: "1.10.5" },
       configError: null,
       cooldownSeconds,
+      floatSkips: false,
     }).detail;
   expect(ok(604800)).toContain("cooldown 7d");
   expect(ok(0)).toContain("no cooldown");
@@ -194,6 +267,7 @@ test("proxy package fails (not throws) when copilot-env.config is unreadable", (
     bounds: null,
     configError: "bad config",
     cooldownSeconds: 604800,
+    floatSkips: false,
   });
   expect(r.status).toBe("fail");
   expect(r.detail).toContain("copilot-env.config");
@@ -426,6 +500,66 @@ test("health's own proxy probes do not move the watchdog activity signal", async
   expect(probes).toBeGreaterThan(0); // the proxy WAS probed (reach + identity)
   expect(facts.runtime?.watchdog.lastRequestMs).toBe(100); // ...yet the signal is unchanged
   expect(facts.runtime?.watchdog.now).toBe(5000);
+});
+
+test("gatherFacts derives proxy.floatSkips from the float's own predicate", async () => {
+  // The package-bounds exemption must key off bothAgentsWiredDirect (the float's
+  // skip predicate: modes AND the managed direct base URL AND no profile homes),
+  // never a looser both-direct read -- health and the float must agree. The
+  // predicate's own edge cases (profile homes, proxy wiring) live in
+  // proxy_float.test.ts; this pins the fact-gathering seam.
+  const root = mkdtempSync(join(tmpdir(), "copilot-health-float-"));
+  const savedHome = process.env.COPILOT_API_HOME;
+  const savedPin = process.env.COPILOT_API_VERSION;
+  process.env.COPILOT_API_HOME = join(root, "api-home"); // isolated: no profile homes
+  delete process.env.COPILOT_API_VERSION; // an inherited pin would force the float
+  try {
+    const codexHome = join(root, "codex-home");
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(
+      join(codexHome, "config.toml"),
+      [
+        'model_provider = "copilot-env"',
+        "",
+        "[model_providers.copilot-env]",
+        'base_url = "https://api.githubcopilot.com"',
+        "",
+      ].join("\n"),
+    );
+    const claudeHome = join(root, "claude-home");
+    mkdirSync(claudeHome, { recursive: true });
+    const claudeSettings = (baseUrl: string) =>
+      JSON.stringify({
+        "apiKeyHelper": join(claudeHome, DIRECT_HELPER_NAME),
+        "env": { "ANTHROPIC_BASE_URL": baseUrl },
+      });
+    writeFileSync(
+      join(claudeHome, "settings.json"),
+      claudeSettings("https://api.githubcopilot.com"),
+    );
+
+    const overrides = {
+      resolvePort: () => "4141",
+      readState: () => ({}),
+      reach: async () => false,
+      codexHome: () => codexHome,
+      claudeHome: () => claudeHome,
+    };
+    const direct = await gatherFacts("proxy", {}, overrides);
+    expect(direct.proxy?.floatSkips).toBe(true);
+
+    // A mixed Claude config (direct helper, proxy base URL) floats again, so
+    // the bounds are enforced again.
+    writeFileSync(join(claudeHome, "settings.json"), claudeSettings("http://127.0.0.1:4141"));
+    const mixed = await gatherFacts("proxy", {}, overrides);
+    expect(mixed.proxy?.floatSkips).toBe(false);
+  } finally {
+    if (savedHome === undefined) delete process.env.COPILOT_API_HOME;
+    else process.env.COPILOT_API_HOME = savedHome;
+    if (savedPin === undefined) delete process.env.COPILOT_API_VERSION;
+    else process.env.COPILOT_API_VERSION = savedPin;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // --- bootstrap checks -------------------------------------------------------
@@ -1017,6 +1151,7 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       bounds: { ok: true, version: "1.10.5" },
       configError: null,
       cooldownSeconds: 604800,
+      floatSkips: false,
     },
     shell: { files: [], integrationWired: true, launchersWired: false },
     clis: [{ command: "claude", name: "Claude", resolved: null }],

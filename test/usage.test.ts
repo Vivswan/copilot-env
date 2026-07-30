@@ -5,6 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { discoverUsageDbs, readUsage, sanitizeTokenCount } from "../src/usage/usage.ts";
+import { localDayKey } from "../src/utils/time.ts";
+
+// Day keys are LOCAL calendar days now, so expectations derive from the same
+// helper the reader uses; timestamps meant to share a day are written at the
+// SAME instant, and distinct days sit a full day apart (which lands on
+// different local days in any runner timezone -- a fall-back transition could
+// stretch a day to 25h, but these June dates avoid one).
+const ms = (utc: string): number => Date.parse(utc);
+const day = (utc: string): string => localDayKey(ms(utc));
 
 // The ONE token-count sanitization rule both session readers apply: only a finite
 // positive number passes; hostile or torn values become 0.
@@ -45,9 +54,11 @@ function seedUsageDb(path: string): void {
     created_at_utc TEXT
   )`);
   const insert = db.prepare("INSERT INTO token_usage_events VALUES (?, ?, ?, ?, ?, ?, ?)");
-  insert.run("claude-opus-4.8", 100, 50, 0, 0, 1, "2026-06-01T00:00:00Z");
-  insert.run("claude-opus-4.8", 100, 50, 10, 0, 2, "2026-06-01T01:00:00Z");
-  insert.run("gpt-5.5", 200, 0, 0, 0, 3, "2026-06-02T00:00:00Z");
+  const day1 = "2026-06-01T00:00:00Z";
+  const day2 = "2026-06-02T00:00:00Z";
+  insert.run("claude-opus-4.8", 100, 50, 0, 0, ms(day1), day1);
+  insert.run("claude-opus-4.8", 100, 50, 10, 0, ms(day1), day1);
+  insert.run("gpt-5.5", 200, 0, 0, 0, ms(day2), day2);
   db.close();
 }
 
@@ -76,20 +87,23 @@ test("readUsage exposes a per-day, per-model breakdown that reconciles with byMo
 
   const report = readUsage([path]);
 
-  // perDay keys are the distinct UTC days.
-  expect([...report.perDay.keys()].sort()).toEqual(["2026-06-01", "2026-06-02"]);
+  // perDay keys are the distinct LOCAL calendar days.
+  expect([...report.perDay.keys()].sort()).toEqual([
+    day("2026-06-01T00:00:00Z"),
+    day("2026-06-02T00:00:00Z"),
+  ]);
 
-  // 2026-06-01 carried both claude rows (100+100 input, 50+50 output, 0+10 cache read).
-  expect(report.perDay.get("2026-06-01")?.get("claude-opus-4.8")).toEqual({
+  // The first day carried both claude rows (100+100 input, 50+50 output, 0+10 cache read).
+  expect(report.perDay.get(day("2026-06-01T00:00:00Z"))?.get("claude-opus-4.8")).toEqual({
     input: 200,
     output: 100,
     cacheRead: 10,
     cacheCreation: 0,
     events: 2,
   });
-  // 2026-06-02 carried only the gpt row.
-  expect(report.perDay.get("2026-06-02")?.get("gpt-5.5")?.input).toBe(200);
-  expect(report.perDay.get("2026-06-02")?.has("claude-opus-4.8")).toBe(false);
+  // The second day carried only the gpt row.
+  expect(report.perDay.get(day("2026-06-02T00:00:00Z"))?.get("gpt-5.5")?.input).toBe(200);
+  expect(report.perDay.get(day("2026-06-02T00:00:00Z"))?.has("claude-opus-4.8")).toBe(false);
 });
 
 test("readUsage folds divergent spellings of one model into the canonical row", () => {
@@ -107,9 +121,10 @@ test("readUsage folds divergent spellings of one model into the canonical row", 
   )`);
   const insert = db.prepare("INSERT INTO token_usage_events VALUES (?, ?, ?, ?, ?, ?, ?)");
   // Anthropic dashed, Copilot dotted, and dated-snapshot ids of one model.
-  insert.run("claude-opus-4-8", 1, 2, 0, 0, 1, "2026-06-01T00:00:00Z");
-  insert.run("claude-opus-4.8", 10, 20, 0, 0, 2, "2026-06-01T01:00:00Z");
-  insert.run("claude-opus-4-8-20260101", 100, 200, 0, 0, 3, "2026-06-01T02:00:00Z");
+  const at = "2026-06-01T00:00:00Z";
+  insert.run("claude-opus-4-8", 1, 2, 0, 0, ms(at), at);
+  insert.run("claude-opus-4.8", 10, 20, 0, 0, ms(at), at);
+  insert.run("claude-opus-4-8-20260101", 100, 200, 0, 0, ms(at), at);
   db.close();
 
   const report = readUsage([path]);
@@ -122,7 +137,7 @@ test("readUsage folds divergent spellings of one model into the canonical row", 
     events: 3,
   });
   expect(report.byModel.size).toBe(1);
-  expect(report.perDay.get("2026-06-01")?.get("claude-opus-4.8")?.events).toBe(3);
+  expect(report.perDay.get(day(at))?.get("claude-opus-4.8")?.events).toBe(3);
 });
 
 test("readUsage sums tokens by model and unions active days across two DBs", () => {
@@ -145,8 +160,8 @@ test("readUsage sums tokens by model and unions active days across two DBs", () 
     created_at_utc TEXT
   )`);
   const insert = db.prepare("INSERT INTO token_usage_events VALUES (?, ?, ?, ?, ?, ?, ?)");
-  insert.run("claude-opus-4.8", 5, 7, 1, 2, 10, "2026-06-01T12:00:00Z");
-  insert.run("gemini-3.0", 9, 0, 0, 0, 11, "2026-06-03T00:00:00Z");
+  insert.run("claude-opus-4.8", 5, 7, 1, 2, ms("2026-06-01T00:00:00Z"), "2026-06-01T00:00:00Z");
+  insert.run("gemini-3.0", 9, 0, 0, 0, ms("2026-06-03T00:00:00Z"), "2026-06-03T00:00:00Z");
   db.close();
 
   const report = readUsage([pathA, pathB]);
@@ -171,15 +186,90 @@ test("readUsage sinceMs filters older rows from token totals and active days", (
   const path = join(dir, "copilot-api.sqlite");
   seedUsageDb(path);
 
-  // Seed rows live at created_at_ms 1, 2 (claude, 2026-06-01) and 3 (gpt,
-  // 2026-06-02). sinceMs=3 keeps only the gpt row.
-  const report = readUsage([path], 3);
+  // Seed rows live on 2026-06-01 (claude) and 2026-06-02 (gpt). A cutoff at
+  // the gpt row's own timestamp keeps only the gpt row.
+  const report = readUsage([path], ms("2026-06-02T00:00:00Z"));
 
   expect(report.byModel.has("claude-opus-4.8")).toBe(false);
   expect(report.byModel.get("gpt-5.5")?.input).toBe(200);
   expect(report.byModel.get("gpt-5.5")?.events).toBe(1);
   // Only 2026-06-02 survives the cutoff.
   expect(report.perDay.size).toBe(1);
+});
+
+test("readUsage buckets by the user's local day, not the UTC day (TZ-pinned)", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  const path = join(dir, "copilot-api.sqlite");
+  const db = new Database(path);
+  db.run(`CREATE TABLE token_usage_events (
+    model TEXT NOT NULL,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_input_tokens INTEGER,
+    cache_creation_input_tokens INTEGER,
+    created_at_ms INTEGER,
+    created_at_utc TEXT
+  )`);
+  // 2026-06-02T01:00Z is 2026-06-01 21:00 in New York (UTC-4 in June).
+  const at = "2026-06-02T01:00:00Z";
+  db.prepare("INSERT INTO token_usage_events VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+    "gpt-5.5",
+    1,
+    0,
+    0,
+    0,
+    ms(at),
+    at,
+  );
+  db.close();
+
+  // Bun ignores TZ assignments after a `delete process.env.TZ` (verified), so
+  // save/restore by explicit zone name and never delete.
+  const savedTz = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  try {
+    process.env.TZ = "America/New_York";
+    const report = readUsage([path]);
+    // A literal expectation on purpose: a regression back to UTC slicing would
+    // key this "2026-06-02" and fail here even on a UTC CI runner.
+    expect([...report.perDay.keys()]).toEqual(["2026-06-01"]);
+  } finally {
+    process.env.TZ = savedTz;
+  }
+});
+
+test("a null created_at_ms row counts in byModel but is dropped from perDay", () => {
+  // The daemon writes created_at_ms on every row, so this is defensive: the
+  // schema belongs to a floating third-party package. A row without it can't
+  // be placed on a local day, but its tokens must still reach the totals.
+  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  const path = join(dir, "copilot-api.sqlite");
+  const db = new Database(path);
+  db.run(`CREATE TABLE token_usage_events (
+    model TEXT NOT NULL,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    cache_read_input_tokens INTEGER,
+    cache_creation_input_tokens INTEGER,
+    created_at_ms INTEGER,
+    created_at_utc TEXT
+  )`);
+  const insert = db.prepare("INSERT INTO token_usage_events VALUES (?, ?, ?, ?, ?, ?, ?)");
+  insert.run("gpt-5.5", 7, 0, 0, 0, null, "2026-06-01T00:00:00Z");
+  insert.run("gpt-5.5", 1, 0, 0, 0, ms("2026-06-01T00:00:00Z"), "2026-06-01T00:00:00Z");
+  db.close();
+
+  const report = readUsage([path]);
+
+  expect(report.byModel.get("gpt-5.5")).toEqual({
+    input: 8,
+    output: 0,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 2,
+  });
+  // Only the dated row appears in the per-day split.
+  expect(report.perDay.size).toBe(1);
+  expect(report.perDay.get(day("2026-06-01T00:00:00Z"))?.get("gpt-5.5")?.input).toBe(1);
 });
 
 test("readUsage skips a missing DB and still reports the readable ones", () => {

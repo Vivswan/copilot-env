@@ -4,6 +4,20 @@ export const SECONDS_PER_DAY = 24 * 60 * 60;
 export const MILLISECONDS_PER_DAY = SECONDS_PER_DAY * 1000;
 
 /**
+ * Format a unix-ms timestamp as the LOCAL calendar day, `YYYY-MM-DD`. The one
+ * day-key derivation every usage source shares, so `agent cost` buckets by the
+ * user's own days rather than UTC's. Deliberately JS (never SQLite's
+ * `localtime` modifier): the libc timezone behind SQLite is cached at first
+ * use, while `Date` follows a runtime `TZ` change -- keeping the timezone math
+ * here keeps it testable and consistent across all sources.
+ */
+export function localDayKey(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
  * Format a millisecond duration as a compact, human string: "1h", "30m", "1m30s", "45s", "0s".
  * Negative inputs clamp to "0s"; zero components are omitted (3600000 -> "1h", not "1h0m0s").
  * Shared by `agent start` (idle-window banner) and `agent health` (idle watchdog report) --

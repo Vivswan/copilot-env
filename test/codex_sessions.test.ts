@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { discoverCodexSessionRoots, readCodexSessions } from "../src/usage/codex_sessions.ts";
+import { localDayKey } from "../src/utils/time.ts";
 
 /** A Codex TokenUsage object: input INCLUDES cached; output includes reasoning. */
 function usage(input: number, cached: number, output: number): Record<string, number> {
@@ -67,9 +68,11 @@ test("readCodexSessions attributes turns to the model in effect and splits cache
     turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
     // input 100 includes 40 cached -> input 60 / cacheRead 40.
     tokenCount("2026-06-01T10:00:05.000Z", usage(100, 40, 20), usage(100, 40, 20)),
-    // Model switch mid-session; the day also rolls over in UTC.
-    turnContext("2026-06-02T00:00:01.000Z", "gpt-5.6-mini"),
-    tokenCount("2026-06-02T00:00:05.000Z", usage(300, 40, 50), usage(200, 0, 30)),
+    // Model switch mid-session, a full day later: distinct local days in any
+    // runner timezone (a fall-back transition could stretch a day to 25h, but
+    // these June dates avoid one).
+    turnContext("2026-06-02T10:00:01.000Z", "gpt-5.6-mini"),
+    tokenCount("2026-06-02T10:00:05.000Z", usage(300, 40, 50), usage(200, 0, 30)),
   ]);
 
   const byProvider = await readCodexSessions([root]);
@@ -89,9 +92,37 @@ test("readCodexSessions attributes turns to the model in effect and splits cache
     cacheCreation: 0,
     events: 1,
   });
-  // Days come from the per-line UTC timestamps, not the file's date path.
-  expect([...(report?.perDay.keys() ?? [])].sort()).toEqual(["2026-06-01", "2026-06-02"]);
+  // Days come from the per-line timestamps (local calendar days), not the
+  // file's date path.
+  expect([...(report?.perDay.keys() ?? [])].sort()).toEqual([
+    localDayKey(Date.parse("2026-06-01T10:00:05.000Z")),
+    localDayKey(Date.parse("2026-06-02T10:00:05.000Z")),
+  ]);
   expect(report?.perDay.size).toBe(2);
+});
+
+test("readCodexSessions buckets by the user's local day, not the UTC day (TZ-pinned)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const root = join(dir, "sessions");
+  writeRollout(root, "2026-06-02", "aaa", [
+    sessionMeta("2026-06-02T01:00:00.000Z", "aaa", { provider: "copilot-env" }),
+    turnContext("2026-06-02T01:00:01.000Z", "gpt-5.6"),
+    // 2026-06-02T01:00Z is 2026-06-01 21:00 in New York (UTC-4 in June).
+    tokenCount("2026-06-02T01:00:05.000Z", usage(10, 0, 1), usage(10, 0, 1)),
+  ]);
+
+  // Bun ignores TZ assignments after a `delete process.env.TZ` (verified), so
+  // save/restore by explicit zone name and never delete.
+  const savedTz = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  try {
+    process.env.TZ = "America/New_York";
+    const byProvider = await readCodexSessions([root]);
+    // A literal expectation on purpose: a regression back to UTC slicing would
+    // key this "2026-06-02" and fail here even on a UTC CI runner.
+    expect([...(byProvider.get("copilot-env")?.perDay.keys() ?? [])]).toEqual(["2026-06-01"]);
+  } finally {
+    process.env.TZ = savedTz;
+  }
 });
 
 test("readCodexSessions keys rows by the canonical model spelling", async () => {

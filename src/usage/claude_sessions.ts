@@ -30,7 +30,7 @@ import { resolveClaudeHome } from "../claude/config.ts";
 import { errMessage } from "../utils/error.ts";
 import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
-import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
+import { localDayKey, MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { canonicalModelName } from "./pricing.ts";
 import {
   addDayUsage,
@@ -79,7 +79,7 @@ export function discoverClaudeSessionRoots(homes: string[] = [resolveClaudeHome(
 
 /**
  * Parse every transcript under `roots` and aggregate token usage per model,
- * per UTC day, into ONE report (transcripts carry no provider dimension).
+ * per LOCAL calendar day, into ONE report (transcripts carry no provider dimension).
  * `sinceMs` (unix ms) bounds the report to recent events when set. A file that
  * fails to read is skipped with a warning rather than aborting the report.
  */
@@ -242,12 +242,10 @@ async function parseTranscriptFile(
       // A repeated id is the same message continuing (streaming) or copied
       // (resume/fork), so only the FIRST occurrence counts as an event.
       addUsage(report.byModel, model, buckets, isNewMessage ? 1 : 0);
-      const day =
-        typeof parsed.timestamp === "string" && /^\d{4}-\d{2}-\d{2}/.test(parsed.timestamp)
-          ? parsed.timestamp.slice(0, 10)
-          : undefined;
-      if (day !== undefined) {
-        addDayUsage(report.perDay, day, model, buckets, isNewMessage ? 1 : 0);
+      // Bucket by the user's LOCAL calendar day (localDayKey), not the UTC day
+      // the transcript timestamp spells.
+      if (Number.isFinite(tsMs)) {
+        addDayUsage(report.perDay, localDayKey(tsMs), model, buckets, isNewMessage ? 1 : 0);
       }
     }
   } finally {

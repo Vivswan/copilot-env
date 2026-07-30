@@ -17,6 +17,7 @@ import { PROFILES_DIR_NAME, resolveHome, usageDbsUnderHome } from "../copilot_ap
 import { isValidProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { isDir } from "../utils/fs.ts";
+import { localDayKey } from "../utils/time.ts";
 import { canonicalModelName } from "./pricing.ts";
 
 /** The four priced token buckets every usage source reduces one event to. */
@@ -40,9 +41,9 @@ export interface ModelUsage extends TokenBuckets {
 }
 
 /** One aggregated `token_usage_events` row as returned by the grouped query. The SUM()
- *  columns and the substr() day are null when a group has no non-null inputs. */
+ *  columns and the bucket are null when a group has no non-null inputs. */
 interface UsageRow {
-  day: string | null;
+  bucket: number | null;
   model: string;
   input: number | null;
   output: number | null;
@@ -54,11 +55,11 @@ interface UsageRow {
 /**
  * Aggregated usage plus a per-day breakdown.
  *
- * `perDay` maps each distinct UTC calendar day (YYYY-MM-DD) to that day's
- * per-model token totals, unioned across every DB. `byModel` is the all-days
- * roll-up -- derived from the same rows, kept as a field so callers don't
- * recompute it. The active-day count is `perDay.size`, always read from the
- * map itself.
+ * `perDay` maps each distinct LOCAL calendar day (YYYY-MM-DD, the user's
+ * timezone) to that day's per-model token totals, unioned across every DB.
+ * `byModel` is the all-days roll-up -- derived from the same rows, kept as a
+ * field so callers don't recompute it. The active-day count is `perDay.size`,
+ * always read from the map itself.
  */
 export interface UsageReport {
   byModel: Map<string, ModelUsage>;
@@ -168,9 +169,20 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
     cacheCreation: row.cacheCreation ?? 0,
   });
 
-  // One grouped query by (day, model); byModel and perDay both derive from it, so we
-  // never read the same rows twice.
-  const QUERY = `SELECT substr(created_at_utc, 1, 10)     AS day,
+  // One grouped query by (UTC minute, model); byModel and perDay both derive from
+  // it, so we never read the same rows twice. The bucket is a UTC minute so the
+  // LOCAL day key can be derived in JS (localDayKey): every IANA transition and
+  // offset in the standard-time era is minute-aligned (sub-minute offsets exist
+  // only for pre-standard-time LMT dates, which a daemon-written Date.now()
+  // timestamp can never carry), so a bucket never straddles a local midnight.
+  // Minutes, not quarter-hours, deliberately: historical zones flipped DST at
+  // odd minutes (America/Goose_Bay fell back at 00:01 local), which would split
+  // a coarser bucket across two local days. Keeping the timezone math out of
+  // SQL avoids SQLite's cached-libc `localtime` (see localDayKey). At most
+  // ~1440 rows per model-day (a long fall-back day holds a few more -- up to
+  // 1560 for Antarctica/Troll's two-hour shift) -- still tiny.
+  const MINUTE_MS = 60_000;
+  const QUERY = `SELECT (created_at_ms / ${MINUTE_MS}) AS bucket,
                   model,
                   SUM(input_tokens)                 AS input,
                   SUM(output_tokens)                AS output,
@@ -179,7 +191,7 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
                   COUNT(*)                          AS events
            FROM token_usage_events
            WHERE (?1 IS NULL OR created_at_ms >= ?1)
-           GROUP BY day, model`;
+           GROUP BY bucket, model`;
 
   for (const path of dbPaths) {
     // The daemon runs the usage DB in WAL mode and only checkpoints on close, so rows written
@@ -215,12 +227,12 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
       const model = canonicalModelName(row.model);
       const buckets = rowBuckets(row);
       addUsage(byModel, model, buckets, row.events ?? 0);
-      // Distinct UTC calendar days with data, unioned across all DBs. The
-      // daemon writes created_at_utc alongside created_at_ms on every row, so
-      // a null/empty day is not expected; such a row still counts toward
-      // byModel (the aggregate total) but is omitted from the per-day split.
-      if (row.day) {
-        addDayUsage(perDay, row.day, model, buckets, row.events ?? 0);
+      // Distinct LOCAL calendar days with data, unioned across all DBs. The
+      // daemon writes created_at_ms on every row, so a null bucket is not
+      // expected; such a row still counts toward byModel (the aggregate total)
+      // but is omitted from the per-day split.
+      if (row.bucket !== null) {
+        addDayUsage(perDay, localDayKey(row.bucket * MINUTE_MS), model, buckets, row.events ?? 0);
       }
     }
   }

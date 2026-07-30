@@ -14,7 +14,7 @@
 //     `total_token_usage`. `input_tokens` INCLUDES `cached_input_tokens`.
 //
 // We attribute each token_count's `last_token_usage` to the model in effect at
-// that line and bucket by the line timestamp's UTC day, grouped by the
+// that line and bucket by the line timestamp's LOCAL calendar day, grouped by the
 // session's `model_provider`. This covers Direct-wired Codex, which bypasses
 // the proxy and therefore never reaches the proxy's SQLite usage tables.
 
@@ -26,7 +26,7 @@ import { knownCodexHomes } from "../codex/config.ts";
 import { errMessage } from "../utils/error.ts";
 import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
-import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
+import { localDayKey, MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { canonicalModelName } from "./pricing.ts";
 import {
   addDayUsage,
@@ -88,7 +88,7 @@ export function discoverCodexSessionRoots(homes: string[] = knownCodexHomes().ho
 
 /**
  * Parse every rollout file under `roots` and aggregate token usage per
- * `model_provider`, per model, per UTC day. `sinceMs` (unix ms) bounds the
+ * `model_provider`, per model, per LOCAL calendar day. `sinceMs` (unix ms) bounds the
  * report to recent events when set. A file that fails to read is skipped with
  * a warning rather than aborting the whole report.
  */
@@ -327,12 +327,10 @@ async function parseRolloutFile(
     }
     const buckets = tokenBuckets(last);
     addUsage(report.byModel, model, buckets, 1);
-    const day =
-      typeof parsed.timestamp === "string" && /^\d{4}-\d{2}-\d{2}/.test(parsed.timestamp)
-        ? parsed.timestamp.slice(0, 10)
-        : undefined;
-    if (day !== undefined) {
-      addDayUsage(report.perDay, day, model, buckets, 1);
+    // Bucket by the user's LOCAL calendar day (localDayKey), not the UTC day
+    // the rollout timestamp spells.
+    if (Number.isFinite(tsMs)) {
+      addDayUsage(report.perDay, localDayKey(tsMs), model, buckets, 1);
     }
   }
 

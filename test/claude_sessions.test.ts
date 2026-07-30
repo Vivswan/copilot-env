@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { discoverClaudeSessionRoots, readClaudeSessions } from "../src/usage/claude_sessions.ts";
+import { localDayKey } from "../src/utils/time.ts";
 
 /** One assistant transcript line; Claude's input_tokens EXCLUDES the cache buckets. */
 function assistantLine(
@@ -42,15 +43,17 @@ function writeTranscript(dir: string, name: string, lines: string[]): string {
   return path;
 }
 
-test("readClaudeSessions maps the four usage buckets and buckets by UTC day", async () => {
+test("readClaudeSessions maps the four usage buckets and buckets by local day", async () => {
   const dir = mkdtempSync(join(tmpdir(), "claude-sessions-"));
   const root = join(dir, "projects");
   writeTranscript(join(root, "-Users-x-proj"), "aaa.jsonl", [
     '{"type":"user","message":{"role":"user","content":"hi"}}',
     assistantLine("2026-06-01T10:00:00.000Z", "claude-opus-4-8", "msg_1", usage(10, 20, 300, 40)),
-    assistantLine("2026-06-02T00:00:01.000Z", "claude-fable-5", "msg_2", usage(5, 6, 0, 0)),
+    // A full day later: distinct local days in any runner timezone (a fall-back
+    // transition could stretch a day to 25h, but these June dates avoid one).
+    assistantLine("2026-06-02T10:00:01.000Z", "claude-fable-5", "msg_2", usage(5, 6, 0, 0)),
     // Dated Anthropic snapshot ids fold into the canonical (dotted) row.
-    assistantLine("2026-06-02T00:00:02.000Z", "claude-haiku-4-5-20251001", "msg_3", usage(1, 2)),
+    assistantLine("2026-06-02T10:00:02.000Z", "claude-haiku-4-5-20251001", "msg_3", usage(1, 2)),
   ]);
 
   const report = await readClaudeSessions([root]);
@@ -64,8 +67,33 @@ test("readClaudeSessions maps the four usage buckets and buckets by UTC day", as
   });
   expect(report.byModel.get("claude-fable-5")?.events).toBe(1);
   expect(report.byModel.get("claude-haiku-4.5")?.events).toBe(1);
-  expect([...report.perDay.keys()].sort()).toEqual(["2026-06-01", "2026-06-02"]);
+  expect([...report.perDay.keys()].sort()).toEqual([
+    localDayKey(Date.parse("2026-06-01T10:00:00.000Z")),
+    localDayKey(Date.parse("2026-06-02T10:00:01.000Z")),
+  ]);
   expect(report.perDay.size).toBe(2);
+});
+
+test("readClaudeSessions buckets by the user's local day, not the UTC day (TZ-pinned)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "claude-sessions-"));
+  const root = join(dir, "projects");
+  writeTranscript(join(root, "-Users-x-proj"), "aaa.jsonl", [
+    // 2026-06-02T01:00Z is 2026-06-01 21:00 in New York (UTC-4 in June).
+    assistantLine("2026-06-02T01:00:00.000Z", "claude-opus-4-8", "msg_1", usage(1, 2)),
+  ]);
+
+  // Bun ignores TZ assignments after a `delete process.env.TZ` (verified), so
+  // save/restore by explicit zone name and never delete.
+  const savedTz = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  try {
+    process.env.TZ = "America/New_York";
+    const report = await readClaudeSessions([root]);
+    // A literal expectation on purpose: a regression back to UTC slicing would
+    // key this "2026-06-02" and fail here even on a UTC CI runner.
+    expect([...report.perDay.keys()]).toEqual(["2026-06-01"]);
+  } finally {
+    process.env.TZ = savedTz;
+  }
 });
 
 test("readClaudeSessions books a streamed message at its final (max) usage snapshot", async () => {

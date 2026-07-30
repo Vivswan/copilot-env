@@ -59,7 +59,7 @@ test("start --record-event writes the lastEnsureAt heartbeat and never launches"
   tmpHome();
   expect(new CopilotEnvRunState().read().lastEnsureAt).toBeUndefined();
 
-  await runStart({ kind: "record-event" });
+  await runStart({ kind: "record-event", profile: null });
 
   expect(typeof new CopilotEnvRunState().read().lastEnsureAt).toBe("number");
   expect(new CopilotEnvRunState().read().pid).toBeUndefined(); // no daemon was started
@@ -70,7 +70,7 @@ test("start --record-event --profile heartbeats ONLY the profile's run state", a
   // A real proxy profile always has run state before its resolver heartbeats (the
   // port reservation writes it); a profile WITHOUT state must not be fabricated.
   CopilotEnvRunState.forProfile(WORK).set({ port: 4242 });
-  await runStart({ kind: "record-event", profile: "work" });
+  await runStart({ kind: "record-event", profile: WORK });
 
   expect(typeof CopilotEnvRunState.forProfile(WORK).read().lastEnsureAt).toBe("number");
   expect(new CopilotEnvRunState().read().lastEnsureAt).toBeUndefined();
@@ -92,13 +92,14 @@ test("parseStartAction rejects conflicting mode flags at the boundary", () => {
 });
 
 test("parseStartAction parses each valid flag shape into its single action", () => {
+  // `profile` comes back PARSED: a branded ProfileName, or null when the flag is absent.
   expect(parseStartAction({ check: true, profile: "work" })).toEqual({
     kind: "check",
-    profile: "work",
+    profile: WORK,
   });
   expect(parseStartAction({ recordEvent: true })).toEqual({
     kind: "record-event",
-    profile: undefined,
+    profile: null,
   });
   // A launch keeps its knobs; --dry-run with --force/--port stays a valid combination.
   expect(parseStartAction({ dryRun: true, force: true, port: 4141 })).toEqual({
@@ -106,26 +107,26 @@ test("parseStartAction parses each valid flag shape into its single action", () 
     dryRun: true,
     force: true,
     port: 4141,
-    profile: undefined,
+    profile: null,
   });
   expect(parseStartAction({})).toEqual({
     kind: "launch",
     dryRun: false,
     force: false,
     port: undefined,
-    profile: undefined,
+    profile: null,
   });
 });
 
 test("start --check --profile exits non-zero when that profile's daemon is not running", async () => {
   tmpHome();
-  await runStart({ kind: "check", profile: "work" });
+  await runStart({ kind: "check", profile: WORK });
   expect(process.exitCode).toBe(1);
 });
 
 test("start --check exits non-zero when no proxy is tracked/running", async () => {
   tmpHome();
-  await runStart({ kind: "check" });
+  await runStart({ kind: "check", profile: null });
   expect(process.exitCode).toBe(1);
 });
 
@@ -171,7 +172,7 @@ test("start --check stays DOWN for a live pid + listening port that is not a cop
     expect(new CopilotEnvRunState().read().pid).toBe(process.pid);
     expect(new CopilotEnvRunState().read().port).toBe(port);
 
-    await runStart({ kind: "check" });
+    await runStart({ kind: "check", profile: null });
     expect(process.exitCode).toBe(1);
   } finally {
     await closeServer(server);

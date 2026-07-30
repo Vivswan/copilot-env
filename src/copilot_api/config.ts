@@ -4,11 +4,11 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync }
 import { basename, dirname, join } from "node:path";
 import { consola } from "consola";
 
-import { releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
+import { acquireFileLockBounded, releaseFileLock } from "../utils/file_lock.ts";
 import { isFile } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { sleepSync } from "../utils/time.ts";
-import { CopilotApiPaths } from "./paths.ts";
+import { CopilotApiPaths, PROXY_CONFIG_FILENAME } from "./paths.ts";
 import type { Profile } from "./profile.ts";
 
 const logger = consola.withTag("copilot_api.config");
@@ -25,24 +25,8 @@ const LOAD_RETRY_MS = 4;
 // shims, several shells at once) don't lost-update one another -- e.g. a `start --record-event`
 // heartbeat clobbering a fresh pid/port, an `auth --del` undone by a concurrent catalog-throttle
 // write, or two ensureApiKey callers each minting a key. It is BEST-EFFORT, not a hard mutex:
-// after a bounded wait we proceed WITHOUT the lock rather than deadlock a command, and a lock
-// whose holder pid is dead or is older than LOCK_STALE_MS is reclaimed. Since a real update() is
-// a millisecond-scale read-modify-write, a live holder is never seen stale and the wait
-// effectively never expires -- the backstops only ever reclaim a crashed/leaked lock.
-const LOCK_STALE_MS = 10_000;
-const LOCK_WAIT_MS = 4_000;
-const LOCK_RETRY_MS = 15;
-
-/** Acquire the store lock within a bounded SYNC wait (update() is synchronous), proceeding
- *  unlocked if it can't -- best-effort, never deadlocks. */
-function acquireStoreLock(lockPath: string): boolean {
-  const deadline = Date.now() + LOCK_WAIT_MS;
-  for (;;) {
-    if (tryAcquireFileLock(lockPath, LOCK_STALE_MS)) return true;
-    if (Date.now() >= deadline) return false;
-    sleepSync(LOCK_RETRY_MS);
-  }
-}
+// the shared bounded-wait policy (acquireFileLockBounded) proceeds WITHOUT the lock after its
+// wait rather than deadlock a command, and reclaims only a crashed/leaked holder.
 
 /**
  * Atomic JSON store for `~/.local/share/copilot-api/` files: the proxy's
@@ -83,7 +67,7 @@ export class CopilotApiConfig {
     // providers). Only config.json needs this: our own stores (state, prefs) write via atomic
     // rename, so a reader never sees a partial state from us. The window is sub-millisecond, so
     // a short bounded backoff closes it at negligible cost.
-    const retryTransient = basename(this.path) === "config.json";
+    const retryTransient = basename(this.path) === PROXY_CONFIG_FILENAME;
     const maxAttempts = retryTransient ? LOAD_RETRY_ATTEMPTS : 1;
     for (let attempt = 1; ; attempt++) {
       let raw: string;
@@ -133,7 +117,7 @@ export class CopilotApiConfig {
    *  by a best-effort `<file>.lock` so concurrent read-modify-writes don't lost-update. */
   update(mutate: (d: Record<string, unknown>) => void): Record<string, unknown> {
     const lockPath = `${this.path}.lock`;
-    const held = acquireStoreLock(lockPath);
+    const held = acquireFileLockBounded(lockPath);
     try {
       const data = this.load();
       mutate(data);

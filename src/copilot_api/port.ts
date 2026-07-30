@@ -2,8 +2,7 @@
 import * as net from "node:net";
 import { join } from "node:path";
 
-import { releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
-import { sleepSync } from "../utils/time.ts";
+import { acquireFileLockBounded, releaseFileLock } from "../utils/file_lock.ts";
 import { CopilotEnvConfig, configDefaultNumber } from "./env_config.ts";
 import { profileHomeNames, resolveRootHome } from "./paths.ts";
 import type { Profile, ProfileName } from "./profile.ts";
@@ -147,10 +146,8 @@ function candidateProfilePort(): number {
 
 // The reservation is a cross-profile scan-then-write, so concurrent reservers (two
 // profiles being wired at once) must be serialized or both could record the same port.
-// Same best-effort bounded-wait contract as the JSON store's update lock.
-const PORT_LOCK_STALE_MS = 10_000;
-const PORT_LOCK_WAIT_MS = 4_000;
-const PORT_LOCK_RETRY_MS = 15;
+// Same best-effort bounded-wait contract as the JSON store's update lock -- literally:
+// both use acquireFileLockBounded (utils/file_lock.ts), the shared stale/wait/retry policy.
 
 /**
  * Reserve (and persist) a stable port for the named profile: the recorded one when it
@@ -169,16 +166,7 @@ export function reserveProfilePort(profile: ProfileName): number {
   const recorded = state.read().port;
   if (recorded !== undefined) return recorded;
   const lockPath = join(resolveRootHome(), ".profile-ports.lock");
-  const deadline = Date.now() + PORT_LOCK_WAIT_MS;
-  let held = false;
-  for (;;) {
-    if (tryAcquireFileLock(lockPath, PORT_LOCK_STALE_MS)) {
-      held = true;
-      break;
-    }
-    if (Date.now() >= deadline) break; // best-effort: proceed unlocked, never deadlock
-    sleepSync(PORT_LOCK_RETRY_MS);
-  }
+  const held = acquireFileLockBounded(lockPath); // best-effort: proceed unlocked, never deadlock
   try {
     // Re-check under the lock: a concurrent reserver may have just recorded one.
     const raced = state.read().port;
@@ -189,6 +177,17 @@ export function reserveProfilePort(profile: ProfileName): number {
   } finally {
     if (held) releaseFileLock(lockPath);
   }
+}
+
+/**
+ * The port a WRITE path bakes into `profile`'s agent wiring: the default daemon's
+ * resolved port, or the named profile's stable reservation -- PERSISTED via
+ * reserveProfilePort, so the baked base URLs and the daemon agree across restarts.
+ * Read-only checks use copilotApiResolvePort instead, which peeks without recording.
+ * Shared by the two agent writers (src/claude/config.ts, src/codex/config.ts).
+ */
+export function wiringPortFor(profile: Profile): string {
+  return profile === null ? copilotApiResolvePort() : String(reserveProfilePort(profile));
 }
 
 /** The proxy's loopback origin for `port` (single source for the emitted string, no path, no

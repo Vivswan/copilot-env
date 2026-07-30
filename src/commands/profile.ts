@@ -23,10 +23,10 @@ import {
 } from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
+import { allProfileNames, CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
 import { CODEX_IDENTITY_NAME } from "../copilot_api/integration_identity.ts";
 import { profileHome, profileHomeNames } from "../copilot_api/paths.ts";
-import { openaiBaseUrl, reserveProfilePort } from "../copilot_api/port.ts";
+import { openaiBaseUrl, wiringPortFor } from "../copilot_api/port.ts";
 import { type ProfileName, parseProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { cyan, gray, green, yellow } from "../utils/ansi.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -81,7 +81,7 @@ async function wireBothAgents(name: ProfileName, mode: ProfileMode, quiet: boole
   try {
     const request =
       mode === "proxy"
-        ? { mode, profile: name, quiet, baseUrl: openaiBaseUrl(String(reserveProfilePort(name))) }
+        ? { mode, profile: name, quiet, baseUrl: openaiBaseUrl(wiringPortFor(name)) }
         : { mode, profile: name, quiet, directIntegrationId };
     configureCodexConfig(effectiveCodexHome(), request);
   } catch (e) {
@@ -218,7 +218,7 @@ async function runDel(name: ProfileName): Promise<void> {
 /** One resolved `--list` row: the store slot plus (for proxy profiles) the
  *  daemon's liveness. `daemon` stays null for direct profiles (no daemon). */
 export interface ProfileListRow {
-  name: string;
+  name: ProfileName;
   provider: string | null;
   mode: ProfileMode | null;
   daemon: ProxyStatus | null;
@@ -273,7 +273,7 @@ export function renderProfileTable(rows: ProfileListRow[]): string {
 /** `--list`: every profile (store + on-disk homes unioned), provider/mode/daemon. */
 async function runList(): Promise<void> {
   const state = new CopilotEnvState();
-  const names = [...new Set([...state.profileNames(), ...profileHomeNames()])].sort();
+  const names = allProfileNames();
   if (names.length === 0) {
     consola.info("No profiles yet. Create one: `agent profile --add <name> --direct|--proxy`.");
     return;

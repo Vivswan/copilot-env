@@ -54,6 +54,7 @@ import {
   DIRECT_BASE_URL as CLAUDE_DIRECT_BASE_URL,
   inspectClaudeWiring,
   resolveClaudeHome,
+  settingsPathFor,
 } from "./claude/config.ts";
 import { effectiveCodexHome, inspectCodexWiring } from "./codex/config.ts";
 import { CopilotEnvConfig, type CopilotEnvConfigData } from "./copilot_api/env_config.ts";
@@ -530,18 +531,17 @@ export function proxyInstallAssertStatus(
       case "missing":
         return {
           "ok": false,
-          "message":
-            "proxy float did not install @jeffreycao/copilot-api (module resolution failed) - the `bun install` postinstall (src/proxy_float.ts) is broken.",
+          "message": `proxy float did not install ${PROXY_PKG} (module resolution failed) - the \`bun install\` postinstall (src/proxy_float.ts) is broken.`,
         };
       case "belowFloor":
         return {
           "ok": false,
-          "message": `installed @jeffreycao/copilot-api ${status.version} is below the ${status.floor} floor - the postinstall proxy float failed to reach the floor.`,
+          "message": `installed ${PROXY_PKG} ${status.version} is below the ${status.floor} floor - the postinstall proxy float failed to reach the floor.`,
         };
       case "aboveCeiling":
         return {
           "ok": false,
-          "message": `installed @jeffreycao/copilot-api ${status.version} is above the ${status.ceiling} ceiling - the postinstall proxy float overshot PROXY_MAX_VERSION.`,
+          "message": `installed ${PROXY_PKG} ${status.version} is above the ${status.ceiling} ceiling - the postinstall proxy float overshot PROXY_MAX_VERSION.`,
         };
       default:
         return assertNever(status);
@@ -554,7 +554,7 @@ export function proxyInstallAssertStatus(
       : `within [${config.proxyMinVersion}, ${config.proxyMaxVersion}]`;
   return {
     "ok": true,
-    "message": `proxy float OK: @jeffreycao/copilot-api ${status.version} (${window})`,
+    "message": `proxy float OK: ${PROXY_PKG} ${status.version} (${window})`,
   };
 }
 
@@ -588,7 +588,7 @@ export function bothAgentsWiredDirect(codexHome?: string, claudeHome?: string): 
     // The mode alone keys off apiKeyHelper; also require the managed Direct base
     // URL so a mixed config (direct helper + proxy ANTHROPIC_BASE_URL) still floats.
     const claudeWiring = inspectClaudeWiring(
-      readTextOrNull(join(effectiveClaudeHome, "settings.json")),
+      readTextOrNull(settingsPathFor(effectiveClaudeHome)),
       effectiveClaudeHome,
       expectedPort,
     );

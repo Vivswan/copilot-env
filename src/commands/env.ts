@@ -16,20 +16,19 @@
 // evals this output) -- no restart. Sourcing just (re)defines those functions, so
 // re-emitting it on later commands is harmless.
 import { existsSync } from "node:fs";
-import { join } from "node:path";
 import {
   BASE_URL_ENV,
   DIRECT_BASE_URL,
   inspectClaudeWiring,
   resolveClaudeHome,
+  settingsPathFor,
 } from "../claude/config.ts";
 import { getHostLocalCodexHome } from "../codex/host.ts";
 import { copilotApiResolvePort, parseLoopbackProxyUrl } from "../copilot_api/port.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { readTextOrNull } from "../utils/fs.ts";
-import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
-import { launchersWired } from "./shell_integration.ts";
+import { launchersFile, launchersWired } from "./shell_integration.ts";
 
 export interface EnvArgs {
   format?: string;
@@ -80,7 +79,7 @@ export function runEnv(args: EnvArgs): void {
   // touch a non-local URL the user set.
   const claudeHome = resolveClaudeHome();
   const claude = inspectClaudeWiring(
-    readTextOrNull(join(claudeHome, "settings.json")),
+    readTextOrNull(settingsPathFor(claudeHome)),
     claudeHome,
     Number(copilotApiResolvePort()),
   );
@@ -126,11 +125,7 @@ export function runEnv(args: EnvArgs): void {
   // (re)defines the launcher functions -- idempotent, and the file never calls
   // `agent env`, so it cannot recurse.
   if (launchersWired()) {
-    const launchers = join(
-      PROJECT_ROOT,
-      "shell",
-      isPowershell ? "agents.launchers.ps1" : "agents.launchers.bashrc",
-    );
+    const launchers = launchersFile(isPowershell);
     console.log(
       isPowershell
         ? `if (Test-Path -LiteralPath ${quotePowerShell(launchers)}) { . ${quotePowerShell(launchers)} }`

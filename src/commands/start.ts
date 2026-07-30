@@ -173,11 +173,13 @@ export interface StartFlags {
  * The launch-only knobs (`dryRun`/`force`/`port`) live on the launch variant alone, so
  * `--check --record-event` (or a probe combined with a launch flag) is unrepresentable
  * past the boundary parse and the dispatch order in runStart is not load-bearing.
+ * `profile` is already PARSED (parseProfileName at the boundary, like McpAction), so an
+ * invalid name errors before any action runs and runStart never re-validates.
  */
 export type StartAction =
-  | { kind: "check"; profile?: string }
-  | { kind: "record-event"; profile?: string }
-  | { kind: "launch"; dryRun: boolean; force: boolean; port?: number; profile?: string };
+  | { kind: "check"; profile: Profile }
+  | { kind: "record-event"; profile: Profile }
+  | { kind: "launch"; dryRun: boolean; force: boolean; port?: number; profile: Profile };
 
 /** Parse the raw flags into a StartAction (the CLI boundary). `--check` and
  *  `--record-event` are standalone probes -- the proxy resolver invokes each in its own
@@ -191,14 +193,15 @@ export function parseStartAction(flags: StartFlags): StartAction {
       "--check and --record-event are mutually exclusive and cannot combine with --dry-run/--port/--force",
     );
   }
-  if (flags.check) return { kind: "check", profile: flags.profile };
-  if (flags.recordEvent) return { kind: "record-event", profile: flags.profile };
+  const profile: Profile = flags.profile === undefined ? null : parseProfileName(flags.profile);
+  if (flags.check) return { kind: "check", profile };
+  if (flags.recordEvent) return { kind: "record-event", profile };
   return {
     kind: "launch",
     dryRun: Boolean(flags.dryRun),
     force: Boolean(flags.force),
     port: flags.port,
-    profile: flags.profile,
+    profile,
   };
 }
 
@@ -390,7 +393,7 @@ async function logProxyVersion(): Promise<void> {
   }
   let published = "";
   try {
-    const res = await fetch("https://registry.npmjs.org/@jeffreycao/copilot-api", {
+    const res = await fetch(`https://registry.npmjs.org/${PROXY_PACKAGE_NAME}`, {
       headers: { Accept: "application/json" },
       signal: AbortSignal.timeout(3000),
     });
@@ -404,7 +407,7 @@ async function logProxyVersion(): Promise<void> {
   } catch {
     // offline / slow registry -- version alone is still useful
   }
-  consola.info(`   Proxy: @jeffreycao/copilot-api ${version}${published}`);
+  consola.info(`   Proxy: ${PROXY_PACKAGE_NAME} ${version}${published}`);
 }
 
 /**
@@ -546,7 +549,7 @@ function trackedDaemonPids(): Set<number> {
 
 /** `start`: launch copilot-api detached, wait for readiness, sync aliases. */
 export async function runStart(action: StartAction): Promise<void> {
-  const profile: Profile = action.profile === undefined ? null : parseProfileName(action.profile);
+  const profile = action.profile;
   if (action.kind === "check") {
     // "Is the proxy up?" probe -- no launch. The exit code is the contract; every machine
     // caller (the proxy resolver + cl/co/cx launchers) discards all output and reads only

@@ -20,6 +20,16 @@ export const MARKER = "# copilot-env shell integration";
 export const LAUNCHERS_MARKER = "# copilot-env launchers";
 const ALL_MARKERS = [MARKER, LAUNCHERS_MARKER];
 
+/** The opt-in cl/co/cx launchers file for each platform flavor -- the single owner of
+ *  the two file names, shared with `agent env`'s one-shot launchers `source` line. */
+export function launchersFile(powershell: boolean): string {
+  return join(
+    PROJECT_ROOT,
+    "shell",
+    powershell ? "agents.launchers.ps1" : "agents.launchers.bashrc",
+  );
+}
+
 export interface ShellIntegrationArgs {
   remove?: boolean;
   removeLaunchers?: boolean;
@@ -49,7 +59,7 @@ export function runShellIntegration(args: ShellIntegrationArgs): void {
     const wired = wireBlocks(
       windowsProfilePaths(Boolean(args.allHosts)),
       windowsBlock(join(PROJECT_ROOT, "shell", "agents.ps1")),
-      windowsLaunchersBlock(join(PROJECT_ROOT, "shell", "agents.launchers.ps1")),
+      windowsLaunchersBlock(launchersFile(true)),
       launchers,
       existingOnly,
     );
@@ -61,7 +71,7 @@ export function runShellIntegration(args: ShellIntegrationArgs): void {
     wireBlocks(
       rcFiles(false),
       posixBlock(join(PROJECT_ROOT, "shell", "agents.bashrc")),
-      posixLaunchersBlock(join(PROJECT_ROOT, "shell", "agents.launchers.bashrc")),
+      posixLaunchersBlock(launchersFile(false)),
       launchers,
       existingOnly,
     );
@@ -288,6 +298,17 @@ export function launchersWired(): boolean {
   }
 }
 
+// --- Windows $PROFILE vocabulary ------------------------------------------------
+//
+// The names BOTH profile-path resolvers share: the per-edition dirs under Documents
+// (5.1 vs pwsh 7) and the current-host / all-hosts profile filenames. Only HOW the
+// Documents folder is found differs between the resolvers (cheap env-var guess vs
+// authoritative PowerShell GetFolderPath) -- that dual implementation is deliberate;
+// the four literals are not allowed to drift.
+const PS_PROFILE_DIRS = ["WindowsPowerShell", "PowerShell"] as const;
+const PS_PROFILE_CURRENT_HOST = "Microsoft.PowerShell_profile.ps1";
+const PS_PROFILE_ALL_HOSTS = "profile.ps1";
+
 /**
  * PowerShell `$PROFILE` candidates resolved WITHOUT shelling out (see launchersWired).
  * Covers the current-host and all-hosts profiles under the default Documents folder
@@ -300,10 +321,10 @@ function cheapWindowsProfilePaths(): string[] {
     process.env.OneDrive ? join(process.env.OneDrive, "Documents") : "",
     process.env.OneDriveConsumer ? join(process.env.OneDriveConsumer, "Documents") : "",
   ].filter(Boolean);
-  const names = ["Microsoft.PowerShell_profile.ps1", "profile.ps1"];
+  const names = [PS_PROFILE_CURRENT_HOST, PS_PROFILE_ALL_HOSTS];
   const paths: string[] = [];
   for (const root of docRoots) {
-    for (const sub of ["WindowsPowerShell", "PowerShell"]) {
+    for (const sub of PS_PROFILE_DIRS) {
       for (const name of names) paths.push(join(root, sub, name));
     }
   }
@@ -315,10 +336,8 @@ function cheapWindowsProfilePaths(): string[] {
 function windowsProfilePaths(allHosts: boolean): string[] {
   const documents = psEval("[Environment]::GetFolderPath('MyDocuments')");
   if (!documents) throw new Error("could not resolve the Documents folder via PowerShell");
-  const name = allHosts ? "profile.ps1" : "Microsoft.PowerShell_profile.ps1";
-  return [
-    ...new Set([join(documents, "WindowsPowerShell", name), join(documents, "PowerShell", name)]),
-  ];
+  const name = allHosts ? PS_PROFILE_ALL_HOSTS : PS_PROFILE_CURRENT_HOST;
+  return [...new Set(PS_PROFILE_DIRS.map((sub) => join(documents, sub, name)))];
 }
 
 function psEval(command: string): string {

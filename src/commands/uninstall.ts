@@ -4,7 +4,7 @@
 // integration, delete the copilot-api home, and finally the install checkout
 // itself. Destructive, so it confirms interactively (`--yes` for headless use)
 // and offers `--dry-run`. Idempotent: a second run finds nothing and exits 0.
-import { existsSync, rmSync } from "node:fs";
+import { rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { consola } from "consola";
@@ -12,11 +12,11 @@ import { removeClaudeDefaultWiring, resolveClaudeHome, settingsPathFor } from ".
 import { removeClaudeMcpRegistration } from "../claude/mcp_registration.ts";
 import { knownCodexHomes, removeCodexDefaultWiring, removeCodexProfile } from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
-import { CopilotEnvState } from "../copilot_api/env_state.ts";
-import { profileHomeNames, resolveRootHome } from "../copilot_api/paths.ts";
+import { allProfileNames } from "../copilot_api/env_state.ts";
+import { resolveRootHome } from "../copilot_api/paths.ts";
 import { type ProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
-import { PROJECT_ROOT } from "../utils/root.ts";
+import { isGitCheckout, PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { deleteProfileEverywhere } from "./profile.ts";
 import { runShellIntegration } from "./shell_integration.ts";
@@ -50,12 +50,6 @@ export interface UninstallDeps {
 function removeShellIntegrationEverywhere(): void {
   runShellIntegration({ remove: true });
   if (process.platform === "win32") runShellIntegration({ remove: true, allHosts: true });
-}
-
-/** Names of every named profile: the store's slots unioned with on-disk daemon
- *  homes (mirrors `agent profile --list`), so a half-created profile is swept too. */
-function allProfileNames(): ProfileName[] {
-  return [...new Set([...new CopilotEnvState().profileNames(), ...profileHomeNames()])].sort();
 }
 
 /** Tear down the host's CODEX_HOME symlink farm (POSIX only). Ownership AND the
@@ -130,7 +124,7 @@ export async function runUninstall(args: UninstallArgs, deps: UninstallDeps = {}
   }
   const claudeHome = resolveClaudeHome();
   const rootHome = resolveRootHome();
-  const skipCheckout = existsSync(join(PROJECT_ROOT, ".git")) && !args.force;
+  const skipCheckout = isGitCheckout() && !args.force;
 
   if (args.dryRun) {
     consola.info("DRY RUN: nothing will be removed.");

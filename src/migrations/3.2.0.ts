@@ -33,6 +33,8 @@ export const migration: Migration = {
     }
 
     // Re-point settings.json apiKeyHelper from the old path to the new one.
+    // Deliberately NOT settingsPathFor: this migration targets the HISTORICAL on-disk
+    // filename as of its release; a future default-path move must not retarget it.
     const settingsPath = join(home, "settings.json");
     if (!existsSync(settingsPath)) return;
     let doc: Record<string, unknown>;

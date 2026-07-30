@@ -98,7 +98,9 @@ export const CLAUDE_PROBE: ProbeDescriptor = {
   // available when the managed credential path is actually broken -- but it also disables
   // settings.json auto-discovery from CLAUDE_CONFIG_DIR, so the managed
   // apiKeyHelper is only honored when handed in via --settings. Without it the
-  // probe has NO auth path and always fails (apiKeySource "none").
+  // probe has NO auth path and always fails (apiKeySource "none"). The default
+  // settings filename is spelled here (not via claude/config.ts settingsPathFor)
+  // because claude/config imports this module -- routing through it would cycle.
   args: (prompt, home) => [
     "--bare",
     "--settings",

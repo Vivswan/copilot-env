@@ -404,11 +404,12 @@ test("profile --check is store-driven: exit 1 unknown/incomplete, 2 proxy, 0 dir
 });
 
 test("renderProfileTable aligns columns under a header and flags incomplete slots", () => {
+  // Rows carry branded names (every real row is built from branded sources).
   const table = renderProfileTable([
-    { name: "fast", provider: "gh-cli", mode: "proxy", daemon: { up: true, port: 4142 } },
-    { name: "idle", provider: "gh-cli", mode: "proxy", daemon: { up: false } },
-    { name: "work", provider: "gh-token", mode: "direct", daemon: null },
-    { name: "broken", provider: null, mode: null, daemon: null },
+    { name: FAST, provider: "gh-cli", mode: "proxy", daemon: { up: true, port: 4142 } },
+    { name: parseProfileName("idle"), provider: "gh-cli", mode: "proxy", daemon: { up: false } },
+    { name: WORK, provider: "gh-token", mode: "direct", daemon: null },
+    { name: parseProfileName("broken"), provider: null, mode: null, daemon: null },
   ]);
   // Strip ANSI styling (the local run may have color enabled) so the
   // plain-text assertions hold everywhere. The escape byte is built with
@@ -487,7 +488,7 @@ test("stop/record-event against a never-existing profile fabricate NOTHING", asy
   await runStop({ profile: "typo" });
   expect(process.exitCode).toBe(1);
   process.exitCode = 0;
-  await runStart({ kind: "record-event", profile: "typo" });
+  await runStart({ kind: "record-event", profile: TYPO });
   // Neither command may materialize a phantom profile home (profile --list,
   // stop --all, and the proxy float all enumerate profile homes).
   expect(existsSync(profileHome(TYPO))).toBe(false);

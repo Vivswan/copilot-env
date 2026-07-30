@@ -51,6 +51,10 @@ import { stopTrackedProxy } from "./stop.ts";
 // Narration to stderr so `--get`'s stdout stays a clean machine-readable token.
 const logger = createStderrLogger();
 
+// The provider vocabulary rendered for flag hints ("copilot|gh-cli|gh-token"), derived
+// from AUTH_PROVIDERS (env_state.ts owns the list) so these messages can never drift.
+const PROVIDER_CHOICES = AUTH_PROVIDERS.join("|");
+
 export interface AuthArgs {
   /** `--provider`: which provider to authenticate with (no flag => interactive choice). */
   provider?: string;
@@ -144,23 +148,27 @@ export function parseAcquisition(
   return acquisitionForProvider(asProvider(provider));
 }
 
+/** Per-provider picker labels, keyed EXHAUSTIVELY on AuthProvider so a vocabulary
+ *  change fails the compile here instead of silently missing a picker option. */
+const PROVIDER_PICKER_DETAIL: Record<AuthProvider, string> = {
+  "copilot": "device-flow browser login (read:user scope)",
+  "gh-cli": "use the machine's `gh auth login`",
+  "gh-token": `store ${ghTokenEnvVarsLabel(" / ")} (headless)`,
+};
+
 /** Interactive provider picker for bare `agent auth`. Errors out without a TTY. */
 async function chooseProvider(): Promise<AuthProvider> {
   if (!process.stdin.isTTY) {
     throw new Error(
-      "not a terminal - pass --provider copilot|gh-cli|gh-token (e.g. `agent auth --provider gh-token`)",
+      `not a terminal - pass --provider ${PROVIDER_CHOICES} (e.g. \`agent auth --provider gh-token\`)`,
     );
   }
   const value = await consola.prompt("How should GitHub Copilot authenticate?", {
     type: "select",
-    options: [
-      { label: "copilot - device-flow browser login (read:user scope)", value: "copilot" },
-      { label: "gh-cli - use the machine's `gh auth login`", value: "gh-cli" },
-      {
-        label: `gh-token - store ${ghTokenEnvVarsLabel(" / ")} (headless)`,
-        value: "gh-token",
-      },
-    ],
+    options: AUTH_PROVIDERS.map((provider) => ({
+      label: `${provider} - ${PROVIDER_PICKER_DETAIL[provider]}`,
+      value: provider,
+    })),
     cancel: "reject",
   });
   return asProvider(String(value));
@@ -568,12 +576,12 @@ export async function runAuth(args: AuthArgs, catalogDeps?: CodexCatalogDeps): P
         // The default wording is an output contract -- keep it byte-identical.
         logger.success(
           `Already authenticated (${provider}). Switch with ` +
-            "`agent auth --provider <copilot|gh-cli|gh-token>`, or clear it with `agent auth --del`.",
+            `\`agent auth --provider <${PROVIDER_CHOICES}>\`, or clear it with \`agent auth --del\`.`,
         );
       } else {
         logger.success(
           `Already authenticated (${provider}, ${profileLabel(profile)}). Switch with ` +
-            `\`agent auth --profile ${profile} --provider <copilot|gh-cli|gh-token>\`, or clear it ` +
+            `\`agent auth --profile ${profile} --provider <${PROVIDER_CHOICES}>\`, or clear it ` +
             `with \`agent auth --profile ${profile} --del\`.`,
         );
       }

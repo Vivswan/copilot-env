@@ -2,14 +2,11 @@
 // `import.meta.main` guard) before a normal command, and once immediately by
 // `agent update --auto`. All output goes to stderr (stderr-routed consola) so the
 // `agent env` stdout contract is never at risk; the launchers also skip `env`.
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-
 import { applyUpdate } from "../commands/apply_update.ts";
 import { resolveTarget } from "../install/resolve-release.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { PROJECT_ROOT } from "../utils/root.ts";
+import { isGitCheckout } from "../utils/root.ts";
 import { isUpToDate } from "../utils/semver.ts";
 import { packageVersion } from "../utils/version.ts";
 import { isDue } from "./due.ts";
@@ -72,7 +69,7 @@ async function checkAndApply(
   }
 
   // Never auto-mutate a git checkout (a dev/manual clone, not a tarball install).
-  if (existsSync(join(PROJECT_ROOT, ".git"))) {
+  if (isGitCheckout()) {
     state.set({ lastCheckMs: nowMs, lastResult: "skipped: git checkout" });
     logger.info(
       `autoupdate: ${current} -> ${target.tag} available, but this is a git checkout; skipping.`,

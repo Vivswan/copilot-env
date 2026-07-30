@@ -18,7 +18,7 @@
 import * as v from "valibot";
 import { isRecord } from "../utils/json.ts";
 import { CopilotApiConfig } from "./config.ts";
-import { CopilotApiPaths } from "./paths.ts";
+import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import { isValidProfileName, type Profile, type ProfileName, parseProfileName } from "./profile.ts";
 
 // The provider vocabulary lives HERE, with the store that persists `authProvider`,
@@ -131,6 +131,16 @@ const STATE_SCHEMA = v.object({
 
 function emptyProfile(): ProfileSlotData {
   return { githubToken: null, authProvider: null, mode: null, integrationIdentity: null };
+}
+
+/**
+ * Names of EVERY named profile the system knows about: the store's slots unioned
+ * with the on-disk daemon homes, sorted -- so a half-created profile (a credential
+ * without a home, or a home without a credential) is still seen. THE "every
+ * profile" answer, shared by `agent profile --list` and `agent uninstall`.
+ */
+export function allProfileNames(): ProfileName[] {
+  return [...new Set([...new CopilotEnvState().profileNames(), ...profileHomeNames()])].sort();
 }
 
 /**

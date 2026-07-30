@@ -14,6 +14,7 @@
 import "./utils/dotenv.ts";
 import { Command } from "commander";
 import { consola } from "consola";
+import { DEFAULT_AUTOUPDATE_COOLDOWN_DAYS } from "./autoupdate/state.ts";
 import { runClaude } from "./claude/config.ts";
 import { runCodex } from "./codex/config.ts";
 import { runCodexHost } from "./codex/host.ts";
@@ -26,12 +27,13 @@ import { runInit } from "./commands/init.ts";
 import { runMcp } from "./commands/mcp.ts";
 import { runModels } from "./commands/models.ts";
 import { runProfile } from "./commands/profile.ts";
-import { runShell } from "./commands/setup.ts";
+import { DEFAULT_CLI_COOLDOWN_DAYS, runShell } from "./commands/setup.ts";
 import { parseStartAction, runStart } from "./commands/start.ts";
 import { runStop } from "./commands/stop.ts";
 import { runUninstall } from "./commands/uninstall.ts";
 import { runUpdate } from "./commands/update.ts";
 import { configKeysHelp } from "./copilot_api/env_config.ts";
+import { AUTH_PROVIDERS, type AuthProvider } from "./copilot_api/env_state.ts";
 import { runCost } from "./usage/cost.ts";
 import { OPENROUTER_MODELS_URL } from "./usage/pricing.ts";
 import { bold, cyan, gray } from "./utils/ansi.ts";
@@ -50,6 +52,26 @@ disableConsolaTimestamps();
 
 /** Commander hands action callbacks an options bag of mixed-typed values. */
 type Opts = Record<string, unknown>;
+
+// Per-provider help details, keyed EXHAUSTIVELY on AuthProvider so the provider list
+// in the help text is derived from AUTH_PROVIDERS (env_state.ts owns the vocabulary)
+// and a membership change fails the compile here instead of drifting the help.
+const AUTH_PROVIDER_HELP: Record<AuthProvider, string> = {
+  "copilot": "device flow, read:user scope",
+  "gh-cli": "use the machine's gh login",
+  "gh-token": `store ${ghTokenEnvVarsLabel()} - for headless servers`,
+};
+
+/** The providers as natural-language help: "'a' (...), 'b' (...), or 'c' (...)". */
+function authProviderChoicesHelp(): string {
+  const parts = AUTH_PROVIDERS.map((p) => `'${p}' (${AUTH_PROVIDER_HELP[p]})`);
+  return `${parts.slice(0, -1).join(", ")}, or ${parts[parts.length - 1]}`;
+}
+
+/** The providers as a bare quoted list: "'copilot' | 'gh-cli' | 'gh-token'". */
+function authProviderNamesHelp(): string {
+  return AUTH_PROVIDERS.map((p) => `'${p}'`).join(" | ");
+}
 
 function parseNonNegativeDays(raw: string, flag: string): number {
   if (!/^\d+$/.test(raw)) {
@@ -152,9 +174,7 @@ program
   .description("Manage the GitHub Copilot credential (the single source of truth for Direct).")
   .option(
     "--provider <provider>",
-    "How to authenticate (no flag => interactive choice): 'copilot' (device flow, " +
-      "read:user scope), 'gh-cli' (use the machine's gh login), or 'gh-token' " +
-      `(store ${ghTokenEnvVarsLabel()} - for headless servers).`,
+    `How to authenticate (no flag => interactive choice): ${authProviderChoicesHelp()}.`,
   )
   .option(
     "--set [token]",
@@ -223,7 +243,7 @@ program
   .option("--proxy", "With --add: wire the profile to its own local proxy daemon.")
   .option(
     "--provider <provider>",
-    "With --add: how the profile authenticates ('copilot' | 'gh-cli' | 'gh-token'); no flag prompts.",
+    `With --add: how the profile authenticates (${authProviderNamesHelp()}); no flag prompts.`,
   )
   .option(
     "--set [token]",
@@ -479,7 +499,8 @@ program
   )
   .option(
     "--auto",
-    "Enable autoupdate: once a day, adopt the newest release aged >= the configured update-cooldown (default 7) days, and apply once now.",
+    "Enable autoupdate: once a day, adopt the newest release aged >= the configured " +
+      `update-cooldown (default ${DEFAULT_AUTOUPDATE_COOLDOWN_DAYS}) days, and apply once now.`,
   )
   .option("--no-auto", "Disable autoupdate.")
   .option(
@@ -505,7 +526,7 @@ program
   .option("--clis", "Also install the optional claude / copilot / codex agent CLIs.")
   .option(
     "--cooldown [days]",
-    "With --clis: install the newest agent-CLI npm releases aged >= DAYS. Bare --cooldown uses 7 days.",
+    `With --clis: install the newest agent-CLI npm releases aged >= DAYS. Bare --cooldown uses ${DEFAULT_CLI_COOLDOWN_DAYS} days.`,
     coerceDays,
   )
   .option(
@@ -524,7 +545,7 @@ program
       remove: Boolean(opts.remove),
       launchers: Boolean(opts.launchers),
       clis: Boolean(opts.clis),
-      cooldown: resolveCooldown(opts.cooldown, 7),
+      cooldown: resolveCooldown(opts.cooldown, DEFAULT_CLI_COOLDOWN_DAYS),
       noSudo: opts.sudo === false,
       noPrereqs: opts.prereqs === false,
       allHosts: Boolean(opts.allHosts),

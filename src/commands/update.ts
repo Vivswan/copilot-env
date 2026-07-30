@@ -1,13 +1,11 @@
 // `agent update`: resolves a release, applies it, refreshes deps, and runs migrations.
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { consola } from "consola";
 import { acquireLock, releaseLock } from "../autoupdate/lock.ts";
 import { runPreflight } from "../autoupdate/preflight.ts";
 import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/state.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { resolveTarget } from "../install/resolve-release.ts";
-import { PROJECT_ROOT } from "../utils/root.ts";
+import { isGitCheckout } from "../utils/root.ts";
 import { isUpToDate } from "../utils/semver.ts";
 import { assertNonNegativeDays } from "../utils/time.ts";
 import { packageVersion } from "../utils/version.ts";
@@ -100,9 +98,9 @@ async function runManualUpdate(args: {
   // The sync overwrites/prunes the checkout in place. A `.git` dir means this is a git
   // checkout (a dev/manual clone, not a tarball install) that may hold uncommitted or
   // untracked work -- refuse unless --force so an update can't silently destroy it.
-  // (existsSync is a file probe, not a git command; tarball installs have no .git and
+  // (isGitCheckout is a file probe, not a git command; tarball installs have no .git and
   // update freely.)
-  if (!args.force && existsSync(join(PROJECT_ROOT, ".git"))) {
+  if (!args.force && isGitCheckout()) {
     throw new Error(
       "This is a git checkout (.git present) and `agent update` overwrites files in place; " +
         "commit or stash your changes and re-run with --force (or update via git).",

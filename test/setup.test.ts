@@ -21,6 +21,14 @@ test("shell --clis: --no-sudo and --no-prereqs are mutually exclusive", () => {
   );
 });
 
+test("shell --clis: --cooldown and --no-prereqs are mutually exclusive", () => {
+  // --no-prereqs installs nothing, so a cooldown has nothing to steer; the boundary
+  // rejects the pair instead of silently dropping the cooldown.
+  expect(() => runShell({ clis: true, cooldown: 7, noPrereqs: true })).toThrow(
+    "--cooldown and --no-prereqs are mutually exclusive",
+  );
+});
+
 test("shell --clis: a non-integer/negative cooldown is rejected", () => {
   expect(() => runShell({ clis: true, cooldown: 1.5 })).toThrow("--cooldown");
   expect(() => runShell({ clis: true, cooldown: -1 })).toThrow("--cooldown");

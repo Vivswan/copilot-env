@@ -437,19 +437,29 @@ test("shell --help surfaces the install/launcher flags", () => {
   }
 });
 
-test("shell --clis --no-prereqs: optional-valued --cooldown parses, no install", () => {
+test("shell --clis --no-prereqs: verify-only runs; --cooldown is rejected, never dropped", () => {
   // --no-prereqs => verify only (no npm install). Isolate HOME so the integration
   // wiring it does touches a throwaway rc, never the real one.
+  const root = mkdtempSync(join(tmpdir(), "copilot-shell-clis-"));
+  const ok = Bun.spawnSync(["bun", "src/cli.ts", "shell", "--clis", "--no-prereqs"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: isolatedEnv({ HOME: root, SHELL: "/bin/bash" }),
+  });
+  expect(ok.exitCode).toBe(0);
+  // A cooldown has nothing to steer when nothing installs, so the boundary rejects the
+  // pair (it used to be silently dropped). The optional-valued flag still PARSES in
+  // every spelling -- the failure below is the boundary conflict, not a parse error.
   for (const args of [["--cooldown"], ["--cooldown=0"], ["--cooldown", "14"]] as const) {
-    const root = mkdtempSync(join(tmpdir(), "copilot-shell-clis-"));
     const proc = Bun.spawnSync(["bun", "src/cli.ts", "shell", "--clis", "--no-prereqs", ...args], {
       stdout: "pipe",
       stderr: "pipe",
       env: isolatedEnv({ HOME: root, SHELL: "/bin/bash" }),
     });
-    expect(proc.exitCode).toBe(0);
+    expect(proc.exitCode).toBe(1);
+    expect(proc.stderr.toString()).toContain("--cooldown and --no-prereqs are mutually exclusive");
   }
-  // Three cold `bun src/cli.ts` spawns; on a loaded Windows CI runner each cold start + TS
+  // Four cold `bun src/cli.ts` spawns; on a loaded Windows CI runner each cold start + TS
   // load can take several seconds, so allow generous headroom to avoid flaky timeouts.
 }, 90_000);
 

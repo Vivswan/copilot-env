@@ -14,8 +14,9 @@
 // closing it entirely would need native advisory locks or a broker.
 //
 // `tryAcquireFileLock` makes ONE attempt (create, or reclaim a stale lock); callers own the
-// wait loop so each can choose its own cadence and bound (a sync bounded spin for the store, an
-// async unbounded wait for start). A lock is stale when its holder pid is DEAD, or -- only when
+// wait loop so each can choose its own cadence and bound (the shared bounded SYNC spin below
+// for the millisecond-scale read-modify-writes, an async unbounded wait for start). A lock is
+// stale when its holder pid is DEAD, or -- only when
 // `staleMs` is finite -- older than staleMs. Pass `Infinity` to reclaim ONLY a dead holder and
 // never age-steal a live one (right for a lock a live process may legitimately hold for a long
 // time, e.g. `agent start` blocking on interactive auth).
@@ -23,6 +24,31 @@ import { linkSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path";
 import { readTextOrNull } from "./fs.ts";
 import { pidAlive } from "./pid.ts";
+import { sleepSync } from "./time.ts";
+
+// --- the shared bounded-wait acquisition policy --------------------------------
+//
+// ONE stale/wait/retry contract for every millisecond-scale SYNC read-modify-write
+// (the JSON store's update() serialization and the profile-port reservation): a
+// lock whose holder pid is dead -- or older than LOCK_STALE_MS -- is reclaimed,
+// and after a bounded LOCK_WAIT_MS wait the caller proceeds WITHOUT the lock
+// rather than deadlock a command. Since a real critical section is milliseconds,
+// a live holder is never seen stale and the wait effectively never expires -- the
+// backstops only ever reclaim a crashed/leaked lock.
+const LOCK_STALE_MS = 10_000;
+const LOCK_WAIT_MS = 4_000;
+const LOCK_RETRY_MS = 15;
+
+/** Acquire `lockPath` under the shared bounded SYNC wait above, returning whether
+ *  the lock is now held (false = the caller proceeds unlocked, best-effort). */
+export function acquireFileLockBounded(lockPath: string): boolean {
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    if (tryAcquireFileLock(lockPath, LOCK_STALE_MS)) return true;
+    if (Date.now() >= deadline) return false;
+    sleepSync(LOCK_RETRY_MS);
+  }
+}
 
 /** Read the lock file's raw marker (`${pid}\n${ts}\n`), or null if absent/unreadable. */
 function readLockRaw(lockPath: string): string | null {

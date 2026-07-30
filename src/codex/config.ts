@@ -21,10 +21,11 @@ import {
   copilotApiResolvePort,
   matchesProxyOrigin,
   openaiBaseUrl,
-  reserveProfilePort,
+  wiringPortFor,
 } from "../copilot_api/port.ts";
 import { type Profile, type ProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
+import { assertNever } from "../utils/assert.ts";
 import {
   CODEX_PROBE,
   type DirectProbeDeps,
@@ -635,9 +636,9 @@ export async function applyCodexConfig(
   if (mode === "proxy") {
     // The key is resolved at request time by the `auth.command` (the shared proxy-token
     // script), so we only need the local proxy base URL here -- reserving the addressed
-    // profile's stable port (this is a write path; read-only checks peek without recording).
-    const port = profile === null ? copilotApiResolvePort() : String(reserveProfilePort(profile));
-    request = { mode, profile, baseUrl: openaiBaseUrl(port) };
+    // profile's stable port via wiringPortFor (this is a write path; read-only checks
+    // peek without recording).
+    request = { mode, profile, baseUrl: openaiBaseUrl(wiringPortFor(profile)) };
   } else {
     // Direct: bake the client identity this credential is accepted under (probe, or the
     // `integration-id` config pin). Throws with the real reason when nothing works, so a
@@ -883,6 +884,8 @@ function providerModeDetail(mode: AgentProviderMode, configExists: boolean): str
       return configExists ? "no model_provider configured" : "no config.toml found";
     case "other":
       return "custom or unsupported provider";
+    default:
+      return assertNever(mode);
   }
 }
 

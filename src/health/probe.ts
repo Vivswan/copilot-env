@@ -16,6 +16,7 @@ import {
   directHelperResolvesViaAgent,
   inspectClaudeWiring,
   resolveClaudeHome,
+  settingsPathFor,
 } from "../claude/config.ts";
 import {
   CODEX_ENV_KEY,
@@ -598,7 +599,7 @@ export function evalClaude(
 ): ClaudeFacts {
   return {
     home,
-    settingsPath: join(home, "settings.json"),
+    settingsPath: settingsPathFor(home),
     directAuth,
     directUsesToken,
     ...wiring,
@@ -618,7 +619,7 @@ function readProviderModes(deps: ProbeDeps, port: number): { bothDirect: boolean
   ).providerMode;
   const claudeHome = deps.claudeHome();
   const claudeMode = inspectClaudeWiring(
-    deps.readFileSafe(join(claudeHome, "settings.json")),
+    deps.readFileSafe(settingsPathFor(claudeHome)),
     claudeHome,
     port,
   ).providerMode;
@@ -771,7 +772,7 @@ export async function gatherFacts(
     jobs.push(
       (async () => {
         const home = deps.claudeHome();
-        const settingsText = deps.readFileSafe(join(home, "settings.json"));
+        const settingsText = deps.readFileSafe(settingsPathFor(home));
         const wiring = inspectClaudeWiring(settingsText, home, port);
         // Managed iff the apiKeyHelper truly execs `agent auth --get` (not a stale/
         // foreign/missing helper); directAuthFor then decides the gh probe.

@@ -12,6 +12,18 @@ import { runShellIntegration } from "./shell_integration.ts";
 
 const NVM_VERSION = "v0.40.1";
 
+// The toolchain command names, decided ONCE per platform: Windows npm is only
+// spawnable/probe-able as `npm.cmd` (the bare name is not an executable), and the
+// Node.js presence probe keys off it there too -- the winget Node.js LTS package
+// ships node and npm together, and npm is what the install path actually invokes.
+// POSIX probes each tool by its own name.
+const NPM_COMMAND = process.platform === "win32" ? "npm.cmd" : "npm";
+const NODE_PROBE_COMMAND = process.platform === "win32" ? NPM_COMMAND : "node";
+
+/** Bare `--cooldown` (no value) means this many days of npm release aging. Distinct
+ *  from the autoupdate release cooldown, which happens to share the number. */
+export const DEFAULT_CLI_COOLDOWN_DAYS = 7;
+
 export const AGENT_CLIS = [
   {
     command: "claude",
@@ -185,8 +197,7 @@ function installNodeWindows(): void {
 }
 
 function ensureNpm(options: CliInstall): boolean {
-  const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-  if (commandExists(npmCommand)) return true;
+  if (commandExists(NPM_COMMAND)) return true;
 
   if (process.platform === "win32" && options.noSudo) {
     consola.warn(
@@ -197,12 +208,11 @@ function ensureNpm(options: CliInstall): boolean {
 
   if (process.platform === "win32") installNodeWindows();
   else installNodePosix();
-  return commandExists(npmCommand);
+  return commandExists(NPM_COMMAND);
 }
 
 function resolveNpm(): string {
-  const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-  const resolved = resolveCommand(npmCommand);
+  const resolved = resolveCommand(NPM_COMMAND);
   if (!resolved) throw new Error("npm is required to install agent CLIs.");
   return resolved;
 }
@@ -315,8 +325,8 @@ function installCli(cli: (typeof AGENT_CLIS)[number], options: CliInstall): void
 export function installAgentClis(setup: CliSetup): void {
   switch (setup.mode) {
     case "verify-only": {
-      warnMissing(process.platform === "win32" ? "npm.cmd" : "node", "Node.js");
-      warnMissing(process.platform === "win32" ? "npm.cmd" : "npm", "npm");
+      warnMissing(NODE_PROBE_COMMAND, "Node.js");
+      warnMissing(NPM_COMMAND, "npm");
       for (const cli of AGENT_CLIS) warnMissing(cli.command, cli.name);
       return;
     }
@@ -371,6 +381,11 @@ export function runShell(args: ShellArgs): void {
     if (remove) throw new Error("--clis installs CLIs and cannot be combined with --remove");
     if (noSudo && noPrereqs) {
       throw new Error("--no-sudo and --no-prereqs are mutually exclusive");
+    }
+    // Same conflict as its sibling above: --no-prereqs installs nothing, so a cooldown
+    // has nothing to steer -- reject it instead of silently dropping it.
+    if (cooldown !== null && noPrereqs) {
+      throw new Error("--cooldown and --no-prereqs are mutually exclusive");
     }
     assertNonNegativeDays(cooldown);
   }

@@ -33,7 +33,7 @@ import {
   copilotApiResolvePort,
   matchesProxyOrigin,
   proxyLoopbackOrigin,
-  reserveProfilePort,
+  wiringPortFor,
 } from "../copilot_api/port.ts";
 import { type Profile, type ProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
@@ -569,10 +569,10 @@ export function configureClaudeConfig(
 
   // proxy: write a helper that runs the shared proxy-token resolver (ensures the proxy is
   // up per the managed-lifecycle rules, then prints its key). The key is resolved at
-  // helper-run time (not baked in). A named profile RESERVES its stable port here (this is
-  // a write path; read-only checks peek without recording) so concurrent profile daemons
-  // never share a port.
-  const port = profile === null ? copilotApiResolvePort() : String(reserveProfilePort(profile));
+  // helper-run time (not baked in). A named profile RESERVES its stable port here via
+  // wiringPortFor (this is a write path; read-only checks peek without recording) so
+  // concurrent profile daemons never share a port.
+  const port = wiringPortFor(profile);
   writeHelperScript(proxyHelperPath(claudeHome, profile), proxyHelperScript(profile));
   doc.apiKeyHelper = proxyHelperPath(claudeHome, profile);
   // proxyLoopbackOrigin (no path, no trailing slash -- the shape claudeBaseUrlMatchesProxy

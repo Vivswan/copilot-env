@@ -24,6 +24,17 @@ function findProjectRoot(): string {
 
 export const PROJECT_ROOT = findProjectRoot();
 
+/**
+ * Whether the install at PROJECT_ROOT is a git checkout (`.git` present) -- a dev or
+ * manual clone that may hold uncommitted work, never a tarball install (those ship no
+ * `.git`). THE predicate behind every "never auto-mutate/delete a git checkout" gate
+ * (`agent update`, the autoupdate preflight, `agent uninstall`). A plain file probe,
+ * not a git command.
+ */
+export function isGitCheckout(): boolean {
+  return existsSync(join(PROJECT_ROOT, ".git"));
+}
+
 /** Absolute path to the POSIX `agent` launcher (bin/agent). */
 const AGENT_LAUNCHER: string = join(PROJECT_ROOT, "bin", "agent");
 /** Absolute path to the PowerShell `agent` launcher (bin/agent.ps1). */

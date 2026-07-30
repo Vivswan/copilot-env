@@ -68,6 +68,8 @@ function repointCodexBaseUrl(): void {
  */
 function repointClaudeConfig(): void {
   const home = resolveClaudeHome();
+  // Deliberately NOT settingsPathFor: this migration targets the HISTORICAL on-disk
+  // filename as of its release; a future default-path move must not retarget it.
   const settingsPath = join(home, "settings.json");
   let helperPath: string | null;
   try {

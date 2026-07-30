@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { DIRECT_BASE_URL } from "../claude/config.ts";
 import { credentialSource } from "../copilot_api/credential.ts";
 import type { AuthProvider } from "../copilot_api/env_state.ts";
-import type { ProxyVersionStatus } from "../copilot_api/version.ts";
+import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
 import { lastActivityMs } from "../scripts/idle_watchdog.ts";
 import { formatDuration, SECONDS_PER_DAY } from "../utils/time.ts";
 import { filterByScope } from "./aggregate.ts";
@@ -165,10 +165,10 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
   if (bounds.ok) {
     status = "ok";
     // Version + cooldown as separate lines -> rendered as `-` sub-items.
-    detail = `@jeffreycao/copilot-api ${bounds.version}\nfloat ${floatCooldownLabel(f.cooldownSeconds)}`;
+    detail = `${PROXY_PACKAGE_NAME} ${bounds.version}\nfloat ${floatCooldownLabel(f.cooldownSeconds)}`;
   } else if (bounds.reason === "missing") {
     status = "fail";
-    detail = "@jeffreycao/copilot-api is not installed";
+    detail = `${PROXY_PACKAGE_NAME} is not installed`;
     fix = "bun install --frozen-lockfile";
   } else if (bounds.reason === "belowFloor") {
     status = "fail";

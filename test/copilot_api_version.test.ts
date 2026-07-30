@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   installedProxyVersion,
+  PROXY_PACKAGE_NAME,
   proxyVersionBoundsStatus,
   proxyVersionFloorStatus,
 } from "../src/copilot_api/version.ts";
+import { isRecord } from "../src/utils/json.ts";
 import type { ProjectConfig } from "../src/utils/project_config.ts";
+import { PROJECT_ROOT } from "../src/utils/root.ts";
 
 let dir = "";
 
@@ -89,4 +92,15 @@ describe("proxy version status", () => {
       "version": "1.10.30",
     });
   });
+});
+
+// package.json's dependency entry is an external contract (bun resolves the proxy by
+// that literal key), so it cannot derive from PROXY_PACKAGE_NAME -- pin the two
+// together instead, so renaming either side fails here rather than at install time.
+test("package.json tracks the proxy dependency under PROXY_PACKAGE_NAME", () => {
+  const pkg: unknown = JSON.parse(readFileSync(join(PROJECT_ROOT, "package.json"), "utf8"));
+  if (!isRecord(pkg) || !isRecord(pkg.dependencies)) {
+    throw new Error("package.json has no dependencies table");
+  }
+  expect(Object.keys(pkg.dependencies)).toContain(PROXY_PACKAGE_NAME);
 });

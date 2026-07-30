@@ -10,6 +10,7 @@ import psList from "ps-list";
 import { errMessage } from "../utils/error.ts";
 import { pidAlive } from "../utils/pid.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
+import { PROXY_PACKAGE_NAME } from "./version.ts";
 
 // Resolve the bundled copilot-api entry by anchoring node's module resolution at
 // the in-place checkout where bootstrap installs the pinned dep. An explicit path
@@ -26,7 +27,7 @@ export function resolveCopilotApiEntry(): string {
     return override;
   }
   try {
-    return rootRequire.resolve("@jeffreycao/copilot-api/dist/main.js");
+    return rootRequire.resolve(`${PROXY_PACKAGE_NAME}/dist/main.js`);
   } catch (e) {
     throw new Error(
       `the proxy is not installed under ${PROJECT_ROOT}; run \`bun install --frozen-lockfile\` (or re-run the agent launcher) to install dependencies: ${errMessage(
@@ -39,6 +40,15 @@ export function resolveCopilotApiEntry(): string {
 // The pid-liveness primitive lives in utils/pid.ts (the file-lock staleness check
 // shares it); re-export it here so lifecycle callers keep their one import site.
 export { pidAlive };
+
+// THE daemon command-line signature (preserves the original `pgrep "copilot-api.*start"`
+// shape): `copilot-api` must appear BEFORE `start`, and `start` is word-bounded so we
+// don't match unrelated processes that merely mention "start" (or "restart") near a path
+// containing "copilot-api". One source string: compiled below for the POSIX scan, and
+// interpolated VERBATIM into the two single-quoted PowerShell `-match` scripts (the
+// backslashes pass through argv unmangled; .NET regexes read `\b` the same way).
+const DAEMON_CMDLINE_PATTERN = "copilot-api.*\\bstart\\b";
+const DAEMON_CMDLINE_RE = new RegExp(DAEMON_CMDLINE_PATTERN);
 
 /**
  * Terminate `pid`: SIGTERM, then -- when `graceMs > 0` -- wait that long and SIGKILL
@@ -104,7 +114,7 @@ async function classifyDaemonPidWindows(pid: number): Promise<"yes" | "no" | "un
     `$p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}'; ` +
     "if (-not $p) { 'no' } " +
     "elseif ([string]::IsNullOrEmpty($p.CommandLine)) { 'unknown' } " +
-    "elseif ($p.CommandLine -match 'copilot-api.*\\bstart\\b') { 'yes' } " +
+    `elseif ($p.CommandLine -match '${DAEMON_CMDLINE_PATTERN}') { 'yes' } ` +
     "else { 'no' }";
   let stdout: string;
   try {
@@ -126,9 +136,8 @@ async function listCopilotApiPidsWindows(): Promise<number[]> {
   // only), so match on the daemon's command line via WMI: node/bun processes
   // whose CommandLine is the launch (`<runtime> .../copilot-api/.../main.js start`).
   // `wmic` is removed on newer Windows, so go through PowerShell + Get-CimInstance.
-  // The `copilot-api.*start` pattern (copilot-api before a word-bounded start)
-  // mirrors the POSIX match. Single quotes only, so the script passes through
-  // argv quoting unmangled.
+  // The signature is the shared DAEMON_CMDLINE_PATTERN (same match as POSIX).
+  // Single quotes only, so the script passes through argv quoting unmangled.
   //
   // Restrict to the CURRENT user's processes (GetOwner Domain+User == $env:USERDOMAIN/$env:USERNAME)
   // to mirror the POSIX `psList({ all: false })` (`pgrep -u me`): otherwise, from an elevated
@@ -141,7 +150,7 @@ async function listCopilotApiPidsWindows(): Promise<number[]> {
   const script =
     "Get-CimInstance Win32_Process | Where-Object { " +
     "($_.Name -eq 'node.exe' -or $_.Name -eq 'bun.exe') " +
-    "-and $_.CommandLine -match 'copilot-api.*\\bstart\\b' " +
+    `-and $_.CommandLine -match '${DAEMON_CMDLINE_PATTERN}' ` +
     "} | Where-Object { " +
     "$o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue; " +
     "$o -and $o.ReturnValue -eq 0 -and $o.User -eq $env:USERNAME -and $o.Domain -eq $env:USERDOMAIN " +
@@ -171,11 +180,8 @@ async function listCopilotApiPidsPosix(): Promise<number[]> {
   const pids: number[] = [];
   for (const proc of procs) {
     const cmd = proc.cmd ?? "";
-    // Preserve the original `pgrep "copilot-api.*start"` shape: `copilot-api`
-    // must appear BEFORE `start`, and `start` is word-bounded so we don't match
-    // unrelated processes that merely mention "start" (or "restart") near a path
-    // containing "copilot-api".
-    if (!/copilot-api.*\bstart\b/.test(cmd)) {
+    // The shared daemon signature (DAEMON_CMDLINE_PATTERN above).
+    if (!DAEMON_CMDLINE_RE.test(cmd)) {
       continue;
     }
     if (cmd.includes("copilot-api.sh") || cmd.includes("copilot_api.py")) {

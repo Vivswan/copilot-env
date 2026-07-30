@@ -21,6 +21,11 @@ export function resolveHome(): string {
 /** Directory under a daemon home that holds the per-host runtime dirs (`.run/<host>/`). */
 export const RUN_DIR_NAME = ".run";
 
+/** Basename of the proxy's OWN config file under a daemon home (the daemon writes it
+ *  too, which is why CopilotApiConfig.load() gives exactly this name its transient-read
+ *  retry). */
+export const PROXY_CONFIG_FILENAME = "config.json";
+
 /** Basename of the proxy's SQLite DB (`token_usage_events` etc.), one per host dir; a
  *  legacy top-level copy may predate the per-host split. */
 export const SQLITE_DB_FILENAME = "copilot-api.sqlite";
@@ -180,7 +185,7 @@ export class CopilotApiPaths {
     const rootHome = resolveRootHome();
     const hostname = getSanitizedHostname();
     const runDir = join(this.home, RUN_DIR_NAME, hostname);
-    this.configFile = join(this.home, "config.json");
+    this.configFile = join(this.home, PROXY_CONFIG_FILENAME);
     this.runDir = runDir;
     // Our own per-host state (port + pid + active CODEX_HOME), written by this
     // tooling and read back by start/stop/env/health/port.

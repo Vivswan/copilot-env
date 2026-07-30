@@ -1,13 +1,18 @@
-# Repository settings, applied remotely by Vivswan/repo-platform's central
-# settings-repos run; the file's presence in this repo is the opt-in.
-# Undeclared labels are deleted; undeclared rulesets are left alone. This
-# file is repo-owned (the settings-sync module is not selected); a central
-# settings/repos/copilot-env.yml in repo-platform would win over it if added.
+---
+# Repository settings, applied by Vivswan/repo-platform's
+# central settings-repos run (and, when this file changes, by the
+# settings-sync workflow if the repo carries its own REPO_PLATFORM_TOKEN;
+# without one it skips with a warning). Undeclared labels are deleted;
+# undeclared rulesets are left alone.
+# Rendered by the settings-sync module: template updates keep the
+# baseline current via three-way merge (repo additions survive), and sync
+# NEVER deletes this file - it stays even if the module is deselected. A
+# central settings/repos/<name>.yml in repo-platform wins over it.
 
 repository:
-  description: Local copilot-api proxy lifecycle + config helper (TypeScript).
-  homepage: https://github.com/Vivswan/copilot-env
-  topics: copilot, copilot-api, cli, bun, typescript, proxy, claude-code, codex
+  description: "Local copilot-api proxy lifecycle + config helper (TypeScript)."
+  homepage: "https://github.com/Vivswan/copilot-env"
+  topics: "bun,claude-code,cli,codex,copilot,copilot-api,proxy,typescript"
   has_issues: true
   has_wiki: false
   has_projects: false
@@ -31,9 +36,10 @@ labels:
   - name: dependencies
     color: "0366d6"
     description: Dependency updates
-  # Dependabot's default per-ecosystem labels: without a `labels:` override in
-  # dependabot.yml it applies these and recreates them if missing, so leaving
-  # them undeclared would make the settings sync delete/recreate them forever.
+  # Dependabot's default labels: the managed dependabot.yml sets no `labels:`
+  # override, so dependabot applies these and recreates them when missing.
+  # Undeclared they would loop forever: every settings apply deletes what
+  # dependabot re-adds on its next run. Values match what dependabot creates.
   - name: github_actions
     color: "000000"
     description: Pull requests that update GitHub Actions code
@@ -57,6 +63,7 @@ labels:
   - name: "autorelease: tagged"
     color: "ededed"
     description: release-please release PR has been tagged
+
 
 # Branch ruleset for the default branch. Admins (RepositoryRole id 5) are in
 # the bypass list, so direct pushes to main still work. The single required

@@ -11,8 +11,12 @@
 
 repository:
   description: "Local copilot-api proxy lifecycle + config helper (TypeScript)."
+  # homepage, topics, and private are always declared, even when empty or
+  # public: the apply manages only declared keys, so this keeps it healing
+  # out-of-band edits (an empty value declares-and-clears).
   homepage: "https://github.com/Vivswan/copilot-env"
   topics: "bun,claude-code,cli,codex,copilot,copilot-api,proxy,typescript"
+  private: false
   has_issues: true
   has_wiki: false
   has_projects: false

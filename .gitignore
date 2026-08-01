@@ -21,6 +21,13 @@ release-assets/
 # patterns go in the REPOSITORY LOCAL section above. Managed patterns
 # deliberately come last: last-match-wins makes them non-overridable.
 
+## Agent local state (repo-platform)
+.claude/worktrees/
+.claude/.worktrees/
+.codex/worktrees/
+.worktrees/
+.claude/settings.local.json
+
 ## Windows (github/gitignore Global/Windows.gitignore)
 # Windows thumbnail cache files
 Thumbs.db

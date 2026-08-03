@@ -50,9 +50,11 @@ test("the preload's copied env-var literal stays in step with launchDaemon's (dr
 });
 
 test("splices the token from the env var into argv as --github-token, then scrubs the env", () => {
-  const out = runPreloaded("ghp_secret123");
+  // Fake-token fixtures stay short and low-entropy: gitleaks' generic-api-key rule only
+  // matches secrets of 10+ chars AND entropy >= 3.5, so neither gate can trip on them.
+  const out = runPreloaded("ghp_test");
   // The proxy's own flags survive, and the token is appended as a trailing --github-token pair.
-  expect(out.argv).toEqual(["start", "--port", "4141", "--github-token", "ghp_secret123"]);
+  expect(out.argv).toEqual(["start", "--port", "4141", "--github-token", "ghp_test"]);
   // The env var is deleted so it can't leak to a child process.
   expect(out.envHadKey).toBe(false);
 });
@@ -74,7 +76,7 @@ test("does not double-add when --github-token is already present in argv", () =>
       {
         stdout: "pipe",
         stderr: "pipe",
-        env: { ...process.env, [ENV_KEY]: "ghp_fromenv" } as Record<string, string>,
+        env: { ...process.env, [ENV_KEY]: "ghp_env" } as Record<string, string>,
       },
     );
     if (res.exitCode !== 0) throw new Error(res.stderr.toString());

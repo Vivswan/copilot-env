@@ -52,17 +52,14 @@ function runPreloaded(
   }
 }
 
+// Fake-token fixtures stay short and low-entropy so gitleaks' generic rules never match.
 test("the exchange URL is intercepted (synthetic token = the passed token, no network)", () => {
-  expect(runPreloaded(EXCHANGE_URL, "ghp_secret123")).toBe("INTERCEPTED:ghp_secret123:21600");
+  expect(runPreloaded(EXCHANGE_URL, "ghp_test")).toBe("INTERCEPTED:ghp_test:21600");
 });
 
 test("the exchange is intercepted for URL and Request fetch inputs too", () => {
-  expect(runPreloaded(EXCHANGE_URL, "ghp_secret123", "url")).toBe(
-    "INTERCEPTED:ghp_secret123:21600",
-  );
-  expect(runPreloaded(EXCHANGE_URL, "ghp_secret123", "request")).toBe(
-    "INTERCEPTED:ghp_secret123:21600",
-  );
+  expect(runPreloaded(EXCHANGE_URL, "ghp_test", "url")).toBe("INTERCEPTED:ghp_test:21600");
+  expect(runPreloaded(EXCHANGE_URL, "ghp_test", "request")).toBe("INTERCEPTED:ghp_test:21600");
 });
 
 test("with no --github-token in argv, no wrap is installed (real fetch is used)", () => {
@@ -72,11 +69,11 @@ test("with no --github-token in argv, no wrap is installed (real fetch is used)"
 test("the wrap acts for ANY token shape (the load decision is start.ts's job, not the shim's)", () => {
   // A non-PAT token still gets intercepted when the shim is preloaded -- start.ts only
   // preloads it on purpose (auto for a PAT, or a forced `passthrough on` config).
-  expect(runPreloaded(EXCHANGE_URL, "gho_oauth123")).toBe("INTERCEPTED:gho_oauth123:21600");
+  expect(runPreloaded(EXCHANGE_URL, "gho_test")).toBe("INTERCEPTED:gho_test:21600");
 });
 
 test("non-exchange URLs are never intercepted", () => {
-  expect(runPreloaded(OTHER_URL, "ghp_secret123")).toBe("PASSTHROUGH");
+  expect(runPreloaded(OTHER_URL, "ghp_test")).toBe("PASSTHROUGH");
 });
 
 // --- integration-id rewrite (pure helpers) ----------------------------------

@@ -1,49 +1,42 @@
 # Contributing to copilot-env
 
-Thanks for your interest in improving copilot-env! This guide covers how to set up the project, run the checks, and submit a pull request.
+Thanks for contributing! This document covers the conventions every change
+in this repository goes through.
 
-## Prerequisites
+CI, settings, and standards files here (including this document above the
+marker at the bottom) are managed by
+[Vivswan/repo-platform](https://github.com/vivswan/repo-platform);
+local edits to managed files are replaced on the next template sync.
 
-- [bun](https://bun.sh) - runtime and test runner
+## Pull requests
 
-## Setup
+- Changes land through pull requests and are squash-merged; the PR title
+  becomes the commit subject on the default branch.
+- The PR title and every pushed commit subject must be a
+  [Conventional Commit](https://www.conventionalcommits.org/en/v1.0.0/),
+  for example `feat: add X` or `fix(parser): handle Y`. Releases are
+  versioned from these subjects.
 
-```bash
-git clone https://github.com/<your-fork>/copilot-env.git
-cd copilot-env
-bash scripts/setup-env.sh   # scripts/setup-env.ps1 on Windows; runs bun install --frozen-lockfile
-```
+## CI
 
-## Running checks
-
-From the project directory:
-
-```bash
-bun test            # run the test suite
-bun run typecheck   # tsc --noEmit
-bun run lint        # biome check (format/lint/import verification)
-bun run lint:sh     # shellcheck on shell scripts
-bun run lint:ps     # PSScriptAnalyzer on PowerShell scripts
-bun run check       # biome check --write (auto-fix format/lint/imports)
-bun run format      # biome format --write
-```
-
-A husky pre-commit hook runs lint-staged (biome) + typecheck + `bun test` + shell/PowerShell lint, so most issues are caught before they land.
-
-## Code style
-
-Conventions live in [AGENTS.md](AGENTS.md) - please read it before contributing. In short:
-
-- biome enforces formatting and linting (run `bun run format` / `bun run lint`).
-- No `any` - biome's `noExplicitAny` is an error.
-
-## Submitting a pull request
-
-1. Fork the repo and create a branch for your change.
-2. Make sure `bun test`, `bun run typecheck`, and `bun run lint` all pass.
-3. Follow the conventions in [AGENTS.md](AGENTS.md).
-4. Open a PR. Merges to `main` are squash-only - keep your PR description meaningful, since it becomes the squash commit message.
+- CI gates on a single status check, `all-green`, which needs every
+  gating CI job (the convention is documented in
+  [repo-platform's all-green guide](https://github.com/vivswan/repo-platform/blob/main/docs/all-green.md)).
+- Repository-specific checks live in `.github/workflows/checks.yml`; run
+  the commands it lists locally before pushing.
+- A typography gate enforces plain ASCII punctuation: no curly quotes,
+  em-dashes, or invisible unicode.
 
 ## Security
 
-Please do not report security vulnerabilities through public issues. See [SECURITY.md](SECURITY.md) for how to disclose them responsibly.
+Never report vulnerabilities in issues or pull requests - see
+[SECURITY.md](SECURITY.md) for the private reporting route.
+
+## Code of conduct
+
+Participation in this project is governed by the
+[code of conduct](CODE_OF_CONDUCT.md).
+
+<!-- Repository-specific contributing documentation (dev setup, build and
+     test commands, review expectations) goes below this line. It survives
+     template updates via three-way merge. -->

@@ -40,3 +40,38 @@ Participation in this project is governed by the
 <!-- Repository-specific contributing documentation (dev setup, build and
      test commands, review expectations) goes below this line. It survives
      template updates via three-way merge. -->
+
+## Prerequisites
+
+- [bun](https://bun.sh) - runtime and test runner
+
+## Setup
+
+```bash
+git clone https://github.com/<your-fork>/copilot-env.git
+cd copilot-env
+bash scripts/setup-env.sh   # scripts/setup-env.ps1 on Windows; runs bun install --frozen-lockfile
+```
+
+## Running checks
+
+From the project directory:
+
+```bash
+bun test            # run the test suite
+bun run typecheck   # tsc --noEmit
+bun run lint        # biome check (format/lint/import verification)
+bun run lint:sh     # shellcheck on shell scripts
+bun run lint:ps     # PSScriptAnalyzer on PowerShell scripts
+bun run check       # biome check --write (auto-fix format/lint/imports)
+bun run format      # biome format --write
+```
+
+A husky pre-commit hook runs lint-staged (biome) + typecheck + `bun test` + shell/PowerShell lint, so most issues are caught before they land.
+
+## Code style
+
+Conventions live in [AGENTS.md](AGENTS.md) - please read it before contributing. In short:
+
+- biome enforces formatting and linting (run `bun run format` / `bun run lint`).
+- No `any` - biome's `noExplicitAny` is an error.

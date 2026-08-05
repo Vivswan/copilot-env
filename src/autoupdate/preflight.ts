@@ -31,7 +31,7 @@ export async function runPreflight(opts: PreflightOptions): Promise<void> {
   if (!opts.force && !isDue(data.lastCheckMs, opts.nowMs)) return;
 
   if (!acquireLock(opts.nowMs)) {
-    logger.info("autoupdate: another check is already running; skipping.");
+    logger.info("autoupdate: could not take the update lock (another check running?); skipping.");
     return;
   }
   try {

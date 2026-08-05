@@ -112,7 +112,9 @@ async function runManualUpdate(args: {
   // (triggered by `agent start` in another shell) applying a release onto the same checkout --
   // two simultaneous mirrors/migrations would corrupt the tree.
   if (!acquireLock(Date.now())) {
-    consola.warn("Another update is already in progress (autoupdate); skipping this run.");
+    consola.warn(
+      "Could not take the update lock (another update in progress?); skipping this run.",
+    );
     process.exitCode = 1;
     return;
   }

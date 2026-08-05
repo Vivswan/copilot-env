@@ -1,5 +1,5 @@
 bunx lint-staged
 bun run typecheck
-bun test --timeout 15000
+bun run test
 bun run lint:sh
 bun run lint:ps

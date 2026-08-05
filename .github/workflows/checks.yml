@@ -54,7 +54,7 @@ jobs:
         run: bun run lint
 
       - name: Test
-        run: bun test --timeout 15000
+        run: bun run test
 
       # End-to-end daemon lifecycle on every OS (script: .github/scripts/lifecycle-smoke.sh):
       # default daemon start/stop/health cross-checks, managed-lifecycle idempotency, and the

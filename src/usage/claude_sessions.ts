@@ -26,7 +26,7 @@ import { createReadStream, type Dirent, readdirSync, realpathSync, statSync } fr
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { consola } from "consola";
-import { resolveClaudeHome } from "../claude/config.ts";
+import { resolveClaudeHome } from "../claude/paths.ts";
 import { errMessage } from "../utils/error.ts";
 import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";

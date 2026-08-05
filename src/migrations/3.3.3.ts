@@ -1,11 +1,11 @@
 // Migration from 3.3.3: bring the GitHub credential onto the provider-driven store,
 // and unify the Codex model provider under the single `copilot-env` id.
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { consola } from "consola";
 import { parse, stringify } from "smol-toml";
 
 import { CODEX_PROVIDER_ID, effectiveCodexHome } from "../codex/config.ts";
+import { codexConfigPath } from "../codex/paths.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { errMessage } from "../utils/error.ts";
@@ -26,7 +26,7 @@ const LEGACY_CODEX_PROVIDER = "github-copilot-direct";
  * whether it changed the file.
  */
 function rewriteLegacyCodexProvider(codexHome: string): boolean {
-  const configPath = join(codexHome, "config.toml");
+  const configPath = codexConfigPath(codexHome);
   let doc: Record<string, unknown>;
   try {
     if (!statSync(configPath).isFile()) return false;

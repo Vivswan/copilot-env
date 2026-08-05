@@ -7,11 +7,11 @@
 // managed config -- and the [features] table when that leaves it empty -- so Codex
 // offers the feature again. User-added [features] keys survive.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { consola } from "consola";
 import { parse, stringify } from "smol-toml";
 
 import { CODEX_PROVIDER_ID, effectiveCodexHome } from "../codex/config.ts";
+import { codexConfigPath } from "../codex/paths.ts";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import type { Migration } from "./index.ts";
@@ -28,7 +28,7 @@ import type { Migration } from "./index.ts";
  * wasn't already overwriting.
  */
 function dropCodexImageGenerationDisable(): void {
-  const configPath = join(effectiveCodexHome(), "config.toml");
+  const configPath = codexConfigPath(effectiveCodexHome());
   if (!existsSync(configPath)) return; // no Codex config -- nothing to heal
   try {
     const doc = parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
@@ -56,7 +56,7 @@ function dropCodexImageGenerationDisable(): void {
  * exact 15000 the old writer produced -- any other value is user-tuned, not ours.
  */
 function raiseCodexDirectAuthTimeout(): void {
-  const configPath = join(effectiveCodexHome(), "config.toml");
+  const configPath = codexConfigPath(effectiveCodexHome());
   if (!existsSync(configPath)) return; // no Codex config -- nothing to heal
   try {
     const doc = parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;

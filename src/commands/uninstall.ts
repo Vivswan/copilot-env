@@ -6,11 +6,12 @@
 // and offers `--dry-run`. Idempotent: a second run finds nothing and exits 0.
 import { rmSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
 import { consola } from "consola";
-import { removeClaudeDefaultWiring, resolveClaudeHome, settingsPathFor } from "../claude/config.ts";
+import { removeClaudeDefaultWiring } from "../claude/config.ts";
 import { removeClaudeMcpRegistration } from "../claude/mcp_registration.ts";
+import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { knownCodexHomes, removeCodexDefaultWiring, removeCodexProfile } from "../codex/config.ts";
+import { codexConfigPath } from "../codex/paths.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { allProfileNames } from "../copilot_api/env_state.ts";
 import { resolveRootHome } from "../copilot_api/paths.ts";
@@ -135,7 +136,7 @@ export async function runUninstall(args: UninstallArgs, deps: UninstallDeps = {}
       consola.info(`   Would delete ${profileLabel(name)} (credential, wiring, daemon home).`);
     }
     for (const home of codexHomes) {
-      consola.info(`   Would remove the copilot-env wiring from ${join(home, "config.toml")}.`);
+      consola.info(`   Would remove the copilot-env wiring from ${codexConfigPath(home)}.`);
     }
     consola.info(`   Would remove the managed Claude wiring at ${settingsPathFor(claudeHome)}.`);
     consola.info("   Would clear the stored GitHub credential.");

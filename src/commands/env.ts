@@ -16,13 +16,8 @@
 // evals this output) -- no restart. Sourcing just (re)defines those functions, so
 // re-emitting it on later commands is harmless.
 import { existsSync } from "node:fs";
-import {
-  BASE_URL_ENV,
-  DIRECT_BASE_URL,
-  inspectClaudeWiring,
-  resolveClaudeHome,
-  settingsPathFor,
-} from "../claude/config.ts";
+import { BASE_URL_ENV, DIRECT_BASE_URL, inspectClaudeWiring } from "../claude/config.ts";
+import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { getHostLocalCodexHome } from "../codex/host.ts";
 import { copilotApiResolvePort, parseLoopbackProxyUrl } from "../copilot_api/port.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";

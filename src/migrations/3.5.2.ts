@@ -18,7 +18,8 @@
 // when the default wiring is direct).
 import { consola } from "consola";
 
-import { resolveClaudeHome, syncDefaultWebSearchWiring } from "../claude/config.ts";
+import { syncDefaultWebSearchWiring } from "../claude/config.ts";
+import { resolveClaudeHome } from "../claude/paths.ts";
 import { errMessage } from "../utils/error.ts";
 import type { Migration } from "./index.ts";
 

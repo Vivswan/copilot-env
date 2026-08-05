@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DIRECT_HELPER_NAME } from "../src/claude/config.ts";
+import { DIRECT_HELPER_NAME } from "../src/claude/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import {
   buildHealthJson,

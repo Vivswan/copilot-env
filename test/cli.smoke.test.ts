@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/config.ts";
+import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/paths.ts";
 import { writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
 
 // A throwaway COPILOT_API_HOME so the runtime probe sees no tracked pid/port. We pin the

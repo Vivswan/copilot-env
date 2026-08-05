@@ -3,7 +3,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { consola } from "consola";
 
-import { PROXY_HELPER_NAME, resolveClaudeHome } from "../claude/config.ts";
+import { PROXY_HELPER_NAME, resolveClaudeHome } from "../claude/paths.ts";
 import type { Migration } from "./index.ts";
 
 // Leaving 3.2.0 behind: the "gateway" -> "proxy" terminology rename also renamed the

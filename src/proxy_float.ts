@@ -50,13 +50,10 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createConsola } from "consola";
 import { parse } from "smol-toml";
-import {
-  DIRECT_BASE_URL as CLAUDE_DIRECT_BASE_URL,
-  inspectClaudeWiring,
-  resolveClaudeHome,
-  settingsPathFor,
-} from "./claude/config.ts";
+import { DIRECT_BASE_URL as CLAUDE_DIRECT_BASE_URL, inspectClaudeWiring } from "./claude/config.ts";
+import { resolveClaudeHome, settingsPathFor } from "./claude/paths.ts";
 import { effectiveCodexHome, inspectCodexWiring } from "./codex/config.ts";
+import { codexConfigPath } from "./codex/paths.ts";
 import { CopilotEnvConfig, type CopilotEnvConfigData } from "./copilot_api/env_config.ts";
 import { profileHomeNames } from "./copilot_api/paths.ts";
 import { copilotApiResolvePort } from "./copilot_api/port.ts";
@@ -577,7 +574,7 @@ export function bothAgentsWiredDirect(codexHome?: string, claudeHome?: string): 
     if (profileHomeNames().length > 0) return false;
     const expectedPort = Number(copilotApiResolvePort());
     const codexMode = inspectCodexWiring(
-      readTextOrNull(join(codexHome ?? effectiveCodexHome(), "config.toml")),
+      readTextOrNull(codexConfigPath(codexHome ?? effectiveCodexHome())),
       null,
       expectedPort,
       false,

@@ -6,11 +6,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 
-import {
-  configureClaudeConfig,
-  inspectClaudeWiring,
-  settingsPathFor,
-} from "../src/claude/config.ts";
+import { configureClaudeConfig, inspectClaudeWiring } from "../src/claude/config.ts";
+import { settingsPathFor } from "../src/claude/paths.ts";
 import { codexProviderId, configureCodexConfig } from "../src/codex/config.ts";
 import { renderProfileTable, runProfile } from "../src/commands/profile.ts";
 import { runStart } from "../src/commands/start.ts";

@@ -11,12 +11,13 @@
 // or surprising document is warned about and left alone, never clobbered.
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { consola } from "consola";
 import { atomicWriteFile } from "../copilot_api/config.ts";
 import { MCP_SERVER_NAME } from "../mcp/server.ts";
 import { isRecord } from "../utils/json.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
+import { claudeConfigDirOverride } from "./paths.ts";
 
 const logger = consola.withTag("claude.mcp");
 
@@ -29,19 +30,6 @@ const logger = consola.withTag("claude.mcp");
  *   - foreign       -- someone else's `copilot-env` entry; never touched
  */
 export type McpRegistrationStatus = "absent" | "ours-current" | "ours-stale" | "foreign";
-
-/**
- * The `$CLAUDE_CONFIG_DIR` override (Claude Code's own knob), or null when
- * unset/empty. THE single reader of that env var: claudeJsonPath and
- * resolveClaudeHome (config.ts, which imports this module) both derive from it,
- * with different fallbacks. Resolved to an absolute path because the web-search
- * deny ownership record keys on the exact string, so a relative override must
- * not drift with the cwd between a write and a later removal.
- */
-export function claudeConfigDirOverride(): string | null {
-  const override = process.env.CLAUDE_CONFIG_DIR;
-  return override !== undefined && override !== "" ? resolve(override) : null;
-}
 
 /**
  * Claude Code's user-scope state file. CLAUDE_CONFIG_DIR relocates it alongside

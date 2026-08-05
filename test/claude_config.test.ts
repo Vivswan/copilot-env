@@ -7,16 +7,15 @@ import {
   cmdHelperBody,
   configureClaudeConfig,
   DIRECT_BASE_URL,
-  DIRECT_HELPER_NAME,
   detectClaudeDirect,
   inspectClaudeWiring,
-  PROXY_HELPER_NAME,
   removeClaudeDefaultWiring,
   runClaude,
   syncDefaultWebSearchWiring,
   WEBSEARCH_DENY_RULE,
 } from "../src/claude/config.ts";
 import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
+import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/paths.ts";
 import { runMcp } from "../src/commands/mcp.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";

@@ -15,16 +15,11 @@ import {
   type ClaudeWiringStatus,
   directHelperResolvesViaAgent,
   inspectClaudeWiring,
-  resolveClaudeHome,
-  settingsPathFor,
 } from "../claude/config.ts";
-import {
-  CODEX_ENV_KEY,
-  type CodexWiringStatus,
-  defaultCodexHome,
-  inspectCodexWiring,
-} from "../codex/config.ts";
+import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
+import { CODEX_ENV_KEY, type CodexWiringStatus, inspectCodexWiring } from "../codex/config.ts";
 import { getHostLocalCodexHome } from "../codex/host.ts";
+import { codexConfigPath, defaultCodexHome } from "../codex/paths.ts";
 import { AGENT_CLIS } from "../commands/setup.ts";
 import {
   hasMarker,
@@ -623,7 +618,7 @@ export function evalClaude(
 function readProviderModes(deps: ProbeDeps, port: number): { bothDirect: boolean } {
   const codexHome = deps.codexHome();
   const codexMode = inspectCodexWiring(
-    deps.readFileSafe(join(codexHome, "config.toml")),
+    deps.readFileSafe(codexConfigPath(codexHome)),
     null,
     port,
     false,
@@ -763,7 +758,7 @@ export async function gatherFacts(
     jobs.push(
       (async () => {
         const home = deps.codexHome();
-        const configToml = deps.readFileSafe(join(home, "config.toml"));
+        const configToml = deps.readFileSafe(codexConfigPath(home));
         const envText = deps.readFileSafe(join(home, ".env"));
         const wiring = inspectCodexWiring(configToml, envText, port, deps.codexTokenInEnviron());
         const { directAuth, noGhNeeded } = await directAuthFor(wiring.directUsesToken);

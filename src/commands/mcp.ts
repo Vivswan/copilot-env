@@ -5,12 +5,13 @@
 // plus a serve-only flag, --profile without --serve) are rejected at the boundary
 // and never reach the server or the removal path.
 
-import { resolveClaudeHome, syncDefaultWebSearchWiring } from "../claude/config.ts";
+import { syncDefaultWebSearchWiring } from "../claude/config.ts";
 import {
   inspectMcpRegistration,
   type McpRegistrationStatus,
   removeClaudeMcpRegistration,
 } from "../claude/mcp_registration.ts";
+import { resolveClaudeHome } from "../claude/paths.ts";
 import { CopilotEnvConfig, configDefaultBoolean } from "../copilot_api/env_config.ts";
 import { type Profile, parseProfileName } from "../copilot_api/profile.ts";
 import { runMcpServer } from "../mcp/server.ts";

@@ -55,6 +55,7 @@ import {
   generateCodexModelCatalog,
   isCatalogFileUsable,
 } from "./catalog.ts";
+import { codexConfigPath, defaultCodexHome } from "./paths.ts";
 
 const logger = createStderrLogger();
 
@@ -514,7 +515,7 @@ export function configureCodexConfig(
     throw new Error(`could not create Codex config directory ${codexHome}: ${errMessage(e)}`);
   }
 
-  const hostConfig = path.join(codexHome, "config.toml");
+  const hostConfig = codexConfigPath(codexHome);
 
   // "Had content" (not just "existed"): loadOrCreateConfig also seeds the default
   // template for an EMPTY/whitespace file, and the template's `model_provider` must not
@@ -678,17 +679,6 @@ export function probeDirectIntegrationId(
   });
 }
 
-/**
- * The default Codex home: $CODEX_HOME, else homedir()/.codex. Deliberately no
- * process.env.HOME precedence (on Windows homedir() is %USERPROFILE%, where Codex
- * reads, while HOME may be a Git-for-Windows/MSYS path) and path.join, not string
- * concat, so every writer and checker produces byte-identical paths. `||` (not
- * `??`) treats an empty CODEX_HOME as unset.
- */
-export function defaultCodexHome(): string {
-  return process.env.CODEX_HOME || path.join(homedir(), ".codex");
-}
-
 export function effectiveCodexHome(): string {
   return new CopilotEnvRunState().read().codexHome ?? defaultCodexHome();
 }
@@ -738,7 +728,7 @@ export function syncCodexCatalogReference(): void {
       return;
     }
     if (!isCatalogFileUsable(catalogFile)) return;
-    const configPath = path.join(effectiveCodexHome(), "config.toml");
+    const configPath = codexConfigPath(effectiveCodexHome());
     const doc = parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
     if (doc.model_provider !== CODEX_PROVIDER_ID) return;
     if (doc.model_catalog_json !== undefined) return;
@@ -786,7 +776,7 @@ export function knownCodexHomes(): { homes: string[]; complete: boolean } {
  *  that sweep. */
 function codexCatalogConfigCandidates(): { configs: string[]; complete: boolean } {
   const { homes, complete } = knownCodexHomes();
-  return { configs: homes.map((home) => path.join(home, "config.toml")), complete };
+  return { configs: homes.map((home) => codexConfigPath(home)), complete };
 }
 
 /** True when `value` is a non-identical spelling of `catalogFile` that still
@@ -851,7 +841,7 @@ interface EffectiveCodexConfig {
 
 function inspectEffectiveCodexConfig(): EffectiveCodexConfig {
   const codexHome = effectiveCodexHome();
-  const configPath = path.join(codexHome, "config.toml");
+  const configPath = codexConfigPath(codexHome);
   try {
     const status = inspectCodexWiring(
       fs.readFileSync(configPath, "utf8"),
@@ -910,7 +900,7 @@ function checkCodexConfig(): void {
  * Used by `agent profile --del`.
  */
 export function removeCodexProfile(codexHome: string, name: ProfileName): void {
-  const configPath = path.join(codexHome, "config.toml");
+  const configPath = codexConfigPath(codexHome);
   let doc: Record<string, unknown>;
   try {
     doc = parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
@@ -950,7 +940,7 @@ export function removeCodexProfile(codexHome: string, name: ProfileName): void {
  * file throws (never blind-write). Used by `agent uninstall`.
  */
 export function removeCodexDefaultWiring(codexHome: string): void {
-  const configPath = path.join(codexHome, "config.toml");
+  const configPath = codexConfigPath(codexHome);
   let doc: Record<string, unknown> | null;
   try {
     doc = parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;

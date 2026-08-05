@@ -7,7 +7,6 @@
 // Windows: PowerShell Get-Process/Start-Process/Stop-Process). There is no Linux
 // Codex app, so `--mobile` is gated to macOS/Windows.
 import * as fs from "node:fs";
-import { join } from "node:path";
 import { consola } from "consola";
 import { execa } from "execa";
 import { parse, stringify } from "smol-toml";
@@ -15,6 +14,7 @@ import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { isCatalogFileUsable } from "./catalog.ts";
 import { CODEX_PROVIDER_ID, effectiveCodexHome } from "./config.ts";
+import { codexConfigPath } from "./paths.ts";
 
 const logger = createStderrLogger();
 
@@ -207,7 +207,7 @@ export async function runCodexMobile(): Promise<void> {
   }
 
   const home = effectiveCodexHome();
-  const configPath = join(home, "config.toml");
+  const configPath = codexConfigPath(home);
   let original: string;
   try {
     original = fs.readFileSync(configPath, "utf8");

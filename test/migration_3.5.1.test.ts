@@ -3,11 +3,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 
-import {
-  CUSTOM_HEADERS_ENV,
-  configureClaudeConfig,
-  settingsPathFor,
-} from "../src/claude/config.ts";
+import { CUSTOM_HEADERS_ENV, configureClaudeConfig } from "../src/claude/config.ts";
+import { settingsPathFor } from "../src/claude/paths.ts";
 import { codexProviderId, configureCodexConfig } from "../src/codex/config.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";

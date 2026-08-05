@@ -7,13 +7,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 
-import {
-  configureClaudeConfig,
-  DIRECT_HELPER_NAME,
-  PROXY_HELPER_NAME,
-  settingsPathFor,
-} from "../src/claude/config.ts";
+import { configureClaudeConfig } from "../src/claude/config.ts";
 import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
+import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME, settingsPathFor } from "../src/claude/paths.ts";
 import { configureCodexConfig } from "../src/codex/config.ts";
 import { runUninstall, type UninstallDeps } from "../src/commands/uninstall.ts";
 import { Credential } from "../src/copilot_api/credential.ts";

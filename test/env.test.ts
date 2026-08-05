@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/config.ts";
+import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/paths.ts";
 import { runEnv } from "../src/commands/env.ts";
 import { LAUNCHERS_MARKER } from "../src/commands/shell_integration.ts";
 import { envSnapshot, removeDir, tmpDir, writeClaudeSettings } from "./helpers.ts";

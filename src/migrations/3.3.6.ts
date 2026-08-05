@@ -11,8 +11,10 @@ import { basename, join } from "node:path";
 import { consola } from "consola";
 import { parse, stringify } from "smol-toml";
 
-import { configureClaudeConfig, resolveClaudeHome } from "../claude/config.ts";
+import { configureClaudeConfig } from "../claude/config.ts";
+import { resolveClaudeHome } from "../claude/paths.ts";
 import { CODEX_PROVIDER_ID, effectiveCodexHome } from "../codex/config.ts";
+import { codexConfigPath } from "../codex/paths.ts";
 import { errMessage } from "../utils/error.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import type { ManagedAgentMode } from "../utils/provider_mode.ts";
@@ -40,7 +42,7 @@ const MANAGED_HELPERS: Record<string, ManagedAgentMode> = {
  */
 function repointCodexBaseUrl(): void {
   const home = effectiveCodexHome();
-  const configPath = join(home, "config.toml");
+  const configPath = codexConfigPath(home);
   if (!existsSync(configPath)) return; // no Codex config -- nothing to re-point
   try {
     const doc = parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;

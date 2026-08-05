@@ -1,7 +1,7 @@
 // Pure evaluators: HealthFacts -> CheckResult[]. No I/O -- every input is a fact
 // gathered by probe.ts, so each check is independently unit-testable.
-import { join } from "node:path";
 import { DIRECT_BASE_URL } from "../claude/config.ts";
+import { codexConfigPath } from "../codex/paths.ts";
 import { credentialSource } from "../copilot_api/credential.ts";
 import type { AuthProvider } from "../copilot_api/env_state.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
@@ -570,7 +570,7 @@ export function checkAuth(f: AuthFacts): CheckResult {
 }
 
 export function checkCodex(f: CodexFacts): CheckResult {
-  const configPath = join(f.home, "config.toml");
+  const configPath = codexConfigPath(f.home);
   const base = {
     id: "setup.codex",
     label: "Codex wiring",
@@ -661,7 +661,7 @@ export function checkCodex(f: CodexFacts): CheckResult {
 
 /** Report the per-host CODEX_HOME farm (~/.codex/hosts/<hostname>) status. */
 export function checkCodexHost(f: CodexHostFacts): CheckResult {
-  const configFile = join(f.hostHome, "config.toml");
+  const configFile = codexConfigPath(f.hostHome);
   const detail = (summary: string) =>
     f.exists ? `${summary}\nconfig.toml: ${configFile}` : summary;
   const base = {

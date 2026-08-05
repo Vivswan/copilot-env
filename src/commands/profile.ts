@@ -9,12 +9,8 @@
 // profile's credential.
 import { rmSync } from "node:fs";
 import { consola } from "consola";
-import {
-  configureClaudeConfig,
-  removeClaudeProfile,
-  resolveClaudeHome,
-  settingsPathFor,
-} from "../claude/config.ts";
+import { configureClaudeConfig, removeClaudeProfile } from "../claude/config.ts";
+import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import {
   configureCodexConfig,
   effectiveCodexHome,

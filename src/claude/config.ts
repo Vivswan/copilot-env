@@ -19,7 +19,6 @@
 // settings.json points at. The merge is surgical: only the managed keys are
 // touched; all other settings are preserved.
 import * as fs from "node:fs";
-import { homedir } from "node:os";
 import * as path from "node:path";
 import { codexUserAgent, probeDirectIntegrationId } from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
@@ -60,11 +59,8 @@ import {
   proxyTokenCommand,
   proxyTokenScriptArgs,
 } from "../utils/root.ts";
-import {
-  claudeConfigDirOverride,
-  registerClaudeMcpServer,
-  removeClaudeMcpRegistration,
-} from "./mcp_registration.ts";
+import { registerClaudeMcpServer, removeClaudeMcpRegistration } from "./mcp_registration.ts";
+import { directHelperPath, proxyHelperPath, resolveClaudeHome, settingsPathFor } from "./paths.ts";
 
 const logger = createStderrLogger();
 
@@ -77,14 +73,6 @@ const WIN = process.platform === "win32";
 // The base URL literal is owned by integration_identity.ts (the identity probe
 // must render its verdict against the same host the agents bake).
 export const DIRECT_BASE_URL = DEFAULT_COPILOT_API_BASE;
-// Helper file basenames. On Windows a `.sh` is not runnable by bare path, so the managed
-// helper is a `.cmd` (which cmd.exe executes). The path stored in apiKeyHelper -- and the
-// exact-path match in inspectClaudeWiring -- therefore carry the platform extension. A
-// NAMED profile suffixes the stem (`copilot-token-work.sh`), keeping the default names
-// (external contracts) byte-identical.
-const HELPER_EXT = WIN ? "cmd" : "sh";
-export const DIRECT_HELPER_NAME = WIN ? "copilot-token.cmd" : "copilot-token.sh";
-export const PROXY_HELPER_NAME = WIN ? "copilot-proxy-token.cmd" : "copilot-proxy-token.sh";
 export const BASE_URL_ENV = "ANTHROPIC_BASE_URL";
 export const DISABLE_BETAS_ENV = "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS";
 // Direct only: GitHub Copilot's endpoint gates on an editor-client identity, so Direct mode
@@ -164,46 +152,6 @@ export interface ClaudeWiringStatus {
  *  slash and accepts `localhost` too (the shared grammar in port.ts, next to the writers). */
 function claudeBaseUrlMatchesProxy(baseUrl: string, expectedPort: number): boolean {
   return matchesProxyOrigin(baseUrl, expectedPort, "");
-}
-
-// --- paths ------------------------------------------------------------------
-
-/**
- * Resolve the effective Claude home: `$CLAUDE_CONFIG_DIR` (Claude Code's own
- * override, via the shared claudeConfigDirOverride reader), else `~/.claude`
- * (`%USERPROFILE%\.claude` on Windows). This is the single knob -- there is no
- * per-command override flag.
- */
-export function resolveClaudeHome(): string {
-  const override = claudeConfigDirOverride();
-  if (override !== null) return override;
-  // Use homedir() WITHOUT a process.env.HOME override, matching the codex-side contract
-  // (src/codex/config.ts): on Windows homedir() is %USERPROFILE% (where Claude Code reads),
-  // whereas HOME may be a Git-for-Windows/MSYS path -- the two must not diverge or `init`
-  // writes settings.json where Claude never looks. On POSIX homedir() already honors $HOME.
-  return path.join(homedir(), ".claude");
-}
-
-/** The profile's filename suffix: `""` for the default, `-<name>` for a named profile. */
-function profileSuffix(profile: Profile): string {
-  return profile === null ? "" : `-${profile}`;
-}
-
-/** `settings.json`, or `settings-<name>.json` for a named profile. Launch a named
- *  profile with `claude --settings <this path>` (the `cl --profile <name>` launcher
- *  resolves it via `agent profile --settings-for <name>`). */
-export function settingsPathFor(claudeHome: string, profile: Profile = null): string {
-  return path.join(claudeHome, `settings${profileSuffix(profile)}.json`);
-}
-
-function directHelperPath(claudeHome: string, profile: Profile = null): string {
-  if (profile === null) return path.join(claudeHome, DIRECT_HELPER_NAME);
-  return path.join(claudeHome, `copilot-token-${profile}.${HELPER_EXT}`);
-}
-
-function proxyHelperPath(claudeHome: string, profile: Profile = null): string {
-  if (profile === null) return path.join(claudeHome, PROXY_HELPER_NAME);
-  return path.join(claudeHome, `copilot-proxy-token-${profile}.${HELPER_EXT}`);
 }
 
 // --- wiring inspection (pure) -----------------------------------------------

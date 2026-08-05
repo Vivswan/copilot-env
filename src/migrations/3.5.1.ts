@@ -16,11 +16,8 @@
 // this rewrites the same bytes it read -- idempotent, and a no-op for most installs.
 import { consola } from "consola";
 
-import {
-  configureClaudeConfig,
-  effectiveClaudeProviderMode,
-  resolveClaudeHome,
-} from "../claude/config.ts";
+import { configureClaudeConfig, effectiveClaudeProviderMode } from "../claude/config.ts";
+import { resolveClaudeHome } from "../claude/paths.ts";
 import {
   configureCodexConfig,
   effectiveCodexHome,

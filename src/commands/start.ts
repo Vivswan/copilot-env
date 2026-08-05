@@ -1,87 +1,36 @@
-// `agent start`: launches the proxy daemon, applies defaults, and syncs aliases.
+// `agent start`: the command layer over the launch pipeline (src/copilot_api/launch.ts).
+// It parses the flags into ONE action, dispatches the check/record-event probes, reports
+// the dry run, and orchestrates the live launch steps; every user-facing summary and
+// next-steps rendering lives here.
 import * as fs from "node:fs";
-import { join } from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
-import { CopilotAdminClient } from "../copilot_api/admin.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
-import { Credential } from "../copilot_api/credential.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
-import { CopilotEnvConfig, projectedProxyConfig } from "../copilot_api/env_config.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
-  DAEMON_INTEGRATION_ID_ENV,
-  resolvePassthroughIntegrationId,
-  usePatPassthrough,
-} from "../copilot_api/integration_identity.ts";
-import { generateAliases } from "../copilot_api/models.ts";
-import {
-  CopilotApiPaths,
-  profileHomeNames,
-  ROOT_HOME_ENV,
-  resolveRootHome,
-} from "../copilot_api/paths.ts";
-import {
-  checkProxyPort,
-  copilotApiFindPort,
-  copilotApiResolvePort,
-  defaultProxyPort,
-  maxProxyPort,
-  minProxyPort,
-  proxyPortFree,
-  reserveProfilePort,
-} from "../copilot_api/port.ts";
-import {
-  getOrphanPids,
-  isCopilotApiPid,
-  launchDaemon,
-  pidAlive,
-  printLogTail,
-  terminatePid,
-} from "../copilot_api/process.ts";
+  acquireStartLock,
+  applyDefaultConfig,
+  assertProxyFloor,
+  awaitReadiness,
+  cleanupExistingProxies,
+  listUntrackedOrphans,
+  resolveLaunchCredential,
+  resolveStartPort,
+  spawnConfiguredDaemon,
+  startLockPath,
+  syncAliasesAfterStart,
+  trackedDaemonPids,
+} from "../copilot_api/launch.ts";
+import { CopilotApiPaths } from "../copilot_api/paths.ts";
+import { pidAlive } from "../copilot_api/process.ts";
 import { type Profile, parseProfileFlag, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
-import {
-  installedProxyVersion,
-  PROXY_PACKAGE_NAME,
-  proxyVersionFloorStatus,
-} from "../copilot_api/version.ts";
+import { installedProxyVersion, PROXY_PACKAGE_NAME } from "../copilot_api/version.ts";
 import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
-import { errMessage } from "../utils/error.ts";
-import { releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
-import { isRecord } from "../utils/json.ts";
-import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
+import { releaseFileLock } from "../utils/file_lock.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { formatDuration } from "../utils/time.ts";
 import { ensureAuthenticated } from "./auth.ts";
-
-// The launch critical section (orphan sweep + spawn + readiness wait) is serialized by a start
-// lock so two concurrent `agent start` (e.g. two agents auto-starting at once) don't each reap
-// the OTHER's freshly launched daemon. The lock reclaims ONLY a DEAD holder (staleMs = Infinity),
-// never age-stealing a live launcher -- a start may legitimately hold it for minutes while it
-// prompts for interactive auth, and stealing it then would let the waiter kill its daemon.
-const START_LOCK_RETRY_MS = 250;
-
-/** Wait UNBOUNDED for the start lock: a live holder is waited out (it releases when done), and a
- *  crashed holder is reclaimed (dead pid), so this always terminates -- and never proceeds
- *  unlocked, which could let a waiter reap the holder's daemon. Emits a one-time notice once the
- *  wait is noticeable. */
-async function acquireStartLock(lockPath: string): Promise<void> {
-  const started = Date.now();
-  let noticed = false;
-  while (!tryAcquireFileLock(lockPath, Number.POSITIVE_INFINITY)) {
-    if (!noticed && Date.now() - started > 2000) {
-      consola.info("Another `agent start` is in progress; waiting for it to finish ...");
-      noticed = true;
-    }
-    await sleep(START_LOCK_RETRY_MS);
-  }
-}
-
-// --- Default config applied on every `start`. ---
-//
-// String literals here are external contracts (config-file keys, copilot-api
-// model ids). Do not change them during refactors.
-//
 
 /** Raw `agent start` flag values, exactly as Commander hands them over. Parsed ONCE by
  *  `parseStartAction` at the CLI boundary into a StartAction -- runStart never dispatches
@@ -156,112 +105,109 @@ export function parseStartAction(flags: StartFlags): StartAction {
   };
 }
 
-/** An actionable hint when the daemon died because the credential could not be exchanged for a
- *  Copilot token (the daemon logs "Failed to get Copilot token" on a 404/403). A gh-cli/PAT
- *  credential needs the passthrough; anything else needs a Copilot-capable login (addressed at
- *  `profile`'s credential slot). */
-function copilotTokenFailureHint(log: string, profile: Profile): string | null {
-  if (!/Failed to get Copilot token/i.test(log)) return null;
-  const flag = profile === null ? "" : ` --profile ${profile}`;
-  return (
-    "The credential was not accepted by Copilot's token exchange. For a gh-cli or PAT credential, " +
-    "enable passthrough (`agent config --set passthrough on`); otherwise re-authenticate with a " +
-    `Copilot-capable login (\`agent auth${flag} --provider copilot\`).`
-  );
-}
-
-function applyDefaultConfig(config: CopilotApiConfig): void {
-  // Project copilot-env's tunable proxy preferences (CONFIG_REGISTRY entries with a
-  // proxyDefault) into the daemon's config.json before launch. These are static defaults the
-  // daemon reads at startup and have no admin REST endpoint, so they must be written to the
-  // file here (unlike model aliases, pushed live via CopilotAdminClient). Unset preferences
-  // fall back to each key's built-in proxy default, so behavior is unchanged by default.
-  config.update((d) => Object.assign(d, projectedProxyConfig()));
-  // Persist an admin key so the live `/admin/config/model-mappings` route (used
-  // by syncModelAliases) accepts our request instead of 401-ing.
-  config.ensureAdminApiKey();
-}
-
 /**
- * Disable every built-in extraPrompt the proxy injects.
+ * The cheap (sync) part of the managed-lifecycle "leave a running proxy up" gate, shared by
+ * the dry-run and live paths: only a no-op candidate when the lifecycle is managed AND this is
+ * not a forced or explicitly-ported (re)launch. The caller still confirms the proxy is actually
+ * up via `proxyStatus()` before short-circuiting.
  *
- * The pinned `@jeffreycao/copilot-api` re-adds any *missing* default extraPrompt
- * key on every config reload (`mergeDefaultConfig`), so an empty or absent map
- * is futile -- the defaults always come back. Instead we blank every key the
- * daemon has already written to config.json. Discovering the key set at runtime
- * (rather than hardcoding it) keeps this correct when a future package version
- * adds new default prompts.
- *
- * Must run after the daemon is up (so config.json holds the package's full
- * default set) and before the model-mappings POST, whose reloadConfig() makes
- * the blanked values take effect.
+ * Idempotent ONLY in the managed lifecycle (auto-start on): there the proxy is auto-started by
+ * the resolver and auto-stopped by the watchdog, so a redundant manual `start` should leave the
+ * running daemon (and any connected Codex/Claude) untouched rather than tearing it down and
+ * relaunching. In the unmanaged/default mode the user drives start/stop by hand, so `start`
+ * stays an explicit (re)start. Bump the heartbeat (a manual start is a keep-alive vs the idle
+ * watchdog). `--force` launches a fresh daemon either way (e.g. after a credential/config
+ * change), and an explicit `--port` is a reconfiguration request, so it always (re)launches
+ * rather than no-op'ing.
  */
-function disableExtraPrompts(config: CopilotApiConfig): void {
-  config.update((d) => {
-    const current = d.extraPrompts;
-    const blanked: Record<string, string> = {};
-    if (isRecord(current)) {
-      for (const key of Object.keys(current)) {
-        blanked[key] = "";
-      }
-    }
-    d.extraPrompts = blanked;
-  });
+function isIdempotentNoOp(
+  action: { force: boolean; port?: number },
+  envConfig: CopilotEnvConfig,
+): boolean {
+  return !action.force && action.port === undefined && envConfig.autoStartEnabled();
 }
 
-/**
- * Pull the daemon's live model catalog and replace its aliases with a
- * catalog-derived map. Best-effort: on failure no aliases are set (the proxy
- * still resolves plain dash-form ids via its own normalizer), and a warning is
- * logged.
- */
-async function syncModelAliases(admin: CopilotAdminClient): Promise<void> {
-  try {
-    const catalog = await admin.getModels();
-    const aliases = generateAliases(catalog);
-    await admin.setModelMappings(aliases);
-    consola.success(`Synced ${Object.keys(aliases).length} model aliases from catalog.`);
-  } catch (e) {
-    consola.warn(
-      `Could not sync model aliases from catalog (${errMessage(e)}); check \`agent health\`.`,
+/** The launch-path stores/paths one `start` invocation reads and writes -- constructed ONCE
+ *  in runStart (including the single CopilotEnvConfig preference cursor) and passed down. */
+interface LaunchContext {
+  profile: Profile;
+  paths: CopilotApiPaths;
+  config: CopilotApiConfig;
+  envConfig: CopilotEnvConfig;
+  state: CopilotEnvRunState;
+  logFile: string;
+}
+
+/** Report what a live launch WOULD do (no runtime changes): the would-be port, the tracked
+ *  pid and orphans that would be stopped, and the files that would be written. */
+async function reportDryRun(
+  action: { force: boolean; port?: number },
+  ctx: LaunchContext,
+): Promise<void> {
+  const { profile, paths, config, envConfig, state, logFile } = ctx;
+  if (isIdempotentNoOp(action, envConfig) && (await proxyStatus(profile)).up) {
+    consola.info(
+      "DRY RUN: proxy already running (managed lifecycle); would leave it up. --force forces one.",
     );
-  }
-  await printModelAliases(admin);
-}
-
-/** Fetch the daemon's live model mappings and print them grouped by target. */
-async function printModelAliases(admin: CopilotAdminClient): Promise<void> {
-  let mappings: Record<string, string>;
-  try {
-    mappings = await admin.getModelMappings();
-  } catch (e) {
-    consola.warn(`Could not read live model mappings (${errMessage(e)}); check \`agent health\`.`);
     return;
   }
-  // Group the aliases by the model they resolve to, so each target is listed
-  // once with its sources comma-joined.
-  const sources = Object.keys(mappings);
-  const byTarget = new Map<string, string[]>();
-  for (const source of sources) {
-    const target = mappings[source];
-    if (target === undefined) {
-      continue;
-    }
-    const list = byTarget.get(target) ?? [];
-    list.push(source);
-    byTarget.set(target, list);
-  }
-  const targets = [...byTarget.keys()].sort();
-  const width = targets.reduce((m, t) => Math.max(m, t.length), 0);
-  // Emit the whole table as a single message so consola stamps one timestamp
-  // instead of one per row (which wraps and interleaves at terminal width).
-  const rows = targets.map((target) => {
-    const aliases = (byTarget.get(target) ?? []).sort();
-    return `   ${target.padEnd(width)}  <-  ${aliases.join(", ")}`;
-  });
-  consola.info(
-    `Model aliases (${sources.length} -> ${targets.length} models):\n${rows.join("\n")}`,
+  const port = await resolveStartPort(action.port, false, profile, false, envConfig);
+  const statePid = state.read().pid;
+  const trackedPid = statePid !== undefined && pidAlive(statePid) ? statePid : null;
+  const keep = trackedDaemonPids();
+  const orphans = (await listUntrackedOrphans(process.pid, process.ppid, keep)).filter((p) =>
+    pidAlive(p),
   );
+
+  consola.info(`DRY RUN: no proxy runtime changes will be made (${profileLabel(profile)}).`);
+  consola.info(`   Would ensure runtime directories: ${paths.home}, ${paths.runDir}`);
+  consola.info(`   Would apply default configuration: ${config.path}`);
+  if (trackedPid !== null) {
+    consola.info(`   Would stop tracked proxy (pid=${trackedPid}).`);
+  }
+  for (const orphan of orphans) {
+    consola.info(`   Would stop orphaned proxy (pid=${orphan}).`);
+  }
+  consola.info(`   Would launch the proxy on port ${port}.`);
+  consola.info(`   Would write runtime state + log: ${paths.stateFile}, ${logFile}`);
+  consola.info("   Would wait for readiness, sync model aliases, and report proxy details.");
+}
+
+/** The managed-lifecycle no-op report: bump the heartbeat (a manual start is a keep-alive vs
+ *  the idle watchdog) and leave the running daemon untouched. */
+function reportStartNoOp(state: CopilotEnvRunState, port: number, profileFlag: string): void {
+  state.set({ lastEnsureAt: Date.now() });
+  consola.success(`Proxy already running on port ${port} - leaving it up.`);
+  // "[start:noop]" is a machine marker (external contract): CI's lifecycle smoke
+  // keys its managed-no-op gate on this token, not on the sentence above.
+  consola.info("[start:noop]");
+  consola.info(
+    `Run \`agent start${profileFlag} --force\` to launch a fresh daemon (e.g. after a credential or config change).`,
+  );
+}
+
+/**
+ * Seed the heartbeat so the in-daemon idle watchdog (preloaded when the managed lifecycle
+ * is on) does not consider a freshly started, quiet proxy idle before its first request.
+ * Also surface the auto-stop behavior, since a manual `start` arms the same watchdog and
+ * the proxy will exit on its own later -- silence here is a surprise (see `agent config`).
+ */
+function reportManagedLifecycle(state: CopilotEnvRunState): void {
+  state.set({ lastEnsureAt: Date.now() });
+  // idle-timeout 0 disables auto-stop: armIdleWatchdog() then never arms a timer, so only
+  // promise auto-stop when a window is actually in effect.
+  const idleMs = idleTimeoutMs();
+  if (idleMs > 0) {
+    consola.info(
+      `Managed lifecycle on: auto-stops after ${formatDuration(idleMs)} idle ` +
+        "(`agent config --set idle-timeout 0` disables auto-stop; `auto-start false` keeps it up).",
+    );
+  } else {
+    consola.info(
+      "Managed lifecycle on (auto-start); idle auto-stop disabled (idle-timeout 0) -- " +
+        "the proxy stays up until `agent stop`.",
+    );
+  }
 }
 
 /**
@@ -294,157 +240,70 @@ async function logProxyVersion(): Promise<void> {
   consola.info(`   Proxy: ${PROXY_PACKAGE_NAME} ${version}${published}`);
 }
 
-/**
- * Resolve the port `start` will bind for `profile`: a pinned `--port` is used as-is but must
- * be free (else throw -- never silently move off the port the user asked for); with no
- * pin, use the base port or the next free port above it. The base is the default proxy port
- * (config `port`, else the built-in) for the default daemon, and the profile's stable
- * reservation for a named one -- PERSISTED only when `reserve` (the live launch path; the
- * read-only dry-run peeks at the candidate without recording it). `strict-port` steers the
- * DEFAULT daemon only. `announce` emits the busy/alternative-port notices on the live path.
- */
-async function resolveStartPort(
-  pinned: number | undefined,
-  announce: boolean,
+/** The end-of-start report: the proxy version line, the path block (one message, one
+ *  timestamp -- keeps it from interleaving), and the next-steps box. */
+async function reportStartSummary(
   profile: Profile,
-  reserve: boolean,
-): Promise<number> {
-  const min = minProxyPort();
-  const max = maxProxyPort();
-  if (min > max) {
-    throw new Error(
-      `invalid port range: min-port (${min}) is greater than max-port (${max}); fix it with \`agent config --set min-port <n>\` / \`--set max-port <n>\`.`,
-    );
-  }
-  if (pinned !== undefined) {
-    switch (await checkProxyPort(pinned)) {
-      case "out-of-range":
-        throw new Error(
-          `requested port ${pinned} is out of range; the proxy port must be between ${min} and ${max} (\`agent config --set min-port/max-port\` to change the range).`,
-        );
-      case "busy":
-        throw new Error(
-          `requested port ${pinned} is busy (held by another process). Free it or pick another --port.`,
-        );
-      case "free":
-        return pinned;
-    }
-  }
-  // No hard `--port` pin: the auto-resolve base is the default proxy port (config `port`,
-  // else the built-in 4141) for the default daemon, or the profile's stable reservation --
-  // a SOFT base that moves to the next free port if busy, unless `strict-port` is set for
-  // the DEFAULT daemon (then a busy default is fatal, no auto-increment). An EXISTING
-  // reservation is honored even when min/max later narrowed past it (the range governs
-  // NEW allocations -- same round-trip contract as the default's recorded port), so it
-  // gets a liveness-only probe instead of the range gate.
-  let honoredReservation = false;
-  let def: number;
-  if (profile === null) {
-    def = defaultProxyPort();
+  live: { pid: number; port: number },
+  paths: CopilotApiPaths,
+  logFile: string,
+): Promise<void> {
+  await logProxyVersion();
+  const summary: Array<[string, string]> = [
+    ["Logs", logFile],
+    ["PID", String(live.pid)],
+    ["Port", String(live.port)],
+    ["SQLite", paths.sqliteDb],
+    ["Bun env", PROJECT_ROOT],
+  ];
+  const labelWidth = summary.reduce((m, [label]) => Math.max(m, label.length), 0);
+  consola.info(
+    summary
+      .map(([label, value]) => `   ${`${label}:`.padEnd(labelWidth + 1)}  ${value}`)
+      .join("\n"),
+  );
+  // What's next: set off in its own box so it doesn't blend into the path block.
+  // The default box is an output contract; the named-profile variant addresses
+  // the profile's own launchers and stop command.
+  consola.log("");
+  consola.box(
+    profile === null
+      ? [
+          "Next steps",
+          "",
+          "  • Launch an agent:  `cl` (Claude) / `cx` (Codex) / `co` (Copilot)",
+          "    ...or run `claude` / `codex` directly.",
+          "  • Install those launchers:  `agent shell --launchers`",
+          "  • `agent cost` reports proxy usage  ·  `agent stop` stops the proxy.",
+        ].join("\n")
+      : [
+          "Next steps",
+          "",
+          `  • Launch an agent under this profile:  \`cl --profile ${profile}\` / \`cx --profile ${profile}\``,
+          `    ...or \`claude --settings <path from agent profile --settings-for ${profile}>\` / \`codex --profile ${profile}\`.`,
+          `  • \`agent stop --profile ${profile}\` stops this daemon (\`agent stop --all\` stops every one).`,
+        ].join("\n"),
+  );
+}
+
+/** The `--check` probe: "is the proxy up?" -- no launch. The exit code is the contract;
+ *  every machine caller (the proxy resolver + cl/co/cx launchers) discards all output and
+ *  reads only it. The status line is purely for a human running `start --check` directly. */
+async function reportCheckProbe(profile: Profile): Promise<void> {
+  const status = await proxyStatus(profile);
+  if (status.up) {
+    consola.success(`proxy is running on port ${status.port}`);
   } else {
-    const recorded = CopilotEnvRunState.forProfile(profile).read().port;
-    honoredReservation = recorded !== undefined;
-    def =
-      recorded ?? (reserve ? reserveProfilePort(profile) : Number(copilotApiResolvePort(profile)));
+    consola.info("proxy is not running");
   }
-  switch (await checkProxyPort(def)) {
-    case "free":
-      return def;
-    case "out-of-range":
-      if (honoredReservation) {
-        if (await proxyPortFree(def)) return def;
-        break; // reservation busy -> auto-increment below (back inside the range)
-      }
-      throw new Error(
-        `configured port ${def} is outside the allowed range ${min}-${max}; run \`agent config --set port <n>\` within the range, or adjust min-port/max-port.`,
-      );
-    case "busy":
-      break; // fall through to strict-port / auto-increment below
-  }
-  if (profile === null && new CopilotEnvConfig().strictPortEnabled()) {
-    throw new Error(
-      `port ${def} is busy and auto-increment is disabled (\`strict-port\`); free it, pick another \`--port\`, or set \`agent config --set strict-port false\`.`,
-    );
-  }
-  if (announce) consola.warn(`Port ${def} is busy (held by another process/user).`);
-  let port: number;
-  try {
-    port = await copilotApiFindPort(def + 1);
-  } catch {
-    throw new Error("could not find a free port to start the proxy.");
-  }
-  if (announce) consola.success(`Using alternative port: ${port}`);
-  return port;
-}
-
-/**
- * Refuse to launch on a proxy below the PROXY_MIN_VERSION floor. The float
- * (`bun install`'s postinstall) is best-effort, so an offline/failed install can
- * leave a sub-floor proxy in node_modules; the floor is a hard runtime contract,
- * so we enforce it here -- **fail-closed** and before disturbing any running daemon.
- * An unresolvable proxy or unreadable copilot-env.config is itself fatal (we
- * can't confirm the floor), so it throws rather than launching blind.
- */
-function assertProxyFloor(): void {
-  const version = installedProxyVersion();
-  if (version === null) {
-    throw new Error(
-      `${PROXY_PACKAGE_NAME} is not installed or its package.json is unreadable - run 'bun install' to (re)install the proxy.`,
-    );
-  }
-  let config: ProjectConfig;
-  try {
-    config = readProjectConfig(PROJECT_ROOT);
-  } catch (e) {
-    throw new Error(`could not read the proxy floor from copilot-env.config: ${errMessage(e)}`);
-  }
-  const status = proxyVersionFloorStatus(version, config);
-  if (!status.ok && status.reason === "belowFloor") {
-    throw new Error(
-      `${PROXY_PACKAGE_NAME} ${status.version} is below the required ${status.floor} floor - the proxy ` +
-        `float (bun install postinstall) likely failed (offline?) or was skipped because both ` +
-        `agents are wired Direct. Re-run 'bun install' online, set COPILOT_API_VERSION to a ` +
-        `known-good release, or rewire an agent to the proxy ('agent init --proxy') first.`,
-    );
-  }
-}
-
-/**
- * The cheap (sync) part of the managed-lifecycle "leave a running proxy up" gate, shared by
- * the dry-run and live paths: only a no-op candidate when the lifecycle is managed AND this is
- * not a forced or explicitly-ported (re)launch. The caller still confirms the proxy is actually
- * up via `proxyStatus()` before short-circuiting.
- */
-function isIdempotentNoOp(action: { force: boolean; port?: number }): boolean {
-  return !action.force && action.port === undefined && new CopilotEnvConfig().autoStartEnabled();
-}
-
-/** Tracked daemon pids across the default and every profile's run state -- the set the
- *  orphan sweep must NEVER signal (in a multi-daemon world, another profile's healthy
- *  daemon is not an orphan). */
-function trackedDaemonPids(): Set<number> {
-  const pids = new Set<number>();
-  for (const profile of [null, ...profileHomeNames()]) {
-    const pid = CopilotEnvRunState.forProfile(profile).read().pid;
-    if (pid !== undefined) pids.add(pid);
-  }
-  return pids;
+  process.exitCode = status.up ? 0 : 1;
 }
 
 /** `start`: launch copilot-api detached, wait for readiness, sync aliases. */
 export async function runStart(action: StartAction): Promise<void> {
   const profile = action.profile;
   if (action.kind === "check") {
-    // "Is the proxy up?" probe -- no launch. The exit code is the contract; every machine
-    // caller (the proxy resolver + cl/co/cx launchers) discards all output and reads only
-    // it. The status line is purely for a human running `start --check` directly.
-    const status = await proxyStatus(profile);
-    if (status.up) {
-      consola.success(`proxy is running on port ${status.port}`);
-    } else {
-      consola.info("proxy is not running");
-    }
-    process.exitCode = status.up ? 0 : 1;
+    await reportCheckProbe(profile);
     return;
   }
   if (action.kind === "record-event") {
@@ -454,38 +313,18 @@ export async function runStart(action: StartAction): Promise<void> {
     return;
   }
   const paths = new CopilotApiPaths(profile);
-  const config = CopilotApiConfig.forProfile(profile);
-
-  const logFile = paths.logFile;
-  const state = CopilotEnvRunState.forProfile(profile);
+  const ctx: LaunchContext = {
+    profile,
+    paths,
+    config: CopilotApiConfig.forProfile(profile),
+    // The ONE preference cursor for this invocation, passed down to every launch step.
+    envConfig: new CopilotEnvConfig(),
+    state: CopilotEnvRunState.forProfile(profile),
+    logFile: paths.logFile,
+  };
 
   if (action.dryRun) {
-    if (isIdempotentNoOp(action) && (await proxyStatus(profile)).up) {
-      consola.info(
-        "DRY RUN: proxy already running (managed lifecycle); would leave it up. --force forces one.",
-      );
-      return;
-    }
-    const port = await resolveStartPort(action.port, false, profile, false);
-    const statePid = state.read().pid;
-    const trackedPid = statePid !== undefined && pidAlive(statePid) ? statePid : null;
-    const keep = trackedDaemonPids();
-    const orphans = (await getOrphanPids(process.pid, process.ppid)).filter(
-      (p) => pidAlive(p) && !keep.has(p),
-    );
-
-    consola.info(`DRY RUN: no proxy runtime changes will be made (${profileLabel(profile)}).`);
-    consola.info(`   Would ensure runtime directories: ${paths.home}, ${paths.runDir}`);
-    consola.info(`   Would apply default configuration: ${config.path}`);
-    if (trackedPid !== null) {
-      consola.info(`   Would stop tracked proxy (pid=${trackedPid}).`);
-    }
-    for (const orphan of orphans) {
-      consola.info(`   Would stop orphaned proxy (pid=${orphan}).`);
-    }
-    consola.info(`   Would launch the proxy on port ${port}.`);
-    consola.info(`   Would write runtime state + log: ${paths.stateFile}, ${logFile}`);
-    consola.info("   Would wait for readiness, sync model aliases, and report proxy details.");
+    await reportDryRun(action, ctx);
     return;
   }
 
@@ -493,350 +332,54 @@ export async function runStart(action: StartAction): Promise<void> {
   // is best-effort, so never launch on a sub-floor proxy.
   assertProxyFloor();
 
-  // Idempotent ONLY in the managed lifecycle (auto-start on): there the proxy is auto-started by
-  // the resolver and auto-stopped by the watchdog, so a redundant manual `start` should leave the
-  // running daemon (and any connected Codex/Claude) untouched rather than tearing it down and
-  // relaunching. In the unmanaged/default mode the user drives start/stop by hand, so `start` stays
-  // an explicit (re)start. Bump the heartbeat (a manual start is a keep-alive vs the idle watchdog).
-  // `--force` launches a fresh daemon either way (e.g. after a credential/config change), and an
-  // explicit `--port` is a reconfiguration request, so it always (re)launches rather than no-op'ing.
-
-  // Serialize the launch critical section (see acquireStartLock). ONE GLOBAL lock in the
-  // DEFAULT run dir, shared by every profile: the orphan sweep scans copilot-api processes
-  // machine-wide, so two concurrent starts of DIFFERENT profiles could otherwise each reap
-  // the other's freshly spawned (not-yet-tracked) daemon. Serializing all starts also makes
-  // the tracked-pid snapshot below race-free.
+  // Serialize the launch critical section (see acquireStartLock/startLockPath in launch.ts).
   fs.mkdirSync(paths.runDir, { recursive: true });
-  const lockDir = new CopilotApiPaths().runDir;
-  fs.mkdirSync(lockDir, { recursive: true });
-  const startLockPath = join(lockDir, ".start.lock");
-  await acquireStartLock(startLockPath);
+  const lockPath = startLockPath();
+  await acquireStartLock(lockPath);
   // Every human-facing follow-up command must address THIS daemon.
   const profileFlag = profile === null ? "" : ` --profile ${profile}`;
   try {
-    if (isIdempotentNoOp(action)) {
+    if (isIdempotentNoOp(action, ctx.envConfig)) {
       const status = await proxyStatus(profile);
       if (status.up) {
-        state.set({ lastEnsureAt: Date.now() });
-        consola.success(`Proxy already running on port ${status.port} - leaving it up.`);
-        // "[start:noop]" is a machine marker (external contract): CI's lifecycle smoke
-        // keys its managed-no-op gate on this token, not on the sentence above.
-        consola.info("[start:noop]");
-        consola.info(
-          `Run \`agent start${profileFlag} --force\` to launch a fresh daemon (e.g. after a credential or config change).`,
-        );
+        reportStartNoOp(ctx.state, status.port, profileFlag);
         return;
       }
     }
 
     fs.mkdirSync(paths.home, { recursive: true });
-    applyDefaultConfig(config);
-    consola.start("Cleaning up existing proxy processes ...");
+    applyDefaultConfig(ctx.config, ctx.envConfig);
+    await cleanupExistingProxies(profile, ctx.state);
 
-    const tracked = state.read().pid;
-    if (tracked !== undefined) {
-      // Only signal it if it's still OUR daemon (guard against PID reuse).
-      if (await isCopilotApiPid(tracked)) {
-        consola.info(`   Stopping tracked proxy (pid=${tracked}) ...`);
-        await terminatePid(tracked, 2000);
-      }
-      // Clear both pid and port up front: if the relaunch below throws, we don't
-      // leave a stale port pointing at the now-dead daemon. (A named profile's
-      // port is its stable reservation, so only the pid is cleared there.)
-      state.set(profile === null ? { pid: null, port: null } : { pid: null });
-    }
-
-    const myPid = process.pid;
-    const myPpid = process.ppid;
-    // In a multi-daemon world "orphan" means: a copilot-api process NO run state tracks --
-    // another profile's healthy daemon must never be swept while (re)starting this one.
-    const keepPids = trackedDaemonPids();
-    const listOrphans = async (): Promise<number[]> =>
-      (await getOrphanPids(myPid, myPpid)).filter((p) => !keepPids.has(p));
-    let orphans = await listOrphans();
-    if (orphans.length > 0) {
-      for (const opid of orphans) {
-        if (pidAlive(opid)) {
-          consola.info(`   Stopping orphaned proxy (pid=${opid}) ...`);
-          try {
-            process.kill(opid, "SIGTERM");
-          } catch {
-            /* OSError */
-          }
-        }
-      }
-      await sleep(2000);
-      orphans = await listOrphans();
-      for (const opid of orphans) {
-        if (pidAlive(opid)) {
-          try {
-            process.kill(opid, "SIGKILL");
-          } catch {
-            /* OSError */
-          }
-        }
-      }
-    }
-
-    await sleep(1000);
-
-    let port = await resolveStartPort(action.port, true, profile, true);
-
-    fs.writeFileSync(logFile, "");
-    const daemonEnv: Record<string, string> = { COPILOT_API_SQLITE_DB_PATH: paths.sqliteDb };
-    if (profile !== null) {
-      // A named profile's daemon runs against its OWN isolated home (config.json incl.
-      // auth.apiKeys, .run/, sqlite, logs) so concurrent daemons never contend on one
-      // home -- with the root home passed alongside so the in-daemon preloads still
-      // find the ACCOUNT-WIDE files (credential store, preferences) there.
-      daemonEnv.COPILOT_API_HOME = paths.home;
-      daemonEnv[ROOT_HOME_ENV] = resolveRootHome();
-    }
-    // Feed the daemon the resolved credential -- the SAME resolution Direct uses
-    // (`agent auth --get`), driven by the recorded provider (gh-cli -> `gh auth token`,
-    // copilot/gh-token -> the stored token). Passing it as `--github-token` keeps the
-    // proxy on our single source of truth (copilot-api uses it in-memory and won't
-    // write its own github_token file). A named profile resolves ONLY its own slot
-    // (never the default credential).
-    const credential = new Credential(undefined, profile);
-    let githubToken = credential.resolve() ?? undefined;
-    if (githubToken === undefined && process.stdin.isTTY) {
-      // Nothing resolved AND we have a terminal: log in (provider choice -> the addressed
-      // slot) so the proxy stays on the single source. Errors out if login fails.
-      // Headless/CI (no TTY) can't complete an interactive login, so skip and let the
-      // daemon handle its own cold-start login (a fake proxy in tests just starts
-      // without a token).
-      await ensureAuthenticated(profile);
-      githubToken = credential.resolve() ?? undefined;
-    }
-    // A gh-cli OAuth token or a PAT can't perform copilot-api's editor token exchange, so load the
-    // passthrough shim (it fakes the exchange, handing the token straight through as the Copilot
-    // bearer). Precedence: config `passthrough` (on/off) > `auto` (gh-cli provider or PAT shape).
-    // Set it with `agent config --set passthrough on|off`. Only meaningful when a token resolved.
-    const forcePassthrough = new CopilotEnvConfig().passthroughOverride();
-    const patPassthrough = usePatPassthrough({
-      force: forcePassthrough,
-      token: githubToken,
-      provider: credential.provider(),
+    const port = await resolveStartPort(action.port, true, profile, true, ctx.envConfig);
+    const credential = await resolveLaunchCredential(profile, ctx.envConfig, {
+      interactiveLogin: ensureAuthenticated,
     });
-    if (patPassthrough) {
-      consola.info(
-        "Token passthrough on: faking the editor token exchange so the proxy uses the token directly.",
-      );
-    } else if (forcePassthrough === false) {
-      consola.info("Token passthrough off: using the standard editor token exchange.");
-    }
-    // A passthrough bearer is only accepted under a client-integration identity that
-    // matches its token class (a fine-grained PAT needs `copilot-developer-cli`;
-    // copilot-api sends `vscode-chat`). Resolve it NOW, before launching, so an
-    // unusable credential fails here with the real reason instead of an opaque
-    // daemon-side "Failed to get models" -- and hand a non-default pick to the
-    // passthrough preload, which rewrites the header on the daemon's upstream calls.
-    if (patPassthrough && githubToken !== undefined) {
-      const integrationId = await resolvePassthroughIntegrationId(githubToken, {
-        pinned: new CopilotEnvConfig().pinnedIntegrationId(),
-      });
-      // Set it unconditionally (not only for a non-default pick): launchDaemon spreads
-      // process.env, so a stale value already in the launcher's environment would otherwise
-      // leak into the daemon. daemonEnv wins, so an explicit value always controls the preload.
-      daemonEnv[DAEMON_INTEGRATION_ID_ENV] = integrationId;
-    }
-    // Managed lifecycle on (the `auto-start` config key)? Preload the in-daemon idle watchdog
-    // so the proxy stops itself after the idle window. It lives in the daemon process, so
-    // the server and watchdog are one unit (no orphan either way), and every (re)start
-    // re-attaches it. With the flag off, the proxy never auto-starts and gets no watchdog.
-    const idleWatchdog = new CopilotEnvConfig().autoStartEnabled();
-    // `proxy-logs false` mutes the daemon's verbose handler logs: a preload shim discards the
-    // writes under <home>/logs. Activity detection is unaffected -- the always-loaded inference
-    // observer watches inbound requests, not log files.
-    const muteProxyLogs = !new CopilotEnvConfig().proxyLogsEnabled();
-    if (muteProxyLogs) {
-      consola.info("Proxy request logs off: discarding writes under <home>/logs (`proxy-logs`).");
-    }
-    let pid = launchDaemon(
+    const spawned = spawnConfiguredDaemon({
       port,
-      logFile,
-      daemonEnv,
-      githubToken,
-      patPassthrough,
-      idleWatchdog,
-      muteProxyLogs,
-    );
-
-    await sleep(1000);
-    if (!pidAlive(pid)) {
-      let logContent = "";
-      try {
-        logContent = fs.readFileSync(logFile, "utf-8");
-      } catch {
-        logContent = "";
-      }
-      if (/address already in use|EADDRINUSE|bind.*failed/i.test(logContent)) {
-        // `strict-port` steers the DEFAULT daemon only (same exemption as resolveStartPort):
-        // a named profile's reservation is soft, so a bind race retries on another port.
-        const strictPort = profile === null && new CopilotEnvConfig().strictPortEnabled();
-        if (action.port !== undefined || strictPort) {
-          // A pinned port -- or any port under strict-port -- that loses the race fails rather
-          // than silently moving to a different port.
-          printLogTail(logFile, 20);
-          throw new Error(
-            `port ${port} was taken by another process just before launch` +
-              `${strictPort && action.port === undefined ? " (strict-port is on, so no auto-increment)" : ""}. See ${logFile}`,
-          );
-        }
-        consola.warn(
-          `Port ${port} was taken by another process just before launch; retrying on a different port ...`,
-        );
-        try {
-          port = await copilotApiFindPort(port + 1);
-        } catch {
-          throw new Error("could not find a free port after the retry.");
-        }
-        fs.writeFileSync(logFile, "");
-        pid = launchDaemon(
-          port,
-          logFile,
-          daemonEnv,
-          githubToken,
-          patPassthrough,
-          idleWatchdog,
-          muteProxyLogs,
-        );
-        await sleep(1000);
-        if (!pidAlive(pid)) {
-          printLogTail(logFile, 20);
-          throw new Error(
-            `the proxy failed to start after retrying on a different port. See ${logFile}`,
-          );
-        }
-        consola.success(`Started on port ${port} after retry.`);
-      } else {
-        printLogTail(logFile, 20);
-        const hint = copilotTokenFailureHint(logContent, profile);
-        if (hint) consola.error(hint);
-        throw new Error(`the proxy failed to start. See ${logFile}`);
-      }
-    }
-
-    state.set({ pid, port });
-    consola.info(`Started the proxy (PID ${pid}) on port ${port}, detached. Logs: ${logFile}`);
-
-    consola.start(`Waiting for the proxy to start (tailing ${logFile}) ...`);
-
-    const maxWait = 120;
-    let ready = false;
-    let printedLogBytes = 0;
-    for (let i = 0; i < maxWait; i++) {
-      if (!pidAlive(pid)) {
-        try {
-          const hint = copilotTokenFailureHint(fs.readFileSync(logFile, "utf-8"), profile);
-          if (hint) consola.error(hint);
-        } catch {
-          // best-effort: a missing/unreadable log just means no hint.
-        }
-        throw new Error(`the proxy (PID ${pid}) exited during startup. See ${logFile}.`);
-      }
-      let logContent = "";
-      try {
-        const logBytes = fs.readFileSync(logFile);
-        if (logBytes.length < printedLogBytes) {
-          printedLogBytes = 0;
-        }
-        if (logBytes.length > printedLogBytes) {
-          process.stderr.write(logBytes.subarray(printedLogBytes));
-          printedLogBytes = logBytes.length;
-        }
-        logContent = logBytes.toString("utf-8");
-      } catch {
-        logContent = "";
-      }
-      if (logContent.includes("Listening on:")) {
-        ready = true;
-        break;
-      }
-      await sleep(1000);
-    }
-
-    if (!ready) {
-      consola.warn(`The proxy did not start listening on port ${port} within ${maxWait}s.`);
-      consola.warn(`It may still be coming up; check the log file: ${logFile}`);
-      throw new Error(`the proxy did not start listening on port ${port} within ${maxWait}s`);
-    }
-
-    consola.success(`The proxy is up on port ${port} (PID ${pid}).`);
-
-    // Seed the heartbeat so the in-daemon idle watchdog (preloaded above when idleWatchdog
-    // is set) does not consider a freshly started, quiet proxy idle before its first request.
-    // Also surface the auto-stop behavior, since a manual `start` arms the same watchdog and
-    // the proxy will exit on its own later -- silence here is a surprise (see `agent config`).
-    if (idleWatchdog) {
-      state.set({ lastEnsureAt: Date.now() });
-      // idle-timeout 0 disables auto-stop: armIdleWatchdog() then never arms a timer, so only
-      // promise auto-stop when a window is actually in effect.
-      const idleMs = idleTimeoutMs();
-      if (idleMs > 0) {
-        consola.info(
-          `Managed lifecycle on: auto-stops after ${formatDuration(idleMs)} idle ` +
-            "(`agent config --set idle-timeout 0` disables auto-stop; `auto-start false` keeps it up).",
-        );
-      } else {
-        consola.info(
-          "Managed lifecycle on (auto-start); idle auto-stop disabled (idle-timeout 0) -- " +
-            "the proxy stays up until `agent stop`.",
-        );
-      }
-    }
-
-    // Blank the proxy's built-in extraPrompts now that config.json holds the
-    // package's full default set. The setModelMappings POST below triggers the
-    // daemon's reloadConfig(), which makes the blanked values take effect.
-    disableExtraPrompts(config);
-
-    const admin = new CopilotAdminClient({
-      port,
-      apiKey: config.ensureApiKey(),
-      adminKey: config.ensureAdminApiKey(),
+      logFile: ctx.logFile,
+      profile,
+      paths,
+      credential,
+      config: ctx.envConfig,
     });
-    await syncModelAliases(admin);
+    const live = await awaitReadiness({
+      pid: spawned.pid,
+      port,
+      logFile: ctx.logFile,
+      profile,
+      pinnedPort: action.port,
+      state: ctx.state,
+      relaunch: spawned.relaunch,
+      config: ctx.envConfig,
+    });
 
-    await logProxyVersion();
-    // One message, one timestamp -- keeps the path block from interleaving.
-    const summary: Array<[string, string]> = [
-      ["Logs", logFile],
-      ["PID", String(pid)],
-      ["Port", String(port)],
-      ["SQLite", paths.sqliteDb],
-      ["Bun env", PROJECT_ROOT],
-    ];
-    const labelWidth = summary.reduce((m, [label]) => Math.max(m, label.length), 0);
-    consola.info(
-      summary
-        .map(([label, value]) => `   ${`${label}:`.padEnd(labelWidth + 1)}  ${value}`)
-        .join("\n"),
-    );
-    // What's next: set off in its own box so it doesn't blend into the path block.
-    // The default box is an output contract; the named-profile variant addresses
-    // the profile's own launchers and stop command.
-    consola.log("");
-    consola.box(
-      profile === null
-        ? [
-            "Next steps",
-            "",
-            "  • Launch an agent:  `cl` (Claude) / `cx` (Codex) / `co` (Copilot)",
-            "    ...or run `claude` / `codex` directly.",
-            "  • Install those launchers:  `agent shell --launchers`",
-            "  • `agent cost` reports proxy usage  ·  `agent stop` stops the proxy.",
-          ].join("\n")
-        : [
-            "Next steps",
-            "",
-            `  • Launch an agent under this profile:  \`cl --profile ${profile}\` / \`cx --profile ${profile}\``,
-            `    ...or \`claude --settings <path from agent profile --settings-for ${profile}>\` / \`codex --profile ${profile}\`.`,
-            `  • \`agent stop --profile ${profile}\` stops this daemon (\`agent stop --all\` stops every one).`,
-          ].join("\n"),
-    );
+    if (spawned.idleWatchdog) {
+      reportManagedLifecycle(ctx.state);
+    }
+    await syncAliasesAfterStart(ctx.config, live.port);
+    await reportStartSummary(profile, live, paths, ctx.logFile);
   } finally {
-    releaseFileLock(startLockPath);
+    releaseFileLock(lockPath);
   }
 }

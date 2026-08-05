@@ -397,11 +397,13 @@ export function configDefaultBoolean(cli: ConfigCli): boolean {
 /**
  * The proxy `config.json` keys this store projects, each resolved to its stored preference or
  * its built-in proxy default. `agent start` writes these into the daemon's config before
- * launch (see applyDefaultConfig in src/commands/start.ts); the storage key doubles as the
- * proxy key, so no name mapping is needed.
+ * launch (see applyDefaultConfig in src/copilot_api/launch.ts); the storage key doubles as
+ * the proxy key, so no name mapping is needed.
  */
-export function projectedProxyConfig(): Record<string, ConfigValue> {
-  const prefs = new CopilotEnvConfig().read();
+export function projectedProxyConfig(
+  config: CopilotEnvConfig = new CopilotEnvConfig(),
+): Record<string, ConfigValue> {
+  const prefs = config.read();
   const out: Record<string, ConfigValue> = {};
   for (const def of CONFIG_REGISTRY) {
     const stored = prefs[def.key];

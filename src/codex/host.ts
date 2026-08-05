@@ -7,6 +7,7 @@ import { resolveDirectMode } from "../agents/direct_detect.ts";
 import type { RequestedMode } from "../agents/provider_mode.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
+import { errMessage } from "../utils/error.ts";
 import { isFile } from "../utils/fs.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../utils/hostname.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -45,7 +46,10 @@ function assertUnix(feature: string, hint?: string): boolean {
   return true;
 }
 
-// --- small fs helpers ------------------------------------------------------
+// --- small fs probes ---------------------------------------------------------
+// These answer "what is at this path right now?"; a stat/read failure means
+// "not that kind of thing", never an error. Mutating operations below are the
+// opposite: they throw, and the failure surfaces through the farm error.
 
 function lexists(p: string): boolean {
   try {
@@ -64,6 +68,7 @@ function readlinkOrEmpty(p: string): string {
   }
 }
 
+// An unreadable side counts as "not equal", so callers refuse rather than merge.
 function filesEqual(a: string, b: string): boolean {
   try {
     return fs.readFileSync(a).equals(fs.readFileSync(b));
@@ -88,11 +93,10 @@ function isDirPath(p: string): boolean {
   }
 }
 
-function statSize(p: string): number {
-  return fs.statSync(p).size;
-}
+// --- fs operations that throw on failure --------------------------------------
 
-function shutilMove(src: string, dst: string): void {
+// Rename, falling back to copy+delete when src and dst sit on different devices.
+function moveTree(src: string, dst: string): void {
   try {
     fs.renameSync(src, dst);
   } catch (e: unknown) {
@@ -106,19 +110,14 @@ function shutilMove(src: string, dst: string): void {
   }
 }
 
-// Walk root one level at a time (mirrors `find -mindepth 1` with
-// follow_symlinks=False: symlinks to dirs are not descended).
-function findMindepth1(root: string): string[] {
+// Every path under root, one level at a time, without descending into symlinked
+// directories (each level lists dirs before files).
+function listDescendants(root: string): string[] {
   const results: string[] = [];
   const stack: string[] = [root];
   while (stack.length > 0) {
     const dirpath = stack.pop() as string;
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(dirpath, { withFileTypes: true });
-    } catch {
-      continue;
-    }
+    const entries = fs.readdirSync(dirpath, { withFileTypes: true });
     const dirnames: string[] = [];
     const filenames: string[] = [];
     for (const entry of entries) {
@@ -133,7 +132,7 @@ function findMindepth1(root: string): string[] {
 }
 
 // Merge-copy contents of localPath into sharedPath, preserving symlinks.
-function cpPrMerge(localPath: string, sharedPath: string): void {
+function mergeDirInto(localPath: string, sharedPath: string): void {
   const entries = fs.readdirSync(localPath, { withFileTypes: true });
   for (const entry of entries) {
     const src = path.join(localPath, entry.name);
@@ -156,93 +155,72 @@ function cpPrMerge(localPath: string, sharedPath: string): void {
   }
 }
 
+function ensureParentDir(p: string): void {
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+}
+
 // === CODEX_HOME symlink farm (seeding) ===
 
 function warnExistingCodexPath(p: string): void {
   logger.warn(`Leaving existing Codex path unchanged: ${p}`);
 }
 
-function ensureCodexPathParent(p: string): number {
-  try {
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-  } catch {
-    return 1;
-  }
-  return 0;
-}
+// "refused" is a normal outcome (the caller warns and moves on), not an error;
+// filesystem failures throw instead.
+type PromoteResult = "promoted" | "refused";
 
 // Promote a host-local directory into the shared Codex root when it can be
-// merged without overwriting existing shared content.
-// Returns:
-//   0 when promotion succeeded or no promotion was needed
-//   1 on an unexpected filesystem error
-//   2 when the directory contains conflicting content and is left unchanged
-function promoteCodexDirToSharedIfSafe(localPath: string, sharedPath: string): number {
-  if (!isDirPath(localPath)) return 0;
-
+// merged without overwriting existing shared content; refuse (warning, local
+// dir left unchanged) when the contents conflict.
+function promoteCodexDirToSharedIfSafe(localPath: string, sharedPath: string): PromoteResult {
   if (!lexists(sharedPath)) {
-    if (ensureCodexPathParent(sharedPath) !== 0) return 1;
-    try {
-      shutilMove(localPath, sharedPath);
-    } catch {
-      return 1;
-    }
-    return 0;
+    ensureParentDir(sharedPath);
+    moveTree(localPath, sharedPath);
+    return "promoted";
   }
 
   if (isSymlinkPath(sharedPath) || !isDirPath(sharedPath)) {
     warnExistingCodexPath(localPath);
-    return 2;
+    return "refused";
   }
 
-  for (const entry of findMindepth1(localPath)) {
-    const prefix = `${localPath}/`;
-    const relPath = entry.startsWith(prefix) ? entry.slice(prefix.length) : entry;
-    const targetPath = `${sharedPath}/${relPath}`;
+  for (const entry of listDescendants(localPath)) {
+    const relPath = path.relative(localPath, entry);
+    const targetPath = path.join(sharedPath, relPath);
 
     if (isSymlinkPath(entry)) {
       const localTarget = readlinkOrEmpty(entry);
       if (isSymlinkPath(targetPath)) {
         if (localTarget !== readlinkOrEmpty(targetPath)) {
           warnExistingCodexPath(localPath);
-          return 2;
+          return "refused";
         }
       } else if (lexists(targetPath)) {
         warnExistingCodexPath(localPath);
-        return 2;
+        return "refused";
       }
     } else if (isDirPath(entry)) {
       if (lexists(targetPath) && (isSymlinkPath(targetPath) || !isDirPath(targetPath))) {
         warnExistingCodexPath(localPath);
-        return 2;
+        return "refused";
       }
     } else if (isFile(entry)) {
       if (lexists(targetPath)) {
         if (isSymlinkPath(targetPath) || !isFile(targetPath) || !filesEqual(entry, targetPath)) {
           warnExistingCodexPath(localPath);
-          return 2;
+          return "refused";
         }
       }
     } else {
       warnExistingCodexPath(localPath);
-      return 2;
+      return "refused";
     }
   }
 
-  // Note: TOCTOU race exists between validation above and the copy/remove
-  // below if another process modifies either directory concurrently. This
-  // symlink-farm flow runs during startup and accepts that trade-off.
-  try {
-    cpPrMerge(localPath, sharedPath);
-  } catch {
-    return 1;
-  }
-  try {
-    fs.rmSync(localPath, { recursive: true, force: true });
-  } catch {
-    return 1;
-  }
-  return 0;
+  // TOCTOU: the merge below races the validation above; accepted, startup-only flow.
+  mergeDirInto(localPath, sharedPath);
+  fs.rmSync(localPath, { recursive: true, force: true });
+  return "promoted";
 }
 
 function primeSharedCodexHomeIfMissing(sharedRoot: string): void {
@@ -258,242 +236,174 @@ function primeSharedCodexHomeIfMissing(sharedRoot: string): void {
       timeout: 10_000,
     });
   } catch {
-    // pass
+    // Swallowed on purpose: the prime is a convenience, never a build failure.
   }
 }
 
-function seedLocalCodexFileIfMissing(localPath: string, sharedPath: string): number {
+function seedLocalCodexFileIfMissing(localPath: string, sharedPath: string): void {
   if (lexists(localPath)) {
     if (isSymlinkPath(localPath)) {
       logger.warn(
         `Skipping local Codex seed because the path already exists as a symlink: ${localPath}`,
       );
     }
-    return 0;
+    return;
   }
 
-  if (ensureCodexPathParent(localPath) !== 0) return 1;
-  try {
-    if (isFile(sharedPath)) {
-      fs.copyFileSync(sharedPath, localPath);
-    } else {
-      fs.writeFileSync(localPath, "");
-    }
-  } catch {
-    return 1;
+  ensureParentDir(localPath);
+  if (isFile(sharedPath)) {
+    fs.copyFileSync(sharedPath, localPath);
+  } else {
+    fs.writeFileSync(localPath, "");
   }
-  return 0;
-}
-
-function seedSharedCodexFileIfMissingImpl(
-  sharedPath: string,
-  localPath: string,
-  createPlaceholder: boolean,
-): number {
-  const sharedExists = lexists(sharedPath);
-
-  if (isFile(localPath) && !isSymlinkPath(localPath)) {
-    if (!sharedExists) {
-      if (ensureCodexPathParent(sharedPath) !== 0) return 1;
-      try {
-        fs.copyFileSync(localPath, sharedPath);
-      } catch {
-        return 1;
-      }
-      return 0;
-    }
-
-    if (isFile(sharedPath) && statSize(sharedPath) === 0 && statSize(localPath) > 0) {
-      try {
-        fs.copyFileSync(localPath, sharedPath);
-      } catch {
-        return 1;
-      }
-    }
-    return 0;
-  }
-
-  if (createPlaceholder && !sharedExists) {
-    if (ensureCodexPathParent(sharedPath) !== 0) return 1;
-    try {
-      fs.writeFileSync(sharedPath, "");
-    } catch {
-      return 1;
-    }
-  }
-  return 0;
 }
 
 // Shared desktop state files need a one-time promotion path from host-local
 // CODEX_HOME into ~/.codex so existing installs keep their saved projects.
-function seedSharedCodexFileIfMissing(sharedPath: string, localPath: string): number {
-  return seedSharedCodexFileIfMissingImpl(sharedPath, localPath, true);
+// With `createPlaceholder`, a missing shared file is created empty; without it
+// the shared file only appears when a host-local copy exists to promote.
+function seedSharedCodexFileIfMissing(
+  sharedPath: string,
+  localPath: string,
+  createPlaceholder: boolean,
+): void {
+  const sharedExists = lexists(sharedPath);
+
+  if (isFile(localPath) && !isSymlinkPath(localPath)) {
+    if (!sharedExists) {
+      ensureParentDir(sharedPath);
+      fs.copyFileSync(localPath, sharedPath);
+      return;
+    }
+
+    if (
+      isFile(sharedPath) &&
+      fs.statSync(sharedPath).size === 0 &&
+      fs.statSync(localPath).size > 0
+    ) {
+      fs.copyFileSync(localPath, sharedPath);
+    }
+    return;
+  }
+
+  if (createPlaceholder && !sharedExists) {
+    ensureParentDir(sharedPath);
+    fs.writeFileSync(sharedPath, "");
+  }
 }
 
-// Some shared state is only worth syncing when present.
-function seedSharedCodexOptionalFileIfMissing(sharedPath: string, localPath: string): number {
-  return seedSharedCodexFileIfMissingImpl(sharedPath, localPath, false);
-}
-
-function ensureCodexDirSymlink(localPath: string, sharedPath: string): number {
+function ensureCodexDirSymlink(localPath: string, sharedPath: string): void {
   if (isSymlinkPath(localPath)) {
-    if (readlinkOrEmpty(localPath) === sharedPath) return 0;
-    warnExistingCodexPath(localPath);
-    return 0;
+    if (readlinkOrEmpty(localPath) !== sharedPath) warnExistingCodexPath(localPath);
+    return;
   }
 
   if (isDirPath(localPath)) {
-    const rc = promoteCodexDirToSharedIfSafe(localPath, sharedPath);
-    if (rc === 2) return 0;
-    if (rc !== 0) return 1;
+    if (promoteCodexDirToSharedIfSafe(localPath, sharedPath) === "refused") return;
   } else if (lexists(localPath)) {
     warnExistingCodexPath(localPath);
-    return 0;
+    return;
   }
 
   if (!lexists(localPath)) {
-    if (ensureCodexPathParent(localPath) !== 0) return 1;
-    try {
-      fs.symlinkSync(sharedPath, localPath);
-    } catch {
-      return 1;
-    }
+    ensureParentDir(localPath);
+    fs.symlinkSync(sharedPath, localPath);
   }
-  return 0;
 }
 
 // After the shared file is seeded, replace a matching host-local copy with a
 // symlink so future desktop updates read and write the same shared state.
-function ensureCodexFileSymlink(localPath: string, sharedPath: string): number {
+function ensureCodexFileSymlink(localPath: string, sharedPath: string): void {
   if (isSymlinkPath(localPath)) {
-    if (readlinkOrEmpty(localPath) === sharedPath) return 0;
-    warnExistingCodexPath(localPath);
-    return 0;
+    if (readlinkOrEmpty(localPath) !== sharedPath) warnExistingCodexPath(localPath);
+    return;
   }
 
   if (isFile(localPath)) {
-    if (filesEqual(localPath, sharedPath)) {
-      try {
-        fs.unlinkSync(localPath);
-      } catch {
-        return 1;
-      }
-    } else {
+    if (!filesEqual(localPath, sharedPath)) {
       warnExistingCodexPath(localPath);
-      return 0;
+      return;
     }
+    fs.unlinkSync(localPath);
   } else if (lexists(localPath)) {
     warnExistingCodexPath(localPath);
-    return 0;
+    return;
   }
 
-  if (ensureCodexPathParent(localPath) !== 0) return 1;
-  try {
-    fs.symlinkSync(sharedPath, localPath);
-  } catch {
-    return 1;
-  }
-  return 0;
+  ensureParentDir(localPath);
+  fs.symlinkSync(sharedPath, localPath);
 }
 
-function buildCodexSymlinkFarm(codexHome: string): number {
-  const localDirs = [
-    ".tmp", // Host-local scratch/cache state, including plugin temp data.
-    "log", // Host-local runtime logs.
-    "tmp", // Host-local transient working files.
-  ];
-  const sharedDirs = [
-    "ambient-suggestions", // Background suggestion state surfaced by Codex.
-    "archived_sessions", // Older conversation transcripts kept by the desktop app.
-    "memories", // Long-term memory state.
-    "memories_extensions", // Extension-generated memory enrichments.
-    "plugins", // Installed plugins and their persistent data.
-    "rules", // Synced Codex rules and instructions.
-    "sessions", // Active conversation transcripts.
-    "shell_snapshots", // Reusable shell context captured by Codex.
-    "skills", // Installed skills available to Codex.
-    "vendor_imports", // Imported third-party agent bundles.
-    "worktrees", // Shared worktree metadata used across checkouts.
-  ];
-  const sharedFiles = [
-    ".codex-global-state.json", // Desktop workspace and project state.
-    "AGENTS.md", // Shared agent instructions exposed inside Codex home.
-    "session_index.jsonl", // Session lookup index maintained by the desktop app.
-    "version.json", // Codex home layout/schema version marker.
-  ];
+// --- the farm layout, as data ------------------------------------------------
+// Every entry name is an on-disk contract with the Codex desktop app: renaming
+// one is a layout change, not a refactor.
 
+// Host-local scratch: real directories, never shared or symlinked.
+const HOST_LOCAL_DIRS = [
+  ".tmp", // Host-local scratch/cache state, including plugin temp data.
+  "log", // Host-local runtime logs.
+  "tmp", // Host-local transient working files.
+];
+
+// Host-local files seeded once from the shared root (or empty), then owned by
+// the host: config.toml in particular diverges per host and is never promoted.
+const HOST_LOCAL_SEED_FILES = [".personality_migration", "config.toml", "history.jsonl"];
+
+// Shared directories: a real directory at the shared root, symlinked from the
+// host home (host-local content is promoted into the shared copy when safe).
+const SHARED_DIRS = [
+  "ambient-suggestions", // Background suggestion state surfaced by Codex.
+  "archived_sessions", // Older conversation transcripts kept by the desktop app.
+  "memories", // Long-term memory state.
+  "memories_extensions", // Extension-generated memory enrichments.
+  "plugins", // Installed plugins and their persistent data.
+  "rules", // Synced Codex rules and instructions.
+  "sessions", // Active conversation transcripts.
+  "shell_snapshots", // Reusable shell context captured by Codex.
+  "skills", // Installed skills available to Codex.
+  "vendor_imports", // Imported third-party agent bundles.
+  "worktrees", // Shared worktree metadata used across checkouts.
+];
+
+// Shared files: seeded at the shared root, symlinked from the host home.
+// `placeholder: false` marks state only worth syncing when a host already has
+// it, so no empty shared file is fabricated (the host symlink dangles).
+const SHARED_FILES: readonly { name: string; placeholder: boolean }[] = [
+  { name: ".codex-global-state.json", placeholder: true }, // Desktop workspace and project state.
+  { name: "AGENTS.md", placeholder: true }, // Shared agent instructions exposed inside Codex home.
+  { name: "session_index.jsonl", placeholder: true }, // Session lookup index maintained by the desktop app.
+  { name: "version.json", placeholder: true }, // Codex home layout/schema version marker.
+  { name: "installation_id", placeholder: false }, // Per-install identifier, present once Codex has run.
+  { name: "shell-init.sh", placeholder: false }, // User shell hook, present only when configured.
+];
+
+function buildCodexSymlinkFarm(codexHome: string): void {
   const sharedRoot = path.dirname(codexFarmHostsDir());
   primeSharedCodexHomeIfMissing(sharedRoot);
-  try {
-    fs.mkdirSync(sharedRoot, { recursive: true });
-    fs.mkdirSync(codexHome, { recursive: true });
-  } catch {
-    return 1;
+  fs.mkdirSync(sharedRoot, { recursive: true });
+  fs.mkdirSync(codexHome, { recursive: true });
+
+  for (const name of HOST_LOCAL_DIRS) {
+    fs.mkdirSync(path.join(codexHome, name), { recursive: true });
   }
 
-  for (const localDir of localDirs) {
-    try {
-      fs.mkdirSync(`${codexHome}/${localDir}`, { recursive: true });
-    } catch {
-      return 1;
-    }
+  for (const name of HOST_LOCAL_SEED_FILES) {
+    seedLocalCodexFileIfMissing(path.join(codexHome, name), path.join(sharedRoot, name));
   }
 
-  if (
-    seedLocalCodexFileIfMissing(
-      `${codexHome}/.personality_migration`,
-      `${sharedRoot}/.personality_migration`,
-    ) !== 0
-  )
-    return 1;
-  if (seedLocalCodexFileIfMissing(`${codexHome}/config.toml`, `${sharedRoot}/config.toml`) !== 0)
-    return 1;
-  if (
-    seedLocalCodexFileIfMissing(`${codexHome}/history.jsonl`, `${sharedRoot}/history.jsonl`) !== 0
-  )
-    return 1;
-
-  for (const sharedDir of sharedDirs) {
-    try {
-      fs.mkdirSync(`${sharedRoot}/${sharedDir}`, { recursive: true });
-    } catch {
-      return 1;
-    }
-    if (ensureCodexDirSymlink(`${codexHome}/${sharedDir}`, `${sharedRoot}/${sharedDir}`) !== 0)
-      return 1;
+  for (const name of SHARED_DIRS) {
+    fs.mkdirSync(path.join(sharedRoot, name), { recursive: true });
+    ensureCodexDirSymlink(path.join(codexHome, name), path.join(sharedRoot, name));
   }
 
-  for (const sharedFile of sharedFiles) {
-    if (
-      seedSharedCodexFileIfMissing(`${sharedRoot}/${sharedFile}`, `${codexHome}/${sharedFile}`) !==
-      0
-    )
-      return 1;
-    if (ensureCodexFileSymlink(`${codexHome}/${sharedFile}`, `${sharedRoot}/${sharedFile}`) !== 0)
-      return 1;
+  for (const { name, placeholder } of SHARED_FILES) {
+    seedSharedCodexFileIfMissing(
+      path.join(sharedRoot, name),
+      path.join(codexHome, name),
+      placeholder,
+    );
+    ensureCodexFileSymlink(path.join(codexHome, name), path.join(sharedRoot, name));
   }
-
-  if (
-    seedSharedCodexOptionalFileIfMissing(
-      `${sharedRoot}/installation_id`,
-      `${codexHome}/installation_id`,
-    ) !== 0
-  )
-    return 1;
-  if (ensureCodexFileSymlink(`${codexHome}/installation_id`, `${sharedRoot}/installation_id`) !== 0)
-    return 1;
-
-  if (
-    seedSharedCodexOptionalFileIfMissing(
-      `${sharedRoot}/shell-init.sh`,
-      `${codexHome}/shell-init.sh`,
-    ) !== 0
-  )
-    return 1;
-  if (ensureCodexFileSymlink(`${codexHome}/shell-init.sh`, `${sharedRoot}/shell-init.sh`) !== 0)
-    return 1;
-
-  return 0;
 }
 
 /**
@@ -520,9 +430,16 @@ export async function runCodexHost(args: CodexHostArgs): Promise<void> {
   }
 
   logger.info("Preparing CODEX_HOME (building symlink farm)...");
-  if (buildCodexSymlinkFarm(codexHome) !== 0) {
+  try {
+    buildCodexSymlinkFarm(codexHome);
+  } catch (e: unknown) {
+    // The one terminal handler for farm filesystem failures; the cause message
+    // names the failing operation and path.
     throw new Error(
-      `Failed to build the CODEX_HOME symlink farm at ${codexHome} (a filesystem operation under it or ~/.codex failed - check permissions and free space)`,
+      `Failed to build the CODEX_HOME symlink farm at ${codexHome}: ${errMessage(e)}`,
+      {
+        cause: e,
+      },
     );
   }
   // --direct/--proxy force the mode; with no flag a configured credential

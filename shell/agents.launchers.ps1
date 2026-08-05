@@ -65,7 +65,7 @@ function Sync-AgentProvider {
         agent $Agent --proxy | Out-Host
         if ($LASTEXITCODE -ne 0) { return $false }
     } elseif ($status -ne 0) {
-        Write-Host "$($Launcher): $Display has a custom provider config (not managed by copilot-env); launching it as-is."
+        [Console]::Error.WriteLine("$($Launcher): $Display has a custom provider config (not managed by copilot-env); launching it as-is.")
     }
     return $true
 }
@@ -74,8 +74,8 @@ function Sync-AgentProvider {
 # just ensures ITS proxy daemon when the profile is proxy-mode (exit 2 from `agent
 # profile --check`, the store-driven probe; delegating to proxy-token.ps1 WITHOUT
 # `--yes`, so a down daemon prompts like the default path). Exit 0 (direct) passes
-# through; exit 1 (no such profile) aborts, replaying the check's own message.
-# Returns $true to continue, $false to abort.
+# through; exit 1 (no such profile) aborts, replaying the check's own message on
+# stderr. Returns $true to continue, $false to abort.
 function Confirm-CopilotProfileServer {
     param(
         [Parameter(Mandatory)][string]$ProfileName
@@ -83,7 +83,7 @@ function Confirm-CopilotProfileServer {
     & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 profile --check $ProfileName *> $null
     if ($LASTEXITCODE -eq 0) { return $true }
     if ($LASTEXITCODE -ne 2) {
-        & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 profile --check $ProfileName | Out-Host
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 profile --check $ProfileName | ForEach-Object { [Console]::Error.WriteLine($_) }
         return $false
     }
     $resolver = Join-Path $script:AgentsDir 'src\scripts\proxy-token.ps1'
@@ -91,8 +91,15 @@ function Confirm-CopilotProfileServer {
     return ($LASTEXITCODE -eq 0)
 }
 
+# Failure signal for scripted callers: PowerShell functions have no exit code of
+# their own, so cl/co/cx are observed through $LASTEXITCODE, the way the bashrc
+# twins are observed through `$?`. Launch paths leave the agent CLI's own exit
+# code in place; provider-sync aborts leave the failing resolver/sync code in
+# place (the twins' `return $?`); the other aborts set 1 explicitly (the twins'
+# `return 1`).
+
 function cl {
-    if (-not (Assert-AgentCli claude)) { return }
+    if (-not (Assert-AgentCli claude)) { $global:LASTEXITCODE = 1; return }
     # The managed Claude launch flag set, stated ONCE for both branches below
     # (profile and default); the bashrc twin states it once in _copilot_claude_launch.
     $claudeFlags = @('--permission-mode', 'auto', '--enable-auto-mode')
@@ -105,9 +112,9 @@ function cl {
     if ($args.Count -ge 2 -and $args[0] -eq '--profile' -and "$($args[1])" -ne '') {
         $name = $args[1]
         $rest = @($args | Select-Object -Skip 2)
-        if (-not (Confirm-CopilotProfileServer -ProfileName $name)) { return }
+        if (-not (Confirm-CopilotProfileServer -ProfileName $name)) { $global:LASTEXITCODE = 1; return }
         $settings = (& powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 profile --settings-for $name | Out-String).Trim()
-        if ($LASTEXITCODE -ne 0 -or $settings -eq '') { return }
+        if ($LASTEXITCODE -ne 0 -or $settings -eq '') { $global:LASTEXITCODE = 1; return }
         $env:CLAUDE_CODE_NO_FLICKER = '1'
         $prevBase = $env:ANTHROPIC_BASE_URL
         Remove-Item Env:ANTHROPIC_BASE_URL -ErrorAction SilentlyContinue
@@ -123,12 +130,12 @@ function cl {
 }
 
 function co {
-    if (-not (Assert-AgentCli copilot)) { return }
+    if (-not (Assert-AgentCli copilot)) { $global:LASTEXITCODE = 1; return }
     & copilot --autopilot --enable-reasoning-summaries --experimental @args
 }
 
 function cx {
-    if (-not (Assert-AgentCli codex)) { return }
+    if (-not (Assert-AgentCli codex)) { $global:LASTEXITCODE = 1; return }
     # `cx --profile <name>` (leading args only): launch Codex under its NATIVE profile.
     # Order matters: ensure the profile's daemon FIRST (a cold start may move its port),
     # THEN `agent profile --sync` so the baked base_url tracks the port the daemon
@@ -136,10 +143,10 @@ function cx {
     if ($args.Count -ge 2 -and $args[0] -eq '--profile' -and "$($args[1])" -ne '') {
         $name = $args[1]
         $rest = @($args | Select-Object -Skip 2)
-        if (-not (Confirm-CopilotProfileServer -ProfileName $name)) { return }
+        if (-not (Confirm-CopilotProfileServer -ProfileName $name)) { $global:LASTEXITCODE = 1; return }
         & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 profile --sync *> $null
         if ($LASTEXITCODE -ne 0) {
-            Write-Host "cx: could not refresh the profile wiring; launching with the existing config (run 'agent profile --sync' to see why)."
+            [Console]::Error.WriteLine("cx: could not refresh the profile wiring; launching with the existing config (run 'agent profile --sync' to see why).")
         }
         & codex --profile $name @rest
         return

@@ -5,6 +5,38 @@
 # installer. Optional CLIs and launchers are managed after install with
 # `agent shell --clis --launchers`.
 
+<#
+.SYNOPSIS
+Installs copilot-env (Windows twin of install.sh).
+
+.DESCRIPTION
+Installs copilot-env into $env:USERPROFILE\.copilot-env by downloading the
+selected GitHub release source archive, bootstraps its dependencies, and wires
+shell integration by default. Optional agent CLIs and launchers are configured
+after install:
+
+  agent shell --clis [--cooldown[=DAYS]] [--no-sudo] [--no-prereqs] [--launchers]
+
+To install a specific copilot-env version, download install.ps1 from that
+GitHub Release and run it. The main-branch installer resolves latest; release
+assets are pinned to their release tag.
+
+.PARAMETER InstallDir
+Install target (default $env:USERPROFILE\.copilot-env). Takes precedence over
+$env:COPILOT_ENV_DIR. Ignored when run from an existing checkout.
+
+.PARAMETER NoShellIntegration
+Do not wire the PowerShell $PROFILE. Run `agent shell` later to enable it.
+
+.PARAMETER NoExecShell
+Do not offer to reload your shell at the end. The offer is also skipped when
+non-interactive or under CI, or when $env:COPILOT_ENV_NO_EXEC_SHELL is set.
+
+.PARAMETER AllHosts
+Wire the shell integration into the CurrentUserAllHosts PowerShell profile
+instead of the current host's profile.
+#>
+
 [CmdletBinding()]
 param(
     [switch]$AllHosts,

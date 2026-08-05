@@ -12,9 +12,10 @@ $script:AgentsDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyComma
 $script:AgentPs1 = Join-Path $AgentsDir 'bin\agent.ps1'
 
 # Ensure bun is on PATH (its installer patches the user PATH, but a running
-# session may predate that).
+# session may predate that). Exact segment match on ';', like the POSIX twin's
+# `:$PATH:` case -- a substring test would false-positive on longer siblings.
 $BunDir = Join-Path $env:USERPROFILE '.bun\bin'
-if ((Test-Path (Join-Path $BunDir 'bun.exe')) -and ($env:Path -notlike "*$BunDir*")) {
+if ((Test-Path (Join-Path $BunDir 'bun.exe')) -and (($env:Path -split ';') -notcontains $BunDir)) {
     $env:Path = "$BunDir;$env:Path"
 }
 

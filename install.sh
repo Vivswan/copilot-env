@@ -23,7 +23,7 @@ PUBLIC_ASSET_CURL_ARGS=(-H "User-Agent: copilot-env" -H "Accept: application/oct
 
 usage() {
     cat <<'EOF'
-Usage: install.sh [--dir DIR] [--no-shell-integration]
+Usage: install.sh [--dir DIR] [--no-shell-integration] [--no-exec-shell]
 
 Installs copilot-env into ~/.copilot-env by downloading the selected GitHub
 release source archive, bootstraps its dependencies, and wires shell integration

@@ -7,8 +7,9 @@
 #
 #     source /path/to/agents.launchers.bashrc
 #
-# Must be compatible with both bash and zsh (POSIX constructs only). Relies on
-# the `agent` function and proxy env that agents.bashrc sets up.
+# Must be compatible with both bash and zsh (only constructs both shells
+# support; this is not plain POSIX sh). Relies on the `agent` function and
+# proxy env that agents.bashrc sets up.
 
 # shellcheck shell=bash
 # Resolve the repo root from THIS file's location (it lives in shell/, so the
@@ -108,9 +109,12 @@ function _copilot_claude_launch {
     if [ "$_copilot_launch_mode" = "profile" ]; then
         unset _copilot_launch_mode
         command env -u ANTHROPIC_BASE_URL claude --settings "$_copilot_launch_settings" "$@"
-        _copilot_status=$?
+        # Park the exit status in $1 (we return immediately, so clobbering "$@"
+        # is fine) rather than in a _copilot_* temporary that would leak into
+        # the interactive shell.
+        set -- "$?"
         unset _copilot_launch_settings
-        return "$_copilot_status"
+        return "$1"
     fi
     unset _copilot_launch_mode
     command claude "$@"
@@ -133,9 +137,9 @@ function cl {
         fi
         unset _copilot_profile
         _copilot_claude_launch profile "$_copilot_settings" "$@"
-        _copilot_status=$?
+        set -- "$?"
         unset _copilot_settings
-        return "$_copilot_status"
+        return "$1"
     fi
     _copilot_wire_provider claude cl Claude || return $?
     _copilot_claude_launch default "$@"
@@ -162,9 +166,9 @@ function cx {
         _copilot_name="$_copilot_profile"
         unset _copilot_profile
         command codex --profile "$_copilot_name" "$@"
-        _copilot_status=$?
+        set -- "$?"
         unset _copilot_name
-        return "$_copilot_status"
+        return "$1"
     fi
     _copilot_wire_provider codex cx Codex || return $?
     command codex "$@"
@@ -185,9 +189,9 @@ function clx {
         _copilot_p="$2"
         shift 2
         ( export IS_SANDBOX=1; cl --profile "$_copilot_p" --dangerously-skip-permissions "$@" )
-        _copilot_s=$?
+        set -- "$?"
         unset _copilot_p
-        return "$_copilot_s"
+        return "$1"
     fi
     ( export IS_SANDBOX=1; cl --dangerously-skip-permissions "$@" )
 }
@@ -197,9 +201,9 @@ function cxx {
         _copilot_p="$2"
         shift 2
         cx --profile "$_copilot_p" --sandbox danger-full-access "$@"
-        _copilot_s=$?
+        set -- "$?"
         unset _copilot_p
-        return "$_copilot_s"
+        return "$1"
     fi
     cx --sandbox danger-full-access "$@"
 }

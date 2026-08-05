@@ -25,11 +25,12 @@ if (Test-Path $BunExe) {
 # no-env verify reads npm publish-time metadata, computes the cooldown-aged target,
 # and compares it to the installed proxy; missing/stale node_modules still force
 # install. HUSKY=0 keeps husky's `prepare` from reinstalling git hooks each time.
-# Discard bun's stdout (its install summary) so it can't be captured into the
-# `agent env` output the profile function evals -- PowerShell can't merge stdout
-# into stderr (`1>&2` is reserved). bun's progress/errors and the float's messages
-# go to stderr (the caller silences with `2>$null`); the verify's own output is
-# discarded for the same reason.
+# Pipe bun's stdout (its install summary) to stderr -- the PowerShell-valid
+# equivalent of the POSIX twin's `>&2` (a literal `1>&2` is reserved) -- so install
+# progress stays visible without being captured into the `agent env` output the
+# profile function evals. bun's own progress/errors and the float's messages
+# already go to stderr (the caller silences with `2>$null`); the verify's output
+# is discarded for the same reason.
 $needInstall = -not (Test-Path (Join-Path $Snap 'node_modules'))
 if (-not $needInstall) {
     $ProxyFloat = Join-Path $Snap 'src\proxy_float.ts'
@@ -46,7 +47,7 @@ if ($needInstall) {
     $env:HUSKY = '0'
     Push-Location $Snap
     try {
-        & bun install --frozen-lockfile > $null
+        & bun install --frozen-lockfile | ForEach-Object { [Console]::Error.WriteLine($_) }
     } finally {
         Pop-Location
     }

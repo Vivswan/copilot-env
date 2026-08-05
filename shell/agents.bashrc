@@ -1,5 +1,6 @@
 # Agent commands -- source this from your shell rc (~/.bashrc / ~/.zshrc).
-# Must be compatible with both bash and zsh (POSIX constructs only).
+# Must be compatible with both bash and zsh (only constructs both shells
+# support; this is not plain POSIX sh).
 #
 # Pure runtime wiring: defines the `agent` lifecycle wrapper and exports the
 # proxy env. Prerequisites and the agent CLIs are installed by install.sh --

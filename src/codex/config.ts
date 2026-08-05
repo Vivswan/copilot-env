@@ -51,6 +51,7 @@ import {
   isCatalogFileUsable,
 } from "./catalog.ts";
 import { codexConfigPath, defaultCodexHome } from "./paths.ts";
+import { type CodexTomlRead, readCodexToml, saveCodexToml } from "./toml_io.ts";
 
 const logger = createStderrLogger();
 
@@ -421,21 +422,38 @@ function defaultConfig(): Record<string, unknown> {
 // or empty. A present-but-UNPARSEABLE file throws rather than letting the caller clobber a
 // config it could not read -- a hand-edit typo must never cost the user their whole
 // config.toml (mcp_servers, custom providers, model pins). Mirrors the Claude side's
-// loadSettings refuse-to-overwrite contract.
+// loadSettings refuse-to-overwrite contract. (Other read errors -- EISDIR, permission --
+// propagate raw from readCodexToml: fail loudly, don't overwrite blindly.)
 function loadOrCreateConfig(hostConfig: string): Record<string, unknown> {
-  let text: string;
-  try {
-    text = fs.readFileSync(hostConfig, "utf8");
-  } catch (e) {
-    if (isEnoent(e)) return defaultConfig();
-    throw e; // EISDIR / permission / etc. -- fail loudly, don't overwrite blindly
+  const read = readCodexToml(hostConfig);
+  switch (read.kind) {
+    case "absent":
+      return defaultConfig();
+    case "unparseable":
+      throw new Error(`${hostConfig} is not valid TOML; refusing to overwrite it (${read.error})`);
+    case "ok":
+      return read.doc;
+    default:
+      return assertNever(read);
   }
-  if (text.trim() === "") return defaultConfig();
+}
+
+/** Removal-path read shared by removeCodexProfile/removeCodexDefaultWiring: absent ->
+ *  null (nothing to remove), while a file that exists but cannot be read or parsed
+ *  throws -- these paths delete keys and write back, so they must never blind-write
+ *  over a config they could not fully read. */
+function readConfigForRemoval(configPath: string): Record<string, unknown> | null {
+  let read: CodexTomlRead;
   try {
-    return parse(text) as Record<string, unknown>;
+    read = readCodexToml(configPath);
   } catch (e) {
-    throw new Error(`${hostConfig} is not valid TOML; refusing to overwrite it (${errMessage(e)})`);
+    throw new Error(`${configPath} is not readable/valid TOML: ${errMessage(e)}`);
   }
+  if (read.kind === "absent") return null;
+  if (read.kind === "unparseable") {
+    throw new Error(`${configPath} is not readable/valid TOML: ${read.error}`);
+  }
+  return read.doc;
 }
 
 // Remove `key` from `$CODEX_HOME/.env` (any `export`-prefixed or duplicate
@@ -595,7 +613,7 @@ export function configureCodexConfig(
     doc.profiles = profilesTable;
   }
 
-  fs.writeFileSync(hostConfig, stringify(doc));
+  saveCodexToml(hostConfig, doc);
   if (!request.quiet) {
     logger.log(
       `  ✓ Codex config written → ${hostConfig}` +
@@ -721,14 +739,18 @@ export function syncCodexCatalogReference(): void {
     }
     if (!isCatalogFileUsable(catalogFile)) return;
     const configPath = codexConfigPath(effectiveCodexHome());
-    const doc = parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    const read = readCodexToml(configPath);
+    // Absent (Codex never wired) or unparseable: nothing to heal in place -- the
+    // next full managed write owns both cases.
+    if (read.kind !== "ok") return;
+    const doc = read.doc;
     if (doc.model_provider !== CODEX_PROVIDER_ID) return;
     if (doc.model_catalog_json !== undefined) return;
     doc.model_catalog_json = catalogFile;
-    fs.writeFileSync(configPath, stringify(doc));
+    saveCodexToml(configPath, doc);
   } catch {
-    // No config.toml (Codex never wired), unreadable TOML, or a write race:
-    // the next `agent codex`/`agent init` wiring writes the key anyway.
+    // An unreadable config (non-ENOENT) or a write race: the next
+    // `agent codex`/`agent init` wiring writes the key anyway.
   }
 }
 
@@ -893,13 +915,8 @@ function checkCodexConfig(): void {
  */
 export function removeCodexProfile(codexHome: string, name: ProfileName): void {
   const configPath = codexConfigPath(codexHome);
-  let doc: Record<string, unknown>;
-  try {
-    doc = parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
-  } catch (e) {
-    if (isEnoent(e)) return;
-    throw new Error(`${configPath} is not readable/valid TOML: ${errMessage(e)}`);
-  }
+  const doc = readConfigForRemoval(configPath);
+  if (doc === null) return;
   const providerId = codexProviderId(name);
   let changed = false;
   const providers = isRecord(doc.model_providers) ? doc.model_providers : {};
@@ -915,7 +932,7 @@ export function removeCodexProfile(codexHome: string, name: ProfileName): void {
     changed = true;
     if (Object.keys(profiles).length === 0) delete doc.profiles;
   }
-  if (changed) fs.writeFileSync(configPath, stringify(doc));
+  if (changed) saveCodexToml(configPath, doc);
 }
 
 /**
@@ -933,13 +950,7 @@ export function removeCodexProfile(codexHome: string, name: ProfileName): void {
  */
 export function removeCodexDefaultWiring(codexHome: string): void {
   const configPath = codexConfigPath(codexHome);
-  let doc: Record<string, unknown> | null;
-  try {
-    doc = parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
-  } catch (e) {
-    if (isEnoent(e)) doc = null;
-    else throw new Error(`${configPath} is not readable/valid TOML: ${errMessage(e)}`);
-  }
+  const doc = readConfigForRemoval(configPath);
   if (doc !== null) {
     let changed = false;
     const providers = isRecord(doc.model_providers) ? doc.model_providers : {};
@@ -966,7 +977,7 @@ export function removeCodexDefaultWiring(codexHome: string): void {
       delete doc.web_search;
       changed = true;
     }
-    if (changed) fs.writeFileSync(configPath, stringify(doc));
+    if (changed) saveCodexToml(configPath, doc);
   }
   removeEnvKey(path.join(codexHome, ".env"), DIRECT_ENV_KEY);
 }

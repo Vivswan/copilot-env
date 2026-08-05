@@ -83,10 +83,11 @@ export function markInference(now: number): void {
 }
 
 /** The persisted mark (epoch ms), or 0 when absent/unreadable. The out-of-process view of
- *  lastObservedInferenceMs, read by `agent health`. */
-export function persistedInferenceMs(): number {
+ *  lastObservedInferenceMs, read by `agent health` -- per daemon, like the clear below, so
+ *  it takes the profile whose activity file to read (null = the effective home's). */
+export function persistedInferenceMs(profile: Profile = null): number {
   try {
-    const value = new CopilotApiConfig(new CopilotApiPaths().activityFile).load()[
+    const value = new CopilotApiConfig(new CopilotApiPaths(profile).activityFile).load()[
       LAST_INFERENCE_KEY
     ];
     return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;

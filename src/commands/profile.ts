@@ -25,7 +25,7 @@ import { allProfileNames, CopilotEnvState, type ProfileMode } from "../copilot_a
 import { CODEX_IDENTITY_NAME } from "../copilot_api/integration_identity.ts";
 import { profileHome, profileHomeNames } from "../copilot_api/paths.ts";
 import { openaiBaseUrl, wiringPortFor } from "../copilot_api/port.ts";
-import { type ProfileName, parseProfileName, profileLabel } from "../copilot_api/profile.ts";
+import { type ProfileName, parseProfileFlag, profileLabel } from "../copilot_api/profile.ts";
 import { cyan, gray, green, yellow } from "../utils/ansi.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { authenticate, parseAcquisition } from "./auth.ts";
@@ -380,10 +380,14 @@ export async function runProfile(args: ProfileArgs): Promise<void> {
       "--provider/--set only apply to --add (re-auth an existing profile with `agent auth --profile <name>`)",
     );
   }
-  if (args.add !== undefined) return runAdd(parseProfileName(args.add), args);
-  if (args.del !== undefined) return runDel(parseProfileName(args.del));
-  if (args.check !== undefined) return runCheck(parseProfileName(args.check));
-  if (args.settingsFor !== undefined) return runSettingsFor(parseProfileName(args.settingsFor));
+  const add = parseProfileFlag(args.add);
+  if (add !== null) return runAdd(add, args);
+  const del = parseProfileFlag(args.del);
+  if (del !== null) return runDel(del);
+  const check = parseProfileFlag(args.check);
+  if (check !== null) return runCheck(check);
+  const settingsFor = parseProfileFlag(args.settingsFor);
+  if (settingsFor !== null) return runSettingsFor(settingsFor);
   if (args.sync) return runSync();
   return runList();
 }

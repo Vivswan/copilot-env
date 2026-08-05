@@ -62,6 +62,14 @@ export function parseProfileName(name: string): ProfileName {
   return name as ProfileName;
 }
 
+/** Parse an optional `--profile` flag value at a command boundary: an absent
+ *  flag (`undefined`) means the default profile (`null`); anything supplied --
+ *  the empty string included -- must be a valid name or `parseProfileName`
+ *  throws. The one place the undefined-means-default rule is spelled. */
+export function parseProfileFlag(raw: string | undefined): Profile {
+  return raw === undefined ? null : parseProfileName(raw);
+}
+
 /** Human label for messages: `default` or `profile 'work'`. */
 export function profileLabel(profile: Profile): string {
   return profile === null ? "default" : `profile '${profile}'`;

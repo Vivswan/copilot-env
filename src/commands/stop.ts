@@ -2,7 +2,7 @@
 import { consola } from "consola";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { profileHomeNames } from "../copilot_api/paths.ts";
-import { type Profile, parseProfileName, profileLabel } from "../copilot_api/profile.ts";
+import { type Profile, parseProfileFlag, profileLabel } from "../copilot_api/profile.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 
 export interface StopArgs {
@@ -33,7 +33,7 @@ export async function runStop(args: StopArgs = {}): Promise<void> {
   if (args.all && args.profile !== undefined) {
     throw new Error("--all stops every daemon; it does not combine with --profile");
   }
-  const named: Profile = args.profile === undefined ? null : parseProfileName(args.profile);
+  const named: Profile = parseProfileFlag(args.profile);
   const profiles: Profile[] = args.all ? [null, ...profileHomeNames()] : [named];
   let stoppedAny = false;
   for (const profile of profiles) {

@@ -38,7 +38,7 @@ import {
   printLogTail,
   terminatePid,
 } from "../copilot_api/process.ts";
-import { type Profile, parseProfileName, profileLabel } from "../copilot_api/profile.ts";
+import { type Profile, parseProfileFlag, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import {
   installedProxyVersion,
@@ -124,7 +124,7 @@ export interface StartFlags {
  * The launch-only knobs (`dryRun`/`force`/`port`) live on the launch variant alone, so
  * `--check --record-event` (or a probe combined with a launch flag) is unrepresentable
  * past the boundary parse and the dispatch order in runStart is not load-bearing.
- * `profile` is already PARSED (parseProfileName at the boundary, like McpAction), so an
+ * `profile` is already PARSED (parseProfileFlag at the boundary, like McpAction), so an
  * invalid name errors before any action runs and runStart never re-validates.
  */
 export type StartAction =
@@ -144,7 +144,7 @@ export function parseStartAction(flags: StartFlags): StartAction {
       "--check and --record-event are mutually exclusive and cannot combine with --dry-run/--port/--force",
     );
   }
-  const profile: Profile = flags.profile === undefined ? null : parseProfileName(flags.profile);
+  const profile: Profile = parseProfileFlag(flags.profile);
   if (flags.check) return { kind: "check", profile };
   if (flags.recordEvent) return { kind: "record-event", profile };
   return {

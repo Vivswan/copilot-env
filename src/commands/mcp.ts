@@ -13,7 +13,7 @@ import {
 } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome } from "../claude/paths.ts";
 import { CopilotEnvConfig, configDefaultBoolean } from "../copilot_api/env_config.ts";
-import { type Profile, parseProfileName } from "../copilot_api/profile.ts";
+import { type Profile, parseProfileFlag } from "../copilot_api/profile.ts";
 import { runMcpServer } from "../mcp/server.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 
@@ -51,13 +51,13 @@ function parseMcpAction(args: McpArgs): McpAction {
     }
     return { kind: "status" };
   }
-  const profile = args.profile?.trim() ?? "";
-  if (args.profile !== undefined && profile === "") {
+  const profile = args.profile?.trim();
+  if (profile === "") {
     // A supplied-but-blank --profile (e.g. an unset shell var) must never silently
     // serve the default credential; `profile: null` is only reachable via an ABSENT flag.
     throw new Error("--profile expects a profile name; omit it for the default credential");
   }
-  const name: Profile = profile === "" ? null : parseProfileName(profile);
+  const name: Profile = parseProfileFlag(profile);
   const model = args.model?.trim() ?? "";
   if (args.model !== undefined && model === "") {
     throw new Error("--model expects a non-empty model id");

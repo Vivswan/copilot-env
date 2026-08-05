@@ -42,7 +42,7 @@ import {
 } from "../copilot_api/gh_cli.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { resolveCopilotApiEntry } from "../copilot_api/process.ts";
-import { type Profile, parseProfileName, profileLabel } from "../copilot_api/profile.ts";
+import { type Profile, parseProfileFlag, profileLabel } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -540,7 +540,7 @@ export async function runAuth(args: AuthArgs, catalogDeps?: CodexCatalogDeps): P
     runList();
     return;
   }
-  const profile: Profile = args.profile === undefined ? null : parseProfileName(args.profile);
+  const profile: Profile = parseProfileFlag(args.profile);
   if (args.printProxyToken) {
     await runPrintProxyToken(profile, catalogDeps);
     return;

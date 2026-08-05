@@ -1,10 +1,9 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DIRECT_HELPER_NAME } from "../src/claude/config.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
-
 import {
   buildHealthJson,
   exitCodeFor,
@@ -46,6 +45,7 @@ import {
   type RuntimeFacts,
 } from "../src/health/probe.ts";
 import type { CheckResult, CheckStatus, HealthScope } from "../src/health/types.ts";
+import { envSnapshot, writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -509,34 +509,18 @@ test("gatherFacts derives proxy.floatSkips from the float's own predicate", asyn
   // predicate's own edge cases (profile homes, proxy wiring) live in
   // proxy_float.test.ts; this pins the fact-gathering seam.
   const root = mkdtempSync(join(tmpdir(), "copilot-health-float-"));
-  const savedHome = process.env.COPILOT_API_HOME;
-  const savedPin = process.env.COPILOT_API_VERSION;
+  const restoreEnv = envSnapshot();
   process.env.COPILOT_API_HOME = join(root, "api-home"); // isolated: no profile homes
   delete process.env.COPILOT_API_VERSION; // an inherited pin would force the float
   try {
     const codexHome = join(root, "codex-home");
-    mkdirSync(codexHome, { recursive: true });
-    writeFileSync(
-      join(codexHome, "config.toml"),
-      [
-        'model_provider = "copilot-env"',
-        "",
-        "[model_providers.copilot-env]",
-        'base_url = "https://api.githubcopilot.com"',
-        "",
-      ].join("\n"),
-    );
+    writeCodexConfigToml(codexHome, { baseUrl: "https://api.githubcopilot.com" });
     const claudeHome = join(root, "claude-home");
-    mkdirSync(claudeHome, { recursive: true });
-    const claudeSettings = (baseUrl: string) =>
-      JSON.stringify({
-        "apiKeyHelper": join(claudeHome, DIRECT_HELPER_NAME),
-        "env": { "ANTHROPIC_BASE_URL": baseUrl },
-      });
-    writeFileSync(
-      join(claudeHome, "settings.json"),
-      claudeSettings("https://api.githubcopilot.com"),
-    );
+    const apiKeyHelper = join(claudeHome, DIRECT_HELPER_NAME);
+    writeClaudeSettings(claudeHome, {
+      apiKeyHelper,
+      baseUrl: "https://api.githubcopilot.com",
+    });
 
     const overrides = {
       resolvePort: () => "4141",
@@ -550,14 +534,11 @@ test("gatherFacts derives proxy.floatSkips from the float's own predicate", asyn
 
     // A mixed Claude config (direct helper, proxy base URL) floats again, so
     // the bounds are enforced again.
-    writeFileSync(join(claudeHome, "settings.json"), claudeSettings("http://127.0.0.1:4141"));
+    writeClaudeSettings(claudeHome, { apiKeyHelper, baseUrl: "http://127.0.0.1:4141" });
     const mixed = await gatherFacts("proxy", {}, overrides);
     expect(mixed.proxy?.floatSkips).toBe(false);
   } finally {
-    if (savedHome === undefined) delete process.env.COPILOT_API_HOME;
-    else process.env.COPILOT_API_HOME = savedHome;
-    if (savedPin === undefined) delete process.env.COPILOT_API_VERSION;
-    else process.env.COPILOT_API_VERSION = savedPin;
+    restoreEnv();
     rmSync(root, { recursive: true, force: true });
   }
 });

@@ -1,6 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -11,21 +10,20 @@ import {
   removeClaudeMcpRegistration,
 } from "../src/claude/mcp_registration.ts";
 import { agentLauncherCommand } from "../src/utils/root.ts";
+import { envSnapshot, removeDir, tmpDir } from "./helpers.ts";
 
-const SAVED_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
+const restoreEnv = envSnapshot();
 let dir = "";
 
 afterEach(() => {
-  if (SAVED_CONFIG_DIR === undefined) delete process.env.CLAUDE_CONFIG_DIR;
-  else process.env.CLAUDE_CONFIG_DIR = SAVED_CONFIG_DIR;
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  dir = removeDir(dir);
 });
 
+// The registration lives in CLAUDE_CONFIG_DIR's .claude.json; point it at the temp
+// dir itself (no other homes involved).
 function tmpConfigDir(): string {
-  dir = mkdtempSync(join(tmpdir(), "copilot-mcpreg-"));
+  dir = tmpDir("copilot-mcpreg-");
   process.env.CLAUDE_CONFIG_DIR = dir;
   return dir;
 }

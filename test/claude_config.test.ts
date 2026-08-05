@@ -1,14 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -30,40 +21,25 @@ import { runMcp } from "../src/commands/mcp.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { copilotApiResolvePort } from "../src/copilot_api/port.ts";
+import { envSnapshot, isolateAgentHomes, removeDir } from "./helpers.ts";
 
 const WIN = process.platform === "win32";
 
-const SAVED = {
-  HOME: process.env.HOME,
-  CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
-  COPILOT_API_HOME: process.env.COPILOT_API_HOME,
-  GH_TOKEN: process.env.GH_TOKEN,
-  GITHUB_TOKEN: process.env.GITHUB_TOKEN,
-};
+const restoreEnv = envSnapshot();
 let dir = "";
 
-function restore(key: keyof typeof SAVED): void {
-  if (SAVED[key] === undefined) delete process.env[key];
-  else process.env[key] = SAVED[key];
-}
-
 afterEach(() => {
-  for (const k of Object.keys(SAVED) as (keyof typeof SAVED)[]) restore(k);
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  dir = removeDir(dir);
 });
 
 // A temp Claude home, exported via CLAUDE_CONFIG_DIR (the only home knob now),
 // with an isolated proxy home so proxy writes (which resolve the proxy
 // endpoint/token) don't touch any real state.
 function tmpHome(): string {
-  dir = mkdtempSync(join(tmpdir(), "copilot-claude-"));
-  process.env.COPILOT_API_HOME = join(dir, "proxy-home");
-  const claudeHome = join(dir, ".claude");
-  process.env.CLAUDE_CONFIG_DIR = claudeHome;
-  return claudeHome;
+  const homes = isolateAgentHomes("copilot-claude-");
+  dir = homes.dir;
+  return homes.claudeHome;
 }
 
 function readSettings(home: string): Record<string, unknown> {

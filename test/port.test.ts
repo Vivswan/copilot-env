@@ -1,7 +1,4 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import {
   DEFAULT_MAX_PROXY_PORT,
@@ -14,22 +11,18 @@ import {
   proxyLoopbackOrigin,
   proxyPortInRange,
 } from "../src/copilot_api/port.ts";
+import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
 
-const SAVED_HOME = process.env.COPILOT_API_HOME;
+const restoreEnv = envSnapshot();
 let dir = "";
 
 afterEach(() => {
-  if (SAVED_HOME === undefined) delete process.env.COPILOT_API_HOME;
-  else process.env.COPILOT_API_HOME = SAVED_HOME;
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  dir = removeDir(dir);
 });
 
 function tmpHome(): void {
-  dir = mkdtempSync(join(tmpdir(), "copilot-port-"));
-  process.env.COPILOT_API_HOME = dir;
+  dir = isolateProxyHome("copilot-port-");
 }
 
 test("the range defaults to [1024, 65535] and excludes privileged/out-of-range ports", () => {

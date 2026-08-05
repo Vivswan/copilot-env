@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/config.ts";
+import { writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
 
 // A throwaway COPILOT_API_HOME so the runtime probe sees no tracked pid/port. We pin the
 // default proxy port to 4199 via config (isolated from any real proxy on 4141 on this host).
@@ -16,23 +17,39 @@ function isolatedEnv(extra: Record<string, string> = {}): Record<string, string>
 function isolatedProxyEnv(extra: Record<string, string> = {}): Record<string, string> {
   const root = mkdtempSync(join(tmpdir(), "copilot-health-proxy-"));
   const codexHome = join(root, ".codex");
-  mkdirSync(codexHome, { recursive: true });
-  writeFileSync(
-    join(codexHome, "config.toml"),
-    [
-      'model_provider = "copilot-env"',
-      "",
-      "[model_providers.copilot-env]",
-      // Production shape: the writer emits 127.0.0.1 (not localhost) so the agent reaches the
-      // IPv4 proxy on Windows. The matcher accepts both; the other fixture keeps a localhost
-      // case to prove backward-compat acceptance.
-      'base_url = "http://127.0.0.1:4199/v1"',
-      'env_key = "OPENAI_API_KEY"',
-      "",
-    ].join("\n"),
-  );
+  // Production shape: the writer emits 127.0.0.1 (not localhost) so the agent reaches the
+  // IPv4 proxy on Windows. The matcher accepts both; the other fixture keeps a localhost
+  // case to prove backward-compat acceptance.
+  writeCodexConfigToml(codexHome, {
+    baseUrl: "http://127.0.0.1:4199/v1",
+    envKey: "OPENAI_API_KEY",
+  });
   writeFileSync(join(codexHome, ".env"), "OPENAI_API_KEY=test-key\n");
   return isolatedEnv({ CODEX_HOME: codexHome, ...extra });
+}
+
+// Pure help screens are read-only and deterministic, so each unique argv is spawned
+// once and its output shared by every test that asserts on it (a cold `bun src/cli.ts`
+// spawn costs ~250ms; the suite asserts on the same screens many times over).
+const HELP_CACHE = new Map<string, { exitCode: number | null; stdout: string; output: string }>();
+
+function helpScreen(...args: string[]): {
+  exitCode: number | null;
+  stdout: string;
+  output: string;
+} {
+  const key = args.join(" ");
+  const cached = HELP_CACHE.get(key);
+  if (cached) return cached;
+  const proc = Bun.spawnSync(["bun", "src/cli.ts", ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, CONSOLA_LEVEL: "5" },
+  });
+  const stdout = proc.stdout.toString();
+  const entry = { exitCode: proc.exitCode, stdout, output: stdout + proc.stderr.toString() };
+  HELP_CACHE.set(key, entry);
+  return entry;
 }
 
 // End-to-end smoke test: the Commander CLI must load its whole import graph and
@@ -43,14 +60,9 @@ function isolatedProxyEnv(extra: Record<string, string> = {}): Record<string, st
 // when it detects a "test" environment, as `bun test` is); Commander prints its
 // own help to stdout directly, independent of consola.
 test("`cli.ts --help` loads the CLI and exits 0", () => {
-  const proc = Bun.spawnSync(["bun", "src/cli.ts", "--help"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CONSOLA_LEVEL: "5" },
-  });
-  const output = proc.stdout.toString() + proc.stderr.toString();
+  const { exitCode, output } = helpScreen("--help");
 
-  expect(proc.exitCode).toBe(0);
+  expect(exitCode).toBe(0);
   expect(output).toContain("start");
   expect(output).toContain("shell");
   expect(output).toContain("uninstall");
@@ -64,17 +76,12 @@ test("`cli.ts --help` loads the CLI and exits 0", () => {
 });
 
 test("cli.ts mcp --help exposes the server flags; --remove rejects serve-only flags", () => {
-  const help = Bun.spawnSync(["bun", "src/cli.ts", "mcp", "--help"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CONSOLA_LEVEL: "5" },
-  });
-  const output = help.stdout.toString() + help.stderr.toString();
+  const help = helpScreen("mcp", "--help");
   expect(help.exitCode).toBe(0);
-  expect(output).toContain("--serve");
-  expect(output).toContain("--remove");
-  expect(output).toContain("--profile");
-  expect(output).toContain("--model");
+  expect(help.output).toContain("--serve");
+  expect(help.output).toContain("--remove");
+  expect(help.output).toContain("--profile");
+  expect(help.output).toContain("--model");
 
   const conflict = Bun.spawnSync(["bun", "src/cli.ts", "mcp", "--remove", "--model", "x"], {
     stdout: "pipe",
@@ -134,28 +141,18 @@ test("cli.ts mcp --serve --profile '' hard-fails instead of serving the default 
 
 for (const args of [["shell"]] as const) {
   test(`cli.ts ${args.join(" ")} --help loads command help and exits 0`, () => {
-    const proc = Bun.spawnSync(["bun", "src/cli.ts", ...args, "--help"], {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env, CONSOLA_LEVEL: "5" },
-    });
-    const output = proc.stdout.toString() + proc.stderr.toString();
+    const { exitCode, output } = helpScreen(...args, "--help");
 
-    expect(proc.exitCode).toBe(0);
+    expect(exitCode).toBe(0);
     expect(output).toContain(args[0]);
   });
 }
 
 for (const args of [["codex"], ["claude"]] as const) {
   test(`cli.ts ${args.join(" ")} --help exposes provider modes`, () => {
-    const proc = Bun.spawnSync(["bun", "src/cli.ts", ...args, "--help"], {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env, CONSOLA_LEVEL: "5" },
-    });
-    const output = proc.stdout.toString() + proc.stderr.toString();
+    const { exitCode, output } = helpScreen(...args, "--help");
 
-    expect(proc.exitCode).toBe(0);
+    expect(exitCode).toBe(0);
     expect(output).toContain("--proxy");
     expect(output).toContain("--direct");
   });
@@ -168,41 +165,18 @@ test("codex exposes and runs check mode", () => {
   const otherHome = join(root, "other-codex");
   const noneHome = join(root, "none-codex");
   const unsetHome = join(root, "unset-codex");
-  mkdirSync(codexHome, { recursive: true });
-  mkdirSync(directHome, { recursive: true });
-  mkdirSync(otherHome, { recursive: true });
   mkdirSync(noneHome, { recursive: true });
+  mkdirSync(otherHome, { recursive: true });
   mkdirSync(unsetHome, { recursive: true });
-  writeFileSync(
-    join(codexHome, "config.toml"),
-    [
-      'model_provider = "copilot-env"',
-      "",
-      "[model_providers.copilot-env]",
-      'base_url = "http://localhost:4199/v1"',
-      'env_key = "OPENAI_API_KEY"',
-      "",
-    ].join("\n"),
-  );
-  writeFileSync(
-    join(directHome, "config.toml"),
-    [
-      'model_provider = "copilot-env"',
-      "",
-      "[model_providers.copilot-env]",
-      'base_url = "https://api.githubcopilot.com"',
-      "",
-    ].join("\n"),
-  );
+  writeCodexConfigToml(codexHome, {
+    baseUrl: "http://localhost:4199/v1",
+    envKey: "OPENAI_API_KEY",
+  });
+  writeCodexConfigToml(directHome, { baseUrl: "https://api.githubcopilot.com" });
   writeFileSync(join(otherHome, "config.toml"), 'model_provider = "openai"\n');
   writeFileSync(join(unsetHome, "config.toml"), "[analytics]\nenabled = false\n");
 
-  const help = Bun.spawnSync(["bun", "src/cli.ts", "codex", "--help"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CONSOLA_LEVEL: "5" },
-  });
-  const helpOut = help.stdout.toString() + help.stderr.toString();
+  const helpOut = helpScreen("codex", "--help").output;
   expect(helpOut).toContain("--check");
   // The per-host farm flags live on `codex` too, not a separate command.
   expect(helpOut).toContain("--host");
@@ -259,29 +233,12 @@ test("claude exposes and runs check mode", () => {
   const proxyHome = join(root, "proxy");
   const otherHome = join(root, "other");
   const noneHome = join(root, "none"); // no settings.json at all
-  mkdirSync(directHome, { recursive: true });
-  mkdirSync(proxyHome, { recursive: true });
-  mkdirSync(otherHome, { recursive: true });
   mkdirSync(noneHome, { recursive: true });
-  writeFileSync(
-    join(directHome, "settings.json"),
-    JSON.stringify({ apiKeyHelper: join(directHome, DIRECT_HELPER_NAME) }),
-  );
-  writeFileSync(
-    join(proxyHome, "settings.json"),
-    JSON.stringify({ apiKeyHelper: join(proxyHome, PROXY_HELPER_NAME) }),
-  );
-  writeFileSync(
-    join(otherHome, "settings.json"),
-    JSON.stringify({ apiKeyHelper: "/opt/x/helper.sh" }),
-  );
+  writeClaudeSettings(directHome, { apiKeyHelper: join(directHome, DIRECT_HELPER_NAME) });
+  writeClaudeSettings(proxyHome, { apiKeyHelper: join(proxyHome, PROXY_HELPER_NAME) });
+  writeClaudeSettings(otherHome, { apiKeyHelper: "/opt/x/helper.sh" });
 
-  const help = Bun.spawnSync(["bun", "src/cli.ts", "claude", "--help"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CONSOLA_LEVEL: "5" },
-  });
-  expect(help.stdout.toString() + help.stderr.toString()).toContain("--check");
+  expect(helpScreen("claude", "--help").output).toContain("--check");
 
   const runCheck = (home: string) =>
     Bun.spawnSync(["bun", "src/cli.ts", "claude", "--check"], {
@@ -318,15 +275,10 @@ test("claude exposes and runs check mode", () => {
 });
 
 test("init configures both agents and rejects --direct + --proxy", () => {
-  const help = Bun.spawnSync(["bun", "src/cli.ts", "init", "--help"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CONSOLA_LEVEL: "5" },
-  });
-  const helpOut = help.stdout.toString() + help.stderr.toString();
+  const help = helpScreen("init", "--help");
   expect(help.exitCode).toBe(0);
-  expect(helpOut).toContain("--direct");
-  expect(helpOut).toContain("--proxy");
+  expect(help.output).toContain("--direct");
+  expect(help.output).toContain("--proxy");
 
   // --proxy forces BOTH agents to the proxy (no probe); isolate the homes so we
   // never touch the real ~/.codex or ~/.claude.
@@ -404,41 +356,26 @@ test("codex --mobile refuses to run (non-TTY, or unsupported platform)", () => {
 });
 
 test("the launcher / CLI-install flags live on shell, not init", () => {
-  const shell = Bun.spawnSync(["bun", "src/cli.ts", "shell", "--help"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CONSOLA_LEVEL: "5" },
-  });
-  const init = Bun.spawnSync(["bun", "src/cli.ts", "init", "--help"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CONSOLA_LEVEL: "5" },
-  });
+  const shell = helpScreen("shell", "--help");
+  const init = helpScreen("init", "--help");
   expect(shell.exitCode).toBe(0);
   expect(init.exitCode).toBe(0);
-  const shellOut = shell.stdout.toString() + shell.stderr.toString();
-  const initOut = init.stdout.toString() + init.stderr.toString();
   for (const flag of ["--launchers", "--clis"]) {
-    expect(shellOut).toContain(flag);
-    expect(initOut).not.toContain(flag);
+    expect(shell.output).toContain(flag);
+    expect(init.output).not.toContain(flag);
   }
   // init keeps the agent-config flags; shell does not configure agents. The
   // credential flags moved to `agent auth`, so init no longer carries --gh-token.
-  expect(initOut).toContain("--direct");
-  expect(initOut).not.toContain("--gh-token");
-  expect(shellOut).not.toContain("--gh-token");
+  expect(init.output).toContain("--direct");
+  expect(init.output).not.toContain("--gh-token");
+  expect(shell.output).not.toContain("--gh-token");
 });
 
 test("uninstall: help surfaces the flags; a non-TTY run without --yes refuses", () => {
-  const help = Bun.spawnSync(["bun", "src/cli.ts", "uninstall", "--help"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CONSOLA_LEVEL: "5" },
-  });
+  const help = helpScreen("uninstall", "--help");
   expect(help.exitCode).toBe(0);
-  const helpOutput = help.stdout.toString() + help.stderr.toString();
   for (const flag of ["--yes", "--dry-run", "--force"]) {
-    expect(helpOutput).toContain(flag);
+    expect(help.output).toContain(flag);
   }
 
   // Spawned without a TTY and without --yes: the confirmation guard must bail
@@ -454,12 +391,7 @@ test("uninstall: help surfaces the flags; a non-TTY run without --yes refuses", 
 });
 
 test("shell --help surfaces the install/launcher flags", () => {
-  const help = Bun.spawnSync(["bun", "src/cli.ts", "shell", "--help"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CONSOLA_LEVEL: "5" },
-  });
-  const helpOutput = help.stdout.toString() + help.stderr.toString();
+  const help = helpScreen("shell", "--help");
   expect(help.exitCode).toBe(0);
   for (const flag of [
     "--launchers",
@@ -469,7 +401,7 @@ test("shell --help surfaces the install/launcher flags", () => {
     "--no-prereqs",
     "--remove",
   ]) {
-    expect(helpOutput).toContain(flag);
+    expect(help.output).toContain(flag);
   }
 });
 
@@ -500,12 +432,7 @@ test("shell --clis --no-prereqs: verify-only runs; --cooldown is rejected, never
 }, 90_000);
 
 test("the merged commands are gone; --gh-token is off the per-agent commands", () => {
-  const rootHelp = Bun.spawnSync(["bun", "src/cli.ts", "--help"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CONSOLA_LEVEL: "5" },
-  });
-  const rootOut = rootHelp.stdout.toString() + rootHelp.stderr.toString();
+  const rootOut = helpScreen("--help").output;
   // setup-clis / setup-shell / setup-launchers were folded into init/shell.
   for (const stale of ["setup-clis", "setup-shell", "setup-launchers"]) {
     expect(rootOut).not.toContain(stale);
@@ -520,40 +447,26 @@ test("the merged commands are gone; --gh-token is off the per-agent commands", (
 
   // --gh-token now lives only on init, not on codex/claude.
   for (const cmd of ["codex", "claude"] as const) {
-    const help = Bun.spawnSync(["bun", "src/cli.ts", cmd, "--help"], {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env, CONSOLA_LEVEL: "5" },
-    });
+    const help = helpScreen(cmd, "--help");
     expect(help.exitCode).toBe(0);
-    expect(help.stdout.toString() + help.stderr.toString()).not.toContain("--gh-token");
+    expect(help.output).not.toContain("--gh-token");
   }
 });
 
 test("--full-help prints the overview plus every subcommand's help", () => {
-  const proc = Bun.spawnSync(["bun", "src/cli.ts", "--full-help"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CONSOLA_LEVEL: "5" },
-  });
+  const proc = helpScreen("--full-help");
   expect(proc.exitCode).toBe(0);
-  const out = proc.stdout.toString();
   // Top-level overview + a sampling of subcommand help sections.
   for (const needle of ["agent init", "agent shell", "agent start", "agent codex", "--clis"]) {
-    expect(out).toContain(needle);
+    expect(proc.stdout).toContain(needle);
   }
 });
 
 test("health --help surfaces --scope and --json", () => {
-  const help = Bun.spawnSync(["bun", "src/cli.ts", "health", "--help"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CONSOLA_LEVEL: "5" },
-  });
-  const out = help.stdout.toString() + help.stderr.toString();
+  const help = helpScreen("health", "--help");
   expect(help.exitCode).toBe(0);
-  expect(out).toContain("--scope");
-  expect(out).toContain("--json");
+  expect(help.output).toContain("--scope");
+  expect(help.output).toContain("--json");
 });
 
 test("health --scope runtime exits 1 when no proxy is running", () => {
@@ -697,10 +610,7 @@ test("health --scope claude covers only Claude wiring", () => {
   const home = mkdtempSync(join(tmpdir(), "copilot-claude-scope-"));
   // Proxy wiring (the proxy is Claude's default; CI has no gh/direct) =>
   // providerMode "proxy", status ok.
-  writeFileSync(
-    join(home, "settings.json"),
-    JSON.stringify({ apiKeyHelper: join(home, PROXY_HELPER_NAME) }),
-  );
+  writeClaudeSettings(home, { apiKeyHelper: join(home, PROXY_HELPER_NAME) });
   const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", "claude", "--json"], {
     stdout: "pipe",
     stderr: "pipe",
@@ -716,28 +626,18 @@ test("health --scope claude covers only Claude wiring", () => {
 // --- autoupdate management flags --------------------------------------------
 
 test("start --help documents its flags including --force", () => {
-  const help = Bun.spawnSync(["bun", "src/cli.ts", "start", "--help"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CONSOLA_LEVEL: "5" },
-  });
-  const out = help.stdout.toString() + help.stderr.toString();
+  const help = helpScreen("start", "--help");
   expect(help.exitCode).toBe(0);
   for (const flag of ["--dry-run", "--port", "--record-event", "--check", "--force"]) {
-    expect(out).toContain(flag);
+    expect(help.output).toContain(flag);
   }
 });
 
 test("update --help documents the autoupdate flags alongside the manual ones", () => {
-  const help = Bun.spawnSync(["bun", "src/cli.ts", "update", "--help"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CONSOLA_LEVEL: "5" },
-  });
-  const out = help.stdout.toString() + help.stderr.toString();
+  const help = helpScreen("update", "--help");
   expect(help.exitCode).toBe(0);
   for (const flag of ["--auto", "--no-auto", "--auto-status", "--check", "--force"]) {
-    expect(out).toContain(flag);
+    expect(help.output).toContain(flag);
   }
 });
 

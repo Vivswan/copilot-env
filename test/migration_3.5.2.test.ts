@@ -1,6 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { configureClaudeConfig, WEBSEARCH_DENY_RULE } from "../src/claude/config.ts";
@@ -9,37 +8,24 @@ import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { migration } from "../src/migrations/3.5.2.ts";
+import { envSnapshot, isolateAgentHomes, removeDir } from "./helpers.ts";
 
 // The 3.5.2 migration wires the web-search pair (MCP registration + WebSearch deny)
 // into existing DIRECT Claude installs, which only rewire on init/claude/profile and
 // would otherwise never gain it from a plain `agent update`.
-const SAVED = {
-  HOME: process.env.HOME,
-  CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
-  COPILOT_API_HOME: process.env.COPILOT_API_HOME,
-};
+const restoreEnv = envSnapshot();
 let dir = "";
 
 afterEach(() => {
-  for (const [k, v] of Object.entries(SAVED)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
-  }
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  dir = removeDir(dir);
 });
 
 /** A temp HOME with Claude wired the pre-3.5.3 way: `mode`, no pair artifacts. */
 function isolate(mode: "direct" | "proxy"): string {
-  dir = mkdtempSync(join(tmpdir(), "copilot-mig352-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "proxy-home");
-  mkdirSync(join(dir, "proxy-home"), { recursive: true });
-  const claudeHome = join(dir, ".claude");
-  process.env.CLAUDE_CONFIG_DIR = claudeHome;
-  mkdirSync(claudeHome, { recursive: true });
+  const homes = isolateAgentHomes("copilot-mig352-", { mkdirs: true });
+  dir = homes.dir;
+  const claudeHome = homes.claudeHome;
   new Credential().store("gh-token", "gho_x");
   configureClaudeConfig(claudeHome, mode, { quiet: true });
   // A CURRENT write applies the pair itself; strip it to simulate a pre-3.5.3 install.
@@ -92,12 +78,9 @@ test("wire-mcp false makes the migration a no-op", async () => {
 });
 
 test("a foreign (unmanaged) settings.json is never touched", async () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-mig352-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "proxy-home");
-  const claudeHome = join(dir, ".claude");
-  process.env.CLAUDE_CONFIG_DIR = claudeHome;
-  mkdirSync(claudeHome, { recursive: true });
+  const homes = isolateAgentHomes("copilot-mig352-", { mkdirs: true });
+  dir = homes.dir;
+  const claudeHome = homes.claudeHome;
   const foreign = `${JSON.stringify({ apiKeyHelper: "/somewhere/else.sh" }, null, 2)}\n`;
   writeFileSync(join(claudeHome, "settings.json"), foreign);
 

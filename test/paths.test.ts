@@ -3,15 +3,12 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { CopilotApiPaths, DEFAULT_HOME } from "../src/copilot_api/paths.ts";
 import { getSanitizedHostname } from "../src/utils/hostname.ts";
+import { envSnapshot } from "./helpers.ts";
 
-const SAVED_HOME = process.env.COPILOT_API_HOME;
+const restoreEnv = envSnapshot();
 
 afterEach(() => {
-  if (SAVED_HOME === undefined) {
-    delete process.env.COPILOT_API_HOME;
-  } else {
-    process.env.COPILOT_API_HOME = SAVED_HOME;
-  }
+  restoreEnv();
 });
 
 test("DEFAULT_HOME mirrors the proxy's default data dir", () => {

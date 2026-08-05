@@ -1,6 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse, stringify } from "smol-toml";
 
@@ -8,38 +7,24 @@ import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { migration } from "../src/migrations/3.3.20.ts";
+import { envSnapshot, isolateAgentHomes, removeDir } from "./helpers.ts";
 
 // The 3.3.20 migration removes the previously always-on Codex model catalog
 // (now opt-in): the generated JSON, the config.toml reference, and the refresh
 // throttle state. It has filesystem side effects, so it is isolated under temp
 // homes.
-const SAVED = {
-  HOME: process.env.HOME,
-  CODEX_HOME: process.env.CODEX_HOME,
-  COPILOT_API_HOME: process.env.COPILOT_API_HOME,
-};
+const restoreEnv = envSnapshot();
 let dir = "";
 
 afterEach(() => {
-  for (const [k, v] of Object.entries(SAVED)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
-  }
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  dir = removeDir(dir);
 });
 
 function isolate(): string {
-  dir = mkdtempSync(join(tmpdir(), "copilot-mig3320-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "proxy-home");
-  mkdirSync(join(dir, "proxy-home"), { recursive: true });
-  const codexHome = join(dir, ".codex");
-  process.env.CODEX_HOME = codexHome;
-  mkdirSync(codexHome, { recursive: true });
-  return codexHome;
+  const homes = isolateAgentHomes("copilot-mig3320-", { mkdirs: true });
+  dir = homes.dir;
+  return homes.codexHome;
 }
 
 test("removes the catalog file, the config.toml reference, and the throttle state", async () => {

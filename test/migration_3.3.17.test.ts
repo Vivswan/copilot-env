@@ -1,36 +1,27 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 
 import { migration } from "../src/migrations/3.3.17.ts";
+import { envSnapshot, isolateAgentHomes, removeDir } from "./helpers.ts";
 
 // The 3.3.17 migration removes the managed image_generation = false that older
 // direct-mode writers put in the Codex config (Copilot Direct serves image
 // generation now). It has filesystem side effects, so it is isolated under a
 // temp CODEX_HOME.
-const SAVED = { HOME: process.env.HOME, CODEX_HOME: process.env.CODEX_HOME };
+const restoreEnv = envSnapshot();
 let dir = "";
 
 afterEach(() => {
-  for (const [k, v] of Object.entries(SAVED)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
-  }
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  dir = removeDir(dir);
 });
 
 function isolate(): string {
-  dir = mkdtempSync(join(tmpdir(), "copilot-mig3317-"));
-  process.env.HOME = dir;
-  const codexHome = join(dir, ".codex");
-  process.env.CODEX_HOME = codexHome;
-  mkdirSync(codexHome, { recursive: true });
-  return codexHome;
+  const homes = isolateAgentHomes("copilot-mig3317-", { mkdirs: true });
+  dir = homes.dir;
+  return homes.codexHome;
 }
 
 function writeCodex(

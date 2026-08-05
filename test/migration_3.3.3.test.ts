@@ -1,41 +1,28 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse } from "smol-toml";
 
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { migration } from "../src/migrations/3.3.3.ts";
+import { envSnapshot, isolateAgentHomes, removeDir } from "./helpers.ts";
 
 // The 3.3.3 migration has filesystem side effects (state store + copilot-api's
 // github_token file + the Codex config), so it is isolated here under a temp home --
 // separate from migrations.test.ts, which covers the pure selection logic.
-const SAVED = {
-  HOME: process.env.HOME,
-  COPILOT_API_HOME: process.env.COPILOT_API_HOME,
-  CODEX_HOME: process.env.CODEX_HOME,
-};
+const restoreEnv = envSnapshot();
 let dir = "";
 
 afterEach(() => {
-  for (const [k, v] of Object.entries(SAVED)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
-  }
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  dir = removeDir(dir);
 });
 
+// CODEX_HOME is pinned into the temp dir so unifyCodexProvider can never touch a real
+// ~/.codex (effectiveCodexHome resolves $CODEX_HOME ahead of the homedir fallback).
 function isolate(): void {
-  dir = mkdtempSync(join(tmpdir(), "copilot-mig-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "proxy-home");
-  // Pin CODEX_HOME into the temp dir so unifyCodexProvider can never touch a real
-  // ~/.codex (effectiveCodexHome resolves $CODEX_HOME ahead of the homedir fallback).
-  process.env.CODEX_HOME = join(dir, ".codex");
+  dir = isolateAgentHomes("copilot-mig-").dir;
 }
 
 function state(): CopilotEnvState {

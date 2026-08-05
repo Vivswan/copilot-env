@@ -1,6 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   clearPersistedInferenceActivity,
@@ -10,26 +9,22 @@ import {
   persistedInferenceMs,
   resetInferenceActivityForTests,
 } from "../src/scripts/inference_activity.ts";
+import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
 
 const ROOT = join(import.meta.dir, "..");
 const PRELOAD = join(ROOT, "src", "scripts", "inference_activity_preload.ts");
 
-const SAVED_HOME = process.env.COPILOT_API_HOME;
+const restoreEnv = envSnapshot();
 let dir = "";
 
 afterEach(() => {
   resetInferenceActivityForTests();
-  if (SAVED_HOME === undefined) delete process.env.COPILOT_API_HOME;
-  else process.env.COPILOT_API_HOME = SAVED_HOME;
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  dir = removeDir(dir);
 });
 
 function tmpHome(): void {
-  dir = mkdtempSync(join(tmpdir(), "copilot-inference-"));
-  process.env.COPILOT_API_HOME = dir;
+  dir = isolateProxyHome("copilot-inference-");
 }
 
 test("isInferenceRequest: inference POSTs only -- never GETs, pings, or model/count routes", () => {

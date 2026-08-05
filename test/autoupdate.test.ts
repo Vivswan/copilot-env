@@ -1,6 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { isDue, shouldRunPreflight } from "../src/autoupdate/due.ts";
@@ -11,17 +10,16 @@ import {
   effectiveUpdateCooldownDays,
 } from "../src/autoupdate/state.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
+import { envSnapshot, removeDir, tmpDir } from "./helpers.ts";
 
-const SAVED_HOME = process.env.COPILOT_API_HOME;
+const restoreEnv = envSnapshot();
 let dir = "";
 afterEach(() => {
-  if (SAVED_HOME === undefined) delete process.env.COPILOT_API_HOME;
-  else process.env.COPILOT_API_HOME = SAVED_HOME;
-  if (dir) rmSync(dir, { recursive: true, force: true });
-  dir = "";
+  restoreEnv();
+  dir = removeDir(dir);
 });
 function tmp(name: string): string {
-  dir = mkdtempSync(join(tmpdir(), "copilot-env-autoupdate-"));
+  dir = tmpDir("copilot-env-autoupdate-");
   return join(dir, name);
 }
 

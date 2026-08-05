@@ -1,31 +1,26 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
+import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
 
 // CopilotEnvState reads/writes the SHARED store under COPILOT_API_HOME, so isolate
 // each test in a temp home (not the per-host .run state).
-const SAVED_HOME = process.env.COPILOT_API_HOME;
+const restoreEnv = envSnapshot();
 // A branded fixture name: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
 let dir = "";
 
 afterEach(() => {
-  if (SAVED_HOME === undefined) delete process.env.COPILOT_API_HOME;
-  else process.env.COPILOT_API_HOME = SAVED_HOME;
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  dir = removeDir(dir);
 });
 
 function tmpHome(): void {
-  dir = mkdtempSync(join(tmpdir(), "copilot-envstate-"));
-  process.env.COPILOT_API_HOME = dir;
+  dir = isolateProxyHome("copilot-envstate-");
 }
 
 test("the provisioned GitHub token round-trips through the shared store and clears", () => {

@@ -1,7 +1,4 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import { runConfig } from "../src/commands/config.ts";
 import {
@@ -19,24 +16,20 @@ import {
 } from "../src/copilot_api/port.ts";
 import { DEFAULT_WEB_SEARCH_MODEL } from "../src/copilot_api/web_search.ts";
 import { DEFAULT_IDLE_TIMEOUT_SECONDS } from "../src/scripts/idle_watchdog.ts";
+import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
 
 // CopilotEnvConfig reads/writes the SHARED prefs store under COPILOT_API_HOME, so isolate
 // each test in a temp home.
-const SAVED_HOME = process.env.COPILOT_API_HOME;
+const restoreEnv = envSnapshot();
 let dir = "";
 
 afterEach(() => {
-  if (SAVED_HOME === undefined) delete process.env.COPILOT_API_HOME;
-  else process.env.COPILOT_API_HOME = SAVED_HOME;
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  dir = removeDir(dir);
 });
 
 function tmpHome(): void {
-  dir = mkdtempSync(join(tmpdir(), "copilot-envconfig-"));
-  process.env.COPILOT_API_HOME = dir;
+  dir = isolateProxyHome("copilot-envconfig-");
 }
 
 test("each typed key round-trips and del() reverts it to undefined (default)", () => {

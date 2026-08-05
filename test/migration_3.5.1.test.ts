@@ -1,6 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 
@@ -16,6 +15,7 @@ import { setIntegrationProbeFetch } from "../src/copilot_api/integration_identit
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { migration } from "../src/migrations/3.5.1.ts";
 import { isRecord } from "../src/utils/json.ts";
+import { envSnapshot, isolateAgentHomes, removeDir } from "./helpers.ts";
 
 // The 3.5.1 migration re-bakes the probed Copilot client identity into DIRECT agent
 // configs, healing an install whose PAT credential predates identity probing. It writes
@@ -23,38 +23,20 @@ import { isRecord } from "../src/utils/json.ts";
 // A branded fixture name: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
 
-const SAVED = {
-  HOME: process.env.HOME,
-  CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
-  CODEX_HOME: process.env.CODEX_HOME,
-  COPILOT_API_HOME: process.env.COPILOT_API_HOME,
-};
+const restoreEnv = envSnapshot();
 let dir = "";
 
 afterEach(() => {
   setIntegrationProbeFetch(null);
-  for (const [k, v] of Object.entries(SAVED)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
-  }
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  dir = removeDir(dir);
 });
 
 /** A temp HOME with both agents wired DIRECT the pre-3.5.2 way (no identity header). */
 function isolateDirect(token: string): { claudeHome: string; codexHome: string } {
-  dir = mkdtempSync(join(tmpdir(), "copilot-mig351-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "proxy-home");
-  mkdirSync(join(dir, "proxy-home"), { recursive: true });
-  const claudeHome = join(dir, ".claude");
-  const codexHome = join(dir, ".codex");
-  process.env.CLAUDE_CONFIG_DIR = claudeHome;
-  process.env.CODEX_HOME = codexHome;
-  mkdirSync(claudeHome, { recursive: true });
-  mkdirSync(codexHome, { recursive: true });
+  const homes = isolateAgentHomes("copilot-mig351-", { mkdirs: true });
+  dir = homes.dir;
+  const { claudeHome, codexHome } = homes;
   new Credential().store("gh-token", token);
   // Pre-3.5.2 wiring: direct, with NO directIntegrationId baked.
   configureClaudeConfig(claudeHome, "direct", { quiet: true });
@@ -144,15 +126,9 @@ test("a rejected credential warns instead of failing the update", async () => {
 });
 
 test("a proxy-mode install is skipped entirely (no probe, no writes)", async () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-mig351-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "proxy-home");
-  mkdirSync(join(dir, "proxy-home"), { recursive: true });
-  const claudeHome = join(dir, ".claude");
-  process.env.CLAUDE_CONFIG_DIR = claudeHome;
-  process.env.CODEX_HOME = join(dir, ".codex");
-  mkdirSync(claudeHome, { recursive: true });
-  mkdirSync(join(dir, ".codex"), { recursive: true });
+  const homes = isolateAgentHomes("copilot-mig351-", { mkdirs: true });
+  dir = homes.dir;
+  const claudeHome = homes.claudeHome;
   new Credential().store("gh-token", "github_pat_x");
   configureClaudeConfig(claudeHome, "proxy", { quiet: true });
   const before = readFileSync(settingsPathFor(claudeHome), "utf8");

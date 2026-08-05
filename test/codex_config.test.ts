@@ -1,14 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse, stringify } from "smol-toml";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
@@ -25,33 +16,21 @@ import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { agentLauncherCommand, proxyTokenCommand } from "../src/utils/root.ts";
+import { envSnapshot, isolateAgentHomes, removeDir } from "./helpers.ts";
 
-const SAVED_HOME = process.env.HOME;
-const SAVED_CODEX_HOME = process.env.CODEX_HOME;
-const SAVED_COPILOT_API_HOME = process.env.COPILOT_API_HOME;
+const restoreEnv = envSnapshot();
 let dir = "";
 
 afterEach(() => {
-  if (SAVED_HOME === undefined) {
-    delete process.env.HOME;
-  } else {
-    process.env.HOME = SAVED_HOME;
-  }
-  if (SAVED_CODEX_HOME === undefined) {
-    delete process.env.CODEX_HOME;
-  } else {
-    process.env.CODEX_HOME = SAVED_CODEX_HOME;
-  }
-  if (SAVED_COPILOT_API_HOME === undefined) {
-    delete process.env.COPILOT_API_HOME;
-  } else {
-    process.env.COPILOT_API_HOME = SAVED_COPILOT_API_HOME;
-  }
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  dir = removeDir(dir);
 });
+
+// Fresh isolated homes for one test; the proxy home exists (catalog tests write
+// the generated JSON straight into it).
+function isolate(): void {
+  dir = isolateAgentHomes("copilot-codex-", { mkdirs: true }).dir;
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null) {
@@ -67,8 +46,7 @@ function enableCatalog(): void {
 }
 
 test("enforces every managed field while preserving unknown user keys", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
+  isolate();
   const codexHome = join(dir, ".codex");
   mkdirSync(codexHome, { recursive: true });
 
@@ -142,8 +120,7 @@ test("enforces every managed field while preserving unknown user keys", () => {
 });
 
 test("direct bakes a probed Copilot-Integration-Id into http_headers when passed", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
+  isolate();
   const codexHome = join(dir, ".codex");
   mkdirSync(codexHome, { recursive: true });
 
@@ -159,8 +136,7 @@ test("direct bakes a probed Copilot-Integration-Id into http_headers when passed
 });
 
 test("direct uses the launcher auth.command (no env_key, no token at rest), classified direct", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
+  isolate();
   const codexHome = join(dir, ".codex");
 
   configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.139.0" });
@@ -192,8 +168,7 @@ test("direct uses the launcher auth.command (no env_key, no token at rest), clas
 });
 
 test("gh-direct .env scrub preserves other keys and never creates a .env when absent", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
+  isolate();
   const codexHome = join(dir, ".codex");
   mkdirSync(codexHome, { recursive: true });
   // A user-maintained .env with our baked token plus an unrelated key.
@@ -212,8 +187,7 @@ test("gh-direct .env scrub preserves other keys and never creates a .env when ab
 });
 
 test("proxy mode enforces every managed field while preserving unknown user keys", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
+  isolate();
   const codexHome = join(dir, ".codex");
   mkdirSync(codexHome, { recursive: true });
 
@@ -289,8 +263,7 @@ test("proxy mode enforces every managed field while preserving unknown user keys
 });
 
 test("refuses to overwrite an unparseable config.toml (preserves the user's file)", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
+  isolate();
   const codexHome = join(dir, ".codex");
   mkdirSync(codexHome, { recursive: true });
 
@@ -315,8 +288,7 @@ test("refuses to overwrite an unparseable config.toml (preserves the user's file
 });
 
 test("proxy mode preserves the user's OPENAI_API_KEY but scrubs the copilot-env legacy key", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
+  isolate();
   const codexHome = join(dir, ".codex");
   mkdirSync(codexHome, { recursive: true });
 
@@ -351,8 +323,7 @@ test("proxy mode preserves the user's OPENAI_API_KEY but scrubs the copilot-env 
 });
 
 test("writes the managed direct default config when no provider section exists", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
+  isolate();
   const codexHome = join(dir, ".codex");
 
   configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.139.0" });
@@ -373,9 +344,7 @@ test("formats Codex user-agent with dynamic version fallback", () => {
 });
 
 test("runCodex --proxy writes the proxy provider at CODEX_HOME", async () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
+  isolate();
   const codexHome = join(dir, "custom-codex-home");
   process.env.CODEX_HOME = codexHome;
   mkdirSync(codexHome, { recursive: true });
@@ -405,9 +374,7 @@ test("runCodex --proxy writes the proxy provider at CODEX_HOME", async () => {
 });
 
 test("runCodex --proxy and --direct force the selected provider (no probe)", async () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
+  isolate();
   const codexHome = join(dir, "custom-codex-home");
   process.env.CODEX_HOME = codexHome;
   mkdirSync(codexHome, { recursive: true });
@@ -439,8 +406,7 @@ test("runCodex --proxy and --direct force the selected provider (no probe)", asy
 });
 
 test("toggling direct <-> proxy swaps the mode-specific keys on the shared table", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
+  isolate();
   const codexHome = join(dir, ".codex");
 
   // Start direct: the table carries the managed auth (agent auth --get) + http_headers.
@@ -471,8 +437,7 @@ test("toggling direct <-> proxy swaps the mode-specific keys on the shared table
 });
 
 test("detectCodexDirect: true only when CLI+gh present, gh authed, and the probe succeeds", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
+  isolate();
   // A runProbe spy lets us prove the cheap gates short-circuit BEFORE the (here
   // simulated) model call.
   let probeCalls = 0;
@@ -503,8 +468,7 @@ test("detectCodexDirect: true only when CLI+gh present, gh authed, and the probe
 });
 
 test("proxy mode rejects a base_url containing invalid characters", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
+  isolate();
 
   expect(() =>
     configureCodexConfig(join(dir, ".codex"), {
@@ -515,12 +479,9 @@ test("proxy mode rejects a base_url containing invalid characters", () => {
 });
 
 test("model_catalog_json is written when enabled and the catalog file exists (both modes)", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
+  isolate();
   const codexHome = join(dir, ".codex");
   const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-  mkdirSync(join(dir, "copilot-api-home"), { recursive: true });
   enableCatalog();
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
 
@@ -538,9 +499,7 @@ test("model_catalog_json is written when enabled and the catalog file exists (bo
 });
 
 test("a stale model_catalog_json is scrubbed when the catalog file is absent", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home"); // no catalog file here
+  isolate();
   const codexHome = join(dir, ".codex");
   mkdirSync(codexHome, { recursive: true });
   enableCatalog();
@@ -557,12 +516,9 @@ test("a stale model_catalog_json is scrubbed when the catalog file is absent", (
 });
 
 test("a corrupt or empty catalog file is scrubbed like a missing one", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
+  isolate();
   const codexHome = join(dir, ".codex");
   const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-  mkdirSync(join(dir, "copilot-api-home"), { recursive: true });
   enableCatalog();
   // Referencing a file Codex cannot parse is a startup error, same as a
   // dangling path -- usability, not existence, gates the key.
@@ -574,13 +530,10 @@ test("a corrupt or empty catalog file is scrubbed like a missing one", () => {
 });
 
 test("syncCodexCatalogReference self-heals a managed config missing the key", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
+  isolate();
   const codexHome = join(dir, ".codex");
   process.env.CODEX_HOME = codexHome;
   const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-  mkdirSync(join(dir, "copilot-api-home"), { recursive: true });
   mkdirSync(codexHome, { recursive: true });
   enableCatalog();
 
@@ -600,13 +553,10 @@ test("syncCodexCatalogReference self-heals a managed config missing the key", ()
 });
 
 test("syncCodexCatalogReference never adds the key to a config not on our provider", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
+  isolate();
   const codexHome = join(dir, ".codex");
   process.env.CODEX_HOME = codexHome;
   const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-  mkdirSync(join(dir, "copilot-api-home"), { recursive: true });
   mkdirSync(codexHome, { recursive: true });
   enableCatalog();
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
@@ -630,12 +580,9 @@ test("syncCodexCatalogReference never adds the key to a config not on our provid
 });
 
 test("syncCodexCatalogReference is ADD-only when enabled: a user-pinned catalog path survives", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
+  isolate();
   const codexHome = join(dir, ".codex");
   process.env.CODEX_HOME = codexHome;
-  mkdirSync(join(dir, "copilot-api-home"), { recursive: true });
   mkdirSync(codexHome, { recursive: true });
   enableCatalog();
   writeFileSync(new CopilotApiPaths().codexModelCatalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
@@ -652,12 +599,9 @@ test("syncCodexCatalogReference is ADD-only when enabled: a user-pinned catalog 
 });
 
 test("disabled: configureCodexConfig scrubs model_catalog_json even when the file is usable", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
+  isolate();
   const codexHome = join(dir, ".codex");
   const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-  mkdirSync(join(dir, "copilot-api-home"), { recursive: true });
   // Opt-in NOT set: a perfectly usable file must still not be referenced.
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
   mkdirSync(codexHome, { recursive: true });
@@ -671,13 +615,10 @@ test("disabled: configureCodexConfig scrubs model_catalog_json even when the fil
 });
 
 test("disabled: sync strips our reference, deletes the file, and clears the throttle state", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
+  isolate();
   const codexHome = join(dir, ".codex");
   process.env.CODEX_HOME = codexHome;
   const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-  mkdirSync(join(dir, "copilot-api-home"), { recursive: true });
   mkdirSync(codexHome, { recursive: true });
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
   writeFileSync(
@@ -702,13 +643,10 @@ test("disabled: sync strips our reference, deletes the file, and clears the thro
 });
 
 test("disabled: sync also strips per-host farm configs referencing the shared file", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
+  isolate();
   const codexHome = join(dir, ".codex");
   process.env.CODEX_HOME = codexHome;
   const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-  mkdirSync(join(dir, "copilot-api-home"), { recursive: true });
   mkdirSync(codexHome, { recursive: true });
   const farmHome = join(codexHome, "hosts", "otherhost");
   mkdirSync(farmHome, { recursive: true });
@@ -727,13 +665,10 @@ test("disabled: sync also strips per-host farm configs referencing the shared fi
 });
 
 test("disabled: a user-pinned custom catalog path survives, but our file still goes", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
+  isolate();
   const codexHome = join(dir, ".codex");
   process.env.CODEX_HOME = codexHome;
   const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-  mkdirSync(join(dir, "copilot-api-home"), { recursive: true });
   mkdirSync(codexHome, { recursive: true });
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
   const pinned = [
@@ -750,12 +685,9 @@ test("disabled: a user-pinned custom catalog path survives, but our file still g
 });
 
 test("disabled: steady-state sync is write-free", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
+  isolate();
   const codexHome = join(dir, ".codex");
   process.env.CODEX_HOME = codexHome;
-  mkdirSync(join(dir, "copilot-api-home"), { recursive: true });
   mkdirSync(codexHome, { recursive: true });
   const clean = 'model_provider = "copilot-env"\n';
   writeFileSync(join(codexHome, "config.toml"), clean);
@@ -773,13 +705,10 @@ test("disabled: steady-state sync is write-free", () => {
 });
 
 test("disabled: an unreadable config.toml keeps the catalog file (no dangling reference)", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
+  isolate();
   const codexHome = join(dir, ".codex");
   process.env.CODEX_HOME = codexHome;
   const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-  mkdirSync(join(dir, "copilot-api-home"), { recursive: true });
   mkdirSync(codexHome, { recursive: true });
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
   // Unparseable TOML: it MIGHT still reference the file, so deletion must wait.
@@ -792,13 +721,10 @@ test("disabled: an unreadable config.toml keeps the catalog file (no dangling re
 
 test("disabled: a symlinked spelling of our path blocks deletion (fail closed)", () => {
   if (process.platform === "win32") return; // symlink creation needs privileges there
-  dir = mkdtempSync(join(tmpdir(), "copilot-codex-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "copilot-api-home");
+  isolate();
   const codexHome = join(dir, ".codex");
   process.env.CODEX_HOME = codexHome;
   const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-  mkdirSync(join(dir, "copilot-api-home"), { recursive: true });
   mkdirSync(codexHome, { recursive: true });
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
   // A non-identical spelling that resolves to OUR file: not provably ours to

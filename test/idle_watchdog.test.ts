@@ -1,7 +1,4 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import {
@@ -18,27 +15,20 @@ import {
   markInference,
   resetInferenceActivityForTests,
 } from "../src/scripts/inference_activity.ts";
+import { envSnapshot, isolateProxyHome, removeDir, writeRunState } from "./helpers.ts";
 
-const SAVED = process.env[IDLE_TIMEOUT_ENV];
-const SAVED_HOME = process.env.COPILOT_API_HOME;
+const restoreEnv = envSnapshot([IDLE_TIMEOUT_ENV]);
 let dir = "";
 
 afterEach(() => {
   resetInferenceActivityForTests();
-  if (SAVED === undefined) delete process.env[IDLE_TIMEOUT_ENV];
-  else process.env[IDLE_TIMEOUT_ENV] = SAVED;
-  if (SAVED_HOME === undefined) delete process.env.COPILOT_API_HOME;
-  else process.env.COPILOT_API_HOME = SAVED_HOME;
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  dir = removeDir(dir);
 });
 
 // Isolate the config store (idleTimeoutMs reads it when the env knob is unset).
 function tmpHome(): void {
-  dir = mkdtempSync(join(tmpdir(), "copilot-idle-"));
-  process.env.COPILOT_API_HOME = dir;
+  dir = isolateProxyHome("copilot-idle-");
 }
 
 test("idleCheck: recent observed inference keeps a long-started daemon alive", () => {
@@ -46,8 +36,7 @@ test("idleCheck: recent observed inference keeps a long-started daemon alive", (
   // Managed lifecycle ON, started long ago, tiny timeout -- WOULD exit if idle. A fresh
   // in-memory inference mark (what the observer records on a real model call) must hold it up.
   new CopilotEnvConfig().set({ autoStart: true });
-  const state = new CopilotEnvRunState();
-  state.set({ pid: process.pid, port: 4141 });
+  writeRunState({ pid: process.pid, port: 4141 });
   markInference(Date.now());
   const realExit = process.exit;
   process.exit = ((code?: number): never => {
@@ -58,7 +47,7 @@ test("idleCheck: recent observed inference keeps a long-started daemon alive", (
   } finally {
     process.exit = realExit;
   }
-  expect(state.read().pid).toBe(process.pid); // never cleared -- the daemon stayed up
+  expect(new CopilotEnvRunState().read().pid).toBe(process.pid); // never cleared -- the daemon stayed up
 });
 
 test("idleCheck: with no activity past the window, clears run state and exits", () => {

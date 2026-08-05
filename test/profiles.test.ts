@@ -2,8 +2,7 @@
 // (settings-<name>.json, [profiles.<name>], per-profile credential slots and
 // daemon homes). The default path must stay byte-identical throughout.
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 
@@ -24,6 +23,7 @@ import { copilotApiResolvePort, reserveProfilePort } from "../src/copilot_api/po
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { isRecord } from "../src/utils/json.ts";
+import { envSnapshot, isolateAgentHomes, removeDir, resetExitCode } from "./helpers.ts";
 
 const WIN = process.platform === "win32";
 
@@ -34,19 +34,8 @@ const GH_ALT = parseProfileName("gh-alt");
 const ALT = parseProfileName("alt");
 const TYPO = parseProfileName("typo");
 
-const SAVED = {
-  HOME: process.env.HOME,
-  CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
-  CODEX_HOME: process.env.CODEX_HOME,
-  COPILOT_API_HOME: process.env.COPILOT_API_HOME,
-  COPILOT_ENV_ROOT_HOME: process.env.COPILOT_ENV_ROOT_HOME,
-};
+const restoreEnv = envSnapshot();
 let dir = "";
-
-function restore(key: keyof typeof SAVED): void {
-  if (SAVED[key] === undefined) delete process.env[key];
-  else process.env[key] = SAVED[key];
-}
 
 // A direct-profile add probes the Copilot integration identity over the network; stub it
 // so every test resolves to the default identity (200 = first candidate accepted) offline.
@@ -58,34 +47,27 @@ beforeEach(() => {
 
 afterEach(() => {
   setIntegrationProbeFetch(null);
-  for (const k of Object.keys(SAVED) as (keyof typeof SAVED)[]) restore(k);
-  // Reset to 0 (NOT undefined -- bun's setter ignores undefined), so a check test's
-  // exit 1/2 never leaks into the whole `bun test` run.
-  process.exitCode = 0;
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  // A check test's exit 1/2 must never leak into the whole `bun test` run.
+  resetExitCode();
+  dir = removeDir(dir);
 });
 
 /** Isolated proxy home (credential store, run state, profile homes). */
 function tmpProxyHome(): string {
-  dir = mkdtempSync(join(tmpdir(), "copilot-profiles-"));
-  process.env.COPILOT_API_HOME = join(dir, "proxy-home");
-  delete process.env.COPILOT_ENV_ROOT_HOME;
-  return process.env.COPILOT_API_HOME;
+  const homes = isolateAgentHomes("copilot-profiles-");
+  dir = homes.dir;
+  return homes.proxyHome;
 }
 
+// isolateAgentHomes already exported CLAUDE_CONFIG_DIR / CODEX_HOME at these paths;
+// the getters keep the call sites reading as "this test uses that home".
 function tmpClaudeHome(): string {
-  const home = join(dir, ".claude");
-  process.env.CLAUDE_CONFIG_DIR = home;
-  return home;
+  return join(dir, ".claude");
 }
 
 function tmpCodexHome(): string {
-  const home = join(dir, ".codex");
-  process.env.CODEX_HOME = home;
-  return home;
+  return join(dir, ".codex");
 }
 
 // --- profile names ------------------------------------------------------------

@@ -1,7 +1,4 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
@@ -14,39 +11,21 @@ import {
   resolveWebSearchCredential,
   webSearch,
 } from "../src/copilot_api/web_search.ts";
+import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
 
 // The credential/config stores live under COPILOT_API_HOME, and the env-token
-// fallback reads the GH token env vars -- isolate both per test.
-const SAVED = {
-  home: process.env.COPILOT_API_HOME,
-  copilotToken: process.env.COPILOT_GITHUB_TOKEN,
-  ghToken: process.env.GH_TOKEN,
-  githubToken: process.env.GITHUB_TOKEN,
-};
+// fallback reads the GH token env vars -- isolate both per test (isolateProxyHome
+// clears the token trio).
+const restoreEnv = envSnapshot();
 let dir = "";
 
-function restore(name: string, value: string | undefined): void {
-  if (value === undefined) delete process.env[name];
-  else process.env[name] = value;
-}
-
 afterEach(() => {
-  restore("COPILOT_API_HOME", SAVED.home);
-  restore("COPILOT_GITHUB_TOKEN", SAVED.copilotToken);
-  restore("GH_TOKEN", SAVED.ghToken);
-  restore("GITHUB_TOKEN", SAVED.githubToken);
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  dir = removeDir(dir);
 });
 
 function tmpHome(): void {
-  dir = mkdtempSync(join(tmpdir(), "copilot-websearch-"));
-  process.env.COPILOT_API_HOME = dir;
-  delete process.env.COPILOT_GITHUB_TOKEN;
-  delete process.env.GH_TOKEN;
-  delete process.env.GITHUB_TOKEN;
+  dir = isolateProxyHome("copilot-websearch-");
 }
 
 interface CapturedRequest {

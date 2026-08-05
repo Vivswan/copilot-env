@@ -1,7 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 import {
   type CopilotModelLimits,
@@ -15,25 +13,18 @@ import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
+import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
 
-const SAVED_COPILOT_API_HOME = process.env.COPILOT_API_HOME;
+const restoreEnv = envSnapshot();
 let dir = "";
 
 afterEach(() => {
-  if (SAVED_COPILOT_API_HOME === undefined) {
-    delete process.env.COPILOT_API_HOME;
-  } else {
-    process.env.COPILOT_API_HOME = SAVED_COPILOT_API_HOME;
-  }
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  dir = removeDir(dir);
 });
 
 function isolate(): void {
-  dir = mkdtempSync(join(tmpdir(), "copilot-catalog-"));
-  process.env.COPILOT_API_HOME = dir;
+  dir = isolateProxyHome("copilot-catalog-");
   // The catalog is opt-in (default false); these tests exercise the enabled
   // machinery, so flip it on in the isolated home. The disabled-gate tests
   // below undo this per-test.

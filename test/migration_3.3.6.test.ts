@@ -1,62 +1,38 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 
 import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/config.ts";
 import { copilotApiResolvePort } from "../src/copilot_api/port.ts";
 import { migration } from "../src/migrations/3.3.6.ts";
+import {
+  envSnapshot,
+  isolateAgentHomes,
+  removeDir,
+  writeClaudeSettings,
+  writeCodexConfigToml,
+} from "./helpers.ts";
 
 // The 3.3.6 migration re-points existing Codex/Claude configs from localhost to 127.0.0.1
 // (and, via the Claude writer re-run, the .sh -> .cmd helper on Windows). It has filesystem
 // side effects, so it is isolated here under temp homes.
-const SAVED = {
-  HOME: process.env.HOME,
-  COPILOT_API_HOME: process.env.COPILOT_API_HOME,
-  CODEX_HOME: process.env.CODEX_HOME,
-  CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
-};
+const restoreEnv = envSnapshot();
 let dir = "";
 
 afterEach(() => {
-  for (const [k, v] of Object.entries(SAVED)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
-  }
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  dir = removeDir(dir);
 });
 
 function isolate(): { codexHome: string; claudeHome: string } {
-  dir = mkdtempSync(join(tmpdir(), "copilot-mig336-"));
-  process.env.HOME = dir;
-  process.env.COPILOT_API_HOME = join(dir, "proxy-home");
-  const codexHome = join(dir, ".codex");
-  const claudeHome = join(dir, ".claude");
-  process.env.CODEX_HOME = codexHome;
-  process.env.CLAUDE_CONFIG_DIR = claudeHome;
-  mkdirSync(codexHome, { recursive: true });
-  mkdirSync(claudeHome, { recursive: true });
-  return { codexHome, claudeHome };
+  const homes = isolateAgentHomes("copilot-mig336-", { mkdirs: true });
+  dir = homes.dir;
+  return { codexHome: homes.codexHome, claudeHome: homes.claudeHome };
 }
 
 function writeCodex(codexHome: string, baseUrl: string): string {
-  const p = join(codexHome, "config.toml");
-  writeFileSync(
-    p,
-    [
-      'model_provider = "copilot-env"',
-      "",
-      "[model_providers.copilot-env]",
-      `base_url = "${baseUrl}"`,
-      'wire_api = "responses"',
-      "",
-    ].join("\n"),
-  );
-  return p;
+  return writeCodexConfigToml(codexHome, { baseUrl, wireApi: "responses" });
 }
 
 function readCodexBaseUrl(p: string): unknown {
@@ -66,10 +42,7 @@ function readCodexBaseUrl(p: string): unknown {
 }
 
 function writeClaude(claudeHome: string, apiKeyHelper: string, baseUrl: string, extra = {}): void {
-  writeFileSync(
-    join(claudeHome, "settings.json"),
-    `${JSON.stringify({ apiKeyHelper, env: { ANTHROPIC_BASE_URL: baseUrl }, ...extra }, null, 2)}\n`,
-  );
+  writeClaudeSettings(claudeHome, { apiKeyHelper, baseUrl, extra, pretty: true });
 }
 
 function readClaude(claudeHome: string): Record<string, unknown> {

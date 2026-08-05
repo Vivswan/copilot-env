@@ -3,8 +3,7 @@
 // ~/.codex, the host farm, or the shell rc files -- and never passes --force, so
 // the dev checkout's .git guard keeps PROJECT_ROOT safe by construction.
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 
@@ -23,46 +22,26 @@ import { profileHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { isRecord } from "../src/utils/json.ts";
+import { envSnapshot, isolateAgentHomes, removeDir, resetExitCode } from "./helpers.ts";
 
 // A branded fixture name: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
 
-const SAVED = {
-  HOME: process.env.HOME,
-  CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
-  CODEX_HOME: process.env.CODEX_HOME,
-  COPILOT_API_HOME: process.env.COPILOT_API_HOME,
-  COPILOT_ENV_ROOT_HOME: process.env.COPILOT_ENV_ROOT_HOME,
-};
+const restoreEnv = envSnapshot();
 let dir = "";
 
-function restore(key: keyof typeof SAVED): void {
-  if (SAVED[key] === undefined) delete process.env[key];
-  else process.env[key] = SAVED[key];
-}
-
 afterEach(() => {
-  for (const k of Object.keys(SAVED) as (keyof typeof SAVED)[]) restore(k);
-  // Reset to 0 (NOT undefined -- bun's setter ignores undefined), so an aborted
-  // run's exit 1 never leaks into the whole `bun test` run.
-  process.exitCode = 0;
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  // An aborted run's exit 1 must never leak into the whole `bun test` run.
+  resetExitCode();
+  dir = removeDir(dir);
 });
 
 /** Isolated homes for one test: proxy home + Claude home + Codex home. */
 function tmpHomes(): { proxyHome: string; claudeHome: string; codexHome: string } {
-  dir = mkdtempSync(join(tmpdir(), "copilot-uninstall-"));
-  const proxyHome = join(dir, "proxy-home");
-  const claudeHome = join(dir, ".claude");
-  const codexHome = join(dir, ".codex");
-  process.env.COPILOT_API_HOME = proxyHome;
-  process.env.CLAUDE_CONFIG_DIR = claudeHome;
-  process.env.CODEX_HOME = codexHome;
-  delete process.env.COPILOT_ENV_ROOT_HOME;
-  return { proxyHome, claudeHome, codexHome };
+  const homes = isolateAgentHomes("copilot-uninstall-");
+  dir = homes.dir;
+  return homes;
 }
 
 /** The injected seam every test run passes: real codex home, spied side effects. */

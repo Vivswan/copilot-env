@@ -1,31 +1,19 @@
 import { afterEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/config.ts";
 import { runEnv } from "../src/commands/env.ts";
 import { LAUNCHERS_MARKER } from "../src/commands/shell_integration.ts";
+import { envSnapshot, removeDir, tmpDir, writeClaudeSettings } from "./helpers.ts";
 
-const SAVED: Record<string, string | undefined> = {
-  HOME: process.env.HOME,
-  CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
-  CODEX_HOME: process.env.CODEX_HOME,
-  ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
-  COPILOT_API_HOME: process.env.COPILOT_API_HOME,
-};
+const restoreEnv = envSnapshot();
 let dir = "";
 
 afterEach(() => {
-  for (const [k, v] of Object.entries(SAVED)) {
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
-  }
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  dir = removeDir(dir);
 });
 
 /** Run runEnv(posix) capturing its stdout lines. */
@@ -44,9 +32,11 @@ function envLines(): string[] {
 }
 
 function isolate(): string {
-  dir = mkdtempSync(join(tmpdir(), "copilot-env-cmd-"));
+  dir = tmpDir("copilot-env-cmd-");
   process.env.HOME = dir;
   process.env.COPILOT_API_HOME = join(dir, "gw"); // empty state => no host CODEX_HOME
+  // Unique need: `agent env` emits/clears CODEX_HOME and ANTHROPIC_BASE_URL exports based
+  // on their CURRENT values, so both must start unset (not pointed at a temp home).
   delete process.env.CODEX_HOME;
   delete process.env.ANTHROPIC_BASE_URL;
   const claudeHome = join(dir, ".claude");
@@ -110,10 +100,7 @@ function childBaseEnv(): Record<string, string | undefined> {
 }
 
 function writeClaude(home: string, apiKeyHelper: string, baseUrl: string): void {
-  writeFileSync(
-    join(home, "settings.json"),
-    JSON.stringify({ apiKeyHelper, env: { ANTHROPIC_BASE_URL: baseUrl } }),
-  );
+  writeClaudeSettings(home, { apiKeyHelper, baseUrl });
 }
 
 test("env exports ANTHROPIC_BASE_URL when Claude is proxy at a localhost proxy URL", () => {
@@ -169,14 +156,14 @@ test("env does not unset a CODEX_HOME the user pointed elsewhere", () => {
 });
 
 test("env emits a launchers source when the launchers are wired", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-env-cmd-"));
+  dir = tmpDir("copilot-env-cmd-");
   wireLaunchers();
   const lines = childEnvLines(childBaseEnv());
   expect(lines.some(isLaunchersSource)).toBe(true);
 });
 
 test("env skips the launchers source when the launchers are not wired", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-env-cmd-")); // no .bashrc / launchers marker
+  dir = tmpDir("copilot-env-cmd-"); // no .bashrc / launchers marker
   const lines = childEnvLines(childBaseEnv());
   expect(lines.some(isLaunchersSource)).toBe(false);
 });

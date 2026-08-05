@@ -1,6 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse, stringify } from "smol-toml";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
@@ -8,46 +7,25 @@ import { runAuth } from "../src/commands/auth.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
+import { envSnapshot, isolateAgentHomes, removeDir, resetExitCode } from "./helpers.ts";
 
-const SAVED = {
-  HOME: process.env.HOME,
-  CODEX_HOME: process.env.CODEX_HOME,
-  CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
-  COPILOT_API_HOME: process.env.COPILOT_API_HOME,
-  GH_TOKEN: process.env.GH_TOKEN,
-  GITHUB_TOKEN: process.env.GITHUB_TOKEN,
-  // COPILOT_GITHUB_TOKEN is FIRST in the gh-token env precedence (GH_TOKEN_ENV_VARS); save it so
-  // a runner that exports it can't leak into the "no token" tests and silently make them pass.
-  COPILOT_GITHUB_TOKEN: process.env.COPILOT_GITHUB_TOKEN,
-};
+const restoreEnv = envSnapshot();
 let dir = "";
 
-function restore(key: keyof typeof SAVED): void {
-  if (SAVED[key] === undefined) delete process.env[key];
-  else process.env[key] = SAVED[key];
-}
-
 afterEach(() => {
-  for (const k of Object.keys(SAVED) as (keyof typeof SAVED)[]) restore(k);
-  process.exitCode = 0; // NOT undefined -- bun keeps the last value otherwise (leaks exit 1)
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  resetExitCode();
+  dir = removeDir(dir);
 });
 
 // Isolate every store/config write under temp homes so tests never touch real state.
+// isolateAgentHomes also clears an inherited COPILOT_GITHUB_TOKEN (FIRST in the gh-token
+// env precedence) so a real one in the runner env can't satisfy the "no credential"
+// paths; GH_TOKEN/GITHUB_TOKEN are set per-test.
 function isolate(): { claudeHome: string } {
-  dir = mkdtempSync(join(tmpdir(), "copilot-auth-"));
-  process.env.COPILOT_API_HOME = join(dir, "proxy-home");
-  process.env.HOME = dir;
-  process.env.CODEX_HOME = join(dir, ".codex");
-  // Clear an inherited COPILOT_GITHUB_TOKEN so a real one in the runner env can't satisfy the
-  // "no credential" paths (afterEach restores it). GH_TOKEN/GITHUB_TOKEN are set per-test.
-  delete process.env.COPILOT_GITHUB_TOKEN;
-  const claudeHome = join(dir, ".claude");
-  process.env.CLAUDE_CONFIG_DIR = claudeHome;
-  return { claudeHome };
+  const homes = isolateAgentHomes("copilot-auth-");
+  dir = homes.dir;
+  return { claudeHome: homes.claudeHome };
 }
 
 function state(): CopilotEnvState {

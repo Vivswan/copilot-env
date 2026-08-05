@@ -1,12 +1,16 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { parseStartAction, portListening, runStart } from "../src/commands/start.ts";
 import { classifyDaemonPid } from "../src/copilot_api/process.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
+import {
+  envSnapshot,
+  isolateProxyHome,
+  removeDir,
+  resetExitCode,
+  writeRunState,
+} from "./helpers.ts";
 
 // The lifecycle primitives the proxy-token resolver orchestrates: `start --record-event`
 // (heartbeat) and `start --check` (is-it-up probe). Each is isolated in a temp
@@ -14,33 +18,26 @@ import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 // A branded fixture name: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
 
-const SAVED_HOME = process.env.COPILOT_API_HOME;
+const restoreEnv = envSnapshot();
 let dir = "";
 
 afterEach(() => {
-  if (SAVED_HOME === undefined) delete process.env.COPILOT_API_HOME;
-  else process.env.COPILOT_API_HOME = SAVED_HOME;
-  // Reset to 0 (NOT undefined -- bun's process.exitCode setter ignores undefined and keeps
-  // the last value, which would leak a test's exit 1 to the whole `bun test` run).
-  process.exitCode = 0;
-  if (dir) {
-    rmSync(dir, { recursive: true, force: true });
-    dir = "";
-  }
+  restoreEnv();
+  resetExitCode();
+  dir = removeDir(dir);
 });
 
 function tmpHome(): void {
-  dir = mkdtempSync(join(tmpdir(), "copilot-lifecycle-"));
-  process.env.COPILOT_API_HOME = dir;
+  dir = isolateProxyHome("copilot-lifecycle-");
 }
 
 // Open a loopback TCP server on an ephemeral port and resolve once it is accepting
 // connections. Mirrors the daemon's listening socket so portListening can probe a real port.
-function listenEphemeral(): Promise<{ server: Server; port: number }> {
+function listenEphemeral(host = "127.0.0.1"): Promise<{ server: Server; port: number }> {
   return new Promise((resolve, reject) => {
     const server = createServer();
     server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(0, host, () => {
       const address = server.address();
       if (address === null || typeof address === "string") {
         reject(new Error("expected an AddressInfo from a TCP server"));
@@ -69,7 +66,7 @@ test("start --record-event --profile heartbeats ONLY the profile's run state", a
   tmpHome();
   // A real proxy profile always has run state before its resolver heartbeats (the
   // port reservation writes it); a profile WITHOUT state must not be fabricated.
-  CopilotEnvRunState.forProfile(WORK).set({ port: 4242 });
+  writeRunState({ port: 4242 }, WORK);
   await runStart({ kind: "record-event", profile: WORK });
 
   expect(typeof CopilotEnvRunState.forProfile(WORK).read().lastEnsureAt).toBe("number");
@@ -153,6 +150,22 @@ test("portListening resolves false for a port with nothing listening", async () 
   expect(await portListening(port, 1000)).toBe(false);
 });
 
+test("portListening detects an IPv6-loopback-only listener too", async () => {
+  // The probe connects to 127.0.0.1 and ::1 concurrently and settles on the first success, so a
+  // daemon bound only to IPv6 loopback is still found. Skip if the host has no IPv6 loopback.
+  let listener: { server: Server; port: number };
+  try {
+    listener = await listenEphemeral("::1");
+  } catch {
+    return; // no IPv6 loopback on this machine -- nothing to assert
+  }
+  try {
+    expect(await portListening(listener.port)).toBe(true);
+  } finally {
+    await closeServer(listener.server);
+  }
+});
+
 // The full UP-path (live pid + real listening port -> exit 0) requires proxyStatus's
 // classifyDaemonPid guard to NOT return "no", which means the seeded pid must be a process whose
 // command line matches `copilot-api ... start`. The test runner's pid is identifiable but does
@@ -168,7 +181,7 @@ test("start --check stays DOWN for a live pid + listening port that is not a cop
   try {
     // process.pid is alive (pidAlive true) and the port genuinely listens, but the test runner
     // is not a copilot-api daemon and IS identifiable, so classifyDaemonPid(process.pid) is "no".
-    new CopilotEnvRunState().set({ pid: process.pid, port });
+    writeRunState({ pid: process.pid, port });
     expect(new CopilotEnvRunState().read().pid).toBe(process.pid);
     expect(new CopilotEnvRunState().read().port).toBe(port);
 

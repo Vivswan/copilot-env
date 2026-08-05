@@ -7,13 +7,12 @@ import * as fs from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
 import { parse, stringify } from "smol-toml";
-import { resolveDirectMode } from "../agents/direct_detect.ts";
+import { type AgentAdapter, type AgentConfigArgs, runAgentConfig } from "../agents/configure.ts";
 import { CODEX_PROBE, type DirectProbeDeps, probeDirectWorks } from "../agents/live_probe.ts";
 import {
   type AgentProviderMode,
   type ManagedAgentMode,
   providerModeExitCode,
-  type RequestedMode,
 } from "../agents/provider_mode.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -84,11 +83,8 @@ export function codexProviderId(profile: Profile = null): string {
 // re-authenticate tool subprocesses as the token's account.
 export const DIRECT_ENV_KEY = "COPILOT_ENV_GH_TOKEN";
 
-export interface CodexConfigArgs {
-  check?: boolean;
-  /** `--direct`/`--proxy`, parsed once at the CLI boundary (auto = neither). */
-  mode: RequestedMode;
-}
+/** The `agent codex` argument shape (the shared skeleton's, under this command's name). */
+export type CodexConfigArgs = AgentConfigArgs;
 
 /** The mode-dependent half of a Codex config write: direct carries the (optional)
  *  probed client-identity header, proxy ALWAYS carries a base URL -- a proxy write
@@ -991,6 +987,45 @@ export function detectCodexDirect(deps?: DirectProbeDeps): boolean {
 }
 
 /**
+ * The Codex AgentAdapter: the shared command skeleton's view of this file's
+ * writers (see src/agents/configure.ts). `catalogDeps` is threaded through for
+ * runCodex's test seam only; `agent profile` builds the adapter without it.
+ */
+export function codexAdapter(catalogDeps?: CodexCatalogDeps): AgentAdapter {
+  return {
+    label: "Codex",
+    check: checkCodexConfig,
+    detectDirect: detectCodexDirect,
+    async configureDefault(mode, ghToken) {
+      // Reuse the already-resolved credential for the catalog seed's direct fetch so
+      // the gh-cli provider isn't shelled out to a second time.
+      const seedDeps = catalogDeps ?? (ghToken === null ? undefined : { directToken: ghToken });
+      await applyCodexConfig(effectiveCodexHome(), mode, seedDeps);
+    },
+    configureProfile(name, mode, options) {
+      const request: CodexWriteRequest =
+        mode === "proxy"
+          ? {
+              mode,
+              profile: name,
+              quiet: options.quiet,
+              baseUrl: openaiBaseUrl(wiringPortFor(name)),
+            }
+          : {
+              mode,
+              profile: name,
+              quiet: options.quiet,
+              directIntegrationId: options.directIntegrationId,
+            };
+      configureCodexConfig(effectiveCodexHome(), request);
+    },
+    removeProfile(name) {
+      removeCodexProfile(effectiveCodexHome(), name);
+    },
+  };
+}
+
+/**
  * `agent codex`: configure Codex at the active CODEX_HOME -- the one a `--host`
  * farm set in state, else `$CODEX_HOME`, else the default `~/.codex`. `--direct`
  * forces GitHub Copilot Direct, `--proxy` forces the local proxy, and with no
@@ -1001,25 +1036,11 @@ export function detectCodexDirect(deps?: DirectProbeDeps): boolean {
  * A GitHub token provisioned via `agent auth` (in the shared store) is used as the
  * Direct credential automatically; with no mode flag, its presence selects Direct
  * without probing. (Named profiles are managed by `agent profile`, not here.)
+ * The body is the shared skeleton (runAgentConfig) over codexAdapter.
  */
 export async function runCodex(
   args: CodexConfigArgs,
   catalogDeps?: CodexCatalogDeps,
 ): Promise<void> {
-  if (args.check) {
-    checkCodexConfig();
-    return;
-  }
-  // A configured credential (`agent auth`) selects Direct without a live probe.
-  // Resolve it provider-aware (gh-cli -> gh, copilot/gh-token -> stored token, none ->
-  // null) so a recorded-but-broken provider correctly falls through to the probe.
-  const ghToken = new Credential().resolve();
-  const direct = resolveDirectMode(args.mode, ghToken, detectCodexDirect);
-  logger.log(
-    `  Configuring Codex for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} ...`,
-  );
-  // Reuse the just-resolved credential for the catalog seed's direct fetch so the
-  // gh-cli provider isn't shelled out to a second time.
-  const seedDeps = catalogDeps ?? (ghToken === null ? undefined : { directToken: ghToken });
-  await applyCodexConfig(effectiveCodexHome(), direct ? "direct" : "proxy", seedDeps);
+  return runAgentConfig(codexAdapter(catalogDeps), args);
 }

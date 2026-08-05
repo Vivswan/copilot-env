@@ -20,13 +20,12 @@
 // touched; all other settings are preserved.
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { resolveDirectMode } from "../agents/direct_detect.ts";
+import { type AgentAdapter, type AgentConfigArgs, runAgentConfig } from "../agents/configure.ts";
 import { CLAUDE_PROBE, type DirectProbeDeps, probeDirectWorks } from "../agents/live_probe.ts";
 import {
   type AgentProviderMode,
   type ManagedAgentMode,
   providerModeExitCode,
-  type RequestedMode,
 } from "../agents/provider_mode.ts";
 import { codexUserAgent, probeDirectIntegrationId } from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
@@ -128,11 +127,8 @@ export function directHelperResolvesViaAgent(helperBody: string | null): boolean
   return helperBody !== null && helperBody === directHelperScript();
 }
 
-export interface ClaudeConfigArgs {
-  check?: boolean;
-  /** `--direct`/`--proxy`, parsed once at the CLI boundary (auto = neither). */
-  mode: RequestedMode;
-}
+/** The `agent claude` argument shape (the shared skeleton's, under this command's name). */
+export type ClaudeConfigArgs = AgentConfigArgs;
 
 export interface ClaudeWiringStatus {
   /** settings.json exists. */
@@ -655,6 +651,36 @@ export function detectClaudeDirect(deps?: DirectProbeDeps): boolean {
 }
 
 /**
+ * The Claude AgentAdapter: the shared command skeleton's view of this file's
+ * writers (see src/agents/configure.ts).
+ */
+export function claudeAdapter(): AgentAdapter {
+  return {
+    label: "Claude",
+    check: checkClaudeConfig,
+    detectDirect: detectClaudeDirect,
+    async configureDefault(mode, ghToken) {
+      // Direct bakes the client identity this credential is accepted under (shared with
+      // Codex Direct); proxy needs none. Reuses the already-resolved token so gh-cli isn't
+      // spawned twice.
+      const directIntegrationId =
+        mode === "direct" ? await probeDirectIntegrationId(null, ghToken) : undefined;
+      configureClaudeConfig(resolveClaudeHome(), mode, { directIntegrationId });
+    },
+    configureProfile(name, mode, options) {
+      configureClaudeConfig(resolveClaudeHome(), mode, {
+        quiet: options.quiet,
+        profile: name,
+        directIntegrationId: options.directIntegrationId,
+      });
+    },
+    removeProfile(name) {
+      removeClaudeProfile(resolveClaudeHome(), name);
+    },
+  };
+}
+
+/**
  * `agent claude`: configure Claude Code's wiring at the effective Claude home
  * ($CLAUDE_CONFIG_DIR, else ~/.claude). `--direct` forces GitHub Copilot Direct,
  * `--proxy` forces the local proxy, and with no mode flag it auto-detects (live
@@ -662,24 +688,8 @@ export function detectClaudeDirect(deps?: DirectProbeDeps): boolean {
  * (in the shared store) selects Direct without probing when no mode flag is given.
  * `--check` reports the configured mode (exit 0 direct / 2 proxy|none / 1 other)
  * without a probe. (Named profiles are managed by `agent profile`, not here.)
+ * The body is the shared skeleton (runAgentConfig) over claudeAdapter.
  */
 export async function runClaude(args: ClaudeConfigArgs): Promise<void> {
-  if (args.check) {
-    checkClaudeConfig();
-    return;
-  }
-  const claudeHome = resolveClaudeHome();
-  // A configured credential (`agent auth`) selects Direct without a live probe.
-  // Resolve it provider-aware (gh-cli -> gh, copilot/gh-token -> stored token, none ->
-  // null); the helper re-resolves at fetch time via `agent auth --get`.
-  const ghToken = new Credential().resolve();
-  const direct = resolveDirectMode(args.mode, ghToken, detectClaudeDirect);
-  logger.log(
-    `  Configuring Claude for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} ...`,
-  );
-  // Direct bakes the client identity this credential is accepted under (shared with
-  // Codex Direct); proxy needs none. Reuses the already-resolved token so gh-cli isn't
-  // spawned twice.
-  const directIntegrationId = direct ? await probeDirectIntegrationId(null, ghToken) : undefined;
-  configureClaudeConfig(claudeHome, direct ? "direct" : "proxy", { directIntegrationId });
+  return runAgentConfig(claudeAdapter(), args);
 }

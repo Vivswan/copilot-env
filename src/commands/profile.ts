@@ -9,22 +9,17 @@
 // profile's credential.
 import { rmSync } from "node:fs";
 import { consola } from "consola";
+import { type AgentAdapter, configuringLine } from "../agents/configure.ts";
 import type { RequestedMode } from "../agents/provider_mode.ts";
-import { configureClaudeConfig, removeClaudeProfile } from "../claude/config.ts";
+import { claudeAdapter, configureClaudeConfig } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import {
-  configureCodexConfig,
-  effectiveCodexHome,
-  probeDirectIntegrationId,
-  removeCodexProfile,
-} from "../codex/config.ts";
+import { codexAdapter, probeDirectIntegrationId } from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { type ProxyStatus, proxyStatus, stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { allProfileNames, CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
 import { CODEX_IDENTITY_NAME } from "../copilot_api/integration_identity.ts";
 import { profileHome, profileHomeNames } from "../copilot_api/paths.ts";
-import { openaiBaseUrl, wiringPortFor } from "../copilot_api/port.ts";
 import { type ProfileName, parseProfileFlag, profileLabel } from "../copilot_api/profile.ts";
 import { cyan, gray, green, yellow } from "../utils/ansi.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -32,6 +27,14 @@ import { authenticate, parseAcquisition } from "./auth.ts";
 
 // Narration to stderr so `--settings-for`'s stdout stays a clean machine-readable path.
 const logger = createStderrLogger();
+
+/** BOTH agents' adapters, in the wiring order profile operations use (Claude first,
+ *  matching the pre-adapter hand-rolled sequence, so per-agent narration and failure
+ *  aggregation keep their historical order). Built fresh per call: adapters are cheap
+ *  closures and a stale one would pin a stale effective home. */
+function bothAgents(): AgentAdapter[] {
+  return [claudeAdapter(), codexAdapter()];
+}
 
 export interface ProfileArgs {
   /** `--add <name>`: create (or re-wire) a profile: credential + mode + both agents. */
@@ -60,27 +63,20 @@ function storedMode(name: ProfileName): ProfileMode | null {
 }
 
 /** Wire BOTH agents for `name` at `mode`. Order and resilience mirror
- *  configureBothAgents: try each, report per-agent, fail if either failed. Direct mode
- *  resolves the client identity as pin > persisted slot > probe, persisting a freshly
- *  probed non-default id so a later launcher `--sync` replays it offline (a null slot
- *  means "re-derive", which is network-free for the non-PAT common case). */
+ *  configureBothAgents: try each adapter, report per-agent, fail if either failed.
+ *  Direct mode resolves the client identity as pin > persisted slot > probe, persisting
+ *  a freshly probed non-default id so a later launcher `--sync` replays it offline (a
+ *  null slot means "re-derive", which is network-free for the non-PAT common case). */
 async function wireBothAgents(name: ProfileName, mode: ProfileMode, quiet: boolean): Promise<void> {
   const directIntegrationId =
     mode === "direct" ? await resolveAndPersistDirectIdentity(name) : undefined;
   const failures: string[] = [];
-  try {
-    configureClaudeConfig(resolveClaudeHome(), mode, { quiet, profile: name, directIntegrationId });
-  } catch (e) {
-    failures.push(`Claude: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  try {
-    const request =
-      mode === "proxy"
-        ? { mode, profile: name, quiet, baseUrl: openaiBaseUrl(wiringPortFor(name)) }
-        : { mode, profile: name, quiet, directIntegrationId };
-    configureCodexConfig(effectiveCodexHome(), request);
-  } catch (e) {
-    failures.push(`Codex: ${e instanceof Error ? e.message : String(e)}`);
+  for (const agent of bothAgents()) {
+    try {
+      agent.configureProfile(name, mode, { quiet, directIntegrationId });
+    } catch (e) {
+      failures.push(`${agent.label}: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
   if (failures.length > 0) {
     throw new Error(`could not wire ${profileLabel(name)}:\n  ${failures.join("\n  ")}`);
@@ -143,10 +139,7 @@ async function runAdd(name: ProfileName, args: ProfileArgs): Promise<void> {
     const { signalled } = await stopTrackedProxy(0, name);
     if (signalled) logger.log(`  Stopped ${profileLabel(name)}'s proxy daemon (now direct).`);
   }
-  logger.log(
-    `  Configuring ${profileLabel(name)} for ` +
-      `${mode === "direct" ? "GitHub Copilot Direct" : "the local copilot-api proxy"} (both agents) ...`,
-  );
+  logger.log(configuringLine(profileLabel(name), mode, " (both agents)"));
   // wireBothAgents resolves+persists the direct client identity (a rejected credential
   // throws here, before the store commits the mode below, so the profile stays unwired).
   await wireBothAgents(name, mode, false);
@@ -181,8 +174,7 @@ export async function deleteProfileEverywhere(name: ProfileName): Promise<void> 
         `(\`agent stop --profile ${name}\`) before deleting`,
     );
   }
-  removeClaudeProfile(resolveClaudeHome(), name);
-  removeCodexProfile(effectiveCodexHome(), name);
+  for (const agent of bothAgents()) agent.removeProfile(name);
   const state = new CopilotEnvState();
   state.setCredential(name, { githubToken: null, authProvider: null });
   state.setProfileMode(name, null);

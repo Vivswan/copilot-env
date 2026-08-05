@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { isPatToken, usePatPassthrough } from "../src/commands/start.ts";
+import { isPatToken, usePatPassthrough } from "../src/copilot_api/integration_identity.ts";
 
 // --- isPatToken --------------------------------------------------------------
 

@@ -1,18 +1,17 @@
 // `agent start`: launches the proxy daemon, applies defaults, and syncs aliases.
 import * as fs from "node:fs";
-import { connect } from "node:net";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
 import { CopilotAdminClient } from "../copilot_api/admin.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
+import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig, projectedProxyConfig } from "../copilot_api/env_config.ts";
-import type { AuthProvider } from "../copilot_api/env_state.ts";
 import {
   DAEMON_INTEGRATION_ID_ENV,
-  isPatShapedToken,
   resolvePassthroughIntegrationId,
+  usePatPassthrough,
 } from "../copilot_api/integration_identity.ts";
 import { generateAliases } from "../copilot_api/models.ts";
 import {
@@ -32,7 +31,6 @@ import {
   reserveProfilePort,
 } from "../copilot_api/port.ts";
 import {
-  classifyDaemonPid,
   getOrphanPids,
   isCopilotApiPid,
   launchDaemon,
@@ -84,53 +82,6 @@ async function acquireStartLock(lockPath: string): Promise<void> {
 // String literals here are external contracts (config-file keys, copilot-api
 // model ids). Do not change them during refactors.
 //
-
-/**
- * Whether a GitHub token is a Personal Access Token by its prefix: `ghp_` (classic)
- * or `github_pat_` (fine-grained). PATs cannot perform copilot-api's editor token
- * exchange (`copilot_internal/v2/token` -> 403), so they need the passthrough shim.
- * (gh OAuth tokens, `gho_`, also can't exchange -- 404 -- but that decision lives in
- * `usePatPassthrough`, not here.) Legacy unprefixed 40-hex classic PATs are NOT detected
- * here -- use `config passthrough on` for those. Delegates to the shared shape predicate
- * so this and the identity probe can never disagree about what a PAT looks like.
- */
-export function isPatToken(token: string): boolean {
-  return isPatShapedToken(token);
-}
-
-/**
- * Whether to load the PAT-passthrough preload shim into the daemon
- * (`src/scripts/pat_passthrough_preload.ts`). The shim intercepts copilot-api's
- * editor token exchange and hands the token back as the Copilot token, so the daemon
- * runs its normal path with the token as the bearer -- the only way a
- * credential that can't perform the exchange works through the proxy. Two such credentials:
- * a PAT (`ghp_`/`github_pat_`, 403s the exchange) and a `gh-cli` OAuth token (404s the
- * exchange) -- both are nonetheless accepted DIRECTLY as the Copilot bearer (a PAT under
- * `copilot-developer-cli`, resolved by the identity probe; other credentials under the
- * default `vscode-chat`). It's a no-op for tokens the exchange accepts (the `copilot`
- * device-flow token), so the `passthrough` config key (`on`) can force it for an
- * undetected credential and `off` forces it off.
- *
- * Precedence: an explicit `force` (resolved by the caller from the `passthrough` config:
- * on -> true, off -> false) wins; otherwise (`auto`/unset) auto-enable for the `gh-cli` provider
- * or a PAT-shaped token.
- */
-export function usePatPassthrough(opts: {
-  force: boolean | undefined;
-  token: string | undefined;
-  provider?: AuthProvider | null;
-}): boolean {
-  if (opts.token === undefined) return false; // no token resolved -> the shim is a no-op anyway
-  if (opts.force !== undefined) return opts.force;
-  // The device-flow `copilot` token CAN perform the editor token exchange (and rotate the
-  // short-lived Copilot token), so never shim it -- regardless of shape. A PAT, a gh-cli login,
-  // or any `gho_` GitHub-OAuth token (e.g. a gh token pasted via gh-token) CANNOT perform the
-  // exchange (403/404) but ARE accepted directly as the Copilot bearer under vscode-chat, so they
-  // need the passthrough.
-  if (opts.provider === "copilot") return false;
-  if (opts.provider === "gh-cli") return true;
-  return isPatToken(opts.token) || opts.token.startsWith("gho_");
-}
 
 /** Raw `agent start` flag values, exactly as Commander hands them over. Parsed ONCE by
  *  `parseStartAction` at the CLI boundary into a StartAction -- runStart never dispatches
@@ -203,73 +154,6 @@ export function parseStartAction(flags: StartFlags): StartAction {
     port: flags.port,
     profile,
   };
-}
-
-/** The `proxyStatus` verdict: a proxy reported up ALWAYS carries the port it was probed
- *  on, so no consumer ever has to handle a tracked-but-portless "up" daemon. */
-export type ProxyStatus = { up: false } | { up: true; port: number };
-
-// Whether OUR proxy for `profile` is genuinely up (and on which recorded port): the tracked,
-// alive copilot-api pid AND the port it actually recorded both confirm it. Reading pid AND port
-// from the SAME run-state snapshot ties the probe to the daemon's real listening port -- so
-// a moved port (start chose a different one) or a stranger on the default port can't produce
-// a false result, and the returned port matches what was probed. Exported for the other
-// commands that need the same "is it up?" answer (`agent models` source auto-pick).
-export async function proxyStatus(profile: Profile = null): Promise<ProxyStatus> {
-  const { pid, port } = CopilotEnvRunState.forProfile(profile).read();
-  if (pid === undefined || !pidAlive(pid)) {
-    return { up: false };
-  }
-  // PID-reuse guard, but liveness-safe: only a CONFIDENT "no" (the recorded pid is gone or is a
-  // different, identifiable process) rules the proxy out. "unknown" -- the caller's token can't
-  // read the pid's command line, as in Codex's packaged/sandboxed app where WMI is unavailable --
-  // falls back to probing OUR recorded pid+port, so a healthy proxy isn't false-reported as down.
-  if ((await classifyDaemonPid(pid)) === "no") {
-    return { up: false };
-  }
-  // Only the default daemon has a meaningful port fallback (the configured/built-in
-  // default); a named profile with a tracked pid but no recorded port is unprobeable.
-  const probePort = port ?? (profile === null ? defaultProxyPort() : undefined);
-  if (probePort === undefined) return { up: false };
-  // Return the port actually probed (not the raw state field, which can be
-  // absent): callers reuse it for follow-up requests, so probe and fetch must
-  // name the same port.
-  return (await portListening(probePort)) ? { up: true, port: probePort } : { up: false };
-}
-
-// A raw TCP-connect liveness probe. It opens (and immediately closes) a loopback socket to
-// confirm the daemon is accepting connections WITHOUT sending an HTTP request -- so `--check`
-// (run by an open agent's resolver, a monitor, etc.) leaves no trace in the daemon access log.
-// The idle watchdog keys off the daemon's inbound-request observer (inference POSTs only),
-// not this access log, so a liveness ping never resets the idle clock regardless; a bare
-// connect still keeps the access log clean and returns faster than an HTTP round-trip.
-// Probes IPv4 and IPv6 loopback
-// CONCURRENTLY and settles on the FIRST success (so a healthy proxy returns immediately,
-// mirroring fetch's localhost happy-eyeballs) -- only a both-fail result waits, and at most one
-// timeout, never two serial.
-export function portListening(port: number, timeoutMs = 2000): Promise<boolean> {
-  const tryHost = (host: string): Promise<boolean> =>
-    new Promise((resolve) => {
-      const socket = connect({ host, port });
-      const finish = (ok: boolean): void => {
-        socket.destroy();
-        resolve(ok);
-      };
-      socket.setTimeout(timeoutMs);
-      socket.once("connect", () => finish(true));
-      socket.once("timeout", () => finish(false));
-      socket.once("error", () => finish(false));
-    });
-  return new Promise((resolve) => {
-    let remaining = 2;
-    for (const host of ["127.0.0.1", "::1"]) {
-      void tryHost(host).then((ok) => {
-        if (ok)
-          resolve(true); // first success wins; later resolve() calls are no-ops
-        else if (--remaining === 0) resolve(false); // both failed
-      });
-    }
-  });
 }
 
 /** An actionable hint when the daemon died because the credential could not be exchanged for a
@@ -566,8 +450,7 @@ export async function runStart(action: StartAction): Promise<void> {
   if (action.kind === "record-event") {
     // Record an activity heartbeat for the idle watchdog and return -- no launch. The
     // proxy resolver calls this on each token fetch so an open agent stays "active".
-    // setIfExists: a typo'd `--profile <name>` must not fabricate a phantom profile home.
-    CopilotEnvRunState.forProfile(profile).setIfExists({ lastEnsureAt: Date.now() });
+    recordHeartbeat(profile);
     return;
   }
   const paths = new CopilotApiPaths(profile);

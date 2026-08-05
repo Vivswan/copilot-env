@@ -19,6 +19,7 @@ import {
   removeCodexProfile,
 } from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
+import { type ProxyStatus, proxyStatus, stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { allProfileNames, CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
 import { CODEX_IDENTITY_NAME } from "../copilot_api/integration_identity.ts";
@@ -28,8 +29,6 @@ import { type ProfileName, parseProfileName, profileLabel } from "../copilot_api
 import { cyan, gray, green, yellow } from "../utils/ansi.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { authenticate, parseAcquisition } from "./auth.ts";
-import { type ProxyStatus, proxyStatus } from "./start.ts";
-import { stopTrackedProxy } from "./stop.ts";
 
 // Narration to stderr so `--settings-for`'s stdout stays a clean machine-readable path.
 const logger = createStderrLogger();

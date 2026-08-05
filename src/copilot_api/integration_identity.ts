@@ -22,6 +22,7 @@
 // long-standing default FIRST, so a credential the default accepts stays byte-identical.
 import { consola } from "consola";
 import { isRecord } from "../utils/json.ts";
+import type { AuthProvider } from "./env_state.ts";
 
 /** The gating header. Its VALUES below are external contracts -- never rename. */
 export const INTEGRATION_ID_HEADER = "Copilot-Integration-Id";
@@ -356,7 +357,7 @@ export interface ResolveIdentityOptions extends IdentityProbeDeps {
  * Whether a GitHub token is a Personal Access Token by its prefix: `ghp_` (classic) or
  * `github_pat_` (fine-grained). THE single PAT-shape predicate -- two separate decisions
  * key off it for the same underlying reason (a PAT is the credential class the Copilot
- * endpoints treat specially): the passthrough shim (`usePatPassthrough`, start.ts, because
+ * endpoints treat specially): the passthrough shim (`usePatPassthrough` below, because
  * a PAT 403s the editor token exchange) and the identity probe below (because a PAT is the
  * only credential the DEFAULT client identity refuses). Legacy unprefixed 40-hex classic
  * PATs are NOT detectable by shape -- use `config passthrough on` / `config integration-id`.
@@ -364,6 +365,53 @@ export interface ResolveIdentityOptions extends IdentityProbeDeps {
 export function isPatShapedToken(token: string): boolean {
   const t = token.trim();
   return t.startsWith("ghp_") || t.startsWith("github_pat_");
+}
+
+/**
+ * Whether a GitHub token is a Personal Access Token by its prefix: `ghp_` (classic)
+ * or `github_pat_` (fine-grained). PATs cannot perform copilot-api's editor token
+ * exchange (`copilot_internal/v2/token` -> 403), so they need the passthrough shim.
+ * (gh OAuth tokens, `gho_`, also can't exchange -- 404 -- but that decision lives in
+ * `usePatPassthrough`, not here.) Legacy unprefixed 40-hex classic PATs are NOT detected
+ * here -- use `config passthrough on` for those. Delegates to the shared shape predicate
+ * so this and the identity probe can never disagree about what a PAT looks like.
+ */
+export function isPatToken(token: string): boolean {
+  return isPatShapedToken(token);
+}
+
+/**
+ * Whether to load the PAT-passthrough preload shim into the daemon
+ * (`src/scripts/pat_passthrough_preload.ts`). The shim intercepts copilot-api's
+ * editor token exchange and hands the token back as the Copilot token, so the daemon
+ * runs its normal path with the token as the bearer -- the only way a
+ * credential that can't perform the exchange works through the proxy. Two such credentials:
+ * a PAT (`ghp_`/`github_pat_`, 403s the exchange) and a `gh-cli` OAuth token (404s the
+ * exchange) -- both are nonetheless accepted DIRECTLY as the Copilot bearer (a PAT under
+ * `copilot-developer-cli`, resolved by the identity probe; other credentials under the
+ * default `vscode-chat`). It's a no-op for tokens the exchange accepts (the `copilot`
+ * device-flow token), so the `passthrough` config key (`on`) can force it for an
+ * undetected credential and `off` forces it off.
+ *
+ * Precedence: an explicit `force` (resolved by the caller from the `passthrough` config:
+ * on -> true, off -> false) wins; otherwise (`auto`/unset) auto-enable for the `gh-cli` provider
+ * or a PAT-shaped token.
+ */
+export function usePatPassthrough(opts: {
+  force: boolean | undefined;
+  token: string | undefined;
+  provider?: AuthProvider | null;
+}): boolean {
+  if (opts.token === undefined) return false; // no token resolved -> the shim is a no-op anyway
+  if (opts.force !== undefined) return opts.force;
+  // The device-flow `copilot` token CAN perform the editor token exchange (and rotate the
+  // short-lived Copilot token), so never shim it -- regardless of shape. A PAT, a gh-cli login,
+  // or any `gho_` GitHub-OAuth token (e.g. a gh token pasted via gh-token) CANNOT perform the
+  // exchange (403/404) but ARE accepted directly as the Copilot bearer under vscode-chat, so they
+  // need the passthrough.
+  if (opts.provider === "copilot") return false;
+  if (opts.provider === "gh-cli") return true;
+  return isPatToken(opts.token) || opts.token.startsWith("gho_");
 }
 
 /**

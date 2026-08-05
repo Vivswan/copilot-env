@@ -32,6 +32,7 @@ import {
   Credential,
   ghAuthToken,
 } from "../copilot_api/credential.ts";
+import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import {
   ghTokenEnvVarsLabel,
@@ -47,7 +48,6 @@ import { releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { printTable } from "../utils/table.ts";
 import { sleepSync } from "../utils/time.ts";
-import { stopTrackedProxy } from "./stop.ts";
 
 // Narration to stderr so `--get`'s stdout stays a clean machine-readable token.
 const logger = createStderrLogger();

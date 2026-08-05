@@ -13,6 +13,7 @@ import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { knownCodexHomes, removeCodexDefaultWiring, removeCodexProfile } from "../codex/config.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import { Credential } from "../copilot_api/credential.ts";
+import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { allProfileNames } from "../copilot_api/env_state.ts";
 import { resolveRootHome } from "../copilot_api/paths.ts";
 import { type ProfileName, profileLabel } from "../copilot_api/profile.ts";
@@ -21,7 +22,6 @@ import { isGitCheckout, PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { deleteProfileEverywhere } from "./profile.ts";
 import { runShellIntegration } from "./shell_integration.ts";
-import { stopTrackedProxy } from "./stop.ts";
 
 export interface UninstallArgs {
   /** `--yes`: skip the confirmation prompt (headless use). */

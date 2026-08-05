@@ -8,10 +8,10 @@
 import { consola } from "consola";
 import type { RequestedMode } from "../agents/provider_mode.ts";
 import { fetchRawModels } from "../copilot_api/catalog.ts";
+import { proxyStatus } from "../copilot_api/daemon.ts";
 import { bold, cyan, gray } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
-import { proxyStatus } from "./start.ts";
 
 export interface ModelsArgs {
   /** `--direct`/`--proxy`, parsed once at the CLI boundary (auto = neither). */

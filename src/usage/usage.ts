@@ -152,6 +152,33 @@ export function discoverUsageDbs(home: string = resolveHome()): string[] {
 }
 
 /**
+ * Open `path` read-only and run `query` against it, preferring a WAL-aware open.
+ * The daemon runs the DB in WAL mode and only checkpoints on close, so a plain
+ * read-only open (which consults the -wal) comes first; if the open OR the query
+ * fails (SQLite can defer a WAL/-shm error to prepare/exec time, e.g. a read-only
+ * FS where the -shm can't be created), retry as an `immutable=1` snapshot --
+ * missing un-checkpointed rows beats failing the report. Throws the last error
+ * when both attempts fail.
+ */
+function openSqliteReadOnlyWithWalFallback<T>(path: string, query: (db: Database) => T): T {
+  // pathToFileURL handles Windows drive letters / backslashes.
+  const uri = pathToFileURL(path).href;
+  let lastErr: unknown;
+  for (const dbUri of [uri, `${uri}?immutable=1`]) {
+    let db: Database | undefined;
+    try {
+      db = new Database(dbUri, constants.SQLITE_OPEN_READONLY | constants.SQLITE_OPEN_URI);
+      return query(db);
+    } catch (e) {
+      lastErr = e;
+    } finally {
+      db?.close();
+    }
+  }
+  throw lastErr;
+}
+
+/**
  * Open each DB read-only and aggregate token usage by model. `sinceMs` (unix
  * ms) bounds the query to recent rows when set. A DB that fails to open or query
  * is skipped with a warning rather than aborting the whole report.
@@ -194,31 +221,14 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
            GROUP BY bucket, model`;
 
   for (const path of dbPaths) {
-    // The daemon runs the usage DB in WAL mode and only checkpoints on close, so rows written
-    // since the last checkpoint live in the -wal file. Open read-only WITHOUT `immutable` so
-    // SQLite consults the -wal (an immutable open ignores it -- undercounting recent usage, or
-    // "no such table" on a fresh DB whose schema is still only in the WAL). SQLite can defer a
-    // WAL/-shm error to query PREPARE/EXEC time, so the immutable fallback wraps the WHOLE
-    // open+query, not just the open: a read-only-FS DB where the -shm can't be created falls
-    // back to an immutable snapshot (misses un-checkpointed rows, but beats failing the report).
-    // pathToFileURL handles Windows drive letters / backslashes.
-    const uri = pathToFileURL(path).href;
-    let rows: UsageRow[] | undefined;
-    let lastErr: unknown;
-    for (const dbUri of [uri, `${uri}?immutable=1`]) {
-      let db: Database | undefined;
-      try {
-        db = new Database(dbUri, constants.SQLITE_OPEN_READONLY | constants.SQLITE_OPEN_URI);
-        rows = db.query(QUERY).all(since) as UsageRow[];
-        break;
-      } catch (e) {
-        lastErr = e;
-      } finally {
-        db?.close();
-      }
-    }
-    if (rows === undefined) {
-      consola.warn(`could not read ${path} (${errMessage(lastErr)}).`);
+    let rows: UsageRow[];
+    try {
+      rows = openSqliteReadOnlyWithWalFallback(
+        path,
+        (db) => db.query(QUERY).all(since) as UsageRow[],
+      );
+    } catch (e) {
+      consola.warn(`could not read ${path} (${errMessage(e)}).`);
       continue;
     }
 

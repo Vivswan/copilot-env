@@ -9,7 +9,6 @@ import { Credential } from "../copilot_api/credential.ts";
 import type { ProfileName } from "../copilot_api/profile.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { resolveDirectMode } from "./direct_detect.ts";
-import type { DirectProbeDeps } from "./live_probe.ts";
 import type { ManagedAgentMode, RequestedMode } from "./provider_mode.ts";
 
 const logger = createStderrLogger();
@@ -52,7 +51,7 @@ export interface AgentAdapter {
    *  config.toml vs settings.json + apiKeyHelper), so the whole report is. */
   check(): void;
   /** Live Direct auto-detect probe (the "auto" fallback when no credential is stored). */
-  detectDirect(deps?: DirectProbeDeps): boolean;
+  detectDirect(): boolean;
   /** Default-selection write for the resolved mode. `ghToken` is the credential
    *  runAgentConfig already resolved (null = none stored), so the adapter never
    *  has to resolve it a second time. */

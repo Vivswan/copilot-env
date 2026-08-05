@@ -54,18 +54,25 @@ function removeShellIntegrationEverywhere(): void {
   if (process.platform === "win32") runShellIntegration({ remove: true, allHosts: true });
 }
 
+/** The run-state-recorded CODEX_HOME farm dir an uninstall would remove, or null
+ *  (Windows, or none recorded). The narration and the removal share this ONE
+ *  resolver so the dry-run can never drift from what actually gets deleted. */
+function recordedCodexHostFarm(): string | null {
+  if (process.platform === "win32") return null;
+  const recorded = new CopilotEnvRunState().read().codexHome;
+  return recorded ? recorded : null;
+}
+
 /** Tear down the host's CODEX_HOME symlink farm (POSIX only). Ownership AND the
  *  path come from run state -- `agent codex --host` persisted the farm dir it
  *  built there -- so an untracked ~/.codex/hosts/<hostname> someone else created
  *  is never swept, and a farm built under a different HOME is still the one
  *  removed. Absent state reads back as undefined (state.ts schema). */
 function removeCodexHostFarm(): void {
-  if (process.platform === "win32") return;
-  const state = new CopilotEnvRunState();
-  const recorded = state.read().codexHome;
-  if (!recorded) return;
+  const recorded = recordedCodexHostFarm();
+  if (recorded === null) return;
   rmSync(recorded, { recursive: true, force: true });
-  state.set({ codexHome: null });
+  new CopilotEnvRunState().set({ codexHome: null });
 }
 
 /** The exact shell command that finishes a checkout delete the process could not. */
@@ -141,10 +148,16 @@ const UNINSTALL_STEPS: UninstallStep[] = [
     //    delete below removes (a dangling reference breaks Codex startup), and a
     //    profile wired while a farm home was active left its tables there too --
     //    step 2 only stripped the currently-effective home. Then the farm itself.
-    describe: (ctx) =>
-      ctx.codexHomes.map(
+    describe: (ctx) => {
+      const lines = ctx.codexHomes.map(
         (home) => `Would remove the copilot-env wiring from ${codexConfigPath(home)}.`,
-      ),
+      );
+      // Narrate the farm delete only when the injected seam is absent: a test
+      // substitute does its own (redirected) work, not this state-recorded rm.
+      const farm = ctx.deps.removeCodexHostFarm === undefined ? recordedCodexHostFarm() : null;
+      if (farm !== null) lines.push(`Would delete the CODEX_HOME host farm: ${farm}`);
+      return lines;
+    },
     run: (ctx) => {
       for (const home of ctx.codexHomes) {
         removeCodexDefaultWiring(home);

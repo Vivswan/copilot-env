@@ -12,7 +12,6 @@ import {
   resolveDirectIntegrationId,
   resolvePassthroughIntegrationId,
   setIntegrationProbeFetch,
-  tokenNeedsIntegrationProbe,
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
 
@@ -40,15 +39,6 @@ function stubFetch(opts: {
     );
   };
 }
-
-test("tokenNeedsIntegrationProbe: only PAT shapes warrant a probe", () => {
-  expect(tokenNeedsIntegrationProbe("ghp_classic")).toBe(true);
-  expect(tokenNeedsIntegrationProbe("github_pat_fine")).toBe(true);
-  expect(tokenNeedsIntegrationProbe("  ghp_trim  ")).toBe(true);
-  expect(tokenNeedsIntegrationProbe("gho_oauth")).toBe(false);
-  expect(tokenNeedsIntegrationProbe("ghu_user")).toBe(false);
-  expect(tokenNeedsIntegrationProbe("ghs_server")).toBe(false);
-});
 
 test("probeIntegrationIdentity: first accepted candidate wins, in order", async () => {
   const seen: string[] = [];

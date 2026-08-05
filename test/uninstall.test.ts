@@ -259,3 +259,40 @@ test.skipIf(process.platform === "win32")(
     expect(existsSync(untracked)).toBe(true);
   },
 );
+
+test.skipIf(process.platform === "win32")(
+  "uninstall --dry-run narrates the codex host-farm delete and leaves the farm alone",
+  async () => {
+    const { codexHome } = tmpHomes();
+    const farm = join(dir, "farm");
+    mkdirSync(farm, { recursive: true });
+    new CopilotEnvRunState().set({ codexHome: farm });
+
+    // No farm seam, so the narration reflects the REAL removal it describes.
+    const deps = tmpDeps(codexHome);
+    delete deps.removeCodexHostFarm;
+    const written: string[] = [];
+    const savedLevel = consola.level;
+    const origOut = process.stdout.write.bind(process.stdout);
+    const origErr = process.stderr.write.bind(process.stderr);
+    process.stdout.write = (s: string | Uint8Array) => {
+      written.push(String(s));
+      return true;
+    };
+    process.stderr.write = (s: string | Uint8Array) => {
+      written.push(String(s));
+      return true;
+    };
+    try {
+      consola.level = 3;
+      await runUninstall({ dryRun: true }, deps);
+    } finally {
+      process.stdout.write = origOut;
+      process.stderr.write = origErr;
+      consola.level = savedLevel;
+    }
+
+    expect(written.join("")).toContain(`Would delete the CODEX_HOME host farm: ${farm}`);
+    expect(existsSync(farm)).toBe(true);
+  },
+);

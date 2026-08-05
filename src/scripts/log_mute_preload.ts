@@ -14,7 +14,8 @@
 // floated proxy version. It depends only on copilot-api opening its handler log streams via
 // `fs.createWriteStream` under `<APP_DIR>/logs` (lib/logger.ts, long-stable) and computing
 // APP_DIR the same way CopilotApiPaths does (COPILOT_API_HOME or the shared default). The
-// load decision lives in start.ts; here we act unconditionally on load.
+// load decision lives in the daemon launch pipeline (src/copilot_api/launch.ts); here
+// we act unconditionally on load.
 import fs from "node:fs";
 import { devNull } from "node:os";
 import { resolve, sep } from "node:path";

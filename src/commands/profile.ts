@@ -22,6 +22,7 @@ import { CODEX_IDENTITY_NAME } from "../copilot_api/integration_identity.ts";
 import { profileHome, profileHomeNames } from "../copilot_api/paths.ts";
 import { type ProfileName, parseProfileFlag, profileLabel } from "../copilot_api/profile.ts";
 import { cyan, gray, green, yellow } from "../utils/ansi.ts";
+import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { authenticate, parseAcquisition } from "./auth.ts";
 
@@ -75,7 +76,7 @@ async function wireBothAgents(name: ProfileName, mode: ProfileMode, quiet: boole
     try {
       agent.configureProfile(name, mode, { quiet, directIntegrationId });
     } catch (e) {
-      failures.push(`${agent.label}: ${e instanceof Error ? e.message : String(e)}`);
+      failures.push(`${agent.label}: ${errMessage(e)}`);
     }
   }
   if (failures.length > 0) {
@@ -345,7 +346,7 @@ async function runSync(): Promise<void> {
       synced++;
     } catch (e) {
       failed++;
-      logger.warn(`could not sync ${profileLabel(name)}: ${e instanceof Error ? e.message : e}`);
+      logger.warn(`could not sync ${profileLabel(name)}: ${errMessage(e)}`);
     }
   }
   logger.log(`  ✓ Synced ${synced} profile${synced === 1 ? "" : "s"}.`);

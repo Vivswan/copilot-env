@@ -1,6 +1,7 @@
-// Preloaded into the copilot-api daemon (via `bun --preload`) when `agent start`
-// decides to use PAT passthrough (`usePatPassthrough` in integration_identity.ts: auto for a PAT-shaped
-// credential, or forced via the `passthrough` config key). A PAT can't perform copilot-api's
+// Preloaded into the copilot-api daemon (via `bun --preload`) when the daemon launch
+// pipeline (src/copilot_api/launch.ts) decides to use PAT passthrough (`usePatPassthrough`
+// in integration_identity.ts: auto for a PAT-shaped or gho_ OAuth token or the gh-cli
+// provider, or forced via the `passthrough` config key). A PAT can't perform copilot-api's
 // editor token exchange (`GET .../copilot_internal/v2/token` -> 403 "Resource not accessible by
 // personal access token"), but IS accepted directly by the Copilot API hosts under the
 // right client-integration identity (which identity depends on the token class -- see
@@ -10,17 +11,18 @@
 //   1. Intercept ONLY the exchange request and return the token itself as the Copilot
 //      token. copilot-api then proceeds down its normal default path with the token as
 //      the bearer.
-//   2. When `agent start`'s identity probe picked a NON-default integration id (a
-//      fine-grained PAT needs `copilot-developer-cli`; copilot-api hardcodes
+//   2. When the launch pipeline resolved an integration id for this credential (a
+//      fine-grained PAT needs `copilot-developer-cli`, copilot-api hardcodes
 //      `vscode-chat`), rewrite the `Copilot-Integration-Id` header on requests to the
-//      *.githubcopilot.com hosts to the probed value from COPILOT_ENV_DAEMON_INTEGRATION_ID.
+//      *.githubcopilot.com hosts to that value from COPILOT_ENV_DAEMON_INTEGRATION_ID.
 //
 // This is a RUNTIME shim: it touches none of copilot-api's
 // files, so it never pins the floated proxy version. It depends only on copilot-api
 // using `globalThis.fetch` (the bun daemon does; `bindElectronFetch` only replaces it
 // inside the Electron app, never here) and on the exchange URL + `{ token, refresh_in }`
-// response shape -- both long-stable. The load decision lives in start.ts; here we act
-// whenever a `--github-token` is present in argv (and only on the exchange URL).
+// response shape -- both long-stable. The load decision lives in the daemon launch
+// pipeline (src/copilot_api/launch.ts); here we act whenever a `--github-token` is
+// present in argv (and only on the exchange URL).
 
 const TOKEN_FLAG = "--github-token";
 const EXCHANGE_PATH = "/copilot_internal/v2/token";
@@ -68,14 +70,16 @@ export function headersWithIntegrationId(
 }
 
 // Act whenever this shim was preloaded with a token. The decision to load it at all is
-// `usePatPassthrough` in integration_identity.ts (auto for a PAT, or forced via the `passthrough` config
-// key), so the
-// shim does NOT re-check the token shape -- that would defeat a forced run for a token
-// start.ts couldn't classify (e.g. a legacy unprefixed classic PAT).
+// `usePatPassthrough` (integration_identity.ts), applied by the daemon launch pipeline
+// (src/copilot_api/launch.ts): auto for a PAT-shaped or gho_ OAuth token or the gh-cli
+// provider, or forced via the `passthrough` config key. The shim does NOT re-check the
+// token shape -- that would defeat a forced run for a credential the shape predicate
+// can't detect (e.g. a legacy unprefixed classic PAT).
 const token = tokenFromArgv();
 if (token !== null) {
-  // The probed integration id (start.ts). Empty/absent (the default identity worked,
-  // or the probe was inconclusive) => no header rewrite, byte-identical to the old shim.
+  // The integration id the launch pipeline resolved for this credential
+  // (COPILOT_ENV_DAEMON_INTEGRATION_ID, set in launch.ts). Empty/absent =>
+  // no header rewrite, byte-identical to the old shim.
   const integrationId = process.env[INTEGRATION_ID_ENV]?.trim() || null;
   const originalFetch = globalThis.fetch;
   const wrapped = (

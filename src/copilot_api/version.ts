@@ -28,17 +28,17 @@ export function proxyVersionFloorStatus(
   config: Pick<ProjectConfig, "proxyMinVersion">,
 ): ProxyVersionFloorStatus {
   if (version === null) {
-    return { "ok": false, "reason": "missing", "version": null };
+    return { ok: false, reason: "missing", version: null };
   }
   if (versionLessThan(version, config.proxyMinVersion)) {
     return {
-      "ok": false,
-      "reason": "belowFloor",
-      "version": version,
-      "floor": config.proxyMinVersion,
+      ok: false,
+      reason: "belowFloor",
+      version,
+      floor: config.proxyMinVersion,
     };
   }
-  return { "ok": true, "version": version };
+  return { ok: true, version };
 }
 
 export function proxyVersionBoundsStatus(
@@ -54,10 +54,10 @@ export function proxyVersionBoundsStatus(
     versionLessThan(config.proxyMaxVersion, floorStatus.version)
   ) {
     return {
-      "ok": false,
-      "reason": "aboveCeiling",
-      "version": floorStatus.version,
-      "ceiling": config.proxyMaxVersion,
+      ok: false,
+      reason: "aboveCeiling",
+      version: floorStatus.version,
+      ceiling: config.proxyMaxVersion,
     };
   }
   return floorStatus;

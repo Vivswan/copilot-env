@@ -1,19 +1,19 @@
 import { expect, test } from "bun:test";
 
-import { isPatToken, usePatPassthrough } from "../src/copilot_api/integration_identity.ts";
+import { isPatShapedToken, usePatPassthrough } from "../src/copilot_api/integration_identity.ts";
 
-// --- isPatToken --------------------------------------------------------------
+// --- isPatShapedToken --------------------------------------------------------
 
-test("isPatToken: ghp_/github_pat_ are PATs; gho_/ghu_/ghs_/empty are not", () => {
-  expect(isPatToken("ghp_classic123")).toBe(true);
-  expect(isPatToken("github_pat_finegrained123")).toBe(true);
-  expect(isPatToken("  ghp_trimmed  ")).toBe(true); // trims before matching
-  expect(isPatToken("gho_oauth123")).toBe(false);
-  expect(isPatToken("ghu_user123")).toBe(false);
-  expect(isPatToken("ghs_server123")).toBe(false);
-  expect(isPatToken("")).toBe(false);
+test("isPatShapedToken: ghp_/github_pat_ are PATs; gho_/ghu_/ghs_/empty are not", () => {
+  expect(isPatShapedToken("ghp_classic123")).toBe(true);
+  expect(isPatShapedToken("github_pat_finegrained123")).toBe(true);
+  expect(isPatShapedToken("  ghp_trimmed  ")).toBe(true); // trims before matching
+  expect(isPatShapedToken("gho_oauth123")).toBe(false);
+  expect(isPatShapedToken("ghu_user123")).toBe(false);
+  expect(isPatShapedToken("ghs_server123")).toBe(false);
+  expect(isPatShapedToken("")).toBe(false);
   // Legacy unprefixed classic PAT (40 hex) is intentionally NOT detected.
-  expect(isPatToken("0123456789abcdef0123456789abcdef01234567")).toBe(false);
+  expect(isPatShapedToken("0123456789abcdef0123456789abcdef01234567")).toBe(false);
 });
 
 // --- usePatPassthrough -------------------------------------------------------

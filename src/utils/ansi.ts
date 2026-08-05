@@ -8,11 +8,10 @@ const NO_COLOR = (() => {
 
 /** SGR wrapper: `open`s the style and `close`s it, unless color is disabled. */
 export function style(open: number, close = 39): (text: string) => string {
-  return (text: string): string => (NO_COLOR ? text : `[${open}m${text}[${close}m`);
+  return (text: string): string => (NO_COLOR ? text : `\x1b[${open}m${text}\x1b[${close}m`);
 }
 
 export const bold = style(1, 22);
-export const underline = style(4, 24);
 export const cyan = style(36);
 export const gray = style(90);
 export const green = style(32);

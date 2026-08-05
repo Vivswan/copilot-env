@@ -19,7 +19,7 @@ interface UpdateLogger {
 }
 
 /** Run `bun install --frozen-lockfile` in the checkout (HUSKY=0 mirrors the bin shims). */
-export function bunInstallFrozen(stdio: StdioOptions = "inherit"): void {
+function bunInstallFrozen(stdio: StdioOptions = "inherit"): void {
   const install = spawnSync("bun", ["install", "--frozen-lockfile"], {
     cwd: PROJECT_ROOT,
     stdio,

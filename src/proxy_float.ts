@@ -60,6 +60,7 @@ import {
 } from "./copilot_api/version.ts";
 import { pickAgedVersion } from "./utils/aged_version.ts";
 import { assertNever } from "./utils/assert.ts";
+import { errMessage } from "./utils/error.ts";
 import { isRecord, parseJsonRecord } from "./utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
 import { PROJECT_ROOT } from "./utils/root.ts";
@@ -593,7 +594,7 @@ function mainAssertInstalled(root: string): never {
     }
     process.exit(status.ok ? 0 : 1);
   } catch (error) {
-    console.error(`::error::${error instanceof Error ? error.message : String(error)}`);
+    console.error(`::error::${errMessage(error)}`);
     process.exit(1);
   }
 }
@@ -614,9 +615,7 @@ function mainVerify(root: string): never {
     status.upToDate ? logger.success(status.message) : logger.info(status.message);
     process.exit(status.upToDate ? 0 : 1);
   } catch (error) {
-    logger.warn(
-      `install needed: verify failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    logger.warn(`install needed: verify failed: ${errMessage(error)}`);
     process.exit(1); // uncertain -> install
   }
 }
@@ -630,7 +629,7 @@ function mainFloat(root: string): void {
     const config = readProjectConfig(root);
     floatProxy(root, process.execPath, config);
   } catch (error) {
-    logger.warn(`proxy float skipped: ${error instanceof Error ? error.message : String(error)}`);
+    logger.warn(`proxy float skipped: ${errMessage(error)}`);
   }
 }
 

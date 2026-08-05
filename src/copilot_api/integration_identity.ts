@@ -21,6 +21,7 @@
 // DAEMON_INTEGRATION_ID_ENV), and in `agent health`. Candidate order puts each mode's
 // long-standing default FIRST, so a credential the default accepts stays byte-identical.
 import { consola } from "consola";
+import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import type { AuthProvider } from "./env_state.ts";
 
@@ -298,7 +299,7 @@ export async function probeIntegrationIdentity(
       sawInconclusive = true;
       outcomes.push({
         name: candidate.name,
-        detail: truncate(`network error: ${e instanceof Error ? e.message : String(e)}`),
+        detail: truncate(`network error: ${errMessage(e)}`),
       });
     }
   }
@@ -358,26 +359,16 @@ export interface ResolveIdentityOptions extends IdentityProbeDeps {
  * `github_pat_` (fine-grained). THE single PAT-shape predicate -- two separate decisions
  * key off it for the same underlying reason (a PAT is the credential class the Copilot
  * endpoints treat specially): the passthrough shim (`usePatPassthrough` below, because
- * a PAT 403s the editor token exchange) and the identity probe below (because a PAT is the
- * only credential the DEFAULT client identity refuses). Legacy unprefixed 40-hex classic
- * PATs are NOT detectable by shape -- use `config passthrough on` / `config integration-id`.
+ * a PAT 403s the editor token exchange) and the identity probe gates in the resolvers
+ * below (because a PAT is the only credential the DEFAULT client identity refuses --
+ * verified July 2026: every gho_/ghu_ OAuth, device-flow, and gh-cli credential is
+ * accepted, so nothing else is worth a probe's network round). Legacy unprefixed 40-hex
+ * classic PATs are NOT detectable by shape -- use `config passthrough on` /
+ * `config integration-id`.
  */
 export function isPatShapedToken(token: string): boolean {
   const t = token.trim();
   return t.startsWith("ghp_") || t.startsWith("github_pat_");
-}
-
-/**
- * Whether a GitHub token is a Personal Access Token by its prefix: `ghp_` (classic)
- * or `github_pat_` (fine-grained). PATs cannot perform copilot-api's editor token
- * exchange (`copilot_internal/v2/token` -> 403), so they need the passthrough shim.
- * (gh OAuth tokens, `gho_`, also can't exchange -- 404 -- but that decision lives in
- * `usePatPassthrough`, not here.) Legacy unprefixed 40-hex classic PATs are NOT detected
- * here -- use `config passthrough on` for those. Delegates to the shared shape predicate
- * so this and the identity probe can never disagree about what a PAT looks like.
- */
-export function isPatToken(token: string): boolean {
-  return isPatShapedToken(token);
 }
 
 /**
@@ -411,17 +402,7 @@ export function usePatPassthrough(opts: {
   // need the passthrough.
   if (opts.provider === "copilot") return false;
   if (opts.provider === "gh-cli") return true;
-  return isPatToken(opts.token) || opts.token.startsWith("gho_");
-}
-
-/**
- * Whether a credential can be REJECTED under the default client identity, so a probe is
- * worth its network round. Verified July 2026: every gho_/ghu_ OAuth, device-flow, and
- * gh-cli credential is accepted under the default identity; only a PAT is refused (and
- * needs `copilot-developer-cli`).
- */
-export function tokenNeedsIntegrationProbe(token: string): boolean {
-  return isPatShapedToken(token);
+  return isPatShapedToken(opts.token) || opts.token.startsWith("gho_");
 }
 
 /**
@@ -484,7 +465,7 @@ export async function resolveDirectIntegrationId(
   }
   // Only PATs are rejected by the default identity, so only they justify a probe;
   // every other credential uses the default (no header, no network round).
-  if (token === null || !tokenNeedsIntegrationProbe(token)) return null;
+  if (token === null || !isPatShapedToken(token)) return null;
   const candidates = directIdentityCandidates(userAgent);
   // Direct mode bakes DEFAULT_COPILOT_API_BASE as the agents' base_url, so probe THAT host
   // -- the verdict must reflect where the agents will actually send traffic (no separate
@@ -513,7 +494,7 @@ export async function resolvePassthroughIntegrationId(
   }
   // Only PATs are rejected under the daemon's default vscode-chat identity; every other
   // passthrough bearer (gho_/device) is accepted, so skip the probe and its network round.
-  if (!tokenNeedsIntegrationProbe(token)) return VSCODE_CHAT_INTEGRATION_ID;
+  if (!isPatShapedToken(token)) return VSCODE_CHAT_INTEGRATION_ID;
   const identity = await acceptedIdentity(token, PASSTHROUGH_IDENTITY_CANDIDATES, deps);
   narrateIdentity(identity.name, VSCODE_CHAT_INTEGRATION_ID, false);
   return bakedIntegrationId(identity) ?? VSCODE_CHAT_INTEGRATION_ID;

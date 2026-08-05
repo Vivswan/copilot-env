@@ -50,7 +50,7 @@ function expectedSha256(value: string): string {
     : parseSha256Checksum(existsSync(value) ? readFileSync(value, "utf8") : value);
 }
 
-export function fileSha256(path: string): string {
+function fileSha256(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 

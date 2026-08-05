@@ -65,10 +65,7 @@ export function parseProjectConfig(content: string, source = PROJECT_CONFIG_FILE
     );
   }
 
-  return {
-    "proxyMinVersion": proxyMinVersion,
-    "proxyMaxVersion": proxyMaxVersion,
-  };
+  return { proxyMinVersion, proxyMaxVersion };
 }
 
 export function readProjectConfig(root: string): ProjectConfig {

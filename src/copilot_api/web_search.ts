@@ -7,6 +7,7 @@
 // It stays in the copilot_api layer (like admin.ts / catalog.ts, the other REST
 // clients) so the MCP server remains a thin protocol adapter over it.
 
+import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { fetchRawModels } from "./catalog.ts";
@@ -33,15 +34,6 @@ const logger = createStderrLogger();
  * the default path skips alias resolution so it stays fetch-free.
  */
 export const DEFAULT_WEB_SEARCH_MODEL = "gpt-5.6-sol";
-
-/**
- * Version-free User-Agent for /responses calls: the shared Codex product token
- * from integration_identity.ts. The VERSIONED form this endpoint normally sees
- * lives in the codex layer (codexUserAgent), which this module must not import;
- * staying version-free mirrors the module-local PROBE_USER_AGENT precedent in
- * integration_identity.ts.
- */
-const RESPONSES_USER_AGENT = CODEX_EXEC_USER_AGENT;
 
 const WEB_SEARCH_TIMEOUT_MS = 120_000;
 
@@ -142,9 +134,8 @@ async function resolveWebSearchModel(
   try {
     return (await catalogAliases(token, fetchImpl))[model] ?? model;
   } catch (e) {
-    const detail = e instanceof Error ? e.message : String(e);
     logger.warn(
-      `could not resolve '${model}' against the live catalog (${detail}); sending it as-is`,
+      `could not resolve '${model}' against the live catalog (${errMessage(e)}); sending it as-is`,
     );
     return model;
   }
@@ -193,8 +184,11 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
   // fetch is injected in production -- instead a cancelled tool call merely stops
   // WAITING for a cold PAT probe (raceWithAbort below); the probe runs on and fills
   // its memo for the next call.
+  // The /responses User-Agent is CODEX_EXEC_USER_AGENT deliberately VERSION-FREE:
+  // the versioned form (codexUserAgent) lives in the codex layer, which this
+  // module must not import.
   const integrationId = await raceWithAbort(
-    resolveDirectIntegrationId(token, RESPONSES_USER_AGENT, {
+    resolveDirectIntegrationId(token, CODEX_EXEC_USER_AGENT, {
       pinned: new CopilotEnvConfig().pinnedIntegrationId(),
       apiBase: DEFAULT_COPILOT_API_BASE,
       fetchImpl: opts.fetchImpl,
@@ -204,7 +198,7 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
   const headers: Record<string, string> = {
     "Authorization": `Bearer ${token}`,
     "Content-Type": "application/json",
-    ...directClientHeaders(RESPONSES_USER_AGENT, integrationId),
+    ...directClientHeaders(CODEX_EXEC_USER_AGENT, integrationId),
   };
   const url = `${DEFAULT_COPILOT_API_BASE}/responses`;
   const fetchImpl: ProbeFetch = opts.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));

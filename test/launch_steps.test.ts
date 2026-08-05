@@ -478,6 +478,9 @@ test("awaitReadiness: an unpinned bind race retries on a different port and tail
       return process.pid; // alive, and the log already reads ready
     },
     config: new CopilotEnvConfig(),
+    // Injected: a real scan from an ephemeral base can hit the top of the range
+    // on Windows runners (reserved blocks near 65535) and find nothing.
+    findPort: (start) => Promise.resolve(start),
   });
 
   expect(relaunchPorts.length).toBe(1);

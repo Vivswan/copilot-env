@@ -480,9 +480,12 @@ export async function awaitReadiness(opts: {
   state: CopilotEnvRunState;
   relaunch: (port: number) => number;
   config?: CopilotEnvConfig;
+  /** Retry-port finder seam; tests inject to avoid real port scans. */
+  findPort?: (start: number) => Promise<number>;
 }): Promise<{ pid: number; port: number }> {
   const { logFile, profile, pinnedPort, state, relaunch } = opts;
   const config = opts.config ?? new CopilotEnvConfig();
+  const findPort = opts.findPort ?? copilotApiFindPort;
   let { pid, port } = opts;
 
   await sleep(1000);
@@ -510,7 +513,7 @@ export async function awaitReadiness(opts: {
         `Port ${port} was taken by another process just before launch; retrying on a different port ...`,
       );
       try {
-        port = await copilotApiFindPort(port + 1);
+        port = await findPort(port + 1);
       } catch {
         throw new Error("could not find a free port after the retry.");
       }

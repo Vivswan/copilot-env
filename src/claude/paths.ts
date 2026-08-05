@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Profile } from "../copilot_api/profile.ts";
 
-const WIN = process.platform === "win32";
+export const WIN = process.platform === "win32";
 
 // Helper file basenames. On Windows a `.sh` is not runnable by bare path, so the managed
 // helper is a `.cmd` (which cmd.exe executes). The path stored in apiKeyHelper -- and the

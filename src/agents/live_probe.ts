@@ -16,12 +16,12 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { assertNever } from "./assert.ts";
-import { childEnvWithPath, cliSpawn, resolveCommand } from "./command.ts";
-import { errMessage } from "./error.ts";
-import { createStderrLogger } from "./logger.ts";
-import type { RequestedMode } from "./provider_mode.ts";
-import { sleepSync } from "./time.ts";
+import { settingsPathFor } from "../claude/paths.ts";
+import { ghAuthTokenSpawnSpec } from "../copilot_api/gh_cli.ts";
+import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
+import { errMessage } from "../utils/error.ts";
+import { createStderrLogger } from "../utils/logger.ts";
+import { sleepSync } from "../utils/time.ts";
 
 // Probe progress goes to stderr (consola), never stdout: the `--check`/`env`
 // machine-readable paths never probe, so this narration can't pollute them.
@@ -98,13 +98,11 @@ export const CLAUDE_PROBE: ProbeDescriptor = {
   // available when the managed credential path is actually broken -- but it also disables
   // settings.json auto-discovery from CLAUDE_CONFIG_DIR, so the managed
   // apiKeyHelper is only honored when handed in via --settings. Without it the
-  // probe has NO auth path and always fails (apiKeySource "none"). The default
-  // settings filename is spelled here (not via claude/config.ts settingsPathFor)
-  // because claude/config imports this module -- routing through it would cycle.
+  // probe has NO auth path and always fails (apiKeySource "none").
   args: (prompt, home) => [
     "--bare",
     "--settings",
-    join(home, "settings.json"),
+    settingsPathFor(home),
     "--print",
     "--permission-mode",
     "plan",
@@ -138,110 +136,6 @@ export interface DirectProbeDeps {
   retries?: number;
   /** Base backoff ms between retries (default DEFAULT_PROBE_RETRY_DELAY_MS; 0 in tests). */
   retryDelayMs?: number;
-}
-
-/**
- * Env var names checked (in order, most specific first) for a `gh-token` value, so
- * the secret stays out of argv / shell history. COPILOT_GITHUB_TOKEN is the
- * Copilot-specific name; GH_TOKEN / GITHUB_TOKEN are the gh CLI's conventional vars.
- */
-export const GH_TOKEN_ENV_VARS = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] as const;
-
-/**
- * GH_TOKEN_ENV_VARS as a `$VAR` fragment for help text and prompt labels, in
- * resolver order, so user-facing docs can never drift from what ghTokenFromEnv
- * actually reads (and in which precedence).
- */
-export function ghTokenEnvVarsLabel(separator = "/"): string {
-  return GH_TOKEN_ENV_VARS.map((name) => `$${name}`).join(separator);
-}
-
-/** GH_TOKEN_ENV_VARS as bare names for error messages ("COPILOT_GITHUB_TOKEN / GH_TOKEN / ..."),
- *  same resolver order as the label. */
-export function ghTokenEnvVarsList(): string {
-  return GH_TOKEN_ENV_VARS.join(" / ");
-}
-
-/** First non-empty (trimmed) token among GH_TOKEN_ENV_VARS, or null when none is set. */
-export function ghTokenFromEnv(env: NodeJS.ProcessEnv = process.env): string | null {
-  for (const name of GH_TOKEN_ENV_VARS) {
-    const value = env[name]?.trim();
-    if (value) return value;
-  }
-  return null;
-}
-
-/**
- * Resolve a GitHub token from `agent auth --provider gh-token`: a bare request
- * (`true`) reads the GH_TOKEN_ENV_VARS in order, so the secret stays out of argv /
- * shell history; a string value is used verbatim (trimmed); `undefined`/`false`
- * => `null` (not requested). Throws when a token was requested but none resolved.
- * The narrow overload proves that a definite request (string | true) always yields
- * a token or throws -- callers holding one never handle a null.
- */
-export function tokenFromSetFlag(flag: string | true): string;
-export function tokenFromSetFlag(flag: string | boolean | undefined): string | null;
-export function tokenFromSetFlag(flag: string | boolean | undefined): string | null {
-  // undefined/false = not requested (false should never come from a boolean flag,
-  // but treat it as absence rather than the literal token "false").
-  if (flag === undefined || flag === false) return null;
-  if (flag === true) {
-    const fromEnv = ghTokenFromEnv();
-    if (fromEnv) return fromEnv;
-    throw new Error(`no GitHub token found: set one of ${ghTokenEnvVarsList()}`);
-  }
-  const token = flag.trim();
-  if (token === "") throw new Error("the provided GitHub token is empty");
-  return token;
-}
-
-/**
- * Decide whether to write DIRECT (true) or PROXY (false), honoring a provisioned
- * token (the shared store's githubToken): "proxy" => proxy, "direct" => direct,
- * and on "auto" a present token selects Direct (we already hold a credential, so
- * no probe is needed) while no token falls back to the live `detectDirect` probe.
- * Total over RequestedMode -- the contradictory flag pair cannot reach here (it is
- * rejected once, at the CLI boundary parse).
- */
-export function resolveDirectMode(
-  mode: RequestedMode,
-  ghToken: string | null,
-  detectDirect: () => boolean,
-): boolean {
-  switch (mode) {
-    case "proxy":
-      return false;
-    case "direct":
-      return true;
-    case "auto":
-      return ghToken !== null || detectDirect();
-    default:
-      return assertNever(mode);
-  }
-}
-
-/** Cap on one `gh auth token` call, shared by every "is gh authenticated?" probe. */
-export const GH_AUTH_TIMEOUT_MS = 5000;
-
-/**
- * The ONE recipe for probing gh's login: spawn `gh auth token` at gh's RESOLVED
- * path (not the bare name), with gh's bin dir on PATH, so an nvm-only gh (or a
- * node-shim gh) found via the nvm fallback is runnable; cliSpawn routes through
- * cmd.exe on Windows so a .cmd/.exe shim is launchable. Success = exit 0. Shared
- * by the token capture (copilot_api/credential.ts), the detect gate below, and
- * the health probe (health/probe.ts), so the command and its GH_AUTH_TIMEOUT_MS
- * budget never drift between them. Callers pick their own stdio (capture the
- * token vs. keep it out of process memory).
- */
-export function ghAuthTokenSpawnSpec(ghPath: string): {
-  file: string;
-  args: string[];
-  shell: boolean;
-  timeout: number;
-  env: Record<string, string>;
-} {
-  const s = cliSpawn(ghPath, ["auth", "token"]);
-  return { ...s, timeout: GH_AUTH_TIMEOUT_MS, env: childEnvWithPath([dirname(ghPath)]) };
 }
 
 function defaultGhAuthOk(ghPath: string): boolean {

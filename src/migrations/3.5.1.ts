@@ -15,7 +15,7 @@
 // A non-PAT credential (gh-cli, device flow, OAuth) resolves to the default identity, so
 // this rewrites the same bytes it read -- idempotent, and a no-op for most installs.
 import { consola } from "consola";
-
+import type { AgentProviderMode } from "../agents/provider_mode.ts";
 import { configureClaudeConfig, effectiveClaudeProviderMode } from "../claude/config.ts";
 import { resolveClaudeHome } from "../claude/paths.ts";
 import {
@@ -25,7 +25,6 @@ import {
   probeDirectIntegrationId,
 } from "../codex/config.ts";
 import { errMessage } from "../utils/error.ts";
-import type { AgentProviderMode } from "../utils/provider_mode.ts";
 import type { Migration } from "./index.ts";
 
 /** The configured mode of an agent, treating any read error as "not ours to touch". */

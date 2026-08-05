@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { parseModeFlags } from "../src/utils/provider_mode.ts";
+import { parseModeFlags } from "../src/agents/provider_mode.ts";
 
 // The CLI boundary (src/cli.ts) parses --direct/--proxy ONCE into the
 // RequestedMode union via parseModeFlags; the contradictory pair is rejected

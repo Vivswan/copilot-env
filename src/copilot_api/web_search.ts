@@ -6,12 +6,13 @@
 // credential -> client identity -> one POST -> answer text with a `Sources:` list.
 // It stays in the copilot_api layer (like admin.ts / catalog.ts, the other REST
 // clients) so the MCP server remains a thin protocol adapter over it.
-import { ghTokenEnvVarsList, ghTokenFromEnv } from "../utils/direct_probe.ts";
+
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { fetchRawModels } from "./catalog.ts";
 import { Credential } from "./credential.ts";
 import { CopilotEnvConfig } from "./env_config.ts";
+import { ghTokenEnvVarsList, ghTokenFromEnv } from "./gh_cli.ts";
 import {
   CODEX_EXEC_USER_AGENT,
   DEFAULT_COPILOT_API_BASE,

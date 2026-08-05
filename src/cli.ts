@@ -14,6 +14,7 @@
 import "./utils/dotenv.ts";
 import { Command } from "commander";
 import { consola } from "consola";
+import { parseModeFlags } from "./agents/provider_mode.ts";
 import { DEFAULT_AUTOUPDATE_COOLDOWN_DAYS } from "./autoupdate/state.ts";
 import { runClaude } from "./claude/config.ts";
 import { runCodex } from "./codex/config.ts";
@@ -34,13 +35,12 @@ import { runUninstall } from "./commands/uninstall.ts";
 import { runUpdate } from "./commands/update.ts";
 import { configKeysHelp } from "./copilot_api/env_config.ts";
 import { AUTH_PROVIDERS, type AuthProvider } from "./copilot_api/env_state.ts";
+import { ghTokenEnvVarsLabel } from "./copilot_api/gh_cli.ts";
 import { runCost } from "./usage/cost.ts";
 import { OPENROUTER_MODELS_URL } from "./usage/pricing.ts";
 import { bold, cyan, gray } from "./utils/ansi.ts";
-import { ghTokenEnvVarsLabel } from "./utils/direct_probe.ts";
 import { errMessage } from "./utils/error.ts";
 import { disableConsolaTimestamps } from "./utils/logger.ts";
-import { parseModeFlags } from "./utils/provider_mode.ts";
 import { packageVersion } from "./utils/version.ts";
 
 // Drop consola's right-aligned wall-clock timestamp from all command output.

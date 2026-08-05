@@ -5,8 +5,8 @@
 // `agent auth` (--provider / --get / --del / --check); shell wiring + CLI install
 // live in `agent shell`.
 
+import type { RequestedMode } from "../agents/provider_mode.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
-import type { RequestedMode } from "../utils/provider_mode.ts";
 import { ensureAuthenticated } from "./auth.ts";
 import { configureBothAgents, printGuidance } from "./configure_agents.ts";
 

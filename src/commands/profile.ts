@@ -9,6 +9,7 @@
 // profile's credential.
 import { rmSync } from "node:fs";
 import { consola } from "consola";
+import type { RequestedMode } from "../agents/provider_mode.ts";
 import { configureClaudeConfig, removeClaudeProfile } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import {
@@ -26,7 +27,6 @@ import { openaiBaseUrl, wiringPortFor } from "../copilot_api/port.ts";
 import { type ProfileName, parseProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { cyan, gray, green, yellow } from "../utils/ansi.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import type { RequestedMode } from "../utils/provider_mode.ts";
 import { authenticate, parseAcquisition } from "./auth.ts";
 import { type ProxyStatus, proxyStatus } from "./start.ts";
 import { stopTrackedProxy } from "./stop.ts";

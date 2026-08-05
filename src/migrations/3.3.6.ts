@@ -10,14 +10,13 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { consola } from "consola";
 import { parse, stringify } from "smol-toml";
-
+import type { ManagedAgentMode } from "../agents/provider_mode.ts";
 import { configureClaudeConfig } from "../claude/config.ts";
 import { resolveClaudeHome } from "../claude/paths.ts";
 import { CODEX_PROVIDER_ID, effectiveCodexHome } from "../codex/config.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import { errMessage } from "../utils/error.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
-import type { ManagedAgentMode } from "../utils/provider_mode.ts";
 import type { Migration } from "./index.ts";
 
 // The stale base-URL host these configs were written with. Lives ONLY here: forward code

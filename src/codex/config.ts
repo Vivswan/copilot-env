@@ -7,6 +7,14 @@ import * as fs from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
 import { parse, stringify } from "smol-toml";
+import { resolveDirectMode } from "../agents/direct_detect.ts";
+import { CODEX_PROBE, type DirectProbeDeps, probeDirectWorks } from "../agents/live_probe.ts";
+import {
+  type AgentProviderMode,
+  type ManagedAgentMode,
+  providerModeExitCode,
+  type RequestedMode,
+} from "../agents/provider_mode.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
@@ -26,23 +34,11 @@ import {
 import { type Profile, type ProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { assertNever } from "../utils/assert.ts";
-import {
-  CODEX_PROBE,
-  type DirectProbeDeps,
-  probeDirectWorks,
-  resolveDirectMode,
-} from "../utils/direct_probe.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoent, isEnoentOrNotdir } from "../utils/fs.ts";
 import { codexFarmHostsDir } from "../utils/hostname.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import {
-  type AgentProviderMode,
-  type ManagedAgentMode,
-  providerModeExitCode,
-  type RequestedMode,
-} from "../utils/provider_mode.ts";
 import {
   AGENT_AUTH_GET_ARGS,
   agentAuthGetArgs,
@@ -982,7 +978,7 @@ export function removeCodexDefaultWiring(codexHome: string): void {
 /**
  * Live auto-detect: does GitHub Copilot Direct work for Codex on this machine?
  * Writes a throwaway direct config and runs `codex exec --sandbox read-only`
- * against it (see src/utils/direct_probe.ts). False => the caller writes proxy.
+ * against it (see src/agents/live_probe.ts). False => the caller writes proxy.
  */
 export function detectCodexDirect(deps?: DirectProbeDeps): boolean {
   return probeDirectWorks(

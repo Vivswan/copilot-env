@@ -6,11 +6,11 @@
 // auto-picks -- the proxy when it is up, Direct otherwise. `--json` emits a
 // machine-readable `{source, models}` object instead of the table.
 import { consola } from "consola";
+import type { RequestedMode } from "../agents/provider_mode.ts";
 import { fetchRawModels } from "../copilot_api/catalog.ts";
 import { bold, cyan, gray } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
-import type { RequestedMode } from "../utils/provider_mode.ts";
 import { proxyStatus } from "./start.ts";
 
 export interface ModelsArgs {

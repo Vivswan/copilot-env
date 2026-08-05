@@ -1,13 +1,14 @@
 // Shared agent-configuration + result-guidance helpers for `agent init`: configure
 // both agents and print the next-step guidance box. Kept in their own module so
 // init.ts stays focused on orchestration (ensure-auth -> configure -> guide).
+
+import type { AgentProviderMode, RequestedMode } from "../agents/provider_mode.ts";
 import { effectiveClaudeProviderMode, runClaude } from "../claude/config.ts";
 import { effectiveCodexProviderMode, runCodex } from "../codex/config.ts";
 import { bold } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import type { AgentProviderMode, RequestedMode } from "../utils/provider_mode.ts";
 
 // All output goes to stderr (one logger) so it interleaves deterministically with
 // the per-agent probe/config narration (also stderr) and never pollutes any stdout.

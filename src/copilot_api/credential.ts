@@ -8,7 +8,6 @@
 import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { resolveCommand } from "../utils/command.ts";
-import { ghAuthTokenSpawnSpec } from "../utils/direct_probe.ts";
 import { releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
 import { sleepSync } from "../utils/time.ts";
 import {
@@ -17,6 +16,7 @@ import {
   CopilotEnvState,
   type TokenProvider,
 } from "./env_state.ts";
+import { ghAuthTokenSpawnSpec } from "./gh_cli.ts";
 import { CopilotApiPaths } from "./paths.ts";
 import type { Profile } from "./profile.ts";
 

@@ -33,15 +33,15 @@ import {
   ghAuthToken,
 } from "../copilot_api/credential.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
-import { CopilotApiPaths } from "../copilot_api/paths.ts";
-import { resolveCopilotApiEntry } from "../copilot_api/process.ts";
-import { type Profile, parseProfileName, profileLabel } from "../copilot_api/profile.ts";
 import {
   ghTokenEnvVarsLabel,
   ghTokenEnvVarsList,
   ghTokenFromEnv,
   tokenFromSetFlag,
-} from "../utils/direct_probe.ts";
+} from "../copilot_api/gh_cli.ts";
+import { CopilotApiPaths } from "../copilot_api/paths.ts";
+import { resolveCopilotApiEntry } from "../copilot_api/process.ts";
+import { type Profile, parseProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
 import { createStderrLogger } from "../utils/logger.ts";

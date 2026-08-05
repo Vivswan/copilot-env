@@ -7,6 +7,13 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  CLAUDE_PROBE,
+  CODEX_CATALOG_NOISE_RE,
+  CODEX_PROBE,
+  PROBE_PROMPT,
+  PROBE_TIMEOUT_MS,
+} from "../agents/live_probe.ts";
+import {
   type AutoupdateData,
   AutoupdateState,
   effectiveUpdateCooldownDays,
@@ -30,6 +37,7 @@ import {
 import { credentialSource } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { type AuthProvider, CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
+import { ghAuthTokenSpawnSpec } from "../copilot_api/gh_cli.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort, proxyLoopbackOrigin } from "../copilot_api/port.ts";
 import { isCopilotApiPid, pidAlive } from "../copilot_api/process.ts";
@@ -48,14 +56,6 @@ import {
 import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
 import { persistedInferenceMs } from "../scripts/inference_activity.ts";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
-import {
-  CLAUDE_PROBE,
-  CODEX_CATALOG_NOISE_RE,
-  CODEX_PROBE,
-  ghAuthTokenSpawnSpec,
-  PROBE_PROMPT,
-  PROBE_TIMEOUT_MS,
-} from "../utils/direct_probe.ts";
 import { errMessage } from "../utils/error.ts";
 import { readTextOrNull } from "../utils/fs.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";

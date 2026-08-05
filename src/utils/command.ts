@@ -4,7 +4,7 @@
 // that installed it, and uses Get-Command on Windows. Kept in its own module (not
 // commands/setup.ts) so lower-level utilities can resolve binaries without
 // importing the heavier setup module -- which would form an import cycle
-// (setup -> codex/claude config -> direct_probe -> setup).
+// (setup -> codex/claude config -> agents/live_probe -> setup).
 import { spawnSync } from "node:child_process";
 
 // `command -v` first, then a best-effort nvm fallback so a freshly nvm-installed

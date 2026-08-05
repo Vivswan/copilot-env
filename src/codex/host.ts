@@ -3,13 +3,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execaSync } from "execa";
 import which from "which";
+import { resolveDirectMode } from "../agents/direct_detect.ts";
+import type { RequestedMode } from "../agents/provider_mode.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
-import { resolveDirectMode } from "../utils/direct_probe.ts";
 import { isFile } from "../utils/fs.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../utils/hostname.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import type { RequestedMode } from "../utils/provider_mode.ts";
 import { applyCodexConfig, detectCodexDirect } from "./config.ts";
 
 const logger = createStderrLogger();

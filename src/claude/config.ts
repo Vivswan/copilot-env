@@ -20,6 +20,14 @@
 // touched; all other settings are preserved.
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { resolveDirectMode } from "../agents/direct_detect.ts";
+import { CLAUDE_PROBE, type DirectProbeDeps, probeDirectWorks } from "../agents/live_probe.ts";
+import {
+  type AgentProviderMode,
+  type ManagedAgentMode,
+  providerModeExitCode,
+  type RequestedMode,
+} from "../agents/provider_mode.ts";
 import { codexUserAgent, probeDirectIntegrationId } from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -36,22 +44,10 @@ import {
 } from "../copilot_api/port.ts";
 import { type Profile, type ProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
-import {
-  CLAUDE_PROBE,
-  type DirectProbeDeps,
-  probeDirectWorks,
-  resolveDirectMode,
-} from "../utils/direct_probe.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoent, readTextOrNull } from "../utils/fs.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import {
-  type AgentProviderMode,
-  type ManagedAgentMode,
-  providerModeExitCode,
-  type RequestedMode,
-} from "../utils/provider_mode.ts";
 import {
   agentAuthGetArgs,
   agentLauncherCommand,
@@ -60,11 +56,15 @@ import {
   proxyTokenScriptArgs,
 } from "../utils/root.ts";
 import { registerClaudeMcpServer, removeClaudeMcpRegistration } from "./mcp_registration.ts";
-import { directHelperPath, proxyHelperPath, resolveClaudeHome, settingsPathFor } from "./paths.ts";
+import {
+  directHelperPath,
+  proxyHelperPath,
+  resolveClaudeHome,
+  settingsPathFor,
+  WIN,
+} from "./paths.ts";
 
 const logger = createStderrLogger();
-
-const WIN = process.platform === "win32";
 
 // The direct (GitHub Copilot) contract. One block so it is easy to adjust if
 // Copilot's Anthropic-compatible endpoint needs a different base URL/path or
@@ -642,7 +642,7 @@ export function removeClaudeDefaultWiring(claudeHome: string): void {
 /**
  * Live auto-detect: does GitHub Copilot Direct work for Claude on this machine?
  * Writes a throwaway direct config (settings.json + gh apiKeyHelper) and runs
- * `claude -p` against it (see src/utils/direct_probe.ts). False => write proxy.
+ * `claude -p` against it (see src/agents/live_probe.ts). False => write proxy.
  */
 export function detectClaudeDirect(deps?: DirectProbeDeps): boolean {
   return probeDirectWorks(

@@ -1,11 +1,11 @@
 // Migration from 3.3.3: bring the GitHub credential onto the provider-driven store,
 // and unify the Codex model provider under the single `copilot-env` id.
-import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { consola } from "consola";
-import { parse, stringify } from "smol-toml";
 
 import { CODEX_PROVIDER_ID, effectiveCodexHome } from "../codex/config.ts";
 import { codexConfigPath } from "../codex/paths.ts";
+import { type CodexTomlRead, readCodexToml, saveCodexToml } from "../codex/toml_io.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { errMessage } from "../utils/error.ts";
@@ -27,13 +27,14 @@ const LEGACY_CODEX_PROVIDER = "github-copilot-direct";
  */
 function rewriteLegacyCodexProvider(codexHome: string): boolean {
   const configPath = codexConfigPath(codexHome);
-  let doc: Record<string, unknown>;
+  let read: CodexTomlRead;
   try {
-    if (!statSync(configPath).isFile()) return false;
-    doc = parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    read = readCodexToml(configPath);
   } catch {
-    return false; // absent or unparseable -- nothing to rewrite
+    return false; // unreadable (a directory, permissions) -- nothing to rewrite
   }
+  if (read.kind !== "ok") return false; // absent or unparseable -- nothing to rewrite
+  const doc = read.doc;
   let changed = false;
 
   const providers = isRecord(doc.model_providers) ? doc.model_providers : null;
@@ -59,7 +60,7 @@ function rewriteLegacyCodexProvider(codexHome: string): boolean {
     changed = true;
   }
 
-  if (changed) writeFileSync(configPath, stringify(doc));
+  if (changed) saveCodexToml(configPath, doc);
   return changed;
 }
 

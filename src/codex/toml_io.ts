@@ -6,7 +6,7 @@
 // precisely so write paths can refuse to clobber a config that exists but could not
 // be read -- a hand-edit typo must never cost the user their config.toml.
 // (Deliberately NOT yet adopted by cleanupCodexCatalogArtifacts -- its one try spans
-// the write too -- nor by mobile.ts or the migrations, which keep their own policies.)
+// the write too -- nor by mobile.ts, which keeps its own policy.)
 import * as fs from "node:fs";
 import { parse, stringify } from "smol-toml";
 import { errMessage } from "../utils/error.ts";

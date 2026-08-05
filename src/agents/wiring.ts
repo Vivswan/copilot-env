@@ -56,7 +56,7 @@ function readAgentWirings(opts: AgentWiringOptions): {
  * profiles have their own settings artifacts and are not read here). A missing
  * or unreadable config file reads as "none"; a malformed one as the inspect
  * functions classify it. Store-level failures (run state, port resolution)
- * propagate -- wrap the call when a fallback is wanted.
+ * propagate -- callers that must never throw use readAgentModesSafe.
  */
 export function readAgentModes(opts: AgentWiringOptions = {}): {
   codex: AgentProviderMode;
@@ -64,6 +64,23 @@ export function readAgentModes(opts: AgentWiringOptions = {}): {
 } {
   const { codex, claude } = readAgentWirings(opts);
   return { codex: codex.providerMode, claude: claude.providerMode };
+}
+
+/**
+ * readAgentModes with every failure collapsed to "not ours to touch": both
+ * agents read as "other", so a best-effort caller (a migration, `agent init`'s
+ * result read-back) neither aborts nor mistakes an unreadable setup for an
+ * unconfigured one it may write over.
+ */
+export function readAgentModesSafe(opts: AgentWiringOptions = {}): {
+  codex: AgentProviderMode;
+  claude: AgentProviderMode;
+} {
+  try {
+    return readAgentModes(opts);
+  } catch {
+    return { codex: "other", claude: "other" };
+  }
 }
 
 /**

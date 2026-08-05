@@ -15,8 +15,7 @@
 // A non-PAT credential (gh-cli, device flow, OAuth) resolves to the default identity, so
 // this rewrites the same bytes it read -- idempotent, and a no-op for most installs.
 import { consola } from "consola";
-import type { AgentProviderMode } from "../agents/provider_mode.ts";
-import { readAgentModes } from "../agents/wiring.ts";
+import { readAgentModesSafe } from "../agents/wiring.ts";
 import { configureClaudeConfig } from "../claude/config.ts";
 import { resolveClaudeHome } from "../claude/paths.ts";
 import {
@@ -27,20 +26,11 @@ import {
 import { errMessage } from "../utils/error.ts";
 import type { Migration } from "./index.ts";
 
-/** Both agents' configured modes, treating any read error as "not ours to touch". */
-function safeModes(): { codex: AgentProviderMode; claude: AgentProviderMode } {
-  try {
-    return readAgentModes();
-  } catch {
-    return { codex: "other", claude: "other" };
-  }
-}
-
 export const migration: Migration = {
   version: "3.5.1",
   description: "re-bake the Copilot client identity into direct Codex/Claude configs",
   run: async () => {
-    const modes = safeModes();
+    const modes = readAgentModesSafe();
     const claudeDirect = modes.claude === "direct";
     const codexDirect = modes.codex === "direct";
     if (!claudeDirect && !codexDirect) return; // proxy-only / unmanaged install -- nothing to do

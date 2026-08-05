@@ -6,15 +6,15 @@
 // apiKeyHelper a `.cmd` on Windows. Both only affect FRESHLY-written configs, so an existing
 // install that merely runs `agent update` keeps its stale localhost base URLs (and, on Windows,
 // a `.sh` helper inspectClaudeWiring no longer recognizes). Rewrite both on update.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { consola } from "consola";
-import { parse, stringify } from "smol-toml";
 import type { ManagedAgentMode } from "../agents/provider_mode.ts";
 import { configureClaudeConfig } from "../claude/config.ts";
 import { resolveClaudeHome } from "../claude/paths.ts";
 import { CODEX_PROVIDER_ID, effectiveCodexHome } from "../codex/config.ts";
 import { codexConfigPath } from "../codex/paths.ts";
+import { readCodexToml, saveCodexToml } from "../codex/toml_io.ts";
 import { errMessage } from "../utils/error.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import type { Migration } from "./index.ts";
@@ -42,9 +42,12 @@ const MANAGED_HELPERS: Record<string, ManagedAgentMode> = {
 function repointCodexBaseUrl(): void {
   const home = effectiveCodexHome();
   const configPath = codexConfigPath(home);
-  if (!existsSync(configPath)) return; // no Codex config -- nothing to re-point
   try {
-    const doc = parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    const read = readCodexToml(configPath);
+    if (read.kind === "absent") return; // no Codex config -- nothing to re-point
+    // An unparseable config warns below, like any other failure (best-effort heal).
+    if (read.kind === "unparseable") throw new Error(read.error);
+    const doc = read.doc;
     const providers = isRecord(doc.model_providers) ? doc.model_providers : null;
     const provider =
       providers && isRecord(providers[CODEX_PROVIDER_ID]) ? providers[CODEX_PROVIDER_ID] : null;
@@ -52,7 +55,7 @@ function repointCodexBaseUrl(): void {
     const baseUrl = typeof provider.base_url === "string" ? provider.base_url : null;
     if (baseUrl === null || !baseUrl.startsWith(STALE_PREFIX)) return;
     provider.base_url = FRESH_PREFIX + baseUrl.slice(STALE_PREFIX.length);
-    writeFileSync(configPath, stringify(doc));
+    saveCodexToml(configPath, doc);
     consola.info(`Re-pointed the Codex proxy base_url to 127.0.0.1 in ${configPath}`);
   } catch (e) {
     consola.warn(`Could not re-point the Codex base_url (non-fatal): ${errMessage(e)}`);

@@ -5,6 +5,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { consola } from "consola";
 import { parse } from "smol-toml";
 
 import { configureClaudeConfig } from "../src/claude/config.ts";
@@ -180,7 +181,7 @@ test("uninstall without --yes on a non-TTY refuses and deletes nothing", async (
   expect(existsSync(proxyHome)).toBe(true);
 });
 
-test("uninstall --dry-run changes nothing", async () => {
+test("uninstall --dry-run changes nothing and narrates every step", async () => {
   const { proxyHome, claudeHome, codexHome } = tmpHomes();
   mkdirSync(claudeHome, { recursive: true });
   configureClaudeConfig(claudeHome, "direct", { quiet: true });
@@ -192,7 +193,33 @@ test("uninstall --dry-run changes nothing", async () => {
   new Credential().store("gh-token", "ghp_default");
 
   const deps = tmpDeps(codexHome);
-  await runUninstall({ dryRun: true }, deps);
+  // Capture the narration: the registry must describe EVERY execution step,
+  // including the two that were once missing (the drift this guards against).
+  const written: string[] = [];
+  const savedLevel = consola.level;
+  const origOut = process.stdout.write.bind(process.stdout);
+  const origErr = process.stderr.write.bind(process.stderr);
+  process.stdout.write = (s: string | Uint8Array) => {
+    written.push(String(s));
+    return true;
+  };
+  process.stderr.write = (s: string | Uint8Array) => {
+    written.push(String(s));
+    return true;
+  };
+  try {
+    consola.level = 3; // ensure info is not self-silenced under bun test
+    await runUninstall({ dryRun: true }, deps);
+  } finally {
+    process.stdout.write = origOut;
+    process.stderr.write = origErr;
+    consola.level = savedLevel;
+  }
+  const narration = written.join("");
+  expect(narration).toContain("Would stop the default proxy daemon");
+  expect(narration).toContain("Would remove the copilot-env MCP registration");
+  expect(narration).toContain("Would stop any proxy daemon relaunched in the meantime");
+  expect(narration).toContain(`Would delete the copilot-api home: ${proxyHome}`);
 
   expect(existsSync(settingsPathFor(claudeHome))).toBe(true);
   expect(existsSync(join(claudeHome, DIRECT_HELPER_NAME))).toBe(true);

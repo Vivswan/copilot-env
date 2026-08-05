@@ -505,11 +505,11 @@ test("health's own proxy probes do not move the watchdog activity signal", async
 });
 
 test("gatherFacts derives proxy.floatSkips from the float's own predicate", async () => {
-  // The package-bounds exemption must key off bothAgentsWiredDirect (the float's
+  // The package-bounds exemption must key off proxyUnusedEverywhere (the float's
   // skip predicate: modes AND the managed direct base URL AND no profile homes),
   // never a looser both-direct read -- health and the float must agree. The
   // predicate's own edge cases (profile homes, proxy wiring) live in
-  // proxy_float.test.ts; this pins the fact-gathering seam.
+  // agents_wiring.test.ts; this pins the fact-gathering seam.
   const root = mkdtempSync(join(tmpdir(), "copilot-health-float-"));
   const restoreEnv = envSnapshot();
   process.env.COPILOT_API_HOME = join(root, "api-home"); // isolated: no profile homes

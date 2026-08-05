@@ -1023,8 +1023,3 @@ export async function runCodex(
   const seedDeps = catalogDeps ?? (ghToken === null ? undefined : { directToken: ghToken });
   await applyCodexConfig(effectiveCodexHome(), direct ? "direct" : "proxy", seedDeps);
 }
-
-/** The configured Codex provider mode at the effective CODEX_HOME (read-only). */
-export function effectiveCodexProviderMode(): AgentProviderMode {
-  return inspectEffectiveCodexConfig().providerMode;
-}

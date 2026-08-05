@@ -3,10 +3,9 @@ import type { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/paths.ts";
+import { DIRECT_HELPER_NAME } from "../src/claude/paths.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import {
-  bothAgentsWiredDirect,
   floatProxy,
   nodeModulesFresh,
   proxyFloatSkips,
@@ -449,9 +448,10 @@ describe("nodeModulesFresh", () => {
   });
 });
 
-// bothAgentsWiredDirect backs the Direct-only no-op in the proxy_float entry
-// points: when neither agent uses the local proxy, the float is skipped.
-describe("bothAgentsWiredDirect", () => {
+// proxyFloatSkips backs the Direct-only no-op in the proxy_float entry points.
+// The wiring-level answer (proxyUnusedEverywhere) and its edge cases live in
+// test/agents_wiring.test.ts; this pins the env-pin override the float adds.
+describe("proxyFloatSkips", () => {
   const CODEX_DIRECT_TOML = [
     'model_provider = "copilot-env"',
     "",
@@ -460,107 +460,23 @@ describe("bothAgentsWiredDirect", () => {
     "",
   ].join("\n");
 
-  function writeCodexHome(configToml: string | null): string {
-    const home = join(dir, "codex-home");
-    mkdirSync(home, { recursive: true });
-    if (configToml !== null) writeFileSync(join(home, "config.toml"), configToml);
-    return home;
-  }
-
-  function writeClaudeHome(
-    helperName: string | null,
-    baseUrl: string | null = "https://api.githubcopilot.com",
-  ): string {
-    const home = join(dir, "claude-home");
-    mkdirSync(home, { recursive: true });
-    if (helperName !== null) {
-      const settings: Record<string, unknown> = { "apiKeyHelper": join(home, helperName) };
-      if (baseUrl !== null) settings.env = { "ANTHROPIC_BASE_URL": baseUrl };
-      writeFileSync(join(home, "settings.json"), JSON.stringify(settings));
-    }
-    return home;
-  }
-
-  test("true when Codex is direct-wired and Claude points at the direct helper", () => {
-    const codexHome = writeCodexHome(CODEX_DIRECT_TOML);
-    const claudeHome = writeClaudeHome(DIRECT_HELPER_NAME);
-    expect(bothAgentsWiredDirect(codexHome, claudeHome)).toBe(true);
-  });
-
-  test("proxyFloatSkips: direct-only skips, but a COPILOT_API_VERSION pin forces the float", () => {
-    const codexHome = writeCodexHome(CODEX_DIRECT_TOML);
-    const claudeHome = writeClaudeHome(DIRECT_HELPER_NAME);
-    const saved = process.env.COPILOT_API_VERSION;
-    try {
-      delete process.env.COPILOT_API_VERSION;
-      expect(proxyFloatSkips(codexHome, claudeHome)).toBe(true);
-      // An env pin is per-invocation intent: the float must run (and health's
-      // bounds exemption must not fire) even on a direct-only machine.
-      process.env.COPILOT_API_VERSION = "1.2.3";
-      expect(proxyFloatSkips(codexHome, claudeHome)).toBe(false);
-    } finally {
-      if (saved === undefined) delete process.env.COPILOT_API_VERSION;
-      else process.env.COPILOT_API_VERSION = saved;
-    }
-  });
-
-  test("false when a named profile home exists (a proxy profile uses the daemon)", () => {
-    const codexHome = writeCodexHome(CODEX_DIRECT_TOML);
-    const claudeHome = writeClaudeHome(DIRECT_HELPER_NAME);
-    // Profile homes are created only by proxy wiring / `agent start --profile`,
-    // so their presence means the local proxy is in use despite direct defaults.
-    mkdirSync(join(dir, "profiles", "work"), { recursive: true });
-    expect(bothAgentsWiredDirect(codexHome, claudeHome)).toBe(false);
-  });
-
-  test("false on a mixed Claude config (direct helper but a proxy ANTHROPIC_BASE_URL)", () => {
-    const codexHome = writeCodexHome(CODEX_DIRECT_TOML);
-    const claudeHome = writeClaudeHome(DIRECT_HELPER_NAME, "http://127.0.0.1:4141");
-    expect(bothAgentsWiredDirect(codexHome, claudeHome)).toBe(false);
-  });
-
-  test("false when the Claude direct base URL is missing (partially managed config)", () => {
-    const codexHome = writeCodexHome(CODEX_DIRECT_TOML);
-    const claudeHome = writeClaudeHome(DIRECT_HELPER_NAME, null);
-    expect(bothAgentsWiredDirect(codexHome, claudeHome)).toBe(false);
-  });
-
-  test("false when Claude is proxy-wired even though Codex is direct", () => {
-    const codexHome = writeCodexHome(CODEX_DIRECT_TOML);
-    const claudeHome = writeClaudeHome(PROXY_HELPER_NAME);
-    expect(bothAgentsWiredDirect(codexHome, claudeHome)).toBe(false);
-  });
-
-  test("false when Codex is proxy-wired (env_key provider) even though Claude is direct", () => {
-    const codexHome = writeCodexHome(
-      [
-        'model_provider = "copilot-env"',
-        "",
-        "[model_providers.copilot-env]",
-        'base_url = "http://127.0.0.1:4141/v1"',
-        'env_key = "OPENAI_API_KEY"',
-        "",
-      ].join("\n"),
+  test("direct-only skips, but a COPILOT_API_VERSION pin forces the float", () => {
+    const codexHome = join(dir, "codex-home");
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(join(codexHome, "config.toml"), CODEX_DIRECT_TOML);
+    const claudeHome = join(dir, "claude-home");
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(
+      join(claudeHome, "settings.json"),
+      JSON.stringify({
+        "apiKeyHelper": join(claudeHome, DIRECT_HELPER_NAME),
+        "env": { "ANTHROPIC_BASE_URL": "https://api.githubcopilot.com" },
+      }),
     );
-    const claudeHome = writeClaudeHome(DIRECT_HELPER_NAME);
-    expect(bothAgentsWiredDirect(codexHome, claudeHome)).toBe(false);
-  });
-
-  test("false when Codex is unconfigured (missing config.toml)", () => {
-    expect(bothAgentsWiredDirect(writeCodexHome(null), writeClaudeHome(DIRECT_HELPER_NAME))).toBe(
-      false,
-    );
-  });
-
-  test("false when Claude is unconfigured (missing settings.json)", () => {
-    expect(bothAgentsWiredDirect(writeCodexHome(CODEX_DIRECT_TOML), writeClaudeHome(null))).toBe(
-      false,
-    );
-  });
-
-  test("false on unparseable configs (uncertain wiring floats normally)", () => {
-    const codexHome = writeCodexHome("model_provider = [broken");
-    const claudeHome = writeClaudeHome(DIRECT_HELPER_NAME);
-    expect(bothAgentsWiredDirect(codexHome, claudeHome)).toBe(false);
+    expect(proxyFloatSkips(codexHome, claudeHome)).toBe(true);
+    // An env pin is per-invocation intent: the float must run (and health's
+    // bounds exemption must not fire) even on a direct-only machine.
+    process.env.COPILOT_API_VERSION = "1.2.3";
+    expect(proxyFloatSkips(codexHome, claudeHome)).toBe(false);
   });
 });

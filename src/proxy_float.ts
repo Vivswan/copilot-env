@@ -50,13 +50,8 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createConsola } from "consola";
 import { parse } from "smol-toml";
-import { DIRECT_BASE_URL as CLAUDE_DIRECT_BASE_URL, inspectClaudeWiring } from "./claude/config.ts";
-import { resolveClaudeHome, settingsPathFor } from "./claude/paths.ts";
-import { effectiveCodexHome, inspectCodexWiring } from "./codex/config.ts";
-import { codexConfigPath } from "./codex/paths.ts";
+import { proxyUnusedEverywhere } from "./agents/wiring.ts";
 import { CopilotEnvConfig, type CopilotEnvConfigData } from "./copilot_api/env_config.ts";
-import { profileHomeNames } from "./copilot_api/paths.ts";
-import { copilotApiResolvePort } from "./copilot_api/port.ts";
 import {
   installedProxyVersion,
   PROXY_PACKAGE_NAME,
@@ -65,7 +60,6 @@ import {
 } from "./copilot_api/version.ts";
 import { pickAgedVersion } from "./utils/aged_version.ts";
 import { assertNever } from "./utils/assert.ts";
-import { readTextOrNull } from "./utils/fs.ts";
 import { isRecord, parseJsonRecord } from "./utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
 import { PROJECT_ROOT } from "./utils/root.ts";
@@ -555,48 +549,6 @@ export function proxyInstallAssertStatus(
   };
 }
 
-// --- Direct-only detection -----------------------------------------------------
-
-/**
- * True when BOTH Codex and Claude are wired Direct (GitHub Copilot, no local
- * proxy) AND no named profile uses the proxy, so floating the unused proxy would
- * be wasted network/install work.
- * Best-effort: any read/parse failure counts as "not direct-only" so the float
- * still runs whenever the wiring is uncertain ("none"/"other"/"proxy" all float).
- * The homes are injectable for tests; the defaults match the effective-home
- * precedence used by `agent env` and health.
- */
-export function bothAgentsWiredDirect(codexHome?: string, claudeHome?: string): boolean {
-  try {
-    // A named profile's daemon home is created only by PROXY wiring or `agent start
-    // --profile` (direct profiles never make one), so any profile home means a local
-    // proxy is in use regardless of how the DEFAULT selections are wired.
-    if (profileHomeNames().length > 0) return false;
-    const expectedPort = Number(copilotApiResolvePort());
-    const codexMode = inspectCodexWiring(
-      readTextOrNull(codexConfigPath(codexHome ?? effectiveCodexHome())),
-      null,
-      expectedPort,
-      false,
-    ).providerMode;
-    if (codexMode !== "direct") return false;
-
-    const effectiveClaudeHome = claudeHome ?? resolveClaudeHome();
-    // The mode alone keys off apiKeyHelper; also require the managed Direct base
-    // URL so a mixed config (direct helper + proxy ANTHROPIC_BASE_URL) still floats.
-    const claudeWiring = inspectClaudeWiring(
-      readTextOrNull(settingsPathFor(effectiveClaudeHome)),
-      effectiveClaudeHome,
-      expectedPort,
-    );
-    return (
-      claudeWiring.providerMode === "direct" && claudeWiring.baseUrl === CLAUDE_DIRECT_BASE_URL
-    );
-  } catch {
-    return false;
-  }
-}
-
 // --- Postinstall / verify/assert entry ---------------------------------------
 
 const DIRECT_ONLY_SKIP_MESSAGE =
@@ -616,17 +568,15 @@ function parseMode(args: string[]): ProxyFloatMode {
 }
 
 /**
- * True when the float's entry points skip: Direct-only wiring
- * (bothAgentsWiredDirect) and no COPILOT_API_VERSION env pin. An explicit env
+ * True when the float's entry points skip: nothing uses the local proxy
+ * (proxyUnusedEverywhere) and no COPILOT_API_VERSION env pin. An explicit env
  * pin is per-invocation intent, so it always forces the normal path; a stored
  * `proxy-version` config pin does NOT force it (the config only matters once an
- * agent is wired to the proxy again). Health's proxy-package check keys its
- * "bounds not enforced" exemption on THIS predicate so it can never disagree
- * with the float.
+ * agent is wired to the proxy again).
  */
 export function proxyFloatSkips(codexHome?: string, claudeHome?: string): boolean {
   const envPinned = Boolean(process.env[PROXY_VERSION_ENV]?.trim());
-  return !envPinned && bothAgentsWiredDirect(codexHome, claudeHome);
+  return !envPinned && proxyUnusedEverywhere({ codexHome, claudeHome });
 }
 
 function mainAssertInstalled(root: string): never {

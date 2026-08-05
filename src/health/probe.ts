@@ -14,6 +14,7 @@ import {
   PROBE_PROMPT,
   PROBE_TIMEOUT_MS,
 } from "../agents/live_probe.ts";
+import { defaultSetupNeedsProxy } from "../agents/wiring.ts";
 import {
   type AutoupdateData,
   AutoupdateState,
@@ -125,12 +126,9 @@ export interface ProxyFacts {
   configError: string | null;
   // The proxy float's cooldown window in seconds (null if it couldn't be read).
   cooldownSeconds: number | null;
-  // The float's own skip predicate (proxyFloatSkips: both agents Direct, no
-  // proxy-profile homes, managed Direct base URL, no COPILOT_API_VERSION env
-  // pin). When it skips, the version bounds are unenforceable and must not
-  // read as a failure. Deliberately NOT the runtime checks' bothDirect: that
-  // one answers "does the default setup need a proxy on this port?", which
-  // stays true even when a named proxy profile runs its own daemon.
+  // The float's own skip predicate (proxyFloatSkips, delegating to
+  // proxyUnusedEverywhere in src/agents/wiring.ts). When it skips, the version
+  // bounds are unenforceable and must not read as a failure.
   floatSkips: boolean;
 }
 
@@ -609,24 +607,6 @@ export function evalClaude(
 
 // --- orchestration ----------------------------------------------------------
 
-/** Read the configured Codex/Claude provider modes (cheap, no live probe). */
-function readProviderModes(deps: ProbeDeps, port: number): { bothDirect: boolean } {
-  const codexHome = deps.codexHome();
-  const codexMode = inspectCodexWiring(
-    deps.readFileSafe(codexConfigPath(codexHome)),
-    null,
-    port,
-    false,
-  ).providerMode;
-  const claudeHome = deps.claudeHome();
-  const claudeMode = inspectClaudeWiring(
-    deps.readFileSafe(settingsPathFor(claudeHome)),
-    claudeHome,
-    port,
-  ).providerMode;
-  return { bothDirect: codexMode === "direct" && claudeMode === "direct" };
-}
-
 /** Gather exactly the facts `scope` needs, running independent probes concurrently. */
 export async function gatherFacts(
   scope: HealthScope,
@@ -690,7 +670,11 @@ export async function gatherFacts(
           paths: deps.paths(),
           // When both agents are configured direct, no proxy is required, so a
           // down proxy must not read as a runtime failure.
-          bothDirect: readProviderModes(deps, port).bothDirect,
+          bothDirect: !defaultSetupNeedsProxy({
+            codexHome: deps.codexHome(),
+            claudeHome: deps.claudeHome(),
+            expectedPort: port,
+          }),
           identityConfirmed,
           watchdog: {
             autoStart: deps.autoStartEnabled(),

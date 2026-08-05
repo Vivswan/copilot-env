@@ -16,23 +16,23 @@
 // this rewrites the same bytes it read -- idempotent, and a no-op for most installs.
 import { consola } from "consola";
 import type { AgentProviderMode } from "../agents/provider_mode.ts";
-import { configureClaudeConfig, effectiveClaudeProviderMode } from "../claude/config.ts";
+import { readAgentModes } from "../agents/wiring.ts";
+import { configureClaudeConfig } from "../claude/config.ts";
 import { resolveClaudeHome } from "../claude/paths.ts";
 import {
   configureCodexConfig,
   effectiveCodexHome,
-  effectiveCodexProviderMode,
   probeDirectIntegrationId,
 } from "../codex/config.ts";
 import { errMessage } from "../utils/error.ts";
 import type { Migration } from "./index.ts";
 
-/** The configured mode of an agent, treating any read error as "not ours to touch". */
-function safeMode(read: () => AgentProviderMode): AgentProviderMode {
+/** Both agents' configured modes, treating any read error as "not ours to touch". */
+function safeModes(): { codex: AgentProviderMode; claude: AgentProviderMode } {
   try {
-    return read();
+    return readAgentModes();
   } catch {
-    return "other";
+    return { codex: "other", claude: "other" };
   }
 }
 
@@ -40,8 +40,9 @@ export const migration: Migration = {
   version: "3.5.1",
   description: "re-bake the Copilot client identity into direct Codex/Claude configs",
   run: async () => {
-    const claudeDirect = safeMode(effectiveClaudeProviderMode) === "direct";
-    const codexDirect = safeMode(effectiveCodexProviderMode) === "direct";
+    const modes = safeModes();
+    const claudeDirect = modes.claude === "direct";
+    const codexDirect = modes.codex === "direct";
     if (!claudeDirect && !codexDirect) return; // proxy-only / unmanaged install -- nothing to do
 
     // ONE probe for the default credential, shared by both writers (it is memoized anyway).

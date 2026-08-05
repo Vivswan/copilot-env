@@ -3,8 +3,9 @@
 // init.ts stays focused on orchestration (ensure-auth -> configure -> guide).
 
 import type { AgentProviderMode, RequestedMode } from "../agents/provider_mode.ts";
-import { effectiveClaudeProviderMode, runClaude } from "../claude/config.ts";
-import { effectiveCodexProviderMode, runCodex } from "../codex/config.ts";
+import { readAgentModes } from "../agents/wiring.ts";
+import { runClaude } from "../claude/config.ts";
+import { runCodex } from "../codex/config.ts";
 import { bold } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
@@ -52,10 +53,10 @@ export async function configureBothAgents(mode: RequestedMode): Promise<{
   }
 
   // Read-back is also best-effort: a config-read error must not abort the caller.
-  return {
-    codex: safeMode<AgentProviderMode>(() => effectiveCodexProviderMode(), "other"),
-    claude: safeMode<AgentProviderMode>(() => effectiveClaudeProviderMode(), "other"),
-  };
+  return safeMode<{ codex: AgentProviderMode; claude: AgentProviderMode }>(readAgentModes, {
+    codex: "other",
+    claude: "other",
+  });
 }
 
 function modeLabel(mode: AgentProviderMode): string {

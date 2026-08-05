@@ -683,13 +683,3 @@ export async function runClaude(args: ClaudeConfigArgs): Promise<void> {
   const directIntegrationId = direct ? await probeDirectIntegrationId(null, ghToken) : undefined;
   configureClaudeConfig(claudeHome, direct ? "direct" : "proxy", { directIntegrationId });
 }
-
-/** The configured Claude provider mode at the effective Claude home (read-only). */
-export function effectiveClaudeProviderMode(): AgentProviderMode {
-  const claudeHome = resolveClaudeHome();
-  return inspectClaudeWiring(
-    readTextOrNull(settingsPathFor(claudeHome)),
-    claudeHome,
-    Number(copilotApiResolvePort()),
-  ).providerMode;
-}

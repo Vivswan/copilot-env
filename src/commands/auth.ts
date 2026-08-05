@@ -45,6 +45,7 @@ import {
 import { errMessage } from "../utils/error.ts";
 import { releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { printTable } from "../utils/table.ts";
 import { sleepSync } from "../utils/time.ts";
 import { stopTrackedProxy } from "./stop.ts";
 
@@ -489,10 +490,7 @@ function runList(): void {
     const cred = new Credential(state, name);
     rows.push([name, describe(cred.provider(), cred.isAuthenticated())]);
   }
-  const width = rows.reduce((m, [name]) => Math.max(m, name.length), 0);
-  for (const [name, detail] of rows) {
-    console.log(`${name.padEnd(width)}  ${detail}`);
-  }
+  printTable(rows, { indent: "" });
 }
 
 /**

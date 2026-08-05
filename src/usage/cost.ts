@@ -1,6 +1,7 @@
 // `agent cost`: fetches pricing, reads usage DBs, and prints spend estimates.
 import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
+import { printTable } from "../utils/table.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { discoverClaudeSessionRoots, readClaudeSessions } from "./claude_sessions.ts";
 import { discoverCodexSessionRoots, readCodexSessions } from "./codex_sessions.ts";
@@ -353,42 +354,6 @@ function formatCurrency(amount: number | undefined): string {
   return amount === undefined ? "N/A" : `$${amount.toFixed(2)}`;
 }
 
-type Align = "left" | "right";
-
-function padCell(text: string, width: number, align: Align): string {
-  return align === "right" ? text.padStart(width) : text.padEnd(width);
-}
-
-/**
- * Render an aligned text table to stdout: a header row, a separator, the body
- * rows, then (if present) a second separator and footer rows. Uses console.log
- * directly so output is clean -- no consola `i` prefix or trailing timestamp.
- */
-function printTable(
-  headers: string[],
-  aligns: Align[],
-  body: string[][],
-  footer: string[][],
-): void {
-  const rows = [headers, ...body, ...footer];
-  const widths = headers.map((_, i) => Math.max(...rows.map((r) => (r[i] ?? "").length)));
-  const fmt = (row: string[]): string =>
-    `  ${row.map((c, i) => padCell(c ?? "", widths[i] ?? 0, aligns[i] ?? "left")).join("  ")}`;
-  const sep = `  ${widths.map((w) => "-".repeat(w)).join("  ")}`;
-
-  console.log(fmt(headers));
-  console.log(sep);
-  for (const row of body) {
-    console.log(fmt(row));
-  }
-  if (footer.length > 0) {
-    console.log(sep);
-    for (const row of footer) {
-      console.log(fmt(row));
-    }
-  }
-}
-
 /** A category cell: a token count and, when priced, its cost (null = unpriced). */
 interface CatCell {
   tok: string;
@@ -597,12 +562,11 @@ function printCostReport(
     `${opts.title} - ${period} | ${opts.sourceLabel} | ${sum.reqs} requests | ${activeDaysLabel}`,
   );
   console.log("");
-  printTable(
-    ["Model", "Requests", "Input", "Output", "Cache Read", "Cache Write", "Total", "Cost"],
-    ["left", "right", "right", "right", "right", "right", "right", "right"],
-    body,
+  printTable(body, {
+    header: ["Model", "Requests", "Input", "Output", "Cache Read", "Cache Write", "Total", "Cost"],
+    aligns: ["left", "right", "right", "right", "right", "right", "right", "right"],
     footer,
-  );
+  });
   if (estimate.unpriced.length > 0) {
     console.log("");
     console.log(`  Unpriced (excluded from total): ${estimate.unpriced.join(", ")}`);
@@ -697,12 +661,11 @@ function printPerDayReport(
 
   console.log(title);
   console.log("");
-  printTable(
-    ["Day", "Requests", "Input", "Output", "Cache Read", "Cache Write", "Total", "Cost"],
-    ["left", "right", "right", "right", "right", "right", "right", "right"],
-    body,
+  printTable(body, {
+    header: ["Day", "Requests", "Input", "Output", "Cache Read", "Cache Write", "Total", "Cost"],
+    aligns: ["left", "right", "right", "right", "right", "right", "right", "right"],
     footer,
-  );
+  });
   console.log("");
 }
 

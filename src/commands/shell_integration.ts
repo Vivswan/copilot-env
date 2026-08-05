@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { consola } from "consola";
 
+import { isEnoent } from "../utils/fs.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 
@@ -362,7 +363,7 @@ function relaxWindowsExecutionPolicy(): void {
       stdio: ["ignore", "inherit", "inherit"],
     });
     // Edition not installed (pwsh-only or 5.1-only machine): nothing to relax there.
-    if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") continue;
+    if (isEnoent(result.error)) continue;
     if (result.error || result.status !== 0) {
       consola.warn(
         `Could not relax the ${exe} execution policy; the profile may not load agents.ps1. ` +

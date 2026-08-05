@@ -2,7 +2,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { isDir } from "../utils/fs.ts";
+import { isDir, isEnoentOrNotdir } from "../utils/fs.ts";
 import { getSanitizedHostname } from "../utils/hostname.ts";
 import { isValidProfileName, type Profile, type ProfileName, parseProfileName } from "./profile.ts";
 
@@ -107,8 +107,7 @@ export function profileHomeNames(): ProfileName[] {
       .map((entry) => parseProfileName(entry.name))
       .sort();
   } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ENOENT" || code === "ENOTDIR") return []; // no profiles dir yet
+    if (isEnoentOrNotdir(e)) return []; // no profiles dir yet
     throw e;
   }
 }

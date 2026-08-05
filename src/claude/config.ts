@@ -44,7 +44,7 @@ import {
   resolveDirectMode,
 } from "../utils/direct_probe.ts";
 import { errMessage } from "../utils/error.ts";
-import { readTextOrNull } from "../utils/fs.ts";
+import { isEnoent, readTextOrNull } from "../utils/fs.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import {
@@ -274,7 +274,7 @@ function loadSettings(settingsPath: string): Record<string, unknown> {
   try {
     text = fs.readFileSync(settingsPath, "utf8");
   } catch (e) {
-    if ((e as { code?: string }).code === "ENOENT") return {};
+    if (isEnoent(e)) return {};
     throw e;
   }
   if (text.trim() === "") return {};

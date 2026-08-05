@@ -1,5 +1,6 @@
 // Shared filesystem predicates and small read helpers.
 import { readFileSync, statSync } from "node:fs";
+import { isRecord } from "./json.ts";
 
 /** True iff `path` exists and is a regular file (any stat error => false). */
 export function isFile(path: string): boolean {
@@ -17,6 +18,20 @@ export function isDir(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** True iff `e` is a thrown value whose `code` is "ENOENT" (the path is absent).
+ *  False for anything that is not a plain error-shaped record, so callers
+ *  rethrow such values instead of misreading them. */
+export function isEnoent(e: unknown): boolean {
+  return isRecord(e) && e.code === "ENOENT";
+}
+
+/** True iff `e` carries "ENOENT" or "ENOTDIR" -- the two codes a lookup under a
+ *  missing or non-directory parent produces, which callers read alike as
+ *  "nothing there". */
+export function isEnoentOrNotdir(e: unknown): boolean {
+  return isRecord(e) && (e.code === "ENOENT" || e.code === "ENOTDIR");
 }
 
 /** Read `path` as UTF-8 text, or null on ANY error (absent, unreadable, a

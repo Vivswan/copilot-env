@@ -33,6 +33,7 @@ import {
   resolveDirectMode,
 } from "../utils/direct_probe.ts";
 import { errMessage } from "../utils/error.ts";
+import { isEnoent, isEnoentOrNotdir } from "../utils/fs.ts";
 import { codexFarmHostsDir } from "../utils/hostname.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -433,7 +434,7 @@ function loadOrCreateConfig(hostConfig: string): Record<string, unknown> {
   try {
     text = fs.readFileSync(hostConfig, "utf8");
   } catch (e) {
-    if ((e as { code?: string }).code === "ENOENT") return defaultConfig();
+    if (isEnoent(e)) return defaultConfig();
     throw e; // EISDIR / permission / etc. -- fail loudly, don't overwrite blindly
   }
   if (text.trim() === "") return defaultConfig();
@@ -453,7 +454,7 @@ function removeEnvKey(envFile: string, key: string): void {
   try {
     existing = fs.readFileSync(envFile, "utf8");
   } catch (e) {
-    if ((e as { code?: string }).code === "ENOENT") return; // nothing to scrub
+    if (isEnoent(e)) return; // nothing to scrub
     throw e;
   }
   const matcher = new RegExp(`^\\s*(?:export\\s+)?${key}\\s*=`);
@@ -773,7 +774,7 @@ export function knownCodexHomes(): { homes: string[]; complete: boolean } {
     // No farm directory (ENOENT/ENOTDIR): the two base homes cover everything.
     // Any OTHER failure (EACCES, I/O) hides farm homes that may hold state,
     // so the sweep is incomplete.
-    if (isRecord(e) && e.code !== "ENOENT" && e.code !== "ENOTDIR") complete = false;
+    if (isRecord(e) && !isEnoentOrNotdir(e)) complete = false;
   }
   return { homes: [...homes], complete };
 }
@@ -824,7 +825,7 @@ function cleanupCodexCatalogArtifacts(catalogFile: string): void {
       // ENOENT (Codex never wired there) cannot hold a reference; any other
       // failure might, so keep the file until every readable config proves it
       // unreferenced.
-      if (!isFileMissingError(e)) deletionSafe = false;
+      if (!isEnoent(e)) deletionSafe = false;
     }
   }
   if (deletionSafe && fs.existsSync(catalogFile)) {
@@ -839,10 +840,6 @@ function cleanupCodexCatalogArtifacts(catalogFile: string): void {
   if (recorded.codexCatalogLastAttemptMs !== 0 || recorded.codexCatalogCodexVersion !== null) {
     state.set({ codexCatalogLastAttemptMs: null, codexCatalogCodexVersion: null });
   }
-}
-
-function isFileMissingError(e: unknown): boolean {
-  return isRecord(e) && e.code === "ENOENT";
 }
 
 interface EffectiveCodexConfig {
@@ -869,7 +866,7 @@ function inspectEffectiveCodexConfig(): EffectiveCodexConfig {
       providerMode: status.providerMode,
     };
   } catch (e) {
-    if ((e as { code?: string }).code !== "ENOENT") throw e;
+    if (!isEnoent(e)) throw e;
     return { codexHome, configPath, configExists: false, providerMode: "none" };
   }
 }
@@ -918,7 +915,7 @@ export function removeCodexProfile(codexHome: string, name: ProfileName): void {
   try {
     doc = parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
   } catch (e) {
-    if ((e as { code?: string }).code === "ENOENT") return;
+    if (isEnoent(e)) return;
     throw new Error(`${configPath} is not readable/valid TOML: ${errMessage(e)}`);
   }
   const providerId = codexProviderId(name);
@@ -958,7 +955,7 @@ export function removeCodexDefaultWiring(codexHome: string): void {
   try {
     doc = parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
   } catch (e) {
-    if ((e as { code?: string }).code === "ENOENT") doc = null;
+    if (isEnoent(e)) doc = null;
     else throw new Error(`${configPath} is not readable/valid TOML: ${errMessage(e)}`);
   }
   if (doc !== null) {

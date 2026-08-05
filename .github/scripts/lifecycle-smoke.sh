@@ -31,11 +31,13 @@ bun src/cli.ts health --scope runtime
 # Managed-lifecycle idempotency (auto-start on): a redundant `start` is a no-op -- it must
 # keep the SAME daemon pid (not restart and disrupt a connected agent); `--force` launches
 # a fresh daemon (new pid). In the default/unmanaged mode `start` still restarts. Capture
-# `start` output (so a nonzero exit fails the run, not just grep) and compare pids.
+# `start` output (so a nonzero exit fails the run, not just grep) and gate on the
+# "[start:noop]" machine marker (an external contract emitted by src/commands/start.ts,
+# so the human wording around it can change freely).
 bun src/cli.ts config --set auto-start true
 pid_before=$(readpid)
 out=$(bun src/cli.ts start)
-echo "$out" | grep -q "already running" || fail "managed redundant start did not no-op"
+echo "$out" | grep -qF "[start:noop]" || fail "managed redundant start did not no-op"
 pid_after=$(readpid)
 [ "$pid_before" = "$pid_after" ] || fail "managed redundant start changed the pid ($pid_before -> $pid_after)"
 bun src/cli.ts health --scope runtime

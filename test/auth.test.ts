@@ -103,7 +103,10 @@ test("auth --check: a configured provider reports authenticated, exit 0", async 
   isolate();
   state().set({ githubToken: "ghu_stored123", authProvider: "gh-token" });
   const out = await captureLog(() => runAuth({ check: true }));
-  expect(out).toContain("authenticated (gh-token)");
+  // Exit 0 is the machine "authenticated" contract; the status line is human
+  // copy, so pin only the parenthesized provider identifier it must name (the
+  // parens keep a longer provider name like "gh-token-file" from matching).
+  expect(out).toContain("(gh-token)");
   expect(process.exitCode).toBe(0);
 });
 

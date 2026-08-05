@@ -636,6 +636,9 @@ export async function runStart(action: StartAction): Promise<void> {
       if (status.up) {
         state.set({ lastEnsureAt: Date.now() });
         consola.success(`Proxy already running on port ${status.port} - leaving it up.`);
+        // "[start:noop]" is a machine marker (external contract): CI's lifecycle smoke
+        // keys its managed-no-op gate on this token, not on the sentence above.
+        consola.info("[start:noop]");
         consola.info(
           `Run \`agent start${profileFlag} --force\` to launch a fresh daemon (e.g. after a credential or config change).`,
         );

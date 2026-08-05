@@ -144,7 +144,12 @@ describe("proxyFloatUpToDate", () => {
     const status = proxyFloatVerifyStatus(dir, "bun", CONFIG, 604800, spawn, NOW_MS);
 
     expect(status.upToDate).toBe(false);
-    expect(status.message).toContain("update needed: @jeffreycao/copilot-api 1.10.29 -> 1.10.30");
+    // The message is log copy for humans; pin only the identifiers it must name
+    // (the package plus the installed and target versions), not the sentence or
+    // arrow around them.
+    expect(status.message).toContain(PROXY_PKG);
+    expect(status.message).toContain("1.10.29");
+    expect(status.message).toContain("1.10.30");
   });
 
   test("false when the proxy is not installed", () => {
@@ -310,11 +315,13 @@ describe("floatProxy", () => {
 });
 
 describe("proxyInstallAssertStatus", () => {
+  // status.ok carries the verdict; the messages are human copy, so the assertions
+  // pin only the identifiers each one must name (the package, the versions).
   test("fails when the proxy is missing", () => {
     const status = proxyInstallAssertStatus(dir, CONFIG);
 
     expect(status.ok).toBe(false);
-    expect(status.message).toContain("proxy float did not install @jeffreycao/copilot-api");
+    expect(status.message).toContain(PROXY_PKG);
   });
 
   test("fails below the configured floor", () => {
@@ -323,7 +330,9 @@ describe("proxyInstallAssertStatus", () => {
     const status = proxyInstallAssertStatus(dir, CONFIG);
 
     expect(status.ok).toBe(false);
-    expect(status.message).toContain("is below the 1.10.0 floor");
+    // Names the installed version and the floor it missed.
+    expect(status.message).toContain("1.9.99");
+    expect(status.message).toContain("1.10.0");
   });
 
   test("fails above the configured ceiling", () => {
@@ -335,11 +344,15 @@ describe("proxyInstallAssertStatus", () => {
     });
 
     expect(status.ok).toBe(false);
-    expect(status.message).toContain("is above the 1.10.30 ceiling");
+    // Names the installed version and the ceiling it overshot.
+    expect(status.message).toContain("1.10.31");
+    expect(status.message).toContain("1.10.30");
   });
 
   test("passes within the configured floor and ceiling", () => {
-    installProxy(dir, "1.10.30");
+    // An interior installed version, so installed, floor, and ceiling are three
+    // distinct values and each assertion below pins its own identifier.
+    installProxy(dir, "1.10.15");
 
     const status = proxyInstallAssertStatus(dir, {
       "proxyMinVersion": "1.10.0",
@@ -347,9 +360,10 @@ describe("proxyInstallAssertStatus", () => {
     });
 
     expect(status.ok).toBe(true);
-    expect(status.message).toBe(
-      "proxy float OK: @jeffreycao/copilot-api 1.10.30 (within [1.10.0, 1.10.30])",
-    );
+    // Names the package + installed version and the window it satisfied.
+    expect(status.message).toContain(`${PROXY_PKG} 1.10.15`);
+    expect(status.message).toContain("1.10.0");
+    expect(status.message).toContain("1.10.30");
   });
 });
 

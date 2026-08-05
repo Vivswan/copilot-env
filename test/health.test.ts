@@ -192,7 +192,9 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
     floatSkips: true,
   });
   expect(below.status).toBe("ok");
-  expect(below.detail).toContain("not enforced (Codex + Claude are both direct");
+  // The detail must surface the exemption; the exact phrasing is human copy, so
+  // pin only the stable "not enforced" token.
+  expect(below.detail).toContain("not enforced");
   expect(below.fix).toBeUndefined();
   // The exemption is machine-readable for --json consumers (mirrors the
   // runtime checks' bothDirect stamp).

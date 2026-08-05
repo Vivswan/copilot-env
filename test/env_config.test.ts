@@ -5,17 +5,12 @@ import {
   CONFIG_REGISTRY,
   CopilotEnvConfig,
   configDefaultLabel,
+  configDefaultNumber,
   configKeyDef,
   isProxyProjected,
   projectedProxyConfig,
 } from "../src/copilot_api/env_config.ts";
-import {
-  BUILTIN_PROXY_PORT,
-  DEFAULT_MAX_PROXY_PORT,
-  DEFAULT_MIN_PROXY_PORT,
-} from "../src/copilot_api/port.ts";
 import { DEFAULT_WEB_SEARCH_MODEL } from "../src/copilot_api/web_search.ts";
-import { DEFAULT_IDLE_TIMEOUT_SECONDS } from "../src/scripts/idle_watchdog.ts";
 import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
 
 // CopilotEnvConfig reads/writes the SHARED prefs store under COPILOT_API_HOME, so isolate
@@ -252,11 +247,12 @@ test("registry defaults are single-sourced: labels derive from the owned default
     expect(configDefaultLabel(def).length).toBeGreaterThan(0);
   }
 
-  // The read sites consume the registry's values, so these pins guard ONE fact each.
-  expect(BUILTIN_PROXY_PORT).toBe(4141);
-  expect(DEFAULT_MIN_PROXY_PORT).toBe(1024);
-  expect(DEFAULT_MAX_PROXY_PORT).toBe(65535);
-  expect(DEFAULT_IDLE_TIMEOUT_SECONDS).toBe(3600);
+  // The read sites consume the registry's values (via the CopilotEnvConfig accessors), so
+  // these pins guard ONE fact each.
+  expect(configDefaultNumber("port")).toBe(4141);
+  expect(configDefaultNumber("min-port")).toBe(1024);
+  expect(configDefaultNumber("max-port")).toBe(65535);
+  expect(configDefaultNumber("idle-timeout")).toBe(3600);
 
   // Rendered labels keep their exact wording (external contract of `--help` / `--get`).
   expect(configDefaultLabel(configKeyDef("port")!)).toBe("4141 (then next free)");

@@ -1,8 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import { CopilotEnvConfig, configDefaultNumber } from "../src/copilot_api/env_config.ts";
 import {
-  DEFAULT_MAX_PROXY_PORT,
-  DEFAULT_MIN_PROXY_PORT,
   matchesProxyOrigin,
   maxProxyPort,
   minProxyPort,
@@ -27,8 +25,8 @@ function tmpHome(): void {
 
 test("the range defaults to [1024, 65535] and excludes privileged/out-of-range ports", () => {
   tmpHome();
-  expect(minProxyPort()).toBe(DEFAULT_MIN_PROXY_PORT); // 1024
-  expect(maxProxyPort()).toBe(DEFAULT_MAX_PROXY_PORT); // 65535
+  expect(minProxyPort()).toBe(configDefaultNumber("min-port")); // 1024
+  expect(maxProxyPort()).toBe(configDefaultNumber("max-port")); // 65535
   expect(proxyPortInRange(443)).toBe(false); // privileged
   expect(proxyPortInRange(1023)).toBe(false);
   expect(proxyPortInRange(1024)).toBe(true);

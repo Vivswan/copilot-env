@@ -181,7 +181,7 @@ export function resolveWebSearchCredential(profile: Profile = null): string {
 export async function webSearch(query: string, opts: WebSearchOptions = {}): Promise<string> {
   const profile = opts.profile ?? null;
   const token = resolveWebSearchCredential(profile);
-  const configured = opts.model ?? new CopilotEnvConfig().read().messageApiWebSearchModel ?? null;
+  const configured = opts.model ?? new CopilotEnvConfig().messageApiWebSearchModel();
   // Only a configured value can be an alias; the built-in default is maintained
   // as a raw catalog id, so the default path stays fetch-free. Like the probe
   // below, a cancelled call stops WAITING but leaves the memo filling.

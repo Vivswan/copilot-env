@@ -14,16 +14,13 @@
 // This module is import-safe -- it never arms a timer on import, so unit tests can exercise the
 // pure helpers. idle_watchdog_preload.ts is the tiny `bun --preload` entry that arms it (and is
 // never imported by tests), the same split pat_passthrough_preload.ts gets from its own file.
-import { CopilotEnvConfig, configDefaultNumber } from "../copilot_api/env_config.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { ROOT_HOME_ENV } from "../copilot_api/paths.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { lastObservedInferenceMs } from "./inference_activity.ts";
 
 /** Env knob: idle timeout in whole seconds. `0` (or negative) disables the watchdog. */
 export const IDLE_TIMEOUT_ENV = "COPILOT_API_IDLE_TIMEOUT";
-/** Default idle window when the env knob is unset: 1 hour, owned by the config
- *  registry's `idle-timeout` entry. */
-export const DEFAULT_IDLE_TIMEOUT_SECONDS = configDefaultNumber("idle-timeout");
 /** Upper bound on the poll interval; short timeouts poll proportionally faster. */
 const MAX_CHECK_INTERVAL_MS = 60_000;
 const MIN_CHECK_INTERVAL_MS = 1_000;
@@ -42,11 +39,7 @@ export function idleTimeoutMs(): number {
   if (raw !== undefined && /^-?\d+$/.test(raw)) {
     return Number.parseInt(raw, 10) * 1000;
   }
-  const configured = new CopilotEnvConfig().read().idleTimeout;
-  if (configured !== undefined) {
-    return configured * 1000;
-  }
-  return DEFAULT_IDLE_TIMEOUT_SECONDS * 1000;
+  return new CopilotEnvConfig().idleTimeoutSeconds() * 1000;
 }
 
 /** Default poll interval for a given timeout: a quarter of the window, clamped. */

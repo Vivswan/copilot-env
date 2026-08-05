@@ -12,7 +12,7 @@ import {
   removeClaudeMcpRegistration,
 } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome } from "../claude/paths.ts";
-import { CopilotEnvConfig, configDefaultBoolean } from "../copilot_api/env_config.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { type Profile, parseProfileFlag } from "../copilot_api/profile.ts";
 import { runMcpServer } from "../mcp/server.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -81,11 +81,9 @@ function printStatus(): void {
   const line = status === "unreadable" ? `could not read ${path}` : STATUS_LINES[status];
   logger.log(`Claude registration: ${line}`);
   logger.log(`  (${path})`);
-  // One config snapshot: value and source must come from the same read.
-  const stored = new CopilotEnvConfig().read().wireMcp;
-  const wireMcp =
-    stored === undefined ? `${configDefaultBoolean("wire-mcp")} (default)` : `${stored} (stored)`;
-  logger.log(`wire-mcp: ${wireMcp}`);
+  // Value and provenance come from ONE config snapshot (the accessor reads once).
+  const wireMcp = new CopilotEnvConfig().wireMcpResolved();
+  logger.log(`wire-mcp: ${wireMcp.value} (${wireMcp.source})`);
   logger.log("");
   logger.log("agent mcp --serve   run the MCP stdio server (what registered clients spawn)");
   logger.log("agent mcp --remove  unregister from Claude Code and opt out (wire-mcp false)");

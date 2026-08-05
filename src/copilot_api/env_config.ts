@@ -117,8 +117,8 @@ export interface ConfigKeyDef {
   describe: string;
   parse: (raw: string) => ConfigValue;
   /** Built-in default applied by the read site when the key is unset. THE owned copy:
-   *  read sites (port.ts, idle_watchdog.ts, the helpers below) consume it via the
-   *  configDefault* accessors, and the rendered default label derives from it. */
+   *  the CopilotEnvConfig accessors below consume it via the configDefault* helpers,
+   *  and the rendered default label derives from it. */
   defaultValue?: ConfigValue;
   /** Extra wording appended after the derived default value in `--help` / `--get`. */
   defaultSuffix?: string;
@@ -373,8 +373,8 @@ export function configKeyDef(cli: string): ConfigKeyDef | undefined {
 }
 
 /** The registry's built-in numeric default for `cli` (`defaultValue`, else `proxyDefault` --
- *  the same resolution the rendered label uses), for the read sites that apply it
- *  (port bounds, idle timeout). A missing or non-numeric entry is a programmer error. */
+ *  the same resolution the rendered label uses), for the CopilotEnvConfig accessors that
+ *  apply it. A missing or non-numeric entry is a programmer error. */
 export function configDefaultNumber(cli: ConfigCli): number {
   const def = configKeyDef(cli);
   const value = def?.defaultValue ?? def?.proxyDefault;
@@ -455,7 +455,16 @@ export class CopilotEnvConfig {
 
   /** Whether direct Claude wiring registers the MCP server + WebSearch deny (default ON). */
   wireMcpEnabled(): boolean {
-    return this.read().wireMcp ?? configDefaultBoolean("wire-mcp");
+    return this.wireMcpResolved().value;
+  }
+
+  /** wire-mcp with its provenance, resolved from ONE snapshot -- for status output that
+   *  prints value and source together (`agent mcp`) and must never show a torn pair. */
+  wireMcpResolved(): { value: boolean; source: "stored" | "default" } {
+    const stored = this.read().wireMcp;
+    return stored === undefined
+      ? { value: configDefaultBoolean("wire-mcp"), source: "default" }
+      : { value: stored, source: "stored" };
   }
 
   /**
@@ -466,6 +475,68 @@ export class CopilotEnvConfig {
   pinnedIntegrationId(): string | null {
     const value = this.read().integrationId;
     return value === undefined || value.toLowerCase() === "auto" ? null : value;
+  }
+
+  /** PAT passthrough override for `agent start`: `on` -> true, `off` -> false, `auto`/unset
+   *  -> undefined (the caller decides from the credential's provider/token shape). */
+  passthroughOverride(): boolean | undefined {
+    const value = this.read().passthrough;
+    if (value === "on") return true;
+    if (value === "off") return false;
+    return undefined;
+  }
+
+  /** The configured default proxy port (`agent config --set port`), else the registry
+   *  built-in. */
+  defaultPort(): number {
+    return this.read().port ?? configDefaultNumber("port");
+  }
+
+  /** The configured lower bound of the allowed proxy port range, else the registry built-in. */
+  minPort(): number {
+    return this.read().minPort ?? configDefaultNumber("min-port");
+  }
+
+  /** The configured upper bound of the allowed proxy port range, else the registry built-in. */
+  maxPort(): number {
+    return this.read().maxPort ?? configDefaultNumber("max-port");
+  }
+
+  /** Whether `agent start` fails on a busy default port instead of auto-incrementing. */
+  strictPortEnabled(): boolean {
+    return this.read().strictPort ?? configDefaultBoolean("strict-port");
+  }
+
+  /** Whether the proxy writes request logs under `<home>/logs`. */
+  proxyLogsEnabled(): boolean {
+    return this.read().proxyLogs ?? configDefaultBoolean("proxy-logs");
+  }
+
+  /**
+   * Idle auto-stop window in whole seconds (`0` disables), else the registry built-in.
+   * The per-invocation env layer above this (COPILOT_API_IDLE_TIMEOUT) stays at the read
+   * site (src/scripts/idle_watchdog.ts), per the flag/env > stored > default precedence.
+   */
+  idleTimeoutSeconds(): number {
+    return this.read().idleTimeout ?? configDefaultNumber("idle-timeout");
+  }
+
+  /**
+   * The stored `update-cooldown` in whole days, else null -- the registry's built-in is
+   * "none (immediate)". Autoupdate layers its own policy default on top
+   * (effectiveUpdateCooldownDays in src/autoupdate/state.ts).
+   */
+  updateCooldownDays(): number | null {
+    return this.read().updateCooldown ?? null;
+  }
+
+  /**
+   * The stored web-search model id, else null. The defaults are owned by the read sites
+   * (the proxy's own default on the proxy path; DEFAULT_WEB_SEARCH_MODEL in web_search.ts
+   * on the MCP path -- that module imports this one, so the registry can't reference it).
+   */
+  messageApiWebSearchModel(): string | null {
+    return this.read().messageApiWebSearchModel ?? null;
   }
 
   /**

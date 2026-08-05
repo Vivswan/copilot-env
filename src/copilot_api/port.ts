@@ -3,31 +3,22 @@ import * as net from "node:net";
 import { join } from "node:path";
 
 import { acquireFileLockBounded, releaseFileLock } from "../utils/file_lock.ts";
-import { CopilotEnvConfig, configDefaultNumber } from "./env_config.ts";
+import { CopilotEnvConfig } from "./env_config.ts";
 import { profileHomeNames, resolveRootHome } from "./paths.ts";
 import type { Profile, ProfileName } from "./profile.ts";
 import { CopilotEnvRunState } from "./state.ts";
 
-/** The built-in proxy port when nothing (config `port`, a running daemon, or `--port`)
- *  overrides it. The value is owned by the config registry's `port` entry. */
-export const BUILTIN_PROXY_PORT = configDefaultNumber("port");
-
-/** Built-in bounds of the allowed proxy port range, used when the `min-port`/`max-port` config
- *  keys are unset (values owned by the config registry). Privileged ports (<1024) are excluded
- *  by default. */
-export const DEFAULT_MIN_PROXY_PORT = configDefaultNumber("min-port");
-export const DEFAULT_MAX_PROXY_PORT = configDefaultNumber("max-port");
-
 /** The configured lower bound of the allowed proxy port range (`agent config --set min-port`),
- *  else the built-in default. */
+ *  else the built-in default (owned by the config registry; privileged ports <1024 are
+ *  excluded by default). */
 export function minProxyPort(): number {
-  return new CopilotEnvConfig().read().minPort ?? DEFAULT_MIN_PROXY_PORT;
+  return new CopilotEnvConfig().minPort();
 }
 
 /** The configured upper bound of the allowed proxy port range (`agent config --set max-port`),
- *  else the built-in default. */
+ *  else the built-in default (owned by the config registry). */
 export function maxProxyPort(): number {
-  return new CopilotEnvConfig().read().maxPort ?? DEFAULT_MAX_PROXY_PORT;
+  return new CopilotEnvConfig().maxPort();
 }
 
 /** Whether `port` is within the allowed proxy range [min-port, max-port] (config-driven). */
@@ -35,9 +26,10 @@ export function proxyPortInRange(port: number): boolean {
   return Number.isInteger(port) && port >= minProxyPort() && port <= maxProxyPort();
 }
 
-/** The default proxy port: the configured `port` (`agent config --set port`), else the built-in. */
+/** The default proxy port: the configured `port` (`agent config --set port`), else the
+ *  built-in default (owned by the config registry). */
 export function defaultProxyPort(): number {
-  return new CopilotEnvConfig().read().port ?? BUILTIN_PROXY_PORT;
+  return new CopilotEnvConfig().defaultPort();
 }
 
 async function portFree(port: number): Promise<boolean> {

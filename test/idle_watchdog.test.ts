@@ -1,9 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import { CopilotEnvConfig, configDefaultNumber } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import {
   armIdleWatchdog,
-  DEFAULT_IDLE_TIMEOUT_SECONDS,
   defaultCheckIntervalMs,
   IDLE_TIMEOUT_ENV,
   idleCheck,
@@ -77,7 +76,7 @@ test("idleCheck: with no activity past the window, clears run state and exits", 
 test("idleTimeoutMs: default is 1 hour; the env knob overrides in whole seconds", () => {
   tmpHome();
   delete process.env[IDLE_TIMEOUT_ENV];
-  expect(idleTimeoutMs()).toBe(DEFAULT_IDLE_TIMEOUT_SECONDS * 1000);
+  expect(idleTimeoutMs()).toBe(configDefaultNumber("idle-timeout") * 1000);
   expect(idleTimeoutMs()).toBe(3600 * 1000);
 
   process.env[IDLE_TIMEOUT_ENV] = "5";
@@ -107,7 +106,7 @@ test("idleTimeoutMs: 0 disables (<=0 means no watchdog); a malformed value falls
 
   // Non-numeric env -> falls through to config/default (a bad env must not crash the watchdog).
   process.env[IDLE_TIMEOUT_ENV] = "notanumber";
-  expect(idleTimeoutMs()).toBe(DEFAULT_IDLE_TIMEOUT_SECONDS * 1000);
+  expect(idleTimeoutMs()).toBe(configDefaultNumber("idle-timeout") * 1000);
 });
 
 test("defaultCheckIntervalMs: a quarter of the window, clamped to [1s, 60s]", () => {

@@ -17,7 +17,7 @@ export const DEFAULT_AUTOUPDATE_COOLDOWN_DAYS = 7;
  * snapshotted into state.
  */
 export function effectiveUpdateCooldownDays(): number {
-  return new CopilotEnvConfig().read().updateCooldown ?? DEFAULT_AUTOUPDATE_COOLDOWN_DAYS;
+  return new CopilotEnvConfig().updateCooldownDays() ?? DEFAULT_AUTOUPDATE_COOLDOWN_DAYS;
 }
 
 export interface AutoupdateData {

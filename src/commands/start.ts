@@ -361,7 +361,7 @@ async function resolveStartPort(
     case "busy":
       break; // fall through to strict-port / auto-increment below
   }
-  if (profile === null && new CopilotEnvConfig().read().strictPort === true) {
+  if (profile === null && new CopilotEnvConfig().strictPortEnabled()) {
     throw new Error(
       `port ${def} is busy and auto-increment is disabled (\`strict-port\`); free it, pick another \`--port\`, or set \`agent config --set strict-port false\`.`,
     );
@@ -613,9 +613,7 @@ export async function runStart(action: StartAction): Promise<void> {
     // passthrough shim (it fakes the exchange, handing the token straight through as the Copilot
     // bearer). Precedence: config `passthrough` (on/off) > `auto` (gh-cli provider or PAT shape).
     // Set it with `agent config --set passthrough on|off`. Only meaningful when a token resolved.
-    const cfgPassthrough = new CopilotEnvConfig().read().passthrough;
-    const forcePassthrough =
-      cfgPassthrough === "on" ? true : cfgPassthrough === "off" ? false : undefined;
+    const forcePassthrough = new CopilotEnvConfig().passthroughOverride();
     const patPassthrough = usePatPassthrough({
       force: forcePassthrough,
       token: githubToken,
@@ -651,7 +649,7 @@ export async function runStart(action: StartAction): Promise<void> {
     // `proxy-logs false` mutes the daemon's verbose handler logs: a preload shim discards the
     // writes under <home>/logs. Activity detection is unaffected -- the always-loaded inference
     // observer watches inbound requests, not log files.
-    const muteProxyLogs = new CopilotEnvConfig().read().proxyLogs === false;
+    const muteProxyLogs = !new CopilotEnvConfig().proxyLogsEnabled();
     if (muteProxyLogs) {
       consola.info("Proxy request logs off: discarding writes under <home>/logs (`proxy-logs`).");
     }
@@ -676,7 +674,7 @@ export async function runStart(action: StartAction): Promise<void> {
       if (/address already in use|EADDRINUSE|bind.*failed/i.test(logContent)) {
         // `strict-port` steers the DEFAULT daemon only (same exemption as resolveStartPort):
         // a named profile's reservation is soft, so a bind race retries on another port.
-        const strictPort = profile === null && new CopilotEnvConfig().read().strictPort === true;
+        const strictPort = profile === null && new CopilotEnvConfig().strictPortEnabled();
         if (action.port !== undefined || strictPort) {
           // A pinned port -- or any port under strict-port -- that loses the race fails rather
           // than silently moving to a different port.

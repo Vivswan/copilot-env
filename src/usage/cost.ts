@@ -1,7 +1,7 @@
 // `agent cost`: fetches pricing, reads usage DBs, and prints spend estimates.
 import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
-import { printTable } from "../utils/table.ts";
+import { type Align, printTable } from "../utils/table.ts";
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { discoverClaudeSessionRoots, readClaudeSessions } from "./claude_sessions.ts";
 import { discoverCodexSessionRoots, readCodexSessions } from "./codex_sessions.ts";
@@ -339,8 +339,13 @@ export function activeDayCoverage(report: UsageReport): { spanDays: number; perc
   return { spanDays, percent };
 }
 
-/** Format a token count with a K/M suffix. */
-function formatTokens(n: number): string {
+/**
+ * Format a token count with a one-decimal K/M suffix ("1.2K", "1.0M").
+ * Distinct from commands/models.ts's formatTokens, which renders catalog
+ * context-window sizes as bare "200k"/"1M" -- different semantics, so a
+ * different name.
+ */
+function formatTokensCompact(n: number): string {
   if (n >= 1_000_000) {
     return `${(n / 1_000_000).toFixed(1)}M`;
   }
@@ -376,30 +381,98 @@ function alignCatColumn(cells: CatCell[]): string[] {
   });
 }
 
-/** Print one source's by-model usage + cost table (tokens with $ per category). */
-function printCostReport(
+/** One assembled table row: label, requests, the four category cells, total, cost. */
+interface CostRow {
+  label: string;
+  reqs: string;
+  input: CatCell;
+  output: CatCell;
+  cacheRead: CatCell;
+  cacheWrite: CatCell;
+  total: string;
+  cost: string;
+}
+
+/** The CostRow category columns, in table order. */
+const CAT_COLUMNS = ["input", "output", "cacheRead", "cacheWrite"] as const;
+
+/** Column headings and alignment shared by the by-model and per-day tables. */
+const COST_TABLE_COLUMNS = [
+  "Requests",
+  "Input",
+  "Output",
+  "Cache Read",
+  "Cache Write",
+  "Total",
+  "Cost",
+];
+const COST_TABLE_ALIGNS: Align[] = [
+  "left",
+  "right",
+  "right",
+  "right",
+  "right",
+  "right",
+  "right",
+  "right",
+];
+
+/** Build a category cell: a bare cost amount (alignCatColumn re-adds the `$`
+ *  after padding), or a null cost to render the token count alone (unpriced). */
+function catCell(tokens: number, costUsd: number | null): CatCell {
+  return { tok: formatTokensCompact(tokens), cost: costUsd === null ? null : costUsd.toFixed(2) };
+}
+
+/**
+ * Turn assembled rows into printTable cells. Each category column is
+ * sub-aligned across body and footer TOGETHER, so the `|` separators and
+ * decimal points line up down the whole table, footer included.
+ */
+function renderCostRows(
+  body: CostRow[],
+  footer: CostRow[],
+): { body: string[][]; footer: string[][] } {
+  const rows = [...body, ...footer];
+  const cats = CAT_COLUMNS.map((key) => alignCatColumn(rows.map((r) => r[key])));
+  const cells = rows.map((r, i) => [
+    r.label,
+    r.reqs,
+    ...cats.map((col) => col[i] ?? ""),
+    r.total,
+    r.cost,
+  ]);
+  return { body: cells.slice(0, body.length), footer: cells.slice(body.length) };
+}
+
+/** Running totals across the by-model rows, token buckets and priced cost alike.
+ *  Not DayMetrics: it is not keyed by day, and it deliberately has no summed
+ *  `cost` field -- the aggregate cost is read from `estimate.totalUsd`. */
+interface CostSums {
+  reqs: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  total: number;
+  inputCost: number;
+  outputCost: number;
+  cacheReadCost: number;
+  cacheWriteCost: number;
+}
+
+/** One row per model (most expensive first) plus the totals they sum to. */
+function buildModelRows(
   report: UsageReport,
   estimate: CostEstimate,
-  pricing: Map<string, PricingTier>,
-  opts: { title: string; sourceLabel: string; days: string | undefined },
-): void {
+): { rows: CostRow[]; sum: CostSums } {
   const { byModel } = report;
-  const activeDays = report.perDay.size;
   // Most expensive first; unpriced models sink to the bottom, ties by name.
   const models = [...byModel.keys()].sort((a, b) => {
     const costA = estimate.perModel[a]?.estimatedCostUsd ?? -1;
     const costB = estimate.perModel[b]?.estimatedCostUsd ?? -1;
     return costB - costA || a.localeCompare(b);
   });
-  const period = opts.days ? `last ${opts.days} days` : "all time";
-  const div = activeDays > 0 ? activeDays : 1;
-  const dayMetrics = computeDayMetrics(report, pricing, estimate);
-  const med = (sel: (d: DayMetrics) => number): number => median(dayMetrics.map(sel));
-
-  // Bare cost amount (no `$`; alignCatColumn re-adds it after padding).
-  const money = (n: number): string => n.toFixed(2);
-
-  const sum = {
+  const sum: CostSums = {
     reqs: 0,
     input: 0,
     output: 0,
@@ -411,17 +484,7 @@ function printCostReport(
     cacheReadCost: 0,
     cacheWriteCost: 0,
   };
-
-  // Collect raw rows; the four category columns are sub-aligned together afterward.
-  const labels: string[] = [];
-  const reqsCol: string[] = [];
-  const inputCol: CatCell[] = [];
-  const outputCol: CatCell[] = [];
-  const cacheReadCol: CatCell[] = [];
-  const cacheWriteCol: CatCell[] = [];
-  const totalCol: string[] = [];
-  const costCol: string[] = [];
-
+  const rows: CostRow[] = [];
   for (const model of models) {
     const u = byModel.get(model);
     if (u === undefined) {
@@ -441,118 +504,92 @@ function printCostReport(
       sum.cacheReadCost += c.cacheReadCostUsd;
       sum.cacheWriteCost += c.cacheCreationCostUsd;
     }
-    labels.push(model);
-    reqsCol.push(formatTokens(u.events));
-    inputCol.push({ tok: formatTokens(u.input), cost: c ? money(c.inputCostUsd) : null });
-    outputCol.push({ tok: formatTokens(u.output), cost: c ? money(c.outputCostUsd) : null });
-    cacheReadCol.push({
-      tok: formatTokens(u.cacheRead),
-      cost: c ? money(c.cacheReadCostUsd) : null,
+    rows.push({
+      label: model,
+      reqs: formatTokensCompact(u.events),
+      input: catCell(u.input, c ? c.inputCostUsd : null),
+      output: catCell(u.output, c ? c.outputCostUsd : null),
+      cacheRead: catCell(u.cacheRead, c ? c.cacheReadCostUsd : null),
+      cacheWrite: catCell(u.cacheCreation, c ? c.cacheCreationCostUsd : null),
+      total: formatTokensCompact(total),
+      cost: c ? formatCurrency(c.estimatedCostUsd) : "unpriced",
     });
-    cacheWriteCol.push({
-      tok: formatTokens(u.cacheCreation),
-      cost: c ? money(c.cacheCreationCostUsd) : null,
-    });
-    totalCol.push(formatTokens(total));
-    costCol.push(c ? formatCurrency(c.estimatedCostUsd) : "unpriced");
   }
+  return { rows, sum };
+}
 
-  // Footer rows (TOTAL, Avg/day) participate in the same sub-alignment.
+/** The TOTAL / Avg-day / Median-day footer rows of the by-model table. */
+function buildAggregateFooter(
+  sum: CostSums,
+  estimate: CostEstimate,
+  activeDays: number,
+  dayMetrics: DayMetrics[],
+): CostRow[] {
+  const div = activeDays > 0 ? activeDays : 1;
   const avg = (n: number): number => n / div;
-  const footerRows: Array<{
-    label: string;
-    reqs: string;
-    cats: [CatCell, CatCell, CatCell, CatCell];
-    total: string;
-    cost: string;
-  }> = [
+  const med = (sel: (d: DayMetrics) => number): number => median(dayMetrics.map(sel));
+  const orNa = (s: string): string => (activeDays > 0 ? s : "N/A");
+  return [
     {
       label: "TOTAL",
-      reqs: formatTokens(sum.reqs),
-      cats: [
-        { tok: formatTokens(sum.input), cost: money(sum.inputCost) },
-        { tok: formatTokens(sum.output), cost: money(sum.outputCost) },
-        { tok: formatTokens(sum.cacheRead), cost: money(sum.cacheReadCost) },
-        { tok: formatTokens(sum.cacheWrite), cost: money(sum.cacheWriteCost) },
-      ],
-      total: formatTokens(sum.total),
+      reqs: formatTokensCompact(sum.reqs),
+      input: catCell(sum.input, sum.inputCost),
+      output: catCell(sum.output, sum.outputCost),
+      cacheRead: catCell(sum.cacheRead, sum.cacheReadCost),
+      cacheWrite: catCell(sum.cacheWrite, sum.cacheWriteCost),
+      total: formatTokensCompact(sum.total),
       cost: formatCurrency(estimate.totalUsd),
     },
     {
       label: "Avg/day",
-      reqs: activeDays > 0 ? formatTokens(Math.round(avg(sum.reqs))) : "N/A",
-      cats: [
-        { tok: formatTokens(Math.round(avg(sum.input))), cost: money(avg(sum.inputCost)) },
-        { tok: formatTokens(Math.round(avg(sum.output))), cost: money(avg(sum.outputCost)) },
-        { tok: formatTokens(Math.round(avg(sum.cacheRead))), cost: money(avg(sum.cacheReadCost)) },
-        {
-          tok: formatTokens(Math.round(avg(sum.cacheWrite))),
-          cost: money(avg(sum.cacheWriteCost)),
-        },
-      ],
-      total: activeDays > 0 ? formatTokens(Math.round(avg(sum.total))) : "N/A",
-      cost: activeDays > 0 ? formatCurrency(estimate.totalUsd / div) : "N/A",
+      reqs: orNa(formatTokensCompact(Math.round(avg(sum.reqs)))),
+      input: catCell(Math.round(avg(sum.input)), avg(sum.inputCost)),
+      output: catCell(Math.round(avg(sum.output)), avg(sum.outputCost)),
+      cacheRead: catCell(Math.round(avg(sum.cacheRead)), avg(sum.cacheReadCost)),
+      cacheWrite: catCell(Math.round(avg(sum.cacheWrite)), avg(sum.cacheWriteCost)),
+      total: orNa(formatTokensCompact(Math.round(avg(sum.total)))),
+      cost: orNa(formatCurrency(estimate.totalUsd / div)),
     },
     {
       label: "Median/day",
-      reqs: activeDays > 0 ? formatTokens(Math.round(med((d) => d.reqs))) : "N/A",
-      cats: [
-        {
-          tok: formatTokens(Math.round(med((d) => d.input))),
-          cost: money(med((d) => d.inputCost)),
-        },
-        {
-          tok: formatTokens(Math.round(med((d) => d.output))),
-          cost: money(med((d) => d.outputCost)),
-        },
-        {
-          tok: formatTokens(Math.round(med((d) => d.cacheRead))),
-          cost: money(med((d) => d.cacheReadCost)),
-        },
-        {
-          tok: formatTokens(Math.round(med((d) => d.cacheWrite))),
-          cost: money(med((d) => d.cacheWriteCost)),
-        },
-      ],
-      total: activeDays > 0 ? formatTokens(Math.round(med((d) => d.total))) : "N/A",
-      cost: activeDays > 0 ? formatCurrency(med((d) => d.cost)) : "N/A",
+      reqs: orNa(formatTokensCompact(Math.round(med((d) => d.reqs)))),
+      input: catCell(
+        Math.round(med((d) => d.input)),
+        med((d) => d.inputCost),
+      ),
+      output: catCell(
+        Math.round(med((d) => d.output)),
+        med((d) => d.outputCost),
+      ),
+      cacheRead: catCell(
+        Math.round(med((d) => d.cacheRead)),
+        med((d) => d.cacheReadCost),
+      ),
+      cacheWrite: catCell(
+        Math.round(med((d) => d.cacheWrite)),
+        med((d) => d.cacheWriteCost),
+      ),
+      total: orNa(formatTokensCompact(Math.round(med((d) => d.total)))),
+      cost: orNa(formatCurrency(med((d) => d.cost))),
     },
   ];
-  for (const f of footerRows) {
-    inputCol.push(f.cats[0]);
-    outputCol.push(f.cats[1]);
-    cacheReadCol.push(f.cats[2]);
-    cacheWriteCol.push(f.cats[3]);
-  }
+}
 
-  const inputCells = alignCatColumn(inputCol);
-  const outputCells = alignCatColumn(outputCol);
-  const cacheReadCells = alignCatColumn(cacheReadCol);
-  const cacheWriteCells = alignCatColumn(cacheWriteCol);
-
-  const body: string[][] = labels.map((label, i) => [
-    label,
-    reqsCol[i] ?? "",
-    inputCells[i] ?? "",
-    outputCells[i] ?? "",
-    cacheReadCells[i] ?? "",
-    cacheWriteCells[i] ?? "",
-    totalCol[i] ?? "",
-    costCol[i] ?? "",
-  ]);
-  const n = labels.length;
-  const footer: string[][] = footerRows.map((f, j) => [
-    f.label,
-    f.reqs,
-    inputCells[n + j] ?? "",
-    outputCells[n + j] ?? "",
-    cacheReadCells[n + j] ?? "",
-    cacheWriteCells[n + j] ?? "",
-    f.total,
-    f.cost,
-  ]);
+/** Print one source's by-model usage + cost table (tokens with $ per category). */
+function printCostReport(
+  report: UsageReport,
+  estimate: CostEstimate,
+  pricing: Map<string, PricingTier>,
+  opts: { title: string; sourceLabel: string; days: string | undefined },
+): void {
+  const activeDays = report.perDay.size;
+  const dayMetrics = computeDayMetrics(report, pricing, estimate);
+  const { rows, sum } = buildModelRows(report, estimate);
+  const footer = buildAggregateFooter(sum, estimate, activeDays, dayMetrics);
+  const cells = renderCostRows(rows, footer);
 
   console.log("");
+  const period = opts.days ? `last ${opts.days} days` : "all time";
   const coverage = activeDayCoverage(report);
   const activeDaysLabel =
     activeDays > 0
@@ -562,16 +599,62 @@ function printCostReport(
     `${opts.title} - ${period} | ${opts.sourceLabel} | ${sum.reqs} requests | ${activeDaysLabel}`,
   );
   console.log("");
-  printTable(body, {
-    header: ["Model", "Requests", "Input", "Output", "Cache Read", "Cache Write", "Total", "Cost"],
-    aligns: ["left", "right", "right", "right", "right", "right", "right", "right"],
-    footer,
+  printTable(cells.body, {
+    header: ["Model", ...COST_TABLE_COLUMNS],
+    aligns: COST_TABLE_ALIGNS,
+    footer: cells.footer,
   });
   if (estimate.unpriced.length > 0) {
     console.log("");
     console.log(`  Unpriced (excluded from total): ${estimate.unpriced.join(", ")}`);
   }
   console.log("");
+}
+
+/** One per-day table row, labeled by `d.day`; also renders the TOTAL footer. */
+function dayRow(d: DayMetrics): CostRow {
+  return {
+    label: d.day,
+    reqs: formatTokensCompact(d.reqs),
+    input: catCell(d.input, d.inputCost),
+    output: catCell(d.output, d.outputCost),
+    cacheRead: catCell(d.cacheRead, d.cacheReadCost),
+    cacheWrite: catCell(d.cacheWrite, d.cacheWriteCost),
+    total: formatTokensCompact(d.total),
+    cost: formatCurrency(d.cost),
+  };
+}
+
+/** Sum per-day metrics field-by-field into the per-day table's TOTAL line. */
+function sumDayMetrics(days: DayMetrics[]): DayMetrics {
+  const sum: DayMetrics = {
+    day: "TOTAL",
+    reqs: 0,
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    total: 0,
+    inputCost: 0,
+    outputCost: 0,
+    cacheReadCost: 0,
+    cacheWriteCost: 0,
+    cost: 0,
+  };
+  for (const d of days) {
+    sum.reqs += d.reqs;
+    sum.input += d.input;
+    sum.output += d.output;
+    sum.cacheRead += d.cacheRead;
+    sum.cacheWrite += d.cacheWrite;
+    sum.total += d.total;
+    sum.inputCost += d.inputCost;
+    sum.outputCost += d.outputCost;
+    sum.cacheReadCost += d.cacheReadCost;
+    sum.cacheWriteCost += d.cacheWriteCost;
+    sum.cost += d.cost;
+  }
+  return sum;
 }
 
 /**
@@ -590,81 +673,17 @@ function printPerDayReport(
   if (days.length === 0) {
     return;
   }
-  const money = (n: number): string => n.toFixed(2);
-
-  const labels: string[] = [];
-  const reqsCol: string[] = [];
-  const inputCol: CatCell[] = [];
-  const outputCol: CatCell[] = [];
-  const cacheReadCol: CatCell[] = [];
-  const cacheWriteCol: CatCell[] = [];
-  const totalCol: string[] = [];
-  const costCol: string[] = [];
-  const sum = { reqs: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 };
-
-  const pushRow = (label: string, d: DayMetrics): void => {
-    labels.push(label);
-    reqsCol.push(formatTokens(d.reqs));
-    inputCol.push({ tok: formatTokens(d.input), cost: money(d.inputCost) });
-    outputCol.push({ tok: formatTokens(d.output), cost: money(d.outputCost) });
-    cacheReadCol.push({ tok: formatTokens(d.cacheRead), cost: money(d.cacheReadCost) });
-    cacheWriteCol.push({ tok: formatTokens(d.cacheWrite), cost: money(d.cacheWriteCost) });
-    totalCol.push(formatTokens(d.total));
-    costCol.push(formatCurrency(d.cost));
-  };
-
-  for (const d of days) {
-    pushRow(d.day, d);
-    sum.reqs += d.reqs;
-    sum.input += d.input;
-    sum.output += d.output;
-    sum.cacheRead += d.cacheRead;
-    sum.cacheWrite += d.cacheWrite;
-    sum.total += d.total;
-    sum.cost += d.cost;
-  }
-  // TOTAL footer mirrors the per-day rows so the sub-alignment stays consistent.
-  const totalRow: DayMetrics = {
-    day: "TOTAL",
-    reqs: sum.reqs,
-    input: sum.input,
-    output: sum.output,
-    cacheRead: sum.cacheRead,
-    cacheWrite: sum.cacheWrite,
-    total: sum.total,
-    inputCost: days.reduce((s, d) => s + d.inputCost, 0),
-    outputCost: days.reduce((s, d) => s + d.outputCost, 0),
-    cacheReadCost: days.reduce((s, d) => s + d.cacheReadCost, 0),
-    cacheWriteCost: days.reduce((s, d) => s + d.cacheWriteCost, 0),
-    cost: sum.cost,
-  };
-  pushRow("TOTAL", totalRow);
-
-  const inputCells = alignCatColumn(inputCol);
-  const outputCells = alignCatColumn(outputCol);
-  const cacheReadCells = alignCatColumn(cacheReadCol);
-  const cacheWriteCells = alignCatColumn(cacheWriteCol);
-
-  const row = (i: number): string[] => [
-    labels[i] ?? "",
-    reqsCol[i] ?? "",
-    inputCells[i] ?? "",
-    outputCells[i] ?? "",
-    cacheReadCells[i] ?? "",
-    cacheWriteCells[i] ?? "",
-    totalCol[i] ?? "",
-    costCol[i] ?? "",
-  ];
-  const last = labels.length - 1;
-  const body = days.map((_, i) => row(i));
-  const footer = [row(last)];
+  const cells = renderCostRows(
+    days.map((d) => dayRow(d)),
+    [dayRow(sumDayMetrics(days))],
+  );
 
   console.log(title);
   console.log("");
-  printTable(body, {
-    header: ["Day", "Requests", "Input", "Output", "Cache Read", "Cache Write", "Total", "Cost"],
-    aligns: ["left", "right", "right", "right", "right", "right", "right", "right"],
-    footer,
+  printTable(cells.body, {
+    header: ["Day", ...COST_TABLE_COLUMNS],
+    aligns: COST_TABLE_ALIGNS,
+    footer: cells.footer,
   });
   console.log("");
 }

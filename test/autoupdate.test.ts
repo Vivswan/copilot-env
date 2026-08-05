@@ -2,13 +2,14 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { isDue, shouldRunPreflight } from "../src/autoupdate/due.ts";
+import { isDue } from "../src/autoupdate/due.ts";
 import { acquireLock, releaseLock } from "../src/autoupdate/lock.ts";
 import {
   AutoupdateState,
   DEFAULT_AUTOUPDATE_COOLDOWN_DAYS,
   effectiveUpdateCooldownDays,
 } from "../src/autoupdate/state.ts";
+import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { envSnapshot, removeDir, tmpDir } from "./helpers.ts";
 
@@ -86,7 +87,7 @@ test("AutoupdateState writes a 0600 file (POSIX)", () => {
   }
 });
 
-// --- isDue / shouldRunPreflight (pure, nowMs injected) ----------------------
+// --- isDue (pure, nowMs injected) --------------------------------------------
 
 test("isDue is false under a day, true at/after a day", () => {
   const now = Date.parse("2026-06-10T00:00:00.000Z");
@@ -97,11 +98,33 @@ test("isDue is false under a day, true at/after a day", () => {
   expect(isDue(now + MILLISECONDS_PER_DAY, now)).toBe(true); // future timestamp can't wedge it
 });
 
-test("shouldRunPreflight runs only for `start`", () => {
-  expect(shouldRunPreflight("start")).toBe(true);
-  for (const a of ["env", "update", "stop", "health", "cost", "shell", "-h", "", undefined]) {
-    expect(shouldRunPreflight(a)).toBe(false);
-  }
+// --- the launchers' preflight gate --------------------------------------------
+// The subcommand gate ("only on `agent start`") is shell in the launchers, not TS:
+// bin/agent and bin/agent.ps1 run preflight.ts before cli.ts loads. Pin the gating
+// lines as text so the two sides can't drift apart -- day-to-day commands
+// (env/health/cost/...) must never trigger a self-update, and `agent env` (whose
+// stdout the shell wrapper evals) must never be in scope.
+
+test("bin/agent and bin/agent.ps1 gate the autoupdate preflight on the same subcommand", () => {
+  const posix = readFileSync(join(PROJECT_ROOT, "bin", "agent"), "utf8");
+  const ps = readFileSync(join(PROJECT_ROOT, "bin", "agent.ps1"), "utf8");
+
+  // Each launcher gates on a first-arg comparison, and the preflight invocation
+  // must sit INSIDE that gated block (matched to its closing `fi` / `}`), so
+  // moving the call out from under the gate fails here too. Both sides are pinned
+  // to the same literal ("start"), so one side changing its command word alone --
+  // the drift this test exists to catch -- fails one of the word assertions.
+  const posixGate = posix.match(/^if \[ "\$\{1:-\}" = "([a-z-]+)" \][\s\S]*?^fi$/m);
+  expect(posixGate).not.toBeNull(); // gate block not found at all (deleted/reformatted)
+  expect(posixGate?.[1]).toBe("start");
+  expect(posixGate?.[0]).toContain("src/autoupdate/preflight.ts");
+
+  // $Sub is an intermediate, so pin its assignment too: it must be $args[0].
+  expect(ps).toMatch(/^\$Sub = if \(\$args\.Count -gt 0\) \{ \$args\[0\] \}/m);
+  const psGate = ps.match(/^if \(\$Sub -eq '([a-z-]+)'[\s\S]*?^\}$/m);
+  expect(psGate).not.toBeNull(); // gate block not found at all (deleted/reformatted)
+  expect(psGate?.[1]).toBe("start");
+  expect(psGate?.[0]).toContain("src\\autoupdate\\preflight.ts");
 });
 
 // --- lock -------------------------------------------------------------------

@@ -18,10 +18,10 @@ import { allProfileNames } from "../copilot_api/env_state.ts";
 import { resolveRootHome } from "../copilot_api/paths.ts";
 import { type ProfileName, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
+import { runShellIntegration } from "../shell/integration.ts";
 import { isGitCheckout, PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { deleteProfileEverywhere } from "./profile.ts";
-import { runShellIntegration } from "./shell_integration.ts";
 
 export interface UninstallArgs {
   /** `--yes`: skip the confirmation prompt (headless use). */

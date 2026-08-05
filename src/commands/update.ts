@@ -1,5 +1,6 @@
 // `agent update`: resolves a release, applies it, refreshes deps, and runs migrations.
 import { consola } from "consola";
+import { applyUpdate } from "../autoupdate/apply.ts";
 import { acquireLock, releaseLock } from "../autoupdate/lock.ts";
 import { runPreflight } from "../autoupdate/preflight.ts";
 import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/state.ts";
@@ -9,7 +10,6 @@ import { isGitCheckout } from "../utils/root.ts";
 import { isUpToDate } from "../utils/semver.ts";
 import { assertNonNegativeDays } from "../utils/time.ts";
 import { packageVersion } from "../utils/version.ts";
-import { applyUpdate } from "./apply_update.ts";
 
 // `agent update` brings the checkout up to the newest GitHub release WITHOUT git:
 //  - discovery (which release, and its tarball URL) is resolveTarget() from

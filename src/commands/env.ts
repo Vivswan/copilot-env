@@ -21,9 +21,9 @@ import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { getHostLocalCodexHome } from "../codex/host.ts";
 import { copilotApiResolvePort, parseLoopbackProxyUrl } from "../copilot_api/port.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
+import { launchersFile, launchersWired } from "../shell/integration.ts";
 import { readTextOrNull } from "../utils/fs.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
-import { launchersFile, launchersWired } from "./shell_integration.ts";
 
 export interface EnvArgs {
   format?: string;

@@ -123,7 +123,13 @@ file layouts. Don't restate here what a reader can grep.
   `src/install/installer.ts`.
 - `src/cli.ts` - Commander entry; delegates to `run*` functions.
 - `src/commands/` - one file per command; `init` configures both agents, `auth` manages the
-  credential only and never configures agents.
+  credential only and never configures agents. Command files validate, orchestrate, and
+  render; the domain layers below never import `commands/`.
+- `src/agents/` - cross-agent domain (needs BOTH `src/codex/` and `src/claude/`, so it can
+  live in neither): the live Direct probe, direct-mode detection, provider-mode vocabulary,
+  the agent-CLI list.
+- `src/shell/` - the rc-file shell-integration domain (markers, block wiring, launcher
+  queries) behind `agent shell`; `shell/` at the repo root is the runtime payload it wires.
 - `src/codex/`, `src/claude/` - per-agent config wiring.
 - `src/copilot_api/` - proxy helpers: admin REST, catalog fetch, JSON config/state, model
   aliases, per-host paths, daemon process control, client-identity probe, the /responses

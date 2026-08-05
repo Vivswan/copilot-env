@@ -6,6 +6,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { AGENT_CLIS } from "../agents/clis.ts";
 import {
   CLAUDE_PROBE,
   CODEX_CATALOG_NOISE_RE,
@@ -27,13 +28,6 @@ import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { CODEX_ENV_KEY, type CodexWiringStatus, inspectCodexWiring } from "../codex/config.ts";
 import { getHostLocalCodexHome } from "../codex/host.ts";
 import { codexConfigPath, defaultCodexHome } from "../codex/paths.ts";
-import { AGENT_CLIS } from "../commands/setup.ts";
-import {
-  hasMarker,
-  LAUNCHERS_MARKER,
-  MARKER,
-  shellTargetFiles,
-} from "../commands/shell_integration.ts";
 import { credentialSource } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { type AuthProvider, CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
@@ -55,6 +49,7 @@ import {
 } from "../proxy_float.ts";
 import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
 import { persistedInferenceMs } from "../scripts/inference_activity.ts";
+import { hasMarker, LAUNCHERS_MARKER, MARKER, shellTargetFiles } from "../shell/integration.ts";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { readTextOrNull } from "../utils/fs.ts";

@@ -9,7 +9,7 @@ import {
   quotePosix,
   quotePowerShell,
   windowsExecutionPolicyCommand,
-} from "../src/commands/shell_integration.ts";
+} from "../src/shell/integration.ts";
 
 // `agent shell` wires/unwires the rc block. Exercise the POSIX path by
 // running the CLI with a throwaway $HOME so we never touch the real rc files.

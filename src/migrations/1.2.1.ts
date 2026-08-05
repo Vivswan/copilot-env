@@ -3,7 +3,7 @@ import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { consola } from "consola";
 
-import { runShellIntegration } from "../commands/shell_integration.ts";
+import { runShellIntegration } from "../shell/integration.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import type { Migration } from "./index.ts";
 

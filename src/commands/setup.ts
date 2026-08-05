@@ -2,13 +2,14 @@
 import { spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import { consola } from "consola";
+import { AGENT_CLIS } from "../agents/clis.ts";
+import { runShellIntegration } from "../shell/integration.ts";
 import { pickAgedVersion } from "../utils/aged_version.ts";
 import { assertNever } from "../utils/assert.ts";
 import { childEnvWithPath, commandExists, resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { assertNonNegativeDays, MILLISECONDS_PER_DAY } from "../utils/time.ts";
-import { runShellIntegration } from "./shell_integration.ts";
 
 const NVM_VERSION = "v0.40.1";
 
@@ -23,24 +24,6 @@ const NODE_PROBE_COMMAND = process.platform === "win32" ? NPM_COMMAND : "node";
 /** Bare `--cooldown` (no value) means this many days of npm release aging. Distinct
  *  from the autoupdate release cooldown, which happens to share the number. */
 export const DEFAULT_CLI_COOLDOWN_DAYS = 7;
-
-export const AGENT_CLIS = [
-  {
-    command: "claude",
-    name: "Claude Code CLI",
-    packageName: "@anthropic-ai/claude-code",
-  },
-  {
-    command: "copilot",
-    name: "GitHub Copilot CLI",
-    packageName: "@github/copilot",
-  },
-  {
-    command: "codex",
-    name: "Codex CLI",
-    packageName: "@openai/codex",
-  },
-] as const;
 
 /**
  * `agent shell`: wire shell integration, optionally the cl/co/cx launchers, and

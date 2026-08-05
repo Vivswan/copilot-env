@@ -40,14 +40,8 @@ function runPreloaded(token: string | undefined): { argv: string[]; envHadKey: b
   }
 }
 
-test("the preload's copied env-var literal stays in step with launchDaemon's (drift guard)", async () => {
-  // The shim stays import-free (a preload must not drag CLI modules into the daemon), so
-  // it re-declares the env var launchDaemon sets as a literal. This source-text check makes
-  // a rename on either side fail loudly here instead of silently launching the daemon with
-  // no credential.
-  const shim = await Bun.file(SHIM).text();
-  expect(shim).toContain(`const ENV_KEY = "${DAEMON_GH_TOKEN_ENV}"`);
-});
+// The shim's copied env-var literal is pinned against launchDaemon's DAEMON_GH_TOKEN_ENV
+// (with formatting-tolerant extraction) by test/daemon_env_keys.test.ts.
 
 test("splices the token from the env var into argv as --github-token, then scrubs the env", () => {
   // Fake-token fixtures stay short and low-entropy: gitleaks' generic-api-key rule only

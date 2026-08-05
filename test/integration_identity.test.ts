@@ -2,7 +2,6 @@ import { expect, test } from "bun:test";
 import {
   bakedIntegrationId,
   COPILOT_CLI_INTEGRATION_ID,
-  DAEMON_INTEGRATION_ID_ENV,
   DEFAULT_COPILOT_API_BASE,
   directIdentityCandidates,
   INTEGRATION_ID_HEADER,
@@ -270,15 +269,15 @@ test("directIdentityCandidates: the default candidate carries the detected UA an
   expect(cli?.headers["User-Agent"]).toBe("codex_exec/9.9.9");
 });
 
-test("the preload's copied literals stay in step with the module's (drift guard)", async () => {
-  // The bun --preload shims stay import-free (a shim must not drag CLI modules into the
-  // daemon), so they re-declare these two contracts as literals. Nothing but this test
-  // ties the copies to the originals -- a rename here fails loudly instead of silently
-  // disabling the header rewrite in the daemon.
+test("the preload's copied header literal stays in step with the module's (drift guard)", async () => {
+  // The bun --preload shim stays import-free (a shim must not drag CLI modules into the
+  // daemon), so it re-declares this contract as a literal. Nothing but this test ties the
+  // copy to the original -- a rename here fails loudly instead of silently disabling the
+  // header rewrite in the daemon. (The shim's env-key literal, INTEGRATION_ID_ENV, is
+  // pinned the same way by test/daemon_env_keys.test.ts.)
   const shim = await Bun.file(
     new URL("../src/scripts/pat_passthrough_preload.ts", import.meta.url),
   ).text();
-  expect(shim).toContain(`const INTEGRATION_ID_ENV = "${DAEMON_INTEGRATION_ID_ENV}"`);
   expect(shim).toContain(`const INTEGRATION_ID_HEADER = "${INTEGRATION_ID_HEADER}"`);
 });
 

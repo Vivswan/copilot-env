@@ -197,7 +197,7 @@ async function listCopilotApiPidsPosix(): Promise<number[]> {
  * token-argv preload (src/scripts/token_argv_preload.ts) reads it and splices it
  * onto process.argv as `--github-token`, keeping the secret off the
  * world-readable command line. The preload stays import-free, so it re-declares
- * this value as a literal -- test/token_argv_preload.test.ts pins the two together.
+ * this value as a literal -- test/daemon_env_keys.test.ts pins the two together.
  */
 export const DAEMON_GH_TOKEN_ENV = "COPILOT_ENV_DAEMON_GH_TOKEN";
 

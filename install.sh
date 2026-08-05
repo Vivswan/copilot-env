@@ -19,6 +19,7 @@ EXEC_SHELL=true
 [ -n "${COPILOT_ENV_NO_EXEC_SHELL:-}" ] && EXEC_SHELL=false
 AUTH_CURL_ARGS=(-H "User-Agent: copilot-env")
 ASSET_CURL_ARGS=("${AUTH_CURL_ARGS[@]}" -H "Accept: application/octet-stream")
+PUBLIC_ASSET_CURL_ARGS=(-H "User-Agent: copilot-env" -H "Accept: application/octet-stream")
 
 usage() {
     cat <<'EOF'
@@ -124,6 +125,15 @@ resolve_safe_install_dir() {
     fi
 }
 
+# Mirrors Resolve-AssetHeaderSet in install.ps1: the Authorization header goes
+# only to api.github.com (curl >= 7.58 drops it on cross-host redirects itself).
+resolve_asset_curl_args() {
+    case "$1" in
+        https://api.github.com/*) RESOLVED_ASSET_CURL_ARGS=("${ASSET_CURL_ARGS[@]}") ;;
+        *) RESOLVED_ASSET_CURL_ARGS=("${PUBLIC_ASSET_CURL_ARGS[@]}") ;;
+    esac
+}
+
 while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help) usage; exit 0 ;;
@@ -198,7 +208,8 @@ else
     }
     _ref="${_url##*/}"
     echo "Downloading copilot-env $_ref into $INSTALL_DIR ..."
-    retry "Download copilot-env release" curl -fsSL "${ASSET_CURL_ARGS[@]}" "$_url" -o "$_tmp/release.tgz"
+    resolve_asset_curl_args "$_url"
+    retry "Download copilot-env release" curl -fsSL "${RESOLVED_ASSET_CURL_ARGS[@]}" "$_url" -o "$_tmp/release.tgz"
     VERIFY_ARGS=("$_tmp/release.tgz" "$_sha")
     if [ -n "$_sha256" ]; then
         VERIFY_ARGS+=("$_sha256")

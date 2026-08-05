@@ -16,7 +16,7 @@
 # Calls go through bin/agent (NOT `bun src/cli.ts`) so bun + node_modules are bootstrapped
 # first. Start/prompt noise goes to stderr; only the key reaches stdout. This script lives at
 # src/scripts/, so the repo root is two levels up.
-dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+dir=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 agent="$dir/bin/agent"
 
 yes=0
@@ -25,8 +25,10 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --yes) yes=1 ;;
     --profile)
-      shift
-      profile="$1"
+      if [ $# -gt 1 ]; then
+        shift
+        profile="$1"
+      fi
       ;;
   esac
   shift

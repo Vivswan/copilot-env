@@ -1,5 +1,20 @@
 # Changelog
 
+## [3.5.4](https://github.com/Vivswan/copilot-env/compare/v3.5.3...v3.5.4) (2026-08-06)
+
+
+### Bug Fixes
+
+* add --profile to agent env and agent models ([5e53155](https://github.com/Vivswan/copilot-env/commit/5e531558d703ccd0c8e4a8653064f95f0acac93e))
+* derive the uninstall dry-run from the real step registry ([cd1183d](https://github.com/Vivswan/copilot-env/commit/cd1183d5bd3ff005383dc4980cc9b1e6112ba8d3))
+* do not warn about foreign listeners no agent routes to ([3373923](https://github.com/Vivswan/copilot-env/commit/33739232888ab54f6b337b2afb68ca300793135d))
+* hide the idle watchdog countdown when no agent routes to the proxy ([5ebd277](https://github.com/Vivswan/copilot-env/commit/5ebd277ad0c43f602fb1b4b0a89c0e0ecfbe44ee))
+* lint the proxy-token resolvers and harden their arg loops ([c905cdf](https://github.com/Vivswan/copilot-env/commit/c905cdfe9a01e43921c27631bea54cfb4657d06d))
+* profile-aware agent health with --profile ([0b3ebfc](https://github.com/Vivswan/copilot-env/commit/0b3ebfc77638753e03d61bea53cfea1ecc1d8418))
+* restore stream and exit-code parity in the launchers and bin wrappers ([bbc5378](https://github.com/Vivswan/copilot-env/commit/bbc5378e9d2f3b42d1cfff6cf7960d9b1feb53b5))
+* scope the installer auth header to api.github.com in install.sh ([a9a6bf0](https://github.com/Vivswan/copilot-env/commit/a9a6bf03092b74513af20611e049821ff46b0fc8))
+* treat a proxy-pointing Claude base URL as needing the proxy ([7f7eab9](https://github.com/Vivswan/copilot-env/commit/7f7eab9777721af144fc8895f1eb58011a97f495))
+
 ## [3.5.3](https://github.com/Vivswan/copilot-env/compare/v3.5.2...v3.5.3) (2026-07-30)
 
 

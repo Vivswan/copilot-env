@@ -352,8 +352,8 @@ export function checkRuntimeWatchdog(f: RuntimeTarget): CheckResult {
     status: "ok" as const,
   };
   if (!f.proxyExpected) {
-    // No agent routes to this daemon, so its idle countdown (and any stale marks
-    // left by an earlier run) describe nothing the user can act on.
+    // Marks left by an earlier run would render a countdown for a daemon no
+    // request will reach.
     return {
       ...base,
       detail: "not required (Codex + Claude are both direct)",

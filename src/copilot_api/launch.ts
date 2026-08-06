@@ -242,7 +242,6 @@ export async function cleanupExistingProxies(
 
   const tracked = state.read().pid;
   if (tracked !== undefined) {
-    // Only signal it if it's still OUR daemon (guard against PID reuse).
     if (await isCopilotApiPid(tracked)) {
       consola.info(`   Stopping tracked proxy (pid=${tracked}) ...`);
       await terminatePid(tracked, 2000);
@@ -255,8 +254,6 @@ export async function cleanupExistingProxies(
 
   const myPid = process.pid;
   const myPpid = process.ppid;
-  // In a multi-daemon world "orphan" means: a copilot-api process NO run state tracks --
-  // another profile's healthy daemon must never be swept while (re)starting this one.
   const keepPids = trackedDaemonPids();
   let orphans = await listUntrackedOrphans(myPid, myPpid, keepPids);
   if (orphans.length > 0) {
@@ -329,8 +326,7 @@ export async function resolveLaunchCredential(
   // (`agent auth --get`), driven by the recorded provider (gh-cli -> `gh auth token`,
   // copilot/gh-token -> the stored token). Passing it as `--github-token` keeps the
   // proxy on our single source of truth (copilot-api uses it in-memory and won't
-  // write its own github_token file). A named profile resolves ONLY its own slot
-  // (never the default credential).
+  // write its own github_token file).
   let githubToken = credential.resolve() ?? undefined;
   if (githubToken === undefined && isTTY) {
     // Nothing resolved AND we have a terminal: log in (provider choice -> the addressed
@@ -428,10 +424,9 @@ export function spawnConfiguredDaemon(opts: {
     consola.info("Proxy request logs off: discarding writes under <home>/logs (`proxy-logs`).");
   }
   const relaunch = (p: number): number => {
-    // Blank the log only HERE, at spawn time (a deliberate change from the pre-decomposition
-    // code, which truncated it right after port resolution): a failure BEFORE launch -- a
-    // login error, an identity-probe rejection -- keeps the previous run's log around for
-    // diagnosis until a new daemon actually launches.
+    // Blank the log only HERE, at spawn time: a failure BEFORE launch -- a
+    // login error, an identity-probe rejection -- keeps the previous run's log
+    // around for diagnosis until a new daemon actually launches.
     fs.writeFileSync(logFile, "");
     return launchDaemon(
       p,
@@ -656,8 +651,6 @@ async function printModelAliases(admin: CopilotAdminClient): Promise<void> {
     consola.warn(`Could not read live model mappings (${errMessage(e)}); check \`agent health\`.`);
     return;
   }
-  // Group the aliases by the model they resolve to, so each target is listed
-  // once with its sources comma-joined.
   const sources = Object.keys(mappings);
   const byTarget = new Map<string, string[]>();
   for (const source of sources) {

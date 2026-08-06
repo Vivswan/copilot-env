@@ -1,8 +1,8 @@
 // Pins the CURRENT observable behavior of src/codex/host.ts (the per-host
 // CODEX_HOME symlink farm) through its exported surface (getHostLocalCodexHome +
-// runCodexHost) ahead of a refactor: on-disk layout, symlink targets, seed
-// contents, tolerated conflicts, and the swallowed-error paths exactly as they
-// are today. Farm tests run proxy-forced so nothing probes the network, and
+// runCodexHost): on-disk layout, symlink targets, seed contents, tolerated
+// conflicts, and the swallowed-error paths exactly as they are today. Farm
+// tests run proxy-forced so nothing probes the network, and
 // PATH points at an empty dir so the shared-home prime can never spawn a real
 // codex CLI from the machine running the suite.
 import { afterEach, expect, test } from "bun:test";

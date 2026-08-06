@@ -79,7 +79,7 @@ const token = tokenFromArgv();
 if (token !== null) {
   // The integration id the launch pipeline resolved for this credential
   // (COPILOT_ENV_DAEMON_INTEGRATION_ID, set in launch.ts). Empty/absent =>
-  // no header rewrite, byte-identical to the old shim.
+  // no header rewrite.
   const integrationId = process.env[INTEGRATION_ID_ENV]?.trim() || null;
   const originalFetch = globalThis.fetch;
   const wrapped = (

@@ -50,8 +50,7 @@ export function readCodexToml(path: string): CodexTomlRead {
   }
 }
 
-/** Serialize `doc` with smol-toml and write it to `path` (the exact
- *  stringify-then-writeFileSync every save site already performed). */
+/** Serialize `doc` with smol-toml and write it to `path`. */
 export function saveCodexToml(path: string, doc: Record<string, unknown>): void {
   fs.writeFileSync(path, stringify(doc));
 }

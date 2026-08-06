@@ -442,8 +442,6 @@ export async function runCodexHost(args: CodexHostArgs): Promise<void> {
       },
     );
   }
-  // --direct/--proxy force the mode; with no flag a configured credential
-  // (`agent auth`, resolved provider-aware) selects Direct, else probe.
   const ghToken = new Credential().resolve();
   const direct = resolveDirectMode(args.mode, ghToken, detectCodexDirect);
   logger.info(

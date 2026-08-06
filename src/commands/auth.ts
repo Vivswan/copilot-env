@@ -84,7 +84,7 @@ function asProvider(provider: string): AuthProvider {
 /** Where a gh-token comes from: `--set <token>` (verbatim, no UI / no env), bare `--set`
  *  (the GH token env vars only -- headless, never prompts), or no `--set` at all (prefer
  *  the env vars, else prompt for it in a TTY). The token itself is read at acquisition
- *  time (loginWithGhToken), so error timing is unchanged from the raw-flag days. */
+ *  time (loginWithGhToken), not here. */
 type GhTokenSource =
   | { kind: "inline"; token: string }
   | { kind: "env" }

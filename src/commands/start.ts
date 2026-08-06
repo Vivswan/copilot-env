@@ -307,8 +307,6 @@ export async function runStart(action: StartAction): Promise<void> {
     return;
   }
   if (action.kind === "record-event") {
-    // Record an activity heartbeat for the idle watchdog and return -- no launch. The
-    // proxy resolver calls this on each token fetch so an open agent stays "active".
     recordHeartbeat(profile);
     return;
   }
@@ -317,7 +315,6 @@ export async function runStart(action: StartAction): Promise<void> {
     profile,
     paths,
     config: CopilotApiConfig.forProfile(profile),
-    // The ONE preference cursor for this invocation, passed down to every launch step.
     envConfig: new CopilotEnvConfig(),
     state: CopilotEnvRunState.forProfile(profile),
     logFile: paths.logFile,
@@ -328,11 +325,8 @@ export async function runStart(action: StartAction): Promise<void> {
     return;
   }
 
-  // Hard floor gate (before touching the running daemon): the postinstall float
-  // is best-effort, so never launch on a sub-floor proxy.
   assertProxyFloor();
 
-  // Serialize the launch critical section (see acquireStartLock/startLockPath in launch.ts).
   fs.mkdirSync(paths.runDir, { recursive: true });
   const lockPath = startLockPath();
   await acquireStartLock(lockPath);

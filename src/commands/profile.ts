@@ -29,10 +29,10 @@ import { authenticate, parseAcquisition } from "./auth.ts";
 // Narration to stderr so `--settings-for`'s stdout stays a clean machine-readable path.
 const logger = createStderrLogger();
 
-/** BOTH agents' adapters, in the wiring order profile operations use (Claude first,
- *  matching the pre-adapter hand-rolled sequence, so per-agent narration and failure
- *  aggregation keep their historical order). Built fresh per call: adapters are cheap
- *  closures and a stale one would pin a stale effective home. */
+/** BOTH agents' adapters, in the wiring order profile operations use (Claude first --
+ *  per-agent narration and failure aggregation keep their long-standing order). Built
+ *  fresh per call: adapters are cheap closures and a stale one would pin a stale
+ *  effective home. */
 function bothAgents(): AgentAdapter[] {
   return [claudeAdapter(), codexAdapter()];
 }

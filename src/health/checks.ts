@@ -409,7 +409,8 @@ export function checkRuntimeIdentity(f: RuntimeTarget): CheckResult {
   // SOMETHING answers; a foreign service squatting the port would read green there while every
   // agent request silently misroutes. Warn-only (never fails a run) and full+proxy scope.
   // The misroute claim presumes something routes to the port: the probe gates on
-  // proxyExpected, so a both-direct target always arrives here with identityConfirmed null.
+  // proxyExpected, so a target with no route to the port (both modes direct and no
+  // proxy base URL) always arrives here with identityConfirmed null.
   const base = {
     id: "runtime.identity",
     label: "Proxy identity",

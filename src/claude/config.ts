@@ -142,7 +142,8 @@ export interface ClaudeWiringStatus {
   helperPath: string | null;
   /** `env.ANTHROPIC_BASE_URL`, if present. */
   baseUrl: string | null;
-  /** In proxy mode, whether `baseUrl` points at the resolved local proxy (host+port). */
+  /** Whether `baseUrl` points at the resolved local proxy (host+port): proxy mode's
+   *  port check, and the mixed-config signal defaultSetupNeedsProxy keys off. */
   baseUrlMatches: boolean;
   /** Which backend the current settings select. */
   providerMode: AgentProviderMode;

@@ -924,8 +924,9 @@ export async function gatherFacts(
           gatherRuntimeTarget(null, scope, deps, {
             slot: null,
             homeExists: null,
-            // When both agents are configured direct, no proxy is required, so a
-            // down proxy must not read as a runtime failure.
+            // When nothing in the default setup routes to the local daemon (both
+            // agents direct AND Claude's base URL not aimed at it), no proxy is
+            // required, so a down proxy must not read as a runtime failure.
             proxyExpected: (targetPort) =>
               defaultSetupNeedsProxy({
                 codexHome: deps.codexHome(),

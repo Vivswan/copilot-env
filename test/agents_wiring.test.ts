@@ -121,9 +121,12 @@ describe("proxyUnusedEverywhere edge cases", () => {
       baseUrl: PROXY_CLAUDE_BASE,
     });
     // The MODE alone keys off the helper path and still reads direct -- which
-    // is exactly why the float's predicate must also check the base URL.
+    // is exactly why BOTH predicates must also check the base URL: Claude's
+    // traffic genuinely goes to the local daemon, so the default setup needs
+    // the proxy (this assertion once said false -- that WAS the bug health
+    // inherited) and the float must keep floating.
     expect(readAgentModes({ codexHome, claudeHome }).claude).toBe("direct");
-    expect(defaultSetupNeedsProxy({ codexHome, claudeHome })).toBe(false);
+    expect(defaultSetupNeedsProxy({ codexHome, claudeHome })).toBe(true);
     expect(proxyUnusedEverywhere({ codexHome, claudeHome })).toBe(false);
   });
 
@@ -131,7 +134,11 @@ describe("proxyUnusedEverywhere edge cases", () => {
     const codexHome = makeCodexHome("direct");
     const claudeHome = join(dir, "claude-home");
     writeClaudeSettings(claudeHome, { apiKeyHelper: join(claudeHome, DIRECT_HELPER_NAME) });
+    // The float refuses to skip on ANY deviation from the managed Direct URL,
+    // but health's question is narrower: no base URL means no route to the
+    // local daemon, so the default setup still needs no proxy.
     expect(proxyUnusedEverywhere({ codexHome, claudeHome })).toBe(false);
+    expect(defaultSetupNeedsProxy({ codexHome, claudeHome })).toBe(false);
   });
 
   test("false on unparseable configs (uncertain wiring floats normally)", () => {
@@ -140,6 +147,65 @@ describe("proxyUnusedEverywhere edge cases", () => {
     writeFileSync(join(codexHome, "config.toml"), "model_provider = [broken");
     const claudeHome = makeClaudeHome("direct");
     expect(proxyUnusedEverywhere({ codexHome, claudeHome })).toBe(false);
+  });
+});
+
+describe("defaultSetupNeedsProxy base-URL matrix (codex direct + Claude direct helper)", () => {
+  // Claude's mode keys off apiKeyHelper alone, so the base URL decides whether
+  // a mode-direct Claude still routes to OUR daemon. Only a URL the proxy-mode
+  // matcher accepts (loopback host, the resolved port, bare origin) counts;
+  // anything routed elsewhere leaves the daemon out of the path -- its state
+  // can neither fix nor break the agent, so health must not demand it.
+  const cases: { name: string; baseUrl?: string; needsProxy: boolean }[] = [
+    { name: "the local proxy origin", baseUrl: PROXY_CLAUDE_BASE, needsProxy: true },
+    {
+      name: "the local proxy origin, localhost spelling",
+      baseUrl: "http://localhost:4141",
+      needsProxy: true,
+    },
+    {
+      name: "the local proxy origin, trailing slash",
+      baseUrl: "http://127.0.0.1:4141/",
+      needsProxy: true,
+    },
+    {
+      name: "a foreign gateway (routes elsewhere)",
+      baseUrl: "https://some-gateway.example",
+      needsProxy: false,
+    },
+    {
+      name: "a loopback service on a DIFFERENT port (not our daemon)",
+      baseUrl: "http://127.0.0.1:5000",
+      needsProxy: false,
+    },
+    { name: "the managed Direct URL", baseUrl: DIRECT_BASE, needsProxy: false },
+    { name: "no base URL at all", needsProxy: false },
+  ];
+  for (const { name, baseUrl, needsProxy } of cases) {
+    test(`${name} => ${needsProxy}`, () => {
+      const codexHome = makeCodexHome("direct");
+      const claudeHome = join(dir, "claude-home");
+      writeClaudeSettings(claudeHome, {
+        apiKeyHelper: join(claudeHome, DIRECT_HELPER_NAME),
+        ...(baseUrl === undefined ? {} : { baseUrl }),
+      });
+      expect(defaultSetupNeedsProxy({ codexHome, claudeHome })).toBe(needsProxy);
+    });
+  }
+
+  test("the reverse mixed shape stays true via the mode (proxy helper, direct base URL)", () => {
+    const codexHome = makeCodexHome("direct");
+    const claudeHome = join(dir, "claude-home");
+    writeClaudeSettings(claudeHome, {
+      apiKeyHelper: join(claudeHome, PROXY_HELPER_NAME),
+      baseUrl: DIRECT_BASE,
+    });
+    expect(defaultSetupNeedsProxy({ codexHome, claudeHome })).toBe(true);
+  });
+
+  test("codex proxy + claude direct stays true regardless of Claude's base URL", () => {
+    const opts = { codexHome: makeCodexHome("proxy"), claudeHome: makeClaudeHome("direct") };
+    expect(defaultSetupNeedsProxy(opts)).toBe(true);
   });
 });
 

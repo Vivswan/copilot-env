@@ -84,27 +84,40 @@ export function readAgentModesSafe(opts: AgentWiringOptions = {}): {
 }
 
 /**
- * Does the DEFAULT selection route anything to a local proxy? True unless both
- * agents are wired Direct. This is health's question: when it is false, a down
- * daemon on the default port is not a failure. Named profiles are deliberately
- * ignored -- a proxy profile runs its own daemon in its own isolated home,
- * which never makes the DEFAULT setup need one. For "is the proxy package
- * unused by everything" (the float's question) use proxyUnusedEverywhere.
+ * Does the DEFAULT selection route anything to the local proxy on the expected
+ * port? This is health's question: when it is false, a down daemon on that port
+ * is not a failure. True unless both agents are wired Direct AND Claude's base
+ * URL does not point at the local proxy -- Claude's MODE keys off apiKeyHelper
+ * alone, so a mixed config (managed direct helper + a proxy ANTHROPIC_BASE_URL)
+ * reads "direct" while its traffic genuinely goes to the daemon; the base-URL
+ * fact catches that. A base URL routed elsewhere (the managed Direct URL, a
+ * foreign gateway, a loopback service on some other port) does NOT count: our
+ * daemon is not in that path, so its state can neither fix nor break the agent.
+ * Named profiles are deliberately ignored -- a proxy profile runs its own
+ * daemon in its own isolated home, which never makes the DEFAULT setup need
+ * one. For "is the proxy package unused by everything" (the float's question)
+ * use proxyUnusedEverywhere.
  */
 export function defaultSetupNeedsProxy(opts: AgentWiringOptions = {}): boolean {
-  const modes = readAgentModes(opts);
-  return !(modes.codex === "direct" && modes.claude === "direct");
+  const { codex, claude } = readAgentWirings(opts);
+  return !(
+    codex.providerMode === "direct" &&
+    claude.providerMode === "direct" &&
+    !claude.baseUrlMatches
+  );
 }
 
 /**
  * Is the local proxy package unused by EVERYTHING -- the default selection AND
  * every named profile -- so floating it against npm would be wasted
- * network/install work? Stricter than the inverse of defaultSetupNeedsProxy:
- * any profile home counts as proxy use (profile homes are created only by
- * proxy wiring or `agent start --profile`), and Claude must also carry the
- * managed Direct base URL so a mixed config (direct helper + proxy
- * ANTHROPIC_BASE_URL) still floats. Best-effort: any read/parse failure counts
- * as "maybe used" so uncertain wiring floats normally.
+ * network/install work? Stricter than the inverse of defaultSetupNeedsProxy on
+ * two axes: any profile home counts as proxy use (profile homes are created
+ * only by proxy wiring or `agent start --profile`), and Claude must carry
+ * exactly the managed Direct base URL -- ANY deviation (a foreign gateway, an
+ * absent URL, a local-proxy URL on any port) keeps the float running, where
+ * defaultSetupNeedsProxy only counts a base URL aimed at OUR daemon's port.
+ * Best-effort: any read/parse failure counts as "maybe used" so uncertain
+ * wiring floats normally.
  */
 export function proxyUnusedEverywhere(opts: AgentWiringOptions = {}): boolean {
   try {

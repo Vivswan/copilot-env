@@ -697,6 +697,63 @@ test("gatherFacts never probes identity for a both-direct default target (proxyE
   }
 });
 
+test("a mixed default Claude config (direct helper, proxy base URL) expects the proxy", async () => {
+  // Claude's MODE keys off apiKeyHelper alone, so this config reads
+  // codex=direct claude=direct -- yet Claude's ANTHROPIC_BASE_URL sends its
+  // traffic to the local daemon. Health once trusted the modes and reported
+  // "not required (both direct)" with the daemon down and Claude broken; the
+  // base-URL fact must bring back the full runtime treatment: proxyExpected
+  // true, the daemon-down FAIL (with the start fix), and the identity probe.
+  const root = mkdtempSync(join(tmpdir(), "copilot-health-mixed-"));
+  const restoreEnv = envSnapshot();
+  process.env.COPILOT_API_HOME = join(root, "api-home"); // isolated: no profile homes
+  try {
+    const codexHome = join(root, "codex-home");
+    writeCodexConfigToml(codexHome, { baseUrl: "https://api.githubcopilot.com" });
+    const claudeHome = join(root, "claude-home");
+    writeClaudeSettings(claudeHome, {
+      apiKeyHelper: join(claudeHome, DIRECT_HELPER_NAME),
+      baseUrl: "http://127.0.0.1:4141",
+    });
+    const deps = {
+      resolvePort: () => "4141",
+      readState: () => ({}),
+      codexHome: () => codexHome,
+      claudeHome: () => claudeHome,
+    };
+
+    // Daemon down (auto-start defaults off): the port row must FAIL with the start fix.
+    const down = await gatherFacts("proxy", {}, { ...deps, reach: async () => false });
+    const downTarget = down.runtimes?.[0];
+    if (!downTarget) throw new Error("expected the default runtime target");
+    expect(downTarget.proxyExpected).toBe(true);
+    const port = checkRuntimePort(downTarget);
+    expect(port.status).toBe("fail");
+    expect(port.fix).toContain("agent start");
+    expect(checkRuntimePid(downTarget).status).toBe("fail");
+
+    // Reachable: the identity probe fires again (proxyExpected gates it).
+    let identityCalls = 0;
+    const up = await gatherFacts(
+      "proxy",
+      {},
+      {
+        ...deps,
+        reach: async () => true,
+        proxyIdentity: async () => {
+          identityCalls++;
+          return true;
+        },
+      },
+    );
+    expect(identityCalls).toBe(1);
+    expect(up.runtimes?.[0]?.identityConfirmed).toBe(true);
+  } finally {
+    restoreEnv();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("gatherFacts still probes identity when an agent routes through the proxy", async () => {
   // Codex wired to the local proxy: requests genuinely route to the port, so the
   // identity probe fires and a foreign responder still earns the misroute warning.

@@ -231,13 +231,26 @@ export function checkRuntimePort(f: RuntimeTarget): CheckResult {
     profile: f.profile,
     scopes: RUNTIME,
   };
-  // Both agents direct => no proxy needed, so a down proxy is not a failure.
-  if (!f.reachable && !f.proxyExpected) {
+  // Both agents direct => no agent routes to this port, so neither an empty port
+  // nor some unrelated service listening there is a proxy problem.
+  if (!f.proxyExpected) {
     return {
       ...base,
       status: "ok",
-      detail: `proxy not running on port ${f.port}; not required (Codex + Claude are both direct)`,
+      detail: f.reachable
+        ? `port ${f.port} has a listener, but no agent routes to it (Codex + Claude are both direct)`
+        : `proxy not running on port ${f.port}; not required (Codex + Claude are both direct)`,
       value: { port: f.port, reachable: f.reachable, bothDirect: true },
+    };
+  }
+  // Managed lifecycle on => the resolver launches the daemon on demand, so a
+  // down daemon is expected between sessions, not a failure.
+  if (!f.reachable && f.watchdog.autoStart) {
+    return {
+      ...base,
+      status: "ok",
+      detail: `proxy not running on port ${f.port}; starts on demand (auto-start on)`,
+      value: { port: f.port, reachable: f.reachable, autoStart: true },
     };
   }
   return {
@@ -273,6 +286,17 @@ export function checkRuntimePid(f: RuntimeTarget): CheckResult {
       status: "ok",
       detail: `${detail}; not required (Codex + Claude are both direct)`,
       value: { pid: f.trackedPid, tracked, alive: f.pidAlive, bothDirect: true },
+    };
+  }
+  // Down daemon + managed lifecycle on => it starts on demand; not a failure.
+  // Reachable-but-untracked is NOT down (that is runtime.orphan/identity
+  // territory), so auto-start never excuses it here.
+  if (!tracked && !f.reachable && f.watchdog.autoStart) {
+    return {
+      ...base,
+      status: "ok",
+      detail: `${detail}; starts on demand (auto-start on)`,
+      value: { pid: f.trackedPid, tracked, alive: f.pidAlive, autoStart: true },
     };
   }
   return {
@@ -358,6 +382,8 @@ export function checkRuntimeIdentity(f: RuntimeTarget): CheckResult {
   // Is whatever is reachable on the port actually copilot-api? checkRuntimePort only proves
   // SOMETHING answers; a foreign service squatting the port would read green there while every
   // agent request silently misroutes. Warn-only (never fails a run) and full+proxy scope.
+  // The misroute claim presumes something routes to the port: the probe gates on
+  // proxyExpected, so a both-direct target always arrives here with identityConfirmed null.
   const base = {
     id: "runtime.identity",
     label: "Proxy identity",
@@ -367,12 +393,13 @@ export function checkRuntimeIdentity(f: RuntimeTarget): CheckResult {
   };
   if (!f.reachable || f.identityConfirmed === null) {
     // Nothing reachable (runtime.port owns that verdict) or identity not probed.
+    const notProbed = !f.proxyExpected
+      ? `not probed (no agent routes to port ${f.port}; Codex + Claude are both direct)`
+      : "identity not probed";
     return {
       ...base,
       status: "ok",
-      detail: f.reachable
-        ? "identity not probed"
-        : `not probed (nothing reachable on port ${f.port})`,
+      detail: f.reachable ? notProbed : `not probed (nothing reachable on port ${f.port})`,
       value: { reachable: f.reachable, confirmed: null },
     };
   }
@@ -414,16 +441,15 @@ export function checkRuntimeOrphan(f: RuntimeTarget): CheckResult {
     let detail: string;
     if (foreign) {
       detail = "port responder is not copilot-api (see proxy identity)";
+    } else if (!f.proxyExpected && f.reachable) {
+      // SOMETHING is reachable on the port, but both agents are configured direct, so no
+      // proxy is required -- the both-direct gate (not the facts) is why this isn't an
+      // orphan warning. Say that -- even with a tracked pid alive, since identity is never
+      // probed for a both-direct target (proxyExpected gates the probe), nothing here
+      // proves who owns the port, and nothing routes to it anyway.
+      detail = `a process is on port ${f.port}, but both agents are direct (no proxy required)`;
     } else if (f.reachable && f.pidTracked) {
       detail = "port held by the tracked daemon";
-    } else if (!f.proxyExpected && f.reachable) {
-      // An untracked copilot-api IS reachable on the port, but both agents are configured
-      // direct, so no proxy is required -- the both-direct gate (not the facts) is why this
-      // isn't an orphan warning. Say that, rather than the false "no untracked copilot-api".
-      detail =
-        f.identityConfirmed === true
-          ? `an untracked copilot-api is on port ${f.port}, but both agents are direct (no proxy required)`
-          : `a process is on port ${f.port}, but both agents are direct (no proxy required)`;
     } else {
       detail = "no untracked copilot-api on the port";
     }

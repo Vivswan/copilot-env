@@ -133,7 +133,8 @@ export interface RuntimeTarget {
   pidAlive: boolean;
   /** Identity of whatever is reachable on the port: true = copilot-api (x-trace-id present),
    *  false = reachable but NOT copilot-api (likely a foreign listener), null = not probed
-   *  (port down, or the fast `runtime` scope which skips the extra request). */
+   *  (port down, the fast `runtime` scope which skips the extra request, or proxyExpected
+   *  false -- no agent routes to the port, so its occupant is not ours to interrogate). */
   identityConfirmed: boolean | null;
   paths: RuntimePathsView;
   /** Idle auto-stop watchdog state, observed from outside the daemon. */
@@ -690,15 +691,21 @@ async function gatherRuntimeTarget(
     deps.reach(probeUrl, 2000),
     trackedPid !== null ? deps.isTrackedPid(trackedPid) : Promise.resolve(false),
   ]);
+  const proxyExpected = target.proxyExpected(port);
   // Identity probe (an extra local request) only in the full/proxy scopes -- never the
-  // launchers' fast `runtime` probe. Only meaningful when something is reachable.
+  // launchers' fast `runtime` probe. Only meaningful when something is reachable AND this
+  // target's setup actually routes through the port: with both agents direct, nothing we
+  // manage talks to whatever answers there, so its identity is none of our business (and
+  // never grounds for a misroute warning).
   const identityConfirmed =
-    SCOPE_BOOTSTRAP.includes(scope) && reachable ? await deps.proxyIdentity(probeUrl, 2000) : null;
+    SCOPE_BOOTSTRAP.includes(scope) && reachable && proxyExpected
+      ? await deps.proxyIdentity(probeUrl, 2000)
+      : null;
   return {
     profile,
     slot: target.slot,
     homeExists: target.homeExists,
-    proxyExpected: target.proxyExpected(port),
+    proxyExpected,
     port,
     reachable,
     trackedPid,

@@ -337,6 +337,103 @@ test("runtime: a down proxy is OK when both Codex and Claude are direct", () => 
   expect(checkRuntimePort(bothDirect).status).toBe("ok");
   expect(checkRuntimePort(bothDirect).detail).toContain("both direct");
   expect(checkRuntimePid(bothDirect).status).toBe("ok");
+  expect(exitCodeFor(evaluateAll("runtime", { runtimes: [down] }))).toBe(1);
+  expect(exitCodeFor(evaluateAll("runtime", { runtimes: [bothDirect] }))).toBe(0);
+});
+
+test("runtime: a foreign listener on the port is not a problem when both agents are direct", () => {
+  // The driving bug: default setup Direct for both agents + an unrelated service on the
+  // default port. Nothing routes to that port, so health must not warn about it.
+  const listener = defaultTarget({
+    proxyExpected: false,
+    trackedPid: null,
+    pidTracked: false,
+    identityConfirmed: null, // the probe gate: identity is never probed when nothing routes
+  });
+  const port = checkRuntimePort(listener);
+  expect(port.status).toBe("ok");
+  expect(port.detail).toContain(`port ${listener.port} has a listener, but no agent routes`);
+  expect(port.fix).toBeUndefined();
+  expect((port.value as Record<string, unknown>).bothDirect).toBe(true);
+  const identity = checkRuntimeIdentity(listener);
+  expect(identity.status).toBe("ok");
+  expect(identity.detail).toContain("not probed");
+  expect(identity.detail).toContain("no agent routes");
+  const orphan = checkRuntimeOrphan(listener);
+  expect(orphan.status).toBe("ok");
+  expect(orphan.detail).toContain("both agents are direct");
+  // The pid check carries the same machine-readable stamp for --json consumers.
+  const pid = checkRuntimePid(listener);
+  expect(pid.status).toBe("ok");
+  expect((pid.value as Record<string, unknown>).bothDirect).toBe(true);
+  // Even a tracked-and-alive pid never lets ownership wording claim the port for a
+  // both-direct target: identity was never probed, so who owns the port is unknown.
+  const trackedListener = defaultTarget({ proxyExpected: false, identityConfirmed: null });
+  expect(checkRuntimeOrphan(trackedListener).detail).toContain("both agents are direct");
+  // The whole run: nothing warns or fails, so the summary is clean and exit 0.
+  const results = evaluateAll("full", { runtimes: [listener] });
+  expect(worstStatus(results)).toBe("ok");
+  expect(exitCodeFor(results)).toBe(0);
+});
+
+test("runtime: a down daemon reads ok (starts on demand) when auto-start is on", () => {
+  // Deliberate severity change: with the managed lifecycle enabled the resolver
+  // launches the daemon on demand, so "down between sessions" is the normal state.
+  const down = defaultTarget({
+    reachable: false,
+    trackedPid: null,
+    pidTracked: false,
+    pidAlive: false,
+    identityConfirmed: null,
+    watchdog: { ...defaultTarget().watchdog, autoStart: true },
+  });
+  const port = checkRuntimePort(down);
+  expect(port.status).toBe("ok");
+  expect(port.detail).toContain("starts on demand (auto-start on)");
+  expect(port.fix).toBeUndefined();
+  expect((port.value as Record<string, unknown>).autoStart).toBe(true);
+  const pid = checkRuntimePid(down);
+  expect(pid.status).toBe("ok");
+  expect(pid.detail).toContain("starts on demand (auto-start on)");
+  expect(pid.fix).toBeUndefined();
+  expect((pid.value as Record<string, unknown>).autoStart).toBe(true);
+  // The exit-code consumer: a down daemon must no longer fail the run.
+  expect(exitCodeFor(evaluateAll("runtime", { runtimes: [down] }))).toBe(0);
+  expect(exitCodeFor(evaluateAll("full", { runtimes: [down] }))).toBe(0);
+
+  // Reachable-but-untracked is NOT "down": auto-start never excuses an orphan/foreign
+  // occupant (the resolver would not relaunch over a busy port).
+  const occupied = defaultTarget({
+    trackedPid: null,
+    pidTracked: false,
+    watchdog: { ...defaultTarget().watchdog, autoStart: true },
+  });
+  expect(checkRuntimePid(occupied).status).toBe("fail");
+});
+
+test("runtime: a down daemon still fails with the agent start fix when auto-start is off", () => {
+  const down = defaultTarget({
+    reachable: false,
+    trackedPid: null,
+    pidTracked: false,
+    identityConfirmed: null,
+  }); // the fixture's watchdog has autoStart false
+  const port = checkRuntimePort(down);
+  expect(port.status).toBe("fail");
+  expect(port.fix).toBe("agent start");
+  const pid = checkRuntimePid(down);
+  expect(pid.status).toBe("fail");
+  expect(pid.fix).toBe("agent start");
+  expect(exitCodeFor(evaluateAll("runtime", { runtimes: [down] }))).toBe(1);
+});
+
+test("runtime identity: the misroute warning remains when the proxy IS expected", () => {
+  // proxyExpected + reachable + no x-trace-id: agent requests genuinely route to the
+  // foreign occupant, so this warning is real and must survive the both-direct fix.
+  const foreign = checkRuntimeIdentity(defaultTarget({ identityConfirmed: false }));
+  expect(foreign.status).toBe("warn");
+  expect(foreign.detail).toContain("misroute");
+  expect(foreign.fix).toContain("free the port");
 });
 
 test("runtime pid: stale/foreign and untracked fail, tracked ok", () => {
@@ -505,6 +602,93 @@ test("the identity probe (an extra request) is skipped in the launchers' fast ru
   );
   expect(identityCalls).toBe(0);
   expect(facts.runtimes?.[0]?.identityConfirmed).toBeNull();
+});
+
+test("gatherFacts never probes identity for a both-direct default target (proxyExpected gate)", async () => {
+  // Both agents wired Direct + something listening on the default port: nothing routes
+  // there, so the identity probe must not even fire -- which makes the misroute warning
+  // structurally unreachable for this state, not merely suppressed.
+  const root = mkdtempSync(join(tmpdir(), "copilot-health-bothdirect-"));
+  const restoreEnv = envSnapshot();
+  process.env.COPILOT_API_HOME = join(root, "api-home"); // isolated: no profile homes
+  try {
+    const codexHome = join(root, "codex-home");
+    writeCodexConfigToml(codexHome, { baseUrl: "https://api.githubcopilot.com" });
+    const claudeHome = join(root, "claude-home");
+    writeClaudeSettings(claudeHome, {
+      apiKeyHelper: join(claudeHome, DIRECT_HELPER_NAME),
+      baseUrl: "https://api.githubcopilot.com",
+    });
+    let identityCalls = 0;
+    const facts = await gatherFacts(
+      "proxy", // an identity-probing scope (unlike the fast `runtime` one)
+      {},
+      {
+        resolvePort: () => "4141",
+        readState: () => ({ port: 4141 }),
+        reach: async () => true, // the foreign listener answers
+        proxyIdentity: async () => {
+          identityCalls++;
+          return false;
+        },
+        codexHome: () => codexHome,
+        claudeHome: () => claudeHome,
+      },
+    );
+    const target = facts.runtimes?.[0];
+    if (!target) throw new Error("expected the default runtime target");
+    expect(identityCalls).toBe(0);
+    expect(target.proxyExpected).toBe(false);
+    expect(target.identityConfirmed).toBeNull();
+    // End to end: the gathered facts evaluate warning-free.
+    const runtime = evaluateAll("proxy", { runtimes: facts.runtimes });
+    expect(worstStatus(runtime)).toBe("ok");
+  } finally {
+    restoreEnv();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("gatherFacts still probes identity when an agent routes through the proxy", async () => {
+  // Codex wired to the local proxy: requests genuinely route to the port, so the
+  // identity probe fires and a foreign responder still earns the misroute warning.
+  const root = mkdtempSync(join(tmpdir(), "copilot-health-proxywired-"));
+  const restoreEnv = envSnapshot();
+  process.env.COPILOT_API_HOME = join(root, "api-home");
+  try {
+    const codexHome = join(root, "codex-home");
+    writeCodexConfigToml(codexHome, {
+      baseUrl: "http://127.0.0.1:4141/v1",
+      envKey: "OPENAI_API_KEY",
+    });
+    let identityCalls = 0;
+    const facts = await gatherFacts(
+      "proxy",
+      {},
+      {
+        resolvePort: () => "4141",
+        readState: () => ({ port: 4141 }),
+        reach: async () => true,
+        proxyIdentity: async () => {
+          identityCalls++;
+          return false; // no x-trace-id: a foreign service
+        },
+        codexHome: () => codexHome,
+        claudeHome: () => join(root, "claude-home"), // unconfigured => not both-direct
+      },
+    );
+    const target = facts.runtimes?.[0];
+    if (!target) throw new Error("expected the default runtime target");
+    expect(identityCalls).toBe(1);
+    expect(target.proxyExpected).toBe(true);
+    expect(target.identityConfirmed).toBe(false);
+    const identity = checkRuntimeIdentity(target);
+    expect(identity.status).toBe("warn");
+    expect(identity.detail).toContain("misroute");
+  } finally {
+    restoreEnv();
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("health's own proxy probes do not move the watchdog activity signal", async () => {

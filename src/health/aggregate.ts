@@ -1,4 +1,5 @@
 // Pure aggregation over CheckResult[] -- the primary unit-test surface. No I/O.
+import type { Profile } from "../copilot_api/profile.ts";
 import {
   type CheckResult,
   type CheckStatus,
@@ -33,12 +34,19 @@ export function exitCodeFor(results: CheckResult[]): 0 | 1 {
   return results.some((r) => r.status === "fail") ? 1 : 0;
 }
 
-/** Build the `--json` payload from the (already scope-filtered) results. */
-export function buildHealthJson(scope: HealthScope, results: CheckResult[]): HealthJson {
+/** Build the `--json` payload from the (already scope-filtered) results.
+ *  `profile` is the target the run was narrowed to (null = the default/whole
+ *  environment; per-check `profile` still names each check's own target). */
+export function buildHealthJson(
+  scope: HealthScope,
+  results: CheckResult[],
+  profile: Profile = null,
+): HealthJson {
   const status = worstStatus(results);
   const exitCode = exitCodeFor(results);
   return {
     scope,
+    profile,
     ok: exitCode === 0,
     status,
     exitCode,
@@ -46,6 +54,7 @@ export function buildHealthJson(scope: HealthScope, results: CheckResult[]): Hea
       id: r.id,
       label: r.label,
       group: r.group,
+      profile: r.profile,
       status: r.status,
       detail: r.detail,
       ...(r.fix ? { fix: r.fix } : {}),

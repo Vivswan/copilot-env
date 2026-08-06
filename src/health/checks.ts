@@ -20,7 +20,7 @@ import type {
   HealthFacts,
   LiveProbeFacts,
   ProxyFacts,
-  RuntimeFacts,
+  RuntimeTarget,
   ShellFacts,
 } from "./probe.ts";
 import type { CheckResult, HealthScope } from "./types.ts";
@@ -102,6 +102,7 @@ export function checkCliVersion(f: BootstrapFacts): CheckResult {
     id: "bootstrap.version",
     label: "copilot-env version",
     group: "bootstrap",
+    profile: null,
     scopes: BOOTSTRAP,
     status: "ok",
     detail: f.cliVersion,
@@ -115,6 +116,7 @@ export function checkBun(f: BootstrapFacts): CheckResult {
     id: "bootstrap.bun",
     label: "Bun runtime",
     group: "bootstrap",
+    profile: null,
     scopes: BOOTSTRAP,
     status: available ? "ok" : "fail",
     detail: available ? `bun ${version ?? "?"}` : "Bun runtime not detected",
@@ -135,6 +137,7 @@ export function checkNodeModules(f: BootstrapFacts): CheckResult {
     id: "bootstrap.nodeModules",
     label: "Dependencies (node_modules)",
     group: "bootstrap",
+    profile: null,
     scopes: BOOTSTRAP,
     status,
     detail,
@@ -151,6 +154,7 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
       id: "proxy.package",
       label: "Proxy package",
       group: "proxy",
+      profile: null,
       scopes: BOOTSTRAP,
       status: "fail",
       detail: `could not read copilot-env.config: ${f.configError ?? "unknown error"}`,
@@ -195,6 +199,7 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
     id: "proxy.package",
     label: "Proxy package",
     group: "proxy",
+    profile: null,
     scopes: BOOTSTRAP,
     status,
     detail,
@@ -218,15 +223,16 @@ function floatCooldownLabel(seconds: number | null): string {
   return `cooldown ${seconds}s`;
 }
 
-export function checkRuntimePort(f: RuntimeFacts): CheckResult {
+export function checkRuntimePort(f: RuntimeTarget): CheckResult {
   const base = {
     id: "runtime.port",
     label: "Proxy port reachable",
     group: "runtime" as const,
+    profile: f.profile,
     scopes: RUNTIME,
   };
   // Both agents direct => no proxy needed, so a down proxy is not a failure.
-  if (!f.reachable && f.bothDirect) {
+  if (!f.reachable && !f.proxyExpected) {
     return {
       ...base,
       status: "ok",
@@ -243,12 +249,13 @@ export function checkRuntimePort(f: RuntimeFacts): CheckResult {
   };
 }
 
-export function checkRuntimePid(f: RuntimeFacts): CheckResult {
+export function checkRuntimePid(f: RuntimeTarget): CheckResult {
   const tracked = f.pidTracked;
   const base = {
     id: "runtime.pid",
     label: "Tracked proxy process",
     group: "runtime" as const,
+    profile: f.profile,
     scopes: RUNTIME,
   };
   let detail: string;
@@ -260,7 +267,7 @@ export function checkRuntimePid(f: RuntimeFacts): CheckResult {
     detail = `tracked pid ${f.trackedPid} is stale or foreign`;
   }
   // Both agents direct => no proxy needed, so a missing tracked pid is fine.
-  if (!tracked && f.bothDirect) {
+  if (!tracked && !f.proxyExpected) {
     return {
       ...base,
       status: "ok",
@@ -277,12 +284,13 @@ export function checkRuntimePid(f: RuntimeFacts): CheckResult {
   };
 }
 
-export function checkRuntimePaths(f: RuntimeFacts): CheckResult {
+export function checkRuntimePaths(f: RuntimeTarget): CheckResult {
   // Multi-line detail: report.ts indents each line so state/log sit on their own.
   return {
     id: "runtime.paths",
     label: "Paths",
     group: "runtime",
+    profile: f.profile,
     scopes: ["full"],
     status: "ok",
     detail: `state ${f.paths.stateFile}\nlog ${f.paths.logFile}`,
@@ -290,7 +298,7 @@ export function checkRuntimePaths(f: RuntimeFacts): CheckResult {
   };
 }
 
-export function checkRuntimeWatchdog(f: RuntimeFacts): CheckResult {
+export function checkRuntimeWatchdog(f: RuntimeTarget): CheckResult {
   const w = f.watchdog;
   // Scoped to full + proxy, NOT the launchers' fast `runtime` probe (this is informational and
   // reads the config + activity file). Always "ok": it reports state, it never fails a run.
@@ -298,6 +306,7 @@ export function checkRuntimeWatchdog(f: RuntimeFacts): CheckResult {
     id: "runtime.watchdog",
     label: "Idle watchdog",
     group: "runtime" as const,
+    profile: f.profile,
     scopes: ["full", "proxy"] as const,
     status: "ok" as const,
   };
@@ -345,7 +354,7 @@ export function checkRuntimeWatchdog(f: RuntimeFacts): CheckResult {
   };
 }
 
-export function checkRuntimeIdentity(f: RuntimeFacts): CheckResult {
+export function checkRuntimeIdentity(f: RuntimeTarget): CheckResult {
   // Is whatever is reachable on the port actually copilot-api? checkRuntimePort only proves
   // SOMETHING answers; a foreign service squatting the port would read green there while every
   // agent request silently misroutes. Warn-only (never fails a run) and full+proxy scope.
@@ -353,6 +362,7 @@ export function checkRuntimeIdentity(f: RuntimeFacts): CheckResult {
     id: "runtime.identity",
     label: "Proxy identity",
     group: "runtime" as const,
+    profile: f.profile,
     scopes: ["full", "proxy"] as const,
   };
   if (!f.reachable || f.identityConfirmed === null) {
@@ -383,7 +393,7 @@ export function checkRuntimeIdentity(f: RuntimeFacts): CheckResult {
   };
 }
 
-export function checkRuntimeOrphan(f: RuntimeFacts): CheckResult {
+export function checkRuntimeOrphan(f: RuntimeTarget): CheckResult {
   // Reconcile the otherwise-contradictory runtime.port (ok: reachable) + runtime.pid (fail: no
   // tracked pid) when both describe the SAME state: copilot-api is on the port but is not the
   // daemon we track. A foreign listener is runtime.identity's verdict, not an "orphan", so we
@@ -392,10 +402,11 @@ export function checkRuntimeOrphan(f: RuntimeFacts): CheckResult {
     id: "runtime.orphan",
     label: "Proxy port ownership",
     group: "runtime" as const,
+    profile: f.profile,
     scopes: ["full", "proxy"] as const,
   };
   const foreign = f.identityConfirmed === false;
-  const orphan = f.reachable && !f.pidTracked && !f.bothDirect && !foreign;
+  const orphan = f.reachable && !f.pidTracked && f.proxyExpected && !foreign;
   if (!orphan) {
     // The detail must not claim the tracked daemon owns the port when identity says the
     // responder is foreign (pidTracked only proves the saved pid is a copilot-api process,
@@ -405,7 +416,7 @@ export function checkRuntimeOrphan(f: RuntimeFacts): CheckResult {
       detail = "port responder is not copilot-api (see proxy identity)";
     } else if (f.reachable && f.pidTracked) {
       detail = "port held by the tracked daemon";
-    } else if (f.bothDirect && f.reachable) {
+    } else if (!f.proxyExpected && f.reachable) {
       // An untracked copilot-api IS reachable on the port, but both agents are configured
       // direct, so no proxy is required -- the both-direct gate (not the facts) is why this
       // isn't an orphan warning. Say that, rather than the false "no untracked copilot-api".
@@ -435,6 +446,7 @@ export function checkShellIntegration(f: ShellFacts): CheckResult {
     id: "setup.shell",
     label: "Shell integration",
     group: "setup",
+    profile: null,
     scopes: SETUP,
     status: f.integrationWired ? "ok" : "warn",
     detail: f.integrationWired
@@ -450,6 +462,7 @@ export function checkLaunchers(f: ShellFacts): CheckResult {
     id: "setup.launchers",
     label: "Launchers (cl/co/cx)",
     group: "setup",
+    profile: null,
     scopes: SETUP,
     status: f.launchersWired ? "ok" : "warn",
     detail: f.launchersWired ? "wired into a shell rc/profile" : "not wired (optional)",
@@ -464,6 +477,7 @@ export function checkCli(c: CliFacts): CheckResult {
     id: `setup.cli.${c.command}`,
     label: `${c.name} (${c.command})`,
     group: "setup",
+    profile: null,
     scopes: SETUP,
     status: present ? "ok" : "warn",
     detail: present ? (c.resolved as string) : "not installed (optional)",
@@ -478,6 +492,7 @@ export function checkTool(name: "node" | "npm", resolved: string | null): CheckR
     id: `setup.tool.${name}`,
     label: name,
     group: "setup",
+    profile: null,
     scopes: SETUP,
     status: present ? "ok" : "warn",
     detail: present ? resolved : "not installed (optional)",
@@ -515,6 +530,7 @@ export function checkAuth(f: AuthFacts): CheckResult {
     id: "setup.auth",
     label: "Authentication",
     group: "auth" as const,
+    profile: null,
     scopes: AUTH,
     value: {
       storedToken: f.storedToken,
@@ -575,6 +591,7 @@ export function checkCodex(f: CodexFacts): CheckResult {
     id: "setup.codex",
     label: "Codex wiring",
     group: "codex" as const,
+    profile: null,
     scopes: CODEX,
     value: {
       home: f.home,
@@ -668,6 +685,7 @@ export function checkCodexHost(f: CodexHostFacts): CheckResult {
     id: "setup.codex-host",
     label: "Per-host CODEX_HOME",
     group: "codex" as const,
+    profile: null,
     scopes: SETUP,
     value: {
       supported: f.supported,
@@ -707,6 +725,7 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
     id: "setup.claude",
     label: "Claude wiring",
     group: "claude" as const,
+    profile: null,
     scopes: CLAUDE,
     value: {
       home: f.home,
@@ -791,6 +810,7 @@ export function checkAutoupdate(f: AutoupdateStatus): CheckResult {
     id: "setup.autoupdate",
     label: "Autoupdate",
     group: "setup" as const,
+    profile: null,
     scopes: SETUP,
     value: {
       enabled: f.enabled,
@@ -834,6 +854,7 @@ function checkAgentLive(agent: "codex" | "claude", f: LiveProbeFacts): CheckResu
     id: meta.id,
     label: meta.label,
     group: meta.group,
+    profile: null,
     scopes: meta.scopes,
     // The JSON report's historical shape: ran/ok/cli, derived from the probe kind.
     value: {
@@ -874,10 +895,12 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
     );
   }
   if (facts.proxy) out.push(checkProxyPackage(facts.proxy));
-  if (facts.runtime) {
-    out.push(checkRuntimePort(facts.runtime), checkRuntimePid(facts.runtime));
-    out.push(checkRuntimePaths(facts.runtime), checkRuntimeWatchdog(facts.runtime));
-    out.push(checkRuntimeIdentity(facts.runtime), checkRuntimeOrphan(facts.runtime));
+  // One block of runtime checks per target, in gather order (the default target
+  // first) -- with a single target this is exactly the historical sequence.
+  for (const target of facts.runtimes ?? []) {
+    out.push(checkRuntimePort(target), checkRuntimePid(target));
+    out.push(checkRuntimePaths(target), checkRuntimeWatchdog(target));
+    out.push(checkRuntimeIdentity(target), checkRuntimeOrphan(target));
   }
   if (facts.shell) {
     out.push(checkShellIntegration(facts.shell), checkLaunchers(facts.shell));

@@ -16,7 +16,11 @@ import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { setIntegrationProbeFetch } from "../src/copilot_api/integration_identity.ts";
 import { CopilotApiPaths, profileHome, profileHomeNames } from "../src/copilot_api/paths.ts";
-import { copilotApiResolvePort, reserveProfilePort } from "../src/copilot_api/port.ts";
+import {
+  copilotApiFallbackPort,
+  copilotApiResolvePort,
+  reserveProfilePort,
+} from "../src/copilot_api/port.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { isRecord } from "../src/utils/json.ts";
@@ -177,6 +181,21 @@ test("reserveProfilePort records stable, distinct ports; resolve peeks read-only
   expect(Number(copilotApiResolvePort(WORK))).toBe(work);
   expect(CopilotEnvRunState.forProfile(WORK).read().port).toBe(work);
   expect(profileHomeNames()).toEqual([GH_ALT, WORK]);
+});
+
+test("copilotApiFallbackPort ignores the addressed profile's own record (snapshot rule)", () => {
+  tmpProxyHome();
+  const defaultPort = Number(copilotApiResolvePort());
+  // The default target's fallback is the configured/built-in default -- no scan.
+  expect(copilotApiFallbackPort(null)).toBe(defaultPort);
+
+  // WORK records the first candidate (default+1). A caller that snapshotted
+  // WORK's state BEFORE that write must get a fallback the write cannot steer:
+  // WORK's own record is excluded, so its fallback is still default+1 -- while
+  // another profile's scan does avoid it and lands on default+2.
+  expect(reserveProfilePort(WORK)).toBe(defaultPort + 1);
+  expect(copilotApiFallbackPort(WORK)).toBe(defaultPort + 1);
+  expect(copilotApiFallbackPort(GH_ALT)).toBe(defaultPort + 2);
 });
 
 test("clearIfPid keeps a profile daemon's port reservation when asked", () => {

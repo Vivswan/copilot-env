@@ -237,9 +237,17 @@ export class CopilotEnvState {
 
   /** The full slot for a NAMED profile (credential + mode); never-created reads empty. */
   readProfileSlot(name: ProfileName): ProfileSlotData {
+    return this.profileSlotStatus(name).slot;
+  }
+
+  /** Like readProfileSlot, plus whether the store actually carries the slot --
+   *  both from ONE read, so existence and contents can never disagree under a
+   *  concurrent write (health's fact-gathering seam). */
+  profileSlotStatus(name: ProfileName): { exists: boolean; slot: ProfileSlotData } {
     const profiles = this.read().profiles;
     // Own-property check for the same prototype-chain reason as readCredential.
-    return (Object.hasOwn(profiles, name) ? profiles[name] : undefined) ?? emptyProfile();
+    const slot = Object.hasOwn(profiles, name) ? profiles[name] : undefined;
+    return { exists: slot !== undefined, slot: slot ?? emptyProfile() };
   }
 
   /** Every named profile in the store, sorted. The `profiles` map lives in the

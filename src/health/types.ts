@@ -1,5 +1,7 @@
-// Shared types for `agent health` diagnostics. Kept dependency-free so the pure
+// Shared types for `agent health` diagnostics. Kept dependency-free (the only
+// import is the profile vocabulary, itself dependency-free) so the pure
 // aggregation/evaluation layers (aggregate.ts, checks.ts) import only from here.
+import type { ProfileName } from "../copilot_api/profile.ts";
 
 /** Worst-to-best diagnostic outcome for a single check. */
 export type CheckStatus = "ok" | "warn" | "fail";
@@ -42,12 +44,15 @@ export type CheckGroup = "bootstrap" | "proxy" | "runtime" | "setup" | "auth" | 
 /**
  * One diagnostic result. `id` is a stable machine-readable key (e.g.
  * "runtime.port"); `scopes` lists every scope the check participates in (every
- * check includes "full"). `value` carries structured data for `--json`.
+ * check includes "full"). `profile` names the runtime target a check describes
+ * (null = the default target; environment-wide checks are always null).
+ * `value` carries structured data for `--json`.
  */
 export interface CheckResult {
   id: string;
   label: string;
   group: CheckGroup;
+  profile: ProfileName | null;
   scopes: readonly HealthScope[];
   status: CheckStatus;
   detail: string;
@@ -58,6 +63,8 @@ export interface CheckResult {
 /** Shape emitted by `agent health --json`. */
 export interface HealthJson {
   scope: HealthScope;
+  /** The profile the run was narrowed to (null = the default/whole environment). */
+  profile: string | null;
   ok: boolean; // no `fail` present
   status: CheckStatus; // worst status across checks
   exitCode: 0 | 1;
@@ -65,6 +72,7 @@ export interface HealthJson {
     id: string;
     label: string;
     group: CheckGroup;
+    profile: ProfileName | null;
     status: CheckStatus;
     detail: string;
     fix?: string;

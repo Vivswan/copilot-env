@@ -31,12 +31,21 @@ import { getHostLocalCodexHome } from "../codex/host.ts";
 import { codexConfigPath, defaultCodexHome } from "../codex/paths.ts";
 import { credentialSource } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { type AuthProvider, CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
+import {
+  type AuthProvider,
+  allProfileNames,
+  CopilotEnvState,
+  type ProfileMode,
+} from "../copilot_api/env_state.ts";
 import { ghAuthTokenSpawnSpec } from "../copilot_api/gh_cli.ts";
-import { CopilotApiPaths } from "../copilot_api/paths.ts";
-import { copilotApiResolvePort, proxyLoopbackOrigin } from "../copilot_api/port.ts";
+import { CopilotApiPaths, profileHomeExists } from "../copilot_api/paths.ts";
+import {
+  copilotApiFallbackPort,
+  copilotApiResolvePort,
+  proxyLoopbackOrigin,
+} from "../copilot_api/port.ts";
 import { isCopilotApiPid, pidAlive } from "../copilot_api/process.ts";
-import type { ProfileName } from "../copilot_api/profile.ts";
+import type { Profile, ProfileName } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import {
   installedProxyVersion,
@@ -71,30 +80,64 @@ import {
 
 // --- fact shapes ------------------------------------------------------------
 
-export interface RuntimePaths {
-  home: string;
-  configFile: string;
-  runDir: string;
-  stateFile: string;
-  logFile: string;
-  sqliteDb: string;
+/** The CopilotApiPaths slice a runtime target reports (a projection, never a
+ *  second hand-maintained shape). */
+export type RuntimePathsView = Pick<
+  CopilotApiPaths,
+  "home" | "configFile" | "runDir" | "stateFile" | "logFile" | "sqliteDb"
+>;
+
+/** THE projection from CopilotApiPaths to the reported slice -- the single
+ *  place that picks the fields, so adding one can never drift between the
+ *  default and (future) named targets. */
+export function runtimePathsView(p: CopilotApiPaths): RuntimePathsView {
+  return {
+    home: p.home,
+    configFile: p.configFile,
+    runDir: p.runDir,
+    stateFile: p.stateFile,
+    logFile: p.logFile,
+    sqliteDb: p.sqliteDb,
+  };
 }
 
-export interface RuntimeFacts {
+/** A named profile's store slot as a runtime target reports it (never tokens). */
+export interface ProfileSlotFacts {
+  exists: boolean;
+  provider: AuthProvider | null;
+  mode: ProfileMode | null;
+}
+
+/**
+ * The runtime facts for ONE daemon target: the default (profile null) or a
+ * named profile's isolated daemon. Gathering is READ-ONLY -- the port comes
+ * from the same run-state snapshot as the pid (proxyStatus's rule), with
+ * copilotApiFallbackPort's non-reserving, non-re-reading fallback when none is
+ * recorded; health never reserves a port or creates a file.
+ */
+export interface RuntimeTarget {
+  /** The profile this target describes (null = the default daemon). */
+  profile: Profile;
+  /** Named targets only: the credential store slot (null for the default). */
+  slot: ProfileSlotFacts | null;
+  /** Named targets only: the isolated daemon home exists (null for the default). */
+  homeExists: boolean | null;
+  /** Whether this target's setup routes anything through a local proxy; when
+   *  false, a down daemon is not a failure (default target: the inverse of
+   *  "both Codex and Claude are wired direct"). */
+  proxyExpected: boolean;
   port: number;
   reachable: boolean;
   trackedPid: number | null;
   pidTracked: boolean;
   pidAlive: boolean;
-  paths: RuntimePaths;
-  /** Both Codex and Claude are configured direct => the proxy is not required. */
-  bothDirect: boolean;
-  /** Idle auto-stop watchdog state, observed from outside the daemon. */
-  watchdog: WatchdogFacts;
   /** Identity of whatever is reachable on the port: true = copilot-api (x-trace-id present),
    *  false = reachable but NOT copilot-api (likely a foreign listener), null = not probed
    *  (port down, or the fast `runtime` scope which skips the extra request). */
   identityConfirmed: boolean | null;
+  paths: RuntimePathsView;
+  /** Idle auto-stop watchdog state, observed from outside the daemon. */
+  watchdog: WatchdogFacts;
 }
 
 /**
@@ -219,7 +262,8 @@ export interface CodexHostFacts {
 export type AutoupdateStatus = AutoupdateData & { cooldownDays: number };
 
 export interface HealthFacts {
-  runtime?: RuntimeFacts;
+  /** One entry per runtime target; this commit always exactly the default. */
+  runtimes?: RuntimeTarget[];
   bootstrap?: BootstrapFacts;
   proxy?: ProxyFacts;
   shell?: ShellFacts;
@@ -265,22 +309,37 @@ export interface AuthFacts {
 
 export interface ProbeDeps {
   root: string;
-  resolvePort(): string;
+  /** READ-ONLY port resolution for a target (never reserves a profile port). */
+  resolvePort(profile: Profile): string;
+  /** The non-reserving port fallback when a state snapshot records none; never
+   *  re-reads the addressed profile's recorded port (snapshot rule). */
+  fallbackPort(profile: Profile): number;
   reach(url: string, timeoutMs: number): Promise<boolean>;
   /** Whether the responder at `url` carries copilot-api's x-trace-id identity header. */
   proxyIdentity(url: string, timeoutMs: number): Promise<boolean | null>;
-  readState(): { port?: number; pid?: number; codexHome?: string; lastEnsureAt?: number };
+  readState(profile: Profile): {
+    port?: number;
+    pid?: number;
+    codexHome?: string;
+    lastEnsureAt?: number;
+  };
   isTrackedPid(pid: number): Promise<boolean>;
   isPidAlive(pid: number): boolean;
-  paths(): RuntimePaths;
+  paths(profile: Profile): RuntimePathsView;
   /** Idle-watchdog inputs (injected for deterministic tests). */
   now(): number;
   idleTimeoutMs(): number;
   autoStartEnabled(): boolean;
-  /** Epoch ms of the most recent inference request -- the in-process observer's persisted
-   *  `.activity.json` mark -- or null when there has been none. NOT moved by liveness
-   *  `GET /` pings. */
-  lastRequestMs(): number | null;
+  /** Epoch ms of the most recent inference request against `profile`'s daemon -- the
+   *  in-process observer's persisted `.activity.json` mark -- or null when there has
+   *  been none. NOT moved by liveness `GET /` pings. */
+  lastRequestMs(profile: Profile): number | null;
+  /** Every named profile the system knows about (store slots + on-disk homes). */
+  profileNames(): ProfileName[];
+  /** A named profile's store slot view (never tokens). */
+  profileSlot(name: ProfileName): ProfileSlotFacts;
+  /** True when the named profile has an isolated daemon home on disk. */
+  profileHomeExists(name: ProfileName): boolean;
   commandResolved(command: string): string | null;
   agentClis(): readonly { command: string; name: string }[];
   shellTargets(): string[];
@@ -454,29 +513,26 @@ export function defaultProbeDeps(): ProbeDeps {
   return {
     root,
     resolvePort: copilotApiResolvePort,
+    fallbackPort: copilotApiFallbackPort,
     reach: reachUrl,
     proxyIdentity,
-    readState: () => new CopilotEnvRunState().read(),
+    readState: (profile) => CopilotEnvRunState.forProfile(profile).read(),
     isTrackedPid: isCopilotApiPid,
     isPidAlive: pidAlive,
     now: () => Date.now(),
     idleTimeoutMs: () => idleTimeoutMs(),
     autoStartEnabled: () => new CopilotEnvConfig().autoStartEnabled(),
-    lastRequestMs: () => {
-      const m = persistedInferenceMs();
+    lastRequestMs: (profile) => {
+      const m = persistedInferenceMs(profile);
       return m > 0 ? m : null;
     },
-    paths: () => {
-      const p = new CopilotApiPaths();
-      return {
-        home: p.home,
-        configFile: p.configFile,
-        runDir: p.runDir,
-        stateFile: p.stateFile,
-        logFile: p.logFile,
-        sqliteDb: p.sqliteDb,
-      };
+    paths: (profile) => runtimePathsView(new CopilotApiPaths(profile)),
+    profileNames: allProfileNames,
+    profileSlot: (name) => {
+      const { exists, slot } = new CopilotEnvState().profileSlotStatus(name);
+      return { exists, provider: slot.authProvider, mode: slot.mode };
     },
+    profileHomeExists,
     commandResolved: resolveCommand,
     agentClis: () => AGENT_CLIS,
     shellTargets: shellTargetFiles,
@@ -607,6 +663,61 @@ export function evalClaude(
 
 // --- orchestration ----------------------------------------------------------
 
+/**
+ * Gather ONE runtime target's facts. READ-ONLY: nothing here writes a file or
+ * reserves a port. Snapshot semantics: pid and port come from a single
+ * run-state read (proxyStatus's documented rule), so a concurrent start/stop
+ * can't pair one daemon's pid with another's port; fallbackPort covers the
+ * no-recorded-port case without a second read of the same file.
+ */
+async function gatherRuntimeTarget(
+  profile: Profile,
+  scope: HealthScope,
+  deps: ProbeDeps,
+  target: {
+    slot: ProfileSlotFacts | null;
+    homeExists: boolean | null;
+    proxyExpected: (port: number) => boolean;
+  },
+): Promise<RuntimeTarget> {
+  const state = deps.readState(profile);
+  const port = state.port ?? deps.fallbackPort(profile);
+  const trackedPid = state.pid ?? null;
+  // proxyLoopbackOrigin, matching portListening: a localhost probe reads DOWN on Windows
+  // while the proxy is up.
+  const probeUrl = `${proxyLoopbackOrigin(port)}/`;
+  const [reachable, pidTracked] = await Promise.all([
+    deps.reach(probeUrl, 2000),
+    trackedPid !== null ? deps.isTrackedPid(trackedPid) : Promise.resolve(false),
+  ]);
+  // Identity probe (an extra local request) only in the full/proxy scopes -- never the
+  // launchers' fast `runtime` probe. Only meaningful when something is reachable.
+  const identityConfirmed =
+    SCOPE_BOOTSTRAP.includes(scope) && reachable ? await deps.proxyIdentity(probeUrl, 2000) : null;
+  return {
+    profile,
+    slot: target.slot,
+    homeExists: target.homeExists,
+    proxyExpected: target.proxyExpected(port),
+    port,
+    reachable,
+    trackedPid,
+    pidTracked,
+    pidAlive: trackedPid !== null ? deps.isPidAlive(trackedPid) : false,
+    identityConfirmed,
+    paths: deps.paths(profile),
+    watchdog: {
+      autoStart: deps.autoStartEnabled(),
+      idleTimeoutMs: deps.idleTimeoutMs(),
+      lastEnsureAt: state.lastEnsureAt ?? null,
+      // The observer's persisted mark; our own reach/identity GET / probes are not
+      // inference POSTs, so health observing the proxy never moves these numbers.
+      lastRequestMs: deps.lastRequestMs(profile),
+      now: deps.now(),
+    },
+  };
+}
+
 /** Gather exactly the facts `scope` needs, running independent probes concurrently. */
 export async function gatherFacts(
   scope: HealthScope,
@@ -614,7 +725,7 @@ export async function gatherFacts(
   overrides?: Partial<ProbeDeps>,
 ): Promise<HealthFacts> {
   const deps: ProbeDeps = { ...defaultProbeDeps(), ...overrides };
-  const port = Number(deps.resolvePort());
+  const port = Number(deps.resolvePort(null));
   const facts: HealthFacts = {};
 
   // gh auth backs BOTH Codex and Claude direct mode; probe it at most once per
@@ -646,46 +757,22 @@ export async function gatherFacts(
   if (SCOPE_RUNTIME.includes(scope)) {
     jobs.push(
       (async () => {
-        const state = deps.readState();
-        const trackedPid = state.pid ?? null;
-        // proxyLoopbackOrigin, matching portListening: a localhost probe reads DOWN on Windows
-        // while the proxy is up.
-        const probeUrl = `${proxyLoopbackOrigin(port)}/`;
-        const [reachable, pidTracked] = await Promise.all([
-          deps.reach(probeUrl, 2000),
-          trackedPid !== null ? deps.isTrackedPid(trackedPid) : Promise.resolve(false),
-        ]);
-        // Identity probe (an extra local request) only in the full/proxy scopes -- never the
-        // launchers' fast `runtime` probe. Only meaningful when something is reachable.
-        const identityConfirmed =
-          SCOPE_BOOTSTRAP.includes(scope) && reachable
-            ? await deps.proxyIdentity(probeUrl, 2000)
-            : null;
-        facts.runtime = {
-          port,
-          reachable,
-          trackedPid,
-          pidTracked,
-          pidAlive: trackedPid !== null ? deps.isPidAlive(trackedPid) : false,
-          paths: deps.paths(),
-          // When both agents are configured direct, no proxy is required, so a
-          // down proxy must not read as a runtime failure.
-          bothDirect: !defaultSetupNeedsProxy({
-            codexHome: deps.codexHome(),
-            claudeHome: deps.claudeHome(),
-            expectedPort: port,
+        // Exactly one target today: the default daemon. Named-profile targets
+        // (deps.profileNames()) join this list in a follow-up.
+        facts.runtimes = [
+          await gatherRuntimeTarget(null, scope, deps, {
+            slot: null,
+            homeExists: null,
+            // When both agents are configured direct, no proxy is required, so a
+            // down proxy must not read as a runtime failure.
+            proxyExpected: (targetPort) =>
+              defaultSetupNeedsProxy({
+                codexHome: deps.codexHome(),
+                claudeHome: deps.claudeHome(),
+                expectedPort: targetPort,
+              }),
           }),
-          identityConfirmed,
-          watchdog: {
-            autoStart: deps.autoStartEnabled(),
-            idleTimeoutMs: deps.idleTimeoutMs(),
-            lastEnsureAt: state.lastEnsureAt ?? null,
-            // The observer's persisted mark; our own reach/identity GET / probes are not
-            // inference POSTs, so health observing the proxy never moves these numbers.
-            lastRequestMs: deps.lastRequestMs(),
-            now: deps.now(),
-          },
-        };
+        ];
       })(),
     );
   }

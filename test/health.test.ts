@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DIRECT_HELPER_NAME } from "../src/claude/paths.ts";
@@ -42,7 +42,7 @@ import {
   evalShellFiles,
   gatherFacts,
   type HealthFacts,
-  type RuntimeFacts,
+  type RuntimeTarget,
 } from "../src/health/probe.ts";
 import type { CheckResult, CheckStatus, HealthScope } from "../src/health/types.ts";
 import { envSnapshot, writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
@@ -50,33 +50,50 @@ import { envSnapshot, writeClaudeSettings, writeCodexConfigToml } from "./helper
 // --- fixtures ---------------------------------------------------------------
 
 function result(id: string, status: CheckStatus, scopes: HealthScope[]): CheckResult {
-  return { id, label: id, group: "runtime", scopes, status, detail: "" };
+  return { id, label: id, group: "runtime", profile: null, scopes, status, detail: "" };
 }
 
-const RUNTIME_OK: RuntimeFacts = {
-  port: 4141,
-  reachable: true,
-  trackedPid: 1234,
-  pidTracked: true,
-  pidAlive: true,
-  bothDirect: false,
-  identityConfirmed: true,
-  paths: {
-    home: "/h",
-    configFile: "/h/config.json",
-    runDir: "/h/.run/x",
-    stateFile: "/h/.run/x/.state.json",
-    logFile: "/h/.run/x/.log",
-    sqliteDb: "/h/.run/x/db.sqlite",
-  },
-  watchdog: {
-    autoStart: false,
-    idleTimeoutMs: 3_600_000,
-    lastEnsureAt: null,
-    lastRequestMs: null,
-    now: 1_000_000_000,
-  },
-};
+/** A default-target runtime fixture (profile null, healthy tracked daemon). */
+function defaultTarget(overrides: Partial<RuntimeTarget> = {}): RuntimeTarget {
+  return {
+    profile: null,
+    slot: null,
+    homeExists: null,
+    proxyExpected: true,
+    port: 4141,
+    reachable: true,
+    trackedPid: 1234,
+    pidTracked: true,
+    pidAlive: true,
+    identityConfirmed: true,
+    paths: {
+      home: "/h",
+      configFile: "/h/config.json",
+      runDir: "/h/.run/x",
+      stateFile: "/h/.run/x/.state.json",
+      logFile: "/h/.run/x/.log",
+      sqliteDb: "/h/.run/x/db.sqlite",
+    },
+    watchdog: {
+      autoStart: false,
+      idleTimeoutMs: 3_600_000,
+      lastEnsureAt: null,
+      lastRequestMs: null,
+      now: 1_000_000_000,
+    },
+    ...overrides,
+  };
+}
+
+/** A named-profile runtime target fixture (used by the profile-aware tier). */
+function profileTarget(name: string, overrides: Partial<RuntimeTarget> = {}): RuntimeTarget {
+  return defaultTarget({
+    profile: parseProfileName(name),
+    slot: { exists: true, provider: null, mode: "proxy" },
+    homeExists: true,
+    ...overrides,
+  });
+}
 
 const BOOTSTRAP_OK: BootstrapFacts = {
   cliVersion: "3.1.0",
@@ -134,6 +151,10 @@ test("buildHealthJson exposes scope/ok/status/exitCode/checks with ok === no-fai
   const okJson = buildHealthJson("full", [result("a", "warn", ["full"])]);
   expect(okJson).toMatchObject({ scope: "full", ok: true, status: "warn", exitCode: 0 });
   expect(okJson.checks).toHaveLength(1);
+  // The profile dimension: top-level = the run's narrowing (default null), and
+  // every check names its own target (environment checks are null).
+  expect(okJson.profile).toBeNull();
+  expect(okJson.checks[0]?.profile).toBeNull();
 
   const failJson = buildHealthJson("runtime", [result("a", "fail", ["runtime"])]);
   expect(failJson).toMatchObject({ ok: false, status: "fail", exitCode: 1 });
@@ -303,57 +324,59 @@ test("gatherFacts probes the proxy at 127.0.0.1, never localhost (Windows IPv6 s
 });
 
 test("runtime port fails only when unreachable", () => {
-  expect(checkRuntimePort(RUNTIME_OK).status).toBe("ok");
-  expect(checkRuntimePort({ ...RUNTIME_OK, reachable: false }).status).toBe("fail");
+  expect(checkRuntimePort(defaultTarget()).status).toBe("ok");
+  expect(checkRuntimePort(defaultTarget({ reachable: false })).status).toBe("fail");
 });
 
 test("runtime: a down proxy is OK when both Codex and Claude are direct", () => {
-  const down = { ...RUNTIME_OK, reachable: false, trackedPid: null, pidTracked: false };
+  const down = defaultTarget({ reachable: false, trackedPid: null, pidTracked: false });
   // Proxy not required => no failure (warnings/ok only), so the overall exit is 0.
   expect(checkRuntimePort(down).status).toBe("fail");
   expect(checkRuntimePid(down).status).toBe("fail");
-  const bothDirect = { ...down, bothDirect: true };
+  const bothDirect = { ...down, proxyExpected: false };
   expect(checkRuntimePort(bothDirect).status).toBe("ok");
   expect(checkRuntimePort(bothDirect).detail).toContain("both direct");
   expect(checkRuntimePid(bothDirect).status).toBe("ok");
 });
 
 test("runtime pid: stale/foreign and untracked fail, tracked ok", () => {
-  expect(checkRuntimePid(RUNTIME_OK).status).toBe("ok");
+  expect(checkRuntimePid(defaultTarget()).status).toBe("ok");
   // reachable but not our pid (foreign squatter / stale): pid check fails, port ok
-  const foreign = { ...RUNTIME_OK, pidTracked: false };
+  const foreign = defaultTarget({ pidTracked: false });
   expect(checkRuntimePid(foreign).status).toBe("fail");
   expect(checkRuntimePort(foreign).status).toBe("ok");
-  const untracked = { ...RUNTIME_OK, trackedPid: null, pidTracked: false, pidAlive: false };
+  const untracked = defaultTarget({ trackedPid: null, pidTracked: false, pidAlive: false });
   expect(checkRuntimePid(untracked).status).toBe("fail");
 });
 
 test("runtime watchdog: off, disabled, and active states are all ok with informative detail", () => {
   // auto-start off -> reports off, never auto-stops.
-  const off = checkRuntimeWatchdog(RUNTIME_OK); // RUNTIME_OK has watchdog.autoStart=false
+  const off = checkRuntimeWatchdog(defaultTarget()); // the fixture has watchdog.autoStart=false
   expect(off.status).toBe("ok");
   expect(off.detail).toContain("off");
   expect(off.value).toEqual({ autoStart: false });
 
   // auto-start on but idle-timeout 0 -> auto-stop disabled.
-  const disabled = checkRuntimeWatchdog({
-    ...RUNTIME_OK,
-    watchdog: { ...RUNTIME_OK.watchdog, autoStart: true, idleTimeoutMs: 0 },
-  });
+  const disabled = checkRuntimeWatchdog(
+    defaultTarget({
+      watchdog: { ...defaultTarget().watchdog, autoStart: true, idleTimeoutMs: 0 },
+    }),
+  );
   expect(disabled.detail).toContain("disabled");
 
   // Active: window 1h, last beat 20m ago, no request traffic -> 40m remaining, 20m idle.
   const now = 1_000_000_000;
-  const active = checkRuntimeWatchdog({
-    ...RUNTIME_OK,
-    watchdog: {
-      autoStart: true,
-      idleTimeoutMs: 3_600_000,
-      lastEnsureAt: now - 20 * 60_000,
-      lastRequestMs: null,
-      now,
-    },
-  });
+  const active = checkRuntimeWatchdog(
+    defaultTarget({
+      watchdog: {
+        autoStart: true,
+        idleTimeoutMs: 3_600_000,
+        lastEnsureAt: now - 20 * 60_000,
+        lastRequestMs: null,
+        now,
+      },
+    }),
+  );
   expect(active.status).toBe("ok");
   expect(active.detail).toContain("auto-stops in 40m");
   expect(active.detail).toContain("idle for 20m");
@@ -364,32 +387,34 @@ test("runtime watchdog: off, disabled, and active states are all ok with informa
 
   // Idle past the window clamps remaining to 0; the persisted request mark counts as the
   // latest activity.
-  const expired = checkRuntimeWatchdog({
-    ...RUNTIME_OK,
-    watchdog: {
-      autoStart: true,
-      idleTimeoutMs: 600_000,
-      lastEnsureAt: now - 3_600_000,
-      lastRequestMs: now - 1_200_000, // 20m ago, more recent than the beat
-      now,
-    },
-  });
+  const expired = checkRuntimeWatchdog(
+    defaultTarget({
+      watchdog: {
+        autoStart: true,
+        idleTimeoutMs: 600_000,
+        lastEnsureAt: now - 3_600_000,
+        lastRequestMs: now - 1_200_000, // 20m ago, more recent than the beat
+        now,
+      },
+    }),
+  );
   expect(expired.value?.idleMs).toBe(1_200_000);
   expect(expired.value?.remainingMs).toBe(0);
   expect(expired.detail).toContain("auto-stops in 0s");
 
   // No activity recorded yet -> idle AND remaining are unknown (the daemon's real baseline
   // includes a startedAtMs the probe can't see, so we don't fake a precise full window).
-  const fresh = checkRuntimeWatchdog({
-    ...RUNTIME_OK,
-    watchdog: {
-      autoStart: true,
-      idleTimeoutMs: 3_600_000,
-      lastEnsureAt: null,
-      lastRequestMs: null,
-      now,
-    },
-  });
+  const fresh = checkRuntimeWatchdog(
+    defaultTarget({
+      watchdog: {
+        autoStart: true,
+        idleTimeoutMs: 3_600_000,
+        lastEnsureAt: null,
+        lastRequestMs: null,
+        now,
+      },
+    }),
+  );
   expect(fresh.detail).toContain("idle for unknown");
   expect(fresh.detail).toContain("auto-stops in unknown");
   expect(fresh.value?.idleMs).toBeNull();
@@ -397,60 +422,69 @@ test("runtime watchdog: off, disabled, and active states are all ok with informa
 });
 
 test("runtime watchdog is scoped to full + proxy, not the launchers' fast runtime probe", () => {
-  expect(checkRuntimeWatchdog(RUNTIME_OK).scopes).toEqual(["full", "proxy"]);
+  expect(checkRuntimeWatchdog(defaultTarget()).scopes).toEqual(["full", "proxy"]);
 });
 
 test("runtime identity: confirmed ok, foreign warns, down/not-probed stays ok", () => {
   // x-trace-id present -> confirmed copilot-api.
-  const ok = checkRuntimeIdentity(RUNTIME_OK); // identityConfirmed: true
+  const ok = checkRuntimeIdentity(defaultTarget()); // identityConfirmed: true
   expect(ok.status).toBe("ok");
   expect(ok.detail).toContain("confirmed copilot-api");
 
   // Reachable but no x-trace-id -> a foreign service squats the port.
-  const foreign = checkRuntimeIdentity({ ...RUNTIME_OK, identityConfirmed: false });
+  const foreign = checkRuntimeIdentity(defaultTarget({ identityConfirmed: false }));
   expect(foreign.status).toBe("warn");
   expect(foreign.detail).toContain("non-copilot-api");
   expect(foreign.fix).toContain("free the port");
 
   // Not reachable / not probed -> ok (runtime.port owns the down verdict).
   expect(
-    checkRuntimeIdentity({ ...RUNTIME_OK, reachable: false, identityConfirmed: null }).status,
+    checkRuntimeIdentity(defaultTarget({ reachable: false, identityConfirmed: null })).status,
   ).toBe("ok");
-  expect(checkRuntimeIdentity({ ...RUNTIME_OK, identityConfirmed: null }).status).toBe("ok");
-  expect(checkRuntimeIdentity(RUNTIME_OK).scopes).toEqual(["full", "proxy"]);
+  expect(checkRuntimeIdentity(defaultTarget({ identityConfirmed: null })).status).toBe("ok");
+  expect(checkRuntimeIdentity(defaultTarget()).scopes).toEqual(["full", "proxy"]);
 });
 
 test("runtime orphan: untracked-but-ours warns, foreign defers to identity, tracked ok", () => {
   // Reachable copilot-api (or unknown) but no tracked pid, proxy required -> orphan warn.
-  const orphan = checkRuntimeOrphan({
-    ...RUNTIME_OK,
-    pidTracked: false,
-    trackedPid: null,
-    identityConfirmed: true,
-  });
+  const orphan = checkRuntimeOrphan(
+    defaultTarget({ pidTracked: false, trackedPid: null, identityConfirmed: true }),
+  );
   expect(orphan.status).toBe("warn");
   expect(orphan.detail).toContain("orphaned");
   expect(orphan.fix).toContain("agent stop");
 
   // A foreign listener is runtime.identity's verdict -> orphan must NOT also warn.
   expect(
-    checkRuntimeOrphan({ ...RUNTIME_OK, pidTracked: false, identityConfirmed: false }).status,
+    checkRuntimeOrphan(defaultTarget({ pidTracked: false, identityConfirmed: false })).status,
   ).toBe("ok");
 
   // Foreign responder while our tracked pid is alive: orphan stays ok but must NOT claim the
   // tracked daemon owns the port (that wording belongs to runtime.identity).
-  const foreignTracked = checkRuntimeOrphan({ ...RUNTIME_OK, identityConfirmed: false });
+  const foreignTracked = checkRuntimeOrphan(defaultTarget({ identityConfirmed: false }));
   expect(foreignTracked.status).toBe("ok");
   expect(foreignTracked.detail).not.toContain("tracked daemon");
   expect(foreignTracked.detail).toContain("not copilot-api");
 
   // Tracked daemon -> ok.
-  expect(checkRuntimeOrphan(RUNTIME_OK).status).toBe("ok");
+  expect(checkRuntimeOrphan(defaultTarget()).status).toBe("ok");
 
   // Both agents direct -> no proxy required -> a missing tracked pid is not an orphan.
-  expect(checkRuntimeOrphan({ ...RUNTIME_OK, pidTracked: false, bothDirect: true }).status).toBe(
-    "ok",
-  );
+  expect(
+    checkRuntimeOrphan(defaultTarget({ pidTracked: false, proxyExpected: false })).status,
+  ).toBe("ok");
+});
+
+test("runtime checks stamp the target's profile; environment checks stay null", () => {
+  // The default target's checks carry profile null (today's only shape); a named
+  // target's checks carry its name -- the plumbing the profile tier builds on.
+  expect(checkRuntimePort(defaultTarget()).profile).toBeNull();
+  expect(checkRuntimeWatchdog(defaultTarget()).profile).toBeNull();
+  const named = profileTarget("work", { reachable: false });
+  expect(checkRuntimePort(named).profile).toBe(parseProfileName("work"));
+  expect(checkRuntimeOrphan(named).profile).toBe(parseProfileName("work"));
+  expect(checkBun(BOOTSTRAP_OK).profile).toBeNull();
+  expect(checkCliVersion(BOOTSTRAP_OK).profile).toBeNull();
 });
 
 test("the identity probe (an extra request) is skipped in the launchers' fast runtime scope", async () => {
@@ -470,7 +504,7 @@ test("the identity probe (an extra request) is skipped in the launchers' fast ru
     },
   );
   expect(identityCalls).toBe(0);
-  expect(facts.runtime?.identityConfirmed).toBeNull();
+  expect(facts.runtimes?.[0]?.identityConfirmed).toBeNull();
 });
 
 test("health's own proxy probes do not move the watchdog activity signal", async () => {
@@ -500,8 +534,8 @@ test("health's own proxy probes do not move the watchdog activity signal", async
     },
   );
   expect(probes).toBeGreaterThan(0); // the proxy WAS probed (reach + identity)
-  expect(facts.runtime?.watchdog.lastRequestMs).toBe(100); // ...yet the signal is unchanged
-  expect(facts.runtime?.watchdog.now).toBe(5000);
+  expect(facts.runtimes?.[0]?.watchdog.lastRequestMs).toBe(100); // ...yet the signal is unchanged
+  expect(facts.runtimes?.[0]?.watchdog.now).toBe(5000);
 });
 
 test("gatherFacts derives proxy.floatSkips from the float's own predicate", async () => {
@@ -539,6 +573,59 @@ test("gatherFacts derives proxy.floatSkips from the float's own predicate", asyn
     writeClaudeSettings(claudeHome, { apiKeyHelper, baseUrl: "http://127.0.0.1:4141" });
     const mixed = await gatherFacts("proxy", {}, overrides);
     expect(mixed.proxy?.floatSkips).toBe(false);
+  } finally {
+    restoreEnv();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a target's pid and port pair from ONE state snapshot (fallback never re-reads)", async () => {
+  // proxyStatus's rule, kept by health: with no recorded port, the fallback is
+  // fallbackPort (state-independent for the addressed profile), never a second
+  // read() that could pair the snapshot's pid with a newer port.
+  let stateReads = 0;
+  const facts = await gatherFacts(
+    "runtime",
+    {},
+    {
+      resolvePort: () => "4141", // the wiring expectation, not the target snapshot
+      readState: () => {
+        stateReads++;
+        return {}; // no recorded port -> the fallback path
+      },
+      fallbackPort: () => 4444,
+      reach: async () => false,
+    },
+  );
+  expect(stateReads).toBe(1);
+  expect(facts.runtimes?.[0]?.port).toBe(4444);
+});
+
+test("gatherFacts is read-only: no files appear in a fresh isolated home", async () => {
+  // Health observes, never writes: it must not create the copilot-api home, a
+  // run dir, or a port reservation (reserveProfilePort is a write-path API).
+  const root = mkdtempSync(join(tmpdir(), "copilot-health-readonly-"));
+  const restoreEnv = envSnapshot();
+  const home = join(root, "api-home"); // never created -- gatherFacts must not mkdir it
+  process.env.COPILOT_API_HOME = home;
+  try {
+    const facts = await gatherFacts(
+      "proxy",
+      {},
+      {
+        reach: async () => false, // keep the probe offline-deterministic; reach does no fs I/O
+        codexHome: () => join(root, "codex-home"),
+        claudeHome: () => join(root, "claude-home"),
+      },
+    );
+    // Exactly one runtime target this commit: the default (profile null).
+    expect(facts.runtimes?.map((t) => t.profile)).toEqual([null]);
+    expect(facts.runtimes?.[0]?.slot).toBeNull();
+    expect(facts.runtimes?.[0]?.homeExists).toBeNull();
+    // The zero-writes invariant: the home was never created and nothing else
+    // landed under the isolated root.
+    expect(existsSync(home)).toBe(false);
+    expect(readdirSync(root)).toEqual([]);
   } finally {
     restoreEnv();
     rmSync(root, { recursive: true, force: true });
@@ -1094,7 +1181,7 @@ test("checkAutoupdate: full status always shown (disabled too); recorded error w
 // --- evaluateAll scope filtering --------------------------------------------
 
 test("evaluateAll(runtime) yields exactly the two runtime checks", () => {
-  const facts: HealthFacts = { runtime: RUNTIME_OK };
+  const facts: HealthFacts = { runtimes: [defaultTarget()] };
   const ids = evaluateAll("runtime", facts).map((r) => r.id);
   expect(ids).toEqual(["runtime.port", "runtime.pid"]);
 });
@@ -1127,7 +1214,7 @@ test("evaluateAll(codex) yields only the Codex wiring check", () => {
 
 test("evaluateAll(full) includes runtime.paths and setup checks", () => {
   const facts: HealthFacts = {
-    runtime: RUNTIME_OK,
+    runtimes: [defaultTarget()],
     bootstrap: BOOTSTRAP_OK,
     proxy: {
       version: "1.10.5",

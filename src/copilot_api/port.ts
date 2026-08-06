@@ -95,26 +95,41 @@ export async function copilotApiFindPort(start: number = defaultProxyPort()): Pr
 export function copilotApiResolvePort(profile: Profile = null): string {
   const statePort = CopilotEnvRunState.forProfile(profile).read().port;
   if (statePort !== undefined) return String(statePort);
-  if (profile === null) return String(defaultProxyPort());
-  return String(candidateProfilePort());
+  return String(copilotApiFallbackPort(profile));
 }
 
-/** Every port currently reserved/recorded across the default and all profile daemons. */
-function recordedPorts(): Set<number> {
+/**
+ * The port `profile`'s daemon WOULD use when its run state records none: the
+ * configured/built-in default, or an unreserved named profile's candidate pick.
+ * READ-ONLY like copilotApiResolvePort, and independent of the addressed
+ * profile's own run state (a named profile's record is EXCLUDED from the
+ * candidate scan) -- so a caller holding a state snapshot (health's fact
+ * gathering) can fall back without a concurrent write to that same file
+ * steering the answer.
+ */
+export function copilotApiFallbackPort(profile: Profile): number {
+  return profile === null ? defaultProxyPort() : candidateProfilePort(profile);
+}
+
+/** Every port currently reserved/recorded across the default and all profile
+ *  daemons, minus `excluding`'s own record (see copilotApiFallbackPort). */
+function recordedPorts(excluding: Profile): Set<number> {
   const ports = new Set<number>([defaultProxyPort()]);
   const defaultPort = new CopilotEnvRunState().read().port;
   if (defaultPort !== undefined) ports.add(defaultPort);
   for (const name of profileHomeNames()) {
+    if (name === excluding) continue;
     const port = CopilotEnvRunState.forProfile(name).read().port;
     if (port !== undefined) ports.add(port);
   }
   return ports;
 }
 
-/** The smallest in-range port no daemon has spoken for: scan upward from just past the
- *  default daemon's port (so profile reservations cluster predictably beside it), then
- *  wrap to the bottom of the range. Pure -- records nothing. */
-function candidateProfilePort(): number {
+/** The smallest in-range port no daemon has spoken for (`excluding`'s own record
+ *  aside): scan upward from just past the default daemon's port (so profile
+ *  reservations cluster predictably beside it), then wrap to the bottom of the
+ *  range. Pure -- records nothing. */
+function candidateProfilePort(excluding: Profile = null): number {
   const min = minProxyPort();
   const max = maxProxyPort();
   if (min > max) {
@@ -122,7 +137,7 @@ function candidateProfilePort(): number {
       `invalid port range: min-port (${min}) is greater than max-port (${max}); fix it with \`agent config --set min-port <n>\` / \`--set max-port <n>\`.`,
     );
   }
-  const used = recordedPorts();
+  const used = recordedPorts(excluding);
   const from = Math.min(Math.max(defaultProxyPort() + 1, min), max);
   for (let port = from; port <= max; port++) {
     if (!used.has(port)) return port;

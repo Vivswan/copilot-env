@@ -3,10 +3,24 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/paths.ts";
+import {
+  DIRECT_HELPER_NAME,
+  directHelperPath,
+  PROXY_HELPER_NAME,
+  proxyHelperPath,
+} from "../src/claude/paths.ts";
 import { runEnv } from "../src/commands/env.ts";
+import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
+import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { LAUNCHERS_MARKER } from "../src/shell/integration.ts";
-import { envSnapshot, removeDir, tmpDir, writeClaudeSettings } from "./helpers.ts";
+import {
+  claudeSettingsJson,
+  envSnapshot,
+  removeDir,
+  tmpDir,
+  writeClaudeSettings,
+  writeRunState,
+} from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -17,14 +31,14 @@ afterEach(() => {
 });
 
 /** Run runEnv(posix) capturing its stdout lines. */
-function envLines(): string[] {
+function envLines(profile?: string): string[] {
   const lines: string[] = [];
   const orig = console.log;
   console.log = (...args: unknown[]) => {
     lines.push(args.map(String).join(" "));
   };
   try {
-    runEnv({ format: "posix" });
+    runEnv({ format: "posix", profile });
   } finally {
     console.log = orig;
   }
@@ -74,8 +88,9 @@ const isLaunchersSource = (l: string): boolean =>
  * binds at startup and ignores later process.env.HOME mutation) resolves correctly
  * only when HOME is in the spawn environment -- which in-process runEnv() can't fake.
  */
-function childEnvLines(env: Record<string, string | undefined>): string[] {
-  const script = `import{runEnv}from${JSON.stringify(join(import.meta.dir, "..", "src/commands/env.ts"))};runEnv({format:"posix"});`;
+function childEnvLines(env: Record<string, string | undefined>, profile?: string): string[] {
+  const argsSrc = JSON.stringify({ "format": "posix", "profile": profile });
+  const script = `import{runEnv}from${JSON.stringify(join(import.meta.dir, "..", "src/commands/env.ts"))};runEnv(${argsSrc});`;
   const spawnEnv: Record<string, string> = {};
   for (const [k, v] of Object.entries({ ...process.env, ...env })) {
     if (v !== undefined) spawnEnv[k] = v;
@@ -166,4 +181,88 @@ test("env skips the launchers source when the launchers are not wired", () => {
   dir = tmpDir("copilot-env-cmd-"); // no .bashrc / launchers marker
   const lines = childEnvLines(childBaseEnv());
   expect(lines.some(isLaunchersSource)).toBe(false);
+});
+
+// --- --profile ------------------------------------------------------------------
+
+/** Seed a named profile: its store slot (mode) + its run-state port reservation +
+ *  its own settings-<name>.json (proxy or direct helper). */
+function seedProfile(
+  claudeHome: string,
+  name: string,
+  mode: "direct" | "proxy",
+  port: number,
+): void {
+  const profile = parseProfileName(name);
+  new CopilotEnvState().setProfileMode(profile, mode);
+  writeRunState({ port }, profile);
+  const helper =
+    mode === "proxy" ? proxyHelperPath(claudeHome, profile) : directHelperPath(claudeHome, profile);
+  const baseUrl = mode === "proxy" ? `http://127.0.0.1:${port}` : "https://api.githubcopilot.com";
+  writeFileSync(
+    join(claudeHome, `settings-${name}.json`),
+    claudeSettingsJson({ apiKeyHelper: helper, baseUrl }),
+  );
+}
+
+test("env (no flag) output is byte-identical to the default wiring, profiles present or not", () => {
+  const home = isolate();
+  writeClaude(home, join(home, PROXY_HELPER_NAME), "http://127.0.0.1:4141");
+  // The default eval contract, pinned as the EXACT full output (child process:
+  // an isolated HOME keeps the machine's own launchers wiring out of the scan).
+  const expected = ["export ANTHROPIC_BASE_URL='http://127.0.0.1:4141'"];
+  expect(childEnvLines(childBaseEnv())).toEqual(expected);
+  // Seeding a named profile (own slot, port, settings file) must not perturb the
+  // no-flag output by a single byte.
+  seedProfile(home, "work", "proxy", 4242);
+  expect(childEnvLines(childBaseEnv())).toEqual(expected);
+});
+
+test("env --profile resolves a proxy profile's OWN settings file and port", () => {
+  const home = isolate();
+  // Default wiring points at a DIFFERENT port; the profile answer must come from
+  // settings-work.json, never from the default settings.json.
+  writeClaude(home, join(home, PROXY_HELPER_NAME), "http://127.0.0.1:4141");
+  seedProfile(home, "work", "proxy", 4242);
+  expect(childEnvLines(childBaseEnv(), "work")).toEqual([
+    "export ANTHROPIC_BASE_URL='http://127.0.0.1:4242'",
+  ]);
+});
+
+test("env --profile for a direct profile clears a stale local proxy URL", () => {
+  const home = isolate();
+  // The default stays PROXY-wired: a direct profile must not inherit its export.
+  writeClaude(home, join(home, PROXY_HELPER_NAME), "http://127.0.0.1:4141");
+  seedProfile(home, "work", "direct", 4242);
+  expect(
+    childEnvLines({ ...childBaseEnv(), ANTHROPIC_BASE_URL: "http://127.0.0.1:4242" }, "work"),
+  ).toEqual(["unset ANTHROPIC_BASE_URL"]);
+});
+
+test("env --profile with an unknown name hard-fails naming the known profiles", () => {
+  const home = isolate();
+  expect(() => envLines("nope")).toThrow("no such profile 'nope' (no profiles exist");
+  seedProfile(home, "work", "proxy", 4242);
+  expect(() => envLines("nope")).toThrow("no such profile 'nope' (known profiles: work)");
+});
+
+test("cli env --profile unknown exits 1 with an EMPTY stdout (the eval contract)", () => {
+  dir = tmpDir("copilot-env-cmd-");
+  const spawnEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries({
+    ...process.env,
+    ...childBaseEnv(),
+    CONSOLA_LEVEL: "5",
+  })) {
+    if (v !== undefined) spawnEnv[k] = v;
+  }
+  const proc = spawnSync(
+    process.execPath,
+    [join(import.meta.dir, "..", "src/cli.ts"), "env", "--profile", "nope"],
+    { encoding: "utf-8", env: spawnEnv },
+  );
+  expect(proc.status).toBe(1);
+  // NOTHING may reach stdout: the shell wrapper evals it verbatim.
+  expect(proc.stdout).toBe("");
+  expect(proc.stderr).toContain("no such profile 'nope'");
 });

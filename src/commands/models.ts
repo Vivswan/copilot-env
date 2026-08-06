@@ -9,6 +9,8 @@ import { consola } from "consola";
 import type { RequestedMode } from "../agents/provider_mode.ts";
 import { fetchRawModels } from "../copilot_api/catalog.ts";
 import { proxyStatus } from "../copilot_api/daemon.ts";
+import { assertKnownProfile } from "../copilot_api/env_state.ts";
+import { type Profile, parseProfileFlag } from "../copilot_api/profile.ts";
 import { bold, cyan, gray } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
@@ -17,6 +19,12 @@ export interface ModelsArgs {
   /** `--direct`/`--proxy`, parsed once at the CLI boundary (auto = neither). */
   mode: RequestedMode;
   json?: boolean;
+  /**
+   * `--profile <name>`: list via that named profile's wiring -- its own daemon
+   * (proxy) or its own credential (direct); a named profile never falls back to
+   * the default daemon or credential. An unknown name is a hard error.
+   */
+  profile?: string;
 }
 
 /** One catalog entry: the addressable id plus the display fields the table shows. */
@@ -165,41 +173,58 @@ type ResolvedSource = { source: "direct" } | { source: "proxy"; port: number };
  * Resolve which catalog to read (and, for the proxy, the port its liveness was
  * just confirmed on). A forced mode wins; on "auto", the proxy is preferred
  * when it is genuinely up (so the listing reflects what the proxy-wired agents
- * actually see), else Direct.
+ * actually see), else Direct. `profile` addresses that named profile's daemon.
  */
-async function resolveSource(mode: RequestedMode): Promise<ResolvedSource> {
+async function resolveSource(mode: RequestedMode, profile: Profile): Promise<ResolvedSource> {
   if (mode === "direct") {
     return { source: "direct" };
   }
-  const status = await proxyStatus();
+  const status = await proxyStatus(profile);
   if (mode === "proxy") {
     if (!status.up) {
-      throw new Error("the local proxy is not running (run `agent start`, or use --direct)");
+      throw new Error(
+        profile === null
+          ? "the local proxy is not running (run `agent start`, or use --direct)"
+          : `the local proxy for profile '${profile}' is not running (run \`agent start --profile ${profile}\`, or use --direct)`,
+      );
     }
     return { source: "proxy", port: status.port };
   }
   return status.up ? { source: "proxy", port: status.port } : { source: "direct" };
 }
 
-function sourceLabel(resolved: ResolvedSource): string {
-  return resolved.source === "proxy"
+function sourceLabel(resolved: ResolvedSource, profile: Profile): string {
+  if (resolved.source === "direct") return "GitHub Copilot Direct";
+  return profile === null
     ? `the local proxy (port ${resolved.port})`
-    : "GitHub Copilot Direct";
+    : `profile '${profile}' local proxy (port ${resolved.port})`;
 }
 
 /** `models`: fetch the live catalog and print it as a table (or `--json`). */
 export async function runModels(args: ModelsArgs): Promise<void> {
-  const resolved = await resolveSource(args.mode);
+  // Boundary validation, before any probe or fetch: an unknown profile is a hard
+  // error naming the known ones -- never a silent answer from the default wiring.
+  const profile: Profile = parseProfileFlag(args.profile);
+  if (profile !== null) assertKnownProfile(profile);
+  const resolved = await resolveSource(args.mode, profile);
   const { source } = resolved;
-  const label = sourceLabel(resolved);
+  const label = sourceLabel(resolved, profile);
   let models: ModelListEntry[];
   try {
     models = parseModelList(
-      await fetchRawModels(source, resolved.source === "proxy" ? { port: resolved.port } : {}),
+      await fetchRawModels(source, {
+        profile,
+        ...(resolved.source === "proxy" ? { port: resolved.port } : {}),
+      }),
     );
   } catch (e) {
+    const profileFlag = profile === null ? "" : ` --profile ${profile}`;
     const hint =
-      source === "proxy" ? "check `agent health` (or use --direct)" : "see `agent auth --check`";
+      source === "proxy"
+        ? profile === null
+          ? "check `agent health` (or use --direct)"
+          : `check \`agent start --profile ${profile} --check\` (or use --direct)`
+        : `see \`agent auth --check${profileFlag}\``;
     throw new Error(`could not list models via ${label}: ${errMessage(e)}; ${hint}`);
   }
   if (args.json) {

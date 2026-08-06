@@ -19,7 +19,9 @@ import { existsSync } from "node:fs";
 import { BASE_URL_ENV, DIRECT_BASE_URL, inspectClaudeWiring } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { getHostLocalCodexHome } from "../codex/host.ts";
+import { assertKnownProfile } from "../copilot_api/env_state.ts";
 import { copilotApiResolvePort, parseLoopbackProxyUrl } from "../copilot_api/port.ts";
+import { type Profile, parseProfileFlag } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { launchersFile, launchersWired } from "../shell/integration.ts";
 import { readTextOrNull } from "../utils/fs.ts";
@@ -27,6 +29,14 @@ import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 
 export interface EnvArgs {
   format?: string;
+  /**
+   * `--profile <name>`: resolve the profile-scoped directives against that named
+   * profile's wiring (its settings-<name>.json, its reserved port) instead of the
+   * default. Account-wide directives (CODEX_HOME, the launchers source) are the
+   * same either way. An unknown name is a hard error BEFORE anything is printed:
+   * this stdout is evaled, so a half-wrong export set must never be emitted.
+   */
+  profile?: string;
 }
 
 /** A shell directive: assign a value, or clear the var entirely. */
@@ -52,6 +62,12 @@ export function runEnv(args: EnvArgs): void {
   if (!isPowershell && format !== "posix" && format !== "sh" && format !== "bash") {
     throw new Error(`Unknown --format '${args.format}' (expected 'posix' or 'powershell').`);
   }
+  // Validate the profile BEFORE any directive is computed or printed: an unknown
+  // name must exit non-zero with an EMPTY stdout (a machine consumer evals this
+  // output, so it must never see a partially resolved export set). A named
+  // profile never falls back to the default wiring.
+  const profile: Profile = parseProfileFlag(args.profile);
+  if (profile !== null) assertKnownProfile(profile);
 
   const directives: EnvDirective[] = [];
 
@@ -71,12 +87,15 @@ export function runEnv(args: EnvArgs): void {
   // ANTHROPIC_BASE_URL: export only when Claude is proxy-wired at a LOCAL proxy
   // URL. If the shell carries a localhost proxy URL (one WE set) but Claude is no
   // longer proxy, clear it so it can't override the now-direct settings.json; never
-  // touch a non-local URL the user set.
+  // touch a non-local URL the user set. Profile-scoped: a named profile answers
+  // from ITS settings-<name>.json and ITS resolved port (read-only -- never
+  // reserves one); the default answers from settings.json as before.
   const claudeHome = resolveClaudeHome();
   const claude = inspectClaudeWiring(
-    readTextOrNull(settingsPathFor(claudeHome)),
+    readTextOrNull(settingsPathFor(claudeHome, profile)),
     claudeHome,
-    Number(copilotApiResolvePort()),
+    Number(copilotApiResolvePort(profile)),
+    profile,
   );
   const proxyUrl =
     claude.providerMode === "proxy" &&

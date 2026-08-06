@@ -148,6 +148,13 @@ for (const args of [["shell"]] as const) {
   });
 }
 
+test("env --help surfaces --format and --profile", () => {
+  const help = helpScreen("env", "--help");
+  expect(help.exitCode).toBe(0);
+  expect(help.output).toContain("--format");
+  expect(help.output).toContain("--profile");
+});
+
 for (const args of [["codex"], ["claude"]] as const) {
   test(`cli.ts ${args.join(" ")} --help exposes provider modes`, () => {
     const { exitCode, output } = helpScreen(...args, "--help");

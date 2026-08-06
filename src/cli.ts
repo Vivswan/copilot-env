@@ -353,10 +353,16 @@ program
   .option("--proxy", "Read the running local proxy's catalog (fails if the proxy is down).")
   .option("--direct", "Fetch upstream from GitHub Copilot Direct with the resolved credential.")
   .option("--json", "Emit a JSON object ({source, models}) instead of the table.")
+  .option(
+    "--profile <name>",
+    "List via the named profile's wiring: its own daemon (proxy) or its own " +
+      "credential (direct); never falls back to the default.",
+  )
   .action((opts: Opts) =>
     runModels({
       mode: parseModeFlags(opts),
       json: Boolean(opts.json),
+      profile: opts.profile as string | undefined,
     }),
   );
 
@@ -369,7 +375,14 @@ program
       "or 'powershell' (`$env:KEY = '...'`, Invoke-Expression-able by PowerShell).",
     "posix",
   )
-  .action((opts: Opts) => runEnv({ format: String(opts.format) }));
+  .option(
+    "--profile <name>",
+    "Resolve the exports for the named profile's wiring (its settings file and " +
+      "reserved port) instead of the default; unknown names are a hard error.",
+  )
+  .action((opts: Opts) =>
+    runEnv({ format: String(opts.format), profile: opts.profile as string | undefined }),
+  );
 
 program
   .command("cost")

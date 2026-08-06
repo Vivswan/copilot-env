@@ -18,6 +18,7 @@ import {
   resolvePassthroughIntegrationId,
 } from "./integration_identity.ts";
 import { copilotApiResolvePort } from "./port.ts";
+import { type Profile, profileLabel } from "./profile.ts";
 
 /** Where the catalog comes from: upstream Copilot (direct) or the running local proxy. */
 export type CatalogSource = "direct" | "proxy";
@@ -39,6 +40,13 @@ export interface FetchRawModelsOptions {
    * otherwise the recorded/configured port is resolved here.
    */
   port?: number;
+  /**
+   * The named profile whose catalog to read (null/absent = the default). Proxy:
+   * the profile daemon's own home (its config.json holds ITS api/admin keys) and
+   * its resolved port. Direct: the profile's own credential -- a named profile
+   * never falls back to the default one.
+   */
+  profile?: Profile;
   /** Injection seam for tests (direct source only: the identity probe and the GET). */
   fetchImpl?: ProbeFetch;
 }
@@ -48,18 +56,24 @@ export async function fetchRawModels(
   source: CatalogSource,
   opts: FetchRawModelsOptions = {},
 ): Promise<unknown> {
+  const profile = opts.profile ?? null;
   if (source === "proxy") {
-    const config = new CopilotApiConfig();
+    const config = CopilotApiConfig.forProfile(profile);
     const admin = new CopilotAdminClient({
-      port: opts.port ?? Number(copilotApiResolvePort()),
+      port: opts.port ?? Number(copilotApiResolvePort(profile)),
       apiKey: config.ensureApiKey(),
       adminKey: config.ensureAdminApiKey(),
     });
     return admin.getRawModels();
   }
-  const token = opts.directToken ?? new Credential().resolve();
+  const token = opts.directToken ?? new Credential(undefined, profile).resolve();
   if (token === null) {
-    throw new Error("no GitHub credential configured (run `agent auth`)");
+    throw new Error(
+      profile === null
+        ? "no GitHub credential configured (run `agent auth`)"
+        : `no GitHub credential for ${profileLabel(profile)} - run \`agent auth --profile ${profile}\` ` +
+            "to log in (a named profile never falls back to the default credential)",
+    );
   }
   // The catalog endpoint gates on the same client identity as inference: a fine-grained
   // PAT is rejected under the default vscode-chat and needs copilot-developer-cli. Resolve

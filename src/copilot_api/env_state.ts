@@ -144,6 +144,22 @@ export function allProfileNames(): ProfileName[] {
 }
 
 /**
+ * Hard gate for read-only commands that ADDRESS an existing profile (`agent env`,
+ * `agent models`): a typo'd `--profile` must error naming the known profiles, never
+ * resolve against default (or half-default) wiring -- `agent env`'s stdout is evaled
+ * by the shell wrapper, so a wrong-profile answer would be silently applied.
+ */
+export function assertKnownProfile(name: ProfileName): void {
+  const names = allProfileNames();
+  if (names.includes(name)) return;
+  const hint =
+    names.length === 0
+      ? "no profiles exist - create one with `agent profile --add <name> --direct|--proxy`"
+      : `known profiles: ${names.join(", ")}`;
+  throw new Error(`no such profile '${name}' (${hint})`);
+}
+
+/**
  * THE parser for the owned-paths entry: junk entries (non-strings, blanks) are
  * dropped INDIVIDUALLY, never the whole list, and survivors come back TRIMMED so
  * a hand-padded entry still matches the exact-path ownership checks. Both the

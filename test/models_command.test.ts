@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -172,10 +172,15 @@ test("renderModelTable groups by vendor, chat first, unknown vendor last", () =>
 
 // A throwaway COPILOT_API_HOME (no tracked pid, no credential): the proxy reads
 // as down without probing any port, and the direct path fails on the missing
-// credential BEFORE any network fetch.
-function runModelsCli(args: string[]): { exitCode: number | null; out: string } {
+// credential BEFORE any network fetch. `seed` runs against the home first (e.g.
+// writing a profile slot into the state store).
+function runModelsCli(
+  args: string[],
+  seed?: (home: string) => void,
+): { exitCode: number | null; out: string } {
   const home = mkdtempSync(join(tmpdir(), "copilot-models-"));
   try {
+    seed?.(home);
     const proc = Bun.spawnSync(["bun", "src/cli.ts", "models", ...args], {
       stdout: "pipe",
       stderr: "pipe",
@@ -187,10 +192,25 @@ function runModelsCli(args: string[]): { exitCode: number | null; out: string } 
   }
 }
 
-test("models --help surfaces --proxy / --direct / --json", () => {
+/** Seed a named DIRECT profile slot (no credential of its own) into the isolated
+ *  state store, BESIDE a resolvable default credential: a fallback regression
+ *  would resolve the default token (and fail past the credential gate), so the
+ *  hard-fail assertions below genuinely pin the never-falls-back rule. */
+function seedDirectProfile(home: string, name: string): void {
+  writeFileSync(
+    join(home, ".copilot-env-state.json"),
+    JSON.stringify({
+      "githubToken": "gho_default-credential-must-never-be-used",
+      "authProvider": "gh-token",
+      "profiles": { [name]: { "mode": "direct" } },
+    }),
+  );
+}
+
+test("models --help surfaces --proxy / --direct / --json / --profile", () => {
   const { exitCode, out } = runModelsCli(["--help"]);
   expect(exitCode).toBe(0);
-  for (const flag of ["--proxy", "--direct", "--json"]) {
+  for (const flag of ["--proxy", "--direct", "--json", "--profile"]) {
     expect(out).toContain(flag);
   }
 });
@@ -214,4 +234,38 @@ test("models (auto) falls back to Direct and fails actionably with no credential
   expect(out).toContain("GitHub Copilot Direct");
   expect(out).toContain("no GitHub credential");
   expect(out).toContain("agent auth");
+});
+
+// --- --profile -------------------------------------------------------------------
+
+test("models --profile with an unknown name hard-fails naming the known profiles", () => {
+  const none = runModelsCli(["--profile", "nope"]);
+  expect(none.exitCode).toBe(1);
+  expect(none.out).toContain("no such profile 'nope' (no profiles exist");
+
+  const known = runModelsCli(["--profile", "nope"], (home) => seedDirectProfile(home, "p1"));
+  expect(known.exitCode).toBe(1);
+  expect(known.out).toContain("no such profile 'nope' (known profiles: p1)");
+});
+
+test("models --profile never falls back: a credential-less direct profile hard-fails", () => {
+  // The store holds a RESOLVABLE default credential but the profile's own slot
+  // has none, so Direct must fail naming the profile -- silently resolving the
+  // default token instead would sail past this error and fail the assertions.
+  const { exitCode, out } = runModelsCli(["--profile", "p1", "--direct"], (home) =>
+    seedDirectProfile(home, "p1"),
+  );
+  expect(exitCode).toBe(1);
+  expect(out).toContain("no GitHub credential for profile 'p1'");
+  expect(out).toContain("agent auth --profile p1");
+  expect(out).toContain("never falls back");
+});
+
+test("models --profile --proxy fails actionably when the profile's daemon is down", () => {
+  const { exitCode, out } = runModelsCli(["--profile", "p1", "--proxy"], (home) =>
+    seedDirectProfile(home, "p1"),
+  );
+  expect(exitCode).toBe(1);
+  expect(out).toContain("local proxy for profile 'p1' is not running");
+  expect(out).toContain("agent start --profile p1");
 });

@@ -341,8 +341,19 @@ program
     "--live",
     "Also run a live read-only prompt through Codex/Claude to verify the configured backend end-to-end (codex/claude/full scopes).",
   )
+  .option(
+    "--profile <name>",
+    "Narrow the diagnosis to the named profile: its daemon, consistency, credential " +
+      "slot, and per-agent wiring (account-wide checks are excluded); unknown names " +
+      "are a hard error.",
+  )
   .action((opts: Opts) =>
-    runHealth({ scope: String(opts.scope), json: Boolean(opts.json), live: Boolean(opts.live) }),
+    runHealth({
+      scope: String(opts.scope),
+      json: Boolean(opts.json),
+      live: Boolean(opts.live),
+      profile: opts.profile as string | undefined,
+    }),
   );
 
 program

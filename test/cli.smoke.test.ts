@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/paths.ts";
+import { getSanitizedHostname } from "../src/utils/hostname.ts";
 import { writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
 
 // A throwaway COPILOT_API_HOME so the runtime probe sees no tracked pid/port. We pin the
@@ -509,6 +510,158 @@ test("health --scope bogus exits 1 with a helpful message", () => {
   const out = proc.stdout.toString() + proc.stderr.toString();
   expect(proc.exitCode).toBe(1);
   expect(out).toContain("--scope must be one of");
+});
+
+// --- profile-aware health ------------------------------------------------------
+
+/** An isolated env with a seeded proxy profile 'p': store slot (gh-token, proxy),
+ *  daemon home, and a reserved port in its run state -- plus throwaway agent
+ *  homes so the wiring checks never read the real ~/.codex / ~/.claude. */
+function seededProfileEnv(): Record<string, string> {
+  const root = mkdtempSync(join(tmpdir(), "copilot-health-profile-"));
+  const home = join(root, "api-home");
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(home, ".copilot-env-config.json"), JSON.stringify({ port: 4199 }));
+  writeFileSync(
+    join(home, ".copilot-env-state.json"),
+    JSON.stringify({
+      "profiles": {
+        "p": { "githubToken": "fake-profile-token", "authProvider": "gh-token", "mode": "proxy" },
+      },
+    }),
+  );
+  const runDir = join(home, "profiles", "p", ".run", getSanitizedHostname());
+  mkdirSync(runDir, { recursive: true });
+  writeFileSync(join(runDir, ".state.json"), JSON.stringify({ port: 4555 }));
+  return {
+    ...process.env,
+    CONSOLA_LEVEL: "5",
+    COPILOT_API_HOME: home,
+    CODEX_HOME: join(root, ".codex"),
+    CLAUDE_CONFIG_DIR: join(root, ".claude"),
+  };
+}
+
+interface ProfiledCheck {
+  id: string;
+  profile: string | null;
+  status: string;
+  detail: string;
+  fix?: string;
+}
+
+test("health sweep reports a seeded proxy profile as its own runtime target", () => {
+  const env = seededProfileEnv();
+  const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--json"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env,
+  });
+  const json = JSON.parse(proc.stdout.toString()) as {
+    profile: string | null;
+    exitCode: number;
+    checks: ProfiledCheck[];
+  };
+  expect(json.profile).toBeNull();
+  // The profile's consistency check and daemon rows, stamped with its name.
+  const consistency = json.checks.find((c) => c.id === "profile.consistency");
+  expect(consistency?.profile).toBe("p");
+  expect(consistency?.status).toBe("ok");
+  const ports = json.checks.filter((c) => c.id === "runtime.port");
+  expect(ports.map((c) => c.profile)).toEqual([null, "p"]);
+  // Nothing listens on p's reserved 4555 and auto-start is off: the profile's
+  // rows fail with the profile-addressed fix, and the exit code reflects it.
+  const profilePort = ports.find((c) => c.profile === "p");
+  expect(profilePort?.status).toBe("fail");
+  expect(profilePort?.detail).toContain("4555");
+  expect(profilePort?.fix).toBe("agent start --profile p");
+  expect(json.exitCode).toBe(1);
+  expect(proc.exitCode).toBe(1);
+  // The fast launcher probe stays the default daemon alone.
+  const fast = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", "runtime", "--json"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env,
+  });
+  const fastJson = JSON.parse(fast.stdout.toString()) as { checks: ProfiledCheck[] };
+  expect(fastJson.checks.map((c) => `${c.id}@${c.profile}`)).toEqual([
+    "runtime.port@null",
+    "runtime.pid@null",
+  ]);
+}, 30_000);
+
+test("health --profile narrows the run and excludes account-wide checks", () => {
+  const env = seededProfileEnv();
+  const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--profile", "p", "--json"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env,
+  });
+  const json = JSON.parse(proc.stdout.toString()) as {
+    profile: string | null;
+    exitCode: number;
+    checks: ProfiledCheck[];
+  };
+  expect(json.profile).toBe("p");
+  const ids = json.checks.map((c) => c.id);
+  for (const id of [
+    "profile.consistency",
+    "runtime.port",
+    "setup.auth",
+    "setup.codex",
+    "setup.claude",
+  ]) {
+    expect(ids).toContain(id);
+  }
+  for (const id of [
+    "bootstrap.version",
+    "bootstrap.bun",
+    "bootstrap.nodeModules",
+    "proxy.package",
+    "setup.shell",
+    "setup.launchers",
+    "setup.tool.node",
+    "setup.tool.npm",
+    "setup.codex-host",
+    "setup.autoupdate",
+  ]) {
+    expect(ids).not.toContain(id);
+  }
+  // Every check in a narrowed run describes the addressed profile.
+  for (const c of json.checks) expect(c.profile).toBe("p");
+  // The unwired agent homes read as interrupted profile wiring (warn), and the
+  // down daemon fails -- both fixes address the profile.
+  expect(json.checks.find((c) => c.id === "setup.codex")?.fix).toBe("agent profile --add p");
+  expect(json.checks.find((c) => c.id === "runtime.port")?.fix).toBe("agent start --profile p");
+  expect(json.exitCode).toBe(1);
+
+  // The acceptance narrowing: --profile with the fast runtime scope.
+  const narrowed = Bun.spawnSync(
+    ["bun", "src/cli.ts", "health", "--profile", "p", "--scope", "runtime", "--json"],
+    { stdout: "pipe", stderr: "pipe", env },
+  );
+  const narrowedJson = JSON.parse(narrowed.stdout.toString()) as {
+    profile: string | null;
+    checks: ProfiledCheck[];
+  };
+  expect(narrowedJson.profile).toBe("p");
+  expect(narrowedJson.checks.map((c) => c.id)).toEqual([
+    "profile.consistency",
+    "runtime.port",
+    "runtime.pid",
+  ]);
+}, 30_000);
+
+test("health --profile with an unknown name is a hard error naming the known profiles", () => {
+  const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--profile", "nope"], {
+    stdout: "pipe",
+    stderr: "pipe",
+    env: seededProfileEnv(),
+  });
+  expect(proc.exitCode).toBe(1);
+  const err = proc.stderr.toString();
+  expect(err).toContain("no such profile 'nope'");
+  expect(err).toContain("known profiles: p");
 });
 
 // End-to-end coverage of the full diagnostic command: running the REAL

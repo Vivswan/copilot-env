@@ -18,7 +18,9 @@ const portIdx = process.argv.indexOf("--port");
 const port = portIdx !== -1 ? Number(process.argv[portIdx + 1]) : 4141;
 
 function json(res, status, obj) {
-  res.writeHead(status, { "content-type": "application/json" });
+  // The real copilot-api stamps every response with an x-trace-id header;
+  // `agent health` uses it as the proxy-identity marker, so the fake must too.
+  res.writeHead(status, { "content-type": "application/json", "x-trace-id": "copilot-api-fake" });
   res.end(JSON.stringify(obj));
 }
 

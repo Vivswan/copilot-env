@@ -21,6 +21,7 @@ import {
   effectiveUpdateCooldownDays,
 } from "../autoupdate/state.ts";
 import {
+  BASE_URL_ENV,
   type ClaudeWiringStatus,
   directHelperResolvesViaAgent,
   inspectClaudeWiring,
@@ -74,6 +75,7 @@ import {
   CLAUDE_LIVE_SCOPES as SCOPE_CLAUDE_LIVE,
   CODEX_SCOPES as SCOPE_CODEX,
   CODEX_LIVE_SCOPES as SCOPE_CODEX_LIVE,
+  PROFILE_SWEEP_SCOPES as SCOPE_PROFILE_SWEEP,
   RUNTIME_SCOPES as SCOPE_RUNTIME,
   SETUP_SCOPES as SCOPE_SETUP,
 } from "./types.ts";
@@ -101,11 +103,18 @@ export function runtimePathsView(p: CopilotApiPaths): RuntimePathsView {
   };
 }
 
-/** A named profile's store slot as a runtime target reports it (never tokens). */
+/** A named profile's store slot as a runtime target reports it (never tokens).
+ *  One profileSlot() call snapshots the WHOLE slot from a single store read, so
+ *  consumers pairing its fields (provider + token presence, say) can never see a
+ *  torn combination under a concurrent credential write. */
 export interface ProfileSlotFacts {
   exists: boolean;
   provider: AuthProvider | null;
   mode: ProfileMode | null;
+  /** The slot holds a provisioned token (classifies the Direct credential path). */
+  storedToken: boolean;
+  /** The probed direct-mode client identity NAME cached on the slot, or null. */
+  integrationIdentity: string | null;
 }
 
 /**
@@ -127,6 +136,17 @@ export interface RuntimeTarget {
    *  "both Codex and Claude are wired direct"). */
   proxyExpected: boolean;
   port: number;
+  /** The port came from the target's own run-state snapshot (vs the non-reserving
+   *  fallback). A NAMED target's daemon is only ever probed -- and only earns
+   *  per-daemon report rows -- on a persisted port: an unpersisted candidate is
+   *  a guess no daemon or wiring has spoken for, so probing it could only
+   *  misattribute whatever answers. */
+  portPersisted: boolean;
+  /** The daemon was actually interrogated (reach/pid probes fired). THE row gate:
+   *  the evaluator renders per-daemon rows exactly for probed targets, so a row
+   *  can never describe a probe that did not happen. Always true for the default
+   *  target; a named target is probed only per gatherNamedTarget's policy. */
+  daemonProbed: boolean;
   reachable: boolean;
   trackedPid: number | null;
   pidTracked: boolean;
@@ -221,6 +241,10 @@ export type CodexFacts = CodexWiringStatus & {
   directAuth: CodexDirectAuthFacts;
   /** Recorded auth provider -- lets the check frame a non-gh-cli credential miss. */
   provider?: AuthProvider | null;
+  /** Narrowed named runs only: the profile's mode recorded in the store slot (the
+   *  source of truth its wiring is derived from) -- a wiring whose managed mode
+   *  disagrees is an interrupted rewire, never green. */
+  expectedMode?: ProfileMode | null;
   /**
    * Direct mode only: the managed resolver (`agent auth --get`) needs no `gh` login --
    * the wiring execs it AND the store classifies the credential as a stored token.
@@ -237,6 +261,8 @@ export type ClaudeFacts = ClaudeWiringStatus & {
   directAuth: CodexDirectAuthFacts;
   /** Recorded auth provider -- lets the check frame a non-gh-cli credential miss. */
   provider?: AuthProvider | null;
+  /** Narrowed named runs only: the profile's recorded mode (see CodexFacts). */
+  expectedMode?: ProfileMode | null;
   /**
    * Direct mode only: true when a GitHub token is provisioned in the store, so the
    * resolver (`agent auth --get`) needs no `gh` login. Always false outside direct.
@@ -263,7 +289,11 @@ export interface CodexHostFacts {
 export type AutoupdateStatus = AutoupdateData & { cooldownDays: number };
 
 export interface HealthFacts {
-  /** One entry per runtime target; this commit always exactly the default. */
+  /** The profile the run was narrowed to (null/absent = the default/whole
+   *  environment) -- the evaluator stamps it onto the codex/claude/live checks. */
+  profile?: Profile;
+  /** One entry per runtime target: the default first, then (in the full/proxy
+   *  scopes) every named profile in sorted order -- or only the narrowed one. */
   runtimes?: RuntimeTarget[];
   bootstrap?: BootstrapFacts;
   proxy?: ProxyFacts;
@@ -271,6 +301,16 @@ export interface HealthFacts {
   clis?: CliFacts[];
   tools?: ToolFacts;
   auth?: AuthFacts;
+  /** A narrowed run's credential line: the addressed profile's slot (null when
+   *  the store carries no slot for it -- e.g. a half-created, home-only profile),
+   *  plus whether its credential actually RESOLVES (a token in the slot, or a
+   *  live gh login for a gh-cli slot) -- mirroring the default checkAuth. */
+  profileAuth?: {
+    name: ProfileName;
+    slot: ProfileAuthFacts | null;
+    storedToken: boolean;
+    ghAuthenticated: boolean;
+  };
   codex?: CodexFacts;
   codexHost?: CodexHostFacts;
   claude?: ClaudeFacts;
@@ -367,9 +407,10 @@ export interface ProbeDeps {
   nodeModulesFresh(): boolean;
   bunVersion(): string | null;
   cliVersion(): string;
-  /** `--live` end-to-end prompts against the configured Codex/Claude homes. */
-  codexLive(home: string): Promise<LiveProbeFacts>;
-  claudeLive(home: string): Promise<LiveProbeFacts>;
+  /** `--live` end-to-end prompts against the configured Codex/Claude homes;
+   *  `profile` selects a named profile's wiring (never probed in the default sweep). */
+  codexLive(home: string, profile: Profile): Promise<LiveProbeFacts>;
+  claudeLive(home: string, profile: Profile): Promise<LiveProbeFacts>;
 }
 
 /** Probe the URL: any HTTP response (even an error status) means "reachable". */
@@ -450,13 +491,17 @@ function formatLiveFailure(
  * non-zero exit => ok:false, with `detail` carrying the captured reason + output.
  * Skipped (ran:false) when the CLI isn't installed. Spawns the RESOLVED path so
  * the nvm fallback isn't defeated. Unlike the init probe, the environment is NOT
- * sanitized -- `--live` tests the user's real, fully-resolved setup.
+ * sanitized -- `--live` tests the user's real, fully-resolved setup -- except
+ * `omitEnvVars` (upper-case names), the narrow scrub a NAMED profile needs so a
+ * shell export of the DEFAULT wiring cannot override the profile's own and
+ * misattribute the answer. Exported for the scrub's own test.
  */
-function runLiveCli(
+export function runLiveCli(
   cli: string,
   args: string[],
   home: string,
   homeEnvVar: string,
+  omitEnvVars: readonly string[] = [],
 ): Promise<LiveProbeFacts> {
   const resolved = resolveCommand(cli);
   if (resolved === null) return Promise.resolve({ kind: "skipped" });
@@ -477,6 +522,7 @@ function runLiveCli(
       // when the parent process never sourced nvm.
       env: childEnvWithPath([dirname(resolved), ghPath ? dirname(ghPath) : null], {
         extra: { [homeEnvVar]: home },
+        omit: (upper) => omitEnvVars.includes(upper),
       }),
     });
     const CAP = 64 * 1024 * 1024;
@@ -509,6 +555,15 @@ function runLiveCli(
   });
 }
 
+/** Env vars scrubbed from a `--live` Claude probe child. A NAMED profile drops a
+ *  shell-exported ANTHROPIC_BASE_URL: env beats the profile's settings file, so a
+ *  default-proxy export would silently answer for the profile and misattribute
+ *  the result -- the same scrub the `cl --profile` launcher performs. The default
+ *  probe scrubs nothing (`--live` tests the real, fully-resolved environment). */
+export function claudeLiveOmitEnv(profile: Profile): readonly string[] {
+  return profile === null ? [] : [BASE_URL_ENV];
+}
+
 export function defaultProbeDeps(): ProbeDeps {
   const root = PROJECT_ROOT;
   return {
@@ -531,7 +586,13 @@ export function defaultProbeDeps(): ProbeDeps {
     profileNames: allProfileNames,
     profileSlot: (name) => {
       const { exists, slot } = new CopilotEnvState().profileSlotStatus(name);
-      return { exists, provider: slot.authProvider, mode: slot.mode };
+      return {
+        exists,
+        provider: slot.authProvider,
+        mode: slot.mode,
+        storedToken: slot.githubToken !== null,
+        integrationIdentity: slot.integrationIdentity,
+      };
     },
     profileHomeExists,
     commandResolved: resolveCommand,
@@ -583,19 +644,20 @@ export function defaultProbeDeps(): ProbeDeps {
     },
     bunVersion: () => process.versions.bun ?? null,
     cliVersion: packageVersion,
-    codexLive: (home) =>
+    codexLive: (home, profile) =>
       runLiveCli(
         CODEX_PROBE.cli,
-        CODEX_PROBE.args(PROBE_PROMPT, home),
+        CODEX_PROBE.args(PROBE_PROMPT, home, profile),
         home,
         CODEX_PROBE.homeEnvVar,
       ),
-    claudeLive: (home) =>
+    claudeLive: (home, profile) =>
       runLiveCli(
         CLAUDE_PROBE.cli,
-        CLAUDE_PROBE.args(PROBE_PROMPT, home),
+        CLAUDE_PROBE.args(PROBE_PROMPT, home, profile),
         home,
         CLAUDE_PROBE.homeEnvVar,
+        claudeLiveOmitEnv(profile),
       ),
   };
 }
@@ -652,10 +714,11 @@ export function evalClaude(
   directAuth: CodexDirectAuthFacts = { command: null, authenticated: false },
   directUsesToken = false,
   wiring: ClaudeWiringStatus = inspectClaudeWiring(settingsText, home, 0),
+  profile: Profile = null,
 ): ClaudeFacts {
   return {
     home,
-    settingsPath: settingsPathFor(home),
+    settingsPath: settingsPathFor(home, profile),
     directAuth,
     directUsesToken,
     ...wiring,
@@ -670,6 +733,14 @@ export function evalClaude(
  * run-state read (proxyStatus's documented rule), so a concurrent start/stop
  * can't pair one daemon's pid with another's port; fallbackPort covers the
  * no-recorded-port case without a second read of the same file.
+ *
+ * `target.probe` decides whether the daemon is interrogated at all: "always" for
+ * the default target (its fallback is the configured default port -- the
+ * historical behavior), "persisted-port-only" for a named target that may have a
+ * daemon (only a port its own run state records is ever probed -- an unpersisted
+ * candidate is never probed), "never" for a target with no daemon to describe (a
+ * named DIRECT profile, or a proxy slot whose home is missing). The state
+ * snapshot and paths are still reported either way.
  */
 async function gatherRuntimeTarget(
   profile: Profile,
@@ -679,17 +750,21 @@ async function gatherRuntimeTarget(
     slot: ProfileSlotFacts | null;
     homeExists: boolean | null;
     proxyExpected: (port: number) => boolean;
+    probe?: "always" | "persisted-port-only" | "never";
   },
 ): Promise<RuntimeTarget> {
   const state = deps.readState(profile);
+  const portPersisted = state.port !== undefined;
   const port = state.port ?? deps.fallbackPort(profile);
+  const policy = target.probe ?? "always";
+  const probeDaemon = policy === "always" || (policy === "persisted-port-only" && portPersisted);
   const trackedPid = state.pid ?? null;
   // proxyLoopbackOrigin, matching portListening: a localhost probe reads DOWN on Windows
   // while the proxy is up.
   const probeUrl = `${proxyLoopbackOrigin(port)}/`;
   const [reachable, pidTracked] = await Promise.all([
-    deps.reach(probeUrl, 2000),
-    trackedPid !== null ? deps.isTrackedPid(trackedPid) : Promise.resolve(false),
+    probeDaemon ? deps.reach(probeUrl, 2000) : Promise.resolve(false),
+    probeDaemon && trackedPid !== null ? deps.isTrackedPid(trackedPid) : Promise.resolve(false),
   ]);
   const proxyExpected = target.proxyExpected(port);
   // Identity probe (an extra local request) only in the full/proxy scopes -- never the
@@ -707,10 +782,12 @@ async function gatherRuntimeTarget(
     homeExists: target.homeExists,
     proxyExpected,
     port,
+    portPersisted,
+    daemonProbed: probeDaemon,
     reachable,
     trackedPid,
     pidTracked,
-    pidAlive: trackedPid !== null ? deps.isPidAlive(trackedPid) : false,
+    pidAlive: probeDaemon && trackedPid !== null ? deps.isPidAlive(trackedPid) : false,
     identityConfirmed,
     paths: deps.paths(profile),
     watchdog: {
@@ -725,15 +802,52 @@ async function gatherRuntimeTarget(
   };
 }
 
-/** Gather exactly the facts `scope` needs, running independent probes concurrently. */
+/**
+ * Gather a NAMED profile's runtime target: its store slot + on-disk daemon home,
+ * with `proxyExpected` derived from the slot's recorded mode -- or, when the slot
+ * is missing but a home exists, assumed proxy (a homed daemon may be running,
+ * and a running daemon always has its port in run state). The daemon is probed
+ * only when a proxy is expected, the home exists, AND the port is persisted: a
+ * DIRECT profile has no daemon, a homeless proxy slot has no persisted port, and
+ * an unpersisted candidate port is never probed.
+ */
+async function gatherNamedTarget(
+  name: ProfileName,
+  scope: HealthScope,
+  deps: ProbeDeps,
+): Promise<RuntimeTarget> {
+  const slot = deps.profileSlot(name);
+  const homeExists = deps.profileHomeExists(name);
+  const proxyExpected = slot.mode === "proxy" || (homeExists && !slot.exists);
+  return gatherRuntimeTarget(name, scope, deps, {
+    slot,
+    homeExists,
+    proxyExpected: () => proxyExpected,
+    probe: proxyExpected && homeExists ? "persisted-port-only" : "never",
+  });
+}
+
+/**
+ * Gather exactly the facts `scope` needs, running independent probes concurrently.
+ * `opts.profile` narrows the run to ONE named profile: its runtime target, its
+ * credential slot, and its per-agent wiring -- the account-wide fact groups
+ * (bootstrap, proxy package, shell/CLI/tool setup, autoupdate, codex-host) are
+ * not gathered at all, so they cannot leak into a narrowed report.
+ */
 export async function gatherFacts(
   scope: HealthScope,
-  opts: { live?: boolean } = {},
+  opts: { live?: boolean; profile?: Profile } = {},
   overrides?: Partial<ProbeDeps>,
 ): Promise<HealthFacts> {
   const deps: ProbeDeps = { ...defaultProbeDeps(), ...overrides };
-  const port = Number(deps.resolvePort(null));
-  const facts: HealthFacts = {};
+  const profile = opts.profile ?? null;
+  // The wiring expectation for the codex/claude scopes: the addressed target's
+  // resolved port (READ-ONLY -- a named profile's reservation is peeked, never
+  // made). Lazy + cached: only the scopes that inspect wiring resolve it, so a
+  // runtime/auth run never computes a named profile's candidate port at all.
+  let wiringPortCache: number | undefined;
+  const wiringPort = (): number => (wiringPortCache ??= Number(deps.resolvePort(profile)));
+  const facts: HealthFacts = { profile };
 
   // gh auth backs BOTH Codex and Claude direct mode; probe it at most once per
   // run, and asynchronously, so the single ~5s `gh auth token` call overlaps with
@@ -743,16 +857,49 @@ export async function gatherFacts(
   const sharedDirectAuth = (): Promise<CodexDirectAuthFacts> =>
     (directAuthCache ??= deps.codexDirectAuth());
 
+  // The credential the run's Direct wiring resolves: the default store pair, or
+  // the narrowed profile's own slot (named profiles never fall back). `mode` is
+  // the named slot's recorded wiring mode (null for the default run, where no
+  // single mode is recorded). Cached -- several jobs consult it.
+  let credentialCache:
+    | { provider: AuthProvider | null; storedToken: boolean; mode: ProfileMode | null }
+    | undefined;
+  const runCredential = (): {
+    provider: AuthProvider | null;
+    storedToken: boolean;
+    mode: ProfileMode | null;
+  } => {
+    if (credentialCache === undefined) {
+      if (profile === null) {
+        credentialCache = {
+          provider: deps.authProvider(),
+          storedToken: deps.storedTokenPresent(),
+          mode: null,
+        };
+      } else {
+        const slot = deps.profileSlot(profile);
+        credentialCache = {
+          provider: slot.provider,
+          storedToken: slot.storedToken,
+          mode: slot.mode,
+        };
+      }
+    }
+    return credentialCache;
+  };
+
   // Skip the (~5s) gh probe -- and report Direct as "uses token" -- only when the
-  // config is `managed` (execs `agent auth --get`) AND the credential classifies as
-  // stored-token; gh-cli classifies to a live gh probe. Shared by the Codex and
-  // Claude scope jobs so the gating stays identical. Classification is owned by
-  // credentialSource() (credential.ts) -- a leftover token with no provider is
-  // "none": no gh probe (no implicit fallback), and Direct never reads green.
+  // config is `managed` (execs `agent auth --get [--profile <name>]`) AND the
+  // addressed credential classifies as stored-token; gh-cli classifies to a live gh
+  // probe. Shared by the Codex and Claude scope jobs so the gating stays identical.
+  // Classification is owned by credentialSource() (credential.ts) -- a leftover
+  // token with no provider is "none": no gh probe (no implicit fallback), and
+  // Direct never reads green.
   const directAuthFor = async (
     managed: boolean,
   ): Promise<{ directAuth: CodexDirectAuthFacts; noGhNeeded: boolean }> => {
-    const source = credentialSource(deps.authProvider(), deps.storedTokenPresent());
+    const { provider, storedToken } = runCredential();
+    const source = credentialSource(provider, storedToken);
     const noGhNeeded = managed && source === "stored-token";
     const directAuth =
       source === "gh-cli" ? await sharedDirectAuth() : { command: null, authenticated: false };
@@ -764,10 +911,17 @@ export async function gatherFacts(
   if (SCOPE_RUNTIME.includes(scope)) {
     jobs.push(
       (async () => {
-        // Exactly one target today: the default daemon. Named-profile targets
-        // (deps.profileNames()) join this list in a follow-up.
-        facts.runtimes = [
-          await gatherRuntimeTarget(null, scope, deps, {
+        if (profile !== null) {
+          // Narrowed: exactly the addressed profile's target.
+          facts.runtimes = [await gatherNamedTarget(profile, scope, deps)];
+          return;
+        }
+        // The default target first, then every named profile in sorted order --
+        // but only in the diagnostic scopes (see PROFILE_SWEEP_SCOPES): the
+        // launchers' fast `runtime` probe stays the default daemon alone.
+        const names = SCOPE_PROFILE_SWEEP.includes(scope) ? deps.profileNames() : [];
+        facts.runtimes = await Promise.all([
+          gatherRuntimeTarget(null, scope, deps, {
             slot: null,
             homeExists: null,
             // When both agents are configured direct, no proxy is required, so a
@@ -779,12 +933,13 @@ export async function gatherFacts(
                 expectedPort: targetPort,
               }),
           }),
-        ];
+          ...names.map((name) => gatherNamedTarget(name, scope, deps)),
+        ]);
       })(),
     );
   }
 
-  if (SCOPE_BOOTSTRAP.includes(scope)) {
+  if (profile === null && SCOPE_BOOTSTRAP.includes(scope)) {
     jobs.push(
       (async () => {
         facts.bootstrap = {
@@ -833,7 +988,15 @@ export async function gatherFacts(
         const home = deps.codexHome();
         const configToml = deps.readFileSafe(codexConfigPath(home));
         const envText = deps.readFileSafe(join(home, ".env"));
-        const wiring = inspectCodexWiring(configToml, envText, port, deps.codexTokenInEnviron());
+        // A named profile inspects ITS selection ([profiles.<name>] over the
+        // suffixed provider table) against ITS resolved port.
+        const wiring = inspectCodexWiring(
+          configToml,
+          envText,
+          wiringPort(),
+          deps.codexTokenInEnviron(),
+          profile,
+        );
         const { directAuth, noGhNeeded } = await directAuthFor(wiring.directUsesToken);
         // The wiring's `directUsesToken` stays a pure CONFIG fact; the store-aware
         // "Direct needs no gh" verdict travels on its own field (`directNeedsNoGh`,
@@ -842,13 +1005,17 @@ export async function gatherFacts(
           home,
           configToml,
           envText,
-          port,
+          wiringPort(),
           deps.codexTokenInEnviron(),
           directAuth,
           noGhNeeded,
           wiring,
         );
-        facts.codex = { ...codexFacts, provider: deps.authProvider() };
+        facts.codex = {
+          ...codexFacts,
+          provider: runCredential().provider,
+          ...(profile === null ? {} : { expectedMode: runCredential().mode }),
+        };
       })(),
     );
   }
@@ -857,65 +1024,100 @@ export async function gatherFacts(
     jobs.push(
       (async () => {
         const home = deps.claudeHome();
-        const settingsText = deps.readFileSafe(settingsPathFor(home));
-        const wiring = inspectClaudeWiring(settingsText, home, port);
-        // Managed iff the apiKeyHelper truly execs `agent auth --get` (not a stale/
-        // foreign/missing helper); directAuthFor then decides the gh probe.
+        // A named profile answers from its own settings-<name>.json.
+        const settingsText = deps.readFileSafe(settingsPathFor(home, profile));
+        const wiring = inspectClaudeWiring(settingsText, home, wiringPort(), profile);
+        // Managed iff the apiKeyHelper truly execs `agent auth --get` addressed at
+        // THIS profile (not a stale/foreign/missing/mis-addressed helper);
+        // directAuthFor then decides the gh probe.
         const usesManagedResolver =
           wiring.providerMode === "direct" &&
           wiring.helperPath !== null &&
-          directHelperResolvesViaAgent(deps.readFileSafe(wiring.helperPath));
+          directHelperResolvesViaAgent(deps.readFileSafe(wiring.helperPath), profile);
         const { directAuth, noGhNeeded } = await directAuthFor(usesManagedResolver);
         facts.claude = {
-          ...evalClaude(home, settingsText, directAuth, noGhNeeded, wiring),
-          provider: deps.authProvider(),
+          ...evalClaude(home, settingsText, directAuth, noGhNeeded, wiring, profile),
+          provider: runCredential().provider,
+          ...(profile === null ? {} : { expectedMode: runCredential().mode }),
         };
       })(),
     );
   }
 
   if (SCOPE_AUTH.includes(scope)) {
-    jobs.push(
-      (async () => {
-        // The credential state, agent-independent. gh is a credential ONLY when
-        // credentialSource() says gh-cli (no implicit fallback); reuses the shared
-        // (cached) gh probe -- no extra spawn.
-        const provider = deps.authProvider();
-        const storedToken = deps.storedTokenPresent();
-        const ghAuthenticated =
-          credentialSource(provider, storedToken) === "gh-cli"
-            ? (await sharedDirectAuth()).authenticated
-            : false;
-        facts.auth = {
-          storedToken,
-          ghAuthenticated,
-          provider,
-          profiles: deps.authProfiles(),
-          pinnedIntegrationId: deps.pinnedIntegrationId(),
-        };
-      })(),
-    );
+    if (profile !== null) {
+      // Narrowed: the addressed profile's slot line only (never the default
+      // credential -- named profiles never fall back to it). Every slot field
+      // comes from ONE profileSlot() snapshot, so provider and token presence
+      // can never pair across a concurrent credential write; resolution mirrors
+      // the default checkAuth (a token slot resolves by presence, a gh-cli slot
+      // by the shared (cached) gh probe).
+      jobs.push(
+        (async () => {
+          const slot = deps.profileSlot(profile);
+          const ghAuthenticated =
+            credentialSource(slot.provider, slot.storedToken) === "gh-cli"
+              ? (await sharedDirectAuth()).authenticated
+              : false;
+          facts.profileAuth = {
+            name: profile,
+            slot: slot.exists
+              ? {
+                  provider: slot.provider,
+                  mode: slot.mode,
+                  integrationIdentity: slot.integrationIdentity,
+                }
+              : null,
+            storedToken: slot.storedToken,
+            ghAuthenticated,
+          };
+        })(),
+      );
+    } else {
+      jobs.push(
+        (async () => {
+          // The credential state, agent-independent. gh is a credential ONLY when
+          // credentialSource() says gh-cli (no implicit fallback); reuses the shared
+          // (cached) gh probe -- no extra spawn.
+          const provider = deps.authProvider();
+          const storedToken = deps.storedTokenPresent();
+          const ghAuthenticated =
+            credentialSource(provider, storedToken) === "gh-cli"
+              ? (await sharedDirectAuth()).authenticated
+              : false;
+          facts.auth = {
+            storedToken,
+            ghAuthenticated,
+            provider,
+            profiles: deps.authProfiles(),
+            pinnedIntegrationId: deps.pinnedIntegrationId(),
+          };
+        })(),
+      );
+    }
   }
 
-  // `--live`: run each agent's read-only smoke prompt against its CONFIGURED home.
-  // Only in the agent-focused scopes, and only when explicitly requested (a live
-  // model call, slow). Skipped instantly when the CLI isn't installed.
+  // `--live`: run each agent's read-only smoke prompt against its CONFIGURED home
+  // (a `--profile` narrowing routes it through that profile's wiring). Only in
+  // the agent-focused scopes, and only when explicitly requested (a live model
+  // call, slow). Skipped instantly when the CLI isn't installed. The default
+  // sweep never runs per-profile live probes -- only a narrowed run does.
   if (opts.live && SCOPE_CODEX_LIVE.includes(scope)) {
     jobs.push(
       (async () => {
-        facts.codexLive = await deps.codexLive(deps.codexHome());
+        facts.codexLive = await deps.codexLive(deps.codexHome(), profile);
       })(),
     );
   }
   if (opts.live && SCOPE_CLAUDE_LIVE.includes(scope)) {
     jobs.push(
       (async () => {
-        facts.claudeLive = await deps.claudeLive(deps.claudeHome());
+        facts.claudeLive = await deps.claudeLive(deps.claudeHome(), profile);
       })(),
     );
   }
 
-  if (SCOPE_SETUP.includes(scope)) {
+  if (profile === null && SCOPE_SETUP.includes(scope)) {
     jobs.push(
       (async () => {
         // Resolving shell targets shells out to PowerShell on Windows and can

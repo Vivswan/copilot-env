@@ -1,6 +1,7 @@
 // Human-readable renderer for `agent health`. Side-effect-free except stdout
 // (the orchestrator owns process.exitCode), mirroring the builder/printer split
 // in src/usage/cost.ts. The `--json` path bypasses this entirely.
+import type { ProfileMode } from "../copilot_api/env_state.ts";
 import { bold, gray, green, red, yellow } from "../utils/ansi.ts";
 import { worstStatus } from "./aggregate.ts";
 import type { CheckGroup, CheckResult, CheckStatus, HealthScope } from "./types.ts";
@@ -30,8 +31,17 @@ function glyph(status: CheckStatus): string {
   return red("✘");
 }
 
-/** Print a grouped, human-readable diagnostic report to stdout. */
-export function renderReport(scope: HealthScope, results: CheckResult[]): void {
+/**
+ * Print a grouped, human-readable diagnostic report to stdout. `profileModes`
+ * carries each named runtime target's recorded mode (from its store slot, null =
+ * none recorded) so a profile's Runtime section header can say which kind of
+ * daemon it describes.
+ */
+export function renderReport(
+  scope: HealthScope,
+  results: CheckResult[],
+  profileModes: ReadonlyMap<string, ProfileMode | null> = new Map(),
+): void {
   console.log(bold(`copilot-env health - scope: ${scope}`));
   for (const group of GROUP_ORDER) {
     const inGroup = results.filter((r) => r.group === group);
@@ -40,8 +50,16 @@ export function renderReport(scope: HealthScope, results: CheckResult[]): void {
     // named profile's checks get their own headed section, in evaluation order.
     for (const profile of sectionProfiles(inGroup)) {
       const section = inGroup.filter((r) => r.profile === profile);
-      const heading =
-        profile === null ? GROUP_LABEL[group] : `${GROUP_LABEL[group]} - profile '${profile}'`;
+      let heading: string;
+      if (profile === null) {
+        heading = GROUP_LABEL[group];
+      } else if (group === "runtime") {
+        // The Runtime section names the daemon kind: `Runtime - profile 'p' (proxy)`.
+        const mode = profileModes.get(profile) ?? null;
+        heading = `${GROUP_LABEL[group]} - profile '${profile}' (${mode ?? "no mode"})`;
+      } else {
+        heading = `${GROUP_LABEL[group]} - profile '${profile}'`;
+      }
       console.log(`\n${bold(heading)}`);
       for (const r of section) {
         const lines = r.detail.split("\n");

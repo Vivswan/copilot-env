@@ -1,9 +1,11 @@
 // Pure evaluators: HealthFacts -> CheckResult[]. No I/O -- every input is a fact
 // gathered by probe.ts, so each check is independently unit-testable.
 import { DIRECT_BASE_URL } from "../claude/config.ts";
+import { codexProviderId } from "../codex/config.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import { credentialSource } from "../copilot_api/credential.ts";
 import type { AuthProvider } from "../copilot_api/env_state.ts";
+import type { Profile, ProfileName } from "../copilot_api/profile.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
 import { lastActivityMs } from "../scripts/idle_watchdog.ts";
 import { formatDuration, SECONDS_PER_DAY } from "../utils/time.ts";
@@ -19,6 +21,7 @@ import type {
   CodexHostFacts,
   HealthFacts,
   LiveProbeFacts,
+  ProfileAuthFacts,
   ProxyFacts,
   RuntimeTarget,
   ShellFacts,
@@ -32,6 +35,16 @@ import {
   RUNTIME_SCOPES as RUNTIME,
   SETUP_SCOPES as SETUP,
 } from "./types.ts";
+
+/** The `agent start` fix for a runtime target, addressed at its profile. */
+function startFix(profile: Profile): string {
+  return profile === null ? "agent start" : `agent start --profile ${profile}`;
+}
+
+/** The re-wire fix for a NAMED profile (mode is sticky from the store on a re-add). */
+function profileAddFix(name: ProfileName): string {
+  return `agent profile --add ${name}`;
+}
 
 /**
  * The gh-auth status shared by Codex and Claude Direct (gh-backed) checks: both
@@ -73,11 +86,15 @@ function directAuthVerdict(
   },
   wiringOk: boolean,
   directFix: string,
+  profile: Profile = null,
 ): { status: "ok" | "warn"; authLine: string; fix?: string } {
+  const getCommand =
+    profile === null ? "agent auth --get" : `agent auth --get --profile ${profile}`;
+  const authFix = profile === null ? "agent auth" : `agent auth --profile ${profile}`;
   if (f.directUsesToken) {
     return {
       status: wiringOk ? "ok" : "warn",
-      authLine: "auth: stored GitHub token (agent auth --get, no gh CLI)",
+      authLine: `auth: stored GitHub token (${getCommand}, no gh CLI)`,
       ...(wiringOk ? {} : { fix: directFix }),
     };
   }
@@ -92,8 +109,8 @@ function directAuthVerdict(
   }
   return {
     status: "warn",
-    authLine: "auth: no credential resolves via `agent auth --get` - run `agent auth`",
-    fix: wiringOk ? "agent auth" : directFix,
+    authLine: `auth: no credential resolves via \`${getCommand}\` - run \`${authFix}\``,
+    fix: wiringOk ? authFix : directFix,
   };
 }
 
@@ -257,7 +274,7 @@ export function checkRuntimePort(f: RuntimeTarget): CheckResult {
     ...base,
     status: f.reachable ? "ok" : "fail",
     detail: f.reachable ? `listening on port ${f.port}` : `nothing reachable on port ${f.port}`,
-    ...(f.reachable ? {} : { fix: "agent start" }),
+    ...(f.reachable ? {} : { fix: startFix(f.profile) }),
     value: { port: f.port, reachable: f.reachable },
   };
 }
@@ -303,7 +320,7 @@ export function checkRuntimePid(f: RuntimeTarget): CheckResult {
     ...base,
     status: tracked ? "ok" : "fail",
     detail,
-    ...(tracked ? {} : { fix: "agent start" }),
+    ...(tracked ? {} : { fix: startFix(f.profile) }),
     value: { pid: f.trackedPid, tracked, alive: f.pidAlive },
   };
 }
@@ -415,7 +432,7 @@ export function checkRuntimeIdentity(f: RuntimeTarget): CheckResult {
     ...base,
     status: "warn",
     detail: `a non-copilot-api service is listening on port ${f.port} (no x-trace-id); agent requests would misroute to it`,
-    fix: "free the port (stop the foreign process), then agent start",
+    fix: `free the port (stop the foreign process), then ${startFix(f.profile)}`,
     value: { reachable: true, confirmed: false },
   };
 }
@@ -458,12 +475,165 @@ export function checkRuntimeOrphan(f: RuntimeTarget): CheckResult {
   // Orphan: reachable, untracked, proxy required, not a known-foreign responder. Identity is
   // confirmed copilot-api or indeterminate (probe failed) -- don't over-claim "copilot-api".
   const what = f.identityConfirmed === true ? "copilot-api" : "a process (identity unconfirmed)";
+  const stopFix = f.profile === null ? "agent stop" : `agent stop --profile ${f.profile}`;
   return {
     ...base,
     status: "warn",
     detail: `${what} is on port ${f.port} but is not the tracked daemon (orphaned -- started outside 'agent start', or the run-state was cleared)`,
-    fix: "agent stop, then agent start (re-tracks the daemon)",
+    fix: `${stopFix}, then ${startFix(f.profile)} (re-tracks the daemon)`,
     value: { orphan: true, trackedPid: f.trackedPid },
+  };
+}
+
+/**
+ * NAMED targets only: do the profile's two halves -- the store slot (the source
+ * of truth for credential + mode) and the on-disk daemon home (derived, proxy
+ * mode only) -- agree? A profile is created/deleted atomically by `agent
+ * profile`, so a lone half is an interrupted add/del; warn with the command that
+ * finishes the job. Never a failure: the profile's own runtime rows own hard
+ * verdicts.
+ */
+export function checkProfileConsistency(f: RuntimeTarget): CheckResult {
+  const name = f.profile;
+  if (name === null) {
+    throw new Error("profile.consistency is a named-target check (default target passed)");
+  }
+  const slot = f.slot;
+  const homeExists = f.homeExists === true;
+  const base = {
+    id: "profile.consistency",
+    label: "Profile consistency",
+    group: "runtime" as const,
+    profile: name,
+    scopes: RUNTIME,
+    value: {
+      slotExists: slot?.exists === true,
+      mode: slot?.mode ?? null,
+      homeExists,
+    },
+  };
+  if (slot?.exists !== true) {
+    // No slot has no recorded mode, so a re-add must pick one explicitly.
+    const fix = `agent profile --add ${name} --direct|--proxy (or agent profile --del ${name})`;
+    return homeExists
+      ? {
+          ...base,
+          status: "warn",
+          detail: "profile home exists but no store slot (half-created)",
+          fix,
+        }
+      : {
+          // Only reachable when the profile vanished between the sweep and this
+          // read (its name came from the slots+homes union).
+          ...base,
+          status: "warn",
+          detail: "no store slot and no daemon home (profile no longer exists)",
+          fix,
+        };
+  }
+  if (slot.mode === null) {
+    return {
+      ...base,
+      status: "warn",
+      detail: "no mode recorded in the store slot (interrupted add)",
+      fix: `agent profile --add ${name} --direct|--proxy`,
+    };
+  }
+  if (slot.mode === "proxy" && !homeExists) {
+    return {
+      ...base,
+      status: "warn",
+      detail: "proxy profile has no daemon home (wiring incomplete)",
+      fix: profileAddFix(name),
+    };
+  }
+  const detail =
+    slot.mode === "proxy"
+      ? f.portPersisted
+        ? "store slot (proxy) and daemon home agree"
+        : `store slot (proxy) and daemon home agree; no port recorded on this host yet, so the daemon was not probed (agent start --profile ${name} records one)`
+      : homeExists
+        ? "store slot (direct); the leftover daemon home is unused"
+        : "store slot (direct); no daemon home needed";
+  return { ...base, status: "ok", detail };
+}
+
+/**
+ * A narrowed run's credential line: the addressed NAMED profile's slot (provider,
+ * mode, probed direct identity) plus whether the credential actually RESOLVES --
+ * a token in the slot, or a live gh login for a gh-cli slot -- mirroring the
+ * default checkAuth's provider-driven verdict. `slot` null means the store
+ * carries no slot at all (a half-created, home-only profile). Named profiles
+ * hard-fail rather than fall back to the default credential, so a missing or
+ * unresolvable credential is a warn here even though the default `setup.auth`
+ * might be green.
+ */
+export function checkProfileAuth(
+  name: ProfileName,
+  slot: ProfileAuthFacts | null,
+  resolution: { storedToken: boolean; ghAuthenticated: boolean },
+): CheckResult {
+  const base = {
+    id: "setup.auth",
+    label: "Authentication",
+    group: "auth" as const,
+    profile: name,
+    scopes: AUTH,
+    value: {
+      provider: slot?.provider ?? null,
+      mode: slot?.mode ?? null,
+      integrationIdentity: slot?.integrationIdentity ?? null,
+      storedToken: resolution.storedToken,
+      ghAuthenticated: resolution.ghAuthenticated,
+    },
+  };
+  // A slot with no recorded mode (or none at all) needs an explicit mode flag on
+  // the re-add; with a mode recorded the bare re-add keeps it (sticky).
+  const addFix =
+    slot === null || slot.mode === null
+      ? `agent profile --add ${name} --direct|--proxy`
+      : profileAddFix(name);
+  if (slot === null || slot.provider === null) {
+    return {
+      ...base,
+      status: "warn",
+      detail: [
+        `no credential recorded for profile '${name}'`,
+        "named profiles never fall back to the default credential",
+      ].join("\n"),
+      fix: addFix,
+    };
+  }
+  const source = credentialSource(slot.provider, resolution.storedToken);
+  const resolves = source === "gh-cli" ? resolution.ghAuthenticated : source === "stored-token";
+  if (!resolves) {
+    return {
+      ...base,
+      status: "warn",
+      detail: [
+        `provider '${slot.provider}' is recorded for profile '${name}' but no credential resolves`,
+        slot.provider === "gh-cli"
+          ? "`gh` is unauthenticated - run `gh auth login`, or re-provision the profile"
+          : `the slot's stored token is missing - run \`agent auth --profile ${name}\` to re-provision`,
+      ].join("\n"),
+      fix: `agent auth --profile ${name}`,
+    };
+  }
+  const how = slot.provider === "gh-cli" ? "gh CLI (`gh auth token`)" : "stored GitHub token";
+  const identity = slot.integrationIdentity === null ? "" : `, ${slot.integrationIdentity}`;
+  const usage =
+    slot.mode === "proxy"
+      ? `resolved by \`agent auth --get --profile ${name}\`; passed to the profile's daemon on \`agent start --profile ${name}\``
+      : slot.mode === "direct"
+        ? `resolved by \`agent auth --get --profile ${name}\` for Direct`
+        : `resolved by \`agent auth --get --profile ${name}\``;
+  return {
+    ...base,
+    status: "ok",
+    detail: [
+      `credential: ${how} (provider: ${slot.provider}, mode: ${slot.mode ?? "none"}${identity})`,
+      usage,
+    ].join("\n"),
   };
 }
 
@@ -611,13 +781,17 @@ export function checkAuth(f: AuthFacts): CheckResult {
   };
 }
 
-export function checkCodex(f: CodexFacts): CheckResult {
+export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult {
   const configPath = codexConfigPath(f.home);
+  // A named profile's whole wiring (both agents, one mode) is (re)written by ONE
+  // command, so every named repair points there instead of `agent codex ...`.
+  const directFix = profile === null ? "agent codex --direct" : profileAddFix(profile);
+  const proxyFix = profile === null ? "agent codex --proxy" : profileAddFix(profile);
   const base = {
     id: "setup.codex",
     label: "Codex wiring",
     group: "codex" as const,
-    profile: null,
+    profile,
     scopes: CODEX,
     value: {
       home: f.home,
@@ -637,12 +811,42 @@ export function checkCodex(f: CodexFacts): CheckResult {
       directUsesToken: f.directNeedsNoGh,
     },
   };
-  // No config at the effective CODEX_HOME: the user hasn't wired Codex -- fine.
+  // No config at the effective CODEX_HOME: the user hasn't wired Codex -- fine
+  // for the default, but a NAMED profile promises both-agent wiring, so its
+  // absence is an interrupted `agent profile --add`.
   if (!f.configExists) {
+    if (profile !== null) {
+      return {
+        ...base,
+        status: "warn",
+        detail: `provider: none\nno Codex config at ${configPath} (profile '${profile}' is not wired into Codex)`,
+        fix: profileAddFix(profile),
+      };
+    }
     return {
       ...base,
       status: "ok",
       detail: `provider: none\nno Codex config at ${configPath} (not wired)`,
+    };
+  }
+  // A NAMED profile's wiring is DERIVED from its store slot's recorded mode; a
+  // managed wiring in the OTHER mode is an interrupted rewire (`profile --add`
+  // switched the slot but not this agent) and must not read green.
+  if (
+    profile !== null &&
+    f.expectedMode != null &&
+    (f.providerMode === "direct" || f.providerMode === "proxy") &&
+    f.providerMode !== f.expectedMode
+  ) {
+    return {
+      ...base,
+      status: "warn",
+      detail: [
+        `provider: ${f.providerMode}`,
+        `config.toml: ${configPath}`,
+        `wired ${f.providerMode}, but the profile's recorded mode is ${f.expectedMode} (out of step with the store slot)`,
+      ].join("\n"),
+      fix: profileAddFix(profile),
     };
   }
   if (f.providerMode === "direct") {
@@ -651,7 +855,8 @@ export function checkCodex(f: CodexFacts): CheckResult {
     const verdict = directAuthVerdict(
       { directUsesToken: f.directNeedsNoGh, provider: f.provider, directAuth: f.directAuth },
       f.providerWired,
-      "agent codex --direct",
+      directFix,
+      profile,
     );
     return {
       ...base,
@@ -671,7 +876,9 @@ export function checkCodex(f: CodexFacts): CheckResult {
   if (!f.providerSelected) {
     detail = [
       `provider: ${f.providerMode}`,
-      withConfigPath(`model_provider is ${f.modelProvider ?? "unset"}, not "copilot-env"`),
+      withConfigPath(
+        `model_provider is ${f.modelProvider ?? "unset"}, not "${codexProviderId(profile)}"`,
+      ),
     ].join("\n");
   } else if (!f.baseUrlMatches) {
     detail = [
@@ -684,11 +891,11 @@ export function checkCodex(f: CodexFacts): CheckResult {
     // is missing/foreign, and there's no legacy env_key token either.
     detail = [
       "provider: proxy",
-      withConfigPath("copilot-env proxy is not fully wired - run `agent codex --proxy`"),
+      withConfigPath(`copilot-env proxy is not fully wired - run \`${proxyFix}\``),
     ].join("\n");
   }
   if (detail !== null) {
-    return { ...base, status: "warn", detail, fix: "agent codex --proxy" };
+    return { ...base, status: "warn", detail, fix: proxyFix };
   }
   // Fully wired: the proxy resolves its key at runtime via the managed auth.command (the
   // proxy-token resolver, which ensures the proxy when the lifecycle is on), so there's no
@@ -696,7 +903,7 @@ export function checkCodex(f: CodexFacts): CheckResult {
   const detailLines = [
     "provider: proxy",
     `config.toml: ${configPath}`,
-    `model_provider copilot-env → ${f.baseUrl}`,
+    `model_provider ${codexProviderId(profile)} → ${f.baseUrl}`,
     "auth: local proxy key via the proxy-token resolver",
   ];
   return { ...base, status: "ok", detail: detailLines.join("\n") };
@@ -745,13 +952,15 @@ export function checkCodexHost(f: CodexHostFacts): CheckResult {
   return { ...base, status: "ok", detail: why };
 }
 
-/** Report Claude Code wiring (~/.claude/settings.json): direct / proxy / custom. */
-export function checkClaude(f: ClaudeFacts): CheckResult {
+/** Report Claude Code wiring (settings.json, or a named profile's
+ *  settings-<name>.json): direct / proxy / custom. */
+export function checkClaude(f: ClaudeFacts, profile: Profile = null): CheckResult {
+  const directFix = profile === null ? "agent claude --direct" : profileAddFix(profile);
   const base = {
     id: "setup.claude",
     label: "Claude wiring",
     group: "claude" as const,
-    profile: null,
+    profile,
     scopes: CLAUDE,
     value: {
       home: f.home,
@@ -764,11 +973,30 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
       directUsesToken: f.directUsesToken,
     },
   };
+  // A NAMED profile's settings file is derived from its slot's recorded mode; a
+  // managed wiring in the OTHER mode is an interrupted rewire (see checkCodex).
+  if (
+    profile !== null &&
+    f.expectedMode != null &&
+    (f.providerMode === "direct" || f.providerMode === "proxy") &&
+    f.providerMode !== f.expectedMode
+  ) {
+    return {
+      ...base,
+      status: "warn",
+      detail: [
+        `provider: ${f.providerMode}`,
+        `settings.json: ${f.settingsPath}`,
+        `wired ${f.providerMode}, but the profile's recorded mode is ${f.expectedMode} (out of step with the store slot)`,
+      ].join("\n"),
+      fix: profileAddFix(profile),
+    };
+  }
   if (f.providerMode === "direct") {
     const baseOk = f.baseUrl === DIRECT_BASE_URL;
     // A stored token means the resolver (`agent auth --get`) needs no `gh`; only
     // the base URL must be right. Otherwise it falls back to `gh auth token`.
-    const verdict = directAuthVerdict(f, baseOk, "agent claude --direct");
+    const verdict = directAuthVerdict(f, baseOk, directFix, profile);
     const baseUrlLine = `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${
       baseOk ? "" : ` (expected ${DIRECT_BASE_URL})`
     }`;
@@ -790,6 +1018,7 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
     // wiring is present AND that ANTHROPIC_BASE_URL actually points at the resolved proxy port
     // -- a stale base URL (e.g. after `config port` changed and the daemon rebound) would send
     // Claude to the wrong/absent port, so it must not read green. Mirrors the Codex check.
+    // A named profile's repair is its own atomic re-add (which re-reserves and re-bakes).
     const baseUrlOk = f.baseUrl !== null && f.baseUrlMatches;
     return {
       ...base,
@@ -803,11 +1032,30 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
       ...(baseUrlOk
         ? {}
         : {
-            fix: "Re-run `agent init` (or `agent claude`) to repoint ANTHROPIC_BASE_URL at the current proxy port.",
+            fix:
+              profile === null
+                ? "Re-run `agent init` (or `agent claude`) to repoint ANTHROPIC_BASE_URL at the current proxy port."
+                : `Re-run \`${profileAddFix(profile)}\` to repoint ANTHROPIC_BASE_URL at the profile's proxy port.`,
           }),
     };
   }
   if (f.providerMode === "other") {
+    // Foreign wiring in the DEFAULT settings.json is the user's own business; in
+    // a NAMED profile's settings file it is drift -- the profile promises managed
+    // wiring, and `profile --add` refuses to overwrite an unmanaged file, so the
+    // fix names the removal first.
+    if (profile !== null) {
+      return {
+        ...base,
+        status: "warn",
+        detail: [
+          "provider: other",
+          `settings.json: ${f.settingsPath}`,
+          `custom apiKeyHelper/ANTHROPIC_BASE_URL set (${f.helperPath ?? f.baseUrl}); profile '${profile}' expects managed wiring`,
+        ].join("\n"),
+        fix: `remove ${f.settingsPath} (not managed by copilot-env), then ${profileAddFix(profile)}`,
+      };
+    }
     return {
       ...base,
       status: "ok",
@@ -818,7 +1066,21 @@ export function checkClaude(f: ClaudeFacts): CheckResult {
       ].join("\n"),
     };
   }
-  // none: never configured. `cl` will write proxy wiring on first launch.
+  // none: never configured. Fine for the default (`cl` writes proxy wiring on
+  // first launch); a NAMED profile promises both-agent wiring, so its absence is
+  // an interrupted `agent profile --add`.
+  if (profile !== null) {
+    return {
+      ...base,
+      status: "warn",
+      detail: [
+        "provider: none",
+        `settings.json: ${f.settingsPath}`,
+        `profile '${profile}' is not wired into Claude`,
+      ].join("\n"),
+      fix: profileAddFix(profile),
+    };
+  }
   return {
     ...base,
     status: "ok",
@@ -866,7 +1128,11 @@ export function checkAutoupdate(f: AutoupdateStatus): CheckResult {
  * `--live` end-to-end check shared by Codex and Claude: did the agent actually
  * respond via its configured backend? Only the ids/labels/group/scopes/fix differ.
  */
-function checkAgentLive(agent: "codex" | "claude", f: LiveProbeFacts): CheckResult {
+function checkAgentLive(
+  agent: "codex" | "claude",
+  f: LiveProbeFacts,
+  profile: Profile = null,
+): CheckResult {
   const meta =
     agent === "codex"
       ? { id: "codex.live", label: "Codex live prompt", group: "codex" as const, scopes: CODEX }
@@ -880,7 +1146,7 @@ function checkAgentLive(agent: "codex" | "claude", f: LiveProbeFacts): CheckResu
     id: meta.id,
     label: meta.label,
     group: meta.group,
-    profile: null,
+    profile,
     scopes: meta.scopes,
     // The JSON report's historical shape: ran/ok/cli, derived from the probe kind.
     value: {
@@ -898,20 +1164,21 @@ function checkAgentLive(agent: "codex" | "claude", f: LiveProbeFacts): CheckResu
         ...base,
         status: "warn",
         detail: `read-only prompt failed (${f.cli})\n${f.detail}`,
-        fix: `agent ${agent}`,
+        fix: profile === null ? `agent ${agent}` : profileAddFix(profile),
       };
 }
 
 /** `--live` end-to-end check: did Codex actually respond via its configured backend? */
-export function checkCodexLive(f: LiveProbeFacts): CheckResult {
-  return checkAgentLive("codex", f);
+export function checkCodexLive(f: LiveProbeFacts, profile: Profile = null): CheckResult {
+  return checkAgentLive("codex", f, profile);
 }
-export function checkClaudeLive(f: LiveProbeFacts): CheckResult {
-  return checkAgentLive("claude", f);
+export function checkClaudeLive(f: LiveProbeFacts, profile: Profile = null): CheckResult {
+  return checkAgentLive("claude", f, profile);
 }
 
 /** Build every check applicable to `scope` from the gathered facts. */
 export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult[] {
+  const runProfile = facts.profile ?? null;
   const out: CheckResult[] = [];
   if (facts.bootstrap) {
     out.push(
@@ -922,8 +1189,15 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
   }
   if (facts.proxy) out.push(checkProxyPackage(facts.proxy));
   // One block of runtime checks per target, in gather order (the default target
-  // first) -- with a single target this is exactly the historical sequence.
+  // first, then named profiles). A named target opens with its consistency
+  // check; per-daemon rows render exactly for the targets whose daemon was
+  // interrogated (daemonProbed, the probe's own stamp -- rows can never describe
+  // a probe that did not happen).
   for (const target of facts.runtimes ?? []) {
+    if (target.profile !== null) {
+      out.push(checkProfileConsistency(target));
+      if (!target.daemonProbed) continue;
+    }
     out.push(checkRuntimePort(target), checkRuntimePid(target));
     out.push(checkRuntimePaths(target), checkRuntimeWatchdog(target));
     out.push(checkRuntimeIdentity(target), checkRuntimeOrphan(target));
@@ -938,11 +1212,14 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
     out.push(checkTool("node", facts.tools.node), checkTool("npm", facts.tools.npm));
   }
   if (facts.auth) out.push(checkAuth(facts.auth));
-  if (facts.codex) out.push(checkCodex(facts.codex));
-  if (facts.codexLive) out.push(checkCodexLive(facts.codexLive));
+  if (facts.profileAuth) {
+    out.push(checkProfileAuth(facts.profileAuth.name, facts.profileAuth.slot, facts.profileAuth));
+  }
+  if (facts.codex) out.push(checkCodex(facts.codex, runProfile));
+  if (facts.codexLive) out.push(checkCodexLive(facts.codexLive, runProfile));
   if (facts.codexHost) out.push(checkCodexHost(facts.codexHost));
-  if (facts.claude) out.push(checkClaude(facts.claude));
-  if (facts.claudeLive) out.push(checkClaudeLive(facts.claudeLive));
+  if (facts.claude) out.push(checkClaude(facts.claude, runProfile));
+  if (facts.claudeLive) out.push(checkClaudeLive(facts.claudeLive, runProfile));
   if (facts.autoupdate) out.push(checkAutoupdate(facts.autoupdate));
   // Keep only the checks that participate in `scope` (single source of the rule,
   // shared with the --json path and the unit tests).

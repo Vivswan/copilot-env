@@ -61,6 +61,8 @@ function defaultTarget(overrides: Partial<RuntimeTarget> = {}): RuntimeTarget {
     homeExists: null,
     proxyExpected: true,
     port: 4141,
+    portPersisted: true,
+    daemonProbed: true,
     reachable: true,
     trackedPid: 1234,
     pidTracked: true,
@@ -89,7 +91,13 @@ function defaultTarget(overrides: Partial<RuntimeTarget> = {}): RuntimeTarget {
 function profileTarget(name: string, overrides: Partial<RuntimeTarget> = {}): RuntimeTarget {
   return defaultTarget({
     profile: parseProfileName(name),
-    slot: { exists: true, provider: null, mode: "proxy" },
+    slot: {
+      exists: true,
+      provider: null,
+      mode: "proxy",
+      storedToken: false,
+      integrationIdentity: null,
+    },
     homeExists: true,
     ...overrides,
   });

@@ -26,6 +26,12 @@ export const HEALTH_SCOPES = [
 // stay in lockstep, so the sets live here rather than as two hand-synced copies.
 // Every set includes "full".
 export const RUNTIME_SCOPES: readonly HealthScope[] = ["full", "proxy", "runtime"];
+// The default run's NAMED-profile runtime sweep joins only the diagnostic scopes
+// (full, proxy) -- never the launchers' fast `runtime` probe, whose row set and
+// exit code are a contract of the DEFAULT daemon alone (a stopped profile daemon
+// must not fail a launcher's readiness gate). A `--profile` narrowing addresses
+// its target in every runtime-bearing scope regardless.
+export const PROFILE_SWEEP_SCOPES: readonly HealthScope[] = ["full", "proxy"];
 export const BOOTSTRAP_SCOPES: readonly HealthScope[] = ["full", "proxy"];
 export const SETUP_SCOPES: readonly HealthScope[] = ["full", "setup"];
 // The GitHub credential underpins Direct for both agents, but it gets its own

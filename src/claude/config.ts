@@ -118,13 +118,18 @@ function directHelperScript(profile: Profile = null): string {
 }
 
 /**
- * True iff `helperBody` is exactly the managed direct helper (execs `agent auth
- * --get`). Health uses this to POSITIVELY confirm Direct resolves via the managed
- * launcher before deciding gh is unneeded -- a stale `gh auth token` helper, a
- * foreign script, or a missing file returns false and stays on the gh-checked path.
+ * True iff `helperBody` is exactly the managed direct helper for `profile` (execs
+ * `agent auth --get`, with `--profile <name>` for a named profile). Health uses
+ * this to POSITIVELY confirm Direct resolves via the managed launcher before
+ * deciding gh is unneeded -- a stale `gh auth token` helper, a foreign script, a
+ * missing file, or a helper addressed at a DIFFERENT profile returns false and
+ * stays on the gh-checked path.
  */
-export function directHelperResolvesViaAgent(helperBody: string | null): boolean {
-  return helperBody !== null && helperBody === directHelperScript();
+export function directHelperResolvesViaAgent(
+  helperBody: string | null,
+  profile: Profile = null,
+): boolean {
+  return helperBody !== null && helperBody === directHelperScript(profile);
 }
 
 /** The `agent claude` argument shape (the shared skeleton's, under this command's name). */

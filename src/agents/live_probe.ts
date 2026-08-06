@@ -18,6 +18,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { settingsPathFor } from "../claude/paths.ts";
 import { ghAuthTokenSpawnSpec } from "../copilot_api/gh_cli.ts";
+import type { Profile } from "../copilot_api/profile.ts";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -62,8 +63,12 @@ export interface ProbeDescriptor {
    * probe). Codex auto-loads `$CODEX_HOME/config.toml` and ignores `home`, but
    * Claude's `--bare` disables settings.json auto-discovery, so it must pass
    * `--settings <home>/settings.json` to load its managed apiKeyHelper.
+   * `profile` selects a NAMED profile's wiring (health `--live --profile`): the
+   * same knob each launcher uses -- Codex's native `--profile <name>` selector,
+   * Claude's per-profile settings file. Null (the default) keeps the argv
+   * byte-identical to the pre-profile shape.
    */
-  args: (prompt: string, home: string) => string[];
+  args: (prompt: string, home: string, profile?: Profile) => string[];
 }
 
 /**
@@ -87,7 +92,18 @@ export const CODEX_PROBE: ProbeDescriptor = {
   // happens to be a git repo ("Not inside a trusted directory and
   // --skip-git-repo-check was not specified.") -- making Direct detection fail
   // purely based on where `agent init` was invoked.
-  args: (prompt) => ["exec", "--json", "--skip-git-repo-check", "--sandbox", "read-only", prompt],
+  // A named profile rides Codex's native selector (`codex exec --profile <name>`,
+  // the exact flag the `cx --profile` launcher passes), selecting the managed
+  // `[profiles.<name>]` table.
+  args: (prompt, _home, profile = null) => [
+    "exec",
+    ...(profile === null ? [] : ["--profile", profile]),
+    "--json",
+    "--skip-git-repo-check",
+    "--sandbox",
+    "read-only",
+    prompt,
+  ],
 };
 
 export const CLAUDE_PROBE: ProbeDescriptor = {
@@ -99,10 +115,12 @@ export const CLAUDE_PROBE: ProbeDescriptor = {
   // settings.json auto-discovery from CLAUDE_CONFIG_DIR, so the managed
   // apiKeyHelper is only honored when handed in via --settings. Without it the
   // probe has NO auth path and always fails (apiKeySource "none").
-  args: (prompt, home) => [
+  // A named profile loads its own settings-<name>.json (what `cl --profile`
+  // launches via `claude --settings`).
+  args: (prompt, home, profile = null) => [
     "--bare",
     "--settings",
-    settingsPathFor(home),
+    settingsPathFor(home, profile),
     "--print",
     "--permission-mode",
     "plan",

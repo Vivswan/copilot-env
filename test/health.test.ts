@@ -526,6 +526,46 @@ test("runtime watchdog: off, disabled, and active states are all ok with informa
   expect(fresh.value?.remainingMs).toBeNull();
 });
 
+test("runtime watchdog: both agents direct collapses to one line, no stale countdown", () => {
+  // A daemon nothing routes to may still carry marks from an earlier run; reporting
+  // its idle countdown (or "auto-stops in 0s" from an expired mark) is noise.
+  const stale = checkRuntimeWatchdog(
+    defaultTarget({
+      proxyExpected: false,
+      watchdog: {
+        autoStart: true,
+        idleTimeoutMs: 3_600_000,
+        lastEnsureAt: 1_000_000_000 - 25 * 3_600_000,
+        lastRequestMs: null,
+        now: 1_000_000_000,
+      },
+    }),
+  );
+  expect(stale.status).toBe("ok");
+  expect(stale.detail).toBe("not required (Codex + Claude are both direct)");
+  expect(stale.detail).not.toContain("auto-stops");
+  expect(stale.detail).not.toContain("idle for");
+  expect(stale.detail).not.toContain("last beat");
+  expect(stale.value).toEqual({ bothDirect: true });
+
+  // The gate precedes the auto-start and idle-timeout branches: neither of those
+  // states may reintroduce watchdog narration when nothing routes to the daemon.
+  const offAndDirect = checkRuntimeWatchdog(
+    defaultTarget({
+      proxyExpected: false,
+      watchdog: { ...defaultTarget().watchdog, autoStart: false },
+    }),
+  );
+  expect(offAndDirect.detail).toBe("not required (Codex + Claude are both direct)");
+  const disabledAndDirect = checkRuntimeWatchdog(
+    defaultTarget({
+      proxyExpected: false,
+      watchdog: { ...defaultTarget().watchdog, autoStart: true, idleTimeoutMs: 0 },
+    }),
+  );
+  expect(disabledAndDirect.detail).toBe("not required (Codex + Claude are both direct)");
+});
+
 test("runtime watchdog is scoped to full + proxy, not the launchers' fast runtime probe", () => {
   expect(checkRuntimeWatchdog(defaultTarget()).scopes).toEqual(["full", "proxy"]);
 });

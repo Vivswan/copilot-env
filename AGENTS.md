@@ -135,7 +135,8 @@ file layouts. Don't restate here what a reader can grep.
   aliases, per-host paths, daemon process control, client-identity probe, the /responses
   web-search client.
 - `src/mcp/` - the copilot-env MCP stdio server behind `agent mcp --serve` (first tool:
-  web_search); bare `agent mcp` is the human status command.
+  web_search), dual-era via serveStdio (legacy handshake and MCP 2026-07-28 per
+  connection); bare `agent mcp` is the human status command.
 - `src/scripts/` - things that run as their OWN process or `bun --preload`, NOT CLI handlers:
   the proxy-token resolver and the daemon shims.
 - `src/install/`, `src/migrations/`, `src/autoupdate/`, `src/health/`, `src/usage/`,
@@ -172,9 +173,13 @@ refresh.
   constants; **snake_case only on object-literal keys** (external config keys), always quoted.
 - **No new deps without an explicit reason.** Current: `commander`, `consola`, `dotenv`,
   `execa`, `semver`, `smol-toml`, `tar`, `valibot`, `which`, `ps-list`,
-  `@jeffreycao/copilot-api`, `@modelcontextprotocol/sdk` (the `agent mcp --serve` stdio server;
-  already resolved in `bun.lock` transitively via the proxy, so pinning it directly added
-  no lockfile surface).
+  `@jeffreycao/copilot-api`, `@modelcontextprotocol/server` (the `agent mcp --serve` stdio
+  server; the v2 split package is the only line implementing MCP 2026-07-28 - the v1
+  monolith is maintenance-only - and its zod arrives transitively either way). Dev-only:
+  `@modelcontextprotocol/sdk` (v1, also still a runtime transitive of the proxy) and
+  `@modelcontextprotocol/client` (v2), the two real
+  MCP clients the interop tests drive against our server; zod itself stays out of our
+  code and out of package.json.
 - **String literals are external contracts** - model ids, JSON keys, env var names, log
   markers: never rename them during refactors.
 - **ASCII source, and no typographic look-alikes anywhere.** By convention,

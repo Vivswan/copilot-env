@@ -7,21 +7,17 @@
 // tool surfaces as `mcp__copilot-env__web_search` and future tools join under the
 // same name without any re-registration.
 //
+// Served through v2's `serveStdio`, which negotiates the protocol era per
+// connection: a classic `initialize` handshake gets the 2025-era serving today's
+// clients expect, while a request carrying a modern `_meta` envelope (or a
+// `server/discover` probe) gets the stateless 2026-07-28 protocol. The factory
+// below is built once per connection -- twice on a probe-then-fallback opening --
+// so it must stay cheap and side-effect-free.
+//
 // stdout carries ONLY newline-delimited JSON-RPC; every log line goes to stderr
 // (see redirectConsolaToStderr below).
-//
-// The SDK ships no root entry (its "." export points at a file that does not
-// exist), so these subpath imports resolve through the package's `./*` wildcard
-// export -- fine for bun/tsc, but biome's import resolver cannot follow it, so
-// biome.json carries a noUnresolvedImports override scoped to this file.
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import {
-  CallToolRequestSchema,
-  ErrorCode,
-  ListToolsRequestSchema,
-  McpError,
-} from "@modelcontextprotocol/sdk/types.js";
+import { fromJsonSchema, McpServer } from "@modelcontextprotocol/server";
+import { StdioServerTransport, serveStdio } from "@modelcontextprotocol/server/stdio";
 import type { Profile } from "../copilot_api/profile.ts";
 import { webSearch } from "../copilot_api/web_search.ts";
 import { errMessage } from "../utils/error.ts";
@@ -48,69 +44,89 @@ export interface McpServerOptions {
 export async function runMcpServer(opts: McpServerOptions): Promise<void> {
   redirectConsolaToStderr();
 
-  // The low-level Server (not McpServer) is deliberate although 1.29 deprecates it:
-  // it takes the tool input schema as a plain JSON-Schema literal, while McpServer
-  // requires a zod schema -- a second direct dependency for one tool.
-  const server = new Server(
-    { name: MCP_SERVER_NAME, version: packageVersion() },
-    { capabilities: { "tools": {} } },
-  );
+  const factory = () => {
+    const server = new McpServer(
+      { name: MCP_SERVER_NAME, version: packageVersion() },
+      { capabilities: { "tools": {} } },
+    );
 
-  server.setRequestHandler(ListToolsRequestSchema, () => ({
-    tools: [
+    server.registerTool(
+      WEB_SEARCH_TOOL,
       {
-        name: WEB_SEARCH_TOOL,
         description:
           "Search the web via GitHub Copilot (the /responses web_search tool) and " +
           "return a concise answer with a Sources list of cited URLs.",
-        inputSchema: {
+        // fromJsonSchema keeps the schema a plain JSON-Schema literal (the wire
+        // contract) instead of forcing a schema-library dependency on us.
+        inputSchema: fromJsonSchema<{ query: string }>({
           "type": "object",
           "properties": {
             "query": { "type": "string", "description": "The web search query." },
           },
           "required": ["query"],
-        },
+        }),
+        annotations: { "readOnlyHint": true, "openWorldHint": true },
       },
-    ],
-  }));
+      async ({ query }, ctx) => {
+        // Error taxonomy: an unknown tool is a protocol error (the SDK's); schema
+        // violations are tool-level errors the SDK raises before the handler runs;
+        // semantically blank-but-schema-valid input is ours to reject here.
+        if (query.trim() === "") {
+          return toolError("web_search needs a non-empty string `query` argument.");
+        }
+        try {
+          const answer = await webSearch(query, {
+            profile: opts.profile,
+            model: opts.model,
+            // A client cancellation aborts the in-flight POST instead of letting it
+            // run to its own 120s timeout.
+            signal: ctx.mcpReq.signal,
+          });
+          return { content: [{ type: "text", text: answer }] };
+        } catch (e) {
+          // Never rethrow: a failed search (no credential, HTTP error, timeout) must not
+          // kill the server. The credential errors already say how to fix themselves.
+          return toolError(errMessage(e));
+        }
+      },
+    );
 
-  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-    // Parse once at the boundary; unknown tool is a PROTOCOL error (the SDK's own
-    // high-level server does the same), a bad argument is a tool-level error.
-    if (request.params.name !== WEB_SEARCH_TOOL) {
-      throw new McpError(ErrorCode.InvalidParams, `Tool ${request.params.name} not found`);
-    }
-    const query = request.params.arguments?.query;
-    if (typeof query !== "string" || query.trim() === "") {
-      return toolError("web_search needs a non-empty string `query` argument.");
-    }
-    try {
-      const answer = await webSearch(query, {
-        profile: opts.profile,
-        model: opts.model,
-        // A client cancellation aborts the in-flight POST instead of letting it
-        // run to its own 120s timeout.
-        signal: extra.signal,
-      });
-      return { content: [{ type: "text", text: answer }] };
-    } catch (e) {
-      // Never rethrow: a failed search (no credential, HTTP error, timeout) must not
-      // kill the server. The credential errors already say how to fix themselves.
-      return toolError(errMessage(e));
-    }
+    return server;
+  };
+
+  const wire = new StdioServerTransport();
+  const handle = serveStdio(factory, {
+    transport: wire,
+    // Reporting-only (never written to the wire): malformed input, wire write
+    // failures, teardown races.
+    onerror: (e) => logger.debug(`mcp serve error: ${errMessage(e)}`),
   });
-
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
   logger.debug(`copilot-env MCP server up (v${packageVersion()})`);
 
   // The stdio transport only reads stdin "data"; nothing closes the server when the
   // client goes away, so hook EOF ourselves or the process would linger forever.
+  // "close" covers a destroyed stdin that never emits "end"; handle.close() is
+  // idempotent, so hearing both is safe. Every teardown path (stdin EOF/teardown,
+  // instance-side close, wire error) funnels through the transport's close(), so
+  // chaining its onclose -- which serveStdio installed synchronously above -- is
+  // the one exit signal.
   await new Promise<void>((resolve) => {
-    server.onclose = resolve;
-    process.stdin.on("end", () => {
-      void server.close().finally(resolve);
-    });
+    const entryOnClose = wire.onclose;
+    wire.onclose = () => {
+      entryOnClose?.();
+      resolve();
+    };
+    // If the entry's teardown rejects before it reaches wire.close(), onclose never
+    // fires and re-entrant close() calls early-return -- close the wire ourselves
+    // and settle, or the process would hang holding stdin.
+    const shutdown = () => {
+      handle.close().catch(() => {
+        void wire.close().catch(() => {});
+        resolve();
+      });
+    };
+    process.stdin.on("end", shutdown);
+    process.stdin.on("close", shutdown);
   });
 }
 

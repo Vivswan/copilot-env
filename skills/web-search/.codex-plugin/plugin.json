@@ -8,7 +8,7 @@
   },
   "homepage": "https://github.com/Vivswan/copilot-env/tree/main/skills/web-search",
   "repository": "https://github.com/Vivswan/copilot-env",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
   "keywords": ["agent-skills", "web-search", "copilot", "mcp"],
   "skills": "./",
   "interface": {

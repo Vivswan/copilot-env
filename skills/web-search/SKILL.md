@@ -1,7 +1,7 @@
 ---
 name: web-search
 description: Search the web through GitHub Copilot when the builtin WebSearch is unavailable (Claude Code wired to Copilot Direct denies it). Use the mcp__copilot-env__web_search tool for any query that needs current information from the internet, and fall back to the documented wiring steps when the tool is not registered.
-license: SEE LICENSE IN LICENSE
+license: MIT
 metadata:
   author: Vivswan
 ---

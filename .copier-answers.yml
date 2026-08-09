@@ -3,7 +3,6 @@
 _commit: 74296e4
 _src_path: gh:Vivswan/repo-platform
 channel: staging
-copyright_holder: Vivswan Shah (https://github.com/Vivswan)
 description: Local copilot-api proxy lifecycle + config helper (TypeScript).
 github_username: Vivswan
 homepage: https://github.com/Vivswan/copilot-env
@@ -15,6 +14,7 @@ modules:
 - pr-title
 - auto-assign
 - settings-sync
+- custom-license
 private: false
 project_name: copilot-env
 project_slug: copilot-env

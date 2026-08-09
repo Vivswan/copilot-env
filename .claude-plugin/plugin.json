@@ -8,7 +8,7 @@
   },
   "homepage": "https://github.com/Vivswan/copilot-env",
   "repository": "https://github.com/Vivswan/copilot-env",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
   "keywords": ["copilot", "web-search", "mcp", "claude-code", "agent-skills"],
   "skills": ["./skills/web-search"],
   "mcpServers": {

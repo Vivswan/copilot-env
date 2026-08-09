@@ -2,18 +2,6 @@
 # BEGIN REPOSITORY LOCAL
 # Add repository-specific ignore patterns in this section only.
 
-# Local assistant/editor workspace state. `.claude/settings.json` IS committed
-# (shared hooks/config); personal overrides and Claude-created worktrees stay ignored.
-.claude/settings.local.json
-.claude/worktrees/
-.worktrees/
-
-# Opt-in autoupdate state/lock (runtime data, lives in the install checkout).
-.autoupdate/
-
-# CI release staging area (built by .github/scripts/release-assets.ts).
-release-assets/
-
 # END REPOSITORY LOCAL
 
 # BEGIN REPO-PLATFORM MANAGED

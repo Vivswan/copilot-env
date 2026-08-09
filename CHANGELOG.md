@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.5.5](https://github.com/Vivswan/copilot-env/compare/v3.5.4...v3.5.5) (2026-08-09)
+
+
+### Bug Fixes
+
+* serve MCP 2026-07-28 alongside the legacy protocol ([92e823e](https://github.com/Vivswan/copilot-env/commit/92e823e4f190bdfc7ebc04a4a51b4926bb968bb6))
+
 ## [3.5.4](https://github.com/Vivswan/copilot-env/compare/v3.5.3...v3.5.4) (2026-08-06)
 
 

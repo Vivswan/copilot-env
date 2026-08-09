@@ -51,6 +51,10 @@ copilot-env: Local copilot-api proxy lifecycle + config helper (TypeScript).
 
 ## Repository-specific guidance
 
+<!-- Add project-specific instructions below. This section survives template
+     updates via three-way merge. -->
+<!-- repo-platform:local-section -->
+
 copilot-env is a local copilot-api proxy lifecycle + config helper (a
 TypeScript port of the Python `copilot-api`). It wraps a floating
 `@jeffreycao/copilot-api` proxy and wires the Codex and Claude CLIs to either

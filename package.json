@@ -2,7 +2,7 @@
   "name": "copilot-env",
   "version": "3.5.4",
   "private": true,
-  "license": "MIT",
+  "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "description": "Local copilot-api proxy lifecycle + config helper (TypeScript port of the Python copilot-api helper).",
   "scripts": {

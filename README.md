@@ -1,7 +1,7 @@
 # copilot-env
 
 [![CI](https://github.com/Vivswan/copilot-env/actions/workflows/ci.yml/badge.svg)](https://github.com/Vivswan/copilot-env/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![License](https://img.shields.io/badge/License-Individual_and_Small_Organization-blue.svg)](./LICENSE)
 
 A small, self-bootstrapping CLI that manages a local
 [`@jeffreycao/copilot-api`](https://www.npmjs.com/package/@jeffreycao/copilot-api)
@@ -358,4 +358,4 @@ bun run check       # biome check --write src bin test scripts
 
 ## License
 
-[MIT](./LICENSE)
+[Individual and Small Organization License 1.0.0](./LICENSE)

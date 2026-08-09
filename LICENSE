@@ -344,3 +344,6 @@ licenses.
      third-party components, differently licensed paths) go below this
      line. They survive template updates via three-way merge. -->
 <!-- repo-platform:local-section -->
+
+Versions of copilot-env released up to and including v3.5.4 were
+licensed under the MIT License.

@@ -69,7 +69,9 @@ export interface CopilotEnvConfigData {
   wireMcp?: boolean;
 }
 
-type ConfigPatch = { [K in keyof CopilotEnvConfigData]?: CopilotEnvConfigData[K] | null };
+/** A `set()` patch: per-key values, null/undefined deleting the key. Exported
+ *  for callers that rebuild the whole store (the settings-bundle import). */
+export type ConfigPatch = { [K in keyof CopilotEnvConfigData]?: CopilotEnvConfigData[K] | null };
 
 // Lenient read schema: each field validates the value we own and FALLS BACK to undefined
 // (treated as "unset" -> default by callers) rather than throwing on a bad/ill-typed value.
@@ -80,7 +82,10 @@ const MAX_DAYS = 3650;
 const PASSTHROUGH_VALUES = ["auto", "on", "off"] as const;
 const wholeSeconds = v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(MAX_SECONDS));
 const wholeDays = v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(MAX_DAYS));
-const CONFIG_SCHEMA = v.object({
+/** Exported for the settings-bundle parser (src/agents/transfer.ts): it reuses
+ *  this schema's per-key VALUE validation and hardens the leniency into strict
+ *  rejections at its own trust boundary. */
+export const CONFIG_SCHEMA = v.object({
   autoStart: v.fallback(v.optional(v.boolean()), undefined),
   passthrough: v.fallback(v.optional(v.picklist(PASSTHROUGH_VALUES)), undefined),
   integrationId: v.fallback(v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))), undefined),

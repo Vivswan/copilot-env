@@ -133,7 +133,10 @@ file layouts. Don't restate here what a reader can grep.
   render; the domain layers below never import `commands/`.
 - `src/agents/` - cross-agent domain (needs BOTH `src/codex/` and `src/claude/`, so it can
   live in neither): the live Direct probe, direct-mode detection, provider-mode vocabulary,
-  the agent-CLI list.
+  the agent-CLI list, the shared default/profile wiring writers (`configure_defaults.ts`,
+  `profile_wiring.ts` - used by init, profile, and import alike), and the `agent settings`
+  portable-bundle domain (`transfer.ts`: strict parse boundary, redaction, non-destructive
+  import, pre-import backups).
 - `src/shell/` - the rc-file shell-integration domain (markers, block wiring, launcher
   queries) behind `agent shell`; `shell/` at the repo root is the runtime payload it wires.
 - `src/codex/`, `src/claude/` - per-agent config wiring.
@@ -230,6 +233,7 @@ bun run check         # biome check --write
 ./bin/agent init      # set up Codex + Claude (auto-detect direct vs proxy; --direct / --proxy)
 ./bin/agent auth      # manage the GitHub credential (--provider/--get/--del/--check)
 ./bin/agent config    # get/set preferences (--set <key> <value> / --get [key] / --del <key>)
+./bin/agent settings  # export/import the portable settings bundle (--export [file] / --import <file>)
 ./bin/agent profile   # manage named profiles (--add <name> --direct|--proxy / --del / --list)
 ./bin/agent start     # start the daemon; also stop / health / models / env / cost / update / shell / codex / claude / uninstall
 ```

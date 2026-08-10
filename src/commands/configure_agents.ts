@@ -2,49 +2,27 @@
 // both agents and print the next-step guidance box. Kept in their own module so
 // init.ts stays focused on orchestration (ensure-auth -> configure -> guide).
 
+import { configureDefaultAgents } from "../agents/configure_defaults.ts";
 import type { AgentProviderMode, RequestedMode } from "../agents/provider_mode.ts";
-import { readAgentModesSafe } from "../agents/wiring.ts";
-import { runClaude } from "../claude/config.ts";
-import { runCodex } from "../codex/config.ts";
 import { bold } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
-import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 
-// All output goes to stderr (one logger) so it interleaves deterministically with
-// the per-agent probe/config narration (also stderr) and never pollutes any stdout.
+// Stderr like the per-agent narration, so the guidance box never pollutes any stdout.
 const logger = createStderrLogger();
 
 /**
- * Configure both agents, resiliently (a failure on one only warns, the other
- * still runs), and report the resulting modes. `mode` is the requested wiring
- * shared by both agents ("auto" = each auto-detects). `runCodex`/`runClaude`
- * read the provisioned GitHub token from the shared store themselves (the single
- * source of truth), so callers persist the token separately. Each agent's
- * narration is grouped under a header with blank-line spacing.
+ * Configure both agents with one shared requested mode ("auto" = each
+ * auto-detects) and report the resulting modes -- `agent init`'s view of
+ * configureDefaultAgents (which owns the narration and per-agent resilience;
+ * init keeps the warn-and-continue contract, so the failures are dropped here).
  */
 export async function configureBothAgents(mode: RequestedMode): Promise<{
   codex: AgentProviderMode;
   claude: AgentProviderMode;
 }> {
-  logger.log("");
-  logger.log(bold("▸ Codex"));
-  try {
-    await runCodex({ mode });
-  } catch (e) {
-    logger.warn(`  Could not configure Codex: ${errMessage(e)}`);
-  }
-
-  logger.log("");
-  logger.log(bold("▸ Claude"));
-  try {
-    await runClaude({ mode });
-  } catch (e) {
-    logger.warn(`  Could not configure Claude: ${errMessage(e)}`);
-  }
-
-  // Read-back is also best-effort: a config-read error must not abort the caller.
-  return readAgentModesSafe();
+  const { codex, claude } = await configureDefaultAgents({ codex: mode, claude: mode });
+  return { codex, claude };
 }
 
 function modeLabel(mode: AgentProviderMode): string {

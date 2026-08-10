@@ -28,6 +28,7 @@ import { runInit } from "./commands/init.ts";
 import { runMcp } from "./commands/mcp.ts";
 import { runModels } from "./commands/models.ts";
 import { runProfile } from "./commands/profile.ts";
+import { runSettings } from "./commands/settings.ts";
 import { DEFAULT_CLI_COOLDOWN_DAYS, runShell } from "./commands/setup.ts";
 import { parseStartAction, runStart } from "./commands/start.ts";
 import { runStop } from "./commands/stop.ts";
@@ -159,11 +160,13 @@ program.configureHelp({
   styleDescriptionText: gray,
 });
 
-// Subcommands are added in display order; the root help lists them in this order,
-// so `init` (the headline command) appears first.
+// Subcommands are added in display order and grouped into help sections via
+// .helpGroup (Commander renders the groups in first-appearance order), so
+// `init` (the headline command) appears first under the first heading.
 
 program
   .command("init")
+  .helpGroup("Setup:")
   .description("Set up both Codex and Claude (auto-detect GitHub Copilot Direct vs the proxy).")
   .option("--direct", "Force both agents to GitHub Copilot Direct (no auto-detect probe).")
   .option("--proxy", "Force both agents to the local copilot-api proxy (no auto-detect probe).")
@@ -171,6 +174,7 @@ program
 
 program
   .command("auth")
+  .helpGroup("Settings:")
   .description("Manage the GitHub Copilot credential (the single source of truth for Direct).")
   .option(
     "--provider <provider>",
@@ -213,6 +217,7 @@ program
 
 program
   .command("profile")
+  .helpGroup("Settings:")
   .description(
     "Manage named profiles: one credential + one mode (direct or proxy), wired into BOTH agents.",
   )
@@ -269,6 +274,7 @@ program
 
 program
   .command("start")
+  .helpGroup("Daemon:")
   .description("Start the proxy in the background, detached.")
   .option("--dry-run", "Print the resolved startup plan without changing proxy runtime state.")
   .option(
@@ -303,6 +309,7 @@ program
 
 program
   .command("stop")
+  .helpGroup("Daemon:")
   .description("Stop the proxy on this host.")
   .option("--profile <name>", "Stop the named profile's daemon instead of the default.")
   .option("--all", "Stop the default daemon and every named profile's daemon.")
@@ -312,6 +319,7 @@ program
 
 program
   .command("config")
+  .helpGroup("Settings:")
   .description("Get/set copilot-env preferences (auto-start, passthrough, idle-timeout, ...).")
   .option("--set <key...>", "Set a preference: --set <key> <value>.")
   .option("--get [key]", "Print all preferences, or just one key's value.")
@@ -326,7 +334,48 @@ program
   );
 
 program
+  .command("settings")
+  .helpGroup("Settings:")
+  .description(
+    "Export/import every portable copilot-env setting (preferences, credential, " +
+      "profiles, wiring modes) as one JSON bundle.",
+  )
+  .option(
+    "--export [file]",
+    "Write the bundle to <file>, or stdout when no file is given. Tokens are " +
+      "redacted unless --with-credentials.",
+  )
+  .option(
+    "--import <file>",
+    "Restore a bundle: back up + overwrite the stores, then re-derive both agents' " +
+      "wiring and every profile from them. Non-destructive: profiles that exist only " +
+      "on this machine are kept, and agents the bundle leaves unconfigured are not touched.",
+  )
+  .option(
+    "--with-credentials",
+    "With --export: include the real tokens (treat the output like a password).",
+  )
+  .option("--force", "With --import: skip the confirmation prompt (headless use).")
+  .option("--no-backup", "With --import: skip the automatic pre-import settings backup.")
+  .addHelpText(
+    "after",
+    "\nImport semantics: preferences are FULL-REPLACE (a key absent from the bundle resets " +
+      "to its built-in default), while credentials are PRESERVE-IF-ABSENT (a slot whose " +
+      "token is redacted or missing never overwrites a working local credential).",
+  )
+  .action((opts: Opts) =>
+    runSettings({
+      exportTo: opts.export as string | boolean | undefined,
+      importFrom: opts.import as string | undefined,
+      withCredentials: Boolean(opts.withCredentials),
+      force: Boolean(opts.force),
+      noBackup: opts.backup === false,
+    }),
+  );
+
+program
   .command("health")
+  .helpGroup("Daemon:")
   .description("Diagnose the local proxy and setup (exit 1 on any failure).")
   .option(
     "--scope <scope>",
@@ -358,6 +407,7 @@ program
 
 program
   .command("models")
+  .helpGroup("Daemon:")
   .description(
     "List the model ids + names GitHub Copilot serves (auto-picks: the running proxy, else Direct).",
   )
@@ -379,6 +429,7 @@ program
 
 program
   .command("env")
+  .helpGroup("Daemon:")
   .description("Print env assignments for the proxy, evaluated by the calling shell.")
   .option(
     "--format <format>",
@@ -397,6 +448,7 @@ program
 
 program
   .command("cost")
+  .helpGroup("Daemon:")
   .description(
     "Aggregate token usage (proxy SQLite DBs + Codex session logs + Claude transcripts) and estimate cost.",
   )
@@ -442,6 +494,7 @@ program
 
 program
   .command("codex")
+  .helpGroup("Setup:")
   .description(
     "Configure Codex: GitHub Copilot Direct or the local proxy (auto-detects with no flag).",
   )
@@ -477,6 +530,7 @@ program
 
 program
   .command("claude")
+  .helpGroup("Setup:")
   .description(
     "Configure Claude Code: GitHub Copilot Direct or the local proxy (auto-detects with no flag).",
   )
@@ -495,6 +549,7 @@ program
 
 program
   .command("mcp")
+  .helpGroup("Setup:")
   .description(
     "Status of the copilot-env MCP server wiring; --serve runs the stdio server " +
       "(web_search via GitHub Copilot /responses) for Claude, Codex, or any MCP client.",
@@ -520,6 +575,7 @@ program
 
 program
   .command("update")
+  .helpGroup("Maintenance:")
   .description("Update the copilot-env checkout to the latest GitHub release.")
   .option(
     "--check",
@@ -551,6 +607,7 @@ program
 
 program
   .command("shell")
+  .helpGroup("Setup:")
   .description(
     "Set up the shell environment: wire the copilot-env integration (rc / PowerShell $PROFILE), " +
       "optionally the cl / co / cx launchers and the optional agent CLIs.",
@@ -586,6 +643,7 @@ program
 
 program
   .command("uninstall")
+  .helpGroup("Maintenance:")
   .description(
     "Remove copilot-env from this machine: daemons, profiles, agent wiring, " +
       "shell integration, data, and the install itself.",

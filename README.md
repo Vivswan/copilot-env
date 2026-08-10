@@ -86,6 +86,7 @@ agent init                 # set up BOTH Codex + Claude (auto-detect direct vs t
 agent auth                 # manage the GitHub Copilot credential (--provider copilot|gh-cli|gh-token, --set, --get, --del, --check; --profile <name> addresses a named profile's slot, --list shows every slot)
 agent profile              # manage named profiles: --add <name> --direct|--proxy (one credential + one mode, both agents), --del <name>, --list, --check <name>
 agent config               # get/set preferences (--set <key> <value> / --get [key] / --del <key>; see Configuration below)
+agent settings             # export/import every portable setting as one JSON bundle (--export [file] / --import <file>; --with-credentials, --force, --no-backup; import is non-destructive - prefs are full-replace, credentials preserve-if-absent - and backs up the stores first; a rollback re-imports the backup but never deletes profiles)
 agent start                # launch the daemon and sync aliases (--dry-run to preview, --port to pin, --check to probe, --profile <name> for a profile's daemon)
 agent stop                 # stop the daemon (--profile <name> for one profile's daemon, --all for every daemon)
 agent health               # full environment diagnosis (--scope full|runtime|proxy|setup|auth|codex|claude, --json, --live)

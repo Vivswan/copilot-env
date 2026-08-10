@@ -450,8 +450,11 @@ export async function runCodexHost(args: CodexHostArgs): Promise<void> {
   await applyCodexConfig(
     codexHome,
     direct ? "direct" : "proxy",
-    // Reuse the just-resolved credential for the catalog seed's direct fetch.
+    // Reuse the just-resolved credential for the catalog seed's direct fetch
+    // AND the identity probe, so gh-cli is not shelled out to a second time.
     ghToken === null ? undefined : { directToken: ghToken },
+    null,
+    ghToken,
   );
   // Persist the active CODEX_HOME (opt-in: only set because a codex command ran).
   state.set({ codexHome });

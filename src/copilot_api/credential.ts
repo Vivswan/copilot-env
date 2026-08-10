@@ -109,14 +109,19 @@ export class Credential {
    *   - gh-cli           -> `gh auth token` (live)
    *   - copilot/gh-token -> the stored token
    *   - none / unknown   -> null (the caller prompts / errors; never silently gh)
+   *
+   * `gh` substitutes the gh-cli probe: batch callers (the settings-bundle
+   * import resolves many slots in one run) pass a memoized wrapper so the
+   * subprocess spawns once, not per slot. Resolution stays provider-driven
+   * either way -- the parameter never changes WHICH source is consulted.
    */
-  resolve(): string | null {
+  resolve(gh: () => string | null = ghAuthToken): string | null {
     const { githubToken, authProvider } = this.state.readCredential(this.profile);
     switch (credentialSource(authProvider, githubToken !== null)) {
       case "stored-token":
         return githubToken;
       case "gh-cli":
-        return ghAuthToken();
+        return gh();
       case "none":
         return null;
     }

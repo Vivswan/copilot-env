@@ -693,6 +693,7 @@ export async function applyCodexConfig(
   mode: ManagedAgentMode,
   catalogDeps?: CodexCatalogDeps,
   profile: Profile = null,
+  directToken?: string | null,
 ): Promise<void> {
   let request: CodexWriteRequest;
 
@@ -706,7 +707,13 @@ export async function applyCodexConfig(
     // Direct: bake the client identity this credential is accepted under (probe, or the
     // `integration-id` config pin). Throws with the real reason when nothing works, so a
     // dead direct credential fails the wiring instead of writing a config that 400s.
-    request = { mode, profile, directIntegrationId: await probeDirectIntegrationId(profile) };
+    // `directToken` skips the probe's own credential resolve when the caller already
+    // resolved one (the adapter path always has).
+    request = {
+      mode,
+      profile,
+      directIntegrationId: await probeDirectIntegrationId(profile, directToken),
+    };
   }
 
   // Seed the patched model catalog (best-effort, unthrottled) BEFORE the config
@@ -1059,10 +1066,10 @@ export function codexAdapter(catalogDeps?: CodexCatalogDeps): AgentAdapter {
     check: checkCodexConfig,
     detectDirect: detectCodexDirect,
     async configureDefault(mode, ghToken) {
-      // Reuse the already-resolved credential for the catalog seed's direct fetch so
-      // the gh-cli provider isn't shelled out to a second time.
+      // Reuse the already-resolved credential for the catalog seed's direct fetch AND
+      // the identity probe, so the gh-cli provider isn't shelled out to a second time.
       const seedDeps = catalogDeps ?? (ghToken === null ? undefined : { directToken: ghToken });
-      await applyCodexConfig(effectiveCodexHome(), mode, seedDeps);
+      await applyCodexConfig(effectiveCodexHome(), mode, seedDeps, null, ghToken);
     },
     configureProfile(name, mode, options) {
       const request: CodexWriteRequest =

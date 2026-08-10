@@ -9,16 +9,18 @@
 // profile's credential.
 import { rmSync } from "node:fs";
 import { consola } from "consola";
-import { type AgentAdapter, configuringLine } from "../agents/configure.ts";
+import { configuringLine } from "../agents/configure.ts";
+import {
+  bothAgents,
+  resolveAndPersistDirectIdentity,
+  wireBothAgents,
+} from "../agents/profile_wiring.ts";
 import type { RequestedMode } from "../agents/provider_mode.ts";
-import { claudeAdapter, configureClaudeConfig } from "../claude/config.ts";
+import { configureClaudeConfig } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { codexAdapter, probeDirectIntegrationId } from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { type ProxyStatus, proxyStatus, stopTrackedProxy } from "../copilot_api/daemon.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { allProfileNames, CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
-import { CODEX_IDENTITY_NAME } from "../copilot_api/integration_identity.ts";
 import { profileHome, profileHomeNames } from "../copilot_api/paths.ts";
 import { type ProfileName, parseProfileFlag, profileLabel } from "../copilot_api/profile.ts";
 import { cyan, gray, green, yellow } from "../utils/ansi.ts";
@@ -28,14 +30,6 @@ import { authenticate, parseAcquisition } from "./auth.ts";
 
 // Narration to stderr so `--settings-for`'s stdout stays a clean machine-readable path.
 const logger = createStderrLogger();
-
-/** BOTH agents' adapters, in the wiring order profile operations use (Claude first --
- *  per-agent narration and failure aggregation keep their long-standing order). Built
- *  fresh per call: adapters are cheap closures and a stale one would pin a stale
- *  effective home. */
-function bothAgents(): AgentAdapter[] {
-  return [claudeAdapter(), codexAdapter()];
-}
 
 export interface ProfileArgs {
   /** `--add <name>`: create (or re-wire) a profile: credential + mode + both agents. */
@@ -61,48 +55,6 @@ export interface ProfileArgs {
 /** The profile's recorded mode from the store (the source of truth), or null. */
 function storedMode(name: ProfileName): ProfileMode | null {
   return new CopilotEnvState().readProfileSlot(name).mode;
-}
-
-/** Wire BOTH agents for `name` at `mode`. Order and resilience mirror
- *  configureBothAgents: try each adapter, report per-agent, fail if either failed.
- *  Direct mode resolves the client identity as pin > persisted slot > probe, persisting
- *  a freshly probed non-default id so a later launcher `--sync` replays it offline (a
- *  null slot means "re-derive", which is network-free for the non-PAT common case). */
-async function wireBothAgents(name: ProfileName, mode: ProfileMode, quiet: boolean): Promise<void> {
-  const directIntegrationId =
-    mode === "direct" ? await resolveAndPersistDirectIdentity(name) : undefined;
-  const failures: string[] = [];
-  for (const agent of bothAgents()) {
-    try {
-      agent.configureProfile(name, mode, { quiet, directIntegrationId });
-    } catch (e) {
-      failures.push(`${agent.label}: ${errMessage(e)}`);
-    }
-  }
-  if (failures.length > 0) {
-    throw new Error(`could not wire ${profileLabel(name)}:\n  ${failures.join("\n  ")}`);
-  }
-}
-
-/**
- * The direct client identity header to bake for `name`: the config pin, else the
- * persisted slot value, else a fresh probe (always persisted, so the launcher hot path
- * -- `--settings-for` / `--sync` on every `cl --profile` -- never re-probes).
- *
- * The slot stores the identity NAME, not the header value, so "probed, the default won"
- * (CODEX_IDENTITY_NAME) is distinguishable from "never probed" (null). Only a named
- * integration is a real header; the default sends none. A credential change clears the
- * slot (CopilotEnvState.setCredential), which is what re-arms the probe.
- * Throws if the credential is rejected under every identity.
- */
-async function resolveAndPersistDirectIdentity(name: ProfileName): Promise<string | null> {
-  const pin = new CopilotEnvConfig().pinnedIntegrationId();
-  if (pin !== null) return pin;
-  const stored = new CopilotEnvState().readProfileSlot(name).integrationIdentity;
-  if (stored !== null) return stored === CODEX_IDENTITY_NAME ? null : stored;
-  const probed = await probeDirectIntegrationId(name);
-  new CopilotEnvState().setProfileIntegrationIdentity(name, probed ?? CODEX_IDENTITY_NAME);
-  return probed;
 }
 
 /**

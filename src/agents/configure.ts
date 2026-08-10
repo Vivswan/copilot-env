@@ -19,6 +19,10 @@ export interface AgentConfigArgs {
   check?: boolean;
   /** `--direct`/`--proxy`, parsed once at the CLI boundary (auto = neither). */
   mode: RequestedMode;
+  /** Pre-resolved Direct credential: skips the store resolve below. The
+   *  settings-bundle import passes its plan's already-resolved token so the
+   *  gh-cli provider is shelled out to once per import, not once per writer. */
+  ghToken?: string | null;
 }
 
 /** The per-agent knobs of a NAMED-profile write (`agent profile`): the caller
@@ -90,7 +94,7 @@ export async function runAgentConfig(adapter: AgentAdapter, args: AgentConfigArg
     adapter.check();
     return;
   }
-  const ghToken = new Credential().resolve();
+  const ghToken = args.ghToken !== undefined ? args.ghToken : new Credential().resolve();
   const direct = resolveDirectMode(args.mode, ghToken, () => adapter.detectDirect());
   const mode: ManagedAgentMode = direct ? "direct" : "proxy";
   logger.log(configuringLine(adapter.label, mode));

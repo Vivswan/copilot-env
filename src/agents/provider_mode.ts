@@ -8,8 +8,13 @@
 //   - other:  a foreign/custom config we do not manage.
 //   - none:   unconfigured (the proxy is the default backend).
 
+/** The provider-mode vocabulary as a runtime list, for boundary validation
+ *  (e.g. the settings-bundle schema) -- the type below derives from it, so the
+ *  two can never drift. */
+export const AGENT_PROVIDER_MODES = ["direct", "proxy", "other", "none"] as const;
+
 /** Which backend an agent's config selects. */
-export type AgentProviderMode = "direct" | "proxy" | "other" | "none";
+export type AgentProviderMode = (typeof AGENT_PROVIDER_MODES)[number];
 
 /** The two modes copilot-env actively manages (writes). */
 export type ManagedAgentMode = Extract<AgentProviderMode, "direct" | "proxy">;

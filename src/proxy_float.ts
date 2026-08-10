@@ -10,8 +10,9 @@
 //     Read-only freshness check used by bin/agent before deciding whether to run
 //     `bun install --frozen-lockfile`.
 //   bun src/proxy_float.ts --assert-installed
-//     CI/dev guard: assert the postinstall float actually installed a proxy
-//     inside copilot-env.config's floor/ceiling window.
+//     CI/dev guard: assert the postinstall float actually installed its resolved
+//     target (or the exact pin), falling back to copilot-env.config's
+//     floor/ceiling window when the registry is unreachable.
 //
 // Runtime knobs are environment variables, not CLI flags: COPILOT_API_VERSION
 // pins an exact proxy version/tag, and COPILOT_API_MIN_RELEASE_AGE overrides the
@@ -511,13 +512,41 @@ export function nodeModulesFresh(root: string): boolean {
  * CI/dev assertion after `bun install`: the postinstall float is best-effort, so
  * this makes the final installed proxy a hard check. It intentionally answers a
  * different question than --verify: not "can bin/agent skip install?", but "did
- * install leave node_modules in a launchable state?".
+ * install leave node_modules in the state the float intended?". The installed
+ * version must equal the float's own resolved target, not merely clear the
+ * copilot-env.config bounds -- otherwise a silently failed overlay hides behind a
+ * lockfile baseline that happens to satisfy the window. A COPILOT_API_VERSION /
+ * `proxy-version` config pin must be the installed version (exact semver pins
+ * only; tag pins are not equality-checked, and bounds do not apply because a pin
+ * bypasses them in the float too). When target resolution fails (npm unreachable)
+ * the assert falls back to the bounds-only check so CI does not flake on npm
+ * outages; that fallback is deliberately stricter than the float's own failure
+ * path (handleResolveFailure enforces only the floor) in that it enforces the
+ * ceiling as well.
  */
 export function proxyInstallAssertStatus(
   root: string,
-  config: ProjectConfig,
+  bun: string = process.execPath,
+  config?: ProjectConfig,
+  minimumReleaseAgeSeconds?: number,
+  spawnRunner: SpawnSyncRunner = spawnSync,
+  nowMs: number = Date.now(),
 ): ProxyInstallAssertStatus {
-  const status = proxyVersionBoundsStatus(installedProxyVersion(root), config);
+  const installed = installedProxyVersion(root);
+
+  const override = resolveProxyVersionOverride();
+  if (override) {
+    if (installed === null) {
+      return {
+        "ok": false,
+        "message": `proxy float did not install the pinned ${PROXY_PKG}@${override}; check the version/tag exists (offline?)`,
+      };
+    }
+    return assertPinnedOverride(installed, override);
+  }
+
+  const effectiveConfig = config ?? readProjectConfig(root);
+  const status = proxyVersionBoundsStatus(installed, effectiveConfig);
   if (!status.ok) {
     switch (status.reason) {
       case "missing":
@@ -541,12 +570,51 @@ export function proxyInstallAssertStatus(
   }
 
   const window =
-    config.proxyMaxVersion === null
-      ? `>= ${config.proxyMinVersion} floor`
-      : `within [${config.proxyMinVersion}, ${config.proxyMaxVersion}]`;
+    effectiveConfig.proxyMaxVersion === null
+      ? `>= ${effectiveConfig.proxyMinVersion} floor`
+      : `within [${effectiveConfig.proxyMinVersion}, ${effectiveConfig.proxyMaxVersion}]`;
+  const target = resolveProxyTarget({
+    "root": root,
+    "bun": bun,
+    "config": effectiveConfig,
+    "minimumReleaseAgeSeconds": minimumReleaseAgeSeconds ?? resolveMinimumReleaseAgeSeconds(root),
+    "spawnRunner": spawnRunner,
+    "nowMs": nowMs,
+  });
+  if (!target.ok) {
+    return {
+      "ok": true,
+      "message": `proxy float OK (bounds only, ${window}): ${PROXY_PKG} ${status.version}; float target unresolved (${target.message})`,
+    };
+  }
+  if (status.version !== target.value.version) {
+    return {
+      "ok": false,
+      "message": `installed ${PROXY_PKG} ${status.version} does not match the float target ${target.value.version} (${target.value.reason}) - the postinstall proxy float overlay did not land its target.`,
+    };
+  }
   return {
     "ok": true,
-    "message": `proxy float OK: ${PROXY_PKG} ${status.version} (${window})`,
+    "message": `proxy float OK: ${PROXY_PKG} ${status.version} matches the float target (${target.value.reason}; ${window})`,
+  };
+}
+
+function assertPinnedOverride(installed: string, override: string): ProxyInstallAssertStatus {
+  if (!SEMVER_RE.test(override)) {
+    return {
+      "ok": true,
+      "message": `proxy float OK: ${PROXY_PKG} ${installed} is installed; equality is not verified for the '${override}' tag pin (only exact semver pins are equality-checked)`,
+    };
+  }
+  if (installed === override) {
+    return {
+      "ok": true,
+      "message": `proxy float OK: ${PROXY_PKG} ${installed} matches the ${override} pin`,
+    };
+  }
+  return {
+    "ok": false,
+    "message": `installed ${PROXY_PKG} ${installed} does not match the pinned ${override} (${PROXY_VERSION_ENV} or the proxy-version config) - the postinstall proxy float failed to apply the pin.`,
   };
 }
 
@@ -586,7 +654,7 @@ function mainAssertInstalled(root: string): never {
     process.exit(0);
   }
   try {
-    const status = proxyInstallAssertStatus(root, readProjectConfig(root));
+    const status = proxyInstallAssertStatus(root, process.execPath, readProjectConfig(root));
     if (status.ok) {
       console.log(status.message);
     } else {

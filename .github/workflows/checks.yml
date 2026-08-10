@@ -41,7 +41,9 @@ jobs:
       # fails the install). Without this check a silently broken float would slip
       # through CI, since the start/stop lifecycle below uses a FAKE proxy
       # (COPILOT_API_ENTRY) and never resolves the real one. This asserts the
-      # float actually installed @jeffreycao/copilot-api within config bounds, on every OS.
+      # installed @jeffreycao/copilot-api matches the float's own resolved target
+      # (a `bun pm view` registry call, no longer a pure fs check), falling back
+      # to the config-bounds window when the registry is unreachable - on every OS.
       - name: Verify proxy float installed the proxy
         run: bun src/proxy_float.ts --assert-installed
 

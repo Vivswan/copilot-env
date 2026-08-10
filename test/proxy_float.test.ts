@@ -317,7 +317,7 @@ describe("proxyInstallAssertStatus", () => {
   // status.ok carries the verdict; the messages are human copy, so the assertions
   // pin only the identifiers each one must name (the package, the versions).
   test("fails when the proxy is missing", () => {
-    const status = proxyInstallAssertStatus(dir, CONFIG);
+    const status = proxyInstallAssertStatus(dir, "bun", CONFIG);
 
     expect(status.ok).toBe(false);
     expect(status.message).toContain(PROXY_PKG);
@@ -326,7 +326,7 @@ describe("proxyInstallAssertStatus", () => {
   test("fails below the configured floor", () => {
     installProxy(dir, "1.9.99");
 
-    const status = proxyInstallAssertStatus(dir, CONFIG);
+    const status = proxyInstallAssertStatus(dir, "bun", CONFIG);
 
     expect(status.ok).toBe(false);
     // Names the installed version and the floor it missed.
@@ -337,7 +337,7 @@ describe("proxyInstallAssertStatus", () => {
   test("fails above the configured ceiling", () => {
     installProxy(dir, "1.10.31");
 
-    const status = proxyInstallAssertStatus(dir, {
+    const status = proxyInstallAssertStatus(dir, "bun", {
       "proxyMinVersion": "1.10.0",
       "proxyMaxVersion": "1.10.30",
     });
@@ -348,21 +348,137 @@ describe("proxyInstallAssertStatus", () => {
     expect(status.message).toContain("1.10.30");
   });
 
-  test("passes within the configured floor and ceiling", () => {
+  test("passes when the installed proxy matches the resolved float target", () => {
     // An interior installed version, so installed, floor, and ceiling are three
     // distinct values and each assertion below pins its own identifier.
     installProxy(dir, "1.10.15");
+    const { spawn } = spawnWithTime(npmTime({ "1.10.15": 8, "1.10.31": 1 }));
 
-    const status = proxyInstallAssertStatus(dir, {
-      "proxyMinVersion": "1.10.0",
-      "proxyMaxVersion": "1.10.30",
-    });
+    const status = proxyInstallAssertStatus(
+      dir,
+      "bun",
+      { "proxyMinVersion": "1.10.0", "proxyMaxVersion": "1.10.30" },
+      604800,
+      spawn,
+      NOW_MS,
+    );
 
     expect(status.ok).toBe(true);
     // Names the package + installed version and the window it satisfied.
     expect(status.message).toContain(`${PROXY_PKG} 1.10.15`);
     expect(status.message).toContain("1.10.0");
     expect(status.message).toContain("1.10.30");
+  });
+
+  test("fails when the installed proxy clears the bounds but misses the float target", () => {
+    // A newer lockfile baseline than the cooldown-aged target: the overlay failed
+    // silently, and the bounds alone would not catch it.
+    installProxy(dir, "1.10.31");
+    const { spawn } = spawnWithTime(npmTime({ "1.10.30": 8, "1.10.31": 1 }));
+
+    const status = proxyInstallAssertStatus(dir, "bun", CONFIG, 604800, spawn, NOW_MS);
+
+    expect(status.ok).toBe(false);
+    // Names both the installed version and the target it should have been.
+    expect(status.message).toContain("1.10.31");
+    expect(status.message).toContain("1.10.30");
+  });
+
+  test("falls back to the bounds-only check when target resolution fails", () => {
+    installProxy(dir, "1.10.30");
+    const { spawn } = spawnWithMetadataFailure();
+
+    const status = proxyInstallAssertStatus(dir, "bun", CONFIG, 604800, spawn, NOW_MS);
+
+    expect(status.ok).toBe(true);
+    // Says the fallback happened and why, and names the version it accepted.
+    expect(status.message).toContain("bounds only");
+    expect(status.message).toContain("offline");
+    expect(status.message).toContain("1.10.30");
+  });
+
+  test("still fails below the floor when target resolution fails", () => {
+    installProxy(dir, "1.9.99");
+    const { spawn } = spawnWithMetadataFailure();
+
+    const status = proxyInstallAssertStatus(dir, "bun", CONFIG, 604800, spawn, NOW_MS);
+
+    expect(status.ok).toBe(false);
+    expect(status.message).toContain("1.9.99");
+    expect(status.message).toContain("1.10.0");
+  });
+
+  test("an exact COPILOT_API_VERSION pin asserts installed == pin, bypassing bounds", () => {
+    // Below CONFIG's floor on purpose: a pin bypasses the bounds in the float,
+    // so the assert accepts the same install the float would have produced.
+    installProxy(dir, "1.9.99");
+    process.env[VERSION_ENV] = "1.9.99";
+
+    const status = proxyInstallAssertStatus(dir, "bun", CONFIG);
+
+    expect(status.ok).toBe(true);
+    expect(status.message).toContain(`${PROXY_PKG} 1.9.99`);
+  });
+
+  test("an exact COPILOT_API_VERSION pin fails when the installed version differs", () => {
+    installProxy(dir, "1.10.30");
+    process.env[VERSION_ENV] = "1.10.31";
+
+    const status = proxyInstallAssertStatus(dir, "bun", CONFIG);
+
+    expect(status.ok).toBe(false);
+    // Names both the installed version and the pin it missed.
+    expect(status.message).toContain("1.10.30");
+    expect(status.message).toContain("1.10.31");
+  });
+
+  test("a non-semver tag pin is not equality-checked", () => {
+    installProxy(dir, "1.10.30");
+    process.env[VERSION_ENV] = "latest";
+
+    const status = proxyInstallAssertStatus(dir, "bun", CONFIG);
+
+    expect(status.ok).toBe(true);
+    expect(status.message).toContain("latest");
+  });
+
+  test("a pin with nothing installed fails naming the pin", () => {
+    process.env[VERSION_ENV] = "1.10.30";
+
+    const status = proxyInstallAssertStatus(dir, "bun", CONFIG);
+
+    expect(status.ok).toBe(false);
+    // Names the pinned spec that failed to install, not the generic missing copy.
+    expect(status.message).toContain(`${PROXY_PKG}@1.10.30`);
+  });
+
+  test("a stored proxy-version config pin is asserted like the env pin", () => {
+    new CopilotEnvConfig().set({ proxyVersion: "1.10.30" });
+    installProxy(dir, "1.10.30");
+    expect(proxyInstallAssertStatus(dir, "bun", CONFIG).ok).toBe(true);
+
+    installProxy(dir, "1.10.29");
+    const status = proxyInstallAssertStatus(dir, "bun", CONFIG);
+    expect(status.ok).toBe(false);
+    // Names both the installed version and the config pin it missed.
+    expect(status.message).toContain("1.10.29");
+    expect(status.message).toContain("1.10.30");
+  });
+
+  test("the COPILOT_API_VERSION env pin wins over the config pin", () => {
+    new CopilotEnvConfig().set({ proxyVersion: "1.10.29" });
+    process.env[VERSION_ENV] = "1.10.30";
+    installProxy(dir, "1.10.30");
+
+    expect(proxyInstallAssertStatus(dir, "bun", CONFIG).ok).toBe(true);
+  });
+
+  test("a pin bypasses the cooldown: a bad COPILOT_API_MIN_RELEASE_AGE is ignored", () => {
+    installProxy(dir, "1.9.99");
+    process.env[VERSION_ENV] = "1.9.99";
+    process.env[MIN_RELEASE_AGE_ENV] = "not-a-number"; // would throw if resolved
+
+    expect(proxyInstallAssertStatus(dir, "bun", CONFIG).ok).toBe(true);
   });
 });
 

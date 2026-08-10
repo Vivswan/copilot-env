@@ -248,6 +248,7 @@ agent config --del idle-timeout       # revert one to its default
 | `claude-token-multiplier` | `1.15` | Multiplier the proxy applies when estimating Claude token usage. |
 | `codex-model-catalog` | `false` | Patched Codex model catalog serving Copilot's real context windows (opt-in). |
 | `idle-timeout` | `3600` | Idle auto-stop window in seconds (`0` disables). |
+| `integration-id` | `auto` (probe per credential) | Pin the Copilot client identity (`Copilot-Integration-Id`), or `auto` to probe per credential. |
 | `min-port` / `max-port` | `1024` / `65535` | Allowed proxy port range. |
 | `message-websearch-model` | per surface | Web-search model id: the proxy's Messages-API path (default `gpt-5-mini`) and the MCP `web_search` tool (default `gpt-5.6-sol`). |
 | `messages-api` | `true` | Proxy Messages-API (Anthropic-shaped) endpoint. |

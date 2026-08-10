@@ -185,6 +185,35 @@ test("runConfig --set validates + persists; --del reverts; unknown key / bad val
   );
 });
 
+test("integration-id is header-safe end to end: --set rejects without echoing, stored junk reads unset", () => {
+  tmpHome();
+  // The pin lands in HTTP headers (and wins over probed identities), so a
+  // header-splitting value is rejected -- and never echoed (no-echo rule: junk
+  // pasted here can be anything, a token included).
+  let message = "";
+  try {
+    runConfig({ set: ["integration-id", "evil\nX-Injected: 1"] });
+  } catch (e) {
+    message = (e as Error).message;
+  }
+  expect(message).toContain("invalid value for 'integration-id'");
+  expect(message).toContain("header-safe");
+  expect(message).not.toContain("evil");
+  expect(new CopilotEnvConfig().read().integrationId).toBeUndefined();
+
+  // The probe sentinel and real identities still parse.
+  runConfig({ set: ["integration-id", "auto"] });
+  expect(new CopilotEnvConfig().read().integrationId).toBe("auto");
+  runConfig({ set: ["integration-id", "copilot-developer-cli"] });
+  expect(new CopilotEnvConfig().pinnedIntegrationId()).toBe("copilot-developer-cli");
+
+  // A hand-mangled STORED value degrades to unset (= probe per credential),
+  // never a baked header-splitting pin.
+  new CopilotEnvConfig().set({ integrationId: "evil\nX-Injected: 1" });
+  expect(new CopilotEnvConfig().read().integrationId).toBeUndefined();
+  expect(new CopilotEnvConfig().pinnedIntegrationId()).toBeNull();
+});
+
 test("runConfig --get <key> prints just the value to stdout (script-friendly)", () => {
   tmpHome();
   new CopilotEnvConfig().set({ smallModel: "gpt-5-mini" });

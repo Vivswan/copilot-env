@@ -18,6 +18,7 @@
 import * as v from "valibot";
 import { isRecord } from "../utils/json.ts";
 import { CopilotApiConfig } from "./config.ts";
+import { INTEGRATION_ID_RE } from "./env_config.ts";
 import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import { isValidProfileName, type Profile, type ProfileName, parseProfileName } from "./profile.ts";
 
@@ -108,7 +109,12 @@ const PROFILE_SCHEMA = v.object({
   githubToken: v.fallback(v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1))), null),
   authProvider: v.fallback(v.nullable(v.picklist(AUTH_PROVIDERS)), null),
   mode: v.fallback(v.nullable(v.picklist(PROFILE_MODES)), null),
-  integrationIdentity: v.fallback(v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1))), null),
+  // Header-safe shape enforced at the read boundary: the cached identity flows
+  // verbatim into HTTP headers, so a hand-mangled value reads as null = re-probe.
+  integrationIdentity: v.fallback(
+    v.nullable(v.pipe(v.string(), v.trim(), v.regex(INTEGRATION_ID_RE))),
+    null,
+  ),
 });
 
 // Lenient read schema: each field validates the value we own and FALLS BACK rather

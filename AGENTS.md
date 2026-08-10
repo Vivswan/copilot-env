@@ -96,8 +96,13 @@ file layouts. Don't restate here what a reader can grep.
 - **`agent config` is the typed preference store**, separate from the credential store, with
   a single key registry as the source of truth (`agent config --help` lists the keys). Some
   keys project into the proxy's own `config.json` at `agent start`, so they need a daemon
-  restart. Every read site applies the same precedence: **explicit flag/env > stored config >
-  built-in default**.
+  restart. Projection is two-tier: **force-projected** keys are always written (copilot-env's
+  default wins over the proxy's), while **opt-in** keys land only when stored, leaving the
+  proxy's own default untouched otherwise - and opt-in projections are **ownership-tracked
+  per daemon home** (`projection_state.ts`, same recorded-ownership philosophy as the
+  WebSearch deny), so unsetting a key clears only the value we wrote, never a hand edit or
+  the daemon's own. Every read site applies the same precedence: **explicit flag/env >
+  stored config > built-in default**.
 - **The managed proxy lifecycle is opt-in** (`auto-start`). The shared resolver
   `src/scripts/proxy-token.{sh,ps1}` is built from **honest primitives** (is-it-up, the gate,
   launch, heartbeat, print-key) rather than one magic flag, so each step is independently
@@ -119,6 +124,15 @@ file layouts. Don't restate here what a reader can grep.
   Deny **ownership is recorded** in the state store so removal never deletes a deny the user
   had before us. The pair is default-profile-only: deny rules union across settings layers,
   so named profiles inherit it from the default layer and could never un-deny anyway.
+- **The settings bundle moves the stores, never the artifacts.** `agent settings` exports
+  exactly the two stores plus the current modes, tokens **redacted by default**, and import
+  is a **strict parse boundary**: unknown keys and malformed values are rejections that
+  never echo a received value (it could be a token). Restore is **non-destructive** - wiring
+  and profiles are re-derived through the same init/profile machinery from one up-front
+  plan (which also renders the confirmation), slots whose credential cannot resolve are
+  skipped whole (ask, never break a working local credential), and imports write a
+  credentials-included local backup first (unless opted out) whose re-import IS the
+  rollback.
 
 ### Repo map
 
@@ -141,8 +155,8 @@ file layouts. Don't restate here what a reader can grep.
   queries) behind `agent shell`; `shell/` at the repo root is the runtime payload it wires.
 - `src/codex/`, `src/claude/` - per-agent config wiring.
 - `src/copilot_api/` - proxy helpers: admin REST, catalog fetch, JSON config/state, model
-  aliases, per-host paths, daemon process control, client-identity probe, the /responses
-  web-search client.
+  aliases, per-host paths, daemon process control, client-identity probe, the projection
+  ownership record (`projection_state.ts`), the /responses web-search client.
 - `src/mcp/` - the copilot-env MCP stdio server behind `agent mcp --serve` (first tool:
   web_search), dual-era via serveStdio (legacy handshake and MCP 2026-07-28 per
   connection); bare `agent mcp` is the human status command.

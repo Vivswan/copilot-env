@@ -35,6 +35,7 @@ import {
   CopilotEnvConfig,
   type CopilotEnvConfigData,
   configDefaultBoolean,
+  INTEGRATION_ID_RE,
 } from "../copilot_api/env_config.ts";
 import {
   AUTH_PROVIDERS,
@@ -204,13 +205,11 @@ function parseNullableEnum<T extends string>(
 }
 
 // The identity is interpolated into an HTTP header (Copilot-Integration-Id) by
-// the config writers, so its shape is restricted to a header-safe token --
-// control characters and CR/LF above all must never pass this boundary.
-const IDENTITY_TOKEN_RE = /^[A-Za-z0-9._-]{1,64}$/;
-
+// the config writers; INTEGRATION_ID_RE (env_config.ts, shared with the
+// `integration-id` pin) is the single source of the header-safe token shape.
 function parseNullableIdentity(value: unknown, path: string): string | null {
   if (value === undefined || value === null) return null;
-  if (typeof value !== "string" || !IDENTITY_TOKEN_RE.test(value)) {
+  if (typeof value !== "string" || !INTEGRATION_ID_RE.test(value)) {
     throw bundleError(
       `${path} must be a header-safe identity token (1-64 chars of [A-Za-z0-9._-]), or null`,
     );

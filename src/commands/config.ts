@@ -38,13 +38,18 @@ function formatValue(value: boolean | number | string): string {
  *  the change until it restarts. Nudge the user when that applies. Keys applied through some
  *  other mechanism carry their own `applyHint`. The hints stay shell-neutral (no `&&`) for
  *  Windows PowerShell 5.1. */
+/** The generic restart hint for keys a running daemon will not re-read (shared
+ *  with `agent settings --import`, which writes such keys in bulk). */
+export const PROXY_RESTART_HINT =
+  "Applies on the next proxy start; restart it: `agent stop`, then `agent start`.";
+
 function noteHowItApplies(def: ConfigKeyDef): void {
   if (def.applyHint !== undefined) {
     consola.info(def.applyHint);
     return;
   }
   if (!isProxyProjected(def) && def.restartToApply !== true) return;
-  consola.info("Applies on the next proxy start; restart it: `agent stop`, then `agent start`.");
+  consola.info(PROXY_RESTART_HINT);
 }
 
 /** The warning for a projected key the installed proxy is too old to read (its

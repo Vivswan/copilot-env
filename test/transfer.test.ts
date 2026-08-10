@@ -27,7 +27,7 @@ import { runClaude } from "../src/claude/config.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { runCodex } from "../src/codex/config.ts";
-import { runSettings } from "../src/commands/settings.ts";
+import { importRestartHints, runSettings } from "../src/commands/settings.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
@@ -172,6 +172,17 @@ test("junk config keys and malformed values are rejections, never dropped or coe
     expect(message).not.toContain("yes");
     expect(message).not.toContain('"2"');
   }
+  // The integration-id pin WINS over probed identities and lands in HTTP
+  // headers, so a header-splitting value is rejected by the shared shape
+  // (INTEGRATION_ID_RE in env_config.ts) -- and never echoed.
+  message = "";
+  try {
+    parseSettingsBundle(rawBundle({ config: { integrationId: "evil\r\nX-Injected: 1" } }));
+  } catch (e) {
+    message = (e as Error).message;
+  }
+  expect(message).toContain("config.integrationId is invalid");
+  expect(message).not.toContain("evil");
 });
 
 test("invalid slots are rejections that never echo the token", () => {
@@ -673,6 +684,20 @@ test("the MCP registration write line reflects the POST-import wire-mcp value", 
   new CopilotEnvConfig().set({ wireMcp: true });
   const unlisted = planImport(parseSettingsBundle(directBundle({ wireMcp: false })));
   expect(unlisted.writes.join("\n")).not.toContain("MCP registration");
+});
+
+test("import surfaces the proxy restart hint when a projected key is set OR reset", () => {
+  isolate();
+  // small-model projects into the proxy's config.json at `agent start`, which a
+  // running daemon will not re-read -- the import must say so.
+  const hints = importRestartHints({ smallModel: "gpt-5-mini" }, {});
+  expect(hints[0]).toContain("next proxy start");
+  // Prefs are full-replace: a bundle that DROPS a stored projected key resets
+  // it to default, which the daemon equally misses until a restart.
+  const resetHints = importRestartHints({ autoStart: true }, { smallModel: "gpt-5-codex" });
+  expect(resetHints[0]).toContain("next proxy start");
+  // A prefs-only bundle with no projected keys on either side stays silent.
+  expect(importRestartHints({ autoStart: true }, { idleTimeout: 60 })).toEqual([]);
 });
 
 // --- pre-import backups -----------------------------------------------------------

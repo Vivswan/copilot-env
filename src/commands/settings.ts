@@ -18,9 +18,16 @@ import {
   serializeSettingsBundle,
   writeSettingsBackup,
 } from "../agents/transfer.ts";
+import {
+  CONFIG_REGISTRY,
+  CopilotEnvConfig,
+  type CopilotEnvConfigData,
+  isProxyProjected,
+} from "../copilot_api/env_config.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
+import { PROXY_RESTART_HINT, unreadProjectedKeyWarnings } from "./config.ts";
 
 // Narration to stderr so `--export`'s stdout stays a clean machine-readable bundle.
 const logger = createStderrLogger();
@@ -57,6 +64,30 @@ function rollbackCommand(backupPath: string): string {
 // (import never deletes profiles), so the hint says exactly that.
 const ROLLBACK_SCOPE_NOTE =
   "(restores the stores; profiles this import created stay until `agent profile --del`)";
+
+/**
+ * Post-import restart guidance (hint first, then warnings): a bundle carrying
+ * any proxy-projected key just wrote preferences a RUNNING daemon will not see
+ * -- projection happens at `agent start`, and with auto-start the idempotent
+ * no-op start never re-projects -- so the import surfaces the same restart
+ * hint and too-old-proxy warnings `agent config --set` / `agent start` would.
+ * Exported for tests; empty when no projected key is set or reset.
+ */
+export function importRestartHints(
+  config: CopilotEnvConfigData,
+  preImportPrefs: CopilotEnvConfigData,
+): string[] {
+  // Prefs are FULL-REPLACE, so a projected key changes when the bundle carries
+  // it OR when the bundle drops one the store had (reset to default) -- a
+  // running daemon misses either direction until it restarts.
+  const projectedChanges = CONFIG_REGISTRY.some(
+    (def) =>
+      isProxyProjected(def) &&
+      (config[def.key] !== undefined || preImportPrefs[def.key] !== undefined),
+  );
+  if (!projectedChanges) return [];
+  return [PROXY_RESTART_HINT, ...unreadProjectedKeyWarnings()];
+}
 
 function runExport(target: string | boolean, withCredentials: boolean): void {
   const text = serializeSettingsBundle(buildExportBundle({ withCredentials }));
@@ -119,6 +150,9 @@ async function runImport(args: SettingsArgs, file: string, deps: SettingsDeps): 
   // Backup BEFORE any write (even with --force), unless opted out; empty
   // stores skip it inside writeSettingsBackup (nothing to roll back to).
   const backupPath = args.noBackup ? null : writeSettingsBackup();
+  // Snapshot the prefs the full-replace import is about to drop: the restart
+  // hint must fire for a projected key the bundle RESETS, not just one it sets.
+  const preImportPrefs = new CopilotEnvConfig().read();
 
   let outcome: ImportOutcome;
   try {
@@ -145,6 +179,9 @@ async function runImport(args: SettingsArgs, file: string, deps: SettingsDeps): 
   } else {
     logger.success(`Settings imported from ${file}${wired}.`);
   }
+  const [restartHint, ...projectionWarnings] = importRestartHints(bundle.config, preImportPrefs);
+  if (restartHint !== undefined) logger.info(restartHint);
+  for (const warning of projectionWarnings) logger.warn(warning);
   if (backupPath !== null) {
     logger.log(`  Previous settings backed up to ${backupPath}`);
     logger.log(`  Roll back with:  ${rollbackCommand(backupPath)}  ${ROLLBACK_SCOPE_NOTE}`);

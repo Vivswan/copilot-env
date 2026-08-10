@@ -82,13 +82,29 @@ const MAX_DAYS = 3650;
 const PASSTHROUGH_VALUES = ["auto", "on", "off"] as const;
 const wholeSeconds = v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(MAX_SECONDS));
 const wholeDays = v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(MAX_DAYS));
+
+/**
+ * The shape of a Copilot-Integration-Id value. It is interpolated into HTTP
+ * headers by the config writers (newline-separated ANTHROPIC_CUSTOM_HEADERS,
+ * Codex `http_headers`), so ONLY a header-safe token may pass any boundary that
+ * feeds those paths: the `integration-id` pin here (which WINS over probed
+ * identities) and the settings-bundle identities (src/agents/transfer.ts).
+ * The `auto` probe sentinel matches.
+ */
+export const INTEGRATION_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
+
 /** Exported for the settings-bundle parser (src/agents/transfer.ts): it reuses
  *  this schema's per-key VALUE validation and hardens the leniency into strict
  *  rejections at its own trust boundary. */
 export const CONFIG_SCHEMA = v.object({
   autoStart: v.fallback(v.optional(v.boolean()), undefined),
   passthrough: v.fallback(v.optional(v.picklist(PASSTHROUGH_VALUES)), undefined),
-  integrationId: v.fallback(v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))), undefined),
+  // An invalid stored pin falls back to undefined = unset, so reads degrade to
+  // the per-credential probe rather than baking a header-splitting value.
+  integrationId: v.fallback(
+    v.optional(v.pipe(v.string(), v.trim(), v.regex(INTEGRATION_ID_RE))),
+    undefined,
+  ),
   idleTimeout: v.fallback(v.optional(wholeSeconds), undefined),
   proxyLogs: v.fallback(v.optional(v.boolean()), undefined),
   smallModel: v.fallback(v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))), undefined),
@@ -294,6 +310,19 @@ function parsePositiveDecimal(raw: string, max: number): number {
   return n;
 }
 
+/** The `integration-id` value check (see INTEGRATION_ID_RE). The rejection never
+ *  echoes the value: it goes into HTTP headers, and junk pasted here can be
+ *  anything -- a token included. */
+function parseIntegrationId(raw: string): string {
+  const t = raw.trim();
+  if (!INTEGRATION_ID_RE.test(t)) {
+    throw new Error(
+      "expected a header-safe identity token (1-64 chars of [A-Za-z0-9._-]) or `auto`",
+    );
+  }
+  return t;
+}
+
 function parseEnum<T extends string>(raw: string, allowed: readonly T[]): T {
   const t = raw.trim().toLowerCase();
   const hit = allowed.find((a) => a === t);
@@ -376,7 +405,7 @@ const CONFIG_REGISTRY_LITERAL = [
     key: "integrationId",
     describe:
       "Pin the Copilot client identity (Copilot-Integration-Id), or `auto` to probe per credential",
-    parse: parseNonEmpty,
+    parse: parseIntegrationId,
     defaultValue: "auto",
     defaultSuffix: " (probe per credential)",
     applyHint:

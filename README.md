@@ -251,7 +251,7 @@ agent config --del idle-timeout       # revert one to its default
 | `proxy-logs` | `true` | Proxy request logging under `<home>/logs` (`false` discards the writes). |
 | `proxy-version` | latest (floated) | Pin the floated proxy to a version/tag. |
 | `release-cooldown` | bunfig `minimumReleaseAge` | Proxy float supply-chain cooldown in seconds. |
-| `responses-context-management` | proxy default | Proxy Responses-API server-side context management. |
+| `responses-context-management` | `false` | Proxy Responses-API server-side context management. |
 | `responses-websearch` | `true` | Proxy Responses-API web search. |
 | `responses-websocket` | `true` | Proxy Responses-API transport: WebSocket vs HTTP/SSE. |
 | `small-model` | `gpt-5-mini` | Small/fast model id the proxy uses. |

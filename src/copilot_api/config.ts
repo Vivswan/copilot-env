@@ -197,8 +197,9 @@ export class CopilotApiConfig {
   }
 }
 
-/** Return ``parent[key]`` as a dict, creating/replacing if needed. */
-function ensureDict(parent: Record<string, unknown>, key: string): Record<string, unknown> {
+/** Return ``parent[key]`` as a dict, creating/replacing if needed. Also the record-walk
+ *  primitive for nested config.json writes (setProxyConfigValue in launch.ts). */
+export function ensureDict(parent: Record<string, unknown>, key: string): Record<string, unknown> {
   const value = parent[key];
   if (isRecord(value)) {
     return value;

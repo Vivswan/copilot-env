@@ -8,6 +8,8 @@ import {
   configDefaultNumber,
   configKeyDef,
   isProxyProjected,
+  optInProxyConfigPaths,
+  type ProjectedProxyEntry,
   projectedProxyConfig,
 } from "../src/copilot_api/env_config.ts";
 import { DEFAULT_WEB_SEARCH_MODEL } from "../src/copilot_api/web_search.ts";
@@ -25,6 +27,15 @@ afterEach(() => {
 
 function tmpHome(): void {
   dir = isolateProxyHome("copilot-envconfig-");
+}
+
+/** The projected value at `path`, or undefined when no entry addresses it. */
+function projectedValue(
+  entries: readonly ProjectedProxyEntry[],
+  path: readonly string[],
+): boolean | number | string | undefined {
+  return entries.find((e) => e.path.length === path.length && e.path.every((k, i) => k === path[i]))
+    ?.value;
 }
 
 test("each typed key round-trips and del() reverts it to undefined (default)", () => {
@@ -184,14 +195,15 @@ test("the registry covers exactly the documented keys, in alphabetical order", (
 test("projectedProxyConfig() force-projects the opinionated keys and opt-in keys only when set", () => {
   tmpHome();
   // Empty store -> the FORCE-projected keys (smallModel + the three flags) resolve to their
-  // built-in defaults; the OPT-IN keys (context-management, websearch-model) are absent so the
-  // proxy's own defaults stand.
-  expect(projectedProxyConfig()).toEqual({
-    smallModel: "gpt-5-mini",
-    useResponsesApiWebSocket: true,
-    useResponsesApiWebSearch: true,
-    useMessagesApi: true,
-  });
+  // built-in defaults; the OPT-IN keys (context-management, websearch-model) are absent so
+  // the proxy's own defaults stand.
+  const empty = projectedProxyConfig();
+  expect(projectedValue(empty, ["smallModel"])).toBe("gpt-5-mini");
+  expect(projectedValue(empty, ["useResponsesApiWebSocket"])).toBe(true);
+  expect(projectedValue(empty, ["useResponsesApiWebSearch"])).toBe(true);
+  expect(projectedValue(empty, ["useMessagesApi"])).toBe(true);
+  expect(empty).toHaveLength(4);
+  expect(empty.every((e) => !e.optIn)).toBe(true);
   // A stored override on a force key is honored; a stored opt-in key now appears too.
   new CopilotEnvConfig().set({
     autoStart: true,
@@ -199,10 +211,35 @@ test("projectedProxyConfig() force-projects the opinionated keys and opt-in keys
     messageApiWebSearchModel: "gpt-5",
   });
   const projected = projectedProxyConfig();
-  expect(projected.useResponsesApiWebSocket).toBe(false);
-  expect(projected.messageApiWebSearchModel).toBe("gpt-5");
+  expect(projectedValue(projected, ["useResponsesApiWebSocket"])).toBe(false);
+  expect(projectedValue(projected, ["messageApiWebSearchModel"])).toBe("gpt-5");
+  expect(projected.find((e) => e.path[0] === "messageApiWebSearchModel")?.optIn).toBe(true);
   // Copilot-env-internal keys (autoStart) never leak into the proxy projection.
-  expect("autoStart" in projected).toBe(false);
+  expect(projectedValue(projected, ["autoStart"])).toBeUndefined();
+});
+
+test("responses-context-management projects to the proxy's NESTED contextManagement.responses", () => {
+  tmpHome();
+  new CopilotEnvConfig().set({ useResponsesApiContextManagement: true });
+  const projected = projectedProxyConfig();
+  expect(projectedValue(projected, ["contextManagement", "responses"])).toBe(true);
+  expect(projected.find((e) => e.path[0] === "contextManagement")?.optIn).toBe(true);
+  // The pre-1.14 flat proxy key (still our storage key) is never projected.
+  expect(projectedValue(projected, ["useResponsesApiContextManagement"])).toBeUndefined();
+  expect(configDefaultLabel(configKeyDef("responses-context-management")!)).toBe(
+    "false (proxy default)",
+  );
+  // The ownership allowlist is exactly the opt-in entries' paths, set or not.
+  expect(optInProxyConfigPaths()).toEqual([
+    ["messageApiWebSearchModel"],
+    ["contextManagement", "responses"],
+  ]);
+  // No two projected entries (force or opt-in, set or not) may share a path: a force entry
+  // always re-emits its path, which would permanently disable the opt-in clearing pass for it.
+  const allProjectedPaths = CONFIG_REGISTRY.filter(isProxyProjected).map((d) =>
+    JSON.stringify(d.proxyPath ?? [d.key]),
+  );
+  expect(new Set(allProjectedPaths).size).toBe(allProjectedPaths.length);
 });
 
 test("isProxyProjected marks force + opt-in keys, not copilot-env-internal ones", () => {

@@ -342,7 +342,7 @@ export async function runStart(action: StartAction): Promise<void> {
     }
 
     fs.mkdirSync(paths.home, { recursive: true });
-    applyDefaultConfig(ctx.config, ctx.envConfig);
+    applyDefaultConfig(ctx.paths, ctx.envConfig);
     await cleanupExistingProxies(profile, ctx.state);
 
     const port = await resolveStartPort(action.port, true, profile, true, ctx.envConfig);

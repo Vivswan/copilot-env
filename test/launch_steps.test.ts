@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
+import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import {
@@ -13,13 +14,16 @@ import {
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
 import {
+  applyDefaultConfig,
   awaitReadiness,
   listUntrackedOrphans,
   resolveLaunchCredential,
   resolveStartPort,
   trackedDaemonPids,
 } from "../src/copilot_api/launch.ts";
+import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { type Profile, parseProfileName } from "../src/copilot_api/profile.ts";
+import { ProxyProjectionState } from "../src/copilot_api/projection_state.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { envSnapshot, isolateProxyHome, removeDir, writeRunState } from "./helpers.ts";
 
@@ -508,4 +512,115 @@ test("awaitReadiness: a dead daemon without a bind race fails with the plain sta
       config: new CopilotEnvConfig(),
     }),
   ).rejects.toThrow(`the proxy failed to start. See ${logFile}`);
+});
+
+// --- applyDefaultConfig: the pre-launch config.json projection --------------------------
+
+/** The temp home's paths plus its config.json store (what applyDefaultConfig writes). */
+function projectionFixture(): { paths: CopilotApiPaths; config: CopilotApiConfig } {
+  tmpHome();
+  const paths = new CopilotApiPaths();
+  return { paths, config: new CopilotApiConfig(paths.configFile) };
+}
+
+test("applyDefaultConfig: a nested projection merges into contextManagement and drops the stale flat key", () => {
+  const { paths, config } = projectionFixture();
+  new CopilotEnvConfig().set({ useResponsesApiContextManagement: true });
+  // Seed what an existing daemon home holds: its own contextManagement.messages plus the
+  // flat key an older copilot-env projected (dead since the proxy's 1.14 rename).
+  config.save({
+    contextManagement: { messages: true },
+    useResponsesApiContextManagement: false,
+  });
+
+  applyDefaultConfig(paths);
+
+  const doc = config.load();
+  expect(doc.contextManagement).toEqual({ messages: true, responses: true });
+  expect("useResponsesApiContextManagement" in doc).toBe(false);
+  // The force-projected keys still land at the top level alongside.
+  expect(doc.smallModel).toBe("gpt-5-mini");
+  // The opt-in write (and ONLY it) is recorded as ours, so a later unset can clear it.
+  expect(new ProxyProjectionState(paths).ownedPaths()).toEqual([
+    ["contextManagement", "responses"],
+  ]);
+});
+
+test("applyDefaultConfig: --del of an opt-in key clears OUR recorded write on the next apply", () => {
+  const { paths, config } = projectionFixture();
+  const envConfig = new CopilotEnvConfig();
+  envConfig.set({ useResponsesApiContextManagement: true });
+  config.save({ contextManagement: { messages: true } });
+  applyDefaultConfig(paths);
+  expect(config.load().contextManagement).toEqual({ messages: true, responses: true });
+
+  envConfig.del("useResponsesApiContextManagement");
+  applyDefaultConfig(paths);
+
+  const doc = config.load();
+  // Our projected value is gone, the daemon-owned sibling stands, and the force-projected
+  // keys are untouched by the clearing pass.
+  expect(doc.contextManagement).toEqual({ messages: true });
+  expect(doc.smallModel).toBe("gpt-5-mini");
+  expect(new ProxyProjectionState(paths).ownedPaths()).toEqual([]);
+});
+
+test("applyDefaultConfig: with the opt-in key unset, a hand-edited value we never projected survives", () => {
+  const { paths, config } = projectionFixture();
+  config.save({
+    contextManagement: { messages: false, responses: true },
+    useResponsesApiContextManagement: true,
+  });
+
+  applyDefaultConfig(paths);
+
+  const doc = config.load();
+  // No ownership record exists for contextManagement.responses, so the hand edit stands;
+  // only the stale flat key is dropped.
+  expect(doc.contextManagement).toEqual({ messages: false, responses: true });
+  expect("useResponsesApiContextManagement" in doc).toBe(false);
+});
+
+test("applyDefaultConfig: a recorded path outside the registry's opt-in set is never deleted", () => {
+  const { paths, config } = projectionFixture();
+  config.save({ auth: { apiKeys: ["seeded-key"] } });
+  // A well-formed record entry claiming a path no registry entry projects opt-in (a foreign
+  // write, or an older registry's key).
+  new ProxyProjectionState(paths).setOwnedPaths([["auth"]]);
+
+  applyDefaultConfig(paths);
+
+  // The foreign claim deleted nothing, and it fell out of the record instead of persisting.
+  expect(config.load().auth).toMatchObject({ apiKeys: ["seeded-key"] });
+  expect(new ProxyProjectionState(paths).ownedPaths()).toEqual([]);
+});
+
+test("applyDefaultConfig: a lost record write self-heals on the next apply", () => {
+  const { paths, config } = projectionFixture();
+  const envConfig = new CopilotEnvConfig();
+  envConfig.set({ useResponsesApiContextManagement: true });
+  applyDefaultConfig(paths);
+  // Simulate the crash window: config.json already carries our value, but the record write
+  // (which lands after the config write) never did.
+  rmSync(paths.projectionsFile);
+
+  applyDefaultConfig(paths);
+  expect(new ProxyProjectionState(paths).ownedPaths()).toEqual([
+    ["contextManagement", "responses"],
+  ]);
+
+  // With ownership re-established, --del clears the value as usual.
+  envConfig.del("useResponsesApiContextManagement");
+  applyDefaultConfig(paths);
+  expect(config.load().contextManagement).toEqual({});
+});
+
+test("applyDefaultConfig: a non-record in a nested path's way is replaced, not crashed on", () => {
+  const { paths, config } = projectionFixture();
+  new CopilotEnvConfig().set({ useResponsesApiContextManagement: false });
+  config.save({ contextManagement: "corrupt" });
+
+  applyDefaultConfig(paths);
+
+  expect(config.load().contextManagement).toEqual({ responses: false });
 });

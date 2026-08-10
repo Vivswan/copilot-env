@@ -121,6 +121,14 @@ export function profileHomeExists(name: ProfileName): boolean {
 export class CopilotApiPaths {
   home: string;
   configFile: string;
+  /**
+   * The per-home record of the OPT-IN config.json projections copilot-env wrote
+   * (ProxyProjectionState). Declared here beside `configFile` -- the file it describes --
+   * so the two can never drift onto different homes (the githubTokenLoginLock precedent).
+   * Per HOME, not per host: hosts sharing a home share its config.json, so they share
+   * its projections too.
+   */
+  projectionsFile: string;
   runDir: string;
   stateFile: string;
   /**
@@ -185,6 +193,7 @@ export class CopilotApiPaths {
     const hostname = getSanitizedHostname();
     const runDir = join(this.home, RUN_DIR_NAME, hostname);
     this.configFile = join(this.home, PROXY_CONFIG_FILENAME);
+    this.projectionsFile = join(this.home, ".copilot-env-projections.json");
     this.runDir = runDir;
     // Our own per-host state (port + pid + active CODEX_HOME), written by this
     // tooling and read back by start/stop/env/health/port.

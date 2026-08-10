@@ -105,47 +105,125 @@ const CONFIG_SCHEMA = v.object({
 });
 
 export type ConfigKey = keyof CopilotEnvConfigData;
-type ConfigValue = boolean | number | string;
+export type ConfigValue = boolean | number | string;
 
-/** One config key: its CLI name (kebab), storage key (camel), help text, a parser from the
- *  `--set <value>` string to the stored value (throws a clear message on bad input), and the
- *  built-in default the read site applies -- rendered into `--help` / `--get` by
- *  configDefaultLabel, so the reported default can never drift from the applied one. */
-export interface ConfigKeyDef {
+/** A non-empty key path into the proxy config.json document
+ *  (e.g. `["contextManagement", "responses"]`). */
+export type ProxyConfigPath = readonly [string, ...string[]];
+
+/** Fields every config key carries: its CLI name (kebab), storage key (camel), help text,
+ *  and a parser from the `--set <value>` string to the stored value (throws a clear message
+ *  on bad input). */
+interface ConfigKeyDefCore {
   cli: string;
   key: ConfigKey;
   describe: string;
   parse: (raw: string) => ConfigValue;
-  /** Built-in default applied by the read site when the key is unset. THE owned copy:
-   *  the CopilotEnvConfig accessors below consume it via the configDefault* helpers,
-   *  and the rendered default label derives from it. */
-  defaultValue?: ConfigValue;
-  /** Extra wording appended after the derived default value in `--help` / `--get`. */
-  defaultSuffix?: string;
-  /** Hand-written default label for keys with no single value this registry owns (an
-   *  external, proxy-owned, or composite default). Only read when neither `defaultValue`
-   *  nor `proxyDefault` is set. */
-  defaultLabel?: string;
-  /** Force-projected into the proxy config.json under `key` at `agent start` as
-   *  `stored ?? proxyDefault` (always written). Use for keys copilot-env has an opinion on.
-   *  Doubles as the rendered default, so no separate `defaultValue` is needed. */
-  proxyDefault?: ConfigValue;
-  /** Opt-in projection: written into the proxy config.json under `key` ONLY when our store
-   *  holds a value, leaving the proxy's own default untouched otherwise. Use for keys we merely
-   *  expose without overriding. Mutually exclusive with `proxyDefault`. */
-  proxyProjected?: boolean;
-  /** Read by `agent start`'s launch wiring (NOT projected into the proxy config.json), yet
-   *  still applied only when a daemon launches -- so a change deserves the same restart hint
-   *  the projected keys get. */
-  restartToApply?: boolean;
-  /** Printed by `agent config` set/del INSTEAD of the proxy-restart hint, for keys that apply
-   *  through some other mechanism than a daemon launch. */
-  applyHint?: string;
 }
+
+/** How an internal key's rendered `--help` / `--get` default is sourced: a registry-owned
+ *  value XOR a hand-written label -- exactly one, checked at compile time. */
+type DefaultSpec =
+  | {
+      /** Built-in default applied by the read site when the key is unset. THE owned copy:
+       *  the CopilotEnvConfig accessors below consume it via the configDefault* helpers,
+       *  and the rendered default label derives from it. */
+      defaultValue: ConfigValue;
+      /** Extra wording appended after the derived default value in `--help` / `--get`. */
+      defaultSuffix?: string;
+      defaultLabel?: undefined;
+    }
+  | {
+      /** Hand-written default label for keys with no single value this registry owns (an
+       *  external or composite default). */
+      defaultLabel: string;
+      defaultValue?: undefined;
+      defaultSuffix?: undefined;
+    };
+
+/** How a change takes effect, for `agent config` set/del's notice: the generic restart hint
+ *  XOR a bespoke hint XOR neither (projected shapes already get the restart hint; anything
+ *  else applies immediately). */
+type ApplySpec =
+  | {
+      /** Read by `agent start`'s launch wiring (NOT projected into the proxy config.json),
+       *  yet still applied only when a daemon launches -- so a change deserves the same
+       *  restart hint the projected keys get. */
+      restartToApply: true;
+      applyHint?: undefined;
+    }
+  | {
+      /** Printed by `agent config` set/del INSTEAD of the proxy-restart hint, for keys that
+       *  apply through some other mechanism than a daemon launch. */
+      applyHint: string;
+      restartToApply?: undefined;
+    }
+  | { restartToApply?: undefined; applyHint?: undefined };
+
+/** Shared by the two projected shapes below. */
+interface ProjectedKeyFields {
+  /** Where in the proxy config.json a projected value lands: a non-empty key path into the
+   *  document (default: `[key]`, i.e. the storage key at the top level). Set it when the
+   *  proxy renamed or nested its key while our storage key stays put (a rename there would
+   *  need a store migration). */
+  proxyPath?: ProxyConfigPath;
+}
+
+/** A copilot-env-internal key: our own code reads it; nothing is written into the proxy
+ *  config.json for it. */
+type InternalConfigKeyDef = ConfigKeyDefCore &
+  DefaultSpec &
+  ApplySpec & {
+    proxyDefault?: undefined;
+    proxyProjected?: undefined;
+    proxyPath?: undefined;
+  };
+
+/** Force-projected into the proxy config.json at `agent start` as `stored ?? proxyDefault`
+ *  (always written). Use for keys copilot-env has an opinion on. `proxyDefault` doubles as
+ *  the rendered default. */
+type ForceProjectedConfigKeyDef = ConfigKeyDefCore &
+  ApplySpec &
+  ProjectedKeyFields & {
+    proxyDefault: ConfigValue;
+    defaultValue?: undefined;
+    defaultSuffix?: undefined;
+    defaultLabel?: undefined;
+    proxyProjected?: undefined;
+  };
+
+/** Opt-in projection: written into the proxy config.json ONLY while our store holds a value
+ *  (at its `proxyPath`), leaving the proxy's own default untouched otherwise. A previously
+ *  written value is cleared again once the key is unset -- ownership-tracked per daemon home
+ *  (see applyDefaultConfig in src/copilot_api/launch.ts). Use for keys we merely expose
+ *  without overriding. */
+type OptInProjectedConfigKeyDef = ConfigKeyDefCore &
+  ApplySpec &
+  ProjectedKeyFields & {
+    proxyProjected: true;
+    /** The proxy owns the default, so the rendered label is hand-written. */
+    defaultLabel: string;
+    defaultValue?: undefined;
+    defaultSuffix?: undefined;
+    proxyDefault?: undefined;
+  };
+
+/** One config key. The registry literal's `as const satisfies` rejects exactly these shapes
+ *  at compile time: `proxyDefault` combined with `proxyProjected`; `proxyPath` on a
+ *  non-projected entry; an internal entry with both or neither of `defaultValue` /
+ *  `defaultLabel`; a force-projected entry with either (`proxyDefault` is its source) and an
+ *  opt-in entry with `defaultValue` (its `defaultLabel` is required instead);
+ *  `defaultSuffix` without `defaultValue`; and `restartToApply`
+ *  combined with `applyHint`. */
+export type ConfigKeyDef =
+  | InternalConfigKeyDef
+  | ForceProjectedConfigKeyDef
+  | OptInProjectedConfigKeyDef;
 
 /** The "built-in default" label shown in `--help` / `--get`: the owned default value
  *  (`defaultValue`, else `proxyDefault`) plus any suffix, else the hand-written label.
- *  An entry with none of the three is a programmer error, same as configDefaultNumber. */
+ *  The union already makes a no-default entry uncompilable; the throw below is only a
+ *  backstop the compiler needs (unlike configDefaultNumber's, which stays reachable). */
 export function configDefaultLabel(def: ConfigKeyDef): string {
   const value = def.defaultValue ?? def.proxyDefault;
   if (value !== undefined) return `${value}${def.defaultSuffix ?? ""}`;
@@ -307,11 +385,14 @@ const CONFIG_REGISTRY_LITERAL = [
   },
   {
     cli: "responses-context-management",
+    // Storage key kept from the proxy's pre-1.14 flat key (renaming it would need a store
+    // migration); the projection lands at the nested key the proxy reads today.
     key: "useResponsesApiContextManagement",
     describe: "Proxy Responses-API server-side context management (bool)",
     parse: parseBool,
-    defaultLabel: "true (proxy default)",
+    defaultLabel: "false (proxy default)",
     proxyProjected: true,
+    proxyPath: ["contextManagement", "responses"],
   },
   {
     cli: "responses-websearch",
@@ -394,25 +475,59 @@ export function configDefaultBoolean(cli: ConfigCli): boolean {
   return value;
 }
 
+/** One projected proxy config.json value, addressed by its key path into the document
+ *  (nested paths follow upstream renames like `contextManagement.responses`). */
+export interface ProjectedProxyEntry {
+  path: ProxyConfigPath;
+  value: ConfigValue;
+  /** True for opt-in entries: present only while the preference is set, and ownership-tracked
+   *  per daemon home so a later unset clears OUR leftover write (see applyDefaultConfig /
+   *  ProxyProjectionState). */
+  optIn: boolean;
+}
+
+/** Proxy config.json keys copilot-env USED to project but the proxy no longer reads
+ *  (upstream renames with no legacy fallback). `agent start` deletes them from the daemon's
+ *  config.json while applying the projection, so a stale write can't linger there.
+ *  TOP-LEVEL keys only; a stale nested projection would need paths here instead.
+ *  Currently: the `responses-context-management` entry's pre-1.14 flat projection. */
+export const STALE_PROXY_CONFIG_KEYS: readonly string[] = ["useResponsesApiContextManagement"];
+
+/** Every path an OPT-IN entry projects to, whether currently set or not -- the ownership
+ *  ALLOWLIST: applyDefaultConfig only ever deletes recorded paths inside this set, so a
+ *  recorded path the registry does not (or no longer does) project opt-in is left alone in
+ *  config.json and simply falls out of the record. */
+export function optInProxyConfigPaths(): ProxyConfigPath[] {
+  const out: ProxyConfigPath[] = [];
+  for (const def of CONFIG_REGISTRY) {
+    if (def.proxyProjected === true) out.push(def.proxyPath ?? [def.key]);
+  }
+  return out;
+}
+
 /**
- * The proxy `config.json` keys this store projects, each resolved to its stored preference or
- * its built-in proxy default. `agent start` writes these into the daemon's config before
- * launch (see applyDefaultConfig in src/copilot_api/launch.ts); the storage key doubles as
- * the proxy key, so no name mapping is needed.
+ * The proxy `config.json` values this store projects, each resolved to its stored preference
+ * or its built-in proxy default and addressed by its `proxyPath` (default: the storage key at
+ * the top level). `agent start` writes these into the daemon's config before launch (see
+ * applyDefaultConfig in src/copilot_api/launch.ts).
  */
 export function projectedProxyConfig(
   config: CopilotEnvConfig = new CopilotEnvConfig(),
-): Record<string, ConfigValue> {
+): ProjectedProxyEntry[] {
   const prefs = config.read();
-  const out: Record<string, ConfigValue> = {};
+  const out: ProjectedProxyEntry[] = [];
   for (const def of CONFIG_REGISTRY) {
     const stored = prefs[def.key];
     if (def.proxyDefault !== undefined) {
       // Force-projected: always written, falling back to copilot-env's chosen default.
-      out[def.key] = stored ?? def.proxyDefault;
-    } else if (def.proxyProjected && stored !== undefined) {
+      out.push({
+        path: def.proxyPath ?? [def.key],
+        value: stored ?? def.proxyDefault,
+        optIn: false,
+      });
+    } else if (def.proxyProjected === true && stored !== undefined) {
       // Opt-in: written only when set, so the proxy's own default stands otherwise.
-      out[def.key] = stored;
+      out.push({ path: def.proxyPath ?? [def.key], value: stored, optIn: true });
     }
   }
   return out;

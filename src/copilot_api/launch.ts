@@ -12,14 +12,21 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
-import { tryAcquireFileLock } from "../utils/file_lock.ts";
+import { acquireFileLockBounded, releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
 import { isRecord } from "../utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { CopilotAdminClient } from "./admin.ts";
-import type { CopilotApiConfig } from "./config.ts";
+import { CopilotApiConfig, ensureDict } from "./config.ts";
 import { Credential } from "./credential.ts";
-import { CopilotEnvConfig, projectedProxyConfig } from "./env_config.ts";
+import {
+  type ConfigValue,
+  CopilotEnvConfig,
+  optInProxyConfigPaths,
+  type ProxyConfigPath,
+  projectedProxyConfig,
+  STALE_PROXY_CONFIG_KEYS,
+} from "./env_config.ts";
 import {
   DAEMON_INTEGRATION_ID_ENV,
   resolvePassthroughIntegrationId,
@@ -43,6 +50,7 @@ import {
   terminatePid,
 } from "./process.ts";
 import type { Profile } from "./profile.ts";
+import { ProxyProjectionState } from "./projection_state.ts";
 import { CopilotEnvRunState } from "./state.ts";
 import { installedProxyVersion, PROXY_PACKAGE_NAME, proxyVersionFloorStatus } from "./version.ts";
 
@@ -580,16 +588,90 @@ export async function awaitReadiness(opts: {
 
 // --- proxy-config defaults + the post-start alias sync ------------------------------------
 
+/** Set `value` at `path` inside the proxy config.json document, merging into existing
+ *  nested records so sibling keys the daemon owns (e.g. `contextManagement.messages`)
+ *  survive; a non-record in the way is replaced. */
+function setProxyConfigValue(
+  doc: Record<string, unknown>,
+  path: ProxyConfigPath,
+  value: ConfigValue,
+): void {
+  const [head, ...rest] = path;
+  let node = doc;
+  let leaf = head;
+  for (const key of rest) {
+    node = ensureDict(node, leaf);
+    leaf = key;
+  }
+  node[leaf] = value;
+}
+
+/** Delete the value at `path` when present. A missing or non-record parent means nothing of
+ *  ours can be there, so nothing is touched (parents are never created or pruned). */
+function deleteProxyConfigValue(doc: Record<string, unknown>, path: ProxyConfigPath): void {
+  const [head, ...rest] = path;
+  let node = doc;
+  let leaf = head;
+  for (const key of rest) {
+    const child = node[leaf];
+    if (!isRecord(child)) return;
+    node = child;
+    leaf = key;
+  }
+  delete node[leaf];
+}
+
 export function applyDefaultConfig(
-  config: CopilotApiConfig,
+  paths: CopilotApiPaths,
   envConfig: CopilotEnvConfig = new CopilotEnvConfig(),
 ): void {
-  // Project copilot-env's tunable proxy preferences (CONFIG_REGISTRY entries with a
-  // proxyDefault) into the daemon's config.json before launch. These are static defaults the
+  // Project copilot-env's tunable proxy preferences (the CONFIG_REGISTRY entries marked for
+  // projection) into the daemon's config.json before launch. These are static defaults the
   // daemon reads at startup and have no admin REST endpoint, so they must be written to the
-  // file here (unlike model aliases, pushed live via CopilotAdminClient). Unset preferences
-  // fall back to each key's built-in proxy default, so behavior is unchanged by default.
-  config.update((d) => Object.assign(d, projectedProxyConfig(envConfig)));
+  // file here (unlike model aliases, pushed live via CopilotAdminClient). A force-projected
+  // key falls back to its built-in proxy default when unset; an unset OPT-IN key is simply
+  // not written -- and when a previous start wrote it (recorded in ProxyProjectionState),
+  // the leftover value is cleared here so `agent config --del` truly reverts to the proxy's
+  // own default without ever deleting a value we didn't project. Keys the proxy renamed
+  // away from are dropped too, so an old install self-heals on its next start.
+  const config = new CopilotApiConfig(paths.configFile);
+  const projection = projectedProxyConfig(envConfig);
+  const projectedKeys = new Set(projection.map((e) => JSON.stringify(e.path)));
+  const registryOptInKeys = new Set(optInProxyConfigPaths().map((p) => JSON.stringify(p)));
+  const ownership = new ProxyProjectionState(paths);
+  // The record-read -> config-write -> record-write sequence is one read-modify-write,
+  // guarded by a per-HOME lock: the global start lock lives in the per-host run dir, so two
+  // hosts sharing a daemon home would not exclude each other there (the exclusion stays
+  // best-effort across hosts, since dead-holder reclaim is pid-based and host-local).
+  // Named `.apply.lock` because plain `<file>.lock` is CopilotApiConfig.update()'s own
+  // inner per-file lock, which the writes below still take.
+  const lockPath = `${ownership.path}.apply.lock`;
+  const held = acquireFileLockBounded(lockPath);
+  if (!held) {
+    consola.info("Proxy-config apply lock is busy; applying unlocked after the bounded wait.");
+  }
+  try {
+    // Only paths the CURRENT registry projects opt-in may be deleted: a recorded path
+    // outside that set (an older registry's, or a foreign write to the record) never
+    // claims anything -- it stays in config.json and just falls out of the record.
+    const ownedBefore = ownership
+      .ownedPaths()
+      .filter((p) => registryOptInKeys.has(JSON.stringify(p)));
+    config.update((d) => {
+      for (const key of STALE_PROXY_CONFIG_KEYS) {
+        delete d[key];
+      }
+      for (const path of ownedBefore) {
+        if (!projectedKeys.has(JSON.stringify(path))) deleteProxyConfigValue(d, path);
+      }
+      for (const entry of projection) {
+        setProxyConfigValue(d, entry.path, entry.value);
+      }
+    });
+    ownership.setOwnedPaths(projection.filter((e) => e.optIn).map((e) => e.path));
+  } finally {
+    if (held) releaseFileLock(lockPath);
+  }
   // Persist an admin key so the live `/admin/config/model-mappings` route (used
   // by syncModelAliases) accepts our request instead of 401-ing.
   config.ensureAdminApiKey();

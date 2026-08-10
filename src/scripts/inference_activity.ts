@@ -41,6 +41,9 @@ const INFERENCE_PATH_SUFFIXES = [
   "/messages",
   "/responses",
   "/embeddings",
+  "/alpha/search",
+  "/images/generations",
+  "/images/edits",
 ] as const;
 
 /** Whether an inbound request targets an inference endpoint (POST; matched on the path

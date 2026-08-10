@@ -38,15 +38,34 @@ test("isInferenceRequest: inference POSTs only -- never GETs, pings, or model/co
   expect(isInferenceRequest("post", "/v1/messages")).toBe(true); // method case-insensitive
   expect(isInferenceRequest("POST", "/v1/messages/")).toBe(true); // trailing slash tolerated
 
+  // Search and image generation are usage too, in the same route forms.
+  expect(isInferenceRequest("POST", "/alpha/search")).toBe(true);
+  expect(isInferenceRequest("POST", "/v1/alpha/search")).toBe(true);
+  expect(isInferenceRequest("POST", "/myprovider/alpha/search")).toBe(true);
+  expect(isInferenceRequest("POST", "/alpha/search/")).toBe(true);
+  expect(isInferenceRequest("POST", "/images/generations")).toBe(true);
+  expect(isInferenceRequest("POST", "/v1/images/generations")).toBe(true);
+  expect(isInferenceRequest("POST", "/myprovider/v1/images/generations")).toBe(true);
+  expect(isInferenceRequest("POST", "/images/generations/")).toBe(true);
+  expect(isInferenceRequest("POST", "/images/edits")).toBe(true);
+  expect(isInferenceRequest("POST", "/v1/images/edits")).toBe(true);
+  expect(isInferenceRequest("POST", "/myprovider/images/edits")).toBe(true);
+  expect(isInferenceRequest("POST", "/images/edits/")).toBe(true);
+
   // Observation must not read as activity: liveness, model lists, token counting.
   expect(isInferenceRequest("GET", "/")).toBe(false);
   expect(isInferenceRequest("GET", "/v1/models")).toBe(false);
   expect(isInferenceRequest("POST", "/v1/models")).toBe(false);
   expect(isInferenceRequest("POST", "/v1/messages/count_tokens")).toBe(false);
   expect(isInferenceRequest("GET", "/v1/messages")).toBe(false); // wrong method
+  expect(isInferenceRequest("GET", "/alpha/search")).toBe(false); // wrong method
+  expect(isInferenceRequest("GET", "/images/generations")).toBe(false); // wrong method
   expect(isInferenceRequest("POST", "/usage")).toBe(false);
   // Suffixes are segment-bounded: no slash before "messages" -> no match.
   expect(isInferenceRequest("POST", "/v1/notmessages")).toBe(false);
+  // Two-segment suffixes stay segment-bounded on both edges.
+  expect(isInferenceRequest("POST", "/v1/myimages/generations")).toBe(false);
+  expect(isInferenceRequest("POST", "/v1/images/generations/foo")).toBe(false);
 });
 
 test("markInference: memory always moves; the activity-file persist is throttled", () => {

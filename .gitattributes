@@ -16,3 +16,7 @@ CLAUDE.md -text
 *.webp binary
 *.pdf binary
 *.zip binary
+
+# Repository-specific attributes (binary globs, linguist overrides) go
+# below this line. They survive template updates via three-way merge.
+# repo-platform:local-section

@@ -1,6 +1,6 @@
 # This file is managed by Vivswan/repo-platform.
 # Copier uses it to track the template source and version - do not delete.
-_commit: 70c4780
+_commit: 884d384
 _src_path: gh:Vivswan/repo-platform
 channel: staging
 description: Local copilot-api proxy lifecycle + config helper (TypeScript).
@@ -14,8 +14,8 @@ modules:
 - pr-title
 - auto-assign
 - settings-sync
+- custom-license
 private: false
 project_name: copilot-env
 project_slug: copilot-env
-release_auto_publish: true
 topics: bun,claude-code,cli,codex,copilot,copilot-api,proxy,typescript

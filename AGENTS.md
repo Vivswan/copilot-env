@@ -41,15 +41,20 @@ copilot-env: Local copilot-api proxy lifecycle + config helper (TypeScript).
   `settings/repos/` file named after this repository over there when one
   exists, otherwise by this repository's own `.github/settings.yml`. Do not
   change settings by hand in the GitHub UI; edit the settings file.
-- Repo-owned escape hatches stay local: `.github/workflows/checks.yml` and
-  `.github/workflows/release.yml`, `.gitignore`'s marked LOCAL section,
-  `.typography-allow.local` (typography exemptions; the managed
-  `.typography-allow` is overwritten by sync), and the repository-specific
-  section below.
+- Repo-owned escape hatches stay local:
+  `.github/workflows/checks.yml`,
+  `.github/workflows/release.yml`, `.gitleaks.toml`,
+  `.gitignore`'s marked LOCAL section, `.typography-allow.local`
+  (typography exemptions; the managed `.typography-allow` is overwritten
+  by sync), and the repository-specific section below.
 - Module selection is this repository's own: edit the `modules` list in
   `.repo-platform.yml` and the next sync PR applies the change.
 
 ## Repository-specific guidance
+
+<!-- Add project-specific instructions below. This section survives template
+     updates via three-way merge. -->
+<!-- repo-platform:local-section -->
 
 copilot-env is a local copilot-api proxy lifecycle + config helper (a
 TypeScript port of the Python `copilot-api`). It wraps a floating

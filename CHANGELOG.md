@@ -1,5 +1,21 @@
 # Changelog
 
+## [3.5.6](https://github.com/Vivswan/copilot-env/compare/v3.5.5...v3.5.6) (2026-08-10)
+
+
+### Features
+
+* add agent settings export/import bundle and grouped help ([aa36e26](https://github.com/Vivswan/copilot-env/commit/aa36e26a3d33f87efab393e9f5744ad6132f1379))
+* expose alpha-search and claude auto-model/token-multiplier proxy config keys ([59ca768](https://github.com/Vivswan/copilot-env/commit/59ca7689bc831e8f2f1b8241ab0302f7573eb31d))
+
+
+### Bug Fixes
+
+* assert the installed proxy matches the float target, not just the bounds ([8d308a6](https://github.com/Vivswan/copilot-env/commit/8d308a64c641c44efd9cb59b4f3934c061b9d8a8))
+* count alpha-search and image endpoints as daemon inference activity ([af1f423](https://github.com/Vivswan/copilot-env/commit/af1f42322dcc7c8723c8dfb7dd162b3530422d21))
+* harden integration-id input and surface restart hints on settings import ([41c079b](https://github.com/Vivswan/copilot-env/commit/41c079b85e1f911fca1ebd56835e1f45f9970954))
+* project responses-context-management into the proxy's nested contextManagement ([b144b39](https://github.com/Vivswan/copilot-env/commit/b144b3910017c4322eaf63cbb8b17670e8351e6d))
+
 ## [3.5.5](https://github.com/Vivswan/copilot-env/compare/v3.5.4...v3.5.5) (2026-08-09)
 
 

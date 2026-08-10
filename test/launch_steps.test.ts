@@ -624,3 +624,17 @@ test("applyDefaultConfig: a non-record in a nested path's way is replaced, not c
 
   expect(config.load().contextManagement).toEqual({ responses: false });
 });
+
+test("applyDefaultConfig: ownership clearing covers every opt-in key (claude-token-multiplier)", () => {
+  const { paths, config } = projectionFixture();
+  const envConfig = new CopilotEnvConfig();
+  envConfig.set({ claudeTokenMultiplier: 1.3 });
+  applyDefaultConfig(paths);
+  expect(config.load().claudeTokenMultiplier).toBe(1.3);
+
+  envConfig.del("claudeTokenMultiplier");
+  applyDefaultConfig(paths);
+
+  expect("claudeTokenMultiplier" in config.load()).toBe(false);
+  expect(new ProxyProjectionState(paths).ownedPaths()).toEqual([]);
+});

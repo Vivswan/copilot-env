@@ -31,6 +31,7 @@ import { releaseFileLock } from "../utils/file_lock.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { formatDuration } from "../utils/time.ts";
 import { ensureAuthenticated } from "./auth.ts";
+import { unreadProjectedKeyWarnings } from "./config.ts";
 
 /** Raw `agent start` flag values, exactly as Commander hands them over. Parsed ONCE by
  *  `parseStartAction` at the CLI boundary into a StartAction -- runStart never dispatches
@@ -343,6 +344,9 @@ export async function runStart(action: StartAction): Promise<void> {
 
     fs.mkdirSync(paths.home, { recursive: true });
     applyDefaultConfig(ctx.paths, ctx.envConfig);
+    for (const warning of unreadProjectedKeyWarnings(ctx.envConfig)) {
+      consola.warn(warning);
+    }
     await cleanupExistingProxies(profile, ctx.state);
 
     const port = await resolveStartPort(action.port, true, profile, true, ctx.envConfig);

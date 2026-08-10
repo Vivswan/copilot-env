@@ -10,7 +10,9 @@ import {
   configKeyDef,
   isProxyProjected,
 } from "../copilot_api/env_config.ts";
+import { installedProxyVersion } from "../copilot_api/version.ts";
 import { errMessage } from "../utils/error.ts";
+import { versionLessThan } from "../utils/semver.ts";
 import { formatTable } from "../utils/table.ts";
 
 export interface ConfigArgs {
@@ -43,6 +45,23 @@ function noteHowItApplies(def: ConfigKeyDef): void {
   }
   if (!isProxyProjected(def) && def.restartToApply !== true) return;
   consola.info("Applies on the next proxy start; restart it: `agent stop`, then `agent start`.");
+}
+
+/** The warning for a projected key the installed proxy is too old to read (its
+ *  `sinceProxyVersion` postdates `installed`): the projection would be a silent no-op until
+ *  the float catches up. Null `installed` (no proxy installed -- e.g. a Direct-only setup)
+ *  warns about nothing: the value applies once a new-enough proxy arrives. */
+export function sinceProxyVersionWarning(
+  def: ConfigKeyDef,
+  installed: string | null,
+): string | null {
+  const since = def.sinceProxyVersion;
+  if (since === undefined || installed === null) return null;
+  if (!versionLessThan(installed, since)) return null;
+  return (
+    `The installed proxy ${installed} does not read '${def.cli}' (added in copilot-api ` +
+    `${since}); it applies once the proxy is >= ${since}.`
+  );
 }
 
 /** `agent config`: get (default/`--get`), set, or delete one preference. */
@@ -80,7 +99,29 @@ function runSet(pair: string[]): void {
   }
   new CopilotEnvConfig().set({ [def.key]: value });
   consola.success(`set ${def.cli} = ${formatValue(value)}`);
-  noteHowItApplies(def);
+  const warning = sinceProxyVersionWarning(def, installedProxyVersion());
+  if (warning !== null) consola.warn(warning);
+  // The warning supersedes only the GENERIC restart hint (a restart cannot make an old proxy
+  // read the key); a bespoke applyHint often covers a non-proxy surface and still applies.
+  if (def.applyHint !== undefined || warning === null) noteHowItApplies(def);
+}
+
+/** The warnings for every STORED projected key the installed proxy is too old to read: the
+ *  projection just wrote values the daemon will ignore. `agent start` prints these after
+ *  projecting -- the moment the actual proxy version is known -- so a key set before the
+ *  first start (when no proxy existed to compare against) still gets its warning. */
+export function unreadProjectedKeyWarnings(
+  envConfig: CopilotEnvConfig = new CopilotEnvConfig(),
+  installed: string | null = installedProxyVersion(),
+): string[] {
+  const stored = envConfig.read();
+  const warnings: string[] = [];
+  for (const def of CONFIG_REGISTRY) {
+    if (stored[def.key] === undefined) continue;
+    const warning = sinceProxyVersionWarning(def, installed);
+    if (warning !== null) warnings.push(warning);
+  }
+  return warnings;
 }
 
 function runDel(cli: string): void {

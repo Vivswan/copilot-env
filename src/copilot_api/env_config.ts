@@ -39,6 +39,16 @@ export interface CopilotEnvConfigData {
   useResponsesApiContextManagement?: boolean;
   /** Model id the proxy uses for Messages-API web search. */
   messageApiWebSearchModel?: string;
+  /** Whether the proxy's /alpha/search endpoint (Codex search) prefers Codex over the
+   *  Copilot fallback. */
+  alphaSearchCodexPriority?: boolean;
+  /** Native-Responses model the proxy's /alpha/search (Codex search) uses when the requested
+   *  model is Messages-backed and cannot run the search itself. */
+  alphaSearchModel?: string;
+  /** Model override for Claude Code's background security-monitor requests (unset disables). */
+  claudeAutoModel?: string;
+  /** Multiplier the proxy applies when estimating Claude token usage. */
+  claudeTokenMultiplier?: number;
   /** Default proxy port. */
   port?: number;
   /** Lower bound of the allowed proxy port range (default 1024). */
@@ -64,6 +74,7 @@ type ConfigPatch = { [K in keyof CopilotEnvConfigData]?: CopilotEnvConfigData[K]
 // Lenient read schema: each field validates the value we own and FALLS BACK to undefined
 // (treated as "unset" -> default by callers) rather than throwing on a bad/ill-typed value.
 const MAX_SECONDS = 365 * 24 * 60 * 60; // a year, a generous ceiling for cooldown/idle knobs
+const MAX_TOKEN_MULTIPLIER = 1000; // generous; anything larger is surely a typo, not an estimate
 const MAX_DAYS = 3650;
 
 const PASSTHROUGH_VALUES = ["auto", "on", "off"] as const;
@@ -82,6 +93,13 @@ const CONFIG_SCHEMA = v.object({
   useResponsesApiContextManagement: v.fallback(v.optional(v.boolean()), undefined),
   messageApiWebSearchModel: v.fallback(
     v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
+    undefined,
+  ),
+  alphaSearchCodexPriority: v.fallback(v.optional(v.boolean()), undefined),
+  alphaSearchModel: v.fallback(v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))), undefined),
+  claudeAutoModel: v.fallback(v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))), undefined),
+  claudeTokenMultiplier: v.fallback(
+    v.optional(v.pipe(v.number(), v.finite(), v.gtValue(0), v.maxValue(MAX_TOKEN_MULTIPLIER))),
     undefined,
   ),
   port: v.fallback(
@@ -167,6 +185,10 @@ interface ProjectedKeyFields {
    *  proxy renamed or nested its key while our storage key stays put (a rename there would
    *  need a store migration). */
   proxyPath?: ProxyConfigPath;
+  /** Oldest proxy version that reads this key (where upstream introduced it). `agent config
+   *  --set` warns when the installed proxy is older, since the projection would be a silent
+   *  no-op until the float catches up. Unset = read by every version above our floor. */
+  sinceProxyVersion?: string;
 }
 
 /** A copilot-env-internal key: our own code reads it; nothing is written into the proxy
@@ -177,6 +199,7 @@ type InternalConfigKeyDef = ConfigKeyDefCore &
     proxyDefault?: undefined;
     proxyProjected?: undefined;
     proxyPath?: undefined;
+    sinceProxyVersion?: undefined;
   };
 
 /** Force-projected into the proxy config.json at `agent start` as `stored ?? proxyDefault`
@@ -209,12 +232,12 @@ type OptInProjectedConfigKeyDef = ConfigKeyDefCore &
   };
 
 /** One config key. The registry literal's `as const satisfies` rejects exactly these shapes
- *  at compile time: `proxyDefault` combined with `proxyProjected`; `proxyPath` on a
- *  non-projected entry; an internal entry with both or neither of `defaultValue` /
- *  `defaultLabel`; a force-projected entry with either (`proxyDefault` is its source) and an
- *  opt-in entry with `defaultValue` (its `defaultLabel` is required instead);
- *  `defaultSuffix` without `defaultValue`; and `restartToApply`
- *  combined with `applyHint`. */
+ *  at compile time: `proxyDefault` combined with `proxyProjected`; `proxyPath` or
+ *  `sinceProxyVersion` on a non-projected entry; an internal entry with both or neither of
+ *  `defaultValue` / `defaultLabel`; a force-projected entry with either (`proxyDefault` is
+ *  its source) and an opt-in entry with `defaultValue` (its `defaultLabel` is required
+ *  instead); `defaultSuffix` without `defaultValue`; and `restartToApply` combined with
+ *  `applyHint`. */
 export type ConfigKeyDef =
   | InternalConfigKeyDef
   | ForceProjectedConfigKeyDef
@@ -257,6 +280,15 @@ function parseWholeNumber(raw: string, min: number, max: number): number {
   return n;
 }
 
+function parsePositiveDecimal(raw: string, max: number): number {
+  const t = raw.trim();
+  if (!/^\d+(\.\d+)?$/.test(t)) throw new Error(`expected a positive decimal number, got '${raw}'`);
+  const n = Number.parseFloat(t);
+  if (n <= 0) throw new Error(`must be greater than 0, got ${n}`);
+  if (n > max) throw new Error(`must be at most ${max}, got ${n}`);
+  return n;
+}
+
 function parseEnum<T extends string>(raw: string, allowed: readonly T[]): T {
   const t = raw.trim().toLowerCase();
   const hit = allowed.find((a) => a === t);
@@ -274,11 +306,48 @@ function parseNonEmpty(raw: string): string {
  *  `--get` / `--help` display order; a test pins it, so insert new keys in place). */
 const CONFIG_REGISTRY_LITERAL = [
   {
+    cli: "alpha-search-codex-priority",
+    key: "alphaSearchCodexPriority",
+    describe: "Prefer Codex for the proxy's /alpha/search endpoint (Codex search) (bool)",
+    parse: parseBool,
+    defaultLabel: "true (proxy default)",
+    proxyProjected: true,
+    sinceProxyVersion: "1.15.0",
+  },
+  {
+    cli: "alpha-search-model",
+    key: "alphaSearchModel",
+    describe:
+      "Native-Responses model for /alpha/search (Codex search) when the requested model is Messages-backed and cannot run the search itself",
+    parse: parseNonEmpty,
+    defaultLabel: "gpt-5-mini (proxy default)",
+    proxyProjected: true,
+    sinceProxyVersion: "1.16.3",
+  },
+  {
     cli: "auto-start",
     key: "autoStart",
     describe: "Managed proxy lifecycle: auto-start on agent open + idle auto-stop (bool)",
     parse: parseBool,
     defaultValue: false,
+  },
+  {
+    cli: "claude-auto-model",
+    key: "claudeAutoModel",
+    describe:
+      "Model override for Claude Code's background security-monitor requests (leave unset to disable)",
+    parse: parseNonEmpty,
+    defaultLabel: "unset (disabled)",
+    proxyProjected: true,
+    sinceProxyVersion: "1.14.22",
+  },
+  {
+    cli: "claude-token-multiplier",
+    key: "claudeTokenMultiplier",
+    describe: "Multiplier the proxy applies when estimating Claude token usage",
+    parse: (r) => parsePositiveDecimal(r, MAX_TOKEN_MULTIPLIER),
+    defaultLabel: "1.15 (proxy default)",
+    proxyProjected: true,
   },
   {
     cli: "codex-model-catalog",

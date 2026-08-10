@@ -240,7 +240,11 @@ agent config --del idle-timeout       # revert one to its default
 
 | Key | Default | Effect |
 | --- | --- | --- |
+| `alpha-search-codex-priority` | `true` | Prefer Codex for the proxy's `/alpha/search` endpoint (Codex search). |
+| `alpha-search-model` | `gpt-5-mini` | Native-Responses model for `/alpha/search` (Codex search) when the requested model is Messages-backed and cannot run the search itself. |
 | `auto-start` | `false` | Managed proxy lifecycle: auto-start on agent open + idle auto-stop. |
+| `claude-auto-model` | unset | Model override for Claude Code's background security-monitor requests (unset disables). |
+| `claude-token-multiplier` | `1.15` | Multiplier the proxy applies when estimating Claude token usage. |
 | `codex-model-catalog` | `false` | Patched Codex model catalog serving Copilot's real context windows (opt-in). |
 | `idle-timeout` | `3600` | Idle auto-stop window in seconds (`0` disables). |
 | `min-port` / `max-port` | `1024` / `65535` | Allowed proxy port range. |
@@ -260,7 +264,8 @@ agent config --del idle-timeout       # revert one to its default
 | `wire-mcp` | `true` | Wire the copilot-env MCP server + WebSearch deny into Claude on direct writes. |
 
 Proxy-side keys (`small-model`, the `responses-*`/`messages-api` flags,
-`message-websearch-model`) are projected into the proxy's own `config.json` at
+`message-websearch-model`, the `alpha-search-*` pair, `claude-auto-model`,
+`claude-token-multiplier`) are projected into the proxy's own `config.json` at
 `agent start`, so changing them needs a daemon restart to take effect - except
 that the MCP `web_search` tool reads `message-websearch-model` fresh on every
 call.

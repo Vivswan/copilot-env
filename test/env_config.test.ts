@@ -1,8 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
 
-import { runConfig } from "../src/commands/config.ts";
+import {
+  runConfig,
+  sinceProxyVersionWarning,
+  unreadProjectedKeyWarnings,
+} from "../src/commands/config.ts";
 import {
   CONFIG_REGISTRY,
+  type ConfigKeyDef,
   CopilotEnvConfig,
   configDefaultLabel,
   configDefaultNumber,
@@ -54,6 +59,10 @@ test("each typed key round-trips and del() reverts it to undefined (default)", (
     useMessagesApi: false,
     useResponsesApiContextManagement: false,
     messageApiWebSearchModel: "gpt-5-mini",
+    alphaSearchCodexPriority: false,
+    alphaSearchModel: "gpt-5",
+    claudeAutoModel: "claude-haiku-4.5",
+    claudeTokenMultiplier: 1.15,
     port: 4242,
     minPort: 2000,
     maxPort: 60000,
@@ -75,6 +84,10 @@ test("each typed key round-trips and del() reverts it to undefined (default)", (
     useMessagesApi: false,
     useResponsesApiContextManagement: false,
     messageApiWebSearchModel: "gpt-5-mini",
+    alphaSearchCodexPriority: false,
+    alphaSearchModel: "gpt-5",
+    claudeAutoModel: "claude-haiku-4.5",
+    claudeTokenMultiplier: 1.15,
     port: 4242,
     minPort: 2000,
     maxPort: 60000,
@@ -111,6 +124,14 @@ test("the read schema is lenient: ill-typed / out-of-range stored values fall ba
   new CopilotEnvConfig().set({ port: 70000 as unknown as number });
   // 70000 > 65535 -> schema fallback -> undefined (NOT a thrown error).
   expect(new CopilotEnvConfig().read().port).toBeUndefined();
+
+  // A stored non-positive multiplier is equally junk: reads back as unset.
+  new CopilotEnvConfig().set({ claudeTokenMultiplier: 0 as unknown as number });
+  expect(new CopilotEnvConfig().read().claudeTokenMultiplier).toBeUndefined();
+  new CopilotEnvConfig().set({ claudeTokenMultiplier: -1.5 as unknown as number });
+  expect(new CopilotEnvConfig().read().claudeTokenMultiplier).toBeUndefined();
+  new CopilotEnvConfig().set({ claudeTokenMultiplier: 5000 as unknown as number });
+  expect(new CopilotEnvConfig().read().claudeTokenMultiplier).toBeUndefined();
 });
 
 test("the registry parsers accept valid input and reject bad input with a clear message", () => {
@@ -121,12 +142,29 @@ test("the registry parsers accept valid input and reject bad input with a clear 
   expect(configKeyDef("proxy-logs")?.parse("false")).toBe(false);
   expect(configKeyDef("port")?.parse("4141")).toBe(4141);
   expect(configKeyDef("codex-model-catalog")?.parse("yes")).toBe(true);
+  expect(configKeyDef("alpha-search-codex-priority")?.parse("false")).toBe(false);
+  expect(configKeyDef("alpha-search-model")?.parse(" gpt-5 ")).toBe("gpt-5");
+  expect(configKeyDef("claude-auto-model")?.parse("claude-haiku-4.5")).toBe("claude-haiku-4.5");
+  expect(configKeyDef("claude-token-multiplier")?.parse("1.15")).toBe(1.15);
+  expect(configKeyDef("claude-token-multiplier")?.parse("2")).toBe(2);
+  expect(configKeyDef("claude-token-multiplier")?.parse(" 1.5 ")).toBe(1.5);
 
   expect(() => configKeyDef("auto-start")?.parse("maybe")).toThrow();
   expect(() => configKeyDef("passthrough")?.parse("sometimes")).toThrow();
   expect(() => configKeyDef("idle-timeout")?.parse("-5")).toThrow();
   expect(() => configKeyDef("port")?.parse("70000")).toThrow(); // out of range
   expect(() => configKeyDef("codex-model-catalog")?.parse("bogus")).toThrow();
+  expect(() => configKeyDef("alpha-search-model")?.parse("  ")).toThrow();
+  expect(() => configKeyDef("claude-token-multiplier")?.parse("0")).toThrow(/greater than 0/);
+  expect(() => configKeyDef("claude-token-multiplier")?.parse("-1.5")).toThrow(/positive decimal/);
+  expect(() => configKeyDef("claude-token-multiplier")?.parse("1.2.3")).toThrow(/positive decimal/);
+  expect(() => configKeyDef("claude-token-multiplier")?.parse("fast")).toThrow(/positive decimal/);
+  expect(() => configKeyDef("claude-token-multiplier")?.parse("1e2")).toThrow(/positive decimal/);
+  expect(() => configKeyDef("claude-token-multiplier")?.parse("NaN")).toThrow(/positive decimal/);
+  expect(() => configKeyDef("claude-token-multiplier")?.parse("Infinity")).toThrow(
+    /positive decimal/,
+  );
+  expect(() => configKeyDef("claude-token-multiplier")?.parse("1001")).toThrow(/at most 1000/);
   expect(configKeyDef("nope")).toBeUndefined();
 });
 
@@ -167,7 +205,11 @@ test("runConfig --get <key> prints just the value to stdout (script-friendly)", 
 test("the registry covers exactly the documented keys, in alphabetical order", () => {
   const clis = CONFIG_REGISTRY.map((d) => d.cli);
   expect(clis).toEqual([
+    "alpha-search-codex-priority",
+    "alpha-search-model",
     "auto-start",
+    "claude-auto-model",
+    "claude-token-multiplier",
     "codex-model-catalog",
     "idle-timeout",
     "integration-id",
@@ -231,6 +273,10 @@ test("responses-context-management projects to the proxy's NESTED contextManagem
   );
   // The ownership allowlist is exactly the opt-in entries' paths, set or not.
   expect(optInProxyConfigPaths()).toEqual([
+    ["alphaSearchCodexPriority"],
+    ["alphaSearchModel"],
+    ["claudeAutoModel"],
+    ["claudeTokenMultiplier"],
     ["messageApiWebSearchModel"],
     ["contextManagement", "responses"],
   ]);
@@ -240,6 +286,101 @@ test("responses-context-management projects to the proxy's NESTED contextManagem
     JSON.stringify(d.proxyPath ?? [d.key]),
   );
   expect(new Set(allProjectedPaths).size).toBe(allProjectedPaths.length);
+});
+
+test("the alpha-search and claude proxy keys are opt-in projections at the top level", () => {
+  tmpHome();
+  // Unset -> absent from the projection, so the proxy's own defaults stand.
+  const empty = projectedProxyConfig();
+  const keys = [
+    "alphaSearchCodexPriority",
+    "alphaSearchModel",
+    "claudeAutoModel",
+    "claudeTokenMultiplier",
+  ];
+  for (const key of keys) {
+    expect(projectedValue(empty, [key])).toBeUndefined();
+  }
+  // Set through the CLI path -> each appears under its own top-level proxy key.
+  runConfig({ set: ["alpha-search-codex-priority", "false"] });
+  runConfig({ set: ["alpha-search-model", "gpt-5"] });
+  runConfig({ set: ["claude-auto-model", "claude-haiku-4.5"] });
+  runConfig({ set: ["claude-token-multiplier", "1.3"] });
+  const projected = projectedProxyConfig();
+  expect(projectedValue(projected, ["alphaSearchCodexPriority"])).toBe(false);
+  expect(projectedValue(projected, ["alphaSearchModel"])).toBe("gpt-5");
+  expect(projectedValue(projected, ["claudeAutoModel"])).toBe("claude-haiku-4.5");
+  expect(projectedValue(projected, ["claudeTokenMultiplier"])).toBe(1.3);
+  for (const cli of [
+    "alpha-search-codex-priority",
+    "alpha-search-model",
+    "claude-auto-model",
+    "claude-token-multiplier",
+  ]) {
+    expect(isProxyProjected(configKeyDef(cli)!)).toBe(true);
+    expect(configKeyDef(cli)?.proxyDefault).toBeUndefined();
+  }
+});
+
+test("sinceProxyVersion pins the upstream introduction of the version-gated keys", () => {
+  // Verified against upstream: the aged float target can legitimately install a proxy
+  // older than these, which would silently ignore the projected key.
+  expect(configKeyDef("claude-auto-model")?.sinceProxyVersion).toBe("1.14.22");
+  expect(configKeyDef("alpha-search-codex-priority")?.sinceProxyVersion).toBe("1.15.0");
+  expect(configKeyDef("alpha-search-model")?.sinceProxyVersion).toBe("1.16.3");
+  // claude-token-multiplier predates the proxy floor, so it carries no gate.
+  expect(configKeyDef("claude-token-multiplier")?.sinceProxyVersion).toBeUndefined();
+  // Every pin must be strict x.y.z: versionLessThan fails OPEN on a malformed operand,
+  // so a typo'd pin would silently disable its warning.
+  for (const def of CONFIG_REGISTRY) {
+    if (def.sinceProxyVersion !== undefined) {
+      expect(def.sinceProxyVersion).toMatch(/^\d+\.\d+\.\d+$/);
+    }
+  }
+});
+
+test("sinceProxyVersionWarning fires only when the installed proxy predates the key", () => {
+  const def = configKeyDef("alpha-search-model")!;
+  const warning = sinceProxyVersionWarning(def, "1.14.21");
+  expect(warning).toBe(
+    "The installed proxy 1.14.21 does not read 'alpha-search-model' (added in copilot-api " +
+      "1.16.3); it applies once the proxy is >= 1.16.3.",
+  );
+  expect(sinceProxyVersionWarning(def, "1.16.3")).toBeNull(); // equal: reads it
+  expect(sinceProxyVersionWarning(def, "1.17.0")).toBeNull(); // newer: reads it
+  // No proxy installed (a Direct-only setup may set keys for later): no warning.
+  expect(sinceProxyVersionWarning(def, null)).toBeNull();
+  // An ungated key never warns, however old the proxy.
+  expect(sinceProxyVersionWarning(configKeyDef("claude-token-multiplier")!, "1.11.0")).toBeNull();
+});
+
+test("unreadProjectedKeyWarnings covers stored gated keys at start time", () => {
+  tmpHome();
+  const cfg = new CopilotEnvConfig();
+  // Nothing stored: nothing to warn about, however old the proxy.
+  expect(unreadProjectedKeyWarnings(cfg, "1.11.0")).toEqual([]);
+
+  cfg.set({ alphaSearchModel: "gpt-5", claudeTokenMultiplier: 1.5, autoStart: true });
+  // The stored gated key warns on an older proxy; the ungated and internal keys never do.
+  const warnings = unreadProjectedKeyWarnings(cfg, "1.14.21");
+  expect(warnings).toHaveLength(1);
+  expect(warnings[0]).toContain("alpha-search-model");
+  // New-enough or missing proxy: silent.
+  expect(unreadProjectedKeyWarnings(cfg, "1.16.3")).toEqual([]);
+  expect(unreadProjectedKeyWarnings(cfg, null)).toEqual([]);
+});
+
+test("the union rejects sinceProxyVersion on internal (non-projected) entries", () => {
+  // @ts-expect-error - sinceProxyVersion exists only on the projected shapes
+  const bad: ConfigKeyDef = {
+    cli: "bogus",
+    key: "autoStart",
+    describe: "bogus",
+    parse: () => true,
+    defaultValue: false,
+    sinceProxyVersion: "1.0.0",
+  };
+  expect(bad.cli).toBe("bogus");
 });
 
 test("isProxyProjected marks force + opt-in keys, not copilot-env-internal ones", () => {
@@ -295,6 +436,14 @@ test("registry defaults are single-sourced: labels derive from the owned default
   expect(configDefaultLabel(configKeyDef("port")!)).toBe("4141 (then next free)");
   expect(configDefaultLabel(configKeyDef("integration-id")!)).toBe("auto (probe per credential)");
   expect(configDefaultLabel(configKeyDef("small-model")!)).toBe("gpt-5-mini");
+  expect(configDefaultLabel(configKeyDef("alpha-search-codex-priority")!)).toBe(
+    "true (proxy default)",
+  );
+  expect(configDefaultLabel(configKeyDef("alpha-search-model")!)).toBe(
+    "gpt-5-mini (proxy default)",
+  );
+  expect(configDefaultLabel(configKeyDef("claude-auto-model")!)).toBe("unset (disabled)");
+  expect(configDefaultLabel(configKeyDef("claude-token-multiplier")!)).toBe("1.15 (proxy default)");
   // The composite websearch label's mcp half is owned by web_search.ts (which imports
   // env_config, so the registry cannot reference it); pin the copy instead.
   expect(configDefaultLabel(configKeyDef("message-websearch-model")!)).toBe(

@@ -75,9 +75,10 @@ file layouts. Don't restate here what a reader can grep.
 - **In-place, no cache.** `bin/agent` installs `node_modules` into the checkout and runs
   `cli.ts` from there. Install noise goes to stderr so it never pollutes the `agent env`
   stdout the shell wrapper evals.
-- **The proxy floats; we never patch it.** `@jeffreycao/copilot-api` is tracked as `latest`
-  and overlaid inside a supply-chain cooldown window (`src/proxy_float.ts`), clamped by
-  `copilot-env.config`. Patching the package would pin one version, so runtime needs are
+- **The proxy floats; we never patch it.** `@jeffreycao/copilot-api` sits at a caret-range
+  baseline in package.json and is overlaid at postinstall with the newest release older
+  than a supply-chain cooldown window (`src/proxy_float.ts`), clamped by `copilot-env.config`.
+  Patching the package would pin one version, so runtime needs are
   `bun --preload` shims instead. Two agents wired Direct means no proxy, so no npm check runs.
 - **`agent env` is the one machine-readable command.** The shell wrapper evals only that, so
   a new subcommand needs no wrapper change. Each agent's wiring otherwise lives in its own

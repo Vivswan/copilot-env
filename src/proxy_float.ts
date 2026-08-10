@@ -1,7 +1,7 @@
-// The proxy float -- the one dependency copilot-env intentionally does NOT pin
-// in bun.lock. package.json keeps @jeffreycao/copilot-api at "latest" as a
-// reproducible baseline, then this postinstall overlays the exact runtime target
-// into node_modules with `bun add --no-save`.
+// The proxy float -- the one dependency whose RUNTIME version bun.lock does not
+// govern. package.json keeps @jeffreycao/copilot-api at a caret-range baseline
+// for reproducible installs, then this postinstall overlays the exact runtime
+// target into node_modules with `bun add --no-save`.
 //
 // Direct run:
 //   bun src/proxy_float.ts

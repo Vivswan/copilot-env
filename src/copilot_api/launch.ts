@@ -598,7 +598,7 @@ export function applyDefaultConfig(
 /**
  * Disable every built-in extraPrompt the proxy injects.
  *
- * The pinned `@jeffreycao/copilot-api` re-adds any *missing* default extraPrompt
+ * The floated `@jeffreycao/copilot-api` re-adds any *missing* default extraPrompt
  * key on every config reload (`mergeDefaultConfig`), so an empty or absent map
  * is futile -- the defaults always come back. Instead we blank every key the
  * daemon has already written to config.json. Discovering the key set at runtime

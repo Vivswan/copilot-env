@@ -5,7 +5,7 @@
     "": {
       "name": "copilot-env",
       "dependencies": {
-        "@jeffreycao/copilot-api": "^1.14.18",
+        "@jeffreycao/copilot-api": "^1.14.22",
         "@modelcontextprotocol/server": "^2.0.0",
         "commander": "^15.0.0",
         "consola": "^3.4.2",
@@ -58,7 +58,7 @@
 
     "@isaacs/fs-minipass": ["@isaacs/fs-minipass@4.0.1", "", { "dependencies": { "minipass": "^7.0.4" } }, "sha512-wgm9Ehl2jpeqP3zw/7mo3kRHFp5MEDhqAdwy1fTGkHAwnkGOVsgpvQhL8B5n1qlb01jV3n/bI0ZfZp5lWA1k4w=="],
 
-    "@jeffreycao/copilot-api": ["@jeffreycao/copilot-api@1.14.18", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.29.0", "citty": "^0.1.6", "clipboardy": "^5.0.0", "consola": "^3.4.2", "fetch-event-stream": "^0.1.5", "fzstd": "^0.1.1", "gpt-tokenizer": "^3.0.1", "hono": "^4.9.9", "proxy-from-env": "^1.1.0", "srvx": "^0.11.15", "tiny-invariant": "^1.3.3", "undici": "^7.16.0", "winreg": "^1.2.5", "zod": "^4.1.11" }, "bin": { "copilot-api": "dist/main.js" } }, "sha512-yH61g6HWCqQVGvoqyJ72VfYG3z5Sa+LGz/WQH0H/3BqNaj9smZ+C8Urz0V+W+P++437x2qsLs5ocwS2XTV/3Sw=="],
+    "@jeffreycao/copilot-api": ["@jeffreycao/copilot-api@1.14.22", "", { "dependencies": { "@modelcontextprotocol/sdk": "^1.29.0", "citty": "^0.1.6", "clipboardy": "^5.0.0", "consola": "^3.4.2", "fetch-event-stream": "^0.1.5", "fzstd": "^0.1.1", "gpt-tokenizer": "^3.0.1", "hono": "^4.9.9", "proxy-from-env": "^1.1.0", "srvx": "^0.11.15", "tiny-invariant": "^1.3.3", "undici": "^7.16.0", "winreg": "^1.2.5", "zod": "^4.1.11" }, "bin": { "copilot-api": "dist/main.js" } }, "sha512-QZgh9azmng7+MeMf+cnomPnTH/t+S44Ywxa0ipKJNp6JHClACp4d82uO7NJDzNo36eDeotXSoxta7Z1RNV2gyw=="],
 
     "@modelcontextprotocol/client": ["@modelcontextprotocol/client@2.0.0", "", { "dependencies": { "@modelcontextprotocol/core": "2.0.0", "cross-spawn": "^7.0.5", "eventsource": "^3.0.2", "eventsource-parser": "^3.0.0", "jose": "^6.1.3", "pkce-challenge": "^5.0.0", "zod": "^4.2.0" } }, "sha512-8f1OghQ2rjzIOfqgUCP+8GiUWqRs89njoWLNqAe8kWmDePv3s1fZXseej+QXemssEuuOvLLmLO/kqM3IQHtISw=="],
 

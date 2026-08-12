@@ -1,5 +1,5 @@
-bunx lint-staged
-bun run typecheck
-bun run test
-bun run lint:sh
-bun run lint:ps
+node_modules/.bin/lint-staged
+deno task typecheck
+deno test -P=test --changed=origin/main test/
+deno task lint:sh
+deno task lint:ps

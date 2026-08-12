@@ -6,55 +6,18 @@
   "type": "module",
   "description": "Local copilot-api proxy lifecycle + config helper (TypeScript port of the Python copilot-api helper).",
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "bun test --timeout 15000",
-    "lint": "biome check src test scripts .github/scripts",
-    "lint:sh": "bash scripts/lint-sh.sh",
-    "lint:ps": "bash scripts/lint-ps.sh",
-    "format": "biome format --write src test scripts .github/scripts",
-    "check": "biome check --write src test scripts .github/scripts",
-    "postinstall": "bun src/proxy_float.ts",
     "prepare": "husky"
   },
-  "dependencies": {
-    "@jeffreycao/copilot-api": "^1.14.22",
-    "@modelcontextprotocol/server": "^2.0.0",
-    "commander": "^15.0.0",
-    "consola": "^3.4.2",
-    "dotenv": "^17.4.2",
-    "execa": "^10.0.0",
-    "ps-list": "^9.0.0",
-    "semver": "^7.8.5",
-    "smol-toml": "^1.7.1",
-    "tar": "^7.5.22",
-    "valibot": "^1.4.2",
-    "which": "^7.0.0"
-  },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.5",
-    "@modelcontextprotocol/client": "^2.0.0",
-    "@modelcontextprotocol/sdk": "^1.30.0",
     "@types/bun": "^1.3.14",
-    "@types/node": "^26.1.1",
-    "@types/semver": "^7.7.1",
-    "@types/which": "^3.0.4",
     "husky": "^9.1.7",
-    "lint-staged": "^17.3.0",
-    "typescript": "^7.0.2"
+    "lint-staged": "^17.3.0"
   },
-  "engines": {
-    "node": ">=20",
-    "bun": ">=1.3.0"
-  },
-  "packageManager": "bun@1.3.14",
-  "trustedDependencies": [
-    "@biomejs/biome"
-  ],
   "lint-staged": {
-    "src/**/*.ts": "biome check --write --no-errors-on-unmatched",
-    "test/**/*.ts": "biome check --write --no-errors-on-unmatched",
-    "scripts/**/*.ts": "biome check --write --no-errors-on-unmatched",
-    ".github/scripts/**/*.ts": "biome check --write --no-errors-on-unmatched",
-    "biome.json": "biome check --write --no-errors-on-unmatched"
+    "src/**/*.ts": ["deno lint --fix", "deno fmt"],
+    "test/**/*.ts": ["deno lint --fix", "deno fmt"],
+    "scripts/**/*.ts": ["deno lint --fix", "deno fmt"],
+    ".github/scripts/**/*.ts": ["deno lint --fix", "deno fmt"],
+    "deno.json": "deno fmt"
   }
 }

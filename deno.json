@@ -1,0 +1,66 @@
+{
+  "nodeModulesDir": "auto",
+  "lock": { "frozen": true },
+  "minimumDependencyAge": "P7D",
+  "exclude": [".claude/", "node_modules/", "CHANGELOG.md"],
+  "imports": {
+    "@jeffreycao/copilot-api": "npm:@jeffreycao/copilot-api@^1.14.22",
+    "@modelcontextprotocol/client": "npm:@modelcontextprotocol/client@^2.0.0",
+    "@modelcontextprotocol/client/": "npm:/@modelcontextprotocol/client@^2.0.0/",
+    "@modelcontextprotocol/sdk": "npm:@modelcontextprotocol/sdk@^1.30.0",
+    "@modelcontextprotocol/sdk/": "npm:/@modelcontextprotocol/sdk@^1.30.0/",
+    "@modelcontextprotocol/server": "npm:@modelcontextprotocol/server@^2.0.0",
+    "@modelcontextprotocol/server/": "npm:/@modelcontextprotocol/server@^2.0.0/",
+    "@std/crypto": "jsr:@std/crypto@^1",
+    "@std/dotenv": "jsr:@std/dotenv@^0.225.0",
+    "@std/expect": "jsr:@std/expect@^1",
+    "@std/testing": "jsr:@std/testing@^1",
+    "commander": "npm:commander@^15.0.0",
+    "consola": "npm:consola@^3.4.2",
+    "execa": "npm:execa@^10.0.0",
+    "ps-list": "npm:ps-list@^9.0.0",
+    "semver": "npm:semver@^7.8.5",
+    "smol-toml": "npm:smol-toml@^1.7.1",
+    "tar": "npm:tar@^7.5.22",
+    "typescript": "npm:typescript@^7.0.2",
+    "valibot": "npm:valibot@^1.4.2",
+    "which": "npm:which@^7.0.0"
+  },
+  "tasks": {
+    "test": "deno test -P=test test/",
+    "typecheck": "deno check src/ test/ scripts/ .github/scripts/",
+    "lint": "deno lint && deno fmt --check",
+    "lint:sh": "bash scripts/lint-sh.sh",
+    "lint:ps": "bash scripts/lint-ps.sh",
+    "check": "deno lint --fix && deno fmt"
+  },
+  "permissions": {
+    "test": {
+      "env": true,
+      "read": true,
+      "write": true,
+      "run": true,
+      "sys": true,
+      "net": ["127.0.0.1", "localhost", "[::1]"]
+    }
+  },
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "verbatimModuleSyntax": true,
+    "lib": ["deno.window", "deno.unstable"],
+    "types": ["node", "./node_modules/@types/bun/index.d.ts"]
+  },
+  "lint": {
+    "plugins": ["./test/lint/no_shim_imports.ts"],
+    "rules": {
+      "tags": ["recommended"],
+      "exclude": ["require-await"]
+    }
+  },
+  "fmt": {
+    "lineWidth": 100,
+    "exclude": ["**/*.md"]
+  }
+}

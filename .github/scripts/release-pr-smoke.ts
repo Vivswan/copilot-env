@@ -18,17 +18,18 @@
 //      COPILOT_ENV_CI_RELEASES_API_URL hook in resolve-release.ts, exercising
 //      resolve -> download -> verify -> extract -> bundled installer.
 //
-// Usage: bun .github/scripts/release-pr-smoke.ts
+// Usage: deno run -P=test .github/scripts/release-pr-smoke.ts
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const isWindows = process.platform === "win32";
-const repoRoot = resolve(import.meta.dir, "..", "..");
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 interface RunOptions {
   env?: Record<string, string | undefined>;
@@ -89,8 +90,12 @@ async function main(): Promise<void> {
 
   // 1. Pin the installers exactly as the release workflow does, and validate the pins.
   const assetsEnv = { ...process.env, RELEASE_ASSETS_DIR: assetsDir };
-  run("bun", [".github/scripts/release-assets.ts", "prepare", tag], { env: assetsEnv });
-  run("bun", [".github/scripts/release-assets.ts", "validate", tag], { env: assetsEnv });
+  run("deno", ["run", "-P=test", ".github/scripts/release-assets.ts", "prepare", tag], {
+    env: assetsEnv,
+  });
+  run("deno", ["run", "-P=test", ".github/scripts/release-assets.ts", "validate", tag], {
+    env: assetsEnv,
+  });
 
   // 2. Build the pending source archive: same wrapper-dir SHA marker shape as a
   // GitHub tarball (verify-source-archive.ts checks the root dir's trailing hex

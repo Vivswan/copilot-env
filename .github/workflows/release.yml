@@ -115,21 +115,31 @@ jobs:
       # Attestations only work on public repositories (private needs GitHub
       # Enterprise Cloud).
       - uses: actions/attest-build-provenance@v4
+        id: attest
         with:
           subject-path: |
             release-assets/install.sh
             release-assets/install.ps1
             release-assets/copilot-env-${{ needs.release-please.outputs.tag_name }}.tar.gz
 
+      # The attestation's Sigstore bundle also ships as a release asset, so
+      # any asset can be verified against the frozen release without
+      # depending on GitHub's attestations API:
+      # `gh attestation verify <asset> -R Vivswan/copilot-env --bundle
+      # copilot-env-<tag>.attestation.jsonl`. The bundle is the verification
+      # material itself, so it is the one asset without its own attestation.
       - name: Upload installer assets
         env:
           GH_TOKEN: ${{ secrets.REPO_PLATFORM_TOKEN || github.token }}
           TAG: ${{ needs.release-please.outputs.tag_name }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
         run: |
+          cp "$BUNDLE" "copilot-env-$TAG.attestation.jsonl"
           gh release upload "$TAG" \
             release-assets/install.sh \
             release-assets/install.ps1 \
             "release-assets/copilot-env-$TAG.tar.gz" \
+            "copilot-env-$TAG.attestation.jsonl" \
             --clobber
 
   # Post-release gate: run the REAL uploaded installer assets end to end on

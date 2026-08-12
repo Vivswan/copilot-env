@@ -1,4 +1,3 @@
-import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -45,6 +44,7 @@ import {
   type RuntimeTarget,
 } from "../src/health/probe.ts";
 import type { CheckResult, CheckStatus, HealthScope } from "../src/health/types.ts";
+import { expect, test } from "./helpers/testing.ts";
 import { envSnapshot, writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
 
 // --- fixtures ---------------------------------------------------------------

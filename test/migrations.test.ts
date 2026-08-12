@@ -1,6 +1,5 @@
-import { expect, test } from "bun:test";
-
 import { dueMigrations, type Migration } from "../src/migrations/index.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 // Pure selection logic for which migrations run across a version range, with a synthetic
 // registry so the real migrations' side effects are never triggered here. Migrations are

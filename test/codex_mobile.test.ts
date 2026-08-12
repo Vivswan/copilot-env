@@ -1,12 +1,11 @@
-import { expect, test } from "bun:test";
 import { parse } from "smol-toml";
-
 import {
   readModelCatalogJson,
   readModelProvider,
   restoreModelProvider,
   stripModelProvider,
 } from "../src/codex/mobile.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null) throw new Error("expected an object");

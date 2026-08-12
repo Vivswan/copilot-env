@@ -1,10 +1,9 @@
-import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-
 import { INSTALLER_PINS } from "../.github/scripts/release-assets.ts";
 import { DOC_LINKS, PRESERVE } from "../src/install/release.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 // The bootstrap installers hand-roll two lists that release.ts owns, and nothing at
 // runtime ties them together: the user-state paths backed up across the destructive

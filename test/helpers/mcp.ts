@@ -3,10 +3,11 @@
 // The consolidation is the point -- a credential env var scrubbed here is
 // scrubbed for every suite, so no test can silently pick up an ambient
 // credential and start making real network calls.
-import { expect } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { denoRunArgs, ROOT } from "./run.ts";
+import { expect } from "./testing.ts";
 
 let dirs: string[] = [];
 
@@ -23,7 +24,10 @@ export function tmpDir(tag: string): string {
 }
 
 export function mcpEnv(): Record<string, string> {
-  const env: Record<string, string> = { ...process.env } as Record<string, string>;
+  const env: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v !== undefined) env[k] = v;
+  }
   // Hermetic stores + no ambient credential: the no-credential tool error is the point.
   env.COPILOT_API_HOME = tmpDir("home");
   env.CLAUDE_CONFIG_DIR = tmpDir("claude");
@@ -46,34 +50,51 @@ export interface JsonRpcMessage {
 /** Drive the spawned server over NEWLINE-DELIMITED JSON-RPC (the stdio MCP framing --
  *  no Content-Length headers), collecting every stdout line for purity checks. */
 export class McpClient {
-  private readonly proc: Bun.Subprocess<"pipe", "pipe", "pipe">;
+  private readonly proc: Deno.ChildProcess;
   private readonly decoder = new TextDecoder();
-  // Structural reader type: Bun and node:stream/web disagree on the full
-  // ReadableStreamDefaultReader shape; read() is all this driver needs.
-  private readonly reader: { read(): Promise<{ done: boolean; value?: Uint8Array }> };
+  private readonly encoder = new TextEncoder();
+  private readonly reader: ReadableStreamDefaultReader<Uint8Array>;
+  private readonly writer: WritableStreamDefaultWriter<Uint8Array>;
+  private exit: number | null = null;
   private buffer = "";
   readonly stdoutLines: string[] = [];
 
   constructor(args: string[] = []) {
-    this.proc = Bun.spawn(["bun", "src/cli.ts", "mcp", "--serve", ...args], {
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
+    // clearEnv matters: mcpEnv() scrubs the credential trio by DELETING keys, and
+    // Deno.Command merges `env` over the inherited environment by default, which
+    // would quietly restore an ambient GH_TOKEN.
+    this.proc = new Deno.Command(Deno.execPath(), {
+      args: [...denoRunArgs(), join(ROOT, "src", "cli.ts"), "mcp", "--serve", ...args],
+      cwd: ROOT,
+      clearEnv: true,
       env: mcpEnv(),
-    });
+      stdin: "piped",
+      stdout: "piped",
+      // Discarded, matching the old pipe-and-never-read: an unread deno pipe would
+      // backpressure a chatty server into a deadlock instead.
+      stderr: "null",
+    }).spawn();
     this.reader = this.proc.stdout.getReader();
+    this.writer = this.proc.stdin.getWriter();
+    this.proc.status.then((status) => {
+      this.exit = status.code;
+    });
   }
 
   /** null while the process is still running. */
   get exitCode(): number | null {
-    return this.proc.exitCode;
+    return this.exit;
   }
 
-  /** Write one raw line (or raw bytes + newline) straight onto stdin. */
+  /** Write one raw line (or raw bytes) plus the newline straight onto stdin. */
   sendRaw(line: string | Uint8Array): void {
-    this.proc.stdin.write(line);
-    this.proc.stdin.write("\n");
-    this.proc.stdin.flush();
+    const bytes = typeof line === "string" ? this.encoder.encode(line) : line;
+    const payload = new Uint8Array(bytes.length + 1);
+    payload.set(bytes);
+    payload[bytes.length] = 0x0a;
+    // Fire-and-forget: the writer queues in order, and a write refused by an
+    // already-exited server surfaces on the read side, not here.
+    this.writer.write(payload).catch(() => {});
   }
 
   private send(msg: Record<string, unknown>): void {
@@ -113,7 +134,7 @@ export class McpClient {
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new Error("timed out waiting for a server response");
       // Race the read against the deadline: a live-but-silent server must fail
-      // fast here, not wait out the whole bun test timeout on a blocked read.
+      // fast here, not wait out the whole per-test timeout on a blocked read.
       const chunk = await this.readWithTimeout(remaining);
       if (chunk.done) throw new Error("server stdout closed early");
       this.buffer += this.decoder.decode(chunk.value);
@@ -137,8 +158,8 @@ export class McpClient {
 
   /** Close stdin (client disconnect) and wait for the process to exit. */
   async closeAndWait(): Promise<number> {
-    this.proc.stdin.end();
-    return await this.proc.exited;
+    await this.writer.close().catch(() => {});
+    return (await this.proc.status).code;
   }
 
   kill(): void {

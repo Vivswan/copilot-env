@@ -1,8 +1,7 @@
-import { expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-
 import { PROJECT_ROOT } from "../src/utils/root.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 // The skills + plugin folder is plain content (no code), so this guard only pins the
 // invariants installs depend on: manifests parse, listed paths exist, names line up,

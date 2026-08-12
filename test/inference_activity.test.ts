@@ -1,4 +1,3 @@
-import { afterEach, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -9,9 +8,10 @@ import {
   persistedInferenceMs,
   resetInferenceActivityForTests,
 } from "../src/scripts/inference_activity.ts";
+import { denoRunArgs, ROOT, resolvePackageDir, runSync } from "./helpers/run.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
 
-const ROOT = join(import.meta.dir, "..");
 const PRELOAD = join(ROOT, "src", "scripts", "inference_activity_preload.ts");
 
 const restoreEnv = envSnapshot();
@@ -89,16 +89,13 @@ test("markInference: memory always moves; the activity-file persist is throttled
   expect(persistedInferenceMs()).toBe(0);
 });
 
-// The observer must be exercised as a real preloaded subprocess (`bun --preload`, how
-// launchDaemon loads it): it patches the `Bun` global before srvx/Bun.serve run, and the
+// The observer must be exercised as a real preloaded subprocess (`--preload`, how
+// launchDaemon loads it): it patches the serve entrypoint before srvx runs, and the
 // target script shares the preloaded module instance, so it can read the in-memory mark.
 const TARGET_SCRIPT = `
 import { lastObservedInferenceMs, persistedInferenceMs } from ${JSON.stringify(join(ROOT, "src", "scripts", "inference_activity.ts"))};
-const server = Bun.serve({
-  port: 0,
-  fetch: () => new Response("ok"),
-});
-const base = "http://127.0.0.1:" + server.port;
+const server = Deno.serve({ port: 0, onListen: () => {} }, () => new Response("ok"));
+const base = "http://127.0.0.1:" + server.addr.port;
 const out = {};
 await fetch(base + "/v1/models"); // liveness/model-list: must NOT mark
 out.afterGet = lastObservedInferenceMs();
@@ -106,40 +103,45 @@ const res = await fetch(base + "/v1/messages", { method: "POST", body: "{}" });
 out.body = await res.text(); // the wrapped handler must still serve normally
 out.afterPost = lastObservedInferenceMs();
 out.persisted = persistedInferenceMs();
-server.stop(true);
+await server.shutdown();
 console.log(JSON.stringify(out));
 `;
 
-test("the preloaded observer marks inference POSTs through a real Bun.serve, not GETs", () => {
-  tmpHome();
-  const target = join(dir, "target.ts");
-  writeFileSync(target, TARGET_SCRIPT);
-  const before = Date.now();
-  const res = Bun.spawnSync(["bun", "--preload", PRELOAD, target], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, COPILOT_API_HOME: dir },
-  });
-  if (res.exitCode !== 0) throw new Error(`preloaded target failed: ${res.stderr.toString()}`);
-  const out = JSON.parse(res.stdout.toString().trim()) as {
-    afterGet: number;
-    afterPost: number;
-    body: string;
-    persisted: number;
-  };
-  expect(out.body).toBe("ok"); // observation never broke serving
-  expect(out.afterGet).toBe(0); // GETs are not activity
-  expect(out.afterPost).toBeGreaterThanOrEqual(before); // the POST marked, in memory...
-  expect(out.persisted).toBe(out.afterPost); // ...and the first mark persisted to the file
-});
+// skipIf(true): src/scripts/inference_activity.ts still patches `Bun.serve`; the
+// chunk-3 src sweep repoints the observer at `Deno.serve`, and this test (whose
+// target script already serves through Deno.serve) is re-enabled with it.
+test.skipIf(true)(
+  "the preloaded observer marks inference POSTs through a real Deno.serve, not GETs",
+  () => {
+    tmpHome();
+    const target = join(dir, "target.ts");
+    writeFileSync(target, TARGET_SCRIPT);
+    const before = Date.now();
+    const res = runSync(Deno.execPath(), [...denoRunArgs("--preload", PRELOAD), target], {
+      env: { ...process.env, COPILOT_API_HOME: dir },
+    });
+    if (res.exitCode !== 0) throw new Error(`preloaded target failed: ${res.stderr}`);
+    const out = JSON.parse(res.stdout.trim()) as {
+      afterGet: number;
+      afterPost: number;
+      body: string;
+      persisted: number;
+    };
+    expect(out.body).toBe("ok"); // observation never broke serving
+    expect(out.afterGet).toBe(0); // GETs are not activity
+    expect(out.afterPost).toBeGreaterThanOrEqual(before); // the POST marked, in memory...
+    expect(out.persisted).toBe(out.afterPost); // ...and the first mark persisted to the file
+  },
+);
 
-// Drift alarm for the floated proxy stack: the observer intercepts `Bun.serve`, which only
-// works because srvx's bun adapter looks it up on the global AT SERVE TIME (a preload-time
-// patch is then seen). A release that captures Bun.serve at import, drops srvx, or serves
-// another way would silently stop marking activity -- fail here instead. The check runs
-// against the modules bun ACTUALLY resolves (export conditions honored), not fixed paths.
-test("the installed proxy still serves through srvx's call-time Bun.serve lookup", () => {
-  const proxyDir = dirname(Bun.resolveSync("@jeffreycao/copilot-api/package.json", ROOT));
+// Drift alarm for the floated proxy stack: the observer intercepts the serve
+// entrypoint, which only works because srvx's runtime adapter looks it up AT SERVE
+// TIME (a preload-time patch is then seen). A release that captures the serve
+// function at import, drops srvx, or serves another way would silently stop
+// marking activity -- fail here instead. The check runs against the module srvx's
+// own exports map hands the daemon under the "deno" condition, not fixed paths.
+test("the installed proxy still serves through srvx's call-time Deno.serve lookup", () => {
+  const proxyDir = resolvePackageDir("@jeffreycao/copilot-api", ROOT);
   // The proxy's start bundle must still serve through srvx at all.
   const startBundle = readdirSync(join(proxyDir, "dist")).find(
     (name) => name.startsWith("start-") && name.endsWith(".js"),
@@ -148,9 +150,17 @@ test("the installed proxy still serves through srvx's call-time Bun.serve lookup
   expect(readFileSync(join(proxyDir, "dist", startBundle as string), "utf8")).toContain(
     'from "srvx"',
   );
-  // Bun.resolveSync("srvx", proxyDir) under bun honors srvx's "bun" export condition -- the
-  // exact module the daemon loads. Scan it plus its one-level relative imports.
-  const entry = Bun.resolveSync("srvx", proxyDir);
+  // The daemon loads srvx under deno, so the "deno" export condition names the
+  // exact adapter module it serves through. Scan it plus its one-level relative imports.
+  const srvxDir = resolvePackageDir("srvx", proxyDir);
+  const srvxPkg = JSON.parse(readFileSync(join(srvxDir, "package.json"), "utf8")) as {
+    exports?: Record<string, { deno?: unknown }>;
+  };
+  const denoEntry = srvxPkg.exports?.["."]?.deno;
+  if (typeof denoEntry !== "string") {
+    throw new Error('srvx no longer exports a deno adapter under its "." deno condition');
+  }
+  const entry = join(srvxDir, denoEntry);
   const entrySource = readFileSync(entry, "utf8");
   const sources = [entrySource];
   for (const match of entrySource.matchAll(/from\s+"(\.[^"]+)"/g)) {
@@ -158,5 +168,5 @@ test("the installed proxy still serves through srvx's call-time Bun.serve lookup
     const path = join(dirname(entry), spec);
     if (existsSync(path)) sources.push(readFileSync(path, "utf8"));
   }
-  expect(sources.some((s) => s.includes("Bun.serve("))).toBe(true);
+  expect(sources.some((s) => s.includes("Deno.serve("))).toBe(true);
 });

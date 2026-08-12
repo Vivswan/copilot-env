@@ -2,7 +2,7 @@
 // stores and re-derives everything else. Every test runs against isolated temp
 // homes (isolateAgentHomes) and a stubbed integration-identity probe, so no
 // real config, credential, or network is ever touched.
-import { afterEach, beforeEach, expect, test } from "bun:test";
+
 import {
   chmodSync,
   existsSync,
@@ -13,7 +13,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-
 import {
   applyImportBundle,
   buildExportBundle,
@@ -34,6 +33,7 @@ import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { setIntegrationProbeFetch } from "../src/copilot_api/integration_identity.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
+import { afterEach, beforeEach, expect, test } from "./helpers/testing.ts";
 import {
   type AgentHomes,
   envSnapshot,

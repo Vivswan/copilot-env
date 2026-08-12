@@ -1,7 +1,6 @@
-import { describe, expect, test } from "bun:test";
-
 import { pickAgedVersion } from "../src/utils/aged_version.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
+import { describe, expect, test } from "./helpers/testing.ts";
 
 // --- pure-function units: `now` is injected, so these are clock-independent ---
 const NOW = Date.parse("2026-06-05T00:00:00.000Z");

@@ -1,8 +1,7 @@
-import { afterEach, expect, test } from "bun:test";
 import { existsSync, writeFileSync } from "node:fs";
-
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { ProxyProjectionState } from "../src/copilot_api/projection_state.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();

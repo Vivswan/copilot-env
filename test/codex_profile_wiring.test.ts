@@ -4,7 +4,7 @@
 // env_key for a named profile, so the OPENAI_API_KEY facts read false). Fixtures are
 // built via configureCodexConfig where practical, so inspection is tested against the
 // real write output; the drift cases are hand-mutated copies of that output.
-import { afterEach, expect, test } from "bun:test";
+
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse, stringify } from "smol-toml";
@@ -12,6 +12,7 @@ import { configureCodexConfig, inspectCodexWiring } from "../src/codex/config.ts
 import { openaiBaseUrl } from "../src/copilot_api/port.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { proxyTokenCommand } from "../src/utils/root.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, removeDir } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();

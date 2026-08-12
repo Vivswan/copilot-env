@@ -1,15 +1,27 @@
-import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
+import { denoRunArgs, ROOT } from "./helpers/run.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 // The cross-process lock in CopilotApiConfig.update() must serialize concurrent read-modify-
-// writes to the SAME store file so none are lost. Prove it by racing several real bun
+// writes to the SAME store file so none are lost. Prove it by racing several real
 // subprocesses, each incrementing a shared counter many times via update(); with the lock the
 // final value equals workers * increments (no lost updates). Without the lock, concurrent
 // load-mutate-saves would clobber each other and the total would come up short.
-const CONFIG_MODULE = join(import.meta.dir, "..", "src", "copilot_api", "config.ts");
+const CONFIG_MODULE = join(ROOT, "src", "copilot_api", "config.ts");
+
+/** Spawn one worker script as a deno child; resolves to its exit code and stdout text. */
+function spawnWorker(worker: string): Promise<{ code: number; stdout: string }> {
+  return new Deno.Command(Deno.execPath(), {
+    args: [...denoRunArgs(), worker],
+    stdout: "piped",
+    stderr: "piped",
+  })
+    .output()
+    .then((o) => ({ code: o.code, stdout: new TextDecoder().decode(o.stdout) }));
+}
 
 test("update() serializes concurrent writers across processes (no lost updates)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "copilot-lock-"));
@@ -33,10 +45,8 @@ test("update() serializes concurrent writers across processes (no lost updates)"
       ].join("\n"),
     );
 
-    const procs = Array.from({ length: WORKERS }, () =>
-      Bun.spawn(["bun", worker], { stdout: "ignore", stderr: "pipe" }),
-    );
-    const codes = await Promise.all(procs.map((p) => p.exited));
+    const procs = Array.from({ length: WORKERS }, () => spawnWorker(worker));
+    const codes = (await Promise.all(procs)).map((p) => p.code);
     expect(codes.every((c) => c === 0)).toBe(true);
 
     const final = JSON.parse(readFileSync(store, "utf8")).counter;
@@ -83,15 +93,8 @@ test("concurrent ensureApiKey callers converge on ONE key (no dropped/overwritte
       ].join("\n"),
     );
 
-    const procs = Array.from({ length: 6 }, () =>
-      Bun.spawn(["bun", worker], { stdout: "pipe", stderr: "pipe" }),
-    );
-    const outs = await Promise.all(
-      procs.map(async (p) => {
-        await p.exited;
-        return (await new Response(p.stdout).text()).trim();
-      }),
-    );
+    const procs = Array.from({ length: 6 }, () => spawnWorker(worker));
+    const outs = (await Promise.all(procs)).map((p) => p.stdout.trim());
     // Every worker saw the same api+admin key pair, and it matches what's on disk.
     const unique = new Set(outs);
     expect(unique.size).toBe(1);

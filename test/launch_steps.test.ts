@@ -1,4 +1,3 @@
-import { afterEach, expect, test } from "bun:test";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
@@ -25,6 +24,7 @@ import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { type Profile, parseProfileName } from "../src/copilot_api/profile.ts";
 import { ProxyProjectionState } from "../src/copilot_api/projection_state.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir, writeRunState } from "./helpers.ts";
 
 // Pure-unit coverage for the launch-pipeline steps extracted out of `agent start`:

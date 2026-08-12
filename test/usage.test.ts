@@ -1,11 +1,10 @@
-import { Database } from "bun:sqlite";
-import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
+import { DatabaseSync } from "node:sqlite";
 import { discoverUsageDbs, readUsage, sanitizeTokenCount } from "../src/usage/usage.ts";
 import { localDayKey } from "../src/utils/time.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 
 // Day keys are LOCAL calendar days now, so expectations derive from the same
 // helper the reader uses; timestamps meant to share a day are written at the
@@ -14,6 +13,21 @@ import { localDayKey } from "../src/utils/time.ts";
 // stretch a day to 25h, but these June dates avoid one).
 const ms = (utc: string): number => Date.parse(utc);
 const day = (utc: string): string => localDayKey(ms(utc));
+
+let dir = "";
+
+afterEach(() => {
+  if (dir) {
+    // sqlite can briefly hold the DB file on Windows after close() (EBUSY),
+    // so retry the cleanup; never let a temp-dir cleanup fail a passing test.
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch {
+      // leaked temp dir is harmless on CI runners
+    }
+    dir = "";
+  }
+});
 
 // The ONE token-count sanitization rule both session readers apply: only a finite
 // positive number passes; hostile or torn values become 0.
@@ -27,24 +41,9 @@ test("sanitizeTokenCount clamps non-finite, negative, and non-number counts to 0
   expect(sanitizeTokenCount(undefined)).toBe(0);
 });
 
-let dir = "";
-
-afterEach(() => {
-  if (dir) {
-    // bun:sqlite can briefly hold the DB file on Windows after close() (EBUSY),
-    // so retry the cleanup; never let a temp-dir cleanup fail a passing test.
-    try {
-      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-    } catch {
-      // leaked temp dir is harmless on CI runners
-    }
-    dir = "";
-  }
-});
-
 function seedUsageDb(path: string): void {
-  const db = new Database(path);
-  db.run(`CREATE TABLE token_usage_events (
+  const db = new DatabaseSync(path);
+  db.exec(`CREATE TABLE token_usage_events (
     model TEXT NOT NULL,
     input_tokens INTEGER,
     output_tokens INTEGER,
@@ -109,8 +108,8 @@ test("readUsage exposes a per-day, per-model breakdown that reconciles with byMo
 test("readUsage folds divergent spellings of one model into the canonical row", () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
   const path = join(dir, "copilot-api.sqlite");
-  const db = new Database(path);
-  db.run(`CREATE TABLE token_usage_events (
+  const db = new DatabaseSync(path);
+  db.exec(`CREATE TABLE token_usage_events (
     model TEXT NOT NULL,
     input_tokens INTEGER,
     output_tokens INTEGER,
@@ -149,8 +148,8 @@ test("readUsage sums tokens by model and unions active days across two DBs", () 
   // DB B shares the "claude-opus-4.8" model and the 2026-06-01 day with A, plus
   // a fresh model and a fresh day, so we can prove SUM (not overwrite) and a
   // UNION of distinct days (not a per-DB reset).
-  const db = new Database(pathB);
-  db.run(`CREATE TABLE token_usage_events (
+  const db = new DatabaseSync(pathB);
+  db.exec(`CREATE TABLE token_usage_events (
     model TEXT NOT NULL,
     input_tokens INTEGER,
     output_tokens INTEGER,
@@ -200,8 +199,8 @@ test("readUsage sinceMs filters older rows from token totals and active days", (
 test("readUsage buckets by the user's local day, not the UTC day (TZ-pinned)", () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
   const path = join(dir, "copilot-api.sqlite");
-  const db = new Database(path);
-  db.run(`CREATE TABLE token_usage_events (
+  const db = new DatabaseSync(path);
+  db.exec(`CREATE TABLE token_usage_events (
     model TEXT NOT NULL,
     input_tokens INTEGER,
     output_tokens INTEGER,
@@ -223,8 +222,8 @@ test("readUsage buckets by the user's local day, not the UTC day (TZ-pinned)", (
   );
   db.close();
 
-  // Bun ignores TZ assignments after a `delete process.env.TZ` (verified), so
-  // save/restore by explicit zone name and never delete.
+  // Some runtimes ignore a TZ assignment after a `delete process.env.TZ`
+  // (verified under bun), so save/restore by explicit zone name and never delete.
   const savedTz = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   try {
     process.env.TZ = "America/New_York";
@@ -243,8 +242,8 @@ test("a null created_at_ms row counts in byModel but is dropped from perDay", ()
   // be placed on a local day, but its tokens must still reach the totals.
   dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
   const path = join(dir, "copilot-api.sqlite");
-  const db = new Database(path);
-  db.run(`CREATE TABLE token_usage_events (
+  const db = new DatabaseSync(path);
+  db.exec(`CREATE TABLE token_usage_events (
     model TEXT NOT NULL,
     input_tokens INTEGER,
     output_tokens INTEGER,

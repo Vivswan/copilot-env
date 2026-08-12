@@ -7,22 +7,24 @@
 //    modern path rather than a downgrade.
 // Both transports spawn the server process themselves, so client and server
 // objects never share a process.
-import { afterEach, expect, test } from "bun:test";
+
+import { join } from "node:path";
 
 import { Client as ClientV2 } from "@modelcontextprotocol/client";
 import { StdioClientTransport as StdioTransportV2 } from "@modelcontextprotocol/client/stdio";
 import { Client as ClientV1 } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport as StdioTransportV1 } from "@modelcontextprotocol/sdk/client/stdio.js";
-
 import { cleanupTmpDirs, mcpEnv } from "./helpers/mcp.ts";
+import { denoRunArgs, ROOT } from "./helpers/run.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 
 afterEach(cleanupTmpDirs);
 
 /** Spawn parameters shared by both transports (their option shapes coincide). */
 function serverParams() {
   return {
-    command: "bun",
-    args: ["src/cli.ts", "mcp", "--serve"],
+    command: Deno.execPath(),
+    args: [...denoRunArgs(), join(ROOT, "src", "cli.ts"), "mcp", "--serve"],
     env: mcpEnv(),
     stderr: "pipe" as const,
   };
@@ -49,7 +51,7 @@ test("legacy era: the v1 SDK client lists web_search and gets the no-credential 
     expect(client.getServerVersion()?.name).toBe("copilot-env");
 
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name)).toEqual(["web_search"]);
+    expect(tools.map((t: { name: string }) => t.name)).toEqual(["web_search"]);
     expect(tools[0]?.inputSchema).toEqual(WEB_SEARCH_INPUT_SCHEMA);
     expect(tools[0]?.annotations).toEqual(WEB_SEARCH_ANNOTATIONS);
 
@@ -80,7 +82,7 @@ test("modern era: the v2 client pinned to 2026-07-28 negotiates it and drives th
     expect(client.getNegotiatedProtocolVersion()).toBe("2026-07-28");
 
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name)).toEqual(["web_search"]);
+    expect(tools.map((t: { name: string }) => t.name)).toEqual(["web_search"]);
     expect(tools[0]?.inputSchema).toEqual(WEB_SEARCH_INPUT_SCHEMA);
     expect(tools[0]?.annotations).toEqual(WEB_SEARCH_ANNOTATIONS);
 

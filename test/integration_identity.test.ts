@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   bakedIntegrationId,
   COPILOT_CLI_INTEGRATION_ID,
@@ -14,6 +15,8 @@ import {
   setIntegrationProbeFetch,
   VSCODE_CHAT_INTEGRATION_ID,
 } from "../src/copilot_api/integration_identity.ts";
+import { ROOT } from "./helpers/run.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 /** A fetch stub: `accept(id)` decides which integration id the fake endpoint accepts on
  *  `/models`; `/copilot_internal/user` returns `apiBase` (or 404 to force the fallback).
@@ -265,9 +268,7 @@ test("the preload's copied header literal stays in step with the module's (drift
   // copy to the original -- a rename here fails loudly instead of silently disabling the
   // header rewrite in the daemon. (The shim's env-key literal, INTEGRATION_ID_ENV, is
   // pinned the same way by test/daemon_env_keys.test.ts.)
-  const shim = await Bun.file(
-    new URL("../src/scripts/pat_passthrough_preload.ts", import.meta.url),
-  ).text();
+  const shim = readFileSync(join(ROOT, "src", "scripts", "pat_passthrough_preload.ts"), "utf8");
   expect(shim).toContain(`const INTEGRATION_ID_HEADER = "${INTEGRATION_ID_HEADER}"`);
 });
 

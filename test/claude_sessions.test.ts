@@ -1,10 +1,9 @@
-import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import { discoverClaudeSessionRoots, readClaudeSessions } from "../src/usage/claude_sessions.ts";
 import { localDayKey } from "../src/utils/time.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 /** One assistant transcript line; Claude's input_tokens EXCLUDES the cache buckets. */
 function assistantLine(

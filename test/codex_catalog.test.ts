@@ -1,6 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-
 import {
   type CopilotModelLimits,
   generateCodexModelCatalog,
@@ -13,6 +11,7 @@ import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();

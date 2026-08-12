@@ -1,7 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-
 import {
   classifyMcpEntry,
   claudeJsonPath,
@@ -10,6 +8,7 @@ import {
   removeClaudeMcpRegistration,
 } from "../src/claude/mcp_registration.ts";
 import { agentLauncherCommand } from "../src/utils/root.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, removeDir, tmpDir } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();

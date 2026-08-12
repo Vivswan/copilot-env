@@ -1,8 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-
 import {
   DIRECT_HELPER_NAME,
   directHelperPath,
@@ -13,6 +10,8 @@ import { runEnv } from "../src/commands/env.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { LAUNCHERS_MARKER } from "../src/shell/integration.ts";
+import { ROOT, runCli, runSync } from "./helpers/run.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import {
   claudeSettingsJson,
   envSnapshot,
@@ -83,20 +82,16 @@ const isLaunchersSource = (l: string): boolean =>
   (l.includes("agents.launchers.ps1") && l.includes("Test-Path"));
 
 /**
- * Run `runEnv` in a CHILD bun process with HOME set at spawn time. `agent env` is
- * always a fresh process in production, so its rc-file scan (os.homedir(), which Bun
- * binds at startup and ignores later process.env.HOME mutation) resolves correctly
- * only when HOME is in the spawn environment -- which in-process runEnv() can't fake.
+ * Run `runEnv` in a CHILD process (`deno eval`) with HOME set at spawn time.
+ * `agent env` is always a fresh process in production, so its rc-file scan
+ * (os.homedir(), bound at process startup) resolves correctly only when HOME
+ * is in the spawn environment -- which in-process runEnv() can't fake.
  */
 function childEnvLines(env: Record<string, string | undefined>, profile?: string): string[] {
   const argsSrc = JSON.stringify({ "format": "posix", "profile": profile });
-  const script = `import{runEnv}from${JSON.stringify(join(import.meta.dir, "..", "src/commands/env.ts"))};runEnv(${argsSrc});`;
-  const spawnEnv: Record<string, string> = {};
-  for (const [k, v] of Object.entries({ ...process.env, ...env })) {
-    if (v !== undefined) spawnEnv[k] = v;
-  }
-  const result = spawnSync(process.execPath, ["-e", script], { env: spawnEnv, encoding: "utf-8" });
-  if (result.status !== 0) throw new Error(`child env failed: ${result.stderr}`);
+  const script = `import{runEnv}from${JSON.stringify(join(ROOT, "src/commands/env.ts"))};runEnv(${argsSrc});`;
+  const result = runSync(Deno.execPath(), ["eval", script], { env: { ...process.env, ...env } });
+  if (result.exitCode !== 0) throw new Error(`child env failed: ${result.stderr}`);
   return result.stdout.split("\n").filter((l) => l.length > 0);
 }
 
@@ -248,20 +243,10 @@ test("env --profile with an unknown name hard-fails naming the known profiles", 
 
 test("cli env --profile unknown exits 1 with an EMPTY stdout (the eval contract)", () => {
   dir = tmpDir("copilot-env-cmd-");
-  const spawnEnv: Record<string, string> = {};
-  for (const [k, v] of Object.entries({
-    ...process.env,
-    ...childBaseEnv(),
-    CONSOLA_LEVEL: "5",
-  })) {
-    if (v !== undefined) spawnEnv[k] = v;
-  }
-  const proc = spawnSync(
-    process.execPath,
-    [join(import.meta.dir, "..", "src/cli.ts"), "env", "--profile", "nope"],
-    { encoding: "utf-8", env: spawnEnv },
-  );
-  expect(proc.status).toBe(1);
+  const proc = runCli(["env", "--profile", "nope"], {
+    env: { ...process.env, ...childBaseEnv(), CONSOLA_LEVEL: "5" },
+  });
+  expect(proc.exitCode).toBe(1);
   // NOTHING may reach stdout: the shell wrapper evals it verbatim.
   expect(proc.stdout).toBe("");
   expect(proc.stderr).toContain("no such profile 'nope'");

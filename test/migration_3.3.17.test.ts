@@ -1,9 +1,8 @@
-import { afterEach, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
-
 import { migration } from "../src/migrations/3.3.17.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, removeDir } from "./helpers.ts";
 
 // The 3.3.17 migration removes the managed image_generation = false that older

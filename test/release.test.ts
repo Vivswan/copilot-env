@@ -1,4 +1,3 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
   lstatSync,
@@ -13,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertReleaseComplete, mirror, PRESERVE, REQUIRED_FILES } from "../src/install/release.ts";
+import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
 
 // POSIX-only because symlink creation is unreliable on Windows without privilege.
 const skipWin = test.skipIf(process.platform === "win32");

@@ -1,11 +1,10 @@
-import { afterEach, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
-
 import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/paths.ts";
 import { copilotApiResolvePort } from "../src/copilot_api/port.ts";
 import { migration } from "../src/migrations/3.3.6.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import {
   envSnapshot,
   isolateAgentHomes,

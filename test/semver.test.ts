@@ -1,6 +1,5 @@
-import { expect, test } from "bun:test";
-
 import { isUpToDate, stripV, versionLessThan } from "../src/utils/semver.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 // Lock the ordering contract before more callers route through versionLessThan
 // (e.g. aged_version). These cases pin numeric-core ordering, the prerelease rule,

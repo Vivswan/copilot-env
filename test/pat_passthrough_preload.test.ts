@@ -1,13 +1,14 @@
-import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { denoRunArgs, ROOT, runSync } from "./helpers/run.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 // The preload shim wraps the daemon's globalThis.fetch to fake copilot-api's editor
 // token exchange for a PAT. It reads the token from `--github-token` in argv and only
 // acts on the exchange URL, so it must be exercised as a real preloaded subprocess
 // (`bun --preload`), which is how launchDaemon loads it.
-const SHIM = join(import.meta.dir, "..", "src", "scripts", "pat_passthrough_preload.ts");
+const SHIM = join(ROOT, "src", "scripts", "pat_passthrough_preload.ts");
 
 // A throwaway "exchange"/other URL on a refused port: if the shim intercepts, fetch
 // returns a synthetic body WITHOUT touching the socket; if it doesn't, the real fetch
@@ -43,10 +44,10 @@ function runPreloaded(
         "}",
       ].join("\n"),
     );
-    const argv = ["bun", "--preload", SHIM, target];
+    const argv = [...denoRunArgs("--preload", SHIM), target];
     if (token !== null) argv.push("--github-token", token);
-    const res = Bun.spawnSync(argv, { stdout: "pipe", stderr: "pipe" });
-    return res.stdout.toString().trim();
+    const res = runSync(Deno.execPath(), argv);
+    return res.stdout.trim();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

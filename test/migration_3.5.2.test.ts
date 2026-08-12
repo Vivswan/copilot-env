@@ -1,13 +1,12 @@
-import { afterEach, expect, test } from "bun:test";
 import { readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-
 import { configureClaudeConfig, WEBSEARCH_DENY_RULE } from "../src/claude/config.ts";
 import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { migration } from "../src/migrations/3.5.2.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, removeDir } from "./helpers.ts";
 
 // The 3.5.2 migration wires the web-search pair (MCP registration + WebSearch deny)

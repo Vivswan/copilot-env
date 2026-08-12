@@ -1,6 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
-
 import { childEnvWithPath, childPathPrepending } from "../src/utils/command.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 
 const SEP = process.platform === "win32" ? ";" : ":";
 

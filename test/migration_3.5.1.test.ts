@@ -1,8 +1,6 @@
-import { afterEach, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
-
 import { CUSTOM_HEADERS_ENV, configureClaudeConfig } from "../src/claude/config.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
 import { codexProviderId, configureCodexConfig } from "../src/codex/config.ts";
@@ -12,6 +10,7 @@ import { setIntegrationProbeFetch } from "../src/copilot_api/integration_identit
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { migration } from "../src/migrations/3.5.1.ts";
 import { isRecord } from "../src/utils/json.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, removeDir } from "./helpers.ts";
 
 // The 3.5.1 migration re-bakes the probed Copilot client identity into DIRECT agent

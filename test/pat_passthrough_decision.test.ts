@@ -1,6 +1,5 @@
-import { expect, test } from "bun:test";
-
 import { isPatShapedToken, usePatPassthrough } from "../src/copilot_api/integration_identity.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 // --- isPatShapedToken --------------------------------------------------------
 

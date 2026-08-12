@@ -1,7 +1,5 @@
-import { afterEach, expect, test } from "bun:test";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-
 import { isDue } from "../src/autoupdate/due.ts";
 import { acquireLock, releaseLock } from "../src/autoupdate/lock.ts";
 import {
@@ -11,6 +9,7 @@ import {
 } from "../src/autoupdate/state.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, removeDir, tmpDir } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();

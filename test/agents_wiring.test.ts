@@ -4,7 +4,7 @@
 // question), proxyUnusedEverywhere counts them (the float's npm-work question).
 // The proxyUnusedEverywhere cases moved here from test/proxy_float.test.ts
 // when the predicate moved into this module.
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -13,6 +13,7 @@ import {
   readAgentModes,
 } from "../src/agents/wiring.ts";
 import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/paths.ts";
+import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
 import {
   envSnapshot,
   isolateProxyHome,

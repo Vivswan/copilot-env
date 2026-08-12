@@ -1,7 +1,7 @@
 // Profile-aware `agent health`: the named-target sweep, the profile.consistency
 // check, named-target severity (profile-carrying fix strings), the --profile
 // narrowing, and the zero-writes invariant over a home with seeded profiles.
-import { expect, test } from "bun:test";
+
 import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,6 +31,7 @@ import {
   type RuntimeTarget,
   runLiveCli,
 } from "../src/health/probe.ts";
+import { expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir, writeRunState } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
@@ -608,8 +609,8 @@ test("a named Claude live probe scrubs ANTHROPIC_BASE_URL; the default scrubs no
   try {
     const probe = (omit: readonly string[]) =>
       runLiveCli(
-        "bun",
-        ["-e", "process.exit(process.env.ANTHROPIC_BASE_URL ? 1 : 0)"],
+        Deno.execPath(),
+        ["eval", "process.exit(process.env.ANTHROPIC_BASE_URL ? 1 : 0)"],
         tmpdir(),
         "CLAUDE_CONFIG_DIR",
         omit,

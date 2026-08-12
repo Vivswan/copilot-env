@@ -1,8 +1,7 @@
-import { afterEach, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-
 import { reclaimStaleLock, releaseFileLock, tryAcquireFileLock } from "../src/utils/file_lock.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { removeDir, tmpDir } from "./helpers.ts";
 
 // Direct tests of the shared lock's parameterization (staleMs, injected nowMs, marker

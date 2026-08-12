@@ -1,5 +1,3 @@
-import { expect, test } from "bun:test";
-
 import {
   canonicalModelName,
   estimateCost,
@@ -8,6 +6,7 @@ import {
   roundUsd,
   type UsageTokens,
 } from "../src/usage/pricing.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 // The ONE reported-USD precision: 4 decimal places, half-up. cost.ts's derived
 // per-day/average fields route through the same helper, so the --json payload can

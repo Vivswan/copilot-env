@@ -1,4 +1,3 @@
-import { expect, test } from "bun:test";
 import {
   existsSync,
   mkdirSync,
@@ -11,28 +10,27 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
+import { denoRunArgs, ROOT, resolvePackageDir, runSync } from "./helpers/run.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 // The preload shim swaps the daemon's `fs.createWriteStream` for a discarding sink on paths
 // under <home>/logs (the proxy's handler-log directory), touching the files' mtimes instead
 // of growing them. Patching the `node:fs` default export must be exercised as a real
 // preloaded subprocess (`bun --preload`), which is how launchDaemon loads it.
-const ROOT = join(import.meta.dir, "..");
 const SHIM = join(ROOT, "src", "scripts", "log_mute_preload.ts");
 
 /** Run a target script under the shim with COPILOT_API_HOME pointed at `home`. */
 function runPreloaded(home: string, script: string): string {
   const target = join(home, "target.ts");
   writeFileSync(target, script);
-  const res = Bun.spawnSync(["bun", "--preload", SHIM, target], {
-    stdout: "pipe",
-    stderr: "pipe",
+  const res = runSync(Deno.execPath(), [...denoRunArgs("--preload", SHIM), target], {
     env: { ...process.env, COPILOT_API_HOME: home },
   });
   if (res.exitCode !== 0) {
-    throw new Error(`preloaded target failed: ${res.stderr.toString()}`);
+    throw new Error(`preloaded target failed: ${res.stderr}`);
   }
-  return res.stdout.toString().trim();
+  return res.stdout.trim();
 }
 
 // Mirrors the proxy logger's own usage: append-mode stream, write(content, cb), end().
@@ -91,7 +89,7 @@ test("writes under <home>/logs are discarded outright (no growth, no file creati
 // newest release on install, so assert those internals against whatever is INSTALLED -- a
 // release that reworks its logger fails here instead of silently logging payloads again.
 test("the installed proxy's logger still matches the shim's assumptions", () => {
-  const pkgDir = dirname(Bun.resolveSync("@jeffreycao/copilot-api/package.json", ROOT));
+  const pkgDir = resolvePackageDir("@jeffreycao/copilot-api", ROOT);
   const distDir = join(pkgDir, "dist");
   const serverBundle = readdirSync(distDir).find(
     (name) => name.startsWith("server-") && name.endsWith(".js"),

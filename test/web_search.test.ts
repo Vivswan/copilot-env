@@ -1,5 +1,3 @@
-import { afterEach, expect, test } from "bun:test";
-
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { generateAliases, parseCatalogModels } from "../src/copilot_api/models.ts";
@@ -11,6 +9,7 @@ import {
   resolveWebSearchCredential,
   webSearch,
 } from "../src/copilot_api/web_search.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
 
 // The credential/config stores live under COPILOT_API_HOME, and the env-token

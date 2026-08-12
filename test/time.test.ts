@@ -1,6 +1,5 @@
-import { expect, test } from "bun:test";
-
 import { formatDuration, localDayKey } from "../src/utils/time.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 test("formatDuration renders compact durations and omits zero components", () => {
   expect(formatDuration(0)).toBe("0s");

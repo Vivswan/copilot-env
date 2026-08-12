@@ -1,8 +1,7 @@
-import { expect, test } from "bun:test";
-
 import { activeDayCoverage, computeDayMetrics, median } from "../src/usage/cost.ts";
 import { estimateCost, type PricingTier } from "../src/usage/pricing.ts";
 import type { ModelUsage, UsageReport } from "../src/usage/usage.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 function usage(partial: Partial<ModelUsage>): ModelUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, events: 0, ...partial };

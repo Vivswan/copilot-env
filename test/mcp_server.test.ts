@@ -1,8 +1,7 @@
-import { afterEach, expect, test } from "bun:test";
 import { consola } from "consola";
-
 import { redirectConsolaToStderr } from "../src/utils/logger.ts";
 import { cleanupTmpDirs, type JsonRpcMessage, McpClient } from "./helpers/mcp.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 
 afterEach(cleanupTmpDirs);
 

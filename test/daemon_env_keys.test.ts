@@ -1,10 +1,12 @@
-import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { DAEMON_INTEGRATION_ID_ENV } from "../src/copilot_api/integration_identity.ts";
 import { DAEMON_GH_TOKEN_ENV } from "../src/copilot_api/process.ts";
+import { ROOT } from "./helpers/run.ts";
+import { expect, test } from "./helpers/testing.ts";
+import shimImportsPlugin, { SHIM_FILES } from "./lint/no_shim_imports.ts";
 
-// Some daemon preload shims stay import-free: a `bun --preload` shim runs inside the proxy
+// Some daemon preload shims stay import-free: a `--preload` shim runs inside the proxy
 // daemon, and pulling a CLI module in with it would drag the whole CLI layer into that
 // process. The price of the isolation is duplication -- each env-var contract between
 // launchDaemon and such a shim is spelled TWICE, once as an exported CLI constant and once
@@ -15,7 +17,7 @@ import { DAEMON_GH_TOKEN_ENV } from "../src/copilot_api/process.ts";
 // against the imported CLI constant, and they pin the import-free invariant itself --
 // the moment a shim may import, the duplication should be replaced by an import.
 
-const SRC_DIR = join(import.meta.dir, "..", "src");
+const SRC_DIR = join(ROOT, "src");
 const SCRIPTS_DIR = join(SRC_DIR, "scripts");
 
 /** Every env key spelled both as a CLI constant and as a local literal in an import-free
@@ -198,25 +200,46 @@ for (const { key, keyName, shim, localConst } of PINNED_PAIRS) {
   });
 
   test(`${shim} stays free of runtime imports (why the literal is duplicated)`, () => {
-    // Primary check: bun's own parser. scanImports reports every runtime module
-    // reference -- static imports, side-effect imports, re-exports, and dynamic
-    // import()/require() with literal specifiers (even inside template interpolation) --
-    // while type-only imports and import.meta are erased and stay allowed. If this ever
-    // needs to change, the duplicated literal should become an import and the
-    // PINNED_PAIRS entry above should go away with it.
-    const source = readFileSync(join(SCRIPTS_DIR, shim), "utf8");
-    expect(new Bun.Transpiler({ loader: "ts" }).scanImports(source)).toEqual([]);
-    // Backstop for what scanImports cannot resolve: dynamic import() with a NON-literal
-    // specifier, and any use of `require` at all (aliasing or `require?.()` would evade a
-    // call-shaped pattern, so the bare token is out). It runs over the type-ERASED
-    // transpiler output, so comments are gone and type-position `import("x").X` cannot
-    // false-positive; a string containing "import(" or "require" still would -- a loud
-    // false positive over a silent miss, and no shim string comes close.
-    const runtime = new Bun.Transpiler({ loader: "ts" }).transformSync(source);
-    expect(runtime).not.toMatch(/\bimport\s*\(/);
-    expect(runtime).not.toMatch(/\brequire\b/);
+    // The repo's own lint rule, run through deno's real parser: it reports every
+    // runtime module reference -- static imports, side-effect imports, re-exports
+    // with a source, dynamic import(), and any bare `require` identifier -- while
+    // type-only imports are erased at runtime and stay allowed. The same rule is
+    // registered in deno.json, so `deno lint` enforces the invariant too; this
+    // test pins it (and the rule itself, below) even if that registration goes
+    // away. If this ever needs to change, the duplicated literal should become an
+    // import and the PINNED_PAIRS entry above should go away with it.
+    const file = join(SCRIPTS_DIR, shim);
+    const diagnostics = Deno.lint.runPlugin(shimImportsPlugin, file, readFileSync(file, "utf8"));
+    expect(diagnostics).toEqual([]);
   });
 }
+
+// The clean-shim assertions above prove nothing if the rule itself is a no-op,
+// so pin its teeth (and its file scoping) against doctored sources.
+test("no-shim-imports: rejects every runtime-import shape, allows type-only", () => {
+  const shim = SHIM_FILES[0];
+  const lint = (source: string): string[] =>
+    Deno.lint.runPlugin(shimImportsPlugin, shim, source).map((d) => d.message);
+
+  expect(lint('import { x } from "./cli.ts";')).toHaveLength(1);
+  expect(lint('import "./side_effect.ts";')).toHaveLength(1);
+  expect(lint('export * from "./cli.ts";')).toHaveLength(1);
+  expect(lint('export { x } from "./cli.ts";')).toHaveLength(1);
+  expect(lint('const m = await import("./cli" + ".ts");')).toHaveLength(1);
+  expect(lint('const r = require; r("node:fs");')).toHaveLength(1); // aliasing still caught
+  // Erased at runtime: type-only imports and plain sourceless exports stay legal.
+  expect(lint('import type { T } from "./cli.ts"; export {};')).toEqual([]);
+  expect(lint("export function f(): number { return 1; }")).toEqual([]);
+});
+
+test("no-shim-imports: scoped to the shim files, silent elsewhere", () => {
+  const importing = 'import { x } from "./cli.ts";';
+  expect(Deno.lint.runPlugin(shimImportsPlugin, "src/commands/init.ts", importing)).toEqual([]);
+  // Every pinned shim is inside the rule's scope -- the two lists may not drift.
+  for (const { shim } of PINNED_PAIRS) {
+    expect(SHIM_FILES.map((f) => f.split("/").at(-1))).toContain(shim);
+  }
+});
 
 /** All .ts files under `dir`, recursively. */
 function tsFilesUnder(dir: string): string[] {
@@ -247,13 +270,41 @@ test("every env key spelled in a script is a pinned CLI pair (sweep)", () => {
   // interpolation would dodge the set comparison, and its leading fragment ends with "_"
   // (as does the bare prefix), while no whole key ever does -- so any
   // underscore-terminated match is rejected outright on either side. Files are scanned
-  // through bun's own parser (transformSync erases comments and lexes regexes properly,
-  // keeping consts and their strings), so no text heuristic can silently HIDE a key here.
+  // through deno's own parser (the collector below visits string literals, template
+  // chunks, and identifiers -- comments are never AST nodes), so no text heuristic
+  // can silently HIDE a key here.
+  const ENV_KEY_RE = /\bCOPILOT_ENV_[A-Z0-9_]*/g;
+  const envKeyCollector: Deno.lint.Plugin = {
+    name: "env-key-collector",
+    rules: {
+      "collect": {
+        create(context) {
+          const report = (node: Deno.lint.Node, text: string): void => {
+            for (const match of text.match(ENV_KEY_RE) ?? []) {
+              context.report({ node, message: `key:${match}` });
+            }
+          };
+          return {
+            "Literal"(node) {
+              if (typeof node.value === "string") report(node, node.value);
+            },
+            "TemplateElement"(node) {
+              report(node, node.cooked ?? node.raw);
+            },
+            "Identifier"(node) {
+              report(node, node.name);
+            },
+          };
+        },
+      },
+    },
+  };
   const keysIn = (files: string[]): Set<string> => {
     const found = new Set<string>();
     for (const file of files) {
-      const code = new Bun.Transpiler({ loader: "ts" }).transformSync(readFileSync(file, "utf8"));
-      for (const match of code.match(/\bCOPILOT_ENV_[A-Z0-9_]*/g) ?? []) {
+      const diagnostics = Deno.lint.runPlugin(envKeyCollector, file, readFileSync(file, "utf8"));
+      for (const diagnostic of diagnostics) {
+        const match = diagnostic.message.slice("key:".length);
         if (match.endsWith("_")) {
           throw new Error(
             `env-key fragment "${match}" in ${relative(SRC_DIR, file)} -- spell env ` +
@@ -286,7 +337,7 @@ test("every env key spelled in a script is a pinned CLI pair (sweep)", () => {
   }
   // Each pinned key is really spelled on the CLI side too -- the other half of the pair.
   const cliKeys = keysIn(cliFiles);
-  for (const { key } of PINNED_PAIRS) expect(cliKeys).toContain(key);
+  for (const { key } of PINNED_PAIRS) expect([...cliKeys]).toContain(key);
   // And the pinned shims are where the sweep expects them: under src/scripts/.
   for (const { shim } of PINNED_PAIRS) {
     expect(scriptFiles.map((f) => relative(SCRIPTS_DIR, f))).toContain(shim);

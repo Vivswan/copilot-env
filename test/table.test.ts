@@ -1,5 +1,5 @@
-import { expect, test } from "bun:test";
 import { formatTable } from "../src/utils/table.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 test("formatTable pads columns and aligns per column", () => {
   const lines = formatTable(

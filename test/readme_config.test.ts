@@ -1,12 +1,12 @@
 // Every `agent config` key must be documented: the README's Configuration table
 // is hand-written, so this pins registry -> README coverage (a new registry key
 // without a table row fails here instead of slipping past review).
-import { expect, test } from "bun:test";
+
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-
 import { CONFIG_REGISTRY } from "../src/copilot_api/env_config.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 test("every CONFIG_REGISTRY key has a README config-table row", () => {
   const readme = readFileSync(join(PROJECT_ROOT, "README.md"), "utf8");

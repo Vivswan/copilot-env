@@ -20,7 +20,6 @@
 // only where the JSON-RPC spec mandates them (-32602 InvalidParams for a
 // malformed envelope, -32601 MethodNotFound). The product contract is the
 // three invariants above.
-import { afterEach, expect, test } from "bun:test";
 
 import {
   cleanupTmpDirs,
@@ -28,6 +27,7 @@ import {
   type JsonRpcMessage,
   McpClient,
 } from "./helpers/mcp.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 
 afterEach(cleanupTmpDirs);
 

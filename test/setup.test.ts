@@ -1,10 +1,9 @@
-import { expect, test } from "bun:test";
-
 import {
   buildNodePosixInstallScript,
   computePathRefresh,
   runShell,
 } from "../src/commands/setup.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 // runShell's flag validation throws BEFORE any install or rc wiring, so these
 // need no filesystem/network isolation.

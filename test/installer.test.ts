@@ -1,6 +1,5 @@
-import { expect, test } from "bun:test";
-
 import { parseInstallArgs, shellSetupArgs } from "../src/install/installer.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 test("installer parses default install options", () => {
   expect(parseInstallArgs(["install"])).toEqual({

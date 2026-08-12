@@ -1,4 +1,3 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +15,8 @@ import {
   verifySourceArchiveEntry,
   verifySourceArchiveSha256,
 } from "../src/install/verify-source-archive.ts";
+import { ROOT, runScript, runSync } from "./helpers/run.ts";
+import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
 
 // resolve-release.ts is the single source of truth for the release pick (imported by
 // `agent update` and downloaded+run by the installers). The network side is thin; the
@@ -264,27 +265,23 @@ describe("source archive SHA256", () => {
       mkdirSync(join(dir, "Vivswan-copilot-env-6c5ae7f"), { recursive: true });
       writeFileSync(join(dir, "Vivswan-copilot-env-6c5ae7f", "package.json"), "{}");
       const archive = join(dir, "release.tgz");
-      const tar = Bun.spawnSync(["tar", "-czf", archive, "-C", dir, "Vivswan-copilot-env-6c5ae7f"]);
+      const tar = runSync("tar", ["-czf", archive, "-C", dir, "Vivswan-copilot-env-6c5ae7f"]);
       expect(tar.exitCode).toBe(0);
 
-      const verifier = join(import.meta.dir, "..", "src", "install", "verify-source-archive.ts");
+      const verifier = join(ROOT, "src", "install", "verify-source-archive.ts");
       const run = (env: Record<string, string>) =>
-        Bun.spawnSync(["bun", verifier, archive, sha], {
-          stdout: "pipe",
-          stderr: "pipe",
-          env: { ...process.env, ...env },
-        });
+        runScript(verifier, [archive, sha], { env: { ...process.env, ...env } });
 
       // No SHA256 arg and no override -> refuse with a clear message (the archive root-dir check
       // alone is forgeable, so it is not treated as real integrity).
       const refused = run({ COPILOT_ENV_ALLOW_UNVERIFIED_RELEASE: "" });
       expect(refused.exitCode).toBe(1);
-      expect(refused.stderr.toString()).toContain("no verifiable SHA256 checksum");
+      expect(refused.stderr).toContain("no verifiable SHA256 checksum");
 
       // The documented escape hatch lets it through (entry check only).
       const overridden = run({ COPILOT_ENV_ALLOW_UNVERIFIED_RELEASE: "1" });
       expect(overridden.exitCode).toBe(0);
-      expect(overridden.stdout.toString()).toContain("source marker");
+      expect(overridden.stdout).toContain("source marker");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -1,4 +1,3 @@
-import { afterEach, expect, test } from "bun:test";
 import {
   mkdtempSync,
   readdirSync,
@@ -10,8 +9,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import { CopilotApiConfig, renameWithRetry } from "../src/copilot_api/config.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 
 let dir = "";
 

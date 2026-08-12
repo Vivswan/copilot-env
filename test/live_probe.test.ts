@@ -1,5 +1,3 @@
-import { expect, test } from "bun:test";
-
 import { resolveDirectMode } from "../src/agents/direct_detect.ts";
 import {
   CLAUDE_PROBE,
@@ -12,6 +10,7 @@ import {
   summarizeProbeFailure,
 } from "../src/agents/live_probe.ts";
 import { ghTokenFromEnv, tokenFromSetFlag } from "../src/copilot_api/gh_cli.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 // The ONE catalog-noise filter both failure formatters share (summarizeProbeFailure
 // here, formatLiveFailure in src/health/probe.ts): catalog dump lines match, a real

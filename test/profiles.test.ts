@@ -1,11 +1,10 @@
 // Named credential/wiring profiles: the opt-in additions beside the default
 // (settings-<name>.json, [profiles.<name>], per-profile credential slots and
 // daemon homes). The default path must stay byte-identical throughout.
-import { afterEach, beforeEach, expect, test } from "bun:test";
+
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
-
 import { configureClaudeConfig, inspectClaudeWiring } from "../src/claude/config.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
 import { codexProviderId, configureCodexConfig } from "../src/codex/config.ts";
@@ -24,6 +23,7 @@ import {
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { isRecord } from "../src/utils/json.ts";
+import { afterEach, beforeEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, removeDir, resetExitCode } from "./helpers.ts";
 
 const WIN = process.platform === "win32";

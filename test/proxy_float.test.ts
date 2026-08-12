@@ -1,4 +1,3 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +17,7 @@ import {
 } from "../src/proxy_float.ts";
 import type { ProjectConfig } from "../src/utils/project_config.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
+import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
 
 // proxyFloatUpToDate / nodeModulesFresh back the bin shims' `--verify` fast path:
 // they decide whether a full `bun install` can be skipped.

@@ -1,7 +1,7 @@
 // Unit tests for src/codex/toml_io.ts (the shared Codex config.toml reader/writer)
 // plus one test per call-site POLICY in src/codex/config.ts, proving each site
 // still maps the shared read variants onto its pre-refactor behavior.
-import { afterEach, expect, test } from "bun:test";
+
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { stringify } from "smol-toml";
@@ -15,6 +15,7 @@ import { readCodexToml, saveCodexToml } from "../src/codex/toml_io.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, removeDir, tmpDir } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();

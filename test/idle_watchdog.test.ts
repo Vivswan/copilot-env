@@ -1,4 +1,3 @@
-import { afterEach, expect, test } from "bun:test";
 import { CopilotEnvConfig, configDefaultNumber } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import {
@@ -14,6 +13,7 @@ import {
   markInference,
   resetInferenceActivityForTests,
 } from "../src/scripts/inference_activity.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir, writeRunState } from "./helpers.ts";
 
 const restoreEnv = envSnapshot([IDLE_TIMEOUT_ENV]);

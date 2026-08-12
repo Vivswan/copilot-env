@@ -1,10 +1,10 @@
-import { afterEach, expect, test } from "bun:test";
 import { createServer, type Server } from "node:net";
 import { parseStartAction, runStart } from "../src/commands/start.ts";
 import { portListening } from "../src/copilot_api/daemon.ts";
 import { classifyDaemonPid } from "../src/copilot_api/process.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import {
   envSnapshot,
   isolateProxyHome,

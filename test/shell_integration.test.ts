@@ -1,8 +1,6 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import {
   posixBlock,
   posixLaunchersBlock,
@@ -10,6 +8,8 @@ import {
   quotePowerShell,
   windowsExecutionPolicyCommand,
 } from "../src/shell/integration.ts";
+import { runCli, runSync } from "./helpers/run.ts";
+import { afterEach, beforeEach, expect, test } from "./helpers/testing.ts";
 
 // `agent shell` wires/unwires the rc block. Exercise the POSIX path by
 // running the CLI with a throwaway $HOME so we never touch the real rc files.
@@ -27,13 +27,11 @@ function shellFunctionBody(source: string, name: string): string {
   return match[1] as string;
 }
 
-function run(...args: string[]): { code: number; out: string } {
-  const proc = Bun.spawnSync(["bun", "src/cli.ts", "shell", ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
+function run(...args: string[]): { code: number | null; out: string } {
+  const proc = runCli(["shell", ...args], {
     env: { ...process.env, HOME: home, SHELL: "/bin/bash", CONSOLA_LEVEL: "5" },
   });
-  return { code: proc.exitCode, out: proc.stdout.toString() + proc.stderr.toString() };
+  return { code: proc.exitCode, out: proc.stdout + proc.stderr };
 }
 
 beforeEach(() => {
@@ -180,14 +178,13 @@ skipWin("posixBlock safely quotes paths with shell metacharacters", () => {
   const weird = "/tmp/we'ird $dir/`x`/agents.bashrc";
   const blockFile = join(home, "block.sh");
   writeFileSync(blockFile, posixBlock(weird));
-  const proc = Bun.spawnSync([
-    "bash",
+  const proc = runSync("bash", [
     "-c",
     `source "$1"; printf %s "$AGENTS_BASHRC"`,
     "bash",
     blockFile,
   ]);
-  expect(proc.stdout.toString()).toBe(weird);
+  expect(proc.stdout).toBe(weird);
 });
 
 test("quotePosix / quotePowerShell escape embedded single quotes", () => {

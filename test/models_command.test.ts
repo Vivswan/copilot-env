@@ -1,14 +1,14 @@
-import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import {
   formatTokens,
   type ModelListEntry,
   parseModelList,
   renderModelTable,
 } from "../src/commands/models.ts";
+import { runCli } from "./helpers/run.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 // --- parseModelList (pure) ----------------------------------------------------
 
@@ -181,12 +181,10 @@ function runModelsCli(
   const home = mkdtempSync(join(tmpdir(), "copilot-models-"));
   try {
     seed?.(home);
-    const proc = Bun.spawnSync(["bun", "src/cli.ts", "models", ...args], {
-      stdout: "pipe",
-      stderr: "pipe",
+    const proc = runCli(["models", ...args], {
       env: { ...process.env, CONSOLA_LEVEL: "5", COPILOT_API_HOME: home },
     });
-    return { exitCode: proc.exitCode, out: proc.stdout.toString() + proc.stderr.toString() };
+    return { exitCode: proc.exitCode, out: proc.stdout + proc.stderr };
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

@@ -1,6 +1,5 @@
-import { describe, expect, test } from "bun:test";
-
 import { parseProjectConfig } from "../src/utils/project_config.ts";
+import { describe, expect, test } from "./helpers/testing.ts";
 
 describe("project config", () => {
   test("parses the proxy floor and ceiling", () => {

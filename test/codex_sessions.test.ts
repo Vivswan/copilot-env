@@ -1,10 +1,10 @@
-import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
+import { zstdCompressSync } from "node:zlib";
 import { discoverCodexSessionRoots, readCodexSessions } from "../src/usage/codex_sessions.ts";
 import { localDayKey } from "../src/utils/time.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 /** A Codex TokenUsage object: input INCLUDES cached; output includes reasoning. */
 function usage(input: number, cached: number, output: number): Record<string, number> {
@@ -290,7 +290,7 @@ test("readCodexSessions counts a session once when it exists both live and archi
   // The archived twin (same basename, compressed) must not double count.
   writeFileSync(
     join(archived, "rollout-2026-06-01T01-00-00-aaa.jsonl.zst"),
-    Bun.zstdCompressSync(Buffer.from(`${lines.join("\n")}\n`)),
+    zstdCompressSync(Buffer.from(`${lines.join("\n")}\n`)),
   );
 
   const byProvider = await readCodexSessions([live, archived]);
@@ -314,7 +314,7 @@ test("readCodexSessions reads zstd-compressed archived rollouts", async () => {
   ];
   writeFileSync(
     join(root, "rollout-2026-06-01T01-00-00-aaa.jsonl.zst"),
-    Bun.zstdCompressSync(Buffer.from(`${lines.join("\n")}\n`)),
+    zstdCompressSync(Buffer.from(`${lines.join("\n")}\n`)),
   );
 
   const byProvider = await readCodexSessions([root]);

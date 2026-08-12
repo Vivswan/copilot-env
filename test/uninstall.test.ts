@@ -2,12 +2,11 @@
 // (codexHomes + farm + shell removal) so `bun test` never touches the real
 // ~/.codex, the host farm, or the shell rc files -- and never passes --force, so
 // the dev checkout's .git guard keeps PROJECT_ROOT safe by construction.
-import { afterEach, expect, test } from "bun:test";
+
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { consola } from "consola";
 import { parse } from "smol-toml";
-
 import { configureClaudeConfig } from "../src/claude/config.ts";
 import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
 import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME, settingsPathFor } from "../src/claude/paths.ts";
@@ -19,6 +18,8 @@ import { profileHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { isRecord } from "../src/utils/json.ts";
+import { ROOT } from "./helpers/run.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, removeDir, resetExitCode } from "./helpers.ts";
 
 // A branded fixture name: parseProfileName is the only mint for ProfileName.
@@ -140,7 +141,7 @@ test("uninstall removes everything managed and preserves user config", async () 
   // injected side-effect seams both ran. The dev checkout survives (.git guard).
   expect(existsSync(proxyHome)).toBe(false);
   expect(deps.calls).toEqual(["farm", "shell"]);
-  expect(existsSync(join(import.meta.dir, "..", "package.json"))).toBe(true);
+  expect(existsSync(join(ROOT, "package.json"))).toBe(true);
 });
 
 test("uninstall leaves foreign Claude/Codex wiring untouched", async () => {

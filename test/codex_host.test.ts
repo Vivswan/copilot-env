@@ -5,12 +5,13 @@
 // tests run proxy-forced so nothing probes the network, and
 // PATH points at an empty dir so the shared-home prime can never spawn a real
 // codex CLI from the machine running the suite.
-import { afterEach, expect, test } from "bun:test";
+
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { getHostLocalCodexHome, runCodexHost } from "../src/codex/host.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../src/utils/hostname.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import {
   envSnapshot,
   isolateAgentHomes,

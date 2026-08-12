@@ -1,8 +1,8 @@
-import { afterEach, expect, test } from "bun:test";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CopilotApiPaths, DEFAULT_HOME } from "../src/copilot_api/paths.ts";
 import { getSanitizedHostname } from "../src/utils/hostname.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();

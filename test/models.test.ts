@@ -1,10 +1,9 @@
-import { expect, test } from "bun:test";
-
 import {
   type CatalogModel,
   generateAliases,
   parseCatalogModels,
 } from "../src/copilot_api/models.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 test("base id gets a dash alias and a [1m] alias that falls back to itself", () => {
   const catalog: CatalogModel[] = [{ id: "claude-opus-4.8", is1m: false }];

@@ -1,18 +1,28 @@
-import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/paths.ts";
 import { getSanitizedHostname } from "../src/utils/hostname.ts";
+import { runCli } from "./helpers/run.ts";
+import { expect, test } from "./helpers/testing.ts";
 import { writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
 
 // A throwaway COPILOT_API_HOME so the runtime probe sees no tracked pid/port. We pin the
 // default proxy port to 4199 via config (isolated from any real proxy on 4141 on this host).
+// HOME/USERPROFILE are isolated too: the codex host-farm and shell probes resolve through
+// the home directory, so a developer machine with a built farm or a wired rc file would
+// otherwise leak into the children's health reports.
 function isolatedEnv(extra: Record<string, string> = {}): Record<string, string> {
   const home = mkdtempSync(join(tmpdir(), "copilot-health-"));
   writeFileSync(join(home, ".copilot-env-config.json"), JSON.stringify({ port: 4199 }));
-  return { ...process.env, CONSOLA_LEVEL: "5", COPILOT_API_HOME: home, ...extra };
+  return {
+    ...process.env,
+    CONSOLA_LEVEL: "5",
+    COPILOT_API_HOME: home,
+    HOME: home,
+    USERPROFILE: home,
+    ...extra,
+  };
 }
 
 function isolatedProxyEnv(extra: Record<string, string> = {}): Record<string, string> {
@@ -30,8 +40,8 @@ function isolatedProxyEnv(extra: Record<string, string> = {}): Record<string, st
 }
 
 // Pure help screens are read-only and deterministic, so each unique argv is spawned
-// once and its output shared by every test that asserts on it (a cold `bun src/cli.ts`
-// spawn costs ~250ms; the suite asserts on the same screens many times over).
+// once and its output shared by every test that asserts on it (a cold CLI child
+// spawn is expensive; the suite asserts on the same screens many times over).
 const HELP_CACHE = new Map<string, { exitCode: number | null; stdout: string; output: string }>();
 
 function helpScreen(...args: string[]): {
@@ -42,13 +52,9 @@ function helpScreen(...args: string[]): {
   const key = args.join(" ");
   const cached = HELP_CACHE.get(key);
   if (cached) return cached;
-  const proc = Bun.spawnSync(["bun", "src/cli.ts", ...args], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CONSOLA_LEVEL: "5" },
-  });
-  const stdout = proc.stdout.toString();
-  const entry = { exitCode: proc.exitCode, stdout, output: stdout + proc.stderr.toString() };
+  const proc = runCli([...args], { env: { ...process.env, CONSOLA_LEVEL: "5" } });
+  const stdout = proc.stdout;
+  const entry = { exitCode: proc.exitCode, stdout, output: stdout + proc.stderr };
   HELP_CACHE.set(key, entry);
   return entry;
 }
@@ -58,7 +64,7 @@ function helpScreen(...args: string[]): {
 // regressions that unit tests on individual modules would miss.
 //
 // CONSOLA_LEVEL is forced for the run* command output (consola silences itself
-// when it detects a "test" environment, as `bun test` is); Commander prints its
+// when it detects a "test" environment, as the test runner is); Commander prints its
 // own help to stdout directly, independent of consola.
 test("`cli.ts --help` loads the CLI and exits 0", () => {
   const { exitCode, output } = helpScreen("--help");
@@ -84,42 +90,32 @@ test("cli.ts mcp --help exposes the server flags; --remove rejects serve-only fl
   expect(help.output).toContain("--profile");
   expect(help.output).toContain("--model");
 
-  const conflict = Bun.spawnSync(["bun", "src/cli.ts", "mcp", "--remove", "--model", "x"], {
-    stdout: "pipe",
-    stderr: "pipe",
+  const conflict = runCli(["mcp", "--remove", "--model", "x"], {
     env: { ...process.env, CONSOLA_LEVEL: "5" },
   });
   expect(conflict.exitCode).not.toBe(0);
-  expect(conflict.stderr.toString()).toContain("--remove takes no --profile/--model");
+  expect(conflict.stderr).toContain("--remove takes no --profile/--model");
 
-  const serveRemove = Bun.spawnSync(["bun", "src/cli.ts", "mcp", "--serve", "--remove"], {
-    stdout: "pipe",
-    stderr: "pipe",
+  const serveRemove = runCli(["mcp", "--serve", "--remove"], {
     env: { ...process.env, CONSOLA_LEVEL: "5" },
   });
   expect(serveRemove.exitCode).not.toBe(0);
-  expect(serveRemove.stderr.toString()).toContain("mutually exclusive");
+  expect(serveRemove.stderr).toContain("mutually exclusive");
 
   // Serve-only flags without --serve must not silently start a server (or anything).
-  const statusModel = Bun.spawnSync(["bun", "src/cli.ts", "mcp", "--model", "x"], {
-    stdout: "pipe",
-    stderr: "pipe",
+  const statusModel = runCli(["mcp", "--model", "x"], {
     env: { ...process.env, CONSOLA_LEVEL: "5" },
   });
   expect(statusModel.exitCode).not.toBe(0);
-  expect(statusModel.stderr.toString()).toContain("apply to --serve");
+  expect(statusModel.stderr).toContain("apply to --serve");
 });
 
 test("cli.ts mcp (bare) prints the wiring status and exits 0", () => {
   // Hermetic homes: a temp CLAUDE_CONFIG_DIR (no registration) and an isolated
   // copilot-env home, so the status never reads or creates real user state.
   const claudeDir = mkdtempSync(join(tmpdir(), "copilot-mcp-status-"));
-  const status = Bun.spawnSync(["bun", "src/cli.ts", "mcp"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: isolatedEnv({ CLAUDE_CONFIG_DIR: claudeDir }),
-  });
-  const output = status.stderr.toString();
+  const status = runCli(["mcp"], { env: isolatedEnv({ CLAUDE_CONFIG_DIR: claudeDir }) });
+  const output = status.stderr;
   expect(status.exitCode).toBe(0);
   expect(output).toContain("not registered");
   expect(output).toContain("wire-mcp: true (default)");
@@ -131,13 +127,11 @@ test("cli.ts mcp (bare) prints the wiring status and exits 0", () => {
 test("cli.ts mcp --serve --profile '' hard-fails instead of serving the default credential", () => {
   // A supplied-but-blank --profile (an unset shell var in `--profile "$P"`) must
   // never silently resolve the DEFAULT credential (the named-profile hard-fail rule).
-  const blank = Bun.spawnSync(["bun", "src/cli.ts", "mcp", "--serve", "--profile", ""], {
-    stdout: "pipe",
-    stderr: "pipe",
+  const blank = runCli(["mcp", "--serve", "--profile", ""], {
     env: { ...process.env, CONSOLA_LEVEL: "5" },
   });
   expect(blank.exitCode).not.toBe(0);
-  expect(blank.stderr.toString()).toContain("--profile expects a profile name");
+  expect(blank.stderr).toContain("--profile expects a profile name");
 });
 
 for (const args of [["shell"]] as const) {
@@ -192,47 +186,41 @@ test("codex exposes and runs check mode", () => {
   expect(helpOut).toContain("--mobile");
 
   const runCheck = (home: string) =>
-    Bun.spawnSync(["bun", "src/cli.ts", "codex", "--check"], {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: isolatedEnv({ CODEX_HOME: home }),
-    });
+    runCli(["codex", "--check"], { env: isolatedEnv({ CODEX_HOME: home }) });
 
   const proxy = runCheck(codexHome);
   expect(proxy.exitCode).toBe(2);
-  expect(proxy.stdout.toString()).toContain("Codex provider mode: proxy");
-  expect(proxy.stdout.toString()).toContain("local copilot-api proxy");
-  expect(proxy.stdout.toString()).toContain(`config.toml: ${join(codexHome, "config.toml")}`);
+  expect(proxy.stdout).toContain("Codex provider mode: proxy");
+  expect(proxy.stdout).toContain("local copilot-api proxy");
+  expect(proxy.stdout).toContain(`config.toml: ${join(codexHome, "config.toml")}`);
 
   const direct = runCheck(directHome);
   expect(direct.exitCode).toBe(0);
-  expect(direct.stdout.toString()).toContain("Codex provider mode: direct");
-  expect(direct.stdout.toString()).toContain("GitHub Copilot Direct");
-  expect(direct.stdout.toString()).toContain(`config.toml: ${join(directHome, "config.toml")}`);
+  expect(direct.stdout).toContain("Codex provider mode: direct");
+  expect(direct.stdout).toContain("GitHub Copilot Direct");
+  expect(direct.stdout).toContain(`config.toml: ${join(directHome, "config.toml")}`);
 
   const other = runCheck(otherHome);
   expect(other.exitCode).toBe(1);
-  expect(other.stdout.toString()).toContain("Codex provider mode: other");
-  expect(other.stdout.toString()).toContain(`config.toml: ${join(otherHome, "config.toml")}`);
+  expect(other.stdout).toContain("Codex provider mode: other");
+  expect(other.stdout).toContain(`config.toml: ${join(otherHome, "config.toml")}`);
 
   // none (no config.toml) now exits 2 (proxy default), matching Claude.
   const missing = runCheck(noneHome);
   expect(missing.exitCode).toBe(2);
-  expect(missing.stdout.toString()).toContain("Codex provider mode: none");
-  expect(missing.stdout.toString()).toContain("no config.toml found");
+  expect(missing.stdout).toContain("Codex provider mode: none");
+  expect(missing.stdout).toContain("no config.toml found");
 
   const unset = runCheck(unsetHome);
   expect(unset.exitCode).toBe(2);
-  expect(unset.stdout.toString()).toContain("Codex provider mode: none");
-  expect(unset.stdout.toString()).toContain("no model_provider configured");
+  expect(unset.stdout).toContain("Codex provider mode: none");
+  expect(unset.stdout).toContain("no model_provider configured");
 
-  const conflicting = Bun.spawnSync(["bun", "src/cli.ts", "codex", "--proxy", "--direct"], {
-    stdout: "pipe",
-    stderr: "pipe",
+  const conflicting = runCli(["codex", "--proxy", "--direct"], {
     env: isolatedEnv({ CODEX_HOME: codexHome }),
   });
   expect(conflicting.exitCode).toBe(1);
-  expect(conflicting.stderr.toString()).toContain("--direct and --proxy are mutually exclusive");
+  expect(conflicting.stderr).toContain("--direct and --proxy are mutually exclusive");
 });
 
 test("claude exposes and runs check mode", () => {
@@ -249,37 +237,31 @@ test("claude exposes and runs check mode", () => {
   expect(helpScreen("claude", "--help").output).toContain("--check");
 
   const runCheck = (home: string) =>
-    Bun.spawnSync(["bun", "src/cli.ts", "claude", "--check"], {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: isolatedEnv({ CLAUDE_CONFIG_DIR: home }),
-    });
+    runCli(["claude", "--check"], { env: isolatedEnv({ CLAUDE_CONFIG_DIR: home }) });
 
   const direct = runCheck(directHome);
   expect(direct.exitCode).toBe(0);
-  expect(direct.stdout.toString()).toContain("Claude provider mode: direct");
-  expect(direct.stdout.toString()).toContain(`settings.json: ${join(directHome, "settings.json")}`);
+  expect(direct.stdout).toContain("Claude provider mode: direct");
+  expect(direct.stdout).toContain(`settings.json: ${join(directHome, "settings.json")}`);
 
   const proxy = runCheck(proxyHome);
   expect(proxy.exitCode).toBe(2);
-  expect(proxy.stdout.toString()).toContain("Claude provider mode: proxy");
+  expect(proxy.stdout).toContain("Claude provider mode: proxy");
 
   // No settings.json at all is "none" -- still exit 2 (the proxy is the default).
   const none = runCheck(noneHome);
   expect(none.exitCode).toBe(2);
-  expect(none.stdout.toString()).toContain("Claude provider mode: none");
+  expect(none.stdout).toContain("Claude provider mode: none");
 
   const other = runCheck(otherHome);
   expect(other.exitCode).toBe(1);
-  expect(other.stdout.toString()).toContain("Claude provider mode: other");
+  expect(other.stdout).toContain("Claude provider mode: other");
 
-  const conflicting = Bun.spawnSync(["bun", "src/cli.ts", "claude", "--proxy", "--direct"], {
-    stdout: "pipe",
-    stderr: "pipe",
+  const conflicting = runCli(["claude", "--proxy", "--direct"], {
     env: isolatedEnv({ CLAUDE_CONFIG_DIR: proxyHome }),
   });
   expect(conflicting.exitCode).toBe(1);
-  expect(conflicting.stderr.toString()).toContain("--direct and --proxy are mutually exclusive");
+  expect(conflicting.stderr).toContain("--direct and --proxy are mutually exclusive");
 });
 
 test("init configures both agents and rejects --direct + --proxy", () => {
@@ -291,36 +273,29 @@ test("init configures both agents and rejects --direct + --proxy", () => {
   // --proxy forces BOTH agents to the proxy (no probe); isolate the homes so we
   // never touch the real ~/.codex or ~/.claude.
   const root = mkdtempSync(join(tmpdir(), "copilot-init-"));
-  const proc = Bun.spawnSync(["bun", "src/cli.ts", "init", "--proxy"], {
-    stdout: "pipe",
-    stderr: "pipe",
+  const proc = runCli(["init", "--proxy"], {
     env: isolatedEnv({
       CODEX_HOME: join(root, ".codex"),
       CLAUDE_CONFIG_DIR: join(root, ".claude"),
     }),
   });
   expect(proc.exitCode).toBe(0);
-  const out = proc.stdout.toString() + proc.stderr.toString();
+  const out = proc.stdout + proc.stderr;
   expect(out).toContain("local proxy");
   expect(existsSync(join(root, ".codex", "config.toml"))).toBe(true);
   expect(existsSync(join(root, ".claude", "settings.json"))).toBe(true);
 
-  const conflict = Bun.spawnSync(["bun", "src/cli.ts", "init", "--direct", "--proxy"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: isolatedEnv(),
-  });
+  const conflict = runCli(["init", "--direct", "--proxy"], { env: isolatedEnv() });
   expect(conflict.exitCode).toBe(1);
-  expect(conflict.stderr.toString()).toContain("--direct and --proxy are mutually exclusive");
+  expect(conflict.stderr).toContain("--direct and --proxy are mutually exclusive");
 });
 
 test("profile rejects --direct + --proxy at the CLI boundary with its own wording", () => {
-  const conflict = Bun.spawnSync(
-    ["bun", "src/cli.ts", "profile", "--add", "work", "--direct", "--proxy"],
-    { stdout: "pipe", stderr: "pipe", env: isolatedEnv() },
-  );
+  const conflict = runCli(["profile", "--add", "work", "--direct", "--proxy"], {
+    env: isolatedEnv(),
+  });
   expect(conflict.exitCode).toBe(1);
-  expect(conflict.stderr.toString()).toContain(
+  expect(conflict.stderr).toContain(
     "--direct and --proxy are mutually exclusive (a profile has ONE mode)",
   );
 });
@@ -333,13 +308,9 @@ test("the mode conflict is rejected at the boundary on every command that takes 
     ["profile", "--list", "--direct", "--proxy"],
     ["codex", "--mobile", "--direct", "--proxy"],
   ]) {
-    const conflict = Bun.spawnSync(["bun", "src/cli.ts", ...argv], {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: isolatedEnv(),
-    });
+    const conflict = runCli([...argv], { env: isolatedEnv() });
     expect(conflict.exitCode).toBe(1);
-    expect(conflict.stderr.toString()).toContain("--direct and --proxy are mutually exclusive");
+    expect(conflict.stderr).toContain("--direct and --proxy are mutually exclusive");
   }
 });
 
@@ -348,14 +319,9 @@ test("codex --mobile refuses to run (non-TTY, or unsupported platform)", () => {
   // message + exit 1 instead of hanging on a prompt. On macOS/Windows that's the
   // TTY guard ("interactive"); on Linux the platform gate fires first (no Codex
   // app there). Either way it refuses.
-  const proc = Bun.spawnSync(["bun", "src/cli.ts", "codex", "--mobile"], {
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-    env: isolatedEnv(),
-  });
+  const proc = runCli(["codex", "--mobile"], { env: isolatedEnv() });
   expect(proc.exitCode).toBe(1);
-  const err = proc.stderr.toString();
+  const err = proc.stderr;
   if (process.platform === "darwin" || process.platform === "win32") {
     expect(err).toContain("interactive");
   } else {
@@ -388,14 +354,9 @@ test("uninstall: help surfaces the flags; a non-TTY run without --yes refuses", 
 
   // Spawned without a TTY and without --yes: the confirmation guard must bail
   // with a clear pointer to --yes (exit 1) instead of hanging on a prompt.
-  const refused = Bun.spawnSync(["bun", "src/cli.ts", "uninstall"], {
-    stdin: "pipe",
-    stdout: "pipe",
-    stderr: "pipe",
-    env: isolatedEnv(),
-  });
+  const refused = runCli(["uninstall"], { env: isolatedEnv() });
   expect(refused.exitCode).toBe(1);
-  expect(refused.stderr.toString()).toContain("--yes");
+  expect(refused.stderr).toContain("--yes");
 });
 
 test("shell --help surfaces the install/launcher flags", () => {
@@ -417,9 +378,7 @@ test("shell --clis --no-prereqs: verify-only runs; --cooldown is rejected, never
   // --no-prereqs => verify only (no npm install). Isolate HOME so the integration
   // wiring it does touches a throwaway rc, never the real one.
   const root = mkdtempSync(join(tmpdir(), "copilot-shell-clis-"));
-  const ok = Bun.spawnSync(["bun", "src/cli.ts", "shell", "--clis", "--no-prereqs"], {
-    stdout: "pipe",
-    stderr: "pipe",
+  const ok = runCli(["shell", "--clis", "--no-prereqs"], {
     env: isolatedEnv({ HOME: root, SHELL: "/bin/bash" }),
   });
   expect(ok.exitCode).toBe(0);
@@ -427,15 +386,13 @@ test("shell --clis --no-prereqs: verify-only runs; --cooldown is rejected, never
   // pair (it used to be silently dropped). The optional-valued flag still PARSES in
   // every spelling -- the failure below is the boundary conflict, not a parse error.
   for (const args of [["--cooldown"], ["--cooldown=0"], ["--cooldown", "14"]] as const) {
-    const proc = Bun.spawnSync(["bun", "src/cli.ts", "shell", "--clis", "--no-prereqs", ...args], {
-      stdout: "pipe",
-      stderr: "pipe",
+    const proc = runCli(["shell", "--clis", "--no-prereqs", ...args], {
       env: isolatedEnv({ HOME: root, SHELL: "/bin/bash" }),
     });
     expect(proc.exitCode).toBe(1);
-    expect(proc.stderr.toString()).toContain("--cooldown and --no-prereqs are mutually exclusive");
+    expect(proc.stderr).toContain("--cooldown and --no-prereqs are mutually exclusive");
   }
-  // Four cold `bun src/cli.ts` spawns; on a loaded Windows CI runner each cold start + TS
+  // Four cold CLI spawns; on a loaded Windows CI runner each cold start + TS
   // load can take several seconds, so allow generous headroom to avoid flaky timeouts.
 }, 90_000);
 
@@ -444,13 +401,9 @@ test("the merged commands are gone; --gh-token is off the per-agent commands", (
   // setup-clis / setup-shell / setup-launchers were folded into init/shell.
   for (const stale of ["setup-clis", "setup-shell", "setup-launchers"]) {
     expect(rootOut).not.toContain(stale);
-    const gone = Bun.spawnSync(["bun", "src/cli.ts", stale], {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { ...process.env, CONSOLA_LEVEL: "5" },
-    });
+    const gone = runCli([stale], { env: { ...process.env, CONSOLA_LEVEL: "5" } });
     expect(gone.exitCode).not.toBe(0);
-    expect(gone.stderr.toString()).toContain("unknown command");
+    expect(gone.stderr).toContain("unknown command");
   }
 
   // --gh-token now lives only on init, not on codex/claude.
@@ -480,21 +433,13 @@ test("health --help surfaces --scope and --json", () => {
 test("health --scope runtime exits 1 when no proxy is running", () => {
   // Proxy-wired Codex (not both-direct) so a down proxy is a genuine failure;
   // the default port has nothing listening + isolated state => probe always fails.
-  const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", "runtime"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: isolatedProxyEnv({}),
-  });
+  const proc = runCli(["health", "--scope", "runtime"], { env: isolatedProxyEnv({}) });
   expect(proc.exitCode).toBe(1);
 });
 
 test("health --json emits a parseable report with scope/exitCode/checks", () => {
-  const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", "runtime", "--json"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: isolatedEnv({}),
-  });
-  const parsed = JSON.parse(proc.stdout.toString());
+  const proc = runCli(["health", "--scope", "runtime", "--json"], { env: isolatedEnv({}) });
+  const parsed = JSON.parse(proc.stdout);
   expect(parsed.scope).toBe("runtime");
   expect(typeof parsed.exitCode).toBe("number");
   expect(Array.isArray(parsed.checks)).toBe(true);
@@ -502,12 +447,8 @@ test("health --json emits a parseable report with scope/exitCode/checks", () => 
 });
 
 test("health --scope bogus exits 1 with a helpful message", () => {
-  const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", "bogus"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: isolatedEnv(),
-  });
-  const out = proc.stdout.toString() + proc.stderr.toString();
+  const proc = runCli(["health", "--scope", "bogus"], { env: isolatedEnv() });
+  const out = proc.stdout + proc.stderr;
   expect(proc.exitCode).toBe(1);
   expect(out).toContain("--scope must be one of");
 });
@@ -552,12 +493,8 @@ interface ProfiledCheck {
 
 test("health sweep reports a seeded proxy profile as its own runtime target", () => {
   const env = seededProfileEnv();
-  const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--json"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env,
-  });
-  const json = JSON.parse(proc.stdout.toString()) as {
+  const proc = runCli(["health", "--json"], { env });
+  const json = JSON.parse(proc.stdout) as {
     profile: string | null;
     exitCode: number;
     checks: ProfiledCheck[];
@@ -578,12 +515,8 @@ test("health sweep reports a seeded proxy profile as its own runtime target", ()
   expect(json.exitCode).toBe(1);
   expect(proc.exitCode).toBe(1);
   // The fast launcher probe stays the default daemon alone.
-  const fast = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", "runtime", "--json"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env,
-  });
-  const fastJson = JSON.parse(fast.stdout.toString()) as { checks: ProfiledCheck[] };
+  const fast = runCli(["health", "--scope", "runtime", "--json"], { env });
+  const fastJson = JSON.parse(fast.stdout) as { checks: ProfiledCheck[] };
   expect(fastJson.checks.map((c) => `${c.id}@${c.profile}`)).toEqual([
     "runtime.port@null",
     "runtime.pid@null",
@@ -592,12 +525,8 @@ test("health sweep reports a seeded proxy profile as its own runtime target", ()
 
 test("health --profile narrows the run and excludes account-wide checks", () => {
   const env = seededProfileEnv();
-  const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--profile", "p", "--json"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env,
-  });
-  const json = JSON.parse(proc.stdout.toString()) as {
+  const proc = runCli(["health", "--profile", "p", "--json"], { env });
+  const json = JSON.parse(proc.stdout) as {
     profile: string | null;
     exitCode: number;
     checks: ProfiledCheck[];
@@ -636,11 +565,8 @@ test("health --profile narrows the run and excludes account-wide checks", () => 
   expect(json.exitCode).toBe(1);
 
   // The acceptance narrowing: --profile with the fast runtime scope.
-  const narrowed = Bun.spawnSync(
-    ["bun", "src/cli.ts", "health", "--profile", "p", "--scope", "runtime", "--json"],
-    { stdout: "pipe", stderr: "pipe", env },
-  );
-  const narrowedJson = JSON.parse(narrowed.stdout.toString()) as {
+  const narrowed = runCli(["health", "--profile", "p", "--scope", "runtime", "--json"], { env });
+  const narrowedJson = JSON.parse(narrowed.stdout) as {
     profile: string | null;
     checks: ProfiledCheck[];
   };
@@ -653,13 +579,9 @@ test("health --profile narrows the run and excludes account-wide checks", () => 
 }, 30_000);
 
 test("health --profile with an unknown name is a hard error naming the known profiles", () => {
-  const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--profile", "nope"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: seededProfileEnv(),
-  });
+  const proc = runCli(["health", "--profile", "nope"], { env: seededProfileEnv() });
   expect(proc.exitCode).toBe(1);
-  const err = proc.stderr.toString();
+  const err = proc.stderr;
   expect(err).toContain("no such profile 'nope'");
   expect(err).toContain("known profiles: p");
 });
@@ -670,12 +592,8 @@ test("health --profile with an unknown name is a hard error naming the known pro
 // cross-validates the rest of the codebase the way the unit tests can't. An
 // isolated COPILOT_API_HOME + a dead port make the runtime checks deterministic.
 function runHealthJson(scope: string): { exitCode: number | null; json: HealthJson } {
-  const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", scope, "--json"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: isolatedProxyEnv({}),
-  });
-  return { exitCode: proc.exitCode, json: JSON.parse(proc.stdout.toString()) as HealthJson };
+  const proc = runCli(["health", "--scope", scope, "--json"], { env: isolatedProxyEnv({}) });
+  return { exitCode: proc.exitCode, json: JSON.parse(proc.stdout) as HealthJson };
 }
 
 interface HealthJson {
@@ -771,12 +689,10 @@ test("health --scope claude covers only Claude wiring", () => {
   // Proxy wiring (the proxy is Claude's default; CI has no gh/direct) =>
   // providerMode "proxy", status ok.
   writeClaudeSettings(home, { apiKeyHelper: join(home, PROXY_HELPER_NAME) });
-  const proc = Bun.spawnSync(["bun", "src/cli.ts", "health", "--scope", "claude", "--json"], {
-    stdout: "pipe",
-    stderr: "pipe",
+  const proc = runCli(["health", "--scope", "claude", "--json"], {
     env: isolatedEnv({ CLAUDE_CONFIG_DIR: home }),
   });
-  const json = JSON.parse(proc.stdout.toString()) as HealthJson;
+  const json = JSON.parse(proc.stdout) as HealthJson;
   expect(json.scope).toBe("claude");
   expect(json.checks.map((c) => c.id)).toEqual(["setup.claude"]);
   expect(json.checks[0]?.value?.providerMode).toBe("proxy");
@@ -802,12 +718,8 @@ test("update --help documents the autoupdate flags alongside the manual ones", (
 });
 
 test("update --auto-status reports status and exits 0 (offline, read-only)", () => {
-  const proc = Bun.spawnSync(["bun", "src/cli.ts", "update", "--auto-status"], {
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, CONSOLA_LEVEL: "5" },
-  });
-  const out = proc.stdout.toString() + proc.stderr.toString();
+  const proc = runCli(["update", "--auto-status"], { env: { ...process.env, CONSOLA_LEVEL: "5" } });
+  const out = proc.stdout + proc.stderr;
   expect(proc.exitCode).toBe(0);
   expect(out).toContain("Autoupdate:");
 });

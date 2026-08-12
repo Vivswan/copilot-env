@@ -1,8 +1,6 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
 import {
   installedProxyVersion,
   PROXY_PACKAGE_NAME,
@@ -12,6 +10,7 @@ import {
 import { isRecord } from "../src/utils/json.ts";
 import type { ProjectConfig } from "../src/utils/project_config.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
+import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
 
 let dir = "";
 

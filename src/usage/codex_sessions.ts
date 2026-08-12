@@ -18,9 +18,17 @@
 // session's `model_provider`. This covers Direct-wired Codex, which bypasses
 // the proxy and therefore never reaches the proxy's SQLite usage tables.
 
-import { createReadStream, type Dirent, readdirSync, realpathSync, statSync } from "node:fs";
+import {
+  createReadStream,
+  type Dirent,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
+import { zstdDecompressSync } from "node:zlib";
 import { consola } from "consola";
 import { knownCodexHomes } from "../codex/config.ts";
 import { errMessage } from "../utils/error.ts";
@@ -184,7 +192,7 @@ function collectRolloutFiles(
 /** Yield the lines of a rollout file, transparently decompressing `.jsonl.zst`. */
 async function* rolloutLines(file: string): AsyncGenerator<string> {
   if (file.endsWith(".zst")) {
-    const raw = Bun.zstdDecompressSync(await Bun.file(file).arrayBuffer());
+    const raw = zstdDecompressSync(readFileSync(file));
     yield* new TextDecoder().decode(raw).split("\n");
     return;
   }

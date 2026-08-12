@@ -1,9 +1,8 @@
 // package.json version reader used by CLI metadata and update comparisons.
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
 
+import pkg from "../../package.json" with { type: "json" };
 import { parseJsonRecord } from "./json.ts";
-import { PROJECT_ROOT } from "./root.ts";
 
 /**
  * Read a package.json's `version` string from `path`, or null if the file is
@@ -12,8 +11,8 @@ import { PROJECT_ROOT } from "./root.ts";
  */
 export function readPackageVersion(path: string): string | null {
   try {
-    const pkg = parseJsonRecord(readFileSync(path, "utf-8"));
-    return typeof pkg?.version === "string" ? pkg.version : null;
+    const parsed = parseJsonRecord(readFileSync(path, "utf-8"));
+    return typeof parsed?.version === "string" ? parsed.version : null;
   } catch {
     return null;
   }
@@ -21,8 +20,9 @@ export function readPackageVersion(path: string): string | null {
 
 /**
  * The checkout's package.json version as bare "X.Y.Z" (release-please-maintained).
- * Falls back to "0.0.0" if package.json is missing or malformed.
+ * Statically imported (so `deno compile` embeds it); "0.0.0" only if the field
+ * is somehow not a string.
  */
 export function packageVersion(): string {
-  return readPackageVersion(join(PROJECT_ROOT, "package.json")) ?? "0.0.0";
+  return typeof pkg.version === "string" ? pkg.version : "0.0.0";
 }

@@ -642,7 +642,7 @@ export function defaultProbeDeps(): ProbeDeps {
         return false;
       }
     },
-    bunVersion: () => process.versions.bun ?? null,
+    bunVersion: () => process.versions.bun ?? process.versions.deno ?? null,
     cliVersion: packageVersion,
     codexLive: (home, profile) =>
       runLiveCli(

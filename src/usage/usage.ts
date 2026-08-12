@@ -7,11 +7,9 @@
 // read all of them read-only and aggregate token counts by model. The DB layout
 // itself is owned by src/copilot_api/paths.ts; this module only sweeps it.
 
-// biome-ignore lint/correctness/noUnresolvedImports: `bun:sqlite` is a bun runtime built-in (typed via @types/bun), not a resolvable file.
-import { constants, Database } from "bun:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import { readdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { consola } from "consola";
 import { PROFILES_DIR_NAME, resolveHome, usageDbsUnderHome } from "../copilot_api/paths.ts";
 import { isValidProfileName } from "../copilot_api/profile.ts";
@@ -160,22 +158,16 @@ export function discoverUsageDbs(home: string = resolveHome()): string[] {
  * missing un-checkpointed rows beats failing the report. Throws the last error
  * when both attempts fail.
  */
-function openSqliteReadOnlyWithWalFallback<T>(path: string, query: (db: Database) => T): T {
-  // pathToFileURL handles Windows drive letters / backslashes.
-  const uri = pathToFileURL(path).href;
-  let lastErr: unknown;
-  for (const dbUri of [uri, `${uri}?immutable=1`]) {
-    let db: Database | undefined;
-    try {
-      db = new Database(dbUri, constants.SQLITE_OPEN_READONLY | constants.SQLITE_OPEN_URI);
-      return query(db);
-    } catch (e) {
-      lastErr = e;
-    } finally {
-      db?.close();
-    }
+function openSqliteReadOnlyWithWalFallback<T>(path: string, query: (db: DatabaseSync) => T): T {
+  // Spike-scope port: node:sqlite has no URI-filename support, so the immutable
+  // snapshot fallback is not expressible here; readOnly consults the -wal.
+  let db: DatabaseSync | undefined;
+  try {
+    db = new DatabaseSync(path, { readOnly: true });
+    return query(db);
+  } finally {
+    db?.close();
   }
-  throw lastErr;
 }
 
 /**
@@ -225,7 +217,7 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
     try {
       rows = openSqliteReadOnlyWithWalFallback(
         path,
-        (db) => db.query(QUERY).all(since) as UsageRow[],
+        (db) => db.prepare(QUERY).all(since) as unknown as UsageRow[],
       );
     } catch (e) {
       consola.warn(`could not read ${path} (${errMessage(e)}).`);

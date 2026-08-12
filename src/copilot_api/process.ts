@@ -201,6 +201,16 @@ async function listCopilotApiPidsPosix(): Promise<number[]> {
  */
 export const DAEMON_GH_TOKEN_ENV = "COPILOT_ENV_DAEMON_GH_TOKEN";
 
+/** Runtime-specific argv prefix for the daemon spawn: deno needs the `run`
+ *  subcommand and explicit permission grants before any `--preload` flag;
+ *  bun takes the preloads directly. */
+function runtimeArgs(): string[] {
+  if (process.versions.bun) {
+    return [];
+  }
+  return ["run", "--allow-env", "--allow-read", "--allow-write", "--allow-net", "--allow-sys"];
+}
+
 export function launchDaemon(
   port: number,
   logfile: string,
@@ -251,7 +261,7 @@ export function launchDaemon(
     // copilot-api in opencode mode and strip those headers, so scrub it.
     delete env.COPILOT_API_OAUTH_APP;
   }
-  const args = [...bunFlags, entry, "start", "--verbose", "--port", String(port)];
+  const args = [...runtimeArgs(), ...bunFlags, entry, "start", "--verbose", "--port", String(port)];
   // A token provisioned via `agent auth` (stored in our state) is handed to the daemon
   // through the ENVIRONMENT (owner-only), NOT the argv -- the token_argv_preload above
   // splices it back onto process.argv in-process as `--github-token`, so the proxy uses it

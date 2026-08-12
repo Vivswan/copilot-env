@@ -93,13 +93,14 @@ describe("proxy version status", () => {
   });
 });
 
-// package.json's dependency entry is an external contract (bun resolves the proxy by
+// deno.json's import entry is an external contract (deno resolves the proxy by
 // that literal key), so it cannot derive from PROXY_PACKAGE_NAME -- pin the two
 // together instead, so renaming either side fails here rather than at install time.
-test("package.json tracks the proxy dependency under PROXY_PACKAGE_NAME", () => {
-  const pkg: unknown = JSON.parse(readFileSync(join(PROJECT_ROOT, "package.json"), "utf8"));
-  if (!isRecord(pkg) || !isRecord(pkg.dependencies)) {
-    throw new Error("package.json has no dependencies table");
+test("deno.json tracks the proxy dependency under PROXY_PACKAGE_NAME", () => {
+  const config: unknown = JSON.parse(readFileSync(join(PROJECT_ROOT, "deno.json"), "utf8"));
+  if (!isRecord(config) || !isRecord(config.imports)) {
+    throw new Error("deno.json has no imports table");
   }
-  expect(Object.keys(pkg.dependencies)).toContain(PROXY_PACKAGE_NAME);
+  expect(Object.keys(config.imports)).toContain(PROXY_PACKAGE_NAME);
+  expect(config.imports[PROXY_PACKAGE_NAME]).toMatch(new RegExp(`^npm:${PROXY_PACKAGE_NAME}@`));
 });

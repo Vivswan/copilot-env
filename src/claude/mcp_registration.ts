@@ -80,11 +80,10 @@ export function classifyMcpEntry(entry: unknown): McpRegistrationStatus {
     // path element must still end in bin/agent.ps1 (a moved checkout, not a
     // foreign tool), and the trailing subargs must be the current or legacy shape.
     const fileIdx = managed.args.indexOf("-File");
-    const shape =
-      command
-        .toLowerCase()
-        .replace(/\.exe$/, "")
-        .endsWith("powershell") &&
+    const shape = command
+      .toLowerCase()
+      .replace(/\.exe$/, "")
+      .endsWith("powershell") &&
       fileIdx >= 0 &&
       managed.args.slice(0, fileIdx + 1).every((a, i) => args[i] === a) &&
       typeof args[fileIdx + 1] === "string" &&

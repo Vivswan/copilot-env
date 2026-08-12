@@ -89,7 +89,9 @@ const isLaunchersSource = (l: string): boolean =>
  */
 function childEnvLines(env: Record<string, string | undefined>, profile?: string): string[] {
   const argsSrc = JSON.stringify({ "format": "posix", "profile": profile });
-  const script = `import{runEnv}from${JSON.stringify(join(ROOT, "src/commands/env.ts"))};runEnv(${argsSrc});`;
+  const script = `import{runEnv}from${
+    JSON.stringify(join(ROOT, "src/commands/env.ts"))
+  };runEnv(${argsSrc});`;
   const result = runSync(Deno.execPath(), ["eval", script], { env: { ...process.env, ...env } });
   if (result.exitCode !== 0) throw new Error(`child env failed: ${result.stderr}`);
   return result.stdout.split("\n").filter((l) => l.length > 0);
@@ -191,8 +193,9 @@ function seedProfile(
   const profile = parseProfileName(name);
   new CopilotEnvState().setProfileMode(profile, mode);
   writeRunState({ port }, profile);
-  const helper =
-    mode === "proxy" ? proxyHelperPath(claudeHome, profile) : directHelperPath(claudeHome, profile);
+  const helper = mode === "proxy"
+    ? proxyHelperPath(claudeHome, profile)
+    : directHelperPath(claudeHome, profile);
   const baseUrl = mode === "proxy" ? `http://127.0.0.1:${port}` : "https://api.githubcopilot.com";
   writeFileSync(
     join(claudeHome, `settings-${name}.json`),

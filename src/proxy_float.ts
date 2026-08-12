@@ -197,7 +197,9 @@ function fetchProxyTimeMap(ctx: FloatContext): Result<Record<string, string>> {
     const stderr = result.stderr?.toString().trim();
     return {
       "ok": false,
-      "message": `npm publish-time metadata unavailable (exit ${status})${stderr ? `: ${stderr}` : ""}`,
+      "message": `npm publish-time metadata unavailable (exit ${status})${
+        stderr ? `: ${stderr}` : ""
+      }`,
     };
   }
 
@@ -211,7 +213,9 @@ function clampProxyTarget(ctx: FloatContext, cooldownVersion: string | null): Pr
   if (cooldownVersion === null) {
     return {
       "version": ctx.config.proxyMinVersion,
-      "reason": `no ${formatReleaseAge(ctx.minimumReleaseAgeSeconds)} release -> floor ${ctx.config.proxyMinVersion}`,
+      "reason": `no ${
+        formatReleaseAge(ctx.minimumReleaseAgeSeconds)
+      } release -> floor ${ctx.config.proxyMinVersion}`,
     };
   }
 
@@ -234,7 +238,9 @@ function clampProxyTarget(ctx: FloatContext, cooldownVersion: string | null): Pr
 
   return {
     "version": cooldownVersion,
-    "reason": `latest >=${formatReleaseAge(ctx.minimumReleaseAgeSeconds)} release ${cooldownVersion}`,
+    "reason": `latest >=${
+      formatReleaseAge(ctx.minimumReleaseAgeSeconds)
+    } release ${cooldownVersion}`,
   };
 }
 
@@ -284,10 +290,11 @@ function handlePinnedOverride(ctx: FloatContext, override: string): void {
 
   logger.info(`installing pinned ${PROXY_PKG}@${override} (cooldown bypassed)`);
   const code = installProxySpec(ctx, override);
-  if (code !== 0 && installedBefore === null)
+  if (code !== 0 && installedBefore === null) {
     throw new Error(
       `failed to install ${PROXY_PKG}@${override} (pinned via ${PROXY_VERSION_ENV}); check the version/tag exists (offline?)`,
     );
+  }
 
   if (code === 0) logNowUsing(ctx);
   else logger.warn(`pin failed for ${PROXY_PKG}@${override}; keeping installed version`);
@@ -310,7 +317,9 @@ function handleResolveFailure(ctx: FloatContext, message: string): void {
   }
 
   throw new Error(
-    `could not install ${PROXY_PKG}@${ctx.config.proxyMinVersion} (offline?); installed ${installed ?? "none"} < floor ${ctx.config.proxyMinVersion}`,
+    `could not install ${PROXY_PKG}@${ctx.config.proxyMinVersion} (offline?); installed ${
+      installed ?? "none"
+    } < floor ${ctx.config.proxyMinVersion}`,
   );
 }
 
@@ -333,7 +342,9 @@ function handleResolvedTarget(ctx: FloatContext, target: ProxyTarget): void {
   const installedAfterFailure = installedProxyVersion(ctx.root);
   if (!proxyVersionFloorStatus(installedAfterFailure, ctx.config).ok) {
     throw new Error(
-      `could not install ${PROXY_PKG}@${target.version} (offline?); installed ${installedAfterFailure ?? "none"} < floor ${ctx.config.proxyMinVersion}`,
+      `could not install ${PROXY_PKG}@${target.version} (offline?); installed ${
+        installedAfterFailure ?? "none"
+      } < floor ${ctx.config.proxyMinVersion}`,
     );
   }
   logger.warn(`update failed; keeping ${PROXY_PKG}@${installedAfterFailure}`);
@@ -375,10 +386,9 @@ export function floatProxy(
     spawnRunner,
     nowMs,
   };
-  const range =
-    config.proxyMaxVersion === null
-      ? `>=${config.proxyMinVersion}`
-      : `>=${config.proxyMinVersion} <=${config.proxyMaxVersion}`;
+  const range = config.proxyMaxVersion === null
+    ? `>=${config.proxyMinVersion}`
+    : `>=${config.proxyMinVersion} <=${config.proxyMaxVersion}`;
   logger.info(`checking for proxy update (${range}, >=${formatReleaseAge(effectiveAge)})`);
   const target = resolveProxyTarget(ctx);
   if (target.ok) handleResolvedTarget(ctx, target.value);
@@ -430,8 +440,8 @@ export function proxyFloatVerifyStatus(
   if (override) return verifyPinnedOverride(installed, override);
 
   const effectiveConfig = config ?? readProjectConfig(root);
-  const effectiveMinimumReleaseAgeSeconds =
-    minimumReleaseAgeSeconds ?? resolveMinimumReleaseAgeSeconds(root);
+  const effectiveMinimumReleaseAgeSeconds = minimumReleaseAgeSeconds ??
+    resolveMinimumReleaseAgeSeconds(root);
 
   const target = resolveProxyTarget({
     "root": root,
@@ -459,13 +469,13 @@ function verifyPinnedOverride(installed: string, override: string): ProxyFloatVe
 function verifyResolvedTarget(installed: string, target: ProxyTarget): ProxyFloatVerifyStatus {
   return installed === target.version
     ? {
-        "upToDate": true,
-        "message": `up to date: ${PROXY_PKG}@${target.version} (${target.reason})`,
-      }
+      "upToDate": true,
+      "message": `up to date: ${PROXY_PKG}@${target.version} (${target.reason})`,
+    }
     : {
-        "upToDate": false,
-        "message": `update needed: ${PROXY_PKG} ${installed} -> ${target.version} (${target.reason})`,
-      };
+      "upToDate": false,
+      "message": `update needed: ${PROXY_PKG} ${installed} -> ${target.version} (${target.reason})`,
+    };
 }
 
 function verifyResolveFailure(
@@ -476,13 +486,14 @@ function verifyResolveFailure(
   const status = proxyVersionFloorStatus(installed, config);
   return !status.ok
     ? {
-        "upToDate": false,
-        "message": `update needed: update check failed (${message}); installed ${installed} < floor ${config.proxyMinVersion}`,
-      }
+      "upToDate": false,
+      "message":
+        `update needed: update check failed (${message}); installed ${installed} < floor ${config.proxyMinVersion}`,
+    }
     : {
-        "upToDate": true,
-        "message": `no update check: ${message}; keeping ${PROXY_PKG}@${installed}`,
-      };
+      "upToDate": true,
+      "message": `no update check: ${message}; keeping ${PROXY_PKG}@${installed}`,
+    };
 }
 
 /**
@@ -539,7 +550,8 @@ export function proxyInstallAssertStatus(
     if (installed === null) {
       return {
         "ok": false,
-        "message": `proxy float did not install the pinned ${PROXY_PKG}@${override}; check the version/tag exists (offline?)`,
+        "message":
+          `proxy float did not install the pinned ${PROXY_PKG}@${override}; check the version/tag exists (offline?)`,
       };
     }
     return assertPinnedOverride(installed, override);
@@ -552,27 +564,29 @@ export function proxyInstallAssertStatus(
       case "missing":
         return {
           "ok": false,
-          "message": `proxy float did not install ${PROXY_PKG} (module resolution failed) - the \`bun install\` postinstall (src/proxy_float.ts) is broken.`,
+          "message":
+            `proxy float did not install ${PROXY_PKG} (module resolution failed) - the \`bun install\` postinstall (src/proxy_float.ts) is broken.`,
         };
       case "belowFloor":
         return {
           "ok": false,
-          "message": `installed ${PROXY_PKG} ${status.version} is below the ${status.floor} floor - the postinstall proxy float failed to reach the floor.`,
+          "message":
+            `installed ${PROXY_PKG} ${status.version} is below the ${status.floor} floor - the postinstall proxy float failed to reach the floor.`,
         };
       case "aboveCeiling":
         return {
           "ok": false,
-          "message": `installed ${PROXY_PKG} ${status.version} is above the ${status.ceiling} ceiling - the postinstall proxy float overshot PROXY_MAX_VERSION.`,
+          "message":
+            `installed ${PROXY_PKG} ${status.version} is above the ${status.ceiling} ceiling - the postinstall proxy float overshot PROXY_MAX_VERSION.`,
         };
       default:
         return assertNever(status);
     }
   }
 
-  const window =
-    effectiveConfig.proxyMaxVersion === null
-      ? `>= ${effectiveConfig.proxyMinVersion} floor`
-      : `within [${effectiveConfig.proxyMinVersion}, ${effectiveConfig.proxyMaxVersion}]`;
+  const window = effectiveConfig.proxyMaxVersion === null
+    ? `>= ${effectiveConfig.proxyMinVersion} floor`
+    : `within [${effectiveConfig.proxyMinVersion}, ${effectiveConfig.proxyMaxVersion}]`;
   const target = resolveProxyTarget({
     "root": root,
     "bun": bun,
@@ -584,18 +598,21 @@ export function proxyInstallAssertStatus(
   if (!target.ok) {
     return {
       "ok": true,
-      "message": `proxy float OK (bounds only, ${window}): ${PROXY_PKG} ${status.version}; float target unresolved (${target.message})`,
+      "message":
+        `proxy float OK (bounds only, ${window}): ${PROXY_PKG} ${status.version}; float target unresolved (${target.message})`,
     };
   }
   if (status.version !== target.value.version) {
     return {
       "ok": false,
-      "message": `installed ${PROXY_PKG} ${status.version} does not match the float target ${target.value.version} (${target.value.reason}) - the postinstall proxy float overlay did not land its target.`,
+      "message":
+        `installed ${PROXY_PKG} ${status.version} does not match the float target ${target.value.version} (${target.value.reason}) - the postinstall proxy float overlay did not land its target.`,
     };
   }
   return {
     "ok": true,
-    "message": `proxy float OK: ${PROXY_PKG} ${status.version} matches the float target (${target.value.reason}; ${window})`,
+    "message":
+      `proxy float OK: ${PROXY_PKG} ${status.version} matches the float target (${target.value.reason}; ${window})`,
   };
 }
 
@@ -603,7 +620,8 @@ function assertPinnedOverride(installed: string, override: string): ProxyInstall
   if (!SEMVER_RE.test(override)) {
     return {
       "ok": true,
-      "message": `proxy float OK: ${PROXY_PKG} ${installed} is installed; equality is not verified for the '${override}' tag pin (only exact semver pins are equality-checked)`,
+      "message":
+        `proxy float OK: ${PROXY_PKG} ${installed} is installed; equality is not verified for the '${override}' tag pin (only exact semver pins are equality-checked)`,
     };
   }
   if (installed === override) {
@@ -614,7 +632,8 @@ function assertPinnedOverride(installed: string, override: string): ProxyInstall
   }
   return {
     "ok": false,
-    "message": `installed ${PROXY_PKG} ${installed} does not match the pinned ${override} (${PROXY_VERSION_ENV} or the proxy-version config) - the postinstall proxy float failed to apply the pin.`,
+    "message":
+      `installed ${PROXY_PKG} ${installed} does not match the pinned ${override} (${PROXY_VERSION_ENV} or the proxy-version config) - the postinstall proxy float failed to apply the pin.`,
   };
 }
 

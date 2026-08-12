@@ -3,7 +3,7 @@
 // implementation, shared by `agent update` (src/commands/update.ts) and the
 // autoupdate preflight (./preflight.ts). Callers own the up-to-date / `--check` /
 // `.git` gates.
-import { type StdioOptions, spawnSync } from "node:child_process";
+import { spawnSync, type StdioOptions } from "node:child_process";
 import { join } from "node:path";
 import { consola } from "consola";
 
@@ -25,10 +25,11 @@ function bunInstallFrozen(stdio: StdioOptions = "inherit"): void {
     stdio,
     env: { ...process.env, HUSKY: "0" },
   });
-  if (install.status !== 0)
+  if (install.status !== 0) {
     throw new Error(
       `bun install failed (exit ${install.status ?? install.signal}); see the output above.`,
     );
+  }
 }
 
 export interface ApplyUpdateOptions {

@@ -10,7 +10,7 @@ import type { RequestedMode } from "../agents/provider_mode.ts";
 import { fetchRawModels } from "../copilot_api/catalog.ts";
 import { proxyStatus } from "../copilot_api/daemon.ts";
 import { assertKnownProfile } from "../copilot_api/env_state.ts";
-import { type Profile, parseProfileFlag } from "../copilot_api/profile.ts";
+import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { bold, cyan, gray } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
@@ -219,12 +219,11 @@ export async function runModels(args: ModelsArgs): Promise<void> {
     );
   } catch (e) {
     const profileFlag = profile === null ? "" : ` --profile ${profile}`;
-    const hint =
-      source === "proxy"
-        ? profile === null
-          ? "check `agent health` (or use --direct)"
-          : `check \`agent start --profile ${profile} --check\` (or use --direct)`
-        : `see \`agent auth --check${profileFlag}\``;
+    const hint = source === "proxy"
+      ? profile === null
+        ? "check `agent health` (or use --direct)"
+        : `check \`agent start --profile ${profile} --check\` (or use --direct)`
+      : `see \`agent auth --check${profileFlag}\``;
     throw new Error(`could not list models via ${label}: ${errMessage(e)}; ${hint}`);
   }
   if (args.json) {

@@ -31,13 +31,16 @@ export function formatTable(body: string[][], options: TableOptions = {}): strin
   const { header, footer = [], aligns = [], indent = GAP } = options;
   const rows = [...(header === undefined ? [] : [header]), ...body, ...footer];
   const columns = rows.reduce((m, r) => Math.max(m, r.length), 0);
-  const widths = Array.from({ length: columns }, (_, i) =>
-    Math.max(...rows.map((r) => (r[i] ?? "").length)),
+  const widths = Array.from(
+    { length: columns },
+    (_, i) => Math.max(...rows.map((r) => (r[i] ?? "").length)),
   );
   const fmt = (row: string[]): string =>
-    `${indent}${row
-      .map((cell, i) => padCell(cell ?? "", widths[i] ?? 0, aligns[i] ?? "left"))
-      .join(GAP)}`.trimEnd();
+    `${indent}${
+      row
+        .map((cell, i) => padCell(cell ?? "", widths[i] ?? 0, aligns[i] ?? "left"))
+        .join(GAP)
+    }`.trimEnd();
   const sep = `${indent}${widths.map((w) => "-".repeat(w)).join(GAP)}`.trimEnd();
 
   const lines: string[] = [];

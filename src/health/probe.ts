@@ -33,8 +33,8 @@ import { codexConfigPath, defaultCodexHome } from "../codex/paths.ts";
 import { credentialSource } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
-  type AuthProvider,
   allProfileNames,
+  type AuthProvider,
   CopilotEnvState,
   type ProfileMode,
 } from "../copilot_api/env_state.ts";
@@ -50,8 +50,8 @@ import type { Profile, ProfileName } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import {
   installedProxyVersion,
-  type ProxyVersionStatus,
   proxyVersionBoundsStatus,
+  type ProxyVersionStatus,
 } from "../copilot_api/version.ts";
 import {
   nodeModulesFresh,
@@ -71,10 +71,10 @@ import type { HealthScope } from "./types.ts";
 import {
   AUTH_SCOPES as SCOPE_AUTH,
   BOOTSTRAP_SCOPES as SCOPE_BOOTSTRAP,
-  CLAUDE_SCOPES as SCOPE_CLAUDE,
   CLAUDE_LIVE_SCOPES as SCOPE_CLAUDE_LIVE,
-  CODEX_SCOPES as SCOPE_CODEX,
+  CLAUDE_SCOPES as SCOPE_CLAUDE,
   CODEX_LIVE_SCOPES as SCOPE_CODEX_LIVE,
+  CODEX_SCOPES as SCOPE_CODEX,
   PROFILE_SWEEP_SCOPES as SCOPE_PROFILE_SWEEP,
   RUNTIME_SCOPES as SCOPE_RUNTIME,
   SETUP_SCOPES as SCOPE_SETUP,
@@ -539,8 +539,7 @@ export function runLiveCli(
         kind: "failed",
         cli: resolved,
         detail: formatLiveFailure(null, null, e.message, out, err),
-      }),
-    );
+      }));
     child.on("close", (code, signal) => {
       if (code === 0) {
         resolve({ kind: "ok", cli: resolved });
@@ -772,10 +771,9 @@ async function gatherRuntimeTarget(
   // target's setup actually routes through the port: with both agents direct, nothing we
   // manage talks to whatever answers there, so its identity is none of our business (and
   // never grounds for a misroute warning).
-  const identityConfirmed =
-    SCOPE_BOOTSTRAP.includes(scope) && reachable && proxyExpected
-      ? await deps.proxyIdentity(probeUrl, 2000)
-      : null;
+  const identityConfirmed = SCOPE_BOOTSTRAP.includes(scope) && reachable && proxyExpected
+    ? await deps.proxyIdentity(probeUrl, 2000)
+    : null;
   return {
     profile,
     slot: target.slot,
@@ -854,8 +852,9 @@ export async function gatherFacts(
   // the other probes under Promise.all instead of serializing into the health
   // timeout. Both jobs await the same cached promise.
   let directAuthCache: Promise<CodexDirectAuthFacts> | undefined;
-  const sharedDirectAuth = (): Promise<CodexDirectAuthFacts> =>
-    (directAuthCache ??= deps.codexDirectAuth());
+  const sharedDirectAuth = (): Promise<
+    CodexDirectAuthFacts
+  > => (directAuthCache ??= deps.codexDirectAuth());
 
   // The credential the run's Direct wiring resolves: the default store pair, or
   // the narrowed profile's own slot (named profiles never fall back). `mode` is
@@ -901,8 +900,9 @@ export async function gatherFacts(
     const { provider, storedToken } = runCredential();
     const source = credentialSource(provider, storedToken);
     const noGhNeeded = managed && source === "stored-token";
-    const directAuth =
-      source === "gh-cli" ? await sharedDirectAuth() : { command: null, authenticated: false };
+    const directAuth = source === "gh-cli"
+      ? await sharedDirectAuth()
+      : { command: null, authenticated: false };
     return { directAuth, noGhNeeded };
   };
 
@@ -1031,8 +1031,7 @@ export async function gatherFacts(
         // Managed iff the apiKeyHelper truly execs `agent auth --get` addressed at
         // THIS profile (not a stale/foreign/missing/mis-addressed helper);
         // directAuthFor then decides the gh probe.
-        const usesManagedResolver =
-          wiring.providerMode === "direct" &&
+        const usesManagedResolver = wiring.providerMode === "direct" &&
           wiring.helperPath !== null &&
           directHelperResolvesViaAgent(deps.readFileSafe(wiring.helperPath), profile);
         const { directAuth, noGhNeeded } = await directAuthFor(usesManagedResolver);
@@ -1056,18 +1055,17 @@ export async function gatherFacts(
       jobs.push(
         (async () => {
           const slot = deps.profileSlot(profile);
-          const ghAuthenticated =
-            credentialSource(slot.provider, slot.storedToken) === "gh-cli"
-              ? (await sharedDirectAuth()).authenticated
-              : false;
+          const ghAuthenticated = credentialSource(slot.provider, slot.storedToken) === "gh-cli"
+            ? (await sharedDirectAuth()).authenticated
+            : false;
           facts.profileAuth = {
             name: profile,
             slot: slot.exists
               ? {
-                  provider: slot.provider,
-                  mode: slot.mode,
-                  integrationIdentity: slot.integrationIdentity,
-                }
+                provider: slot.provider,
+                mode: slot.mode,
+                integrationIdentity: slot.integrationIdentity,
+              }
               : null,
             storedToken: slot.storedToken,
             ghAuthenticated,
@@ -1082,10 +1080,9 @@ export async function gatherFacts(
           // (cached) gh probe -- no extra spawn.
           const provider = deps.authProvider();
           const storedToken = deps.storedTokenPresent();
-          const ghAuthenticated =
-            credentialSource(provider, storedToken) === "gh-cli"
-              ? (await sharedDirectAuth()).authenticated
-              : false;
+          const ghAuthenticated = credentialSource(provider, storedToken) === "gh-cli"
+            ? (await sharedDirectAuth()).authenticated
+            : false;
           facts.auth = {
             storedToken,
             ghAuthenticated,

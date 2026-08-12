@@ -77,34 +77,38 @@ test("update() reclaims a stale lock (dead holder pid) quickly instead of hangin
   }
 });
 
-test("concurrent ensureApiKey callers converge on ONE key (no dropped/overwritten key)", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "copilot-lock-"));
-  try {
-    const store = join(dir, "config.json");
-    const worker = join(dir, "keyworker.ts");
-    // Each worker ensures the api + admin key and prints them; with the atomic check-inside-
-    // update + lock, every worker must return the SAME persisted keys.
-    writeFileSync(
-      worker,
-      [
-        `import { CopilotApiConfig } from ${JSON.stringify(CONFIG_MODULE)};`,
-        `const cfg = new CopilotApiConfig(${JSON.stringify(store)});`,
-        "console.log(cfg.ensureApiKey() + ' ' + cfg.ensureAdminApiKey());",
-      ].join("\n"),
-    );
+test(
+  "concurrent ensureApiKey callers converge on ONE key (no dropped/overwritten key)",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "copilot-lock-"));
+    try {
+      const store = join(dir, "config.json");
+      const worker = join(dir, "keyworker.ts");
+      // Each worker ensures the api + admin key and prints them; with the atomic check-inside-
+      // update + lock, every worker must return the SAME persisted keys.
+      writeFileSync(
+        worker,
+        [
+          `import { CopilotApiConfig } from ${JSON.stringify(CONFIG_MODULE)};`,
+          `const cfg = new CopilotApiConfig(${JSON.stringify(store)});`,
+          "console.log(cfg.ensureApiKey() + ' ' + cfg.ensureAdminApiKey());",
+        ].join("\n"),
+      );
 
-    const procs = Array.from({ length: 6 }, () => spawnWorker(worker));
-    const outs = (await Promise.all(procs)).map((p) => p.stdout.trim());
-    // Every worker saw the same api+admin key pair, and it matches what's on disk.
-    const unique = new Set(outs);
-    expect(unique.size).toBe(1);
-    const doc = JSON.parse(readFileSync(store, "utf8"));
-    const apiKey = doc.auth.apiKeys[0];
-    const adminKey = doc.auth.adminApiKey;
-    expect(outs[0]).toBe(`${apiKey} ${adminKey}`);
-    // No duplicate api keys were appended by the concurrent creators.
-    expect(doc.auth.apiKeys.length).toBe(1);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-}, 30_000);
+      const procs = Array.from({ length: 6 }, () => spawnWorker(worker));
+      const outs = (await Promise.all(procs)).map((p) => p.stdout.trim());
+      // Every worker saw the same api+admin key pair, and it matches what's on disk.
+      const unique = new Set(outs);
+      expect(unique.size).toBe(1);
+      const doc = JSON.parse(readFileSync(store, "utf8"));
+      const apiKey = doc.auth.apiKeys[0];
+      const adminKey = doc.auth.adminApiKey;
+      expect(outs[0]).toBe(`${apiKey} ${adminKey}`);
+      // No duplicate api keys were appended by the concurrent creators.
+      expect(doc.auth.apiKeys.length).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);

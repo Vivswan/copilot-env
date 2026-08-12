@@ -15,76 +15,84 @@ async function initialized(client: McpClient): Promise<JsonRpcMessage> {
   return res;
 }
 
-test("handshake: initialize + tools/list expose web_search; stdout stays pure JSON; EOF exits", async () => {
-  const client = new McpClient();
-  try {
-    const init = await initialized(client);
-    const serverInfo = (init.result as { serverInfo?: { name?: string } }).serverInfo;
-    expect(serverInfo?.name).toBe("copilot-env");
+test(
+  "handshake: initialize + tools/list expose web_search; stdout stays pure JSON; EOF exits",
+  async () => {
+    const client = new McpClient();
+    try {
+      const init = await initialized(client);
+      const serverInfo = (init.result as { serverInfo?: { name?: string } }).serverInfo;
+      expect(serverInfo?.name).toBe("copilot-env");
 
-    const list = await client.request(2, "tools/list");
-    const tools = (list.result as { tools: { name: string; inputSchema: unknown }[] }).tools;
-    expect(tools.map((t) => t.name)).toEqual(["web_search"]);
-    expect(tools[0]?.inputSchema).toEqual({
-      "type": "object",
-      "properties": { "query": { "type": "string", "description": "The web search query." } },
-      "required": ["query"],
-    });
+      const list = await client.request(2, "tools/list");
+      const tools = (list.result as { tools: { name: string; inputSchema: unknown }[] }).tools;
+      expect(tools.map((t) => t.name)).toEqual(["web_search"]);
+      expect(tools[0]?.inputSchema).toEqual({
+        "type": "object",
+        "properties": { "query": { "type": "string", "description": "The web search query." } },
+        "required": ["query"],
+      });
 
-    // Every stdout line of the whole session must be JSON-RPC (nothing may leak).
-    for (const line of client.stdoutLines) {
-      expect(() => JSON.parse(line)).not.toThrow();
+      // Every stdout line of the whole session must be JSON-RPC (nothing may leak).
+      for (const line of client.stdoutLines) {
+        expect(() => JSON.parse(line)).not.toThrow();
+      }
+    } catch (e) {
+      client.kill();
+      throw e;
     }
-  } catch (e) {
-    client.kill();
-    throw e;
-  }
-  expect(await client.closeAndWait()).toBe(0);
-}, 20_000);
+    expect(await client.closeAndWait()).toBe(0);
+  },
+  20_000,
+);
 
-test("tools/call: no credential -> isError pointing at agent auth; unknown tool -> protocol error; bad query -> isError", async () => {
-  const client = new McpClient();
-  try {
-    await initialized(client);
+test(
+  "tools/call: no credential -> isError pointing at agent auth; unknown tool -> protocol error; bad query -> isError",
+  async () => {
+    const client = new McpClient();
+    try {
+      await initialized(client);
 
-    const noCred = await client.request(3, "tools/call", {
-      "name": "web_search",
-      "arguments": { "query": "anything" },
-    });
-    const noCredResult = noCred.result as {
-      isError?: boolean;
-      content: { type: string; text: string }[];
-    };
-    expect(noCredResult.isError).toBe(true);
-    expect(noCredResult.content[0]?.text).toContain("agent auth");
+      const noCred = await client.request(3, "tools/call", {
+        "name": "web_search",
+        "arguments": { "query": "anything" },
+      });
+      const noCredResult = noCred.result as {
+        isError?: boolean;
+        content: { type: string; text: string }[];
+      };
+      expect(noCredResult.isError).toBe(true);
+      expect(noCredResult.content[0]?.text).toContain("agent auth");
 
-    const unknown = await client.request(4, "tools/call", {
-      "name": "nope",
-      "arguments": {},
-    });
-    expect(unknown.result).toBeUndefined();
-    expect(unknown.error?.message).toContain("not found");
+      const unknown = await client.request(4, "tools/call", {
+        "name": "nope",
+        "arguments": {},
+      });
+      expect(unknown.result).toBeUndefined();
+      expect(unknown.error?.message).toContain("not found");
 
-    const badQuery = await client.request(5, "tools/call", {
-      "name": "web_search",
-      "arguments": { "query": "   " },
-    });
-    const badQueryResult = badQuery.result as {
-      isError?: boolean;
-      content: { type: string; text: string }[];
-    };
-    expect(badQueryResult.isError).toBe(true);
-    expect(badQueryResult.content[0]?.text).toContain("query");
+      const badQuery = await client.request(5, "tools/call", {
+        "name": "web_search",
+        "arguments": { "query": "   " },
+      });
+      const badQueryResult = badQuery.result as {
+        isError?: boolean;
+        content: { type: string; text: string }[];
+      };
+      expect(badQueryResult.isError).toBe(true);
+      expect(badQueryResult.content[0]?.text).toContain("query");
 
-    for (const line of client.stdoutLines) {
-      expect(() => JSON.parse(line)).not.toThrow();
+      for (const line of client.stdoutLines) {
+        expect(() => JSON.parse(line)).not.toThrow();
+      }
+    } catch (e) {
+      client.kill();
+      throw e;
     }
-  } catch (e) {
-    client.kill();
-    throw e;
-  }
-  expect(await client.closeAndWait()).toBe(0);
-}, 20_000);
+    expect(await client.closeAndWait()).toBe(0);
+  },
+  20_000,
+);
 
 test("a named profile without a credential hard-fails per call, never falling back", async () => {
   const client = new McpClient(["--profile", "work"]);

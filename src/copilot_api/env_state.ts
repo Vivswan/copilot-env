@@ -20,7 +20,7 @@ import { isRecord } from "../utils/json.ts";
 import { CopilotApiConfig } from "./config.ts";
 import { INTEGRATION_ID_RE } from "./env_config.ts";
 import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
-import { isValidProfileName, type Profile, type ProfileName, parseProfileName } from "./profile.ts";
+import { isValidProfileName, parseProfileName, type Profile, type ProfileName } from "./profile.ts";
 
 // The provider vocabulary lives HERE, with the store that persists `authProvider`,
 // so env_state can validate it at the read boundary without importing from the
@@ -158,10 +158,9 @@ export function allProfileNames(): ProfileName[] {
 export function assertKnownProfile(name: ProfileName): void {
   const names = allProfileNames();
   if (names.includes(name)) return;
-  const hint =
-    names.length === 0
-      ? "no profiles exist - create one with `agent profile --add <name> --direct|--proxy`"
-      : `known profiles: ${names.join(", ")}`;
+  const hint = names.length === 0
+    ? "no profiles exist - create one with `agent profile --add <name> --direct|--proxy`"
+    : `known profiles: ${names.join(", ")}`;
   throw new Error(`no such profile '${name}' (${hint})`);
 }
 
@@ -175,9 +174,9 @@ export function assertKnownProfile(name: ProfileName): void {
 function ownedPathList(value: unknown): string[] {
   return Array.isArray(value)
     ? value
-        .filter((p): p is string => typeof p === "string")
-        .map((p) => p.trim())
-        .filter((p) => p !== "")
+      .filter((p): p is string => typeof p === "string")
+      .map((p) => p.trim())
+      .filter((p) => p !== "")
     : [];
 }
 

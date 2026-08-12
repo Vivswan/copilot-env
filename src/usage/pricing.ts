@@ -263,8 +263,9 @@ function compareKeys(a: Array<number | number[]>, b: Array<number | number[]>): 
   for (let i = 0; i < a.length; i++) {
     const x = a[i];
     const y = b[i];
-    const diff =
-      Array.isArray(x) && Array.isArray(y) ? compareNumberArrays(x, y) : Number(x) - Number(y);
+    const diff = Array.isArray(x) && Array.isArray(y)
+      ? compareNumberArrays(x, y)
+      : Number(x) - Number(y);
     if (diff !== 0) {
       return diff;
     }

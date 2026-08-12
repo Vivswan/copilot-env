@@ -55,7 +55,7 @@ let dirs: string[] = [];
 // offline. Direct tests that must prove NO probe ran install a counting stub.
 beforeEach(() => {
   setIntegrationProbeFetch(() =>
-    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 })),
+    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
   );
 });
 
@@ -228,9 +228,8 @@ test("invalid slots are rejections that never echo the token", () => {
   expect(message).toContain("pairs a token with the gh-cli provider");
   expect(message).not.toContain("ghp_secret_leak");
 
-  expect(() =>
-    parseSettingsBundle(rawBundle({ modes: { codex: "bogus", claude: "direct" } })),
-  ).toThrow(/modes.codex/);
+  expect(() => parseSettingsBundle(rawBundle({ modes: { codex: "bogus", claude: "direct" } })))
+    .toThrow(/modes.codex/);
   expect(() => parseSettingsBundle(rawBundle({ profiles: { "NOT A NAME": {} } }))).toThrow(
     /invalid profile name/,
   );

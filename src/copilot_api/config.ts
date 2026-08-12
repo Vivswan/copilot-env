@@ -69,7 +69,7 @@ export class CopilotApiConfig {
     // a short bounded backoff closes it at negligible cost.
     const retryTransient = basename(this.path) === PROXY_CONFIG_FILENAME;
     const maxAttempts = retryTransient ? LOAD_RETRY_ATTEMPTS : 1;
-    for (let attempt = 1; ; attempt++) {
+    for (let attempt = 1;; attempt++) {
       let raw: string;
       try {
         raw = readFileSync(this.path, "utf8");

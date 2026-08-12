@@ -197,7 +197,7 @@ test("auth --get stdout stays EXACTLY the token even when the catalog refresh ru
         fetchLimits: async () =>
           new Map([["gpt-5.5", { maxContextWindowTokens: 1_050_000, maxPromptTokens: 922_000 }]]),
       },
-    ),
+    )
   );
   expect(out).toBe("ghu_stored123\n");
 });
@@ -219,7 +219,7 @@ test("auth --get succeeds (exit 0) even when the catalog refresh blows up", asyn
           throw new Error("network exploded");
         },
       },
-    ),
+    )
   );
   expect(out).toBe("ghu_stored123\n");
   expect(process.exitCode).toBe(0);
@@ -239,7 +239,7 @@ test("auth --print-proxy-token stdout stays EXACTLY the key even when the refres
           throw new Error("proxy exploded");
         },
       },
-    ),
+    )
   );
   // ensureApiKey generates a stable 64-char hex key on first use; the line is the
   // ENTIRE stdout, refresh failure or not.

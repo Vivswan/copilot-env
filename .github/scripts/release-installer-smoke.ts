@@ -152,8 +152,9 @@ async function downloadReleaseAsset(
   }
 
   const installer = join(dir, scriptName);
-  const headers =
-    assetUrl === asset.url ? authHeaders({ "Accept": "application/octet-stream" }) : authHeaders();
+  const headers = assetUrl === asset.url
+    ? authHeaders({ "Accept": "application/octet-stream" })
+    : authHeaders();
   await download(assetUrl, installer, headers);
   return digest;
 }

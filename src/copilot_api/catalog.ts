@@ -71,8 +71,10 @@ export async function fetchRawModels(
     throw new Error(
       profile === null
         ? "no GitHub credential configured (run `agent auth`)"
-        : `no GitHub credential for ${profileLabel(profile)} - run \`agent auth --profile ${profile}\` ` +
-            "to log in (a named profile never falls back to the default credential)",
+        : `no GitHub credential for ${
+          profileLabel(profile)
+        } - run \`agent auth --profile ${profile}\` ` +
+          "to log in (a named profile never falls back to the default credential)",
     );
   }
   // The catalog endpoint gates on the same client identity as inference: a fine-grained

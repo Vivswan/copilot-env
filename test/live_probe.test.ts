@@ -5,8 +5,8 @@ import {
   CODEX_PROBE,
   DEFAULT_PROBE_RETRIES,
   type ProbeDescriptor,
-  type ProbeOutcome,
   probeDirectWorks,
+  type ProbeOutcome,
   summarizeProbeFailure,
 } from "../src/agents/live_probe.ts";
 import { ghTokenFromEnv, tokenFromSetFlag } from "../src/copilot_api/gh_cli.ts";

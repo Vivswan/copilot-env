@@ -132,8 +132,8 @@ export function parseReleasesJson(
     const archiveName = `copilot-env-${r.tag_name}.tar.gz`;
     const useAssetApiUrl = r.draft === true;
     const sourceArchive = releaseAsset(r, archiveName, useAssetApiUrl);
-    const tarballUrl =
-      sourceArchive?.url ?? (typeof r.tarball_url === "string" ? r.tarball_url : null);
+    const tarballUrl = sourceArchive?.url ??
+      (typeof r.tarball_url === "string" ? r.tarball_url : null);
     if (!tarballUrl) continue;
     const date = typeof r.published_at === "string" ? r.published_at : r.created_at;
     if (typeof date !== "string") continue;
@@ -281,11 +281,11 @@ if (import.meta.main) {
   process.stdout.write(
     json
       ? JSON.stringify({
-          tag: target.tag,
-          tarballUrl: target.tarballUrl,
-          sourceSha: target.sourceSha,
-          sourceSha256: target.sourceSha256,
-        })
+        tag: target.tag,
+        tarballUrl: target.tarballUrl,
+        sourceSha: target.sourceSha,
+        sourceSha256: target.sourceSha256,
+      })
       : target.tarballUrl,
   );
 }

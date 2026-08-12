@@ -62,10 +62,9 @@ export function installedCodexVersion(): string | null {
     windowsHide: true,
     shell: s.shell,
   });
-  cachedCodexVersion =
-    result.error || result.status !== 0
-      ? null
-      : parseCodexVersion(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
+  cachedCodexVersion = result.error || result.status !== 0
+    ? null
+    : parseCodexVersion(`${result.stdout ?? ""}\n${result.stderr ?? ""}`);
   return cachedCodexVersion;
 }
 
@@ -85,8 +84,9 @@ function latestNpmCodexVersion(): string | null {
     windowsHide: true,
     shell: s.shell,
   });
-  cachedNpmCodexVersion =
-    result.error || result.status !== 0 ? null : parseCodexVersion(result.stdout ?? "");
+  cachedNpmCodexVersion = result.error || result.status !== 0
+    ? null
+    : parseCodexVersion(result.stdout ?? "");
   return cachedNpmCodexVersion;
 }
 
@@ -254,8 +254,8 @@ export async function generateCodexModelCatalog(
 ): Promise<boolean> {
   try {
     if (!new CopilotEnvConfig().codexModelCatalogEnabled()) return false;
-    const fetchLimits =
-      deps.fetchLimits ?? ((s: CatalogSource) => defaultFetchLimits(s, deps.directToken));
+    const fetchLimits = deps.fetchLimits ??
+      ((s: CatalogSource) => defaultFetchLimits(s, deps.directToken));
     const limits = await fetchLimits(source);
     if (limits === null || limits.size === 0) return false;
     const bundledCatalog = deps.bundledCatalog ?? defaultBundledCatalog;

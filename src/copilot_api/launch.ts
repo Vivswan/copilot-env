@@ -23,8 +23,8 @@ import {
   type ConfigValue,
   CopilotEnvConfig,
   optInProxyConfigPaths,
-  type ProxyConfigPath,
   projectedProxyConfig,
+  type ProxyConfigPath,
   STALE_PROXY_CONFIG_KEYS,
 } from "./env_config.ts";
 import {
@@ -33,7 +33,7 @@ import {
   usePatPassthrough,
 } from "./integration_identity.ts";
 import { generateAliases } from "./models.ts";
-import { CopilotApiPaths, profileHomeNames, ROOT_HOME_ENV, resolveRootHome } from "./paths.ts";
+import { CopilotApiPaths, profileHomeNames, resolveRootHome, ROOT_HOME_ENV } from "./paths.ts";
 import {
   checkProxyPort,
   copilotApiFindPort,
@@ -177,8 +177,8 @@ export async function resolveStartPort(
   } else {
     const recorded = CopilotEnvRunState.forProfile(profile).read().port;
     honoredReservation = recorded !== undefined;
-    def =
-      recorded ?? (reserve ? reserveProfilePort(profile) : Number(copilotApiResolvePort(profile)));
+    def = recorded ??
+      (reserve ? reserveProfilePort(profile) : Number(copilotApiResolvePort(profile)));
   }
   switch (await checkProxyPort(def)) {
     case "free":
@@ -509,7 +509,11 @@ export async function awaitReadiness(opts: {
         printLogTail(logFile, 20);
         throw new Error(
           `port ${port} was taken by another process just before launch` +
-            `${strictPort && pinnedPort === undefined ? " (strict-port is on, so no auto-increment)" : ""}. See ${logFile}`,
+            `${
+              strictPort && pinnedPort === undefined
+                ? " (strict-port is on, so no auto-increment)"
+                : ""
+            }. See ${logFile}`,
         );
       }
       consola.warn(

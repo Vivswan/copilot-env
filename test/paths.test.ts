@@ -46,12 +46,14 @@ test("account-wide files resolve to the home root, not under .run/<host>/", () =
   expect(paths.githubTokenFile).toBe(join(home, "github_token"));
   expect(paths.codexModelCatalogFile).toBe(join(home, "codex-model-catalog.json"));
 
-  for (const rootFile of [
-    paths.sharedStateFile,
-    paths.envConfigFile,
-    paths.githubTokenFile,
-    paths.codexModelCatalogFile,
-  ]) {
+  for (
+    const rootFile of [
+      paths.sharedStateFile,
+      paths.envConfigFile,
+      paths.githubTokenFile,
+      paths.codexModelCatalogFile,
+    ]
+  ) {
     expect(rootFile.startsWith(runDir)).toBe(false);
     expect(rootFile.startsWith(home)).toBe(true);
   }

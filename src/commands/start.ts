@@ -23,7 +23,7 @@ import {
 } from "../copilot_api/launch.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { pidAlive } from "../copilot_api/process.ts";
-import { type Profile, parseProfileFlag, profileLabel } from "../copilot_api/profile.ts";
+import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { installedProxyVersion, PROXY_PACKAGE_NAME } from "../copilot_api/version.ts";
 import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
@@ -157,7 +157,7 @@ async function reportDryRun(
   const trackedPid = statePid !== undefined && pidAlive(statePid) ? statePid : null;
   const keep = trackedDaemonPids();
   const orphans = (await listUntrackedOrphans(process.pid, process.ppid, keep)).filter((p) =>
-    pidAlive(p),
+    pidAlive(p)
   );
 
   consola.info(`DRY RUN: no proxy runtime changes will be made (${profileLabel(profile)}).`);
@@ -270,20 +270,20 @@ async function reportStartSummary(
   consola.box(
     profile === null
       ? [
-          "Next steps",
-          "",
-          "  • Launch an agent:  `cl` (Claude) / `cx` (Codex) / `co` (Copilot)",
-          "    ...or run `claude` / `codex` directly.",
-          "  • Install those launchers:  `agent shell --launchers`",
-          "  • `agent cost` reports proxy usage  ·  `agent stop` stops the proxy.",
-        ].join("\n")
+        "Next steps",
+        "",
+        "  • Launch an agent:  `cl` (Claude) / `cx` (Codex) / `co` (Copilot)",
+        "    ...or run `claude` / `codex` directly.",
+        "  • Install those launchers:  `agent shell --launchers`",
+        "  • `agent cost` reports proxy usage  ·  `agent stop` stops the proxy.",
+      ].join("\n")
       : [
-          "Next steps",
-          "",
-          `  • Launch an agent under this profile:  \`cl --profile ${profile}\` / \`cx --profile ${profile}\``,
-          `    ...or \`claude --settings <path from agent profile --settings-for ${profile}>\` / \`codex --profile ${profile}\`.`,
-          `  • \`agent stop --profile ${profile}\` stops this daemon (\`agent stop --all\` stops every one).`,
-        ].join("\n"),
+        "Next steps",
+        "",
+        `  • Launch an agent under this profile:  \`cl --profile ${profile}\` / \`cx --profile ${profile}\``,
+        `    ...or \`claude --settings <path from agent profile --settings-for ${profile}>\` / \`codex --profile ${profile}\`.`,
+        `  • \`agent stop --profile ${profile}\` stops this daemon (\`agent stop --all\` stops every one).`,
+      ].join("\n"),
   );
 }
 

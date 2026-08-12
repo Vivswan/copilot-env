@@ -41,7 +41,7 @@ import {
   proxyLoopbackOrigin,
   wiringPortFor,
 } from "../copilot_api/port.ts";
-import { type Profile, type ProfileName, profileLabel } from "../copilot_api/profile.ts";
+import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoent, readTextOrNull } from "../utils/fs.ts";
@@ -505,10 +505,9 @@ export function configureClaudeConfig(
     applyManagedEnv(doc, "direct", DIRECT_BASE_URL, profile, options.directIntegrationId);
     // The MCP + deny pair is machine-global (default profile, the REAL Claude home
     // only -- the throwaway detect-probe home must not touch ~/.claude.json).
-    const commit =
-      profile === null && claudeHome === resolveClaudeHome()
-        ? applyWebSearchPair(doc, "direct", settingsPath)
-        : NO_COMMIT;
+    const commit = profile === null && claudeHome === resolveClaudeHome()
+      ? applyWebSearchPair(doc, "direct", settingsPath)
+      : NO_COMMIT;
     saveSettings(settingsPath, doc);
     commit();
     if (!quiet) {
@@ -529,10 +528,9 @@ export function configureClaudeConfig(
   // expects); env.ts's isLocalProxyUrl accepts it. Host rationale (127.0.0.1, never localhost)
   // on the helper in port.ts.
   applyManagedEnv(doc, "proxy", proxyLoopbackOrigin(port), profile);
-  const commit =
-    profile === null && claudeHome === resolveClaudeHome()
-      ? applyWebSearchPair(doc, "proxy", settingsPath)
-      : NO_COMMIT;
+  const commit = profile === null && claudeHome === resolveClaudeHome()
+    ? applyWebSearchPair(doc, "proxy", settingsPath)
+    : NO_COMMIT;
   saveSettings(settingsPath, doc);
   commit();
   if (!quiet) {
@@ -669,8 +667,9 @@ export function claudeAdapter(): AgentAdapter {
       // Direct bakes the client identity this credential is accepted under (shared with
       // Codex Direct); proxy needs none. Reuses the already-resolved token so gh-cli isn't
       // spawned twice.
-      const directIntegrationId =
-        mode === "direct" ? await probeDirectIntegrationId(null, ghToken) : undefined;
+      const directIntegrationId = mode === "direct"
+        ? await probeDirectIntegrationId(null, ghToken)
+        : undefined;
       configureClaudeConfig(resolveClaudeHome(), mode, { directIntegrationId });
     },
     configureProfile(name, mode, options) {

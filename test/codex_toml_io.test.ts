@@ -146,7 +146,7 @@ test("policy: configureCodexConfig (loadOrCreateConfig) throws on unparseable, f
 
   // The exact wrapped message up to the parser's own text (path included).
   const thrown = capture(() =>
-    configureCodexConfig(codexHome, { mode: "proxy", baseUrl: "http://localhost:4141/v1" }),
+    configureCodexConfig(codexHome, { mode: "proxy", baseUrl: "http://localhost:4141/v1" })
   );
   expect(
     (thrown as Error).message.startsWith(
@@ -160,7 +160,7 @@ test("policy: configureCodexConfig (loadOrCreateConfig) throws on unparseable, f
   rmSync(configPath);
   mkdirSync(configPath);
   const rawError = capture(() =>
-    configureCodexConfig(codexHome, { mode: "proxy", baseUrl: "http://localhost:4141/v1" }),
+    configureCodexConfig(codexHome, { mode: "proxy", baseUrl: "http://localhost:4141/v1" })
   );
   expect((rawError as NodeJS.ErrnoException).code).toBe("EISDIR");
 });

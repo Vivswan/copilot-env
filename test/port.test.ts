@@ -1,4 +1,4 @@
-import { CopilotEnvConfig, configDefaultNumber } from "../src/copilot_api/env_config.ts";
+import { configDefaultNumber, CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import {
   matchesProxyOrigin,
   maxProxyPort,

@@ -21,7 +21,7 @@ import {
   trackedDaemonPids,
 } from "../src/copilot_api/launch.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
-import { type Profile, parseProfileName } from "../src/copilot_api/profile.ts";
+import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
 import { ProxyProjectionState } from "../src/copilot_api/projection_state.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";

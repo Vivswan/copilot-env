@@ -235,8 +235,9 @@ async function accountApiBase(
     const body: unknown = await res.json();
     const endpoints = isRecord(body) ? body.endpoints : undefined;
     const api = isRecord(endpoints) ? endpoints.api : undefined;
-    const apiBase =
-      typeof api === "string" && api.startsWith("https://") ? api : DEFAULT_COPILOT_API_BASE;
+    const apiBase = typeof api === "string" && api.startsWith("https://")
+      ? api
+      : DEFAULT_COPILOT_API_BASE;
     return { apiBase, inconclusive: false };
   } catch {
     return { apiBase: DEFAULT_COPILOT_API_BASE, inconclusive: true };

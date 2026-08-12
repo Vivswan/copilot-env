@@ -212,23 +212,31 @@ function removeLaunchersFrom(files: string[]): boolean {
 export { quotePosix, quotePowerShell };
 
 export function posixBlock(agentsBashrc: string): string {
-  return `\n${MARKER}\nAGENTS_BASHRC=${quotePosix(agentsBashrc)}\n[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n`;
+  return `\n${MARKER}\nAGENTS_BASHRC=${
+    quotePosix(agentsBashrc)
+  }\n[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n`;
 }
 
 /** Opt-in launchers block; sourced after posixBlock so the `agent` wrapper exists. */
 export function posixLaunchersBlock(launchersBashrc: string): string {
-  return `\n${LAUNCHERS_MARKER}\nAGENTS_LAUNCHERS=${quotePosix(launchersBashrc)}\n[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"\n`;
+  return `\n${LAUNCHERS_MARKER}\nAGENTS_LAUNCHERS=${
+    quotePosix(launchersBashrc)
+  }\n[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"\n`;
 }
 
 export function windowsBlock(agentsPs1: string): string {
   // -LiteralPath so a path with PowerShell wildcard chars ([ ] * ?) isn't treated
   // as a pattern (the quoting handles spaces/quotes, not wildcard semantics).
-  return `\n${MARKER}\n$AgentsPs1 = ${quotePowerShell(agentsPs1)}\nif (Test-Path -LiteralPath $AgentsPs1) { . $AgentsPs1 }\n`;
+  return `\n${MARKER}\n$AgentsPs1 = ${
+    quotePowerShell(agentsPs1)
+  }\nif (Test-Path -LiteralPath $AgentsPs1) { . $AgentsPs1 }\n`;
 }
 
 /** Opt-in launchers block; dot-sourced after windowsBlock so the `agent` wrapper exists. */
 export function windowsLaunchersBlock(launchersPs1: string): string {
-  return `\n${LAUNCHERS_MARKER}\n$AgentsLaunchers = ${quotePowerShell(launchersPs1)}\nif (Test-Path -LiteralPath $AgentsLaunchers) { . $AgentsLaunchers }\n`;
+  return `\n${LAUNCHERS_MARKER}\n$AgentsLaunchers = ${
+    quotePowerShell(launchersPs1)
+  }\nif (Test-Path -LiteralPath $AgentsLaunchers) { . $AgentsLaunchers }\n`;
 }
 
 export function windowsExecutionPolicyCommand(): string {
@@ -346,8 +354,8 @@ function psEval(command: string): string {
     encoding: "utf-8",
   });
   if (result.error || result.status !== 0) {
-    const detail =
-      result.error?.message ?? `exit ${result.status}: ${(result.stderr ?? "").toString().trim()}`;
+    const detail = result.error?.message ??
+      `exit ${result.status}: ${(result.stderr ?? "").toString().trim()}`;
     throw new Error(`powershell command failed (${detail}). Is PowerShell on PATH?`);
   }
   return (result.stdout ?? "").toString().trim();

@@ -78,7 +78,9 @@ export async function copilotApiFindPort(start: number = defaultProxyPort()): Pr
     }
   }
   throw new Error(
-    `no free port found in range ${from}-${to - 1}; free a port or run \`agent config --set port <n>\` to start the search elsewhere`,
+    `no free port found in range ${from}-${
+      to - 1
+    }; free a port or run \`agent config --set port <n>\` to start the search elsewhere`,
   );
 }
 

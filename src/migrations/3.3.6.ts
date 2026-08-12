@@ -49,8 +49,9 @@ function repointCodexBaseUrl(): void {
     if (read.kind === "unparseable") throw new Error(read.error);
     const doc = read.doc;
     const providers = isRecord(doc.model_providers) ? doc.model_providers : null;
-    const provider =
-      providers && isRecord(providers[CODEX_PROVIDER_ID]) ? providers[CODEX_PROVIDER_ID] : null;
+    const provider = providers && isRecord(providers[CODEX_PROVIDER_ID])
+      ? providers[CODEX_PROVIDER_ID]
+      : null;
     if (provider === null) return;
     const baseUrl = typeof provider.base_url === "string" ? provider.base_url : null;
     if (baseUrl === null || !baseUrl.startsWith(STALE_PREFIX)) return;

@@ -75,7 +75,6 @@ labels:
     color: "ededed"
     description: release-please release PR has been tagged
 
-
 # Branch ruleset for the default branch. Admins (RepositoryRole id 5) are in
 # the bypass list, so direct pushes to main still work. The single required
 # status check is `all-green` (ci.yml), which `needs:` every gating CI job - the

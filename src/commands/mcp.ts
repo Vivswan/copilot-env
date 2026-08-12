@@ -13,7 +13,7 @@ import {
 } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome } from "../claude/paths.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { type Profile, parseProfileFlag } from "../copilot_api/profile.ts";
+import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { runMcpServer } from "../mcp/server.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 

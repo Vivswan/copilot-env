@@ -30,9 +30,11 @@ export function resolveCopilotApiEntry(): string {
     return rootRequire.resolve(`${PROXY_PACKAGE_NAME}/dist/main.js`);
   } catch (e) {
     throw new Error(
-      `the proxy is not installed under ${PROJECT_ROOT}; run \`bun install --frozen-lockfile\` (or re-run the agent launcher) to install dependencies: ${errMessage(
-        e,
-      )}`,
+      `the proxy is not installed under ${PROJECT_ROOT}; run \`bun install --frozen-lockfile\` (or re-run the agent launcher) to install dependencies: ${
+        errMessage(
+          e,
+        )
+      }`,
     );
   }
 }
@@ -110,8 +112,7 @@ async function classifyDaemonPidWindows(pid: number): Promise<"yes" | "no" | "un
   // Query the SPECIFIC pid so we can tell a "different process" (CommandLine present, no match)
   // from "unreadable" (CommandLine null -- a restricted token). `pid` is our own integer from
   // state, so inlining it is safe. A wholesale CIM failure (access denied) also reads "unknown".
-  const script =
-    `$p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}'; ` +
+  const script = `$p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}'; ` +
     "if (-not $p) { 'no' } " +
     "elseif ([string]::IsNullOrEmpty($p.CommandLine)) { 'unknown' } " +
     `elseif ($p.CommandLine -match '${DAEMON_CMDLINE_PATTERN}') { 'yes' } ` +
@@ -147,8 +148,7 @@ async function listCopilotApiPidsWindows(): Promise<number[]> {
   // across a local account and a domain account. A process whose owner can't be read (GetOwner
   // ReturnValue != 0) is excluded -- safer to skip an unconfirmed process than to signal another
   // user's.
-  const script =
-    "Get-CimInstance Win32_Process | Where-Object { " +
+  const script = "Get-CimInstance Win32_Process | Where-Object { " +
     "($_.Name -eq 'node.exe' -or $_.Name -eq 'bun.exe') " +
     `-and $_.CommandLine -match '${DAEMON_CMDLINE_PATTERN}' ` +
     "} | Where-Object { " +

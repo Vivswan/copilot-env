@@ -5,8 +5,8 @@ import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import {
   codexUserAgent,
   configureCodexConfig,
-  DIRECT_ENV_KEY,
   detectCodexDirect,
+  DIRECT_ENV_KEY,
   inspectCodexWiring,
   runCodex,
   syncCodexCatalogReference,
@@ -281,7 +281,7 @@ test("refuses to overwrite an unparseable config.toml (preserves the user's file
 
   // The write must throw rather than clobber the file with the default template.
   expect(() =>
-    configureCodexConfig(codexHome, { mode: "proxy", baseUrl: "http://localhost:4141/v1" }),
+    configureCodexConfig(codexHome, { mode: "proxy", baseUrl: "http://localhost:4141/v1" })
   ).toThrow(/not valid TOML|refusing to overwrite/);
   // The user's file is left exactly as it was.
   expect(readFileSync(configPath, "utf8")).toBe(original);
@@ -474,7 +474,7 @@ test("proxy mode rejects a base_url containing invalid characters", () => {
     configureCodexConfig(join(dir, ".codex"), {
       mode: "proxy",
       baseUrl: "http://bad url/v1",
-    }),
+    })
   ).toThrow("base_url contains invalid characters: http://bad url/v1");
 });
 

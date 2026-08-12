@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { denoRunArgs, ROOT, resolvePackageDir, runSync } from "./helpers/run.ts";
+import { denoRunArgs, resolvePackageDir, ROOT, runSync } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
 
 // The preload shim swaps the daemon's `fs.createWriteStream` for a discarding sink on paths

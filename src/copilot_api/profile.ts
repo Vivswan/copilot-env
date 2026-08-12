@@ -46,7 +46,9 @@ export function isValidProfileName(name: string): boolean {
 export function parseProfileName(name: string): ProfileName {
   if ((RESERVED_PROFILE_NAMES as readonly string[]).includes(name)) {
     throw new Error(
-      `profile name '${name}' is reserved${name === "default" ? " (omit --profile for the default profile)" : ""}`,
+      `profile name '${name}' is reserved${
+        name === "default" ? " (omit --profile for the default profile)" : ""
+      }`,
     );
   }
   if (WINDOWS_DEVICE_NAME_RE.test(name)) {

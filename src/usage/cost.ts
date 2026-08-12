@@ -40,14 +40,14 @@ export async function runCost(args: {
   const proxyReport = dbPaths.length > 0 ? readUsage(dbPaths, sinceMs) : EMPTY_REPORT;
 
   const sessionRoots = discoverCodexSessionRoots();
-  const codexByProvider =
-    sessionRoots.length > 0
-      ? await readCodexSessions(sessionRoots, sinceMs)
-      : new Map<string, UsageReport>();
+  const codexByProvider = sessionRoots.length > 0
+    ? await readCodexSessions(sessionRoots, sinceMs)
+    : new Map<string, UsageReport>();
 
   const claudeRoots = discoverClaudeSessionRoots();
-  const claudeReport =
-    claudeRoots.length > 0 ? await readClaudeSessions(claudeRoots, sinceMs) : EMPTY_REPORT;
+  const claudeReport = claudeRoots.length > 0
+    ? await readClaudeSessions(claudeRoots, sinceMs)
+    : EMPTY_REPORT;
 
   if (dbPaths.length === 0 && codexByProvider.size === 0 && claudeReport.byModel.size === 0) {
     consola.warn(
@@ -591,10 +591,11 @@ function printCostReport(
   console.log("");
   const period = opts.days ? `last ${opts.days} days` : "all time";
   const coverage = activeDayCoverage(report);
-  const activeDaysLabel =
-    activeDays > 0
-      ? `${activeDays} active day${activeDays === 1 ? "" : "s"} (${coverage.percent}% of a ${coverage.spanDays}-day span)`
-      : "0 active days";
+  const activeDaysLabel = activeDays > 0
+    ? `${activeDays} active day${
+      activeDays === 1 ? "" : "s"
+    } (${coverage.percent}% of a ${coverage.spanDays}-day span)`
+    : "0 active days";
   console.log(
     `${opts.title} - ${period} | ${opts.sourceLabel} | ${sum.reqs} requests | ${activeDaysLabel}`,
   );
@@ -668,7 +669,7 @@ function printPerDayReport(
   title: string,
 ): void {
   const days = computeDayMetrics(report, pricing, estimate).sort((a, b) =>
-    a.day.localeCompare(b.day),
+    a.day.localeCompare(b.day)
   );
   if (days.length === 0) {
     return;
@@ -711,19 +712,19 @@ function buildSourceJson(
     medianCostPerDayUsd: activeDays > 0 ? roundUsd(median(dayCosts)) : null,
     ...(opts.perDay
       ? {
-          perDay: [...dayMetrics]
-            .sort((a, b) => a.day.localeCompare(b.day))
-            .map((d) => ({
-              day: d.day,
-              requests: d.reqs,
-              input: d.input,
-              output: d.output,
-              cacheRead: d.cacheRead,
-              cacheCreation: d.cacheWrite,
-              total: d.total,
-              costUsd: roundUsd(d.cost),
-            })),
-        }
+        perDay: [...dayMetrics]
+          .sort((a, b) => a.day.localeCompare(b.day))
+          .map((d) => ({
+            day: d.day,
+            requests: d.reqs,
+            input: d.input,
+            output: d.output,
+            cacheRead: d.cacheRead,
+            cacheCreation: d.cacheWrite,
+            total: d.total,
+            costUsd: roundUsd(d.cost),
+          })),
+      }
       : {}),
     unpriced: estimate.unpriced,
   };
@@ -750,6 +751,7 @@ function buildCostJson(
     ...buildSourceJson(report, estimate, pricing, { perDay }),
     codexSessions,
     claudeSessions,
-    note: "approximate numbers gathered from local logs and keyed by canonical model spellings (dashed/dated claude ids fold into the dotted form), priced at public OpenRouter rates (actual billing may differ); top-level keys cover proxied traffic only, while codexSessions/claudeSessions cover each agent's FULL traffic (proxy and Direct), so they overlap the proxy keys when an agent is proxy-wired -- never sum them",
+    note:
+      "approximate numbers gathered from local logs and keyed by canonical model spellings (dashed/dated claude ids fold into the dotted form), priced at public OpenRouter rates (actual billing may differ); top-level keys cover proxied traffic only, while codexSessions/claudeSessions cover each agent's FULL traffic (proxy and Direct), so they overlap the proxy keys when an agent is proxy-wired -- never sum them",
   };
 }

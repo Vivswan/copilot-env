@@ -315,7 +315,9 @@ export function probeDirectWorks(
     for (let attempt = 0; attempt <= retries; attempt++) {
       if (attempt > 0) {
         logger.log(
-          `    • smoke prompt failed${lastDetail ? ` (${lastDetail})` : ""}; retrying (attempt ${attempt + 1} of ${retries + 1}) ...`,
+          `    • smoke prompt failed${lastDetail ? ` (${lastDetail})` : ""}; retrying (attempt ${
+            attempt + 1
+          } of ${retries + 1}) ...`,
         );
         sleepSync(retryDelayMs * attempt);
       }
@@ -329,7 +331,9 @@ export function probeDirectWorks(
       if (Date.now() - startedAt >= PROBE_TIMEOUT_MS * TIMEOUT_RETRY_FRACTION) break;
     }
     logger.log(
-      `    • the Direct smoke prompt did not succeed${lastDetail ? ` (${lastDetail})` : ""} → using the local proxy`,
+      `    • the Direct smoke prompt did not succeed${
+        lastDetail ? ` (${lastDetail})` : ""
+      } → using the local proxy`,
     );
     return false;
   } catch (e) {

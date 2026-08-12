@@ -11,7 +11,7 @@ import { configureCodexConfig } from "../src/codex/config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { profileHome } from "../src/copilot_api/paths.ts";
 import { openaiBaseUrl, proxyLoopbackOrigin } from "../src/copilot_api/port.ts";
-import { type Profile, type ProfileName, parseProfileName } from "../src/copilot_api/profile.ts";
+import { parseProfileName, type Profile, type ProfileName } from "../src/copilot_api/profile.ts";
 import { exitCodeFor, worstStatus } from "../src/health/aggregate.ts";
 import {
   checkClaude,
@@ -28,8 +28,8 @@ import {
   claudeLiveOmitEnv,
   gatherFacts,
   type ProbeDeps,
-  type RuntimeTarget,
   runLiveCli,
+  type RuntimeTarget,
 } from "../src/health/probe.ts";
 import { expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir, writeRunState } from "./helpers.ts";
@@ -765,17 +765,19 @@ test("--profile narrows gathering to the named target and excludes account-wide 
     expect(ids).toContain("setup.auth");
     expect(ids).toContain("setup.codex");
     expect(ids).toContain("setup.claude");
-    for (const absent of [
-      "bootstrap.version",
-      "bootstrap.bun",
-      "bootstrap.nodeModules",
-      "proxy.package",
-      "setup.shell",
-      "setup.launchers",
-      "setup.tool.node",
-      "setup.codex-host",
-      "setup.autoupdate",
-    ]) {
+    for (
+      const absent of [
+        "bootstrap.version",
+        "bootstrap.bun",
+        "bootstrap.nodeModules",
+        "proxy.package",
+        "setup.shell",
+        "setup.launchers",
+        "setup.tool.node",
+        "setup.codex-host",
+        "setup.autoupdate",
+      ]
+    ) {
       expect(ids).not.toContain(absent);
     }
     for (const r of results) expect(r.profile).toBe(P);

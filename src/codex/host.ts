@@ -38,7 +38,9 @@ export function getHostLocalCodexHome(): string {
 function assertUnix(feature: string, hint?: string): boolean {
   if (process.platform === "win32") {
     logger.info(
-      `${feature} is only supported on Linux and macOS (this is ${process.platform}).${hint ? ` ${hint}` : ""}`,
+      `${feature} is only supported on Linux and macOS (this is ${process.platform}).${
+        hint ? ` ${hint}` : ""
+      }`,
     );
     process.exitCode = 1;
     return false;
@@ -445,7 +447,9 @@ export async function runCodexHost(args: CodexHostArgs): Promise<void> {
   const ghToken = new Credential().resolve();
   const direct = resolveDirectMode(args.mode, ghToken, detectCodexDirect);
   logger.info(
-    `Configuring the per-host Codex home for ${direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"} ...`,
+    `Configuring the per-host Codex home for ${
+      direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"
+    } ...`,
   );
   await applyCodexConfig(
     codexHome,

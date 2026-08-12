@@ -22,7 +22,7 @@ import { Credential } from "../copilot_api/credential.ts";
 import { type ProxyStatus, proxyStatus, stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { allProfileNames, CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
 import { profileHome, profileHomeNames } from "../copilot_api/paths.ts";
-import { type ProfileName, parseProfileFlag, profileLabel } from "../copilot_api/profile.ts";
+import { parseProfileFlag, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { cyan, gray, green, yellow } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -142,8 +142,7 @@ async function runDel(name: ProfileName): Promise<void> {
   // Sweep NOTHING for a profile that never existed: a foreign same-named
   // settings-<name>.json or a hand-made [model_providers.copilot-env-<name>]
   // is not ours to delete unless the store/home says the profile was real.
-  const existed =
-    storedMode(name) !== null ||
+  const existed = storedMode(name) !== null ||
     new Credential(undefined, name).provider() !== null ||
     profileHomeNames().includes(name);
   if (!existed) {
@@ -193,12 +192,11 @@ export function renderProfileTable(rows: ProfileListRow[]): string {
   for (const r of rows) {
     const modeCell = modeText(r).padEnd(modeWidth);
     const providerCell = providerText(r).padEnd(providerWidth);
-    const daemonCell =
-      r.daemon === null
-        ? gray("-")
-        : r.daemon.up
-          ? green(`up (port ${r.daemon.port})`)
-          : gray("down");
+    const daemonCell = r.daemon === null
+      ? gray("-")
+      : r.daemon.up
+      ? green(`up (port ${r.daemon.port})`)
+      : gray("down");
     const cells = [
       `     ${cyan(r.name.padEnd(nameWidth))}`,
       r.mode === null ? yellow(modeCell) : modeCell,
@@ -233,7 +231,9 @@ async function runList(): Promise<void> {
   // hint as its footer.
   const hint = gray("   Launch one:  cl --profile <name>  /  cx --profile <name>");
   consola.info(
-    `${rows.length} profile${rows.length === 1 ? "" : "s"}:\n\n${renderProfileTable(rows)}\n\n${hint}\n`,
+    `${rows.length} profile${rows.length === 1 ? "" : "s"}:\n\n${
+      renderProfileTable(rows)
+    }\n\n${hint}\n`,
   );
 }
 
@@ -244,7 +244,9 @@ function runCheck(name: ProfileName): void {
   const slot = new CopilotEnvState().readProfileSlot(name);
   if (slot.mode === null) {
     console.log(
-      `${profileLabel(name)} does not exist - create it with \`agent profile --add ${name} --direct|--proxy\``,
+      `${
+        profileLabel(name)
+      } does not exist - create it with \`agent profile --add ${name} --direct|--proxy\``,
     );
     process.exitCode = 1;
     return;
@@ -270,15 +272,18 @@ async function runSettingsFor(name: ProfileName): Promise<void> {
   const mode = storedMode(name);
   if (mode === null) {
     throw new Error(
-      `${profileLabel(name)} does not exist - create it with \`agent profile --add ${name} --direct|--proxy\``,
+      `${
+        profileLabel(name)
+      } does not exist - create it with \`agent profile --add ${name} --direct|--proxy\``,
     );
   }
   const claudeHome = resolveClaudeHome();
   configureClaudeConfig(claudeHome, mode, {
     quiet: true,
     profile: name,
-    directIntegrationId:
-      mode === "direct" ? await resolveAndPersistDirectIdentity(name) : undefined,
+    directIntegrationId: mode === "direct"
+      ? await resolveAndPersistDirectIdentity(name)
+      : undefined,
   });
   process.stdout.write(`${settingsPathFor(claudeHome, name)}\n`);
 }

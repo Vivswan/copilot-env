@@ -23,7 +23,9 @@ const optionalClis = ["claude", "copilot", "codex"];
 const posixNvmSource =
   // biome-ignore lint/suspicious/noTemplateCurlyInString: ${NVM_DIR:-...} is a SHELL expansion inside the sh -c snippet, not a JS template.
   '[ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ] && . "${NVM_DIR:-$HOME/.nvm}/nvm.sh" >/dev/null 2>&1 || true';
-const releaseApi = `https://api.github.com/repos/${process.env.GITHUB_REPOSITORY ?? "Vivswan/copilot-env"}/releases/latest`;
+const releaseApi = `https://api.github.com/repos/${
+  process.env.GITHUB_REPOSITORY ?? "Vivswan/copilot-env"
+}/releases/latest`;
 const legacyDownloadSkipMarker = join(
   process.env.RUNNER_TEMP ?? tmpdir(),
   "copilot-env-installer-smoke-legacy-download.skip",
@@ -76,7 +78,9 @@ async function latestReleaseTag(): Promise<string | null> {
     return typeof release.tag_name === "string" ? release.tag_name : null;
   } catch (error) {
     console.warn(
-      `::warning::could not check latest release for download smoke: ${error instanceof Error ? error.message : String(error)}`,
+      `::warning::could not check latest release for download smoke: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
     );
     return null;
   }
@@ -267,7 +271,9 @@ function verifyShellWiring(): void {
   }
   if (!envBool("EXPECT_WIRING", true) && wired) {
     console.error(
-      `::error::expected NO shell wiring (${process.env.INSTALLER_ARGS ?? ""}), but a profile was wired`,
+      `::error::expected NO shell wiring (${
+        process.env.INSTALLER_ARGS ?? ""
+      }), but a profile was wired`,
     );
     process.exit(1);
   }
@@ -294,7 +300,9 @@ function verifyOutcome(): void {
   verifyShellWiring();
   verifyLauncherWiring();
   console.log(
-    `${isWindows ? "install.ps1" : "install.sh"} ${process.env.INSTALLER_ARGS ?? ""} verified on ${process.env.RUNNER_OS ?? process.platform}`,
+    `${isWindows ? "install.ps1" : "install.sh"} ${process.env.INSTALLER_ARGS ?? ""} verified on ${
+      process.env.RUNNER_OS ?? process.platform
+    }`,
   );
 }
 

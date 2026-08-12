@@ -30,7 +30,7 @@ import {
   openaiBaseUrl,
   wiringPortFor,
 } from "../copilot_api/port.ts";
-import { type Profile, type ProfileName, profileLabel } from "../copilot_api/profile.ts";
+import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
@@ -87,10 +87,10 @@ export type CodexConfigArgs = AgentConfigArgs;
  *  without one is unrepresentable, so nothing downstream re-checks for it. */
 type CodexModeRequest =
   | {
-      mode: "direct";
-      /** Direct mode: the probed `Copilot-Integration-Id` to bake, or null to send none. */
-      directIntegrationId?: string | null;
-    }
+    mode: "direct";
+    /** Direct mode: the probed `Copilot-Integration-Id` to bake, or null to send none. */
+    directIntegrationId?: string | null;
+  }
   | { mode: "proxy"; baseUrl: string };
 
 /** The mode-independent knobs of a Codex config write. */
@@ -219,8 +219,9 @@ function managedProviderForMode(
   codexExecVersion?: string | null,
   profile: Profile = null,
 ) {
-  if (request.mode === "direct")
+  if (request.mode === "direct") {
     return managedDirectProvider(codexExecVersion, profile, request.directIntegrationId);
+  }
   return managedProxyProvider(request.baseUrl, profile);
 }
 
@@ -356,8 +357,7 @@ export function inspectCodexWiring(
   profile: Profile = null,
 ): CodexWiringStatus {
   const providerId = codexProviderId(profile);
-  const envKeyInDotenv =
-    profile === null &&
+  const envKeyInDotenv = profile === null &&
     envText !== null &&
     new RegExp(`^\\s*(?:export\\s+)?${CODEX_ENV_KEY}\\s*=\\s*\\S`, "m").test(envText);
   const envKeyExported = profile === null && envKeyInEnviron;
@@ -383,12 +383,14 @@ export function inspectCodexWiring(
     // `model_provider` for the default, the `[profiles.<name>]` table's
     // `model_provider` for a named profile (`codex --profile <name>`).
     const profilesTable = isRecord(doc) ? doc.profiles : undefined;
-    const selector =
-      profile === null ? doc : isRecord(profilesTable) ? profilesTable[profile] : undefined;
-    const modelProvider =
-      isRecord(selector) && typeof selector.model_provider === "string"
-        ? selector.model_provider
-        : null;
+    const selector = profile === null
+      ? doc
+      : isRecord(profilesTable)
+      ? profilesTable[profile]
+      : undefined;
+    const modelProvider = isRecord(selector) && typeof selector.model_provider === "string"
+      ? selector.model_provider
+      : null;
     const providers = isRecord(doc) ? doc.model_providers : undefined;
     // We select our provider (per profile) by name, but read the MODE from its
     // table's contents -- the unified table doesn't encode mode in its name.
@@ -398,19 +400,16 @@ export function inspectCodexWiring(
     // A selected-but-unrecognized table shape ("other") still counts as one of ours for
     // messaging; report it as proxy so the wiring checks below flag what's off.
     const providerMode: AgentProviderMode = selected
-      ? isManagedProviderMode(tableMode)
-        ? tableMode
-        : "proxy"
+      ? isManagedProviderMode(tableMode) ? tableMode : "proxy"
       : modelProvider === null
-        ? "none"
-        : "other";
+      ? "none"
+      : "other";
     const baseUrl = isRecord(table) && typeof table.base_url === "string" ? table.base_url : null;
     status.modelProvider = modelProvider;
     status.providerMode = providerMode;
     status.providerSelected = selected;
     status.baseUrl = baseUrl;
-    status.baseUrlMatches =
-      baseUrl !== null &&
+    status.baseUrlMatches = baseUrl !== null &&
       (providerMode === "proxy"
         ? baseUrlMatchesProxy(baseUrl, expectedPort)
         : providerMode === "direct" && baseUrl === DIRECT_BASE_URL);
@@ -419,15 +418,14 @@ export function inspectCodexWiring(
     // needs no `env_key`. A legacy proxy config still using `env_key` is also accepted
     // (back-compat) -- DEFAULT selection only: named profiles postdate the env_key era,
     // so their wiring is managed auth.command alone.
-    const proxyUsesManagedAuth =
-      providerMode === "proxy" && isRecord(table) && isManagedProxyAuth(table.auth, profile);
+    const proxyUsesManagedAuth = providerMode === "proxy" && isRecord(table) &&
+      isManagedProxyAuth(table.auth, profile);
     // A named profile's table must carry NO env_key at all: the writer strips it
     // (MANAGED_PROVIDER_KEYS) and Codex rejects `auth` + `env_key` on one provider,
     // so a present env_key is drift the writer would never produce.
-    const namedTableCarriesEnvKey =
-      profile !== null && isRecord(table) && table.env_key !== undefined;
-    status.envKeyMatches =
-      !namedTableCarriesEnvKey &&
+    const namedTableCarriesEnvKey = profile !== null && isRecord(table) &&
+      table.env_key !== undefined;
+    status.envKeyMatches = !namedTableCarriesEnvKey &&
       (providerMode === "direct" ||
         proxyUsesManagedAuth ||
         (profile === null && isRecord(table) && table.env_key === CODEX_ENV_KEY));
@@ -437,10 +435,9 @@ export function inspectCodexWiring(
     // must NOT read as managed. Whether a `gh` login is actually needed depends on
     // the store (a token there means no gh) -- the health probe decides that from
     // the store, not the static config.
-    status.directUsesToken =
-      providerMode === "direct" && isRecord(table) && isManagedDirectAuth(table.auth, profile);
-    status.providerWired =
-      status.providerSelected &&
+    status.directUsesToken = providerMode === "direct" && isRecord(table) &&
+      isManagedDirectAuth(table.auth, profile);
+    status.providerWired = status.providerSelected &&
       status.baseUrlMatches &&
       status.envKeyMatches &&
       // The default direct selection needs no further conjunct (the health probe
@@ -567,8 +564,9 @@ export function configureCodexConfig(
   const providerId = codexProviderId(profile);
   // Parse the proxy variant up front (the union already guarantees a base URL exists;
   // this rejects an empty/malformed one) so nothing below sees an unvalidated URL.
-  const modeRequest: CodexModeRequest =
-    request.mode === "proxy" ? validateProxyOptions(request) : request;
+  const modeRequest: CodexModeRequest = request.mode === "proxy"
+    ? validateProxyOptions(request)
+    : request;
 
   try {
     fs.mkdirSync(codexHome, { recursive: true });
@@ -668,7 +666,11 @@ export function configureCodexConfig(
   if (!request.quiet) {
     logger.log(
       `  ✓ Codex config written → ${hostConfig}` +
-        `${profile === null ? "" : ` (${profileLabel(profile)}; launch with \`codex --profile ${profile}\`)`}`,
+        `${
+          profile === null
+            ? ""
+            : ` (${profileLabel(profile)}; launch with \`codex --profile ${profile}\`)`
+        }`,
     );
   }
 
@@ -1072,20 +1074,19 @@ export function codexAdapter(catalogDeps?: CodexCatalogDeps): AgentAdapter {
       await applyCodexConfig(effectiveCodexHome(), mode, seedDeps, null, ghToken);
     },
     configureProfile(name, mode, options) {
-      const request: CodexWriteRequest =
-        mode === "proxy"
-          ? {
-              mode,
-              profile: name,
-              quiet: options.quiet,
-              baseUrl: openaiBaseUrl(wiringPortFor(name)),
-            }
-          : {
-              mode,
-              profile: name,
-              quiet: options.quiet,
-              directIntegrationId: options.directIntegrationId,
-            };
+      const request: CodexWriteRequest = mode === "proxy"
+        ? {
+          mode,
+          profile: name,
+          quiet: options.quiet,
+          baseUrl: openaiBaseUrl(wiringPortFor(name)),
+        }
+        : {
+          mode,
+          profile: name,
+          quiet: options.quiet,
+          directIntegrationId: options.directIntegrationId,
+        };
       configureCodexConfig(effectiveCodexHome(), request);
     },
     removeProfile(name) {

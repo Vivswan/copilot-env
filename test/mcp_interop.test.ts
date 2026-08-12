@@ -44,55 +44,63 @@ interface ToolCallView {
   content: { type: string; text?: string }[];
 }
 
-test("legacy era: the v1 SDK client lists web_search and gets the no-credential tool error", async () => {
-  const client = new ClientV1({ name: "copilot-env-interop-v1", version: "0.0.0" });
-  try {
-    await client.connect(new StdioTransportV1(serverParams()));
-    expect(client.getServerVersion()?.name).toBe("copilot-env");
+test(
+  "legacy era: the v1 SDK client lists web_search and gets the no-credential tool error",
+  async () => {
+    const client = new ClientV1({ name: "copilot-env-interop-v1", version: "0.0.0" });
+    try {
+      await client.connect(new StdioTransportV1(serverParams()));
+      expect(client.getServerVersion()?.name).toBe("copilot-env");
 
-    const { tools } = await client.listTools();
-    expect(tools.map((t: { name: string }) => t.name)).toEqual(["web_search"]);
-    expect(tools[0]?.inputSchema).toEqual(WEB_SEARCH_INPUT_SCHEMA);
-    expect(tools[0]?.annotations).toEqual(WEB_SEARCH_ANNOTATIONS);
+      const { tools } = await client.listTools();
+      expect(tools.map((t: { name: string }) => t.name)).toEqual(["web_search"]);
+      expect(tools[0]?.inputSchema).toEqual(WEB_SEARCH_INPUT_SCHEMA);
+      expect(tools[0]?.annotations).toEqual(WEB_SEARCH_ANNOTATIONS);
 
-    // v1's callTool return is a union with the pre-2024 compatibility shape;
-    // this server speaks the current shape, so view it structurally.
-    const res = (await client.callTool({
-      "name": "web_search",
-      "arguments": { "query": "anything" },
-    })) as ToolCallView;
-    expect(res.isError).toBe(true);
-    expect(res.content[0]?.text).toContain("agent auth");
-  } finally {
-    await client.close();
-  }
-}, 20_000);
+      // v1's callTool return is a union with the pre-2024 compatibility shape;
+      // this server speaks the current shape, so view it structurally.
+      const res = (await client.callTool({
+        "name": "web_search",
+        "arguments": { "query": "anything" },
+      })) as ToolCallView;
+      expect(res.isError).toBe(true);
+      expect(res.content[0]?.text).toContain("agent auth");
+    } finally {
+      await client.close();
+    }
+  },
+  20_000,
+);
 
-test("modern era: the v2 client pinned to 2026-07-28 negotiates it and drives the same tool", async () => {
-  const client = new ClientV2(
-    { name: "copilot-env-interop-v2", version: "0.0.0" },
-    { versionNegotiation: { mode: { pin: "2026-07-28" } } },
-  );
-  try {
-    await client.connect(new StdioTransportV2(serverParams()));
-    // The pin makes connect() fail loudly unless server/discover offered exactly
-    // this revision; assert the negotiated outcome anyway so a future SDK default
-    // change cannot quietly turn this into a legacy test.
-    expect(client.getProtocolEra()).toBe("modern");
-    expect(client.getNegotiatedProtocolVersion()).toBe("2026-07-28");
+test(
+  "modern era: the v2 client pinned to 2026-07-28 negotiates it and drives the same tool",
+  async () => {
+    const client = new ClientV2(
+      { name: "copilot-env-interop-v2", version: "0.0.0" },
+      { versionNegotiation: { mode: { pin: "2026-07-28" } } },
+    );
+    try {
+      await client.connect(new StdioTransportV2(serverParams()));
+      // The pin makes connect() fail loudly unless server/discover offered exactly
+      // this revision; assert the negotiated outcome anyway so a future SDK default
+      // change cannot quietly turn this into a legacy test.
+      expect(client.getProtocolEra()).toBe("modern");
+      expect(client.getNegotiatedProtocolVersion()).toBe("2026-07-28");
 
-    const { tools } = await client.listTools();
-    expect(tools.map((t: { name: string }) => t.name)).toEqual(["web_search"]);
-    expect(tools[0]?.inputSchema).toEqual(WEB_SEARCH_INPUT_SCHEMA);
-    expect(tools[0]?.annotations).toEqual(WEB_SEARCH_ANNOTATIONS);
+      const { tools } = await client.listTools();
+      expect(tools.map((t: { name: string }) => t.name)).toEqual(["web_search"]);
+      expect(tools[0]?.inputSchema).toEqual(WEB_SEARCH_INPUT_SCHEMA);
+      expect(tools[0]?.annotations).toEqual(WEB_SEARCH_ANNOTATIONS);
 
-    const res = (await client.callTool({
-      "name": "web_search",
-      "arguments": { "query": "anything" },
-    })) as ToolCallView;
-    expect(res.isError).toBe(true);
-    expect(res.content[0]?.text).toContain("agent auth");
-  } finally {
-    await client.close();
-  }
-}, 20_000);
+      const res = (await client.callTool({
+        "name": "web_search",
+        "arguments": { "query": "anything" },
+      })) as ToolCallView;
+      expect(res.isError).toBe(true);
+      expect(res.content[0]?.text).toContain("agent auth");
+    } finally {
+      await client.close();
+    }
+  },
+  20_000,
+);

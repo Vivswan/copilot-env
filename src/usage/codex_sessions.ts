@@ -312,8 +312,7 @@ async function parseRolloutFile(
 
     const hash = JSON.stringify(payload.info);
     const tsMs = typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : Number.NaN;
-    const duplicate =
-      ownHashes.has(hash) ||
+    const duplicate = ownHashes.has(hash) ||
       parentHashes?.has(hash) === true ||
       (forked &&
         parentHashes === undefined &&

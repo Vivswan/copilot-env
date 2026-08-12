@@ -180,8 +180,8 @@ function constMatches(code: string, name: string): { value: string; index: numbe
 function extractStringConst(source: string, name: string, file: string): string {
   const structural = constMatches(blankSource(source, true), name);
   const values = constMatches(blankSource(source, false), name);
-  const aligned =
-    structural.length === 1 && values.length === 1 && structural[0]?.index === values[0]?.index;
+  const aligned = structural.length === 1 && values.length === 1 &&
+    structural[0]?.index === values[0]?.index;
   const value = aligned ? values[0]?.value : undefined;
   if (value === undefined) {
     throw new Error(

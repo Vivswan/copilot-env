@@ -26,12 +26,11 @@ function runPreloaded(
   try {
     const target = join(dir, "target.ts");
     // Exercise each fetch input shape the shim must handle: string | URL | Request.
-    const input =
-      inputKind === "url"
-        ? `new URL(${JSON.stringify(url)})`
-        : inputKind === "request"
-          ? `new Request(${JSON.stringify(url)})`
-          : JSON.stringify(url);
+    const input = inputKind === "url"
+      ? `new URL(${JSON.stringify(url)})`
+      : inputKind === "request"
+      ? `new Request(${JSON.stringify(url)})`
+      : JSON.stringify(url);
     writeFileSync(
       target,
       [

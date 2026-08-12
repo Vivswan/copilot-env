@@ -69,9 +69,9 @@ export function portListening(port: number, timeoutMs = 2000): Promise<boolean> 
     let remaining = 2;
     for (const host of ["127.0.0.1", "::1"]) {
       void tryHost(host).then((ok) => {
-        if (ok)
+        if (ok) {
           resolve(true); // first success wins; later resolve() calls are no-ops
-        else if (--remaining === 0) resolve(false); // both failed
+        } else if (--remaining === 0) resolve(false); // both failed
       });
     }
   });

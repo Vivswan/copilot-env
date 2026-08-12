@@ -55,8 +55,9 @@ export interface SettingsDeps extends ImportDeps {
 
 /** The rollback invocation, path quoted for THIS machine's shell. */
 function rollbackCommand(backupPath: string): string {
-  const quoted =
-    process.platform === "win32" ? quotePowerShell(backupPath) : quotePosix(backupPath);
+  const quoted = process.platform === "win32"
+    ? quotePowerShell(backupPath)
+    : quotePosix(backupPath);
   return `agent settings --import ${quoted}`;
 }
 
@@ -171,8 +172,9 @@ async function runImport(args: SettingsArgs, file: string, deps: SettingsDeps): 
 
   for (const line of outcome.skipped) logger.warn(line);
   for (const line of outcome.failures) logger.warn(line);
-  const wired =
-    outcome.wiredProfiles.length > 0 ? ` (profiles: ${outcome.wiredProfiles.join(", ")})` : "";
+  const wired = outcome.wiredProfiles.length > 0
+    ? ` (profiles: ${outcome.wiredProfiles.join(", ")})`
+    : "";
   if (outcome.failures.length > 0) {
     logger.error(`Settings imported from ${file}${wired}, but some wiring failed (see above).`);
     process.exitCode = 1;

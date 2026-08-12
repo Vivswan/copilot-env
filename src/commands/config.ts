@@ -4,10 +4,10 @@
 import { consola } from "consola";
 import {
   CONFIG_REGISTRY,
-  type ConfigKeyDef,
-  CopilotEnvConfig,
   configDefaultLabel,
+  type ConfigKeyDef,
   configKeyDef,
+  CopilotEnvConfig,
   isProxyProjected,
 } from "../copilot_api/env_config.ts";
 import { installedProxyVersion } from "../copilot_api/version.ts";
@@ -152,8 +152,9 @@ function runGet(get: string | boolean | undefined): void {
   // All keys -> a formatted table (stored value or "(default: <built-in>)").
   const rows = CONFIG_REGISTRY.map((def) => {
     const value = data[def.key];
-    const shown =
-      value === undefined ? `(default: ${configDefaultLabel(def)})` : formatValue(value);
+    const shown = value === undefined
+      ? `(default: ${configDefaultLabel(def)})`
+      : formatValue(value);
     return [def.cli, shown];
   });
   consola.log(`copilot-env config:\n${formatTable(rows).join("\n")}`);

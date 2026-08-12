@@ -21,7 +21,7 @@ import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { getHostLocalCodexHome } from "../codex/host.ts";
 import { assertKnownProfile } from "../copilot_api/env_state.ts";
 import { copilotApiResolvePort, parseLoopbackProxyUrl } from "../copilot_api/port.ts";
-import { type Profile, parseProfileFlag } from "../copilot_api/profile.ts";
+import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { launchersFile, launchersWired } from "../shell/integration.ts";
 import { readTextOrNull } from "../utils/fs.ts";
@@ -97,13 +97,12 @@ export function runEnv(args: EnvArgs): void {
     Number(copilotApiResolvePort(profile)),
     profile,
   );
-  const proxyUrl =
-    claude.providerMode === "proxy" &&
-    claude.baseUrl &&
-    claude.baseUrl !== DIRECT_BASE_URL &&
-    isLocalProxyUrl(claude.baseUrl)
-      ? claude.baseUrl
-      : null;
+  const proxyUrl = claude.providerMode === "proxy" &&
+      claude.baseUrl &&
+      claude.baseUrl !== DIRECT_BASE_URL &&
+      isLocalProxyUrl(claude.baseUrl)
+    ? claude.baseUrl
+    : null;
   if (proxyUrl) {
     directives.push({ key: BASE_URL_ENV, value: proxyUrl });
   } else {
@@ -142,7 +141,9 @@ export function runEnv(args: EnvArgs): void {
     const launchers = launchersFile(isPowershell);
     console.log(
       isPowershell
-        ? `if (Test-Path -LiteralPath ${quotePowerShell(launchers)}) { . ${quotePowerShell(launchers)} }`
+        ? `if (Test-Path -LiteralPath ${quotePowerShell(launchers)}) { . ${
+          quotePowerShell(launchers)
+        } }`
         : `[ -f ${quotePosix(launchers)} ] && . ${quotePosix(launchers)}`,
     );
   }

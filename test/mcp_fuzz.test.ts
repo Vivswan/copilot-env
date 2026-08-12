@@ -153,64 +153,72 @@ function expectNoUnsolicitedResults(client: McpClient, knownIds: (number | strin
   }
 }
 
-test("opening classifier: bad envelopes and early responses get the documented answers, era stays unpinned", async () => {
-  const client = new McpClient();
-  try {
-    for (const line of classifierCorpus()) client.sendRaw(line);
+test(
+  "opening classifier: bad envelopes and early responses get the documented answers, era stays unpinned",
+  async () => {
+    const client = new McpClient();
+    try {
+      for (const line of classifierCorpus()) client.sendRaw(line);
 
-    // Processing is serial, so these responses arriving proves every earlier
-    // line was consumed. -32602 InvalidParams is the spec-mandated code for a
-    // malformed envelope; the unsupported-revision code is the SDK's choice,
-    // so only the error shape is pinned there.
-    const badEnvelope = await client.waitFor(101);
-    expect(badEnvelope.error?.code).toBe(-32602);
+      // Processing is serial, so these responses arriving proves every earlier
+      // line was consumed. -32602 InvalidParams is the spec-mandated code for a
+      // malformed envelope; the unsupported-revision code is the SDK's choice,
+      // so only the error shape is pinned there.
+      const badEnvelope = await client.waitFor(101);
+      expect(badEnvelope.error?.code).toBe(-32602);
 
-    const nonStringClaim = await client.waitFor(102);
-    expect(nonStringClaim.error?.code).toBe(-32602);
+      const nonStringClaim = await client.waitFor(102);
+      expect(nonStringClaim.error?.code).toBe(-32602);
 
-    const unsupported = await client.waitFor(103);
-    expect(isErrorResponse(unsupported)).toBe(true);
+      const unsupported = await client.waitFor(103);
+      expect(isErrorResponse(unsupported)).toBe(true);
 
-    const unknownMethod = await client.waitFor("str-1");
-    expect(unknownMethod.error?.code).toBe(-32601);
+      const unknownMethod = await client.waitFor("str-1");
+      expect(unknownMethod.error?.code).toBe(-32601);
 
-    expect(client.exitCode).toBeNull();
-    await expectFullRecovery(client);
+      expect(client.exitCode).toBeNull();
+      await expectFullRecovery(client);
 
-    // The early response (id 99) and the null-id request may be dropped or
-    // answered with an error, but never with a result.
-    expectNoUnsolicitedResults(client, [101, 102, 103, "str-1", 1001, 1002, 1003]);
-    expectStdoutPurity(client);
-  } catch (e) {
-    client.kill();
-    throw e;
-  }
-  expect(await client.closeAndWait()).toBe(0);
-}, 20_000);
-
-test("line noise: raw bytes, invalid JSON, and non-JSON-RPC values are dropped without a reply", async () => {
-  const rnd = makePrng(FUZZ_SEED);
-  const client = new McpClient();
-  try {
-    client.sendRaw(binaryGarbage());
-    for (const line of ["not json at all", '{"truncated": ', "[1,2,3]", "42", '"bare"']) {
-      client.sendRaw(line);
+      // The early response (id 99) and the null-id request may be dropped or
+      // answered with an error, but never with a result.
+      expectNoUnsolicitedResults(client, [101, 102, 103, "str-1", 1001, 1002, 1003]);
+      expectStdoutPurity(client);
+    } catch (e) {
+      client.kill();
+      throw e;
     }
-    for (const line of generatedCorpus(rnd, 50)) client.sendRaw(line);
+    expect(await client.closeAndWait()).toBe(0);
+  },
+  20_000,
+);
 
-    expect(client.exitCode).toBeNull();
-    await expectFullRecovery(client);
+test(
+  "line noise: raw bytes, invalid JSON, and non-JSON-RPC values are dropped without a reply",
+  async () => {
+    const rnd = makePrng(FUZZ_SEED);
+    const client = new McpClient();
+    try {
+      client.sendRaw(binaryGarbage());
+      for (const line of ["not json at all", '{"truncated": ', "[1,2,3]", "42", '"bare"']) {
+        client.sendRaw(line);
+      }
+      for (const line of generatedCorpus(rnd, 50)) client.sendRaw(line);
 
-    // Silent drop or an error response are both fine; a result for a request
-    // we never sent is not.
-    expectNoUnsolicitedResults(client, [1001, 1002, 1003]);
-    expectStdoutPurity(client);
-  } catch (e) {
-    client.kill();
-    throw e;
-  }
-  expect(await client.closeAndWait()).toBe(0);
-}, 20_000);
+      expect(client.exitCode).toBeNull();
+      await expectFullRecovery(client);
+
+      // Silent drop or an error response are both fine; a result for a request
+      // we never sent is not.
+      expectNoUnsolicitedResults(client, [1001, 1002, 1003]);
+      expectStdoutPurity(client);
+    } catch (e) {
+      client.kill();
+      throw e;
+    }
+    expect(await client.closeAndWait()).toBe(0);
+  },
+  20_000,
+);
 
 test("a ~1MB request (under the 10MB transport buffer) is answered normally", async () => {
   const client = new McpClient();

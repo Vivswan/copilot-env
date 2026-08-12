@@ -8,7 +8,7 @@
 // account-wide checks drop out). `--json` emits a structured report instead of
 // the formatted text one. Exit 1 iff any check fails; warnings alone exit 0.
 import { assertKnownProfile, type ProfileMode } from "../copilot_api/env_state.ts";
-import { type Profile, parseProfileFlag } from "../copilot_api/profile.ts";
+import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { buildHealthJson, exitCodeFor, isHealthScope } from "../health/aggregate.ts";
 import { evaluateAll } from "../health/checks.ts";
 import { gatherFacts, type HealthFacts } from "../health/probe.ts";

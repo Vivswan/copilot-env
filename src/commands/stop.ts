@@ -2,7 +2,7 @@
 import { consola } from "consola";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { profileHomeNames } from "../copilot_api/paths.ts";
-import { type Profile, parseProfileFlag, profileLabel } from "../copilot_api/profile.ts";
+import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 
 export interface StopArgs {

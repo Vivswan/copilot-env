@@ -250,8 +250,9 @@ test("models --profile never falls back: a credential-less direct profile hard-f
   // The store holds a RESOLVABLE default credential but the profile's own slot
   // has none, so Direct must fail naming the profile -- silently resolving the
   // default token instead would sail past this error and fail the assertions.
-  const { exitCode, out } = runModelsCli(["--profile", "p1", "--direct"], (home) =>
-    seedDirectProfile(home, "p1"),
+  const { exitCode, out } = runModelsCli(
+    ["--profile", "p1", "--direct"],
+    (home) => seedDirectProfile(home, "p1"),
   );
   expect(exitCode).toBe(1);
   expect(out).toContain("no GitHub credential for profile 'p1'");
@@ -260,8 +261,9 @@ test("models --profile never falls back: a credential-less direct profile hard-f
 });
 
 test("models --profile --proxy fails actionably when the profile's daemon is down", () => {
-  const { exitCode, out } = runModelsCli(["--profile", "p1", "--proxy"], (home) =>
-    seedDirectProfile(home, "p1"),
+  const { exitCode, out } = runModelsCli(
+    ["--profile", "p1", "--proxy"],
+    (home) => seedDirectProfile(home, "p1"),
   );
   expect(exitCode).toBe(1);
   expect(out).toContain("local proxy for profile 'p1' is not running");

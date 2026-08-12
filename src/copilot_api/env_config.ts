@@ -164,39 +164,39 @@ interface ConfigKeyDefCore {
  *  value XOR a hand-written label -- exactly one, checked at compile time. */
 type DefaultSpec =
   | {
-      /** Built-in default applied by the read site when the key is unset. THE owned copy:
-       *  the CopilotEnvConfig accessors below consume it via the configDefault* helpers,
-       *  and the rendered default label derives from it. */
-      defaultValue: ConfigValue;
-      /** Extra wording appended after the derived default value in `--help` / `--get`. */
-      defaultSuffix?: string;
-      defaultLabel?: undefined;
-    }
+    /** Built-in default applied by the read site when the key is unset. THE owned copy:
+     *  the CopilotEnvConfig accessors below consume it via the configDefault* helpers,
+     *  and the rendered default label derives from it. */
+    defaultValue: ConfigValue;
+    /** Extra wording appended after the derived default value in `--help` / `--get`. */
+    defaultSuffix?: string;
+    defaultLabel?: undefined;
+  }
   | {
-      /** Hand-written default label for keys with no single value this registry owns (an
-       *  external or composite default). */
-      defaultLabel: string;
-      defaultValue?: undefined;
-      defaultSuffix?: undefined;
-    };
+    /** Hand-written default label for keys with no single value this registry owns (an
+     *  external or composite default). */
+    defaultLabel: string;
+    defaultValue?: undefined;
+    defaultSuffix?: undefined;
+  };
 
 /** How a change takes effect, for `agent config` set/del's notice: the generic restart hint
  *  XOR a bespoke hint XOR neither (projected shapes already get the restart hint; anything
  *  else applies immediately). */
 type ApplySpec =
   | {
-      /** Read by `agent start`'s launch wiring (NOT projected into the proxy config.json),
-       *  yet still applied only when a daemon launches -- so a change deserves the same
-       *  restart hint the projected keys get. */
-      restartToApply: true;
-      applyHint?: undefined;
-    }
+    /** Read by `agent start`'s launch wiring (NOT projected into the proxy config.json),
+     *  yet still applied only when a daemon launches -- so a change deserves the same
+     *  restart hint the projected keys get. */
+    restartToApply: true;
+    applyHint?: undefined;
+  }
   | {
-      /** Printed by `agent config` set/del INSTEAD of the proxy-restart hint, for keys that
-       *  apply through some other mechanism than a daemon launch. */
-      applyHint: string;
-      restartToApply?: undefined;
-    }
+    /** Printed by `agent config` set/del INSTEAD of the proxy-restart hint, for keys that
+     *  apply through some other mechanism than a daemon launch. */
+    applyHint: string;
+    restartToApply?: undefined;
+  }
   | { restartToApply?: undefined; applyHint?: undefined };
 
 /** Shared by the two projected shapes below. */
@@ -214,9 +214,11 @@ interface ProjectedKeyFields {
 
 /** A copilot-env-internal key: our own code reads it; nothing is written into the proxy
  *  config.json for it. */
-type InternalConfigKeyDef = ConfigKeyDefCore &
-  DefaultSpec &
-  ApplySpec & {
+type InternalConfigKeyDef =
+  & ConfigKeyDefCore
+  & DefaultSpec
+  & ApplySpec
+  & {
     proxyDefault?: undefined;
     proxyProjected?: undefined;
     proxyPath?: undefined;
@@ -226,9 +228,11 @@ type InternalConfigKeyDef = ConfigKeyDefCore &
 /** Force-projected into the proxy config.json at `agent start` as `stored ?? proxyDefault`
  *  (always written). Use for keys copilot-env has an opinion on. `proxyDefault` doubles as
  *  the rendered default. */
-type ForceProjectedConfigKeyDef = ConfigKeyDefCore &
-  ApplySpec &
-  ProjectedKeyFields & {
+type ForceProjectedConfigKeyDef =
+  & ConfigKeyDefCore
+  & ApplySpec
+  & ProjectedKeyFields
+  & {
     proxyDefault: ConfigValue;
     defaultValue?: undefined;
     defaultSuffix?: undefined;
@@ -241,9 +245,11 @@ type ForceProjectedConfigKeyDef = ConfigKeyDefCore &
  *  written value is cleared again once the key is unset -- ownership-tracked per daemon home
  *  (see applyDefaultConfig in src/copilot_api/launch.ts). Use for keys we merely expose
  *  without overriding. */
-type OptInProjectedConfigKeyDef = ConfigKeyDefCore &
-  ApplySpec &
-  ProjectedKeyFields & {
+type OptInProjectedConfigKeyDef =
+  & ConfigKeyDefCore
+  & ApplySpec
+  & ProjectedKeyFields
+  & {
     proxyProjected: true;
     /** The proxy owns the default, so the rendered label is hand-written. */
     defaultLabel: string;

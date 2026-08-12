@@ -42,7 +42,7 @@ let dir = "";
 // so every test resolves to the default identity (200 = first candidate accepted) offline.
 beforeEach(() => {
   setIntegrationProbeFetch(() =>
-    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 })),
+    Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }))
   );
 });
 

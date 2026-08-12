@@ -39,8 +39,11 @@ const rel = (tag: string, date: string, over: Record<string, unknown> = {}): unk
 const archiveDigest = "d09b936d834dbd7b0cbe1b016146aab603e94d66f121ddfbcd271a653fc2f3de";
 const sourceArchiveAsset = (tag: string, digest = `sha256:${archiveDigest}`): unknown => ({
   name: `copilot-env-${tag}.tar.gz`,
-  url: `https://api.github.com/repos/Vivswan/copilot-env/releases/assets/${tag.replace(/\D/g, "")}1`,
-  browser_download_url: `https://github.com/Vivswan/copilot-env/releases/download/${tag}/copilot-env-${tag}.tar.gz`,
+  url: `https://api.github.com/repos/Vivswan/copilot-env/releases/assets/${
+    tag.replace(/\D/g, "")
+  }1`,
+  browser_download_url:
+    `https://github.com/Vivswan/copilot-env/releases/download/${tag}/copilot-env-${tag}.tar.gz`,
   digest,
 });
 
@@ -249,9 +252,8 @@ describe("source archive SHA256", () => {
           "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
         ),
       ).toBe("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824");
-      expect(() =>
-        verifySourceArchiveSha256(file, `${"0".repeat(64)}  copilot-env-v3.0.0.tar.gz`),
-      ).toThrow("SHA256 mismatch");
+      expect(() => verifySourceArchiveSha256(file, `${"0".repeat(64)}  copilot-env-v3.0.0.tar.gz`))
+        .toThrow("SHA256 mismatch");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

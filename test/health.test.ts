@@ -1351,9 +1351,12 @@ test("evalCodex: no config.toml at the home reads as not-configured", () => {
 });
 
 test("evalCodex: provider wired only when default + env_key + host:port all match", () => {
-  const good = `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "http://localhost:4141/v1"\nenv_key = "OPENAI_API_KEY"\n`;
-  const stalePort = `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "http://localhost:9999/v1"\nenv_key = "OPENAI_API_KEY"\n`;
-  const wrongEnvKey = `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "http://localhost:4141/v1"\nenv_key = "COPILOT_API_KEY"\n`;
+  const good =
+    `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "http://localhost:4141/v1"\nenv_key = "OPENAI_API_KEY"\n`;
+  const stalePort =
+    `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "http://localhost:9999/v1"\nenv_key = "OPENAI_API_KEY"\n`;
+  const wrongEnvKey =
+    `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "http://localhost:4141/v1"\nenv_key = "COPILOT_API_KEY"\n`;
   const env = "OPENAI_API_KEY=sk-test\n";
   expect(evalCodex("/c", good, env, 4141, false)).toMatchObject({
     providerMode: "proxy",
@@ -1374,7 +1377,8 @@ test("evalCodex: provider wired only when default + env_key + host:port all matc
 });
 
 test("evalCodex: direct provider reports direct mode without requiring OPENAI_API_KEY", () => {
-  const direct = `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "https://api.githubcopilot.com"\n`;
+  const direct =
+    `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "https://api.githubcopilot.com"\n`;
   expect(evalCodex("/c", direct, null, 4141, false)).toMatchObject({
     providerMode: "direct",
     providerWired: true,
@@ -1384,7 +1388,8 @@ test("evalCodex: direct provider reports direct mode without requiring OPENAI_AP
 
 test("evalCodex: a port that only appears as a substring does not match", () => {
   // base_url port 41410 must NOT satisfy expected port 4141 (old substring bug).
-  const decoy = `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "http://localhost:41410/v1"\nenv_key = "OPENAI_API_KEY"\n`;
+  const decoy =
+    `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "http://localhost:41410/v1"\nenv_key = "OPENAI_API_KEY"\n`;
   expect(evalCodex("/c", decoy, "OPENAI_API_KEY=x\n", 4141, false).providerWired).toBe(false);
 });
 
@@ -1410,7 +1415,8 @@ test("evalCodex: base_url must be the full http://localhost:<port>/v1 contract",
 });
 
 test("evalCodex: OPENAI_API_KEY with spaces after = still counts as present in .env", () => {
-  const good = `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "http://localhost:4141/v1"\nenv_key = "OPENAI_API_KEY"\n`;
+  const good =
+    `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "http://localhost:4141/v1"\nenv_key = "OPENAI_API_KEY"\n`;
   expect(evalCodex("/c", good, "OPENAI_API_KEY = sk-test\n", 4141, false).envKeyInDotenv).toBe(
     true,
   );

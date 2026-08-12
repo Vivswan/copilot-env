@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { isDir, isEnoentOrNotdir } from "../utils/fs.ts";
 import { getSanitizedHostname } from "../utils/hostname.ts";
-import { isValidProfileName, type Profile, type ProfileName, parseProfileName } from "./profile.ts";
+import { isValidProfileName, parseProfileName, type Profile, type ProfileName } from "./profile.ts";
 
 // Mirror the proxy's own default (`@jeffreycao/copilot-api` lib/paths.ts):
 //   path.join(os.homedir(), ".local", "share", "copilot-api")

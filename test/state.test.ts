@@ -119,7 +119,11 @@ test("webSearchDenyOwnedPaths drops junk entries individually and trims survivor
   // path must read back trimmed so exact-path ownership checks still match.
   writeFileSync(
     join(dir, ".copilot-env-state.json"),
-    `${JSON.stringify({ webSearchDenyOwnedPaths: ["/a/settings.json", 123, "", null, "  /b/settings.json  "] })}\n`,
+    `${
+      JSON.stringify({
+        webSearchDenyOwnedPaths: ["/a/settings.json", 123, "", null, "  /b/settings.json  "],
+      })
+    }\n`,
   );
   expect(new CopilotEnvState().read().webSearchDenyOwnedPaths).toEqual([
     "/a/settings.json",
@@ -136,13 +140,15 @@ test("profileNames skips a hand-edited invalid profile key so it can never reach
   // stray-directory filter -- while valid siblings still come back.
   writeFileSync(
     join(dir, ".copilot-env-state.json"),
-    `${JSON.stringify({
-      profiles: {
-        "../escape": { mode: "proxy", authProvider: "gh-token", githubToken: "ghp_evil" },
-        con: { mode: "direct" },
-        work: { mode: "direct" },
-      },
-    })}\n`,
+    `${
+      JSON.stringify({
+        profiles: {
+          "../escape": { mode: "proxy", authProvider: "gh-token", githubToken: "ghp_evil" },
+          con: { mode: "direct" },
+          work: { mode: "direct" },
+        },
+      })
+    }\n`,
   );
   expect(new CopilotEnvState().profileNames()).toEqual([WORK]);
 });

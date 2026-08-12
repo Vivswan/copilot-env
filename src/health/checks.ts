@@ -59,12 +59,11 @@ function describeDirectGhAuth(a: CodexDirectAuthFacts): {
 } {
   return {
     ok: a.command !== null && a.authenticated,
-    detail:
-      a.command === null
-        ? "gh auth: GitHub CLI not found"
-        : a.authenticated
-          ? `gh auth: authenticated via ${a.command}`
-          : `gh auth: ${a.command} is not authenticated`,
+    detail: a.command === null
+      ? "gh auth: GitHub CLI not found"
+      : a.authenticated
+      ? `gh auth: authenticated via ${a.command}`
+      : `gh auth: ${a.command} is not authenticated`,
     ghFix: a.command === null ? "install gh and run gh auth login" : "gh auth login",
   };
 }
@@ -88,8 +87,9 @@ function directAuthVerdict(
   directFix: string,
   profile: Profile = null,
 ): { status: "ok" | "warn"; authLine: string; fix?: string } {
-  const getCommand =
-    profile === null ? "agent auth --get" : `agent auth --get --profile ${profile}`;
+  const getCommand = profile === null
+    ? "agent auth --get"
+    : `agent auth --get --profile ${profile}`;
   const authFix = profile === null ? "agent auth" : `agent auth --profile ${profile}`;
   if (f.directUsesToken) {
     return {
@@ -148,8 +148,8 @@ export function checkNodeModules(f: BootstrapFacts): CheckResult {
   const detail = !present
     ? "node_modules is missing"
     : !fresh
-      ? "node_modules is stale (older than bun.lock)"
-      : "installed and up to date";
+    ? "node_modules is stale (older than bun.lock)"
+    : "installed and up to date";
   return {
     id: "bootstrap.nodeModules",
     label: "Dependencies (node_modules)",
@@ -186,7 +186,9 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
   if (bounds.ok) {
     status = "ok";
     // Version + cooldown as separate lines -> rendered as `-` sub-items.
-    detail = `${PROXY_PACKAGE_NAME} ${bounds.version}\nfloat ${floatCooldownLabel(f.cooldownSeconds)}`;
+    detail = `${PROXY_PACKAGE_NAME} ${bounds.version}\nfloat ${
+      floatCooldownLabel(f.cooldownSeconds)
+    }`;
   } else if (bounds.reason === "missing") {
     // A missing package is a broken install in any mode; the fix always works.
     status = "fail";
@@ -385,7 +387,9 @@ export function checkRuntimeWatchdog(f: RuntimeTarget): CheckResult {
   const ago = (at: number | null): string =>
     at === null ? "none" : `${formatDuration(w.now - at)} ago`;
   const detail = [
-    `auto-stops in ${remainingMs === null ? "unknown" : formatDuration(remainingMs)} (idle window ${formatDuration(w.idleTimeoutMs)})`,
+    `auto-stops in ${remainingMs === null ? "unknown" : formatDuration(remainingMs)} (idle window ${
+      formatDuration(w.idleTimeoutMs)
+    })`,
     `idle for ${idleMs === null ? "unknown (no activity recorded yet)" : formatDuration(idleMs)}`,
     `last beat ${ago(w.lastEnsureAt)}`,
     `last request ${ago(w.lastRequestMs)}`,
@@ -441,7 +445,8 @@ export function checkRuntimeIdentity(f: RuntimeTarget): CheckResult {
   return {
     ...base,
     status: "warn",
-    detail: `a non-copilot-api service is listening on port ${f.port} (no x-trace-id); agent requests would misroute to it`,
+    detail:
+      `a non-copilot-api service is listening on port ${f.port} (no x-trace-id); agent requests would misroute to it`,
     fix: `free the port (stop the foreign process), then ${startFix(f.profile)}`,
     value: { reachable: true, confirmed: false },
   };
@@ -489,7 +494,8 @@ export function checkRuntimeOrphan(f: RuntimeTarget): CheckResult {
   return {
     ...base,
     status: "warn",
-    detail: `${what} is on port ${f.port} but is not the tracked daemon (orphaned -- started outside 'agent start', or the run-state was cleared)`,
+    detail:
+      `${what} is on port ${f.port} but is not the tracked daemon (orphaned -- started outside 'agent start', or the run-state was cleared)`,
     fix: `${stopFix}, then ${startFix(f.profile)} (re-tracks the daemon)`,
     value: { orphan: true, trackedPid: f.trackedPid },
   };
@@ -527,19 +533,19 @@ export function checkProfileConsistency(f: RuntimeTarget): CheckResult {
     const fix = `agent profile --add ${name} --direct|--proxy (or agent profile --del ${name})`;
     return homeExists
       ? {
-          ...base,
-          status: "warn",
-          detail: "profile home exists but no store slot (half-created)",
-          fix,
-        }
+        ...base,
+        status: "warn",
+        detail: "profile home exists but no store slot (half-created)",
+        fix,
+      }
       : {
-          // Only reachable when the profile vanished between the sweep and this
-          // read (its name came from the slots+homes union).
-          ...base,
-          status: "warn",
-          detail: "no store slot and no daemon home (profile no longer exists)",
-          fix,
-        };
+        // Only reachable when the profile vanished between the sweep and this
+        // read (its name came from the slots+homes union).
+        ...base,
+        status: "warn",
+        detail: "no store slot and no daemon home (profile no longer exists)",
+        fix,
+      };
   }
   if (slot.mode === null) {
     return {
@@ -557,14 +563,13 @@ export function checkProfileConsistency(f: RuntimeTarget): CheckResult {
       fix: profileAddFix(name),
     };
   }
-  const detail =
-    slot.mode === "proxy"
-      ? f.portPersisted
-        ? "store slot (proxy) and daemon home agree"
-        : `store slot (proxy) and daemon home agree; no port recorded on this host yet, so the daemon was not probed (agent start --profile ${name} records one)`
-      : homeExists
-        ? "store slot (direct); the leftover daemon home is unused"
-        : "store slot (direct); no daemon home needed";
+  const detail = slot.mode === "proxy"
+    ? f.portPersisted
+      ? "store slot (proxy) and daemon home agree"
+      : `store slot (proxy) and daemon home agree; no port recorded on this host yet, so the daemon was not probed (agent start --profile ${name} records one)`
+    : homeExists
+    ? "store slot (direct); the leftover daemon home is unused"
+    : "store slot (direct); no daemon home needed";
   return { ...base, status: "ok", detail };
 }
 
@@ -599,10 +604,9 @@ export function checkProfileAuth(
   };
   // A slot with no recorded mode (or none at all) needs an explicit mode flag on
   // the re-add; with a mode recorded the bare re-add keeps it (sticky).
-  const addFix =
-    slot === null || slot.mode === null
-      ? `agent profile --add ${name} --direct|--proxy`
-      : profileAddFix(name);
+  const addFix = slot === null || slot.mode === null
+    ? `agent profile --add ${name} --direct|--proxy`
+    : profileAddFix(name);
   if (slot === null || slot.provider === null) {
     return {
       ...base,
@@ -631,12 +635,11 @@ export function checkProfileAuth(
   }
   const how = slot.provider === "gh-cli" ? "gh CLI (`gh auth token`)" : "stored GitHub token";
   const identity = slot.integrationIdentity === null ? "" : `, ${slot.integrationIdentity}`;
-  const usage =
-    slot.mode === "proxy"
-      ? `resolved by \`agent auth --get --profile ${name}\`; passed to the profile's daemon on \`agent start --profile ${name}\``
-      : slot.mode === "direct"
-        ? `resolved by \`agent auth --get --profile ${name}\` for Direct`
-        : `resolved by \`agent auth --get --profile ${name}\``;
+  const usage = slot.mode === "proxy"
+    ? `resolved by \`agent auth --get --profile ${name}\`; passed to the profile's daemon on \`agent start --profile ${name}\``
+    : slot.mode === "direct"
+    ? `resolved by \`agent auth --get --profile ${name}\` for Direct`
+    : `resolved by \`agent auth --get --profile ${name}\``;
   return {
     ...base,
     status: "ok",
@@ -710,28 +713,22 @@ export function checkTool(name: "node" | "npm", resolved: string | null): CheckR
 export function checkAuth(f: AuthFacts): CheckResult {
   // Named profiles surface as a detail line only (their hard-fail resolution is a
   // per-profile concern; the default credential drives this check's status).
-  const profileEntries = Object.entries(f.profiles).sort(([a], [b]) =>
-    a < b ? -1 : a > b ? 1 : 0,
-  );
-  const profilesLine =
-    profileEntries.length === 0
-      ? []
-      : [
-          `named profiles: ${profileEntries
-            .map(([name, slot]) => {
-              const identity = slot.integrationIdentity ? `, ${slot.integrationIdentity}` : "";
-              return `${name} (${slot.provider ?? "no auth"}, ${slot.mode ?? "no mode"}${identity})`;
-            })
-            .join(", ")}`,
-        ];
+  const profileEntries = Object.entries(f.profiles).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  const profilesLine = profileEntries.length === 0 ? [] : [
+    `named profiles: ${
+      profileEntries
+        .map(([name, slot]) => {
+          const identity = slot.integrationIdentity ? `, ${slot.integrationIdentity}` : "";
+          return `${name} (${slot.provider ?? "no auth"}, ${slot.mode ?? "no mode"}${identity})`;
+        })
+        .join(", ")
+    }`,
+  ];
   // The Copilot client identity: a pin overrides the per-credential probe (the knob a
   // fine-grained PAT needs -- copilot-developer-cli -- when auto-detection is off).
-  const identityLine =
-    f.pinnedIntegrationId === null
-      ? []
-      : [
-          `Copilot integration id pinned to '${f.pinnedIntegrationId}' (\`agent config integration-id\`)`,
-        ];
+  const identityLine = f.pinnedIntegrationId === null ? [] : [
+    `Copilot integration id pinned to '${f.pinnedIntegrationId}' (\`agent config integration-id\`)`,
+  ];
   const base = {
     id: "setup.auth",
     label: "Authentication",
@@ -829,7 +826,8 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
       return {
         ...base,
         status: "warn",
-        detail: `provider: none\nno Codex config at ${configPath} (profile '${profile}' is not wired into Codex)`,
+        detail:
+          `provider: none\nno Codex config at ${configPath} (profile '${profile}' is not wired into Codex)`,
         fix: profileAddFix(profile),
       };
     }
@@ -922,8 +920,7 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
 /** Report the per-host CODEX_HOME farm (~/.codex/hosts/<hostname>) status. */
 export function checkCodexHost(f: CodexHostFacts): CheckResult {
   const configFile = codexConfigPath(f.hostHome);
-  const detail = (summary: string) =>
-    f.exists ? `${summary}\nconfig.toml: ${configFile}` : summary;
+  const detail = (summary: string) => f.exists ? `${summary}\nconfig.toml: ${configFile}` : summary;
   const base = {
     id: "setup.codex-host",
     label: "Per-host CODEX_HOME",
@@ -1036,17 +1033,18 @@ export function checkClaude(f: ClaudeFacts, profile: Profile = null): CheckResul
       detail: [
         "provider: proxy",
         `settings.json: ${f.settingsPath}`,
-        `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${baseUrlOk ? "" : " (does not match the resolved proxy port)"}`,
+        `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${
+          baseUrlOk ? "" : " (does not match the resolved proxy port)"
+        }`,
         `apiKeyHelper → ${f.helperPath ?? "(missing)"}`,
       ].join("\n"),
-      ...(baseUrlOk
-        ? {}
-        : {
-            fix:
-              profile === null
-                ? "Re-run `agent init` (or `agent claude`) to repoint ANTHROPIC_BASE_URL at the current proxy port."
-                : `Re-run \`${profileAddFix(profile)}\` to repoint ANTHROPIC_BASE_URL at the profile's proxy port.`,
-          }),
+      ...(baseUrlOk ? {} : {
+        fix: profile === null
+          ? "Re-run `agent init` (or `agent claude`) to repoint ANTHROPIC_BASE_URL at the current proxy port."
+          : `Re-run \`${
+            profileAddFix(profile)
+          }\` to repoint ANTHROPIC_BASE_URL at the profile's proxy port.`,
+      }),
     };
   }
   if (f.providerMode === "other") {
@@ -1061,9 +1059,13 @@ export function checkClaude(f: ClaudeFacts, profile: Profile = null): CheckResul
         detail: [
           "provider: other",
           `settings.json: ${f.settingsPath}`,
-          `custom apiKeyHelper/ANTHROPIC_BASE_URL set (${f.helperPath ?? f.baseUrl}); profile '${profile}' expects managed wiring`,
+          `custom apiKeyHelper/ANTHROPIC_BASE_URL set (${
+            f.helperPath ?? f.baseUrl
+          }); profile '${profile}' expects managed wiring`,
         ].join("\n"),
-        fix: `remove ${f.settingsPath} (not managed by copilot-env), then ${profileAddFix(profile)}`,
+        fix: `remove ${f.settingsPath} (not managed by copilot-env), then ${
+          profileAddFix(profile)
+        }`,
       };
     }
     return {
@@ -1143,15 +1145,14 @@ function checkAgentLive(
   f: LiveProbeFacts,
   profile: Profile = null,
 ): CheckResult {
-  const meta =
-    agent === "codex"
-      ? { id: "codex.live", label: "Codex live prompt", group: "codex" as const, scopes: CODEX }
-      : {
-          id: "claude.live",
-          label: "Claude live prompt",
-          group: "claude" as const,
-          scopes: CLAUDE,
-        };
+  const meta = agent === "codex"
+    ? { id: "codex.live", label: "Codex live prompt", group: "codex" as const, scopes: CODEX }
+    : {
+      id: "claude.live",
+      label: "Claude live prompt",
+      group: "claude" as const,
+      scopes: CLAUDE,
+    };
   const base = {
     id: meta.id,
     label: meta.label,
@@ -1171,11 +1172,11 @@ function checkAgentLive(
   return f.kind === "ok"
     ? { ...base, status: "ok", detail: `read-only prompt responded via ${f.cli}` }
     : {
-        ...base,
-        status: "warn",
-        detail: `read-only prompt failed (${f.cli})\n${f.detail}`,
-        fix: profile === null ? `agent ${agent}` : profileAddFix(profile),
-      };
+      ...base,
+      status: "warn",
+      detail: `read-only prompt failed (${f.cli})\n${f.detail}`,
+      fix: profile === null ? `agent ${agent}` : profileAddFix(profile),
+    };
 }
 
 /** `--live` end-to-end check: did Codex actually respond via its configured backend? */

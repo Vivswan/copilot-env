@@ -1,11 +1,11 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  CUSTOM_HEADERS_ENV,
   cmdHelperBody,
   configureClaudeConfig,
-  DIRECT_BASE_URL,
+  CUSTOM_HEADERS_ENV,
   detectClaudeDirect,
+  DIRECT_BASE_URL,
   inspectClaudeWiring,
   removeClaudeDefaultWiring,
   runClaude,
@@ -336,9 +336,11 @@ test("registration failure (foreign .claude.json entry) skips the deny - never d
   mkdirSync(home, { recursive: true });
   writeFileSync(
     claudeJsonPath(),
-    `${JSON.stringify({
-      mcpServers: { "copilot-env": { "type": "stdio", "command": "npx", "args": ["other"] } },
-    })}\n`,
+    `${
+      JSON.stringify({
+        mcpServers: { "copilot-env": { "type": "stdio", "command": "npx", "args": ["other"] } },
+      })
+    }\n`,
   );
   configureClaudeConfig(home, "direct");
   expect(denyOf(readSettings(home))).toBeUndefined();

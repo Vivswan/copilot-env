@@ -42,7 +42,7 @@ import {
 } from "../copilot_api/gh_cli.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { resolveCopilotApiEntry } from "../copilot_api/process.ts";
-import { type Profile, parseProfileFlag, profileLabel } from "../copilot_api/profile.ts";
+import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -127,8 +127,7 @@ export function parseAcquisition(
   opts: { setConflictWins?: boolean } = {},
 ): CredentialAcquisition {
   if (set !== undefined) {
-    const isGhToken =
-      provider === undefined ||
+    const isGhToken = provider === undefined ||
       (opts.setConflictWins
         ? provider.trim().toLowerCase() === "gh-token"
         : asProvider(provider) === "gh-token");
@@ -217,7 +216,9 @@ function loginWithCopilot(cred: Credential): void {
     });
     if (result.error || result.status !== 0) {
       throw new Error(
-        `device-flow login failed${result.error ? `: ${result.error.message}` : ` (exit ${result.status})`}`,
+        `device-flow login failed${
+          result.error ? `: ${result.error.message}` : ` (exit ${result.status})`
+        }`,
       );
     }
     let token: string;
@@ -335,8 +336,9 @@ export async function authenticate(
   acquisition: CredentialAcquisition,
   profile: Profile,
 ): Promise<AuthProvider> {
-  const resolved =
-    acquisition.kind === "choose" ? acquisitionForProvider(await chooseProvider()) : acquisition;
+  const resolved = acquisition.kind === "choose"
+    ? acquisitionForProvider(await chooseProvider())
+    : acquisition;
   const cred = new Credential(undefined, profile);
   if (resolved.kind === "gh-token") {
     await loginWithGhToken(cred, resolved.source);
@@ -358,8 +360,10 @@ async function runGet(profile: Profile, catalogDeps?: CodexCatalogDeps): Promise
     logger.error(
       profile === null
         ? "no GitHub credential - run `agent auth` to log in"
-        : `no GitHub credential for ${profileLabel(profile)} - run \`agent auth --profile ${profile}\` ` +
-            "to log in (a named profile never falls back to the default credential)",
+        : `no GitHub credential for ${
+          profileLabel(profile)
+        } - run \`agent auth --profile ${profile}\` ` +
+          "to log in (a named profile never falls back to the default credential)",
     );
     process.exitCode = 1;
     return;
@@ -437,7 +441,9 @@ async function runDel(profile: Profile): Promise<void> {
       logger.success(`De-authenticated ${profileLabel(profile)}. Run ${again} to log in again.`);
     } else if (stopped) {
       logger.success(
-        `De-authenticated ${profileLabel(profile)} and stopped its proxy. Run ${again} to log in again.`,
+        `De-authenticated ${
+          profileLabel(profile)
+        } and stopped its proxy. Run ${again} to log in again.`,
       );
     } else {
       logger.warn(
@@ -592,6 +598,6 @@ export async function runAuth(args: AuthArgs, catalogDeps?: CodexCatalogDeps): P
     profile === null
       ? `Authenticated (${provider}). Run \`agent init\` to configure Codex and Claude.`
       : `Authenticated ${profileLabel(profile)} (${provider}). Wire it into both agents with ` +
-          `\`agent profile --add ${profile} --direct|--proxy\`.`,
+        `\`agent profile --add ${profile} --direct|--proxy\`.`,
   );
 }

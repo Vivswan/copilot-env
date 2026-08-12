@@ -5,15 +5,15 @@ import {
 } from "../src/commands/config.ts";
 import {
   CONFIG_REGISTRY,
-  type ConfigKeyDef,
-  CopilotEnvConfig,
   configDefaultLabel,
   configDefaultNumber,
+  type ConfigKeyDef,
   configKeyDef,
+  CopilotEnvConfig,
   isProxyProjected,
   optInProxyConfigPaths,
-  type ProjectedProxyEntry,
   projectedProxyConfig,
+  type ProjectedProxyEntry,
 } from "../src/copilot_api/env_config.ts";
 import { DEFAULT_WEB_SEARCH_MODEL } from "../src/copilot_api/web_search.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
@@ -311,7 +311,7 @@ test("responses-context-management projects to the proxy's NESTED contextManagem
   // No two projected entries (force or opt-in, set or not) may share a path: a force entry
   // always re-emits its path, which would permanently disable the opt-in clearing pass for it.
   const allProjectedPaths = CONFIG_REGISTRY.filter(isProxyProjected).map((d) =>
-    JSON.stringify(d.proxyPath ?? [d.key]),
+    JSON.stringify(d.proxyPath ?? [d.key])
   );
   expect(new Set(allProjectedPaths).size).toBe(allProjectedPaths.length);
 });
@@ -339,12 +339,14 @@ test("the alpha-search and claude proxy keys are opt-in projections at the top l
   expect(projectedValue(projected, ["alphaSearchModel"])).toBe("gpt-5");
   expect(projectedValue(projected, ["claudeAutoModel"])).toBe("claude-haiku-4.5");
   expect(projectedValue(projected, ["claudeTokenMultiplier"])).toBe(1.3);
-  for (const cli of [
-    "alpha-search-codex-priority",
-    "alpha-search-model",
-    "claude-auto-model",
-    "claude-token-multiplier",
-  ]) {
+  for (
+    const cli of [
+      "alpha-search-codex-priority",
+      "alpha-search-model",
+      "claude-auto-model",
+      "claude-token-multiplier",
+    ]
+  ) {
     expect(isProxyProjected(configKeyDef(cli)!)).toBe(true);
     expect(configKeyDef(cli)?.proxyDefault).toBeUndefined();
   }

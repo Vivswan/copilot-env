@@ -4,8 +4,8 @@
 // the answer can never drift between them. The two predicates below answer two
 // DIFFERENT questions; pick by question, not by name.
 import {
-  DIRECT_BASE_URL as CLAUDE_DIRECT_BASE_URL,
   type ClaudeWiringStatus,
+  DIRECT_BASE_URL as CLAUDE_DIRECT_BASE_URL,
   inspectClaudeWiring,
 } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";

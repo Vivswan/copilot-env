@@ -78,7 +78,9 @@ export interface AgentAdapter {
  * through here so the backend phrasing can never drift between them.
  */
 export function configuringLine(subject: string, mode: ManagedAgentMode, suffix = ""): string {
-  return `  Configuring ${subject} for ${mode === "direct" ? "GitHub Copilot Direct" : "the local copilot-api proxy"}${suffix} ...`;
+  return `  Configuring ${subject} for ${
+    mode === "direct" ? "GitHub Copilot Direct" : "the local copilot-api proxy"
+  }${suffix} ...`;
 }
 
 /**

@@ -212,7 +212,7 @@ program
       printProxyToken: Boolean(opts.printProxyToken),
       profile: opts.profile as string | undefined,
       list: Boolean(opts.list),
-    }),
+    })
   );
 
 program
@@ -269,7 +269,7 @@ program
       ),
       provider: opts.provider as string | undefined,
       set: opts.set as string | boolean | undefined,
-    }),
+    })
   );
 
 program
@@ -304,7 +304,7 @@ program
         force: Boolean(opts.force),
         profile: opts.profile as string | undefined,
       }),
-    ),
+    )
   );
 
 program
@@ -314,7 +314,7 @@ program
   .option("--profile <name>", "Stop the named profile's daemon instead of the default.")
   .option("--all", "Stop the default daemon and every named profile's daemon.")
   .action((opts: Opts) =>
-    runStop({ profile: opts.profile as string | undefined, all: Boolean(opts.all) }),
+    runStop({ profile: opts.profile as string | undefined, all: Boolean(opts.all) })
   );
 
 program
@@ -330,7 +330,7 @@ program
       set: opts.set as string[] | undefined,
       get: opts.get as string | boolean | undefined,
       del: opts.del as string | undefined,
-    }),
+    })
   );
 
 program
@@ -370,7 +370,7 @@ program
       withCredentials: Boolean(opts.withCredentials),
       force: Boolean(opts.force),
       noBackup: opts.backup === false,
-    }),
+    })
   );
 
 program
@@ -402,7 +402,7 @@ program
       json: Boolean(opts.json),
       live: Boolean(opts.live),
       profile: opts.profile as string | undefined,
-    }),
+    })
   );
 
 program
@@ -424,7 +424,7 @@ program
       mode: parseModeFlags(opts),
       json: Boolean(opts.json),
       profile: opts.profile as string | undefined,
-    }),
+    })
   );
 
 program
@@ -443,7 +443,7 @@ program
       "reserved port) instead of the default; unknown names are a hard error.",
   )
   .action((opts: Opts) =>
-    runEnv({ format: String(opts.format), profile: opts.profile as string | undefined }),
+    runEnv({ format: String(opts.format), profile: opts.profile as string | undefined })
   );
 
 program
@@ -489,7 +489,7 @@ program
       perDay: Boolean(opts.perDay),
       pricingUrl: String(opts.pricingUrl),
       sources: Boolean(opts.sources),
-    }),
+    })
   );
 
 program
@@ -544,7 +544,7 @@ program
     runClaude({
       check: Boolean(opts.check),
       mode: parseModeFlags(opts),
-    }),
+    })
   );
 
 program
@@ -570,7 +570,7 @@ program
       remove: Boolean(opts.remove),
       profile: opts.profile === undefined ? undefined : String(opts.profile),
       model: opts.model === undefined ? undefined : String(opts.model),
-    }),
+    })
   );
 
 program
@@ -602,7 +602,7 @@ program
       auto: opts.auto === true,
       noAuto: opts.auto === false,
       autoStatus: Boolean(opts.autoStatus),
-    }),
+    })
   );
 
 program
@@ -638,7 +638,7 @@ program
       noSudo: opts.sudo === false,
       noPrereqs: opts.prereqs === false,
       allHosts: Boolean(opts.allHosts),
-    }),
+    })
   );
 
 program
@@ -656,7 +656,7 @@ program
       yes: Boolean(opts.yes),
       dryRun: Boolean(opts.dryRun),
       force: Boolean(opts.force),
-    }),
+    })
   );
 
 if (import.meta.main) {

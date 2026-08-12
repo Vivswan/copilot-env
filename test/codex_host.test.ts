@@ -334,7 +334,9 @@ skipWin("a host-local history.jsonl that is already a symlink is tolerated in pl
   const warned = await stderrDuring(build);
   expect(linkTarget(join(hostHome, "history.jsonl"))).toBe(elsewhere);
   expect(warned).toContain(
-    `Skipping local Codex seed because the path already exists as a symlink: ${join(hostHome, "history.jsonl")}`,
+    `Skipping local Codex seed because the path already exists as a symlink: ${
+      join(hostHome, "history.jsonl")
+    }`,
   );
 });
 

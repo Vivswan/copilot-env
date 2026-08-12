@@ -16,7 +16,7 @@ import { Credential } from "../copilot_api/credential.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { allProfileNames } from "../copilot_api/env_state.ts";
 import { resolveRootHome } from "../copilot_api/paths.ts";
-import { type ProfileName, profileLabel } from "../copilot_api/profile.ts";
+import { profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { runShellIntegration } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
@@ -125,7 +125,9 @@ const UNINSTALL_STEPS: UninstallStep[] = [
   {
     // 1. Stop every daemon. A stuck one aborts here, before anything is deleted.
     describe: (ctx) => [
-      `Would stop the default proxy daemon${ctx.profiles.length > 0 ? ` and ${ctx.profiles.length} profile daemon(s)` : ""}.`,
+      `Would stop the default proxy daemon${
+        ctx.profiles.length > 0 ? ` and ${ctx.profiles.length} profile daemon(s)` : ""
+      }.`,
     ],
     run: (ctx) => stopAllDaemons(ctx.profiles),
   },

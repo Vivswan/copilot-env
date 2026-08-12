@@ -7,14 +7,14 @@ description: Local copilot-api proxy lifecycle + config helper (TypeScript).
 github_username: Vivswan
 homepage: https://github.com/Vivswan/copilot-env
 modules:
-- agents
-- bun
-- release-please
-- issue-templates
-- pr-title
-- auto-assign
-- settings-sync
-- custom-license
+  - agents
+  - bun
+  - release-please
+  - issue-templates
+  - pr-title
+  - auto-assign
+  - settings-sync
+  - custom-license
 private: false
 project_name: copilot-env
 project_slug: copilot-env

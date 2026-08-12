@@ -155,7 +155,9 @@ export function resolveWebSearchCredential(profile: Profile = null): string {
   if (token !== null) return token;
   if (profile !== null) {
     throw new Error(
-      `no GitHub credential for ${profileLabel(profile)} - run \`agent auth --profile ${profile}\` ` +
+      `no GitHub credential for ${
+        profileLabel(profile)
+      } - run \`agent auth --profile ${profile}\` ` +
         "to log in (a named profile never falls back to the default credential)",
     );
   }
@@ -176,10 +178,9 @@ export async function webSearch(query: string, opts: WebSearchOptions = {}): Pro
   // Only a configured value can be an alias; the built-in default is maintained
   // as a raw catalog id, so the default path stays fetch-free. Like the probe
   // below, a cancelled call stops WAITING but leaves the memo filling.
-  const model =
-    configured === null
-      ? DEFAULT_WEB_SEARCH_MODEL
-      : await raceWithAbort(resolveWebSearchModel(configured, token, opts.fetchImpl), opts.signal);
+  const model = configured === null
+    ? DEFAULT_WEB_SEARCH_MODEL
+    : await raceWithAbort(resolveWebSearchModel(configured, token, opts.fetchImpl), opts.signal);
   // The probe stays MEMOIZED (a per-credential result the next call reuses), so no
   // fetch is injected in production -- instead a cancelled tool call merely stops
   // WAITING for a cold PAT probe (raceWithAbort below); the probe runs on and fills
@@ -263,7 +264,7 @@ export function parseResponsesOutput(body: unknown): string {
   }
   if (sources.size === 0) return answer;
   const lines = [...sources.entries()].map(([sourceUrl, title]) =>
-    title !== "" ? `- ${title}: ${sourceUrl}` : `- ${sourceUrl}`,
+    title !== "" ? `- ${title}: ${sourceUrl}` : `- ${sourceUrl}`
   );
   return `${answer}\n\nSources:\n${lines.join("\n")}`;
 }

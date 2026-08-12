@@ -30,11 +30,11 @@ import { Credential, ghAuthToken } from "../copilot_api/credential.ts";
 import {
   CONFIG_REGISTRY,
   CONFIG_SCHEMA,
+  configDefaultBoolean,
   type ConfigKey,
   type ConfigPatch,
   CopilotEnvConfig,
   type CopilotEnvConfigData,
-  configDefaultBoolean,
   INTEGRATION_ID_RE,
 } from "../copilot_api/env_config.ts";
 import {
@@ -47,9 +47,9 @@ import {
 import { resolveRootHome } from "../copilot_api/paths.ts";
 import {
   isValidProfileName,
+  parseProfileName,
   type Profile,
   type ProfileName,
-  parseProfileName,
 } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
@@ -418,8 +418,7 @@ function planSlotCredential(
     if (local !== null) return { action: "keep", resolvedToken: local };
     return {
       action: "skip",
-      reason:
-        "the bundle relies on the gh CLI login, which does not resolve a token on this " +
+      reason: "the bundle relies on the gh CLI login, which does not resolve a token on this " +
         "machine (`gh auth login`), and no stored credential resolves either",
     };
   }

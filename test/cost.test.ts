@@ -62,7 +62,7 @@ test("computeDayMetrics sums tokens per day and reconciles cost with the aggrega
   const pricing = new Map<string, PricingTier>([["openai/gpt-5.5", { input: 1, output: 2 }]]);
   const estimate = estimateCost(report.byModel, pricing);
   const days = computeDayMetrics(report, pricing, estimate).sort((a, b) =>
-    a.day.localeCompare(b.day),
+    a.day.localeCompare(b.day)
   );
 
   expect(days.map((d) => d.day)).toEqual(["2026-06-01", "2026-06-02"]);

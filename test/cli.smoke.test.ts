@@ -303,11 +303,13 @@ test("profile rejects --direct + --proxy at the CLI boundary with its own wordin
 test("the mode conflict is rejected at the boundary on every command that takes the pair", () => {
   // Boundary parse runs before any per-command logic, so even invocations whose
   // command would error later (non---add profile, --mobile) reject the pair first.
-  for (const argv of [
-    ["models", "--direct", "--proxy"],
-    ["profile", "--list", "--direct", "--proxy"],
-    ["codex", "--mobile", "--direct", "--proxy"],
-  ]) {
+  for (
+    const argv of [
+      ["models", "--direct", "--proxy"],
+      ["profile", "--list", "--direct", "--proxy"],
+      ["codex", "--mobile", "--direct", "--proxy"],
+    ]
+  ) {
     const conflict = runCli([...argv], { env: isolatedEnv() });
     expect(conflict.exitCode).toBe(1);
     expect(conflict.stderr).toContain("--direct and --proxy are mutually exclusive");
@@ -362,14 +364,16 @@ test("uninstall: help surfaces the flags; a non-TTY run without --yes refuses", 
 test("shell --help surfaces the install/launcher flags", () => {
   const help = helpScreen("shell", "--help");
   expect(help.exitCode).toBe(0);
-  for (const flag of [
-    "--launchers",
-    "--clis",
-    "--cooldown",
-    "--no-sudo",
-    "--no-prereqs",
-    "--remove",
-  ]) {
+  for (
+    const flag of [
+      "--launchers",
+      "--clis",
+      "--cooldown",
+      "--no-sudo",
+      "--no-prereqs",
+      "--remove",
+    ]
+  ) {
     expect(help.output).toContain(flag);
   }
 });
@@ -533,27 +537,31 @@ test("health --profile narrows the run and excludes account-wide checks", () => 
   };
   expect(json.profile).toBe("p");
   const ids = json.checks.map((c) => c.id);
-  for (const id of [
-    "profile.consistency",
-    "runtime.port",
-    "setup.auth",
-    "setup.codex",
-    "setup.claude",
-  ]) {
+  for (
+    const id of [
+      "profile.consistency",
+      "runtime.port",
+      "setup.auth",
+      "setup.codex",
+      "setup.claude",
+    ]
+  ) {
     expect(ids).toContain(id);
   }
-  for (const id of [
-    "bootstrap.version",
-    "bootstrap.bun",
-    "bootstrap.nodeModules",
-    "proxy.package",
-    "setup.shell",
-    "setup.launchers",
-    "setup.tool.node",
-    "setup.tool.npm",
-    "setup.codex-host",
-    "setup.autoupdate",
-  ]) {
+  for (
+    const id of [
+      "bootstrap.version",
+      "bootstrap.bun",
+      "bootstrap.nodeModules",
+      "proxy.package",
+      "setup.shell",
+      "setup.launchers",
+      "setup.tool.node",
+      "setup.tool.npm",
+      "setup.codex-host",
+      "setup.autoupdate",
+    ]
+  ) {
     expect(ids).not.toContain(id);
   }
   // Every check in a narrowed run describes the addressed profile.
@@ -614,14 +622,16 @@ test("health --scope full runs every group end-to-end and fails on a dead proxy"
   const ids = json.checks.map((c) => c.id);
   expect(json.scope).toBe("full");
   // Representative checks from each group are present.
-  for (const id of [
-    "bootstrap.bun",
-    "proxy.package",
-    "runtime.port",
-    "setup.shell",
-    "setup.codex",
-    "setup.codex-host",
-  ]) {
+  for (
+    const id of [
+      "bootstrap.bun",
+      "proxy.package",
+      "runtime.port",
+      "setup.shell",
+      "setup.codex",
+      "setup.codex-host",
+    ]
+  ) {
     expect(ids).toContain(id);
   }
   // No daemon + isolated state => runtime fails => exit 1, ok=false.
@@ -660,8 +670,9 @@ test("health --scope setup covers wiring only and never fails (warnings exit 0)"
   expect(ids).toContain("setup.codex-host");
   const codexHost = json.checks.find((c) => c.id === "setup.codex-host");
   // Unbuilt farm: optional on Linux/macOS (POSIX symlinks), unsupported on Windows.
-  const expectedHostDetail =
-    process.platform === "win32" ? "not built (unsupported on Windows)" : "not built (optional)";
+  const expectedHostDetail = process.platform === "win32"
+    ? "not built (unsupported on Windows)"
+    : "not built (optional)";
   expect(codexHost?.detail).toBe(expectedHostDetail);
   expect(codexHost?.detail).not.toContain(String(codexHost?.value?.hostHome));
   expect(codexHost?.detail).not.toContain("config.toml:");

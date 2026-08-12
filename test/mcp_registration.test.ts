@@ -53,10 +53,12 @@ test("register preserves unrelated keys and other servers", () => {
   const home = tmpConfigDir();
   writeFileSync(
     join(home, ".claude.json"),
-    `${JSON.stringify({
-      "numStartups": 42,
-      "mcpServers": { "other": { "type": "stdio", "command": "x", "args": [] } },
-    })}\n`,
+    `${
+      JSON.stringify({
+        "numStartups": 42,
+        "mcpServers": { "other": { "type": "stdio", "command": "x", "args": [] } },
+      })
+    }\n`,
   );
   expect(registerClaudeMcpServer()).toBe(true);
   const doc = readDoc();
@@ -102,15 +104,14 @@ test("an ours-stale entry (moved checkout) is reclaimed by register and by remov
   const managed = managedEntry();
   // A moved checkout: same argv shape, different launcher path. On POSIX the path
   // is the command; on Windows it is the -File argument inside the argv.
-  const stale =
-    process.platform === "win32"
-      ? {
-          ...managed,
-          "args": (managed.args as string[]).map((a) =>
-            /[\\/]bin[\\/]agent\.ps1$/i.test(a) ? "C:\\somewhere\\else\\bin\\agent.ps1" : a,
-          ),
-        }
-      : { ...managed, "command": "/somewhere/else/bin/agent" };
+  const stale = process.platform === "win32"
+    ? {
+      ...managed,
+      "args": (managed.args as string[]).map((a) =>
+        /[\\/]bin[\\/]agent\.ps1$/i.test(a) ? "C:\\somewhere\\else\\bin\\agent.ps1" : a
+      ),
+    }
+    : { ...managed, "command": "/somewhere/else/bin/agent" };
   expect(classifyMcpEntry(stale)).toBe("ours-stale");
   writeFileSync(
     join(home, ".claude.json"),
@@ -133,13 +134,15 @@ test("remove keeps sibling servers and unrelated keys", () => {
   const home = tmpConfigDir();
   writeFileSync(
     join(home, ".claude.json"),
-    `${JSON.stringify({
-      "numStartups": 1,
-      "mcpServers": {
-        "copilot-env": managedEntry(),
-        "other": { "type": "stdio", "command": "x", "args": [] },
-      },
-    })}\n`,
+    `${
+      JSON.stringify({
+        "numStartups": 1,
+        "mcpServers": {
+          "copilot-env": managedEntry(),
+          "other": { "type": "stdio", "command": "x", "args": [] },
+        },
+      })
+    }\n`,
   );
   removeClaudeMcpRegistration();
   const doc = readDoc();
@@ -203,15 +206,14 @@ test("the legacy bare-mcp argv is ours-stale and register upgrades it", () => {
 
 test("the legacy argv from a moved checkout is ours-stale; other subargs are foreign", () => {
   const legacy = legacyEntry();
-  const moved =
-    process.platform === "win32"
-      ? {
-          ...legacy,
-          "args": (legacy.args as string[]).map((a) =>
-            /[\\/]bin[\\/]agent\.ps1$/i.test(a) ? "C:\\somewhere\\else\\bin\\agent.ps1" : a,
-          ),
-        }
-      : { ...legacy, "command": "/somewhere/else/bin/agent" };
+  const moved = process.platform === "win32"
+    ? {
+      ...legacy,
+      "args": (legacy.args as string[]).map((a) =>
+        /[\\/]bin[\\/]agent\.ps1$/i.test(a) ? "C:\\somewhere\\else\\bin\\agent.ps1" : a
+      ),
+    }
+    : { ...legacy, "command": "/somewhere/else/bin/agent" };
   expect(classifyMcpEntry(moved)).toBe("ours-stale");
 
   const managed = managedEntry();

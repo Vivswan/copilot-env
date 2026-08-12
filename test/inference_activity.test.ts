@@ -8,7 +8,7 @@ import {
   persistedInferenceMs,
   resetInferenceActivityForTests,
 } from "../src/scripts/inference_activity.ts";
-import { denoRunArgs, ROOT, resolvePackageDir, runSync } from "./helpers/run.ts";
+import { denoRunArgs, resolvePackageDir, ROOT, runSync } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
 
@@ -93,7 +93,9 @@ test("markInference: memory always moves; the activity-file persist is throttled
 // launchDaemon loads it): it patches the serve entrypoint before srvx runs, and the
 // target script shares the preloaded module instance, so it can read the in-memory mark.
 const TARGET_SCRIPT = `
-import { lastObservedInferenceMs, persistedInferenceMs } from ${JSON.stringify(join(ROOT, "src", "scripts", "inference_activity.ts"))};
+import { lastObservedInferenceMs, persistedInferenceMs } from ${
+  JSON.stringify(join(ROOT, "src", "scripts", "inference_activity.ts"))
+};
 const server = Deno.serve({ port: 0, onListen: () => {} }, () => new Response("ok"));
 const base = "http://127.0.0.1:" + server.addr.port;
 const out = {};

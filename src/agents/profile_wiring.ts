@@ -8,7 +8,7 @@ import { codexAdapter, probeDirectIntegrationId } from "../codex/config.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
 import { CODEX_IDENTITY_NAME } from "../copilot_api/integration_identity.ts";
-import { type ProfileName, profileLabel } from "../copilot_api/profile.ts";
+import { profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import type { AgentAdapter } from "./configure.ts";
 
@@ -33,8 +33,9 @@ export async function wireBothAgents(
   quiet: boolean,
   credentialToken?: string | null,
 ): Promise<void> {
-  const directIntegrationId =
-    mode === "direct" ? await resolveAndPersistDirectIdentity(name, credentialToken) : undefined;
+  const directIntegrationId = mode === "direct"
+    ? await resolveAndPersistDirectIdentity(name, credentialToken)
+    : undefined;
   const failures: string[] = [];
   for (const agent of bothAgents()) {
     try {

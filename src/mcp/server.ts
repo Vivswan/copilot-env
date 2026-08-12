@@ -17,7 +17,7 @@
 // stdout carries ONLY newline-delimited JSON-RPC; every log line goes to stderr
 // (see redirectConsolaToStderr below).
 import { fromJsonSchema, McpServer } from "@modelcontextprotocol/server";
-import { StdioServerTransport, serveStdio } from "@modelcontextprotocol/server/stdio";
+import { serveStdio, StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import type { Profile } from "../copilot_api/profile.ts";
 import { webSearch } from "../copilot_api/web_search.ts";
 import { errMessage } from "../utils/error.ts";
@@ -53,8 +53,7 @@ export async function runMcpServer(opts: McpServerOptions): Promise<void> {
     server.registerTool(
       WEB_SEARCH_TOOL,
       {
-        description:
-          "Search the web via GitHub Copilot (the /responses web_search tool) and " +
+        description: "Search the web via GitHub Copilot (the /responses web_search tool) and " +
           "return a concise answer with a Sources list of cited URLs.",
         // fromJsonSchema keeps the schema a plain JSON-Schema literal (the wire
         // contract) instead of forcing a schema-library dependency on us.

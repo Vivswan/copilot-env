@@ -61,7 +61,8 @@ test("restoreModelProvider puts the provider back and round-trips through strip"
 
 test("strip removes model_catalog_json; restore puts it back only when captured", () => {
   // Top-level keys must precede any [table] in TOML, so prepend.
-  const config = `model_catalog_json = "/home/u/.local/share/copilot-api/codex-model-catalog.json"\n${CONFIG}`;
+  const config =
+    `model_catalog_json = "/home/u/.local/share/copilot-api/codex-model-catalog.json"\n${CONFIG}`;
   expect(readModelCatalogJson(config)).toBe(
     "/home/u/.local/share/copilot-api/codex-model-catalog.json",
   );

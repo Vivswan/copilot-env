@@ -87,8 +87,8 @@ function refreshWindowsPath(): void {
       "-NoProfile",
       "-Command",
       "$machine=[Environment]::GetEnvironmentVariable('Path','Machine');" +
-        "$user=[Environment]::GetEnvironmentVariable('Path','User');" +
-        "($machine,$user,$env:Path) -join ';'",
+      "$user=[Environment]::GetEnvironmentVariable('Path','User');" +
+      "($machine,$user,$env:Path) -join ';'",
     ],
     { encoding: "utf8" },
   );
@@ -108,11 +108,11 @@ function addWindowsUserPath(directory: string): void {
       "-NoProfile",
       "-Command",
       `$dir=${quotePowerShell(directory)};` +
-        "$path=[Environment]::GetEnvironmentVariable('Path','User');" +
-        "$entries=@($path -split ';' | Where-Object { $_ });" +
-        "if ($entries -notcontains $dir) {" +
-        "[Environment]::SetEnvironmentVariable('Path', (($entries + $dir) -join ';'), 'User')" +
-        "}",
+      "$path=[Environment]::GetEnvironmentVariable('Path','User');" +
+      "$entries=@($path -split ';' | Where-Object { $_ });" +
+      "if ($entries -notcontains $dir) {" +
+      "[Environment]::SetEnvironmentVariable('Path', (($entries + $dir) -join ';'), 'User')" +
+      "}",
     ],
     { stdio: "ignore" },
   );

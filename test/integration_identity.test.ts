@@ -87,15 +87,13 @@ test("probeIntegrationIdentity: a network error is inconclusive, not a rejection
 });
 
 test("probeIntegrationIdentity: a transient 5xx/429 is inconclusive, a 400 is definitive", async () => {
-  const status =
-    (code: number): ProbeFetch =>
-    (input) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (url.includes("/copilot_internal/user")) {
-        return Promise.resolve(new Response("{}", { status: 200 }));
-      }
-      return Promise.resolve(new Response("nope", { status: code }));
-    };
+  const status = (code: number): ProbeFetch => (input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.includes("/copilot_internal/user")) {
+      return Promise.resolve(new Response("{}", { status: 200 }));
+    }
+    return Promise.resolve(new Response("nope", { status: code }));
+  };
   // A 500/429 on every candidate must NOT read as "definitively rejected".
   for (const code of [500, 429, 503, 408, 404]) {
     const res = await probeIntegrationIdentity("ghp_x", PASSTHROUGH_IDENTITY_CANDIDATES, {
@@ -145,8 +143,11 @@ test("resolveDirectIntegrationId: probes the host it BAKES, with no account-host
   await expect(
     resolveDirectIntegrationId("ghp_x", "codex_exec/1", {
       fetchImpl: (input) => {
-        const url =
-          typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+        const url = typeof input === "string"
+          ? input
+          : input instanceof URL
+          ? input.href
+          : input.url;
         probed.push(url);
         return Promise.resolve(new Response("PATs not supported", { status: 400 }));
       },
@@ -294,8 +295,9 @@ test("fetchRawModels(direct) probes and fetches ONE host, with the resolved iden
   };
   setIntegrationProbeFetch((input, init) => Promise.resolve(respond(input, init)));
   const realFetch = globalThis.fetch;
-  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) =>
-    Promise.resolve(respond(input, init))) as typeof fetch;
+  globalThis.fetch =
+    ((input: string | URL | Request, init?: RequestInit) =>
+      Promise.resolve(respond(input, init))) as typeof fetch;
   try {
     const body = await fetchRawModels("direct", { directToken: "github_pat_x" });
     expect(body).toEqual({ data: [{ id: "gpt-5-mini" }] });

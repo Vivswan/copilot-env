@@ -61,7 +61,8 @@ skipWin("is idempotent -- a second wire is byte-for-byte identical", () => {
 
 skipWin("re-wiring refreshes the block in place without reordering later lines", () => {
   // A stale block followed by a user line that must stay AFTER the integration.
-  const stale = `${MARKER}\nAGENTS_BASHRC="/old/agents.bashrc"\n[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"`;
+  const stale =
+    `${MARKER}\nAGENTS_BASHRC="/old/agents.bashrc"\n[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"`;
   writeFileSync(join(home, ".bashrc"), `export BEFORE=1\n\n${stale}\n\nexport AFTER=1\n`);
   run();
   const rc = readFileSync(join(home, ".bashrc"), "utf-8");
@@ -97,7 +98,8 @@ skipWin("wires an existing rc without clobbering its contents", () => {
 
 skipWin("--remove strips a CRLF-written block (Windows-style line endings)", () => {
   // Simulate a block written with CRLF (e.g. old PowerShell Add-Content / a CRLF rc).
-  const block = `\r\n${MARKER}\r\nAGENTS_BASHRC="/x/agents.bashrc"\r\n[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\r\n`;
+  const block =
+    `\r\n${MARKER}\r\nAGENTS_BASHRC="/x/agents.bashrc"\r\n[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\r\n`;
   writeFileSync(join(home, ".bashrc"), `export KEEP=1\r\n${block}`);
   const { code } = run("--remove");
   expect(code).toBe(0);
@@ -152,7 +154,8 @@ skipWin("--remove strips both the integration and launchers blocks", () => {
 
 skipWin("re-wiring migrates a stale block to the current shell/ path", () => {
   // Simulate a pre-`shell/`-move block that points at the old root-level agents.bashrc.
-  const stale = `\n${MARKER}\nAGENTS_BASHRC="/old/agents.bashrc"\n[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n`;
+  const stale =
+    `\n${MARKER}\nAGENTS_BASHRC="/old/agents.bashrc"\n[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n`;
   writeFileSync(join(home, ".bashrc"), `export KEEP=1\n${stale}`);
   run();
   const rc = readFileSync(join(home, ".bashrc"), "utf-8");

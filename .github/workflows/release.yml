@@ -72,6 +72,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # For the build-provenance attestation step; the managed ci.yml
+      # ceiling grants both.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v7
 
@@ -104,6 +108,18 @@ jobs:
         run: |
           bun .github/scripts/release-assets.ts create-archive "$TAG" "${{ github.repository }}"
           bun .github/scripts/release-assets.ts validate "$TAG"
+
+      # Attest build provenance BEFORE uploading, so nothing unattested is
+      # ever published. Anyone can then verify an asset came from this
+      # workflow: gh attestation verify <file> -R Vivswan/copilot-env.
+      # Attestations only work on public repositories (private needs GitHub
+      # Enterprise Cloud).
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            release-assets/install.sh
+            release-assets/install.ps1
+            release-assets/copilot-env-${{ needs.release-please.outputs.tag_name }}.tar.gz
 
       - name: Upload installer assets
         env:

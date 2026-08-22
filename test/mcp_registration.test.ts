@@ -36,12 +36,6 @@ function managedEntry(): Record<string, unknown> {
   return { "type": "stdio", "command": command, "args": args };
 }
 
-/** The pre-release registration: bare `agent mcp` (no --serve) as the server argv. */
-function legacyEntry(): Record<string, unknown> {
-  const { command, args } = agentLauncherCommand(["mcp"]);
-  return { "type": "stdio", "command": command, "args": args };
-}
-
 test("register creates .claude.json with the managed entry when missing", () => {
   tmpConfigDir();
   expect(registerClaudeMcpServer()).toBe(true);
@@ -188,50 +182,12 @@ test("a bare `agent` from someone's PATH is foreign, not ours-stale", () => {
     classifyMcpEntry({ "type": "stdio", "command": "/usr/local/agent", "args": ["mcp"] }),
   ).toBe("foreign");
   expect(
-    classifyMcpEntry({ "type": "stdio", "command": "/elsewhere/bin/agent", "args": ["mcp"] }),
+    classifyMcpEntry({
+      "type": "stdio",
+      "command": "/elsewhere/bin/agent",
+      "args": ["mcp", "--serve"],
+    }),
   ).toBe("ours-stale");
-});
-
-test("the legacy bare-mcp argv is ours-stale and register upgrades it", () => {
-  const home = tmpConfigDir();
-  // The pre-release shape under the CURRENT checkout path: same launcher, no --serve.
-  expect(classifyMcpEntry(legacyEntry())).toBe("ours-stale");
-  writeFileSync(
-    join(home, ".claude.json"),
-    `${JSON.stringify({ "mcpServers": { "copilot-env": legacyEntry() } })}\n`,
-  );
-  expect(registerClaudeMcpServer()).toBe(true);
-  expect((readDoc().mcpServers as Record<string, unknown>)["copilot-env"]).toEqual(managedEntry());
-});
-
-test("the legacy argv from a moved checkout is ours-stale; other subargs are foreign", () => {
-  const legacy = legacyEntry();
-  const moved = process.platform === "win32"
-    ? {
-      ...legacy,
-      "args": (legacy.args as string[]).map((a) =>
-        /[\\/]bin[\\/]agent\.ps1$/i.test(a) ? "C:\\somewhere\\else\\bin\\agent.ps1" : a
-      ),
-    }
-    : { ...legacy, "command": "/somewhere/else/bin/agent" };
-  expect(classifyMcpEntry(moved)).toBe("ours-stale");
-
-  const managed = managedEntry();
-  const otherSubargs = {
-    ...managed,
-    "args": (managed.args as string[]).map((a) => (a === "--serve" ? "--verbose" : a)),
-  };
-  expect(classifyMcpEntry(otherSubargs)).toBe("foreign");
-});
-
-test("remove deletes a legacy registration too", () => {
-  const home = tmpConfigDir();
-  writeFileSync(
-    join(home, ".claude.json"),
-    `${JSON.stringify({ "mcpServers": { "copilot-env": legacyEntry() } })}\n`,
-  );
-  expect(removeClaudeMcpRegistration()).toBe(true);
-  expect(readDoc().mcpServers).toBeUndefined();
 });
 
 test("malformed launcher argvs are foreign, never reclaimed", () => {
@@ -241,6 +197,9 @@ test("malformed launcher argvs are foreign, never reclaimed", () => {
   expect(classifyMcpEntry({ ...managed, "args": [...args, "extra"] })).toBe("foreign");
   // Truncated argv (the subargs are gone entirely).
   expect(classifyMcpEntry({ ...managed, "args": args.slice(0, -2) })).toBe("foreign");
+  // Our launcher shape running some OTHER subcommand is not a registration of ours.
+  const otherSubargs = args.map((a) => (a === "--serve" ? "--verbose" : a));
+  expect(classifyMcpEntry({ ...managed, "args": otherSubargs })).toBe("foreign");
   if (process.platform === "win32") {
     const fileIdx = args.indexOf("-File");
     // Missing script path: -File runs straight into the subargs.

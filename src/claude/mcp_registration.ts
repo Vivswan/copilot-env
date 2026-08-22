@@ -45,13 +45,6 @@ export function claudeJsonPath(): string {
 /** The subcommand argv the managed registration runs (the current shape). */
 const CURRENT_MCP_SUBARGS: readonly string[] = ["mcp", "--serve"];
 
-/**
- * The pre-release shape: bare `agent mcp` used to BE the server before it
- * became the status command. Classified ours-stale so a direct rewire upgrades
- * it and `--remove`/uninstall delete it.
- */
-const LEGACY_MCP_SUBARGS: readonly string[] = ["mcp"];
-
 function managedEntry(): Record<string, unknown> {
   const { command, args } = agentLauncherCommand(CURRENT_MCP_SUBARGS);
   return { "type": "stdio", "command": command, "args": args };
@@ -59,10 +52,6 @@ function managedEntry(): Record<string, unknown> {
 
 function sameStrings(a: readonly unknown[], b: readonly string[]): boolean {
   return a.length === b.length && b.every((v, i) => a[i] === v);
-}
-
-function knownSubargs(trailing: readonly unknown[]): boolean {
-  return sameStrings(trailing, CURRENT_MCP_SUBARGS) || sameStrings(trailing, LEGACY_MCP_SUBARGS);
 }
 
 /** Classify the entry under our name (see McpRegistrationStatus). */
@@ -78,7 +67,7 @@ export function classifyMcpEntry(entry: unknown): McpRegistrationStatus {
   if (process.platform === "win32") {
     // Split the managed argv at -File: the flag prefix must match verbatim, the
     // path element must still end in bin/agent.ps1 (a moved checkout, not a
-    // foreign tool), and the trailing subargs must be the current or legacy shape.
+    // foreign tool), and the trailing subargs must be the current shape.
     const fileIdx = managed.args.indexOf("-File");
     const shape = command
       .toLowerCase()
@@ -88,14 +77,12 @@ export function classifyMcpEntry(entry: unknown): McpRegistrationStatus {
       managed.args.slice(0, fileIdx + 1).every((a, i) => args[i] === a) &&
       typeof args[fileIdx + 1] === "string" &&
       /[\\/]bin[\\/]agent\.ps1$/i.test(String(args[fileIdx + 1])) &&
-      knownSubargs(args.slice(fileIdx + 2));
+      sameStrings(args.slice(fileIdx + 2), CURRENT_MCP_SUBARGS);
     return shape ? "ours-stale" : "foreign";
   }
   // POSIX: a command that ends in bin/agent (the checkout layout -- a bare
-  // `agent` from someone's PATH is NOT claimed) running the current or legacy
-  // subargs. The current checkout's own path with the legacy argv lands here
-  // too: ours-stale, upgraded by the next register.
-  const shape = /[\\/]bin[\\/]agent$/.test(command) && knownSubargs(args);
+  // `agent` from someone's PATH is NOT claimed) running the current subargs.
+  const shape = /[\\/]bin[\\/]agent$/.test(command) && sameStrings(args, CURRENT_MCP_SUBARGS);
   return shape ? "ours-stale" : "foreign";
 }
 

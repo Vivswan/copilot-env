@@ -83,7 +83,7 @@ export const DEFAULT_RELEASE_COOLDOWN_SECONDS = 7 * SECONDS_PER_DAY;
 
 /** The npm registry document for the proxy package (full doc: `time` carries
  *  the publish times the cooldown needs; the abbreviated install doc lacks it). */
-export const PROXY_REGISTRY_URL = `https://registry.npmjs.org/${PROXY_PKG.replace("/", "%2F")}`;
+export const PROXY_REGISTRY_URL = `https://registry.npmjs.org/${PROXY_PKG.replaceAll("/", "%2F")}`;
 
 // The float runs inside `agent start` (ensureProxyFloor), so config reads are best-effort:
 // any failure (missing/corrupt file) falls back to env/default. `agent config` is the

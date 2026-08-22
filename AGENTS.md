@@ -72,9 +72,14 @@ unless the user says otherwise. Each POSIX/PowerShell pair stays feature-matched
 Only the *why* lives here - the code is the source of truth for mechanics, key lists, and
 file layouts. Don't restate here what a reader can grep.
 
-- **In-place, no cache.** `bin/agent` installs `node_modules` into the checkout and runs
-  `cli.ts` from there. Install noise goes to stderr so it never pollutes the `agent env`
-  stdout the shell wrapper evals.
+- **A release is a binary, a checkout is a checkout.** Users get one compiled `agent`
+  per platform (`scripts/compile.sh`, five targets); `agent install` unpacks the runtime
+  assets it embeds into the install root and writes a `bin/agent` shim beside itself.
+  A dev checkout keeps the self-bootstrapping `bin/agent`, which installs deps in place
+  and runs `cli.ts`; install noise goes to stderr so it never pollutes the `agent env`
+  stdout the shell wrapper evals. The SAME `agent install` code path serves both and
+  discriminates on whether its embedded asset source IS the install root, so a checkout
+  can never be overwritten by an install.
 - **The proxy floats; we never patch it.** `@jeffreycao/copilot-api` sits at a caret-range
   baseline in package.json and is overlaid at postinstall with the newest release older
   than a supply-chain cooldown window (`src/proxy_float.ts`), clamped by `copilot-env.config`.
@@ -139,8 +144,14 @@ file layouts. Don't restate here what a reader can grep.
 - `bin/agent`(`.ps1`) - self-bootstrapping launchers (install deno + deps, dispatch `cli.ts`).
 - `shell/` - shell integration (the `agent` wrapper + eager `agent env`) and the opt-in
   `cl`/`co`/`cx` launchers; pure runtime wiring, never installs.
-- `install.sh`/`install.ps1` - one-line bootstrap installers, handing off to release-local
-  `src/install/installer.ts`.
+- `install.sh`/`install.ps1` - one-line installers: fetch the platform binary, verify its
+  SHA256 against the release `checksums.txt`, then hand off to its own `agent install`.
+  `COPILOT_ENV_DOWNLOAD_BASE` (a directory or URL) replaces the release as the source, which
+  is how CI smokes an installer against a binary built from the branch under test.
+- `scripts/compile.sh` - the release build: five targets into `dist/` plus `checksums.txt`.
+  Its `TARGETS` and `--include` lists are pinned to `src/install/targets.ts` and to
+  `installer.ts`'s asset lists by `test/installer_pinning.test.ts`, because shell cannot
+  import TypeScript and a drift is a broken install nobody sees until release.
 - `src/cli.ts` - Commander entry; delegates to `run*` functions.
 - `src/commands/` - one file per command; `init` configures both agents, `auth` manages the
   credential only and never configures agents. Command files validate, orchestrate, and
@@ -240,8 +251,17 @@ Versioned via release-please: pushes to `main` update one rolling **release PR**
 tags `vX.Y.Z` and publishes the GitHub Release. Ordinary pushes release nothing. Installers
 and `agent update` install the newest release tag, not `main`. The repo-owned
 `.github/workflows/release.yml` wraps the managed release-please machinery: it pins the
-installer assets before the release, then uploads them to the draft release, smokes the real
-uploaded assets on Linux + Windows, and only then publishes.
+installer assets AND cross-compiles all five binaries before the release (so a broken build
+fails before anything is tagged), uploads them to the draft release with a build-provenance
+attestation, verifies and runs the real uploaded binaries and installers on Linux + Windows,
+and only then publishes.
+
+`agent update` is the same fetch-verify-swap the installer does, minus the bootstrap: it
+renames the new binary over the live one (POSIX) or moves the running image aside first
+(Windows), then runs the NEW binary for both post-swap steps - `install --assets-only` to lay
+down that release's runtime files, and `__migrate` for the due migrations. Both are
+best-effort: the version has already moved forward at the rename, so failing there would
+strand the install instead of retrying.
 
 - **Releases only ever move forward.** A published version is immutable: never re-release,
   overwrite, or pin a future release back to it. Each new release must be **> the latest tag**.

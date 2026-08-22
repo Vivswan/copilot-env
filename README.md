@@ -14,8 +14,9 @@ macOS, and Windows**.
 - **Lifecycle**: `start` / `stop` the local proxy with one command - or opt in
   to the managed lifecycle (`auto-start`) that starts the proxy when an agent
   needs it and stops it after an idle window.
-- **Zero setup**: auto-installs [deno](https://deno.com), dependencies, and the
-  proxy on first run. No global installs to manage.
+- **Zero setup**: the CLI ships as one self-contained binary - no runtime and no
+  package manager to install first. The proxy and what it needs to run are
+  fetched on first use, never installed globally.
 - **Codex + Claude wiring**: point both CLIs at the local proxy or GitHub
   Copilot Direct automatically; write `~/.codex` / `~/.claude` config; build a
   per-host `CODEX_HOME` farm (Linux/macOS).
@@ -49,20 +50,26 @@ curl -fsSL https://github.com/Vivswan/copilot-env/releases/latest/download/insta
 powershell -c "irm https://github.com/Vivswan/copilot-env/releases/latest/download/install.ps1 | iex"
 ```
 
-Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, then wires your shell.
+Downloads a single self-contained `agent` binary for your platform into
+`~/.copilot-env`, then wires your shell. There is no runtime or package manager to
+install first.
 
 - **Recommended:** install from the latest GitHub release asset, not from the
   `main` branch. `main` is for development and can be temporarily ahead of the
   latest released installer flow.
-- **Artifact:** the installer extracts the official `copilot-env-vX.Y.Z.tar.gz` release asset when present, verifies that asset's SHA256, and checks the archive source marker against GitHub release metadata before extraction.
-- **Replaceable:** re-run the bootstrapper to replace the previous install with the selected release.
+- **Verified:** the installer checks the binary's SHA256 against the release's
+  `checksums.txt` before it puts it anywhere. Every release asset also carries a
+  build-provenance attestation: `gh attestation verify <file> -R Vivswan/copilot-env`.
+- **Replaceable:** re-run the installer any time to move to the selected release.
 - **Next:** restart your shell, then `agent start`.
 - **Optional:** run `agent shell --clis --launchers` for Claude/Copilot/Codex CLIs and `cl` / `co` / `cx`.
-- **Update later:** `agent update`.
+- **Update later:** `agent update` downloads the newest release's binary, verifies
+  it the same way, and swaps it in place. Your config, credentials, and profiles
+  live outside the install directory and are untouched.
 - **Uninstall:** `agent uninstall` removes everything copilot-env manages (daemons, profiles,
   agent wiring, shell integration, credentials, data, and the install itself). It does not
-  remove the agent CLIs (`claude` / `copilot` / `codex`) or bun.
-- **Specific version:** replace `latest` with an exact release tag:
+  remove the agent CLIs (`claude` / `copilot` / `codex`).
+- **Specific version:** replace `latest` with an exact release tag, or pass `--version`:
 
   ```bash
   curl -fsSL https://github.com/Vivswan/copilot-env/releases/download/vX.X.X/install.sh | bash
@@ -72,11 +79,18 @@ Installs bun and copilot-env into `~/.copilot-env`, bootstraps dependencies, the
   powershell -c "irm https://github.com/Vivswan/copilot-env/releases/download/vX.X.X/install.ps1 | iex"
   ```
 
+> **Upgrading from 3.5.6 or earlier?** Those versions installed a source tree and
+> bootstrapped a runtime into it, and `agent update` cannot cross that gap. Re-run
+> the installer above once; it replaces the old layout in place (removing the
+> `node_modules` it left behind) and every later update is the ordinary binary
+> swap. Your settings are not stored in the install directory, so nothing is lost.
+
 ### Install flags
 
 | macOS / Linux | Windows | Effect |
 | --- | --- | --- |
 | `--dir DIR` | `-InstallDir DIR` | Install target (default `~/.copilot-env`; overrides `COPILOT_ENV_DIR`). |
+| `--version TAG` | `-Version TAG` | Install an exact release tag instead of the default. |
 | `--no-shell-integration` | `-NoShellIntegration` | Don't touch your rc / `$PROFILE`. |
 
 ## Usage

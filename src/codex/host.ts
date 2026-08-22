@@ -1,7 +1,7 @@
 // Per-host Codex home manager: builds the per-host CODEX_HOME symlink farm (Linux/macOS).
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { execaSync } from "execa";
 import which from "which";
 import { resolveDirectMode } from "../agents/direct_detect.ts";
 import type { RequestedMode } from "../agents/provider_mode.ts";
@@ -231,15 +231,14 @@ function primeSharedCodexHomeIfMissing(sharedRoot: string): void {
 
   // Best effort: let Codex create its default shared home before we seed and
   // symlink into it. Timeout prevents a misconfigured codex from blocking.
-  try {
-    execaSync("codex", ["exec"], {
-      input: "hi\n",
-      stdio: ["pipe", "ignore", "ignore"],
-      timeout: 10_000,
-    });
-  } catch {
-    // Swallowed on purpose: the prime is a convenience, never a build failure.
-  }
+  // spawnSync reports failures (a nonzero exit, ENOENT, the timeout) in its
+  // result rather than throwing, and the result is ignored on purpose: the
+  // prime is a convenience, never a build failure.
+  spawnSync("codex", ["exec"], {
+    input: "hi\n",
+    stdio: ["pipe", "ignore", "ignore"],
+    timeout: 10_000,
+  });
 }
 
 function seedLocalCodexFileIfMissing(localPath: string, sharedPath: string): void {

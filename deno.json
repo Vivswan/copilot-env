@@ -32,7 +32,6 @@
     "@std/testing": "jsr:@std/testing@^1",
     "commander": "npm:commander@^15.0.0",
     "consola": "npm:consola@^3.4.2",
-    "execa": "npm:execa@^10.0.0",
     "semver": "npm:semver@^7.8.5",
     "smol-toml": "npm:smol-toml@^1.7.1",
     "valibot": "npm:valibot@^1.4.2",

@@ -227,7 +227,7 @@ that tolerance into the reader instead of keeping the migration.
 - **camelCase** functions/vars, **PascalCase** types/classes, **CONSTANT_CASE** top-level
   constants; **snake_case only on object-literal keys** (external config keys), always quoted.
 - **No new deps without an explicit reason.** Current: `commander`, `consola`, `@std/dotenv`,
-  `execa`, `semver`, `smol-toml`, `valibot`, `which`,
+  `semver`, `smol-toml`, `valibot`, `which`,
   `@jeffreycao/copilot-api`, `@modelcontextprotocol/server` (the `agent mcp --serve` stdio
   server; the v2 split package is the only line implementing MCP 2026-07-28 - the v1
   monolith is maintenance-only - and its zod arrives transitively either way). Dev-only:

@@ -8,8 +8,8 @@
 // Codex app, so `--mobile` is gated to macOS/Windows.
 import * as fs from "node:fs";
 import { consola } from "consola";
-import { execa } from "execa";
 import { parse, stringify } from "smol-toml";
+import { runCaptured } from "../utils/command.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { isCatalogFileUsable } from "./catalog.ts";
@@ -99,13 +99,11 @@ export class CodexAppController {
   private readonly windows = process.platform === "win32";
 
   private run(file: string, args: string[]) {
-    return execa(file, args, { reject: false });
+    return runCaptured(file, args);
   }
 
   private ps(script: string) {
-    return execa("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
-      reject: false,
-    });
+    return runCaptured("powershell", ["-NoProfile", "-NonInteractive", "-Command", script]);
   }
 
   /** The Codex app appears installed. */

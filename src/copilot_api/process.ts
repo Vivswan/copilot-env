@@ -4,8 +4,8 @@ import { closeSync, existsSync, openSync, readFileSync } from "node:fs";
 import { devNull } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { execa } from "execa";
 import { daemonConfigFile, readResolvedVersionRecord } from "../proxy_float.ts";
+import { runCaptured } from "../utils/command.ts";
 import { pidAlive } from "../utils/pid.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { DAEMON_INTEGRATION_ID_ENV } from "./integration_identity.ts";
@@ -227,12 +227,13 @@ async function classifyDaemonPidWindows(pid: number): Promise<"yes" | "no" | "un
     "elseif ([string]::IsNullOrEmpty($p.CommandLine)) { 'unknown' } " +
     `elseif ($p.CommandLine -match '${DAEMON_CMDLINE_PATTERN}') { 'yes' } ` +
     "else { 'no' }";
-  let stdout: string;
-  try {
-    ({ stdout } = await execa("powershell", ["-NoProfile", "-NonInteractive", "-Command", script]));
-  } catch {
-    return "unknown";
-  }
+  const { exitCode, stdout } = await runCaptured("powershell", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    script,
+  ]);
+  if (exitCode !== 0) return "unknown";
   const verdict = stdout.trim();
   return verdict === "yes" || verdict === "no" ? verdict : "unknown";
 }
@@ -273,12 +274,13 @@ async function listCopilotApiPidsWindows(): Promise<number[]> {
     "$o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue; " +
     "$o -and $o.ReturnValue -eq 0 -and $o.User -eq $env:USERNAME -and $o.Domain -eq $env:USERDOMAIN " +
     "} | ForEach-Object { $_.ProcessId }";
-  let stdout: string;
-  try {
-    ({ stdout } = await execa("powershell", ["-NoProfile", "-NonInteractive", "-Command", script]));
-  } catch {
-    return [];
-  }
+  const { exitCode, stdout } = await runCaptured("powershell", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    script,
+  ]);
+  if (exitCode !== 0) return [];
 
   const pids: number[] = [];
   for (const line of stdout.split(/\r?\n/)) {
@@ -315,17 +317,18 @@ export function parseProcessRows(stdout: string): ProcessRow[] {
  * to OUR processes on both BSD (macOS) and procps (Linux) -- the orphan sweep SIGKILLs
  * what this returns, so an elevated shell must never see another user's daemons.
  * Best-effort, like the `pgrep` this descends from: any failure (including a user with no
- * processes, where `ps` exits non-zero) degrades to no rows rather than aborting.
+ * processes, where `ps` exits non-zero) degrades to no rows rather than aborting. The
+ * raised maxBuffer keeps a process-heavy machine's listing from overflowing into that
+ * degrade path and silently weakening the orphan scan.
  */
 async function listUserProcesses(): Promise<ProcessRow[]> {
   const uid = process.getuid?.();
   if (uid === undefined) return [];
-  try {
-    const { stdout } = await execa("ps", ["-U", String(uid), "-o", "pid=,args="]);
-    return parseProcessRows(stdout);
-  } catch {
-    return [];
-  }
+  const { exitCode, stdout } = await runCaptured("ps", ["-U", String(uid), "-o", "pid=,args="], {
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (exitCode !== 0) return [];
+  return parseProcessRows(stdout);
 }
 
 async function listCopilotApiPidsPosix(): Promise<number[]> {

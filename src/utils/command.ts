@@ -5,7 +5,7 @@
 // commands/setup.ts) so lower-level utilities can resolve binaries without
 // importing the heavier setup module -- which would form an import cycle
 // (setup -> codex/claude config -> agents/live_probe -> setup).
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 
 // `command -v` first, then a best-effort nvm fallback so a freshly nvm-installed
 // Node/CLI resolves in the same process that installed it (PATH not yet reloaded).
@@ -103,6 +103,34 @@ export function childEnvWithPath(
   if (extra) Object.assign(out, extra);
   out.PATH = childPathPrepending(dirs);
   return out;
+}
+
+/**
+ * Run `file` with `args` and capture stdout, never rejecting: a nonzero exit
+ * reports through `exitCode`, and a spawn failure (ENOENT, a killing signal)
+ * maps to a nonzero `exitCode` too, so `exitCode === 0` always means "ran and
+ * succeeded". `windowsHide` keeps a no-console Windows parent from flashing a
+ * console window. `maxBuffer` defaults to 16 MiB (well past node's 1 MiB);
+ * callers that collect large listings raise it -- an overflow kills the child
+ * and reads as a spawn failure, silently degrading their scans.
+ */
+export function runCaptured(
+  file: string,
+  args: readonly string[],
+  opts: { maxBuffer?: number } = {},
+): Promise<{ exitCode: number; stdout: string }> {
+  return new Promise((resolve) => {
+    execFile(
+      file,
+      args,
+      { windowsHide: true, maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024 },
+      (error, stdout) => {
+        if (error === null) return resolve({ exitCode: 0, stdout });
+        const exitCode = typeof error.code === "number" && error.code !== 0 ? error.code : 1;
+        resolve({ exitCode, stdout });
+      },
+    );
+  });
 }
 
 /** Quote a single arg for a cmd.exe command line (only when it needs it). */

@@ -1,0 +1,7 @@
+.git/
+.claude/
+node_modules/
+dist/
+.husky/
+.env
+.env.*

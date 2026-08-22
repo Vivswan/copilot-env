@@ -10,6 +10,15 @@
 # fails the run. `::error::` lines surface as GitHub annotations.
 set -euo pipefail
 
+# This script rewires agent configs and manages real daemons in whatever HOME
+# it sees, so it refuses to start outside a container or a disposable CI
+# runner. On a developer machine, run it through the container:
+#   deno task test:docker --lifecycle
+if [ ! -f /.dockerenv ] && [ ! -f /run/.containerenv ] && [ "${GITHUB_ACTIONS:-}" != "true" ]; then
+    echo "::error::lifecycle-smoke.sh mutates the HOME it runs in; use 'deno task test:docker --lifecycle' on a developer machine" >&2
+    exit 1
+fi
+
 cli() {
     deno run -P=test src/cli.ts "$@"
 }

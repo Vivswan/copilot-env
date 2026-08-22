@@ -768,7 +768,7 @@ test("--profile narrows gathering to the named target and excludes account-wide 
     for (
       const absent of [
         "bootstrap.version",
-        "bootstrap.bun",
+        "bootstrap.deno",
         "bootstrap.nodeModules",
         "proxy.package",
         "setup.shell",

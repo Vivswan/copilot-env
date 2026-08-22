@@ -551,7 +551,7 @@ test("health --profile narrows the run and excludes account-wide checks", () => 
   for (
     const id of [
       "bootstrap.version",
-      "bootstrap.bun",
+      "bootstrap.deno",
       "bootstrap.nodeModules",
       "proxy.package",
       "setup.shell",
@@ -624,7 +624,7 @@ test("health --scope full runs every group end-to-end and fails on a dead proxy"
   // Representative checks from each group are present.
   for (
     const id of [
-      "bootstrap.bun",
+      "bootstrap.deno",
       "proxy.package",
       "runtime.port",
       "setup.shell",
@@ -679,7 +679,7 @@ test("health --scope setup covers wiring only and never fails (warnings exit 0)"
   expect(typeof codexHost?.value?.configFile).toBe("string");
   // Setup-only: no runtime/bootstrap checks can drag the exit code to 1.
   expect(ids).not.toContain("runtime.port");
-  expect(ids).not.toContain("bootstrap.bun");
+  expect(ids).not.toContain("bootstrap.deno");
   expect(json.checks.every((c) => c.status !== "fail")).toBe(true);
   expect(json.exitCode).toBe(0);
   expect(exitCode).toBe(0);

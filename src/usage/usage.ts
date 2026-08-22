@@ -8,13 +8,15 @@
 // itself is owned by src/copilot_api/paths.ts; this module only sweeps it.
 
 import { DatabaseSync } from "node:sqlite";
-import { readdirSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { copyFileSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { consola } from "consola";
 import { PROFILES_DIR_NAME, resolveHome, usageDbsUnderHome } from "../copilot_api/paths.ts";
 import { isValidProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { isDir } from "../utils/fs.ts";
+import { isRecord } from "../utils/json.ts";
 import { localDayKey } from "../utils/time.ts";
 import { canonicalModelName } from "./pricing.ts";
 
@@ -38,16 +40,47 @@ export interface ModelUsage extends TokenBuckets {
   events: number;
 }
 
-/** One aggregated `token_usage_events` row as returned by the grouped query. The SUM()
- *  columns and the bucket are null when a group has no non-null inputs. */
-interface UsageRow {
+/** One aggregated `token_usage_events` row, in the shape the report consumes: counts
+ *  already sanitized, and `bucket` null only when the group carried no timestamp.
+ *  parseUsageRow below is the only mint, so nothing downstream re-checks. */
+export interface UsageRow {
   bucket: number | null;
   model: string;
-  input: number | null;
-  output: number | null;
-  cacheRead: number | null;
-  cacheCreation: number | null;
+  buckets: TokenBuckets;
   events: number;
+}
+
+/** Coerce one SQLite numeric column to a finite JS number. node:sqlite hands back a
+ *  `bigint` for an integer a double cannot hold exactly, so both shapes arrive here;
+ *  anything else (or a non-finite value) reads as absent. */
+function numberOrNull(value: unknown): number | null {
+  const asNumber = typeof value === "bigint" ? Number(value) : value;
+  return typeof asNumber === "number" && Number.isFinite(asNumber) ? asNumber : null;
+}
+
+/**
+ * Parse one grouped query result into a UsageRow, or null when it is not one. THE
+ * boundary between untyped SQLite output and the rest of this module: every count that
+ * reaches a report has passed sanitizeTokenCount here, and every field downstream is a
+ * plain finite number -- so no later step re-checks for bigints, nulls, or hostile
+ * values. A row with no usable `model` is dropped, since it cannot be attributed.
+ * Exported for the unit tests that drive shapes a live DB will not produce.
+ */
+export function parseUsageRow(raw: unknown): UsageRow | null {
+  if (!isRecord(raw)) return null;
+  const model = raw.model;
+  if (typeof model !== "string" || model === "") return null;
+  return {
+    bucket: numberOrNull(raw.bucket),
+    model,
+    buckets: {
+      input: sanitizeTokenCount(numberOrNull(raw.input)),
+      output: sanitizeTokenCount(numberOrNull(raw.output)),
+      cacheRead: sanitizeTokenCount(numberOrNull(raw.cacheRead)),
+      cacheCreation: sanitizeTokenCount(numberOrNull(raw.cacheCreation)),
+    },
+    events: sanitizeTokenCount(numberOrNull(raw.events)),
+  };
 }
 
 /**
@@ -149,24 +182,61 @@ export function discoverUsageDbs(home: string = resolveHome()): string[] {
   });
 }
 
+/** Open `path` read-only, run `query`, and always close the handle. */
+function withReadOnlyDb<T>(path: string, query: (db: DatabaseSync) => T): T {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try {
+    return query(db);
+  } finally {
+    db.close();
+  }
+}
+
+/** The database file and the two WAL sidecars a read of it may need. The main file is
+ *  required; a missing -wal/-shm just means there is nothing un-checkpointed to replay. */
+const SQLITE_SIDECAR_SUFFIXES = ["-wal", "-shm"] as const;
+
+/** Copy the database and its WAL sidecars into a temp directory and read the COPY, then
+ *  delete it. The copy is what makes the read work where the original cannot be opened:
+ *  a read-only filesystem lets SQLite consult a -wal only if it can create the -shm
+ *  beside it, which it can here. */
+function withDbCopy<T>(path: string, query: (db: DatabaseSync) => T): T {
+  const dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  try {
+    const copy = join(dir, basename(path));
+    copyFileSync(path, copy);
+    for (const suffix of SQLITE_SIDECAR_SUFFIXES) {
+      try {
+        copyFileSync(`${path}${suffix}`, `${copy}${suffix}`);
+      } catch {
+        // absent sidecar: the daemon checkpointed, so the main file is complete
+      }
+    }
+    return withReadOnlyDb(copy, query);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /**
- * Open `path` read-only and run `query` against it, preferring a WAL-aware open.
+ * Open `path` read-only and run `query` against it, preferring the live database.
  * The daemon runs the DB in WAL mode and only checkpoints on close, so a plain
  * read-only open (which consults the -wal) comes first; if the open OR the query
  * fails (SQLite can defer a WAL/-shm error to prepare/exec time, e.g. a read-only
- * FS where the -shm can't be created), retry as an `immutable=1` snapshot --
- * missing un-checkpointed rows beats failing the report. Throws the last error
- * when both attempts fail.
+ * FS where the -shm can't be created), retry against a temp copy of the database
+ * and its sidecars -- which keeps the un-checkpointed rows an immutable snapshot
+ * would drop. The FIRST error is what propagates when both attempts fail: it
+ * describes the real database, not the copy.
  */
 function openSqliteReadOnlyWithWalFallback<T>(path: string, query: (db: DatabaseSync) => T): T {
-  // Spike-scope port: node:sqlite has no URI-filename support, so the immutable
-  // snapshot fallback is not expressible here; readOnly consults the -wal.
-  let db: DatabaseSync | undefined;
   try {
-    db = new DatabaseSync(path, { readOnly: true });
-    return query(db);
-  } finally {
-    db?.close();
+    return withReadOnlyDb(path, query);
+  } catch (first) {
+    try {
+      return withDbCopy(path, query);
+    } catch {
+      throw first;
+    }
   }
 }
 
@@ -179,14 +249,6 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
   const byModel = new Map<string, ModelUsage>();
   const perDay = new Map<string, Map<string, ModelUsage>>();
   const since = sinceMs ?? null;
-
-  // Normalize one grouped row's nullable SUM columns into the shared fold's buckets.
-  const rowBuckets = (row: UsageRow): TokenBuckets => ({
-    input: row.input ?? 0,
-    output: row.output ?? 0,
-    cacheRead: row.cacheRead ?? 0,
-    cacheCreation: row.cacheCreation ?? 0,
-  });
 
   // One grouped query by (UTC minute, model); byModel and perDay both derive from
   // it, so we never read the same rows twice. The bucket is a UTC minute so the
@@ -217,7 +279,9 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
     try {
       rows = openSqliteReadOnlyWithWalFallback(
         path,
-        (db) => db.prepare(QUERY).all(since) as unknown as UsageRow[],
+        // flatMap over the parse: an unparseable row drops out here rather than
+        // reaching a report as a zero-filled phantom.
+        (db) => db.prepare(QUERY).all(since).flatMap((raw) => parseUsageRow(raw) ?? []),
       );
     } catch (e) {
       consola.warn(`could not read ${path} (${errMessage(e)}).`);
@@ -227,14 +291,13 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
     for (const row of rows) {
       // Sources spell the same model differently; key rows by the shared form.
       const model = canonicalModelName(row.model);
-      const buckets = rowBuckets(row);
-      addUsage(byModel, model, buckets, row.events ?? 0);
+      addUsage(byModel, model, row.buckets, row.events);
       // Distinct LOCAL calendar days with data, unioned across all DBs. The
       // daemon writes created_at_ms on every row, so a null bucket is not
       // expected; such a row still counts toward byModel (the aggregate total)
       // but is omitted from the per-day split.
       if (row.bucket !== null) {
-        addDayUsage(perDay, localDayKey(row.bucket * MINUTE_MS), model, buckets, row.events ?? 0);
+        addDayUsage(perDay, localDayKey(row.bucket * MINUTE_MS), model, row.buckets, row.events);
       }
     }
   }

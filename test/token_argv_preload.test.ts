@@ -7,7 +7,7 @@ import { expect, test } from "./helpers/testing.ts";
 
 // The shim reads the GitHub token from DAEMON_GH_TOKEN_ENV and splices it into
 // process.argv as `--github-token <token>`, keeping it off the launch command line. It must
-// be exercised as a real preloaded subprocess (`bun --preload`), which is how launchDaemon
+// be exercised as a real preloaded subprocess (`--preload`), which is how launchDaemon
 // loads it -- and BEFORE the PAT shim, which reads the token from argv.
 const SHIM = join(ROOT, "src", "scripts", "token_argv_preload.ts");
 const ENV_KEY = DAEMON_GH_TOKEN_ENV;

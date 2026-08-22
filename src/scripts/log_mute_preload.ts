@@ -1,4 +1,4 @@
-// Preloaded into the copilot-api daemon (via `bun --preload`) when the `proxy-logs` config
+// Preloaded into the copilot-api daemon (via `--preload`) when the `proxy-logs` config
 // key is false (`agent config --set proxy-logs false`). launchDaemon always starts the proxy
 // with `--verbose`, so its handler loggers append full request/response payload dumps under
 // <home>/logs -- gigabytes per week on a busy proxy. This shim intercepts
@@ -7,7 +7,7 @@
 //
 // Pure discard is safe because activity detection does not read these logs: the idle
 // watchdog and `agent health` get their inference-activity signal from the in-daemon
-// inference observer (inference_activity_preload.ts, always loaded), which watches inbound
+// inference observer (daemon_runtime_preload.ts, always loaded), which watches inbound
 // requests directly.
 //
 // This is a RUNTIME shim: it touches none of copilot-api's files, so it never pins the

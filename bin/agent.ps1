@@ -1,81 +1,62 @@
 # Single self-bootstrapping entry point (Windows) for copilot-env. Mirror of
-# bin/agent: installs bun if missing, installs node_modules in-place in the
-# checkout only when a read-only `proxy_float.ts --verify` says it's needed
-# (stale float / missing or out-of-sync node_modules), then runs the cli.ts
-# dispatcher (cli.ts owns the subcommand list; see `agent --help`).
+# bin/agent: installs deno if missing (the .dvmrc pin, via the shared
+# scripts/ensure-deno.ps1 that scripts/setup-env.ps1 uses too), installs dependencies
+# in-place in the checkout only when the lockfile has moved ahead of them, then runs the
+# cli.ts dispatcher (cli.ts owns the subcommand list; see `agent --help`).
 # The `agent` function in agents.ps1 turns `agent env` output into session state.
 #
 # No cache: node_modules lives directly in the checkout and cli.ts runs from there.
+#
+# EVERY line this script emits goes to stderr -- stdout belongs to `agent env`, whose
+# output the profile function evals. `[Console]::Error.WriteLine` is the PowerShell-valid
+# equivalent of the POSIX twin's `>&2` (a literal `1>&2` is reserved).
 $ErrorActionPreference = 'Stop'
 
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Snap = (Resolve-Path (Join-Path $Here '..')).Path
 
-$BunExe = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
-if (-not (Get-Command bun -ErrorAction SilentlyContinue) -and -not (Test-Path $BunExe)) {
-    Write-Host '==> Installing bun (one-time) ...' -ForegroundColor Yellow
-    powershell -NoProfile -ExecutionPolicy Bypass -Command 'irm bun.sh/install.ps1 | iex' | Out-Null
-}
-if (Test-Path $BunExe) {
-    $env:Path = "$(Split-Path $BunExe -Parent);$env:Path"
-}
+. (Join-Path $Snap 'scripts\ensure-deno.ps1')
+Install-Deno -Root $Snap
 
-# Install node_modules in-place in the checkout, but only when needed: a read-only
-# `proxy_float.ts --verify` checks whether this call can skip install. Normal
-# no-env verify reads npm publish-time metadata, computes the cooldown-aged target,
-# and compares it to the installed proxy; missing/stale node_modules still force
-# install. HUSKY=0 keeps husky's `prepare` from reinstalling git hooks each time.
-# Pipe bun's stdout (its install summary) to stderr -- the PowerShell-valid
-# equivalent of the POSIX twin's `>&2` (a literal `1>&2` is reserved) -- so install
-# progress stays visible without being captured into the `agent env` output the
-# profile function evals. bun's own progress/errors and the float's messages
-# already go to stderr (the caller silences with `2>$null`); the verify's output
-# is discarded for the same reason.
-$needInstall = -not (Test-Path (Join-Path $Snap 'node_modules'))
+# Install dependencies in-place in the checkout, but only when needed: a missing
+# node_modules, or a deno.lock that has moved ahead of it (the lockfile is the source of
+# truth for what should be installed, and every dependency change updates it).
+$NodeModules = Join-Path $Snap 'node_modules'
+$needInstall = -not (Test-Path $NodeModules)
 if (-not $needInstall) {
-    $ProxyFloat = Join-Path $Snap 'src\proxy_float.ts'
-    $previousErrorActionPreference = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        & bun $ProxyFloat --verify *> $null
-    } finally {
-        $ErrorActionPreference = $previousErrorActionPreference
-    }
-    if ($LASTEXITCODE -ne 0) { $needInstall = $true }
+    $lock = Get-Item (Join-Path $Snap 'deno.lock') -ErrorAction SilentlyContinue
+    if ($lock -and $lock.LastWriteTime -gt (Get-Item $NodeModules).LastWriteTime) { $needInstall = $true }
 }
 if ($needInstall) {
-    $env:HUSKY = '0'
     Push-Location $Snap
     try {
-        & bun install --frozen-lockfile | ForEach-Object { [Console]::Error.WriteLine($_) }
+        & deno install --frozen | ForEach-Object { [Console]::Error.WriteLine($_) }
     } finally {
         Pop-Location
     }
     if ($LASTEXITCODE -ne 0) {
-        Write-Error 'copilot-env bootstrap failed: bun install did not complete -- check network/bun, then re-run.'
+        [Console]::Error.WriteLine('copilot-env bootstrap failed: deno install did not complete -- check network/deno, then re-run.')
         exit 1
     }
-    # Mark node_modules as freshly installed so the bun.lock-vs-node_modules mtime
-    # check can't loop: a frozen no-op install needn't bump the dir's mtime.
-    (Get-Item (Join-Path $Snap 'node_modules')).LastWriteTime = Get-Date
+    # Mark node_modules as freshly installed so the deno.lock-vs-node_modules mtime
+    # check can't loop: a no-op frozen install needn't bump the dir's mtime.
+    (Get-Item $NodeModules).LastWriteTime = Get-Date
 }
 
 # Opt-in autoupdate preflight: ONLY on `agent start`, run before cli.ts loads so a
 # swapped release is what dispatches. preflight.ts gates on the state file's
 # `enabled` flag and the once-per-day cadence; the file-exists test just keeps the
 # no-spawn fast path for users who never opted in. Non-fatal; output to stderr.
+# `-P=cli` scopes net to the CLI's real outbound hosts; fs/run stay broad until chunk 5.
 $Sub = if ($args.Count -gt 0) { $args[0] } else { '' }
 $AuState = Join-Path $Snap '.autoupdate\state.json'
 if ($Sub -eq 'start' -and (Test-Path $AuState -PathType Leaf)) {
-    # Non-fatal: write the failure to stderr (stdout stays pure) and continue.
-    # Not Write-Error -- $ErrorActionPreference is 'Stop', which would re-throw. Pipe any stdout
-    # the child emits to stderr (the PowerShell-valid equivalent of the POSIX twin's `>&2`; a
-    # literal `1>&2` is NOT valid PowerShell) so nothing leaks into the bootstrap stdout the
-    # shell wrapper evals.
-    try { & bun (Join-Path $Snap 'src\autoupdate\preflight.ts') | ForEach-Object { [Console]::Error.WriteLine($_) } }
+    # Non-fatal: write the failure to stderr and continue. Not Write-Error --
+    # $ErrorActionPreference is 'Stop', which would re-throw.
+    try { & deno run -P=cli (Join-Path $Snap 'src\autoupdate\preflight.ts') | ForEach-Object { [Console]::Error.WriteLine($_) } }
     catch { [Console]::Error.WriteLine("autoupdate preflight failed: $_") }
 }
 
 $Cli = Join-Path $Snap 'src\cli.ts'
-& bun $Cli @args
+& deno run -P=cli $Cli @args
 exit $LASTEXITCODE

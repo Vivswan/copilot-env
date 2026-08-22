@@ -24,11 +24,9 @@
     "commander": "npm:commander@^15.0.0",
     "consola": "npm:consola@^3.4.2",
     "execa": "npm:execa@^10.0.0",
-    "ps-list": "npm:ps-list@^9.0.0",
     "semver": "npm:semver@^7.8.5",
     "smol-toml": "npm:smol-toml@^1.7.1",
     "tar": "npm:tar@^7.5.22",
-    "typescript": "npm:typescript@^7.0.2",
     "valibot": "npm:valibot@^1.4.2",
     "which": "npm:which@^7.0.0"
   },
@@ -38,7 +36,8 @@
     "lint": "deno lint && deno fmt --check",
     "lint:sh": "bash scripts/lint-sh.sh",
     "lint:ps": "bash scripts/lint-ps.sh",
-    "check": "deno lint --fix && deno fmt"
+    "check": "deno lint --fix && deno fmt",
+    "test:docker": "deno run --allow-read --allow-env --allow-run=docker,podman scripts/test_docker.ts"
   },
   "permissions": {
     "test": {
@@ -52,6 +51,27 @@
         "localhost",
         "[::1]"
       ]
+    },
+    "cli": {
+      "env": true,
+      "read": true,
+      "write": true,
+      "run": true,
+      "sys": true,
+      "net": [
+        "127.0.0.1",
+        "localhost",
+        "[::1]",
+        "api.github.com",
+        "github.com",
+        "codeload.github.com",
+        "objects.githubusercontent.com",
+        "raw.githubusercontent.com",
+        "registry.npmjs.org",
+        "openrouter.ai",
+        "githubcopilot.com",
+        "*.githubcopilot.com"
+      ]
     }
   },
   "compilerOptions": {
@@ -62,10 +82,6 @@
     "lib": [
       "deno.window",
       "deno.unstable"
-    ],
-    "types": [
-      "node",
-      "./node_modules/@types/bun/index.d.ts"
     ]
   },
   "lint": {

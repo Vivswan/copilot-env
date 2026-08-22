@@ -50,7 +50,6 @@ test("plugin.json's inline mcpServers entry registers bin/agent mcp --serve", ()
   const servers = plugin.mcpServers as Record<string, { command: string; args: string[] }>;
   const entry = servers["copilot-env"];
   expect(entry).toBeDefined();
-  // biome-ignore lint/suspicious/noTemplateCurlyInString: the raw ${CLAUDE_PLUGIN_ROOT} text IS the contract Claude expands at install time
   expect(entry?.command).toBe("${CLAUDE_PLUGIN_ROOT}/bin/agent");
   expect(entry?.args).toEqual(["mcp", "--serve"]);
   // The MCP config must stay INSIDE plugin.json: a root .mcp.json is read as

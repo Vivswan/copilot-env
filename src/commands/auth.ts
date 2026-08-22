@@ -41,8 +41,9 @@ import {
   tokenFromSetFlag,
 } from "../copilot_api/gh_cli.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
-import { resolveCopilotApiEntry } from "../copilot_api/process.ts";
+import { copilotApiArgv, resolveCopilotApiEntry, resolveDenoBin } from "../copilot_api/process.ts";
 import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
+import { installedProxyVersion } from "../copilot_api/version.ts";
 import { errMessage } from "../utils/error.ts";
 import { releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -190,12 +191,9 @@ async function chooseProvider(): Promise<AuthProvider> {
  * an interactive login legitimately holds it for minutes.
  */
 function loginWithCopilot(cred: Credential): void {
-  let entry: string;
-  try {
-    entry = resolveCopilotApiEntry();
-  } catch (e) {
+  if (resolveCopilotApiEntry().kind === "package" && installedProxyVersion() === null) {
     throw new Error(
-      `cannot run the device-flow login - copilot-api is not installed (${errMessage(e)}). ` +
+      "cannot run the device-flow login - copilot-api is not installed. " +
         "Re-run the agent launcher to install dependencies, or use `agent auth --provider gh-token`.",
     );
   }
@@ -209,11 +207,15 @@ function loginWithCopilot(cred: Credential): void {
     sleepSync(500);
   }
   try {
-    const result = spawnSync(process.execPath, [entry, "auth", "login", "--provider", "copilot"], {
-      stdio: "inherit",
-      windowsHide: true,
-      env: { ...process.env },
-    });
+    const result = spawnSync(
+      resolveDenoBin(),
+      copilotApiArgv(["auth", "login", "--provider", "copilot"]),
+      {
+        stdio: "inherit",
+        windowsHide: true,
+        env: { ...process.env },
+      },
+    );
     if (result.error || result.status !== 0) {
       throw new Error(
         `device-flow login failed${

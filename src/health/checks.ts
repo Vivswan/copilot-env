@@ -127,17 +127,17 @@ export function checkCliVersion(f: BootstrapFacts): CheckResult {
   };
 }
 
-export function checkBun(f: BootstrapFacts): CheckResult {
-  const { available, version } = f.bun;
+export function checkDeno(f: BootstrapFacts): CheckResult {
+  const { available, version } = f.deno;
   return {
-    id: "bootstrap.bun",
-    label: "Bun runtime",
+    id: "bootstrap.deno",
+    label: "Deno runtime",
     group: "bootstrap",
     profile: null,
     scopes: BOOTSTRAP,
     status: available ? "ok" : "fail",
-    detail: available ? `bun ${version ?? "?"}` : "Bun runtime not detected",
-    ...(available ? {} : { fix: "install Bun (https://bun.sh)" }),
+    detail: available ? `deno ${version ?? "?"}` : "Deno runtime not detected",
+    ...(available ? {} : { fix: "install Deno (https://deno.com)" }),
     value: { available, version },
   };
 }
@@ -148,7 +148,7 @@ export function checkNodeModules(f: BootstrapFacts): CheckResult {
   const detail = !present
     ? "node_modules is missing"
     : !fresh
-    ? "node_modules is stale (older than bun.lock)"
+    ? "node_modules is stale (older than the lockfile)"
     : "installed and up to date";
   return {
     id: "bootstrap.nodeModules",
@@ -158,7 +158,7 @@ export function checkNodeModules(f: BootstrapFacts): CheckResult {
     scopes: BOOTSTRAP,
     status,
     detail,
-    ...(status === "ok" ? {} : { fix: "bun install --frozen-lockfile" }),
+    ...(status === "ok" ? {} : { fix: "deno install --frozen" }),
     value: { present, fresh },
   };
 }
@@ -193,11 +193,11 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
     // A missing package is a broken install in any mode; the fix always works.
     status = "fail";
     detail = `${PROXY_PACKAGE_NAME} is not installed`;
-    fix = "bun install --frozen-lockfile";
+    fix = "deno install --frozen";
   } else if (bounds.reason === "belowFloor") {
     status = "fail";
     detail = `proxy ${bounds.version} is below the floor ${bounds.floor}`;
-    fix = "bun install --frozen-lockfile";
+    fix = "deno install --frozen";
   } else {
     status = "warn";
     detail = `proxy ${bounds.version} is above the ceiling ${bounds.ceiling}`;
@@ -1194,7 +1194,7 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
   if (facts.bootstrap) {
     out.push(
       checkCliVersion(facts.bootstrap),
-      checkBun(facts.bootstrap),
+      checkDeno(facts.bootstrap),
       checkNodeModules(facts.bootstrap),
     );
   }

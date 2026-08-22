@@ -129,8 +129,6 @@ export async function runCost(args: {
   }
 
   console.log(SOURCES_NOTE);
-  // Blank separators are console.log("") throughout this file: bun's NO-ARG
-  // console.log() prints nothing at all (node would print a newline).
   console.log("");
 }
 

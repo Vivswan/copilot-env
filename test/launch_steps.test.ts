@@ -120,9 +120,11 @@ test("resolveLaunchCredential: a stored PAT auto-enables passthrough and probes 
     resolveIntegrationId: probe.resolve,
   });
 
-  expect(result.githubToken).toBe("ghp_stored_pat");
-  expect(result.patPassthrough).toBe(true);
-  expect(result.integrationId).toBe(COPILOT_CLI_INTEGRATION_ID);
+  expect(result).toEqual({
+    kind: "pat",
+    token: "ghp_stored_pat",
+    integrationId: COPILOT_CLI_INTEGRATION_ID,
+  });
   // Probed once, per credential, with no config pin.
   expect(probe.calls).toEqual([{ token: "ghp_stored_pat", pinned: null }]);
 });
@@ -138,9 +140,7 @@ test("resolveLaunchCredential: the copilot device-flow token skips passthrough A
     resolveIntegrationId: probe.resolve,
   });
 
-  expect(result.githubToken).toBe("gho_device_flow");
-  expect(result.patPassthrough).toBe(false);
-  expect(result.integrationId).toBeUndefined();
+  expect(result).toEqual({ kind: "token", token: "gho_device_flow" });
   expect(probe.calls).toEqual([]); // non-passthrough launches never probe
 });
 
@@ -156,8 +156,7 @@ test("resolveLaunchCredential: `passthrough off` overrides even a PAT (and skips
     resolveIntegrationId: probe.resolve,
   });
 
-  expect(result.patPassthrough).toBe(false);
-  expect(result.integrationId).toBeUndefined();
+  expect(result).toEqual({ kind: "token", token: "ghp_forced_off" });
   expect(probe.calls).toEqual([]);
 });
 
@@ -173,8 +172,11 @@ test("resolveLaunchCredential: `passthrough on` forces the shim for a non-PAT to
     isTTY: false,
   });
 
-  expect(result.patPassthrough).toBe(true);
-  expect(result.integrationId).toBe(VSCODE_CHAT_INTEGRATION_ID);
+  expect(result).toEqual({
+    kind: "pat",
+    token: "ghu_user_to_server",
+    integrationId: VSCODE_CHAT_INTEGRATION_ID,
+  });
 });
 
 test("resolveLaunchCredential: a pinned integration-id reaches the probe as the pin", async () => {
@@ -189,7 +191,11 @@ test("resolveLaunchCredential: a pinned integration-id reaches the probe as the 
     resolveIntegrationId: probe.resolve,
   });
 
-  expect(result.integrationId).toBe("copilot-developer-sandbox");
+  expect(result).toEqual({
+    kind: "pat",
+    token: "ghp_pinned",
+    integrationId: "copilot-developer-sandbox",
+  });
   expect(probe.calls).toEqual([{ token: "ghp_pinned", pinned: "copilot-developer-sandbox" }]);
 });
 
@@ -216,8 +222,11 @@ test("resolveLaunchCredential: PAT + real probe -- the injected fetch's accepted
     isTTY: false,
   });
 
-  expect(result.patPassthrough).toBe(true);
-  expect(result.integrationId).toBe(COPILOT_CLI_INTEGRATION_ID);
+  expect(result).toEqual({
+    kind: "pat",
+    token: "github_pat_finegrained",
+    integrationId: COPILOT_CLI_INTEGRATION_ID,
+  });
 });
 
 test("resolveLaunchCredential: nothing resolved + no TTY -> no login, no token, no shim", async () => {
@@ -232,9 +241,7 @@ test("resolveLaunchCredential: nothing resolved + no TTY -> no login, no token, 
   });
 
   expect(loginCalls).toBe(0);
-  expect(result.githubToken).toBeUndefined();
-  expect(result.patPassthrough).toBe(false);
-  expect(result.integrationId).toBeUndefined();
+  expect(result).toEqual({ kind: "none" });
 });
 
 test("resolveLaunchCredential: nothing resolved + TTY -> logs in, then resolves the fresh credential", async () => {
@@ -250,8 +257,8 @@ test("resolveLaunchCredential: nothing resolved + TTY -> logs in, then resolves 
   });
 
   expect(loggedInto).toEqual([null]);
-  expect(result.githubToken).toBe("gho_after_login");
-  expect(result.patPassthrough).toBe(false); // copilot provider: exchange-capable, no shim
+  // copilot provider: exchange-capable, so a plain token and no passthrough shim.
+  expect(result).toEqual({ kind: "token", token: "gho_after_login" });
 });
 
 test("resolveLaunchCredential: a named profile NEVER falls back to the default credential", async () => {
@@ -267,8 +274,7 @@ test("resolveLaunchCredential: a named profile NEVER falls back to the default c
     isTTY: false,
   });
 
-  expect(result.githubToken).toBeUndefined(); // hard-empty, not the default token
-  expect(result.patPassthrough).toBe(false);
+  expect(result).toEqual({ kind: "none" }); // hard-empty, not the default token
   expect(loginCalls).toBe(0);
 });
 

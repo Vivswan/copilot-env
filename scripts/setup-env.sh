@@ -16,14 +16,10 @@ set -eu
 # Run from the repo root regardless of where we're invoked (e.g. a worktree).
 cd "$(dirname "$0")/.."
 
-DENO_VERSION="$(tr -d '[:space:]' < .dvmrc)"
-export DENO_NO_UPDATE_CHECK=1
-
-if ! command -v deno >/dev/null 2>&1; then
-    echo "deno not found -- installing v${DENO_VERSION} via the official install script ..." >&2
-    curl -fsSL https://deno.land/install.sh | sh -s -- -y "v${DENO_VERSION}"
-    export PATH="${DENO_INSTALL:-$HOME/.deno}/bin:$PATH"
-fi
+# The deno bootstrap is shared with bin/agent so the two can't drift.
+# shellcheck source=ensure-deno.sh
+. "$(dirname "$0")/ensure-deno.sh"
+ensure_deno "$PWD"
 
 echo "Initializing copilot-env: deno install --frozen ..."
 deno install --frozen

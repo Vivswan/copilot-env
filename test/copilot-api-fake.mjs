@@ -6,7 +6,7 @@
 // with an empty catalog), prints the exact "Listening on:" marker that `start`
 // waits for in the daemon log, and stays alive until killed -- exercising
 // start -> wait-for-listen -> stop without GitHub Copilot auth. Invoked as:
-// bun copilot-api-fake.mjs start --port N
+// deno run copilot-api-fake.mjs start --port N
 //
 // The filename MUST contain "copilot-api": isCopilotApiPid (process.ts) matches
 // the daemon's command line against /copilot-api.*\bstart\b/, so `stop` only

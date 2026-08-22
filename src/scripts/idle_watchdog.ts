@@ -12,11 +12,12 @@
 // never reset the idle timer. Idle past the timeout -> the daemon exits.
 //
 // This module is import-safe -- it never arms a timer on import, so unit tests can exercise the
-// pure helpers. idle_watchdog_preload.ts is the tiny `bun --preload` entry that arms it (and is
+// pure helpers. idle_watchdog_preload.ts is the tiny `--preload` entry that arms it (and is
 // never imported by tests), the same split pat_passthrough_preload.ts gets from its own file.
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { ROOT_HOME_ENV } from "../copilot_api/paths.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
+import { shutdownDaemon } from "./daemon_shutdown.ts";
 import { lastObservedInferenceMs } from "./inference_activity.ts";
 
 /** Env knob: idle timeout in whole seconds. `0` (or negative) disables the watchdog. */
@@ -77,8 +78,9 @@ export function lastActivityMs(signals: {
  * turned off (the `auto-start` config key set to false) we disengage and leave the daemon
  * running.
  * Otherwise, when idle past the timeout, clear our run-state tracking (best-effort) and
- * stop the server by exiting this process. `startedAtMs` floors activity so a freshly
- * launched, quiet daemon is not considered idle before its first request/heartbeat.
+ * stop the server through the shared shutdown path. `startedAtMs` floors activity so a
+ * freshly launched, quiet daemon is not considered idle before its first
+ * request/heartbeat.
  * Activity: the in-process observer's mark (same process, always current -- the persisted
  * `.activity.json` copy exists for out-of-process readers, not for us) and the run-state
  * `lastEnsureAt` resolver heartbeat.
@@ -95,7 +97,7 @@ export function idleCheck(startedAtMs: number, timeoutMs: number): void {
   if (!isIdle(lastActivity, Date.now(), timeoutMs)) return;
   // Clear our run-state tracking, but ONLY if it still points at THIS daemon. clearIfPid
   // does the pid check INSIDE the atomic read-modify-write, so a newer daemon that replaced
-  // us between ticks can't have its freshly written pid/port clobbered. We exit either way
+  // us between ticks can't have its freshly written pid/port clobbered. We stop either way
   // (this daemon is idle / has been replaced). A profile daemon (ROOT_HOME_ENV set at
   // spawn) keeps its `port` -- that's the profile's stable reservation, which the baked
   // agent wiring points at. The persisted `.activity.json` mark is left
@@ -105,9 +107,11 @@ export function idleCheck(startedAtMs: number, timeoutMs: number): void {
   try {
     state.clearIfPid(process.pid, process.env[ROOT_HOME_ENV] !== undefined);
   } catch {
-    // best-effort: a failed state clear must not stop us from exiting
+    // best-effort: a failed state clear must not stop us from shutting down
   }
-  process.exit(0); // stops the daemon (this IS the server process)
+  // The shared path (daemon_shutdown.ts) drains the server this process IS, then exits --
+  // the same teardown a SIGTERM from `agent stop` takes.
+  void shutdownDaemon(0);
 }
 
 /**

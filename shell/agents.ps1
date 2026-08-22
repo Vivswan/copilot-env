@@ -1,7 +1,7 @@
 # Agent commands (Windows / PowerShell) -- dot-sourced from your PowerShell
 # $PROFILE. PowerShell equivalent of agents.bashrc.
 #
-# Thin wrapper over bin\agent.ps1 (which self-bootstraps bun, installs
+# Thin wrapper over bin\agent.ps1 (which self-bootstraps deno, installs
 # node_modules in-place in the checkout, and dispatches). This file only adds what
 # a subprocess can't do for the session: eval the proxy env into the current
 # shell after `start`.
@@ -11,12 +11,12 @@
 $script:AgentsDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $script:AgentPs1 = Join-Path $AgentsDir 'bin\agent.ps1'
 
-# Ensure bun is on PATH (its installer patches the user PATH, but a running
+# Ensure deno is on PATH (its installer patches the user PATH, but a running
 # session may predate that). Exact segment match on ';', like the POSIX twin's
 # `:$PATH:` case -- a substring test would false-positive on longer siblings.
-$BunDir = Join-Path $env:USERPROFILE '.bun\bin'
-if ((Test-Path (Join-Path $BunDir 'bun.exe')) -and (($env:Path -split ';') -notcontains $BunDir)) {
-    $env:Path = "$BunDir;$env:Path"
+$DenoDir = Join-Path $env:USERPROFILE '.deno\bin'
+if ((Test-Path (Join-Path $DenoDir 'deno.exe')) -and (($env:Path -split ';') -notcontains $DenoDir)) {
+    $env:Path = "$DenoDir;$env:Path"
 }
 
 # --- low-level helpers -----------------------------------------------------

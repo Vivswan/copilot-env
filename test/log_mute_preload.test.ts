@@ -17,7 +17,7 @@ import { expect, test } from "./helpers/testing.ts";
 // The preload shim swaps the daemon's `fs.createWriteStream` for a discarding sink on paths
 // under <home>/logs (the proxy's handler-log directory), touching the files' mtimes instead
 // of growing them. Patching the `node:fs` default export must be exercised as a real
-// preloaded subprocess (`bun --preload`), which is how launchDaemon loads it.
+// preloaded subprocess (`--preload`), which is how launchDaemon loads it.
 const SHIM = join(ROOT, "src", "scripts", "log_mute_preload.ts");
 
 /** Run a target script under the shim with COPILOT_API_HOME pointed at `home`. */

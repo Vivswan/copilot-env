@@ -3,7 +3,9 @@ import { dirname, join } from "node:path";
 import {
   clearPersistedInferenceActivity,
   isInferenceRequest,
+  lastObservedInferenceMs,
   markInference,
+  observeServeArgs,
   PERSIST_INTERVAL_MS,
   persistedInferenceMs,
   resetInferenceActivityForTests,
@@ -12,7 +14,7 @@ import { denoRunArgs, resolvePackageDir, ROOT, runSync } from "./helpers/run.ts"
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
 
-const PRELOAD = join(ROOT, "src", "scripts", "inference_activity_preload.ts");
+const PRELOAD = join(ROOT, "src", "scripts", "daemon_runtime_preload.ts");
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -89,6 +91,49 @@ test("markInference: memory always moves; the activity-file persist is throttled
   expect(persistedInferenceMs()).toBe(0);
 });
 
+// Deno.serve takes the handler in three places. srvx's deno adapter uses the
+// (options, handler) form, but the observer must not silently stop marking if the proxy
+// stack ever moves to another -- and an argument list matching NONE of them must still
+// reach the real serve untouched (arity included), so the daemon serves either way.
+test("observeServeArgs substitutes the handler in every Deno.serve calling shape", async () => {
+  tmpHome(); // marking persists to the activity file -- keep it out of the real home
+  const seen: string[] = [];
+  const handler = (request: Request): Response => {
+    seen.push(new URL(request.url).pathname);
+    return new Response("ok");
+  };
+  const post = (path: string): Request =>
+    new Request(`http://127.0.0.1${path}`, { method: "POST" });
+
+  // serve(handler)
+  const [wrappedOnly, ...noTail] = observeServeArgs([handler]);
+  expect(noTail).toEqual([]); // arity preserved
+  await (wrappedOnly as typeof handler)(post("/v1/messages"));
+  expect(lastObservedInferenceMs()).toBeGreaterThan(0);
+
+  // serve(options, handler)
+  resetInferenceActivityForTests();
+  const twoArg = observeServeArgs([{ port: 0 }, handler]);
+  expect(twoArg[0]).toEqual({ port: 0 }); // options relayed untouched
+  await (twoArg[1] as typeof handler)(post("/v1/responses"));
+  expect(lastObservedInferenceMs()).toBeGreaterThan(0);
+
+  // serve({ ...options, handler })
+  resetInferenceActivityForTests();
+  const [options] = observeServeArgs([{ port: 0, handler }]);
+  const wrapped = (options as { handler: typeof handler }).handler;
+  expect(wrapped).not.toBe(handler);
+  await wrapped(post("/v1/chat/completions"));
+  expect(lastObservedInferenceMs()).toBeGreaterThan(0);
+
+  // Every shape delegated to the real handler, in order, exactly once.
+  expect(seen).toEqual(["/v1/messages", "/v1/responses", "/v1/chat/completions"]);
+
+  // An unrecognized shape passes through verbatim rather than being mangled.
+  expect(observeServeArgs([42, "x"])).toEqual([42, "x"]);
+  expect(observeServeArgs([])).toEqual([]);
+});
+
 // The observer must be exercised as a real preloaded subprocess (`--preload`, how
 // launchDaemon loads it): it patches the serve entrypoint before srvx runs, and the
 // target script shares the preloaded module instance, so it can read the in-memory mark.
@@ -96,7 +141,7 @@ const TARGET_SCRIPT = `
 import { lastObservedInferenceMs, persistedInferenceMs } from ${
   JSON.stringify(join(ROOT, "src", "scripts", "inference_activity.ts"))
 };
-const server = Deno.serve({ port: 0, onListen: () => {} }, () => new Response("ok"));
+const server = Deno.serve({ hostname: "127.0.0.1", port: 0, onListen: () => {} }, () => new Response("ok"));
 const base = "http://127.0.0.1:" + server.addr.port;
 const out = {};
 await fetch(base + "/v1/models"); // liveness/model-list: must NOT mark
@@ -109,32 +154,26 @@ await server.shutdown();
 console.log(JSON.stringify(out));
 `;
 
-// skipIf(true): src/scripts/inference_activity.ts still patches `Bun.serve`; the
-// chunk-3 src sweep repoints the observer at `Deno.serve`, and this test (whose
-// target script already serves through Deno.serve) is re-enabled with it.
-test.skipIf(true)(
-  "the preloaded observer marks inference POSTs through a real Deno.serve, not GETs",
-  () => {
-    tmpHome();
-    const target = join(dir, "target.ts");
-    writeFileSync(target, TARGET_SCRIPT);
-    const before = Date.now();
-    const res = runSync(Deno.execPath(), [...denoRunArgs("--preload", PRELOAD), target], {
-      env: { ...process.env, COPILOT_API_HOME: dir },
-    });
-    if (res.exitCode !== 0) throw new Error(`preloaded target failed: ${res.stderr}`);
-    const out = JSON.parse(res.stdout.trim()) as {
-      afterGet: number;
-      afterPost: number;
-      body: string;
-      persisted: number;
-    };
-    expect(out.body).toBe("ok"); // observation never broke serving
-    expect(out.afterGet).toBe(0); // GETs are not activity
-    expect(out.afterPost).toBeGreaterThanOrEqual(before); // the POST marked, in memory...
-    expect(out.persisted).toBe(out.afterPost); // ...and the first mark persisted to the file
-  },
-);
+test("the preloaded observer marks inference POSTs through a real Deno.serve, not GETs", () => {
+  tmpHome();
+  const target = join(dir, "target.ts");
+  writeFileSync(target, TARGET_SCRIPT);
+  const before = Date.now();
+  const res = runSync(Deno.execPath(), [...denoRunArgs("--preload", PRELOAD), target], {
+    env: { ...process.env, COPILOT_API_HOME: dir },
+  });
+  if (res.exitCode !== 0) throw new Error(`preloaded target failed: ${res.stderr}`);
+  const out = JSON.parse(res.stdout.trim()) as {
+    afterGet: number;
+    afterPost: number;
+    body: string;
+    persisted: number;
+  };
+  expect(out.body).toBe("ok"); // observation never broke serving
+  expect(out.afterGet).toBe(0); // GETs are not activity
+  expect(out.afterPost).toBeGreaterThanOrEqual(before); // the POST marked, in memory...
+  expect(out.persisted).toBe(out.afterPost); // ...and the first mark persisted to the file
+});
 
 // Drift alarm for the floated proxy stack: the observer intercepts the serve
 // entrypoint, which only works because srvx's runtime adapter looks it up AT SERVE

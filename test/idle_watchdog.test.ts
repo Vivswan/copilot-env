@@ -9,6 +9,7 @@ import {
   isIdle,
   lastActivityMs,
 } from "../src/scripts/idle_watchdog.ts";
+import { resetDaemonShutdownForTests } from "../src/scripts/daemon_shutdown.ts";
 import {
   markInference,
   resetInferenceActivityForTests,
@@ -21,6 +22,7 @@ let dir = "";
 
 afterEach(() => {
   resetInferenceActivityForTests();
+  resetDaemonShutdownForTests();
   restoreEnv();
   dir = removeDir(dir);
 });
@@ -37,14 +39,16 @@ test("idleCheck: recent observed inference keeps a long-started daemon alive", (
   new CopilotEnvConfig().set({ autoStart: true });
   writeRunState({ pid: process.pid, port: 4141 });
   markInference(Date.now());
-  const realExit = process.exit;
-  process.exit = ((code?: number): never => {
-    throw new Error(`idleCheck unexpectedly exited (${code})`);
-  }) as typeof process.exit;
+  // Stub the process-exit primitive the shared shutdown path calls, so a wrong
+  // decision surfaces as a failure instead of ending the test run.
+  const realExit = Deno.exit;
+  Deno.exit = ((code?: number): never => {
+    throw new Error(`idleCheck unexpectedly stopped the daemon (${code})`);
+  }) as typeof Deno.exit;
   try {
     idleCheck(0, 60_000); // started at epoch, 1-minute window: only the mark is recent
   } finally {
-    process.exit = realExit;
+    Deno.exit = realExit;
   }
   expect(new CopilotEnvRunState().read().pid).toBe(process.pid); // never cleared -- the daemon stayed up
 });
@@ -54,16 +58,18 @@ test("idleCheck: with no activity past the window, clears run state and exits", 
   new CopilotEnvConfig().set({ autoStart: true });
   const state = new CopilotEnvRunState();
   state.set({ pid: process.pid, port: 4141, lastEnsureAt: 1 });
-  const realExit = process.exit;
+  const realExit = Deno.exit;
   let exitCode: number | undefined = -1;
-  process.exit = ((code?: number): never => {
+  Deno.exit = ((code?: number): never => {
     exitCode = code;
-    throw new Error("exit"); // idleCheck ends here, like the real process.exit
-  }) as typeof process.exit;
+    throw new Error("exit"); // the shutdown path ends here, like the real Deno.exit
+  }) as typeof Deno.exit;
   try {
-    expect(() => idleCheck(2, 1)).toThrow("exit"); // all marks ancient -> idle -> exit(0)
+    // All marks ancient -> idle -> the shared shutdown path. No server was recorded in
+    // this process, so there is nothing to drain and the exit is immediate.
+    expect(() => idleCheck(2, 1)).toThrow("exit");
   } finally {
-    process.exit = realExit;
+    Deno.exit = realExit;
   }
   expect(exitCode).toBe(0);
   // clearIfPid wiped the daemon tracking (pid matches this process).

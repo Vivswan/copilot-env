@@ -1,42 +1,84 @@
 // Process lifecycle helpers for finding, launching, and inspecting copilot-api.
 import { spawn } from "node:child_process";
 import { closeSync, openSync, readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { devNull } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { execa } from "execa";
-import psList from "ps-list";
-import { errMessage } from "../utils/error.ts";
 import { pidAlive } from "../utils/pid.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
+import { DAEMON_INTEGRATION_ID_ENV } from "./integration_identity.ts";
 import { PROXY_PACKAGE_NAME } from "./version.ts";
 
-// Resolve the bundled copilot-api entry by anchoring node's module resolution at
-// the in-place checkout where bootstrap installs the pinned dep. An explicit path
-// anchor (not import.meta) so node walks up from a
-// stable directory looking for node_modules/.
-const rootRequire = createRequire(join(PROJECT_ROOT, "_anchor.js"));
+/**
+ * How the floated copilot-api is addressed on a deno command line. The two forms are
+ * distinct shapes rather than one path plus a flag because `--cached-only` is only
+ * meaningful for a package specifier -- a file override must never carry it.
+ */
+export type CopilotApiEntry =
+  | { kind: "package"; specifier: string }
+  | { kind: "file"; path: string };
 
-export function resolveCopilotApiEntry(): string {
-  // Escape hatch: an explicit entry path overrides module resolution. CI uses
-  // this to point `start` at a fake proxy so the daemon lifecycle can be
-  // exercised without GitHub Copilot auth.
+/**
+ * The entry deno runs for the proxy. deno.json's import map pins the proxy version, so
+ * the bare package specifier IS the entry: deno resolves it through the frozen lock to
+ * the installed release and runs its `copilot-api` bin. That keeps ONE source for the
+ * version instead of restating it on every command line.
+ */
+export function resolveCopilotApiEntry(): CopilotApiEntry {
+  // Escape hatch: an explicit entry path overrides the mapped package. CI uses this to
+  // point `start` at a fake proxy so the daemon lifecycle can be exercised without
+  // GitHub Copilot auth.
   const override = process.env.COPILOT_API_ENTRY?.trim();
   if (override) {
-    return override;
+    return { kind: "file", path: override };
   }
-  try {
-    return rootRequire.resolve(`${PROXY_PACKAGE_NAME}/dist/main.js`);
-  } catch (e) {
-    throw new Error(
-      `the proxy is not installed under ${PROJECT_ROOT}; run \`bun install --frozen-lockfile\` (or re-run the agent launcher) to install dependencies: ${
-        errMessage(
-          e,
-        )
-      }`,
-    );
-  }
+  return { kind: "package", specifier: PROXY_PACKAGE_NAME };
+}
+
+/** The deno binary that runs the proxy. The one seam a packaged (sidecar) install
+ *  re-points; every proxy spawn goes through it. */
+export function resolveDenoBin(): string {
+  return Deno.execPath();
+}
+
+/** The proxy's permission grants, rendered as a list rather than `-A` so the set stays
+ *  visible: it reads and writes its daemon home, binds the loopback port, and reads env
+ *  plus platform info. */
+const PROXY_PERMISSIONS = [
+  "--allow-env",
+  "--allow-read",
+  "--allow-write",
+  "--allow-net",
+  "--allow-sys",
+] as const;
+
+/**
+ * The `deno run` argv that runs the floated copilot-api with `subArgs`, preceded by
+ * `preloadFlags` (the daemon's `--preload` shim pairs; empty for a foreground run).
+ *
+ * `--config` pins THIS checkout's deno.json instead of letting deno discover one: a
+ * package specifier has no directory to discover from, so discovery would fall back to
+ * the caller's cwd and could pick up an unrelated project's import map -- which the
+ * preload shims resolve their own imports through. The same file pins the proxy
+ * version, which is why the package form needs no version string here, and
+ * `--cached-only` then guarantees the launch never reaches the network.
+ */
+export function copilotApiArgv(
+  subArgs: readonly string[],
+  preloadFlags: readonly string[] = [],
+): string[] {
+  const entry = resolveCopilotApiEntry();
+  return [
+    "run",
+    "--config",
+    join(PROJECT_ROOT, "deno.json"),
+    ...(entry.kind === "package" ? ["--cached-only"] : []),
+    ...PROXY_PERMISSIONS,
+    ...preloadFlags,
+    entry.kind === "package" ? entry.specifier : entry.path,
+    ...subArgs,
+  ];
 }
 
 // The pid-liveness primitive lives in utils/pid.ts (the file-lock staleness check
@@ -132,24 +174,32 @@ function listCopilotApiPids(): Promise<number[]> {
   return process.platform === "win32" ? listCopilotApiPidsWindows() : listCopilotApiPidsPosix();
 }
 
+/** Process images that can host the daemon on Windows, where the command-line query
+ *  filters by image name. `deno.exe` is what launchDaemon spawns today; `node.exe` and
+ *  `bun.exe` exist only so an `agent update` from 3.5.6 or older (the last releases whose
+ *  launcher ran the daemon under bun) can still find -- and stop -- the daemon that
+ *  install left running. */
+const WINDOWS_DAEMON_IMAGES = ["deno.exe", "node.exe", "bun.exe"] as const;
+
 async function listCopilotApiPidsWindows(): Promise<number[]> {
-  // ps-list can't see command lines on Windows (fastlist returns name/pid/ppid
-  // only), so match on the daemon's command line via WMI: node/bun processes
-  // whose CommandLine is the launch (`<runtime> .../copilot-api/.../main.js start`).
-  // `wmic` is removed on newer Windows, so go through PowerShell + Get-CimInstance.
-  // The signature is the shared DAEMON_CMDLINE_PATTERN (same match as POSIX).
-  // Single quotes only, so the script passes through argv quoting unmangled.
+  // Windows has no portable command-line column in `ps`, so match on the daemon's command
+  // line via WMI: runtime processes whose CommandLine is the launch
+  // (`<runtime> ... copilot-api ... start`). `wmic` is removed on newer Windows, so go
+  // through PowerShell + Get-CimInstance. The signature is the shared
+  // DAEMON_CMDLINE_PATTERN (same match as POSIX). Single quotes only, so the script
+  // passes through argv quoting unmangled.
   //
   // Restrict to the CURRENT user's processes (GetOwner Domain+User == $env:USERDOMAIN/$env:USERNAME)
-  // to mirror the POSIX `psList({ all: false })` (`pgrep -u me`): otherwise, from an elevated
+  // to mirror the POSIX `ps -U <uid>` (`pgrep -u me`): otherwise, from an elevated
   // shell, the scan would list OTHER users' daemons and the orphan sweep could kill them. Both
   // env vars (not `[WindowsIdentity]::GetCurrent()`, which is blocked under Constrained Language
   // Mode) keep this working everywhere, and matching Domain too avoids a same-username collision
   // across a local account and a domain account. A process whose owner can't be read (GetOwner
   // ReturnValue != 0) is excluded -- safer to skip an unconfirmed process than to signal another
   // user's.
+  const nameTest = WINDOWS_DAEMON_IMAGES.map((image) => `$_.Name -eq '${image}'`).join(" -or ");
   const script = "Get-CimInstance Win32_Process | Where-Object { " +
-    "($_.Name -eq 'node.exe' -or $_.Name -eq 'bun.exe') " +
+    `(${nameTest}) ` +
     `-and $_.CommandLine -match '${DAEMON_CMDLINE_PATTERN}' ` +
     "} | Where-Object { " +
     "$o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue; " +
@@ -172,22 +222,55 @@ async function listCopilotApiPidsWindows(): Promise<number[]> {
   return pids;
 }
 
+/** One process as the POSIX scan reads it: its pid and full command line. */
+export interface ProcessRow {
+  pid: number;
+  command: string;
+}
+
+/** Parse `ps -o pid=,args=` output: leading-blank-padded pid, one space, then the command
+ *  line verbatim (which may itself contain runs of spaces, so only the pid is split off).
+ *  Lines that are not pid-prefixed -- a header a future `ps` might emit, or a wrapped
+ *  continuation -- are dropped rather than guessed at. */
+export function parseProcessRows(stdout: string): ProcessRow[] {
+  const rows: ProcessRow[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const match = /^\s*(\d+)\s+(\S.*)$/.exec(line);
+    if (match === null) continue;
+    rows.push({ pid: Number.parseInt(match[1] as string, 10), command: match[2] as string });
+  }
+  return rows;
+}
+
+/**
+ * The current user's processes as (pid, command line) rows. `-U <uid>` restricts the scan
+ * to OUR processes on both BSD (macOS) and procps (Linux) -- the orphan sweep SIGKILLs
+ * what this returns, so an elevated shell must never see another user's daemons.
+ * Best-effort, like the `pgrep` this descends from: any failure (including a user with no
+ * processes, where `ps` exits non-zero) degrades to no rows rather than aborting.
+ */
+async function listUserProcesses(): Promise<ProcessRow[]> {
+  const uid = process.getuid?.();
+  if (uid === undefined) return [];
+  try {
+    const { stdout } = await execa("ps", ["-U", String(uid), "-o", "pid=,args="]);
+    return parseProcessRows(stdout);
+  } catch {
+    return [];
+  }
+}
+
 async function listCopilotApiPidsPosix(): Promise<number[]> {
-  // Best-effort, like the old `pgrep`: a failed scan degrades to none rather
-  // than aborting. `all: false` restricts to the current user's processes
-  // (mirrors `pgrep -u me`).
-  const procs = await psList({ all: false }).catch(() => []);
   const pids: number[] = [];
-  for (const proc of procs) {
-    const cmd = proc.cmd ?? "";
+  for (const { pid, command } of await listUserProcesses()) {
     // The shared daemon signature (DAEMON_CMDLINE_PATTERN above).
-    if (!DAEMON_CMDLINE_RE.test(cmd)) {
+    if (!DAEMON_CMDLINE_RE.test(command)) {
       continue;
     }
-    if (cmd.includes("copilot-api.sh") || cmd.includes("copilot_api.py")) {
+    if (command.includes("copilot-api.sh") || command.includes("copilot_api.py")) {
       continue;
     }
-    pids.push(proc.pid);
+    pids.push(pid);
   }
   return pids;
 }
@@ -201,82 +284,142 @@ async function listCopilotApiPidsPosix(): Promise<number[]> {
  */
 export const DAEMON_GH_TOKEN_ENV = "COPILOT_ENV_DAEMON_GH_TOKEN";
 
-/** Runtime-specific argv prefix for the daemon spawn: deno needs the `run`
- *  subcommand and explicit permission grants before any `--preload` flag;
- *  bun takes the preloads directly. */
-function runtimeArgs(): string[] {
-  if (process.versions.bun) {
-    return [];
-  }
-  return ["run", "--allow-env", "--allow-read", "--allow-write", "--allow-net", "--allow-sys"];
+/**
+ * The credential the daemon launches with, in the only three shapes that exist. A
+ * passthrough credential ALWAYS carries its token -- the shim reads it back from argv,
+ * so passthrough-without-a-token would load a shim that can do nothing -- which is why
+ * `pat` is a variant rather than a boolean beside an optional token.
+ */
+export type DaemonCredential =
+  | { kind: "none" }
+  | { kind: "token"; token: string }
+  | { kind: "pat"; token: string; integrationId: string | undefined };
+
+/** Everything the daemon spawn needs. The preload set and the credential environment are
+ *  DERIVED from this (below), never passed alongside it, so no caller can hand over a
+ *  combination the credential doesn't support. */
+export interface DaemonSpec {
+  port: number;
+  logFile: string;
+  /** Daemon-home / sqlite environment the launch pipeline assembles. */
+  env: Record<string, string>;
+  credential: DaemonCredential;
+  /** Arm the in-daemon idle auto-stop watchdog (the `auto-start` config key). */
+  idleWatchdog: boolean;
+  /** Discard the proxy's handler-log writes (the `proxy-logs` config key). */
+  muteProxyLogs: boolean;
 }
 
-export function launchDaemon(
-  port: number,
-  logfile: string,
-  extraEnv?: Record<string, string>,
-  githubToken?: string,
-  patPassthrough?: boolean,
-  idleWatchdog?: boolean,
-  muteProxyLogs?: boolean,
-): number {
-  /** Launch copilot-api as a detached daemon. Returns the PID. */
-  const env: NodeJS.ProcessEnv = { ...process.env };
-  if (extraEnv) {
-    Object.assign(env, extraEnv);
+const shimPath = (name: string): string => join(PROJECT_ROOT, "src", "scripts", name);
+
+/**
+ * The daemon's `--preload` pairs, in load order. Every shim is a RUNTIME shim that
+ * touches none of copilot-api's files, so none of them pins the floated proxy version.
+ *  - the token-argv shim FIRST, whenever a credential exists: it splices the token from
+ *    an env var onto process.argv, and the PAT shim below reads it back from there.
+ *  - the daemon-runtime shim, ALWAYS: it wraps Deno.serve to record inbound inference
+ *    requests and to capture the server handle the shutdown path drains.
+ *  - PAT passthrough, which fakes the editor token exchange so the token is used directly.
+ *  - the idle watchdog, which stops the daemon once it has been idle past the timeout.
+ *  - the log mute, which discards the daemon's handler-log writes under <home>/logs.
+ */
+function daemonPreloadFlags(spec: DaemonSpec): string[] {
+  const shims: string[] = [];
+  if (spec.credential.kind !== "none") shims.push(shimPath("token_argv_preload.ts"));
+  shims.push(shimPath("daemon_runtime_preload.ts"));
+  if (spec.credential.kind === "pat") shims.push(shimPath("pat_passthrough_preload.ts"));
+  if (spec.idleWatchdog) shims.push(shimPath("idle_watchdog_preload.ts"));
+  if (spec.muteProxyLogs) shims.push(shimPath("log_mute_preload.ts"));
+  return shims.flatMap((shim) => ["--preload", shim]);
+}
+
+/**
+ * Write the credential into the daemon's environment. Total over the union and always
+ * set-OR-DELETE: the daemon starts from a copy of our own environment, so a value left
+ * there by an earlier run would otherwise leak into a daemon whose credential does not
+ * want it.
+ *
+ * The token travels through the ENVIRONMENT (owner-only: /proc/<pid>/environ is 0600 and
+ * `ps e` shows only your own processes), never the argv -- the token-argv shim splices it
+ * back onto process.argv in-process as `--github-token`, so the proxy uses it in-memory
+ * (never writing its own github_token file, leaving a device-flow login untouched) while
+ * the secret stays off the world-readable command line.
+ */
+function applyCredentialEnv(env: NodeJS.ProcessEnv, credential: DaemonCredential): void {
+  if (credential.kind === "none") {
+    delete env[DAEMON_GH_TOKEN_ENV];
+  } else {
+    env[DAEMON_GH_TOKEN_ENV] = credential.token;
   }
-  const logFd = openSync(logfile, "w");
-  const devnull = openSync(devNull, "r");
-  const entry = resolveCopilotApiEntry();
-  // bun flags go BEFORE the entry script, as `--preload <shim>` pairs (runtime shims
-  // that touch none of copilot-api's files, so neither pins the floated proxy version):
-  //  - the token-argv shim (FIRST, when a token is passed) splices the GitHub token from an
-  //    env var into process.argv so it stays off the world-readable command line (see
-  //    token_argv_preload.ts); it must precede the PAT shim, which reads the token from argv.
-  //  - the inference-activity observer (ALWAYS loaded) wraps Bun.serve so inbound inference
-  //    POSTs are recorded for the idle watchdog and `agent health` (see inference_activity.ts).
-  //  - PAT passthrough wraps the daemon's globalThis.fetch to fake the editor token
-  //    exchange so a PAT is used directly (see pat_passthrough_preload.ts).
-  //  - the idle watchdog arms an in-daemon timer that exits the process when idle, so the
-  //    server and its watchdog are one unit (see idle_watchdog.ts).
-  //  - the log mute discards the daemon's handler-log writes under <home>/logs
-  //    (see log_mute_preload.ts).
-  const bunFlags: string[] = [];
-  if (githubToken) {
-    bunFlags.push("--preload", join(PROJECT_ROOT, "src/scripts/token_argv_preload.ts"));
+  const integrationId = credential.kind === "pat" ? credential.integrationId : undefined;
+  if (integrationId === undefined) {
+    delete env[DAEMON_INTEGRATION_ID_ENV];
+  } else {
+    env[DAEMON_INTEGRATION_ID_ENV] = integrationId;
   }
-  bunFlags.push("--preload", join(PROJECT_ROOT, "src/scripts/inference_activity_preload.ts"));
-  if (patPassthrough) {
-    bunFlags.push("--preload", join(PROJECT_ROOT, "src/scripts/pat_passthrough_preload.ts"));
-  }
-  if (idleWatchdog) {
-    bunFlags.push("--preload", join(PROJECT_ROOT, "src/scripts/idle_watchdog_preload.ts"));
-  }
-  if (muteProxyLogs) {
-    bunFlags.push("--preload", join(PROJECT_ROOT, "src/scripts/log_mute_preload.ts"));
-  }
-  if (patPassthrough) {
-    // The shim relies on copilot-api's DEFAULT path (which sends the vscode-chat editor
-    // headers the token needs). An inherited COPILOT_API_OAUTH_APP=opencode would put
-    // copilot-api in opencode mode and strip those headers, so scrub it.
+  if (credential.kind === "pat") {
+    // The passthrough shim relies on copilot-api's DEFAULT path (which sends the
+    // vscode-chat editor headers the token needs). An inherited
+    // COPILOT_API_OAUTH_APP=opencode would put copilot-api in opencode mode and strip
+    // those headers, so scrub it.
     delete env.COPILOT_API_OAUTH_APP;
   }
-  const args = [...runtimeArgs(), ...bunFlags, entry, "start", "--verbose", "--port", String(port)];
-  // A token provisioned via `agent auth` (stored in our state) is handed to the daemon
-  // through the ENVIRONMENT (owner-only), NOT the argv -- the token_argv_preload above
-  // splices it back onto process.argv in-process as `--github-token`, so the proxy uses it
-  // in-memory (never writing its own github_token file, leaving a device-flow login
-  // untouched) while the secret stays off the world-readable command line. The PAT shim
-  // reads the spliced flag too.
-  if (githubToken) {
-    env[DAEMON_GH_TOKEN_ENV] = githubToken;
+}
+
+/** Loopback hosts that must never be routed through an outbound HTTP proxy: the daemon's
+ *  own admin traffic and every local client's calls to it. Deno honours HTTP_PROXY for
+ *  loopback too, so a corporate proxy environment would otherwise swallow them. */
+const LOOPBACK_NO_PROXY = ["127.0.0.1", "::1", "localhost"] as const;
+
+/** `current` with the loopback hosts appended -- the user's own entries are always kept,
+ *  never replaced, and an entry already present is not duplicated. */
+export function noProxyWithLoopback(current: string | undefined): string {
+  const entries = (current ?? "").split(",").map((e) => e.trim()).filter((e) => e !== "");
+  for (const host of LOOPBACK_NO_PROXY) {
+    if (!entries.some((e) => e.toLowerCase() === host)) entries.push(host);
   }
-  const proc = spawn(process.execPath, args, {
+  return entries.join(",");
+}
+
+/**
+ * The daemon's full environment. `base` (our own) is inherited wholesale, so TLS and
+ * outbound-proxy settings -- DENO_TLS_CA_STORE, NODE_EXTRA_CA_CERTS, HTTP_PROXY/HTTPS_PROXY
+ * -- reach the daemon exactly as the user set them for us; the spec's home wiring, the
+ * credential, and the loopback proxy exemption are layered on top. Pure, so the whole
+ * environment contract is testable without spawning anything.
+ */
+export function daemonEnvironment(spec: DaemonSpec, base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base, ...spec.env };
+  applyCredentialEnv(env, spec.credential);
+  // Read either spelling (a user may have set only one) and write BOTH, so the exemption
+  // holds whichever name the HTTP client happens to consult first.
+  const noProxy = noProxyWithLoopback(env.NO_PROXY ?? env.no_proxy);
+  env.NO_PROXY = noProxy;
+  env.no_proxy = noProxy;
+  // A detached daemon must never stall on (or log) a release probe at startup.
+  env.DENO_NO_UPDATE_CHECK = "1";
+  return env;
+}
+
+/** The full `deno run` argv for the daemon spawn. Pure: what the daemon is launched with
+ *  is inspectable without launching it. */
+export function daemonArgv(spec: DaemonSpec): string[] {
+  return copilotApiArgv(
+    ["start", "--verbose", "--port", String(spec.port)],
+    daemonPreloadFlags(spec),
+  );
+}
+
+/** Launch copilot-api as a detached daemon per `spec`. Returns the PID. */
+export function launchDaemon(spec: DaemonSpec): number {
+  const logFd = openSync(spec.logFile, "w");
+  const devnull = openSync(devNull, "r");
+  const proc = spawn(resolveDenoBin(), daemonArgv(spec), {
     stdio: [devnull, logFd, logFd],
     detached: true,
     // No console window on Windows (defensive; redirected stdio already avoids one).
     windowsHide: true,
-    env,
+    env: daemonEnvironment(spec, process.env),
   });
   proc.unref();
   closeSync(devnull);

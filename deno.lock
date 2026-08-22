@@ -17,17 +17,14 @@
     "npm:@modelcontextprotocol/client@2": "2.0.0",
     "npm:@modelcontextprotocol/sdk@^1.30.0": "1.30.0_zod@4.4.3",
     "npm:@modelcontextprotocol/server@2": "2.0.0",
-    "npm:@types/bun@^1.3.14": "1.3.14",
     "npm:commander@15": "15.0.0",
     "npm:consola@^3.4.2": "3.4.2",
     "npm:execa@10": "10.0.1",
     "npm:husky@^9.1.7": "9.1.7",
     "npm:lint-staged@^17.3.0": "17.3.0",
-    "npm:ps-list@9": "9.0.0",
     "npm:semver@^7.8.5": "7.8.5",
     "npm:smol-toml@^1.7.1": "1.7.1",
     "npm:tar@^7.5.22": "7.5.22",
-    "npm:typescript@^7.0.2": "7.0.2",
     "npm:valibot@^1.4.2": "1.4.2_typescript@7.0.2",
     "npm:which@7": "7.0.0"
   },
@@ -171,18 +168,6 @@
     "@sindresorhus/merge-streams@4.0.0": {
       "integrity": "sha512-tlqY9xq5ukxTUZBmoOp+m61cqwQD5pHJtFY3Mn8CA8ps6yghLH/Hw8UPdqg4OLmFW3IFlcXnQNmo/dh8HzXYIQ=="
     },
-    "@types/bun@1.3.14": {
-      "integrity": "sha512-h1hFqFVcvAvD9j9K7ZW7vd82aSA+rTdznZa+5bwvCwqSB1jmmfLcbIWhOLx1/+boy/xmjgCs/OMUL8hRJSmnPw==",
-      "dependencies": [
-        "bun-types"
-      ]
-    },
-    "@types/node@26.1.2": {
-      "integrity": "sha512-Vu4a5UFA9rIIFJ7rB/Vaafh9lrCQszopTCx6KjFboXTGQbPNasehVR5TEiithSDGyd1DEiUByggTZsg8jukeIg==",
-      "dependencies": [
-        "undici-types"
-      ]
-    },
     "@typescript/typescript-aix-ppc64@7.0.2": {
       "integrity": "sha512-MTKKkWB7p/0E9xi1d1tHtZ5PiLkGEMIq88pK2CubZjOsLtYTLqhgIgi6zepFa+9GHZ6h05NMCkQxGKiPXMxXtQ==",
       "os": ["aix"],
@@ -320,12 +305,6 @@
         "qs",
         "raw-body",
         "type-is"
-      ]
-    },
-    "bun-types@1.3.14": {
-      "integrity": "sha512-4N0ig0fEomHt5R0KCFWjovxow98rIoRwKolrYdCcknNwMekCXRnWEUvgu5soYV8QXtVsrUD8B95MBOZGPvr6KQ==",
-      "dependencies": [
-        "@types/node"
       ]
     },
     "bytes@3.1.2": {
@@ -869,9 +848,6 @@
     "proxy-from-env@1.1.0": {
       "integrity": "sha512-D+zkORCbA9f1tdWRK0RaCR3GPv50cMxcrz4X8k5LTSUD1Dkw47mKJEZQNunItRTkWwgtaUSo1RVFRIG9ZXiFYg=="
     },
-    "ps-list@9.0.0": {
-      "integrity": "sha512-lxMEoIL/BQlk2KunFzxwUPwMvjFH7x7cmvzSLsSHpyMXl9FFfLUlfKrYwFc4wx/ZaIxxuXC4n8rjQ1CX/tkXVQ=="
-    },
     "qs@6.15.3": {
       "integrity": "sha512-O9gl3zCl5h5blw1KGUzQKhA5oUXSl8rwUIM5o0S3nCXMliSvy5Dzx7/DJcI+SwgICv+IneSZwhBh1oSyEHA71A==",
       "dependencies": [
@@ -1087,9 +1063,6 @@
       ],
       "bin": true
     },
-    "undici-types@8.3.0": {
-      "integrity": "sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ=="
-    },
     "undici@7.29.0": {
       "integrity": "sha512-IDxfleLmmbSskfWSUATiN1nfn2rDuvnMOqb5CWR92iIfojA0Ud+ulOAAEQ57LPr9rWmsreUyf5lwyao+7GNNVw=="
     },
@@ -1174,17 +1147,14 @@
       "npm:commander@15",
       "npm:consola@^3.4.2",
       "npm:execa@10",
-      "npm:ps-list@9",
       "npm:semver@^7.8.5",
       "npm:smol-toml@^1.7.1",
       "npm:tar@^7.5.22",
-      "npm:typescript@^7.0.2",
       "npm:valibot@^1.4.2",
       "npm:which@7"
     ],
     "packageJson": {
       "dependencies": [
-        "npm:@types/bun@^1.3.14",
         "npm:husky@^9.1.7",
         "npm:lint-staged@^17.3.0"
       ]

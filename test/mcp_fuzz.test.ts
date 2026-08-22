@@ -86,7 +86,6 @@ function binaryGarbage(): Uint8Array {
 
 /** A request whose params carry the given `_meta` envelope claim. */
 function envelopeProbe(id: number, meta: Record<string, unknown>): string {
-  // biome-ignore lint/style/useNamingConvention: `_meta` is the MCP wire key
   const params = { "_meta": meta };
   return JSON.stringify({ "jsonrpc": "2.0", "id": id, "method": "tools/list", "params": params });
 }

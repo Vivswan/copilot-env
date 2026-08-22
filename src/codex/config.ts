@@ -172,7 +172,7 @@ function managedDirectProvider(
     "auth": {
       "command": command,
       "args": [...args],
-      // Generous vs the old `gh` path (5s): the launcher may cold-start bun, and a
+      // Generous vs the old `gh` path (5s): the launcher may cold-start deno, and a
       // due (at most daily) model-catalog refresh adds a bounded /models fetch (5s)
       // plus a `codex debug models --bundled` dump (8s) after the token prints.
       // The common warm case returns in well under a second; Codex refreshes lazily.
@@ -204,7 +204,7 @@ function managedProxyProvider(baseUrl: string, profile: Profile = null) {
     "auth": {
       "command": auth.command,
       "args": [...auth.args],
-      // Cold-starting the proxy runs a full child `agent start`: bun startup, the daemon's
+      // Cold-starting the proxy runs a full child `agent start`: runtime startup, the daemon's
       // readiness wait (up to a ~120s ceiling), THEN model-alias sync + version logging
       // before the key is printed. Give the first auth attempt headroom past all of that, so
       // it does not time out after the proxy is ready but before `auth --print-proxy-token`.

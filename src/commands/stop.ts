@@ -45,5 +45,5 @@ export async function runStop(args: StopArgs = {}): Promise<void> {
     process.exitCode = 1;
     return;
   }
-  consola.info(`   Bun env: ${PROJECT_ROOT}`);
+  consola.info(`   Install root: ${PROJECT_ROOT}`);
 }

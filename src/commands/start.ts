@@ -255,7 +255,7 @@ async function reportStartSummary(
     ["PID", String(live.pid)],
     ["Port", String(live.port)],
     ["SQLite", paths.sqliteDb],
-    ["Bun env", PROJECT_ROOT],
+    ["Install root", PROJECT_ROOT],
   ];
   const labelWidth = summary.reduce((m, [label]) => Math.max(m, label.length), 0);
   consola.info(

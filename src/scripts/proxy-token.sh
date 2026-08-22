@@ -13,7 +13,7 @@
 # heartbeat, the key) at that NAMED profile's isolated daemon; the auto-start gate stays the
 # one account-wide preference.
 #
-# Calls go through bin/agent (NOT `bun src/cli.ts`) so bun + node_modules are bootstrapped
+# Calls go through bin/agent (NOT `deno run src/cli.ts`) so deno + dependencies are bootstrapped
 # first. Start/prompt noise goes to stderr; only the key reaches stdout. This script lives at
 # src/scripts/, so the repo root is two levels up.
 dir=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)

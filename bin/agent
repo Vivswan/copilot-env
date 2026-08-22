@@ -1,39 +1,36 @@
 #!/bin/sh
 # Single self-bootstrapping entry point (Linux + macOS) for copilot-env.
-# Installs bun if missing, installs node_modules in-place in the checkout only
-# when a read-only `proxy_float.ts --verify` says it's needed (stale float /
-# missing or out-of-sync node_modules), then runs the cli.ts dispatcher (cli.ts
-# owns the subcommand list; see `agent --help`). The `agent` shell function
-# (agents.bashrc) is what turns `agent env` output into shell state.
+# Installs deno if missing (the .dvmrc pin, via the shared scripts/ensure-deno.sh that
+# scripts/setup-env.sh uses too), installs dependencies in-place in the checkout only when
+# the lockfile has moved ahead of them, then runs the cli.ts dispatcher (cli.ts owns the
+# subcommand list; see `agent --help`). The `agent` shell function (agents.bashrc) is what
+# turns `agent env` output into shell state.
 #
-# No cache: node_modules lives directly in the checkout and cli.ts runs from
-# there.
+# No cache: node_modules lives directly in the checkout and cli.ts runs from there.
+#
+# EVERY line this script emits goes to stderr -- stdout belongs to `agent env`, whose
+# output the shell function evals.
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SNAP="$(cd "${HERE}/.." && pwd)"
 
-if ! command -v bun >/dev/null 2>&1 && [ ! -x "$HOME/.bun/bin/bun" ]; then
-    echo "==> Installing bun (one-time) ..." >&2
-    curl -fsSL https://bun.sh/install | bash >/dev/null
+# shellcheck source=../scripts/ensure-deno.sh
+. "${SNAP}/scripts/ensure-deno.sh"
+if ! ensure_deno "${SNAP}"; then
+    echo "copilot-env bootstrap failed: deno is unavailable -- check network, then re-run." >&2
+    exit 1
 fi
-[ -x "$HOME/.bun/bin/bun" ] && PATH="$HOME/.bun/bin:$PATH"
-export PATH
 
-# Install node_modules in-place in the checkout, but only when needed: a read-only
-# `proxy_float.ts --verify` checks whether this call can skip install. Normal
-# no-env verify reads npm publish-time metadata, computes the cooldown-aged target,
-# and compares it to the installed proxy; missing/stale node_modules still force
-# install. HUSKY=0 keeps husky's `prepare` from reinstalling git hooks each time.
-# Route all of bun's output to stderr so it can't leak into the `agent env` stdout
-# the shell function evals (the verify's own output is discarded for the same reason).
-if [ ! -d "${SNAP}/node_modules" ] \
-    || ! bun "${SNAP}/src/proxy_float.ts" --verify >/dev/null 2>&1; then
-    if ! ( cd "${SNAP}" && HUSKY=0 bun install --frozen-lockfile >&2 ); then
-        echo "copilot-env bootstrap failed: bun install did not complete -- check network/bun, then re-run." >&2
+# Install dependencies in-place in the checkout, but only when needed: a missing
+# node_modules, or a deno.lock that has moved ahead of it (the lockfile is the source of
+# truth for what should be installed, and every dependency change updates it).
+if [ ! -d "${SNAP}/node_modules" ] || [ "${SNAP}/deno.lock" -nt "${SNAP}/node_modules" ]; then
+    if ! ( cd "${SNAP}" && deno install --frozen >&2 ); then
+        echo "copilot-env bootstrap failed: deno install did not complete -- check network/deno, then re-run." >&2
         exit 1
     fi
-    # Mark node_modules as freshly installed so the bun.lock-vs-node_modules mtime
-    # check above can't loop: a frozen no-op install needn't bump the dir's mtime.
+    # Mark node_modules as freshly installed so the deno.lock-vs-node_modules mtime
+    # check above can't loop: a no-op frozen install needn't bump the dir's mtime.
     touch "${SNAP}/node_modules"
 fi
 
@@ -41,8 +38,9 @@ fi
 # swapped release is what dispatches. preflight.ts gates on the state file's
 # `enabled` flag and the once-per-day cadence; the file-exists test just keeps the
 # no-spawn fast path for users who never opted in. Non-fatal; output to stderr.
+# `-P=cli` scopes net to the CLI's real outbound hosts; fs/run stay broad until chunk 5.
 if [ "${1:-}" = "start" ] && [ -f "${SNAP}/.autoupdate/state.json" ]; then
-    bun "${SNAP}/src/autoupdate/preflight.ts" >&2 || true
+    deno run -P=cli "${SNAP}/src/autoupdate/preflight.ts" >&2 || true
 fi
 
-exec bun run "${SNAP}/src/cli.ts" "$@"
+exec deno run -P=cli "${SNAP}/src/cli.ts" "$@"

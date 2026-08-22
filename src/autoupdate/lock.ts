@@ -6,7 +6,7 @@
 //
 // This is a BEST-EFFORT advisory lock for a once-a-day personal self-update, not a
 // distributed mutex. Its correctness rests on one invariant: STALE_LOCK_MS must far
-// exceed the real work duration (a tarball download + `bun install` of a few pinned
+// exceed the real work duration (a tarball download + a frozen `deno install` of a few pinned
 // deps -- seconds to a couple of minutes), so a LIVE holder is never seen as stale.
 // Steal therefore only ever reaps a crashed/dead holder; a live lock is never stolen,
 // which is what keeps the release path from racing a successor.

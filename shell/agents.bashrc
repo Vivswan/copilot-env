@@ -14,8 +14,8 @@
 # shellcheck disable=SC2296
 _COPILOT_AGENTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")/.." && pwd)"
 
-# Ensure bun is on PATH (its installer only patches ~/.zshrc by default).
-[ -x "$HOME/.bun/bin/bun" ] && case ":$PATH:" in *":$HOME/.bun/bin:"*) ;; *) export PATH="$HOME/.bun/bin:$PATH" ;; esac
+# Ensure deno is on PATH (its installer only patches ~/.zshrc by default).
+[ -x "$HOME/.deno/bin/deno" ] && case ":$PATH:" in *":$HOME/.deno/bin:"*) ;; *) export PATH="$HOME/.deno/bin:$PATH" ;; esac
 
 # Uniform wrapper over bin/agent: run the requested command, then re-apply the
 # full session env from the single source of truth -- `agent env`, which prints

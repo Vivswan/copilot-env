@@ -9,17 +9,9 @@ $ErrorActionPreference = 'Stop'
 # Run from the repo root regardless of where we're invoked (e.g. a worktree).
 Set-Location (Join-Path $PSScriptRoot '..')
 
-$denoVersion = (Get-Content .dvmrc -Raw).Trim()
-$env:DENO_NO_UPDATE_CHECK = '1'
-
-if (-not (Get-Command deno -ErrorAction SilentlyContinue)) {
-    Write-Host "deno not found -- installing v$denoVersion via the official install script ..."
-    $installer = Join-Path ([IO.Path]::GetTempPath()) 'deno-install.ps1'
-    Invoke-RestMethod https://deno.land/install.ps1 -OutFile $installer
-    & $installer "v$denoVersion"
-    $denoHome = if ($env:DENO_INSTALL) { $env:DENO_INSTALL } else { Join-Path $HOME '.deno' }
-    $env:Path = (Join-Path $denoHome 'bin') + [IO.Path]::PathSeparator + $env:Path
-}
+# The deno bootstrap is shared with bin/agent.ps1 so the two can't drift.
+. (Join-Path $PSScriptRoot 'ensure-deno.ps1')
+Install-Deno -Root $PWD
 
 Write-Host 'Initializing copilot-env: deno install --frozen ...'
 & deno install --frozen

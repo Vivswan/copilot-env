@@ -1,11 +1,11 @@
 // CLI entrypoint: declares Commander commands and delegates behavior to command modules.
 //
 // Direct run:
-//   bun src/cli.ts <command> [args]
+//   deno run -P=cli src/cli.ts <command> [args]
 //
 // This is the implementation behind bin/agent and bin/agent.ps1. The launchers
 // normally run this after ensuring Bun/deps are present; direct runs are useful
-// for tests and local command debugging. Run `bun src/cli.ts --help` for the
+// for tests and local command debugging. Run `deno run -P=cli src/cli.ts --help` for the
 // command tree and per-command arguments.
 //
 // Commander (not citty) so unknown flags are rejected (`error: unknown option
@@ -48,7 +48,7 @@ import { packageVersion } from "./utils/version.ts";
 disableConsolaTimestamps();
 
 // Thin Commander wiring: each subcommand only declares its parameters and calls
-// the matching domain/command run function. bin/agent runs `bun install` (in-place,
+// the matching domain/command run function. bin/agent runs `deno install` (in-place,
 // in the checkout) before this, so the install/float is not a subcommand here.
 
 /** Commander hands action callbacks an options bag of mixed-typed values. */

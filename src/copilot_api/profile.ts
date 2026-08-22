@@ -12,7 +12,6 @@
  *  unforgeable elsewhere), so holding the type IS the proof of validation --
  *  the path/store/config sinks accept it without re-checking. */
 export type ProfileName = string & {
-  // biome-ignore lint/style/useNamingConvention: the dunder phantom key is the branded-type convention; it never exists at runtime
   readonly __brand: "ProfileName";
 };
 

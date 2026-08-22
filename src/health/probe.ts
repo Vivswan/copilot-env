@@ -4,7 +4,7 @@
 // command did). Pure sub-evaluators (evalShellFiles, evalCodex) take raw content
 // so they unit-test without touching the world.
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { AGENT_CLIS } from "../agents/clis.ts";
 import {
@@ -53,11 +53,7 @@ import {
   proxyVersionBoundsStatus,
   type ProxyVersionStatus,
 } from "../copilot_api/version.ts";
-import {
-  nodeModulesFresh,
-  proxyFloatSkips,
-  resolveMinimumReleaseAgeSeconds,
-} from "../proxy_float.ts";
+import { proxyFloatSkips, resolveMinimumReleaseAgeSeconds } from "../proxy_float.ts";
 import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
 import { persistedInferenceMs } from "../scripts/inference_activity.ts";
 import { hasMarker, LAUNCHERS_MARKER, MARKER, shellTargetFiles } from "../shell/integration.ts";
@@ -179,7 +175,7 @@ export interface WatchdogFacts {
 
 export interface BootstrapFacts {
   cliVersion: string;
-  bun: { available: boolean; version: string | null };
+  deno: { available: boolean; version: string | null };
   nodeModules: { present: boolean; fresh: boolean };
 }
 
@@ -405,7 +401,7 @@ export interface ProbeDeps {
   readAutoupdate(): AutoupdateStatus;
   nodeModulesPresent(): boolean;
   nodeModulesFresh(): boolean;
-  bunVersion(): string | null;
+  denoVersion(): string | null;
   cliVersion(): string;
   /** `--live` end-to-end prompts against the configured Codex/Claude homes;
    *  `profile` selects a named profile's wiring (never probed in the default sweep). */
@@ -635,13 +631,17 @@ export function defaultProbeDeps(): ProbeDeps {
     }),
     nodeModulesPresent: () => existsSync(join(root, "node_modules")),
     nodeModulesFresh: () => {
+      // Same predicate as bin/agent's freshness gate: node_modules at least as
+      // new as deno.lock. (proxy_float's bun-era check is replaced in chunk 4.)
       try {
-        return nodeModulesFresh(root);
+        const lock = statSync(join(root, "deno.lock")).mtimeMs;
+        const modules = statSync(join(root, "node_modules")).mtimeMs;
+        return modules >= lock;
       } catch {
         return false;
       }
     },
-    bunVersion: () => process.versions.bun ?? process.versions.deno ?? null,
+    denoVersion: () => Deno.version.deno,
     cliVersion: packageVersion,
     codexLive: (home, profile) =>
       runLiveCli(
@@ -945,11 +945,11 @@ export async function gatherFacts(
       (async () => {
         facts.bootstrap = {
           cliVersion: deps.cliVersion(),
-          bun: { available: deps.bunVersion() !== null, version: deps.bunVersion() },
+          deno: { available: deps.denoVersion() !== null, version: deps.denoVersion() },
           nodeModules: { present: deps.nodeModulesPresent(), fresh: deps.nodeModulesFresh() },
         };
         const version = deps.installedProxyVersion();
-        // A bad COPILOT_API_MIN_RELEASE_AGE / bunfig value shouldn't crash health.
+        // A bad COPILOT_API_MIN_RELEASE_AGE / cooldown setting shouldn't crash health.
         let cooldownSeconds: number | null = null;
         try {
           cooldownSeconds = deps.proxyCooldownSeconds();

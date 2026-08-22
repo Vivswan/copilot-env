@@ -13,7 +13,6 @@ import {
 import {
   checkAuth,
   checkAutoupdate,
-  checkBun,
   checkClaude,
   checkClaudeLive,
   checkCli,
@@ -21,6 +20,7 @@ import {
   checkCodex,
   checkCodexHost,
   checkCodexLive,
+  checkDeno,
   checkLaunchers,
   checkNodeModules,
   checkProxyPackage,
@@ -105,7 +105,7 @@ function profileTarget(name: string, overrides: Partial<RuntimeTarget> = {}): Ru
 
 const BOOTSTRAP_OK: BootstrapFacts = {
   cliVersion: "3.1.0",
-  bun: { available: true, version: "1.2.0" },
+  deno: { available: true, version: "2.9.5" },
   nodeModules: { present: true, fresh: true },
 };
 
@@ -134,17 +134,17 @@ test("filterByScope keeps only participating checks, preserving order", () => {
     result("runtime.port", "ok", ["full", "proxy", "runtime"]),
     result("setup.shell", "warn", ["full", "setup"]),
     result("setup.codex", "ok", ["full", "setup", "codex"]),
-    result("bootstrap.bun", "ok", ["full", "proxy"]),
+    result("bootstrap.deno", "ok", ["full", "proxy"]),
   ];
   expect(filterByScope(all, "runtime").map((r) => r.id)).toEqual(["runtime.port"]);
   expect(filterByScope(all, "setup").map((r) => r.id)).toEqual(["setup.shell", "setup.codex"]);
   expect(filterByScope(all, "codex").map((r) => r.id)).toEqual(["setup.codex"]);
-  expect(filterByScope(all, "proxy").map((r) => r.id)).toEqual(["runtime.port", "bootstrap.bun"]);
+  expect(filterByScope(all, "proxy").map((r) => r.id)).toEqual(["runtime.port", "bootstrap.deno"]);
   expect(filterByScope(all, "full").map((r) => r.id)).toEqual([
     "runtime.port",
     "setup.shell",
     "setup.codex",
-    "bootstrap.bun",
+    "bootstrap.deno",
   ]);
 });
 
@@ -240,7 +240,7 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
   expect(above.fix).toBeUndefined();
 
   // A missing package is a broken install in any mode: the exemption must not
-  // swallow it (bun install genuinely fixes it, float or no float).
+  // swallow it (a reinstall genuinely fixes it, float or no float).
   const missing = checkProxyPackage({
     version: null,
     bounds: { ok: false, reason: "missing", version: null },
@@ -249,7 +249,7 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
     floatSkips: true,
   });
   expect(missing.status).toBe("fail");
-  expect(missing.fix).toBe("bun install --frozen-lockfile");
+  expect(missing.fix).toBe("deno install --frozen");
 
   // An in-bounds proxy on a direct-only machine reads plain ok: no note glued
   // onto the version/cooldown detail, no floatSkips stamp.
@@ -628,7 +628,7 @@ test("runtime checks stamp the target's profile; environment checks stay null", 
   const named = profileTarget("work", { reachable: false });
   expect(checkRuntimePort(named).profile).toBe(parseProfileName("work"));
   expect(checkRuntimeOrphan(named).profile).toBe(parseProfileName("work"));
-  expect(checkBun(BOOTSTRAP_OK).profile).toBeNull();
+  expect(checkDeno(BOOTSTRAP_OK).profile).toBeNull();
   expect(checkCliVersion(BOOTSTRAP_OK).profile).toBeNull();
 });
 
@@ -924,8 +924,8 @@ test("gatherFacts is read-only: no files appear in a fresh isolated home", async
 // --- bootstrap checks -------------------------------------------------------
 
 test("bun unavailable fails; node_modules absent fails, stale warns, fresh ok", () => {
-  expect(checkBun(BOOTSTRAP_OK).status).toBe("ok");
-  expect(checkBun({ ...BOOTSTRAP_OK, bun: { available: false, version: null } }).status).toBe(
+  expect(checkDeno(BOOTSTRAP_OK).status).toBe("ok");
+  expect(checkDeno({ ...BOOTSTRAP_OK, deno: { available: false, version: null } }).status).toBe(
     "fail",
   );
   expect(checkNodeModules(BOOTSTRAP_OK).status).toBe("ok");

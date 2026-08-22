@@ -2,7 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { discoverUsageDbs, readUsage, sanitizeTokenCount } from "../src/usage/usage.ts";
+import {
+  discoverUsageDbs,
+  parseUsageRow,
+  readUsage,
+  sanitizeTokenCount,
+} from "../src/usage/usage.ts";
 import { localDayKey } from "../src/utils/time.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 
@@ -39,6 +44,84 @@ test("sanitizeTokenCount clamps non-finite, negative, and non-number counts to 0
   expect(sanitizeTokenCount(Number.POSITIVE_INFINITY)).toBe(0);
   expect(sanitizeTokenCount("7")).toBe(0);
   expect(sanitizeTokenCount(undefined)).toBe(0);
+});
+
+// parseUsageRow is THE boundary between untyped SQLite output and the report. It runs on
+// values a live daemon DB should never hold, because the file is external state a torn
+// write or a hand edit can corrupt -- so the shapes below are driven directly rather than
+// through a DB that cannot produce all of them.
+test("parseUsageRow normalizes every count and drops rows it cannot attribute", () => {
+  const ok = parseUsageRow({
+    bucket: 100,
+    model: "gpt-5.5",
+    input: 10,
+    output: 20,
+    cacheRead: 30,
+    cacheCreation: 40,
+    events: 2,
+  });
+  expect(ok).toEqual({
+    bucket: 100,
+    model: "gpt-5.5",
+    buckets: { input: 10, output: 20, cacheRead: 30, cacheCreation: 40 },
+    events: 2,
+  });
+
+  // A bigint column (node:sqlite hands one back for an integer a double cannot hold, and
+  // for every column under readBigInts) becomes a plain number, never leaks downstream.
+  expect(parseUsageRow({ bucket: 5n, model: "m", input: 7n, events: 1n })?.buckets.input).toBe(7);
+  expect(parseUsageRow({ bucket: 5n, model: "m", events: 1 })?.bucket).toBe(5);
+
+  // Hostile or absent counts clamp to 0 rather than reaching a report.
+  const clamped = parseUsageRow({
+    bucket: null,
+    model: "m",
+    input: -5,
+    output: null,
+    cacheRead: "700",
+    cacheCreation: Number.NaN,
+    events: 1,
+  });
+  expect(clamped?.buckets).toEqual({ input: 0, output: 0, cacheRead: 0, cacheCreation: 0 });
+  expect(clamped?.bucket).toBeNull(); // no timestamp -> omitted from the per-day split
+
+  // Nothing usable to attribute the row to -> the whole row is dropped.
+  expect(parseUsageRow({ model: null, input: 10, events: 1 })).toBeNull();
+  expect(parseUsageRow({ model: "", input: 10, events: 1 })).toBeNull();
+  expect(parseUsageRow({ model: 42, input: 10, events: 1 })).toBeNull();
+  expect(parseUsageRow(null)).toBeNull();
+  expect(parseUsageRow("not a row")).toBeNull();
+});
+
+test("readUsage drops an unattributable DB row instead of reporting a phantom model", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  const path = join(dir, "copilot-api.sqlite");
+  // No column constraints: the reader must survive a corrupt file, not just the daemon's.
+  const db = new DatabaseSync(path);
+  db.exec(`CREATE TABLE token_usage_events (
+    model, input_tokens, output_tokens, cache_read_input_tokens,
+    cache_creation_input_tokens, created_at_ms, created_at_utc
+  )`);
+  const insert = db.prepare("INSERT INTO token_usage_events VALUES (?, ?, ?, ?, ?, ?, ?)");
+  const t = ms("2026-06-01T00:00:00Z");
+  insert.run("gpt-5.5", 100, 50, 0, 0, t, "x");
+  insert.run(null, 999, 999, 0, 0, t, "x"); // no model: cannot be attributed
+  insert.run("negative", -5, -5, 0, 0, t, "x"); // hostile counts: clamped, row kept
+  db.close();
+
+  const report = readUsage([path]);
+
+  expect([...report.byModel.keys()].sort()).toEqual(["gpt-5.5", "negative"]);
+  expect(report.byModel.get("negative")).toEqual({
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 1,
+  });
+  // The dropped row contributed nothing to the totals or the per-day split.
+  expect(report.byModel.get("gpt-5.5")?.input).toBe(100);
+  expect(report.perDay.get(day("2026-06-01T00:00:00Z"))?.size).toBe(2);
 });
 
 function seedUsageDb(path: string): void {

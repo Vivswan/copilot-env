@@ -1,4 +1,4 @@
-// Preloaded into the copilot-api daemon (via `bun --preload`) when the daemon launch
+// Preloaded into the copilot-api daemon (via `--preload`) when the daemon launch
 // pipeline (src/copilot_api/launch.ts) decides to use PAT passthrough (`usePatPassthrough`
 // in integration_identity.ts: auto for a PAT-shaped or gho_ OAuth token or the gh-cli
 // provider, or forced via the `passthrough` config key). A PAT can't perform copilot-api's
@@ -18,7 +18,7 @@
 //
 // This is a RUNTIME shim: it touches none of copilot-api's
 // files, so it never pins the floated proxy version. It depends only on copilot-api
-// using `globalThis.fetch` (the bun daemon does; `bindElectronFetch` only replaces it
+// using `globalThis.fetch` (the daemon does; `bindElectronFetch` only replaces it
 // inside the Electron app, never here) and on the exchange URL + `{ token, refresh_in }`
 // response shape -- both long-stable. The load decision lives in the daemon launch
 // pipeline (src/copilot_api/launch.ts); here we act whenever a `--github-token` is
@@ -105,6 +105,5 @@ if (token !== null) {
     }
     return originalFetch(input, init);
   };
-  // Preserve fetch's own `preconnect` method so the replacement is a complete `fetch`.
-  globalThis.fetch = Object.assign(wrapped, { preconnect: originalFetch.preconnect });
+  globalThis.fetch = wrapped;
 }

@@ -1,9 +1,10 @@
 // Inbound-request activity signal for the copilot-api daemon. The idle auto-stop watchdog
 // (idle_watchdog.ts) needs "the proxy is being used for inference" from inside a server we
-// never patch on disk; this module observes it at the REQUEST layer by wrapping `Bun.serve`
-// before the proxy starts serving (the proxy serves through srvx, whose bun adapter calls
-// `Bun.serve` at serve time -- a call-time global lookup, so a preload-time patch
-// intercepts it).
+// never patch on disk; this module observes it at the REQUEST layer by wrapping `Deno.serve`
+// before the proxy starts serving (the proxy serves through srvx, whose deno adapter calls
+// `Deno.serve` at serve time -- a call-time global lookup, so a preload-time patch
+// intercepts it). The same wrap is where the daemon's server handle becomes visible, so it
+// hands the handle to the shared shutdown path (daemon_shutdown.ts) on the way through.
 //
 // Liveness pings (GET /, GET /v1/models) deliberately do NOT count as activity, so
 // observing the proxy (health probes, shell keepalives) never resets the idle timer; only a
@@ -17,12 +18,13 @@
 // atomic across processes, so sharing the file would risk losing those writes.
 //
 // This module is import-safe -- importing it never patches anything, so unit tests can
-// exercise the pure helpers. inference_activity_preload.ts is the tiny `bun --preload` entry
+// exercise the pure helpers. daemon_runtime_preload.ts is the tiny `--preload` entry
 // that installs the observer (the same split idle_watchdog.ts gets from its preload).
 import { rmSync } from "node:fs";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import type { Profile } from "../copilot_api/profile.ts";
+import { recordDaemonServer } from "./daemon_shutdown.ts";
 
 /** Persist the in-memory mark into the activity file at most this often (the file is for
  *  out-of-process readers like `agent health`; the watchdog reads memory directly). */
@@ -111,43 +113,77 @@ export function clearPersistedInferenceActivity(profile: Profile = null): void {
   }
 }
 
-/** The structural slice of Bun's serve options the observer touches; everything else is
- *  passed through untouched. */
-type ServeOptionsLike = Record<string, unknown> & {
-  fetch?: (this: unknown, request: Request, ...rest: unknown[]) => unknown;
-};
+/** The request handler as every `Deno.serve` calling shape spells it. Extra arguments
+ *  (the connection info deno passes second) are relayed untouched. */
+type ServeHandler = (this: unknown, request: Request, ...rest: unknown[]) => unknown;
 
-type BunLike = { serve?: (options: ServeOptionsLike, ...rest: unknown[]) => unknown };
+/** The structural slice of the serve options the observer touches; everything else is
+ *  passed through untouched. */
+type ServeOptionsLike = Record<string, unknown> & { handler?: ServeHandler };
+
+/** `Deno.serve` seen structurally, so the wrap doesn't have to satisfy (or re-declare)
+ *  its overload set. */
+type ServeLike = (...args: unknown[]) => unknown;
+
+/** `handler` with an activity mark taken before it runs. Purely observational: `this` is
+ *  preserved (deno binds the handler to the server), every argument is relayed, and a
+ *  failure while observing is swallowed -- a monitoring signal must never be able to
+ *  break the server it monitors. */
+function observed(handler: ServeHandler): ServeHandler {
+  return function (this: unknown, request: Request, ...rest: unknown[]): unknown {
+    try {
+      if (isInferenceRequest(request.method, new URL(request.url).pathname)) {
+        markInference(Date.now());
+      }
+    } catch {
+      // observation must never break serving
+    }
+    return handler.call(this, request, ...rest);
+  };
+}
 
 /**
- * Patch `Bun.serve` so the served fetch handler marks inference activity before delegating.
- * Purely observational: every option and argument passes through (including any future extra
- * serve arguments), `this` is preserved (Bun binds the handler to the server), and a failure
- * anywhere -- installing the patch or observing a request -- is swallowed: a monitoring
- * signal must never be able to break the server it monitors.
+ * `args` with the request handler swapped for its observed twin, covering every shape
+ * `Deno.serve` accepts: `serve(handler)`, `serve(options, handler)`, and
+ * `serve({ ...options, handler })`. An argument list matching none of them is returned
+ * untouched, so a future signature still serves -- just unobserved.
+ */
+export function observeServeArgs(args: readonly unknown[]): unknown[] {
+  // Substitute in place in a copy, so the call's arity reaches the real serve unchanged.
+  const out = [...args];
+  const [first, second] = out;
+  if (typeof first === "function") {
+    out[0] = observed(first as ServeHandler);
+    return out;
+  }
+  if (typeof second === "function") {
+    out[1] = observed(second as ServeHandler);
+    return out;
+  }
+  if (typeof first === "object" && first !== null) {
+    const options = first as ServeOptionsLike;
+    if (typeof options.handler === "function") {
+      out[0] = { ...options, handler: observed(options.handler) };
+    }
+  }
+  return out;
+}
+
+/**
+ * Patch `Deno.serve` so the served handler marks inference activity before delegating and
+ * the resulting server is handed to the shared shutdown path. Failure anywhere --
+ * installing the patch or observing a request -- is swallowed: the daemon must still serve
+ * (and still stop on its own signals) even with no activity signal.
  */
 export function installInferenceObserver(): void {
   try {
-    const bun = (globalThis as Record<string, unknown>).Bun as BunLike | undefined;
-    const realServe = bun?.serve;
-    if (bun === undefined || typeof realServe !== "function") return; // not a bun runtime
-    bun.serve = (options: ServeOptionsLike, ...rest: unknown[]): unknown => {
-      const originalFetch = options?.fetch;
-      if (typeof originalFetch !== "function") return realServe.call(bun, options, ...rest);
-      const observed: ServeOptionsLike = {
-        ...options,
-        fetch(this: unknown, request: Request, ...fetchRest: unknown[]): unknown {
-          try {
-            if (isInferenceRequest(request.method, new URL(request.url).pathname)) {
-              markInference(Date.now());
-            }
-          } catch {
-            // observation must never break serving
-          }
-          return originalFetch.call(this, request, ...fetchRest);
-        },
-      };
-      return realServe.call(bun, observed, ...rest);
+    const deno = (globalThis as { Deno?: { serve: ServeLike } }).Deno;
+    if (deno === undefined || typeof deno.serve !== "function") return;
+    const realServe = deno.serve;
+    deno.serve = (...args: unknown[]): unknown => {
+      const server = realServe(...observeServeArgs(args));
+      recordDaemonServer(server);
+      return server;
     };
   } catch {
     // a failed install just means no observed activity; the watchdog still has heartbeats

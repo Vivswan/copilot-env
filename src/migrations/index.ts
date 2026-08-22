@@ -88,7 +88,7 @@ if (import.meta.main) {
   disableConsolaTimestamps();
   const [from, to] = process.argv.slice(2);
   if (!from || !to) {
-    consola.error("usage: bun src/migrations/index.ts <fromVersion> <toVersion>");
+    consola.error("usage: deno run -P=cli src/migrations/index.ts <fromVersion> <toVersion>");
     process.exitCode = 2;
   } else {
     runMigrations(from, to).catch((e: unknown) => {

@@ -7,7 +7,7 @@ import { expect, test } from "./helpers/testing.ts";
 // The preload shim wraps the daemon's globalThis.fetch to fake copilot-api's editor
 // token exchange for a PAT. It reads the token from `--github-token` in argv and only
 // acts on the exchange URL, so it must be exercised as a real preloaded subprocess
-// (`bun --preload`), which is how launchDaemon loads it.
+// (`--preload`), which is how launchDaemon loads it.
 const SHIM = join(ROOT, "src", "scripts", "pat_passthrough_preload.ts");
 
 // A throwaway "exchange"/other URL on a refused port: if the shim intercepts, fetch

@@ -27,11 +27,7 @@ import {
   type ProxyConfigPath,
   STALE_PROXY_CONFIG_KEYS,
 } from "./env_config.ts";
-import {
-  DAEMON_INTEGRATION_ID_ENV,
-  resolvePassthroughIntegrationId,
-  usePatPassthrough,
-} from "./integration_identity.ts";
+import { resolvePassthroughIntegrationId, usePatPassthrough } from "./integration_identity.ts";
 import { generateAliases } from "./models.ts";
 import { CopilotApiPaths, profileHomeNames, resolveRootHome, ROOT_HOME_ENV } from "./paths.ts";
 import {
@@ -42,6 +38,7 @@ import {
   reserveProfilePort,
 } from "./port.ts";
 import {
+  type DaemonCredential,
   getOrphanPids,
   isCopilotApiPid,
   launchDaemon,
@@ -94,8 +91,8 @@ export async function acquireStartLock(lockPath: string): Promise<void> {
 
 /**
  * Refuse to launch on a proxy below the PROXY_MIN_VERSION floor. The float
- * (`bun install`'s postinstall) is best-effort, so an offline/failed install can
- * leave a sub-floor proxy in node_modules; the floor is a hard runtime contract,
+ * (`deno install`'s postinstall) is best-effort, so an offline/failed install can
+ * leave a sub-floor proxy installed; the floor is a hard runtime contract,
  * so we enforce it here -- **fail-closed** and before disturbing any running daemon.
  * An unresolvable proxy or unreadable copilot-env.config is itself fatal (we
  * can't confirm the floor), so it throws rather than launching blind.
@@ -104,7 +101,7 @@ export function assertProxyFloor(): void {
   const version = installedProxyVersion();
   if (version === null) {
     throw new Error(
-      `${PROXY_PACKAGE_NAME} is not installed or its package.json is unreadable - run 'bun install' to (re)install the proxy.`,
+      `${PROXY_PACKAGE_NAME} is not installed or its package.json is unreadable - run 'deno install' to (re)install the proxy.`,
     );
   }
   let config: ProjectConfig;
@@ -117,8 +114,8 @@ export function assertProxyFloor(): void {
   if (!status.ok && status.reason === "belowFloor") {
     throw new Error(
       `${PROXY_PACKAGE_NAME} ${status.version} is below the required ${status.floor} floor - the proxy ` +
-        `float (bun install postinstall) likely failed (offline?) or was skipped because both ` +
-        `agents are wired Direct. Re-run 'bun install' online, set COPILOT_API_VERSION to a ` +
+        `float likely failed (offline?) or was skipped because both ` +
+        `agents are wired Direct. Re-run 'deno install' online, set COPILOT_API_VERSION to a ` +
         `known-good release, or rewire an agent to the proxy ('agent init --proxy') first.`,
     );
   }
@@ -293,15 +290,6 @@ export async function cleanupExistingProxies(
 
 // --- credential resolution ---------------------------------------------------------
 
-/** The launch-ready credential decision: the resolved token (if any), whether the
- *  PAT-passthrough shim loads, and -- passthrough with a token only -- the probed/pinned
- *  integration id the daemon's preload must present. */
-export interface LaunchCredential {
-  githubToken: string | undefined;
-  patPassthrough: boolean;
-  integrationId?: string;
-}
-
 /** Injectable seams for resolveLaunchCredential. `interactiveLogin` is REQUIRED: the
  *  login flow lives in the command layer (src/commands/auth.ts), which this domain
  *  module must not import, so the orchestrator hands it down. */
@@ -320,13 +308,15 @@ export interface LaunchCredentialDeps {
  * Resolve the credential the daemon launches with, and the two per-credential
  * decisions that hang off it: the PAT-passthrough shim and the client-integration
  * identity. A named profile resolves ONLY its own slot (never the default credential);
- * with nothing resolved and a TTY, the interactive login runs first.
+ * with nothing resolved and a TTY, the interactive login runs first. The result is the
+ * daemon's DaemonCredential itself, so the launch never carries a passthrough decision
+ * apart from the token it applies to.
  */
 export async function resolveLaunchCredential(
   profile: Profile,
   config: CopilotEnvConfig = new CopilotEnvConfig(),
   deps: LaunchCredentialDeps,
-): Promise<LaunchCredential> {
+): Promise<DaemonCredential> {
   const credential = deps.credential ?? new Credential(undefined, profile);
   const isTTY = deps.isTTY ?? Boolean(process.stdin.isTTY);
   const resolveIntegrationId = deps.resolveIntegrationId ?? resolvePassthroughIntegrationId;
@@ -362,19 +352,18 @@ export async function resolveLaunchCredential(
   } else if (forcePassthrough === false) {
     consola.info("Token passthrough off: using the standard editor token exchange.");
   }
+  if (githubToken === undefined) return { kind: "none" };
+  if (!patPassthrough) return { kind: "token", token: githubToken };
   // A passthrough bearer is only accepted under a client-integration identity that
   // matches its token class (a fine-grained PAT needs `copilot-developer-cli`;
   // copilot-api sends `vscode-chat`). Resolve it NOW, before launching, so an
   // unusable credential fails here with the real reason instead of an opaque
   // daemon-side "Failed to get models" -- and hand a non-default pick to the
   // passthrough preload, which rewrites the header on the daemon's upstream calls.
-  let integrationId: string | undefined;
-  if (patPassthrough && githubToken !== undefined) {
-    integrationId = await resolveIntegrationId(githubToken, {
-      pinned: config.pinnedIntegrationId(),
-    });
-  }
-  return { githubToken, patPassthrough, integrationId };
+  const integrationId = await resolveIntegrationId(githubToken, {
+    pinned: config.pinnedIntegrationId(),
+  });
+  return { kind: "pat", token: githubToken, integrationId };
 }
 
 // --- the configured daemon spawn ------------------------------------------------------
@@ -391,15 +380,17 @@ export interface SpawnedDaemon {
 
 /**
  * Assemble the daemon's environment (sqlite path; the isolated home + root-home pair for a
- * named profile; the probed integration id for the passthrough preload), decide the preload
- * set from `config` (idle watchdog, log mute), and launch copilot-api detached on `port`.
+ * named profile), decide the config-driven knobs (idle watchdog, log mute), and launch
+ * copilot-api detached on `port`. The credential's own environment and preload set are
+ * derived inside launchDaemon from the DaemonCredential, so they can't disagree with it
+ * here.
  */
 export function spawnConfiguredDaemon(opts: {
   port: number;
   logFile: string;
   profile: Profile;
   paths: CopilotApiPaths;
-  credential: LaunchCredential;
+  credential: DaemonCredential;
   config?: CopilotEnvConfig;
 }): SpawnedDaemon {
   const { port, logFile, profile, paths, credential } = opts;
@@ -412,12 +403,6 @@ export function spawnConfiguredDaemon(opts: {
     // find the ACCOUNT-WIDE files (credential store, preferences) there.
     daemonEnv.COPILOT_API_HOME = paths.home;
     daemonEnv[ROOT_HOME_ENV] = resolveRootHome();
-  }
-  if (credential.integrationId !== undefined) {
-    // Set it unconditionally (not only for a non-default pick): launchDaemon spreads
-    // process.env, so a stale value already in the launcher's environment would otherwise
-    // leak into the daemon. daemonEnv wins, so an explicit value always controls the preload.
-    daemonEnv[DAEMON_INTEGRATION_ID_ENV] = credential.integrationId;
   }
   // Managed lifecycle on (the `auto-start` config key)? Preload the in-daemon idle watchdog
   // so the proxy stops itself after the idle window. It lives in the daemon process, so
@@ -436,15 +421,14 @@ export function spawnConfiguredDaemon(opts: {
     // login error, an identity-probe rejection -- keeps the previous run's log
     // around for diagnosis until a new daemon actually launches.
     fs.writeFileSync(logFile, "");
-    return launchDaemon(
-      p,
+    return launchDaemon({
+      port: p,
       logFile,
-      daemonEnv,
-      credential.githubToken,
-      credential.patPassthrough,
+      env: daemonEnv,
+      credential,
       idleWatchdog,
       muteProxyLogs,
-    );
+    });
   };
   return { pid: relaunch(port), idleWatchdog, relaunch };
 }

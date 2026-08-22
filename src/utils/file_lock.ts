@@ -126,15 +126,36 @@ function renderMarker(nowMs: number, jsonMarker: boolean): string {
     : `${process.pid}\n${nowMs}\n`;
 }
 
-/** A held OS lock: the open, exclusively-locked SIDECAR handle plus the marker we last wrote.
- *  Disposing releases the OS lock and closes the handle (it does NOT delete the marker file --
- *  that is releaseFileLock's marker-verified job, and the sidecar is never deleted at all). */
+/** A lock held by THIS process: the OS-locked SIDECAR handle plus the marker we last WROTE.
+ *  `#raw` is what we wrote, NOT a claim about what is on disk -- another release can
+ *  rename-steal the path, which is precisely what releaseFileLock checks for. Private so our
+ *  own record cannot drift: refresh() adopts a marker only after writing it. */
 class HeldFileLock implements Disposable {
-  constructor(
-    readonly file: Deno.FsFile,
-    public raw: string,
-  ) {}
+  #raw: string;
 
+  constructor(
+    readonly path: string,
+    readonly file: Deno.FsFile,
+    raw: string,
+  ) {
+    this.#raw = raw;
+  }
+
+  /** Whether the marker WE last wrote reads stale under `staleMs`, judged at `nowMs`. */
+  isStale(staleMs: number, nowMs: number): boolean {
+    return markerStale(this.#raw, staleMs, nowMs);
+  }
+
+  /** Re-stamp the lock: write `marker`, then adopt it. False = the write threw, so we keep
+   *  remembering the previous one (the file itself may be torn; the next by-path read judges). */
+  refresh(marker: string): boolean {
+    if (!writeMarker(this.path, marker)) return false;
+    this.#raw = marker;
+    return true;
+  }
+
+  /** Releases the OS lock and closes the handle. Does NOT delete the marker file (that is
+   *  releaseFileLock's marker-verified job) and never the sidecar. */
   [Symbol.dispose](): void {
     dropHandle(this.file);
   }
@@ -205,11 +226,8 @@ export function tryAcquireFileLock(
 
   const ours = HELD_LOCKS.get(lockPath);
   if (ours !== undefined) {
-    if (!markerStale(ours.raw, staleMs, nowMs)) return false;
-    const marker = renderMarker(nowMs, jsonMarker);
-    if (!writeMarker(lockPath, marker)) return false;
-    ours.raw = marker;
-    return true;
+    if (!ours.isStale(staleMs, nowMs)) return false;
+    return ours.refresh(renderMarker(nowMs, jsonMarker));
   }
 
   try {
@@ -232,7 +250,7 @@ export function tryAcquireFileLock(
     if (observed.kind === "present" && !markerStale(observed.raw, staleMs, nowMs)) return false;
     const marker = renderMarker(nowMs, jsonMarker);
     if (!writeMarker(lockPath, marker)) return false;
-    HELD_LOCKS.set(lockPath, new HeldFileLock(file, marker));
+    HELD_LOCKS.set(lockPath, new HeldFileLock(lockPath, file, marker));
     kept = true;
     return true;
   } finally {

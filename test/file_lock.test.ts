@@ -116,6 +116,24 @@ test("release by a non-holder is refused (a successor's lock survives)", () => {
   expect(existsSync(path)).toBe(true);
 });
 
+test("release by the HOLDER still spares a marker a rename-steal replaced", () => {
+  // The mixed-version window: we hold the lock, and an old release (which judges by marker
+  // age alone, seeing no OS lock) renames ours aside and puts its own marker at the path.
+  // Our release must delete OUR marker, never the successor's -- otherwise we would hand a
+  // third process a lock the successor believes it holds.
+  const path = tmp("x.lock");
+  expect(tryAcquireFileLock(path, 10_000, { nowMs: 1_000 })).toBe(true);
+  const successor = marker(process.pid + 1, 2_000);
+  writeFileSync(path, successor);
+
+  releaseFileLock(path);
+  expect(readFileSync(path, "utf-8")).toBe(successor); // untouched, byte-for-byte
+
+  // Our OS lock and handle were dropped all the same, so the path is acquirable again once
+  // the successor's marker ages out -- a declined delete must not strand the sidecar.
+  expect(tryAcquireFileLock(path, 5_000, { nowMs: 8_000 })).toBe(true);
+});
+
 test("release by the holder works even when the marker's ts half is corrupted", () => {
   const path = tmp("x.lock");
   writeFileSync(path, `${process.pid}\ngarbage`);

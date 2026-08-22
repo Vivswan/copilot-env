@@ -21,7 +21,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { mkdir, open } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { denoRuntime, isStandaloneBinary, PROJECT_ROOT } from "../utils/root.ts";
+import { ASSET_ROOT, denoRuntime, isStandaloneBinary } from "../utils/root.ts";
 import { sidecarSha256 } from "./sidecar_pins.ts";
 import { crypto } from "@std/crypto";
 
@@ -70,7 +70,7 @@ export function resolveDenoBin(
   if (runtime && !isStandaloneBinary()) return runtime.execPath();
 
   if (rootHome !== undefined) {
-    const state = detectSidecar(rootHome, readDvmrcPin(PROJECT_ROOT), { "env": env });
+    const state = detectSidecar(rootHome, readDvmrcPin(), { "env": env });
     if (state.kind === "provisioned") return state.denoBin;
   }
   throw new Error(
@@ -145,7 +145,11 @@ export function parseDvmrcPin(content: string, source: string = DVMRC_FILENAME):
 }
 
 /** The pinned sidecar Deno version from `<projectRoot>/.dvmrc`. */
-export function readDvmrcPin(projectRoot: string): string {
+/** The Deno version this build is pinned to. Defaults to ASSET_ROOT, not the install
+ *  root: `.dvmrc` is build-time metadata embedded in the binary and never materialized
+ *  onto disk, so an installed root has no copy. `projectRoot` is for tests and the
+ *  checkout-only pin generator. */
+export function readDvmrcPin(projectRoot: string = ASSET_ROOT): string {
   const path = join(projectRoot, DVMRC_FILENAME);
   let content: string;
   try {
@@ -329,7 +333,7 @@ export async function ensureSidecar(
   rootHome: string,
   seams: SidecarDownloadSeams = {},
 ): Promise<AbsolutePath> {
-  const pin = readDvmrcPin(PROJECT_ROOT);
+  const pin = readDvmrcPin();
   const state = detectSidecar(rootHome, pin, { "platform": seams.platform });
   switch (state.kind) {
     case "dev":
@@ -367,7 +371,7 @@ export interface SidecarStatus {
 
 /** Read-only sidecar facts. Never downloads -- health reports, it does not provision. */
 export function sidecarStatus(rootHome: string): SidecarStatus {
-  const pin = readDvmrcPin(PROJECT_ROOT);
+  const pin = readDvmrcPin();
   const state = detectSidecar(rootHome, pin);
   return {
     "kind": state.kind,

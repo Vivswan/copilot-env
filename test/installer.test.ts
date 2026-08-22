@@ -198,3 +198,32 @@ describe("launcher shims", () => {
     expect(POWERSHELL_SHIM).toContain("exit $LASTEXITCODE");
   });
 });
+
+describe("the install root carries the markers uninstall requires", () => {
+  // `agent uninstall` deletes the resolved root wholesale, and in a compiled
+  // install that root is DERIVED from the binary's location -- so root.ts
+  // refuses any root missing these markers (a binary dropped in
+  // ~/.local/bin would otherwise aim `rm -rf` at ~/.local). That makes them a
+  // contract ON this installer: narrowing EMBEDDED_ASSET_DIRS below them turns
+  // uninstall into a silent no-op on every install.
+  //
+  // Duplicated from INSTALL_ROOT_MARKERS in src/utils/root.ts, which this
+  // branch cannot import yet; it becomes an import when that lands.
+  const INSTALL_ROOT_MARKERS = ["bin", "shell", join("src", "scripts")];
+
+  test("applying a plan produces every marker directory", () => {
+    applyInstallPlan(installedPlan({ ...OPTIONS, assetsOnly: true }));
+
+    for (const marker of INSTALL_ROOT_MARKERS) {
+      expect(statSync(join(dest, marker)).isDirectory()).toBe(true);
+    }
+  });
+
+  test("the asset lists cannot be narrowed below the markers", () => {
+    // Fails at the list, not only at the applied result, so the intent is
+    // visible when someone edits EMBEDDED_ASSET_DIRS. `bin` is absent from it
+    // on purpose: the shims create that directory.
+    expect(EMBEDDED_ASSET_DIRS).toContain("shell");
+    expect(EMBEDDED_ASSET_DIRS).toContain("src/scripts");
+  });
+});

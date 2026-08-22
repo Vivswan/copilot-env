@@ -81,9 +81,10 @@ file layouts. Don't restate here what a reader can grep.
   discriminates on whether its embedded asset source IS the install root, so a checkout
   can never be overwritten by an install.
 - **The proxy floats; we never patch it.** `@jeffreycao/copilot-api` sits at a caret-range
-  baseline in deno.json's import map and is resolved at install/update time to the newest
-  release older than a supply-chain cooldown window (`src/proxy_float.ts`), clamped by
-  `copilot-env.config`, into a dedicated deno cache under the proxy root home.
+  baseline in deno.json's import map and is resolved at `agent start`, when the recorded
+  resolution has gone stale, to the newest release older than a supply-chain cooldown
+  window (`src/proxy_float.ts`), clamped by `copilot-env.config`, into a dedicated deno
+  cache under the proxy root home.
   Patching the package would pin one version, so runtime needs are
   `deno run --preload` shims instead. Two agents wired Direct means no proxy, so the float
   is a no-op.

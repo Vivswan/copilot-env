@@ -36,11 +36,10 @@ uncommitted files. Disposition per hunk:
   var NAMES (children get them via hand-built env maps); the floor-activity
   assertions now cover both seams.
 
-Windows caveat: the "child gets EXACTLY the requested env" test spawns a deno
-child with a 1-var env. Passes on macOS + Linux (container); Windows CI is the
-remaining verifier (a bare-env child on Windows can be sensitive to
-SYSTEMROOT). If the Windows lane trips on it, the fix is to fold the platform
-essentials into childSees's requested env, not to soften runSync.
+Windows caveat: RESOLVED in the round-1 fix (see below) - the two partial-env
+tests fold the platform essentials (SystemRoot/windir/ComSpec/PATH/TEMP/TMP)
+into the requested env, so the child is spawnable everywhere while the named
+assertions are unchanged.
 
 ## Leg 2 - zero-bun audit
 
@@ -64,9 +63,9 @@ Additional keepers, with reasons:
 - .github/dependabot.yml "bun" ecosystem entry: managed by repo-platform.
 - AGENTS.md migrations section + src/migrations/index.ts bun mentions:
   deliberate historical rationale for the empty registry.
-- test/helpers/testing.ts "bun:test surface / bun-parity" headers and
-  test/helpers/run.ts "Bun.spawnSync result shape": deliberate - they name
-  the emulated contract.
+- test/helpers/testing.ts "bun:test surface / bun-parity" headers: deliberate -
+  they name the emulated contract. (run.ts's "Bun.spawnSync result shape"
+  clause was scrubbed in round 1: the shape is now just RunResult.)
 - test/web_search.test.ts "Bun 1.3 shipped" fixtures: content ABOUT the Bun
   product inside simulated search results, not toolchain references.
 
@@ -118,8 +117,10 @@ sanctioned/keeper lines listed above. No bun-runtime machinery remains.
 ## Leg 4 - stale docs
 
 - AGENTS.md proxy-float bullet: package.json/postinstall/npm-check wording ->
-  deno.json import-map baseline, install/update-time resolution into the root
-  home's deno cache, float no-op when both agents are Direct.
+  deno.json import-map baseline, resolved at `agent start` when the recorded
+  resolution has gone stale (the only ensureProxyFloor caller is
+  src/commands/start.ts since 0f4d932), float no-op when both agents are
+  Direct.
 - AGENTS.md dep list: "dotenv" -> "@std/dotenv"; zod exclusion now points at
   deno.json's imports (package.json carries no dependencies anymore).
 - README/CONTRIBUTING/SECURITY/Dockerfile/scripts/shell: scanned for
@@ -132,8 +133,30 @@ sanctioned/keeper lines listed above. No bun-runtime machinery remains.
   when due (2026-08-16 cooldown has passed), goes to deno.json +
   test/proxy_float.test.ts's manifest guard.
 
+## Round-1 review fixes (opus items 1-2, codex items 3-5)
+
+1. run_helper.test.ts: the two new partial-env tests fold platformEssentials()
+   (SystemRoot/windir/ComSpec/PATH/TEMP/TMP, case-insensitive match) into the
+   requested env - Windows CreateProcess passes the block verbatim, and the
+   tests assert a NAMED variable, never minimality.
+2. test/helpers.ts isolateAgentHomes: sets USERPROFILE alongside HOME (node:os
+   homedir() resolves from USERPROFILE on Windows), actually closing the
+   catalog-sweep read escape everywhere; codex_host.test.ts's comment now
+   names both variables. USERPROFILE was already in TEST_ENV_KEYS, so
+   envSnapshot restoration covers it.
+3. AGENTS.md float bullet: "install/update time" -> "at `agent start`, when
+   the recorded resolution has gone stale" (verified: start.ts:329 is the only
+   ensureProxyFloor caller).
+4. test/helpers/run.ts: "Bun.spawnSync result shape" -> "RunResult shape";
+   rest of the docblock untouched.
+5. test/env_config.test.ts: new drift guard deriving the "7 days (built-in)"
+   release-cooldown label from DEFAULT_RELEASE_COOLDOWN_SECONDS (test count
+   380).
+6. (codex item 6) codex_host comment re-checked after the USERPROFILE change:
+   the bun-contrast stays, wording now matches what isolateAgentHomes sets.
+
 ## Gate
 
 See the SendMessage report; run from this worktree:
-deno task typecheck, deno task lint, deno task test (379 = 377 + 2 harvested
-tests), bash scripts/lint-sh.sh, deno task test:docker.
+deno task typecheck, deno task lint, deno task test (380 = 377 + 2 harvested
+tests + 1 label drift guard), bash scripts/lint-sh.sh, deno task test:docker.

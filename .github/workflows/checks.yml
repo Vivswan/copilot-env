@@ -38,9 +38,10 @@ jobs:
       - name: Install dependencies
         run: deno ci
 
-      # The installed-proxy guard (proxy float --assert-installed) returns with
-      # the deno-native float in migration chunk 4; until then the proxy is a
-      # plain locked dependency covered by `deno ci` itself.
+      # The installed-proxy guard (proxy float --assert-installed) is not wired here:
+      # asserting means floating first, which would hit the npm registry and warm a
+      # cache on every runner. `deno ci` already pins the proxy baseline this job
+      # builds against.
 
       - name: Typecheck
         if: runner.os == 'Linux'

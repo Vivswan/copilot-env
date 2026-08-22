@@ -8,6 +8,9 @@
 # CI release staging area (built by .github/scripts/release-assets.ts).
 release-assets/
 
+# Floated-proxy test fixture (built by scripts/warm-proxy-cache.ts).
+.proxy-cache/
+
 # END REPOSITORY LOCAL
 
 # BEGIN REPO-PLATFORM MANAGED

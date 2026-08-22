@@ -336,6 +336,22 @@ export function daemonConfigFile(rootHome: string): string {
 }
 
 /**
+ * Path of the proxy's OWN lockfile, written and re-read by the float's cache warms.
+ *
+ * Two jobs, and it is a float-time artifact for both -- the daemon run never takes it,
+ * so a read-only install or two concurrent daemons can never trip over it:
+ *   - it pins TRANSITIVE resolution between floats. The proxy's own dependency ranges
+ *     would otherwise re-resolve on every warm, so the same proxy version could sit on
+ *     different transitive trees, and each entry carries an integrity hash.
+ *   - it is the baseline `trust-policy=no-downgrade` compares against. Deno records the
+ *     publishing-trust level in the lockfile, so with no lockfile there is definitionally
+ *     nothing to compare and the policy can never fire.
+ */
+export function proxyLockFile(rootHome: string): string {
+  return join(rootHome, "proxy", "deno.lock");
+}
+
+/**
  * Write the config the floated daemon runs under: the checkout's import map and
  * compiler options, with `lock` and `nodeModulesDir` DELIBERATELY dropped.
  *
@@ -512,61 +528,82 @@ export function minimumDependencyAgeArg(cooldownSeconds: number): string {
   return cooldownSeconds === 0 ? "0" : `PT${cooldownSeconds}S`;
 }
 
-/** Config args for a cache/info spawn: the daemon config once the float has written
- *  one, else none. The floated daemon resolves under that config, so checking under it
- *  is the only check that answers the spawn's actual question. */
-function configArgs(rootHome: string): string[] {
-  const config = daemonConfigFile(rootHome);
-  return existsSync(config) ? ["--config", config] : ["--no-config"];
-}
-
 /**
  * Populate the proxy's DENO_DIR for an exact version. Warms TWO graphs, because the
  * daemon spawn resolves both under `--cached-only` and a miss on either is a hard
  * launch failure: the proxy package itself, and the preload shims (whose own imports
- * come from the map the daemon config carries). Returns the exit status.
+ * come from the map the daemon config carries). Both share the proxy lockfile, so the
+ * transitive tree is pinned across floats. Returns the exit status.
  */
 function denoCacheVersion(ctx: FloatContext, version: string, cooldownSeconds: number): number {
+  dropSupersededCache(ctx, version);
   writeDaemonConfig(ctx.rootHome);
-  const config = daemonConfigFile(ctx.rootHome);
-  const ageArg = `--minimum-dependency-age=${minimumDependencyAgeArg(cooldownSeconds)}`;
+  const pinned = [
+    "--config",
+    daemonConfigFile(ctx.rootHome),
+    "--lock",
+    proxyLockFile(ctx.rootHome),
+    "--node-modules-dir=none",
+    `--minimum-dependency-age=${minimumDependencyAgeArg(cooldownSeconds)}`,
+  ];
   const env = denoEnv(proxyDenoDir(ctx.rootHome));
 
-  const proxy = ctx.runner(
-    ctx.denoBin,
-    ["cache", "--config", config, "--node-modules-dir=none", ageArg, `npm:${PROXY_PKG}@${version}`],
-    { "cwd": ctx.rootHome, "env": env },
-  );
+  const proxy = ctx.runner(ctx.denoBin, ["cache", ...pinned, `npm:${PROXY_PKG}@${version}`], {
+    "cwd": ctx.rootHome,
+    "env": env,
+  });
   if (proxy.status !== 0) {
     if (proxy.stderr.trim()) logger.warn(proxy.stderr.trimEnd());
     return proxy.status;
   }
 
-  const shims = ctx.runner(
-    ctx.denoBin,
-    ["cache", "--config", config, "--node-modules-dir=none", ageArg, ...allShimPaths()],
-    { "cwd": ctx.rootHome, "env": env },
-  );
+  const shims = ctx.runner(ctx.denoBin, ["cache", ...pinned, ...allShimPaths()], {
+    "cwd": ctx.rootHome,
+    "env": env,
+  });
   if (shims.status !== 0 && shims.stderr.trim()) logger.warn(shims.stderr.trimEnd());
   return shims.status;
 }
 
-/** True when the cached entry for `version` resolves against `denoDir`
- *  (`deno info --json`; uses the cache when present, repopulates it when
- *  reachable, fails when neither). */
+/**
+ * Drop the whole proxy cache when the target differs from what is recorded. The old
+ * version's tree is dead weight the moment we move off it, and `deno clean --except`
+ * cannot take its place: `--except` retains the graphs of FILES, so an npm specifier is
+ * not a thing it can keep -- a prune "keeping" the proxy deletes the very tree the float
+ * just warmed. Re-warming from empty is the only sweep that cannot corrupt the cache.
+ */
+function dropSupersededCache(ctx: FloatContext, version: string): void {
+  const record = readResolvedVersionRecord(ctx.rootHome);
+  if (record === null || record.version === version) return;
+  rmSync(proxyDenoDir(ctx.rootHome), { "recursive": true, "force": true });
+}
+
+/**
+ * True when `denoDir` holds EVERYTHING a floated launch resolves offline: the proxy
+ * package AND the preload shims' own graph.
+ *
+ * Checking only the proxy is what makes a half-warmed cache read as up to date -- the
+ * float then skips its warm, and the daemon dies at launch on a missing import-map
+ * package instead. Both graphs are warmed together, so both are checked together.
+ *
+ * Without the daemon config there is no floated launch to verify at all, so that reads
+ * false rather than falling back to a laxer check.
+ */
 function cacheResolves(ctx: FloatContext, version: string, denoDir: string): boolean {
-  const result = ctx.runner(
-    ctx.denoBin,
-    [
-      "info",
-      "--json",
-      ...configArgs(ctx.rootHome),
-      "--node-modules-dir=none",
-      `npm:${PROXY_PKG}@${version}`,
-    ],
-    { "cwd": ctx.rootHome, "env": denoEnv(denoDir) },
-  );
-  return result.status === 0;
+  const config = daemonConfigFile(ctx.rootHome);
+  if (!existsSync(config)) return false;
+  const pinned = ["--json", "--config", config, "--lock", proxyLockFile(ctx.rootHome)];
+  const options = { "cwd": ctx.rootHome, "env": denoEnv(denoDir) };
+
+  for (const target of [[`npm:${PROXY_PKG}@${version}`], allShimPaths()]) {
+    const result = ctx.runner(
+      ctx.denoBin,
+      ["info", ...pinned, "--node-modules-dir=none", ...target],
+      options,
+    );
+    if (result.status !== 0) return false;
+  }
+  return true;
 }
 
 /** The record, but only when its cache entry still resolves -- the one notion of
@@ -575,43 +612,6 @@ function usableRecord(ctx: FloatContext): ResolvedVersionRecord | null {
   const record = readResolvedVersionRecord(ctx.rootHome);
   if (record === null) return null;
   return cacheResolves(ctx, record.version, record.denoDir) ? record : null;
-}
-
-/**
- * Drop every cached npm package except the kept proxy version from the proxy's
- * DENO_DIR (`deno clean --except`). Wired after a successful float so superseded
- * proxy trees don't accumulate.
- */
-export function pruneProxyCache(
-  keep: ResolvedVersionRecord,
-  deps: Pick<ProxyFloatDeps, "denoBin" | "runner" | "rootHome"> = {},
-): DenoRunResult {
-  const rootHome = deps.rootHome ?? resolveRootHome();
-  const runner = deps.runner ?? defaultDenoRunner;
-  const denoBin = deps.denoBin ?? resolveDenoBin();
-  // `deno clean` rejects --no-config (unlike cache/info), so cwd=rootHome and
-  // denoEnv's DENO_NO_PACKAGE_JSON are the only guards against a discovered
-  // project config -- clean under one deletes from that project's node_modules.
-  return runner(denoBin, ["clean", "--except", `npm:${PROXY_PKG}@${keep.version}`], {
-    "cwd": rootHome,
-    "env": denoEnv(keep.denoDir),
-  });
-}
-
-/** Best-effort post-float housekeeping: sweep the superseded proxy trees out of the
- *  cache. A failed prune only costs disk, so it must never fail the float itself. */
-function pruneAfterFloat(ctx: FloatContext): void {
-  const record = readResolvedVersionRecord(ctx.rootHome);
-  if (record === null) return;
-  try {
-    pruneProxyCache(record, {
-      "rootHome": ctx.rootHome,
-      "denoBin": ctx.denoBin,
-      "runner": ctx.runner,
-    });
-  } catch {
-    // disk hygiene only -- never worth failing a successful float over.
-  }
 }
 
 /**
@@ -786,7 +786,6 @@ function handleResolved(
 /**
  * Float the proxy: resolve the target (pin, else registry selection), populate
  * the proxy's DENO_DIR, and record the resolution.
- * Ends by sweeping the superseded proxy trees out of the cache.
  */
 export async function floatProxy(deps: ProxyFloatDeps = {}): Promise<void> {
   const ctx = floatContext(deps);
@@ -800,7 +799,6 @@ export async function floatProxy(deps: ProxyFloatDeps = {}): Promise<void> {
   const override = resolveProxyVersionOverride();
   if (override) {
     await handlePinnedOverride(ctx, override);
-    pruneAfterFloat(ctx);
     return;
   }
 
@@ -815,7 +813,6 @@ export async function floatProxy(deps: ProxyFloatDeps = {}): Promise<void> {
     doc = await fetchRegistryDoc(ctx.fetchLike);
   } catch (e) {
     handleUnavailable(ctx, errMessage(e), cooldownSeconds);
-    pruneAfterFloat(ctx);
     return;
   }
 
@@ -833,7 +830,6 @@ export async function floatProxy(deps: ProxyFloatDeps = {}): Promise<void> {
     default:
       assertNever(selection);
   }
-  pruneAfterFloat(ctx);
 }
 
 export type ProxyFloatVerifyStatus = {

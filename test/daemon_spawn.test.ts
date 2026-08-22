@@ -14,7 +14,11 @@ import {
 import { DAEMON_INTEGRATION_ID_ENV } from "../src/copilot_api/integration_identity.ts";
 import { DRAIN_DEADLINE_MS } from "../src/scripts/daemon_shutdown.ts";
 import { PROXY_PACKAGE_NAME } from "../src/copilot_api/version.ts";
-import { daemonConfigFile, writeResolvedVersionRecord } from "../src/proxy_float.ts";
+import {
+  daemonConfigFile,
+  writeDaemonConfig,
+  writeResolvedVersionRecord,
+} from "../src/proxy_float.ts";
 import { denoRunArgs, importSpecifier, ROOT, runSync, spawnChild } from "./helpers/run.ts";
 import { afterEach, beforeEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir, tmpDir } from "./helpers.ts";
@@ -45,7 +49,11 @@ const BASE: DaemonSpec = {
   credential: { kind: "none" },
   idleWatchdog: false,
   muteProxyLogs: false,
-  entry: { kind: "package", specifier: PROXY_PACKAGE_NAME },
+  entry: {
+    kind: "package",
+    specifier: PROXY_PACKAGE_NAME,
+    configFile: join(ROOT, "deno.json"),
+  },
 };
 
 /** The shim filenames the argv preloads, in order. */
@@ -97,7 +105,11 @@ test("the watchdog and log-mute shims load only when their config knob is on", (
 
 test("with no float record the argv runs the mapped package, offline-only, ending in start", () => {
   delete process.env.COPILOT_API_ENTRY;
-  expect(resolveCopilotApiEntry()).toEqual({ kind: "package", specifier: PROXY_PACKAGE_NAME });
+  expect(resolveCopilotApiEntry()).toEqual({
+    kind: "package",
+    specifier: PROXY_PACKAGE_NAME,
+    configFile: join(ROOT, "deno.json"),
+  });
 
   const argv = daemonArgv({ ...BASE, port: 4242 });
   expect(argv[0]).toBe("run");
@@ -171,9 +183,17 @@ test("a float record moves the entry to that exact version, run out of the cache
 test("a COPILOT_API_ENTRY override runs that file and never asks for a cached package", () => {
   const fake = join(ROOT, "test", "copilot-api-fake.mjs");
   process.env.COPILOT_API_ENTRY = fake;
-  expect(resolveCopilotApiEntry()).toEqual({ kind: "file", path: fake });
+  // No float has run, so the file entry falls back to the checkout's config.
+  expect(resolveCopilotApiEntry()).toEqual({
+    kind: "file",
+    path: fake,
+    configFile: join(ROOT, "deno.json"),
+  });
 
-  const argv = daemonArgv({ ...BASE, entry: { kind: "file", path: fake } });
+  const argv = daemonArgv({
+    ...BASE,
+    entry: { kind: "file", path: fake, configFile: join(ROOT, "deno.json") },
+  });
   // `--cached-only` is about resolving a package; a file entry must never carry it.
   expect(argv).not.toContain("--cached-only");
   expect(argv).not.toContain(PROXY_PACKAGE_NAME);
@@ -181,10 +201,15 @@ test("a COPILOT_API_ENTRY override runs that file and never asks for a cached pa
 });
 
 test("the override beats a float record, so the CI fake is never shadowed by a real resolve", () => {
+  writeDaemonConfig(dir, ROOT);
   writeResolvedVersionRecord(dir, "1.14.30", Date.now(), join(dir, "deno", "cache"));
   const fake = join(ROOT, "test", "copilot-api-fake.mjs");
   process.env.COPILOT_API_ENTRY = fake;
-  expect(resolveCopilotApiEntry()).toEqual({ kind: "file", path: fake });
+  const entry = resolveCopilotApiEntry();
+  expect(entry.kind).toBe("file");
+  // ...but it still resolves under the float's generated config, which on an installed
+  // binary is the ONLY config on disk -- the checkout's deno.json is not shipped.
+  expect(entry.configFile).toBe(daemonConfigFile(dir));
 });
 
 test("copilotApiArgv runs any proxy subcommand through the same entry and permissions", () => {

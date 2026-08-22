@@ -1,6 +1,6 @@
 // Process lifecycle helpers for finding, launching, and inspecting copilot-api.
 import { spawn } from "node:child_process";
-import { closeSync, openSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync } from "node:fs";
 import { devNull } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -19,15 +19,30 @@ import { PROXY_PACKAGE_NAME } from "./version.ts";
  * distinct shapes rather than one string plus flags because each carries something the
  * others cannot: only a package specifier can take `--cached-only`, and only the floated
  * form has a DENO_DIR to point the resolve at.
+ *
+ * Every form carries the `configFile` it resolves under, chosen at resolve time so the
+ * argv builder never has to guess -- and so an installed binary, which has no checkout
+ * deno.json on disk, can never be handed one that does not exist.
  */
 export type CopilotApiEntry =
   /** The `COPILOT_API_ENTRY` override: run this file, resolve nothing. */
-  | { kind: "file"; path: string }
+  | { kind: "file"; path: string; configFile: string }
   /** The float's recorded resolution: an exact version in the cache it pre-warmed,
    *  resolved under the daemon config the float wrote beside the record. */
   | { kind: "floated"; specifier: string; version: string; denoDir: string; configFile: string }
   /** deno.json's mapped specifier, resolved through the frozen lock. */
-  | { kind: "package"; specifier: string };
+  | { kind: "package"; specifier: string; configFile: string };
+
+/**
+ * The config a proxy spawn resolves under. The float's generated one when it exists --
+ * an installed binary has no checkout, so that is the ONLY config on disk there -- else
+ * the checkout's. The preload shims resolve their own imports through whichever it is,
+ * which is why every spawn passes one.
+ */
+function entryConfigFile(rootHome: string): string {
+  const daemonConfig = daemonConfigFile(rootHome);
+  return existsSync(daemonConfig) ? daemonConfig : join(PROJECT_ROOT, "deno.json");
+}
 
 /**
  * The entry deno runs for the proxy, in precedence order:
@@ -43,11 +58,11 @@ export type CopilotApiEntry =
  * pre-warms node_modules, so neither launch has any business reaching the network.
  */
 export function resolveCopilotApiEntry(): CopilotApiEntry {
+  const rootHome = resolveRootHome();
   const override = process.env.COPILOT_API_ENTRY?.trim();
   if (override) {
-    return { kind: "file", path: override };
+    return { kind: "file", path: override, configFile: entryConfigFile(rootHome) };
   }
-  const rootHome = resolveRootHome();
   const record = readResolvedVersionRecord(rootHome);
   if (record !== null) {
     return {
@@ -58,7 +73,11 @@ export function resolveCopilotApiEntry(): CopilotApiEntry {
       configFile: daemonConfigFile(rootHome),
     };
   }
-  return { kind: "package", specifier: PROXY_PACKAGE_NAME };
+  return {
+    kind: "package",
+    specifier: PROXY_PACKAGE_NAME,
+    configFile: join(PROJECT_ROOT, "deno.json"),
+  };
 }
 
 /**
@@ -90,10 +109,10 @@ const PROXY_PERMISSIONS = [
  * `--config` is always PINNED, never discovered: a package specifier has no directory to
  * discover from, so discovery would fall back to the caller's cwd and could pick up an
  * unrelated project's import map -- which the preload shims resolve their own imports
- * through. WHICH config differs by entry: a floated entry uses the one the float wrote
- * beside its record, because the checkout's deno.json carries a frozen lock that rejects
- * the floated version outright (see writeDaemonConfig). The other entries use the
- * checkout's.
+ * through. The entry already chose WHICH config (see entryConfigFile): the float's
+ * generated one wherever it exists, because the checkout's deno.json carries a frozen
+ * lock that rejects a floated version outright and is absent entirely on an installed
+ * binary.
  *
  * `--cached-only` then guarantees the launch never reaches the network: the float
  * pre-warmed its own cache (proxy AND shims) for a floated entry, and the frozen lock
@@ -108,7 +127,7 @@ export function copilotApiArgv(
   return [
     "run",
     "--config",
-    entry.kind === "floated" ? entry.configFile : join(PROJECT_ROOT, "deno.json"),
+    entry.configFile,
     ...(entry.kind === "file" ? [] : ["--cached-only"]),
     ...(entry.kind === "floated" ? ["--node-modules-dir=none"] : []),
     ...PROXY_PERMISSIONS,

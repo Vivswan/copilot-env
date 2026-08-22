@@ -23,6 +23,12 @@ RUN deno ci
 
 COPY . .
 
+# The proxy's own runtime graph, which `deno ci` never sees: it caches the workspace
+# imports, while the proxy's bin entrypoint pulls its own tree (citty and friends).
+# The floated-spawn test executes a real `--cached-only` launch under --network=none,
+# so that tree has to be in the image's cache while there is still a network.
+RUN deno run -P=cli scripts/warm-proxy-cache.ts
+
 # .dockerignore strips .git (huge, irrelevant), but the uninstall/update
 # checkout guard is `existsSync(.git)` - without the marker, the uninstall
 # tests' real deletion path would sweep /work mid-suite.

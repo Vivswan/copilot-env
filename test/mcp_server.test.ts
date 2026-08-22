@@ -128,7 +128,7 @@ test("redirectConsolaToStderr moves global consola info lines off stdout", () =>
     return true;
   };
   try {
-    consola.level = 3; // ensure info is not self-silenced under bun test
+    consola.level = 3; // ensure info is not self-silenced under deno test
     redirectConsolaToStderr();
     consola.info("narration that must not corrupt the JSON-RPC stream");
   } finally {

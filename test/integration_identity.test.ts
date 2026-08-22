@@ -264,7 +264,7 @@ test("directIdentityCandidates: the default candidate carries the detected UA an
 });
 
 test("the preload's copied header literal stays in step with the module's (drift guard)", async () => {
-  // The bun --preload shim stays import-free (a shim must not drag CLI modules into the
+  // The --preload shim stays import-free (a shim must not drag CLI modules into the
   // daemon), so it re-declares this contract as a literal. Nothing but this test ties the
   // copy to the original -- a rename here fails loudly instead of silently disabling the
   // header rewrite in the daemon. (The shim's env-key literal, INTEGRATION_ID_ENV, is

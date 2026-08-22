@@ -148,7 +148,7 @@ test("idleCheck: lifecycle OFF (auto-start unset) returns without exiting, even 
   // disabled, so idleCheck must disengage and leave the daemon running. idleCheck(0, 1) is
   // long-idle + a 1ms timeout, which WOULD trip process.exit(0) if the OFF gate were removed.
   // Stub process.exit so that regression throws (fails loudly) instead of silently terminating
-  // the whole `bun test` run with code 0 -- the bug this test exists to catch.
+  // the whole `deno test` run with code 0 -- the bug this test exists to catch.
   expect(new CopilotEnvConfig().autoStartEnabled()).toBe(false);
   const realExit = process.exit;
   let exited = false;

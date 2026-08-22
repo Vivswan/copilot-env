@@ -63,7 +63,7 @@ describe("pickAgedVersion", () => {
     expect(pickAgedVersion({ "3.0.0": iso(7) }, 7 * MILLISECONDS_PER_DAY, NOW)).toBe("3.0.0");
   });
 
-  test("supports sub-day minimum ages for bunfig-style cooldowns", () => {
+  test("supports sub-day minimum ages, not just whole-day cooldowns", () => {
     expect(
       pickAgedVersion({ "3.0.0": iso(0.5), "3.0.1": iso(0.1) }, 12 * 60 * 60 * 1000, NOW),
     ).toBe("3.0.0");

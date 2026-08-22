@@ -618,7 +618,7 @@ test("import confirms only for actual overwrites: stores with content, or wiring
   const file = join(machine1.dir, "bundle.json");
   await runSettings({ exportTo: file, withCredentials: true });
 
-  // Non-empty stores, non-TTY (bun test): the guard fires before the prompt.
+  // Non-empty stores, non-TTY (deno test): the guard fires before the prompt.
   expect(runSettings({ importFrom: file })).rejects.toThrow(/--force/);
 
   // Fresh machine, EMPTY stores -- but the bundle rewrites both agents'

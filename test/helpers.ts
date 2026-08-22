@@ -1,5 +1,5 @@
 // Shared test harness + fixture builders for the suite. This is NOT a test
-// file (bun's runner only collects *.test.* / *.spec.* names), so importing it
+// file (the `test` task only collects test/**/*.test.ts names), so importing it
 // never registers tests. Plain functions only -- each test file keeps its own
 // afterEach and calls these from it.
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -55,9 +55,9 @@ export function envSnapshot(extraKeys: readonly string[] = []): () => void {
 }
 
 /**
- * Reset to 0 (NOT undefined -- bun's process.exitCode setter ignores undefined
- * and keeps the last value, which would leak a test's exit 1 into the whole
- * `bun test` run).
+ * Reset to 0 (an explicit known value, so a test's exit 1 can never leak into
+ * the rest of the run through whatever the runtime's process.exitCode setter
+ * does with undefined).
  */
 export function resetExitCode(): void {
   process.exitCode = 0;

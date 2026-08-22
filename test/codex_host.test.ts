@@ -69,11 +69,10 @@ interface Farm {
 
 // Isolated homes plus an empty PATH dir (no codex resolvable => the prime step
 // is a no-op and the build never leaves the temp tree or the network off).
-// Known suite-wide escape, shared with codex_config.test.ts: the disabled
-// catalog sync inside applyCodexConfig sweeps homedir()/.codex, and bun caches
-// os.homedir() at startup, so it READS the real ~/.codex/config.toml. It can
-// never write there (the temp catalog path matches nothing real) and no
-// assertion depends on that read.
+// The disabled catalog sync inside applyCodexConfig sweeps homedir()/.codex;
+// deno's node:os homedir() follows the HOME isolateAgentHomes just set (it is
+// not cached at startup, the way bun's was), so that sweep stays inside the
+// temp tree too.
 function isolate(): Farm {
   const homes = isolateAgentHomes("copilot-codex-host-");
   dir = homes.dir;

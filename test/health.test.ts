@@ -1021,7 +1021,7 @@ test("gatherFacts is read-only: no files appear in a fresh isolated home", async
 
 // --- bootstrap checks -------------------------------------------------------
 
-test("bun unavailable fails; node_modules absent fails, stale warns, fresh ok", () => {
+test("deno unavailable fails; node_modules absent fails, stale warns, fresh ok", () => {
   expect(checkDeno(BOOTSTRAP_OK).status).toBe("ok");
   expect(checkDeno({ ...BOOTSTRAP_OK, deno: { available: false, version: null } }).status).toBe(
     "fail",
@@ -1565,7 +1565,7 @@ test("checkAutoupdate: full status always shown (disabled too); recorded error w
   expect(checkAutoupdate(enabled).detail).toContain("enabled");
   expect(checkAutoupdate(enabled).detail).toContain("up to date");
 
-  const errored = { ...enabled, lastResult: "error: bun install failed after update" };
+  const errored = { ...enabled, lastResult: "error: deno install failed after update" };
   const r = checkAutoupdate(errored);
   expect(r.status).toBe("warn");
   expect(r.fix).toBe("agent update --auto-status");

@@ -130,7 +130,7 @@ test("start --check exits non-zero when no proxy is tracked/running", async () =
 
 // portListening is the liveness half of proxyStatus's UP-path composition. proxyStatus's
 // OTHER half (classifyDaemonPid) checks the recorded pid's identity against a `copilot-api
-// ... start` command line, which the bun test runner's own pid cannot satisfy -- so the full
+// ... start` command line, which the deno test runner's own pid cannot satisfy -- so the full
 // UP-path through runStart({kind:"check"}) is not reproducible in-test without a real daemon (see
 // the "stays DOWN" test below). These two tests pin the part that IS deterministic: the raw TCP
 // liveness probe against a real listening port vs. a dead one.

@@ -636,7 +636,7 @@ test("health --profile with an unknown name is a hard error naming the known pro
 });
 
 // End-to-end coverage of the full diagnostic command: running the REAL
-// `agent health` exercises the whole import graph plus the live probes (bun,
+// `agent health` exercises the whole import graph plus the live probes (deno,
 // node_modules, proxy package, runtime, shell wiring, CLIs, Codex), so it
 // cross-validates the rest of the codebase the way the unit tests can't. An
 // isolated COPILOT_API_HOME + a dead port make the runtime checks deterministic.

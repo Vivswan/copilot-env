@@ -49,7 +49,7 @@ beforeEach(() => {
 afterEach(() => {
   setIntegrationProbeFetch(null);
   restoreEnv();
-  // A check test's exit 1/2 must never leak into the whole `bun test` run.
+  // A check test's exit 1/2 must never leak into the whole `deno test` run.
   resetExitCode();
   dir = removeDir(dir);
 });

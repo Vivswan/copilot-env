@@ -19,7 +19,7 @@
     ".github/workflows/settings-sync.yml"
   ],
   "imports": {
-    "@jeffreycao/copilot-api": "npm:@jeffreycao/copilot-api@^1.14.22",
+    "@jeffreycao/copilot-api": "npm:@jeffreycao/copilot-api@^2.0.1",
     "@modelcontextprotocol/client": "npm:@modelcontextprotocol/client@^2.0.0",
     "@modelcontextprotocol/client/": "npm:/@modelcontextprotocol/client@^2.0.0/",
     "@modelcontextprotocol/sdk": "npm:@modelcontextprotocol/sdk@^1.30.0",

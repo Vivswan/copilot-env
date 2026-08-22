@@ -190,12 +190,13 @@ install after swapping it in; failures are non-fatal. The runner is reached thro
 spawn. The transition that *adds* a subsystem can't auto-run via update - that one is covered
 by the installer's `agent shell` refresh.
 
-**The registry is currently EMPTY.** Every pre-deno-rewrite step was deleted: the rewrite is a
-hard runtime break (a pre-rewrite install runs the old bun-based updater, and this tree cannot
-execute under bun), so no historical step can still be reached. Before deleting a step, check
-that its persisted-state fix is re-derivable (`agent init`/`auth`/`claude`/`shell`) or
-self-healing; if a step is the ONLY reader of a format the current code cannot parse, move that
-tolerance into the reader instead of keeping the migration.
+**The registry is currently EMPTY.** Every pre-deno-rewrite step was deleted, because the
+rewrite is a hard runtime break: a pre-rewrite install runs the old bun-based updater, and bun
+cannot load the runner at all (its first import reaches `@std/dotenv`, a jsr specifier only
+deno's import map resolves), so no historical step can still be reached. Before deleting a
+step, check that its persisted-state fix is re-derivable (`agent init`/`auth`/`claude`/`shell`)
+or self-healing; if a step is the ONLY reader of a format the current code cannot parse, move
+that tolerance into the reader instead of keeping the migration.
 
 ### Project conventions
 

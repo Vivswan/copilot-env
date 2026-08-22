@@ -48,19 +48,41 @@ function findCheckoutRoot(): string {
   return start;
 }
 
+/** The one facet of the Deno global this module needs (typed locally so the
+ *  module also typechecks under non-Deno tooling). */
+interface DenoRuntimeGlobal {
+  execPath(): string;
+  build: { standalone?: boolean };
+}
+
+/** The running Deno runtime's global, or null when not running under Deno. */
+export function denoRuntime(): DenoRuntimeGlobal | null {
+  const versions: Record<string, string | undefined> = process.versions;
+  if (!versions.deno) return null;
+  return (globalThis as { Deno?: DenoRuntimeGlobal }).Deno ?? null;
+}
+
 /**
- * `Deno.build.standalone` is the runtime's own answer to "am I a compiled binary",
- * true only inside a `deno compile` executable. Preferred over sniffing the shape of
- * `import.meta.url`: the VFS path is a plain `file:` URL under the temp dir, so it is
- * indistinguishable from a legitimate source path by scheme, and its directory name
+ * True when we are a `deno compile` standalone binary rather than a script under a real
+ * deno. It matters everywhere the runtime's own executable is treated as a deno: under a
+ * standalone, `Deno.execPath()` is OUR binary, which cannot run `deno cache` or launch
+ * the proxy. Deno reports this itself, so it is observed rather than inferred from paths.
+ *
+ * It is also what discriminates RootMode. Preferred over sniffing the shape of
+ * `import.meta.url`: the compiled VFS path is a plain `file:` URL under the temp dir, so
+ * it is indistinguishable from a legitimate source path by scheme, and its directory name
  * follows the output file name (not `--app-name`), which no contract pins.
  */
+export function isStandaloneBinary(): boolean {
+  return denoRuntime()?.build.standalone === true;
+}
+
 function detectRootMode(): RootMode {
-  if (!Deno.build.standalone) return { kind: "checkout", root: findCheckoutRoot() };
+  if (!isStandaloneBinary()) return { kind: "checkout", root: findCheckoutRoot() };
   const override = process.env[ROOT_OVERRIDE_ENV];
   // <root>/bin/agent-bin -> <root>. The installers put the binary there and the
   // bin/agent shim next to it; nothing else may define the layout.
-  const root = override ? resolve(override) : dirname(dirname(Deno.execPath()));
+  const root = override ? resolve(override) : dirname(dirname(denoRuntime()?.execPath() ?? ""));
   return { kind: "compiled", root };
 }
 

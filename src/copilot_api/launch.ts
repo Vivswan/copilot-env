@@ -31,7 +31,8 @@ import {
 import { resolvePassthroughIntegrationId, usePatPassthrough } from "./integration_identity.ts";
 import { generateAliases } from "./models.ts";
 import { CopilotApiPaths, profileHomeNames, resolveRootHome, ROOT_HOME_ENV } from "./paths.ts";
-import { ensureSidecar, isStandaloneBinary } from "./sidecar.ts";
+import { isStandaloneBinary } from "../utils/root.ts";
+import { ensureSidecar } from "./sidecar.ts";
 import {
   checkProxyPort,
   copilotApiFindPort,

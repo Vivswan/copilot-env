@@ -21,7 +21,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { mkdir, open } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { PROJECT_ROOT } from "../utils/root.ts";
+import { denoRuntime, isStandaloneBinary, PROJECT_ROOT } from "../utils/root.ts";
 import { sidecarSha256 } from "./sidecar_pins.ts";
 import { crypto } from "@std/crypto";
 
@@ -48,30 +48,6 @@ export function parseAbsolutePath(path: string): AbsolutePath {
     throw new Error(`expected an absolute path, got '${trimmed}'`);
   }
   return trimmed as AbsolutePath;
-}
-
-/** The one facet of the Deno global this module needs (typed locally so the
- *  module also typechecks under non-Deno tooling). */
-interface DenoRuntimeGlobal {
-  execPath(): string;
-  build: { standalone?: boolean };
-}
-
-/** The running Deno runtime's global, or null when not running under Deno. */
-function denoRuntime(): DenoRuntimeGlobal | null {
-  const versions: Record<string, string | undefined> = process.versions;
-  if (!versions.deno) return null;
-  return (globalThis as { Deno?: DenoRuntimeGlobal }).Deno ?? null;
-}
-
-/**
- * True when we are a `deno compile` standalone binary rather than a script under a real
- * deno. It matters everywhere the runtime's own executable is treated as a deno: under a
- * standalone, `Deno.execPath()` is OUR binary, which cannot run `deno cache` or launch
- * the proxy. Deno reports this itself, so it is observed rather than inferred from paths.
- */
-export function isStandaloneBinary(): boolean {
-  return denoRuntime()?.build.standalone === true;
 }
 
 /**

@@ -38,8 +38,9 @@ export interface Migration {
  *
  * EMPTY BY DESIGN. Every step shipped before the deno rewrite was deleted. They are
  * unreachable because the rewrite is a hard runtime break, not because of their version
- * range: a pre-rewrite install runs the OLD updater, which shells out to bun, and this
- * tree cannot execute under bun at all. Nothing that could still be due can reach here.
+ * range: a pre-rewrite install runs the OLD updater, which shells out to bun, and bun
+ * cannot even load this file -- its first import reaches `@std/dotenv`, a jsr specifier
+ * only deno's import map resolves. Nothing that could still be due can reach here.
  *
  * Each deleted step's persisted-state fix was checked first and was re-derivable by
  * `agent init` / `auth` / `claude` / `shell`, or self-healing on the catalog sync timer;

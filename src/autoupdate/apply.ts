@@ -235,8 +235,8 @@ export async function applyUpdate(
     rmSync(staging, { recursive: true, force: true });
   }
 
-  // Lay down the new release's runtime assets (shell payload, proxy-token
-  // scripts, skills, the deno config the daemon spawn reads). Without this an
+  // Lay down the new release's runtime assets (shell payload, daemon shims,
+  // skills, the deno config the daemon spawn reads). Without this an
   // updated install would run the previous release's files.
   if (runNewBinary(swapped, root, ["install", "--assets-only"], stdio) !== 0) {
     logger.warn("Refreshing the installed runtime files reported a problem; see the output above.");

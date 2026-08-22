@@ -8,9 +8,9 @@
 //   deno task test:docker                     full suite (image CMD)
 //   deno task test:docker test/usage.test.ts  selected files
 //   deno task test:docker --lifecycle         daemon lifecycle smoke, in-container
-//   deno task test:docker --floated-lifecycle the same smoke against the REAL
-//                                             floated proxy (needs the network
-//                                             and a Copilot credential)
+//   deno task test:docker --floated-lifecycle the REAL floated proxy, asserted
+//                                             as far as auth (needs the network;
+//                                             a credential is NOT required)
 //
 // Engine: $CONTAINER_ENGINE picks between "docker" and "podman" (the task's
 // --allow-run grants exactly those two); otherwise podman is preferred.

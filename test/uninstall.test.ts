@@ -50,7 +50,7 @@ function tmpHomes(): { proxyHome: string; claudeHome: string; codexHome: string 
 
 /**
  * A sandbox stand-in for the install root, shaped like what the installers build
- * (`<root>/bin/agent-bin`). `kind: "compiled"` means the delete step treats it as an
+ * (`<root>/bin/copilot-env`). `kind: "compiled"` means the delete step treats it as an
  * installed binary root and REALLY removes it -- the production code path, run
  * against a temp directory instead of the tree under test.
  */
@@ -62,7 +62,7 @@ function sandboxRoot(kind: RootMode["kind"] = "compiled"): RootMode {
   for (const marker of ["bin", "shell", join("src", "scripts")]) {
     mkdirSync(join(root, marker), { recursive: true });
   }
-  writeFileSync(join(root, "bin", "agent-bin"), "#!/bin/sh\n");
+  writeFileSync(join(root, "bin", "copilot-env"), "#!/bin/sh\n");
   return { kind, root };
 }
 

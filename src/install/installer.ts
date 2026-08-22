@@ -1,6 +1,6 @@
 // The in-binary `agent install` implementation: finalize an install root
 // around the compiled agent binary that install.sh / install.ps1 just
-// downloaded to <root>/bin/agent-bin(.exe).
+// downloaded to <root>/bin/copilot-env(.exe).
 //
 // The work is a plan/apply split (build one typed plan up front, then execute
 // it -- the same shape as planImport/applyImportPlan in src/agents/transfer.ts):

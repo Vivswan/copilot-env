@@ -100,10 +100,11 @@ for (const target of targets) {
   if (code !== 0) Deno.exit(code);
 }
 
-// checksums.txt covers every binary currently in dist/ (so a filtered build
-// still emits verifiable lines), in `shasum -a 256 -c` compatible form.
+// checksums.txt covers every release binary currently in dist/ (so a filtered
+// build still emits verifiable lines), in `shasum -a 256 -c` compatible form.
+const assetNames = new Set(RELEASE_TARGETS.map(releaseAssetName));
 const binaries = [...Deno.readDirSync(join(ROOT, OUT_DIR))]
-  .filter((entry) => entry.isFile && entry.name.startsWith("agent-"))
+  .filter((entry) => entry.isFile && assetNames.has(entry.name))
   .map((entry) => entry.name)
   .sort();
 const lines = await Promise.all(

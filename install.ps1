@@ -2,7 +2,7 @@
 #
 # Bootstrap only: download the compiled Windows agent binary from the selected
 # copilot-env GitHub release, verify its SHA256 against the release's
-# checksums.txt, install it as <install-dir>\bin\agent-bin.exe, then hand off
+# checksums.txt, install it as <install-dir>\bin\copilot-env.exe, then hand off
 # to the binary's own `install` subcommand (it materializes the runtime
 # assets, the bin\agent launcher shims, and the shell integration). Optional
 # CLIs and launchers are managed after install with
@@ -63,7 +63,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 # (byte-exact needle; test/installer_pinning.test.ts guards the match).
 $InstallRef = if ($env:COPILOT_ENV_INSTALL_REF) { $env:COPILOT_ENV_INSTALL_REF } else { 'latest' }
 $Repo = 'Vivswan/copilot-env'
-$BinaryName = 'agent-bin.exe'
+$BinaryName = 'copilot-env.exe'
 # The Authorization header goes only to api.github.com (tag resolution);
 # release-asset downloads ride the public URL with anonymous headers.
 $AuthHeaders = @{ 'User-Agent' = 'copilot-env'; 'Accept' = 'application/vnd.github+json' }
@@ -230,7 +230,7 @@ function Get-ExpectedSha256 {
 
 $InstallDir = Resolve-SafeInstallDir
 $Target = Resolve-Target
-$AssetName = "agent-$Target.exe"
+$AssetName = "copilot-env-$Target.exe"
 
 $DownloadDir = ''
 $DownloadUrlBase = ''

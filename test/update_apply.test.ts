@@ -76,11 +76,11 @@ describe("parseChecksums", () => {
     const digest = "a".repeat(64);
     const other = "b".repeat(64);
     const checksums = parseChecksums(
-      `${digest}  agent-x86_64-unknown-linux-gnu\n${other} *agent-x86_64-pc-windows-msvc.exe\n`,
+      `${digest}  copilot-env-x86_64-unknown-linux-gnu\n${other} *copilot-env-x86_64-pc-windows-msvc.exe\n`,
     );
-    expect(checksums.get("agent-x86_64-unknown-linux-gnu")).toBe(digest);
+    expect(checksums.get("copilot-env-x86_64-unknown-linux-gnu")).toBe(digest);
     // The leading "*" marks binary mode and is not part of the name.
-    expect(checksums.get("agent-x86_64-pc-windows-msvc.exe")).toBe(other);
+    expect(checksums.get("copilot-env-x86_64-pc-windows-msvc.exe")).toBe(other);
   });
 
   test("skips malformed lines rather than throwing", () => {
@@ -132,9 +132,9 @@ describe("release targets", () => {
   });
 
   test("the installed binary name is platform-shaped", () => {
-    expect(installedBinaryName("win32")).toBe("agent-bin.exe");
-    expect(installedBinaryName("linux")).toBe("agent-bin");
-    expect(installedBinaryName("darwin")).toBe("agent-bin");
+    expect(installedBinaryName("win32")).toBe("copilot-env.exe");
+    expect(installedBinaryName("linux")).toBe("copilot-env");
+    expect(installedBinaryName("darwin")).toBe("copilot-env");
   });
 });
 

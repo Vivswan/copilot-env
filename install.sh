@@ -3,7 +3,7 @@
 #
 # Bootstrap only: pick this platform's compiled agent binary from the selected
 # copilot-env GitHub release, verify its SHA256 against the release's
-# checksums.txt, install it as <install-dir>/bin/agent-bin, then hand off to
+# checksums.txt, install it as <install-dir>/bin/copilot-env, then hand off to
 # the binary's own `install` subcommand (it materializes the runtime assets,
 # the bin/agent launcher shims, and the shell integration). Optional CLIs and
 # launchers are managed after install with `agent shell --clis --launchers`.
@@ -14,7 +14,7 @@ set -eu
 # (byte-exact needle; test/installer_pinning.test.ts guards the match).
 INSTALL_REF="${COPILOT_ENV_INSTALL_REF:-latest}"
 REPO="Vivswan/copilot-env"
-BINARY_NAME="agent-bin"
+BINARY_NAME="copilot-env"
 INSTALL_DIR_ARG=""
 VERSION_ARG=""
 SKIP_SHELL_INTEGRATION=false
@@ -250,7 +250,7 @@ if [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
 fi
 
 resolve_target
-ASSET="agent-$TARGET"
+ASSET="copilot-env-$TARGET"
 
 DOWNLOAD_DIR=""
 DOWNLOAD_URL_BASE=""
@@ -280,7 +280,7 @@ _line="$(awk -v name="$ASSET" '$2 == name || $2 == ("*" name) { print }' "$_tmp/
 sha256_check_line "$_tmp" "$_line" || die "SHA256 verification failed for $ASSET."
 
 mkdir -p "$INSTALL_DIR/bin"
-# mv (rename) rather than cp: replacing a running agent-bin in place would
+# mv (rename) rather than cp: replacing a running copilot-env binary in place would
 # fail with ETXTBSY; a rename swaps the inode out from under it safely.
 mv -f "$_tmp/$ASSET" "$INSTALL_DIR/bin/$BINARY_NAME"
 chmod 0755 "$INSTALL_DIR/bin/$BINARY_NAME"

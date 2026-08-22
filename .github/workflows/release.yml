@@ -145,7 +145,7 @@ jobs:
           subject-path: |
             release-assets/install.sh
             release-assets/install.ps1
-            dist/agent-*
+            dist/copilot-env-*
             dist/checksums.txt
 
       # The attestation's Sigstore bundle also ships as a release asset, so
@@ -164,7 +164,7 @@ jobs:
           gh release upload "$TAG" \
             release-assets/install.sh \
             release-assets/install.ps1 \
-            dist/agent-* \
+            dist/copilot-env-* \
             dist/checksums.txt \
             "copilot-env-$TAG.attestation.jsonl" \
             --clobber
@@ -176,7 +176,7 @@ jobs:
   # public release URL until the release is published).
   #
   # Everything here installs into RUNNER_TEMP and only reads. Do NOT add a step
-  # that runs `agent update` or `agent-bin __migrate` for real: migrations mutate
+  # that runs `agent update` or `copilot-env __migrate` for real: migrations mutate
   # the invoking HOME (agent configs, credential store, shell rc files) and have
   # no dry-run, so on a runner they would rewrite state no assertion here owns.
   # The update path is covered by test/update_apply.test.ts, which drives it
@@ -192,9 +192,9 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            asset: agent-x86_64-unknown-linux-gnu
+            asset: copilot-env-x86_64-unknown-linux-gnu
           - os: windows-latest
-            asset: agent-x86_64-pc-windows-msvc.exe
+            asset: copilot-env-x86_64-pc-windows-msvc.exe
     permissions:
       contents: write # draft releases are only visible to tokens with push access
     steps:
@@ -208,7 +208,9 @@ jobs:
           gh release download "$TAG" --repo "${{ github.repository }}" \
             --dir release-smoke-assets \
             --pattern 'install.sh' --pattern 'install.ps1' \
-            --pattern 'agent-*' --pattern 'checksums.txt'
+            --pattern 'copilot-env-*' --pattern 'checksums.txt'
+          # 'copilot-env-*' also matches the attestation bundle; sha256sum -c
+          # below checks only the files checksums.txt lists, so it is inert.
 
       - name: Verify uploaded checksums
         shell: bash

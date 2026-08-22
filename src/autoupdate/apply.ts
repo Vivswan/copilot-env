@@ -161,7 +161,7 @@ function sweepSupersededBinaries(binDir: string, liveName: string): void {
 }
 
 /**
- * Stage 3: put the verified binary at `<root>/bin/agent-bin(.exe)`.
+ * Stage 3: put the verified binary at `<root>/bin/copilot-env(.exe)`.
  *
  * POSIX renames straight over the live path: the running process keeps its open
  * inode, so replacing the file underneath it is safe and atomic. Windows

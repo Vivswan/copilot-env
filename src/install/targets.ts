@@ -25,10 +25,12 @@ export const RELEASE_TARGETS: readonly ReleaseTarget[] = [
   { triple: "x86_64-pc-windows-msvc", os: "win32", arch: "x64" },
 ];
 
-/** The release-asset name for a target: `agent-<triple>`, `.exe` on Windows.
- *  scripts/compile.ts writes exactly these names into dist/. */
+/** The release-asset name for a target: `copilot-env-<triple>`, `.exe` on
+ *  Windows. scripts/compile.ts writes exactly these names into dist/. */
 export function releaseAssetName(target: ReleaseTarget): string {
-  return target.os === "win32" ? `agent-${target.triple}.exe` : `agent-${target.triple}`;
+  return target.os === "win32"
+    ? `copilot-env-${target.triple}.exe`
+    : `copilot-env-${target.triple}`;
 }
 
 /** The target this process is running on, or null when copilot-env ships no
@@ -42,10 +44,11 @@ export function currentReleaseTarget(
 
 /** The installed name of the compiled binary inside `<root>/bin`. Unlike the
  *  release asset it is platform-independent: one install root only ever holds
- *  its own platform's binary, and the launcher shims hardcode this name. */
-export const INSTALLED_BINARY_POSIX = "agent-bin";
+ *  its own platform's binary, and the launcher shims hardcode this name. The
+ *  `bin/agent`(`.ps1`) shim beside it IS the `agent` alias. */
+export const INSTALLED_BINARY_POSIX = "copilot-env";
 /** Windows twin of `INSTALLED_BINARY_POSIX`. */
-export const INSTALLED_BINARY_WINDOWS = "agent-bin.exe";
+export const INSTALLED_BINARY_WINDOWS = "copilot-env.exe";
 
 export function installedBinaryName(platform: string = process.platform): string {
   return platform === "win32" ? INSTALLED_BINARY_WINDOWS : INSTALLED_BINARY_POSIX;

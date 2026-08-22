@@ -202,10 +202,10 @@ describe("launcher shims", () => {
   test("dispatch to the compiled binary next to them", () => {
     // The shims are the ONLY thing standing between `agent` on a user's PATH
     // and the binary, so their dispatch target is a contract with install.sh
-    // (which writes the binary to bin/agent-bin) and with the update swap.
-    expect(POSIX_SHIM).toContain('exec "$HERE/agent-bin" "$@"');
+    // (which writes the binary to bin/copilot-env) and with the update swap.
+    expect(POSIX_SHIM).toContain('exec "$HERE/copilot-env" "$@"');
     expect(POSIX_SHIM.startsWith("#!/bin/sh\n")).toBe(true);
-    expect(POWERSHELL_SHIM).toContain("agent-bin.exe");
+    expect(POWERSHELL_SHIM).toContain("copilot-env.exe");
     expect(POWERSHELL_SHIM).toContain("exit $LASTEXITCODE");
   });
 });

@@ -12,7 +12,7 @@ import type { Profile } from "../copilot_api/profile.ts";
  *   worktree. The root is the source tree itself, so the code we execute and the
  *   files we manage are the same directory.
  * - `compiled`: running as a `deno compile` binary installed at
- *   `<root>/bin/agent-bin`. The root is derived from `Deno.execPath()`, NEVER from
+ *   `<root>/bin/copilot-env`. The root is derived from `Deno.execPath()`, NEVER from
  *   `import.meta.url`: inside a compiled binary that URL points into the embedded
  *   virtual filesystem (a temp-dir-shaped path that exists only in-process). Paths
  *   we hand to OTHER programs -- Codex's `auth.command`, Claude's `apiKeyHelper`,
@@ -80,7 +80,7 @@ export function isStandaloneBinary(): boolean {
 function detectRootMode(): RootMode {
   if (!isStandaloneBinary()) return { kind: "checkout", root: findCheckoutRoot() };
   const override = process.env[ROOT_OVERRIDE_ENV];
-  // <root>/bin/agent-bin -> <root>. The installers put the binary there and the
+  // <root>/bin/copilot-env -> <root>. The installers put the binary there and the
   // bin/agent shim next to it; nothing else may define the layout.
   const root = override ? resolve(override) : dirname(dirname(denoRuntime()?.execPath() ?? ""));
   return { kind: "compiled", root };
@@ -124,7 +124,7 @@ export function isProtectedRoot(mode: RootMode = rootMode()): boolean {
 /** Directories every copilot-env root carries: a checkout ships them, and an install
  *  materializes them out of the binary (`bin` is the exception -- the installer writes
  *  launcher shims into it rather than unpacking one). `bin` alone would not identify a
- *  root anyway: ~/.local/bin/agent-bin would resolve its root to ~/.local, which has one.
+ *  root anyway: ~/.local/bin/copilot-env would resolve its root to ~/.local, which has one.
  *  Exported so the installer's tests can assert it produces exactly this layout. */
 export const INSTALL_ROOT_MARKERS = ["bin", "shell", join("src", "scripts")] as const;
 

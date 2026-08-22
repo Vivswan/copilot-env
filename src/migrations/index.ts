@@ -1,27 +1,21 @@
 // Migration runner: selects and executes version-to-version fixups after update.
 //
-// Direct run:
-//   bun src/migrations/index.ts <fromVersion> <toVersion>
+// Run via the hidden `agent __migrate <fromVersion> <toVersion>` subcommand -- a compiled
+// binary has no source file on disk to spawn, so the runner is reached through the CLI.
+// Direct run still works in a dev checkout:
+//   deno run -P=cli src/migrations/index.ts <fromVersion> <toVersion>
 //
 // Arguments:
 //   <fromVersion>  Version being updated away from, with or without a leading v.
 //   <toVersion>    Version being updated to, with or without a leading v.
 //
-// `agent update` spawns this after swapping in the new release so migrations load
-// from the new code on disk instead of the already-running old update process.
+// `agent update` invokes this after swapping in the new release so migrations load from
+// the new code rather than from the already-running old update process.
 import "../utils/dotenv.ts";
 import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
 import { disableConsolaTimestamps } from "../utils/logger.ts";
 import { stripV, versionLessThan } from "../utils/semver.ts";
-import { migration as v121 } from "./1.2.1.ts";
-import { migration as v320 } from "./3.2.0.ts";
-import { migration as v333 } from "./3.3.3.ts";
-import { migration as v336 } from "./3.3.6.ts";
-import { migration as v3317 } from "./3.3.17.ts";
-import { migration as v3320 } from "./3.3.20.ts";
-import { migration as v351 } from "./3.5.1.ts";
-import { migration as v352 } from "./3.5.2.ts";
 
 /**
  * One step in the version history, named for the release it migrates AWAY FROM (so a
@@ -38,9 +32,21 @@ export interface Migration {
   run: () => void | Promise<void>;
 }
 
-// One file per version step (named for the from-version), registered in ascending order;
-// `dueMigrations` re-sorts defensively, so order here is for readability only.
-const MIGRATIONS: Migration[] = [v121, v320, v333, v336, v3317, v3320, v351, v352];
+/**
+ * One file per version step (named for the from-version), registered in ascending order;
+ * `dueMigrations` re-sorts defensively, so order here is for readability only.
+ *
+ * EMPTY BY DESIGN. Every step shipped before the deno rewrite was deleted. They are
+ * unreachable because the rewrite is a hard runtime break, not because of their version
+ * range: a pre-rewrite install runs the OLD updater, which shells out to bun, and this
+ * tree cannot execute under bun at all. Nothing that could still be due can reach here.
+ *
+ * Each deleted step's persisted-state fix was checked first and was re-derivable by
+ * `agent init` / `auth` / `claude` / `shell`, or self-healing on the catalog sync timer;
+ * none was the only reader of a format the current code cannot parse. Add the next step
+ * here as `[v360]` when one is needed.
+ */
+const MIGRATIONS: Migration[] = [];
 
 /**
  * The migrations whose (from-)version falls in the half-open range [from, to), sorted
@@ -62,10 +68,15 @@ export function dueMigrations(
 
 /**
  * Run every due migration in order. Best-effort: a failing migration warns and the rest
- * still run -- migrations must never abort an otherwise-successful update.
+ * still run -- migrations must never abort an otherwise-successful update. `migrations`
+ * is the injection seam for tests, matching `dueMigrations`.
  */
-export async function runMigrations(from: string, to: string): Promise<void> {
-  const due = dueMigrations(from, to);
+export async function runMigrations(
+  from: string,
+  to: string,
+  migrations: Migration[] = MIGRATIONS,
+): Promise<void> {
+  const due = dueMigrations(from, to, migrations);
   if (due.length === 0) return;
   consola.info(`Running ${due.length} migration(s): ${stripV(from)} -> ${stripV(to)}`);
   for (const m of due) {
@@ -79,11 +90,12 @@ export async function runMigrations(from: string, to: string): Promise<void> {
   }
 }
 
-// Runnable entry: `agent update` spawns this in a FRESH process after swapping in the new
-// release -- the running update.ts still holds the pre-update code in memory, so the new
-// migration set (and the code it calls) must load from disk. Guarded by import.meta.main
-// so importing this module (registry/dueMigrations) never executes it.
-//   bun src/migrations/index.ts <fromVersion> <toVersion>
+// Runnable entry for a dev checkout. `agent update` normally reaches the runner through
+// the hidden `agent __migrate` subcommand instead -- this process still holds the
+// pre-update code in memory, so the new migration set must load from the new release.
+// Guarded by import.meta.main so importing this module (registry/dueMigrations/CLI) never
+// executes it.
+//   deno run -P=cli src/migrations/index.ts <fromVersion> <toVersion>
 if (import.meta.main) {
   disableConsolaTimestamps();
   const [from, to] = process.argv.slice(2);

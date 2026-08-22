@@ -207,8 +207,8 @@ by the Copilot coding agent, Codespaces/Dev Containers, and humans.
 `src/migrations/` carries one-time, idempotent fix-ups for existing installs, one file per step
 named for the release it migrates **away from** (`3.6.0.ts`) - authored against the current
 version, never predicting the next. `agent update` runs the due ones (`[old, new)`) on the NEW
-install after swapping it in; failures are non-fatal. The runner is reached through the hidden
-`agent __migrate <from> <to>` subcommand, because a compiled binary has no source file to
+install after swapping it in; failures are non-fatal. The runner is reached through the
+`agent migrate <from> <to>` subcommand, because a compiled binary has no source file to
 spawn. The transition that *adds* a subsystem can't auto-run via update - that one is covered
 by the installer's `agent shell` refresh.
 
@@ -270,7 +270,7 @@ and only then publishes.
 `agent update` is the same fetch-verify-swap the installer does, minus the bootstrap: it
 renames the new binary over the live one (POSIX) or moves the running image aside first
 (Windows), then runs the NEW binary for both post-swap steps - `install --assets-only` to lay
-down that release's runtime files, and `__migrate` for the due migrations. Both are
+down that release's runtime files, and `migrate` for the due migrations. Both are
 best-effort: the version has already moved forward at the rename, so failing there would
 strand the install instead of retrying.
 

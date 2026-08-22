@@ -157,7 +157,7 @@ describe("applyUpdate", () => {
     // Both post-swap steps must run the NEW binary: it is the only thing that
     // knows its own assets and its own migrations.
     const log = readFileSync(join(installDir, "invocations.log"), "utf8").trim().split("\n");
-    expect(log).toEqual(["install --assets-only", "__migrate 9.9.8 9.9.9"]);
+    expect(log).toEqual(["install --assets-only", "migrate 9.9.8 9.9.9"]);
   });
 
   skipWin("refuses a binary the release manifest does not vouch for", async () => {

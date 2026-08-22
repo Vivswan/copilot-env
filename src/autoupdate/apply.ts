@@ -243,7 +243,7 @@ export async function applyUpdate(
   }
 
   if (
-    runNewBinary(swapped, root, ["__migrate", stripV(current), stripV(target.tag)], stdio) !== 0
+    runNewBinary(swapped, root, ["migrate", stripV(current), stripV(target.tag)], stdio) !== 0
   ) {
     logger.warn("Post-update migrations reported a problem; see the output above.");
   }

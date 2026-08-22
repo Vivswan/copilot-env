@@ -684,14 +684,18 @@ program
     })
   );
 
-// Hidden: `agent update` invokes this on the NEW install after swapping it in, so the
+// `agent update` invokes this on the NEW install after swapping it in, so the
 // migrations run from the new code rather than from the pre-update process's memory.
 // A compiled binary has no `src/migrations/index.ts` on disk to run, so the runner is
-// imported statically and reached through this subcommand instead of a script path.
-// Not user-facing (the `__` prefix and hidden() say so), but `deno run
-// src/migrations/index.ts <from> <to>` keeps working in a dev checkout.
+// imported statically and reached through this subcommand instead of a script path
+// (`deno run src/migrations/index.ts <from> <to>` keeps working in a dev checkout).
 program
-  .command("__migrate", { hidden: true })
+  .command("migrate")
+  .helpGroup("Maintenance:")
+  .description(
+    "Run the migration steps due between two versions (what `agent update` runs after " +
+      "swapping in a release). Safe to re-run: steps are idempotent.",
+  )
   .argument("<from>", "Version being updated away from.")
   .argument("<to>", "Version being updated to.")
   .action((from: string, to: string) => runMigrations(from, to));

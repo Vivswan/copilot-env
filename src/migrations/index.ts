@@ -1,6 +1,6 @@
 // Migration runner: selects and executes version-to-version fixups after update.
 //
-// Run via the hidden `agent __migrate <fromVersion> <toVersion>` subcommand -- a compiled
+// Run via the `agent migrate <fromVersion> <toVersion>` subcommand -- a compiled
 // binary has no source file on disk to spawn, so the runner is reached through the CLI.
 // Direct run still works in a dev checkout:
 //   deno run -P=cli src/migrations/index.ts <fromVersion> <toVersion>
@@ -92,7 +92,7 @@ export async function runMigrations(
 }
 
 // Runnable entry for a dev checkout. `agent update` normally reaches the runner through
-// the hidden `agent __migrate` subcommand instead -- this process still holds the
+// the `agent migrate` subcommand instead -- this process still holds the
 // pre-update code in memory, so the new migration set must load from the new release.
 // Guarded by import.meta.main so importing this module (registry/dueMigrations/CLI) never
 // executes it.

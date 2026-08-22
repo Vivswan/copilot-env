@@ -176,7 +176,7 @@ jobs:
   # public release URL until the release is published).
   #
   # Everything here installs into RUNNER_TEMP and only reads. Do NOT add a step
-  # that runs `agent update` or `copilot-env __migrate` for real: migrations mutate
+  # that runs `agent update` or `copilot-env migrate` for real: migrations mutate
   # the invoking HOME (agent configs, credential store, shell rc files) and have
   # no dry-run, so on a runner they would rewrite state no assertion here owns.
   # The update path is covered by test/update_apply.test.ts, which drives it

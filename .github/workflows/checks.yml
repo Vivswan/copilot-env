@@ -85,13 +85,18 @@ jobs:
   # proxy's actual dependency tree.
   #
   # ADVISORY (continue-on-error) rather than gating, because it currently fails
-  # for a reason outside its own scope: the real proxy pulls in `is-wsl`, which
-  # probes /proc/sys/fs/binfmt_misc/WSLInterop, and the daemon's PROXY_PERMISSIONS
-  # (src/copilot_api/process.ts) do not cover it -- the daemon dies with
-  # `NotCapable ... run again with the --allow-all flag` before it ever listens.
-  # Reproduce locally with `deno task test:docker --floated-lifecycle`. Once the
-  # daemon starts under the real proxy, delete the continue-on-error line and
-  # this paragraph: the job is meant to gate.
+  # for a reason outside its own scope: on Linux the real proxy cannot start
+  # under ANY granular permission list. `is-wsl`, a transitive of the real
+  # proxy, reads /proc, and deno 2.9.5 treats the whole /proc tree as requiring
+  # --allow-all -- measured on 2.9.5, unrestricted --allow-read fails,
+  # --allow-read=/proc fails, and even `-A` plus any --deny-* fails, because a
+  # single deny stops the grant counting as "all". Only a bare -A works, so the
+  # daemon's deliberately-visible PROXY_PERMISSIONS list
+  # (src/copilot_api/process.ts) cannot be widened into a fix; it is a design
+  # decision someone has to make. Reproduce with
+  # `deno task test:docker --floated-lifecycle`. Once the real proxy starts,
+  # delete the continue-on-error line and this paragraph: the job is meant to
+  # gate.
   floated-lifecycle:
     name: floated lifecycle (real proxy)
     runs-on: ubuntu-latest

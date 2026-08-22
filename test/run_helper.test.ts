@@ -17,6 +17,37 @@ function childSees(env: Record<string, string | undefined>): string {
   return result.stdout.trim();
 }
 
+test("runSync: the child gets EXACTLY the requested env, not the parent merged with it", () => {
+  process.env[PROBE] = "PARENT_VALUE";
+  try {
+    // A PARTIAL env is the case that separates replacement from merge: under Deno's native
+    // merge the parent's value reaches the child even though the caller never mentioned it.
+    expect(childSees({ SOMETHING_ELSE: "x" })).toBe("V=<unset>");
+    // The parent is untouched by the clearing.
+    expect(process.env[PROBE]).toBe("PARENT_VALUE");
+  } finally {
+    delete process.env[PROBE];
+  }
+});
+
+test("runSync: a parent variable named after an Object prototype member is cleared too", () => {
+  // `"toString" in wanted` is true through the prototype chain, so an `in` test would spare
+  // this key and leak it into a child that never asked for it. Typed as a plain string so it
+  // reaches ProcessEnv's index signature rather than Object.prototype.toString.
+  const protoKey: string = "toString";
+  process.env[protoKey] = "PARENT_VALUE";
+  try {
+    const seen = runSync(Deno.execPath(), [
+      "eval",
+      'console.log("V=" + (Deno.env.get("toString") ?? "<unset>"))',
+    ], { env: { SOMETHING_ELSE: "x" } });
+    expect(seen.stdout.trim()).toBe("V=<unset>");
+    expect(process.env[protoKey]).toBe("PARENT_VALUE");
+  } finally {
+    delete process.env[protoKey];
+  }
+});
+
 test("runSync: an explicitly undefined env value is unset in the child, not merged over", () => {
   process.env[PROBE] = "PARENT_VALUE";
   try {

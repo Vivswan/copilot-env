@@ -44,22 +44,16 @@ export interface RunOptions {
 }
 
 /**
- * The child env split into what to SET and what must not reach the child. Deno's
- * node:child_process merges `env` OVER the parent (node replaces it) and ignores a key whose
- * value is `undefined`, so an unset can only be done by removing the key from the parent for
- * the span of the spawn - which runSync does, safely, because a sync spawn blocks the one
- * thread and nothing can observe the gap.
+ * The exact environment the child should get: the requested map with `undefined` values
+ * dropped, since those spell "the child must not see this". Null-prototype, so a variable
+ * named `toString` or `__proto__` is an ordinary key here rather than something inherited.
  */
-function childEnv(
-  env: Record<string, string | undefined>,
-): { set: Record<string, string>; unset: string[] } {
-  const set: Record<string, string> = {};
-  const unset: string[] = [];
+function childEnv(env: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = Object.create(null);
   for (const [key, value] of Object.entries(env)) {
-    if (value === undefined) unset.push(key);
-    else set[key] = value;
+    if (value !== undefined) out[key] = value;
   }
-  return { set, unset };
+  return out;
 }
 
 /** The running test's abort signal, thrown if the deadline already fired. Every spawn
@@ -100,19 +94,37 @@ export function spawnChild(cmd: string, options: Deno.CommandOptions): Deno.Chil
   return killOnTestAbort(new Deno.Command(cmd, options).spawn());
 }
 
-/** Synchronous spawn with the Bun.spawnSync result shape the suite asserts on. */
+/**
+ * Synchronous spawn with the Bun.spawnSync result shape the suite asserts on. The child gets
+ * EXACTLY `opts.env` (node's documented replacement semantics), so a key the caller omits, or
+ * spells `undefined`, is genuinely absent in the child.
+ *
+ * Deno's node:child_process MERGES `env` over the parent instead, so replacement is restored
+ * here by clearing the parent's extra keys for the span of the spawn. PRECONDITION: the suite
+ * runs no Web Worker. spawnSync blocks this thread, so nothing on it can observe the window,
+ * but a Worker shares the process environment and would. (Deno.Command's `clearEnv` needs no
+ * such window, but its outputSync has no `timeout` -- and a blocked thread is precisely what
+ * stops the per-test deadline from killing a wedged child.)
+ */
 export function runSync(cmd: string, args: string[], opts: RunOptions = {}): RunResult {
   // spawnSync can take no part in this: it blocks the thread, so the only moment the signal
   // can be observed for a SYNC child is before the call.
   liveTestSignal();
-  const { set, unset } = childEnv(opts.env ?? process.env);
-  const saved = unset.map((key) => [key, process.env[key]] as const);
+  const wanted = childEnv(opts.env ?? process.env);
+  const cleared: (readonly [string, string])[] = [];
   try {
-    // Inside the try: a throw partway through must still restore the keys already removed.
-    for (const key of unset) delete process.env[key];
+    // Inside the try: a throw partway through must still restore what was already cleared.
+    for (const [key, value] of Object.entries(process.env)) {
+      // hasOwn, not `in`: `"toString" in wanted` is true through the prototype chain, which
+      // would spare a parent variable of that name and leak it into the child.
+      if (value !== undefined && !Object.hasOwn(wanted, key)) {
+        cleared.push([key, value] as const);
+        delete process.env[key];
+      }
+    }
     const res = spawnSync(cmd, args, {
       cwd: opts.cwd ?? ROOT,
-      env: set,
+      env: wanted,
       encoding: "utf-8",
       maxBuffer: 16 * 1024 * 1024,
       timeout: opts.timeoutMs ?? 120_000,
@@ -120,11 +132,7 @@ export function runSync(cmd: string, args: string[], opts: RunOptions = {}): Run
     if (res.error) throw res.error;
     return { exitCode: res.status, stdout: res.stdout ?? "", stderr: res.stderr ?? "" };
   } finally {
-    // Total, like envSnapshot: a key absent beforehand is put back ABSENT.
-    for (const [key, value] of saved) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
+    for (const [key, value] of cleared) process.env[key] = value;
   }
 }
 

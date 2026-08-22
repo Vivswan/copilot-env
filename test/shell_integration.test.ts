@@ -484,11 +484,14 @@ test("the cl launchers state the same Claude flag set on both platforms", () => 
   expect(psSet).toEqual(posixSet);
 });
 
-// The suite floor (test/helpers/testing.ts) sets this seam by LITERAL - it cannot
-// import from src/. Pin the pair so a rename on either side fails here instead of
-// silently turning the floor line into dead config; asserting the live env also
-// proves the floor is active in this very process.
-test("the sandbox floor sets the rc seam under its exported name", () => {
+// The seam NAMES are external contracts: the suite floor (test/helpers/testing.ts) exports
+// them into every test process, and a child spawned with a hand-built env spells them as
+// literals. Pin the exported constants to those literals so a rename fails here instead of
+// silently orphaning a hand-spelled seam; asserting the live env also proves the floor is
+// active in this very process.
+test("the sandbox floor sets both shell seams under their exported names", () => {
   expect(CI_RC_DIR_ENV).toBe("COPILOT_ENV_CI_RC_DIR");
+  expect(CI_PS_DOCUMENTS_DIR_ENV).toBe("COPILOT_ENV_CI_PS_DOCUMENTS_DIR");
   expect(Deno.env.get(CI_RC_DIR_ENV)).toBeDefined();
+  expect(Deno.env.get(CI_PS_DOCUMENTS_DIR_ENV)).toBeDefined();
 });

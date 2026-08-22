@@ -18,6 +18,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "@std/testing/bdd";
+import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../../src/shell/integration.ts";
 
 export { expect } from "@std/expect";
 export { afterEach, beforeEach, describe } from "@std/testing/bdd";
@@ -34,10 +35,14 @@ const SANDBOX_HOME = mkdtempSync(join(tmpdir(), "copilot-env-suite-"));
 process.env.COPILOT_API_HOME = join(SANDBOX_HOME, "copilot-api");
 process.env.CLAUDE_CONFIG_DIR = join(SANDBOX_HOME, ".claude");
 process.env.CODEX_HOME = join(SANDBOX_HOME, ".codex");
-// The rc-file lookup's own knob, spelled as a literal because this module cannot import from
-// src/. Source of truth: CI_RC_DIR_ENV in src/shell/integration.ts, which reads it as the
-// home the rc scan walks instead of homedir().
-process.env.COPILOT_ENV_CI_RC_DIR = join(SANDBOX_HOME, "rc-home");
+// The shell-integration seams, by their exported constants rather than retyped literals, so a
+// rename cannot silently turn this floor into dead config. They sit at DIFFERENT levels: the
+// rc one replaces homedir() (`<value>/.bashrc`), while the PowerShell one is the Documents
+// folder holding the per-edition profile dirs (`<value>/WindowsPowerShell/...`). Both stay
+// absolute and non-empty: the reader throws on an empty value rather than falling back to the
+// machine's real home.
+process.env[CI_RC_DIR_ENV] = SANDBOX_HOME;
+process.env[CI_PS_DOCUMENTS_DIR_ENV] = join(SANDBOX_HOME, "Documents");
 globalThis.addEventListener("unload", () => {
   rmSync(SANDBOX_HOME, { recursive: true, force: true });
 });

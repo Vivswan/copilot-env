@@ -14,7 +14,7 @@ macOS, and Windows**.
 - **Lifecycle**: `start` / `stop` the local proxy with one command - or opt in
   to the managed lifecycle (`auto-start`) that starts the proxy when an agent
   needs it and stops it after an idle window.
-- **Zero setup**: auto-installs [bun](https://bun.sh), dependencies, and the
+- **Zero setup**: auto-installs [deno](https://deno.com), dependencies, and the
   proxy on first run. No global installs to manage.
 - **Codex + Claude wiring**: point both CLIs at the local proxy or GitHub
   Copilot Direct automatically; write `~/.codex` / `~/.claude` config; build a
@@ -35,7 +35,7 @@ macOS, and Windows**.
   through Copilot's Responses API instead.
 - **Cost reporting**: estimated spend from per-host usage DBs via live OpenRouter pricing.
 - **Controlled floating**: the proxy floats to the newest cooldown-aged release
-  within configured bounds; every other dependency is pinned via `bun.lock`.
+  within configured bounds; every other dependency is pinned via `deno.lock`.
 
 ## Install
 
@@ -256,7 +256,7 @@ agent config --del idle-timeout       # revert one to its default
 | `port` | `4141` | Default proxy port (then next free unless `strict-port`). |
 | `proxy-logs` | `true` | Proxy request logging under `<home>/logs` (`false` discards the writes). |
 | `proxy-version` | latest (floated) | Pin the floated proxy to a version/tag. |
-| `release-cooldown` | bunfig `minimumReleaseAge` | Proxy float supply-chain cooldown in seconds. |
+| `release-cooldown` | `604800` (7 days) | Proxy float supply-chain cooldown in seconds. |
 | `responses-context-management` | `false` | Proxy Responses-API server-side context management. |
 | `responses-websearch` | `true` | Proxy Responses-API web search. |
 | `responses-websocket` | `true` | Proxy Responses-API transport: WebSocket vs HTTP/SSE. |
@@ -332,13 +332,12 @@ vars take precedence over stored `agent config` values.
   refuses a proxy below the version floor. The `proxy-version` config key is
   the persistent equivalent).
 - `COPILOT_API_MIN_RELEASE_AGE=<seconds>`: override the cooldown window
-  (`0` = no cooldown), taking precedence over the `release-cooldown` config
-  key and `bunfig.toml`'s `install.minimumReleaseAge`.
+  (`0` = no cooldown), taking precedence over the `release-cooldown` config key.
 
 Without a pin, the proxy float reads npm publish times, picks the newest
 version at least the cooldown window old (env var, else `release-cooldown`
-config, else `bunfig.toml`'s `install.minimumReleaseAge`), and clamps it to
-the bounds in `copilot-env.config`.
+config, else the 7-day default that tracks `deno.json`'s
+`minimumDependencyAge`), and clamps it to the bounds in `copilot-env.config`.
 
 ## Development
 
@@ -347,15 +346,16 @@ Drive the CLI from a checkout (deps + proxy install in-place; no separate cache)
 ```bash
 git clone https://github.com/Vivswan/copilot-env.git
 cd copilot-env
-bash scripts/setup-env.sh   # one-shot env/worktree init (bun install --frozen-lockfile)
+bash scripts/setup-env.sh   # one-shot env/worktree init (deno install --frozen)
 ./bin/agent --help          # or: powershell -File bin\agent.ps1 --help
 ```
 
 ```bash
-bun run typecheck   # tsc --noEmit
-bun test            # test/**/*.test.ts
-bun run lint        # biome check src bin test scripts
-bun run check       # biome check --write src bin test scripts
+deno task typecheck   # deno check src/ test/ scripts/ .github/scripts/
+deno task test        # test/**/*.test.ts
+deno task test:docker # the same suite in a container (hermetic HOME)
+deno task lint        # deno lint + deno fmt --check
+deno task check       # deno lint --fix + deno fmt
 ```
 
 - **Env init:** `scripts/setup-env.sh` (`setup-env.ps1` on Windows) is the single

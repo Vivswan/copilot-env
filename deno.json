@@ -35,7 +35,6 @@
     "execa": "npm:execa@^10.0.0",
     "semver": "npm:semver@^7.8.5",
     "smol-toml": "npm:smol-toml@^1.7.1",
-    "tar": "npm:tar@^7.5.22",
     "valibot": "npm:valibot@^1.4.2",
     "which": "npm:which@^7.0.0"
   },

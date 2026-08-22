@@ -11,13 +11,13 @@ import { isUpToDate } from "../utils/semver.ts";
 import { assertNonNegativeDays } from "../utils/time.ts";
 import { packageVersion } from "../utils/version.ts";
 
-// `agent update` brings the checkout up to the newest GitHub release WITHOUT git:
-//  - discovery (which release, and its tarball URL) is resolveTarget() from
-//    ../install/resolve-release.ts -- the SAME module the installers download + run,
-//    so the release-pick logic has one home. Then
-//  - apply downloads that release's `tarball_url` and SYNCS it onto the checkout:
-//    tracked files are replaced, files the release no longer ships (and OS junk)
-//    are pruned, and node_modules/.git are preserved; then `bun install`.
+// `agent update` moves this install to the newest GitHub release WITHOUT git:
+//  - discovery (which release) is resolveTarget() from
+//    ../install/resolve-release.ts, shared with the autoupdate preflight so the
+//    release-pick logic has one home. Then
+//  - apply (../autoupdate/apply.ts) downloads that release's binary for this
+//    platform, verifies it against the release checksums.txt, swaps it in, and
+//    lets the new binary lay down its own runtime files and run migrations.
 
 export interface UpdateArgs {
   check?: boolean;

@@ -352,7 +352,8 @@ export async function runUninstall(args: UninstallArgs, deps: UninstallDeps = {}
   }
   consola.info(
     "Not removed: the agent CLIs themselves (claude / copilot / codex npm globals), " +
-      "deno (and its PATH entry), the PowerShell execution policy, Codex's " +
+      "a deno installed for a source checkout (and its PATH entry), the " +
+      "PowerShell execution policy, Codex's " +
       "sandbox_workspace_write.network_access key, other hosts' ~/.codex/hosts/* dirs " +
       "on a shared home, and the agents' own session history.",
   );

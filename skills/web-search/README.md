@@ -34,10 +34,11 @@ that name when switching modes):
 On Windows, run the PowerShell launcher instead:
 `powershell -NoProfile -ExecutionPolicy Bypass -File <checkout>/bin/agent.ps1 mcp --serve`.
 
-The launcher self-bootstraps: on a fresh clone the FIRST spawn installs bun
-and `node_modules` before the server answers, which can outlast an MCP
-client's startup window. If the first connection times out, run
-`bin/agent --help` once to warm the checkout, then reconnect.
+In a dev checkout the launcher self-bootstraps: the FIRST spawn installs the
+pinned deno and the locked dependencies before the server answers, which can
+outlast an MCP client's startup window. If the first connection times out, run
+`bin/agent --help` once to warm the checkout, then reconnect. An installed
+copilot-env is a single binary and has no such warm-up.
 
 ## Credentials
 

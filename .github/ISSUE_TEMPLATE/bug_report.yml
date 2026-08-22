@@ -44,10 +44,10 @@ body:
     validations:
       required: true
   - type: input
-    id: bun-version
+    id: install-source
     attributes:
-      label: bun version
-      description: "`bun --version`"
+      label: How it was installed
+      description: "install.sh / install.ps1, or a dev checkout"
     validations:
       required: false
   - type: textarea

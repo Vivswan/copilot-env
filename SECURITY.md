@@ -52,12 +52,12 @@ your own machine. Its security posture:
   the API key.
 - **Supply-chain posture.** The proxy dependency floats but by default only
   adopts releases that have been public for at least 7 days (the
-  `minimumReleaseAge` fallback in `bunfig.toml`; override the window with the
+  built-in cooldown default; override the window with the
   `release-cooldown` config key or `COPILOT_API_MIN_RELEASE_AGE`, or bypass it
   by pinning via the `proxy-version` config key or `COPILOT_API_VERSION`),
   clamped to the version floor/ceiling in `copilot-env.config` - and `agent
   start` refuses to launch a proxy below that floor regardless of how it was
-  installed. Every other dependency is pinned via the committed `bun.lock`
+  installed. Every other dependency is pinned via the committed `deno.lock`
   for reproducible installs.
 - **Releases, not a registry.** `copilot-env` ships as versioned GitHub
   Releases (tagged `vX.Y.Z` via release-please) and is not published to any

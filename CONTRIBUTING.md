@@ -44,14 +44,14 @@ Participation in this project is governed by the
 
 ## Prerequisites
 
-- [bun](https://bun.sh) - runtime and test runner
+- [deno](https://deno.com) - runtime, test runner, formatter, and linter
 
 ## Setup
 
 ```bash
 git clone https://github.com/<your-fork>/copilot-env.git
 cd copilot-env
-bash scripts/setup-env.sh   # scripts/setup-env.ps1 on Windows; runs bun install --frozen-lockfile
+bash scripts/setup-env.sh   # scripts/setup-env.ps1 on Windows; installs the pinned deno and the locked deps
 ```
 
 ## Running checks
@@ -59,20 +59,20 @@ bash scripts/setup-env.sh   # scripts/setup-env.ps1 on Windows; runs bun install
 From the project directory:
 
 ```bash
-bun test            # run the test suite
-bun run typecheck   # tsc --noEmit
-bun run lint        # biome check (format/lint/import verification)
-bun run lint:sh     # shellcheck on shell scripts
-bun run lint:ps     # PSScriptAnalyzer on PowerShell scripts
-bun run check       # biome check --write (auto-fix format/lint/imports)
-bun run format      # biome format --write
+deno task test        # run the test suite
+deno task test:docker # the same suite in a container (hermetic HOME)
+deno task typecheck   # deno check
+deno task lint        # deno lint + deno fmt --check
+deno task lint:sh     # shellcheck on shell scripts
+deno task lint:ps     # PSScriptAnalyzer on PowerShell scripts
+deno task check       # deno lint --fix + deno fmt (auto-fix)
 ```
 
-A husky pre-commit hook runs lint-staged (biome) + typecheck + `bun test` + shell/PowerShell lint, so most issues are caught before they land.
+A husky pre-commit hook runs lint-staged + typecheck + `deno task test` + repo-wide lint + shell/PowerShell lint, so most issues are caught before they land.
 
 ## Code style
 
 Conventions live in [AGENTS.md](AGENTS.md) - please read it before contributing. In short:
 
-- biome enforces formatting and linting (run `bun run format` / `bun run lint`).
-- No `any` - biome's `noExplicitAny` is an error.
+- deno enforces formatting and linting (run `deno task check` / `deno task lint`).
+- No `any` - deno lint's `no-explicit-any` is an error.

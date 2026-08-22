@@ -73,7 +73,7 @@ let cachedNpmCodexVersion: string | null | undefined;
 /** The newest @openai/codex release on npm (cached per process), or null when
  *  npm is missing/unreachable. */
 function latestNpmCodexVersion(): string | null {
-  // Never under `bun test` (it sets NODE_ENV=test): this is a live npm query,
+  // Never under the test runner (it sets NODE_ENV=test): this is a live npm query,
   // and tests must stay network-free and deterministic.
   if (process.env.NODE_ENV === "test") return null;
   if (cachedNpmCodexVersion !== undefined) return cachedNpmCodexVersion;

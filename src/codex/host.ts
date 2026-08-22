@@ -2,11 +2,11 @@
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import which from "which";
 import { resolveDirectMode } from "../agents/direct_detect.ts";
 import type { RequestedMode } from "../agents/provider_mode.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
+import { resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { isFile } from "../utils/fs.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../utils/hostname.ts";
@@ -227,14 +227,18 @@ function promoteCodexDirToSharedIfSafe(localPath: string, sharedPath: string): P
 
 function primeSharedCodexHomeIfMissing(sharedRoot: string): void {
   if (lexists(sharedRoot)) return;
-  if (which.sync("codex", { nothrow: true }) === null) return;
+  // resolveCommand, not a bare PATH lookup: its nvm fallback also finds an
+  // nvm-only codex, and spawning the RESOLVED path below keeps the prime
+  // working even though this process never sourced nvm.sh.
+  const codexBin = resolveCommand("codex");
+  if (codexBin === null) return;
 
   // Best effort: let Codex create its default shared home before we seed and
   // symlink into it. Timeout prevents a misconfigured codex from blocking.
   // spawnSync reports failures (a nonzero exit, ENOENT, the timeout) in its
   // result rather than throwing, and the result is ignored on purpose: the
   // prime is a convenience, never a build failure.
-  spawnSync("codex", ["exec"], {
+  spawnSync(codexBin, ["exec"], {
     input: "hi\n",
     stdio: ["pipe", "ignore", "ignore"],
     timeout: 10_000,

@@ -21,8 +21,7 @@
     "npm:consola@^3.4.2": "3.4.2",
     "npm:semver@^7.8.5": "7.8.5",
     "npm:smol-toml@^1.7.1": "1.7.1",
-    "npm:valibot@^1.4.2": "1.4.2",
-    "npm:which@7": "7.0.0"
+    "npm:valibot@^1.4.2": "1.4.2"
   },
   "jsr": {
     "@std/assert@1.0.19": {
@@ -271,7 +270,7 @@
       "dependencies": [
         "path-key@3.1.1",
         "shebang-command",
-        "which@2.0.2"
+        "which"
       ]
     },
     "crypto-random-string@4.0.0": {
@@ -567,9 +566,6 @@
     },
     "isexe@2.0.0": {
       "integrity": "sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw=="
-    },
-    "isexe@4.0.0": {
-      "integrity": "sha512-FFUtZMpoZ8RqHS3XeXEmHWLA4thH+ZxCv2lOiPIn1Xc7CxrqhWzNSDzD+/chS/zbYezmiwWLdQC09JdQKmthOw=="
     },
     "jose@6.2.8": {
       "integrity": "sha512-Bsdjwm3Qsd/P0jR+BHDe3LytDfY7WBq2HmCCLIwuVRHMuEC9ae7/R474GIUdF1NgCyZjzVo/A9DOiOBtXq8ZoQ=="
@@ -887,14 +883,7 @@
     "which@2.0.2": {
       "integrity": "sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA==",
       "dependencies": [
-        "isexe@2.0.0"
-      ],
-      "bin": true
-    },
-    "which@7.0.0": {
-      "integrity": "sha512-RancgH2dmbLdHl6LRhEqvklWMgl/Hdnun0Y90KhBOLkMefg8Qa7/Zel8Sm+8HEcP6DEjzsWzpkuBQEZok58isA==",
-      "dependencies": [
-        "isexe@4.0.0"
+        "isexe"
       ],
       "bin": true
     },
@@ -931,8 +920,7 @@
       "npm:consola@^3.4.2",
       "npm:semver@^7.8.5",
       "npm:smol-toml@^1.7.1",
-      "npm:valibot@^1.4.2",
-      "npm:which@7"
+      "npm:valibot@^1.4.2"
     ]
   }
 }

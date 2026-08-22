@@ -273,7 +273,9 @@ skipWin(
       `#!/bin/sh\nPATH=/usr/bin:/bin\nprintf '%s\\n' "$*" >> "${marker}"\ncat > /dev/null\nexit 3\n`,
       { mode: 0o755 },
     );
-    process.env.PATH = bin;
+    // The fake bin dir FIRST, but with the system dirs kept: resolveCommand
+    // resolves through `sh`, which must itself stay spawnable.
+    process.env.PATH = `${bin}:/usr/bin:/bin`;
 
     await build();
     expect(fs.readFileSync(marker, "utf8")).toBe("exec\n");
@@ -292,7 +294,7 @@ skipWin("an existing shared root skips the codex prime entirely", async () => {
     `#!/bin/sh\nPATH=/usr/bin:/bin\nprintf '%s\\n' "$*" >> "${marker}"\ncat > /dev/null\n`,
     { mode: 0o755 },
   );
-  process.env.PATH = bin;
+  process.env.PATH = `${bin}:/usr/bin:/bin`;
 
   await build();
   expect(lexists(marker)).toBe(false);

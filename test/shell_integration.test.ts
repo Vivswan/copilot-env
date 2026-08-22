@@ -483,3 +483,12 @@ test("the cl launchers state the same Claude flag set on both platforms", () => 
   expect(posixSet.length).toBeGreaterThan(0);
   expect(psSet).toEqual(posixSet);
 });
+
+// The suite floor (test/helpers/testing.ts) sets this seam by LITERAL - it cannot
+// import from src/. Pin the pair so a rename on either side fails here instead of
+// silently turning the floor line into dead config; asserting the live env also
+// proves the floor is active in this very process.
+test("the sandbox floor sets the rc seam under its exported name", () => {
+  expect(CI_RC_DIR_ENV).toBe("COPILOT_ENV_CI_RC_DIR");
+  expect(Deno.env.get(CI_RC_DIR_ENV)).toBeDefined();
+});

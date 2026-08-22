@@ -104,6 +104,9 @@ function childBaseEnv(): Record<string, string | undefined> {
   return {
     HOME: dir,
     USERPROFILE: dir,
+    // The suite floor redirects rc lookups away from every real home; this child
+    // wants them under ITS isolated home, so the seam points there explicitly.
+    COPILOT_ENV_CI_RC_DIR: dir,
     COPILOT_API_HOME: join(dir, "gw"),
     CLAUDE_CONFIG_DIR: claudeHome,
     CODEX_HOME: undefined,

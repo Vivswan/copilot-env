@@ -1,5 +1,59 @@
 # Changelog
 
+## [3.5.7](https://github.com/Vivswan/copilot-env/compare/v3.5.6...v3.5.7) (2026-08-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* install and update from compiled release binaries
+* drop every shipped migration step, keep the framework
+* resolve the install root from the run mode, not a .git probe
+* run the daemon, preloads, and launchers on deno end to end
+* adopt deno as the runtime and toolchain
+
+### Features
+
+* add the `agent proxy-token` subcommand (the in-CLI proxy credential resolver) ([609b7b8](https://github.com/Vivswan/copilot-env/commit/609b7b8bde0d8c2d5627198ba233d950d2e6162d))
+* adopt deno as the runtime and toolchain ([13fd1a3](https://github.com/Vivswan/copilot-env/commit/13fd1a3e24ebcba829992814390ec5e1ebd8de17))
+* float the proxy from agent start instead of only at install ([0f4d932](https://github.com/Vivswan/copilot-env/commit/0f4d932d2ed9b26453e5f149cd8a63f31eaa18ab))
+* install and update from compiled release binaries ([5dc43c1](https://github.com/Vivswan/copilot-env/commit/5dc43c19fc598109ab3b802acda5b29b8f630492))
+* provision the pinned deno sidecar so compiled installs can spawn the proxy ([2b5097d](https://github.com/Vivswan/copilot-env/commit/2b5097dd8a9a5b487c51735ae75fde76a24d9895))
+* reach the migration runner through a hidden __migrate subcommand ([db7607d](https://github.com/Vivswan/copilot-env/commit/db7607d15731a90eb2ed8e4c034830b5ee74cb35))
+* report the proxy version that will actually run in agent health ([4d6468f](https://github.com/Vivswan/copilot-env/commit/4d6468f88d04fcf97e007ee72749efee8e34c766))
+* resolve the install root from the run mode, not a .git probe ([f5f2dca](https://github.com/Vivswan/copilot-env/commit/f5f2dca9aa63484ef35dc1d98d4379642efc6075))
+* resolve the proxy through a registry float and a deno sidecar ([0cf6c94](https://github.com/Vivswan/copilot-env/commit/0cf6c943c549cb5ef5c0c61e5ef6205ce28cc725))
+* run the daemon from the float's resolved version and its own config ([7145b4a](https://github.com/Vivswan/copilot-env/commit/7145b4a63c15cf70fe8aa25b9a5c29ff2c911ee6))
+* run the daemon, preloads, and launchers on deno end to end ([7b91ad8](https://github.com/Vivswan/copilot-env/commit/7b91ad8faadd522ebe4063f3011acb6edb0fecb4))
+* run the test suite in containers with a container-only lifecycle smoke ([910ed62](https://github.com/Vivswan/copilot-env/commit/910ed62ab50d0fab6bb5787372516a5ba717b82e))
+* surface the migration runner as a visible `agent migrate` subcommand ([bb54bc0](https://github.com/Vivswan/copilot-env/commit/bb54bc0c95f667051313781afcaec0fe9c40a543))
+* write Claude's apiKeyHelper as an inline agent command (no helper files) ([8955825](https://github.com/Vivswan/copilot-env/commit/89558250dcb4b95083339a42b76fe4f7424db05d))
+
+
+### Bug Fixes
+
+* align the install root with the floated daemon's real needs ([f2fda2c](https://github.com/Vivswan/copilot-env/commit/f2fda2cc0df050f47db675cec716382d27fe2b9d))
+* allow the host GitHub release downloads actually redirect to ([823b9ec](https://github.com/Vivswan/copilot-env/commit/823b9ece4ed48cb3999058fcefe2a42c7cfafa97))
+* correct the readline-disqualifier comment and decode stdin as utf8 in the answer reader ([59f948a](https://github.com/Vivswan/copilot-env/commit/59f948a179ff38125f91708dab7d6e34b4d9599a))
+* encode every slash in the proxy registry URL ([7dbba2a](https://github.com/Vivswan/copilot-env/commit/7dbba2a1834eca2c82945b5b69d7f968d18c9a8f))
+* give the floated proxy a lockfile and verify the whole cached graph ([769bc14](https://github.com/Vivswan/copilot-env/commit/769bc1430a70b3a94d5cd5b5ce4fae1576d2d962))
+* green the migration on windows and harden the lock, mute, and bootstrap seams ([ba0d125](https://github.com/Vivswan/copilot-env/commit/ba0d125edc82bc3cc4c0445eaa8ce6f7c352dbd8))
+* keep the real proxy startable on linux ([b8a3e16](https://github.com/Vivswan/copilot-env/commit/b8a3e16e5031708e59ae9bca74d68b0faaea3b6e))
+* narrow the fs compat shim to the permission error it exists for ([c621989](https://github.com/Vivswan/copilot-env/commit/c6219891d08704a8bd8574eab92a3fb730da346b))
+* pass -z where git can still parse it in the staged-lint helper ([5280eb0](https://github.com/Vivswan/copilot-env/commit/5280eb003b616a14d269d8b097709453f1b20c90))
+* point the child env tests' PS-Documents seam at the isolated home ([a6b9aed](https://github.com/Vivswan/copilot-env/commit/a6b9aed3c4c02dd46d610ca2743c14f8fa9774c9))
+* read copilot-env.config from the bundled assets, not the install root ([98fba9d](https://github.com/Vivswan/copilot-env/commit/98fba9d167a3329919b0da224e78a61e16807516))
+* read the deno version pin from the bundled assets ([3cefda4](https://github.com/Vivswan/copilot-env/commit/3cefda417b25dec7b9003cd6da8f0e73105c4a37))
+* resolve the Windows Documents folder unverified ([f290173](https://github.com/Vivswan/copilot-env/commit/f2901731469587752da978bd28aae9568fa024ce))
+* retire the bunfig-era release-cooldown default label ([1e3eedf](https://github.com/Vivswan/copilot-env/commit/1e3eedfcb85ca7d3d1163fc25ccc56ce83f1551d))
+* stop materializing assets that are read from the bundle ([a860dd8](https://github.com/Vivswan/copilot-env/commit/a860dd88f35b7c200381df680a4a90295ded12e5))
+* suppress the PSReviewUnusedParameter false positive on install.ps1's -Version ([3daa12c](https://github.com/Vivswan/copilot-env/commit/3daa12c0538b23b93574f72338cd4b61664e04b9))
+* sweep the float's cache on uninstall even when it lives outside the home ([83ed9e8](https://github.com/Vivswan/copilot-env/commit/83ed9e851392de21e8a28082ab190450b9beccb4))
+
+
+### Code Refactoring
+
+* drop every shipped migration step, keep the framework ([36aaccf](https://github.com/Vivswan/copilot-env/commit/36aaccfcb8b2f1506a9b3e11a1d8f4c028ac9b59))
+
 ## [3.5.6](https://github.com/Vivswan/copilot-env/compare/v3.5.5...v3.5.6) (2026-08-10)
 
 

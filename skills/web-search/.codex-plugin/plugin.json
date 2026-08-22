@@ -20,7 +20,7 @@
     "capabilities": ["Read"],
     "websiteURL": "https://github.com/Vivswan/copilot-env/tree/main/skills/web-search",
     "defaultPrompt": [
-      "Search the web for the latest bun release notes.",
+      "Search the web for the latest deno release notes.",
       "What changed in the newest TypeScript version?"
     ],
     "brandColor": "#0F766E"

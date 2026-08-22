@@ -961,17 +961,13 @@ describe("the floated spawn executes", () => {
     expect(output).not.toContain("lockfile is out of date");
     expect(output).not.toContain("Module not found");
 
-    // Past resolution, the proxy's own code runs. On Linux it then dies inside one of
-    // its dependencies: clipboardy -> is-wsl probes /proc/sys/fs/binfmt_misc/WSLInterop,
-    // which deno's node compat serves only under --allow-all, and the daemon's grants
-    // are a narrower list. That is a daemon-permission gap -- the mapped entry fails
-    // identically -- not a resolution one, so it is recorded here rather than asserted
-    // away. Where the grants do suffice, the launch must genuinely complete.
-    if (!output.includes("WSLInterop")) {
-      // Fold the output into the assertion: a bare exit-code diff says nothing about
-      // WHY deno refused, and the refusals this test exists to catch are all in stderr.
-      expect(`exit=${result.exitCode} ${output}`).toContain("exit=0");
-      expect(output).toContain("copilot-api");
-    }
+    // ...and the launch must then genuinely complete. On Linux that only happens
+    // because every spawn preloads the node-compat shim: the proxy probes /proc at
+    // module load, which deno answers with a thrown NotCapable under any permission
+    // set short of all-access.
+    // Fold the output into the assertion: a bare exit-code diff says nothing about WHY
+    // deno refused, and the refusals this test exists to catch are all in stderr.
+    expect(`exit=${result.exitCode} ${output}`).toContain("exit=0");
+    expect(output).toContain("copilot-api");
   });
 });

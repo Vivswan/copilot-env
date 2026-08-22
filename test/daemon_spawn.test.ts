@@ -66,10 +66,11 @@ function preloads(spec: DaemonSpec): string[] {
 
 test("the preload set derives from the credential kind, in load order", () => {
   // No credential: nothing to splice onto argv, nothing for the PAT shim to read.
-  expect(preloads(BASE)).toEqual(["daemon_runtime_preload.ts"]);
+  expect(preloads(BASE)).toEqual(["node_compat_preload.ts", "daemon_runtime_preload.ts"]);
 
   // A plain token: the argv splice loads FIRST, but no passthrough shim.
   expect(preloads({ ...BASE, credential: { kind: "token", token: "gho_x" } })).toEqual([
+    "node_compat_preload.ts",
     "token_argv_preload.ts",
     "daemon_runtime_preload.ts",
   ]);
@@ -81,6 +82,7 @@ test("the preload set derives from the credential kind, in load order", () => {
       credential: { kind: "pat", token: "ghp_x", integrationId: "copilot-developer-cli" },
     }),
   ).toEqual([
+    "node_compat_preload.ts",
     "token_argv_preload.ts",
     "daemon_runtime_preload.ts",
     "pat_passthrough_preload.ts",
@@ -89,14 +91,17 @@ test("the preload set derives from the credential kind, in load order", () => {
 
 test("the watchdog and log-mute shims load only when their config knob is on", () => {
   expect(preloads({ ...BASE, idleWatchdog: true })).toEqual([
+    "node_compat_preload.ts",
     "daemon_runtime_preload.ts",
     "idle_watchdog_preload.ts",
   ]);
   expect(preloads({ ...BASE, muteProxyLogs: true })).toEqual([
+    "node_compat_preload.ts",
     "daemon_runtime_preload.ts",
     "log_mute_preload.ts",
   ]);
   expect(preloads({ ...BASE, idleWatchdog: true, muteProxyLogs: true })).toEqual([
+    "node_compat_preload.ts",
     "daemon_runtime_preload.ts",
     "idle_watchdog_preload.ts",
     "log_mute_preload.ts",
@@ -215,7 +220,10 @@ test("the override beats a float record, so the CI fake is never shadowed by a r
 test("copilotApiArgv runs any proxy subcommand through the same entry and permissions", () => {
   delete process.env.COPILOT_API_ENTRY;
   const argv = copilotApiArgv(["auth", "login", "--provider", "copilot"]);
-  expect(argv).not.toContain("--preload"); // a foreground run loads no daemon shims
+  // A foreground run loads no DAEMON shims, but still the node-compat one -- without it
+  // the proxy dies at module load on Linux, device-flow login included.
+  const loaded = argv.filter((_a, i) => argv[i - 1] === "--preload");
+  expect(loaded.map((p) => p.split(/[\\/]/).at(-1))).toEqual(["node_compat_preload.ts"]);
   expect(argv.slice(-4)).toEqual(["auth", "login", "--provider", "copilot"]);
   expect(argv).toContain(PROXY_PACKAGE_NAME);
 });

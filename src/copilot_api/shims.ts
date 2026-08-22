@@ -9,8 +9,14 @@
 import { join } from "node:path";
 import { PROJECT_ROOT } from "../utils/root.ts";
 
-/** Every shim the daemon can load, by filename under `src/scripts/`. */
+/** The shim EVERY proxy spawn loads, daemon or foreground: it restores node's
+ *  `fs.existsSync` contract, without which the proxy dies at module load on Linux. */
+export const NODE_COMPAT_SHIM = "node_compat_preload.ts";
+
+/** Every shim a proxy spawn can load, by filename under `src/scripts/`. The float warms
+ *  all of them, since any one may be loaded by a later start. */
 export const DAEMON_SHIM_FILES = [
+  "node_compat_preload.ts",
   "token_argv_preload.ts",
   "daemon_runtime_preload.ts",
   "pat_passthrough_preload.ts",

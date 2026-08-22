@@ -10,7 +10,7 @@ import { pidAlive } from "../utils/pid.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { DAEMON_INTEGRATION_ID_ENV } from "./integration_identity.ts";
 import { resolveRootHome } from "./paths.ts";
-import { type DaemonShimFile, shimPath } from "./shims.ts";
+import { type DaemonShimFile, NODE_COMPAT_SHIM, shimPath } from "./shims.ts";
 import { resolveDenoBin } from "./sidecar.ts";
 import { PROXY_PACKAGE_NAME } from "./version.ts";
 
@@ -131,6 +131,12 @@ export function copilotApiArgv(
     ...(entry.kind === "file" ? [] : ["--cached-only"]),
     ...(entry.kind === "floated" ? ["--node-modules-dir=none"] : []),
     ...PROXY_PERMISSIONS,
+    // FIRST, on every spawn: the proxy's dependency tree probes /proc at module load,
+    // which deno's node compat turns into a thrown NotCapable instead of node's
+    // documented `false`. Without this the proxy never reaches its own entry point on
+    // Linux -- daemon or foreground `auth login` alike.
+    "--preload",
+    shimPath(NODE_COMPAT_SHIM),
     ...preloadFlags,
     entry.kind === "file" ? entry.path : entry.specifier,
     ...subArgs,

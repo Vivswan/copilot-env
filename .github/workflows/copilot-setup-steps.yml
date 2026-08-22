@@ -1,8 +1,8 @@
 # Provisions the ephemeral environment for the GitHub Copilot coding agent before
 # it starts a task: it runs the job named exactly `copilot-setup-steps` (a special
-# name GitHub recognizes) so the agent gets bun + the pinned project deps ready
-# (`bun run typecheck` / `bun test` / `biome` work out of the box). Mirrors the
-# `bun install --frozen-lockfile` baseline the CI `check` job uses.
+# name GitHub recognizes) so the agent gets the pinned deno + project deps ready
+# (`deno task typecheck` / `deno task test` / `deno lint` work out of the box).
+# setup-env.sh installs the .dvmrc-pinned deno and runs the frozen install.
 #
 # https://docs.github.com/en/copilot/customizing-copilot/customizing-the-development-environment-for-copilot-coding-agent
 name: Copilot setup steps
@@ -25,10 +25,6 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v7
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.14
 
       - name: Initialize the environment
         run: bash scripts/setup-env.sh

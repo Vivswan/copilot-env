@@ -21,7 +21,6 @@ const step = process.argv[2];
 const isWindows = process.platform === "win32";
 const optionalClis = ["claude", "copilot", "codex"];
 const posixNvmSource =
-  // biome-ignore lint/suspicious/noTemplateCurlyInString: ${NVM_DIR:-...} is a SHELL expansion inside the sh -c snippet, not a JS template.
   '[ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ] && . "${NVM_DIR:-$HOME/.nvm}/nvm.sh" >/dev/null 2>&1 || true';
 const releaseApi = `https://api.github.com/repos/${
   process.env.GITHUB_REPOSITORY ?? "Vivswan/copilot-env"

@@ -46,7 +46,6 @@ interface InstallerPin {
 export const INSTALLER_PINS: Record<"install.sh" | "install.ps1", InstallerPin[]> = {
   "install.sh": [
     {
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: the ${...} is install.sh's own shell placeholder being pinned, not a JS template.
       needle: 'INSTALL_REF="${COPILOT_ENV_INSTALL_REF:-latest}"',
       pinned: (tag) => `INSTALL_REF="\${COPILOT_ENV_INSTALL_REF:-${tag}}"`,
     },

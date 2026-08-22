@@ -1,5 +1,7 @@
+PATH="$HOME/.deno/bin:$PATH"
+export PATH
 node_modules/.bin/lint-staged
 deno task typecheck
-deno test -P=test --changed=origin/main test/
+deno task test
 deno task lint:sh
 deno task lint:ps

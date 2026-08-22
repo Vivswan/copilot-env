@@ -37,6 +37,7 @@ import { runUpdate } from "./commands/update.ts";
 import { configKeysHelp } from "./copilot_api/env_config.ts";
 import { AUTH_PROVIDERS, type AuthProvider } from "./copilot_api/env_state.ts";
 import { ghTokenEnvVarsLabel } from "./copilot_api/gh_cli.ts";
+import { runMigrations } from "./migrations/index.ts";
 import { runCost } from "./usage/cost.ts";
 import { OPENROUTER_MODELS_URL } from "./usage/pricing.ts";
 import { bold, cyan, gray } from "./utils/ansi.ts";
@@ -583,7 +584,7 @@ program
   )
   .option(
     "--force",
-    "Update even when this is a git checkout (.git present); the sync overwrites local files.",
+    "Update even when this is a source checkout; the sync overwrites local files.",
   )
   .option(
     "--auto",
@@ -650,7 +651,7 @@ program
   )
   .option("--yes", "Skip the confirmation prompt (headless use).")
   .option("--dry-run", "Print what would be removed without changing anything.")
-  .option("--force", "Also delete the install directory when it is a git checkout (.git present).")
+  .option("--force", "Also delete the install directory when it is a source checkout.")
   .action((opts: Opts) =>
     runUninstall({
       yes: Boolean(opts.yes),
@@ -658,6 +659,18 @@ program
       force: Boolean(opts.force),
     })
   );
+
+// Hidden: `agent update` invokes this on the NEW install after swapping it in, so the
+// migrations run from the new code rather than from the pre-update process's memory.
+// A compiled binary has no `src/migrations/index.ts` on disk to run, so the runner is
+// imported statically and reached through this subcommand instead of a script path.
+// Not user-facing (the `__` prefix and hidden() say so), but `deno run
+// src/migrations/index.ts <from> <to>` keeps working in a dev checkout.
+program
+  .command("__migrate", { hidden: true })
+  .argument("<from>", "Version being updated away from.")
+  .argument("<to>", "Version being updated to.")
+  .action((from: string, to: string) => runMigrations(from, to));
 
 if (import.meta.main) {
   // Single error renderer for both option-coercion and action errors.

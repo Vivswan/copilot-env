@@ -33,32 +33,36 @@ import { runShellIntegration } from "../shell/integration.ts";
 import { installRoot } from "./install_root.ts";
 import { INSTALLED_BINARY_POSIX, INSTALLED_BINARY_WINDOWS } from "./targets.ts";
 
-/** Directories embedded into the compiled binary (deno.json's `compile.include`)
- *  that an installed root needs on real disk: the daemon's `--preload` shims and
- *  the proxy-token resolvers, the shell-integration payload, and the
- *  plugin/skill distribution surface.
+/** Embedded AND materialized: something outside this process opens these by
+ *  path, so they have to exist on real disk in the install root - the daemon's
+ *  `--preload` shims and the proxy-token resolvers, the shell-integration
+ *  payload the rc block sources, and the plugin/skill surface other tools read.
  *
  *  `src/scripts` is materialized WHOLE rather than by naming the shims. The
  *  daemon loads a per-credential subset of `DAEMON_SHIM_FILES`
  *  (src/copilot_api/shims.ts) by absolute path, and those five entrypoints
  *  import three more siblings; copying the directory covers all of them by
  *  construction, so there is no second list to drift out of sync. */
-export const EMBEDDED_ASSET_DIRS = ["src/scripts", "shell", "skills", ".claude-plugin"] as const;
+export const MATERIALIZED_ASSET_DIRS = [
+  "src/scripts",
+  "shell",
+  "skills",
+  ".claude-plugin",
+] as const;
 
-/** Single files an installed root needs for the same reason.
+/** Embedded and NEVER materialized: read in-process through `ASSET_ROOT`, which
+ *  resolves inside the compiled VFS. The rule these follow is general - if a
+ *  file ships with the build and is read in-process, it is an ASSET_ROOT read,
+ *  and writing a second copy into the install root would only create something
+ *  nothing reads and that can drift from the binary that shipped it.
  *
- *  Only `copilot-env.config` (the proxy-float floor/ceiling): its readers pass
- *  an explicit root, so on an installed binary it has to be a real file rather
- *  than one that exists only inside the compiled VFS.
+ *  `copilot-env.config` is the proxy-float floor/ceiling (`readProjectConfig`)
+ *  and `.dvmrc` is the deno version the sidecar provisions against
+ *  (`readDvmrcPin`); both default to ASSET_ROOT.
  *
- *  Deliberately NOT here: `deno.json`, `deno.lock`, `.dvmrc`. The floated
- *  daemon runs against a config the float generates itself plus its own warmed
- *  DENO_DIR, with `--node-modules-dir=none` and no lockfile -- the checkout's
- *  deno.json cannot serve it at all, since its frozen lock rejects any floated
- *  version and `--cached-only` would demand the whole import map. `.dvmrc` is
- *  read only by the dev checkout's shell bootstrap, which the compiled
- *  launcher shim replaces. */
-export const EMBEDDED_ASSET_FILES = ["copilot-env.config"] as const;
+ *  They are still verified present at plan time: absent from the VFS means the
+ *  build is broken, and failing here beats failing at first proxy start. */
+export const BUNDLED_ONLY_ASSETS = ["copilot-env.config", ".dvmrc"] as const;
 
 /** Superseded files a pre-binary source install leaves in the root. The binary
  *  install has no runtime bootstrap left to use them and `node_modules` alone
@@ -198,7 +202,7 @@ export function buildInstallPlan(
   }
 
   const copies: AssetCopy[] = [];
-  for (const dir of EMBEDDED_ASSET_DIRS) {
+  for (const dir of MATERIALIZED_ASSET_DIRS) {
     if (!existsSync(join(sourceRoot, dir))) {
       throw new Error(
         `embedded assets are missing ${dir}; deno.json compile.include did not embed it`,
@@ -206,13 +210,13 @@ export function buildInstallPlan(
     }
     copies.push(...collectAssetCopies(sourceRoot, root, dir));
   }
-  for (const file of EMBEDDED_ASSET_FILES) {
+  // Verified, never copied: these are read out of the VFS in-process.
+  for (const file of BUNDLED_ONLY_ASSETS) {
     if (!existsSync(join(sourceRoot, file))) {
       throw new Error(
         `embedded assets are missing ${file}; deno.json compile.include did not embed it`,
       );
     }
-    copies.push({ from: join(sourceRoot, file), to: join(root, file), executable: false });
   }
 
   return {

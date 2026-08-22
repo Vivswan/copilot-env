@@ -53,7 +53,8 @@
       "shell",
       "skills",
       ".claude-plugin",
-      "copilot-env.config"
+      "copilot-env.config",
+      ".dvmrc"
     ],
     "permissions": "cli"
   },

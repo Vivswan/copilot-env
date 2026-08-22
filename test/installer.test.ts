@@ -4,11 +4,11 @@ import { join } from "node:path";
 import {
   applyInstallPlan,
   buildInstallPlan,
-  EMBEDDED_ASSET_DIRS,
-  EMBEDDED_ASSET_FILES,
+  BUNDLED_ONLY_ASSETS,
   type InstallOptions,
   type InstallPlan,
   LEGACY_ARTIFACTS,
+  MATERIALIZED_ASSET_DIRS,
   parseInstallArgs,
   POSIX_SHIM,
   POWERSHELL_SHIM,
@@ -23,13 +23,13 @@ let dest = "";
 
 /** A stand-in for the compiled VFS: every embedded asset the plan requires. */
 function writeAssetSource(dir: string): void {
-  for (const assetDir of EMBEDDED_ASSET_DIRS) {
+  for (const assetDir of MATERIALIZED_ASSET_DIRS) {
     mkdirSync(join(dir, assetDir), { recursive: true });
     writeFileSync(join(dir, assetDir, "payload.txt"), `content of ${assetDir}`);
   }
   mkdirSync(join(dir, "src", "scripts"), { recursive: true });
   writeFileSync(join(dir, "src", "scripts", "proxy-token.sh"), "#!/bin/sh\n");
-  for (const file of EMBEDDED_ASSET_FILES) {
+  for (const file of BUNDLED_ONLY_ASSETS) {
     writeFileSync(join(dir, file), `content of ${file}`);
   }
 }
@@ -89,17 +89,30 @@ describe("buildInstallPlan", () => {
     expect(plan.shell).toEqual({ allHosts: false });
   });
 
-  test("a compiled binary plans copies for every embedded asset", () => {
+  test("a compiled binary plans copies for every materialized asset", () => {
     const plan = installedPlan();
     if (plan.kind !== "installed") throw new Error("expected an installed plan");
 
     const targets = plan.copies.map((c) => c.to);
-    for (const file of EMBEDDED_ASSET_FILES) {
-      expect(targets).toContain(join(dest, file));
-    }
-    for (const dir of EMBEDDED_ASSET_DIRS) {
+    for (const dir of MATERIALIZED_ASSET_DIRS) {
       expect(targets.some((t) => t.startsWith(join(dest, dir)))).toBe(true);
     }
+  });
+
+  test("bundled-only assets are verified but never written", () => {
+    // They are read out of the VFS through ASSET_ROOT. A copy in the install
+    // root would be a second source of truth that an update can leave stale.
+    const plan = installedPlan();
+    if (plan.kind !== "installed") throw new Error("expected an installed plan");
+
+    for (const file of BUNDLED_ONLY_ASSETS) {
+      expect(plan.copies.map((c) => c.to)).not.toContain(join(dest, file));
+    }
+  });
+
+  test("a missing bundled-only asset still fails the plan", () => {
+    rmSync(join(source, "copilot-env.config"));
+    expect(() => installedPlan()).toThrow("embedded assets are missing copilot-env.config");
   });
 
   test("plans the launcher shims beside the binary", () => {
@@ -128,8 +141,8 @@ describe("buildInstallPlan", () => {
     expect(() => installedPlan()).toThrow("embedded assets are missing shell");
 
     writeAssetSource(source);
-    rmSync(join(source, "copilot-env.config"));
-    expect(() => installedPlan()).toThrow("embedded assets are missing copilot-env.config");
+    rmSync(join(source, ".dvmrc"));
+    expect(() => installedPlan()).toThrow("embedded assets are missing .dvmrc");
   });
 
   test("plans removal of only the superseded artifacts actually present", () => {
@@ -159,9 +172,6 @@ describe("applyInstallPlan", () => {
 
     applyInstallPlan(installedPlan({ ...OPTIONS, assetsOnly: true }));
 
-    expect(readFileSync(join(dest, "copilot-env.config"), "utf8")).toBe(
-      "content of copilot-env.config",
-    );
     expect(readFileSync(join(dest, "shell", "payload.txt"), "utf8")).toBe("content of shell");
     expect(readFileSync(join(dest, "bin", "agent"), "utf8")).toBe(POSIX_SHIM);
     expect(readFileSync(join(dest, "bin", "agent.ps1"), "utf8")).toBe(POWERSHELL_SHIM);
@@ -204,7 +214,7 @@ describe("the install root carries the markers uninstall requires", () => {
   // install that root is DERIVED from the binary's location -- so root.ts
   // refuses any root missing these markers (a binary dropped in
   // ~/.local/bin would otherwise aim `rm -rf` at ~/.local). That makes them a
-  // contract ON this installer: narrowing EMBEDDED_ASSET_DIRS below them turns
+  // contract ON this installer: narrowing MATERIALIZED_ASSET_DIRS below them turns
   // uninstall into a silent no-op on every install.
   //
   // Duplicated from INSTALL_ROOT_MARKERS in src/utils/root.ts, which this
@@ -221,9 +231,9 @@ describe("the install root carries the markers uninstall requires", () => {
 
   test("the asset lists cannot be narrowed below the markers", () => {
     // Fails at the list, not only at the applied result, so the intent is
-    // visible when someone edits EMBEDDED_ASSET_DIRS. `bin` is absent from it
+    // visible when someone edits MATERIALIZED_ASSET_DIRS. `bin` is absent from it
     // on purpose: the shims create that directory.
-    expect(EMBEDDED_ASSET_DIRS).toContain("shell");
-    expect(EMBEDDED_ASSET_DIRS).toContain("src/scripts");
+    expect(MATERIALIZED_ASSET_DIRS).toContain("shell");
+    expect(MATERIALIZED_ASSET_DIRS).toContain("src/scripts");
   });
 });

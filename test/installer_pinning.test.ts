@@ -2,9 +2,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { INSTALLER_PINS } from "../.github/scripts/release-assets.ts";
 import {
-  EMBEDDED_ASSET_DIRS,
-  EMBEDDED_ASSET_FILES,
+  BUNDLED_ONLY_ASSETS,
   LEGACY_ARTIFACTS,
+  MATERIALIZED_ASSET_DIRS,
 } from "../src/install/installer.ts";
 import { RELEASE_TARGETS } from "../src/install/targets.ts";
 import { ROOT } from "./helpers/run.ts";
@@ -86,10 +86,13 @@ describe("compile targets match the installers", () => {
   });
 });
 
-describe("compile embeds every asset the installer materializes", () => {
-  // buildInstallPlan reads these paths out of the compiled VFS and throws if
-  // one is absent. That throw is the LAST line of defense and it only fires
-  // once a binary exists; this pins the two lists at PR time instead.
+describe("compile.include matches what the binary actually needs", () => {
+  // Two fates, one embed list. MATERIALIZED_* is written to the install root
+  // because something outside this process opens it by path; BUNDLED_ONLY_* is
+  // read in-process through ASSET_ROOT and must never be written. Both have to
+  // be embedded, and nothing else should be: an entry with neither fate is dead
+  // weight in all five binaries, and a fate with no entry is a file that is
+  // missing exactly when it is first needed.
   //
   // The list lives in deno.json rather than in scripts/compile.sh on purpose: a
   // CLI --include MERGES with the config's list instead of replacing it, so a
@@ -97,19 +100,18 @@ describe("compile embeds every asset the installer materializes", () => {
   const compileInclude: string[] = JSON.parse(
     readFileSync(join(ROOT, "deno.json"), "utf8"),
   ).compile?.include ?? [];
+  const needed = [...MATERIALIZED_ASSET_DIRS, ...BUNDLED_ONLY_ASSETS];
 
-  test("deno.json compile.include covers EMBEDDED_ASSET_DIRS and _FILES", () => {
-    for (const entry of [...EMBEDDED_ASSET_DIRS, ...EMBEDDED_ASSET_FILES]) {
-      expect(compileInclude).toContain(entry);
-    }
+  test("compile.include is exactly the union of the two fates", () => {
+    expect([...compileInclude].sort()).toEqual([...needed].sort());
   });
 
-  test("compile.include embeds nothing the installer never materializes", () => {
-    // Embedding an asset the install never writes out is dead weight in every
-    // binary and a false promise that it will be there at runtime.
-    expect([...compileInclude].sort()).toEqual(
-      [...EMBEDDED_ASSET_DIRS, ...EMBEDDED_ASSET_FILES].sort(),
-    );
+  test("the two fates are disjoint", () => {
+    // A path in both would be materialized AND read from the VFS, i.e. two
+    // copies that can disagree after an update.
+    for (const entry of BUNDLED_ONLY_ASSETS) {
+      expect(MATERIALIZED_ASSET_DIRS).not.toContain(entry);
+    }
   });
 
   test("scripts/compile.sh does not carry a second include list", () => {

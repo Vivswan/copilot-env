@@ -19,6 +19,7 @@ import { resolveRootHome } from "../copilot_api/paths.ts";
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import { profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
+import { removeProxyFloatArtifacts } from "../proxy_float.ts";
 import { runShellIntegration } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
 import { isGitCheckout, PROJECT_ROOT } from "../utils/root.ts";
@@ -213,10 +214,14 @@ const UNINSTALL_STEPS: UninstallStep[] = [
     //    that the wiring is gone nothing can start another.
     describe: (ctx) => [
       "Would stop any proxy daemon relaunched in the meantime (second sweep).",
+      "Would delete the floated proxy's deno cache and resolved-version record.",
       `Would delete the copilot-api home: ${ctx.rootHome}`,
     ],
     run: async (ctx) => {
       await stopAllDaemons(ctx.profiles);
+      // Before the home goes: the float's cache is wherever its record points, which a
+      // sidecar install can put OUTSIDE the home -- deleting the home alone would strand it.
+      removeProxyFloatArtifacts(ctx.rootHome);
       rmSync(ctx.rootHome, { recursive: true, force: true });
       consola.info(`Deleted the copilot-api home: ${ctx.rootHome}`);
     },

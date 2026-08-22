@@ -155,6 +155,31 @@ sanctioned/keeper lines listed above. No bun-runtime machinery remains.
 6. (codex item 6) codex_host comment re-checked after the USERPROFILE change:
    the bun-contrast stays, wording now matches what isolateAgentHomes sets.
 
+## Round-2 review fixes
+
+1. run.ts / run_helper.test.ts hasOwn comments: the old justification claimed
+   `in` would leak prototype members, but childEnv's map is null-prototype, so
+   `in` and hasOwn agree there today. Comments now state the real reason: the
+   guard survives childEnv ever returning an ordinary object again.
+2. env_config.test.ts drift guard: 86_400 -> SECONDS_PER_DAY from
+   src/utils/time.ts (single-sourcing).
+3. proxy_float.ts stale trigger claims fixed in all three spots (configRead
+   comment, header, verify docblock), plus the cooldown doc, the record-refresh
+   comment, launch.ts's "rather than in the bin shim", checks.yml's
+   "--assert-installed" comment, and three test comments.
+4. DECISION - proxy_float's direct-run CLI surface DELETED. Zero invokers
+   anywhere: bin/, installers, workflows, scripts/, Dockerfile, skills/, docs,
+   and no test spawns the file as a script (tests import the functions).
+   Removed: parseMode, mainFloat/mainVerify/mainAssertInstalled, main, the
+   import.meta.main block, DIRECT_ONLY_SKIP_MESSAGE (output of a never-run
+   CLI, so no external contract). Kept: every exported function.
+   proxyFloatSkips stays (health probe + tests) with its doc repointed at its
+   real consumer; proxyInstallAssertStatus stays as the hard end-state check,
+   documented as tests-only today with the checks.yml rationale for why CI
+   does not wire it. The module header now names the real consumers
+   (ensureProxyFloor at `agent start`, process.ts, uninstall, health,
+   warm-proxy-cache.ts, tests).
+
 ## Gate
 
 See the SendMessage report; run from this worktree:

@@ -115,7 +115,7 @@ function entryProxyVersion(entry: CopilotApiEntry): string | null {
  * The `agent start` proxy gate: float the proxy if its recorded resolution has gone
  * stale, then refuse to launch below the PROXY_MIN_VERSION floor.
  *
- * The float runs HERE rather than in the bin shim because `start` is the one command
+ * The float runs HERE, at start, because `start` is the one command
  * that needs a runnable proxy -- and `proxyFloatVerifyStatus` is offline while the
  * record is younger than the cooldown, so the common start pays no network cost. The
  * float itself is best-effort (an offline machine keeps whatever is already cached),

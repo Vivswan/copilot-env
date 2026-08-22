@@ -38,7 +38,7 @@ jobs:
       - name: Install dependencies
         run: deno ci
 
-      # The installed-proxy guard (proxy float --assert-installed) is not wired here:
+      # The installed-proxy guard (proxyInstallAssertStatus) is not wired here:
       # asserting means floating first, which would hit the npm registry and warm a
       # cache on every runner. `deno ci` already pins the proxy baseline this job
       # builds against.

@@ -6,18 +6,18 @@
 // below reads, and the record src/copilot_api/process.ts turns into the daemon's
 // entry.
 //
-// Direct run:
-//   src/proxy_float.ts
-//     Resolve and cache the float target. Used by install/update flows.
-//   src/proxy_float.ts --verify
-//     Freshness check for the bin shims: exits 0 when the recorded resolution
-//     is still the one the rules would pick (offline while the record is
-//     younger than the cooldown; network only once it goes stale) and the
-//     cached entry still resolves.
-//   src/proxy_float.ts --assert-installed
-//     CI/dev guard: assert the float actually recorded + cached its resolved
-//     target (or the exact pin), falling back to copilot-env.config's
-//     floor/ceiling window when the registry is unreachable.
+// Consumers (this module is import-only; it has no CLI entry):
+//   - ensureProxyFloor (src/copilot_api/launch.ts, behind `agent start`): checks
+//     proxyFloatVerifyStatus -- offline while the record is younger than the
+//     cooldown -- and runs floatProxy once it goes stale.
+//   - src/copilot_api/process.ts turns the recorded resolution into the daemon's
+//     entry; src/commands/uninstall.ts removes the float's artifacts.
+//   - The health engine reads the statuses and the skip predicate
+//     (src/health/probe.ts).
+//   - scripts/warm-proxy-cache.ts runs floatProxy while building the test container.
+//   - proxyInstallAssertStatus, the hard end-state check, is exercised by tests
+//     only today: wiring it into CI would float first and hit the npm registry
+//     on every runner (see .github/workflows/checks.yml).
 //
 // Runtime knobs are environment variables, not CLI flags: COPILOT_API_VERSION
 // pins an exact proxy version/tag, and COPILOT_API_MIN_RELEASE_AGE overrides
@@ -25,9 +25,9 @@
 // in between -- env > stored config > built-in default).
 //
 // Resolution:
-// 1. Both Codex and Claude wired Direct (no local proxy) -> the float, --verify,
-//    and --assert-installed are no-ops. An explicit COPILOT_API_VERSION env pin
-//    overrides this and forces the normal path.
+// 1. Both Codex and Claude wired Direct (no local proxy) -> the skip predicate
+//    (proxyFloatSkips) reports the float unnecessary. An explicit
+//    COPILOT_API_VERSION env pin overrides this and forces the normal path.
 // 2. COPILOT_API_VERSION (or config `proxy-version`) set -> cache exactly that
 //    version/tag, bypassing copilot-env.config bounds, the cooldown, and the
 //    lifecycle-script preflight (with a warning for the latter).
@@ -45,8 +45,6 @@
 // --minimum-dependency-age, so TRANSITIVE dependencies get the supply-chain
 // window too, not just the proxy itself. An exact target older than the window
 // always clears its own gate.
-//
-// Tests import the exported functions directly; main() only runs via CLI.
 
 import "./utils/dotenv.ts";
 import { spawnSync } from "node:child_process";
@@ -87,9 +85,10 @@ export const DEFAULT_RELEASE_COOLDOWN_SECONDS = 7 * SECONDS_PER_DAY;
  *  the publish times the cooldown needs; the abbreviated install doc lacks it). */
 export const PROXY_REGISTRY_URL = `https://registry.npmjs.org/${PROXY_PKG.replace("/", "%2F")}`;
 
-// The float runs during install/update, so config reads are best-effort: any failure
-// (missing/corrupt file) falls back to env/default. `agent config` is the persistent home for
-// the proxy-version pin and the release-cooldown window (env still overrides per-invocation).
+// The float runs inside `agent start` (ensureProxyFloor), so config reads are best-effort:
+// any failure (missing/corrupt file) falls back to env/default. `agent config` is the
+// persistent home for the proxy-version pin and the release-cooldown window (env still
+// overrides per-invocation).
 function configRead(): CopilotEnvConfigData | undefined {
   try {
     return new CopilotEnvConfig().read();
@@ -118,7 +117,7 @@ const logger = createConsola(loggerOptions);
 /**
  * The effective cooldown window in seconds. Precedence: COPILOT_API_MIN_RELEASE_AGE env (a
  * whole number of seconds; 0 disables) > config `releaseCooldown` > the built-in 7-day
- * default. The single source the float, `--verify`, and health all read.
+ * default. The single source the float, the verify status, and health all read.
  */
 export function resolveMinimumReleaseAgeSeconds(): number {
   const raw = process.env[MIN_RELEASE_AGE_ENV]?.trim();
@@ -753,7 +752,7 @@ function handleResolved(
 ): void {
   const record = readResolvedVersionRecord(ctx.rootHome);
   if (record?.version === sel.version && cacheResolves(ctx, sel.version, record.denoDir)) {
-    // Refresh the record's timestamp so --verify stays on its offline fast path.
+    // Refresh the record's timestamp so proxyFloatVerifyStatus stays on its offline fast path.
     writeResolvedVersionRecord(ctx.rootHome, sel.version, ctx.nowMs, record.denoDir);
     logger.success(`up to date: ${PROXY_PKG}@${sel.version} (${sel.reason}); no install`);
     return;
@@ -842,7 +841,7 @@ export type ProxyInstallAssertStatus = {
 };
 
 /**
- * Read-only freshness check for the bin shims (`proxy_float.ts --verify`).
+ * Read-only freshness check behind ensureProxyFloor (`agent start`).
  * Offline while the record is younger than the cooldown window (record parse +
  * bounds + cache check only); once stale, the registry is re-consulted. An
  * exact COPILOT_API_VERSION semver pin never needs the network. Read-only by
@@ -956,17 +955,19 @@ export async function proxyFloatVerifyStatus(
 }
 
 /**
- * CI/dev assertion after an install/update: the float is best-effort there, so
- * this makes the final state a hard check. It answers a different question than
- * --verify: not "can the bin shim skip the float?", but "did the float leave
- * the record + cache in the state it intended?". The recorded version must
- * equal the float's own resolved target, not merely clear the bounds --
- * otherwise a silently failed cache write hides behind a window that happens to
- * be satisfied. A pin must be the recorded version (exact semver pins only; tag
- * pins are not equality-checked, and bounds do not apply because a pin bypasses
- * them in the float too). When target resolution fails (npm unreachable) the
- * assert falls back to the bounds-only check so CI does not flake on npm
- * outages.
+ * A hard check of the float's end state (the float inside `agent start` is
+ * best-effort, so this is what makes silent failure visible). Exercised by
+ * tests only today: wiring it into CI would float first and hit the npm
+ * registry on every runner (see .github/workflows/checks.yml). It answers a
+ * different question than the verify status: not "can the float be skipped?",
+ * but "did the float leave the record + cache in the state it intended?". The
+ * recorded version must equal the float's own resolved target, not merely
+ * clear the bounds -- otherwise a silently failed cache write hides behind a
+ * window that happens to be satisfied. A pin must be the recorded version
+ * (exact semver pins only; tag pins are not equality-checked, and bounds do
+ * not apply because a pin bypasses them in the float too). When target
+ * resolution fails (npm unreachable) the assert falls back to the bounds-only
+ * check so a consumer does not flake on npm outages.
  */
 export async function proxyInstallAssertStatus(
   deps: ProxyFloatDeps = {},
@@ -1100,103 +1101,17 @@ export async function proxyInstallAssertStatus(
   }
 }
 
-// --- Postinstall / verify/assert entry ---------------------------------------
-
-const DIRECT_ONLY_SKIP_MESSAGE =
-  "proxy float skipped: Codex and Claude are both wired Direct; the local proxy is unused";
-
-type ProxyFloatMode = "float" | "verify" | "assert";
-
-/** Parse argv into the one mode this invocation runs in; anything else is a usage error. */
-function parseMode(args: string[]): ProxyFloatMode {
-  if (args.length === 0) return "float";
-  if (args.length === 1) {
-    if (args[0] === "--verify") return "verify";
-    if (args[0] === "--assert-installed") return "assert";
-  }
-  logger.error("usage: src/proxy_float.ts [--verify | --assert-installed]");
-  process.exit(2);
-}
+// --- the Direct-only skip predicate -------------------------------------------
 
 /**
- * True when the float's entry points skip: nothing uses the local proxy
+ * True when the float is pointless: nothing uses the local proxy
  * (proxyUnusedEverywhere) and no COPILOT_API_VERSION env pin. An explicit env
  * pin is per-invocation intent, so it always forces the normal path; a stored
  * `proxy-version` config pin does NOT force it (the config only matters once an
- * agent is wired to the proxy again).
+ * agent is wired to the proxy again). Consumed by the health engine
+ * (src/health/probe.ts), which reports the float as skipped instead of stale.
  */
 export function proxyFloatSkips(codexHome?: string, claudeHome?: string): boolean {
   const envPinned = Boolean(process.env[PROXY_VERSION_ENV]?.trim());
   return !envPinned && proxyUnusedEverywhere({ codexHome, claudeHome });
-}
-
-async function mainAssertInstalled(): Promise<never> {
-  if (proxyFloatSkips()) {
-    console.log(DIRECT_ONLY_SKIP_MESSAGE);
-    process.exit(0);
-  }
-  try {
-    const status = await proxyInstallAssertStatus();
-    if (status.ok) {
-      console.log(status.message);
-    } else {
-      console.error(`::error::${status.message}`);
-    }
-    process.exit(status.ok ? 0 : 1);
-  } catch (error) {
-    console.error(`::error::${errMessage(error)}`);
-    process.exit(1);
-  }
-}
-
-async function mainVerify(): Promise<never> {
-  try {
-    if (proxyFloatSkips()) {
-      logger.success(`up to date: ${DIRECT_ONLY_SKIP_MESSAGE}`);
-      process.exit(0);
-    }
-    // Don't pre-resolve the cooldown: proxyFloatVerifyStatus resolves it
-    // internally AFTER its pin check, so a COPILOT_API_VERSION pin (which
-    // bypasses the cooldown) isn't blocked by a bad COPILOT_API_MIN_RELEASE_AGE.
-    const status = await proxyFloatVerifyStatus();
-    status.upToDate ? logger.success(status.message) : logger.info(status.message);
-    process.exit(status.upToDate ? 0 : 1);
-  } catch (error) {
-    logger.warn(`install needed: verify failed: ${errMessage(error)}`);
-    process.exit(1); // uncertain -> install
-  }
-}
-
-async function mainFloat(): Promise<void> {
-  try {
-    if (proxyFloatSkips()) {
-      logger.info(DIRECT_ONLY_SKIP_MESSAGE);
-      return;
-    }
-    await floatProxy();
-  } catch (error) {
-    logger.warn(`proxy float skipped: ${errMessage(error)}`);
-  }
-}
-
-async function main(): Promise<void> {
-  const mode = parseMode(process.argv.slice(2));
-
-  switch (mode) {
-    case "assert":
-      await mainAssertInstalled();
-      break;
-    case "verify":
-      await mainVerify();
-      break;
-    case "float":
-      await mainFloat();
-      break;
-    default:
-      assertNever(mode);
-  }
-}
-
-if (import.meta.main) {
-  await main();
 }

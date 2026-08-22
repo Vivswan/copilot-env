@@ -39,8 +39,8 @@ import { ROOT, runSync } from "./helpers/run.ts";
 import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
 
 // The float resolves the proxy into a Deno npm cache under the root home and
-// records the resolution in resolved-version.json -- the freshness oracle the
-// bin shims' `--verify` fast path reads.
+// records the resolution in resolved-version.json -- the freshness oracle
+// proxyFloatVerifyStatus's offline fast path reads.
 
 const PROXY_PKG = "@jeffreycao/copilot-api";
 const NOW_MS = Date.parse("2026-06-10T00:00:00.000Z");
@@ -384,7 +384,7 @@ describe("floatProxy", () => {
     await floatProxy(deps(fetchLike, deno.runner, WEEK_SECONDS));
 
     expect(cacheCalls(deno.calls)).toEqual([]);
-    // The record's timestamp refreshes so --verify stays on its offline fast path.
+    // The record's timestamp refreshes so proxyFloatVerifyStatus stays on its offline fast path.
     expect(readResolvedVersionRecord(dir)?.resolvedAtMs).toBe(NOW_MS);
   });
 
@@ -875,7 +875,7 @@ describe("minimumDependencyAgeArg", () => {
   });
 });
 
-// proxyFloatSkips backs the Direct-only no-op in the proxy_float entry points.
+// proxyFloatSkips backs the health engine's Direct-only skip report.
 // The wiring-level answer (proxyUnusedEverywhere) and its edge cases live in
 // test/agents_wiring.test.ts; this pins the env-pin override the float adds.
 describe("proxyFloatSkips", () => {

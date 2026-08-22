@@ -6,10 +6,10 @@
       "version": "20"
     }
   },
-  "postCreateCommand": "npm install -g bun@1.3.14 && bash scripts/setup-env.sh",
+  "postCreateCommand": "bash scripts/setup-env.sh",
   "customizations": {
     "vscode": {
-      "extensions": ["biomejs.biome", "oven.bun-vscode"]
+      "extensions": ["denoland.vscode-deno"]
     }
   }
 }

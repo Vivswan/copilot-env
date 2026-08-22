@@ -79,6 +79,35 @@ jobs:
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser -SkipPublisherCheck
           deno task lint:ps
 
+  # The same suite again, in the container. Not redundant with the matrix above:
+  # the container is where the throwaway HOME comes from, so it is the only run
+  # that proves the suite is genuinely hermetic rather than merely passing on a
+  # machine that happens to have the right state. `--network=none` inside means
+  # anything reaching for the network fails loudly instead of silently
+  # depending on it.
+  #
+  # Always runs, never path-gated: it IS the suite, so there is no change class
+  # it can safely skip. Complements the floated-lifecycle job below, which is
+  # the opposite trade - networked, real proxy, narrow assertion.
+  test-container:
+    name: container suite (hermetic HOME)
+    runs-on: ubuntu-latest
+    # Dominated by the cold image build; the suite itself runs in well under a
+    # minute once the image exists.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version-file: .dvmrc
+          cache: true
+
+      # docker is preinstalled on ubuntu runners; the task prefers podman and
+      # falls back, so no engine selection is needed here.
+      - name: Run the suite in a container
+        run: deno task test:docker
+
   # The ONLY job that runs the REAL proxy. Every other lifecycle run points
   # COPILOT_API_ENTRY at test/copilot-api-fake.mjs, so nothing else exercises
   # the float against the live registry, or the daemon's production permission

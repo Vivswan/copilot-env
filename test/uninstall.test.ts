@@ -1,7 +1,7 @@
 // `agent uninstall`: the full-teardown command. Every run injects the deps seam
-// (codexHomes + farm + shell removal) so `bun test` never touches the real
-// ~/.codex, the host farm, or the shell rc files -- and never passes --force, so
-// the dev checkout's .git guard keeps PROJECT_ROOT safe by construction.
+// (install root + codexHomes + farm + shell removal) so `deno test` never touches
+// the real ~/.codex, the host farm, or the shell rc files -- and the install root
+// it deletes is a sandbox directory, never the tree this process runs from.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -18,6 +18,7 @@ import { profileHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { isRecord } from "../src/utils/json.ts";
+import type { RootMode } from "../src/utils/root.ts";
 import { ROOT } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, removeDir, resetExitCode } from "./helpers.ts";
@@ -28,9 +29,14 @@ const WORK = parseProfileName("work");
 const restoreEnv = envSnapshot();
 let dir = "";
 
+// The delete step chdir's out of the doomed directory; every other test file that
+// reads a cwd-relative path would inherit that move, so put it back.
+const startCwd = process.cwd();
+
 afterEach(() => {
   restoreEnv();
-  // An aborted run's exit 1 must never leak into the whole `bun test` run.
+  process.chdir(startCwd);
+  // An aborted run's exit 1 must never leak into the whole `deno test` run.
   resetExitCode();
   dir = removeDir(dir);
 });
@@ -42,12 +48,31 @@ function tmpHomes(): { proxyHome: string; claudeHome: string; codexHome: string 
   return homes;
 }
 
+/**
+ * A sandbox stand-in for the install root, shaped like what the installers build
+ * (`<root>/bin/agent-bin`). `kind: "compiled"` means the delete step treats it as an
+ * installed binary root and REALLY removes it -- the production code path, run
+ * against a temp directory instead of the tree under test.
+ */
+function sandboxRoot(kind: RootMode["kind"] = "compiled"): RootMode {
+  if (dir === "") throw new Error("call tmpHomes() first: sandboxRoot needs the per-test tmp dir");
+  const root = join(dir, "install-root");
+  // Carry the marker layout looksLikeInstallRoot() requires, so the delete step sees a
+  // root shaped like a real one rather than being turned away by the safety guard.
+  for (const marker of ["bin", "shell", join("src", "scripts")]) {
+    mkdirSync(join(root, marker), { recursive: true });
+  }
+  writeFileSync(join(root, "bin", "agent-bin"), "#!/bin/sh\n");
+  return { kind, root };
+}
+
 /** The injected seam every test run passes: real codex home, spied side effects. */
-function tmpDeps(codexHome: string): UninstallDeps & { calls: string[] } {
+function tmpDeps(codexHome: string): UninstallDeps & { calls: string[]; installRoot: RootMode } {
   const calls: string[] = [];
   return {
     calls,
     codexHomes: [codexHome],
+    installRoot: sandboxRoot(),
     removeCodexHostFarm: () => calls.push("farm"),
     removeShellIntegration: () => calls.push("shell"),
   };
@@ -98,7 +123,7 @@ test("uninstall removes everything managed and preserves user config", async () 
   const deps = tmpDeps(codexHome);
   deps.codexHomes = [codexHome, codexHome2];
   await runUninstall({ yes: true }, deps);
-  // Bun leaves exitCode undefined until someone sets it; a clean run sets nothing.
+  // exitCode stays undefined until someone sets it; a clean run sets nothing.
   expect(process.exitCode ?? 0).toBe(0);
 
   // Named profile artifacts gone.
@@ -138,10 +163,50 @@ test("uninstall removes everything managed and preserves user config", async () 
   expect(doc.foo).toBe("bar");
 
   // The whole copilot-api home (store, run state, profile homes) is gone, and the
-  // injected side-effect seams both ran. The dev checkout survives (.git guard).
+  // injected side-effect seams both ran. The install root deleted is the injected
+  // sandbox; the tree this process runs from is untouched.
   expect(existsSync(proxyHome)).toBe(false);
   expect(deps.calls).toEqual(["farm", "shell"]);
+  expect(existsSync(deps.installRoot.root)).toBe(false);
   expect(existsSync(join(ROOT, "package.json"))).toBe(true);
+});
+
+test("uninstall leaves a source-checkout root in place without --force", async () => {
+  const { codexHome } = tmpHomes();
+  const deps = tmpDeps(codexHome);
+  deps.installRoot = sandboxRoot("checkout");
+
+  await runUninstall({ yes: true }, deps);
+
+  // Protection follows the injected RootMode's kind, not any ambient .git probe:
+  // nothing was created or removed inside the sandbox to make it look like a clone.
+  expect(existsSync(deps.installRoot.root)).toBe(true);
+  expect(existsSync(join(deps.installRoot.root, ".git"))).toBe(false);
+});
+
+test("uninstall --force deletes a source-checkout root", async () => {
+  const { codexHome } = tmpHomes();
+  const deps = tmpDeps(codexHome);
+  deps.installRoot = sandboxRoot("checkout");
+
+  await runUninstall({ yes: true, force: true }, deps);
+
+  expect(existsSync(deps.installRoot.root)).toBe(false);
+});
+
+test("uninstall refuses a root that does not look like a copilot-env install", async () => {
+  const { codexHome } = tmpHomes();
+  const deps = tmpDeps(codexHome);
+  // A compiled binary dropped in ~/.local/bin resolves its root to ~/.local: unprotected
+  // by kind, but not ours to delete. Only `bin` is present, none of the other markers.
+  const stray = join(dir, "stray-root");
+  mkdirSync(join(stray, "bin"), { recursive: true });
+  deps.installRoot = { kind: "compiled", root: stray };
+
+  await runUninstall({ yes: true }, deps);
+
+  expect(existsSync(stray)).toBe(true);
+  expect(process.exitCode).toBe(1);
 });
 
 test("uninstall leaves foreign Claude/Codex wiring untouched", async () => {
@@ -176,7 +241,7 @@ test("uninstall without --yes on a non-TTY refuses and deletes nothing", async (
   configureClaudeConfig(claudeHome, "direct", { quiet: true });
   new Credential().store("gh-token", "ghp_default");
 
-  // bun test's stdin is not a TTY, so the guard fires before the prompt.
+  // the test runner's stdin is not a TTY, so the guard fires before the prompt.
   await expect(runUninstall({}, tmpDeps(codexHome))).rejects.toThrow(/--yes/);
   expect(existsSync(settingsPathFor(claudeHome))).toBe(true);
   expect(existsSync(proxyHome)).toBe(true);
@@ -209,7 +274,7 @@ test("uninstall --dry-run changes nothing and narrates every step", async () => 
     return true;
   };
   try {
-    consola.level = 3; // ensure info is not self-silenced under bun test
+    consola.level = 3; // ensure info is not self-silenced under the test runner
     await runUninstall({ dryRun: true }, deps);
   } finally {
     process.stdout.write = origOut;
@@ -221,7 +286,9 @@ test("uninstall --dry-run changes nothing and narrates every step", async () => 
   expect(narration).toContain("Would remove the copilot-env MCP registration");
   expect(narration).toContain("Would stop any proxy daemon relaunched in the meantime");
   expect(narration).toContain(`Would delete the copilot-api home: ${proxyHome}`);
+  expect(narration).toContain(`Would delete the install directory: ${deps.installRoot.root}`);
 
+  expect(existsSync(deps.installRoot.root)).toBe(true);
   expect(existsSync(settingsPathFor(claudeHome))).toBe(true);
   expect(existsSync(join(claudeHome, DIRECT_HELPER_NAME))).toBe(true);
   expect(readToml(codexHome).model_provider).toBe("copilot-env");

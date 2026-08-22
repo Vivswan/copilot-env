@@ -5,7 +5,7 @@
 import { resolveTarget } from "../install/resolve-release.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { isGitCheckout } from "../utils/root.ts";
+import { isProtectedRoot } from "../utils/root.ts";
 import { isUpToDate } from "../utils/semver.ts";
 import { packageVersion } from "../utils/version.ts";
 import { applyUpdate } from "./apply.ts";
@@ -68,11 +68,11 @@ async function checkAndApply(
     return;
   }
 
-  // Never auto-mutate a git checkout (a dev/manual clone, not a tarball install).
-  if (isGitCheckout()) {
-    state.set({ lastCheckMs: nowMs, lastResult: "skipped: git checkout" });
+  // Never auto-mutate a source checkout (a dev clone, not an installed binary).
+  if (isProtectedRoot()) {
+    state.set({ lastCheckMs: nowMs, lastResult: "skipped: source checkout" });
     logger.info(
-      `autoupdate: ${current} -> ${target.tag} available, but this is a git checkout; skipping.`,
+      `autoupdate: ${current} -> ${target.tag} available, but this is a source checkout; skipping.`,
     );
     return;
   }
@@ -89,7 +89,7 @@ async function checkAndApply(
   }
 }
 
-// Runnable: `bun src/autoupdate/preflight.ts` from the launchers. Never throws out
+// Runnable: `deno run -P=cli src/autoupdate/preflight.ts` from the launchers. Never throws out
 // (a failed self-update must not block the user's command).
 if (import.meta.main) {
   runPreflight({ nowMs: Date.now() }).catch((e) => {

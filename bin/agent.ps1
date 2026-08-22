@@ -47,7 +47,8 @@ if ($needInstall) {
 # swapped release is what dispatches. preflight.ts gates on the state file's
 # `enabled` flag and the once-per-day cadence; the file-exists test just keeps the
 # no-spawn fast path for users who never opted in. Non-fatal; output to stderr.
-# `-P=cli` scopes net to the CLI's real outbound hosts; fs/run stay broad until chunk 5.
+# `-P=cli` scopes net to the CLI's real outbound hosts; fs/run stay broad because
+# permission sets take literal paths and every path we touch is HOME-relative.
 $Sub = if ($args.Count -gt 0) { $args[0] } else { '' }
 $AuState = Join-Path $Snap '.autoupdate\state.json'
 if ($Sub -eq 'start' -and (Test-Path $AuState -PathType Leaf)) {

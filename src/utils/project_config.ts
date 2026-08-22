@@ -1,6 +1,7 @@
 // Parser for copilot-env.config proxy floor/ceiling settings.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { ASSET_ROOT } from "./root.ts";
 import { versionLessThan } from "./semver.ts";
 
 export const PROJECT_CONFIG_FILE = "copilot-env.config";
@@ -68,7 +69,13 @@ export function parseProjectConfig(content: string, source = PROJECT_CONFIG_FILE
   return { proxyMinVersion, proxyMaxVersion };
 }
 
-export function readProjectConfig(root: string): ProjectConfig {
+/**
+ * Read the copilot-env.config that ships with this build. Defaults to ASSET_ROOT,
+ * NOT the install root: the file is embedded in the compiled binary and never
+ * materialized onto disk, so an installed root has no copy of it. `root` is for
+ * tests pointing at a fixture directory.
+ */
+export function readProjectConfig(root: string = ASSET_ROOT): ProjectConfig {
   const path = join(root, PROJECT_CONFIG_FILE);
   return parseProjectConfig(readFileSync(path, "utf8"), path);
 }

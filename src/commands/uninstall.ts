@@ -1,10 +1,10 @@
 // `agent uninstall`: remove everything copilot-env manages from this machine, in
 // dependency-safe order -- stop every daemon, delete every named profile, strip
 // the DEFAULT Codex + Claude wiring, clear the credential, unwire the shell
-// integration, delete the copilot-api home, and finally the install checkout
+// integration, delete the copilot-api home, and finally the install root
 // itself. Destructive, so it confirms interactively (`--yes` for headless use)
 // and offers `--dry-run`. Idempotent: a second run finds nothing and exits 0.
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { consola } from "consola";
 import { removeClaudeDefaultWiring } from "../claude/config.ts";
@@ -22,7 +22,7 @@ import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { removeProxyFloatArtifacts } from "../proxy_float.ts";
 import { runShellIntegration } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
-import { isGitCheckout, PROJECT_ROOT } from "../utils/root.ts";
+import { isProtectedRoot, looksLikeInstallRoot, type RootMode, rootMode } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { deleteProfileEverywhere } from "./profile.ts";
 
@@ -31,7 +31,7 @@ export interface UninstallArgs {
   yes?: boolean;
   /** `--dry-run`: print what would be removed without changing anything. */
   dryRun?: boolean;
-  /** `--force`: also delete the install directory when it is a git checkout. */
+  /** `--force`: also delete the install directory when it is a source checkout. */
   force?: boolean;
 }
 
@@ -45,6 +45,13 @@ export interface UninstallDeps {
   codexHomes?: string[];
   removeCodexHostFarm?: () => void;
   removeShellIntegration?: () => void;
+  /**
+   * The install root to tear down, and with it the policy for whether deleting it
+   * needs `--force`. Injected rather than read from the ambient PROJECT_ROOT so the
+   * suite exercises a real deletion against a sandbox root and can never reach the
+   * directory the test process is running from.
+   */
+  installRoot?: RootMode;
 }
 
 /** The full shell unwire: rc / PowerShell profile blocks (integration + launchers).
@@ -104,10 +111,13 @@ interface UninstallContext {
   codexSweepComplete: boolean;
   claudeHome: string;
   rootHome: string;
-  skipCheckout: boolean;
+  /** The install root being torn down (injectable; see UninstallDeps.installRoot). */
+  installRoot: RootMode;
+  /** The root is protected (a source checkout) and `--force` was not given. */
+  skipRootDelete: boolean;
   deps: UninstallDeps;
-  /** Set by the checkout step when its rmSync could not finish. */
-  checkoutRemains: boolean;
+  /** Set by the install-root step when its rmSync could not finish. */
+  rootRemains: boolean;
 }
 
 /** One uninstall step: the dry-run narration and the real work come from the
@@ -227,25 +237,39 @@ const UNINSTALL_STEPS: UninstallStep[] = [
     },
   },
   {
-    // 8. The install checkout -- where this process runs, so it goes last, from
-    //    a safe cwd. rmSync can fail mid-tree (Windows open handles,
-    //    permissions); report the exact finishing command and a non-zero exit so
-    //    scripts can tell "fully removed" from "directory left behind". A git
-    //    checkout (`.git` present) is left in place unless `--force`: developers
-    //    run this from a clone to test it, and a nuked repo is unrecoverable
-    //    while a leftover directory is a one-line `rm` -- tarball installs have
-    //    no `.git`, so users are unaffected.
+    // 8. The install root -- where this process runs, so it goes last, from a
+    //    safe cwd. rmSync can fail mid-tree (Windows open handles, permissions);
+    //    report the exact finishing command and a non-zero exit so scripts can
+    //    tell "fully removed" from "directory left behind". A SOURCE checkout is
+    //    left in place unless `--force`: developers run this from a clone to test
+    //    it, and a nuked repo is unrecoverable while a leftover directory is a
+    //    one-line `rm`. An installed binary root holds nothing the user authored,
+    //    so it deletes freely.
     describe: (ctx) => [
-      ctx.skipCheckout
-        ? `Would leave ${PROJECT_ROOT} in place (git checkout; re-run with --force to delete it).`
-        : `Would delete the install directory: ${PROJECT_ROOT}`,
+      ctx.skipRootDelete
+        ? `Would leave ${ctx.installRoot.root} in place (source checkout; re-run with --force to delete it).`
+        : `Would delete the install directory: ${ctx.installRoot.root}`,
     ],
     run: (ctx) => {
-      if (ctx.skipCheckout) {
+      const installRoot = ctx.installRoot.root;
+      if (ctx.skipRootDelete) {
         consola.info(
-          `${PROJECT_ROOT} is a git checkout; leaving it in place - delete it yourself, ` +
+          `${installRoot} is a source checkout; leaving it in place - delete it yourself, ` +
             "or re-run with --force.",
         );
+        return;
+      }
+      // Already gone: a second run must be a silent no-op, not a refusal.
+      if (!existsSync(installRoot)) return;
+      // The root is derived (two levels up from the binary, or an env override), so
+      // confirm it is really ours before deleting it recursively.
+      if (!looksLikeInstallRoot(installRoot)) {
+        consola.warn(
+          `${installRoot} does not look like a copilot-env install root; leaving it ` +
+            `in place. Remove it yourself if it is: ${manualRemoveCommand(installRoot)}`,
+        );
+        ctx.rootRemains = true;
+        process.exitCode = 1;
         return;
       }
       try {
@@ -254,14 +278,14 @@ const UNINSTALL_STEPS: UninstallStep[] = [
         // pass -- deletion may still succeed from the current cwd.
       }
       try {
-        rmSync(PROJECT_ROOT, { recursive: true, force: true });
-        consola.info(`Deleted the install directory: ${PROJECT_ROOT}`);
+        rmSync(installRoot, { recursive: true, force: true });
+        consola.info(`Deleted the install directory: ${installRoot}`);
       } catch {
         consola.warn(
-          `Could not fully delete ${PROJECT_ROOT} (files may be in use). ` +
-            `Finish with: ${manualRemoveCommand(PROJECT_ROOT)}`,
+          `Could not fully delete ${installRoot} (files may be in use). ` +
+            `Finish with: ${manualRemoveCommand(installRoot)}`,
         );
-        ctx.checkoutRemains = true;
+        ctx.rootRemains = true;
         process.exitCode = 1;
       }
     },
@@ -298,15 +322,17 @@ export async function runUninstall(args: UninstallArgs, deps: UninstallDeps = {}
   } else {
     ({ homes: codexHomes, complete: codexSweepComplete } = knownCodexHomes());
   }
+  const installRoot = deps.installRoot ?? rootMode();
   const ctx: UninstallContext = {
     profiles: allProfileNames(),
     codexHomes,
     codexSweepComplete,
     claudeHome: resolveClaudeHome(),
     rootHome: resolveRootHome(),
-    skipCheckout: isGitCheckout() && !args.force,
+    installRoot,
+    skipRootDelete: isProtectedRoot(installRoot) && !args.force,
     deps,
-    checkoutRemains: false,
+    rootRemains: false,
   };
 
   if (args.dryRun) {
@@ -319,14 +345,14 @@ export async function runUninstall(args: UninstallArgs, deps: UninstallDeps = {}
 
   for (const step of UNINSTALL_STEPS) await step.run(ctx);
 
-  if (ctx.checkoutRemains) {
+  if (ctx.rootRemains) {
     consola.info("Everything else is removed; finish with the command above.");
   } else {
     consola.success("copilot-env is uninstalled. Restart your shell to finish.");
   }
   consola.info(
     "Not removed: the agent CLIs themselves (claude / copilot / codex npm globals), " +
-      "bun (and its PATH entry), the PowerShell execution policy, Codex's " +
+      "deno (and its PATH entry), the PowerShell execution policy, Codex's " +
       "sandbox_workspace_write.network_access key, other hosts' ~/.codex/hosts/* dirs " +
       "on a shared home, and the agents' own session history.",
   );

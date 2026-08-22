@@ -96,7 +96,7 @@ agent mcp                  # MCP wiring status (--serve runs the stdio server; -
 agent cost                 # estimated token spend across all usage DBs (default + profile daemons)
 agent update               # update to the latest release (--check; cooldown via `agent config --set update-cooldown`)
 agent shell                # wire rc / $PROFILE; --launchers adds cl/co/cx, --clis installs the CLIs, --remove unwires
-agent uninstall            # remove copilot-env entirely (--yes headless, --dry-run preview, --force to delete a git checkout)
+agent uninstall            # remove copilot-env entirely (--yes headless, --dry-run preview, --force to delete a source checkout)
 agent codex                # configure Codex; no flag auto-detects the backend, --check reports it
 agent codex --direct       # force GitHub Copilot Direct (no auto-detect probe)
 agent codex --check        # print provider mode; exits 0 direct, 2 proxy, 1 other

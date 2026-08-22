@@ -6,7 +6,7 @@ import { runPreflight } from "../autoupdate/preflight.ts";
 import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/state.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { resolveTarget } from "../install/resolve-release.ts";
-import { isGitCheckout } from "../utils/root.ts";
+import { isProtectedRoot } from "../utils/root.ts";
 import { isUpToDate } from "../utils/semver.ts";
 import { assertNonNegativeDays } from "../utils/time.ts";
 import { packageVersion } from "../utils/version.ts";
@@ -95,14 +95,13 @@ async function runManualUpdate(args: {
     return;
   }
 
-  // The sync overwrites/prunes the checkout in place. A `.git` dir means this is a git
-  // checkout (a dev/manual clone, not a tarball install) that may hold uncommitted or
-  // untracked work -- refuse unless --force so an update can't silently destroy it.
-  // (isGitCheckout is a file probe, not a git command; tarball installs have no .git and
-  // update freely.)
-  if (!args.force && isGitCheckout()) {
+  // The sync overwrites/prunes the install root in place. Running from source means a
+  // dev clone that may hold uncommitted or untracked work -- refuse unless --force so an
+  // update can't silently destroy it. (The distinction is the RootMode this process was
+  // started in, not a file probe: an installed binary is freely replaceable.)
+  if (!args.force && isProtectedRoot()) {
     throw new Error(
-      "This is a git checkout (.git present) and `agent update` overwrites files in place; " +
+      "This is a source checkout and `agent update` overwrites files in place; " +
         "commit or stash your changes and re-run with --force (or update via git).",
     );
   }

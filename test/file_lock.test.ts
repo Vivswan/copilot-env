@@ -32,6 +32,17 @@ test("acquire, contend against a fresh live holder, release, re-acquire", () => 
   expect(tryAcquireFileLock(path, 10_000, { nowMs: 3_000 })).toBe(true);
 });
 
+test("a HELD lock's marker stays readable and deletable by path (the sidecar invariant)", () => {
+  // The marker is the cross-version contract: other processes read it to judge the holder.
+  // Holding the OS lock on the marker itself would break exactly that on Windows, where an
+  // exclusive LockFileEx fails reads from every other handle -- so the lock lives on a
+  // sidecar and this by-path read must work on every platform.
+  const path = tmp("x.lock");
+  expect(tryAcquireFileLock(path, 10_000, { nowMs: 1_000 })).toBe(true);
+  expect(readFileSync(path, "utf-8")).toBe(marker(process.pid, 1_000));
+  releaseFileLock(path);
+});
+
 test("staleMs is the age horizon, judged at the injected nowMs (strictly older steals)", () => {
   const path = tmp("x.lock");
   writeFileSync(path, marker(process.pid, 1_000));

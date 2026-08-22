@@ -40,9 +40,26 @@ function Install-Deno {
     } else {
         [Console]::Error.WriteLine("==> Installing deno v$want (one-time) ...")
     }
-    $installer = Join-Path ([IO.Path]::GetTempPath()) 'deno-install.ps1'
-    Invoke-RestMethod https://deno.land/install.ps1 -OutFile $installer
-    & $installer "v$want" | ForEach-Object { [Console]::Error.WriteLine($_) }
+    # A private scratch directory, for two reasons. It is where the installer is DOWNLOADED
+    # to: a fixed name under the shared temp root can be pre-created by another local user,
+    # who would then have written the script we are about to execute. And it is the working
+    # directory we RUN it from (the POSIX twin's constraint): anything the installer runs
+    # through deno would otherwise resolve the checkout's deno.json and die on its frozen
+    # lockfile. New-Item without -Force fails rather than reusing a directory we did not make.
+    $scratch = Join-Path ([IO.Path]::GetTempPath()) ([IO.Path]::GetRandomFileName())
+    New-Item $scratch -ItemType Directory | Out-Null
+    try {
+        $installer = Join-Path $scratch 'deno-install.ps1'
+        Invoke-RestMethod https://deno.land/install.ps1 -OutFile $installer
+        Push-Location $scratch
+        try {
+            & $installer "v$want" | ForEach-Object { [Console]::Error.WriteLine($_) }
+        } finally {
+            Pop-Location
+        }
+    } finally {
+        Remove-Item $scratch -Recurse -Force -ErrorAction SilentlyContinue
+    }
     if (($env:Path -split ';') -notcontains $denoBin) { $env:Path = "$denoBin;$env:Path" }
     # One attempt, then verify: a botched install fails loudly here rather than letting the
     # caller run on whatever version it happens to find.

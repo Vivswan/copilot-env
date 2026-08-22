@@ -52,3 +52,11 @@ export const test: TestApi = Object.assign(register(it), {
     return condition ? register(it.skip) : register(it);
   },
 });
+
+/**
+ * Whether pinning a timezone with `process.env.TZ` works in this runtime. Deno's TZ
+ * support is unix-only: on Windows the zone comes from the OS and a runtime assignment
+ * is ignored, so a test that pins a zone to prove local-day bucketing can only assert on
+ * POSIX. `test.skipIf(!TZ_PINNABLE)` is how such a test opts out.
+ */
+export const TZ_PINNABLE = Deno.build.os !== "windows";

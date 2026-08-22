@@ -10,7 +10,7 @@ import { runEnv } from "../src/commands/env.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { LAUNCHERS_MARKER } from "../src/shell/integration.ts";
-import { ROOT, runCli, runSync } from "./helpers/run.ts";
+import { importSpecifier, ROOT, runCli, runSync } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import {
   claudeSettingsJson,
@@ -90,7 +90,7 @@ const isLaunchersSource = (l: string): boolean =>
 function childEnvLines(env: Record<string, string | undefined>, profile?: string): string[] {
   const argsSrc = JSON.stringify({ "format": "posix", "profile": profile });
   const script = `import{runEnv}from${
-    JSON.stringify(join(ROOT, "src/commands/env.ts"))
+    importSpecifier(join(ROOT, "src/commands/env.ts"))
   };runEnv(${argsSrc});`;
   const result = runSync(Deno.execPath(), ["eval", script], { env: { ...process.env, ...env } });
   if (result.exitCode !== 0) throw new Error(`child env failed: ${result.stderr}`);

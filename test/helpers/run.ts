@@ -6,9 +6,19 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+/**
+ * `path` as a quoted module specifier, ready to splice into generated source
+ * (`import ... from ${importSpecifier(p)}`). It must be a file URL: a Windows
+ * absolute path is not a valid specifier, and deno reads its drive letter as an
+ * unsupported URL scheme.
+ */
+export function importSpecifier(path: string): string {
+  return JSON.stringify(pathToFileURL(path).href);
+}
 
 /** `deno run` argv (before the entrypoint) for a child under the test permission set. */
 export function denoRunArgs(...flags: string[]): string[] {

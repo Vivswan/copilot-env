@@ -173,8 +173,9 @@ describe("proxyFloatUpToDate", () => {
   });
 
   test("resolveMinimumReleaseAgeSeconds: env wins, 0 allowed, bad value throws", () => {
-    expect(resolveMinimumReleaseAgeSeconds(dir)).toBe(0); // no env, no bunfig
-    process.env[MIN_RELEASE_AGE_ENV] = "0";
+    // Nothing configured -> the 7-day default, matching deno.json's minimumDependencyAge.
+    expect(resolveMinimumReleaseAgeSeconds(dir)).toBe(604800);
+    process.env[MIN_RELEASE_AGE_ENV] = "0"; // an explicit 0 still disables the cooldown
     expect(resolveMinimumReleaseAgeSeconds(dir)).toBe(0);
     process.env[MIN_RELEASE_AGE_ENV] = "604800";
     expect(resolveMinimumReleaseAgeSeconds(dir)).toBe(604800);
@@ -184,7 +185,7 @@ describe("proxyFloatUpToDate", () => {
 
   test("resolveMinimumReleaseAgeSeconds: config releaseCooldown applies, env overrides it", () => {
     new CopilotEnvConfig().set({ releaseCooldown: 172800 });
-    // env unset -> config wins over the (no-bunfig) 0 default.
+    // env unset -> config wins over the built-in default.
     expect(resolveMinimumReleaseAgeSeconds(dir)).toBe(172800);
     // env set -> overrides config.
     process.env[MIN_RELEASE_AGE_ENV] = "100";
@@ -483,6 +484,13 @@ describe("proxyInstallAssertStatus", () => {
 });
 
 describe("readBunMinimumReleaseAgeSeconds", () => {
+  test("no bunfig.toml at all -> the 7-day default (the only branch left in production)", () => {
+    // bunfig.toml is gone for good, so this is what `agent health` reports. Returning 0
+    // here would advertise "no cooldown" while deno.json's minimumDependencyAge holds
+    // dependencies back for a week.
+    expect(readBunMinimumReleaseAgeSeconds(dir)).toBe(604800);
+  });
+
   test("reads install.minimumReleaseAge from bunfig.toml", () => {
     writeFileSync(
       join(dir, "bunfig.toml"),

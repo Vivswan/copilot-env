@@ -41,7 +41,14 @@ ensure_deno() {
     else
         echo "==> Installing deno v${_copilot_env_want} (one-time) ..." >&2
     fi
-    curl -fsSL https://deno.land/install.sh | sh -s -- -y "v${_copilot_env_want}" >&2 || return 1
+    # From a scratch directory, never the repo: the installer's own shell-setup step is a
+    # `deno run jsr:...`, which would resolve the checkout's deno.json and die on its frozen
+    # lockfile.
+    _copilot_env_tmp="$(mktemp -d)" || return 1
+    _copilot_env_rc=0
+    (cd "${_copilot_env_tmp}" && curl -fsSL https://deno.land/install.sh | sh -s -- -y "v${_copilot_env_want}") >&2 || _copilot_env_rc=1
+    rm -rf "${_copilot_env_tmp}"
+    [ "${_copilot_env_rc}" -eq 0 ] || return 1
     PATH="${_copilot_env_deno_bin}:$PATH"
     export PATH
     # One attempt, then verify: a botched install fails loudly here rather than letting the

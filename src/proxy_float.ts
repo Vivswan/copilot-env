@@ -127,9 +127,14 @@ type FloatContext = {
   nowMs: number;
 };
 
+/** The cooldown that applies when nothing configures one. It tracks deno.json's
+ *  `minimumDependencyAge` (P7D), which is what actually holds dependencies back now that
+ *  bunfig.toml is gone -- so `agent health` reports the window really in force. */
+const DEFAULT_RELEASE_COOLDOWN_SECONDS = 7 * SECONDS_PER_DAY;
+
 export function readBunMinimumReleaseAgeSeconds(root: string): number {
   const bunfig = join(root, "bunfig.toml");
-  if (!existsSync(bunfig)) return 0;
+  if (!existsSync(bunfig)) return DEFAULT_RELEASE_COOLDOWN_SECONDS;
 
   const doc = parse(readFileSync(bunfig, "utf-8"));
   const install = doc.install;

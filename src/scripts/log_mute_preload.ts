@@ -17,8 +17,8 @@
 // load decision lives in the daemon launch pipeline (src/copilot_api/launch.ts); here
 // we act unconditionally on load.
 import fs from "node:fs";
-import { devNull } from "node:os";
 import { resolve, sep } from "node:path";
+import { Writable } from "node:stream";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 
 /** Case-normalize for the path-prefix check (Windows paths are case-insensitive). */
@@ -37,16 +37,20 @@ function isUnderLogsDir(target: unknown): boolean {
 
 const realCreateWriteStream = fs.createWriteStream;
 
-/** Discard sink: a real WriteStream opened on the OS null device (/dev/null on POSIX,
- *  \\.\nul on Windows), so every WriteStream member the proxy's logger might touch
- *  behaves genuinely. */
-function muteSink(): fs.WriteStream {
-  return realCreateWriteStream(devNull);
+/** Discard sink: a stream that swallows every chunk. The proxy's logger touches only the
+ *  Writable surface of its log streams (write/end/destroyed/on("error")), and a sink over the
+ *  OS null device is not portable -- deno cannot open node's Windows `devNull` device path. */
+function muteSink(): Writable {
+  return new Writable({
+    write(_chunk, _encoding, callback) {
+      callback();
+    },
+  });
 }
 
 const mutedCreateWriteStream = (
   ...args: Parameters<typeof fs.createWriteStream>
-): fs.WriteStream => {
+): fs.WriteStream | Writable => {
   const [path] = args;
   return isUnderLogsDir(path) ? muteSink() : realCreateWriteStream(...args);
 };

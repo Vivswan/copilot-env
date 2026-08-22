@@ -14,8 +14,11 @@
 # shellcheck disable=SC2296
 _COPILOT_AGENTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")/.." && pwd)"
 
-# Ensure deno is on PATH (its installer only patches ~/.zshrc by default).
-[ -x "$HOME/.deno/bin/deno" ] && case ":$PATH:" in *":$HOME/.deno/bin:"*) ;; *) export PATH="$HOME/.deno/bin:$PATH" ;; esac
+# Ensure deno is on PATH (its installer only patches ~/.zshrc by default). DENO_INSTALL is
+# the same override scripts/ensure-deno.sh honors, so every entry point looks in one place.
+_COPILOT_DENO_BIN="${DENO_INSTALL:-$HOME/.deno}/bin"
+[ -x "${_COPILOT_DENO_BIN}/deno" ] && case ":$PATH:" in *":${_COPILOT_DENO_BIN}:"*) ;; *) export PATH="${_COPILOT_DENO_BIN}:$PATH" ;; esac
+unset _COPILOT_DENO_BIN
 
 # Uniform wrapper over bin/agent: run the requested command, then re-apply the
 # full session env from the single source of truth -- `agent env`, which prints

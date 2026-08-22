@@ -378,17 +378,28 @@ test("shell --help surfaces the install/launcher flags", () => {
   }
 });
 
-test("shell --clis --no-prereqs: verify-only runs; --cooldown is rejected, never dropped", () => {
-  // --no-prereqs => verify only (no npm install). Isolate HOME so the integration
-  // wiring it does touches a throwaway rc, never the real one.
-  const root = mkdtempSync(join(tmpdir(), "copilot-shell-clis-"));
-  const ok = runCli(["shell", "--clis", "--no-prereqs"], {
-    env: isolatedEnv({ HOME: root, SHELL: "/bin/bash" }),
-  });
-  expect(ok.exitCode).toBe(0);
+// The Windows branch of `agent shell` resolves the machine's REAL PowerShell $PROFILE
+// (via [Environment]::GetFolderPath), which an isolated HOME cannot redirect -- so, like
+// the wiring tests in shell_integration.test.ts, the run that actually wires stays POSIX.
+test.skipIf(process.platform === "win32")(
+  "shell --clis --no-prereqs runs verify-only",
+  () => {
+    // --no-prereqs => verify only (no npm install). Isolate HOME so the integration
+    // wiring it does touches a throwaway rc, never the real one.
+    const root = mkdtempSync(join(tmpdir(), "copilot-shell-clis-"));
+    const ok = runCli(["shell", "--clis", "--no-prereqs"], {
+      env: isolatedEnv({ HOME: root, SHELL: "/bin/bash" }),
+    });
+    expect(ok.exitCode).toBe(0);
+  },
+  30_000,
+);
+
+test("shell --clis --no-prereqs rejects --cooldown, never drops it", () => {
   // A cooldown has nothing to steer when nothing installs, so the boundary rejects the
   // pair (it used to be silently dropped). The optional-valued flag still PARSES in
   // every spelling -- the failure below is the boundary conflict, not a parse error.
+  const root = mkdtempSync(join(tmpdir(), "copilot-shell-clis-"));
   for (const args of [["--cooldown"], ["--cooldown=0"], ["--cooldown", "14"]] as const) {
     const proc = runCli(["shell", "--clis", "--no-prereqs", ...args], {
       env: isolatedEnv({ HOME: root, SHELL: "/bin/bash" }),
@@ -396,7 +407,7 @@ test("shell --clis --no-prereqs: verify-only runs; --cooldown is rejected, never
     expect(proc.exitCode).toBe(1);
     expect(proc.stderr).toContain("--cooldown and --no-prereqs are mutually exclusive");
   }
-  // Four cold CLI spawns; on a loaded Windows CI runner each cold start + TS
+  // Three cold CLI spawns; on a loaded Windows CI runner each cold start + TS
   // load can take several seconds, so allow generous headroom to avoid flaky timeouts.
 }, 90_000);
 

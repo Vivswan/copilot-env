@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
-import { denoRunArgs, ROOT } from "./helpers/run.ts";
+import { denoRunArgs, importSpecifier, ROOT } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
 
 // The cross-process lock in CopilotApiConfig.update() must serialize concurrent read-modify-
@@ -35,7 +35,7 @@ test("update() serializes concurrent writers across processes (no lost updates)"
     writeFileSync(
       worker,
       [
-        `import { CopilotApiConfig } from ${JSON.stringify(CONFIG_MODULE)};`,
+        `import { CopilotApiConfig } from ${importSpecifier(CONFIG_MODULE)};`,
         `const cfg = new CopilotApiConfig(${JSON.stringify(store)});`,
         `for (let i = 0; i < ${INCREMENTS}; i++) {`,
         "  cfg.update((d) => {",
@@ -89,7 +89,7 @@ test(
       writeFileSync(
         worker,
         [
-          `import { CopilotApiConfig } from ${JSON.stringify(CONFIG_MODULE)};`,
+          `import { CopilotApiConfig } from ${importSpecifier(CONFIG_MODULE)};`,
           `const cfg = new CopilotApiConfig(${JSON.stringify(store)});`,
           "console.log(cfg.ensureApiKey() + ' ' + cfg.ensureAdminApiKey());",
         ].join("\n"),

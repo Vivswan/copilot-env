@@ -13,7 +13,7 @@ import {
 import { DAEMON_INTEGRATION_ID_ENV } from "../src/copilot_api/integration_identity.ts";
 import { DRAIN_DEADLINE_MS } from "../src/scripts/daemon_shutdown.ts";
 import { PROXY_PACKAGE_NAME } from "../src/copilot_api/version.ts";
-import { denoRunArgs, ROOT, runSync } from "./helpers/run.ts";
+import { denoRunArgs, importSpecifier, ROOT, runSync } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, removeDir, tmpDir } from "./helpers.ts";
 
@@ -225,7 +225,7 @@ test("parseProcessRows splits only the pid off, keeping the command line verbati
 
 // --- the shared shutdown path --------------------------------------------------------
 
-const SHUTDOWN_MODULE = JSON.stringify(join(ROOT, "src", "scripts", "daemon_shutdown.ts"));
+const SHUTDOWN_MODULE = importSpecifier(join(ROOT, "src", "scripts", "daemon_shutdown.ts"));
 
 test("a wedged drain still exits: the deadline is what keeps `agent stop` able to stop us", () => {
   // A SIGTERM listener REPLACES deno's terminate-on-signal, and `agent stop` sends a
@@ -260,7 +260,7 @@ test.skipIf(Deno.build.os === "windows")(
       target,
       `import { installTerminationHandler } from ${SHUTDOWN_MODULE};\n` +
         `import { installInferenceObserver } from ${
-          JSON.stringify(join(ROOT, "src", "scripts", "inference_activity.ts"))
+          importSpecifier(join(ROOT, "src", "scripts", "inference_activity.ts"))
         };\n` +
         "installInferenceObserver();\n" +
         "installTerminationHandler();\n" +

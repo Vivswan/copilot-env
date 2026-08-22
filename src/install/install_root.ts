@@ -7,9 +7,9 @@
 // is the reliable anchor instead: install.sh / install.ps1 place the binary at
 // <root>/bin/agent-bin(.exe), so the root is two levels up.
 //
-// TEMPORARY -- delete this module when chunk 5's root.ts dual-mode lands.
-// Its `PROJECT_ROOT` becomes mode-aware and answers exactly this question, so
-// the swap is mechanical and needs no replacement logic:
+// TEMPORARY -- delete this module; root.ts's dual-mode `PROJECT_ROOT` answers
+// exactly this question, so the swap is mechanical and needs no replacement
+// logic:
 //
 //   src/install/installer.ts   `import { installRoot } from "./install_root.ts"`
 //                              -> `import { ASSET_ROOT, PROJECT_ROOT, rootMode } from "../utils/root.ts"`
@@ -18,10 +18,9 @@
 //                              the in-place branch      -> `rootMode().kind === "checkout"`
 //   src/autoupdate/apply.ts    `installRoot()`          -> `PROJECT_ROOT`
 //
-// That repoint was type-checked against a stand-in of the stated contract and
-// compiles clean; it is kept out of this branch only because root.ts's new
-// exports are not on any branch yet, and depending on them here would leave
-// this one unable to run its own gate.
+// That repoint is type-checked clean against those exports; it stayed out of
+// this branch only because they were not yet on any branch when it was written,
+// and depending on them then would have left this one unable to run its gate.
 import { dirname } from "node:path";
 import { PROJECT_ROOT } from "../utils/root.ts";
 

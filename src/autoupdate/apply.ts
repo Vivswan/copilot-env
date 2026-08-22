@@ -26,9 +26,9 @@ import {
   fileSha256,
   parseChecksums,
 } from "../install/checksums.ts";
-import { installRoot } from "../install/install_root.ts";
 import type { Release } from "../install/resolve-release.ts";
 import { currentReleaseTarget, installedBinaryName, releaseAssetName } from "../install/targets.ts";
+import { PROJECT_ROOT } from "../utils/root.ts";
 import { stripV } from "../utils/semver.ts";
 
 const REPO = "Vivswan/copilot-env";
@@ -221,7 +221,7 @@ export async function applyUpdate(
   opts: ApplyUpdateOptions = {},
 ): Promise<void> {
   const logger = opts.logger ?? consola;
-  const root = opts.root ?? installRoot();
+  const root = opts.root ?? PROJECT_ROOT;
   // ["ignore", 2, 2] => stdin closed, child stdout AND stderr both go to our fd2.
   const stdio: StdioOptions = opts.childStdoutToStderr ? ["ignore", 2, 2] : "inherit";
 

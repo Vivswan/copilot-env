@@ -26,11 +26,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { consola } from "consola";
 
 import { runShellIntegration } from "../shell/integration.ts";
-import { installRoot } from "./install_root.ts";
+import { ASSET_ROOT, PROJECT_ROOT } from "../utils/root.ts";
 import { INSTALLED_BINARY_POSIX, INSTALLED_BINARY_WINDOWS } from "./targets.ts";
 
 /** Embedded AND materialized: something outside this process opens these by
@@ -154,12 +153,6 @@ export type InstallPlan =
     shell: ShellWiring | null;
   };
 
-/** Where the embedded assets live: the repo root relative to this module --
- *  the compiled VFS root in a binary, the checkout root in dev. */
-function assetSourceRoot(): string {
-  return fileURLToPath(new URL("../..", import.meta.url));
-}
-
 /** Collect every file under `dir` (recursively, sorted for determinism) as
  *  install-root-relative copies. `.sh` files get the executable bit: they are
  *  the only embedded assets ever handed to an OS exec directly. */
@@ -190,13 +183,20 @@ function collectAssetCopies(sourceRoot: string, root: string, dir: string): Asse
  *  embedded asset source. */
 export function buildInstallPlan(
   options: InstallOptions,
-  root: string = installRoot(),
-  sourceRoot: string = assetSourceRoot(),
+  root: string = PROJECT_ROOT,
+  sourceRoot: string = ASSET_ROOT,
 ): InstallPlan {
   const shell: ShellWiring | null = options.noShellIntegration || options.assetsOnly
     ? null
     : { allHosts: options.allHosts };
 
+  // The discriminant IS rootMode's, expressed over the arguments rather than
+  // read from ambient state: root.ts sets ASSET_ROOT === PROJECT_ROOT for a
+  // checkout (both resolve to the checkout) and splits them for a compiled
+  // binary (VFS vs install root). Comparing the injected pair therefore gives
+  // the same answer as `rootMode().kind`, and keeps the parameters meaningful -
+  // gating on `rootMode()` instead would ignore them and make the installed
+  // branch unreachable from a test, which is exactly the branch worth testing.
   if (resolve(sourceRoot) === resolve(root)) {
     return { kind: "in-place", root, shell };
   }

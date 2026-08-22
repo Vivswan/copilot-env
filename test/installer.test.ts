@@ -13,6 +13,7 @@ import {
   POSIX_SHIM,
   POWERSHELL_SHIM,
 } from "../src/install/installer.ts";
+import { INSTALL_ROOT_MARKERS } from "../src/utils/root.ts";
 import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
 
 const OPTIONS: InstallOptions = { noShellIntegration: false, allHosts: false, assetsOnly: false };
@@ -217,10 +218,6 @@ describe("the install root carries the markers uninstall requires", () => {
   // contract ON this installer: narrowing MATERIALIZED_ASSET_DIRS below them turns
   // uninstall into a silent no-op on every install.
   //
-  // Duplicated from INSTALL_ROOT_MARKERS in src/utils/root.ts, which this
-  // branch cannot import yet; it becomes an import when that lands.
-  const INSTALL_ROOT_MARKERS = ["bin", "shell", join("src", "scripts")];
-
   test("applying a plan produces every marker directory", () => {
     applyInstallPlan(installedPlan({ ...OPTIONS, assetsOnly: true }));
 

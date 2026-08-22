@@ -80,28 +80,15 @@ jobs:
           deno task lint:ps
 
   # The ONLY job that runs the REAL proxy. Every other lifecycle run points
-  # COPILOT_API_ENTRY at test/copilot-api-fake.mjs, so nothing else exercises the
-  # float against the live registry or the daemon's permission set against the
-  # proxy's actual dependency tree.
-  #
-  # ADVISORY (continue-on-error) rather than gating, because it currently fails
-  # for a reason outside its own scope. The real proxy pulls in `is-wsl`, which
-  # probes /proc; deno treats the whole /proc tree as needing --allow-all, and
-  # deno's node:fs `existsSync` THROWS there where node's returns false. The
-  # throw is the bug, not the missing read: is-wsl only wants "am I WSL", and on
-  # Linux the right answer is false, which is exactly what a bare -A run
-  # produces (the file does not exist). So the fix is to make the probe
-  # non-fatal - a preload restoring node's `existsSync` contract yields
-  # `false` under the daemon's existing five grants, measured identical to -A.
-  # Do NOT widen the grant list or reach for -A; no grant is needed at all.
-  # Reproduce with `deno task test:docker --floated-lifecycle`. Once the real
-  # proxy starts, delete the continue-on-error line and this paragraph: the job
-  # is meant to gate.
+  # COPILOT_API_ENTRY at test/copilot-api-fake.mjs, so nothing else exercises
+  # the float against the live registry, or the daemon's production permission
+  # set against the proxy's actual dependency tree. It asserts up to auth rather
+  # than through a full lifecycle: there is no credential here, so a daemon that
+  # floats, spawns, and reaches provider resolution is the expected end state.
   floated-lifecycle:
     name: floated lifecycle (real proxy)
     runs-on: ubuntu-latest
     timeout-minutes: 25
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
         with:
@@ -120,7 +107,7 @@ jobs:
             exit 0
           fi
           changed="$(git diff --name-only "$BASE"...HEAD)"
-          if printf '%s\n' "$changed" | grep -qE '^(deno\.(json|lock)|copilot-env\.config|src/proxy_float\.ts|src/copilot_api/(process|launch|sidecar|shims)\.ts|src/scripts/|\.github/scripts/lifecycle-smoke\.sh|scripts/test_docker\.ts)'; then
+          if printf '%s\n' "$changed" | grep -qE '^(deno\.(json|lock)|copilot-env\.config|src/proxy_float\.ts|src/copilot_api/(process|launch|sidecar|shims)\.ts|src/scripts/|\.github/scripts/(floated-smoke|lifecycle-smoke)\.sh|scripts/test_docker\.ts)'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
@@ -138,14 +125,13 @@ jobs:
         run: deno ci
 
       # No COPILOT_API_ENTRY: `agent start` resolves and runs the real proxy.
-      # The runner's HOME is disposable, which is what the smoke's own guard
-      # requires.
-      - name: Float the proxy and run the daemon lifecycle
+      # The runner's HOME is disposable, which is what the smoke's guard wants.
+      - name: Float the proxy and assert the daemon reaches auth
         if: steps.scope.outputs.run == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash .github/scripts/lifecycle-smoke.sh
+        run: bash .github/scripts/floated-smoke.sh
 
   # Each install.sh scenario runs as its OWN isolated job (fresh runner, fresh
   # $HOME) via the reusable installer-sh.yml, which compiles this tree's binary

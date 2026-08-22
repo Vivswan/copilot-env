@@ -92,14 +92,15 @@ if (first === "--lifecycle") {
   runArgs.push("--network=none", "-e", "COPILOT_API_ENTRY=/work/test/copilot-api-fake.mjs");
   command = ["bash", ".github/scripts/lifecycle-smoke.sh", ...rest];
 } else if (first === "--floated-lifecycle") {
-  // Same smoke, no COPILOT_API_ENTRY: `agent start` resolves and runs the REAL
-  // proxy, so this is the only run that covers the float end to end. Needs the
-  // network for the registry, and a credential for the daemon to come up.
+  // No COPILOT_API_ENTRY: `agent start` resolves and runs the REAL proxy, so
+  // this is the only run that covers the float and the daemon's production
+  // permission set end to end. Needs the network for the registry; it asserts
+  // up to auth rather than through a lifecycle, because there is no credential.
   for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN"]) {
     const value = Deno.env.get(name);
     if (value) runArgs.push("-e", `${name}=${value}`);
   }
-  command = ["bash", ".github/scripts/lifecycle-smoke.sh", ...rest];
+  command = ["bash", ".github/scripts/floated-smoke.sh", ...rest];
 } else {
   runArgs.push("--network=none");
   if (first !== undefined) {

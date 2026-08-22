@@ -24,10 +24,8 @@ ensure_deno "$PWD"
 echo "Initializing copilot-env: deno install --frozen ..."
 deno install --frozen
 
-# `deno install` does not run package.json lifecycle scripts, so wire the git
-# hooks path explicitly; husky's bin needs node (skip-if-absent, like CI).
-if command -v node >/dev/null 2>&1 && [ -f node_modules/husky/bin.js ]; then
-    node node_modules/husky/bin.js
-fi
+# Wire the checked-in git hooks (.githooks/pre-commit, the deno-native gate).
+# Idempotent; a relative hooksPath resolves against each worktree's root.
+git config core.hooksPath .githooks
 
 echo "Done. Try: deno task typecheck && deno task lint && deno task test"

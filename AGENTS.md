@@ -298,6 +298,7 @@ deno task check         # deno lint --fix + deno fmt
 ./bin/agent start     # start the daemon; also stop / health / models / env / cost / update / shell / codex / claude / uninstall
 ```
 
-The husky `pre-commit` hook runs the same gate as the `check` job in `checks.yml` (lint-staged +
-typecheck + tests + repo-wide lint + the skip-if-absent shell/PS linters); `checks.yml` adds a
-Linux/macOS/Windows matrix plus lifecycle and installer jobs.
+The checked-in `.githooks/pre-commit` hook (wired by `scripts/setup-env.sh` via
+`core.hooksPath`; deno-native, no node) runs the same gate as the `check` job in `checks.yml`
+(staged-file lint/format + typecheck + tests + repo-wide lint + the skip-if-absent shell/PS
+linters); `checks.yml` adds a Linux/macOS/Windows matrix plus lifecycle and installer jobs.

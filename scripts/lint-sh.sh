@@ -16,12 +16,13 @@ if ! command -v shellcheck >/dev/null 2>&1; then
     exit 0
 fi
 
-# Every *.sh and *.bashrc in the tree, plus the extensionless `bin/agent` launcher.
+# Every *.sh and *.bashrc in the tree, plus the extensionless `bin/agent`
+# launcher and the `.githooks/pre-commit` gate.
 targets() {
     find . -type f \( -name '*.sh' -o -name '*.bashrc' \) \
         -not -path './node_modules/*' -not -path './.git/*' -not -path './.claude/*' \
         -not -path './.husky/_/*' -print
-    printf '%s\n' ./bin/agent
+    printf '%s\n' ./bin/agent ./.githooks/pre-commit
 }
 
 targets | sort | xargs shellcheck --severity=warning

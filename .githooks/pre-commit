@@ -1,0 +1,14 @@
+#!/bin/sh
+# The pre-commit gate, wired by scripts/setup-env.sh (.ps1 on Windows) via
+# `git config core.hooksPath .githooks`. Deno-native: no node required.
+# Same gate as the `check` job in .github/workflows/checks.yml -- staged-file
+# autofix first, then the full typecheck/test/lint sequence.
+set -e
+PATH="${DENO_INSTALL:-$HOME/.deno}/bin:$PATH"
+export PATH
+deno task lint:staged
+deno task typecheck
+deno task test
+deno task lint
+deno task lint:sh
+deno task lint:ps

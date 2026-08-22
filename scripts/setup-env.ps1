@@ -17,11 +17,9 @@ Write-Host 'Initializing copilot-env: deno install --frozen ...'
 & deno install --frozen
 if ($LASTEXITCODE -ne 0) { throw 'deno install failed.' }
 
-# `deno install` does not run package.json lifecycle scripts, so wire the git
-# hooks path explicitly; husky's bin needs node (skip-if-absent, like CI).
-if ((Get-Command node -ErrorAction SilentlyContinue) -and (Test-Path 'node_modules/husky/bin.js')) {
-    & node node_modules/husky/bin.js
-    if ($LASTEXITCODE -ne 0) { throw 'husky hook setup failed.' }
-}
+# Wire the checked-in git hooks (.githooks/pre-commit, the deno-native gate).
+# Idempotent; a relative hooksPath resolves against each worktree's root.
+& git config core.hooksPath .githooks
+if ($LASTEXITCODE -ne 0) { throw 'git hooks path setup failed.' }
 
 Write-Host 'Done. Try: deno task typecheck; deno task lint; deno task test'

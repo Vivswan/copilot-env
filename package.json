@@ -4,19 +4,5 @@
   "private": true,
   "license": "MIT",
   "type": "module",
-  "description": "Local copilot-api proxy lifecycle + config helper (TypeScript port of the Python copilot-api helper).",
-  "scripts": {
-    "prepare": "husky"
-  },
-  "devDependencies": {
-    "husky": "^9.1.7",
-    "lint-staged": "^17.3.0"
-  },
-  "lint-staged": {
-    "src/**/*.ts": ["deno lint --fix", "deno fmt"],
-    "test/**/*.ts": ["deno lint --fix", "deno fmt"],
-    "scripts/**/*.ts": ["deno lint --fix", "deno fmt"],
-    ".github/scripts/**/*.ts": ["deno lint --fix", "deno fmt"],
-    "deno.json": "deno fmt"
-  }
+  "description": "Local copilot-api proxy lifecycle + config helper (TypeScript port of the Python copilot-api helper)."
 }

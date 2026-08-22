@@ -68,7 +68,7 @@ deno task lint:ps     # PSScriptAnalyzer on PowerShell scripts
 deno task check       # deno lint --fix + deno fmt (auto-fix)
 ```
 
-A husky pre-commit hook runs lint-staged + typecheck + `deno task test` + repo-wide lint + shell/PowerShell lint, so most issues are caught before they land.
+The checked-in pre-commit hook (`.githooks/pre-commit`, wired by `scripts/setup-env.sh`) runs staged-file lint/format + typecheck + `deno task test` + repo-wide lint + shell/PowerShell lint, so most issues are caught before they land.
 
 ## Code style
 

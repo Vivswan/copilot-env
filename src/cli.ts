@@ -30,6 +30,7 @@ import { runInit } from "./commands/init.ts";
 import { runMcp } from "./commands/mcp.ts";
 import { runModels } from "./commands/models.ts";
 import { runProfile } from "./commands/profile.ts";
+import { runProxyToken } from "./commands/proxy_token.ts";
 import { runSettings } from "./commands/settings.ts";
 import { DEFAULT_CLI_COOLDOWN_DAYS, runShell } from "./commands/setup.ts";
 import { parseStartAction, runStart } from "./commands/start.ts";
@@ -318,6 +319,30 @@ program
   .option("--all", "Stop the default daemon and every named profile's daemon.")
   .action((opts: Opts) =>
     runStop({ profile: opts.profile as string | undefined, all: Boolean(opts.all) })
+  );
+
+program
+  .command("proxy-token")
+  .helpGroup("Daemon:")
+  .description(
+    "Print the local proxy's API key, auto-starting the proxy when the managed " +
+      "lifecycle (`auto-start`) is on - the resolver behind the proxy-mode " +
+      "Codex/Claude wiring and the cl/cx launchers. Only the key touches stdout.",
+  )
+  .option(
+    "--yes",
+    "Never prompt (headless): when the proxy is down and auto-start is off, exit 1 " +
+      "instead of offering to start it.",
+  )
+  .option(
+    "--profile <name>",
+    "Resolve against the named profile's isolated daemon instead of the default.",
+  )
+  .action((opts: Opts) =>
+    runProxyToken({
+      yes: Boolean(opts.yes),
+      profile: opts.profile as string | undefined,
+    })
   );
 
 program

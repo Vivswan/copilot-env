@@ -39,6 +39,8 @@ export interface RunResult {
 export interface RunOptions {
   cwd?: string;
   env?: Record<string, string | undefined>;
+  /** Text fed to the child's stdin, then closed; omitted = an immediately-EOF stdin. */
+  input?: string;
   /** Hard kill for a wedged child; sync spawns block the deadline race in testing.ts. */
   timeoutMs?: number;
 }
@@ -128,6 +130,7 @@ export function runSync(cmd: string, args: string[], opts: RunOptions = {}): Run
       cwd: opts.cwd ?? ROOT,
       env: wanted,
       encoding: "utf-8",
+      input: opts.input ?? "",
       maxBuffer: 16 * 1024 * 1024,
       timeout: opts.timeoutMs ?? 120_000,
     });

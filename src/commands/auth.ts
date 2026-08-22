@@ -401,14 +401,19 @@ async function runGet(profile: Profile, catalogDeps?: CodexCatalogDeps): Promise
 
 /**
  * `--print-proxy-token`: print the local copilot-api proxy's API key on stdout. The
- * proxy-mode resolver (`src/scripts/proxy-token.sh`) runs this last, after it has
- * ensured the proxy is up. Distinct from `--get` (the upstream GitHub credential).
- * `--profile` reads the key from that profile daemon's own config.json. The key
- * line is the ENTIRE stdout contract; after printing it this also runs the same
- * best-effort daily model-catalog refresh as `--get` (stderr-only, never throws,
- * default profile only), sourced from the running proxy's /models.
+ * proxy-mode resolver (`agent proxy-token`) runs this last, after it has ensured the
+ * proxy is up. Distinct from `--get` (the upstream GitHub credential). `--profile`
+ * reads the key from that profile daemon's own config.json. The key line is the
+ * ENTIRE stdout contract; after printing it this also runs the same best-effort
+ * daily model-catalog refresh as `--get` (stderr-only, never throws, default
+ * profile only), sourced from the running proxy's /models. Exported because it IS
+ * the resolver's print-key primitive -- `agent proxy-token` must come through here,
+ * not bare ensureApiKey, or the catalog freshness hook silently dies.
  */
-async function runPrintProxyToken(profile: Profile, catalogDeps?: CodexCatalogDeps): Promise<void> {
+export async function runPrintProxyToken(
+  profile: Profile,
+  catalogDeps?: CodexCatalogDeps,
+): Promise<void> {
   const key = CopilotApiConfig.forProfile(profile).ensureApiKey();
   // codeql[js/clear-text-logging] -- emitting the proxy key on stdout IS this command's
   // contract (the proxy-mode agents' auth.command / apiKeyHelper consume it).

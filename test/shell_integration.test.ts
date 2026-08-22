@@ -446,6 +446,13 @@ test("cx launchers start the proxy only for proxy-backed Codex configs", () => {
   expect(posixWire).toContain("_copilot_ensure_server");
   expect(posixWire).not.toContain("--json");
   expect(posixWire).not.toContain("jq");
+  // The launchers ensure the proxy through the resolver SUBCOMMAND (interactive: no
+  // --yes, so a down unmanaged proxy prompts), never the retired script path.
+  expect(shellFunctionBody(posix, "_copilot_ensure_server")).toContain("proxy-token");
+  expect(shellFunctionBody(posix, "_copilot_ensure_server")).not.toContain("proxy-token.sh");
+  expect(shellFunctionBody(posix, "_copilot_ensure_server")).not.toContain("--yes");
+  expect(shellFunctionBody(posix, "_copilot_ensure_profile_server")).toContain("proxy-token");
+  expect(shellFunctionBody(posix, "_copilot_ensure_profile_server")).not.toContain("--yes");
   expect(posix).not.toContain("_copilot_codex_config_file");
   expect(posix).not.toContain("_copilot_codex_uses_proxy");
   // The launcher reconfigures proxy only; it never runs the live auto-detect.
@@ -466,6 +473,12 @@ test("cx launchers start the proxy only for proxy-backed Codex configs", () => {
   expect(powershellWire).toContain("Confirm-CopilotServer");
   expect(powershellWire).not.toContain("--json");
   expect(powershellWire).not.toContain("jq");
+  // Same resolver-subcommand contract on the PowerShell twin.
+  expect(shellFunctionBody(powershell, "Confirm-CopilotServer")).toContain("proxy-token");
+  expect(shellFunctionBody(powershell, "Confirm-CopilotServer")).not.toContain("proxy-token.ps1");
+  expect(shellFunctionBody(powershell, "Confirm-CopilotServer")).not.toContain("--yes");
+  expect(shellFunctionBody(powershell, "Confirm-CopilotProfileServer")).toContain("proxy-token");
+  expect(shellFunctionBody(powershell, "Confirm-CopilotProfileServer")).not.toContain("--yes");
   expect(powershell).not.toContain("Get-CodexConfigPath");
   expect(powershell).not.toContain("Test-CodexProxyProvider");
   expect(powershellWire).not.toContain("--auto");

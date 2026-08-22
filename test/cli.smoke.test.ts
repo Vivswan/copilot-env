@@ -83,6 +83,9 @@ test("`cli.ts --help` loads the CLI and exits 0", () => {
   expect(output).toContain("shell");
   expect(output).toContain("uninstall");
   expect(output).toContain("mcp");
+  // No hidden commands: the resolver and the migration runner are documented surface.
+  expect(output).toContain("proxy-token");
+  expect(output).toContain("migrate");
   // `init` is the headline command and appears first in the COMMANDS list.
   expect(output).toContain("init");
   expect(output.indexOf("init")).toBeLessThan(output.indexOf("start"));

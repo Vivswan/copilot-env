@@ -25,6 +25,7 @@ import {
   checkNodeModules,
   checkProxyPackage,
   checkProxyResolved,
+  checkProxySidecar,
   checkRuntimeIdentity,
   checkRuntimeOrphan,
   checkRuntimePid,
@@ -181,6 +182,7 @@ test("proxy package: missing and below-floor fail, above-ceiling warns, in-bound
       cooldownSeconds: 604800,
       floatSkips: false,
       resolved: null,
+      sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
     }).status,
   ).toBe("fail");
   expect(
@@ -191,6 +193,7 @@ test("proxy package: missing and below-floor fail, above-ceiling warns, in-bound
       cooldownSeconds: 604800,
       floatSkips: false,
       resolved: null,
+      sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
     }).status,
   ).toBe("fail");
   const above = checkProxyPackage({
@@ -200,6 +203,7 @@ test("proxy package: missing and below-floor fail, above-ceiling warns, in-bound
     cooldownSeconds: 604800,
     floatSkips: false,
     resolved: null,
+    sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
   });
   expect(above.status).toBe("warn");
   expect(above.fix).toBe("agent update");
@@ -211,6 +215,7 @@ test("proxy package: missing and below-floor fail, above-ceiling warns, in-bound
       cooldownSeconds: 604800,
       floatSkips: false,
       resolved: null,
+      sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
     }).status,
   ).toBe("ok");
 });
@@ -226,6 +231,7 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
     cooldownSeconds: 604800,
     floatSkips: true,
     resolved: null,
+    sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
   });
   expect(below.status).toBe("ok");
   // The detail must surface the exemption; the exact phrasing is human copy, so
@@ -243,6 +249,7 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
     cooldownSeconds: 604800,
     floatSkips: true,
     resolved: null,
+    sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
   });
   expect(above.status).toBe("ok");
   expect(above.fix).toBeUndefined();
@@ -256,6 +263,7 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
     cooldownSeconds: 604800,
     floatSkips: true,
     resolved: null,
+    sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
   });
   expect(missing.status).toBe("fail");
   expect(missing.fix).toBe("deno install --frozen");
@@ -269,6 +277,7 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
     cooldownSeconds: 604800,
     floatSkips: true,
     resolved: null,
+    sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
   });
   expect(inBounds.status).toBe("ok");
   expect(inBounds.detail).not.toContain("not enforced");
@@ -283,6 +292,7 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
     cooldownSeconds: 604800,
     floatSkips: true,
     resolved: null,
+    sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
   });
   expect(badConfig.status).toBe("fail");
 });
@@ -296,6 +306,7 @@ test("proxy package detail shows the float cooldown window", () => {
       cooldownSeconds,
       floatSkips: false,
       resolved: null,
+      sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
     }).detail;
   expect(ok(604800)).toContain("cooldown 7d");
   expect(ok(0)).toContain("no cooldown");
@@ -312,9 +323,48 @@ test("proxy package fails (not throws) when copilot-env.config is unreadable", (
     cooldownSeconds: 604800,
     floatSkips: false,
     resolved: null,
+    sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
   });
   expect(r.status).toBe("fail");
   expect(r.detail).toContain("copilot-env.config");
+});
+
+test("proxy sidecar: absent is fatal for a compiled build, a warning for a checkout", () => {
+  const facts = (sidecar: ProxyFacts["sidecar"]): ProxyFacts => ({
+    version: "1.10.5",
+    bounds: { ok: true, version: "1.10.5" },
+    configError: null,
+    cooldownSeconds: 604800,
+    floatSkips: false,
+    resolved: null,
+    sidecar,
+  });
+
+  // A compiled binary is not a deno CLI: with no sidecar it cannot spawn the proxy
+  // at all, so this is a failure rather than a note.
+  const compiled = checkProxySidecar(
+    facts({ kind: "absent", pin: "2.9.5", denoBin: null, standalone: true }),
+  );
+  expect(compiled.status).toBe("fail");
+  expect(compiled.fix).toBe("agent start");
+
+  // From a checkout the runtime itself is the answer, so a missing sidecar is not fatal.
+  expect(
+    checkProxySidecar(facts({ kind: "absent", pin: "2.9.5", denoBin: null, standalone: false }))
+      .status,
+  ).toBe("warn");
+
+  const dev = checkProxySidecar(
+    facts({ kind: "dev", pin: "2.9.5", denoBin: "/usr/bin/deno", standalone: false }),
+  );
+  expect(dev.status).toBe("ok");
+  expect(dev.detail).toContain("/usr/bin/deno");
+
+  const provisioned = checkProxySidecar(
+    facts({ kind: "provisioned", pin: "2.9.5", denoBin: "/home/x/deno", standalone: true }),
+  );
+  expect(provisioned.status).toBe("ok");
+  expect(provisioned.detail).toContain("2.9.5");
 });
 
 test("proxy resolved: no record is ok, a record with a missing cache fails", () => {
@@ -325,6 +375,7 @@ test("proxy resolved: no record is ok, a record with a missing cache fails", () 
     cooldownSeconds: 604800,
     floatSkips,
     resolved,
+    sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
   });
 
   // Never floated: the deno.json baseline runs, which is a working fallback.
@@ -1565,6 +1616,7 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       cooldownSeconds: 604800,
       floatSkips: false,
       resolved: null,
+      sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
     },
     shell: { files: [], integrationWired: true, launchersWired: false },
     clis: [{ command: "claude", name: "Claude", resolved: null }],

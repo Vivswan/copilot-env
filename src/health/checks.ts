@@ -248,6 +248,41 @@ function floatCooldownLabel(seconds: number | null): string {
  * which is a working fallback rather than a failure; a record whose cache has gone
  * missing is not (the launch asks for that exact version offline and would fail).
  */
+/**
+ * The deno the proxy runs on. A checkout runs on its own runtime and needs nothing; a
+ * compiled binary is not a deno CLI, so it CANNOT spawn the proxy until the pinned
+ * sidecar is provisioned -- which is a failure, not a note.
+ */
+export function checkProxySidecar(f: ProxyFacts): CheckResult {
+  const base = {
+    id: "proxy.sidecar",
+    label: "Deno sidecar",
+    group: "proxy" as const,
+    profile: null,
+    scopes: BOOTSTRAP,
+  };
+  const { kind, pin, denoBin, standalone } = f.sidecar;
+  if (kind === "absent") {
+    return {
+      ...base,
+      status: standalone ? "fail" : "warn",
+      detail: `deno ${pin} is not provisioned${
+        standalone ? "; a compiled build cannot spawn the proxy without it" : ""
+      }`,
+      fix: "agent start",
+      value: { kind, pin, standalone },
+    };
+  }
+  return {
+    ...base,
+    status: "ok",
+    detail: kind === "dev"
+      ? `running on this checkout's own deno\n${denoBin}`
+      : `deno ${pin} provisioned\n${denoBin}`,
+    value: { kind, pin, standalone },
+  };
+}
+
 export function checkProxyResolved(f: ProxyFacts): CheckResult {
   const base = {
     id: "proxy.resolved",
@@ -1241,7 +1276,13 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
       checkNodeModules(facts.bootstrap),
     );
   }
-  if (facts.proxy) out.push(checkProxyPackage(facts.proxy), checkProxyResolved(facts.proxy));
+  if (facts.proxy) {
+    out.push(
+      checkProxyPackage(facts.proxy),
+      checkProxyResolved(facts.proxy),
+      checkProxySidecar(facts.proxy),
+    );
+  }
   // One block of runtime checks per target, in gather order (the default target
   // first, then named profiles). A named target opens with its consistency
   // check; per-daemon rows render exactly for the targets whose daemon was

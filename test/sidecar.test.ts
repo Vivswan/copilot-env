@@ -7,6 +7,7 @@ import {
   detectSidecar,
   downloadSidecar,
   DVMRC_FILENAME,
+  ensureSidecar,
   parseAbsolutePath,
   parseDvmrcPin,
   readDvmrcPin,
@@ -16,6 +17,8 @@ import {
   unzipCommand,
 } from "../src/copilot_api/sidecar.ts";
 import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
+import { sidecarSha256 } from "../src/copilot_api/sidecar_pins.ts";
+import { ROOT } from "./helpers/run.ts";
 import { envSnapshot, removeDir, tmpDir } from "./helpers.ts";
 
 const PIN = "2.9.5";
@@ -258,5 +261,42 @@ describe("downloadSidecar", () => {
         "arch": "arm64",
       }),
     ).rejects.toThrow("HTTP 404");
+  });
+});
+
+// --- the pin table and provisioning ---------------------------------------------
+
+describe("the sha256 pin table", () => {
+  test("covers every supported target for the .dvmrc pin", () => {
+    // downloadSidecar REFUSES a target with no entry, so a gap here is not a missing
+    // optimisation -- it is a platform that cannot provision a sidecar at all.
+    const pin = readDvmrcPin(ROOT);
+    for (const target of new Set(Object.values(DENO_RELEASE_TARGETS))) {
+      const digest = sidecarSha256(pin, target);
+      expect(`${target}=${digest ?? "MISSING"}`).toMatch(/=[0-9a-f]{64}$/);
+    }
+  });
+
+  test("an unknown pin yields no digest, so a .dvmrc bump cannot silently downgrade trust", () => {
+    expect(sidecarSha256("0.0.0", "x86_64-unknown-linux-gnu")).toBeUndefined();
+  });
+});
+
+describe("ensureSidecar", () => {
+  test("running under a real deno is a no-op: our own runtime IS the answer", async () => {
+    // Never downloads from a checkout -- a fetch here would be a live network call on
+    // every `agent start`.
+    const bin = await ensureSidecar(dir, {
+      fetchLike: () => Promise.reject(new Error("must not fetch")),
+    });
+    expect(bin).toBe(runtimeExecPath() ?? "(not under deno)");
+  });
+
+  test("an env override wins and still never downloads", async () => {
+    process.env[SIDECAR_DENO_ENV] = "/opt/deno/bin/deno";
+    const bin = await ensureSidecar(dir, {
+      fetchLike: () => Promise.reject(new Error("must not fetch")),
+    });
+    expect(bin).toBe("/opt/deno/bin/deno");
   });
 });

@@ -46,6 +46,7 @@ import {
   proxyLoopbackOrigin,
 } from "../copilot_api/port.ts";
 import { isCopilotApiPid, pidAlive } from "../copilot_api/process.ts";
+import { type SidecarStatus, sidecarStatus } from "../copilot_api/sidecar.ts";
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import {
@@ -206,6 +207,8 @@ export interface ProxyFacts {
   // The float's record, or null when it has never resolved here (a fresh checkout
   // or a Direct-only install, where the deno.json baseline is what would run).
   resolved: ProxyResolvedFacts | null;
+  // The deno binary every proxy spawn runs on.
+  sidecar: SidecarStatus;
 }
 
 export interface ShellFileFact {
@@ -400,6 +403,8 @@ export interface ProbeDeps {
   installedProxyVersion(): string | null;
   /** The float's resolved-version record, or null when it has never resolved here. */
   proxyResolved(): ProxyResolvedFacts | null;
+  /** The deno sidecar every proxy spawn runs on. */
+  sidecar(): SidecarStatus;
   projectConfig(): ProjectConfig;
   proxyCooldownSeconds(): number;
   codexHome(): string;
@@ -618,6 +623,7 @@ export function defaultProbeDeps(): ProbeDeps {
       if (record === null) return null;
       return { ...record, cached: existsSync(record.denoDir) };
     },
+    sidecar: () => sidecarStatus(resolveRootHome()),
     projectConfig: () => readProjectConfig(root),
     proxyCooldownSeconds: () => resolveMinimumReleaseAgeSeconds(),
     // Effective CODEX_HOME, matching runCodexConfig / env.ts precedence:
@@ -990,6 +996,7 @@ export async function gatherFacts(
         // checks' looser both-direct read) so health and the float can never
         // disagree about whether the bounds are enforced.
         const floatSkips = proxyFloatSkips(deps.codexHome(), deps.claudeHome());
+        const sidecar = deps.sidecar();
         try {
           facts.proxy = {
             version,
@@ -998,6 +1005,7 @@ export async function gatherFacts(
             cooldownSeconds,
             floatSkips,
             resolved,
+            sidecar,
           };
         } catch (e) {
           facts.proxy = {
@@ -1007,6 +1015,7 @@ export async function gatherFacts(
             cooldownSeconds,
             floatSkips,
             resolved,
+            sidecar,
           };
         }
       })(),

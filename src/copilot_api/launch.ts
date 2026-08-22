@@ -32,6 +32,7 @@ import {
 import { resolvePassthroughIntegrationId, usePatPassthrough } from "./integration_identity.ts";
 import { generateAliases } from "./models.ts";
 import { CopilotApiPaths, profileHomeNames, resolveRootHome, ROOT_HOME_ENV } from "./paths.ts";
+import { ensureSidecar, isStandaloneBinary } from "./sidecar.ts";
 import {
   checkProxyPort,
   copilotApiFindPort,
@@ -124,6 +125,12 @@ function entryProxyVersion(entry: CopilotApiEntry): string | null {
  */
 export async function ensureProxyFloor(): Promise<void> {
   if (resolveCopilotApiEntry().kind === "file") return;
+
+  // Before anything spawns deno: a compiled build's own executable is not a deno CLI, so
+  // the pinned sidecar has to exist before the float can warm a cache or the daemon can
+  // launch. Provisioning is a no-op from a checkout, where our runtime already is one.
+  const sidecar = await ensureSidecar(resolveRootHome());
+  if (isStandaloneBinary()) consola.info(`Using the provisioned deno sidecar: ${sidecar}`);
 
   const status = await proxyFloatVerifyStatus();
   if (!status.upToDate) {

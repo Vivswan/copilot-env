@@ -88,9 +88,16 @@ function launchProxy(profile: Profile, output: LaunchOutput): void {
 
 /**
  * Show `query` on stderr and read one raw answer line from stdin. Raw stdin data
- * events (NOT consola.prompt, which writes to stdout, and not node:readline's
- * question(), which under deno's node compat never delivers a piped line) keep the
- * stdout contract while mirroring the shells' `read -r`: a TTY in canonical mode
+ * events, NOT node:readline's question(): with stdin already CLOSED and no line
+ * ever arriving (the redirected/headless shape), rl.question never settles -- in
+ * its callback or promise form -- and EOF-resolves-to-"" is load-bearing here (EOF
+ * means START, the apiKeyHelper case), so readline would hang forever in exactly
+ * the case this module must not. Do not "simplify" back to readline after testing
+ * only the piped-line case: piped lines DO deliver; the closed-stdin hang is the
+ * disqualifier. (Secondary and fixable: readline's default prompt target -- and
+ * consola.prompt outright -- write to stdout, which must stay key-only.)
+ *
+ * The raw reader also mirrors the shells' `read -r`: a TTY in canonical mode
  * delivers a full echoed line, EOF with no line resolves "" -- which the caller
  * reads as the default answer (start) -- and Ctrl-C stays the terminal's SIGINT
  * (the process dies unanswered, exactly like the script resolvers did).
@@ -99,6 +106,9 @@ function launchProxy(profile: Profile, output: LaunchOutput): void {
 export function readStartAnswer(query: string): Promise<string> {
   process.stderr.write(query);
   return new Promise((resolve) => {
+    // String chunks split on character boundaries: per-chunk Buffer.toString could
+    // mangle a multi-byte UTF-8 sequence straddling a chunk boundary.
+    process.stdin.setEncoding("utf8");
     let buf = "";
     const finish = (answer: string): void => {
       process.stdin.off("data", onData);
@@ -106,8 +116,8 @@ export function readStartAnswer(query: string): Promise<string> {
       process.stdin.pause(); // release the event loop; the process must be able to exit
       resolve(answer);
     };
-    const onData = (chunk: Buffer | string): void => {
-      buf += chunk.toString();
+    const onData = (chunk: string): void => {
+      buf += chunk;
       const newline = buf.indexOf("\n");
       if (newline !== -1) finish(buf.slice(0, newline).replace(/\r$/, ""));
     };

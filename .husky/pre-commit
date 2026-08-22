@@ -1,7 +1,8 @@
-PATH="$HOME/.deno/bin:$PATH"
+PATH="${DENO_INSTALL:-$HOME/.deno}/bin:$PATH"
 export PATH
 node_modules/.bin/lint-staged
 deno task typecheck
 deno task test
+deno task lint
 deno task lint:sh
 deno task lint:ps

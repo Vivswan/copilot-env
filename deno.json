@@ -7,7 +7,16 @@
   "exclude": [
     ".claude/",
     "node_modules/",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    ".copier-answers.yml",
+    ".repo-platform.yml",
+    ".github/dependabot.yml",
+    ".github/settings.yml",
+    ".github/workflows/auto-assign.yml",
+    ".github/workflows/ci.yml",
+    ".github/workflows/dependabot-bun-lockfile.yml",
+    ".github/workflows/release-please.yml",
+    ".github/workflows/settings-sync.yml"
   ],
   "imports": {
     "@jeffreycao/copilot-api": "npm:@jeffreycao/copilot-api@^1.14.22",

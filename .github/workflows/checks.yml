@@ -85,73 +85,62 @@ jobs:
   # Disabled until the deno installer rewrite + binary release assets land
   # (migration chunk 6); a job skipped by its own `if:` does not fail all-green.
   install-sh:
-    if: false
+    # No such repository variable is defined, so this never runs; chunk 6 deletes the gate.
+    if: ${{ vars.ENABLE_INSTALLER_JOBS == 'true' }}
     name: install.sh ${{ matrix.name }} / ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - {
-              os: ubuntu-latest,
-              name: "default",
-              args: "",
-              setup-clis: false,
-              setup-launchers: false,
-              expect-clis: false,
-              expect-wiring: true,
-              rerun: true,
-            }
-          - {
-              os: macos-latest,
-              name: "default",
-              args: "",
-              setup-clis: false,
-              setup-launchers: false,
-              expect-clis: false,
-              expect-wiring: true,
-              rerun: true,
-            }
-          - {
-              os: ubuntu-latest,
-              name: "download path",
-              args: "--no-shell-integration",
-              setup-clis: false,
-              setup-launchers: false,
-              expect-clis: false,
-              expect-wiring: false,
-              rerun: true,
-              download-install: true,
-            }
-          - {
-              os: ubuntu-latest,
-              name: "setup-clis",
-              args: "",
-              setup-clis: true,
-              setup-launchers: false,
-              expect-clis: true,
-              expect-wiring: true,
-              rerun: false,
-            }
-          - {
-              os: ubuntu-latest,
-              name: "setup-launchers",
-              args: "",
-              setup-clis: false,
-              setup-launchers: true,
-              expect-clis: false,
-              expect-wiring: true,
-              rerun: false,
-            }
-          - {
-              os: ubuntu-latest,
-              name: "--no-shell-integration",
-              args: "--no-shell-integration",
-              setup-clis: false,
-              setup-launchers: false,
-              expect-clis: false,
-              expect-wiring: false,
-              rerun: false,
-            }
+          - os: ubuntu-latest
+            name: "default"
+            args: ""
+            setup-clis: false
+            setup-launchers: false
+            expect-clis: false
+            expect-wiring: true
+            rerun: true
+          - os: macos-latest
+            name: "default"
+            args: ""
+            setup-clis: false
+            setup-launchers: false
+            expect-clis: false
+            expect-wiring: true
+            rerun: true
+          - os: ubuntu-latest
+            name: "download path"
+            args: "--no-shell-integration"
+            setup-clis: false
+            setup-launchers: false
+            expect-clis: false
+            expect-wiring: false
+            rerun: true
+            download-install: true
+          - os: ubuntu-latest
+            name: "setup-clis"
+            args: ""
+            setup-clis: true
+            setup-launchers: false
+            expect-clis: true
+            expect-wiring: true
+            rerun: false
+          - os: ubuntu-latest
+            name: "setup-launchers"
+            args: ""
+            setup-clis: false
+            setup-launchers: true
+            expect-clis: false
+            expect-wiring: true
+            rerun: false
+          - os: ubuntu-latest
+            name: "--no-shell-integration"
+            args: "--no-shell-integration"
+            setup-clis: false
+            setup-launchers: false
+            expect-clis: false
+            expect-wiring: false
+            rerun: false
     uses: ./.github/workflows/installer-sh.yml
     with:
       os: ${{ matrix.os }}
@@ -168,49 +157,42 @@ jobs:
   # Disabled until the deno installer rewrite + binary release assets land
   # (migration chunk 6); a job skipped by its own `if:` does not fail all-green.
   install-ps1:
-    if: false
+    # No such repository variable is defined, so this never runs; chunk 6 deletes the gate.
+    if: ${{ vars.ENABLE_INSTALLER_JOBS == 'true' }}
     name: install.ps1 ${{ matrix.scenario.name }}
     strategy:
       fail-fast: false
       matrix:
         scenario:
-          - {
-              name: "default",
-              args: "",
-              setup-clis: false,
-              setup-launchers: false,
-              expect-clis: false,
-              expect-wiring: true,
-              rerun: true,
-            }
-          - {
-              name: "download path",
-              args: "-NoShellIntegration",
-              setup-clis: false,
-              setup-launchers: false,
-              expect-clis: false,
-              expect-wiring: false,
-              rerun: true,
-              download-install: true,
-            }
-          - {
-              name: "setup-clis",
-              args: "",
-              setup-clis: true,
-              setup-launchers: false,
-              expect-clis: true,
-              expect-wiring: true,
-              rerun: false,
-            }
-          - {
-              name: "-NoShellIntegration",
-              args: "-NoShellIntegration",
-              setup-clis: false,
-              setup-launchers: false,
-              expect-clis: false,
-              expect-wiring: false,
-              rerun: false,
-            }
+          - name: "default"
+            args: ""
+            setup-clis: false
+            setup-launchers: false
+            expect-clis: false
+            expect-wiring: true
+            rerun: true
+          - name: "download path"
+            args: "-NoShellIntegration"
+            setup-clis: false
+            setup-launchers: false
+            expect-clis: false
+            expect-wiring: false
+            rerun: true
+            download-install: true
+          - name: "setup-clis"
+            args: ""
+            setup-clis: true
+            setup-launchers: false
+            expect-clis: true
+            expect-wiring: true
+            rerun: false
+          - name: "-NoShellIntegration"
+            args: "-NoShellIntegration"
+            setup-clis: false
+            setup-launchers: false
+            expect-clis: false
+            expect-wiring: false
+            rerun: false
     uses: ./.github/workflows/installer-ps1.yml
     with:
       args: ${{ matrix.scenario.args }}
@@ -235,7 +217,8 @@ jobs:
   # bun-era installer, so it cannot pass; a job skipped by its own `if:` does
   # not fail all-green.
   release-pr-smoke:
-    if: false
+    # No such repository variable is defined, so this never runs; chunk 6 deletes the gate.
+    if: ${{ vars.ENABLE_INSTALLER_JOBS == 'true' }}
     name: release-pr smoke / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20

@@ -19,8 +19,12 @@ if [ ! -f /.dockerenv ] && [ ! -f /run/.containerenv ] && [ "${GITHUB_ACTIONS:-}
     exit 1
 fi
 
+# `-P=cli`, the set production runs under (bin/agent uses it), NOT the broader test set:
+# the lifecycle smoke is the only place a real end-to-end run exercises it, so a permission
+# the CLI actually needs and the set forgets fails here. The fake proxy needs no outbound
+# net, and loopback is in the cli set.
 cli() {
-    deno run -P=test src/cli.ts "$@"
+    deno run -P=cli src/cli.ts "$@"
 }
 
 fail() {

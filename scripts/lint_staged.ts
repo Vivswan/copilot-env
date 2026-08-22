@@ -15,21 +15,23 @@ function run(cmd: string, args: string[]): number {
   return new Deno.Command(cmd, { args, stdout: "inherit", stderr: "inherit" }).outputSync().code;
 }
 
-/** NUL-separated `git <args>` stdout as a list, exiting on git failure. */
+/** The NUL-separated stdout of `git <args>` as a list, exiting on git failure.
+ *  Callers pass -z themselves: after a `--` pathspec separator git would eat
+ *  an appended flag as a path, so its position is the caller's business. */
 function gitList(args: string[]): string[] {
-  const out = new Deno.Command("git", { args: [...args, "-z"], stderr: "inherit" }).outputSync();
+  const out = new Deno.Command("git", { args, stderr: "inherit" }).outputSync();
   if (out.code !== 0) Deno.exit(out.code);
   return new TextDecoder().decode(out.stdout).split("\0").filter((name) => name !== "");
 }
 
-const files = gitList(["diff", "--cached", "--name-only", "--diff-filter=ACMR"]);
+const files = gitList(["diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z"]);
 const tsFiles = files.filter((f) => f.endsWith(".ts") && TS_TREES.some((t) => f.startsWith(t)));
 const targets = [...tsFiles, ...(files.includes("deno.json") ? ["deno.json"] : [])];
 if (targets.length === 0) Deno.exit(0);
 
 // The partial-staging refusal. Checked BEFORE the fixers run: they edit the
 // working tree, so afterwards every fixed file would look partially staged.
-const partiallyStaged = gitList(["diff", "--name-only", "--", ...targets]);
+const partiallyStaged = gitList(["diff", "--name-only", "-z", "--", ...targets]);
 if (partiallyStaged.length > 0) {
   console.error(
     "lint:staged: refusing to run -- these staged files also have unstaged changes, and the " +

@@ -91,7 +91,10 @@
       "bin",
       "skills",
       ".claude-plugin",
-      "copilot-env.config"
+      "copilot-env.config",
+      "deno.json",
+      "deno.lock",
+      ".dvmrc"
     ],
     "permissions": "cli"
   },

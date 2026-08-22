@@ -26,14 +26,18 @@ export { afterEach, beforeEach, describe } from "@std/testing/bdd";
 //
 // Every env var that steers a real agent-state path is repointed into one per-run temp dir
 // here, so a test that sets up no harness of its own still cannot touch the developer's
-// `~/.codex`, `~/.claude`, `~/.claude.json`, or copilot-api home.
+// `~/.codex`, `~/.claude`, `~/.claude.json`, copilot-api home, or shell rc files.
 //
 // HOME stays REAL: each path above has its own override, which is what makes it redirectable
-// without HOME. Not covered: src/shell/integration.ts reads homedir() with no env knob.
+// without HOME.
 const SANDBOX_HOME = mkdtempSync(join(tmpdir(), "copilot-env-suite-"));
 process.env.COPILOT_API_HOME = join(SANDBOX_HOME, "copilot-api");
 process.env.CLAUDE_CONFIG_DIR = join(SANDBOX_HOME, ".claude");
 process.env.CODEX_HOME = join(SANDBOX_HOME, ".codex");
+// The rc-file lookup's own knob, spelled as a literal because this module cannot import from
+// src/. Source of truth: CI_RC_DIR_ENV in src/shell/integration.ts, which reads it as the
+// home the rc scan walks instead of homedir().
+process.env.COPILOT_ENV_CI_RC_DIR = join(SANDBOX_HOME, "rc-home");
 globalThis.addEventListener("unload", () => {
   rmSync(SANDBOX_HOME, { recursive: true, force: true });
 });

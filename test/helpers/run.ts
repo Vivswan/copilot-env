@@ -43,13 +43,23 @@ export interface RunOptions {
   timeoutMs?: number;
 }
 
-/** spawnSync rejects undefined env values, which a `{ ...process.env }` spread carries. */
-function definedEnv(env: Record<string, string | undefined>): Record<string, string> {
-  const out: Record<string, string> = {};
+/**
+ * The child env split into what to SET and what must not reach the child. Deno's
+ * node:child_process merges `env` OVER the parent (node replaces it) and ignores a key whose
+ * value is `undefined`, so an unset can only be done by removing the key from the parent for
+ * the span of the spawn - which runSync does, safely, because a sync spawn blocks the one
+ * thread and nothing can observe the gap.
+ */
+function childEnv(
+  env: Record<string, string | undefined>,
+): { set: Record<string, string>; unset: string[] } {
+  const set: Record<string, string> = {};
+  const unset: string[] = [];
   for (const [key, value] of Object.entries(env)) {
-    if (value !== undefined) out[key] = value;
+    if (value === undefined) unset.push(key);
+    else set[key] = value;
   }
-  return out;
+  return { set, unset };
 }
 
 /** The running test's abort signal, thrown if the deadline already fired. Every spawn
@@ -95,15 +105,27 @@ export function runSync(cmd: string, args: string[], opts: RunOptions = {}): Run
   // spawnSync can take no part in this: it blocks the thread, so the only moment the signal
   // can be observed for a SYNC child is before the call.
   liveTestSignal();
-  const res = spawnSync(cmd, args, {
-    cwd: opts.cwd ?? ROOT,
-    env: definedEnv(opts.env ?? process.env),
-    encoding: "utf-8",
-    maxBuffer: 16 * 1024 * 1024,
-    timeout: opts.timeoutMs ?? 120_000,
-  });
-  if (res.error) throw res.error;
-  return { exitCode: res.status, stdout: res.stdout ?? "", stderr: res.stderr ?? "" };
+  const { set, unset } = childEnv(opts.env ?? process.env);
+  const saved = unset.map((key) => [key, process.env[key]] as const);
+  try {
+    // Inside the try: a throw partway through must still restore the keys already removed.
+    for (const key of unset) delete process.env[key];
+    const res = spawnSync(cmd, args, {
+      cwd: opts.cwd ?? ROOT,
+      env: set,
+      encoding: "utf-8",
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: opts.timeoutMs ?? 120_000,
+    });
+    if (res.error) throw res.error;
+    return { exitCode: res.status, stdout: res.stdout ?? "", stderr: res.stderr ?? "" };
+  } finally {
+    // Total, like envSnapshot: a key absent beforehand is put back ABSENT.
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 }
 
 /** Run a repo TypeScript entrypoint (or a temp-dir worker script) as a deno child. */

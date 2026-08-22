@@ -21,6 +21,10 @@ function isolatedEnv(extra: Record<string, string> = {}): Record<string, string>
     COPILOT_API_HOME: home,
     HOME: home,
     USERPROFILE: home,
+    // Pointed at THIS home: both override HOME, and the suite-wide sandbox always sets them,
+    // so inheriting would send the child's agent state outside the home built for it.
+    CLAUDE_CONFIG_DIR: join(home, ".claude"),
+    CODEX_HOME: join(home, ".codex"),
     ...extra,
   };
 }

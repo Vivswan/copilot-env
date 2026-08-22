@@ -16,6 +16,7 @@ import {
   type ProjectedProxyEntry,
 } from "../src/copilot_api/env_config.ts";
 import { DEFAULT_WEB_SEARCH_MODEL } from "../src/copilot_api/web_search.ts";
+import { DEFAULT_RELEASE_COOLDOWN_SECONDS } from "../src/proxy_float.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
 
@@ -479,4 +480,12 @@ test("registry defaults are single-sourced: labels derive from the owned default
   expect(configDefaultLabel(configKeyDef("message-websearch-model")!)).toBe(
     `gpt-5-mini (proxy) / ${DEFAULT_WEB_SEARCH_MODEL} (mcp)`,
   );
+});
+
+test("the release-cooldown label tracks the built-in default it describes", () => {
+  // The one hand-written label with an importable in-repo source of truth: proxy_float.ts
+  // owns the constant but imports env_config, so the registry cannot reference it directly.
+  // Derive the label from the constant here, like the other cross-module literal pins.
+  const days = DEFAULT_RELEASE_COOLDOWN_SECONDS / 86_400;
+  expect(configDefaultLabel(configKeyDef("release-cooldown")!)).toBe(`${days} days (built-in)`);
 });

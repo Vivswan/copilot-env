@@ -114,6 +114,9 @@ export function isolateAgentHomes(prefix: string, opts: { mkdirs?: boolean } = {
     codexHome: join(dir, ".codex"),
   };
   process.env.HOME = dir;
+  // USERPROFILE too: node:os homedir() resolves from it on Windows, so HOME alone would
+  // leave every homedir()-based sweep pointed at the real profile there.
+  process.env.USERPROFILE = dir;
   process.env.COPILOT_API_HOME = homes.proxyHome;
   process.env.CLAUDE_CONFIG_DIR = homes.claudeHome;
   process.env.CODEX_HOME = homes.codexHome;

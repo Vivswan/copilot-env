@@ -95,7 +95,7 @@ export function spawnChild(cmd: string, options: Deno.CommandOptions): Deno.Chil
 }
 
 /**
- * Synchronous spawn with the Bun.spawnSync result shape the suite asserts on. The child gets
+ * Synchronous spawn with the RunResult shape the suite asserts on. The child gets
  * EXACTLY `opts.env` (node's documented replacement semantics), so a key the caller omits, or
  * spells `undefined`, is genuinely absent in the child.
  *

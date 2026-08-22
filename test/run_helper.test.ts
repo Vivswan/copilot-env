@@ -17,12 +17,28 @@ function childSees(env: Record<string, string | undefined>): string {
   return result.stdout.trim();
 }
 
+/**
+ * The parent variables a child process cannot reliably start without. Replacement semantics
+ * mean a partial env is passed VERBATIM (Windows CreateProcess injects nothing), so the two
+ * partial-env tests below fold these in: they assert a NAMED variable's presence/absence,
+ * never that the env is minimal, so carrying the essentials costs the assertions nothing
+ * and keeps the child spawnable on all three platforms.
+ */
+function platformEssentials(): Record<string, string> {
+  const keep = new Set(["SYSTEMROOT", "WINDIR", "COMSPEC", "PATH", "TEMP", "TMP"]);
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined && keep.has(key.toUpperCase())) out[key] = value;
+  }
+  return out;
+}
+
 test("runSync: the child gets EXACTLY the requested env, not the parent merged with it", () => {
   process.env[PROBE] = "PARENT_VALUE";
   try {
     // A PARTIAL env is the case that separates replacement from merge: under Deno's native
     // merge the parent's value reaches the child even though the caller never mentioned it.
-    expect(childSees({ SOMETHING_ELSE: "x" })).toBe("V=<unset>");
+    expect(childSees({ ...platformEssentials(), SOMETHING_ELSE: "x" })).toBe("V=<unset>");
     // The parent is untouched by the clearing.
     expect(process.env[PROBE]).toBe("PARENT_VALUE");
   } finally {
@@ -40,7 +56,7 @@ test("runSync: a parent variable named after an Object prototype member is clear
     const seen = runSync(Deno.execPath(), [
       "eval",
       'console.log("V=" + (Deno.env.get("toString") ?? "<unset>"))',
-    ], { env: { SOMETHING_ELSE: "x" } });
+    ], { env: { ...platformEssentials(), SOMETHING_ELSE: "x" } });
     expect(seen.stdout.trim()).toBe("V=<unset>");
     expect(process.env[protoKey]).toBe("PARENT_VALUE");
   } finally {

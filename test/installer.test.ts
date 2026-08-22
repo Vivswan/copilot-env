@@ -183,6 +183,8 @@ describe("applyInstallPlan", () => {
     applyInstallPlan(installedPlan({ ...OPTIONS, assetsOnly: true }));
 
     expect(statSync(join(dest, "bin", "agent")).mode & 0o111).not.toBe(0);
+    // The .sh exec-bit rule now mostly guards the one-release proxy-token FORWARDER
+    // (and this synthetic fixture): the resolver itself is `agent proxy-token`.
     expect(statSync(join(dest, "src", "scripts", "proxy-token.sh")).mode & 0o111).not.toBe(0);
     // The PowerShell shim is never exec'd by an OS loader.
     expect(statSync(join(dest, "bin", "agent.ps1")).mode & 0o111).toBe(0);

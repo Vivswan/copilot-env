@@ -14,7 +14,7 @@ import {
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
-import { agentLauncherCommand, proxyTokenCommand } from "../src/utils/root.ts";
+import { agentLauncherCommand, PROJECT_ROOT, proxyTokenCommand } from "../src/utils/root.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, removeDir } from "./helpers.ts";
 
@@ -738,4 +738,91 @@ test("disabled: a symlinked spelling of our path blocks deletion (fail closed)",
 
   expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(pinned);
   expect(existsSync(catalogFile)).toBe(true);
+});
+
+// --- reader tolerance: the retired script-shaped proxy auth ---------------------
+
+// What pre-`agent proxy-token` releases wrote as the managed proxy auth block on THIS
+// platform: the src/scripts resolver script under the current root (the shape the old
+// proxyTokenCommand produced).
+function legacyScriptAuth(profileArgs: string[] = []): { command: string; args: string[] } {
+  if (process.platform === "win32") {
+    return {
+      command: "powershell",
+      args: [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        join(PROJECT_ROOT, "src", "scripts", "proxy-token.ps1"),
+        "--yes",
+        ...profileArgs,
+      ],
+    };
+  }
+  return {
+    command: "/bin/sh",
+    args: [join(PROJECT_ROOT, "src", "scripts", "proxy-token.sh"), "--yes", ...profileArgs],
+  };
+}
+
+function proxyConfigWithAuth(auth: { command: string; args: string[] }): string {
+  return stringify({
+    "model_provider": "copilot-env",
+    "model_providers": {
+      "copilot-env": {
+        "name": "copilot-env",
+        "base_url": "http://127.0.0.1:4141/v1",
+        "wire_api": "responses",
+        "auth": { "command": auth.command, "args": auth.args },
+      },
+    },
+  });
+}
+
+test("legacy script-shaped proxy auth still inspects as managed (reader tolerance)", () => {
+  // An install whose wiring predates the `agent proxy-token` subcommand: the auth
+  // block execs the src/scripts resolver script. It must keep reading as OUR managed
+  // proxy wiring (`agent codex --check` exit 2 keeps the launchers' auto-start branch)
+  // until a rewrite upgrades it.
+  const wiring = inspectCodexWiring(proxyConfigWithAuth(legacyScriptAuth()), null, 4141, false);
+  expect(wiring.providerMode).toBe("proxy");
+  expect(wiring.envKeyMatches).toBe(true);
+  expect(wiring.providerWired).toBe(true);
+});
+
+test("a genuinely foreign auth block still un-wires the proxy config", () => {
+  // The tolerance must not widen into "any script named like ours": a foreign command
+  // (or a script outside the managed root) is not managed wiring.
+  const foreign = inspectCodexWiring(
+    proxyConfigWithAuth({ command: "/usr/local/bin/my-token", args: ["--yes"] }),
+    null,
+    4141,
+    false,
+  );
+  expect(foreign.providerMode).toBe("proxy");
+  expect(foreign.envKeyMatches).toBe(false);
+  expect(foreign.providerWired).toBe(false);
+
+  const strayCopy = inspectCodexWiring(
+    proxyConfigWithAuth({ command: "/bin/sh", args: ["/opt/elsewhere/proxy-token.sh", "--yes"] }),
+    null,
+    4141,
+    false,
+  );
+  expect(strayCopy.providerWired).toBe(false);
+});
+
+test("a rewrite upgrades legacy script wiring to the subcommand shape", () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(join(codexHome, "config.toml"), proxyConfigWithAuth(legacyScriptAuth()));
+
+  configureCodexConfig(codexHome, { mode: "proxy", baseUrl: "http://127.0.0.1:4141/v1" });
+
+  const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
+  const provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
+  expect(asRecord(provider.auth).command).toBe(proxyTokenCommand().command);
+  expect(asRecord(provider.auth).args).toEqual(proxyTokenCommand().args);
 });

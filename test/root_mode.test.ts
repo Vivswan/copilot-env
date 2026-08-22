@@ -15,11 +15,12 @@ import {
   isProtectedRoot,
   looksLikeInstallRoot,
   PROJECT_ROOT,
-  PROXY_TOKEN_SCRIPT_SH,
+  proxyTokenArgs,
   proxyTokenCommand,
   rootMode,
 } from "../src/utils/root.ts";
 import { PROJECT_CONFIG_FILE, readProjectConfig } from "../src/utils/project_config.ts";
+import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { expect, test } from "./helpers/testing.ts";
 
 test("the suite runs in checkout mode, where both roots are the source tree", () => {
@@ -37,15 +38,16 @@ test("PROJECT_ROOT is a real absolute directory on disk", () => {
   // are handed paths under this root and must be able to open them.
   expect(isAbsolute(PROJECT_ROOT)).toBe(true);
   expect(existsSync(PROJECT_ROOT)).toBe(true);
-  // The resolver script the agent configs point at, per platform. On Windows the argv
-  // is `powershell -NoProfile ... -File <script>`, so pick the path off `-File` rather
-  // than a fixed index (args[0] there is a flag, which would assert nothing).
-  const { args } = proxyTokenCommand();
-  const scriptPath = process.platform === "win32" ? args[args.indexOf("-File") + 1] : args[0];
-  expect(scriptPath).toBeDefined();
-  expect(isAbsolute(String(scriptPath))).toBe(true);
-  expect(existsSync(String(scriptPath))).toBe(true);
-  if (process.platform !== "win32") expect(scriptPath).toBe(PROXY_TOKEN_SCRIPT_SH);
+  // The resolver the agent configs invoke is the launcher itself (`agent proxy-token`),
+  // per platform. On Windows the argv is `powershell -NoProfile ... -File <launcher>`,
+  // so pick the path off `-File` rather than a fixed index (args[0] there is a flag,
+  // which would assert nothing).
+  const { command, args } = proxyTokenCommand();
+  const launcherPath = process.platform === "win32" ? args[args.indexOf("-File") + 1] : command;
+  expect(launcherPath).toBeDefined();
+  expect(isAbsolute(String(launcherPath))).toBe(true);
+  expect(existsSync(String(launcherPath))).toBe(true);
+  if (process.platform !== "win32") expect(launcherPath).toBe(join(PROJECT_ROOT, "bin", "agent"));
 });
 
 test("protection follows the RootMode kind, with no filesystem probe", () => {
@@ -78,8 +80,15 @@ test("copilot-env.config is read from ASSET_ROOT by default", () => {
   expect(() => readProjectConfig(join(ASSET_ROOT, "src"))).toThrow();
 });
 
-test("the credential resolver argv stays byte-identical", () => {
+test("the credential resolver argvs stay byte-identical", () => {
   // Writers (Codex auth.command, Claude apiKeyHelper) and the health verifier
   // compare these strings; a root refactor must not disturb them.
   expect(AGENT_AUTH_GET_ARGS).toEqual(["auth", "--get"]);
+  expect(proxyTokenArgs()).toEqual(["proxy-token", "--yes"]);
+  expect(proxyTokenArgs(parseProfileName("work"))).toEqual([
+    "proxy-token",
+    "--yes",
+    "--profile",
+    "work",
+  ]);
 });

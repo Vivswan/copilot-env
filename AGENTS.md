@@ -112,11 +112,12 @@ file layouts. Don't restate here what a reader can grep.
   the daemon's own. Every read site applies the same precedence: **explicit flag/env >
   stored config > built-in default**.
 - **The managed proxy lifecycle is opt-in** (`auto-start`). The shared resolver
-  `src/scripts/proxy-token.{sh,ps1}` is built from **honest primitives** (is-it-up, the gate,
-  launch, heartbeat, print-key) rather than one magic flag, so each step is independently
-  testable. Auto-stop is an **in-daemon** watchdog preload: server and watchdog are one
-  process, so neither can orphan the other. Its activity signal counts only inference
-  requests, so health pings can't keep it alive and muted logs can't starve it.
+  `agent proxy-token` (src/commands/proxy_token.ts) is built from **honest primitives**
+  (is-it-up, the gate, launch, heartbeat, print-key) rather than one magic flag, so each
+  step is independently testable. Auto-stop is an **in-daemon** watchdog preload: server
+  and watchdog are one process, so neither can orphan the other. Its activity signal
+  counts only inference requests, so health pings can't keep it alive and muted logs
+  can't starve it.
 - **PATs need two runtime workarounds, both because Copilot treats them as a distinct
   credential class.** A PAT can't perform copilot-api's editor token exchange, so a preload
   fakes it and the daemon uses the token directly. And the inference hosts gate on a
@@ -179,7 +180,7 @@ file layouts. Don't restate here what a reader can grep.
   web_search), dual-era via serveStdio (legacy handshake and MCP 2026-07-28 per
   connection); bare `agent mcp` is the human status command.
 - `src/scripts/` - things that run as their OWN process or `deno run --preload`, NOT CLI handlers:
-  the proxy-token resolver and the daemon shims.
+  the daemon shims, plus the one-release proxy-token forwarders onto `agent proxy-token`.
 - `src/install/`, `src/migrations/`, `src/autoupdate/`, `src/health/`, `src/usage/`,
   `src/utils/` - release download/verify, version-step fix-ups, the update preflight, the
   health engine, cost reporting, generic helpers.

@@ -162,40 +162,26 @@ export function agentAuthGetArgs(profile: Profile = null): string[] {
     : [...AGENT_AUTH_GET_ARGS, "--profile", profile];
 }
 
-/** The shared proxy-token scripts (ensure the proxy + print its key); .ps1 is the
- *  Windows parity. Referenced by Codex's `auth.command` and Claude's `apiKeyHelper`. */
-export const PROXY_TOKEN_SCRIPT_SH: string = join(PROJECT_ROOT, "src", "scripts", "proxy-token.sh");
-const PROXY_TOKEN_SCRIPT_PS1: string = join(PROJECT_ROOT, "src", "scripts", "proxy-token.ps1");
-
-/** The proxy-token script arguments for the HEADLESS path at `profile`:
- *  `--yes` (never prompt), plus the profile selector when named. */
-export function proxyTokenScriptArgs(profile: Profile = null): string[] {
-  return profile === null ? ["--yes"] : ["--yes", "--profile", profile];
+/** The `agent proxy-token` argv for the HEADLESS path at `profile`: `--yes` (never
+ *  prompt -- Codex/Claude run the resolver on a timer and can't answer one), plus the
+ *  profile selector when named. Single source of truth, like AGENT_AUTH_GET_ARGS, so
+ *  the write sites and the wiring inspectors stay byte-identical. */
+export function proxyTokenArgs(profile: Profile = null): string[] {
+  return profile === null
+    ? ["proxy-token", "--yes"]
+    : ["proxy-token", "--yes", "--profile", profile];
 }
 
 /**
- * The platform `{ command, args }` to run the shared proxy-token script as a NATIVE
- * subprocess (Codex's `auth.command`): `/bin/sh <script>.sh --yes` on POSIX,
- * `powershell -File <script>.ps1 --yes` on Windows. `--yes` selects the headless path
- * (never prompt) -- Codex/Claude run this on a timer and can't answer a prompt.
- * `profile` routes the resolver at that profile's daemon.
+ * The platform `{ command, args }` to run the proxy-mode credential resolver --
+ * `agent proxy-token --yes` (src/commands/proxy_token.ts) -- as a NATIVE subprocess
+ * (Codex's `auth.command`): it ensures the addressed proxy is up per the
+ * managed-lifecycle rules, then prints its key on stdout. `profile` routes the
+ * resolver at that profile's daemon. (src/scripts/proxy-token.{sh,ps1} remain only
+ * as one-release forwarders onto this subcommand for configs older releases wrote.)
  */
 export function proxyTokenCommand(profile: Profile = null): { command: string; args: string[] } {
-  const scriptArgs = proxyTokenScriptArgs(profile);
-  if (process.platform === "win32") {
-    return {
-      command: "powershell",
-      args: [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        PROXY_TOKEN_SCRIPT_PS1,
-        ...scriptArgs,
-      ],
-    };
-  }
-  return { command: "/bin/sh", args: [PROXY_TOKEN_SCRIPT_SH, ...scriptArgs] };
+  return agentLauncherCommand(proxyTokenArgs(profile));
 }
 
 /**

@@ -47,13 +47,7 @@ import { errMessage } from "../utils/error.ts";
 import { isEnoent, readTextOrNull } from "../utils/fs.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import {
-  agentAuthGetArgs,
-  agentLauncherCommand,
-  PROXY_TOKEN_SCRIPT_SH,
-  proxyTokenCommand,
-  proxyTokenScriptArgs,
-} from "../utils/root.ts";
+import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../utils/root.ts";
 import { registerClaudeMcpServer, removeClaudeMcpRegistration } from "./mcp_registration.ts";
 import {
   directHelperPath,
@@ -539,19 +533,17 @@ export function configureClaudeConfig(
 }
 
 /**
- * The proxy apiKeyHelper body: run the SHARED proxy-token resolver (`src/scripts/proxy-token.sh
- * --yes [--profile <name>]`, or `.ps1` on Windows via proxyTokenCommand), which (per the
- * managed-lifecycle rules) ensures the addressed proxy is up then prints its key. `--yes` is
- * the headless path (never prompt) -- Claude runs this on a timer. The same resolver backs
- * Codex's `auth.command`; the key is resolved at run time (nothing is baked in here). POSIX
- * emits a `#!/bin/sh` script; Windows a `.cmd` that invokes PowerShell against the `.ps1` twin.
+ * The proxy apiKeyHelper body: run the proxy-mode credential resolver (`agent proxy-token
+ * --yes [--profile <name>]` via proxyTokenCommand), which (per the managed-lifecycle rules)
+ * ensures the addressed proxy is up then prints its key. `--yes` is the headless path
+ * (never prompt) -- Claude runs this on a timer. The same resolver backs Codex's
+ * `auth.command`; the key is resolved at run time (nothing is baked in here). POSIX
+ * emits a `#!/bin/sh` script; Windows a `.cmd` that invokes PowerShell the same way.
  */
 function proxyHelperScript(profile: Profile = null): string {
-  if (WIN) {
-    const { command, args } = proxyTokenCommand(profile);
-    return cmdHelperBody(command, args);
-  }
-  const line = [PROXY_TOKEN_SCRIPT_SH, ...proxyTokenScriptArgs(profile)].map(shQuote).join(" ");
+  const { command, args } = proxyTokenCommand(profile);
+  if (WIN) return cmdHelperBody(command, args);
+  const line = [command, ...args].map(shQuote).join(" ");
   return `#!/bin/sh\nexec ${line}\n`;
 }
 

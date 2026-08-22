@@ -38,7 +38,12 @@ import { isEnoent, isEnoentOrNotdir } from "../utils/fs.ts";
 import { codexFarmHostsDir } from "../utils/hostname.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../utils/root.ts";
+import {
+  agentAuthGetArgs,
+  agentLauncherCommand,
+  PROJECT_ROOT,
+  proxyTokenCommand,
+} from "../utils/root.ts";
 import {
   type CodexCatalogDeps,
   codexUserAgentVersion,
@@ -188,8 +193,8 @@ function managedDirectProvider(
 // string/boolean fields) -- only the parsed user config below is `unknown`,
 // because that TOML shape is arbitrary and we don't control it.
 //
-// `auth.command` runs the shared `src/scripts/proxy-token.sh --yes` (`.ps1` on Windows, via
-// `proxyTokenCommand`): it ensures the proxy is up (auto-starting it when the managed
+// `auth.command` runs the resolver subcommand, `agent proxy-token --yes [--profile <name>]`
+// (via `proxyTokenCommand`): it ensures the proxy is up (auto-starting it when the managed
 // lifecycle is on, the `auto-start` config key) and then prints the proxy key. `--yes` is the
 // headless path (never prompt). Codex forbids `auth` together with `env_key` on one
 // provider, so proxy (like direct) resolves its key via the command, not an env var.
@@ -260,10 +265,44 @@ function isManagedDirectAuth(auth: unknown, profile: Profile = null): boolean {
   return authMatches(auth, agentLauncherCommand(agentAuthGetArgs(profile)));
 }
 
-/** True iff `auth` is OUR managed proxy auth block for `profile` (runs the shared
- *  proxy-token script, addressed at the profile -- what managedProxyProvider writes). */
+/**
+ * Reader tolerance (2026-08, the `agent proxy-token` move): releases before it wrote
+ * the resolver as a script -- `/bin/sh <root>/src/scripts/proxy-token.sh --yes
+ * [--profile <name>]` (`powershell -File ...proxy-token.ps1` on Windows). Recognizing
+ * that shape keeps an un-rewired install truthful (`agent codex --check` still exits
+ * 2/proxy, so the launchers keep their auto-start branch), and any wiring REWRITE
+ * (init/profile/codex) upgrades the config to the subcommand shape -- self-healing,
+ * per the migrate-or-reader rule in AGENTS.md. Remove once no supported install can
+ * still carry the script wiring; that removal IS the migration decision done right.
+ */
+function legacyProxyTokenCommand(profile: Profile = null): { command: string; args: string[] } {
+  const scriptArgs = profile === null ? ["--yes"] : ["--yes", "--profile", profile];
+  if (process.platform === "win32") {
+    return {
+      command: "powershell",
+      args: [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        path.join(PROJECT_ROOT, "src", "scripts", "proxy-token.ps1"),
+        ...scriptArgs,
+      ],
+    };
+  }
+  return {
+    command: "/bin/sh",
+    args: [path.join(PROJECT_ROOT, "src", "scripts", "proxy-token.sh"), ...scriptArgs],
+  };
+}
+
+/** True iff `auth` is OUR managed proxy auth block for `profile`: the resolver
+ *  subcommand (`agent proxy-token --yes`, addressed at the profile -- what
+ *  managedProxyProvider writes), or the retired script shape older releases wrote
+ *  (see legacyProxyTokenCommand). */
 function isManagedProxyAuth(auth: unknown, profile: Profile = null): boolean {
-  return authMatches(auth, proxyTokenCommand(profile));
+  return authMatches(auth, proxyTokenCommand(profile)) ||
+    authMatches(auth, legacyProxyTokenCommand(profile));
 }
 
 // === wiring inspection (inverse of the write contract above) ===
@@ -414,7 +453,7 @@ export function inspectCodexWiring(
         ? baseUrlMatchesProxy(baseUrl, expectedPort)
         : providerMode === "direct" && baseUrl === DIRECT_BASE_URL);
     // Proxy mode resolves its key (and auto-starts the proxy) via the managed
-    // `auth.command` (the shared proxy-token script, addressed at the profile), so it
+    // `auth.command` (the proxy-token resolver, addressed at the profile), so it
     // needs no `env_key`. A legacy proxy config still using `env_key` is also accepted
     // (back-compat) -- DEFAULT selection only: named profiles postdate the env_key era,
     // so their wiring is managed auth.command alone.

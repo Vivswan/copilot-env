@@ -22,12 +22,12 @@
 _COPILOT_AGENTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")/.." && pwd)"
 
 # Ensure the proxy is up before launching a proxy-backed agent. Delegates to the shared
-# resolver (src/scripts/proxy-token.sh) WITHOUT `--yes`, so an unmanaged + down proxy
-# prompts the user (the managed path starts it silently). stdout (the key) is discarded;
-# only the prompt/start noise on stderr shows, and the exit code signals reachability -- so
-# a caller that `|| return`s won't re-sync against a stale port or launch into a dead proxy.
+# resolver (`agent proxy-token`) WITHOUT `--yes`, so an unmanaged + down proxy prompts the
+# user (the managed path starts it silently). stdout (the key) is discarded; only the
+# prompt/start noise on stderr shows, and the exit code signals reachability -- so a
+# caller that `|| return`s won't re-sync against a stale port or launch into a dead proxy.
 function _copilot_ensure_server {
-    "${_COPILOT_AGENTS_DIR}/src/scripts/proxy-token.sh" >/dev/null
+    "${_COPILOT_AGENTS_DIR}/bin/agent" proxy-token >/dev/null
 }
 
 # Error if an agent CLI is missing; installation is handled by install.sh.
@@ -66,7 +66,7 @@ function _copilot_wire_provider {
 
 # Prepare an EXPLICIT named profile for launch: never rewires it (the user picked it) --
 # just ensures ITS proxy daemon when the profile is proxy-mode (exit 2 from `agent
-# profile --check`, the store-driven probe; delegating to proxy-token.sh WITHOUT
+# profile --check`, the store-driven probe; delegating to `agent proxy-token` WITHOUT
 # `--yes`, so a down daemon prompts like the default path). Exit 0 (direct) passes
 # through; exit 1 (no such profile) aborts with the check's own message on stderr.
 # $1 = profile name.
@@ -86,7 +86,7 @@ function _copilot_ensure_profile_server {
         return 1
     fi
     unset _copilot_profile_status
-    "${_COPILOT_AGENTS_DIR}/src/scripts/proxy-token.sh" --profile "$1" >/dev/null
+    "${_COPILOT_AGENTS_DIR}/bin/agent" proxy-token --profile "$1" >/dev/null
 }
 
 # Shared Claude launch for cl's two branches, so the managed flag set is stated

@@ -119,10 +119,12 @@ test("proxy mode writes proxy wiring (127.0.0.1 base URL + a token helper), pres
 
   const helper = join(home, PROXY_HELPER_NAME);
   const script = readFileSync(helper, "utf8");
-  // The proxy helper runs the shared proxy-token resolver (with --yes); no literal token is
-  // baked in. POSIX execs proxy-token.sh; Windows is a .cmd that invokes the .ps1 twin.
+  // The proxy helper runs the resolver subcommand (`agent proxy-token --yes`); no literal
+  // token is baked in. POSIX execs bin/agent; Windows is a .cmd that invokes agent.ps1.
   expect(script.startsWith(WIN ? "@echo off\r\n" : "#!/bin/sh\n")).toBe(true);
-  expect(script).toContain(WIN ? "proxy-token.ps1" : "proxy-token.sh");
+  expect(script).toContain(WIN ? "agent.ps1" : "bin/agent");
+  expect(script).toContain("proxy-token");
+  expect(script).toContain("--yes");
   if (!WIN) {
     expect(statSync(helper).mode & 0o100).not.toBe(0);
   }

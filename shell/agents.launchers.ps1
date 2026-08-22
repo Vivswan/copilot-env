@@ -26,14 +26,15 @@ function Assert-AgentCli {
 }
 
 # Ensure the proxy is up before launching a proxy-backed agent. Delegates to the shared
-# resolver (src/scripts/proxy-token.ps1) WITHOUT `--yes`, so an unmanaged + down proxy
-# prompts the user (the managed path starts it silently). stdout (the key) is discarded;
-# only the prompt/start noise shows. Returns $true when the resolver's exit code says the
-# proxy is reachable -- the same contract the POSIX twin (`_copilot_ensure_server ||
-# return`) and Confirm-CopilotProfileServer trust.
+# resolver (`agent proxy-token`) WITHOUT `--yes`, so an unmanaged + down proxy prompts
+# the user (the managed path starts it silently). Each agent.ps1 call is a CHILD
+# powershell -- agent.ps1 ends with `exit`, so invoking it in this host would terminate
+# the user's session. stdout (the key) is discarded; only the prompt/start noise shows.
+# Returns $true when the resolver's exit code says the proxy is reachable -- the same
+# contract the POSIX twin (`_copilot_ensure_server || return`) and
+# Confirm-CopilotProfileServer trust.
 function Confirm-CopilotServer {
-    $resolver = Join-Path $script:AgentsDir 'src\scripts\proxy-token.ps1'
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $resolver 1> $null
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 proxy-token 1> $null
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -72,7 +73,7 @@ function Sync-AgentProvider {
 
 # Prepare an EXPLICIT named profile for launch: never rewires it (the user picked it) --
 # just ensures ITS proxy daemon when the profile is proxy-mode (exit 2 from `agent
-# profile --check`, the store-driven probe; delegating to proxy-token.ps1 WITHOUT
+# profile --check`, the store-driven probe; delegating to `agent proxy-token` WITHOUT
 # `--yes`, so a down daemon prompts like the default path). Exit 0 (direct) passes
 # through; exit 1 (no such profile) aborts, replaying the check's own message on
 # stderr. Returns $true to continue, $false to abort.
@@ -86,8 +87,7 @@ function Confirm-CopilotProfileServer {
         & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 profile --check $ProfileName | ForEach-Object { [Console]::Error.WriteLine($_) }
         return $false
     }
-    $resolver = Join-Path $script:AgentsDir 'src\scripts\proxy-token.ps1'
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $resolver --profile $ProfileName 1> $null
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $script:AgentPs1 proxy-token --profile $ProfileName 1> $null
     return ($LASTEXITCODE -eq 0)
 }
 

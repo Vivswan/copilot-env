@@ -14,9 +14,10 @@ import {
 import { DAEMON_INTEGRATION_ID_ENV } from "../src/copilot_api/integration_identity.ts";
 import { DRAIN_DEADLINE_MS } from "../src/scripts/daemon_shutdown.ts";
 import { PROXY_PACKAGE_NAME } from "../src/copilot_api/version.ts";
+import { daemonConfigFile, writeResolvedVersionRecord } from "../src/proxy_float.ts";
 import { denoRunArgs, importSpecifier, ROOT, runSync, spawnChild } from "./helpers/run.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, removeDir, tmpDir } from "./helpers.ts";
+import { afterEach, beforeEach, expect, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateProxyHome, removeDir, tmpDir } from "./helpers.ts";
 
 // The daemon spawn is assembled from ONE DaemonSpec: the preload set, the credential
 // environment, and the entry all derive from it, so the argv and the environment are
@@ -24,6 +25,13 @@ import { envSnapshot, removeDir, tmpDir } from "./helpers.ts";
 
 const restoreEnv = envSnapshot(["COPILOT_API_ENTRY", "NO_PROXY", "no_proxy", "HTTP_PROXY"]);
 let dir = "";
+
+// The entry resolver reads the float's record out of the root home, so every entry
+// test runs against an isolated one -- otherwise a dev machine that HAS floated
+// would resolve a real version here and a hermetic container would not.
+beforeEach(() => {
+  dir = isolateProxyHome("copilot-daemon-spawn-");
+});
 
 afterEach(() => {
   restoreEnv();
@@ -37,6 +45,7 @@ const BASE: DaemonSpec = {
   credential: { kind: "none" },
   idleWatchdog: false,
   muteProxyLogs: false,
+  entry: { kind: "package", specifier: PROXY_PACKAGE_NAME },
 };
 
 /** The shim filenames the argv preloads, in order. */
@@ -86,7 +95,7 @@ test("the watchdog and log-mute shims load only when their config knob is on", (
   ]);
 });
 
-test("the argv runs the mapped package with an offline-only resolve, and ends in the start command", () => {
+test("with no float record the argv runs the mapped package, offline-only, ending in start", () => {
   delete process.env.COPILOT_API_ENTRY;
   expect(resolveCopilotApiEntry()).toEqual({ kind: "package", specifier: PROXY_PACKAGE_NAME });
 
@@ -115,6 +124,48 @@ test("the argv runs the mapped package with an offline-only resolve, and ends in
     "--port",
     "4242",
   ]);
+  // Nothing to point a resolve at: the mapped entry resolves through node_modules.
+  expect(daemonEnvironment(BASE, {}).DENO_DIR).toBeUndefined();
+});
+
+test("a float record moves the entry to that exact version, run out of the cache it warmed", () => {
+  delete process.env.COPILOT_API_ENTRY;
+  const denoDir = join(dir, "deno", "cache");
+  writeResolvedVersionRecord(dir, "1.14.30", Date.now(), denoDir);
+
+  const entry = resolveCopilotApiEntry();
+  expect(entry).toEqual({
+    kind: "floated",
+    specifier: `npm:${PROXY_PACKAGE_NAME}@1.14.30`,
+    version: "1.14.30",
+    denoDir,
+    configFile: daemonConfigFile(dir),
+  });
+
+  const spec = { ...BASE, entry };
+  const argv = daemonArgv(spec);
+  // THE regression pin: the floated spawn must NOT use the checkout's deno.json.
+  // Its `lock: {frozen: true}` rejects this exact specifier ("lockfile is out of
+  // date"), and `--config` + `--cached-only` would demand the whole import map in a
+  // DENO_DIR that only holds the proxy. Both were live launch failures.
+  expect(argv.slice(1, 3)).toEqual(["--config", daemonConfigFile(dir)]);
+  expect(argv).not.toContain(join(ROOT, "deno.json"));
+  // A compiled install has no node_modules; resolution stays inside the float's cache.
+  expect(argv).toContain("--node-modules-dir=none");
+  // The version IS the specifier here, and the resolve still never reaches the
+  // network -- the float pre-warmed the cache the environment points at.
+  expect(argv).toContain("--cached-only");
+  expect(argv.slice(-5)).toEqual([
+    `npm:${PROXY_PACKAGE_NAME}@1.14.30`,
+    "start",
+    "--verbose",
+    "--port",
+    "4141",
+  ]);
+  // Without this the `--cached-only` resolve would look in the default cache and fail.
+  expect(daemonEnvironment(spec, {}).DENO_DIR).toBe(denoDir);
+  // The spec's own home wiring still wins over the entry's overlay.
+  expect(daemonEnvironment({ ...spec, env: { DENO_DIR: "/pinned" } }, {}).DENO_DIR).toBe("/pinned");
 });
 
 test("a COPILOT_API_ENTRY override runs that file and never asks for a cached package", () => {
@@ -122,11 +173,18 @@ test("a COPILOT_API_ENTRY override runs that file and never asks for a cached pa
   process.env.COPILOT_API_ENTRY = fake;
   expect(resolveCopilotApiEntry()).toEqual({ kind: "file", path: fake });
 
-  const argv = daemonArgv(BASE);
+  const argv = daemonArgv({ ...BASE, entry: { kind: "file", path: fake } });
   // `--cached-only` is about resolving a package; a file entry must never carry it.
   expect(argv).not.toContain("--cached-only");
   expect(argv).not.toContain(PROXY_PACKAGE_NAME);
   expect(argv.slice(-5)).toEqual([fake, "start", "--verbose", "--port", "4141"]);
+});
+
+test("the override beats a float record, so the CI fake is never shadowed by a real resolve", () => {
+  writeResolvedVersionRecord(dir, "1.14.30", Date.now(), join(dir, "deno", "cache"));
+  const fake = join(ROOT, "test", "copilot-api-fake.mjs");
+  process.env.COPILOT_API_ENTRY = fake;
+  expect(resolveCopilotApiEntry()).toEqual({ kind: "file", path: fake });
 });
 
 test("copilotApiArgv runs any proxy subcommand through the same entry and permissions", () => {

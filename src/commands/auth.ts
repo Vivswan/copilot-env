@@ -43,10 +43,11 @@ import {
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import {
   copilotApiArgv,
+  copilotApiEnv,
   DAEMON_SIGKILL_GRACE_MS,
   resolveCopilotApiEntry,
-  resolveDenoBin,
 } from "../copilot_api/process.ts";
+import { resolveDenoBin } from "../copilot_api/sidecar.ts";
 import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { installedProxyVersion } from "../copilot_api/version.ts";
 import { errMessage } from "../utils/error.ts";
@@ -196,7 +197,8 @@ async function chooseProvider(): Promise<AuthProvider> {
  * an interactive login legitimately holds it for minutes.
  */
 function loginWithCopilot(cred: Credential): void {
-  if (resolveCopilotApiEntry().kind === "package" && installedProxyVersion() === null) {
+  const entry = resolveCopilotApiEntry();
+  if (entry.kind === "package" && installedProxyVersion() === null) {
     throw new Error(
       "cannot run the device-flow login - copilot-api is not installed. " +
         "Re-run the agent launcher to install dependencies, or use `agent auth --provider gh-token`.",
@@ -214,11 +216,11 @@ function loginWithCopilot(cred: Credential): void {
   try {
     const result = spawnSync(
       resolveDenoBin(),
-      copilotApiArgv(["auth", "login", "--provider", "copilot"]),
+      copilotApiArgv(["auth", "login", "--provider", "copilot"], [], entry),
       {
         stdio: "inherit",
         windowsHide: true,
-        env: { ...process.env },
+        env: { ...process.env, ...copilotApiEnv(entry) },
       },
     );
     if (result.error || result.status !== 0) {

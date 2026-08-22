@@ -5,41 +5,69 @@ import { devNull } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { execa } from "execa";
+import { daemonConfigFile, readResolvedVersionRecord } from "../proxy_float.ts";
 import { pidAlive } from "../utils/pid.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { DAEMON_INTEGRATION_ID_ENV } from "./integration_identity.ts";
+import { resolveRootHome } from "./paths.ts";
+import { type DaemonShimFile, shimPath } from "./shims.ts";
+import { resolveDenoBin } from "./sidecar.ts";
 import { PROXY_PACKAGE_NAME } from "./version.ts";
 
 /**
- * How the floated copilot-api is addressed on a deno command line. The two forms are
- * distinct shapes rather than one path plus a flag because `--cached-only` is only
- * meaningful for a package specifier -- a file override must never carry it.
+ * How the floated copilot-api is addressed on a deno command line. The three forms are
+ * distinct shapes rather than one string plus flags because each carries something the
+ * others cannot: only a package specifier can take `--cached-only`, and only the floated
+ * form has a DENO_DIR to point the resolve at.
  */
 export type CopilotApiEntry =
-  | { kind: "package"; specifier: string }
-  | { kind: "file"; path: string };
+  /** The `COPILOT_API_ENTRY` override: run this file, resolve nothing. */
+  | { kind: "file"; path: string }
+  /** The float's recorded resolution: an exact version in the cache it pre-warmed,
+   *  resolved under the daemon config the float wrote beside the record. */
+  | { kind: "floated"; specifier: string; version: string; denoDir: string; configFile: string }
+  /** deno.json's mapped specifier, resolved through the frozen lock. */
+  | { kind: "package"; specifier: string };
 
 /**
- * The entry deno runs for the proxy. deno.json's import map pins the proxy version, so
- * the bare package specifier IS the entry: deno resolves it through the frozen lock to
- * the installed release and runs its `copilot-api` bin. That keeps ONE source for the
- * version instead of restating it on every command line.
+ * The entry deno runs for the proxy, in precedence order:
+ *
+ * 1. `COPILOT_API_ENTRY` -- the explicit escape hatch. CI points `start` at a fake proxy
+ *    so the daemon lifecycle runs without GitHub Copilot auth.
+ * 2. The proxy float's resolved-version record: an exact version, run out of the DENO_DIR
+ *    the float pre-warmed. This is the runtime answer on any install the float has run on.
+ * 3. deno.json's import map, resolved through the frozen lock -- the dev baseline, and the
+ *    fallback on a fresh checkout or a Direct-only install where the float never ran.
+ *
+ * Both package forms keep `--cached-only`: the float pre-warms its cache and the lock
+ * pre-warms node_modules, so neither launch has any business reaching the network.
  */
 export function resolveCopilotApiEntry(): CopilotApiEntry {
-  // Escape hatch: an explicit entry path overrides the mapped package. CI uses this to
-  // point `start` at a fake proxy so the daemon lifecycle can be exercised without
-  // GitHub Copilot auth.
   const override = process.env.COPILOT_API_ENTRY?.trim();
   if (override) {
     return { kind: "file", path: override };
   }
+  const rootHome = resolveRootHome();
+  const record = readResolvedVersionRecord(rootHome);
+  if (record !== null) {
+    return {
+      kind: "floated",
+      specifier: `npm:${PROXY_PACKAGE_NAME}@${record.version}`,
+      version: record.version,
+      denoDir: record.denoDir,
+      configFile: daemonConfigFile(rootHome),
+    };
+  }
   return { kind: "package", specifier: PROXY_PACKAGE_NAME };
 }
 
-/** The deno binary that runs the proxy. The one seam a packaged (sidecar) install
- *  re-points; every proxy spawn goes through it. */
-export function resolveDenoBin(): string {
-  return Deno.execPath();
+/**
+ * The environment overlay `entry` needs on top of the caller's own. Only the floated
+ * entry has one: its exact version lives in the float's DENO_DIR, not the default cache,
+ * so the resolve must be pointed there or `--cached-only` would fail.
+ */
+export function copilotApiEnv(entry: CopilotApiEntry): Record<string, string> {
+  return entry.kind === "floated" ? { DENO_DIR: entry.denoDir } : {};
 }
 
 /** The proxy's permission grants, rendered as a list rather than `-A` so the set stays
@@ -56,27 +84,36 @@ const PROXY_PERMISSIONS = [
 /**
  * The `deno run` argv that runs the floated copilot-api with `subArgs`, preceded by
  * `preloadFlags` (the daemon's `--preload` shim pairs; empty for a foreground run).
+ * `entry` is passed in by callers that also need `copilotApiEnv` for the SAME entry, so
+ * the argv and the environment can never be built from two different resolutions.
  *
- * `--config` pins THIS checkout's deno.json instead of letting deno discover one: a
- * package specifier has no directory to discover from, so discovery would fall back to
- * the caller's cwd and could pick up an unrelated project's import map -- which the
- * preload shims resolve their own imports through. The same file pins the proxy
- * version, which is why the package form needs no version string here, and
- * `--cached-only` then guarantees the launch never reaches the network.
+ * `--config` is always PINNED, never discovered: a package specifier has no directory to
+ * discover from, so discovery would fall back to the caller's cwd and could pick up an
+ * unrelated project's import map -- which the preload shims resolve their own imports
+ * through. WHICH config differs by entry: a floated entry uses the one the float wrote
+ * beside its record, because the checkout's deno.json carries a frozen lock that rejects
+ * the floated version outright (see writeDaemonConfig). The other entries use the
+ * checkout's.
+ *
+ * `--cached-only` then guarantees the launch never reaches the network: the float
+ * pre-warmed its own cache (proxy AND shims) for a floated entry, and the frozen lock
+ * pre-warmed node_modules for the mapped one. `--node-modules-dir=none` on the floated
+ * path keeps resolution inside that cache -- a compiled install has no node_modules.
  */
 export function copilotApiArgv(
   subArgs: readonly string[],
   preloadFlags: readonly string[] = [],
+  entry: CopilotApiEntry = resolveCopilotApiEntry(),
 ): string[] {
-  const entry = resolveCopilotApiEntry();
   return [
     "run",
     "--config",
-    join(PROJECT_ROOT, "deno.json"),
-    ...(entry.kind === "package" ? ["--cached-only"] : []),
+    entry.kind === "floated" ? entry.configFile : join(PROJECT_ROOT, "deno.json"),
+    ...(entry.kind === "file" ? [] : ["--cached-only"]),
+    ...(entry.kind === "floated" ? ["--node-modules-dir=none"] : []),
     ...PROXY_PERMISSIONS,
     ...preloadFlags,
-    entry.kind === "package" ? entry.specifier : entry.path,
+    entry.kind === "file" ? entry.path : entry.specifier,
     ...subArgs,
   ];
 }
@@ -317,9 +354,11 @@ export interface DaemonSpec {
   idleWatchdog: boolean;
   /** Discard the proxy's handler-log writes (the `proxy-logs` config key). */
   muteProxyLogs: boolean;
+  /** What deno runs the proxy from. Resolved ONCE per launch and carried here so the
+   *  argv and the environment derive from the same answer -- and so the bind-race
+   *  relaunch reuses the identical entry rather than re-resolving mid-flight. */
+  entry: CopilotApiEntry;
 }
-
-const shimPath = (name: string): string => join(PROJECT_ROOT, "src", "scripts", name);
 
 /**
  * The daemon's `--preload` pairs, in load order. Every shim is a RUNTIME shim that
@@ -333,13 +372,13 @@ const shimPath = (name: string): string => join(PROJECT_ROOT, "src", "scripts", 
  *  - the log mute, which discards the daemon's handler-log writes under <home>/logs.
  */
 function daemonPreloadFlags(spec: DaemonSpec): string[] {
-  const shims: string[] = [];
-  if (spec.credential.kind !== "none") shims.push(shimPath("token_argv_preload.ts"));
-  shims.push(shimPath("daemon_runtime_preload.ts"));
-  if (spec.credential.kind === "pat") shims.push(shimPath("pat_passthrough_preload.ts"));
-  if (spec.idleWatchdog) shims.push(shimPath("idle_watchdog_preload.ts"));
-  if (spec.muteProxyLogs) shims.push(shimPath("log_mute_preload.ts"));
-  return shims.flatMap((shim) => ["--preload", shim]);
+  const shims: DaemonShimFile[] = [];
+  if (spec.credential.kind !== "none") shims.push("token_argv_preload.ts");
+  shims.push("daemon_runtime_preload.ts");
+  if (spec.credential.kind === "pat") shims.push("pat_passthrough_preload.ts");
+  if (spec.idleWatchdog) shims.push("idle_watchdog_preload.ts");
+  if (spec.muteProxyLogs) shims.push("log_mute_preload.ts");
+  return shims.flatMap((shim) => ["--preload", shimPath(shim)]);
 }
 
 /**
@@ -395,7 +434,7 @@ export function noProxyWithLoopback(current: string | undefined): string {
  * environment contract is testable without spawning anything.
  */
 export function daemonEnvironment(spec: DaemonSpec, base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...base, ...spec.env };
+  const env: NodeJS.ProcessEnv = { ...base, ...copilotApiEnv(spec.entry), ...spec.env };
   applyCredentialEnv(env, spec.credential);
   // Read either spelling (a user may have set only one) and write BOTH, so the exemption
   // holds whichever name the HTTP client happens to consult first.
@@ -413,6 +452,7 @@ export function daemonArgv(spec: DaemonSpec): string[] {
   return copilotApiArgv(
     ["start", "--verbose", "--port", String(spec.port)],
     daemonPreloadFlags(spec),
+    spec.entry,
   );
 }
 

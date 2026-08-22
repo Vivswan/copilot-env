@@ -115,8 +115,10 @@ export function runSync(cmd: string, args: string[], opts: RunOptions = {}): Run
   try {
     // Inside the try: a throw partway through must still restore what was already cleared.
     for (const [key, value] of Object.entries(process.env)) {
-      // hasOwn, not `in`: `"toString" in wanted` is true through the prototype chain, which
-      // would spare a parent variable of that name and leak it into the child.
+      // hasOwn, not `in`: on the null-prototype map childEnv builds the two are equivalent,
+      // but hasOwn stays correct even if childEnv ever returns an ordinary object again --
+      // there `"toString" in wanted` would be true through the prototype chain and spare a
+      // parent variable of that name, leaking it into the child.
       if (value !== undefined && !Object.hasOwn(wanted, key)) {
         cleared.push([key, value] as const);
         delete process.env[key];

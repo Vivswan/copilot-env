@@ -47,9 +47,12 @@ test("runSync: the child gets EXACTLY the requested env, not the parent merged w
 });
 
 test("runSync: a parent variable named after an Object prototype member is cleared too", () => {
-  // `"toString" in wanted` is true through the prototype chain, so an `in` test would spare
-  // this key and leak it into a child that never asked for it. Typed as a plain string so it
-  // reaches ProcessEnv's index signature rather than Object.prototype.toString.
+  // Pins the clearing loop's membership test against prototype pollution: childEnv's map is
+  // null-prototype today (where `in` and hasOwn agree), but if it ever returns an ordinary
+  // object again, an `in` test would see `"toString" in wanted` as true through the prototype
+  // chain and spare this key, leaking it into a child that never asked for it. Typed as a
+  // plain string so it reaches ProcessEnv's index signature rather than
+  // Object.prototype.toString.
   const protoKey: string = "toString";
   process.env[protoKey] = "PARENT_VALUE";
   try {

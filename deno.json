@@ -84,6 +84,17 @@
       ]
     }
   },
+  "compile": {
+    "include": [
+      "src/scripts",
+      "shell",
+      "bin",
+      "skills",
+      ".claude-plugin",
+      "copilot-env.config"
+    ],
+    "permissions": "cli"
+  },
   "compilerOptions": {
     "strict": true,
     "noUncheckedIndexedAccess": true,

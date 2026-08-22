@@ -6,7 +6,10 @@ import {
   CUSTOM_HEADERS_ENV,
   detectClaudeDirect,
   DIRECT_BASE_URL,
+  directHelperCommand,
+  directHelperResolvesViaAgent,
   inspectClaudeWiring,
+  proxyHelperCommand,
   removeClaudeDefaultWiring,
   runClaude,
   syncDefaultWebSearchWiring,
@@ -18,10 +21,13 @@ import { runMcp } from "../src/commands/mcp.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { copilotApiResolvePort } from "../src/copilot_api/port.ts";
+import { parseProfileName } from "../src/copilot_api/profile.ts";
+import { agentLauncherCommand } from "../src/utils/root.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, removeDir } from "./helpers.ts";
 
 const WIN = process.platform === "win32";
+const WORK = parseProfileName("work");
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -44,7 +50,7 @@ function readSettings(home: string): Record<string, unknown> {
   return JSON.parse(readFileSync(join(home, "settings.json"), "utf8"));
 }
 
-test("direct mode writes the managed apiKeyHelper + env and the token helper, preserving user keys", () => {
+test("direct mode writes the inline apiKeyHelper command + env, preserving user keys", () => {
   const home = tmpHome();
 
   configureClaudeConfig(home, "direct");
@@ -56,7 +62,7 @@ test("direct mode writes the managed apiKeyHelper + env and the token helper, pr
   configureClaudeConfig(home, "direct");
 
   const doc = readSettings(home);
-  expect(doc.apiKeyHelper).toBe(join(home, DIRECT_HELPER_NAME));
+  expect(doc.apiKeyHelper).toBe(directHelperCommand());
   const env = doc.env as Record<string, unknown>;
   expect(env.ANTHROPIC_BASE_URL).toBe(DIRECT_BASE_URL);
   expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("1");
@@ -71,17 +77,14 @@ test("direct mode writes the managed apiKeyHelper + env and the token helper, pr
   expect(doc.model).toBe("sonnet");
   expect((doc.permissions as Record<string, unknown>).allow).toEqual(["Bash"]);
 
-  const helper = join(home, DIRECT_HELPER_NAME);
-  const directScript = readFileSync(helper, "utf8");
-  // The direct helper execs `agent auth --get` (the resolver) -- never `gh auth token`,
-  // never a baked token. POSIX is a #!/bin/sh script; Windows a @echo off .cmd.
-  expect(directScript.startsWith(WIN ? "@echo off\r\n" : "#!/bin/sh\nexec ")).toBe(true);
-  expect(directScript).toContain("auth");
-  expect(directScript).toContain("--get");
-  expect(directScript).not.toContain("gh auth token");
-  if (!WIN) {
-    expect(statSync(helper).mode & 0o100).not.toBe(0);
-  }
+  // apiKeyHelper is an inline COMMAND invoking `agent auth --get` (the resolver) --
+  // never `gh auth token`, never a baked token, and NO helper file is written.
+  const helperCommand = String(doc.apiKeyHelper);
+  expect(helperCommand).toContain(WIN ? "agent.ps1" : "bin/agent");
+  expect(helperCommand).toContain("auth");
+  expect(helperCommand).toContain("--get");
+  expect(helperCommand).not.toContain("gh auth token");
+  expect(existsSync(join(home, DIRECT_HELPER_NAME))).toBe(false);
 });
 
 test("direct bakes a probed Copilot-Integration-Id into ANTHROPIC_CUSTOM_HEADERS when passed", () => {
@@ -108,7 +111,7 @@ test("proxy mode writes proxy wiring (127.0.0.1 base URL + a token helper), pres
   configureClaudeConfig(home, "proxy");
 
   const doc = readSettings(home);
-  expect(doc.apiKeyHelper).toBe(join(home, PROXY_HELPER_NAME));
+  expect(doc.apiKeyHelper).toBe(proxyHelperCommand());
   const env = doc.env as Record<string, unknown>;
   expect(env.ANTHROPIC_BASE_URL).toBe(`http://127.0.0.1:${copilotApiResolvePort()}`);
   // Disable-betas is a direct-only knob; switching to proxy drops it.
@@ -117,17 +120,13 @@ test("proxy mode writes proxy wiring (127.0.0.1 base URL + a token helper), pres
   expect(env[CUSTOM_HEADERS_ENV]).toBeUndefined();
   expect(doc.model).toBe("sonnet"); // unrelated user key survives
 
-  const helper = join(home, PROXY_HELPER_NAME);
-  const script = readFileSync(helper, "utf8");
-  // The proxy helper runs the resolver subcommand (`agent proxy-token --yes`); no literal
-  // token is baked in. POSIX execs bin/agent; Windows is a .cmd that invokes agent.ps1.
-  expect(script.startsWith(WIN ? "@echo off\r\n" : "#!/bin/sh\n")).toBe(true);
-  expect(script).toContain(WIN ? "agent.ps1" : "bin/agent");
-  expect(script).toContain("proxy-token");
-  expect(script).toContain("--yes");
-  if (!WIN) {
-    expect(statSync(helper).mode & 0o100).not.toBe(0);
-  }
+  // The inline command runs the resolver subcommand (`agent proxy-token --yes`); no
+  // literal token is baked in, and NO helper file is written.
+  const helperCommand = String(doc.apiKeyHelper);
+  expect(helperCommand).toContain(WIN ? "agent.ps1" : "bin/agent");
+  expect(helperCommand).toContain("proxy-token");
+  expect(helperCommand).toContain("--yes");
+  expect(existsSync(join(home, PROXY_HELPER_NAME))).toBe(false);
 });
 
 test("cmdHelperBody: @echo off + CRLF, quotes paths with spaces, escapes % as %%", () => {
@@ -151,10 +150,22 @@ test("cmdHelperBody: @echo off + CRLF, quotes paths with spaces, escapes % as %%
   expect(/[^%]%[^%]/.test(body)).toBe(false);
 });
 
-test("inspectClaudeWiring classifies direct / proxy / other / none / malformed (by exact path)", () => {
+test("inspectClaudeWiring classifies direct / proxy / other / none / malformed (by exact value)", () => {
   const home = "/home/x/.claude";
-  // Build the managed helper paths with join() + the platform basename so they match
-  // inspectClaudeWiring's own path.join()/extension on every OS.
+  // The managed contract: the exact inline command strings.
+  expect(
+    inspectClaudeWiring(JSON.stringify({ apiKeyHelper: directHelperCommand() }), home, 4141)
+      .providerMode,
+  ).toBe("direct");
+  expect(
+    inspectClaudeWiring(JSON.stringify({ apiKeyHelper: proxyHelperCommand() }), home, 4141)
+      .providerMode,
+  ).toBe("proxy");
+
+  // Reader tolerance: the retired helper-script PATHS (what pre-inline releases
+  // stored) still classify as managed, so an un-rewired install stays truthful.
+  // Build them with join() + the platform basename so they match inspectClaudeWiring's
+  // own path.join()/extension on every OS.
   const directHelper = join(home, DIRECT_HELPER_NAME);
   const proxyHelper = join(home, PROXY_HELPER_NAME);
 
@@ -245,20 +256,20 @@ test("configureClaudeConfig refuses to overwrite a malformed settings.json", () 
   expect(() => configureClaudeConfig(home, "direct")).toThrow("not valid JSON");
 });
 
-test("direct helper execs `agent auth --get` and never bakes a token, still classified direct", () => {
+test("direct helper invokes `agent auth --get` and never bakes a token, still classified direct", () => {
   const home = tmpHome();
   configureClaudeConfig(home, "direct");
 
   const doc = readSettings(home);
-  expect(doc.apiKeyHelper).toBe(join(home, DIRECT_HELPER_NAME));
+  expect(doc.apiKeyHelper).toBe(directHelperCommand());
   expect(
     inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home, 4141).providerMode,
   ).toBe("direct");
 
-  const script = readFileSync(join(home, DIRECT_HELPER_NAME), "utf8");
-  expect(script).toContain("auth");
-  expect(script).toContain("--get");
-  expect(script).not.toContain("gh auth token");
+  const helperCommand = String(doc.apiKeyHelper);
+  expect(helperCommand).toContain("auth");
+  expect(helperCommand).toContain("--get");
+  expect(helperCommand).not.toContain("gh auth token");
 });
 
 test("runClaude with a stored token selects Direct WITHOUT baking it; --proxy still wins", async () => {
@@ -266,14 +277,14 @@ test("runClaude with a stored token selects Direct WITHOUT baking it; --proxy st
   const read = () =>
     inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home, 4141);
 
-  // A configured credential selects Direct with NO probe -- but the helper resolves
-  // it at fetch time (`agent auth --get`), so it's never written to disk.
+  // A configured credential selects Direct with NO probe -- but the inline helper
+  // resolves it at fetch time (`agent auth --get`), so it's never written anywhere.
   new CopilotEnvState().set({ githubToken: "ghu_stored", authProvider: "gh-token" });
   await runClaude({ mode: "auto" });
   expect(read().providerMode).toBe("direct");
-  const helper = readFileSync(join(home, DIRECT_HELPER_NAME), "utf8");
-  expect(helper).not.toContain("ghu_stored");
-  expect(helper).toContain("--get");
+  const helperCommand = String(readSettings(home).apiKeyHelper);
+  expect(helperCommand).not.toContain("ghu_stored");
+  expect(helperCommand).toContain("--get");
 
   // --proxy still wins: proxy mode (the stored token is only used by the proxy).
   await runClaude({ mode: "proxy" });
@@ -457,4 +468,52 @@ test("ownership is keyed to the settings path: a stale marker never strips anoth
   );
   configureClaudeConfig(otherHome, "proxy");
   expect(denyOf(readSettings(otherHome))).toEqual([WEBSEARCH_DENY_RULE]); // user policy survives
+});
+
+// --- reader tolerance: the retired helper-file wiring ---------------------------
+
+test("a rewrite upgrades legacy helper-path wiring to the inline command, leaving the file", () => {
+  const home = tmpHome();
+  // A pre-inline install: apiKeyHelper stores the helper-script PATH and the file exists.
+  const legacyHelper = join(home, PROXY_HELPER_NAME);
+  mkdirSync(home, { recursive: true });
+  writeFileSync(legacyHelper, "#!/bin/sh\nexec old-resolver --yes\n");
+  writeFileSync(
+    join(home, "settings.json"),
+    `${JSON.stringify({ apiKeyHelper: legacyHelper }, null, 2)}\n`,
+  );
+
+  configureClaudeConfig(home, "proxy");
+
+  // Upgraded in place; the orphaned legacy file is left alone (uninstall removes it).
+  expect(readSettings(home).apiKeyHelper).toBe(proxyHelperCommand());
+  expect(existsSync(legacyHelper)).toBe(true);
+});
+
+test("directHelperResolvesViaAgent: inline command, legacy file body, and every impostor", () => {
+  const home = tmpHome();
+  const files = new Map<string, string>();
+  const readFile = (path: string): string | null => files.get(path) ?? null;
+
+  // The managed inline command needs no file at all.
+  expect(directHelperResolvesViaAgent(directHelperCommand(), readFile)).toBe(true);
+  // A default-addressed command is NOT a named profile's resolver (and vice versa).
+  expect(directHelperResolvesViaAgent(directHelperCommand(), readFile, WORK)).toBe(false);
+  expect(directHelperResolvesViaAgent(directHelperCommand(WORK), readFile, WORK)).toBe(true);
+
+  // Legacy: a helper FILE whose body is exactly what pre-inline releases wrote.
+  // Reproduce that body from the same primitives the old writer used.
+  const { command, args } = agentLauncherCommand(["auth", "--get"]);
+  const legacyBody = WIN
+    ? cmdHelperBody(command, args)
+    : `#!/bin/sh\nexec ${[command, ...args].map((s) => `'${s}'`).join(" ")}\n`;
+  const legacyPath = join(home, DIRECT_HELPER_NAME);
+  files.set(legacyPath, legacyBody);
+  expect(directHelperResolvesViaAgent(legacyPath, readFile)).toBe(true);
+
+  // Impostors: a foreign body at the right path, a missing file, a bare `gh` helper.
+  files.set(legacyPath, "#!/bin/sh\nexec gh auth token\n");
+  expect(directHelperResolvesViaAgent(legacyPath, readFile)).toBe(false);
+  expect(directHelperResolvesViaAgent(join(home, "gone.sh"), readFile)).toBe(false);
+  expect(directHelperResolvesViaAgent(null, readFile)).toBe(false);
 });

@@ -1067,12 +1067,12 @@ export async function gatherFacts(
         // A named profile answers from its own settings-<name>.json.
         const settingsText = deps.readFileSafe(settingsPathFor(home, profile));
         const wiring = inspectClaudeWiring(settingsText, home, wiringPort(), profile);
-        // Managed iff the apiKeyHelper truly execs `agent auth --get` addressed at
-        // THIS profile (not a stale/foreign/missing/mis-addressed helper);
+        // Managed iff the apiKeyHelper truly invokes `agent auth --get` addressed at
+        // THIS profile -- the inline managed command, or a legacy install's helper
+        // file whose body says so (not a stale/foreign/missing/mis-addressed helper);
         // directAuthFor then decides the gh probe.
         const usesManagedResolver = wiring.providerMode === "direct" &&
-          wiring.helperPath !== null &&
-          directHelperResolvesViaAgent(deps.readFileSafe(wiring.helperPath), profile);
+          directHelperResolvesViaAgent(wiring.helperPath, deps.readFileSafe, profile);
         const { directAuth, noGhNeeded } = await directAuthFor(usesManagedResolver);
         facts.claude = {
           ...evalClaude(home, settingsText, directAuth, noGhNeeded, wiring, profile),

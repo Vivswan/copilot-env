@@ -89,6 +89,10 @@ test("uninstall removes everything managed and preserves user config", async () 
   mkdirSync(claudeHome, { recursive: true });
   writeFileSync(settingsPathFor(claudeHome), JSON.stringify({ model: "opus" }));
   configureClaudeConfig(claudeHome, "direct", { quiet: true });
+  // Legacy helper files from a pre-inline install (the current writer creates none):
+  // uninstall must still remove them by name.
+  writeFileSync(join(claudeHome, DIRECT_HELPER_NAME), "#!/bin/sh\nexec legacy\n");
+  writeFileSync(join(claudeHome, PROXY_HELPER_NAME), "#!/bin/sh\nexec legacy\n");
   mkdirSync(codexHome, { recursive: true });
   writeFileSync(
     join(codexHome, "config.toml"),
@@ -251,6 +255,8 @@ test("uninstall --dry-run changes nothing and narrates every step", async () => 
   const { proxyHome, claudeHome, codexHome } = tmpHomes();
   mkdirSync(claudeHome, { recursive: true });
   configureClaudeConfig(claudeHome, "direct", { quiet: true });
+  // A legacy helper file (pre-inline install): dry-run must leave even that alone.
+  writeFileSync(join(claudeHome, DIRECT_HELPER_NAME), "#!/bin/sh\nexec legacy\n");
   configureCodexConfig(codexHome, {
     mode: "proxy",
     quiet: true,

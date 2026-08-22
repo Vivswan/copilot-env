@@ -9,10 +9,13 @@ import type { Profile } from "../copilot_api/profile.ts";
 
 export const WIN = process.platform === "win32";
 
-// Helper file basenames. On Windows a `.sh` is not runnable by bare path, so the managed
-// helper is a `.cmd` (which cmd.exe executes). The path stored in apiKeyHelper -- and the
-// exact-path match in inspectClaudeWiring -- therefore carry the platform extension. A
-// NAMED profile suffixes the stem (`copilot-token-work.sh`), keeping the default names
+// LEGACY helper file basenames. Pre-inline-apiKeyHelper releases wrote the managed
+// resolver as a helper file at these names (a `.cmd` on Windows, where a `.sh` is not
+// runnable by bare path); the current wiring stores an inline command instead and
+// writes no files. The names live on ONLY for the reader tolerance in
+// inspectClaudeWiring / directHelperResolvesViaAgent and for removal
+// (uninstall / profile --del) -- delete them with that tolerance. A NAMED profile
+// suffixes the stem (`copilot-token-work.sh`), keeping the default names
 // (external contracts) byte-identical.
 const HELPER_EXT = WIN ? "cmd" : "sh";
 export const DIRECT_HELPER_NAME = WIN ? "copilot-token.cmd" : "copilot-token.sh";
@@ -60,13 +63,13 @@ export function settingsPathFor(claudeHome: string, profile: Profile = null): st
   return join(claudeHome, `settings${profileSuffix(profile)}.json`);
 }
 
-/** Path of the managed direct apiKeyHelper script for `profile`. */
+/** Path of the LEGACY direct apiKeyHelper script for `profile` (tolerance/removal only). */
 export function directHelperPath(claudeHome: string, profile: Profile = null): string {
   if (profile === null) return join(claudeHome, DIRECT_HELPER_NAME);
   return join(claudeHome, `copilot-token-${profile}.${HELPER_EXT}`);
 }
 
-/** Path of the managed proxy apiKeyHelper script for `profile`. */
+/** Path of the LEGACY proxy apiKeyHelper script for `profile` (tolerance/removal only). */
 export function proxyHelperPath(claudeHome: string, profile: Profile = null): string {
   if (profile === null) return join(claudeHome, PROXY_HELPER_NAME);
   return join(claudeHome, `copilot-proxy-token-${profile}.${HELPER_EXT}`);

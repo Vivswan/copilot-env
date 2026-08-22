@@ -1,23 +1,26 @@
 // Claude Code config writer: wires ~/.claude/settings.json for one of two
 // backends, mirroring src/codex/config.ts but adapted to how Claude consumes
-// config (JSON settings.json + an apiKeyHelper script, no `model_provider`):
+// config (JSON settings.json + an apiKeyHelper command, no `model_provider`):
 //
-//   - direct: GitHub Copilot. apiKeyHelper -> copilot-token.{sh,cmd}, which execs
-//     `agent auth --get` (provider-driven: gh-cli -> gh, copilot/gh-token -> stored token)
-//     and env.ANTHROPIC_BASE_URL = https://api.githubcopilot.com.
-//   - proxy:  the local copilot-api proxy. apiKeyHelper -> copilot-proxy-token.{sh,cmd}
-//     (prints the proxy key) and env.ANTHROPIC_BASE_URL = http://127.0.0.1:<port>.
+//   - direct: GitHub Copilot. apiKeyHelper invokes `agent auth --get` (provider-driven:
+//     gh-cli -> gh, copilot/gh-token -> stored token) and
+//     env.ANTHROPIC_BASE_URL = https://api.githubcopilot.com.
+//   - proxy:  the local copilot-api proxy. apiKeyHelper invokes `agent proxy-token --yes`
+//     (ensures the proxy, prints its key) and env.ANTHROPIC_BASE_URL = http://127.0.0.1:<port>.
 //
-// The helper is a script FILE whose path Claude stores in apiKeyHelper (so health can read
-// it back and mode detection keys off the exact path). It must be runnable by bare path:
-// a POSIX `#!/bin/sh` script, or -- on Windows, where a `.sh` is not executable -- a `.cmd`
-// (cmd.exe runs it by path) that shells into PowerShell to reach the same resolver Codex uses.
+// apiKeyHelper is a shell COMMAND STRING (sh-style on POSIX, cmd-style on Windows), not
+// a file path, so the managed wiring invokes bin/agent directly -- no intermediate
+// credential helper file exists anywhere. Claude caches the helper's stdout for ~5
+// minutes and re-runs it on 401 (the same cadence Codex's refresh_interval_ms=300000
+// gives auth.command), and hard-fails when stdout is anything but the single credential
+// line -- which both resolvers guarantee (their diagnostics go to stderr).
 //
 // `agent env` re-exports ANTHROPIC_BASE_URL only for the proxy backend (to keep
 // the shell aligned with the live proxy port); direct is driven entirely by
-// settings.json. Mode is inferred from which managed apiKeyHelper (by EXACT path)
-// settings.json points at. The merge is surgical: only the managed keys are
-// touched; all other settings are preserved.
+// settings.json. Mode is inferred from the EXACT apiKeyHelper value (the managed
+// command string, or -- reader tolerance -- the retired helper-script path). The
+// merge is surgical: only the managed keys are touched; all other settings are
+// preserved.
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type AgentAdapter, type AgentConfigArgs, runAgentConfig } from "../agents/configure.ts";
@@ -90,21 +93,53 @@ function winQuote(s: string): string {
  *  off` keeps the command itself off stdout; CRLF endings so cmd.exe parses it reliably. Literal
  *  `%` is doubled to `%%` -- in a batch file `%` triggers variable expansion even inside quotes,
  *  so a checkout path containing `%` would otherwise be mangled. (`!` needs no escaping: we never
- *  `setlocal enabledelayedexpansion`, so delayed expansion is off.) Exported for tests. */
+ *  `setlocal enabledelayedexpansion`, so delayed expansion is off.) Only the RETIRED helper-file
+ *  wiring wrote these bodies (see legacyDirectHelperScript); kept for that tolerance and its
+ *  tests. Exported for tests. */
 export function cmdHelperBody(command: string, args: readonly string[]): string {
   const line = [command, ...args].map(winQuote).join(" ").replace(/%/g, "%%");
   return `@echo off\r\n${line}\r\n`;
 }
 
+/** Quote one token of a POSIX apiKeyHelper command string: bare when unambiguous
+ *  (flags, subcommands, profile names), single-quoted otherwise (paths carry spaces). */
+function shToken(s: string): string {
+  return /^[A-Za-z0-9_.:/=-]+$/.test(s) ? s : shQuote(s);
+}
+
+/** The inline apiKeyHelper command string for `{command, args}`: sh-style on POSIX,
+ *  cmd-style on Windows -- the two shells Claude runs apiKeyHelper through. */
+function helperCommandLine({ command, args }: { command: string; args: string[] }): string {
+  return [command, ...args].map(WIN ? winQuote : shToken).join(" ");
+}
+
 /**
- * The direct apiKeyHelper body: print the Direct credential on stdout. Claude runs apiKeyHelper
- * and uses its stdout as the credential. We exec `agent auth --get` (with `--profile <name>`
- * for a named profile), the provider-driven resolver (gh-cli -> gh, else the stored token), so
- * the token is never baked into this script -- it lives only in the state store. POSIX emits a
- * `#!/bin/sh` script; Windows emits a `.cmd` that runs the same resolver via PowerShell
- * (agentLauncherCommand wraps it as `powershell -File ...`).
+ * The managed DIRECT apiKeyHelper command for `profile`: invoke `agent auth --get
+ * [--profile <name>]` (via the platform launcher), whose stdout is exactly the one
+ * credential line (its catalog-refresh side work is stderr-only). Byte-exact on both
+ * the write and inspect sides, like Codex's managed auth block.
  */
-function directHelperScript(profile: Profile = null): string {
+export function directHelperCommand(profile: Profile = null): string {
+  return helperCommandLine(agentLauncherCommand(agentAuthGetArgs(profile)));
+}
+
+/** The managed PROXY apiKeyHelper command for `profile`: invoke `agent proxy-token
+ *  --yes [--profile <name>]` -- the same resolver Codex's auth.command runs. */
+export function proxyHelperCommand(profile: Profile = null): string {
+  return helperCommandLine(proxyTokenCommand(profile));
+}
+
+/**
+ * Reader tolerance (2026-08, the inline-apiKeyHelper move): releases before it wrote
+ * apiKeyHelper as the PATH of a managed helper-script file (copilot-token[-<name>].{sh,cmd},
+ * copilot-proxy-token[-<name>].{sh,cmd} -- src/claude/paths.ts still names them for this
+ * tolerance and for removal). This builder reproduces the direct FILE BODY those releases
+ * wrote, so health can keep positively identifying a legacy managed helper; any wiring
+ * rewrite upgrades the config to the inline command -- self-healing, per the
+ * migrate-or-reader rule in AGENTS.md. Remove (with the path arms in inspectClaudeWiring)
+ * once no supported install can still carry helper-file wiring.
+ */
+function legacyDirectHelperScript(profile: Profile = null): string {
   const { command, args } = agentLauncherCommand(agentAuthGetArgs(profile));
   if (WIN) return cmdHelperBody(command, args);
   const line = [command, ...args].map(shQuote).join(" ");
@@ -112,18 +147,22 @@ function directHelperScript(profile: Profile = null): string {
 }
 
 /**
- * True iff `helperBody` is exactly the managed direct helper for `profile` (execs
- * `agent auth --get`, with `--profile <name>` for a named profile). Health uses
- * this to POSITIVELY confirm Direct resolves via the managed launcher before
- * deciding gh is unneeded -- a stale `gh auth token` helper, a foreign script, a
- * missing file, or a helper addressed at a DIFFERENT profile returns false and
- * stays on the gh-checked path.
+ * True iff Claude's Direct credential resolution is the managed launcher for `profile`:
+ * `helperValue` (settings.json's apiKeyHelper) IS the managed inline command, or --
+ * legacy installs -- a helper FILE whose body (read via `readFile`) is exactly what the
+ * pre-inline releases wrote. Health uses this to POSITIVELY confirm Direct resolves via
+ * `agent auth --get` before deciding gh is unneeded -- a stale `gh auth token` helper, a
+ * foreign script, a missing file, or a helper addressed at a DIFFERENT profile returns
+ * false and stays on the gh-checked path.
  */
 export function directHelperResolvesViaAgent(
-  helperBody: string | null,
+  helperValue: string | null,
+  readFile: (path: string) => string | null,
   profile: Profile = null,
 ): boolean {
-  return helperBody !== null && helperBody === directHelperScript(profile);
+  if (helperValue === null) return false;
+  if (helperValue === directHelperCommand(profile)) return true;
+  return readFile(helperValue) === legacyDirectHelperScript(profile);
 }
 
 /** The `agent claude` argument shape (the shared skeleton's, under this command's name). */
@@ -132,7 +171,8 @@ export type ClaudeConfigArgs = AgentConfigArgs;
 export interface ClaudeWiringStatus {
   /** settings.json exists. */
   settingsExists: boolean;
-  /** Path to the configured `apiKeyHelper` script, for messaging (not a secret). */
+  /** The configured `apiKeyHelper` value, for messaging (not a secret): the managed
+   *  inline command, a legacy install's helper-script path, or a foreign value. */
   helperPath: string | null;
   /** `env.ANTHROPIC_BASE_URL`, if present. */
   baseUrl: string | null;
@@ -155,11 +195,13 @@ function claudeBaseUrlMatchesProxy(baseUrl: string, expectedPort: number): boole
 /**
  * Inspect raw settings content against the managed contract for `profile` (default
  * profile = settings.json, named = settings-<name>.json). Pure (no I/O): the caller
- * passes the file text (null = absent) plus the home, from which the two managed
- * helper paths are derived. Mode is keyed off the EXACT apiKeyHelper path so a
- * user's own same-named helper is never mistaken for ours:
- *   - direct: apiKeyHelper === <home>/copilot-token[-<profile>].sh
- *   - proxy:  apiKeyHelper === <home>/copilot-proxy-token[-<profile>].sh
+ * passes the file text (null = absent) plus the home, from which the two LEGACY
+ * helper paths are derived. Mode is keyed off the EXACT apiKeyHelper value so a
+ * user's own similar-looking helper is never mistaken for ours:
+ *   - direct: apiKeyHelper is the managed `agent auth --get` command (or, reader
+ *             tolerance, the retired <home>/copilot-token[-<profile>] script path)
+ *   - proxy:  apiKeyHelper is the managed `agent proxy-token --yes` command (or the
+ *             retired <home>/copilot-proxy-token[-<profile>] script path)
  *   - other:  a foreign apiKeyHelper, a custom ANTHROPIC_BASE_URL, or malformed
  *             JSON (a config we must not clobber)
  *   - none:   no relevant keys (absent/empty) -- unconfigured; proxy is default
@@ -196,9 +238,18 @@ export function inspectClaudeWiring(
   status.baseUrl = baseUrl;
   status.baseUrlMatches = baseUrl !== null && claudeBaseUrlMatchesProxy(baseUrl, expectedPort);
 
-  if (helperPath === directHelperPath(claudeHome, profile)) {
+  // The inline command is the managed contract; the path arms are the legacy
+  // helper-file tolerance (see legacyDirectHelperScript for the dating and the
+  // removal condition).
+  if (
+    helperPath === directHelperCommand(profile) ||
+    helperPath === directHelperPath(claudeHome, profile)
+  ) {
     status.providerMode = "direct";
-  } else if (helperPath === proxyHelperPath(claudeHome, profile)) {
+  } else if (
+    helperPath === proxyHelperCommand(profile) ||
+    helperPath === proxyHelperPath(claudeHome, profile)
+  ) {
     status.providerMode = "proxy";
   } else if (helperPath !== null || baseUrl !== null) {
     // A foreign apiKeyHelper or a custom base URL the user set -- not ours.
@@ -239,17 +290,6 @@ function saveSettings(settingsPath: string, doc: Record<string, unknown>): void 
 function saveOrRemoveSettings(settingsPath: string, doc: Record<string, unknown>): void {
   if (Object.keys(doc).length === 0) fs.rmSync(settingsPath, { force: true });
   else saveSettings(settingsPath, doc);
-}
-
-/** Write a managed apiKeyHelper script (prints a token on stdout), chmod 0700. The chmod is the
- *  POSIX exec bit; on Windows it is a harmless near-no-op (a `.cmd` runs without it). */
-function writeHelperScript(helperPath: string, script: string): void {
-  fs.writeFileSync(helperPath, script);
-  try {
-    fs.chmodSync(helperPath, 0o700);
-  } catch {
-    // pass (e.g. Windows) -- the exec bit is best-effort.
-  }
 }
 
 /**
@@ -432,14 +472,14 @@ export function syncDefaultWebSearchWiring(claudeHome = resolveClaudeHome()): vo
 /**
  * Apply the managed Claude wiring at `claudeHome` for `profile` (default =
  * settings.json; named = settings-<name>.json, launched via `claude --settings`).
- * Direct writes the apiKeyHelper that execs `agent auth --get [--profile <name>]`
- * (the credential resolver for the addressed slot) + the Copilot base URL; proxy
- * resolves the profile's proxy port, writes a helper that runs the shared
- * proxy-token resolver, and points the base URL at 127.0.0.1. Either way the merge
- * is surgical (only managed keys change) and the OTHER mode's settings are
+ * Direct writes the inline apiKeyHelper command that invokes `agent auth --get
+ * [--profile <name>]` (the credential resolver for the addressed slot) + the Copilot
+ * base URL; proxy resolves the profile's proxy port, writes the inline command that
+ * runs `agent proxy-token --yes`, and points the base URL at 127.0.0.1. Either way the
+ * merge is surgical (only managed keys change) and the OTHER mode's settings are
  * overwritten so switching modes is clean. A named DIRECT profile requires its own
  * credential (named profiles never fall back to the default one). Throws on an
- * unwritable home / malformed settings / unresolvable proxy token.
+ * unwritable home / malformed settings / unresolvable proxy port.
  */
 /** Options for configureClaudeConfig (mirrors the Codex writer's common knobs). */
 export interface ConfigureClaudeConfigOptions {
@@ -493,9 +533,10 @@ export function configureClaudeConfig(
   }
 
   if (mode === "direct") {
-    // The helper execs `agent auth --get`; the token is never baked here.
-    writeHelperScript(directHelperPath(claudeHome, profile), directHelperScript(profile));
-    doc.apiKeyHelper = directHelperPath(claudeHome, profile);
+    // The inline command invokes `agent auth --get`; the token is never baked here, and
+    // no helper file is written (a legacy install's helper files are left alone --
+    // orphaned but harmless -- until uninstall/profile-del removes them by name).
+    doc.apiKeyHelper = directHelperCommand(profile);
     applyManagedEnv(doc, "direct", DIRECT_BASE_URL, profile, options.directIntegrationId);
     // The MCP + deny pair is machine-global (default profile, the REAL Claude home
     // only -- the throwaway detect-probe home must not touch ~/.claude.json).
@@ -510,14 +551,13 @@ export function configureClaudeConfig(
     return;
   }
 
-  // proxy: write a helper that runs the shared proxy-token resolver (ensures the proxy is
-  // up per the managed-lifecycle rules, then prints its key). The key is resolved at
+  // proxy: the inline command runs the proxy-token resolver (ensures the proxy is up
+  // per the managed-lifecycle rules, then prints its key). The key is resolved at
   // helper-run time (not baked in). A named profile RESERVES its stable port here via
   // wiringPortFor (this is a write path; read-only checks peek without recording) so
   // concurrent profile daemons never share a port.
   const port = wiringPortFor(profile);
-  writeHelperScript(proxyHelperPath(claudeHome, profile), proxyHelperScript(profile));
-  doc.apiKeyHelper = proxyHelperPath(claudeHome, profile);
+  doc.apiKeyHelper = proxyHelperCommand(profile);
   // proxyLoopbackOrigin (no path, no trailing slash -- the shape claudeBaseUrlMatchesProxy
   // expects); env.ts's isLocalProxyUrl accepts it. Host rationale (127.0.0.1, never localhost)
   // on the helper in port.ts.
@@ -530,21 +570,6 @@ export function configureClaudeConfig(
   if (!quiet) {
     logger.log(`  ✓ Claude config written → ${settingsPath} (proxy mode → port ${port})`);
   }
-}
-
-/**
- * The proxy apiKeyHelper body: run the proxy-mode credential resolver (`agent proxy-token
- * --yes [--profile <name>]` via proxyTokenCommand), which (per the managed-lifecycle rules)
- * ensures the addressed proxy is up then prints its key. `--yes` is the headless path
- * (never prompt) -- Claude runs this on a timer. The same resolver backs Codex's
- * `auth.command`; the key is resolved at run time (nothing is baked in here). POSIX
- * emits a `#!/bin/sh` script; Windows a `.cmd` that invokes PowerShell the same way.
- */
-function proxyHelperScript(profile: Profile = null): string {
-  const { command, args } = proxyTokenCommand(profile);
-  if (WIN) return cmdHelperBody(command, args);
-  const line = [command, ...args].map(shQuote).join(" ");
-  return `#!/bin/sh\nexec ${line}\n`;
 }
 
 // --- the `--check` provider report ------------------------------------------
@@ -585,10 +610,10 @@ function checkClaudeConfig(): void {
 }
 
 /**
- * Remove a NAMED profile's managed Claude artifacts: its helper scripts (ours by
- * name) and its settings-<name>.json -- the latter only when it is actually OURS
- * (managed direct/proxy wiring); a foreign same-named file the user owns is left
- * alone. Used by `agent profile --del`.
+ * Remove a NAMED profile's managed Claude artifacts: its LEGACY helper scripts (ours
+ * by name; the inline wiring writes none) and its settings-<name>.json -- the latter
+ * only when it is actually OURS (managed direct/proxy wiring); a foreign same-named
+ * file the user owns is left alone. Used by `agent profile --del`.
  */
 export function removeClaudeProfile(claudeHome: string, name: ProfileName): void {
   const settingsPath = settingsPathFor(claudeHome, name);
@@ -607,7 +632,8 @@ export function removeClaudeProfile(claudeHome: string, name: ProfileName): void
  * points at the managed helper (inspectClaudeWiring reports direct/proxy) --
  * that helper is what makes the whole managed key set ours, exactly as an explicit
  * mode write would reclaim it; a foreign apiKeyHelper (`other`) leaves settings.json
- * alone. Helper scripts are removed by name (mirrors removeClaudeProfile). The
+ * alone. LEGACY helper scripts are removed by name (the inline wiring writes none;
+ * mirrors removeClaudeProfile). The
  * strip is surgical so every other user setting (model, hooks, the user's own
  * permissions entries) survives; an emptied env object is dropped, and a doc
  * emptied entirely removes settings.json itself. Used by `agent uninstall`.

@@ -26,8 +26,6 @@ import { isRecord } from "../src/utils/json.ts";
 import { afterEach, beforeEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, removeDir, resetExitCode } from "./helpers.ts";
 
-const WIN = process.platform === "win32";
-
 // Branded fixture names: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
 const FAST = parseProfileName("fast");
@@ -228,12 +226,11 @@ test("a direct Claude profile writes settings-<name>.json + a --profile helper, 
     string,
     unknown
   >;
-  const helperPath = String(doc.apiKeyHelper);
-  expect(helperPath).toContain(`copilot-token-work.${WIN ? "cmd" : "sh"}`);
-  const helper = readFileSync(helperPath, "utf8");
-  expect(helper).toContain("--profile");
-  expect(helper).toContain("work");
-  expect(helper).not.toContain("ghp_work"); // never baked
+  const helperCommand = String(doc.apiKeyHelper);
+  expect(helperCommand).toContain("auth");
+  expect(helperCommand).toContain("--profile");
+  expect(helperCommand).toContain("work");
+  expect(helperCommand).not.toContain("ghp_work"); // never baked
 
   const status = inspectClaudeWiring(
     JSON.stringify(doc),
@@ -269,9 +266,10 @@ test("a proxy Claude profile bakes ITS reserved port and blanks the direct-only 
   // Blanked (not deleted): the overlay layers over a possibly-direct default.
   expect(env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS).toBe("");
   expect(env.ANTHROPIC_CUSTOM_HEADERS).toBe("");
-  const helper = readFileSync(String(doc.apiKeyHelper), "utf8");
-  expect(helper).toContain("--profile");
-  expect(helper).toContain("fast");
+  const helperCommand = String(doc.apiKeyHelper);
+  expect(helperCommand).toContain("proxy-token");
+  expect(helperCommand).toContain("--profile");
+  expect(helperCommand).toContain("fast");
 });
 
 test("a foreign settings-<name>.json is never taken over", () => {

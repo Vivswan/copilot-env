@@ -74,9 +74,10 @@ if (-not $InstallDir) {
     $InstallDir = if ($env:COPILOT_ENV_DIR) { $env:COPILOT_ENV_DIR } else { Join-Path $env:USERPROFILE '.copilot-env' }
 }
 
-# Bun-era artifacts an old source-tree install leaves in the install root; the
-# binary install has no runtime bootstrap, so they are removed outright
-# (mirrors LEGACY_ARTIFACTS in src/install/installer.ts).
+# Artifacts a pre-binary source install leaves in the install root; the binary
+# install has no runtime bootstrap left to use them, so they are removed
+# outright (mirrors LEGACY_ARTIFACTS in src/install/installer.ts, which
+# test/installer_pinning.test.ts pins this list to).
 $LegacyArtifacts = @('node_modules', 'bun.lock', 'bunfig.toml')
 
 function Invoke-WithRetry {
@@ -269,7 +270,7 @@ try {
 foreach ($legacy in $LegacyArtifacts) {
     $legacyPath = Join-Path $InstallDir $legacy
     if (Test-Path -LiteralPath $legacyPath) {
-        Write-Host "Removing legacy $legacy from $InstallDir ..."
+        Write-Host "Removing superseded $legacy from $InstallDir ..."
         Remove-Item -LiteralPath $legacyPath -Recurse -Force
     }
 }

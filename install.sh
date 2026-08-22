@@ -26,9 +26,10 @@ EXEC_SHELL=true
 AUTH_CURL_ARGS=(-H "User-Agent: copilot-env" -H "Accept: application/vnd.github+json")
 PUBLIC_CURL_ARGS=(-H "User-Agent: copilot-env")
 
-# Bun-era artifacts an old source-tree install leaves in the install root; the
-# binary install has no runtime bootstrap, so they are removed outright
-# (mirrors LEGACY_ARTIFACTS in src/install/installer.ts).
+# Artifacts a pre-binary source install leaves in the install root; the binary
+# install has no runtime bootstrap left to use them, so they are removed
+# outright (mirrors LEGACY_ARTIFACTS in src/install/installer.ts, which
+# test/installer_pinning.test.ts pins this list to).
 LEGACY_ARTIFACTS="node_modules bun.lock bunfig.toml"
 
 usage() {
@@ -286,7 +287,7 @@ chmod 0755 "$INSTALL_DIR/bin/$BINARY_NAME"
 
 for _legacy in $LEGACY_ARTIFACTS; do
     if [ -e "$INSTALL_DIR/$_legacy" ]; then
-        echo "Removing legacy $_legacy from $INSTALL_DIR ..."
+        echo "Removing superseded $_legacy from $INSTALL_DIR ..."
         rm -rf -- "${INSTALL_DIR:?}/$_legacy"
     fi
 done

@@ -100,9 +100,11 @@ export function isProtectedRoot(mode: RootMode = rootMode()): boolean {
 }
 
 /** Directories every copilot-env root carries: a checkout ships them, and an install
- *  materializes them out of the binary. `bin` alone is not enough to identify a root --
- *  ~/.local/bin/agent-bin would resolve its root to ~/.local, which has one. */
-const INSTALL_ROOT_MARKERS = ["bin", "shell", join("src", "scripts")] as const;
+ *  materializes them out of the binary (`bin` is the exception -- the installer writes
+ *  launcher shims into it rather than unpacking one). `bin` alone would not identify a
+ *  root anyway: ~/.local/bin/agent-bin would resolve its root to ~/.local, which has one.
+ *  Exported so the installer's tests can assert it produces exactly this layout. */
+export const INSTALL_ROOT_MARKERS = ["bin", "shell", join("src", "scripts")] as const;
 
 /**
  * Whether `root` actually looks like a copilot-env root, i.e. is safe to delete

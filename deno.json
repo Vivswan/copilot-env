@@ -88,13 +88,9 @@
     "include": [
       "src/scripts",
       "shell",
-      "bin",
       "skills",
       ".claude-plugin",
-      "copilot-env.config",
-      "deno.json",
-      "deno.lock",
-      ".dvmrc"
+      "copilot-env.config"
     ],
     "permissions": "cli"
   },

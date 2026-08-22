@@ -9,7 +9,11 @@ import {
 import { runEnv } from "../src/commands/env.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
-import { LAUNCHERS_MARKER } from "../src/shell/integration.ts";
+import {
+  CI_PS_DOCUMENTS_DIR_ENV,
+  CI_RC_DIR_ENV,
+  LAUNCHERS_MARKER,
+} from "../src/shell/integration.ts";
 import { importSpecifier, ROOT, runCli, runSync } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import {
@@ -105,8 +109,11 @@ function childBaseEnv(): Record<string, string | undefined> {
     HOME: dir,
     USERPROFILE: dir,
     // The suite floor redirects rc lookups away from every real home; this child
-    // wants them under ITS isolated home, so the seam points there explicitly.
-    COPILOT_ENV_CI_RC_DIR: dir,
+    // wants them under ITS isolated home, so the seams point there explicitly -
+    // BOTH of them: the POSIX rc seam and the Windows PS-Documents seam, which
+    // must line up with the Documents tree wireLaunchers() writes under `dir`.
+    [CI_RC_DIR_ENV]: dir,
+    [CI_PS_DOCUMENTS_DIR_ENV]: join(dir, "Documents"),
     COPILOT_API_HOME: join(dir, "gw"),
     CLAUDE_CONFIG_DIR: claudeHome,
     CODEX_HOME: undefined,

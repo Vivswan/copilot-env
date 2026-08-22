@@ -10,9 +10,9 @@ import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   acquireStartLock,
   applyDefaultConfig,
-  assertProxyFloor,
   awaitReadiness,
   cleanupExistingProxies,
+  ensureProxyFloor,
   listUntrackedOrphans,
   resolveLaunchCredential,
   resolveStartPort,
@@ -326,7 +326,7 @@ export async function runStart(action: StartAction): Promise<void> {
     return;
   }
 
-  assertProxyFloor();
+  await ensureProxyFloor();
 
   fs.mkdirSync(paths.runDir, { recursive: true });
   const lockPath = startLockPath();

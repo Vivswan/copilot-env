@@ -1,6 +1,6 @@
-// The `agent start` launch pipeline, one named function per step: the proxy-floor
-// gate, the start lock, port resolution, the tracked-pid/orphan cleanup, credential
-// resolution (with the PAT-passthrough and integration-identity decisions), the
+// The `agent start` launch pipeline, one named function per step: the proxy
+// freshness/floor gate, the start lock, port resolution, the tracked-pid/orphan cleanup,
+// credential resolution (with the PAT-passthrough and integration-identity decisions), the
 // configured daemon spawn, the readiness wait (with the EADDRINUSE bind-race retry),
 // and the post-start alias sync. src/commands/start.ts stays the command layer
 // (flag parsing, dry-run reporting, summary rendering) and orchestrates these.
@@ -11,6 +11,8 @@ import * as fs from "node:fs";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
+import { floatProxy, proxyFloatVerifyStatus } from "../proxy_float.ts";
+import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { acquireFileLockBounded, releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
 import { isRecord } from "../utils/json.ts";
@@ -38,6 +40,7 @@ import {
   reserveProfilePort,
 } from "./port.ts";
 import {
+  type CopilotApiEntry,
   DAEMON_SIGKILL_GRACE_MS,
   type DaemonCredential,
   getOrphanPids,
@@ -45,6 +48,7 @@ import {
   launchDaemon,
   pidAlive,
   printLogTail,
+  resolveCopilotApiEntry,
   terminatePid,
 } from "./process.ts";
 import type { Profile } from "./profile.ts";
@@ -88,21 +92,56 @@ export async function acquireStartLock(lockPath: string): Promise<void> {
   }
 }
 
-// --- the proxy-floor gate -------------------------------------------------------
+// --- the proxy freshness + floor gate ---------------------------------------------
+
+/** The proxy version `entry` will actually run, or null when it cannot be known ahead of
+ *  the launch: a mapped entry whose node_modules copy is missing, or a file override,
+ *  which runs whatever that file is (the CI fake has no version at all). */
+function entryProxyVersion(entry: CopilotApiEntry): string | null {
+  switch (entry.kind) {
+    case "floated":
+      return entry.version;
+    case "package":
+      return installedProxyVersion();
+    case "file":
+      return null;
+    default:
+      return assertNever(entry);
+  }
+}
 
 /**
- * Refuse to launch on a proxy below the PROXY_MIN_VERSION floor. The float
- * (`deno install`'s postinstall) is best-effort, so an offline/failed install can
- * leave a sub-floor proxy installed; the floor is a hard runtime contract,
- * so we enforce it here -- **fail-closed** and before disturbing any running daemon.
- * An unresolvable proxy or unreadable copilot-env.config is itself fatal (we
- * can't confirm the floor), so it throws rather than launching blind.
+ * The `agent start` proxy gate: float the proxy if its recorded resolution has gone
+ * stale, then refuse to launch below the PROXY_MIN_VERSION floor.
+ *
+ * The float runs HERE rather than in the bin shim because `start` is the one command
+ * that needs a runnable proxy -- and `proxyFloatVerifyStatus` is offline while the
+ * record is younger than the cooldown, so the common start pays no network cost. The
+ * float itself is best-effort (an offline machine keeps whatever is already cached),
+ * but the floor is a hard runtime contract: fail-closed, and before disturbing any
+ * running daemon. A `COPILOT_API_ENTRY` override skips both -- it runs a file we did
+ * not resolve and do not version.
  */
-export function assertProxyFloor(): void {
-  const version = installedProxyVersion();
+export async function ensureProxyFloor(): Promise<void> {
+  if (resolveCopilotApiEntry().kind === "file") return;
+
+  const status = await proxyFloatVerifyStatus();
+  if (!status.upToDate) {
+    consola.info(status.message);
+    try {
+      await floatProxy();
+    } catch (e) {
+      consola.warn(`proxy float failed (${errMessage(e)}); checking what is already available`);
+    }
+  }
+
+  // Re-resolve: a successful float just wrote the record, which moves the entry from the
+  // mapped fallback to the floated version.
+  const version = entryProxyVersion(resolveCopilotApiEntry());
   if (version === null) {
     throw new Error(
-      `${PROXY_PACKAGE_NAME} is not installed or its package.json is unreadable - run 'deno install' to (re)install the proxy.`,
+      `${PROXY_PACKAGE_NAME} is not resolved or installed - run 'agent start' online to float it, ` +
+        "or 'deno install' to restore the baseline.",
     );
   }
   let config: ProjectConfig;
@@ -111,12 +150,12 @@ export function assertProxyFloor(): void {
   } catch (e) {
     throw new Error(`could not read the proxy floor from copilot-env.config: ${errMessage(e)}`);
   }
-  const status = proxyVersionFloorStatus(version, config);
-  if (!status.ok && status.reason === "belowFloor") {
+  const floorStatus = proxyVersionFloorStatus(version, config);
+  if (!floorStatus.ok && floorStatus.reason === "belowFloor") {
     throw new Error(
-      `${PROXY_PACKAGE_NAME} ${status.version} is below the required ${status.floor} floor - the proxy ` +
+      `${PROXY_PACKAGE_NAME} ${floorStatus.version} is below the required ${floorStatus.floor} floor - the proxy ` +
         `float likely failed (offline?) or was skipped because both ` +
-        `agents are wired Direct. Re-run 'deno install' online, set COPILOT_API_VERSION to a ` +
+        `agents are wired Direct. Re-run 'agent start' online, set COPILOT_API_VERSION to a ` +
         `known-good release, or rewire an agent to the proxy ('agent init --proxy') first.`,
     );
   }
@@ -396,6 +435,9 @@ export function spawnConfiguredDaemon(opts: {
 }): SpawnedDaemon {
   const { port, logFile, profile, paths, credential } = opts;
   const config = opts.config ?? new CopilotEnvConfig();
+  // Resolve the entry ONCE for this launch (and every bind-race relaunch below), so the
+  // daemon can never be started from one resolution and pointed at another's cache.
+  const entry = resolveCopilotApiEntry();
   const daemonEnv: Record<string, string> = { COPILOT_API_SQLITE_DB_PATH: paths.sqliteDb };
   if (profile !== null) {
     // A named profile's daemon runs against its OWN isolated home (config.json incl.
@@ -429,6 +471,7 @@ export function spawnConfiguredDaemon(opts: {
       credential,
       idleWatchdog,
       muteProxyLogs,
+      entry,
     });
   };
   return { pid: relaunch(port), idleWatchdog, relaunch };

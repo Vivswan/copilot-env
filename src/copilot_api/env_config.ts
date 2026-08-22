@@ -490,7 +490,7 @@ const CONFIG_REGISTRY_LITERAL = [
     key: "releaseCooldown",
     describe: "Proxy float supply-chain cooldown in seconds",
     parse: (r) => parseWholeNumber(r, 0, MAX_SECONDS),
-    defaultLabel: "bunfig minimumReleaseAge",
+    defaultLabel: "7 days (built-in)",
   },
   {
     cli: "responses-context-management",

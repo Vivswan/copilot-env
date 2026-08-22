@@ -1,41 +1,112 @@
-#!/usr/bin/env bun
-// Release-bundled installer handoff: bootstraps deps and invokes `agent shell` wiring.
+// The in-binary `agent install` implementation: finalize an install root
+// around the compiled agent binary that install.sh / install.ps1 just
+// downloaded to <root>/bin/agent-bin(.exe).
 //
-// Direct run:
-//   bun src/install/installer.ts install [--no-shell-integration] [--all-hosts]
+// The work is a plan/apply split (build one typed plan up front, then execute
+// it -- the same shape as planImport/applyImportPlan in src/agents/transfer.ts):
 //
-// Arguments:
-//   install                   Required command; keeps accidental direct runs explicit.
-//   --no-shell-integration    Bootstrap deps only; skip `agent shell`.
-//   --all-hosts               Windows only; pass through to `agent shell --all-hosts`.
+// - installed mode (compiled binary): materialize the embedded runtime assets
+//   from the compiled VFS onto real disk, write the bin/agent(.ps1) launcher
+//   shims, remove superseded source-install artifacts, wire shell integration.
+// - in-place mode (dev checkout, where the asset source IS the install root):
+//   only shell integration applies -- the checkout's own bin/agent launchers
+//   and working files are never overwritten.
 //
-// install.sh / install.ps1 run this from the extracted release so installer
-// behavior comes from the selected release, not from main.
-import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+// Assets are read via URLs relative to import.meta.url, which resolves inside
+// the compiled VFS (a virtual path readable in-process only) and inside a dev
+// checkout alike; comparing that source root to the install root is what
+// discriminates the two modes.
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { consola } from "consola";
+
+import { runShellIntegration } from "../shell/integration.ts";
+import { installRoot } from "./install_root.ts";
+import { INSTALLED_BINARY_POSIX, INSTALLED_BINARY_WINDOWS } from "./targets.ts";
+
+/** Directories embedded into the compiled binary (scripts/compile.sh --include)
+ *  that an installed root needs on real disk: helper scripts that run as their
+ *  own processes, the shell-integration payload, and the plugin/skill
+ *  distribution surface. The compile include list must cover every entry. */
+export const EMBEDDED_ASSET_DIRS = ["src/scripts", "shell", "skills", ".claude-plugin"] as const;
+
+/** Single files an installed root needs for the same reason. The daemon spawn
+ *  passes `<root>/deno.json` to the sidecar as `--config` (it is the import map
+ *  that pins the proxy), `deno.lock` is the frozen resolution behind it, and
+ *  `.dvmrc` is which deno version the sidecar installs. `copilot-env.config`
+ *  carries the proxy-float floor/ceiling. */
+export const EMBEDDED_ASSET_FILES = [
+  "deno.json",
+  "deno.lock",
+  ".dvmrc",
+  "copilot-env.config",
+] as const;
+
+/** Superseded files a pre-binary source install leaves in the root. The binary
+ *  install has no runtime bootstrap left to use them and `node_modules` alone
+ *  is hundreds of megabytes, so they are removed outright (clean break --
+ *  there is no upgrade bridge). install.sh / install.ps1 carry the same list
+ *  for the sweep they do before handing off. */
+export const LEGACY_ARTIFACTS = ["node_modules", "bun.lock", "bunfig.toml"] as const;
+
+/** Installed-mode bin/agent: a thin dispatcher to the adjacent compiled
+ *  binary. The checkout's bin/agent is the dev-mode variant; an install never
+ *  overwrites a checkout (in-place mode writes no shims), so the two texts
+ *  never compete for the same file. */
+export const POSIX_SHIM = `#!/bin/sh
+# copilot-env launcher (installed): dispatch to the compiled agent binary.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+exec "$HERE/${INSTALLED_BINARY_POSIX}" "$@"
+`;
+
+/** Installed-mode bin/agent.ps1 (Windows twin of POSIX_SHIM). */
+export const POWERSHELL_SHIM =
+  `# copilot-env launcher (installed): dispatch to the compiled agent binary.
+$Here = Split-Path -Parent $MyInvocation.MyCommand.Path
+& (Join-Path $Here '${INSTALLED_BINARY_WINDOWS}') @args
+exit $LASTEXITCODE
+`;
 
 export interface InstallOptions {
   noShellIntegration: boolean;
   allHosts: boolean;
+  /**
+   * Materialize the embedded assets and launcher shims and nothing else: no
+   * shell wiring, no next-steps epilogue. `agent update` runs the NEW binary
+   * this way after the swap, so the release that owns the assets is the one
+   * that writes them.
+   */
+  assetsOnly: boolean;
 }
 
 export function parseInstallArgs(args: string[]): InstallOptions {
   const command = args[0];
   if (command !== "install") {
-    throw new Error(
-      "usage: bun src/install/installer.ts install [--no-shell-integration] [--all-hosts]",
-    );
+    throw new Error("usage: agent install [--no-shell-integration] [--all-hosts] [--assets-only]");
   }
 
-  const options: InstallOptions = { noShellIntegration: false, allHosts: false };
+  const options: InstallOptions = {
+    noShellIntegration: false,
+    allHosts: false,
+    assetsOnly: false,
+  };
   for (let i = 1; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--no-shell-integration") {
       options.noShellIntegration = true;
     } else if (arg === "--all-hosts") {
       options.allHosts = true;
+    } else if (arg === "--assets-only") {
+      options.assetsOnly = true;
     } else {
       throw new Error(`unknown argument '${arg}'`);
     }
@@ -43,54 +114,139 @@ export function parseInstallArgs(args: string[]): InstallOptions {
   return options;
 }
 
-export function shellSetupArgs(options: InstallOptions): string[] | null {
-  if (options.noShellIntegration) return null;
-  const args = ["shell"];
-  if (options.allHosts) args.push("--all-hosts");
-  return args;
+interface ShellWiring {
+  allHosts: boolean;
 }
 
-function projectRoot(): string {
-  return dirname(dirname(dirname(fileURLToPath(import.meta.url))));
+interface AssetCopy {
+  from: string;
+  to: string;
+  executable: boolean;
 }
 
-function agentLauncherPath(root: string): string {
-  return process.platform === "win32" ? join(root, "bin", "agent.ps1") : join(root, "bin", "agent");
+interface ShimWrite {
+  to: string;
+  text: string;
+  executable: boolean;
 }
 
-function runAgent(root: string, args: string[]): void {
-  const agent = agentLauncherPath(root);
-  const win = process.platform === "win32";
-  const command = win ? "powershell" : agent;
-  const spawnArgs = win
-    ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", agent, ...args]
-    : args;
-  const result = spawnSync(command, spawnArgs, {
-    cwd: root,
-    stdio: args[0] === "env" ? ["ignore", "ignore", "inherit"] : "inherit",
-    env: { ...process.env, HUSKY: "0" },
-  });
-  if (result.error) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(`agent ${args.join(" ")} failed (exit ${result.status ?? result.signal})`);
+export type InstallPlan =
+  | { kind: "in-place"; root: string; shell: ShellWiring | null }
+  | {
+    kind: "installed";
+    root: string;
+    copies: AssetCopy[];
+    shims: ShimWrite[];
+    legacyRemovals: string[];
+    shell: ShellWiring | null;
+  };
+
+/** Where the embedded assets live: the repo root relative to this module --
+ *  the compiled VFS root in a binary, the checkout root in dev. */
+function assetSourceRoot(): string {
+  return fileURLToPath(new URL("../..", import.meta.url));
+}
+
+/** Collect every file under `dir` (recursively, sorted for determinism) as
+ *  install-root-relative copies. `.sh` files get the executable bit: they are
+ *  the only embedded assets ever handed to an OS exec directly. */
+function collectAssetCopies(sourceRoot: string, root: string, dir: string): AssetCopy[] {
+  const copies: AssetCopy[] = [];
+  const walk = (rel: string): void => {
+    const entries = readdirSync(join(sourceRoot, rel), { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const entryRel = join(rel, entry.name);
+      if (entry.isDirectory()) {
+        walk(entryRel);
+      } else {
+        copies.push({
+          from: join(sourceRoot, entryRel),
+          to: join(root, entryRel),
+          executable: entry.name.endsWith(".sh"),
+        });
+      }
+    }
+  };
+  walk(dir);
+  return copies;
+}
+
+/** Build the full typed plan. Exported for tests; `runInstall` is the composed
+ *  entry point. `root`/`sourceRoot` default to the live install root and the
+ *  embedded asset source. */
+export function buildInstallPlan(
+  options: InstallOptions,
+  root: string = installRoot(),
+  sourceRoot: string = assetSourceRoot(),
+): InstallPlan {
+  const shell: ShellWiring | null = options.noShellIntegration || options.assetsOnly
+    ? null
+    : { allHosts: options.allHosts };
+
+  if (resolve(sourceRoot) === resolve(root)) {
+    return { kind: "in-place", root, shell };
   }
-}
 
-export function runInstall(options: InstallOptions): void {
-  const root = projectRoot();
-  const agent = agentLauncherPath(root);
-  if (!existsSync(agent)) throw new Error(`could not find agent launcher at ${agent}`);
-
-  console.log("Bootstrapping copilot-env dependencies ...");
-  runAgent(root, ["env"]);
-
-  const setupArgs = shellSetupArgs(options);
-  if (setupArgs === null) {
-    console.log("Skipping shell integration (--no-shell-integration).");
-  } else {
-    runAgent(root, setupArgs);
+  const copies: AssetCopy[] = [];
+  for (const dir of EMBEDDED_ASSET_DIRS) {
+    if (!existsSync(join(sourceRoot, dir))) {
+      throw new Error(
+        `embedded assets are missing ${dir}; this binary was not built by scripts/compile.sh`,
+      );
+    }
+    copies.push(...collectAssetCopies(sourceRoot, root, dir));
+  }
+  for (const file of EMBEDDED_ASSET_FILES) {
+    if (!existsSync(join(sourceRoot, file))) {
+      throw new Error(
+        `embedded assets are missing ${file}; this binary was not built by scripts/compile.sh`,
+      );
+    }
+    copies.push({ from: join(sourceRoot, file), to: join(root, file), executable: false });
   }
 
+  return {
+    kind: "installed",
+    root,
+    copies,
+    shims: [
+      { to: join(root, "bin", "agent"), text: POSIX_SHIM, executable: true },
+      { to: join(root, "bin", "agent.ps1"), text: POWERSHELL_SHIM, executable: false },
+    ],
+    legacyRemovals: LEGACY_ARTIFACTS.map((name) => join(root, name)).filter(existsSync),
+    shell,
+  };
+}
+
+export function applyInstallPlan(plan: InstallPlan): void {
+  if (plan.kind === "installed") {
+    // read+write instead of copyFileSync: the source side may be a compiled
+    // VFS path, which is only guaranteed readable through in-process reads.
+    for (const copy of plan.copies) {
+      mkdirSync(dirname(copy.to), { recursive: true });
+      writeFileSync(copy.to, readFileSync(copy.from));
+      if (copy.executable) chmodSync(copy.to, 0o755);
+    }
+    for (const shim of plan.shims) {
+      mkdirSync(dirname(shim.to), { recursive: true });
+      writeFileSync(shim.to, shim.text);
+      if (shim.executable) chmodSync(shim.to, 0o755);
+    }
+    consola.success(`Installed the copilot-env runtime files into ${plan.root}`);
+    for (const path of plan.legacyRemovals) {
+      consola.info(`Removing superseded ${path} ...`);
+      rmSync(path, { recursive: true, force: true });
+    }
+  }
+
+  if (plan.shell === null) return;
+  runShellIntegration({ allHosts: plan.shell.allHosts });
+}
+
+/** What to tell the user once a real install finishes. Skipped for
+ *  `--assets-only`, which is a machine-to-machine step inside `agent update`. */
+function printEpilogue(options: InstallOptions): void {
   console.log("");
   if (options.noShellIntegration) {
     console.log("Done. Shell integration was skipped; run 'agent shell' to enable it.");
@@ -111,11 +267,11 @@ export function runInstall(options: InstallOptions): void {
   );
 }
 
-if (import.meta.main) {
-  try {
-    runInstall(parseInstallArgs(process.argv.slice(2)));
-  } catch (e) {
-    console.error(e instanceof Error ? e.message : String(e));
-    process.exitCode = 1;
+export function runInstall(options: InstallOptions): void {
+  applyInstallPlan(buildInstallPlan(options));
+  if (options.assetsOnly) return;
+  if (options.noShellIntegration) {
+    consola.info("Skipping shell integration (--no-shell-integration).");
   }
+  printEpilogue(options);
 }

@@ -3,10 +3,12 @@
 // Direct run:
 //   deno run -P=cli src/cli.ts <command> [args]
 //
-// This is the implementation behind bin/agent and bin/agent.ps1. The launchers
-// normally run this after ensuring Bun/deps are present; direct runs are useful
-// for tests and local command debugging. Run `deno run -P=cli src/cli.ts --help` for the
-// command tree and per-command arguments.
+// This is the implementation behind bin/agent and bin/agent.ps1, and the entry
+// `deno compile` builds the released binary from. In a dev checkout the
+// launchers run this after ensuring the pinned deno and the locked deps are
+// present; direct runs are useful for tests and local command debugging. Run
+// `deno run -P=cli src/cli.ts --help` for the command tree and per-command
+// arguments.
 //
 // Commander (not citty) so unknown flags are rejected (`error: unknown option
 // '--x'`, exit 1) instead of silently accepted, and so help wraps to the
@@ -37,6 +39,7 @@ import { runUpdate } from "./commands/update.ts";
 import { configKeysHelp } from "./copilot_api/env_config.ts";
 import { AUTH_PROVIDERS, type AuthProvider } from "./copilot_api/env_state.ts";
 import { ghTokenEnvVarsLabel } from "./copilot_api/gh_cli.ts";
+import { runInstall } from "./install/installer.ts";
 import { runMigrations } from "./migrations/index.ts";
 import { runCost } from "./usage/cost.ts";
 import { OPENROUTER_MODELS_URL } from "./usage/pricing.ts";
@@ -49,8 +52,7 @@ import { packageVersion } from "./utils/version.ts";
 disableConsolaTimestamps();
 
 // Thin Commander wiring: each subcommand only declares its parameters and calls
-// the matching domain/command run function. bin/agent runs `deno install` (in-place,
-// in the checkout) before this, so the install/float is not a subcommand here.
+// the matching domain/command run function.
 
 /** Commander hands action callbacks an options bag of mixed-typed values. */
 type Opts = Record<string, unknown>;
@@ -639,6 +641,28 @@ program
       noSudo: opts.sudo === false,
       noPrereqs: opts.prereqs === false,
       allHosts: Boolean(opts.allHosts),
+    })
+  );
+
+program
+  .command("install")
+  .helpGroup("Maintenance:")
+  .description(
+    "Finalize this install root: write the runtime files and launcher shims " +
+      "shipped inside this binary, then wire shell integration. Run by install.sh / install.ps1.",
+  )
+  .option("--no-shell-integration", "Materialize the runtime files only; don't touch your rc file.")
+  .option("--all-hosts", "Windows only: wire the AllHosts PowerShell profile.")
+  .option(
+    "--assets-only",
+    "Refresh the runtime files and shims only - no shell wiring, no summary. Used by `agent update` after it swaps the binary.",
+  )
+  .action((opts: Opts) =>
+    runInstall({
+      // Commander's --no-<x> sets opts.shellIntegration=false, so read the positive form.
+      noShellIntegration: opts.shellIntegration === false,
+      allHosts: Boolean(opts.allHosts),
+      assetsOnly: Boolean(opts.assetsOnly),
     })
   );
 

@@ -1,8 +1,11 @@
 # copilot-env installer (Windows).
 #
-# Bootstrap only: ensure Bun, download/extract the selected copilot-env GitHub
-# release source archive, then hand off to the release-bundled TypeScript
-# installer. Optional CLIs and launchers are managed after install with
+# Bootstrap only: download the compiled Windows agent binary from the selected
+# copilot-env GitHub release, verify its SHA256 against the release's
+# checksums.txt, install it as <install-dir>\bin\agent-bin.exe, then hand off
+# to the binary's own `install` subcommand (it materializes the runtime
+# assets, the bin\agent launcher shims, and the shell integration). Optional
+# CLIs and launchers are managed after install with
 # `agent shell --clis --launchers`.
 
 <#
@@ -11,19 +14,24 @@ Installs copilot-env (Windows twin of install.sh).
 
 .DESCRIPTION
 Installs copilot-env into $env:USERPROFILE\.copilot-env by downloading the
-selected GitHub release source archive, bootstraps its dependencies, and wires
-shell integration by default. Optional agent CLIs and launchers are configured
-after install:
+compiled agent binary from the selected GitHub release, verifying its SHA256,
+and wiring shell integration by default. Optional agent CLIs and launchers are
+configured after install:
 
   agent shell --clis [--cooldown[=DAYS]] [--no-sudo] [--no-prereqs] [--launchers]
 
-To install a specific copilot-env version, download install.ps1 from that
-GitHub Release and run it. The main-branch installer resolves latest; release
-assets are pinned to their release tag.
+The main-branch installer resolves the latest release; release assets are
+pinned to their release tag. $env:COPILOT_ENV_DOWNLOAD_BASE (a directory or a
+base URL holding the agent binary and checksums.txt) overrides the release
+download source; CI uses it to smoke draft releases.
 
 .PARAMETER InstallDir
 Install target (default $env:USERPROFILE\.copilot-env). Takes precedence over
-$env:COPILOT_ENV_DIR. Ignored when run from an existing checkout.
+$env:COPILOT_ENV_DIR.
+
+.PARAMETER Version
+Install a specific release tag (e.g. v3.5.6) instead of the default. Takes
+precedence over $env:COPILOT_ENV_INSTALL_REF.
 
 .PARAMETER NoShellIntegration
 Do not wire the PowerShell $PROFILE. Run `agent shell` later to enable it.
@@ -41,6 +49,7 @@ instead of the current host's profile.
 param(
     [switch]$AllHosts,
     [string]$InstallDir = '',
+    [string]$Version = '',
     [switch]$NoShellIntegration,
     [switch]$NoExecShell
 )
@@ -48,45 +57,27 @@ param(
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
-# The next three lines are rewritten to the release tag by .github/scripts/release-assets.ts
-# (byte-exact needles; test/installer_pinning.test.ts guards the match).
+# The next line is rewritten to the release tag by .github/scripts/release-assets.ts
+# (byte-exact needle; test/installer_pinning.test.ts guards the match).
 $InstallRef = if ($env:COPILOT_ENV_INSTALL_REF) { $env:COPILOT_ENV_INSTALL_REF } else { 'latest' }
-$ResolverUrl = 'https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/resolve-release.ts'
-$VerifierUrl = 'https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/verify-source-archive.ts'
-$AuthHeaders = @{ 'User-Agent' = 'copilot-env' }
+$Repo = 'Vivswan/copilot-env'
+$BinaryName = 'agent-bin.exe'
+# The Authorization header goes only to api.github.com (tag resolution);
+# release-asset downloads ride the public URL with anonymous headers.
+$AuthHeaders = @{ 'User-Agent' = 'copilot-env'; 'Accept' = 'application/vnd.github+json' }
 $AuthToken = if ($env:GH_TOKEN) { $env:GH_TOKEN } else { $env:GITHUB_TOKEN }
 if ($AuthToken) {
     $AuthHeaders['Authorization'] = "Bearer $AuthToken"
 }
-$AssetHeaders = @{}
-foreach ($key in $AuthHeaders.Keys) {
-    $AssetHeaders[$key] = $AuthHeaders[$key]
-}
-$AssetHeaders['Accept'] = 'application/octet-stream'
-$PublicAssetHeaders = @{ 'User-Agent' = 'copilot-env'; 'Accept' = 'application/octet-stream' }
+$PublicHeaders = @{ 'User-Agent' = 'copilot-env' }
 if (-not $InstallDir) {
     $InstallDir = if ($env:COPILOT_ENV_DIR) { $env:COPILOT_ENV_DIR } else { Join-Path $env:USERPROFILE '.copilot-env' }
 }
 
-$SelfDir = if ($PSCommandPath) { Split-Path -Parent $PSCommandPath } else { $null }
-
-function Update-ProcessPath {
-    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $entries = @($machinePath -split ';') + @($userPath -split ';') + @($env:Path -split ';')
-    $env:Path = ($entries | Where-Object { $_ } | Select-Object -Unique) -join ';'
-}
-
-function Add-UserPath {
-    param([Parameter(Mandatory)][string]$Directory)
-
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $entries = @($userPath -split ';' | Where-Object { $_ })
-    if ($entries -notcontains $Directory) {
-        [Environment]::SetEnvironmentVariable('Path', (($entries + $Directory) -join ';'), 'User')
-    }
-    Update-ProcessPath
-}
+# Bun-era artifacts an old source-tree install leaves in the install root; the
+# binary install has no runtime bootstrap, so they are removed outright
+# (mirrors LEGACY_ARTIFACTS in src/install/installer.ts).
+$LegacyArtifacts = @('node_modules', 'bun.lock', 'bunfig.toml')
 
 function Invoke-WithRetry {
     param(
@@ -96,20 +87,13 @@ function Invoke-WithRetry {
 
     for ($try = 1; $try -le 3; $try++) {
         try {
-            & $Script
-            return
+            return & $Script
         } catch {
             if ($try -ge 3) { throw }
             Write-Warning "$Label failed; retrying ($try/3): $($_.Exception.Message)"
             Start-Sleep -Seconds ($try * 2)
         }
     }
-}
-
-function Test-ExternalCommand {
-    param([Parameter(Mandatory)][string]$Command)
-
-    return [bool](Get-Command $Command -ErrorAction SilentlyContinue)
 }
 
 function Resolve-PhysicalPath {
@@ -157,7 +141,7 @@ public static class Ce_PathResolver {
     }
     $physical = [Ce_PathResolver]::Resolve($full)
     if (-not $physical) {
-        throw "Refusing to replace install directory '$InstallDir': could not resolve its physical path."
+        throw "Refusing to use install directory '$InstallDir': could not resolve its physical path."
     }
     return $physical
 }
@@ -169,7 +153,7 @@ function Resolve-SafeInstallDir {
     # so an input like 'C:\Users\*' would otherwise pass the guard and then delete every
     # match. (The POSIX twin is safe here because it quotes every use of the path.)
     if ([System.Management.Automation.WildcardPattern]::ContainsWildcardCharacters($InstallDir)) {
-        throw "Refusing to replace unsafe install directory '$InstallDir' (contains wildcard characters)."
+        throw "Refusing to use unsafe install directory '$InstallDir' (contains wildcard characters)."
     }
     # Resolve physically (all reparse points + 8.3 short names) so an alias of the profile
     # directory cannot slip past the home guard, then trim trailing separators (never past
@@ -181,139 +165,121 @@ function Resolve-SafeInstallDir {
     $homeRoot = [System.IO.Path]::GetPathRoot($userHome)
     $normHome = if ($userHome.Length -gt $homeRoot.Length) { $userHome.TrimEnd($sep, $alt) } else { $userHome }
     if (-not $normResolved -or $normResolved -eq $root -or $normResolved -ieq $normHome) {
-        throw "Refusing to replace unsafe install directory '$InstallDir'."
+        throw "Refusing to use unsafe install directory '$InstallDir'."
     }
     return $normResolved
 }
 
-function Resolve-ReleaseTarget {
-    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("ce-resolve-" + [guid]::NewGuid())
-    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
-    try {
-        $resolver = Join-Path $tmp 'resolve-release.ts'
-        Invoke-WithRetry 'Download release resolver' {
-            Invoke-WebRequest -Uri $ResolverUrl -OutFile $resolver -UseBasicParsing -Headers $AuthHeaders
-        }
-        $resolverArgs = @($resolver, '--json')
-        if ($InstallRef -ne 'latest') {
-            $resolverArgs += @('--tag', $InstallRef)
-        }
-        $json = (& bun @resolverArgs)
-        if ($LASTEXITCODE -ne 0 -or -not $json) { return $null }
-        $target = ($json | Select-Object -First 1) | ConvertFrom-Json
-        if (-not $target.tarballUrl -or -not $target.sourceSha) { return $null }
-        return $target
-    } finally {
-        Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+# The Windows entry of the platform -> release-target mapping (install.sh
+# carries the Linux/macOS entries; scripts/compile.sh owns the target list).
+function Resolve-Target {
+    $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+    switch ("$arch") {
+        'X64' { return 'x86_64-pc-windows-msvc' }
+        default { throw "No prebuilt copilot-env binary for Windows/$arch." }
     }
 }
 
-function Resolve-AssetHeaderSet {
-    param([Parameter(Mandatory)][string]$Url)
-
-    if ($Url.StartsWith('https://api.github.com/')) {
-        return $AssetHeaders
+function Resolve-ReleaseTag {
+    if ($Version) { return $Version }
+    if ($InstallRef -ne 'latest') { return $InstallRef }
+    $release = Invoke-WithRetry 'Resolve latest release' {
+        Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $AuthHeaders
     }
-    return $PublicAssetHeaders
+    $tag = [string]$release.tag_name
+    if ($tag -notmatch '^v[0-9]') { throw "Could not resolve a release tag (got '$tag')." }
+    return $tag
 }
 
-Update-ProcessPath
+# Fetch one release file into $Destination: from the override directory
+# (pwsh's Invoke-WebRequest cannot fetch file:// URIs, hence directory mode),
+# the override URL, or the resolved GitHub release download URL.
+function Get-ReleaseFile {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Destination
+    )
 
-$BunExe = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
-if (-not (Test-ExternalCommand bun) -and -not (Test-Path $BunExe)) {
-    Write-Host 'Installing Bun ...'
-    Invoke-WithRetry 'Bun install' {
-        & powershell -NoProfile -ExecutionPolicy Bypass -Command 'irm bun.sh/install.ps1 | iex' | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw 'Bun installation failed.' }
+    if ($DownloadDir) {
+        Copy-Item -LiteralPath (Join-Path $DownloadDir $Name) $Destination -Force
+    } else {
+        Invoke-WithRetry "Download $Name" {
+            Invoke-WebRequest -Uri "$DownloadUrlBase/$Name" -OutFile $Destination -UseBasicParsing -Headers $PublicHeaders
+        } | Out-Null
     }
 }
-if (Test-Path $BunExe) {
-    Add-UserPath (Split-Path $BunExe -Parent)
-}
-if (-not (Test-ExternalCommand bun)) {
-    throw 'Bun was installed but is still unavailable. Open a new PowerShell window and rerun install.ps1.'
+
+# The one checksums.txt line for $AssetName, parsed to its lowercase SHA256 (a
+# leading "*" marks binary mode in shasum output; accept both forms).
+function Get-ExpectedSha256 {
+    param(
+        [Parameter(Mandatory)][string]$ChecksumsPath,
+        [Parameter(Mandatory)][string]$AssetName
+    )
+
+    foreach ($line in Get-Content -LiteralPath $ChecksumsPath) {
+        $parts = $line.Trim() -split '\s+', 2
+        if ($parts.Count -lt 2) { continue }
+        if ($parts[1].TrimStart('*') -eq $AssetName) { return $parts[0].ToLowerInvariant() }
+    }
+    throw "checksums.txt has no entry for $AssetName."
 }
 
-if ($SelfDir -and (Test-Path (Join-Path $SelfDir 'shell\agents.ps1'))) {
-    $RepoDir = $SelfDir
-    Write-Host "Using existing checkout at $RepoDir"
+$InstallDir = Resolve-SafeInstallDir
+$Target = Resolve-Target
+$AssetName = "agent-$Target.exe"
+
+$DownloadDir = ''
+$DownloadUrlBase = ''
+if ($env:COPILOT_ENV_DOWNLOAD_BASE) {
+    if (Test-Path -LiteralPath $env:COPILOT_ENV_DOWNLOAD_BASE -PathType Container) {
+        $DownloadDir = $env:COPILOT_ENV_DOWNLOAD_BASE
+    } else {
+        $DownloadUrlBase = $env:COPILOT_ENV_DOWNLOAD_BASE
+    }
+    Write-Host "Downloading copilot-env ($AssetName) from $($env:COPILOT_ENV_DOWNLOAD_BASE) into $InstallDir ..."
 } else {
-    $InstallDir = Resolve-SafeInstallDir
     Write-Host 'Resolving the copilot-env release ...'
-    $target = Resolve-ReleaseTarget
-    if (-not $target) { throw 'No copilot-env release found (or the GitHub API is unreachable).' }
-
-    $url = $target.tarballUrl
-    $ref = ($url -split '/')[-1]
-    Write-Host "Downloading copilot-env $ref into $InstallDir ..."
-    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("ce-dl-" + [guid]::NewGuid())
-    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
-    try {
-        $tgz = Join-Path $tmp 'release.tgz'
-        $verifier = Join-Path $tmp 'verify-source-archive.ts'
-        Invoke-WithRetry 'Download archive verifier' {
-            Invoke-WebRequest -Uri $VerifierUrl -OutFile $verifier -UseBasicParsing -Headers $AuthHeaders
-        }
-        Invoke-WithRetry 'Download copilot-env release' {
-            Invoke-WebRequest -Uri $url -OutFile $tgz -UseBasicParsing -Headers (Resolve-AssetHeaderSet $url)
-        }
-        $verifyArgs = @($verifier, $tgz, $target.sourceSha)
-        if ($target.sourceSha256) {
-            $verifyArgs += $target.sourceSha256
-        }
-        & bun @verifyArgs
-        if ($LASTEXITCODE -ne 0) { throw 'release archive verification failed.' }
-        # Preserve opt-in autoupdate state and the user's local .env overrides across the
-        # destructive replace below (both gitignored, so a release tree never ships them).
-        $autoupdateBackup = Join-Path $tmp '.autoupdate-backup'
-        if (Test-Path (Join-Path $InstallDir '.autoupdate')) {
-            Copy-Item -Recurse -Force (Join-Path $InstallDir '.autoupdate') $autoupdateBackup
-        }
-        $envBackup = Join-Path $tmp '.env-backup'
-        if (Test-Path (Join-Path $InstallDir '.env')) {
-            Copy-Item -Force (Join-Path $InstallDir '.env') $envBackup
-        }
-        if (Test-Path -LiteralPath $InstallDir) {
-            Write-Host "Removing previous copilot-env install at $InstallDir ..."
-            Remove-Item -LiteralPath $InstallDir -Recurse -Force
-        }
-        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-        # tar.exe cannot create symlinks without Developer Mode/admin, so it errors and aborts
-        # the whole extract on the three doc links (CLAUDE.md, .github/*.md -> AGENTS.md).
-        # Exclude them, then materialize them as plain copies of AGENTS.md below.
-        & tar -xzf $tgz --strip-components=1 -C $InstallDir --exclude='*/CLAUDE.md' --exclude='*/.github/copilot-instructions.md' --exclude='*/.github/agents.md'
-        if ($LASTEXITCODE -ne 0) { throw 'tar extraction of the release archive failed.' }
-        $agentsDoc = Join-Path $InstallDir 'AGENTS.md'
-        foreach ($link in @('CLAUDE.md', '.github\copilot-instructions.md', '.github\agents.md')) {
-            $dest = Join-Path $InstallDir $link
-            if ((Test-Path $agentsDoc) -and -not (Test-Path $dest)) {
-                Copy-Item -Force $agentsDoc $dest
-            }
-        }
-        # Restore preserved autoupdate state. The release never ships .autoupdate
-        # (gitignored), so the fresh tree has none - copy the backup into place.
-        if (Test-Path $autoupdateBackup) {
-            Copy-Item -Recurse -Force $autoupdateBackup (Join-Path $InstallDir '.autoupdate')
-        }
-        # Restore the preserved .env (the documented supply-chain pin / env overrides).
-        if (Test-Path $envBackup) {
-            Copy-Item -Force $envBackup (Join-Path $InstallDir '.env')
-        }
-    } finally {
-        Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
-    }
-    $RepoDir = $InstallDir
+    $Tag = Resolve-ReleaseTag
+    $DownloadUrlBase = "https://github.com/$Repo/releases/download/$Tag"
+    Write-Host "Downloading copilot-env $Tag ($AssetName) into $InstallDir ..."
 }
 
-$Installer = Join-Path $RepoDir 'src\install\installer.ts'
-if (-not (Test-Path $Installer)) { throw "Could not find bundled installer at $Installer" }
+$tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("ce-dl-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+try {
+    $binTmp = Join-Path $tmp $AssetName
+    $checksums = Join-Path $tmp 'checksums.txt'
+    Get-ReleaseFile -Name $AssetName -Destination $binTmp
+    Get-ReleaseFile -Name 'checksums.txt' -Destination $checksums
+
+    $expected = Get-ExpectedSha256 -ChecksumsPath $checksums -AssetName $AssetName
+    $actual = (Get-FileHash -LiteralPath $binTmp -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $expected) {
+        throw "SHA256 verification failed for ${AssetName}: expected $expected, got $actual."
+    }
+
+    $binDir = Join-Path $InstallDir 'bin'
+    New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+    Move-Item -LiteralPath $binTmp -Destination (Join-Path $binDir $BinaryName) -Force
+} finally {
+    Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+}
+
+foreach ($legacy in $LegacyArtifacts) {
+    $legacyPath = Join-Path $InstallDir $legacy
+    if (Test-Path -LiteralPath $legacyPath) {
+        Write-Host "Removing legacy $legacy from $InstallDir ..."
+        Remove-Item -LiteralPath $legacyPath -Recurse -Force
+    }
+}
 
 $installerArgs = @('install')
 if ($NoShellIntegration) { $installerArgs += '--no-shell-integration' }
 if ($AllHosts) { $installerArgs += '--all-hosts' }
 
-& bun $Installer @installerArgs
-if ($LASTEXITCODE -ne 0) { throw 'copilot-env installer failed.' }
+& (Join-Path (Join-Path $InstallDir 'bin') $BinaryName) @installerArgs
+if ($LASTEXITCODE -ne 0) { throw 'copilot-env install failed.' }
 
 # Offer to reload the shell so the freshly-wired integration takes effect without the
 # user opening a new window. Only when integration was wired, we can actually prompt on

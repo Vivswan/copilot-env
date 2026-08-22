@@ -1,59 +1,72 @@
 #!/usr/bin/env bash
 # copilot-env installer (Linux + macOS).
 #
-# Bootstrap only: ensure bun, download/extract the selected copilot-env GitHub
-# release source archive, then hand off to the release-bundled TypeScript
-# installer. Optional CLIs and launchers are managed after install with
-# `agent shell --clis --launchers`.
+# Bootstrap only: pick this platform's compiled agent binary from the selected
+# copilot-env GitHub release, verify its SHA256 against the release's
+# checksums.txt, install it as <install-dir>/bin/agent-bin, then hand off to
+# the binary's own `install` subcommand (it materializes the runtime assets,
+# the bin/agent launcher shims, and the shell integration). Optional CLIs and
+# launchers are managed after install with `agent shell --clis --launchers`.
 
 set -eu
 
-# The next three lines are rewritten to the release tag by .github/scripts/release-assets.ts
-# (byte-exact needles; test/installer_pinning.test.ts guards the match).
+# The next line is rewritten to the release tag by .github/scripts/release-assets.ts
+# (byte-exact needle; test/installer_pinning.test.ts guards the match).
 INSTALL_REF="${COPILOT_ENV_INSTALL_REF:-latest}"
-RESOLVER_URL="https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/resolve-release.ts"
-VERIFIER_URL="https://raw.githubusercontent.com/Vivswan/copilot-env/main/src/install/verify-source-archive.ts"
+REPO="Vivswan/copilot-env"
+BINARY_NAME="agent-bin"
 INSTALL_DIR_ARG=""
+VERSION_ARG=""
 SKIP_SHELL_INTEGRATION=false
 EXEC_SHELL=true
 [ -n "${COPILOT_ENV_NO_EXEC_SHELL:-}" ] && EXEC_SHELL=false
-AUTH_CURL_ARGS=(-H "User-Agent: copilot-env")
-ASSET_CURL_ARGS=("${AUTH_CURL_ARGS[@]}" -H "Accept: application/octet-stream")
-PUBLIC_ASSET_CURL_ARGS=(-H "User-Agent: copilot-env" -H "Accept: application/octet-stream")
+# The Authorization header goes only to api.github.com (tag resolution);
+# release-asset downloads ride the public URL (curl >= 7.58 would drop the
+# header on the cross-host CDN redirect anyway).
+AUTH_CURL_ARGS=(-H "User-Agent: copilot-env" -H "Accept: application/vnd.github+json")
+PUBLIC_CURL_ARGS=(-H "User-Agent: copilot-env")
+
+# Bun-era artifacts an old source-tree install leaves in the install root; the
+# binary install has no runtime bootstrap, so they are removed outright
+# (mirrors LEGACY_ARTIFACTS in src/install/installer.ts).
+LEGACY_ARTIFACTS="node_modules bun.lock bunfig.toml"
 
 usage() {
     cat <<'EOF'
-Usage: install.sh [--dir DIR] [--no-shell-integration] [--no-exec-shell]
+Usage: install.sh [--dir DIR] [--version TAG] [--no-shell-integration] [--no-exec-shell]
 
-Installs copilot-env into ~/.copilot-env by downloading the selected GitHub
-release source archive, bootstraps its dependencies, and wires shell integration
-by default. Optional agent CLIs and launchers are configured after install:
+Installs copilot-env into ~/.copilot-env by downloading the compiled agent
+binary for this platform from the selected GitHub release, verifying its
+SHA256, and wiring shell integration by default. Optional agent CLIs and
+launchers are configured after install:
 
   agent shell --clis [--cooldown[=DAYS]] [--no-sudo] [--no-prereqs] [--launchers]
 
 Options:
   --dir DIR              Install target (default ~/.copilot-env). Takes
-                         precedence over $COPILOT_ENV_DIR. Ignored when run
-                         from an existing checkout.
+                         precedence over $COPILOT_ENV_DIR.
+  --version TAG          Install a specific release tag (e.g. v3.5.6) instead
+                         of the default. Takes precedence over
+                         $COPILOT_ENV_INSTALL_REF.
   --no-shell-integration Do not wire ~/.bashrc / ~/.zshrc. Run
                          `agent shell` later to enable it.
   --no-exec-shell        Do not offer to reload your shell at the end. The
                          offer is also skipped when non-interactive or under CI,
                          or when $COPILOT_ENV_NO_EXEC_SHELL is set.
 
-To install a specific copilot-env version, download install.sh from that
-GitHub Release and run it. The main-branch installer resolves latest; release
-assets are pinned to their release tag.
+Environment:
+  COPILOT_ENV_DOWNLOAD_BASE  Directory or URL to fetch the agent binary and
+                             checksums.txt from instead of the GitHub release
+                             (CI uses this to smoke draft releases).
+
+The main-branch installer resolves the latest release; release assets are
+pinned to their release tag.
 EOF
 }
 
 die() {
     echo "ERROR: $*" >&2
     exit 2
-}
-
-json_field() {
-    bun -e "const d=JSON.parse(await Bun.stdin.text()); process.stdout.write(String(d['$1'] ?? ''))"
 }
 
 retry() {
@@ -118,20 +131,79 @@ resolve_safe_install_dir() {
     # and the user's home directory.
     case "$INSTALL_DIR" in
         /*) ;;
-        *) die "refusing to replace unsafe install directory '$INSTALL_DIR'." ;;
+        *) die "refusing to use unsafe install directory '$INSTALL_DIR'." ;;
     esac
     if [ "$INSTALL_DIR" = "$(dirname -- "$INSTALL_DIR")" ] || [ "$INSTALL_DIR" = "$_home" ]; then
-        die "refusing to replace unsafe install directory '$INSTALL_DIR'."
+        die "refusing to use unsafe install directory '$INSTALL_DIR'."
     fi
 }
 
-# Mirrors Resolve-AssetHeaderSet in install.ps1: the Authorization header goes
-# only to api.github.com (curl >= 7.58 drops it on cross-host redirects itself).
-resolve_asset_curl_args() {
-    case "$1" in
-        https://api.github.com/*) RESOLVED_ASSET_CURL_ARGS=("${ASSET_CURL_ARGS[@]}") ;;
-        *) RESOLVED_ASSET_CURL_ARGS=("${PUBLIC_ASSET_CURL_ARGS[@]}") ;;
+# The ONE platform -> release-target mapping (mirrors the release-asset names
+# produced by scripts/compile.sh; install.ps1 carries the Windows entry).
+resolve_target() {
+    _os="$(uname -s)"
+    _arch="$(uname -m)"
+    case "$_os/$_arch" in
+        Darwin/x86_64) TARGET="x86_64-apple-darwin" ;;
+        Darwin/arm64) TARGET="aarch64-apple-darwin" ;;
+        Linux/x86_64 | Linux/amd64) TARGET="x86_64-unknown-linux-gnu" ;;
+        Linux/aarch64 | Linux/arm64) TARGET="aarch64-unknown-linux-gnu" ;;
+        *) die "no prebuilt copilot-env binary for $_os/$_arch." ;;
     esac
+}
+
+# Verify one "<sha256>  <name>" checksums.txt line against the file of that
+# name inside $1, with whichever sha256 tool this system has.
+sha256_check_line() {
+    _dir="$1"
+    _line="$2"
+    if command -v sha256sum >/dev/null 2>&1; then
+        ( cd "$_dir" && printf '%s\n' "$_line" | sha256sum -c - >/dev/null )
+    elif command -v shasum >/dev/null 2>&1; then
+        ( cd "$_dir" && printf '%s\n' "$_line" | shasum -a 256 -c - >/dev/null )
+    else
+        die "need sha256sum or shasum on PATH to verify the download."
+    fi
+}
+
+resolve_release_tag() {
+    if [ -n "$VERSION_ARG" ]; then
+        TAG="$VERSION_ARG"
+    elif [ "$INSTALL_REF" != "latest" ]; then
+        TAG="$INSTALL_REF"
+    elif [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
+        # A token raises the API rate limit and sees private repos, so resolve
+        # `latest` through the API when one is available.
+        _json="$(retry "Resolve latest release" curl -fsSL "${AUTH_CURL_ARGS[@]}" \
+            "https://api.github.com/repos/$REPO/releases/latest")" \
+            || die "could not resolve the latest copilot-env release."
+        TAG="$(printf '%s' "$_json" \
+            | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+    else
+        # Tokenless: follow the /releases/latest redirect to the tag page
+        # instead of burning the 60/hour unauthenticated API quota.
+        _url="$(retry "Resolve latest release" curl -fsSL -o /dev/null -w '%{url_effective}' \
+            "${PUBLIC_CURL_ARGS[@]}" "https://github.com/$REPO/releases/latest")" \
+            || die "could not resolve the latest copilot-env release."
+        TAG="${_url##*/}"
+    fi
+    case "$TAG" in
+        v[0-9]*) ;;
+        *) die "could not resolve a release tag (got '$TAG')." ;;
+    esac
+}
+
+# Fetch one release file into $2: from the override directory, the override
+# URL, or the resolved GitHub release download URL.
+fetch_release_file() {
+    _name="$1"
+    _dest="$2"
+    if [ -n "$DOWNLOAD_DIR" ]; then
+        cp -- "$DOWNLOAD_DIR/$_name" "$_dest"
+    else
+        retry "Download $_name" curl -fsSL "${PUBLIC_CURL_ARGS[@]}" \
+            "$DOWNLOAD_URL_BASE/$_name" -o "$_dest"
+    fi
 }
 
 while [ $# -gt 0 ]; do
@@ -144,6 +216,13 @@ while [ $# -gt 0 ]; do
         --dir=*)
             INSTALL_DIR_ARG="${1#*=}"
             [ -n "$INSTALL_DIR_ARG" ] || die "--dir= needs a value, e.g. --dir=/opt/copilot-env." ;;
+        --version)
+            shift
+            [ $# -gt 0 ] || die "--version needs a release tag argument."
+            VERSION_ARG="$1" ;;
+        --version=*)
+            VERSION_ARG="${1#*=}"
+            [ -n "$VERSION_ARG" ] || die "--version= needs a value, e.g. --version=v3.5.6." ;;
         --no-shell-integration) SKIP_SHELL_INTEGRATION=true ;;
         --no-exec-shell) EXEC_SHELL=false ;;
         *) die "unknown argument '$1' (try --help)" ;;
@@ -152,108 +231,72 @@ while [ $# -gt 0 ]; do
 done
 
 INSTALL_DIR="${INSTALL_DIR_ARG:-${COPILOT_ENV_DIR:-$HOME/.copilot-env}}"
+resolve_safe_install_dir "$INSTALL_DIR"
 
-if ! command -v bun >/dev/null 2>&1 && [ ! -x "$HOME/.bun/bin/bun" ]; then
-    echo "Installing bun ..."
-    retry "Bun install" bash -c 'set -o pipefail; curl -fsSL https://bun.sh/install | bash >/dev/null'
+_tmp="$(mktemp -d)"
+trap 'rm -rf "$_tmp"' EXIT
+
+# A GH token (higher rate limits / private access) must stay off curl's command
+# line: argv is world-readable via `ps`/`/proc/<pid>/cmdline` while curl runs, so
+# write it to a 0600 header file and pass `-H @file` (curl >= 7.55).
+if [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
+    _hdr="$_tmp/auth-header"
+    _old_umask="$(umask)"
+    umask 0177
+    printf 'Authorization: Bearer %s\n' "${GH_TOKEN:-$GITHUB_TOKEN}" > "$_hdr"
+    umask "$_old_umask"
+    AUTH_CURL_ARGS+=(-H "@$_hdr")
 fi
-[ -x "$HOME/.bun/bin/bun" ] && case ":$PATH:" in
-    *":$HOME/.bun/bin:"*) ;;
-    *) PATH="$HOME/.bun/bin:$PATH" ;;
-esac
-export PATH
 
-SELF_DIR=""
-case "${0:-}" in
-    bash|sh|-bash|-sh|"") ;;
-    *) SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)" ;;
-esac
+resolve_target
+ASSET="agent-$TARGET"
 
-if [ -n "$SELF_DIR" ] && [ -f "$SELF_DIR/shell/agents.bashrc" ]; then
-    REPO_DIR="$SELF_DIR"
-    echo "Using existing checkout at $REPO_DIR"
+DOWNLOAD_DIR=""
+DOWNLOAD_URL_BASE=""
+if [ -n "${COPILOT_ENV_DOWNLOAD_BASE:-}" ]; then
+    # Override for CI draft-release smokes and mirrors: a local directory or a
+    # base URL that holds the agent binary and checksums.txt.
+    if [ -d "$COPILOT_ENV_DOWNLOAD_BASE" ]; then
+        DOWNLOAD_DIR="$COPILOT_ENV_DOWNLOAD_BASE"
+    else
+        DOWNLOAD_URL_BASE="$COPILOT_ENV_DOWNLOAD_BASE"
+    fi
+    echo "Downloading copilot-env ($ASSET) from $COPILOT_ENV_DOWNLOAD_BASE into $INSTALL_DIR ..."
 else
-    # Vet and canonicalize the target (download path only; the existing-checkout
-    # branch above ignores --dir entirely).
-    resolve_safe_install_dir "$INSTALL_DIR"
-    _tmp="$(mktemp -d)"
-    trap 'rm -rf "$_tmp"' EXIT
-    # A GH token (higher rate limits / private access) must stay off curl's command
-    # line: argv is world-readable via `ps`/`/proc/<pid>/cmdline` while curl runs, so
-    # write it to a 0600 header file and pass `-H @file` (curl >= 7.55).
-    if [ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]; then
-        _hdr="$_tmp/auth-header"
-        _old_umask="$(umask)"
-        umask 0177
-        printf 'Authorization: Bearer %s\n' "${GH_TOKEN:-$GITHUB_TOKEN}" > "$_hdr"
-        umask "$_old_umask"
-        AUTH_CURL_ARGS+=(-H "@$_hdr")
-        ASSET_CURL_ARGS+=(-H "@$_hdr")
-    fi
     echo "Resolving the copilot-env release ..."
-    retry "Download release resolver" curl -fsSL "${AUTH_CURL_ARGS[@]}" "$RESOLVER_URL" -o "$_tmp/resolve-release.ts"
-    retry "Download archive verifier" curl -fsSL "${AUTH_CURL_ARGS[@]}" "$VERIFIER_URL" -o "$_tmp/verify-source-archive.ts"
-    RESOLVER_ARGS=(--json)
-    if [ "$INSTALL_REF" != "latest" ]; then
-        RESOLVER_ARGS+=(--tag "$INSTALL_REF")
-    fi
-    _target="$(bun "$_tmp/resolve-release.ts" "${RESOLVER_ARGS[@]}")" \
-        || { echo "ERROR: no copilot-env release found (or the GitHub API is unreachable)." >&2; exit 1; }
-    _url="$(printf %s "$_target" | json_field tarballUrl)"
-    _sha="$(printf %s "$_target" | json_field sourceSha)"
-    _sha256="$(printf %s "$_target" | json_field sourceSha256)"
-    [ -n "$_url" ] && [ -n "$_sha" ] || {
-        echo "ERROR: release resolver returned incomplete metadata." >&2
-        exit 1
-    }
-    _ref="${_url##*/}"
-    echo "Downloading copilot-env $_ref into $INSTALL_DIR ..."
-    resolve_asset_curl_args "$_url"
-    retry "Download copilot-env release" curl -fsSL "${RESOLVED_ASSET_CURL_ARGS[@]}" "$_url" -o "$_tmp/release.tgz"
-    VERIFY_ARGS=("$_tmp/release.tgz" "$_sha")
-    if [ -n "$_sha256" ]; then
-        VERIFY_ARGS+=("$_sha256")
-    fi
-    bun "$_tmp/verify-source-archive.ts" "${VERIFY_ARGS[@]}"
-    # Preserve opt-in autoupdate state and the user's local `.env` overrides across the
-    # destructive replace below (both are gitignored, so a release tree never ships them).
-    if [ -d "$INSTALL_DIR/.autoupdate" ]; then
-        cp -a "$INSTALL_DIR/.autoupdate" "$_tmp/.autoupdate-backup"
-    fi
-    if [ -f "$INSTALL_DIR/.env" ]; then
-        cp -a "$INSTALL_DIR/.env" "$_tmp/.env-backup"
-    fi
-    if [ -e "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; then
-        echo "Removing previous copilot-env install at $INSTALL_DIR ..."
-        rm -rf -- "$INSTALL_DIR"
-    fi
-    mkdir -p "$INSTALL_DIR"
-    tar -xzf "$_tmp/release.tgz" --strip-components=1 -C "$INSTALL_DIR"
-    # Restore preserved autoupdate state. The release never ships .autoupdate (it's
-    # gitignored), so the freshly-extracted tree has none - copy the backup's
-    # contents into a fresh dir (no destructive pre-clean of $INSTALL_DIR needed).
-    if [ -d "$_tmp/.autoupdate-backup" ]; then
-        mkdir -p "$INSTALL_DIR/.autoupdate"
-        cp -a "$_tmp/.autoupdate-backup/." "$INSTALL_DIR/.autoupdate/"
-    fi
-    # Restore the preserved .env (the documented supply-chain pin / env overrides).
-    if [ -f "$_tmp/.env-backup" ]; then
-        cp -a "$_tmp/.env-backup" "$INSTALL_DIR/.env"
-    fi
-    REPO_DIR="$INSTALL_DIR"
+    resolve_release_tag
+    DOWNLOAD_URL_BASE="https://github.com/$REPO/releases/download/$TAG"
+    echo "Downloading copilot-env $TAG ($ASSET) into $INSTALL_DIR ..."
 fi
 
-[ -f "$REPO_DIR/src/install/installer.ts" ] || {
-    echo "ERROR: could not find bundled installer at $REPO_DIR/src/install/installer.ts" >&2
-    exit 1
-}
+fetch_release_file "$ASSET" "$_tmp/$ASSET"
+fetch_release_file "checksums.txt" "$_tmp/checksums.txt"
+
+# Verify against the one checksums.txt line for this asset (a leading "*"
+# marks binary mode in shasum output; accept both forms).
+_line="$(awk -v name="$ASSET" '$2 == name || $2 == ("*" name) { print }' "$_tmp/checksums.txt" | head -n 1)"
+[ -n "$_line" ] || die "checksums.txt has no entry for $ASSET."
+sha256_check_line "$_tmp" "$_line" || die "SHA256 verification failed for $ASSET."
+
+mkdir -p "$INSTALL_DIR/bin"
+# mv (rename) rather than cp: replacing a running agent-bin in place would
+# fail with ETXTBSY; a rename swaps the inode out from under it safely.
+mv -f "$_tmp/$ASSET" "$INSTALL_DIR/bin/$BINARY_NAME"
+chmod 0755 "$INSTALL_DIR/bin/$BINARY_NAME"
+
+for _legacy in $LEGACY_ARTIFACTS; do
+    if [ -e "$INSTALL_DIR/$_legacy" ]; then
+        echo "Removing legacy $_legacy from $INSTALL_DIR ..."
+        rm -rf -- "${INSTALL_DIR:?}/$_legacy"
+    fi
+done
 
 INSTALLER_ARGS=(install)
 if [ "$SKIP_SHELL_INTEGRATION" = true ]; then
     INSTALLER_ARGS+=(--no-shell-integration)
 fi
 
-bun "$REPO_DIR/src/install/installer.ts" "${INSTALLER_ARGS[@]}"
+"$INSTALL_DIR/bin/$BINARY_NAME" "${INSTALLER_ARGS[@]}"
 
 # Offer to reload the shell so the freshly-wired integration takes effect without the
 # user opening a new terminal. Only when integration was wired, we are attached to a
@@ -269,7 +312,7 @@ if [ "$SKIP_SHELL_INTEGRATION" = false ] && [ "$EXEC_SHELL" = true ] && [ -z "${
     case "$_ans" in
         [Nn]*) : ;;
         *)
-            [ -n "${_tmp:-}" ] && rm -rf "$_tmp"
+            rm -rf "$_tmp"
             _reload_shell="${SHELL:-/bin/sh}"
             echo "Reloading $_reload_shell ..." >/dev/tty
             # Interactive (no -l): a login bash reads .bash_profile, NOT the .bashrc we

@@ -24,6 +24,7 @@ import {
   checkLaunchers,
   checkNodeModules,
   checkProxyPackage,
+  checkProxyResolved,
   checkRuntimeIdentity,
   checkRuntimeOrphan,
   checkRuntimePid,
@@ -41,6 +42,7 @@ import {
   evalShellFiles,
   gatherFacts,
   type HealthFacts,
+  type ProxyFacts,
   type RuntimeTarget,
 } from "../src/health/probe.ts";
 import type { CheckResult, CheckStatus, HealthScope } from "../src/health/types.ts";
@@ -178,6 +180,7 @@ test("proxy package: missing and below-floor fail, above-ceiling warns, in-bound
       configError: null,
       cooldownSeconds: 604800,
       floatSkips: false,
+      resolved: null,
     }).status,
   ).toBe("fail");
   expect(
@@ -187,6 +190,7 @@ test("proxy package: missing and below-floor fail, above-ceiling warns, in-bound
       configError: null,
       cooldownSeconds: 604800,
       floatSkips: false,
+      resolved: null,
     }).status,
   ).toBe("fail");
   const above = checkProxyPackage({
@@ -195,6 +199,7 @@ test("proxy package: missing and below-floor fail, above-ceiling warns, in-bound
     configError: null,
     cooldownSeconds: 604800,
     floatSkips: false,
+    resolved: null,
   });
   expect(above.status).toBe("warn");
   expect(above.fix).toBe("agent update");
@@ -205,6 +210,7 @@ test("proxy package: missing and below-floor fail, above-ceiling warns, in-bound
       configError: null,
       cooldownSeconds: 604800,
       floatSkips: false,
+      resolved: null,
     }).status,
   ).toBe("ok");
 });
@@ -219,6 +225,7 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
     configError: null,
     cooldownSeconds: 604800,
     floatSkips: true,
+    resolved: null,
   });
   expect(below.status).toBe("ok");
   // The detail must surface the exemption; the exact phrasing is human copy, so
@@ -235,6 +242,7 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
     configError: null,
     cooldownSeconds: 604800,
     floatSkips: true,
+    resolved: null,
   });
   expect(above.status).toBe("ok");
   expect(above.fix).toBeUndefined();
@@ -247,6 +255,7 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
     configError: null,
     cooldownSeconds: 604800,
     floatSkips: true,
+    resolved: null,
   });
   expect(missing.status).toBe("fail");
   expect(missing.fix).toBe("deno install --frozen");
@@ -259,6 +268,7 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
     configError: null,
     cooldownSeconds: 604800,
     floatSkips: true,
+    resolved: null,
   });
   expect(inBounds.status).toBe("ok");
   expect(inBounds.detail).not.toContain("not enforced");
@@ -272,6 +282,7 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
     configError: "bad config",
     cooldownSeconds: 604800,
     floatSkips: true,
+    resolved: null,
   });
   expect(badConfig.status).toBe("fail");
 });
@@ -284,6 +295,7 @@ test("proxy package detail shows the float cooldown window", () => {
       configError: null,
       cooldownSeconds,
       floatSkips: false,
+      resolved: null,
     }).detail;
   expect(ok(604800)).toContain("cooldown 7d");
   expect(ok(0)).toContain("no cooldown");
@@ -299,9 +311,44 @@ test("proxy package fails (not throws) when copilot-env.config is unreadable", (
     configError: "bad config",
     cooldownSeconds: 604800,
     floatSkips: false,
+    resolved: null,
   });
   expect(r.status).toBe("fail");
   expect(r.detail).toContain("copilot-env.config");
+});
+
+test("proxy resolved: no record is ok, a record with a missing cache fails", () => {
+  const facts = (resolved: ProxyFacts["resolved"], floatSkips = false): ProxyFacts => ({
+    version: resolved?.version ?? "1.10.5",
+    bounds: { ok: true, version: resolved?.version ?? "1.10.5" },
+    configError: null,
+    cooldownSeconds: 604800,
+    floatSkips,
+    resolved,
+  });
+
+  // Never floated: the deno.json baseline runs, which is a working fallback.
+  const none = checkProxyResolved(facts(null));
+  expect(none.status).toBe("ok");
+  expect(none.detail).toContain("not floated");
+  expect(none.fix).toBeUndefined();
+  // Direct-only says so explicitly rather than implying a pending float.
+  expect(checkProxyResolved(facts(null, true)).detail).toContain("both direct");
+
+  // Recorded but the cache is gone: the launch asks for that exact version
+  // offline, so this is a real failure rather than a fallback.
+  const stale = checkProxyResolved(
+    facts({ version: "1.10.5", resolvedAtMs: 1, denoDir: "/gone", cached: false }),
+  );
+  expect(stale.status).toBe("fail");
+  expect(stale.fix).toBe("agent start");
+
+  const ok = checkProxyResolved(
+    facts({ version: "1.10.5", resolvedAtMs: 1, denoDir: "/cache", cached: true }),
+  );
+  expect(ok.status).toBe("ok");
+  expect(ok.detail).toContain("1.10.5");
+  expect(ok.detail).toContain("/cache");
 });
 
 test("copilot-env version check is always ok and surfaces the version", () => {
@@ -1517,6 +1564,7 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       configError: null,
       cooldownSeconds: 604800,
       floatSkips: false,
+      resolved: null,
     },
     shell: { files: [], integrationWired: true, launchersWired: false },
     clis: [{ command: "claude", name: "Claude", resolved: null }],

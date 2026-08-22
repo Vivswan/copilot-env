@@ -39,7 +39,7 @@ import {
   type ProfileMode,
 } from "../copilot_api/env_state.ts";
 import { ghAuthTokenSpawnSpec } from "../copilot_api/gh_cli.ts";
-import { CopilotApiPaths, profileHomeExists } from "../copilot_api/paths.ts";
+import { CopilotApiPaths, profileHomeExists, resolveRootHome } from "../copilot_api/paths.ts";
 import {
   copilotApiFallbackPort,
   copilotApiResolvePort,
@@ -53,7 +53,11 @@ import {
   proxyVersionBoundsStatus,
   type ProxyVersionStatus,
 } from "../copilot_api/version.ts";
-import { proxyFloatSkips, resolveMinimumReleaseAgeSeconds } from "../proxy_float.ts";
+import {
+  proxyFloatSkips,
+  readResolvedVersionRecord,
+  resolveMinimumReleaseAgeSeconds,
+} from "../proxy_float.ts";
 import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
 import { persistedInferenceMs } from "../scripts/inference_activity.ts";
 import { hasMarker, LAUNCHERS_MARKER, MARKER, shellTargetFiles } from "../shell/integration.ts";
@@ -179,6 +183,15 @@ export interface BootstrapFacts {
   nodeModules: { present: boolean; fresh: boolean };
 }
 
+/** The proxy float's resolved-version record, as health reads it back. */
+export interface ProxyResolvedFacts {
+  version: string;
+  resolvedAtMs: number;
+  denoDir: string;
+  /** True when the recorded cache directory is actually on disk. */
+  cached: boolean;
+}
+
 export interface ProxyFacts {
   version: string | null;
   // null when the project config could not be read (see configError).
@@ -190,6 +203,9 @@ export interface ProxyFacts {
   // proxyUnusedEverywhere in src/agents/wiring.ts). When it skips, the version
   // bounds are unenforceable and must not read as a failure.
   floatSkips: boolean;
+  // The float's record, or null when it has never resolved here (a fresh checkout
+  // or a Direct-only install, where the deno.json baseline is what would run).
+  resolved: ProxyResolvedFacts | null;
 }
 
 export interface ShellFileFact {
@@ -382,6 +398,8 @@ export interface ProbeDeps {
   shellTargets(): string[];
   readFileSafe(path: string): string | null;
   installedProxyVersion(): string | null;
+  /** The float's resolved-version record, or null when it has never resolved here. */
+  proxyResolved(): ProxyResolvedFacts | null;
   projectConfig(): ProjectConfig;
   proxyCooldownSeconds(): number;
   codexHome(): string;
@@ -595,8 +613,13 @@ export function defaultProbeDeps(): ProbeDeps {
     shellTargets: shellTargetFiles,
     readFileSafe: readTextOrNull,
     installedProxyVersion: () => installedProxyVersion(root),
+    proxyResolved: () => {
+      const record = readResolvedVersionRecord(resolveRootHome());
+      if (record === null) return null;
+      return { ...record, cached: existsSync(record.denoDir) };
+    },
     projectConfig: () => readProjectConfig(root),
-    proxyCooldownSeconds: () => resolveMinimumReleaseAgeSeconds(root),
+    proxyCooldownSeconds: () => resolveMinimumReleaseAgeSeconds(),
     // Effective CODEX_HOME, matching runCodexConfig / env.ts precedence:
     // per-host state override, then the default resolution.
     codexHome: () => new CopilotEnvRunState().read().codexHome ?? defaultCodexHome(),
@@ -632,7 +655,7 @@ export function defaultProbeDeps(): ProbeDeps {
     nodeModulesPresent: () => existsSync(join(root, "node_modules")),
     nodeModulesFresh: () => {
       // Same predicate as bin/agent's freshness gate: node_modules at least as
-      // new as deno.lock. (proxy_float's bun-era check is replaced in chunk 4.)
+      // new as deno.lock.
       try {
         const lock = statSync(join(root, "deno.lock")).mtimeMs;
         const modules = statSync(join(root, "node_modules")).mtimeMs;
@@ -948,7 +971,12 @@ export async function gatherFacts(
           deno: { available: deps.denoVersion() !== null, version: deps.denoVersion() },
           nodeModules: { present: deps.nodeModulesPresent(), fresh: deps.nodeModulesFresh() },
         };
-        const version = deps.installedProxyVersion();
+        const resolved = deps.proxyResolved();
+        // Report the version that would actually RUN, in the daemon entry's own
+        // precedence: the float's recorded resolution, else the deno.json baseline
+        // in node_modules. Judging bounds on anything else would grade a copy the
+        // daemon never loads.
+        const version = resolved?.version ?? deps.installedProxyVersion();
         // A bad COPILOT_API_MIN_RELEASE_AGE / cooldown setting shouldn't crash health.
         let cooldownSeconds: number | null = null;
         try {
@@ -969,6 +997,7 @@ export async function gatherFacts(
             configError: null,
             cooldownSeconds,
             floatSkips,
+            resolved,
           };
         } catch (e) {
           facts.proxy = {
@@ -977,6 +1006,7 @@ export async function gatherFacts(
             configError: errMessage(e),
             cooldownSeconds,
             floatSkips,
+            resolved,
           };
         }
       })(),

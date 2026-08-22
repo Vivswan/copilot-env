@@ -242,6 +242,49 @@ function floatCooldownLabel(seconds: number | null): string {
   return `cooldown ${seconds}s`;
 }
 
+/**
+ * The float's resolved-version record and the cache it points at -- the pair the daemon
+ * actually launches from. Absent, the deno.json baseline in node_modules runs instead,
+ * which is a working fallback rather than a failure; a record whose cache has gone
+ * missing is not (the launch asks for that exact version offline and would fail).
+ */
+export function checkProxyResolved(f: ProxyFacts): CheckResult {
+  const base = {
+    id: "proxy.resolved",
+    label: "Proxy resolved + cached",
+    group: "proxy" as const,
+    profile: null,
+    scopes: BOOTSTRAP,
+  };
+  const resolved = f.resolved;
+  if (resolved === null) {
+    return {
+      ...base,
+      status: "ok",
+      detail: f.floatSkips
+        ? "not floated; Codex + Claude are both direct, so the proxy is unused"
+        : "not floated yet; the deno.json baseline would run instead",
+      value: { resolved: false },
+    };
+  }
+  if (!resolved.cached) {
+    return {
+      ...base,
+      status: "fail",
+      detail: `${PROXY_PACKAGE_NAME} ${resolved.version} is recorded, but its cache ` +
+        `${resolved.denoDir} is missing`,
+      fix: "agent start",
+      value: { resolved: true, version: resolved.version, cached: false },
+    };
+  }
+  return {
+    ...base,
+    status: "ok",
+    detail: `${PROXY_PACKAGE_NAME} ${resolved.version}\ncached in ${resolved.denoDir}`,
+    value: { resolved: true, version: resolved.version, cached: true },
+  };
+}
+
 export function checkRuntimePort(f: RuntimeTarget): CheckResult {
   const base = {
     id: "runtime.port",
@@ -1198,7 +1241,7 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
       checkNodeModules(facts.bootstrap),
     );
   }
-  if (facts.proxy) out.push(checkProxyPackage(facts.proxy));
+  if (facts.proxy) out.push(checkProxyPackage(facts.proxy), checkProxyResolved(facts.proxy));
   // One block of runtime checks per target, in gather order (the default target
   // first, then named profiles). A named target opens with its consistency
   // check; per-daemon rows render exactly for the targets whose daemon was

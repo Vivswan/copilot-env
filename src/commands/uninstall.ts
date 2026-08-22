@@ -37,9 +37,8 @@ export interface UninstallArgs {
 /**
  * Test seam (the repo's deps pattern, e.g. DirectProbeDeps): these targets can
  * resolve to REAL machine paths that test env vars cannot (or cannot portably)
- * redirect -- homedir() ignores `$HOME` on Windows, the codex farm follows `$HOME`
- * only on POSIX, and the Windows shell removal edits the actual `$PROFILE` -- so
- * tests inject substitutes.
+ * redirect -- homedir() ignores `$HOME` on Windows and the codex farm follows
+ * `$HOME` only on POSIX -- so tests inject substitutes.
  */
 export interface UninstallDeps {
   codexHomes?: string[];
@@ -48,7 +47,7 @@ export interface UninstallDeps {
 }
 
 /** The full shell unwire: rc / PowerShell profile blocks (integration + launchers).
- *  windowsProfilePaths targets ONE profile filename per call, so Windows removes
+ *  windowsProfileTarget covers ONE profile filename per call, so Windows removes
  *  both the per-host and the CurrentUserAllHosts profiles with two calls. */
 function removeShellIntegrationEverywhere(): void {
   runShellIntegration({ remove: true });

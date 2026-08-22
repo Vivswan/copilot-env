@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/paths.ts";
+import { CI_PS_DOCUMENTS_DIR_ENV, MARKER as SHELL_MARKER } from "../src/shell/integration.ts";
 import { getSanitizedHostname } from "../src/utils/hostname.ts";
 import { runCli } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
@@ -382,22 +383,35 @@ test("shell --help surfaces the install/launcher flags", () => {
   }
 });
 
-// The Windows branch of `agent shell` resolves the machine's REAL PowerShell $PROFILE
-// (via [Environment]::GetFolderPath), which an isolated HOME cannot redirect -- so, like
-// the wiring tests in shell_integration.test.ts, the run that actually wires stays POSIX.
-test.skipIf(process.platform === "win32")(
-  "shell --clis --no-prereqs runs verify-only",
-  () => {
-    // --no-prereqs => verify only (no npm install). Isolate HOME so the integration
-    // wiring it does touches a throwaway rc, never the real one.
-    const root = mkdtempSync(join(tmpdir(), "copilot-shell-clis-"));
-    const ok = runCli(["shell", "--clis", "--no-prereqs"], {
-      env: isolatedEnv({ HOME: root, SHELL: "/bin/bash" }),
-    });
-    expect(ok.exitCode).toBe(0);
-  },
-  30_000,
-);
+// `agent shell` wires whatever this platform's startup file is: the POSIX rc files under
+// an isolated HOME, or the PowerShell $PROFILE under a redirected Documents folder. The
+// Windows lookup asks the OS where Documents is, so no HOME override can move it --
+// COPILOT_ENV_CI_PS_DOCUMENTS_DIR is the seam that can. Both targets are throwaway, so the
+// wiring runs for real on every OS and the machine is never touched.
+test("shell --clis --no-prereqs verifies only and wires this platform's startup file", () => {
+  const root = mkdtempSync(join(tmpdir(), "copilot-shell-clis-"));
+  const documents = join(root, "Documents");
+  const ok = runCli(["shell", "--clis", "--no-prereqs"], {
+    env: isolatedEnv({ HOME: root, SHELL: "/bin/bash", [CI_PS_DOCUMENTS_DIR_ENV]: documents }),
+  });
+  // Exit code asserted together with stderr, so a failure reports the child's real error
+  // instead of a bare "expected 0".
+  expect({ exitCode: ok.exitCode, stderr: ok.stderr }).toMatchObject({ exitCode: 0 });
+
+  // Marker AND payload: a block that lost its `agents.*` path would still carry a marker.
+  const windows = process.platform === "win32";
+  const wired = windows
+    ? ["WindowsPowerShell", "PowerShell"].map((edition) =>
+      join(documents, edition, "Microsoft.PowerShell_profile.ps1")
+    )
+    : [join(root, ".bashrc")];
+  const payload = windows ? "agents.ps1" : "agents.bashrc";
+  for (const file of wired) {
+    const content = readFileSync(file, "utf-8");
+    expect(content).toContain(SHELL_MARKER);
+    expect(content).toContain(payload);
+  }
+}, 30_000);
 
 test("shell --clis --no-prereqs rejects --cooldown, never drops it", () => {
   // A cooldown has nothing to steer when nothing installs, so the boundary rejects the

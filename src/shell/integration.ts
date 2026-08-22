@@ -2,7 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import { consola } from "consola";
 
 import { isEnoent } from "../utils/fs.ts";
@@ -48,7 +48,7 @@ export function runShellIntegration(args: ShellIntegrationArgs): void {
   const windows = process.platform === "win32";
 
   if (remove || removeLaunchers) {
-    const files = windows ? windowsProfilePaths(Boolean(args.allHosts)) : rcFiles(true);
+    const files = windows ? windowsProfileTarget(Boolean(args.allHosts)).paths : rcFiles(true);
     const restartHint = windows ? "Restart PowerShell." : "Restart your shell.";
     const removed = remove ? removeFrom(files) : removeLaunchersFrom(files);
     if (removed) consola.info(restartHint);
@@ -57,16 +57,18 @@ export function runShellIntegration(args: ShellIntegrationArgs): void {
   const launchers = Boolean(args.launchers);
   const existingOnly = Boolean(args.existingOnly);
   if (windows) {
+    const target = windowsProfileTarget(Boolean(args.allHosts));
     const wired = wireBlocks(
-      windowsProfilePaths(Boolean(args.allHosts)),
+      target.paths,
       windowsBlock(join(PROJECT_ROOT, "shell", "agents.ps1")),
       windowsLaunchersBlock(launchersFile(true)),
       launchers,
       existingOnly,
     );
     // Only relax execution policy when integration is actually present -- never for an
-    // opted-out user whose `existingOnly` migration found no owned block to refresh.
-    if (wired) relaxWindowsExecutionPolicy();
+    // opted-out user whose `existingOnly` migration found no owned block to refresh, and
+    // never for a redirected run, which owns no machine state (the type enforces it).
+    if (wired && target.source === "system") relaxWindowsExecutionPolicy(target);
     consola.info("Restart PowerShell or run: . $PROFILE");
   } else {
     wireBlocks(
@@ -282,7 +284,9 @@ export function rcFiles(remove: boolean): string[] {
  */
 export function shellTargetFiles(): string[] {
   if (process.platform !== "win32") return rcFiles(true);
-  return [...new Set([...windowsProfilePaths(false), ...windowsProfilePaths(true)])];
+  return [
+    ...new Set([...windowsProfileTarget(false).paths, ...windowsProfileTarget(true).paths]),
+  ];
 }
 
 /**
@@ -292,13 +296,16 @@ export function shellTargetFiles(): string[] {
  * CURRENT shell right after `agent shell --launchers`, so cl/co/cx work without a
  * restart. Deliberately CHEAP: on Windows it resolves the profile directory from env
  * vars (USERPROFILE / OneDrive) rather than spawning PowerShell like
- * shellTargetFiles(), so a redirected Documents folder may be missed -- in which case
- * the auto-source simply doesn't fire and the printed "restart" hint still applies.
- * Any read error resolves to false (no emission), never a throw into `agent env`.
+ * shellTargetFiles(), so a Documents folder relocated somewhere it does not guess may
+ * be missed -- in which case the auto-source simply doesn't fire and the printed
+ * "restart" hint still applies.
+ * Any READ error resolves to false (no emission), never a throw into `agent env`. The
+ * candidates are resolved outside that catch on purpose: a set-but-unusable seam is a
+ * mistake everywhere, not a quiet "not wired" here.
  */
 export function launchersWired(): boolean {
+  const files = process.platform === "win32" ? cheapWindowsProfilePaths() : rcFiles(true);
   try {
-    const files = process.platform === "win32" ? cheapWindowsProfilePaths() : rcFiles(true);
     return files.some(
       (file) => existsSync(file) && hasMarker(readFileSync(file, "utf-8"), LAUNCHERS_MARKER),
     );
@@ -313,26 +320,45 @@ export function launchersWired(): boolean {
 // (5.1 vs pwsh 7) and the current-host / all-hosts profile filenames. Only HOW the
 // Documents folder is found differs between the resolvers (cheap env-var guess vs
 // authoritative PowerShell GetFolderPath) -- that dual implementation is deliberate;
-// the four literals are not allowed to drift.
+// the four literals are not allowed to drift. The CI redirect short-circuits both, so
+// a redirected run cannot wire one tree and inspect another.
 const PS_PROFILE_DIRS = ["WindowsPowerShell", "PowerShell"] as const;
 const PS_PROFILE_CURRENT_HOST = "Microsoft.PowerShell_profile.ps1";
 const PS_PROFILE_ALL_HOSTS = "profile.ps1";
+/** The two PowerShell editions, in the order to try them: 5.1, then 7. Index-for-index
+ *  with PS_PROFILE_DIRS above (WindowsPowerShell = 5.1, PowerShell = 7). */
+const PS_EXES = ["powershell", "pwsh"] as const;
 
 /**
- * PowerShell `$PROFILE` candidates resolved WITHOUT shelling out (see launchersWired).
- * Covers the current-host and all-hosts profiles under the default Documents folder
- * and its common OneDrive redirections.
+ * Test/CI seam: the Documents FOLDER both `$PROFILE` resolvers build on -- the parent of
+ * the per-edition `WindowsPowerShell/` and `PowerShell/` directories, not a profile
+ * directory itself. Absolute paths only.
+ *
+ * It exists because the real lookup asks Windows where Documents is, which
+ * `$HOME`/`$USERPROFILE` cannot move -- so without it the wiring test writes the CI
+ * runner's actual PowerShell profile.
  */
-function cheapWindowsProfilePaths(): string[] {
-  const home = process.env.USERPROFILE ?? homedir();
-  const docRoots = [
-    join(home, "Documents"),
-    process.env.OneDrive ? join(process.env.OneDrive, "Documents") : "",
-    process.env.OneDriveConsumer ? join(process.env.OneDriveConsumer, "Documents") : "",
-  ].filter(Boolean);
-  const names = [PS_PROFILE_CURRENT_HOST, PS_PROFILE_ALL_HOSTS];
+export const CI_PS_DOCUMENTS_DIR_ENV = "COPILOT_ENV_CI_PS_DOCUMENTS_DIR";
+
+/** The redirected Documents folder, or null when this run targets the real one.
+ *  The ONE place the seam is read. */
+function psDocumentsOverride(): string | null {
+  const dir = process.env[CI_PS_DOCUMENTS_DIR_ENV];
+  if (dir === undefined) return null;
+  // Set-but-unusable is a mistake, never a silent fall back to the real profile: an
+  // empty value is an unexpanded interpolation, and a relative one would resolve
+  // against whatever cwd the CLI happened to run from.
+  if (!isAbsolute(dir)) {
+    throw new Error(`${CI_PS_DOCUMENTS_DIR_ENV} must be an absolute path (got: ${dir})`);
+  }
+  return dir;
+}
+
+/** Every `<root>/<edition>/<name>` profile path, deduped -- the one spelling of the
+ *  layout both resolvers produce. */
+function profilePathsUnder(documentRoots: string[], names: string[]): string[] {
   const paths: string[] = [];
-  for (const root of docRoots) {
+  for (const root of documentRoots) {
     for (const sub of PS_PROFILE_DIRS) {
       for (const name of names) paths.push(join(root, sub, name));
     }
@@ -340,33 +366,84 @@ function cheapWindowsProfilePaths(): string[] {
   return [...new Set(paths)];
 }
 
-// --- Windows (file ops in TS; PS only for what it must) ------------------------
-
-function windowsProfilePaths(allHosts: boolean): string[] {
-  const documents = psEval("[Environment]::GetFolderPath('MyDocuments')");
-  if (!documents) throw new Error("could not resolve the Documents folder via PowerShell");
-  const name = allHosts ? PS_PROFILE_ALL_HOSTS : PS_PROFILE_CURRENT_HOST;
-  return [...new Set(PS_PROFILE_DIRS.map((sub) => join(documents, sub, name)))];
+/**
+ * PowerShell `$PROFILE` candidates resolved WITHOUT shelling out (see launchersWired).
+ * Covers the current-host and all-hosts profiles under the default Documents folder
+ * and its common OneDrive redirections. Exported so a test can pin it against
+ * windowsProfileTarget: under the seam the two must resolve the same tree, or a
+ * redirected run would wire one place and inspect another.
+ */
+export function cheapWindowsProfilePaths(): string[] {
+  const override = psDocumentsOverride();
+  const home = process.env.USERPROFILE ?? homedir();
+  const docRoots = override ? [override] : [
+    join(home, "Documents"),
+    process.env.OneDrive ? join(process.env.OneDrive, "Documents") : "",
+    process.env.OneDriveConsumer ? join(process.env.OneDriveConsumer, "Documents") : "",
+  ].filter(Boolean);
+  return profilePathsUnder(docRoots, [PS_PROFILE_CURRENT_HOST, PS_PROFILE_ALL_HOSTS]);
 }
 
-function psEval(command: string): string {
-  const result = spawnSync("powershell", ["-NoProfile", "-Command", command], {
-    encoding: "utf-8",
-  });
-  if (result.error || result.status !== 0) {
-    const detail = result.error?.message ??
-      `exit ${result.status}: ${(result.stderr ?? "").toString().trim()}`;
-    throw new Error(`powershell command failed (${detail}). Is PowerShell on PATH?`);
+// --- Windows (file ops in TS; PS only for what it must) ------------------------
+
+/** The Windows `$PROFILE` files to act on. `source` is the proof of whose profile these
+ *  are: only a "system" target owns the machine's execution policy, and
+ *  relaxWindowsExecutionPolicy accepts nothing else -- so a redirected run cannot relax
+ *  it even by mistake. `paths` is ONE filename (current-host or all-hosts) under BOTH
+ *  edition directories, present or not: wireBlocks creates the one that is missing. */
+export type WindowsProfileTarget =
+  | { paths: string[]; source: "system" }
+  | { paths: string[]; source: "redirected" };
+
+/** Resolve this run's `$PROFILE` target: the machine's own, or the seam's throwaway tree. */
+export function windowsProfileTarget(allHosts: boolean): WindowsProfileTarget {
+  const override = psDocumentsOverride();
+  const name = allHosts ? PS_PROFILE_ALL_HOSTS : PS_PROFILE_CURRENT_HOST;
+  if (override !== null) {
+    return { paths: profilePathsUnder([override], [name]), source: "redirected" };
   }
-  return (result.stdout ?? "").toString().trim();
+  // Off Windows the lookup answers for $HOME: plausible-looking nonsense, not a profile.
+  if (process.platform !== "win32") {
+    throw new Error("the Windows $PROFILE target is only resolvable on Windows");
+  }
+  // DoNotVerify: the one-argument call verifies the folder and answers with an empty
+  // string when it was never created. We create it on write, so the unverified answer
+  // is the useful one.
+  const documents = psEval("[Environment]::GetFolderPath('MyDocuments','DoNotVerify')");
+  if (!documents) throw new Error("could not resolve the Documents folder via PowerShell");
+  return { paths: profilePathsUnder([documents], [name]), source: "system" };
+}
+
+/** Ask PowerShell for one value, from whichever edition answers. The query is read-only
+ *  and both editions return the same thing, so a missing OR broken 5.1 falls through to
+ *  pwsh rather than failing the command. */
+function psEval(command: string): string {
+  const failures: string[] = [];
+  for (const exe of PS_EXES) {
+    const result = spawnSync(exe, ["-NoProfile", "-Command", command], { encoding: "utf-8" });
+    if (isEnoent(result.error)) {
+      failures.push(`${exe}: not on PATH`);
+      continue;
+    }
+    if (result.error || result.status !== 0) {
+      failures.push(`${exe}: ${
+        result.error?.message ??
+          `exit ${result.status}: ${(result.stderr ?? "").toString().trim()}`
+      }`);
+      continue;
+    }
+    return (result.stdout ?? "").toString().trim();
+  }
+  throw new Error(`no PowerShell edition could run the command (${failures.join("; ")})`);
 }
 
 // The profile dot-sources the unsigned agents.ps1; under Restricted/AllSigned the
 // profile would silently refuse to load it. Relax CurrentUser to RemoteSigned. CurrentUser
 // policy keys are per-edition, so run it in each installed edition (5.1 + pwsh 7).
-function relaxWindowsExecutionPolicy(): void {
+// Takes the system target as proof this run owns the policy it is about to change.
+function relaxWindowsExecutionPolicy(_target: { source: "system" }): void {
   const command = windowsExecutionPolicyCommand();
-  for (const exe of ["powershell", "pwsh"]) {
+  for (const exe of PS_EXES) {
     const result = spawnSync(exe, ["-NoProfile", "-Command", command], {
       stdio: ["ignore", "inherit", "inherit"],
     });

@@ -1,12 +1,16 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import {
+  cheapWindowsProfilePaths,
+  CI_PS_DOCUMENTS_DIR_ENV,
+  launchersWired,
   posixBlock,
   posixLaunchersBlock,
   quotePosix,
   quotePowerShell,
   windowsExecutionPolicyCommand,
+  windowsProfileTarget,
 } from "../src/shell/integration.ts";
 import { runCli, runSync } from "./helpers/run.ts";
 import { afterEach, beforeEach, expect, test } from "./helpers/testing.ts";
@@ -25,6 +29,21 @@ function shellFunctionBody(source: string, name: string): string {
   const match = source.match(new RegExp(`function ${name} \\{([\\s\\S]*?)\\n\\}`));
   if (!match) throw new Error(`function ${name} not found`);
   return match[1] as string;
+}
+
+/** Run `body` with the Documents seam set to `value` (or cleared, when null), restoring
+ *  whatever was there before. Every seam test goes through this, so none can leak -- and
+ *  the ones that must see the REAL lookup can clear an inherited value. */
+function withDocumentsEnv(value: string | null, body: () => void): void {
+  const previous = process.env[CI_PS_DOCUMENTS_DIR_ENV];
+  if (value === null) delete process.env[CI_PS_DOCUMENTS_DIR_ENV];
+  else process.env[CI_PS_DOCUMENTS_DIR_ENV] = value;
+  try {
+    body();
+  } finally {
+    if (previous === undefined) delete process.env[CI_PS_DOCUMENTS_DIR_ENV];
+    else process.env[CI_PS_DOCUMENTS_DIR_ENV] = previous;
+  }
 }
 
 function run(...args: string[]): { code: number | null; out: string } {
@@ -194,6 +213,89 @@ test("quotePosix / quotePowerShell escape embedded single quotes", () => {
   expect(quotePosix("a'b")).toBe("'a'\\''b'");
   expect(quotePowerShell("a'b")).toBe("'a''b'");
 });
+
+test("the Windows $PROFILE lookup honors the Documents redirect on every OS", () => {
+  // The real lookup asks Windows itself where Documents is: unreachable from a POSIX
+  // test and unredirectable on Windows. Under the redirect it is pure path math, so
+  // resolving it here at all is the proof that PowerShell was never spawned.
+  const documents = join(home, "Documents");
+  withDocumentsEnv(documents, () => {
+    // One filename per call, under each PowerShell edition's directory.
+    expect(windowsProfileTarget(false).paths).toEqual([
+      join(documents, "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1"),
+      join(documents, "PowerShell", "Microsoft.PowerShell_profile.ps1"),
+    ]);
+    expect(windowsProfileTarget(true).paths).toEqual([
+      join(documents, "WindowsPowerShell", "profile.ps1"),
+      join(documents, "PowerShell", "profile.ps1"),
+    ]);
+    // Not the machine's own profile -- what stops the caller relaxing its policy.
+    expect(windowsProfileTarget(false).source).toBe("redirected");
+  });
+});
+
+test("both profile resolvers land on the same redirected tree", () => {
+  // The authoritative resolver wires; the cheap one (behind `agent env`) inspects. Let
+  // them disagree and a redirected run wires the launchers, then reports them unwired.
+  const documents = join(home, "Documents");
+  withDocumentsEnv(documents, () => {
+    expect(new Set(cheapWindowsProfilePaths())).toEqual(
+      new Set([...windowsProfileTarget(false).paths, ...windowsProfileTarget(true).paths]),
+    );
+  });
+});
+
+test("a set-but-unusable Documents redirect is refused by both resolvers", () => {
+  // Quietly falling back to the real profile is the one failure this seam must not have:
+  // an empty value is an unexpanded interpolation, a relative one resolves off the cwd.
+  // Windows cannot hold an empty env var (it reads back as unset), so that case is only
+  // assertable where the OS preserves the difference.
+  const relative = ["Documents", "./Documents"];
+  const bad = process.platform === "win32" ? relative : ["", ...relative];
+  for (const value of bad) {
+    withDocumentsEnv(value, () => {
+      expect(() => windowsProfileTarget(false)).toThrow("must be an absolute path");
+      expect(() => cheapWindowsProfilePaths()).toThrow("must be an absolute path");
+    });
+  }
+});
+
+// Windows only, and the one test that exercises the REAL lookup end to end: it spawns
+// PowerShell and asks the OS where Documents is. It clears any inherited redirect first,
+// or it would quietly stop testing the thing it exists for. Read-only -- it resolves
+// paths and writes nothing, so it is safe against a real profile.
+test.skipIf(process.platform !== "win32")(
+  "the un-redirected Windows lookup resolves the machine's real $PROFILE candidates",
+  () => {
+    withDocumentsEnv(null, () => {
+      const target = windowsProfileTarget(false); // resolving at all is the assertion
+      expect(target.source).toBe("system");
+      expect(target.paths.length).toBe(2);
+      for (const path of target.paths) {
+        expect(basename(path)).toBe("Microsoft.PowerShell_profile.ps1");
+        // GetFolderPath answered with a real location, not "" and not a bare name.
+        expect(isAbsolute(path)).toBe(true);
+      }
+    });
+  },
+);
+
+// Windows only: the cheap resolver behind `agent env` has to read the redirected tree.
+// Asserting false on an empty tree FIRST is what proves the redirect was honored -- a
+// resolver ignoring it could report true off an already-wired real profile.
+test.skipIf(process.platform !== "win32")(
+  "launchersWired inspects the redirected profile tree, not the machine's",
+  () => {
+    const documents = join(home, "Documents");
+    const profile = join(documents, "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1");
+    withDocumentsEnv(documents, () => {
+      expect(launchersWired()).toBe(false);
+      mkdirSync(dirname(profile), { recursive: true });
+      writeFileSync(profile, `${LAUNCHERS_MARKER}\n`);
+      expect(launchersWired()).toBe(true);
+    });
+  },
+);
 
 test("windows execution policy command skips unavailable policy cmdlets", () => {
   const command = windowsExecutionPolicyCommand();

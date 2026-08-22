@@ -1,5 +1,6 @@
-// The release's checksums.txt: the `shasum -a 256` manifest scripts/compile.sh
-// emits next to the binaries and the release uploads alongside them.
+// The release's checksums.txt: the `shasum -a 256`-form manifest
+// scripts/compile.ts emits next to the binaries and the release uploads
+// alongside them.
 //
 // install.sh / install.ps1 verify the same file with the platform's own sha256
 // tool before the binary ever lands; this module is the in-process twin that

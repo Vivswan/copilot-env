@@ -1,10 +1,10 @@
 // The release target list: which platforms get a compiled `agent` binary, and
 // what that binary is called as a release asset.
 //
-// This module is the ONE source of truth. Three other places must agree with it
-// and cannot import it (they are shell), so test/release_targets.test.ts parses
-// them and pins the match at PR time:
-//   - scripts/compile.sh   TARGETS  (what gets built)
+// This module is the ONE source of truth. scripts/compile.ts imports it
+// directly; two other places must agree with it and cannot import it (they are
+// shell), so test/installer_pinning.test.ts parses them and pins the match at
+// PR time:
 //   - install.sh           resolve_target()  (POSIX platform -> triple)
 //   - install.ps1          Resolve-Target    (Windows platform -> triple)
 
@@ -26,7 +26,7 @@ export const RELEASE_TARGETS: readonly ReleaseTarget[] = [
 ];
 
 /** The release-asset name for a target: `agent-<triple>`, `.exe` on Windows.
- *  scripts/compile.sh writes exactly these names into dist/. */
+ *  scripts/compile.ts writes exactly these names into dist/. */
 export function releaseAssetName(target: ReleaseTarget): string {
   return target.os === "win32" ? `agent-${target.triple}.exe` : `agent-${target.triple}`;
 }

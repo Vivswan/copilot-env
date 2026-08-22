@@ -10,21 +10,18 @@ import { RELEASE_TARGETS } from "../src/install/targets.ts";
 import { ROOT } from "./helpers/run.ts";
 import { describe, expect, test } from "./helpers/testing.ts";
 
-// The installers and the compile script hand-roll lists that TypeScript modules
-// own, and nothing at runtime ties them together: shell cannot import TS. Each
-// guard below parses a list back out of the script text and pins it to its TS
-// source of truth, so a drift fails at PR time instead of at release time or,
-// worse, as a silently broken install.
+// The installers hand-roll lists that TypeScript modules own, and nothing at
+// runtime ties them together: shell cannot import TS. Each guard below parses
+// a list back out of the script text and pins it to its TS source of truth, so
+// a drift fails at PR time instead of at release time or, worse, as a silently
+// broken install.
+//
+// scripts/compile.ts needs no such guard for its target list: it imports
+// RELEASE_TARGETS directly, so that drift is impossible by construction.
 
 const installSh = readFileSync(join(ROOT, "install.sh"), "utf8");
 const installPs1 = readFileSync(join(ROOT, "install.ps1"), "utf8");
-const compileSh = readFileSync(join(ROOT, "scripts", "compile.sh"), "utf8");
-
-/** The values of a `NAME=(a b c)` bash array literal in `script`. */
-function bashArray(script: string, name: string): string[] {
-  const body = script.match(new RegExp(`^${name}=\\(([^)]*)\\)`, "m"))?.[1] ?? "";
-  return body.split(/\s+/).filter((entry) => entry !== "");
-}
+const compileTs = readFileSync(join(ROOT, "scripts", "compile.ts"), "utf8");
 
 describe("release-assets.ts pin needles", () => {
   // The release pipeline rewrites a handful of installer lines to the release
@@ -57,14 +54,10 @@ describe("release-assets.ts pin needles", () => {
 });
 
 describe("compile targets match the installers", () => {
-  // scripts/compile.sh decides which binaries exist; the installers decide
-  // which one to download on a given machine. A target in one list and not the
-  // other is either a binary nobody can install or an install that 404s.
+  // scripts/compile.ts builds RELEASE_TARGETS by importing it; the installers
+  // decide which binary to download on a given machine and cannot import TS. A
+  // platform mapped onto a triple outside the list is an install that 404s.
   const triples = RELEASE_TARGETS.map((t) => t.triple).sort();
-
-  test("scripts/compile.sh builds exactly the RELEASE_TARGETS triples", () => {
-    expect(bashArray(compileSh, "TARGETS").sort()).toEqual(triples);
-  });
 
   test("install.sh maps its platforms onto RELEASE_TARGETS triples", () => {
     const mapped = [...installSh.matchAll(/TARGET="([a-z0-9_-]+)"/g)].map((m) => m[1] ?? "");
@@ -94,9 +87,9 @@ describe("compile.include matches what the binary actually needs", () => {
   // weight in all five binaries, and a fate with no entry is a file that is
   // missing exactly when it is first needed.
   //
-  // The list lives in deno.json rather than in scripts/compile.sh on purpose: a
-  // CLI --include MERGES with the config's list instead of replacing it, so a
-  // second copy in the script would silently union rather than fail.
+  // The list lives in deno.json rather than in scripts/compile.ts on purpose:
+  // a CLI --include MERGES with the config's list instead of replacing it, so
+  // a second copy in the script would silently union rather than fail.
   const compileInclude: string[] = JSON.parse(
     readFileSync(join(ROOT, "deno.json"), "utf8"),
   ).compile?.include ?? [];
@@ -114,11 +107,10 @@ describe("compile.include matches what the binary actually needs", () => {
     }
   });
 
-  test("scripts/compile.sh does not carry a second include list", () => {
+  test("scripts/compile.ts does not carry a second include list", () => {
     // Comments may mention --include; no executable line may pass it.
-    const code = compileSh.split("\n").filter((line) => !line.trim().startsWith("#"));
+    const code = compileTs.split("\n").filter((line) => !line.trim().startsWith("//"));
     expect(code.some((line) => line.includes("--include"))).toBe(false);
-    expect(compileSh).not.toMatch(/^INCLUDES=/m);
   });
 });
 

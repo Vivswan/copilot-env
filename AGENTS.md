@@ -73,7 +73,7 @@ Only the *why* lives here - the code is the source of truth for mechanics, key l
 file layouts. Don't restate here what a reader can grep.
 
 - **A release is a binary, a checkout is a checkout.** Users get one compiled `agent`
-  per platform (`scripts/compile.sh`, five targets); `agent install` unpacks the runtime
+  per platform (`deno task compile`, five targets); `agent install` unpacks the runtime
   assets it embeds into the install root and writes a `bin/agent` shim beside itself.
   A dev checkout keeps the self-bootstrapping `bin/agent`, which installs deps in place
   and runs `cli.ts`; install noise goes to stderr so it never pollutes the `agent env`
@@ -151,13 +151,14 @@ file layouts. Don't restate here what a reader can grep.
   SHA256 against the release `checksums.txt`, then hand off to its own `agent install`.
   `COPILOT_ENV_DOWNLOAD_BASE` (a directory or URL) replaces the release as the source, which
   is how CI smokes an installer against a binary built from the branch under test.
-- `scripts/compile.sh` - the release build: five targets into `dist/` plus `checksums.txt`.
-  It drives only the target loop; `deno.json`'s `compile.include` owns what gets embedded,
-  because a CLI `--include` MERGES with the config's list instead of replacing it, so a
-  second copy would silently union. `test/installer_pinning.test.ts` pins `TARGETS` to
-  `src/install/targets.ts` and `compile.include` to `installer.ts`'s asset lists in both
-  directions - shell cannot import TypeScript, and a drift is either a broken install or
-  dead weight in every binary.
+- `scripts/compile.ts` (`deno task compile`) - the release build: five targets into `dist/`
+  plus `checksums.txt`. It imports `RELEASE_TARGETS` from `src/install/targets.ts`, so the
+  target list cannot drift; it drives only the target loop, because `deno.json`'s
+  `compile.include` owns what gets embedded - a CLI `--include` MERGES with the config's list
+  instead of replacing it, so a second copy would silently union.
+  `test/installer_pinning.test.ts` pins `compile.include` to `installer.ts`'s asset lists in
+  both directions (a drift is either a broken install or dead weight in every binary) and the
+  installers' platform mappings to `targets.ts` (shell cannot import TypeScript).
 - `src/cli.ts` - Commander entry; delegates to `run*` functions.
 - `src/commands/` - one file per command; `init` configures both agents, `auth` manages the
   credential only and never configures agents. Command files validate, orchestrate, and

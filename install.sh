@@ -140,7 +140,7 @@ resolve_safe_install_dir() {
 }
 
 # The ONE platform -> release-target mapping (mirrors the release-asset names
-# produced by scripts/compile.sh; install.ps1 carries the Windows entry).
+# produced by scripts/compile.ts; install.ps1 carries the Windows entry).
 resolve_target() {
     _os="$(uname -s)"
     _arch="$(uname -m)"

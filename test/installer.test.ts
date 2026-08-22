@@ -136,7 +136,7 @@ describe("buildInstallPlan", () => {
   });
 
   test("refuses a binary whose embedded assets are incomplete", () => {
-    // Anything the plan expects to find in the VFS but that compile.sh never
+    // Anything the plan expects to find in the VFS but that compile.ts never
     // embedded has to fail loudly here, not produce a half-built install.
     rmSync(join(source, "shell"), { recursive: true, force: true });
     expect(() => installedPlan()).toThrow("embedded assets are missing shell");

@@ -46,6 +46,7 @@
     "lint:ps": "bash scripts/lint-ps.sh",
     "lint:staged": "deno run --allow-run=deno,git scripts/lint_staged.ts",
     "check": "deno lint --fix && deno fmt",
+    "compile": "deno run --allow-read --allow-write --allow-env --allow-run=deno scripts/compile.ts",
     "test:docker": "deno run --allow-read --allow-env --allow-run=docker,podman scripts/test_docker.ts"
   },
   "permissions": {

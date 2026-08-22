@@ -71,7 +71,7 @@ jobs:
       - name: Compile this tree's host binary
         run: |
           triple="$(deno eval 'console.log(Deno.build.target)')"
-          bash scripts/compile.sh --target "$triple"
+          deno task compile --target "$triple"
 
       - name: Run install.sh ${{ inputs.args }}
         run: deno run -P=cli .github/scripts/installer-smoke.ts run-install

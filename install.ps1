@@ -174,7 +174,7 @@ function Resolve-SafeInstallDir {
 }
 
 # The Windows entry of the platform -> release-target mapping (install.sh
-# carries the Linux/macOS entries; scripts/compile.sh owns the target list).
+# carries the Linux/macOS entries; src/install/targets.ts owns the target list).
 function Resolve-Target {
     $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
     switch ("$arch") {

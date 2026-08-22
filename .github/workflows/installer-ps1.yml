@@ -63,12 +63,13 @@ jobs:
       - name: Install dependencies
         run: deno ci
 
-      # `shell: bash` (git-bash) so the one compile script serves every OS.
+      # `shell: bash` (git-bash) just for the $(...) triple substitution; the
+      # compile task itself is cross-platform TypeScript.
       - name: Compile this tree's host binary
         shell: bash
         run: |
           triple="$(deno eval 'console.log(Deno.build.target)')"
-          bash scripts/compile.sh --target "$triple"
+          deno task compile --target "$triple"
 
       - name: Run install.ps1 ${{ inputs.args }}
         run: deno run -P=cli .github/scripts/installer-smoke.ts run-install

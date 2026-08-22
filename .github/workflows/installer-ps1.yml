@@ -5,6 +5,11 @@ name: installer-ps1 smoke
 # a fresh runner -- separate profile, separate $HOME. Scenarios can never share or
 # clobber each other's state, so expect-wiring=false asserts the absence of
 # profile wiring directly (a fresh profile has none to begin with).
+#
+# Windows twin of installer-sh.yml: the job compiles this tree's host-target
+# binary and points install.ps1 at it through COPILOT_ENV_DOWNLOAD_BASE, so the
+# real download/verify/handoff path is exercised against the PR's code without a
+# published release.
 on:
   workflow_call:
     inputs:
@@ -17,11 +22,11 @@ on:
         type: boolean
         default: false
       setup-clis:
-        description: true runs `agent setup-clis --cooldown` after install.
+        description: true runs `agent shell --clis --cooldown` after install.
         type: boolean
         default: false
       setup-launchers:
-        description: true runs `agent setup-launchers` after install.
+        description: true runs `agent shell --launchers` after install.
         type: boolean
         default: false
       expect-wiring:
@@ -35,53 +40,63 @@ on:
           Same flag, same job -- no cross-scenario interference.
         type: boolean
         default: false
-      download-install:
-        description: true runs a temp-copied installer so it must download/extract a release instead of using the checkout fast path.
-        type: boolean
-        default: false
 
 permissions:
   contents: read
+
+env:
+  DENO_NO_UPDATE_CHECK: "1"
 
 jobs:
   smoke:
     name: windows-latest
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: denoland/setup-deno@v2
         with:
-          bun-version: 1.3.14
+          deno-version-file: .dvmrc
+          cache: true
+
+      - name: Install dependencies
+        run: deno ci
+
+      # `shell: bash` (git-bash) so the one compile script serves every OS.
+      - name: Compile this tree's host binary
+        shell: bash
+        run: |
+          triple="$(deno eval 'console.log(Deno.build.target)')"
+          bash scripts/compile.sh --target "$triple"
 
       - name: Run install.ps1 ${{ inputs.args }}
-        run: bun .github/scripts/installer-smoke.ts run-install
+        run: deno run -P=cli .github/scripts/installer-smoke.ts run-install
         env:
           INSTALLER_ARGS: ${{ inputs.args }}
           RERUN: ${{ inputs.rerun }}
-          DOWNLOAD_INSTALL: ${{ inputs.download-install }}
-          # Authenticate the installer's release-resolution API calls: anonymous
-          # requests share the runner IP pool's 60/hour limit and flake.
-          GH_TOKEN: ${{ github.token }}
+          COPILOT_ENV_DOWNLOAD_BASE: ${{ github.workspace }}\dist
 
       - name: Assert installer did not install optional CLIs
-        run: bun .github/scripts/installer-smoke.ts assert-no-optional-clis
+        run: deno run -P=cli .github/scripts/installer-smoke.ts assert-no-optional-clis
         env:
           INSTALLER_ARGS: ${{ inputs.args }}
 
+      # The INSTALLED agent, not the checkout's launcher.
       - name: Run agent shell --clis
         if: ${{ inputs.setup-clis }}
         shell: pwsh
-        run: ./bin/agent.ps1 shell --clis --cooldown
+        run: |
+          & "$env:USERPROFILE\.copilot-env\bin\agent.ps1" shell --clis --cooldown
 
       - name: Run agent shell --launchers
         if: ${{ inputs.setup-launchers }}
         shell: pwsh
-        run: ./bin/agent.ps1 shell --launchers
+        run: |
+          & "$env:USERPROFILE\.copilot-env\bin\agent.ps1" shell --launchers
 
       - name: Verify install.ps1 outcome
-        run: bun .github/scripts/installer-smoke.ts verify-outcome
+        run: deno run -P=cli .github/scripts/installer-smoke.ts verify-outcome
         env:
           INSTALLER_ARGS: ${{ inputs.args }}
           EXPECT_CLIS: ${{ inputs.expect-clis }}

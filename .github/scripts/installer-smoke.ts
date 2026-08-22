@@ -1,34 +1,23 @@
 // install.sh / install.ps1 smoke driver, one sub-step per CI workflow step:
-// run-install (optionally in download mode from a temp copy), the
-// no-optional-CLIs assertion, and the final outcome verification (CLIs, shell
-// wiring, launcher wiring).
+// run-install, the no-optional-CLIs assertion, and the final outcome
+// verification (installed launcher, CLIs, shell wiring, launcher wiring).
+//
+// The installer under test fetches a compiled binary rather than a source
+// archive, so the workflow compiles the host target from the tree first and
+// points COPILOT_ENV_DOWNLOAD_BASE at dist/. That is what makes this smoke
+// meaningful on every PR instead of only once a release exists to download.
+//
 // Run by installer-sh.yml / installer-ps1.yml:
-//   bun .github/scripts/installer-smoke.ts run-install|assert-no-optional-clis|verify-outcome
+//   deno run -P=cli .github/scripts/installer-smoke.ts run-install|assert-no-optional-clis|verify-outcome
 import { spawnSync } from "node:child_process";
-import {
-  chmodSync,
-  copyFileSync,
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const step = process.argv[2];
 const isWindows = process.platform === "win32";
 const optionalClis = ["claude", "copilot", "codex"];
 const posixNvmSource =
   '[ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ] && . "${NVM_DIR:-$HOME/.nvm}/nvm.sh" >/dev/null 2>&1 || true';
-const releaseApi = `https://api.github.com/repos/${
-  process.env.GITHUB_REPOSITORY ?? "Vivswan/copilot-env"
-}/releases/latest`;
-const legacyDownloadSkipMarker = join(
-  process.env.RUNNER_TEMP ?? tmpdir(),
-  "copilot-env-installer-smoke-legacy-download.skip",
-);
 
 function envBool(name: string, fallback = false): boolean {
   const value = process.env[name];
@@ -41,99 +30,6 @@ function envBool(name: string, fallback = false): boolean {
 function installerArgs(): string[] {
   const args = process.env.INSTALLER_ARGS ?? "";
   return args.trim() === "" ? [] : args.trim().split(/\s+/);
-}
-
-function hasInstallDirArg(args: string[]): boolean {
-  return isWindows
-    ? args.some((arg) => arg.toLowerCase() === "-installdir")
-    : args.some((arg) => arg === "--dir" || arg.startsWith("--dir="));
-}
-
-function tagMajor(tag: string): number | null {
-  const match = /^v?(\d+)\.\d+\.\d+$/.exec(tag.trim());
-  const major = match?.[1];
-  return major !== undefined ? Number.parseInt(major, 10) : null;
-}
-
-async function latestReleaseTag(): Promise<string | null> {
-  const ref = process.env.COPILOT_ENV_INSTALL_REF;
-  if (ref && ref !== "latest") {
-    return ref;
-  }
-  try {
-    const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
-    const headers: Record<string, string> = { "User-Agent": "copilot-env" };
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
-    }
-    const response = await fetch(releaseApi, { headers });
-    if (!response.ok) {
-      console.warn(
-        `::warning::could not check latest release for download smoke (HTTP ${response.status})`,
-      );
-      return null;
-    }
-    const release = (await response.json()) as { tag_name?: unknown };
-    return typeof release.tag_name === "string" ? release.tag_name : null;
-  } catch (error) {
-    console.warn(
-      `::warning::could not check latest release for download smoke: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-    return null;
-  }
-}
-
-async function shouldSkipLegacyDownloadSmoke(): Promise<boolean> {
-  if (!envBool("DOWNLOAD_INSTALL")) {
-    return false;
-  }
-  const tag = await latestReleaseTag();
-  const major = tag ? tagMajor(tag) : null;
-  if (tag === null || major === null) {
-    console.log(
-      "Skipping download-mode installer smoke because the latest release could not be confirmed as v3.0.0 or newer.",
-    );
-    writeFileSync(legacyDownloadSkipMarker, `${tag ?? "unknown"}\n`);
-    return true;
-  }
-  if (major < 3) {
-    console.log(
-      `Skipping download-mode installer smoke for ${tag}; supported bundled TS installer release starts in v3.0.0.`,
-    );
-    writeFileSync(legacyDownloadSkipMarker, `${tag}\n`);
-    return true;
-  }
-  return false;
-}
-
-function legacyDownloadSmokeSkipped(): boolean {
-  return existsSync(legacyDownloadSkipMarker);
-}
-
-interface InstallerTarget {
-  script: string;
-  args: string[];
-}
-
-function installerTarget(args: string[]): InstallerTarget {
-  const scriptName = isWindows ? "install.ps1" : "install.sh";
-  if (!envBool("DOWNLOAD_INSTALL")) {
-    return { script: isWindows ? `./${scriptName}` : scriptName, args };
-  }
-
-  const tmp = mkdtempSync(join(tmpdir(), "copilot-env-installer-smoke-"));
-  const script = join(tmp, scriptName);
-  copyFileSync(resolve(scriptName), script);
-  if (!isWindows) chmodSync(script, 0o755);
-
-  const installDir = join(tmp, "copilot-env");
-  const nextArgs = hasInstallDirArg(args)
-    ? args
-    : [...args, isWindows ? "-InstallDir" : "--dir", installDir];
-  console.log(`download-mode installer smoke using ${script} -> ${installDir}`);
-  return { script, args: nextArgs };
 }
 
 function run(command: string, args: string[]): void {
@@ -192,33 +88,25 @@ function cliExists(command: string): boolean {
   return existsSync(join(bin, `${command}.cmd`)) || existsSync(join(bin, command));
 }
 
-async function runInstall(): Promise<void> {
-  rmSync(legacyDownloadSkipMarker, { force: true });
-  if (await shouldSkipLegacyDownloadSmoke()) {
-    return;
-  }
-  const target = installerTarget(installerArgs());
+function runInstaller(args: string[]): void {
   if (isWindows) {
-    run("pwsh", ["-NoProfile", "-File", target.script, ...target.args]);
+    run("pwsh", ["-NoProfile", "-File", "./install.ps1", ...args]);
   } else {
-    run("bash", [target.script, ...target.args]);
+    run("bash", ["install.sh", ...args]);
   }
+}
+
+function runInstall(): void {
+  const args = installerArgs();
+  runInstaller(args);
 
   if (envBool("RERUN")) {
     console.log("--- repeat install run (must still succeed) ---");
-    if (isWindows) {
-      run("pwsh", ["-NoProfile", "-File", target.script, ...target.args]);
-    } else {
-      run("bash", [target.script, ...target.args]);
-    }
+    runInstaller(args);
   }
 }
 
 function assertNoOptionalClis(): void {
-  if (legacyDownloadSmokeSkipped()) {
-    console.log("Skipping optional CLI assertion because legacy download-mode smoke was skipped.");
-    return;
-  }
   for (const cli of optionalClis) {
     if (cliExists(cli)) {
       console.error(
@@ -235,11 +123,11 @@ function verifyOptionalClis(): void {
   for (const cli of optionalClis) {
     const found = cliExists(cli);
     if (expectClis && !found) {
-      console.error(`::error::${cli} was not installed by agent setup-clis`);
+      console.error(`::error::${cli} was not installed by agent shell --clis`);
       process.exit(1);
     }
     if (!expectClis && found) {
-      console.error(`::error::${cli} must NOT have been installed without agent setup-clis`);
+      console.error(`::error::${cli} must NOT have been installed without agent shell --clis`);
       process.exit(1);
     }
     console.log(expectClis ? `found ${cli}` : `${cli} correctly absent`);
@@ -290,11 +178,39 @@ function verifyLauncherWiring(): void {
   }
 }
 
-function verifyOutcome(): void {
-  if (legacyDownloadSmokeSkipped()) {
-    console.log("Skipping outcome verification because legacy download-mode smoke was skipped.");
-    return;
+/** The root the installer installed into: its default unless the scenario
+ *  passed an explicit target. Everything after run-install addresses the
+ *  INSTALLED tree, never the checkout it was built from. */
+function installRoot(args: string[], home: string): string {
+  const flag = isWindows ? "-installdir" : "--dir";
+  const index = args.findIndex((arg) => arg.toLowerCase() === flag);
+  const paired = index >= 0 ? args[index + 1] : undefined;
+  const inline = args.find((arg) => arg.startsWith("--dir="))?.slice("--dir=".length);
+  return paired ?? inline ?? join(home, ".copilot-env");
+}
+
+/** The installed launcher shim -- what a user actually runs after install. */
+function verifyInstalledLauncher(): void {
+  const home = (isWindows ? process.env.USERPROFILE : process.env.HOME) ?? "";
+  const launcher = join(
+    installRoot(installerArgs(), home),
+    "bin",
+    isWindows ? "agent.ps1" : "agent",
+  );
+  if (!existsSync(launcher)) {
+    console.error(`::error::installed launcher missing at ${launcher}`);
+    process.exit(1);
   }
+  if (isWindows) {
+    run("pwsh", ["-NoProfile", "-File", launcher, "--version"]);
+  } else {
+    run(launcher, ["--version"]);
+  }
+  console.log(`installed launcher works: ${launcher}`);
+}
+
+function verifyOutcome(): void {
+  verifyInstalledLauncher();
   verifyOptionalClis();
   verifyShellWiring();
   verifyLauncherWiring();
@@ -305,24 +221,17 @@ function verifyOutcome(): void {
   );
 }
 
-async function main(): Promise<void> {
-  switch (step) {
-    case "run-install":
-      await runInstall();
-      break;
-    case "assert-no-optional-clis":
-      assertNoOptionalClis();
-      break;
-    case "verify-outcome":
-      verifyOutcome();
-      break;
-    default:
-      console.error("usage: installer-smoke.ts run-install|assert-no-optional-clis|verify-outcome");
-      process.exit(2);
-  }
+switch (step) {
+  case "run-install":
+    runInstall();
+    break;
+  case "assert-no-optional-clis":
+    assertNoOptionalClis();
+    break;
+  case "verify-outcome":
+    verifyOutcome();
+    break;
+  default:
+    console.error("usage: installer-smoke.ts run-install|assert-no-optional-clis|verify-outcome");
+    process.exit(2);
 }
-
-main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-});

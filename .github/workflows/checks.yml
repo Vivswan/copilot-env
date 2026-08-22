@@ -80,14 +80,11 @@ jobs:
           deno task lint:ps
 
   # Each install.sh scenario runs as its OWN isolated job (fresh runner, fresh
-  # $HOME) via the reusable installer-sh.yml. The default bootstrap path runs on
-  # both Linux and macOS; optional setup variants run on one POSIX OS because the
-  # detailed block/flag behavior is covered by unit tests.
-  # Disabled until the deno installer rewrite + binary release assets land
-  # (migration chunk 6); a job skipped by its own `if:` does not fail all-green.
+  # $HOME) via the reusable installer-sh.yml, which compiles this tree's binary
+  # and installs from it. The default bootstrap path runs on both Linux and
+  # macOS; optional setup variants run on one POSIX OS because the detailed
+  # block/flag behavior is covered by unit tests.
   install-sh:
-    # No such repository variable is defined, so this never runs; chunk 6 deletes the gate.
-    if: ${{ vars.ENABLE_INSTALLER_JOBS == 'true' }}
     name: install.sh ${{ matrix.name }} / ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -109,15 +106,6 @@ jobs:
             expect-clis: false
             expect-wiring: true
             rerun: true
-          - os: ubuntu-latest
-            name: "download path"
-            args: "--no-shell-integration"
-            setup-clis: false
-            setup-launchers: false
-            expect-clis: false
-            expect-wiring: false
-            rerun: true
-            download-install: true
           - os: ubuntu-latest
             name: "setup-clis"
             args: ""
@@ -151,15 +139,10 @@ jobs:
       expect-clis: ${{ matrix.expect-clis }}
       expect-wiring: ${{ matrix.expect-wiring }}
       rerun: ${{ matrix.rerun }}
-      download-install: ${{ matrix.download-install || false }}
 
   # Windows parity: each install.ps1 scenario as its OWN isolated job via the
   # reusable installer-ps1.yml. Git + Node/npm are preinstalled on windows-latest.
-  # Disabled until the deno installer rewrite + binary release assets land
-  # (migration chunk 6); a job skipped by its own `if:` does not fail all-green.
   install-ps1:
-    # No such repository variable is defined, so this never runs; chunk 6 deletes the gate.
-    if: ${{ vars.ENABLE_INSTALLER_JOBS == 'true' }}
     name: install.ps1 ${{ matrix.scenario.name }}
     strategy:
       fail-fast: false
@@ -172,14 +155,6 @@ jobs:
             expect-clis: false
             expect-wiring: true
             rerun: true
-          - name: "download path"
-            args: "-NoShellIntegration"
-            setup-clis: false
-            setup-launchers: false
-            expect-clis: false
-            expect-wiring: false
-            rerun: true
-            download-install: true
           - name: "setup-clis"
             args: ""
             setup-clis: true
@@ -202,46 +177,3 @@ jobs:
       expect-clis: ${{ matrix.scenario.expect-clis }}
       expect-wiring: ${{ matrix.scenario.expect-wiring }}
       rerun: ${{ matrix.scenario.rerun }}
-      download-install: ${{ matrix.scenario.download-install || false }}
-
-  # Pre-merge release smoke, exercised on the rolling release-please PR ONLY:
-  # simulate the pending release from the working tree (pin the installers,
-  # git-archive HEAD, serve a localhost stand-in of the GitHub releases API) and
-  # run the full installer against it on both platforms. Catches packaging and
-  # installer bugs BEFORE the tag exists; the post-release smoke in release.yml
-  # still gates publishing with the real uploaded assets. The job itself always
-  # runs and the release-PR condition lives on the STEPS, so everywhere else it
-  # is a seconds-long no-op reporting success -- keeping the aggregate `checks`
-  # result the gate sees honest.
-  # Disabled until the deno installer rewrite + binary release assets land
-  # (migration chunk 6): the simulated install still bootstraps through the
-  # bun-era installer, so it cannot pass; a job skipped by its own `if:` does
-  # not fail all-green.
-  release-pr-smoke:
-    # No such repository variable is defined, so this never runs; chunk 6 deletes the gate.
-    if: ${{ vars.ENABLE_INSTALLER_JOBS == 'true' }}
-    name: release-pr smoke / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    env:
-      # A same-repo PR from release-please's branch namespace. The head-repo check
-      # matters: a fork can name its branch release-please--anything. Within this
-      # repo, only trusted collaborators and workflows can create branches at all.
-      IS_RELEASE_PR: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'release-please--') && github.event.pull_request.head.repo.full_name == github.repository }}
-    steps:
-      - uses: actions/checkout@v7
-        if: ${{ env.IS_RELEASE_PR == 'true' }}
-
-      - uses: denoland/setup-deno@v2
-        if: ${{ env.IS_RELEASE_PR == 'true' }}
-        with:
-          deno-version-file: .dvmrc
-          cache: true
-
-      - name: Simulate the pending release and run the installer against it
-        if: ${{ env.IS_RELEASE_PR == 'true' }}
-        run: deno run -P=test .github/scripts/release-pr-smoke.ts

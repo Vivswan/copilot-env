@@ -624,7 +624,7 @@ export function defaultProbeDeps(): ProbeDeps {
       return { ...record, cached: existsSync(record.denoDir) };
     },
     sidecar: () => sidecarStatus(resolveRootHome()),
-    projectConfig: () => readProjectConfig(root),
+    projectConfig: () => readProjectConfig(),
     proxyCooldownSeconds: () => resolveMinimumReleaseAgeSeconds(),
     // Effective CODEX_HOME, matching runCodexConfig / env.ts precedence:
     // per-host state override, then the default resolution.

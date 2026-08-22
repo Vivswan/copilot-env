@@ -506,7 +506,7 @@ export interface ProxyFloatDeps {
 function floatContext(deps: ProxyFloatDeps): FloatContext {
   return {
     "rootHome": deps.rootHome ?? resolveRootHome(),
-    "config": deps.config ?? readProjectConfig(PROJECT_ROOT),
+    "config": deps.config ?? readProjectConfig(),
     "denoBin": deps.denoBin ?? resolveDenoBin(),
     "fetchLike": deps.fetchLike ?? fetch,
     "runner": deps.runner ?? defaultDenoRunner,

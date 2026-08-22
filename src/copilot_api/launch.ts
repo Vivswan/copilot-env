@@ -17,7 +17,6 @@ import { errMessage } from "../utils/error.ts";
 import { acquireFileLockBounded, releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
 import { isRecord } from "../utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
-import { PROJECT_ROOT } from "../utils/root.ts";
 import { CopilotAdminClient } from "./admin.ts";
 import { CopilotApiConfig, ensureDict } from "./config.ts";
 import { Credential } from "./credential.ts";
@@ -153,7 +152,7 @@ export async function ensureProxyFloor(): Promise<void> {
   }
   let config: ProjectConfig;
   try {
-    config = readProjectConfig(PROJECT_ROOT);
+    config = readProjectConfig();
   } catch (e) {
     throw new Error(`could not read the proxy floor from copilot-env.config: ${errMessage(e)}`);
   }

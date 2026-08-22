@@ -419,7 +419,7 @@ test("toggling direct <-> proxy swaps the mode-specific keys on the shared table
   expect(asRecord(provider.auth).args).toEqual(agentLauncherCommand(["auth", "--get"]).args);
   expect(provider.http_headers).toBeDefined();
 
-  // Switch to proxy on the SAME table: the proxy auth (/bin/sh -c ensure + print)
+  // Switch to proxy on the SAME table: the proxy auth (`agent proxy-token --yes`)
   // replaces the direct auth, env_key stays absent, and direct-only http_headers is
   // scrubbed.
   configureCodexConfig(codexHome, {

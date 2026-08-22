@@ -46,6 +46,8 @@ instead of the current host's profile.
 #>
 
 [CmdletBinding()]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', 'Version',
+    Justification = 'Read by the nested Resolve-ReleaseTag; the rule does not follow a script-scope param into function bodies.')]
 param(
     [switch]$AllHosts,
     [string]$InstallDir = '',

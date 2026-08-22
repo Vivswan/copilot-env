@@ -10,12 +10,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 # --- the single source of truth for the compile inputs -------------------------
-# TARGETS mirrors RELEASE_TARGETS in src/install/targets.ts and INCLUDES mirrors
-# EMBEDDED_ASSET_DIRS + EMBEDDED_ASSET_FILES in src/install/installer.ts. Shell
-# cannot import those, so test/release_targets.test.ts parses this block and
-# fails the PR when the two drift: anything `agent install` expects to find in
-# the compiled VFS but that was never embedded would only surface as a broken
-# install at release time.
+# TARGETS mirrors RELEASE_TARGETS in src/install/targets.ts; shell cannot import
+# TS, so test/installer_pinning.test.ts parses this block and fails the PR when
+# the two drift.
+#
+# The --include list is NOT here: deno.json's `compile.include` owns it, pinned
+# to installer.ts's asset lists by the same test. That has to stay one list --
+# a CLI --include MERGES with the config's rather than replacing it, so a
+# second copy here would silently union instead of failing loudly.
 TARGETS=(
     x86_64-apple-darwin
     aarch64-apple-darwin
@@ -23,8 +25,9 @@ TARGETS=(
     aarch64-unknown-linux-gnu
     x86_64-pc-windows-msvc
 )
+# deno.json's compile.permissions holds the set; -P must still be passed as an
+# explicit acknowledgement or `deno compile` refuses to use it.
 PERMISSION_SET="cli"
-INCLUDES=(src/scripts shell skills .claude-plugin deno.json deno.lock .dvmrc copilot-env.config)
 ENTRY="src/cli.ts"
 APP_NAME="copilot-env"
 OUT_DIR="dist"
@@ -77,11 +80,6 @@ if [ "${#SELECTED[@]}" -eq 0 ]; then
     SELECTED=("${TARGETS[@]}")
 fi
 
-INCLUDE_ARGS=()
-for _inc in "${INCLUDES[@]}"; do
-    INCLUDE_ARGS+=(--include "$_inc")
-done
-
 mkdir -p "$OUT_DIR"
 for _target in "${SELECTED[@]}"; do
     _out="$OUT_DIR/agent-$_target"
@@ -97,11 +95,9 @@ for _target in "${SELECTED[@]}"; do
     # never imports. Embedding it whole costs ~78MB per target.
     "$DENO_BIN" compile \
         --target "$_target" \
-        --no-check \
         --node-modules-dir=none \
         --exclude-unused-npm \
         -P="$PERMISSION_SET" \
-        "${INCLUDE_ARGS[@]}" \
         --app-name "$APP_NAME" \
         -o "$_out" \
         "$ENTRY"

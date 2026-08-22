@@ -128,8 +128,8 @@ describe("buildInstallPlan", () => {
     expect(() => installedPlan()).toThrow("embedded assets are missing shell");
 
     writeAssetSource(source);
-    rmSync(join(source, "deno.json"));
-    expect(() => installedPlan()).toThrow("embedded assets are missing deno.json");
+    rmSync(join(source, "copilot-env.config"));
+    expect(() => installedPlan()).toThrow("embedded assets are missing copilot-env.config");
   });
 
   test("plans removal of only the superseded artifacts actually present", () => {
@@ -159,7 +159,9 @@ describe("applyInstallPlan", () => {
 
     applyInstallPlan(installedPlan({ ...OPTIONS, assetsOnly: true }));
 
-    expect(readFileSync(join(dest, "deno.json"), "utf8")).toBe("content of deno.json");
+    expect(readFileSync(join(dest, "copilot-env.config"), "utf8")).toBe(
+      "content of copilot-env.config",
+    );
     expect(readFileSync(join(dest, "shell", "payload.txt"), "utf8")).toBe("content of shell");
     expect(readFileSync(join(dest, "bin", "agent"), "utf8")).toBe(POSIX_SHIM);
     expect(readFileSync(join(dest, "bin", "agent.ps1"), "utf8")).toBe(POWERSHELL_SHIM);

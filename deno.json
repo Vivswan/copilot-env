@@ -47,6 +47,16 @@
     "check": "deno lint --fix && deno fmt",
     "test:docker": "deno run --allow-read --allow-env --allow-run=docker,podman scripts/test_docker.ts"
   },
+  "compile": {
+    "include": [
+      "src/scripts",
+      "shell",
+      "skills",
+      ".claude-plugin",
+      "copilot-env.config"
+    ],
+    "permissions": "cli"
+  },
   "permissions": {
     "test": {
       "env": true,

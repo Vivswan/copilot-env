@@ -33,23 +33,32 @@ import { runShellIntegration } from "../shell/integration.ts";
 import { installRoot } from "./install_root.ts";
 import { INSTALLED_BINARY_POSIX, INSTALLED_BINARY_WINDOWS } from "./targets.ts";
 
-/** Directories embedded into the compiled binary (scripts/compile.sh --include)
- *  that an installed root needs on real disk: helper scripts that run as their
- *  own processes, the shell-integration payload, and the plugin/skill
- *  distribution surface. The compile include list must cover every entry. */
+/** Directories embedded into the compiled binary (deno.json's `compile.include`)
+ *  that an installed root needs on real disk: the daemon's `--preload` shims and
+ *  the proxy-token resolvers, the shell-integration payload, and the
+ *  plugin/skill distribution surface.
+ *
+ *  `src/scripts` is materialized WHOLE rather than by naming the shims. The
+ *  daemon loads a per-credential subset of `DAEMON_SHIM_FILES`
+ *  (src/copilot_api/shims.ts) by absolute path, and those five entrypoints
+ *  import three more siblings; copying the directory covers all of them by
+ *  construction, so there is no second list to drift out of sync. */
 export const EMBEDDED_ASSET_DIRS = ["src/scripts", "shell", "skills", ".claude-plugin"] as const;
 
-/** Single files an installed root needs for the same reason. The daemon spawn
- *  passes `<root>/deno.json` to the sidecar as `--config` (it is the import map
- *  that pins the proxy), `deno.lock` is the frozen resolution behind it, and
- *  `.dvmrc` is which deno version the sidecar installs. `copilot-env.config`
- *  carries the proxy-float floor/ceiling. */
-export const EMBEDDED_ASSET_FILES = [
-  "deno.json",
-  "deno.lock",
-  ".dvmrc",
-  "copilot-env.config",
-] as const;
+/** Single files an installed root needs for the same reason.
+ *
+ *  Only `copilot-env.config` (the proxy-float floor/ceiling): its readers pass
+ *  an explicit root, so on an installed binary it has to be a real file rather
+ *  than one that exists only inside the compiled VFS.
+ *
+ *  Deliberately NOT here: `deno.json`, `deno.lock`, `.dvmrc`. The floated
+ *  daemon runs against a config the float generates itself plus its own warmed
+ *  DENO_DIR, with `--node-modules-dir=none` and no lockfile -- the checkout's
+ *  deno.json cannot serve it at all, since its frozen lock rejects any floated
+ *  version and `--cached-only` would demand the whole import map. `.dvmrc` is
+ *  read only by the dev checkout's shell bootstrap, which the compiled
+ *  launcher shim replaces. */
+export const EMBEDDED_ASSET_FILES = ["copilot-env.config"] as const;
 
 /** Superseded files a pre-binary source install leaves in the root. The binary
  *  install has no runtime bootstrap left to use them and `node_modules` alone
@@ -192,7 +201,7 @@ export function buildInstallPlan(
   for (const dir of EMBEDDED_ASSET_DIRS) {
     if (!existsSync(join(sourceRoot, dir))) {
       throw new Error(
-        `embedded assets are missing ${dir}; this binary was not built by scripts/compile.sh`,
+        `embedded assets are missing ${dir}; deno.json compile.include did not embed it`,
       );
     }
     copies.push(...collectAssetCopies(sourceRoot, root, dir));
@@ -200,7 +209,7 @@ export function buildInstallPlan(
   for (const file of EMBEDDED_ASSET_FILES) {
     if (!existsSync(join(sourceRoot, file))) {
       throw new Error(
-        `embedded assets are missing ${file}; this binary was not built by scripts/compile.sh`,
+        `embedded assets are missing ${file}; deno.json compile.include did not embed it`,
       );
     }
     copies.push({ from: join(sourceRoot, file), to: join(root, file), executable: false });

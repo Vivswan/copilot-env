@@ -149,9 +149,12 @@ file layouts. Don't restate here what a reader can grep.
   `COPILOT_ENV_DOWNLOAD_BASE` (a directory or URL) replaces the release as the source, which
   is how CI smokes an installer against a binary built from the branch under test.
 - `scripts/compile.sh` - the release build: five targets into `dist/` plus `checksums.txt`.
-  Its `TARGETS` and `--include` lists are pinned to `src/install/targets.ts` and to
-  `installer.ts`'s asset lists by `test/installer_pinning.test.ts`, because shell cannot
-  import TypeScript and a drift is a broken install nobody sees until release.
+  It drives only the target loop; `deno.json`'s `compile.include` owns what gets embedded,
+  because a CLI `--include` MERGES with the config's list instead of replacing it, so a
+  second copy would silently union. `test/installer_pinning.test.ts` pins `TARGETS` to
+  `src/install/targets.ts` and `compile.include` to `installer.ts`'s asset lists in both
+  directions - shell cannot import TypeScript, and a drift is either a broken install or
+  dead weight in every binary.
 - `src/cli.ts` - Commander entry; delegates to `run*` functions.
 - `src/commands/` - one file per command; `init` configures both agents, `auth` manages the
   credential only and never configures agents. Command files validate, orchestrate, and
@@ -183,7 +186,11 @@ file layouts. Don't restate here what a reader can grep.
   `.mcp.json` would be read as project-scope MCP config by any `claude` session in this
   checkout and conflict with the user-scope registration.
 - `copilot-env.config` - proxy-float floor/ceiling. `test/` - `deno test` units + a start/stop
-  lifecycle against `test/copilot-api-fake.mjs`.
+  lifecycle against `test/copilot-api-fake.mjs`. The fake is what keeps the lifecycle smoke
+  auth-free and offline, so it is also the reason `deno task test:docker --floated-lifecycle`
+  exists: that one run uses the REAL proxy, and it is the only thing that exercises the float
+  against the live registry and the daemon's permission set against the proxy's real
+  dependency tree.
 
 ### Agent & dev environment init
 

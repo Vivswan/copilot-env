@@ -3,18 +3,58 @@
 export const SECONDS_PER_DAY = 24 * 60 * 60;
 export const MILLISECONDS_PER_DAY = SECONDS_PER_DAY * 1000;
 
-/**
- * Format a unix-ms timestamp as the LOCAL calendar day, `YYYY-MM-DD`. The one
- * day-key derivation every usage source shares, so `agent cost` buckets by the
- * user's own days rather than UTC's. Deliberately JS (never SQLite's
- * `localtime` modifier): the libc timezone behind SQLite is cached at first
- * use, while `Date` follows a runtime `TZ` change -- keeping the timezone math
- * here keeps it testable and consistent across all sources.
- */
-export function localDayKey(ms: number): string {
+/** `ms -> "YYYY-MM-DD"`, bound to one timezone. */
+export type DayKey = (ms: number) => string;
+
+const pad = (n: number): string => String(n).padStart(2, "0");
+
+/** The system zone's day key, on Date's own accessors: this is the hot path (one call per
+ *  aggregated usage row) and the half that follows the process `TZ`. */
+const SYSTEM_DAY_KEY: DayKey = (ms) => {
   const d = new Date(ms);
-  const pad = (n: number): string => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+};
+
+/** One bound day key per NAMED zone. A named zone's rules are fixed for the life of the
+ *  process, so caching by name is safe -- which is why SYSTEM_DAY_KEY is not in here. */
+const DAY_KEY_BY_ZONE = new Map<string, DayKey>();
+
+/**
+ * The day-key function for `timeZone` (an IANA name), or the system's own zone by default.
+ * The one day-key derivation every usage source shares. Deliberately JS, never SQLite's
+ * `localtime`: the libc zone behind SQLite is cached at first use, while `Date` honors `TZ`.
+ *
+ * Resolve ONCE and pass the result down; resolved per row, an unknown zone throws inside a
+ * reader's per-file catch and silently costs the report its per-day split. Named zones go
+ * through Intl and the default through `Date`; test/time.test.ts pins the two together.
+ */
+export function dayKeyIn(timeZone?: string): DayKey {
+  if (timeZone === undefined) return SYSTEM_DAY_KEY;
+  const cached = DAY_KEY_BY_ZONE.get(timeZone);
+  if (cached !== undefined) return cached;
+  // "en-US" pins a Gregorian, latin-digit calendar whatever the host locale is, and the parts
+  // are read by NAME, so the locale's field ORDER cannot leak into the key. An unknown zone
+  // throws RangeError right here, which is the whole point of resolving up front.
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const dayKey: DayKey = (ms) => {
+    const parts = formatter.formatToParts(new Date(ms));
+    const part = (type: Intl.DateTimeFormatPartTypes): string =>
+      parts.find((p) => p.type === type)?.value ?? "";
+    return `${part("year")}-${part("month")}-${part("day")}`;
+  };
+  DAY_KEY_BY_ZONE.set(timeZone, dayKey);
+  return dayKey;
+}
+
+/** `ms` as a calendar day, `YYYY-MM-DD`, in `timeZone` or the system's own zone. The one-shot
+ *  form of dayKeyIn, for a caller holding a single timestamp rather than a column of them. */
+export function localDayKey(ms: number, timeZone?: string): string {
+  return dayKeyIn(timeZone)(ms);
 }
 
 /**

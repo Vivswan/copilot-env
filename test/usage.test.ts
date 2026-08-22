@@ -9,7 +9,7 @@ import {
   sanitizeTokenCount,
 } from "../src/usage/usage.ts";
 import { localDayKey } from "../src/utils/time.ts";
-import { afterEach, expect, test, TZ_PINNABLE } from "./helpers/testing.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 
 // Day keys are LOCAL calendar days now, so expectations derive from the same
 // helper the reader uses; timestamps meant to share a day are written at the
@@ -279,13 +279,11 @@ test("readUsage sinceMs filters older rows from token totals and active days", (
   expect(report.perDay.size).toBe(1);
 });
 
-test.skipIf(!TZ_PINNABLE)(
-  "readUsage buckets by the user's local day, not the UTC day (TZ-pinned)",
-  () => {
-    dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
-    const path = join(dir, "copilot-api.sqlite");
-    const db = new DatabaseSync(path);
-    db.exec(`CREATE TABLE token_usage_events (
+test("readUsage buckets by the user's local day, not the UTC day", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  const path = join(dir, "copilot-api.sqlite");
+  const db = new DatabaseSync(path);
+  db.exec(`CREATE TABLE token_usage_events (
     model TEXT NOT NULL,
     input_tokens INTEGER,
     output_tokens INTEGER,
@@ -294,33 +292,33 @@ test.skipIf(!TZ_PINNABLE)(
     created_at_ms INTEGER,
     created_at_utc TEXT
   )`);
-    // 2026-06-02T01:00Z is 2026-06-01 21:00 in New York (UTC-4 in June).
-    const at = "2026-06-02T01:00:00Z";
-    db.prepare("INSERT INTO token_usage_events VALUES (?, ?, ?, ?, ?, ?, ?)").run(
-      "gpt-5.5",
-      1,
-      0,
-      0,
-      0,
-      ms(at),
-      at,
-    );
-    db.close();
+  // 2026-06-02T01:00Z is 2026-06-01 21:00 in New York (UTC-4 in June).
+  const at = "2026-06-02T01:00:00Z";
+  db.prepare("INSERT INTO token_usage_events VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+    "gpt-5.5",
+    1,
+    0,
+    0,
+    0,
+    ms(at),
+    at,
+  );
+  db.close();
 
-    // Some runtimes ignore a TZ assignment after a `delete process.env.TZ`
-    // (verified under bun), so save/restore by explicit zone name and never delete.
-    const savedTz = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
-    try {
-      process.env.TZ = "America/New_York";
-      const report = readUsage([path]);
-      // A literal expectation on purpose: a regression back to UTC slicing would
-      // key this "2026-06-02" and fail here even on a UTC CI runner.
-      expect([...report.perDay.keys()]).toEqual(["2026-06-01"]);
-    } finally {
-      process.env.TZ = savedTz;
-    }
-  },
-);
+  // The zone is NAMED rather than pinned through process.env.TZ, so this runs on Windows
+  // too (deno honors the TZ env var on unix only). Asserting the SAME row in two zones
+  // is what keeps the teeth on every runner: a reader that ignored the zone -- or sliced
+  // by UTC -- would have to return one key for both, and these two differ.
+  expect([...readUsage([path], undefined, "America/New_York").perDay.keys()])
+    .toEqual(["2026-06-01"]);
+  expect([...readUsage([path], undefined, "UTC").perDay.keys()]).toEqual(["2026-06-02"]);
+});
+
+test("readUsage rejects an unknown zone before it opens a single database", () => {
+  // Resolved lazily, a bad zone would raise RangeError per row inside the per-path catch,
+  // which reports it as an unreadable DB and returns a report missing its per-day split.
+  expect(() => readUsage([], undefined, "Not/AZone")).toThrow();
+});
 
 test("a null created_at_ms row counts in byModel but is dropped from perDay", () => {
   // The daemon writes created_at_ms on every row, so this is defensive: the

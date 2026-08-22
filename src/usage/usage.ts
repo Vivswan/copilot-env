@@ -17,7 +17,7 @@ import { isValidProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
-import { localDayKey } from "../utils/time.ts";
+import { dayKeyIn } from "../utils/time.ts";
 import { canonicalModelName } from "./pricing.ts";
 
 /** The four priced token buckets every usage source reduces one event to. */
@@ -243,12 +243,18 @@ function openSqliteReadOnlyWithWalFallback<T>(path: string, query: (db: Database
 /**
  * Open each DB read-only and aggregate token usage by model. `sinceMs` (unix
  * ms) bounds the query to recent rows when set. A DB that fails to open or query
- * is skipped with a warning rather than aborting the whole report.
+ * is skipped with a warning rather than aborting the whole report. `timeZone`
+ * names the zone the per-day split is cut in (default: the system's own); it
+ * exists so the slicing is assertable without pinning the process `TZ`, which
+ * deno honors on unix only.
  */
-export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
+export function readUsage(dbPaths: string[], sinceMs?: number, timeZone?: string): UsageReport {
   const byModel = new Map<string, ModelUsage>();
   const perDay = new Map<string, Map<string, ModelUsage>>();
   const since = sinceMs ?? null;
+  // Resolved BEFORE any DB is opened: an unknown zone must fail here, not once per row
+  // inside the per-path catch below, which would report it as an unreadable database.
+  const dayKey = dayKeyIn(timeZone);
 
   // One grouped query by (UTC minute, model); byModel and perDay both derive from
   // it, so we never read the same rows twice. The bucket is a UTC minute so the
@@ -297,7 +303,13 @@ export function readUsage(dbPaths: string[], sinceMs?: number): UsageReport {
       // expected; such a row still counts toward byModel (the aggregate total)
       // but is omitted from the per-day split.
       if (row.bucket !== null) {
-        addDayUsage(perDay, localDayKey(row.bucket * MINUTE_MS), model, row.buckets, row.events);
+        addDayUsage(
+          perDay,
+          dayKey(row.bucket * MINUTE_MS),
+          model,
+          row.buckets,
+          row.events,
+        );
       }
     }
   }

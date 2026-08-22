@@ -34,7 +34,7 @@ import { knownCodexHomes } from "../codex/config.ts";
 import { errMessage } from "../utils/error.ts";
 import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
-import { localDayKey, MILLISECONDS_PER_DAY } from "../utils/time.ts";
+import { type DayKey, dayKeyIn, MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { canonicalModelName } from "./pricing.ts";
 import {
   addDayUsage,
@@ -98,12 +98,19 @@ export function discoverCodexSessionRoots(homes: string[] = knownCodexHomes().ho
  * Parse every rollout file under `roots` and aggregate token usage per
  * `model_provider`, per model, per LOCAL calendar day. `sinceMs` (unix ms) bounds the
  * report to recent events when set. A file that fails to read is skipped with
- * a warning rather than aborting the whole report.
+ * a warning rather than aborting the whole report. `timeZone` names the zone the
+ * per-day split is cut in (default: the system's own); it exists so the slicing is
+ * assertable without pinning the process `TZ`, which deno honors on unix only.
  */
 export async function readCodexSessions(
   roots: string[],
   sinceMs?: number,
+  timeZone?: string,
 ): Promise<Map<string, UsageReport>> {
+  // Resolved FIRST, before any directory walk or file read: an unknown zone must fail here,
+  // not once per line inside the per-file catch below, which would report it as an
+  // unreadable rollout and return a report silently missing its per-day split.
+  const dayKey = dayKeyIn(timeZone);
   const files: string[] = [];
   for (const root of roots) {
     collectRolloutFiles(root, 1, sinceMs, files);
@@ -131,7 +138,7 @@ export async function readCodexSessions(
 
   for (const file of uniqueFiles) {
     try {
-      await parseRolloutFile(file, sinceMs, providers, infoHashesBySession);
+      await parseRolloutFile(file, sinceMs, providers, infoHashesBySession, dayKey);
     } catch (e) {
       consola.warn(`could not read ${file} (${errMessage(e)}).`);
     }
@@ -239,6 +246,7 @@ async function parseRolloutFile(
   sinceMs: number | undefined,
   providers: Map<string, UsageReport>,
   infoHashesBySession: Map<string, Set<string>>,
+  dayKey: DayKey,
 ): Promise<void> {
   let provider = DEFAULT_PROVIDER;
   let model = UNKNOWN_MODEL;
@@ -337,7 +345,7 @@ async function parseRolloutFile(
     // Bucket by the user's LOCAL calendar day (localDayKey), not the UTC day
     // the rollout timestamp spells.
     if (Number.isFinite(tsMs)) {
-      addDayUsage(report.perDay, localDayKey(tsMs), model, buckets, 1);
+      addDayUsage(report.perDay, dayKey(tsMs), model, buckets, 1);
     }
   }
 

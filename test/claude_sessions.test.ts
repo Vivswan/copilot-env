@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { discoverClaudeSessionRoots, readClaudeSessions } from "../src/usage/claude_sessions.ts";
 import { localDayKey } from "../src/utils/time.ts";
-import { expect, test, TZ_PINNABLE } from "./helpers/testing.ts";
+import { expect, test } from "./helpers/testing.ts";
 
 /** One assistant transcript line; Claude's input_tokens EXCLUDES the cache buckets. */
 function assistantLine(
@@ -73,30 +73,23 @@ test("readClaudeSessions maps the four usage buckets and buckets by local day", 
   expect(report.perDay.size).toBe(2);
 });
 
-test.skipIf(!TZ_PINNABLE)(
-  "readClaudeSessions buckets by the user's local day, not the UTC day (TZ-pinned)",
-  async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claude-sessions-"));
-    const root = join(dir, "projects");
-    writeTranscript(join(root, "-Users-x-proj"), "aaa.jsonl", [
-      // 2026-06-02T01:00Z is 2026-06-01 21:00 in New York (UTC-4 in June).
-      assistantLine("2026-06-02T01:00:00.000Z", "claude-opus-4-8", "msg_1", usage(1, 2)),
-    ]);
+test("readClaudeSessions buckets by the user's local day, not the UTC day", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "claude-sessions-"));
+  const root = join(dir, "projects");
+  writeTranscript(join(root, "-Users-x-proj"), "aaa.jsonl", [
+    // 2026-06-02T01:00Z is 2026-06-01 21:00 in New York (UTC-4 in June).
+    assistantLine("2026-06-02T01:00:00.000Z", "claude-opus-4-8", "msg_1", usage(1, 2)),
+  ]);
 
-    // TZ assignments are ignored after a `delete process.env.TZ` (verified), so
-    // save/restore by explicit zone name and never delete.
-    const savedTz = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
-    try {
-      process.env.TZ = "America/New_York";
-      const report = await readClaudeSessions([root]);
-      // A literal expectation on purpose: a regression back to UTC slicing would
-      // key this "2026-06-02" and fail here even on a UTC CI runner.
-      expect([...report.perDay.keys()]).toEqual(["2026-06-01"]);
-    } finally {
-      process.env.TZ = savedTz;
-    }
-  },
-);
+  // The zone is NAMED rather than pinned through process.env.TZ, so this runs on Windows
+  // too (deno honors the TZ env var on unix only). Asserting the SAME event in two zones
+  // is what keeps the teeth on every runner: a reader that ignored the zone -- or sliced
+  // by UTC -- would have to return one key for both, and these two differ.
+  const newYork = await readClaudeSessions([root], undefined, "America/New_York");
+  expect([...newYork.perDay.keys()]).toEqual(["2026-06-01"]);
+  const utc = await readClaudeSessions([root], undefined, "UTC");
+  expect([...utc.perDay.keys()]).toEqual(["2026-06-02"]);
+});
 
 test("readClaudeSessions books a streamed message at its final (max) usage snapshot", async () => {
   const dir = mkdtempSync(join(tmpdir(), "claude-sessions-"));

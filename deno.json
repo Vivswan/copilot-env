@@ -95,7 +95,8 @@
   },
   "lint": {
     "plugins": [
-      "./test/lint/no_shim_imports.ts"
+      "./test/lint/no_shim_imports.ts",
+      "./test/lint/no_unmanaged_child_spawn.ts"
     ],
     "rules": {
       "tags": [

@@ -3,10 +3,15 @@
 // set; `--config` pins the root deno.json because deno discovers config (and
 // with it the permission set) from the ENTRYPOINT's directory, so a worker
 // script written to a temp dir would otherwise resolve no set at all.
+//
+// Every spawn here is gated on the running test's abort signal (testing.ts): a
+// body the deadline abandoned keeps executing, and without the gate its next
+// spawn would land in the middle of whichever test is running by then.
 import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { testAbortSignal } from "./testing.ts";
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -47,8 +52,49 @@ function definedEnv(env: Record<string, string | undefined>): Record<string, str
   return out;
 }
 
+/** The running test's abort signal, thrown if the deadline already fired. Every spawn
+ *  starts here, so a body the deadline abandoned never gets a new child at all. */
+function liveTestSignal(): AbortSignal | undefined {
+  const signal = testAbortSignal();
+  if (signal?.aborted) throw signal.reason;
+  return signal;
+}
+
+/**
+ * Tear `child` down as soon as the running test's signal aborts. Private on purpose:
+ * spawnChild below is the only way to make a child, so there is no reachable path that
+ * builds one and forgets to register it.
+ */
+function killOnTestAbort(child: Deno.ChildProcess): Deno.ChildProcess {
+  const signal = testAbortSignal();
+  if (signal === undefined) return child;
+  const kill = (): void => {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // already exited
+    }
+  };
+  // An already-aborted signal never fires a listener added afterwards, and the deadline can
+  // land between the spawn and this call -- so the kill is immediate in that case.
+  if (signal.aborted) kill();
+  else signal.addEventListener("abort", kill, { once: true });
+  return child;
+}
+
+/** THE async child spawn for the suite: constructs and registers for abort teardown in one
+ *  step. Reaching a child-process API anywhere else under test/ is a lint error
+ *  (test/lint/no_unmanaged_child_spawn.ts). */
+export function spawnChild(cmd: string, options: Deno.CommandOptions): Deno.ChildProcess {
+  liveTestSignal();
+  return killOnTestAbort(new Deno.Command(cmd, options).spawn());
+}
+
 /** Synchronous spawn with the Bun.spawnSync result shape the suite asserts on. */
 export function runSync(cmd: string, args: string[], opts: RunOptions = {}): RunResult {
+  // spawnSync can take no part in this: it blocks the thread, so the only moment the signal
+  // can be observed for a SYNC child is before the call.
+  liveTestSignal();
   const res = spawnSync(cmd, args, {
     cwd: opts.cwd ?? ROOT,
     env: definedEnv(opts.env ?? process.env),

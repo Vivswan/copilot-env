@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
-import { denoRunArgs, importSpecifier, ROOT } from "./helpers/run.ts";
+import { denoRunArgs, importSpecifier, ROOT, spawnChild } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
 
 // The cross-process lock in CopilotApiConfig.update() must serialize concurrent read-modify-
@@ -14,13 +14,15 @@ const CONFIG_MODULE = join(ROOT, "src", "copilot_api", "config.ts");
 
 /** Spawn one worker script as a deno child; resolves to its exit code and stdout text. */
 function spawnWorker(worker: string): Promise<{ code: number; stdout: string }> {
-  return new Deno.Command(Deno.execPath(), {
+  const child = spawnChild(Deno.execPath(), {
     args: [...denoRunArgs(), worker],
     stdout: "piped",
     stderr: "piped",
-  })
-    .output()
-    .then((o) => ({ code: o.code, stdout: new TextDecoder().decode(o.stdout) }));
+  });
+  return child.output().then((o) => ({
+    code: o.code,
+    stdout: new TextDecoder().decode(o.stdout),
+  }));
 }
 
 test("update() serializes concurrent writers across processes (no lost updates)", async () => {

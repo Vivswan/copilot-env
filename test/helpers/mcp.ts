@@ -6,7 +6,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { denoRunArgs, ROOT } from "./run.ts";
+import { denoRunArgs, ROOT, spawnChild } from "./run.ts";
 import { expect } from "./testing.ts";
 
 let dirs: string[] = [];
@@ -63,7 +63,7 @@ export class McpClient {
     // clearEnv matters: mcpEnv() scrubs the credential trio by DELETING keys, and
     // Deno.Command merges `env` over the inherited environment by default, which
     // would quietly restore an ambient GH_TOKEN.
-    this.proc = new Deno.Command(Deno.execPath(), {
+    this.proc = spawnChild(Deno.execPath(), {
       args: [...denoRunArgs(), join(ROOT, "src", "cli.ts"), "mcp", "--serve", ...args],
       cwd: ROOT,
       clearEnv: true,
@@ -73,7 +73,7 @@ export class McpClient {
       // Discarded, matching the old pipe-and-never-read: an unread deno pipe would
       // backpressure a chatty server into a deadlock instead.
       stderr: "null",
-    }).spawn();
+    });
     this.reader = this.proc.stdout.getReader();
     this.writer = this.proc.stdin.getWriter();
     this.proc.status.then((status) => {

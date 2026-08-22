@@ -16,6 +16,7 @@ import { Credential } from "../copilot_api/credential.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { allProfileNames } from "../copilot_api/env_state.ts";
 import { resolveRootHome } from "../copilot_api/paths.ts";
+import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import { profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { runShellIntegration } from "../shell/integration.ts";
@@ -86,7 +87,7 @@ function manualRemoveCommand(dir: string): string {
  *  daemon throws, so the caller aborts instead of deleting under a live proxy. */
 async function stopAllDaemons(profiles: ProfileName[]): Promise<void> {
   for (const profile of [null, ...profiles]) {
-    const { signalled, stopped } = await stopTrackedProxy(2000, profile);
+    const { signalled, stopped } = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, profile);
     if (signalled && !stopped) {
       throw new Error(
         `the ${profileLabel(profile)} proxy daemon did not stop; retry, or stop it ` +

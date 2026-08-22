@@ -38,6 +38,7 @@ import {
   reserveProfilePort,
 } from "./port.ts";
 import {
+  DAEMON_SIGKILL_GRACE_MS,
   type DaemonCredential,
   getOrphanPids,
   isCopilotApiPid,
@@ -249,7 +250,7 @@ export async function cleanupExistingProxies(
   if (tracked !== undefined) {
     if (await isCopilotApiPid(tracked)) {
       consola.info(`   Stopping tracked proxy (pid=${tracked}) ...`);
-      await terminatePid(tracked, 2000);
+      await terminatePid(tracked, DAEMON_SIGKILL_GRACE_MS);
     }
     // Clear both pid and port up front: if the relaunch below throws, we don't
     // leave a stale port pointing at the now-dead daemon. (A named profile's
@@ -272,7 +273,7 @@ export async function cleanupExistingProxies(
         }
       }
     }
-    await sleep(2000);
+    await sleep(DAEMON_SIGKILL_GRACE_MS);
     orphans = await listUntrackedOrphans(myPid, myPpid, keepPids);
     for (const opid of orphans) {
       if (pidAlive(opid)) {

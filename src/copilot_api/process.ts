@@ -94,6 +94,12 @@ export { pidAlive };
 const DAEMON_CMDLINE_PATTERN = "copilot-api.*\\bstart\\b";
 const DAEMON_CMDLINE_RE = new RegExp(DAEMON_CMDLINE_PATTERN);
 
+/** How long an escalating teardown waits after SIGTERM before it SIGKILLs, shared by every
+ *  path that must guarantee the daemon is gone. It also bounds the daemon's own drain:
+ *  daemon_shutdown.ts keeps a separate literal (it loads in the daemon, which imports no CLI
+ *  module) and test/daemon_spawn.test.ts pins the two in order. */
+export const DAEMON_SIGKILL_GRACE_MS = 2_000;
+
 /**
  * Terminate `pid`: SIGTERM, then -- when `graceMs > 0` -- wait that long and SIGKILL
  * if it's still alive. Signal errors (e.g. ESRCH on an already-gone pid) are
@@ -288,12 +294,15 @@ export const DAEMON_GH_TOKEN_ENV = "COPILOT_ENV_DAEMON_GH_TOKEN";
  * The credential the daemon launches with, in the only three shapes that exist. A
  * passthrough credential ALWAYS carries its token -- the shim reads it back from argv,
  * so passthrough-without-a-token would load a shim that can do nothing -- which is why
- * `pat` is a variant rather than a boolean beside an optional token.
+ * `pat` is a variant rather than a boolean beside an optional token. It always carries an
+ * `integrationId` too: resolvePassthroughIntegrationId falls back to the daemon's own
+ * vscode-chat default rather than returning nothing, so "passthrough with no identity" is
+ * a state the launch cannot produce.
  */
 export type DaemonCredential =
   | { kind: "none" }
   | { kind: "token"; token: string }
-  | { kind: "pat"; token: string; integrationId: string | undefined };
+  | { kind: "pat"; token: string; integrationId: string };
 
 /** Everything the daemon spawn needs. The preload set and the credential environment are
  *  DERIVED from this (below), never passed alongside it, so no caller can hand over a
@@ -351,18 +360,15 @@ function applyCredentialEnv(env: NodeJS.ProcessEnv, credential: DaemonCredential
   } else {
     env[DAEMON_GH_TOKEN_ENV] = credential.token;
   }
-  const integrationId = credential.kind === "pat" ? credential.integrationId : undefined;
-  if (integrationId === undefined) {
-    delete env[DAEMON_INTEGRATION_ID_ENV];
-  } else {
-    env[DAEMON_INTEGRATION_ID_ENV] = integrationId;
-  }
   if (credential.kind === "pat") {
+    env[DAEMON_INTEGRATION_ID_ENV] = credential.integrationId;
     // The passthrough shim relies on copilot-api's DEFAULT path (which sends the
     // vscode-chat editor headers the token needs). An inherited
     // COPILOT_API_OAUTH_APP=opencode would put copilot-api in opencode mode and strip
     // those headers, so scrub it.
     delete env.COPILOT_API_OAUTH_APP;
+  } else {
+    delete env[DAEMON_INTEGRATION_ID_ENV];
   }
 }
 

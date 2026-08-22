@@ -22,6 +22,7 @@ import { Credential } from "../copilot_api/credential.ts";
 import { type ProxyStatus, proxyStatus, stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { allProfileNames, CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
 import { profileHome, profileHomeNames } from "../copilot_api/paths.ts";
+import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import { parseProfileFlag, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { cyan, gray, green, yellow } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
@@ -120,7 +121,7 @@ async function runAdd(name: ProfileName, args: ProfileArgs): Promise<void> {
  * uninstall`.
  */
 export async function deleteProfileEverywhere(name: ProfileName): Promise<void> {
-  const { signalled, stopped } = await stopTrackedProxy(2000, name);
+  const { signalled, stopped } = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, name);
   if (signalled && !stopped) {
     throw new Error(
       `${profileLabel(name)}'s proxy daemon did not stop; retry, or stop it manually ` +

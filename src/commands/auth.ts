@@ -41,7 +41,12 @@ import {
   tokenFromSetFlag,
 } from "../copilot_api/gh_cli.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
-import { copilotApiArgv, resolveCopilotApiEntry, resolveDenoBin } from "../copilot_api/process.ts";
+import {
+  copilotApiArgv,
+  DAEMON_SIGKILL_GRACE_MS,
+  resolveCopilotApiEntry,
+  resolveDenoBin,
+} from "../copilot_api/process.ts";
 import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { installedProxyVersion } from "../copilot_api/version.ts";
 import { errMessage } from "../utils/error.ts";
@@ -423,7 +428,7 @@ async function runDel(profile: Profile): Promise<void> {
     // must sever that too -- stop THIS profile's tracked daemon, escalating to SIGKILL and
     // VERIFYING it died (graceMs > 0) so we never falsely report the credential's access as
     // revoked.
-    const { signalled, stopped } = await stopTrackedProxy(2000, profile);
+    const { signalled, stopped } = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, profile);
     if (profile === null) {
       // The default wording is an output contract -- keep it byte-identical.
       if (!signalled) {

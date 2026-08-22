@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
   copilotApiArgv,
   DAEMON_GH_TOKEN_ENV,
+  DAEMON_SIGKILL_GRACE_MS,
   daemonArgv,
   daemonEnvironment,
   type DaemonSpec,
@@ -13,7 +14,7 @@ import {
 import { DAEMON_INTEGRATION_ID_ENV } from "../src/copilot_api/integration_identity.ts";
 import { DRAIN_DEADLINE_MS } from "../src/scripts/daemon_shutdown.ts";
 import { PROXY_PACKAGE_NAME } from "../src/copilot_api/version.ts";
-import { denoRunArgs, importSpecifier, ROOT, runSync } from "./helpers/run.ts";
+import { denoRunArgs, importSpecifier, ROOT, runSync, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, removeDir, tmpDir } from "./helpers.ts";
 
@@ -95,9 +96,16 @@ test("the argv runs the mapped package with an offline-only resolve, and ends in
   // discover from, and the preloads resolve their imports through this file's import map.
   expect(argv.slice(1, 3)).toEqual(["--config", join(ROOT, "deno.json")]);
   expect(argv).toContain("--cached-only");
-  // The permission grants are a visible list, not a blanket -A.
-  expect(argv).toContain("--allow-net");
-  expect(argv).not.toContain("-A");
+  // The permission grants are an exact, visible list: never a blanket -A, and never one
+  // grant more than the daemon needs (it reads/writes its home, binds the loopback port,
+  // and reads env plus platform info).
+  expect(argv.filter((a) => a === "-A" || a.startsWith("--allow"))).toEqual([
+    "--allow-env",
+    "--allow-read",
+    "--allow-write",
+    "--allow-net",
+    "--allow-sys",
+  ]);
   // deno.json's import map is the single source of the proxy version, so no version
   // string is restated on the command line.
   expect(argv.slice(-5)).toEqual([
@@ -160,13 +168,6 @@ test("the credential environment is set-or-DELETE, so a stale value can never le
   expect(pat[DAEMON_GH_TOKEN_ENV]).toBe("ghp_new");
   expect(pat[DAEMON_INTEGRATION_ID_ENV]).toBe("vscode-chat");
   expect(pat.COPILOT_API_OAUTH_APP).toBeUndefined();
-
-  // Passthrough whose probe produced no identity still clears the stale one.
-  const unprobed = daemonEnvironment(
-    { ...BASE, credential: { kind: "pat", token: "ghp_new", integrationId: undefined } },
-    stale,
-  );
-  expect(unprobed[DAEMON_INTEGRATION_ID_ENV]).toBeUndefined();
 });
 
 test("the daemon inherits our TLS/proxy environment, and the spec's own wiring wins", () => {
@@ -250,33 +251,51 @@ test("a wedged drain still exits: the deadline is what keeps `agent stop` able t
 });
 
 test.skipIf(Deno.build.os === "windows")(
-  "SIGTERM drains the served requests before the daemon exits",
+  "SIGTERM drains an IN-FLIGHT request before the daemon exits",
   async () => {
     // Windows has no deliverable SIGTERM (node's process.kill is TerminateProcess there),
     // so the drain is a POSIX contract; the Windows daemon keeps its hard-kill teardown.
+    //
+    // The request must be genuinely mid-flight when the signal lands, or the test proves
+    // only that a finished server can exit. So the handler parks until this process
+    // releases it, and the release is written only AFTER the child reports the signal
+    // arrived -- by which point shutdownDaemon has already called server.shutdown().
     dir = tmpDir("copilot-sigterm-");
     const target = join(dir, "serving.ts");
+    const release = join(dir, "release");
     writeFileSync(
       target,
       `import { installTerminationHandler } from ${SHUTDOWN_MODULE};\n` +
         `import { installInferenceObserver } from ${
           importSpecifier(join(ROOT, "src", "scripts", "inference_activity.ts"))
         };\n` +
+        `const release = ${JSON.stringify(release)};\n` +
         "installInferenceObserver();\n" +
         "installTerminationHandler();\n" +
+        // A second listener, so the parent learns the signal was delivered. It runs AFTER
+        // the handler installed above, which starts the drain synchronously.
+        "Deno.addSignalListener('SIGTERM', () => console.log('SIGNALLED'));\n" +
+        "const parked = async () => {\n" +
+        "  console.log('SERVING');\n" +
+        "  for (;;) {\n" +
+        "    try { await Deno.stat(release); break; } catch { /* not yet */ }\n" +
+        "    await new Promise((r) => setTimeout(r, 20));\n" +
+        "  }\n" +
+        "  return new Response('drained-ok');\n" +
+        "};\n" +
         "const server = Deno.serve(\n" +
         "  { hostname: '127.0.0.1', port: 0, onListen: (a) => console.log('PORT ' + a.port) },\n" +
-        "  () => new Response('ok'),\n" +
+        "  parked,\n" +
         ");\n" +
         "server.finished.then(() => console.log('DRAINED'));\n",
     );
     // Deno.Command, not node's child_process: only this reports the real wait status
     // (node's compat layer echoes the signal it SENT, so a clean exit reads as killed).
-    const child = new Deno.Command(Deno.execPath(), {
+    const child = spawnChild(Deno.execPath(), {
       args: [...denoRunArgs(), target],
       stdout: "piped",
       stderr: "piped",
-    }).spawn();
+    });
     let stdout = "";
     const decoder = new TextDecoder();
     const reader = child.stdout.getReader();
@@ -287,26 +306,54 @@ test.skipIf(Deno.build.os === "windows")(
         stdout += decoder.decode(value);
       }
     })();
+    const awaitLine = async (line: string, budgetMs: number): Promise<void> => {
+      const deadline = Date.now() + budgetMs;
+      while (!stdout.includes(line) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(stdout).toContain(line);
+    };
+    let inFlight: Promise<Response> | undefined;
     try {
       // Signal it only once it is genuinely listening (the handler installs before serve).
-      for (let i = 0; i < 100 && !stdout.includes("PORT "); i++) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-      expect(stdout).toContain("PORT ");
+      await awaitLine("PORT ", 10_000);
+      const match = /PORT (\d+)/.exec(stdout);
+      expect(match).not.toBeNull();
+      inFlight = fetch(`http://127.0.0.1:${match?.[1]}/`);
+      inFlight.catch(() => {}); // marked handled; the await below is what surfaces a failure
+      await awaitLine("SERVING", 5_000); // the handler is parked, response not yet written
+
       child.kill("SIGTERM");
+      // The signal must show up INSIDE the drain window: past it the daemon has already
+      // exited on the deadline and there is no in-flight request left to prove anything about.
+      await awaitLine("SIGNALLED", DRAIN_DEADLINE_MS);
+      writeFileSync(release, "");
+
+      // The parked request completes: drained, not severed.
+      const response = await inFlight;
+      inFlight = undefined;
+      const body = await response.text();
+      expect(response.status).toBe(200);
+      expect(body).toBe("drained-ok");
+
       expect(await child.status).toEqual({ success: true, code: 0, signal: null });
       await pump;
       // Drained through the shared path, not severed by deno's default terminate.
       expect(stdout).toContain("DRAINED");
     } finally {
+      // An assertion that threw before the request was consumed would otherwise hold the
+      // connection -- and the child -- open.
+      await inFlight?.then((r) => r.body?.cancel(), () => {});
       await child.stderr.cancel();
     }
   },
 );
 
-// Every escalating teardown (start --force, uninstall, de-auth, profile --del)
-// SIGKILLs after a 2000ms grace; the drain deadline must finish first or those
-// paths sever the in-flight responses the drain exists to protect.
+// The escalating teardowns (start --force, uninstall, de-auth, profile --del) SIGKILL
+// after the shared grace; the drain deadline must finish first or those paths sever the
+// in-flight responses the drain exists to protect. Both sides are imported so the
+// relation is pinned rather than restated: the daemon-side module keeps its own literal
+// (it loads inside the daemon, where a CLI import does not belong).
 test("the drain deadline fits inside the SIGKILL grace", () => {
-  expect(DRAIN_DEADLINE_MS).toBeLessThan(2000);
+  expect(DRAIN_DEADLINE_MS).toBeLessThan(DAEMON_SIGKILL_GRACE_MS);
 });

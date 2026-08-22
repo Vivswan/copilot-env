@@ -37,19 +37,21 @@ test("runSync: an explicitly undefined env value is unset in the child, not merg
  *  Built from the temp dir so it is absolute-and-absent on every platform. */
 const UNSPAWNABLE = join(tmpdir(), "copilot-env-definitely-not", "not-a-binary");
 
-test("runSync: an unset survives a spawn that throws, and never leaks into the parent", () => {
+test("runSync: an unset survives a failed spawn, and never leaks into the parent", () => {
   process.env[PROBE] = "PARENT_VALUE";
   try {
-    // The restore has to run from the finally, not the happy path. Deno's Windows
-    // node-compat surfaces the spawn failure as a non-Error value, so assert the
-    // CONTRACT (it throws, the parent is restored) rather than the value's class.
-    let threw = false;
+    // The restore must hold however the platform surfaces a missing executable:
+    // POSIX throws out of res.error, Windows node-compat returns normally with a
+    // nonzero status and no error at all. The contract under test is the parent
+    // restoration after a FAILED spawn, not the failure vehicle.
+    let failed = false;
     try {
-      runSync(UNSPAWNABLE, [], { env: { ...process.env, [PROBE]: undefined } });
+      const res = runSync(UNSPAWNABLE, [], { env: { ...process.env, [PROBE]: undefined } });
+      failed = res.exitCode !== 0;
     } catch {
-      threw = true;
+      failed = true;
     }
-    expect(threw).toBe(true);
+    expect(failed).toBe(true);
     expect(process.env[PROBE]).toBe("PARENT_VALUE");
   } finally {
     delete process.env[PROBE];

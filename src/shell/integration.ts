@@ -263,16 +263,46 @@ export function windowsExecutionPolicyCommand(): string {
   );
 }
 
+// --- test/CI seams ------------------------------------------------------------
+//
+// One override per platform family for WHERE this module writes. They exist for different
+// reasons: the Windows $PROFILE location comes from a Windows API call that no environment
+// variable can move, while the POSIX rc lookup does follow $HOME -- but only if every test
+// remembers to set it, which is exactly what a structural isolation floor must not depend
+// on. Set them ONLY from tests, like the other COPILOT_ENV_CI_* variables.
+
+/** The Documents FOLDER the Windows `$PROFILE` resolvers build on -- the parent of the
+ *  per-edition `WindowsPowerShell/` and `PowerShell/` directories, not a profile dir. */
+export const CI_PS_DOCUMENTS_DIR_ENV = "COPILOT_ENV_CI_PS_DOCUMENTS_DIR";
+
+/** The directory the POSIX rc files (`.bashrc` / `.zshrc`) resolve under, in place of
+ *  `homedir()`. Takes precedence over `$HOME`. */
+export const CI_RC_DIR_ENV = "COPILOT_ENV_CI_RC_DIR";
+
+/**
+ * Read one seam. Absolute paths only, and set-but-unusable is a hard ERROR for both: an
+ * empty value is an unexpanded interpolation and a relative one resolves against whatever
+ * cwd the CLI ran from. Quietly falling back to the machine's real startup file is the one
+ * outcome a seam whose entire job is isolation must never have. The ONE place they are read.
+ */
+function absolutePathEnv(name: string): string | null {
+  const dir = process.env[name];
+  if (dir === undefined) return null;
+  if (!isAbsolute(dir)) throw new Error(`${name} must be an absolute path (got: ${dir})`);
+  return dir;
+}
+
 // --- POSIX target files -------------------------------------------------------
 
 /** Existing ~/.bashrc + ~/.zshrc; for wiring, fall back to one named for $SHELL. */
 export function rcFiles(remove: boolean): string[] {
+  const home = absolutePathEnv(CI_RC_DIR_ENV) ?? homedir();
   const existing = [".bashrc", ".zshrc"]
-    .map((f) => join(homedir(), f))
+    .map((f) => join(home, f))
     .filter((p) => existsSync(p));
   if (existing.length > 0 || remove) return existing;
   const shell = basename(process.env.SHELL ?? "/bin/bash");
-  return [join(homedir(), shell === "zsh" ? ".zshrc" : ".bashrc")];
+  return [join(home, shell === "zsh" ? ".zshrc" : ".bashrc")];
 }
 
 /**
@@ -329,31 +359,6 @@ const PS_PROFILE_ALL_HOSTS = "profile.ps1";
  *  with PS_PROFILE_DIRS above (WindowsPowerShell = 5.1, PowerShell = 7). */
 const PS_EXES = ["powershell", "pwsh"] as const;
 
-/**
- * Test/CI seam: the Documents FOLDER both `$PROFILE` resolvers build on -- the parent of
- * the per-edition `WindowsPowerShell/` and `PowerShell/` directories, not a profile
- * directory itself. Absolute paths only.
- *
- * It exists because the real lookup asks Windows where Documents is, which
- * `$HOME`/`$USERPROFILE` cannot move -- so without it the wiring test writes the CI
- * runner's actual PowerShell profile.
- */
-export const CI_PS_DOCUMENTS_DIR_ENV = "COPILOT_ENV_CI_PS_DOCUMENTS_DIR";
-
-/** The redirected Documents folder, or null when this run targets the real one.
- *  The ONE place the seam is read. */
-function psDocumentsOverride(): string | null {
-  const dir = process.env[CI_PS_DOCUMENTS_DIR_ENV];
-  if (dir === undefined) return null;
-  // Set-but-unusable is a mistake, never a silent fall back to the real profile: an
-  // empty value is an unexpanded interpolation, and a relative one would resolve
-  // against whatever cwd the CLI happened to run from.
-  if (!isAbsolute(dir)) {
-    throw new Error(`${CI_PS_DOCUMENTS_DIR_ENV} must be an absolute path (got: ${dir})`);
-  }
-  return dir;
-}
-
 /** Every `<root>/<edition>/<name>` profile path, deduped -- the one spelling of the
  *  layout both resolvers produce. */
 function profilePathsUnder(documentRoots: string[], names: string[]): string[] {
@@ -374,7 +379,7 @@ function profilePathsUnder(documentRoots: string[], names: string[]): string[] {
  * redirected run would wire one place and inspect another.
  */
 export function cheapWindowsProfilePaths(): string[] {
-  const override = psDocumentsOverride();
+  const override = absolutePathEnv(CI_PS_DOCUMENTS_DIR_ENV);
   const home = process.env.USERPROFILE ?? homedir();
   const docRoots = override ? [override] : [
     join(home, "Documents"),
@@ -397,7 +402,7 @@ export type WindowsProfileTarget =
 
 /** Resolve this run's `$PROFILE` target: the machine's own, or the seam's throwaway tree. */
 export function windowsProfileTarget(allHosts: boolean): WindowsProfileTarget {
-  const override = psDocumentsOverride();
+  const override = absolutePathEnv(CI_PS_DOCUMENTS_DIR_ENV);
   const name = allHosts ? PS_PROFILE_ALL_HOSTS : PS_PROFILE_CURRENT_HOST;
   if (override !== null) {
     return { paths: profilePathsUnder([override], [name]), source: "redirected" };

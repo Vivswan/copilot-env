@@ -2,7 +2,11 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/paths.ts";
-import { CI_PS_DOCUMENTS_DIR_ENV, MARKER as SHELL_MARKER } from "../src/shell/integration.ts";
+import {
+  CI_PS_DOCUMENTS_DIR_ENV,
+  CI_RC_DIR_ENV,
+  MARKER as SHELL_MARKER,
+} from "../src/shell/integration.ts";
 import { getSanitizedHostname } from "../src/utils/hostname.ts";
 import { runCli } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
@@ -391,8 +395,16 @@ test("shell --help surfaces the install/launcher flags", () => {
 test("shell --clis --no-prereqs verifies only and wires this platform's startup file", () => {
   const root = mkdtempSync(join(tmpdir(), "copilot-shell-clis-"));
   const documents = join(root, "Documents");
+  // Both seams point at the throwaway root, so this run is floor-proof: it cannot be
+  // moved by an ambient rc-dir value, and it never reaches the machine's own files.
+  // (The homedir()/$HOME fallback keeps its coverage in shell_integration.test.ts.)
   const ok = runCli(["shell", "--clis", "--no-prereqs"], {
-    env: isolatedEnv({ HOME: root, SHELL: "/bin/bash", [CI_PS_DOCUMENTS_DIR_ENV]: documents }),
+    env: isolatedEnv({
+      HOME: root,
+      SHELL: "/bin/bash",
+      [CI_PS_DOCUMENTS_DIR_ENV]: documents,
+      [CI_RC_DIR_ENV]: root,
+    }),
   });
   // Exit code asserted together with stderr, so a failure reports the child's real error
   // instead of a bare "expected 0".

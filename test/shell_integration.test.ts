@@ -1,14 +1,16 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import {
   cheapWindowsProfilePaths,
   CI_PS_DOCUMENTS_DIR_ENV,
+  CI_RC_DIR_ENV,
   launchersWired,
   posixBlock,
   posixLaunchersBlock,
   quotePosix,
   quotePowerShell,
+  rcFiles,
   windowsExecutionPolicyCommand,
   windowsProfileTarget,
 } from "../src/shell/integration.ts";
@@ -31,25 +33,30 @@ function shellFunctionBody(source: string, name: string): string {
   return match[1] as string;
 }
 
-/** Run `body` with the Documents seam set to `value` (or cleared, when null), restoring
- *  whatever was there before. Every seam test goes through this, so none can leak -- and
- *  the ones that must see the REAL lookup can clear an inherited value. */
-function withDocumentsEnv(value: string | null, body: () => void): void {
-  const previous = process.env[CI_PS_DOCUMENTS_DIR_ENV];
-  if (value === null) delete process.env[CI_PS_DOCUMENTS_DIR_ENV];
-  else process.env[CI_PS_DOCUMENTS_DIR_ENV] = value;
+/** Run `body` with env var `name` set to `value`, or cleared when null, restoring the
+ *  prior value afterwards and returning whatever `body` returned. It mutates this
+ *  process because deno's spawnSync MERGES the parent environment: a key merely absent
+ *  from a child's `env` option still arrives from the parent, so clearing has to happen
+ *  here to take effect there. */
+function withEnv<T>(name: string, value: string | null, body: () => T): T {
+  const previous = process.env[name];
+  if (value === null) delete process.env[name];
+  else process.env[name] = value;
   try {
-    body();
+    return body();
   } finally {
-    if (previous === undefined) delete process.env[CI_PS_DOCUMENTS_DIR_ENV];
-    else process.env[CI_PS_DOCUMENTS_DIR_ENV] = previous;
+    if (previous === undefined) delete process.env[name];
+    else process.env[name] = previous;
   }
 }
 
 function run(...args: string[]): { code: number | null; out: string } {
-  const proc = runCli(["shell", ...args], {
-    env: { ...process.env, HOME: home, SHELL: "/bin/bash", CONSOLA_LEVEL: "5" },
-  });
+  // These tests drive the homedir()/$HOME path on purpose, so the rc-dir seam must not
+  // reach the child: it outranks $HOME, and a suite-wide floor may set it.
+  const proc = withEnv(CI_RC_DIR_ENV, null, () =>
+    runCli(["shell", ...args], {
+      env: { ...process.env, HOME: home, SHELL: "/bin/bash", CONSOLA_LEVEL: "5" },
+    }));
   return { code: proc.exitCode, out: proc.stdout + proc.stderr };
 }
 
@@ -219,7 +226,7 @@ test("the Windows $PROFILE lookup honors the Documents redirect on every OS", ()
   // test and unredirectable on Windows. Under the redirect it is pure path math, so
   // resolving it here at all is the proof that PowerShell was never spawned.
   const documents = join(home, "Documents");
-  withDocumentsEnv(documents, () => {
+  withEnv(CI_PS_DOCUMENTS_DIR_ENV, documents, () => {
     // One filename per call, under each PowerShell edition's directory.
     expect(windowsProfileTarget(false).paths).toEqual([
       join(documents, "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1"),
@@ -238,25 +245,72 @@ test("both profile resolvers land on the same redirected tree", () => {
   // The authoritative resolver wires; the cheap one (behind `agent env`) inspects. Let
   // them disagree and a redirected run wires the launchers, then reports them unwired.
   const documents = join(home, "Documents");
-  withDocumentsEnv(documents, () => {
+  withEnv(CI_PS_DOCUMENTS_DIR_ENV, documents, () => {
     expect(new Set(cheapWindowsProfilePaths())).toEqual(
       new Set([...windowsProfileTarget(false).paths, ...windowsProfileTarget(true).paths]),
     );
   });
 });
 
-test("a set-but-unusable Documents redirect is refused by both resolvers", () => {
-  // Quietly falling back to the real profile is the one failure this seam must not have:
-  // an empty value is an unexpanded interpolation, a relative one resolves off the cwd.
-  // Windows cannot hold an empty env var (it reads back as unset), so that case is only
-  // assertable where the OS preserves the difference.
+test("a set-but-unusable seam value is refused by every resolver", () => {
+  // Quietly falling back to the machine's real startup file is the one failure a seam
+  // whose job is isolation must not have: an empty value is an unexpanded interpolation,
+  // a relative one resolves off the cwd. Windows cannot hold an empty env var (it reads
+  // back as unset), so that case is only assertable where the OS preserves it.
   const relative = ["Documents", "./Documents"];
   const bad = process.platform === "win32" ? relative : ["", ...relative];
   for (const value of bad) {
-    withDocumentsEnv(value, () => {
+    withEnv(CI_PS_DOCUMENTS_DIR_ENV, value, () => {
       expect(() => windowsProfileTarget(false)).toThrow("must be an absolute path");
       expect(() => cheapWindowsProfilePaths()).toThrow("must be an absolute path");
     });
+    withEnv(CI_RC_DIR_ENV, value, () => {
+      expect(() => rcFiles(true)).toThrow("must be an absolute path");
+    });
+  }
+});
+
+test("the POSIX rc lookup honors the rc-dir seam on every OS", () => {
+  // homedir() does follow $HOME on POSIX, so this seam is not about reachability like its
+  // Windows twin -- it is the floor that stops a test which forgot to isolate $HOME from
+  // landing in the developer's real ~/.bashrc.
+  const rcDir = join(home, "rc");
+  mkdirSync(rcDir, { recursive: true });
+  writeFileSync(join(rcDir, ".bashrc"), "export EXISTING=1\n");
+  withEnv(CI_RC_DIR_ENV, rcDir, () => {
+    expect(rcFiles(true)).toEqual([join(rcDir, ".bashrc")]);
+    // With no rc file present the wiring path falls back to one named for $SHELL -- still
+    // under the seam, never under $HOME.
+    rmSync(join(rcDir, ".bashrc"));
+    withEnv("SHELL", "/bin/zsh", () => {
+      expect(rcFiles(false)).toEqual([join(rcDir, ".zshrc")]);
+    });
+    withEnv("SHELL", "/bin/bash", () => {
+      expect(rcFiles(false)).toEqual([join(rcDir, ".bashrc")]);
+    });
+  });
+});
+
+skipWin("the rc-dir seam beats $HOME end to end, so a stray run cannot reach it", () => {
+  // The structural floor: even with $HOME pointed at a live directory, the seam decides
+  // where `agent shell` writes. This is what keeps a test that forgets its own isolation
+  // from landing in the real ~/.bashrc.
+  const rcDir = mkdtempSync(join(tmpdir(), "copilot-rc-"));
+  try {
+    const proc = runCli(["shell"], {
+      env: {
+        ...process.env,
+        HOME: home,
+        SHELL: "/bin/bash",
+        CONSOLA_LEVEL: "5",
+        [CI_RC_DIR_ENV]: rcDir,
+      },
+    });
+    expect({ exitCode: proc.exitCode, stderr: proc.stderr }).toMatchObject({ exitCode: 0 });
+    expect(readFileSync(join(rcDir, ".bashrc"), "utf-8")).toContain(MARKER);
+    expect(existsSync(join(home, ".bashrc"))).toBe(false); // $HOME never touched
+  } finally {
+    rmSync(rcDir, { recursive: true, force: true });
   }
 });
 
@@ -267,7 +321,7 @@ test("a set-but-unusable Documents redirect is refused by both resolvers", () =>
 test.skipIf(process.platform !== "win32")(
   "the un-redirected Windows lookup resolves the machine's real $PROFILE candidates",
   () => {
-    withDocumentsEnv(null, () => {
+    withEnv(CI_PS_DOCUMENTS_DIR_ENV, null, () => {
       const target = windowsProfileTarget(false); // resolving at all is the assertion
       expect(target.source).toBe("system");
       expect(target.paths.length).toBe(2);
@@ -288,7 +342,7 @@ test.skipIf(process.platform !== "win32")(
   () => {
     const documents = join(home, "Documents");
     const profile = join(documents, "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1");
-    withDocumentsEnv(documents, () => {
+    withEnv(CI_PS_DOCUMENTS_DIR_ENV, documents, () => {
       expect(launchersWired()).toBe(false);
       mkdirSync(dirname(profile), { recursive: true });
       writeFileSync(profile, `${LAUNCHERS_MARKER}\n`);

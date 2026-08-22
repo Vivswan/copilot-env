@@ -81,10 +81,12 @@ file layouts. Don't restate here what a reader can grep.
   discriminates on whether its embedded asset source IS the install root, so a checkout
   can never be overwritten by an install.
 - **The proxy floats; we never patch it.** `@jeffreycao/copilot-api` sits at a caret-range
-  baseline in package.json and is overlaid at postinstall with the newest release older
-  than a supply-chain cooldown window (`src/proxy_float.ts`), clamped by `copilot-env.config`.
+  baseline in deno.json's import map and is resolved at install/update time to the newest
+  release older than a supply-chain cooldown window (`src/proxy_float.ts`), clamped by
+  `copilot-env.config`, into a dedicated deno cache under the proxy root home.
   Patching the package would pin one version, so runtime needs are
-  `deno run --preload` shims instead. Two agents wired Direct means no proxy, so no npm check runs.
+  `deno run --preload` shims instead. Two agents wired Direct means no proxy, so the float
+  is a no-op.
 - **`agent env` is the one machine-readable command.** The shell wrapper evals only that, so
   a new subcommand needs no wrapper change. Each agent's wiring otherwise lives in its own
   config file (`~/.codex/config.toml`, `~/.claude/settings.json`).
@@ -221,7 +223,7 @@ that tolerance into the reader instead of keeping the migration.
 - **No `any`** - deno lint's `no-explicit-any` is on (the recommended tag).
 - **camelCase** functions/vars, **PascalCase** types/classes, **CONSTANT_CASE** top-level
   constants; **snake_case only on object-literal keys** (external config keys), always quoted.
-- **No new deps without an explicit reason.** Current: `commander`, `consola`, `dotenv`,
+- **No new deps without an explicit reason.** Current: `commander`, `consola`, `@std/dotenv`,
   `execa`, `semver`, `smol-toml`, `valibot`, `which`,
   `@jeffreycao/copilot-api`, `@modelcontextprotocol/server` (the `agent mcp --serve` stdio
   server; the v2 split package is the only line implementing MCP 2026-07-28 - the v1
@@ -229,7 +231,7 @@ that tolerance into the reader instead of keeping the migration.
   `@modelcontextprotocol/sdk` (v1, also still a runtime transitive of the proxy) and
   `@modelcontextprotocol/client` (v2), the two real
   MCP clients the interop tests drive against our server; zod itself stays out of our
-  code and out of package.json.
+  code and out of deno.json's imports.
 - **String literals are external contracts** - model ids, JSON keys, env var names, log
   markers: never rename them during refactors.
 - **ASCII source, and no typographic look-alikes anywhere.** By convention,

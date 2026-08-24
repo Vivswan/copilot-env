@@ -30,7 +30,7 @@
     "@std/crypto": "jsr:@std/crypto@^1",
     "@std/dotenv": "jsr:@std/dotenv@^0.225.0",
     "@std/expect": "jsr:@std/expect@^1",
-    "@std/testing": "jsr:@std/testing@^1",
+    "@std/testing": "jsr:@std/testing@^1.0.20",
     "commander": "npm:commander@^15.0.0",
     "consola": "npm:consola@^3.4.2",
     "semver": "jsr:@std/semver@^1",

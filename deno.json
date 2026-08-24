@@ -12,6 +12,7 @@
     ".repo-platform.yml",
     ".typography-allow",
     ".github/dependabot.yml",
+    ".github/repo-platform-manifest.json",
     ".github/settings.yml",
     ".github/workflows/auto-assign.yml",
     ".github/workflows/ci.yml",

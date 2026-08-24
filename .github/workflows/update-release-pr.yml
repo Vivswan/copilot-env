@@ -5,9 +5,9 @@
 # so everything this repository wants on that PR happens here: regenerating
 # files that must ride in the release commit, updating version references
 # in docs. Add jobs freely - releases never wait on this path.
-# Token caveat: pushes to the PR branch made with the default github.token
-# do NOT re-trigger the PR's CI checks (the same limitation behind
-# release.yml's close/reopen note); with REPO_PLATFORM_TOKEN they do.
+# Token caveat: pushes made with the default github.token do NOT re-trigger
+# the PR's CI checks (the same limitation behind release.yml's close/reopen
+# note); GH_TOKEN below therefore prefers the inherited REPO_PLATFORM_TOKEN.
 
 name: Update Release PR
 
@@ -33,12 +33,16 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.head_branch }}
+          # Read-only checkout (push steps authenticate themselves, like
+          # auto-format.yml), so no token lingers in git credentials.
+          persist-credentials: false
       - name: Update the release PR
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.REPO_PLATFORM_TOKEN || github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
           HEAD_BRANCH: ${{ inputs.head_branch }}
         # Repository-specific release-PR preparation goes here, e.g.:
         #   ./regenerate-versioned-files.sh
-        #   git commit -am "chore: regenerate for release" && git push origin "$HEAD_BRANCH"
+        #   git commit -am "chore: regenerate for release"
+        #   git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:"$HEAD_BRANCH"
         run: echo "nothing to add to release PR $PR_NUMBER yet"

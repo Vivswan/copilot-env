@@ -18,4 +18,4 @@ modules:
 private: false
 project_name: copilot-env
 project_slug: copilot-env
-topics: bun,claude-code,cli,codex,copilot,copilot-api,proxy,typescript
+topics: claude-code,cli,codex,copilot,copilot-api,deno,proxy,typescript

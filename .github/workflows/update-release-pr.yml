@@ -1,0 +1,44 @@
+# The release-PR hook of the release pipeline: repo-owned, generated once
+# by Vivswan/repo-platform and never overwritten by template
+# sync. The managed release.yml calls this workflow whenever release-please
+# creates or refreshes the release PR (independently of any release cut),
+# so everything this repository wants on that PR happens here: regenerating
+# files that must ride in the release commit, updating version references
+# in docs. Add jobs freely - releases never wait on this path.
+# Token caveat: pushes to the PR branch made with the default github.token
+# do NOT re-trigger the PR's CI checks (the same limitation behind
+# release.yml's close/reopen note); with REPO_PLATFORM_TOKEN they do.
+
+name: Update Release PR
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: The release PR's number
+        required: true
+        type: string
+      head_branch:
+        description: The release PR's head branch (push updates back to it)
+        required: true
+        type: string
+
+jobs:
+  update-release-pr:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write # enough to push regenerated files back to the PR branch
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.head_branch }}
+      - name: Update the release PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          HEAD_BRANCH: ${{ inputs.head_branch }}
+        # Repository-specific release-PR preparation goes here, e.g.:
+        #   ./regenerate-versioned-files.sh
+        #   git commit -am "chore: regenerate for release" && git push origin "$HEAD_BRANCH"
+        run: echo "nothing to add to release PR $PR_NUMBER yet"

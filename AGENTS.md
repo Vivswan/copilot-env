@@ -2,6 +2,8 @@
 
 This file provides guidance to AI coding agents working in this repository. `CLAUDE.md`, `.github/copilot-instructions.md`, and `.github/agents.md` are symlinks to this file, so edit only here.
 
+Everything above the marker at the bottom of this file is managed by Vivswan/repo-platform and overwritten by template sync; this repository's own guidance belongs below the marker.
+
 ## Project
 
 copilot-env: Local copilot-api proxy lifecycle + config helper (TypeScript).
@@ -10,6 +12,7 @@ copilot-env: Local copilot-api proxy lifecycle + config helper (TypeScript).
 
 - Deno runtime (`deno install`, `deno test`, `deno task <task>`)
 - See `deno.json` for tasks, imports (`npm:`/`jsr:` dependency specifiers), and lint/format settings.
+- `.dvmrc` pins the toolchain and is managed by the template: sync overwrites it, so version overrides belong in the repo-owned workflows' explicit version inputs.
 
 ## Conventions
 
@@ -21,7 +24,7 @@ copilot-env: Local copilot-api proxy lifecycle + config helper (TypeScript).
 
 - Files whose header says "managed by Vivswan/repo-platform" arrive via sync PRs pushed by that repository. Do not edit them here; change them in Vivswan/repo-platform and let the next sync PR deliver the update.
 - Repository settings (description, topics, labels, rulesets, merge policy) are applied from Vivswan/repo-platform: by the `settings/repos/` file named after this repository over there when one exists, otherwise by this repository's own `.github/settings.yml`. Do not change settings by hand in the GitHub UI; edit the settings file.
-- Repo-owned escape hatches stay local: `.github/workflows/checks.yml`, `.github/workflows/update-release.yml`, `.gitleaks.toml`, `.gitignore`'s marked LOCAL section, `.typography-allow.local` (typography exemptions; the managed `.typography-allow` is overwritten by sync), and the repository-specific section below.
+- Repo-owned escape hatches stay local: `.github/workflows/checks.yml`, `.github/workflows/update-release.yml`, `.github/workflows/update-release-pr.yml`, `release-please-config.json` and `.release-please-manifest.json` (release state, seeded once), `.gitleaks.toml`, `.gitignore`'s marked LOCAL section, `.typography-allow.local` (typography exemptions; the managed `.typography-allow` is overwritten by sync), and the repository-specific section below.
 - Module selection is this repository's own: edit the `modules` list in `.repo-platform.yml` and the next sync PR applies the change.
 
 ## Repository-specific guidance

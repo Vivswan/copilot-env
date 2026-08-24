@@ -8,8 +8,8 @@ copilot-env: Local copilot-api proxy lifecycle + config helper (TypeScript).
 
 ## Toolchain
 
-- Runtime and package manager: deno (`deno install`, `deno test`, `deno task <name>`)
-- See the `tasks` table in `deno.json` for the available commands.
+- Deno runtime (`deno install`, `deno test`, `deno task <task>`)
+- See `deno.json` for tasks, imports (`npm:`/`jsr:` dependency specifiers), and lint/format settings.
 
 ## Conventions
 
@@ -118,3 +118,6 @@ deno task check         # deno lint --fix + deno fmt
 ```
 
 The checked-in `.githooks/pre-commit` hook (wired by `scripts/setup-env.sh` via `core.hooksPath`; deno-native, no node) runs the same gate as the `check` job in `checks.yml` (staged-file lint/format + typecheck + tests + repo-wide lint + the skip-if-absent shell/PS linters); `checks.yml` adds a Linux/macOS/Windows matrix plus lifecycle and installer jobs.
+
+- Runtime and package manager: deno (`deno install`, `deno test`, `deno task <name>`)
+- See the `tasks` table in `deno.json` for the available commands.

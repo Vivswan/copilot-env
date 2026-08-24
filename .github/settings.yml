@@ -54,9 +54,9 @@ labels:
   - name: github_actions
     color: "000000"
     description: Pull requests that update GitHub Actions code
-  - name: javascript
-    color: "168700"
-    description: Pull requests that update javascript code
+  - name: deno
+    color: "70ffaf"
+    description: Pull requests that update deno code
   - name: bug
     color: "d73a4a"
     description: Something isn't working

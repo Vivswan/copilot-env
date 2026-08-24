@@ -1,6 +1,6 @@
 # This file is managed by Vivswan/repo-platform.
 # Copier uses it to track the template source and version - do not delete.
-_commit: 53e8a01
+_commit: c8a5116
 _src_path: gh:Vivswan/repo-platform
 channel: staging
 description: Local copilot-api proxy lifecycle + config helper (TypeScript).
@@ -8,7 +8,7 @@ github_username: Vivswan
 homepage: https://github.com/Vivswan/copilot-env
 modules:
 - agents
-- bun
+- deno
 - release-please
 - issue-templates
 - pr-title

@@ -3,7 +3,7 @@
   "specifiers": {
     "jsr:@std/assert@^1.0.19": "1.0.19",
     "jsr:@std/async@^1.5.0": "1.5.0",
-    "jsr:@std/crypto@1": "1.1.0",
+    "jsr:@std/crypto@^1.1.0": "1.1.0",
     "jsr:@std/data-structures@^1.1.2": "1.1.2",
     "jsr:@std/dotenv@0.225": "0.225.8",
     "jsr:@std/expect@1": "1.0.20",
@@ -911,7 +911,7 @@
   },
   "workspace": {
     "dependencies": [
-      "jsr:@std/crypto@1",
+      "jsr:@std/crypto@^1.1.0",
       "jsr:@std/dotenv@0.225",
       "jsr:@std/expect@1",
       "jsr:@std/semver@1",

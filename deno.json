@@ -27,7 +27,7 @@
     "@modelcontextprotocol/sdk/": "npm:/@modelcontextprotocol/sdk@^1.30.0/",
     "@modelcontextprotocol/server": "npm:@modelcontextprotocol/server@^2.0.0",
     "@modelcontextprotocol/server/": "npm:/@modelcontextprotocol/server@^2.0.0/",
-    "@std/crypto": "jsr:@std/crypto@^1",
+    "@std/crypto": "jsr:@std/crypto@^1.1.0",
     "@std/dotenv": "jsr:@std/dotenv@^0.225.0",
     "@std/expect": "jsr:@std/expect@^1",
     "@std/testing": "jsr:@std/testing@^1",

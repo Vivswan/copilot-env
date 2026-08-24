@@ -34,7 +34,7 @@
     "commander": "npm:commander@^15.0.0",
     "consola": "npm:consola@^3.4.2",
     "semver": "jsr:@std/semver@^1",
-    "smol-toml": "npm:smol-toml@^1.7.1",
+    "smol-toml": "npm:smol-toml@^1.8.0",
     "valibot": "npm:valibot@^1.4.2"
   },
   "tasks": {

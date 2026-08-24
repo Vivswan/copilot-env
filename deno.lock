@@ -20,7 +20,7 @@
     "npm:@modelcontextprotocol/server@2": "2.0.0",
     "npm:commander@15": "15.0.0",
     "npm:consola@^3.4.2": "3.4.2",
-    "npm:smol-toml@^1.7.1": "1.7.1",
+    "npm:smol-toml@^1.8.0": "1.8.0",
     "npm:valibot@^1.4.2": "1.4.2"
   },
   "jsr": {
@@ -816,8 +816,8 @@
     "signal-exit@4.1.0": {
       "integrity": "sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw=="
     },
-    "smol-toml@1.7.1": {
-      "integrity": "sha512-PPlsspAZ4jbMBu5DMFhfUGDQLu/vrL4SyBROVS37x8ynnVmFIs1VPBz1Co8Xks3TvpIaZXmU85y4DrQ+UyVFoQ=="
+    "smol-toml@1.8.0": {
+      "integrity": "sha512-kCZr2V3ch9i00x8zXRhjUNVcjG9ijES5dDudkXvUVCT5QlJNQWElSJdZqyPemffHoLNUYwOcou0Fy+ojN0uHSQ=="
     },
     "srvx@0.11.22": {
       "integrity": "sha512-LqZxxBDMKuMAZzFzJnDCkFOrs9MZQZr0LvHiO/SuSZVdQaXD7xQ5UWTUxheJrQPve1qk9MG2B/yttUvJxw8egQ==",
@@ -922,7 +922,7 @@
       "npm:@modelcontextprotocol/server@2",
       "npm:commander@15",
       "npm:consola@^3.4.2",
-      "npm:smol-toml@^1.7.1",
+      "npm:smol-toml@^1.8.0",
       "npm:valibot@^1.4.2"
     ]
   }

@@ -1,42 +1,20 @@
 # copilot-env
 
-[![CI](https://github.com/Vivswan/copilot-env/actions/workflows/ci.yml/badge.svg)](https://github.com/Vivswan/copilot-env/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE.md)
+[![CI](https://github.com/Vivswan/copilot-env/actions/workflows/ci.yml/badge.svg)](https://github.com/Vivswan/copilot-env/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE.md)
 
-A small, self-bootstrapping CLI that manages a local
-[`@jeffreycao/copilot-api`](https://www.npmjs.com/package/@jeffreycao/copilot-api)
-proxy: start/stop the daemon, wire model aliases, export env vars for your shell
-and for Codex, and report estimated token spend.
+A small, self-bootstrapping CLI that manages a local [`@jeffreycao/copilot-api`](https://www.npmjs.com/package/@jeffreycao/copilot-api) proxy: start/stop the daemon, wire model aliases, export env vars for your shell and for Codex, and report estimated token spend.
 
-TypeScript port of the original Python `copilot-api` helper. Runs on **Linux,
-macOS, and Windows**.
+TypeScript port of the original Python `copilot-api` helper. Runs on **Linux, macOS, and Windows**.
 
-- **Lifecycle**: `start` / `stop` the local proxy with one command - or opt in
-  to the managed lifecycle (`auto-start`) that starts the proxy when an agent
-  needs it and stops it after an idle window.
-- **Zero setup**: the CLI ships as one self-contained binary - no runtime and no
-  package manager to install first. The proxy and what it needs to run are
-  fetched on first use, never installed globally.
-- **Codex + Claude wiring**: point both CLIs at the local proxy or GitHub
-  Copilot Direct automatically; write `~/.codex` / `~/.claude` config; build a
-  per-host `CODEX_HOME` farm (Linux/macOS).
-- **One credential per setup**: `agent auth` manages the GitHub Copilot token
-  (device flow, `gh` CLI, or a stored PAT) as the single source of truth for the
-  default setup - and one slot per named profile; PATs work through an automatic
-  passthrough shim.
-- **Named profiles**: `agent profile` bundles ONE credential + ONE mode (direct
-  or proxy) into both agents, so several sessions run at once - direct beside
-  proxy, or a second GitHub account - each proxy profile with its own daemon on
-  its own port. Launch with `cl --profile <name>` / `cx --profile <name>`.
-- **Typed preferences**: `agent config` gets/sets every knob - lifecycle,
-  ports, proxy feature flags, model ids - with one precedence rule everywhere.
-- **Web search for Claude Code on Direct**: the builtin WebSearch does not work
-  against Copilot's Anthropic endpoint, so direct wiring registers the
-  copilot-env MCP server (`agent mcp --serve`), whose `web_search` tool searches
-  through Copilot's Responses API instead.
+- **Lifecycle**: `start` / `stop` the local proxy with one command - or opt in to the managed lifecycle (`auto-start`) that starts the proxy when an agent needs it and stops it after an idle window.
+- **Zero setup**: the CLI ships as one self-contained binary - no runtime and no package manager to install first. The proxy and what it needs to run are fetched on first use, never installed globally.
+- **Codex + Claude wiring**: point both CLIs at the local proxy or GitHub Copilot Direct automatically; write `~/.codex` / `~/.claude` config; build a per-host `CODEX_HOME` farm (Linux/macOS).
+- **One credential per setup**: `agent auth` manages the GitHub Copilot token (device flow, `gh` CLI, or a stored PAT) as the single source of truth for the default setup - and one slot per named profile; PATs work through an automatic passthrough shim.
+- **Named profiles**: `agent profile` bundles ONE credential + ONE mode (direct or proxy) into both agents, so several sessions run at once - direct beside proxy, or a second GitHub account - each proxy profile with its own daemon on its own port. Launch with `cl --profile <name>` / `cx --profile <name>`.
+- **Typed preferences**: `agent config` gets/sets every knob - lifecycle, ports, proxy feature flags, model ids - with one precedence rule everywhere.
+- **Web search for Claude Code on Direct**: the builtin WebSearch does not work against Copilot's Anthropic endpoint, so direct wiring registers the copilot-env MCP server (`agent mcp --serve`), whose `web_search` tool searches through Copilot's Responses API instead.
 - **Cost reporting**: estimated spend from per-host usage DBs via live OpenRouter pricing.
-- **Controlled floating**: the proxy floats to the newest cooldown-aged release
-  within configured bounds; every other dependency is pinned via `deno.lock`.
+- **Controlled floating**: the proxy floats to the newest cooldown-aged release within configured bounds; every other dependency is pinned via `deno.lock`.
 
 ## Install
 
@@ -50,25 +28,15 @@ curl -fsSL https://github.com/Vivswan/copilot-env/releases/latest/download/insta
 powershell -c "irm https://github.com/Vivswan/copilot-env/releases/latest/download/install.ps1 | iex"
 ```
 
-Downloads a single self-contained `agent` binary for your platform into
-`~/.copilot-env`, then wires your shell. There is no runtime or package manager to
-install first.
+Downloads a single self-contained `agent` binary for your platform into `~/.copilot-env`, then wires your shell. There is no runtime or package manager to install first.
 
-- **Recommended:** install from the latest GitHub release asset, not from the
-  `main` branch. `main` is for development and can be temporarily ahead of the
-  latest released installer flow.
-- **Verified:** the installer checks the binary's SHA256 against the release's
-  `checksums.txt` before it puts it anywhere. Every release asset also carries a
-  build-provenance attestation: `gh attestation verify <file> -R Vivswan/copilot-env`.
+- **Recommended:** install from the latest GitHub release asset, not from the `main` branch. `main` is for development and can be temporarily ahead of the latest released installer flow.
+- **Verified:** the installer checks the binary's SHA256 against the release's `checksums.txt` before it puts it anywhere. Every release asset also carries a build-provenance attestation: `gh attestation verify <file> -R Vivswan/copilot-env`.
 - **Replaceable:** re-run the installer any time to move to the selected release.
 - **Next:** restart your shell, then `agent start`.
 - **Optional:** run `agent shell --clis --launchers` for Claude/Copilot/Codex CLIs and `cl` / `co` / `cx`.
-- **Update later:** `agent update` downloads the newest release's binary, verifies
-  it the same way, and swaps it in place. Your config, credentials, and profiles
-  live outside the install directory and are untouched.
-- **Uninstall:** `agent uninstall` removes everything copilot-env manages (daemons, profiles,
-  agent wiring, shell integration, credentials, data, and the install itself). It does not
-  remove the agent CLIs (`claude` / `copilot` / `codex`).
+- **Update later:** `agent update` downloads the newest release's binary, verifies it the same way, and swaps it in place. Your config, credentials, and profiles live outside the install directory and are untouched.
+- **Uninstall:** `agent uninstall` removes everything copilot-env manages (daemons, profiles, agent wiring, shell integration, credentials, data, and the install itself). It does not remove the agent CLIs (`claude` / `copilot` / `codex`).
 - **Specific version:** replace `latest` with an exact release tag, or pass `--version`:
 
   ```bash
@@ -79,11 +47,7 @@ install first.
   powershell -c "irm https://github.com/Vivswan/copilot-env/releases/download/vX.X.X/install.ps1 | iex"
   ```
 
-> **Upgrading from 3.5.6 or earlier?** Those versions installed a source tree and
-> bootstrapped a runtime into it, and `agent update` cannot cross that gap. Re-run
-> the installer above once; it replaces the old layout in place (removing the
-> `node_modules` it left behind) and every later update is the ordinary binary
-> swap. Your settings are not stored in the install directory, so nothing is lost.
+> **Upgrading from 3.5.6 or earlier?** Those versions installed a source tree and bootstrapped a runtime into it, and `agent update` cannot cross that gap. Re-run the installer above once; it replaces the old layout in place (removing the `node_modules` it left behind) and every later update is the ordinary binary swap. Your settings are not stored in the install directory, so nothing is lost.
 
 ### Install flags
 
@@ -121,8 +85,7 @@ agent claude --direct      # force GitHub Copilot Direct for Claude (no auto-det
 agent claude --check       # print Claude provider mode; exits 0 direct, 2 proxy, 1 other
 ```
 
-Once the profile is wired, the same commands run via `agent` on Windows too (or
-directly: `powershell -ExecutionPolicy Bypass -File bin\agent.ps1 <cmd>`).
+Once the profile is wired, the same commands run via `agent` on Windows too (or directly: `powershell -ExecutionPolicy Bypass -File bin\agent.ps1 <cmd>`).
 
 ### Shell integration
 
@@ -165,8 +128,7 @@ source ~/.copilot-env/shell/agents.launchers.bashrc
 
 ### Managed proxy lifecycle (auto-start)
 
-By default you manage the proxy yourself with `agent start` / `agent stop`.
-Opt in to the managed lifecycle instead:
+By default you manage the proxy yourself with `agent start` / `agent stop`. Opt in to the managed lifecycle instead:
 
 ```bash
 agent config --set auto-start true
@@ -174,47 +136,29 @@ agent config --set auto-start true
 
 With `auto-start` on:
 
-- **Auto-start:** whenever Codex, Claude, or the `cl`/`cx` launchers need the
-  proxy and it is down, it is started automatically (the shared credential
-  resolver handles this - no manual `agent start`).
-- **Idle auto-stop:** a watchdog inside the daemon stops the proxy after an
-  idle window. Inference requests and the resolver's session heartbeats count
-  as activity; health and liveness pings never keep it alive. Configure the
-  window with `agent config --set idle-timeout <seconds>` (default `3600`;
-  `0` disables) or the `COPILOT_API_IDLE_TIMEOUT` env var.
+- **Auto-start:** whenever Codex, Claude, or the `cl`/`cx` launchers need the proxy and it is down, it is started automatically (the shared credential resolver handles this - no manual `agent start`).
+- **Idle auto-stop:** a watchdog inside the daemon stops the proxy after an idle window. Inference requests and the resolver's session heartbeats count as activity; health and liveness pings never keep it alive. Configure the window with `agent config --set idle-timeout <seconds>` (default `3600`; `0` disables) or the `COPILOT_API_IDLE_TIMEOUT` env var.
 
-With `auto-start` off, the launchers prompt before starting a downed proxy;
-headless callers (Codex/Claude config hooks) never start it implicitly.
+With `auto-start` off, the launchers prompt before starting a downed proxy; headless callers (Codex/Claude config hooks) never start it implicitly.
 
 ### Web search for Claude Code
 
-Claude Code wired to GitHub Copilot Direct cannot use its builtin WebSearch:
-Copilot's Anthropic-compatible endpoint rejects the server-side search tool
-with a 400. Copilot's own Responses API does serve web search, so copilot-env
-ships an MCP stdio server (`agent mcp --serve`) whose `web_search` tool proxies
-through it and returns a cited answer with a `Sources:` list (bare `agent mcp`
-prints the wiring status).
+Claude Code wired to GitHub Copilot Direct cannot use its builtin WebSearch: Copilot's Anthropic-compatible endpoint rejects the server-side search tool with a 400. Copilot's own Responses API does serve web search, so copilot-env ships an MCP stdio server (`agent mcp --serve`) whose `web_search` tool proxies through it and returns a cited answer with a `Sources:` list (bare `agent mcp` prints the wiring status).
 
-Wiring Claude direct (`agent init`, `agent claude --direct`) sets this up by
-itself: it registers the server in Claude Code's user scope and denies the
-broken builtin, and a proxy write takes both back (through the local proxy
-the builtin WebSearch works, so nothing is needed there). The pair is opt-out:
+Wiring Claude direct (`agent init`, `agent claude --direct`) sets this up by itself: it registers the server in Claude Code's user scope and denies the broken builtin, and a proxy write takes both back (through the local proxy the builtin WebSearch works, so nothing is needed there). The pair is opt-out:
 
 ```bash
 agent mcp --remove                  # unregister + restore the builtin + remember the opt-out
 agent config --set wire-mcp true    # opt back in (applies on the next direct wiring)
 ```
 
-The search model follows `message-websearch-model` (default `gpt-5.6-sol` on
-this surface), read on every call - no restart:
+The search model follows `message-websearch-model` (default `gpt-5.6-sol` on this surface), read on every call - no restart:
 
 ```bash
 agent config --set message-websearch-model gpt-5.6-sol
 ```
 
-The server is client-agnostic. Register it in Codex, Cursor, or any other MCP
-client by pointing at the launcher (Codex itself needs no MCP for search - it
-speaks the Responses API natively):
+The server is client-agnostic. Register it in Codex, Cursor, or any other MCP client by pointing at the launcher (Codex itself needs no MCP for search - it speaks the Responses API natively):
 
 ```jsonc
 {
@@ -228,24 +172,13 @@ speaks the Responses API natively):
 }
 ```
 
-It resolves the `agent auth` credential; without one it falls back to
-`COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, so a bare clone works:
-`GH_TOKEN=... bin/agent mcp --serve`. The registered server uses the default
-credential; a named profile that needs its own registers a second entry with
-`--profile <name>`.
+It resolves the `agent auth` credential; without one it falls back to `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, so a bare clone works: `GH_TOKEN=... bin/agent mcp --serve`. The registered server uses the default credential; a named profile that needs its own registers a second entry with `--profile <name>`.
 
-The repo also doubles as a Claude Code plugin and a skills collection: the
-plugin (`.claude-plugin/`) bundles the MCP server inline in its manifest, and
-`npx skills add Vivswan/copilot-env` installs the companion
-[`web-search` skill](./skills/web-search). The plugin's bundled registration
-runs `bin/agent`, a POSIX script - on Windows, wire through `agent init` or
-register `bin\agent.ps1` by hand instead.
+The repo also doubles as a Claude Code plugin and a skills collection: the plugin (`.claude-plugin/`) bundles the MCP server inline in its manifest, and `npx skills add Vivswan/copilot-env` installs the companion [`web-search` skill](./skills/web-search). The plugin's bundled registration runs `bin/agent`, a POSIX script - on Windows, wire through `agent init` or register `bin\agent.ps1` by hand instead.
 
 ### Configuration
 
-`agent config` is the typed preference store. Every read site applies the same
-precedence: **explicit flag/env (per-invocation) > stored config > built-in
-default**.
+`agent config` is the typed preference store. Every read site applies the same precedence: **explicit flag/env (per-invocation) > stored config > built-in default**.
 
 ```bash
 agent config --get                    # print all preferences
@@ -279,40 +212,24 @@ agent config --del idle-timeout       # revert one to its default
 | `update-cooldown` | none | `agent update` cooldown in days. |
 | `wire-mcp` | `true` | Wire the copilot-env MCP server + WebSearch deny into Claude on direct writes. |
 
-Proxy-side keys (`small-model`, the `responses-*`/`messages-api` flags,
-`message-websearch-model`, the `alpha-search-*` pair, `claude-auto-model`,
-`claude-token-multiplier`) are projected into the proxy's own `config.json` at
-`agent start`, so changing them needs a daemon restart to take effect - except
-that the MCP `web_search` tool reads `message-websearch-model` fresh on every
-call.
+Proxy-side keys (`small-model`, the `responses-*`/`messages-api` flags, `message-websearch-model`, the `alpha-search-*` pair, `claude-auto-model`, `claude-token-multiplier`) are projected into the proxy's own `config.json` at `agent start`, so changing them needs a daemon restart to take effect - except that the MCP `web_search` tool reads `message-websearch-model` fresh on every call.
 
-`codex-model-catalog` applies at the next Codex auth refresh (within ~5
-minutes) or `agent codex`/`agent init` wiring; turning it off also removes the
-generated `codex-model-catalog.json` and the managed `model_catalog_json`
-reference from the Codex config.
+`codex-model-catalog` applies at the next Codex auth refresh (within ~5 minutes) or `agent codex`/`agent init` wiring; turning it off also removes the generated `codex-model-catalog.json` and the managed `model_catalog_json` reference from the Codex config.
 
 ### Authentication
 
-`agent auth` is the credential front door - one GitHub Copilot credential,
-resolved at fetch time (agent configs never store a copy; `gh-cli` holds no
-token of its own and defers to the machine's `gh` login):
+`agent auth` is the credential front door - one GitHub Copilot credential, resolved at fetch time (agent configs never store a copy; `gh-cli` holds no token of its own and defers to the machine's `gh` login):
 
 - `--provider copilot` - GitHub device flow (`read:user` scope).
 - `--provider gh-cli` - use the machine's existing `gh` login.
-- `--provider gh-token` - store `$COPILOT_GITHUB_TOKEN`/`$GH_TOKEN`/`$GITHUB_TOKEN`
-  (first set wins; headless servers); `--set [token]` stores one non-interactively.
+- `--provider gh-token` - store `$COPILOT_GITHUB_TOKEN`/`$GH_TOKEN`/`$GITHUB_TOKEN` (first set wins; headless servers); `--set [token]` stores one non-interactively.
 - `--get` / `--del` / `--check` - print, clear, or check that a credential resolves.
 
-Classic and fine-grained PATs can't perform the proxy's editor token exchange,
-so `agent start` transparently enables a passthrough shim for PAT-shaped
-tokens that uses the PAT as the bearer directly. Force it either way with
-`agent config --set passthrough on|off`.
+Classic and fine-grained PATs can't perform the proxy's editor token exchange, so `agent start` transparently enables a passthrough shim for PAT-shaped tokens that uses the PAT as the bearer directly. Force it either way with `agent config --set passthrough on|off`.
 
 ### Profiles
 
-A profile is an atomic unit - ONE credential + ONE mode (direct or proxy,
-never both) - always wired into BOTH agents, so several sessions run at once
-without touching the default setup:
+A profile is an atomic unit - ONE credential + ONE mode (direct or proxy, never both) - always wired into BOTH agents, so several sessions run at once without touching the default setup:
 
 ```bash
 agent profile --add work --proxy --provider gh-token --set   # own credential + mode + both agents, one command
@@ -322,36 +239,17 @@ agent profile --list     # NAME  MODE  PROVIDER  DAEMON
 agent profile --del work # stop its daemon, clear its credential, strip both agents' wiring
 ```
 
-Named profiles hard-fail rather than falling back to the default credential;
-re-authenticate one with `agent auth --profile <name>`. A proxy-mode profile
-gets its own daemon in an isolated home (`<copilot-api home>/profiles/<name>`)
-on a stable reserved port, managed via `agent start/stop --profile <name>`.
-Re-running `--add` with the other mode flag switches the profile's mode.
-One web-search caveat: a DIRECT profile over a PROXY default has no search
-path in Claude (the builtin 400s on Direct, and the machine-global MCP server
-is only registered while the default wiring is direct) - register the server
-by hand there if you need it, under a name other than `copilot-env` (wiring
-writes reclaim that name).
+Named profiles hard-fail rather than falling back to the default credential; re-authenticate one with `agent auth --profile <name>`. A proxy-mode profile gets its own daemon in an isolated home (`<copilot-api home>/profiles/<name>`) on a stable reserved port, managed via `agent start/stop --profile <name>`. Re-running `--add` with the other mode flag switches the profile's mode. One web-search caveat: a DIRECT profile over a PROXY default has no search path in Claude (the builtin 400s on Direct, and the machine-global MCP server is only registered while the default wiring is direct) - register the server by hand there if you need it, under a name other than `copilot-env` (wiring writes reclaim that name).
 
 ### Environment overrides
 
-copilot-env loads local defaults from root `.env` when running its TypeScript
-entry points; already-set shell environment variables take precedence, and env
-vars take precedence over stored `agent config` values.
+copilot-env loads local defaults from root `.env` when running its TypeScript entry points; already-set shell environment variables take precedence, and env vars take precedence over stored `agent config` values.
 
-- `COPILOT_API_IDLE_TIMEOUT=<seconds>`: override the managed-lifecycle idle
-  window for this invocation (beats the `idle-timeout` config key).
-- `COPILOT_API_VERSION=<version|tag>`: pin the proxy to a specific release
-  (bypasses the cooldown and float bounds at install; `agent start` still
-  refuses a proxy below the version floor. The `proxy-version` config key is
-  the persistent equivalent).
-- `COPILOT_API_MIN_RELEASE_AGE=<seconds>`: override the cooldown window
-  (`0` = no cooldown), taking precedence over the `release-cooldown` config key.
+- `COPILOT_API_IDLE_TIMEOUT=<seconds>`: override the managed-lifecycle idle window for this invocation (beats the `idle-timeout` config key).
+- `COPILOT_API_VERSION=<version|tag>`: pin the proxy to a specific release (bypasses the cooldown and float bounds at install; `agent start` still refuses a proxy below the version floor. The `proxy-version` config key is the persistent equivalent).
+- `COPILOT_API_MIN_RELEASE_AGE=<seconds>`: override the cooldown window (`0` = no cooldown), taking precedence over the `release-cooldown` config key.
 
-Without a pin, the proxy float reads npm publish times, picks the newest
-version at least the cooldown window old (env var, else `release-cooldown`
-config, else the 7-day default that tracks `deno.json`'s
-`minimumDependencyAge`), and clamps it to the bounds in `copilot-env.config`.
+Without a pin, the proxy float reads npm publish times, picks the newest version at least the cooldown window old (env var, else `release-cooldown` config, else the 7-day default that tracks `deno.json`'s `minimumDependencyAge`), and clamps it to the bounds in `copilot-env.config`.
 
 ## Development
 
@@ -372,10 +270,8 @@ deno task lint        # deno lint + deno fmt --check
 deno task check       # deno lint --fix + deno fmt
 ```
 
-- **Env init:** `scripts/setup-env.sh` (`setup-env.ps1` on Windows) is the single
-  initializer; the Copilot coding agent and Codespaces / Dev Containers both run it.
-- **More docs:** conventions, the proxy float/cooldown model, and a file-by-file
-  breakdown live in [`AGENTS.md`](./AGENTS.md).
+- **Env init:** `scripts/setup-env.sh` (`setup-env.ps1` on Windows) is the single initializer; the Copilot coding agent and Codespaces / Dev Containers both run it.
+- **More docs:** conventions, the proxy float/cooldown model, and a file-by-file breakdown live in [`AGENTS.md`](./AGENTS.md).
 
 ## License
 

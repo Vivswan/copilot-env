@@ -36,61 +36,6 @@ on:
   workflow_call:
 
 jobs:
-  prepare-assets:
-    runs-on: ubuntu-latest
-    # Five cross-compiles, each downloading its target's denort on a cold cache.
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    outputs:
-      tag: ${{ steps.prepare.outputs.tag }}
-    steps:
-      - uses: actions/checkout@v7
-
-      # cache: true keys the DENO_DIR cache on deno.lock; the per-target
-      # denort archives deno compile downloads land there too.
-      - uses: denoland/setup-deno@v2
-        with:
-          deno-version-file: .dvmrc
-          cache: true
-
-      - name: Create installer assets
-        id: prepare
-        run: |
-          tag="v$(jq -r .version package.json)"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          deno run --allow-read --allow-write --allow-env .github/scripts/release-assets.ts prepare "$tag"
-
-      - name: Validate installer assets
-        env:
-          TAG: ${{ steps.prepare.outputs.tag }}
-        run: |
-          deno run --allow-read --allow-env .github/scripts/release-assets.ts validate "$TAG"
-          bash -n release-assets/install.sh
-          pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content -Raw release-assets/install.ps1)) | Out-Null"
-
-      - name: Compile agent binaries (all targets)
-        run: |
-          deno install --frozen
-          deno task compile
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: installer-assets
-          path: release-assets/
-          if-no-files-found: error
-          retention-days: 1
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: compiled-binaries
-          path: dist/
-          if-no-files-found: error
-          retention-days: 1
-
-  # The managed machinery: stale-head guard + release-please, which
-  # opens/updates the rolling release PR and, when that PR is merged, creates
-  # the (draft) release and tag. Outputs: release_created, tag_name.
   release-please:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -184,13 +129,8 @@ jobs:
   # (GitHub attestations need a public repository or Enterprise Cloud, so
   # non-public releases publish unattested by fleet policy).
   publish-release:
-    name: publish release
-    needs: [release-please, release-installer-smoke]
-    if: >-
-      ${{
-        needs.release-please.outputs.release_created == 'true' &&
-        needs.release-installer-smoke.result == 'success'
-      }}
+    needs: [release-please, update-release]
+    if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

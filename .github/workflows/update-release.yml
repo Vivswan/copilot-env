@@ -1,12 +1,17 @@
 # The update stage of the release pipeline: repo-owned, generated once by
-# Vivswan/repo-platform and never overwritten by template
-# sync. The managed release.yml calls this workflow between cutting the
-# draft release and the attested publish, so everything this repository
-# wants on the release happens here: packaging, asset uploads, note edits.
-# Add jobs freely - publishing waits for every job in this file, and every
-# asset uploaded here is attested at publish time into the release's
-# single attestation.jsonl. Recovery when a run dies mid-pipeline is
-# documented in release.yml.
+# Vivswan/repo-platform and never overwritten by template sync. The managed
+# release.yml calls this workflow between cutting the draft release and the
+# attested publish: publishing waits for every job here, and every asset
+# uploaded here is attested at publish time into the release's single
+# attestation.jsonl.
+#
+# copilot-env's stage: pin the installers to the tag, cross-compile the
+# agent binary for every release target, upload everything to the draft,
+# then verify and run the REAL uploaded binaries and installers on Linux +
+# Windows so the draft only flips live after they pass. A broken build
+# fails here, after the draft and its forced tag already exist: re-run this
+# run's failed jobs (release.yml documents the recovery); releases only
+# ever move forward.
 
 name: Update Release
 
@@ -19,20 +24,127 @@ on:
         type: string
 
 jobs:
-  update-release:
+  upload-assets:
+    name: build and upload release assets
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Five cross-compiles, each downloading its target's denort on a cold cache.
+    timeout-minutes: 45
     permissions:
-      contents: write # also what makes the draft visible to gh
+      contents: write # uploads to the draft; also what makes the draft visible to gh
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag }}
-      - name: Update the draft release
+
+      # cache: true keys the DENO_DIR cache on deno.lock; the per-target
+      # denort archives deno compile downloads land there too.
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version-file: .dvmrc
+          cache: true
+
+      - name: Create installer assets
         env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
-        # Repository-specific release preparation goes here, e.g.:
-        #   ./build.sh
-        #   gh release upload "$RELEASE_TAG" ./artifact --clobber
-        run: echo "nothing to add to $RELEASE_TAG yet"
+          TAG: ${{ inputs.tag }}
+        run: deno run --allow-read --allow-write --allow-env .github/scripts/release-assets.ts prepare "$TAG"
+
+      - name: Validate installer assets
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          deno run --allow-read --allow-env .github/scripts/release-assets.ts validate "$TAG"
+          bash -n release-assets/install.sh
+          pwsh -NoProfile -Command "[scriptblock]::Create((Get-Content -Raw release-assets/install.ps1)) | Out-Null"
+
+      - name: Compile agent binaries (all targets)
+        run: |
+          deno install --frozen
+          deno task compile
+          (cd dist && sha256sum -c checksums.txt)
+
+      # Same token expression as the managed publish flip: REPO_PLATFORM_TOKEN
+      # when set, github.token otherwise.
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PLATFORM_TOKEN || github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          gh release upload "$TAG" \
+            release-assets/install.sh \
+            release-assets/install.ps1 \
+            dist/copilot-env-* \
+            dist/checksums.txt \
+            --clobber
+
+  # Pre-publish gate: verify and run the REAL uploaded binary, then the REAL
+  # uploaded installer end to end, on both platforms - the managed publish
+  # waits for every job in this file, so the draft cannot go live before
+  # these pass. COPILOT_ENV_DOWNLOAD_BASE points the installer at the assets
+  # gh already downloaded (draft assets are invisible to the installer's
+  # public release URL until the release is published).
+  #
+  # Everything here installs into RUNNER_TEMP and only reads. Do NOT add a step
+  # that runs `agent update` or `copilot-env migrate` for real: migrations mutate
+  # the invoking HOME (agent configs, credential store, shell rc files) and have
+  # no dry-run, so on a runner they would rewrite state no assertion here owns.
+  # The update path is covered by test/update_apply.test.ts, which drives it
+  # against a throwaway root.
+  release-installer-smoke:
+    name: release installer smoke / ${{ matrix.os }}
+    needs: [upload-assets]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: copilot-env-x86_64-unknown-linux-gnu
+          - os: windows-latest
+            asset: copilot-env-x86_64-pc-windows-msvc.exe
+    permissions:
+      contents: write # draft releases are only visible to tokens with push access
+    steps:
+      - name: Download the uploaded release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.REPO_PLATFORM_TOKEN || github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          mkdir release-smoke-assets
+          gh release download "$TAG" --repo "${{ github.repository }}" \
+            --dir release-smoke-assets \
+            --pattern 'install.sh' --pattern 'install.ps1' \
+            --pattern 'copilot-env-*' --pattern 'checksums.txt'
+
+      - name: Verify uploaded checksums
+        shell: bash
+        run: cd release-smoke-assets && sha256sum -c checksums.txt
+
+      - name: Run the uploaded binary
+        shell: bash
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          chmod +x "release-smoke-assets/$ASSET"
+          "./release-smoke-assets/$ASSET" --help
+          "./release-smoke-assets/$ASSET" env
+
+      - name: Run the uploaded installer end to end
+        if: runner.os == 'Linux'
+        env:
+          COPILOT_ENV_DOWNLOAD_BASE: ${{ github.workspace }}/release-smoke-assets
+        run: |
+          bash release-smoke-assets/install.sh --dir "$RUNNER_TEMP/copilot-env" --no-shell-integration
+          "$RUNNER_TEMP/copilot-env/bin/agent" --help
+
+      - name: Run the uploaded installer end to end
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          COPILOT_ENV_DOWNLOAD_BASE: ${{ github.workspace }}\release-smoke-assets
+        run: |
+          pwsh -NoProfile -File release-smoke-assets/install.ps1 -InstallDir "$env:RUNNER_TEMP\copilot-env" -NoShellIntegration
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP\copilot-env\bin\agent.ps1" --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

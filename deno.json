@@ -16,7 +16,7 @@
     ".github/workflows/auto-assign.yml",
     ".github/workflows/ci.yml",
     ".github/workflows/deno-audit.yml",
-    ".github/workflows/release-please.yml",
+    ".github/workflows/release.yml",
     ".github/workflows/settings-sync.yml"
   ],
   "imports": {

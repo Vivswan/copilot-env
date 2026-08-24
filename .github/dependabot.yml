@@ -19,7 +19,7 @@ updates:
       prefix: "ci"
       include: "scope"
 
-  - package-ecosystem: "bun"
+  - package-ecosystem: "deno"
     directory: "/"
     schedule:
       interval: "monthly"

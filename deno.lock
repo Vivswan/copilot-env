@@ -5,7 +5,7 @@
     "jsr:@std/async@^1.5.0": "1.5.0",
     "jsr:@std/crypto@^1.1.0": "1.1.0",
     "jsr:@std/data-structures@^1.1.2": "1.1.2",
-    "jsr:@std/dotenv@0.225": "0.225.8",
+    "jsr:@std/dotenv@~0.225.8": "0.225.8",
     "jsr:@std/expect@1": "1.0.20",
     "jsr:@std/fs@^1.0.24": "1.0.24",
     "jsr:@std/internal@^1.0.12": "1.0.14",
@@ -912,7 +912,7 @@
   "workspace": {
     "dependencies": [
       "jsr:@std/crypto@^1.1.0",
-      "jsr:@std/dotenv@0.225",
+      "jsr:@std/dotenv@~0.225.8",
       "jsr:@std/expect@1",
       "jsr:@std/semver@1",
       "jsr:@std/testing@^1.0.20",

@@ -8,8 +8,8 @@ copilot-env: Local copilot-api proxy lifecycle + config helper (TypeScript).
 
 ## Toolchain
 
-- Runtime and package manager: deno (`deno install`, `deno test`, `deno task <name>`)
-- See the `tasks` table in `deno.json` for the available commands.
+- Deno runtime (`deno install`, `deno test`, `deno task <task>`)
+- See `deno.json` for tasks, imports (`npm:`/`jsr:` dependency specifiers), and lint/format settings.
 
 ## Conventions
 

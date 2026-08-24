@@ -10,11 +10,12 @@
     "CHANGELOG.md",
     ".copier-answers.yml",
     ".repo-platform.yml",
+    ".typography-allow",
     ".github/dependabot.yml",
     ".github/settings.yml",
     ".github/workflows/auto-assign.yml",
     ".github/workflows/ci.yml",
-    ".github/workflows/dependabot-bun-lockfile.yml",
+    ".github/workflows/deno-audit.yml",
     ".github/workflows/release-please.yml",
     ".github/workflows/settings-sync.yml"
   ],

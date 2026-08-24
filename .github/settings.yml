@@ -4,6 +4,7 @@
 # settings-sync workflow if the repo carries its own REPO_PLATFORM_TOKEN;
 # without one it skips with a warning). Undeclared labels are deleted;
 # undeclared rulesets are left alone.
+# repo-platform:mergeable
 # Rendered by the settings-sync module: template updates keep the
 # baseline current via three-way merge (repo additions survive), and sync
 # NEVER deletes this file - it stays even if the module is deselected. A

@@ -940,8 +940,15 @@ function cleanupCodexCatalogArtifacts(catalogFile: string): void {
   }
   const state = new CopilotEnvState();
   const recorded = state.read();
-  if (recorded.codexCatalogLastAttemptMs !== 0 || recorded.codexCatalogCodexVersion !== null) {
-    state.set({ codexCatalogLastAttemptMs: null, codexCatalogCodexVersion: null });
+  if (
+    recorded.codexCatalogLastAttemptMs !== 0 || recorded.codexCatalogCodexVersion !== null ||
+    recorded.codexCatalogPatchVersion !== 0
+  ) {
+    state.set({
+      codexCatalogLastAttemptMs: null,
+      codexCatalogCodexVersion: null,
+      codexCatalogPatchVersion: null,
+    });
   }
 }
 

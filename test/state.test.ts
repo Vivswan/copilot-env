@@ -62,6 +62,7 @@ test("the auth provider round-trips and clears alongside the token", () => {
     profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogCodexVersion: null,
+    codexCatalogPatchVersion: 0,
     webSearchDenyOwnedPaths: [],
   });
 });

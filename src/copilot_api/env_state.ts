@@ -83,6 +83,10 @@ export interface CopilotEnvStateData {
   codexCatalogLastAttemptMs: number;
   /** The codex CLI version the catalog was last generated against (null if never). */
   codexCatalogCodexVersion: string | null;
+  /** The CATALOG_PATCH_VERSION the catalog was last generated with (0 if never):
+   *  a copilot-env whose patch logic changed regenerates on the next refresh
+   *  instead of serving the old patch for up to a day (src/codex/catalog.ts). */
+  codexCatalogPatchVersion: number;
   /**
    * The settings.json PATHS whose `permissions.deny` copilot-env itself ADDED the
    * `WebSearch` entry to (the direct-wiring pair in src/claude/config.ts). Keying
@@ -130,6 +134,7 @@ const STATE_SCHEMA = v.object({
     v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1))),
     null,
   ),
+  codexCatalogPatchVersion: v.fallback(v.pipe(v.number(), v.finite(), v.minValue(0)), 0),
   // ownedPathList owns the shape; the fallback only covers an ABSENT key (the
   // pipe itself never issues -- junk entries are dropped inside the transform).
   webSearchDenyOwnedPaths: v.fallback(v.pipe(v.unknown(), v.transform(ownedPathList)), []),

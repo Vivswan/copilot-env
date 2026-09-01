@@ -94,6 +94,7 @@ test("auth --del clears the stored token and provider", async () => {
     authProvider: null,
     profiles: {},
     codexCatalogLastAttemptMs: 0,
+    codexCatalogPatchVersion: 0,
     codexCatalogCodexVersion: null,
     webSearchDenyOwnedPaths: [],
   });
@@ -149,6 +150,7 @@ test("auth --provider gh-token stores the env token + provider, and does NOT con
     authProvider: "gh-token",
     profiles: {},
     codexCatalogLastAttemptMs: 0,
+    codexCatalogPatchVersion: 0,
     codexCatalogCodexVersion: null,
     webSearchDenyOwnedPaths: [],
   });
@@ -166,6 +168,7 @@ test("auth --set <token> stores it verbatim (no env, no UI) and records gh-token
     authProvider: "gh-token",
     profiles: {},
     codexCatalogLastAttemptMs: 0,
+    codexCatalogPatchVersion: 0,
     codexCatalogCodexVersion: null,
     webSearchDenyOwnedPaths: [],
   });
@@ -266,6 +269,7 @@ test("disabled: auth --get removes the catalog artifacts and stdout stays EXACTL
     authProvider: "gh-token",
     codexCatalogLastAttemptMs: 123,
     codexCatalogCodexVersion: "1.0.0",
+    codexCatalogPatchVersion: 2,
   });
 
   const out = await captureStdout(() => runAuth({ get: true }, NOOP_CATALOG_DEPS));
@@ -280,6 +284,7 @@ test("disabled: auth --get removes the catalog artifacts and stdout stays EXACTL
   expect(existsSync(catalogFile)).toBe(false);
   expect(state().read().codexCatalogLastAttemptMs).toBe(0);
   expect(state().read().codexCatalogCodexVersion).toBeNull();
+  expect(state().read().codexCatalogPatchVersion).toBe(0);
 });
 
 test("disabled: auth --print-proxy-token runs the same cleanup", async () => {

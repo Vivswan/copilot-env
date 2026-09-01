@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import {
+  CATALOG_PATCH_VERSION,
   type CopilotModelLimits,
   generateCodexModelCatalog,
   isCatalogFileUsable,
@@ -113,8 +114,15 @@ test("patchModelCatalog patches matching slugs and preserves everything else ver
         max_context_window: 272_000,
         effective_context_window_percent: 95,
         nested: { keep: ["me", 1] },
+        service_tiers: [{ id: "priority", name: "Fast" }],
+        additional_speed_tiers: ["fast"],
       },
-      { slug: "gpt-5.2", context_window: 272_000, effective_context_window_percent: 95 },
+      {
+        slug: "gpt-5.2",
+        context_window: 272_000,
+        effective_context_window_percent: 95,
+        service_tiers: [{ id: "priority", name: "Fast" }],
+      },
       { no_slug: true },
     ],
   });
@@ -130,7 +138,11 @@ test("patchModelCatalog patches matching slugs and preserves everything else ver
   // Untouched fields survive verbatim.
   expect(models[0]?.display_name).toBe("GPT-5.5");
   expect(models[0]?.nested).toEqual({ keep: ["me", 1] });
-  // A non-matching sibling and a slug-less entry are untouched.
+  // Tier advertisements are stripped from EVERY model (limits-matched or not):
+  // they make Codex send `service_tier`, which Copilot's /responses rejects.
+  expect(models[0]?.service_tiers).toBeUndefined();
+  expect(models[0]?.additional_speed_tiers).toBeUndefined();
+  // A non-matching sibling loses only its tier fields; a slug-less entry survives.
   expect(models[1]).toEqual({
     slug: "gpt-5.2",
     context_window: 272_000,
@@ -216,7 +228,10 @@ test("a failed regeneration never touches an existing (stale but valid) catalog"
 test("refresh is attempt-throttled: a fresh timestamp skips deps entirely", async () => {
   isolate();
   const now = 1_700_000_000_000;
-  new CopilotEnvState().set({ codexCatalogLastAttemptMs: now - 1000 });
+  new CopilotEnvState().set({
+    codexCatalogLastAttemptMs: now - 1000,
+    codexCatalogPatchVersion: CATALOG_PATCH_VERSION,
+  });
   let called = false;
   await refreshCodexModelCatalogIfStale("direct", {
     nowMs: () => now,
@@ -284,6 +299,7 @@ test("a codex version change bypasses the daily throttle (new bundled catalog wi
   new CopilotEnvState().set({
     codexCatalogLastAttemptMs: now - 1000,
     codexCatalogCodexVersion: "0.144.0",
+    codexCatalogPatchVersion: CATALOG_PATCH_VERSION,
   });
 
   // Same version + fresh timestamp: throttled.
@@ -317,12 +333,33 @@ test("a codex version change bypasses the daily throttle (new bundled catalog wi
   expect(called).toBe(false);
 });
 
+test("a catalog patch-logic change bypasses the daily throttle", async () => {
+  isolate();
+  const now = 1_700_000_000_000;
+  // A refresh just ran (fresh timestamp, same codex) under the PREVIOUS patch
+  // logic: its on-disk catalog may carry exactly what the new patch removes.
+  new CopilotEnvState().set({
+    codexCatalogLastAttemptMs: now - 1000,
+    codexCatalogCodexVersion: "0.144.0",
+    codexCatalogPatchVersion: CATALOG_PATCH_VERSION - 1,
+  });
+  const regenerated = await refreshCodexModelCatalogIfStale("direct", {
+    nowMs: () => now,
+    codexVersion: () => "0.144.0",
+    bundledCatalog: () => BUNDLED,
+    fetchLimits: async () => limitsOf([["gpt-5.5", GPT55_LIMITS]]),
+  });
+  expect(regenerated).toBe(true);
+  expect(new CopilotEnvState().read().codexCatalogPatchVersion).toBe(CATALOG_PATCH_VERSION);
+});
+
 test("a failed post-upgrade regeneration does not retry on the next same-version call", async () => {
   isolate();
   const now = 1_700_000_000_000;
   new CopilotEnvState().set({
     codexCatalogLastAttemptMs: now - 1000,
     codexCatalogCodexVersion: "0.144.0",
+    codexCatalogPatchVersion: CATALOG_PATCH_VERSION,
   });
 
   // Upgrade detected, but generation fails: the attempt AND new version are

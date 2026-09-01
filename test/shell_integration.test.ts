@@ -219,8 +219,12 @@ skipWin("posixBlock safely quotes paths with shell metacharacters", () => {
 
 skipWin("posixBlock anchors a path under the home directory at $HOME", () => {
   // The written block must follow $HOME wherever the rc file travels (dotfile syncs,
-  // renamed users): $HOME expands at source time while the tail -- metacharacters
-  // included -- stays literal. Proven by sourcing the block under a DIFFERENT $HOME.
+  // renamed users). A plain tail gets the readable double-quoted form; a tail with
+  // double-quote metacharacters falls back to "$HOME"'<tail>' so only $HOME expands.
+  // Both proven by sourcing the block under a DIFFERENT $HOME.
+  const plain = posixBlock(join(homedir(), "shell", "agents.bashrc"));
+  expect(plain).toContain(`AGENTS_BASHRC="$HOME${sep}shell${sep}agents.bashrc"`);
+
   const tail = join("we'ird $dir", "shell", "agents.bashrc");
   const blockFile = join(home, "block.sh");
   writeFileSync(blockFile, posixBlock(join(homedir(), tail)));
@@ -235,11 +239,15 @@ skipWin("posixBlock anchors a path under the home directory at $HOME", () => {
 });
 
 test("the PowerShell blocks anchor an under-home path at $HOME, and only then", () => {
-  // Parity with posixBlock: a profile synced across machines follows $HOME. A path
-  // outside home (e.g. a dev checkout) stays a single-quoted literal.
-  const tail = join(sep, "shell", "agents.ps1");
+  // Parity with posixBlock: a profile synced across machines follows $HOME. A plain
+  // tail reads "$HOME\tail"; one with PS metacharacters concatenates a literal; a
+  // path outside home (e.g. a dev checkout) stays a single-quoted literal.
   expect(windowsBlock(join(homedir(), "shell", "agents.ps1"))).toContain(
-    `$AgentsPs1 = $HOME + '${tail}'`,
+    `$AgentsPs1 = "$HOME${sep}shell${sep}agents.ps1"`,
+  );
+  const weird = join(homedir(), "we$ird", "agents.ps1");
+  expect(windowsBlock(weird)).toContain(
+    `$AgentsPs1 = $HOME + '${sep}we$ird${sep}agents.ps1'`,
   );
   const outside = join(sep, "opt", "agents.ps1");
   expect(windowsBlock(outside)).toContain(`$AgentsPs1 = '${outside}'`);

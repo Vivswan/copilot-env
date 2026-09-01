@@ -30,6 +30,7 @@ import { resolveClaudeHome } from "../src/claude/paths.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { DEFAULT_COPILOT_API_BASE } from "../src/copilot_api/integration_identity.ts";
 import { resolveRootHome } from "../src/copilot_api/paths.ts";
+import { agentLauncherCommand } from "../src/utils/root.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { expect, test } from "./helpers/testing.ts";
 import { afterEach } from "./helpers/testing.ts";
@@ -521,9 +522,14 @@ test("payload: MCP entry carries the profile selector and merges over foreign se
       "inferenceCustomHeaders": { "X-Custom": "keep" },
     },
   });
-  const servers = doc["managedMcpServers"] as Record<string, { args: string[] }>;
+  const servers = doc["managedMcpServers"] as Record<string, { command: string; args: string[] }>;
   expect(Object.keys(servers).sort()).toEqual(["copilot-env", "their-server"]);
-  expect(servers["copilot-env"]?.args).toEqual(["mcp", "--serve", "--profile", "work"]);
+  // Derived from the same launcher-command builder the writer uses: on Windows the
+  // args carry the PowerShell invocation ahead of the copilot-env subcommand, so a
+  // hand-spelled POSIX shape would be wrong there.
+  const launcher = agentLauncherCommand(["mcp", "--serve", "--profile", "work"]);
+  expect(servers["copilot-env"]?.command).toBe(launcher.command);
+  expect(servers["copilot-env"]?.args).toEqual(launcher.args);
   // Foreign header names survive; ours are (re)written.
   const headers = doc["inferenceCustomHeaders"] as Record<string, string>;
   expect(headers["X-Custom"]).toBe("keep");

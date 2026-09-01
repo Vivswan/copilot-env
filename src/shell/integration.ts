@@ -225,17 +225,31 @@ function homeTail(path: string): string | null {
   return sep + tail;
 }
 
-/** Quote `path` for a POSIX assignment, `$HOME`-anchored when possible. Only `$HOME`
- *  expands; the tail stays single-quoted so its metacharacters remain literal. */
+/** Tails that stay literal inside a double-quoted string (no $, backtick, ", \\,
+ *  or newline in POSIX; no $, backtick, or " in PowerShell) -- every real install.
+ *  `!` is also excluded on the POSIX side: sourced rc files skip history expansion,
+ *  but a user pasting the line into an interactive bash would not. Anything else
+ *  falls back to the concatenated form below. */
+const POSIX_DQ_SAFE = /^[^$`"\\\n!]*$/;
+const PS_DQ_SAFE = /^[^$`"\n]*$/;
+
+/** Quote `path` for a POSIX assignment, `$HOME`-anchored when possible: the readable
+ *  `"$HOME/tail"` when the tail needs no escaping, else `"$HOME"'<tail>'` so only
+ *  `$HOME` expands and the tail's metacharacters remain literal. */
 function quotePosixHomeAnchored(path: string): string {
   const tail = homeTail(path);
-  return tail === null ? quotePosix(path) : `"$HOME"${quotePosix(tail)}`;
+  if (tail === null) return quotePosix(path);
+  if (POSIX_DQ_SAFE.test(tail)) return `"$HOME${tail}"`;
+  return `"$HOME"${quotePosix(tail)}`;
 }
 
-/** PowerShell twin of quotePosixHomeAnchored: `$HOME + '<tail>'` when possible. */
+/** PowerShell twin of quotePosixHomeAnchored: `"$HOME\tail"` when safe (`\` ends the
+ *  variable name, so nothing else expands), else `$HOME + '<tail>'`. */
 function quotePowerShellHomeAnchored(path: string): string {
   const tail = homeTail(path);
-  return tail === null ? quotePowerShell(path) : `$HOME + ${quotePowerShell(tail)}`;
+  if (tail === null) return quotePowerShell(path);
+  if (PS_DQ_SAFE.test(tail)) return `"$HOME${tail}"`;
+  return `$HOME + ${quotePowerShell(tail)}`;
 }
 
 export function posixBlock(agentsBashrc: string): string {

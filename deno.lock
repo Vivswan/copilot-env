@@ -14,7 +14,7 @@
     "jsr:@std/path@^1.1.6": "1.1.6",
     "jsr:@std/semver@^1.0.8": "1.0.8",
     "jsr:@std/testing@^1.0.20": "1.0.20",
-    "npm:@jeffreycao/copilot-api@^2.0.1": "2.1.13",
+    "npm:@jeffreycao/copilot-api@^2.3.3": "2.3.3",
     "npm:@modelcontextprotocol/client@2": "2.0.0",
     "npm:@modelcontextprotocol/sdk@^1.30.0": "1.30.0_zod@4.4.3",
     "npm:@modelcontextprotocol/server@2": "2.0.0",
@@ -81,14 +81,14 @@
     }
   },
   "npm": {
-    "@hono/node-server@2.1.0_hono@4.13.1": {
+    "@hono/node-server@2.1.0_hono@4.13.4": {
       "integrity": "sha512-XovyyCCnBzW+zKu+z/zq8hwNs4KOR5rEMAOxo2f40Q5xoOI37IMm6MIg2COOUtUApo0i6850MTBKH2u4QLGIqg==",
       "dependencies": [
         "hono"
       ]
     },
-    "@jeffreycao/copilot-api@2.1.13": {
-      "integrity": "sha512-jwgC2nuDhDruqY1S0s0XSo7Gb8OqDRMrTiE71ClEuSU2Q1f87TBZK1hasiba3+OVJcyvvSPLN7r9saqLbUgghg==",
+    "@jeffreycao/copilot-api@2.3.3": {
+      "integrity": "sha512-PP2zO+/y+hZJM+LaEZ1sXeIX13UgndYZZgemehOJGP86YLM3VMBuxXpL6+LNqujlcSA29MZHAzVd12+QAfLJyw==",
       "dependencies": [
         "@modelcontextprotocol/sdk",
         "citty",
@@ -492,8 +492,8 @@
         "function-bind"
       ]
     },
-    "hono@4.13.1": {
-      "integrity": "sha512-kdJoFVv2xmayw6cY09H7AbMJMt8Jn5jdlEdXsP7AGBdF2DIptVlKlOLKXP41yPip4/a3yQPv9gVcJYI8YY04dw=="
+    "hono@4.13.4": {
+      "integrity": "sha512-AGEwKIyRMHRv1t8Wjwa3LHxQ61X5CqrdFT+4BRNTpqS5aJNnpl5WLjADb7vFlJzI/8uK7T5QLVApCMQKNa3LgQ=="
     },
     "http-errors@2.0.1": {
       "integrity": "sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ==",
@@ -916,7 +916,7 @@
       "jsr:@std/expect@^1.0.20",
       "jsr:@std/semver@^1.0.8",
       "jsr:@std/testing@^1.0.20",
-      "npm:@jeffreycao/copilot-api@^2.0.1",
+      "npm:@jeffreycao/copilot-api@^2.3.3",
       "npm:@modelcontextprotocol/client@2",
       "npm:@modelcontextprotocol/sdk@^1.30.0",
       "npm:@modelcontextprotocol/server@2",

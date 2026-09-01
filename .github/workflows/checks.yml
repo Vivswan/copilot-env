@@ -136,7 +136,7 @@ jobs:
             exit 0
           fi
           changed="$(git diff --name-only "$BASE"...HEAD)"
-          if printf '%s\n' "$changed" | grep -qE '^(deno\.(json|lock)|copilot-env\.config|src/proxy_float\.ts|src/copilot_api/(process|launch|sidecar|shims)\.ts|src/scripts/|\.github/scripts/(floated-smoke|lifecycle-smoke)\.sh|scripts/test_docker\.ts)'; then
+          if printf '%s\n' "$changed" | grep -qE '^(deno\.(json|lock)|copilot-env\.config|src/proxy_float\.ts|src/copilot_api/(process|launch|sidecar|shims|paths)\.ts|src/scripts/|\.github/scripts/(floated-smoke|lifecycle-smoke)\.sh|scripts/test_docker\.ts)'; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"

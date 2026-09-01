@@ -45,6 +45,7 @@ afterEach(() => {
 const BASE: DaemonSpec = {
   port: 4141,
   logFile: "/tmp/proxy.log",
+  home: "/tmp/proxy-home",
   env: {},
   credential: { kind: "none" },
   idleWatchdog: false,
@@ -143,6 +144,18 @@ test("with no float record the argv runs the mapped package, offline-only, endin
   ]);
   // Nothing to point a resolve at: the mapped entry resolves through node_modules.
   expect(daemonEnvironment(BASE, {}).DENO_DIR).toBeUndefined();
+});
+
+test("COPILOT_API_HOME is pinned from the spec for every daemon", () => {
+  // An unpinned default daemon (no COPILOT_API_HOME in the parent env) must still
+  // get the spec's home: since the data-home rename, the npm package's own default
+  // differs from ours, so falling back would split daemon and wrapper state.
+  expect(daemonEnvironment(BASE, {}).COPILOT_API_HOME).toBe("/tmp/proxy-home");
+  // The spec wins over an inherited value too (a profile daemon must never run
+  // against whatever home the parent shell happened to export).
+  expect(daemonEnvironment(BASE, { COPILOT_API_HOME: "/elsewhere" }).COPILOT_API_HOME).toBe(
+    "/tmp/proxy-home",
+  );
 });
 
 test("a float record moves the entry to that exact version, run out of the cache it warmed", () => {
@@ -263,7 +276,7 @@ test("the credential environment is set-or-DELETE, so a stale value can never le
 
 test("the daemon inherits our TLS/proxy environment, and the spec's own wiring wins", () => {
   const env = daemonEnvironment(
-    { ...BASE, env: { COPILOT_API_HOME: "/profiles/work" } },
+    { ...BASE, home: "/profiles/work" },
     {
       NODE_EXTRA_CA_CERTS: "/etc/corp.pem",
       DENO_TLS_CA_STORE: "system",

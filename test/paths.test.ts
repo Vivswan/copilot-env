@@ -11,8 +11,8 @@ afterEach(() => {
   restoreEnv();
 });
 
-test("DEFAULT_HOME mirrors the proxy's default data dir", () => {
-  expect(DEFAULT_HOME).toBe(join(homedir(), ".local", "share", "copilot-api"));
+test("DEFAULT_HOME is copilot-env's own data dir", () => {
+  expect(DEFAULT_HOME).toBe(join(homedir(), ".local", "share", "copilot-env"));
 });
 
 test("CopilotApiPaths composes per-host run files under COPILOT_API_HOME", () => {

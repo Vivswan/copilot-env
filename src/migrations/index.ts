@@ -16,6 +16,7 @@ import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
 import { disableConsolaTimestamps } from "../utils/logger.ts";
 import { stripV, versionLessThan } from "../utils/semver.ts";
+import { v356 } from "./3.5.6.ts";
 
 /**
  * One step in the version history, named for the release it migrates AWAY FROM (so a
@@ -36,18 +37,13 @@ export interface Migration {
  * One file per version step (named for the from-version), registered in ascending order;
  * `dueMigrations` re-sorts defensively, so order here is for readability only.
  *
- * EMPTY BY DESIGN. Every step shipped before the deno rewrite was deleted. They are
- * unreachable because the rewrite is a hard runtime break, not because of their version
- * range: a pre-rewrite install runs the OLD updater, which shells out to bun, and bun
- * cannot even load this file -- its first import reaches `@std/dotenv`, a jsr specifier
- * only deno's import map resolves. Nothing that could still be due can reach here.
- *
- * Each deleted step's persisted-state fix was checked first and was re-derivable by
- * `agent init` / `auth` / `claude` / `shell`, or self-healing on the catalog sync timer;
- * none was the only reader of a format the current code cannot parse. Add the next step
- * here as `[v360]` when one is needed.
+ * Every step shipped before the deno rewrite was deleted: a pre-rewrite install runs the
+ * OLD bun-based updater, which cannot even load this file (its first import reaches
+ * `@std/dotenv`, a jsr specifier only deno's import map resolves), so no historical step
+ * could still be reached. Each deleted step's persisted-state fix was re-derivable by
+ * `agent init` / `auth` / `claude` / `shell`, or self-healing on the catalog sync timer.
  */
-const MIGRATIONS: Migration[] = [];
+const MIGRATIONS: Migration[] = [v356];
 
 /**
  * The migrations whose (from-)version falls in the half-open range [from, to), sorted

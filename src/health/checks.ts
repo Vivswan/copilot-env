@@ -143,6 +143,20 @@ export function checkDeno(f: BootstrapFacts): CheckResult {
 }
 
 export function checkNodeModules(f: BootstrapFacts): CheckResult {
+  if (f.nodeModules === null) {
+    // Compiled binary: dependencies are embedded and the proxy floats into its
+    // own cache, so there is no node_modules to be missing or stale.
+    return {
+      id: "bootstrap.nodeModules",
+      label: "Dependencies (node_modules)",
+      group: "bootstrap",
+      profile: null,
+      scopes: BOOTSTRAP,
+      status: "ok",
+      detail: "embedded in the compiled binary",
+      value: { embedded: true },
+    };
+  }
   const { present, fresh } = f.nodeModules;
   const status = !present ? "fail" : !fresh ? "warn" : "ok";
   const detail = !present
@@ -183,6 +197,7 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
   let status: CheckResult["status"];
   let detail: string;
   let fix: string | undefined;
+  let standaloneMissing = false;
   if (bounds.ok) {
     status = "ok";
     // Version + cooldown as separate lines -> rendered as `-` sub-items.
@@ -190,10 +205,21 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
       floatCooldownLabel(f.cooldownSeconds)
     }`;
   } else if (bounds.reason === "missing") {
-    // A missing package is a broken install in any mode; the fix always works.
-    status = "fail";
-    detail = `${PROXY_PACKAGE_NAME} is not installed`;
-    fix = "deno install --frozen";
+    if (f.sidecar.standalone) {
+      // A compiled install ships no deno.json baseline: the float resolves the
+      // proxy into its own cache at `agent start`, so "missing" is the normal
+      // pre-start state there, not a broken install.
+      standaloneMissing = true;
+      status = "ok";
+      detail = f.floatSkips
+        ? `${PROXY_PACKAGE_NAME} not resolved; not required (Codex + Claude are both direct, so the proxy is unused)`
+        : `${PROXY_PACKAGE_NAME} not resolved yet; \`agent start\` floats it in`;
+    } else {
+      // In a checkout a missing package is a broken install; the fix always works.
+      status = "fail";
+      detail = `${PROXY_PACKAGE_NAME} is not installed`;
+      fix = "deno install --frozen";
+    }
   } else if (bounds.reason === "belowFloor") {
     status = "fail";
     detail = `proxy ${bounds.version} is below the floor ${bounds.floor}`;
@@ -223,13 +249,14 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
     status,
     detail,
     ...(fix ? { fix } : {}),
-    // floatSkips is stamped only when it changed the verdict, mirroring the
-    // runtime checks' bothDirect stamp, so --json consumers can tell
-    // "in bounds" from "out of bounds but exempted".
+    // floatSkips/standalone are stamped only when they changed the verdict,
+    // mirroring the runtime checks' bothDirect stamp, so --json consumers can
+    // tell "in bounds" from "out of bounds but exempted".
     value: {
       version: f.version,
       cooldownSeconds: f.cooldownSeconds,
       ...(exempted ? { floatSkips: true } : {}),
+      ...(standaloneMissing ? { standalone: true } : {}),
     },
   };
 }
@@ -263,6 +290,17 @@ export function checkProxySidecar(f: ProxyFacts): CheckResult {
   };
   const { kind, pin, denoBin, standalone } = f.sidecar;
   if (kind === "absent") {
+    if (f.floatSkips) {
+      // Direct-only: nothing spawns the proxy, so an unprovisioned sidecar is
+      // idle capacity, not a failure. A proxy rewire re-enables the requirement.
+      return {
+        ...base,
+        status: "ok",
+        detail:
+          `deno ${pin} not provisioned; not required (Codex + Claude are both direct, so the proxy is unused)`,
+        value: { kind, pin, standalone, floatSkips: true },
+      };
+    }
     return {
       ...base,
       status: standalone ? "fail" : "warn",
@@ -298,6 +336,8 @@ export function checkProxyResolved(f: ProxyFacts): CheckResult {
       status: "ok",
       detail: f.floatSkips
         ? "not floated; Codex + Claude are both direct, so the proxy is unused"
+        : f.sidecar.standalone
+        ? "not floated yet; `agent start` resolves it (a compiled install has no baseline)"
         : "not floated yet; the deno.json baseline would run instead",
       value: { resolved: false },
     };

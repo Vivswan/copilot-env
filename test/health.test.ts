@@ -254,7 +254,7 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
   expect(above.status).toBe("ok");
   expect(above.fix).toBeUndefined();
 
-  // A missing package is a broken install in any mode: the exemption must not
+  // A missing package is a broken CHECKOUT in any mode: the exemption must not
   // swallow it (a reinstall genuinely fixes it, float or no float).
   const missing = checkProxyPackage({
     version: null,
@@ -295,6 +295,46 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
     sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
   });
   expect(badConfig.status).toBe("fail");
+});
+
+test("proxy package: a compiled install treats missing as pre-start, not broken", () => {
+  // A compiled binary ships no deno.json baseline -- the float resolves the proxy
+  // into its own cache at `agent start`. "Missing" is therefore the normal state
+  // of a fresh or direct-only binary install and must not fail.
+  const standalone = {
+    kind: "provisioned",
+    pin: "2.9.5",
+    denoBin: "/deno",
+    standalone: true,
+  } as const;
+  const unused = checkProxyPackage({
+    version: null,
+    bounds: { ok: false, reason: "missing", version: null },
+    configError: null,
+    cooldownSeconds: 604800,
+    floatSkips: true,
+    resolved: null,
+    sidecar: standalone,
+  });
+  expect(unused.status).toBe("ok");
+  expect(unused.detail).toContain("not required");
+  expect(unused.fix).toBeUndefined();
+  // Machine-readable for --json consumers, like the floatSkips stamp.
+  expect((unused.value as Record<string, unknown>).standalone).toBe(true);
+
+  // Proxy wired but never started: still ok, pointing at `agent start`.
+  const preStart = checkProxyPackage({
+    version: null,
+    bounds: { ok: false, reason: "missing", version: null },
+    configError: null,
+    cooldownSeconds: 604800,
+    floatSkips: false,
+    resolved: null,
+    sidecar: standalone,
+  });
+  expect(preStart.status).toBe("ok");
+  expect(preStart.detail).toContain("agent start");
+  expect(preStart.fix).toBeUndefined();
 });
 
 test("proxy package detail shows the float cooldown window", () => {
@@ -365,6 +405,16 @@ test("proxy sidecar: absent is fatal for a compiled build, a warning for a check
   );
   expect(provisioned.status).toBe("ok");
   expect(provisioned.detail).toContain("2.9.5");
+
+  // Direct-only (the float skips): nothing spawns the proxy, so an absent
+  // sidecar is idle capacity, not a failure -- even on a compiled build.
+  const unused = checkProxySidecar({
+    ...facts({ kind: "absent", pin: "2.9.5", denoBin: null, standalone: true }),
+    floatSkips: true,
+  });
+  expect(unused.status).toBe("ok");
+  expect(unused.detail).toContain("not required");
+  expect(unused.fix).toBeUndefined();
 });
 
 test("proxy resolved: no record is ok, a record with a missing cache fails", () => {
@@ -1033,6 +1083,12 @@ test("deno unavailable fails; node_modules absent fails, stale warns, fresh ok",
   expect(
     checkNodeModules({ ...BOOTSTRAP_OK, nodeModules: { present: true, fresh: false } }).status,
   ).toBe("warn");
+  // A compiled binary embeds its dependencies (nodeModules fact is null): the
+  // check must read ok and say so, never fail on the node_modules it cannot have.
+  const embedded = checkNodeModules({ ...BOOTSTRAP_OK, nodeModules: null });
+  expect(embedded.status).toBe("ok");
+  expect(embedded.detail).toContain("embedded");
+  expect(embedded.fix).toBeUndefined();
 });
 
 // --- setup checks -----------------------------------------------------------

@@ -181,7 +181,9 @@ export interface WatchdogFacts {
 export interface BootstrapFacts {
   cliVersion: string;
   deno: { available: boolean; version: string | null };
-  nodeModules: { present: boolean; fresh: boolean };
+  /** null when running as a compiled binary: dependencies are embedded, so there
+   *  is no node_modules to judge. */
+  nodeModules: { present: boolean; fresh: boolean } | null;
 }
 
 /** The proxy float's resolved-version record, as health reads it back. */
@@ -972,10 +974,14 @@ export async function gatherFacts(
   if (profile === null && SCOPE_BOOTSTRAP.includes(scope)) {
     jobs.push(
       (async () => {
+        const sidecar = deps.sidecar();
         facts.bootstrap = {
           cliVersion: deps.cliVersion(),
           deno: { available: deps.denoVersion() !== null, version: deps.denoVersion() },
-          nodeModules: { present: deps.nodeModulesPresent(), fresh: deps.nodeModulesFresh() },
+          // A compiled binary embeds its dependencies -- no node_modules to judge.
+          nodeModules: sidecar.standalone
+            ? null
+            : { present: deps.nodeModulesPresent(), fresh: deps.nodeModulesFresh() },
         };
         const resolved = deps.proxyResolved();
         // Report the version that would actually RUN, in the daemon entry's own
@@ -996,7 +1002,6 @@ export async function gatherFacts(
         // checks' looser both-direct read) so health and the float can never
         // disagree about whether the bounds are enforced.
         const floatSkips = proxyFloatSkips(deps.codexHome(), deps.claudeHome());
-        const sidecar = deps.sidecar();
         try {
           facts.proxy = {
             version,

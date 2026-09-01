@@ -77,6 +77,19 @@ export function isStandaloneBinary(): boolean {
   return denoRuntime()?.build.standalone === true;
 }
 
+/**
+ * Our own runtime's executable when it can act as a deno CLI, else null: running
+ * under a real deno yields its binary; a compiled standalone (a deno runtime but
+ * not a deno CLI -- it cannot `deno cache` or run scripts) and a non-deno process
+ * yield null. The ONE owner of this guard; every "use our own deno" fast path
+ * (resolveDenoBin, detectSidecar) goes through it rather than re-deriving it.
+ */
+export function devDenoExecPath(): string | null {
+  const runtime = denoRuntime();
+  if (runtime === null || isStandaloneBinary()) return null;
+  return runtime.execPath();
+}
+
 function detectRootMode(): RootMode {
   if (!isStandaloneBinary()) return { kind: "checkout", root: findCheckoutRoot() };
   const override = process.env[ROOT_OVERRIDE_ENV];

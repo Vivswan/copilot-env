@@ -12,6 +12,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { isRecord } from "../../src/utils/json.ts";
 
 const step = process.argv[2];
 const isWindows = process.platform === "win32";
@@ -52,6 +53,20 @@ function output(command: string, args: string[]): string | null {
     return null;
   }
   return proc.stdout.trim();
+}
+
+/** stdout of a command whose exit code is NOT the signal: `health` exits 1 on
+ *  any environment-dependent failure, but its JSON body is what we assert on. */
+function outputAnyExit(command: string, args: string[]): string {
+  const proc = spawnSync(command, args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+    shell: false,
+  });
+  if (proc.error) {
+    throw proc.error;
+  }
+  return (proc.stdout ?? "").trim();
 }
 
 function commandPath(command: string): string | null {
@@ -190,7 +205,7 @@ function installRoot(args: string[], home: string): string {
 }
 
 /** The installed launcher shim -- what a user actually runs after install. */
-function verifyInstalledLauncher(): void {
+function verifyInstalledLauncher(): string {
   const home = (isWindows ? process.env.USERPROFILE : process.env.HOME) ?? "";
   const launcher = join(
     installRoot(installerArgs(), home),
@@ -207,10 +222,82 @@ function verifyInstalledLauncher(): void {
     run(launcher, ["--version"]);
   }
   console.log(`installed launcher works: ${launcher}`);
+  return launcher;
+}
+
+/**
+ * Compiled-install health invariants, FAIL-CLOSED: the report is parsed from
+ * unknown and every expectation is POSITIVE, so a missing row, a renamed id, a
+ * reshaped value, or an unexpected status/kind is a failure -- never a silent
+ * pass. The whole-report exit code is environment-dependent (a fresh install
+ * legitimately fails the proxy runtime probes), so this asserts only the checks
+ * a compiled binary must get right about ITSELF: dependencies read as embedded,
+ * the proxy package reads ok (never "not installed"), and the sidecar is
+ * provisioned or absent -- never the "dev" deno a compiled binary cannot be.
+ * Exported for the unit tests' negative controls; the CI entry point below
+ * feeds it the real binary's report.
+ */
+export function compiledHealthFailures(reportJson: unknown): string[] {
+  const checks = isRecord(reportJson) && Array.isArray(reportJson.checks)
+    ? reportJson.checks
+    : null;
+  if (checks === null) {
+    return ["health --json did not produce a checks array"];
+  }
+  const failures: string[] = [];
+  const row = (id: string): { status: unknown; value: unknown } | undefined => {
+    const found = checks.find((c): c is Record<string, unknown> => isRecord(c) && c.id === id);
+    if (found === undefined) {
+      failures.push(`health --json has no ${id} check (renamed or removed?)`);
+      return undefined;
+    }
+    return { status: found.status, value: found.value };
+  };
+  const nodeModules = row("bootstrap.nodeModules");
+  if (
+    nodeModules !== undefined &&
+    (!isRecord(nodeModules.value) || nodeModules.value.embedded !== true)
+  ) {
+    failures.push("bootstrap.nodeModules must read as embedded on a compiled install");
+  }
+  const pkg = row("proxy.package");
+  if (pkg !== undefined && pkg.status !== "ok") {
+    failures.push(
+      `proxy.package must be ok on a fresh compiled install (got ${JSON.stringify(pkg.status)})`,
+    );
+  }
+  const sidecar = row("proxy.sidecar");
+  if (sidecar !== undefined) {
+    const kind = isRecord(sidecar.value) ? sidecar.value.kind : undefined;
+    if (kind !== "provisioned" && kind !== "absent") {
+      failures.push(
+        `proxy.sidecar kind must be provisioned|absent on a compiled binary (got ${
+          JSON.stringify(kind)
+        })`,
+      );
+    }
+  }
+  return failures;
+}
+
+function verifyCompiledHealth(launcher: string): void {
+  const healthArgs = ["health", "--json", "--scope", "proxy"];
+  const raw = isWindows
+    ? outputAnyExit("pwsh", ["-NoProfile", "-File", launcher, ...healthArgs])
+    : outputAnyExit(launcher, healthArgs);
+  const failures = compiledHealthFailures(JSON.parse(raw));
+  for (const failure of failures) {
+    console.error(`::error::${failure}`);
+  }
+  if (failures.length > 0) {
+    process.exit(1);
+  }
+  console.log("compiled-install health invariants hold");
 }
 
 function verifyOutcome(): void {
-  verifyInstalledLauncher();
+  const launcher = verifyInstalledLauncher();
+  verifyCompiledHealth(launcher);
   verifyOptionalClis();
   verifyShellWiring();
   verifyLauncherWiring();
@@ -221,17 +308,22 @@ function verifyOutcome(): void {
   );
 }
 
-switch (step) {
-  case "run-install":
-    runInstall();
-    break;
-  case "assert-no-optional-clis":
-    assertNoOptionalClis();
-    break;
-  case "verify-outcome":
-    verifyOutcome();
-    break;
-  default:
-    console.error("usage: installer-smoke.ts run-install|assert-no-optional-clis|verify-outcome");
-    process.exit(2);
+// Guarded so the unit tests can import compiledHealthFailures without running a step.
+if (import.meta.main) {
+  switch (step) {
+    case "run-install":
+      runInstall();
+      break;
+    case "assert-no-optional-clis":
+      assertNoOptionalClis();
+      break;
+    case "verify-outcome":
+      verifyOutcome();
+      break;
+    default:
+      console.error(
+        "usage: installer-smoke.ts run-install|assert-no-optional-clis|verify-outcome",
+      );
+      process.exit(2);
+  }
 }

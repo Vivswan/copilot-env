@@ -12,6 +12,7 @@ import { isAbsolute, join, parse } from "node:path";
 import {
   AGENT_AUTH_GET_ARGS,
   ASSET_ROOT,
+  devDenoExecPath,
   isProtectedRoot,
   looksLikeInstallRoot,
   PROJECT_ROOT,
@@ -91,4 +92,12 @@ test("the credential resolver argvs stay byte-identical", () => {
     "--profile",
     "work",
   ]);
+});
+
+test("devDenoExecPath is the runtime binary under a real deno (the compiled half is CI's)", () => {
+  // Under `deno test` this process IS a real deno, so the dev fast path answers
+  // with its executable. The compiled half of the contract (null, so a compiled
+  // binary never classifies itself as a dev deno) is pinned by the installer
+  // smoke's compiled-health invariants, which run the real built binary.
+  expect(devDenoExecPath()).toBe(Deno.execPath());
 });

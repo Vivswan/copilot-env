@@ -2,7 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { consola } from "consola";
 
 import { isEnoent } from "../utils/fs.ts";
@@ -213,16 +213,41 @@ function removeLaunchersFrom(files: string[]): boolean {
 // Re-exported so test/shell_integration.test.ts can import them from here.
 export { quotePosix, quotePowerShell };
 
+/** The `$HOME` tail of `path` when it lives under the user's home directory, else null.
+ *  Anchoring the written block at `$HOME` keeps a synced rc/profile file working across
+ *  machines and usernames; a path outside home (e.g. a dev checkout) stays literal.
+ *  relative() rather than a lexical prefix test: it normalizes separators and compares
+ *  the way the platform does (case-insensitive on Windows), so a differently-cased home
+ *  still anchors; outside-home walks up ("..") or lands on another drive (absolute). */
+function homeTail(path: string): string | null {
+  const tail = relative(homedir(), path);
+  if (tail === "" || tail.startsWith("..") || isAbsolute(tail)) return null;
+  return sep + tail;
+}
+
+/** Quote `path` for a POSIX assignment, `$HOME`-anchored when possible. Only `$HOME`
+ *  expands; the tail stays single-quoted so its metacharacters remain literal. */
+function quotePosixHomeAnchored(path: string): string {
+  const tail = homeTail(path);
+  return tail === null ? quotePosix(path) : `"$HOME"${quotePosix(tail)}`;
+}
+
+/** PowerShell twin of quotePosixHomeAnchored: `$HOME + '<tail>'` when possible. */
+function quotePowerShellHomeAnchored(path: string): string {
+  const tail = homeTail(path);
+  return tail === null ? quotePowerShell(path) : `$HOME + ${quotePowerShell(tail)}`;
+}
+
 export function posixBlock(agentsBashrc: string): string {
   return `\n${MARKER}\nAGENTS_BASHRC=${
-    quotePosix(agentsBashrc)
+    quotePosixHomeAnchored(agentsBashrc)
   }\n[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n`;
 }
 
 /** Opt-in launchers block; sourced after posixBlock so the `agent` wrapper exists. */
 export function posixLaunchersBlock(launchersBashrc: string): string {
   return `\n${LAUNCHERS_MARKER}\nAGENTS_LAUNCHERS=${
-    quotePosix(launchersBashrc)
+    quotePosixHomeAnchored(launchersBashrc)
   }\n[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"\n`;
 }
 
@@ -230,14 +255,14 @@ export function windowsBlock(agentsPs1: string): string {
   // -LiteralPath so a path with PowerShell wildcard chars ([ ] * ?) isn't treated
   // as a pattern (the quoting handles spaces/quotes, not wildcard semantics).
   return `\n${MARKER}\n$AgentsPs1 = ${
-    quotePowerShell(agentsPs1)
+    quotePowerShellHomeAnchored(agentsPs1)
   }\nif (Test-Path -LiteralPath $AgentsPs1) { . $AgentsPs1 }\n`;
 }
 
 /** Opt-in launchers block; dot-sourced after windowsBlock so the `agent` wrapper exists. */
 export function windowsLaunchersBlock(launchersPs1: string): string {
   return `\n${LAUNCHERS_MARKER}\n$AgentsLaunchers = ${
-    quotePowerShell(launchersPs1)
+    quotePowerShellHomeAnchored(launchersPs1)
   }\nif (Test-Path -LiteralPath $AgentsLaunchers) { . $AgentsLaunchers }\n`;
 }
 

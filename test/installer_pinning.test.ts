@@ -147,6 +147,11 @@ describe("the install task spawns what it is allowed to run", () => {
     const allow = denoJson.tasks.install?.match(/--allow-run=(\S+)/)?.[1]?.split(",") ?? [];
     const spawned = [...installLocal.matchAll(/run\(\s*\n?\s*"([^"]+)"/g)].map((m) => m[1]);
     expect(new Set(spawned)).toEqual(new Set(allow));
+    // The --force path additionally reads env + home and deletes the install
+    // root; a dropped flag is a hard denial at run time.
+    for (const flag of ["--allow-env", "--allow-read", "--allow-write", "--allow-sys=homedir"]) {
+      expect(denoJson.tasks.install).toContain(flag);
+    }
   });
 
   test("install.sh is invoked under the shell its shebang declares", () => {

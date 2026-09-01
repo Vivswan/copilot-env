@@ -29,7 +29,7 @@ const LOAD_RETRY_MS = 4;
 // wait rather than deadlock a command, and reclaims only a crashed/leaked holder.
 
 /**
- * Atomic JSON store for `~/.local/share/copilot-api/` files: the proxy's
+ * Atomic JSON store for `~/.local/share/copilot-env/` files: the proxy's
  * `config.json` and the small state files (`CopilotEnvState`, `CopilotEnvRunState`,
  * `AutoupdateState` all wrap one of these). Sorted keys, 0600, atomic rename with a
  * Windows EPERM/EBUSY retry.

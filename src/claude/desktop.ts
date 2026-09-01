@@ -228,7 +228,7 @@ function readFileOrNull(path: string): string | null {
 }
 
 /** Pretty JSON + trailing newline, atomically, skipping byte-identical rewrites. */
-function saveJsonIfChanged(path: string, doc: unknown): void {
+export function saveJsonIfChanged(path: string, doc: unknown): void {
   const text = `${JSON.stringify(doc, null, 2)}\n`;
   if (readFileOrNull(path) === text) return;
   atomicWriteFile(path, text);
@@ -328,6 +328,18 @@ export function desktopConfigPayload(opts: DesktopPayloadOptions): Record<string
   doc["autoModeEnabled"] = true;
   doc["userPluginMarketplacesEnabled"] = true;
   doc["userPluginUploadsEnabled"] = true;
+  // Show estimated cost in the UI, default to the 1M window (user decisions).
+  doc["inferenceModelPricingEnabled"] = true;
+  doc["modelPrefer1mContext"] = true;
+  // Claude.ai data import/export switches all on (user decision); merged so a
+  // hand-set field like bannerBehavior survives.
+  const existingImport = doc["claudeAiImport"];
+  doc["claudeAiImport"] = {
+    ...(isRecord(existingImport) ? existingImport : {}),
+    "enabled": true,
+    "automatic3pImport": true,
+    "exportEnabled": true,
+  };
   // No telemetry at all (user decision), essential included.
   doc["disableEssentialTelemetry"] = true;
   doc["disableNonessentialTelemetry"] = true;

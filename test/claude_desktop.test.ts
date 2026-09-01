@@ -184,7 +184,7 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
     "anthropicFamilyTier": "fable",
     "isFamilyDefault": true,
   }]);
-  // All capability switches on, all telemetry off (including essential).
+  // All capability switches on, cost display on, all telemetry off (incl. essential).
   for (
     const key of [
       "chatTabEnabled",
@@ -196,6 +196,8 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
       "autoModeEnabled",
       "userPluginMarketplacesEnabled",
       "userPluginUploadsEnabled",
+      "inferenceModelPricingEnabled",
+      "modelPrefer1mContext",
       "disableEssentialTelemetry",
       "disableNonessentialTelemetry",
       "disableNonessentialServices",
@@ -204,6 +206,12 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
     expect(direct[key]).toBe(true);
   }
   expect(isRecordLike(direct["managedMcpServers"])).toBe(true);
+  // Import/export all on; a hand-set sibling field would survive the merge.
+  expect(direct["claudeAiImport"]).toEqual({
+    "enabled": true,
+    "automatic3pImport": true,
+    "exportEnabled": true,
+  });
 
   const proxy = desktopConfigPayload({
     mode: "proxy",
@@ -231,10 +239,21 @@ test("payload: foreign keys in the existing document survive the surgical merge"
     profile: null,
     baseUrl: DEFAULT_COPILOT_API_BASE,
     helperPath: "/x/h.sh",
-    existing: { "banner": { "enabled": true, "text": "keep me" }, "userKey": 42 },
+    existing: {
+      "banner": { "enabled": true, "text": "keep me" },
+      "userKey": 42,
+      // A hand-set import field survives; managed fields win on conflict.
+      "claudeAiImport": { "bannerBehavior": "detect", "enabled": false },
+    },
   });
   expect(merged["banner"]).toEqual({ "enabled": true, "text": "keep me" });
   expect(merged["userKey"]).toBe(42);
+  expect(merged["claudeAiImport"]).toEqual({
+    "bannerBehavior": "detect", // hand-set sibling field kept
+    "enabled": true, // managed value wins over the stale hand-set one
+    "automatic3pImport": true,
+    "exportEnabled": true,
+  });
 });
 
 // --- helper scripts ----------------------------------------------------------------

@@ -36,10 +36,15 @@ cat "$start_output"
 grep -q "now using @jeffreycao/copilot-api@" "$start_output" ||
     fail "the proxy float did not resolve and install a version"
 
-proxy_log="$(find "${HOME}/.local/share/copilot-api" -name '.log' -print -quit 2>/dev/null || true)"
+proxy_log="$(find "${HOME}/.local/share/copilot-env" -name '.log' -print -quit 2>/dev/null || true)"
 [ -n "$proxy_log" ] || fail "the daemon never wrote a proxy log"
 echo "--- proxy log ---"
 cat "$proxy_log"
+
+# The daemon must run against OUR home, not the npm package's own default: a
+# recreated legacy dir means the spawn stopped pinning COPILOT_API_HOME.
+[ ! -d "${HOME}/.local/share/copilot-api" ] ||
+    fail "the daemon recreated the legacy copilot-api home"
 
 # 2. THE regression this job exists for: the daemon must not die on a permission
 #    the production grant list cannot express. The real proxy's dependency tree

@@ -449,9 +449,9 @@ export function spawnConfiguredDaemon(opts: {
   if (profile !== null) {
     // A named profile's daemon runs against its OWN isolated home (config.json incl.
     // auth.apiKeys, .run/, sqlite, logs) so concurrent daemons never contend on one
-    // home -- with the root home passed alongside so the in-daemon preloads still
-    // find the ACCOUNT-WIDE files (credential store, preferences) there.
-    daemonEnv.COPILOT_API_HOME = paths.home;
+    // home -- the root home is passed alongside so the in-daemon preloads still
+    // find the ACCOUNT-WIDE files (credential store, preferences) there. The home
+    // itself rides in DaemonSpec.home (pinned for every daemon, default included).
     daemonEnv[ROOT_HOME_ENV] = resolveRootHome();
   }
   // Managed lifecycle on (the `auto-start` config key)? Preload the in-daemon idle watchdog
@@ -474,6 +474,7 @@ export function spawnConfiguredDaemon(opts: {
     return launchDaemon({
       port: p,
       logFile,
+      home: paths.home,
       env: daemonEnv,
       credential,
       idleWatchdog,

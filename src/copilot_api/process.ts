@@ -375,7 +375,11 @@ export type DaemonCredential =
 export interface DaemonSpec {
   port: number;
   logFile: string;
-  /** Daemon-home / sqlite environment the launch pipeline assembles. */
+  /** The daemon's home dir, pinned into COPILOT_API_HOME on EVERY spawn: since the
+   *  data-home rename, the npm package's own default no longer matches ours, so an
+   *  unpinned daemon would split its files from the wrapper's. */
+  home: string;
+  /** Extra daemon environment the launch pipeline assembles (sqlite path, root home). */
   env: Record<string, string>;
   credential: DaemonCredential;
   /** Arm the in-daemon idle auto-stop watchdog (the `auto-start` config key). */
@@ -463,6 +467,7 @@ export function noProxyWithLoopback(current: string | undefined): string {
  */
 export function daemonEnvironment(spec: DaemonSpec, base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...base, ...copilotApiEnv(spec.entry), ...spec.env };
+  env.COPILOT_API_HOME = spec.home;
   applyCredentialEnv(env, spec.credential);
   // Read either spelling (a user may have set only one) and write BOTH, so the exemption
   // holds whichever name the HTTP client happens to consult first.

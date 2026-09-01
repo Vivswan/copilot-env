@@ -6,12 +6,14 @@ import { isDir, isEnoentOrNotdir } from "../utils/fs.ts";
 import { getSanitizedHostname } from "../utils/hostname.ts";
 import { isValidProfileName, parseProfileName, type Profile, type ProfileName } from "./profile.ts";
 
-// Mirror the proxy's own default (`@jeffreycao/copilot-api` lib/paths.ts):
-//   path.join(os.homedir(), ".local", "share", "copilot-api")
-// applied on every platform. Must stay byte-for-byte compatible so the wrapper
-// reads the same config/run dir the daemon writes -- do NOT swap in a native
-// %LOCALAPPDATA% location on Windows, that would diverge from the daemon.
-export const DEFAULT_HOME: string = join(homedir(), ".local", "share", "copilot-api");
+// copilot-env's own data home. The proxy daemon never depends on this default:
+// every spawn pins COPILOT_API_HOME from DaemonSpec.home (process.ts), so the dir
+// carries OUR name, not the proxy package's. One spelling on every platform -- do
+// NOT swap in a native %LOCALAPPDATA% location on Windows, the wrapper and the
+// daemon must derive the identical path. Installs made before the rename used
+// the proxy package's own default (`~/.local/share/copilot-api`); the 3.5.6
+// migration moves them.
+export const DEFAULT_HOME: string = join(homedir(), ".local", "share", "copilot-env");
 
 /** The effective copilot-api home: `$COPILOT_API_HOME` or the default data dir. */
 export function resolveHome(): string {

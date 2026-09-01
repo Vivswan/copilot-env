@@ -96,6 +96,13 @@ export interface CopilotEnvStateData {
    * `agent mcp --remove` only ever takes back the entry we put in THAT file.
    */
   webSearchDenyOwnedPaths: string[];
+  /**
+   * The Claude Desktop config-library entry PATHS (absolute `<dir>/<uuid>.json`)
+   * copilot-env itself created or adopted (src/claude/desktop.ts). Same exact-path
+   * ownership doctrine as webSearchDenyOwnedPaths: an entry the user made - or one
+   * in a differently-located library - is never ours to rewrite or remove.
+   */
+  claudeDesktopOwnedPaths: string[];
 }
 
 // Mirror CopilotEnvRunState/AutoupdateState's patch spelling (`Data[K] | null`).
@@ -138,6 +145,7 @@ const STATE_SCHEMA = v.object({
   // ownedPathList owns the shape; the fallback only covers an ABSENT key (the
   // pipe itself never issues -- junk entries are dropped inside the transform).
   webSearchDenyOwnedPaths: v.fallback(v.pipe(v.unknown(), v.transform(ownedPathList)), []),
+  claudeDesktopOwnedPaths: v.fallback(v.pipe(v.unknown(), v.transform(ownedPathList)), []),
 });
 
 function emptyProfile(): ProfileSlotData {
@@ -321,6 +329,29 @@ export class CopilotEnvState {
       const list = ownedPathList(d.webSearchDenyOwnedPaths).filter((p) => p !== settingsPath);
       if (list.length === 0) delete d.webSearchDenyOwnedPaths;
       else d.webSearchDenyOwnedPaths = list;
+    });
+  }
+
+  /** Whether WE created or adopted this exact Claude Desktop config-library entry. */
+  ownsClaudeDesktopEntry(configPath: string): boolean {
+    return this.read().claudeDesktopOwnedPaths.includes(configPath);
+  }
+
+  /** Record ownership of the Desktop entry at `configPath` (atomic, idempotent). */
+  addClaudeDesktopOwnedPath(configPath: string): void {
+    this.store.update((d) => {
+      const list = ownedPathList(d.claudeDesktopOwnedPaths).filter((p) => p !== configPath);
+      list.push(configPath);
+      d.claudeDesktopOwnedPaths = list;
+    });
+  }
+
+  /** Forget ownership for `configPath`; an emptied list drops the key entirely. */
+  removeClaudeDesktopOwnedPath(configPath: string): void {
+    this.store.update((d) => {
+      const list = ownedPathList(d.claudeDesktopOwnedPaths).filter((p) => p !== configPath);
+      if (list.length === 0) delete d.claudeDesktopOwnedPaths;
+      else d.claudeDesktopOwnedPaths = list;
     });
   }
 

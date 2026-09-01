@@ -1,5 +1,6 @@
 import {
   type CatalogModel,
+  claudeFamilyPicks,
   generateAliases,
   parseCatalogModels,
 } from "../src/copilot_api/models.ts";
@@ -421,4 +422,23 @@ test("parseCatalogModels skips malformed entries and bodies, never throws", () =
   expect(parseCatalogModels({ "data": [null, 5, { "id": 7 }, { "id": "gpt-6" }] })).toEqual([
     { id: "gpt-6", is1m: false },
   ]);
+});
+
+test("claudeFamilyPicks: newest per family preferring the 1m sibling; non-claude ignored", () => {
+  // 1m siblings arrive from parseCatalogModels with the SAME id (the display-only
+  // [1m] suffix stripped) and is1m true.
+  const picks = claudeFamilyPicks([
+    { id: "claude-opus-4-7", is1m: false },
+    { id: "claude-opus-4-8", is1m: false },
+    { id: "claude-opus-4-8", is1m: true },
+    { id: "claude-fable-5", is1m: true },
+    { id: "claude-sonnet-4-6", is1m: false },
+    { id: "gpt-5.6-sol", is1m: false },
+  ]);
+  expect(picks).toEqual([
+    { family: "fable", id: "claude-fable-5", is1m: true },
+    { family: "opus", id: "claude-opus-4-8", is1m: true },
+    { family: "sonnet", id: "claude-sonnet-4-6", is1m: false },
+  ]);
+  expect(claudeFamilyPicks([{ id: "gpt-4o", is1m: false }])).toEqual([]);
 });

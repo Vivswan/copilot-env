@@ -18,6 +18,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "@std/testing/bdd";
+import { CLAUDE_DESKTOP_DIR_ENV } from "../../src/claude/desktop.ts";
 import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../../src/shell/integration.ts";
 
 export { expect } from "@std/expect";
@@ -43,6 +44,10 @@ process.env.CODEX_HOME = join(SANDBOX_HOME, ".codex");
 // machine's real home.
 process.env[CI_RC_DIR_ENV] = SANDBOX_HOME;
 process.env[CI_PS_DOCUMENTS_DIR_ENV] = join(SANDBOX_HOME, "Documents");
+// The Claude Desktop seam points at a dir that is NEVER created: detection reads its
+// existence, so the whole suite sees "no Claude Desktop" (and stays off the real
+// library) unless a test opts in by mkdir'ing it.
+process.env[CLAUDE_DESKTOP_DIR_ENV] = join(SANDBOX_HOME, "claude-desktop");
 globalThis.addEventListener("unload", () => {
   rmSync(SANDBOX_HOME, { recursive: true, force: true });
 });

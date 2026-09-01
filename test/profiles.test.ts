@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 import { configureClaudeConfig, inspectClaudeWiring } from "../src/claude/config.ts";
+import { CLAUDE_DESKTOP_DIR_ENV, desktopLibraryDirUnder } from "../src/claude/desktop.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
 import { codexProviderId, configureCodexConfig } from "../src/codex/config.ts";
 import { renderProfileTable, runProfile } from "../src/commands/profile.ts";
@@ -560,4 +561,34 @@ test("a direct profile bakes a non-default probed identity into BOTH agents", as
   const providers = doc.model_providers as Record<string, Record<string, unknown>>;
   const headers = providers[codexProviderId(WORK)]?.http_headers as Record<string, string>;
   expect(headers["Copilot-Integration-Id"]).toBe("copilot-developer-cli");
+});
+
+test("profile add/del keeps the Claude Desktop entry in lockstep when Desktop is present", async () => {
+  tmpProxyHome();
+  // Opt this test into "Desktop installed": the seam dir exists.
+  const dataDir = join(dir, "claude-desktop");
+  mkdirSync(dataDir, { recursive: true });
+  process.env[CLAUDE_DESKTOP_DIR_ENV] = dataDir;
+  const library = desktopLibraryDirUnder(dataDir);
+
+  await runProfile({ add: "work", mode: "proxy", set: "ghp_worktoken" });
+  const meta = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
+    entries: { id: string; name: string }[];
+  };
+  const entry = meta.entries.find((e) => e.name === "copilot-env: work");
+  expect(entry).toBeDefined();
+  const doc = JSON.parse(readFileSync(join(library, `${entry?.id}.json`), "utf8")) as Record<
+    string,
+    unknown
+  >;
+  // Proxy wiring: loopback gateway + discovery on (the daemon serves /v1/models).
+  expect(doc.inferenceGatewayBaseUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+  expect(doc.modelDiscoveryEnabled).toBe(true);
+
+  await runProfile({ del: "work", mode: "auto" });
+  const after = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
+    entries: unknown[];
+  };
+  expect(after.entries).toEqual([]);
+  expect(existsSync(join(library, `${entry?.id}.json`))).toBe(false);
 });

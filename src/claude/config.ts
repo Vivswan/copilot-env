@@ -51,6 +51,8 @@ import { isEnoent, readTextOrNull } from "../utils/fs.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../utils/root.ts";
+import { removeClaudeDesktopEntry, syncClaudeDesktopWiring } from "./desktop.ts";
+import { cmdHelperBody, posixExecBody, shQuote, winQuote } from "./helper_body.ts";
 import { registerClaudeMcpServer, removeClaudeMcpRegistration } from "./mcp_registration.ts";
 import {
   directHelperPath,
@@ -78,28 +80,9 @@ export const DISABLE_BETAS_ENV = "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS";
 // native Anthropic and needs none, so proxy mode scrubs it).
 export const CUSTOM_HEADERS_ENV = "ANTHROPIC_CUSTOM_HEADERS";
 
-/** Single-quote a string for safe embedding in a /bin/sh command line. */
-function shQuote(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
-
-/** Quote an argument for a Windows `.cmd` line: bare for plain flags/words, else double-quoted
- *  (paths carry `:` and `\`). cmd.exe runs a quoted path fine; our args never contain a `"`. */
-function winQuote(s: string): string {
-  return /^[-A-Za-z0-9_.]+$/.test(s) ? s : `"${s}"`;
-}
-
-/** A Windows `.cmd` helper body: run `command args...` so its stdout is the credential. `@echo
- *  off` keeps the command itself off stdout; CRLF endings so cmd.exe parses it reliably. Literal
- *  `%` is doubled to `%%` -- in a batch file `%` triggers variable expansion even inside quotes,
- *  so a checkout path containing `%` would otherwise be mangled. (`!` needs no escaping: we never
- *  `setlocal enabledelayedexpansion`, so delayed expansion is off.) Only the RETIRED helper-file
- *  wiring wrote these bodies (see legacyDirectHelperScript); kept for that tolerance and its
- *  tests. Exported for tests. */
-export function cmdHelperBody(command: string, args: readonly string[]): string {
-  const line = [command, ...args].map(winQuote).join(" ").replace(/%/g, "%%");
-  return `@echo off\r\n${line}\r\n`;
-}
+/** Body builders live in helper_body.ts (shared with the Desktop wiring); cmdHelperBody
+ *  stays re-exported here for its existing test/import surface. */
+export { cmdHelperBody };
 
 /** Quote one token of a POSIX apiKeyHelper command string: bare when unambiguous
  *  (flags, subcommands, profile names), single-quoted otherwise (paths carry spaces). */
@@ -141,9 +124,7 @@ export function proxyHelperCommand(profile: Profile = null): string {
  */
 function legacyDirectHelperScript(profile: Profile = null): string {
   const { command, args } = agentLauncherCommand(agentAuthGetArgs(profile));
-  if (WIN) return cmdHelperBody(command, args);
-  const line = [command, ...args].map(shQuote).join(" ");
-  return `#!/bin/sh\nexec ${line}\n`;
+  return WIN ? cmdHelperBody(command, args) : posixExecBody(command, args);
 }
 
 /**
@@ -689,16 +670,31 @@ export function claudeAdapter(): AgentAdapter {
         ? await probeDirectIntegrationId(null, ghToken)
         : undefined;
       configureClaudeConfig(resolveClaudeHome(), mode, { directIntegrationId });
+      // Claude Desktop's chat surface reads its own config library, not settings.json;
+      // every default rewire refreshes it too (best-effort, identity resolved above).
+      await syncClaudeDesktopWiring({
+        profile: null,
+        mode,
+        directIntegrationId,
+        directToken: ghToken,
+      });
     },
-    configureProfile(name, mode, options) {
+    async configureProfile(name, mode, options) {
       configureClaudeConfig(resolveClaudeHome(), mode, {
         quiet: options.quiet,
         profile: name,
         directIntegrationId: options.directIntegrationId,
       });
+      await syncClaudeDesktopWiring({
+        profile: name,
+        mode,
+        directIntegrationId: options.directIntegrationId,
+        quiet: options.quiet,
+      });
     },
     removeProfile(name) {
       removeClaudeProfile(resolveClaudeHome(), name);
+      removeClaudeDesktopEntry(name);
     },
   };
 }

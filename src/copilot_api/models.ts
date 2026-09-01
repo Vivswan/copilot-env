@@ -123,21 +123,7 @@ function compareVersion(a: string, b: string): number {
  * Identity mappings (key === target) are skipped: pass-through is equivalent.
  */
 export function generateAliases(catalog: CatalogModel[]): Record<string, string> {
-  const parsed: ParsedModel[] = [];
-  for (const model of catalog) {
-    const match = MODEL_ID_PATTERN.exec(model.id);
-    if (!match) {
-      continue; // non-claude (gpt/gemini/...) -- clients address these directly
-    }
-    const [, family, rawVersion, qualifier] = match;
-    if (family === undefined || rawVersion === undefined) {
-      continue;
-    }
-    // Canonical version is dot-form ("4-8" -> "4.8") so sibling lookups and
-    // version compares stay separator-agnostic regardless of the catalog's form.
-    const version = rawVersion.replace("-", ".");
-    parsed.push({ id: model.id, family, version, qualifier: qualifier ?? null, is1m: model.is1m });
-  }
+  const parsed = parseClaudeModels(catalog);
 
   // family+version -> the 1m-capable sibling's id, if any.
   const oneMByKey = new Map<string, string>();
@@ -233,6 +219,50 @@ function newestGpt(catalog: CatalogModel[]): string | undefined {
     }
   }
   return best?.id;
+}
+
+/** Parse the Claude ids out of a catalog; non-Claude ids (gpt/gemini/...) are skipped --
+ *  clients address those directly. The ONE place MODEL_ID_PATTERN is applied. */
+function parseClaudeModels(catalog: CatalogModel[]): ParsedModel[] {
+  const parsed: ParsedModel[] = [];
+  for (const model of catalog) {
+    const match = MODEL_ID_PATTERN.exec(model.id);
+    if (!match) {
+      continue;
+    }
+    const [, family, rawVersion, qualifier] = match;
+    if (family === undefined || rawVersion === undefined) {
+      continue;
+    }
+    // Canonical version is dot-form ("4-8" -> "4.8") so sibling lookups and
+    // version compares stay separator-agnostic regardless of the catalog's form.
+    const version = rawVersion.replace("-", ".");
+    parsed.push({ id: model.id, family, version, qualifier: qualifier ?? null, is1m: model.is1m });
+  }
+  return parsed;
+}
+
+/** One Claude family's newest pick -- see claudeFamilyPicks. */
+export interface ClaudeFamilyPick {
+  family: string;
+  id: string;
+  is1m: boolean;
+}
+
+/** Newest model per Claude family in `catalog` (sorted by family name), each preferring
+ *  the 1m sibling of its newest version -- the same choice the `<family>` alias
+ *  shorthands make. For consumers needing per-family picks rather than an alias map
+ *  (the Claude Desktop model list). */
+export function claudeFamilyPicks(catalog: CatalogModel[]): ClaudeFamilyPick[] {
+  const parsed = parseClaudeModels(catalog);
+  const picks: ClaudeFamilyPick[] = [];
+  for (const family of [...new Set(parsed.map((p) => p.family))].sort()) {
+    const pick = newestPreferring1m(parsed, family);
+    if (pick) {
+      picks.push({ family, id: pick.id, is1m: pick.is1m });
+    }
+  }
+  return picks;
 }
 
 /** Newest model of `family` matching `predicate`, by version. */

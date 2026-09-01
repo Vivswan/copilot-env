@@ -120,11 +120,16 @@ export type CodexWriteRequest =
 // configureCodexConfig ENFORCES every managed field on each run, so a renamed or
 // added key (e.g. the env_key) propagates even into a pre-existing config.
 
-// The single source of truth for our managed direct Copilot provider table.
-// Re-applied on every direct-mode run (managed keys win; any user-added key in
-// the same table is preserved by the merge).
+/** Last-resort UA version when neither the installed codex CLI nor npm can name one
+ *  (fully offline). Copilot's Anthropic surface REJECTS some models (claude-fable-5,
+ *  verified live) for a version-LESS `codex_exec` UA while accepting any versioned
+ *  form -- the gate is the shape, not the value -- so the managed identity must never
+ *  go bare. A real release (npm-latest at pin time) keeps the advertised identity
+ *  plausible; the two live lookups above it keep it current when reachable. */
+export const FALLBACK_CODEX_UA_VERSION = "0.152.0";
+
 export function codexUserAgent(version: string | null = codexUserAgentVersion()): string {
-  return version ? `${CODEX_EXEC_USER_AGENT}/${version}` : CODEX_EXEC_USER_AGENT;
+  return `${CODEX_EXEC_USER_AGENT}/${version ?? FALLBACK_CODEX_UA_VERSION}`;
 }
 
 /**

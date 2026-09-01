@@ -8,6 +8,7 @@ import { existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { consola } from "consola";
 import { removeClaudeDefaultWiring } from "../claude/config.ts";
+import { removeAllClaudeDesktopWiring } from "../claude/desktop.ts";
 import { removeClaudeMcpRegistration } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { knownCodexHomes, removeCodexDefaultWiring, removeCodexProfile } from "../codex/config.ts";
@@ -45,6 +46,12 @@ export interface UninstallDeps {
   codexHomes?: string[];
   removeCodexHostFarm?: () => void;
   removeShellIntegration?: () => void;
+  /**
+   * Claude Desktop's configLibrary dir: injected because homedir()-anchored paths
+   * are not env-redirectable on Windows (the resolveClaudeHome precedent). Absent =
+   * resolve for this machine; null = treat Desktop as absent.
+   */
+  claudeDesktopLibraryDir?: string | null;
   /**
    * The install root to tear down, and with it the policy for whether deleting it
    * needs `--force`. Injected rather than read from the ambient PROJECT_ROOT so the
@@ -202,6 +209,21 @@ const UNINSTALL_STEPS: UninstallStep[] = [
         consola.warn(`could not remove the copilot-env MCP registration: ${errMessage(e)}`);
       }
       consola.info("Removed the copilot-env Claude wiring.");
+    },
+  },
+  {
+    // 4b. Claude Desktop's config library: the entries copilot-env created or
+    //     adopted (ownership-recorded), plus the generated credential-helper
+    //     scripts. Owned entries only -- a user's own configs stay untouched.
+    describe: () => [
+      "Would remove the copilot-env entries from Claude Desktop's config library.",
+    ],
+    run: (ctx) => {
+      try {
+        removeAllClaudeDesktopWiring(ctx.deps.claudeDesktopLibraryDir);
+      } catch (e) {
+        consola.warn(`could not remove the Claude Desktop entries: ${errMessage(e)}`);
+      }
     },
   },
   {

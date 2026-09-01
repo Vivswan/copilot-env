@@ -1,6 +1,8 @@
 import {
   type CatalogModel,
+  claudeCatalogRows,
   generateAliases,
+  mergeUnlistedModels,
   parseCatalogModels,
 } from "../src/copilot_api/models.ts";
 import { expect, test } from "./helpers/testing.ts";
@@ -421,4 +423,47 @@ test("parseCatalogModels skips malformed entries and bodies, never throws", () =
   expect(parseCatalogModels({ "data": [null, 5, { "id": 7 }, { "id": "gpt-6" }] })).toEqual([
     { id: "gpt-6", is1m: false },
   ]);
+});
+
+test("claudeCatalogRows: every Claude model, deduped, newest-first per family, defaults marked", () => {
+  // 1m siblings arrive from parseCatalogModels with the SAME id (the display-only
+  // [1m] suffix stripped) and is1m true; the duplicate folds into one row.
+  const rows = claudeCatalogRows([
+    { id: "claude-opus-4-7", is1m: false },
+    { id: "claude-opus-4-8", is1m: false },
+    { id: "claude-opus-4-8", is1m: true },
+    { id: "claude-fable-5", is1m: true },
+    { id: "claude-sonnet-4-6", is1m: false },
+    { id: "gpt-5.6-sol", is1m: false },
+  ]);
+  expect(rows).toEqual([
+    { family: "fable", id: "claude-fable-5", is1m: true, familyDefault: true },
+    { family: "opus", id: "claude-opus-4-8", is1m: true, familyDefault: true },
+    { family: "opus", id: "claude-opus-4-7", is1m: false, familyDefault: false },
+    { family: "sonnet", id: "claude-sonnet-4-6", is1m: false, familyDefault: true },
+  ]);
+  expect(claudeCatalogRows([{ id: "gpt-4o", is1m: false }])).toEqual([]);
+});
+
+test("mergeUnlistedModels appends verified extras as tagged Anthropic rows, id-sorted", () => {
+  const merged = mergeUnlistedModels(
+    [{
+      id: "claude-haiku-4.5",
+      name: "Claude Haiku 4.5",
+      vendor: "Anthropic",
+      type: "chat",
+      contextWindow: 200_000,
+      maxOutput: 64_000,
+      preview: false,
+    }],
+    {
+      models: [{ id: "claude-haiku-4.5", is1m: false }, { id: "claude-fable-5", is1m: true }],
+      unlisted: ["claude-fable-5"],
+    },
+  );
+  expect(merged.map((m) => m.id)).toEqual(["claude-fable-5", "claude-haiku-4.5"]);
+  const fable = merged.find((m) => m.id === "claude-fable-5");
+  expect(fable?.unlisted).toBe(true);
+  expect(fable?.contextWindow).toBe(1_000_000); // the probed 1m verdict
+  expect(merged.find((m) => m.id === "claude-haiku-4.5")?.unlisted).toBeUndefined();
 });

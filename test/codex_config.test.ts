@@ -7,6 +7,7 @@ import {
   configureCodexConfig,
   detectCodexDirect,
   DIRECT_ENV_KEY,
+  FALLBACK_CODEX_UA_VERSION,
   inspectCodexWiring,
   runCodex,
   syncCodexCatalogReference,
@@ -340,7 +341,10 @@ test("writes the managed direct default config when no provider section exists",
 
 test("formats Codex user-agent with dynamic version fallback", () => {
   expect(codexUserAgent("0.139.0")).toBe("codex_exec/0.139.0");
-  expect(codexUserAgent(null)).toBe("codex_exec");
+  // Never version-less: Copilot rejects some models for a bare codex_exec UA
+  // (the gate is the versioned SHAPE), so the null fallback pins a real release.
+  expect(codexUserAgent(null)).toBe(`codex_exec/${FALLBACK_CODEX_UA_VERSION}`);
+  expect(FALLBACK_CODEX_UA_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
 });
 
 test("runCodex --proxy writes the proxy provider at CODEX_HOME", async () => {

@@ -370,3 +370,34 @@ test.skipIf(process.platform === "win32")(
     expect(existsSync(farm)).toBe(true);
   },
 );
+
+test("uninstall removes owned Claude Desktop entries via the injected library dir", async () => {
+  const { codexHome } = tmpHomes();
+  const library = join(dir, "desktop-library");
+  mkdirSync(library, { recursive: true });
+  // One owned entry, one foreign sibling beside it.
+  writeFileSync(join(library, "ours.json"), '{"inferenceGatewayBaseUrl":"x"}\n');
+  writeFileSync(join(library, "theirs.json"), '{"userKey":1}\n');
+  writeFileSync(
+    join(library, "_meta.json"),
+    `${
+      JSON.stringify({
+        appliedId: "ours",
+        entries: [{ id: "ours", name: "copilot-env" }, { id: "theirs", name: "Mine" }],
+      })
+    }\n`,
+  );
+  new CopilotEnvState().addClaudeDesktopOwnedPath(join(library, "ours.json"));
+
+  const deps = { ...tmpDeps(codexHome), claudeDesktopLibraryDir: library };
+  await runUninstall({ yes: true }, deps);
+
+  expect(existsSync(join(library, "ours.json"))).toBe(false);
+  expect(existsSync(join(library, "theirs.json"))).toBe(true);
+  const meta = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
+    appliedId?: string;
+    entries: unknown[];
+  };
+  expect(meta.entries).toEqual([{ id: "theirs", name: "Mine" }]);
+  expect(meta.appliedId).toBeUndefined(); // ours was applied; the reference is dropped
+});

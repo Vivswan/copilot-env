@@ -8,12 +8,15 @@
 import { consola } from "consola";
 import type { RequestedMode } from "../agents/provider_mode.ts";
 import { fetchRawModels } from "../copilot_api/catalog.ts";
+import { Credential } from "../copilot_api/credential.ts";
+import { discoverServableClaudeModels } from "../copilot_api/discovery.ts";
+import { codexUserAgent, probeDirectIntegrationId } from "../codex/config.ts";
 import { proxyStatus } from "../copilot_api/daemon.ts";
 import { assertKnownProfile } from "../copilot_api/env_state.ts";
-import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
+import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { bold, cyan, gray } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
-import { isRecord } from "../utils/json.ts";
+import { mergeUnlistedModels, type ModelListEntry, parseModelList } from "../copilot_api/models.ts";
 
 export interface ModelsArgs {
   /** `--direct`/`--proxy`, parsed once at the CLI boundary (auto = neither). */
@@ -25,77 +28,6 @@ export interface ModelsArgs {
    * the default daemon or credential. An unknown name is a hard error.
    */
   profile?: string;
-}
-
-/** One catalog entry: the addressable id plus the display fields the table shows. */
-export interface ModelListEntry {
-  id: string;
-  name: string | null;
-  vendor: string | null;
-  /** Upstream `capabilities.type` ("chat", "embeddings", ...). */
-  type: string | null;
-  /** Upstream `capabilities.limits.max_context_window_tokens`. */
-  contextWindow: number | null;
-  /** Upstream `capabilities.limits.max_output_tokens`. */
-  maxOutput: number | null;
-  preview: boolean;
-}
-
-function nonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function positiveNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
-}
-
-function toEntry(raw: Record<string, unknown>, id: string): ModelListEntry {
-  const capabilities = isRecord(raw.capabilities) ? raw.capabilities : {};
-  const limits = isRecord(capabilities.limits) ? capabilities.limits : {};
-  return {
-    id,
-    name: nonEmptyString(raw.name),
-    vendor: nonEmptyString(raw.vendor),
-    type: nonEmptyString(capabilities.type),
-    contextWindow: positiveNumber(limits.max_context_window_tokens),
-    maxOutput: positiveNumber(limits.max_output_tokens),
-    preview: raw.preview === true,
-  };
-}
-
-/**
- * Parse a raw `/models` body into id-sorted, id-deduped entries (pure).
- * Ids are kept VERBATIM -- including a display-only `[1m]` suffix -- because
- * the listing answers "what can a client address", not "what is distinct".
- * An envelope without a `data` array is an ERROR, not an empty catalog, so
- * upstream schema drift cannot silently print "no models"; `{data: []}`
- * stays a valid (empty) catalog. Duplicate ids merge field-wise, first
- * non-null value wins, so a bare duplicate cannot mask a named one.
- */
-export function parseModelList(body: unknown): ModelListEntry[] {
-  if (!isRecord(body) || !Array.isArray(body.data)) {
-    throw new Error("unexpected /models response shape (no data array)");
-  }
-  const byId = new Map<string, ModelListEntry>();
-  for (const raw of body.data) {
-    if (!isRecord(raw) || typeof raw.id !== "string" || raw.id === "") {
-      continue;
-    }
-    const entry = toEntry(raw, raw.id);
-    const existing = byId.get(entry.id);
-    if (existing === undefined) {
-      byId.set(entry.id, entry);
-      continue;
-    }
-    existing.name ??= entry.name;
-    existing.vendor ??= entry.vendor;
-    existing.type ??= entry.type;
-    existing.contextWindow ??= entry.contextWindow;
-    existing.maxOutput ??= entry.maxOutput;
-    // preview has no "missing" state (absent parses as false), so any-true wins.
-    existing.preview ||= entry.preview;
-  }
-  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
 /** Humanize a token limit for the table: 200000 -> "200k", 1048576 -> "1M". */
@@ -120,6 +52,7 @@ function entryDetail(entry: ModelListEntry): string {
     entry.maxOutput !== null ? `${formatTokens(entry.maxOutput)} out` : null,
     entry.type !== null && entry.type !== "chat" ? entry.type : null,
     entry.preview ? "preview" : null,
+    entry.unlisted === true ? "unlisted" : null,
   ];
   return parts.filter((p) => p !== null).join(", ");
 }
@@ -211,12 +144,38 @@ export async function runModels(args: ModelsArgs): Promise<void> {
   const label = sourceLabel(resolved, profile);
   let models: ModelListEntry[];
   try {
-    models = parseModelList(
-      await fetchRawModels(source, {
-        profile,
-        ...(resolved.source === "proxy" ? { port: resolved.port } : {}),
-      }),
-    );
+    if (source === "direct") {
+      // The SAME unified pipeline the Claude Desktop wiring runs (catalog +
+      // allowlist oracle + cached verification), so both surfaces list identical
+      // models and every discovery fix propagates to both.
+      const token = new Credential(undefined, profile).resolve();
+      if (token === null) {
+        // Same wording as fetchRawModels' direct branch: a named profile never
+        // falls back to the default credential.
+        throw new Error(
+          profile === null
+            ? "no GitHub credential configured (run `agent auth`)"
+            : `no GitHub credential for ${
+              profileLabel(profile)
+            } - run \`agent auth --profile ${profile}\` ` +
+              "to log in (a named profile never falls back to the default credential)",
+        );
+      }
+      const discovered = await discoverServableClaudeModels(
+        token,
+        codexUserAgent(),
+        await probeDirectIntegrationId(profile, token),
+        {},
+      );
+      models = mergeUnlistedModels(parseModelList(discovered.catalogBody), discovered);
+    } else {
+      models = parseModelList(
+        await fetchRawModels(source, {
+          profile,
+          ...(resolved.source === "proxy" ? { port: resolved.port } : {}),
+        }),
+      );
+    }
   } catch (e) {
     const profileFlag = profile === null ? "" : ` --profile ${profile}`;
     const hint = source === "proxy"

@@ -106,7 +106,8 @@ function storedPrefs(): CopilotEnvConfigData {
  * Build the export bundle from the current stores. Tokens are replaced by
  * REDACTED_TOKEN unless `withCredentials` -- redaction is the default so a
  * casually shared bundle never leaks a credential. The machine-local state
- * fields (`codexCatalog*`, `webSearchDenyOwnedPaths`) are never included.
+ * fields (`codexCatalog*`, `webSearchDenyOwnedPaths`, `claudeDesktopOwnedPaths`)
+ * are never included.
  */
 export function buildExportBundle(options: { withCredentials?: boolean } = {}): SettingsBundle {
   const withCredentials = options.withCredentials ?? false;

@@ -50,7 +50,14 @@ import { errMessage } from "../utils/error.ts";
 import { isEnoent, readTextOrNull } from "../utils/fs.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../utils/root.ts";
+import {
+  agentAuthGetArgs,
+  agentLauncherCommand,
+  proxyTokenArgs,
+  proxyTokenCommand,
+} from "../utils/root.ts";
+import { removeClaudeDesktopEntry, syncClaudeDesktopWiring } from "./desktop.ts";
+import { cmdHelperBody, posixExecBody, shQuote, winQuote } from "./helper_body.ts";
 import { registerClaudeMcpServer, removeClaudeMcpRegistration } from "./mcp_registration.ts";
 import {
   directHelperPath,
@@ -78,33 +85,46 @@ export const DISABLE_BETAS_ENV = "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS";
 // native Anthropic and needs none, so proxy mode scrubs it).
 export const CUSTOM_HEADERS_ENV = "ANTHROPIC_CUSTOM_HEADERS";
 
-/** Single-quote a string for safe embedding in a /bin/sh command line. */
-function shQuote(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
-
-/** Quote an argument for a Windows `.cmd` line: bare for plain flags/words, else double-quoted
- *  (paths carry `:` and `\`). cmd.exe runs a quoted path fine; our args never contain a `"`. */
-function winQuote(s: string): string {
-  return /^[-A-Za-z0-9_.]+$/.test(s) ? s : `"${s}"`;
-}
-
-/** A Windows `.cmd` helper body: run `command args...` so its stdout is the credential. `@echo
- *  off` keeps the command itself off stdout; CRLF endings so cmd.exe parses it reliably. Literal
- *  `%` is doubled to `%%` -- in a batch file `%` triggers variable expansion even inside quotes,
- *  so a checkout path containing `%` would otherwise be mangled. (`!` needs no escaping: we never
- *  `setlocal enabledelayedexpansion`, so delayed expansion is off.) Only the RETIRED helper-file
- *  wiring wrote these bodies (see legacyDirectHelperScript); kept for that tolerance and its
- *  tests. Exported for tests. */
-export function cmdHelperBody(command: string, args: readonly string[]): string {
-  const line = [command, ...args].map(winQuote).join(" ").replace(/%/g, "%%");
-  return `@echo off\r\n${line}\r\n`;
-}
+/** Body builders live in helper_body.ts (shared with the Desktop wiring); cmdHelperBody
+ *  stays re-exported here for its existing test/import surface. */
+export { cmdHelperBody };
 
 /** Quote one token of a POSIX apiKeyHelper command string: bare when unambiguous
  *  (flags, subcommands, profile names), single-quoted otherwise (paths carry spaces). */
 function shToken(s: string): string {
   return /^[A-Za-z0-9_.:/=-]+$/.test(s) ? s : shQuote(s);
+}
+
+// The managed inline command's SHAPE, root-agnostic: any copilot-env root's launcher
+// (`<root>/bin/agent` on POSIX, the PowerShell -File invocation of `<root>\bin\agent.ps1`
+// on Windows) followed by exactly one resolver's args. Mode INSPECTION must recognize a
+// sibling install's wiring (a dev checkout vs ~/.copilot-env) as managed: the command
+// resolves the same shared store from any root, and byte-exact-only matching made the
+// verdict depend on WHICH copilot-env binary was asking. Writes still spell the current
+// root. Each arm accepts ONLY spellings the writers can produce: the bare POSIX path is
+// limited to shToken's bare charset (no shell metacharacters -- `evil;/bin/agent` must
+// never classify as managed), and the Windows -File path is always winQuote-quoted (a
+// real agent.ps1 path carries `\` and `:`), so there is no bare Windows arm at all.
+const POSIX_LAUNCHER_SHAPE = String
+  .raw`(?:'(?:[^']|'\\'')*/bin/agent'|[A-Za-z0-9_.:/=-]*/bin/agent)`;
+const WIN_LAUNCHER_SHAPE = String
+  .raw`powershell -NoProfile -ExecutionPolicy Bypass -File "[^"]*\\bin\\agent\.ps1"`;
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Whether `helperValue` is the managed inline command for `subArgs` under ANY
+ *  copilot-env root. `win` is a parameter (not the ambient platform) so both shapes
+ *  are testable on every CI runner. */
+export function managedHelperShape(
+  helperValue: string,
+  subArgs: readonly string[],
+  win: boolean = WIN,
+): boolean {
+  const argsLine = escapeRegExp(subArgs.map(win ? winQuote : shToken).join(" "));
+  const launcher = win ? WIN_LAUNCHER_SHAPE : POSIX_LAUNCHER_SHAPE;
+  return new RegExp(`^${launcher} ${argsLine}$`).test(helperValue);
 }
 
 /** The inline apiKeyHelper command string for `{command, args}`: sh-style on POSIX,
@@ -141,9 +161,7 @@ export function proxyHelperCommand(profile: Profile = null): string {
  */
 function legacyDirectHelperScript(profile: Profile = null): string {
   const { command, args } = agentLauncherCommand(agentAuthGetArgs(profile));
-  if (WIN) return cmdHelperBody(command, args);
-  const line = [command, ...args].map(shQuote).join(" ");
-  return `#!/bin/sh\nexec ${line}\n`;
+  return WIN ? cmdHelperBody(command, args) : posixExecBody(command, args);
 }
 
 /**
@@ -161,7 +179,7 @@ export function directHelperResolvesViaAgent(
   profile: Profile = null,
 ): boolean {
   if (helperValue === null) return false;
-  if (helperValue === directHelperCommand(profile)) return true;
+  if (managedHelperShape(helperValue, agentAuthGetArgs(profile))) return true;
   return readFile(helperValue) === legacyDirectHelperScript(profile);
 }
 
@@ -238,17 +256,21 @@ export function inspectClaudeWiring(
   status.baseUrl = baseUrl;
   status.baseUrlMatches = baseUrl !== null && claudeBaseUrlMatchesProxy(baseUrl, expectedPort);
 
-  // The inline command is the managed contract; the path arms are the legacy
-  // helper-file tolerance (see legacyDirectHelperScript for the dating and the
-  // removal condition).
+  // The inline command is the managed contract, recognized by SHAPE (any root's
+  // spelling); the path arms are the legacy helper-file tolerance (see
+  // legacyDirectHelperScript for the dating and the removal condition).
   if (
-    helperPath === directHelperCommand(profile) ||
-    helperPath === directHelperPath(claudeHome, profile)
+    helperPath !== null && (
+      managedHelperShape(helperPath, agentAuthGetArgs(profile)) ||
+      helperPath === directHelperPath(claudeHome, profile)
+    )
   ) {
     status.providerMode = "direct";
   } else if (
-    helperPath === proxyHelperCommand(profile) ||
-    helperPath === proxyHelperPath(claudeHome, profile)
+    helperPath !== null && (
+      managedHelperShape(helperPath, proxyTokenArgs(profile)) ||
+      helperPath === proxyHelperPath(claudeHome, profile)
+    )
   ) {
     status.providerMode = "proxy";
   } else if (helperPath !== null || baseUrl !== null) {
@@ -689,16 +711,31 @@ export function claudeAdapter(): AgentAdapter {
         ? await probeDirectIntegrationId(null, ghToken)
         : undefined;
       configureClaudeConfig(resolveClaudeHome(), mode, { directIntegrationId });
+      // Claude Desktop's chat surface reads its own config library, not settings.json;
+      // every default rewire refreshes it too (best-effort, identity resolved above).
+      await syncClaudeDesktopWiring({
+        profile: null,
+        mode,
+        directIntegrationId,
+        directToken: ghToken,
+      });
     },
-    configureProfile(name, mode, options) {
+    async configureProfile(name, mode, options) {
       configureClaudeConfig(resolveClaudeHome(), mode, {
         quiet: options.quiet,
         profile: name,
         directIntegrationId: options.directIntegrationId,
       });
+      await syncClaudeDesktopWiring({
+        profile: name,
+        mode,
+        directIntegrationId: options.directIntegrationId,
+        quiet: options.quiet,
+      });
     },
     removeProfile(name) {
       removeClaudeProfile(resolveClaudeHome(), name);
+      removeClaudeDesktopEntry(name);
     },
   };
 }

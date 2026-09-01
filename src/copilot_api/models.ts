@@ -123,21 +123,7 @@ function compareVersion(a: string, b: string): number {
  * Identity mappings (key === target) are skipped: pass-through is equivalent.
  */
 export function generateAliases(catalog: CatalogModel[]): Record<string, string> {
-  const parsed: ParsedModel[] = [];
-  for (const model of catalog) {
-    const match = MODEL_ID_PATTERN.exec(model.id);
-    if (!match) {
-      continue; // non-claude (gpt/gemini/...) -- clients address these directly
-    }
-    const [, family, rawVersion, qualifier] = match;
-    if (family === undefined || rawVersion === undefined) {
-      continue;
-    }
-    // Canonical version is dot-form ("4-8" -> "4.8") so sibling lookups and
-    // version compares stay separator-agnostic regardless of the catalog's form.
-    const version = rawVersion.replace("-", ".");
-    parsed.push({ id: model.id, family, version, qualifier: qualifier ?? null, is1m: model.is1m });
-  }
+  const parsed = parseClaudeModels(catalog);
 
   // family+version -> the 1m-capable sibling's id, if any.
   const oneMByKey = new Map<string, string>();
@@ -235,6 +221,62 @@ function newestGpt(catalog: CatalogModel[]): string | undefined {
   return best?.id;
 }
 
+/** Parse the Claude ids out of a catalog; non-Claude ids (gpt/gemini/...) are skipped --
+ *  clients address those directly. The ONE place MODEL_ID_PATTERN is applied. */
+function parseClaudeModels(catalog: CatalogModel[]): ParsedModel[] {
+  const parsed: ParsedModel[] = [];
+  for (const model of catalog) {
+    const match = MODEL_ID_PATTERN.exec(model.id);
+    if (!match) {
+      continue;
+    }
+    const [, family, rawVersion, qualifier] = match;
+    if (family === undefined || rawVersion === undefined) {
+      continue;
+    }
+    // Canonical version is dot-form ("4-8" -> "4.8") so sibling lookups and
+    // version compares stay separator-agnostic regardless of the catalog's form.
+    const version = rawVersion.replace("-", ".");
+    parsed.push({ id: model.id, family, version, qualifier: qualifier ?? null, is1m: model.is1m });
+  }
+  return parsed;
+}
+
+/** One Claude catalog model -- see claudeCatalogRows. */
+export interface ClaudeCatalogRow {
+  family: string;
+  id: string;
+  is1m: boolean;
+  /** This is the family's newest model (the pick the `<family>` alias makes). */
+  familyDefault: boolean;
+}
+
+/** EVERY Claude model in `catalog`, deduped by id (a 1m sibling entry folds into
+ *  `is1m`), family-ascending then newest-first, with each family's newest marked as
+ *  its default -- the same choice the `<family>` alias shorthands make. For consumers
+ *  needing the whole picker list rather than an alias map (the Claude Desktop
+ *  model list). */
+export function claudeCatalogRows(catalog: CatalogModel[]): ClaudeCatalogRow[] {
+  const byId = new Map<string, ParsedModel>();
+  for (const p of parseClaudeModels(catalog)) {
+    const prev = byId.get(p.id);
+    if (prev === undefined) byId.set(p.id, { ...p });
+    else prev.is1m = prev.is1m || p.is1m;
+  }
+  const unique = [...byId.values()];
+  const rows: ClaudeCatalogRow[] = [];
+  for (const family of [...new Set(unique.map((p) => p.family))].sort()) {
+    const pick = newestPreferring1m(unique, family);
+    const members = unique
+      .filter((p) => p.family === family)
+      .sort((a, b) => compareVersion(b.version, a.version));
+    for (const m of members) {
+      rows.push({ family, id: m.id, is1m: m.is1m, familyDefault: m.id === pick?.id });
+    }
+  }
+  return rows;
+}
+
 /** Newest model of `family` matching `predicate`, by version. */
 function newest(
   parsed: ParsedModel[],
@@ -261,4 +303,105 @@ function newestPreferring1m(parsed: ParsedModel[], family: string): ParsedModel 
     return undefined;
   }
   return newest(parsed, family, (p) => p.is1m && p.version === pick.version) ?? pick;
+}
+
+/** One catalog entry: the addressable id plus the display fields `agent models` shows. */
+export interface ModelListEntry {
+  id: string;
+  name: string | null;
+  vendor: string | null;
+  /** Upstream `capabilities.type` ("chat", "embeddings", ...). */
+  type: string | null;
+  /** Upstream `capabilities.limits.max_context_window_tokens`. */
+  contextWindow: number | null;
+  /** Upstream `capabilities.limits.max_output_tokens`. */
+  maxOutput: number | null;
+  preview: boolean;
+  /** True for models the catalog does not advertise but discovery VERIFIED servable
+   *  (src/copilot_api/discovery.ts). parseModelList never sets it. */
+  unlisted?: boolean;
+}
+
+/** Fold discovery's verified-but-unadvertised models into a parsed model list --
+ *  the shared render/consume shape, so every consumer of the unified pipeline
+ *  (agent models, the Desktop wiring) sees the same rows. */
+export function mergeUnlistedModels(
+  entries: ModelListEntry[],
+  discovered: { models: CatalogModel[]; unlisted: string[] },
+): ModelListEntry[] {
+  const extras: ModelListEntry[] = [];
+  for (const id of discovered.unlisted) {
+    const model = discovered.models.find((m) => m.id === id);
+    if (model === undefined) continue;
+    extras.push({
+      id,
+      name: null,
+      vendor: "Anthropic",
+      type: "chat",
+      // The 1m probe proved the window class; a non-1m extra's exact cap is unknown.
+      contextWindow: model.is1m ? 1_000_000 : null,
+      maxOutput: null,
+      preview: false,
+      unlisted: true,
+    });
+  }
+  return [...entries, ...extras].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function positiveNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function toEntry(raw: Record<string, unknown>, id: string): ModelListEntry {
+  const capabilities = isRecord(raw.capabilities) ? raw.capabilities : {};
+  const limits = isRecord(capabilities.limits) ? capabilities.limits : {};
+  return {
+    id,
+    name: nonEmptyString(raw.name),
+    vendor: nonEmptyString(raw.vendor),
+    type: nonEmptyString(capabilities.type),
+    contextWindow: positiveNumber(limits.max_context_window_tokens),
+    maxOutput: positiveNumber(limits.max_output_tokens),
+    preview: raw.preview === true,
+  };
+}
+
+/**
+ * Parse a raw `/models` body into id-sorted, id-deduped entries (pure) -- the ONE
+ * pipeline behind `agent models` and the Claude Desktop model list.
+ * Ids are kept VERBATIM -- including a display-only `[1m]` suffix -- because
+ * the listing answers "what can a client address", not "what is distinct".
+ * An envelope without a `data` array is an ERROR, not an empty catalog, so
+ * upstream schema drift cannot silently print "no models"; `{data: []}`
+ * stays a valid (empty) catalog. Duplicate ids merge field-wise, first
+ * non-null value wins, so a bare duplicate cannot mask a named one.
+ */
+export function parseModelList(body: unknown): ModelListEntry[] {
+  if (!isRecord(body) || !Array.isArray(body.data)) {
+    throw new Error("unexpected /models response shape (no data array)");
+  }
+  const byId = new Map<string, ModelListEntry>();
+  for (const raw of body.data) {
+    if (!isRecord(raw) || typeof raw.id !== "string" || raw.id === "") {
+      continue;
+    }
+    const entry = toEntry(raw, raw.id);
+    const existing = byId.get(entry.id);
+    if (existing === undefined) {
+      byId.set(entry.id, entry);
+      continue;
+    }
+    existing.name ??= entry.name;
+    existing.vendor ??= entry.vendor;
+    existing.type ??= entry.type;
+    existing.contextWindow ??= entry.contextWindow;
+    existing.maxOutput ??= entry.maxOutput;
+    // preview has no "missing" state (absent parses as false), so any-true wins.
+    existing.preview ||= entry.preview;
+  }
+  return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
 }

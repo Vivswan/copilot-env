@@ -1,14 +1,8 @@
 # This file is managed by Vivswan/repo-platform.
 # Local edits may be replaced during template updates.
 #
-# `deno audit` checks every locked dependency (JSR and npm, transitive
-# entries included) against the GitHub Advisory Database (served through
-# the npm registry's bulk advisory endpoint) and fails the run on
-# findings. Dependabot's deno ecosystem does version updates only (no
-# security updates), so this run is the advisory coverage: a fresh
-# advisory (weekly re-scan) or a change that locks a vulnerable version
-# (lockfile-touching PRs and pushes to main) becomes an immediate red
-# signal.
+# Dependabot's deno ecosystem does version updates only, so this run is
+# the advisory coverage (GitHub Advisory Database via `deno audit`).
 
 name: Deno Audit
 
@@ -41,20 +35,15 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version-file: .dvmrc
-      # Every tracked lockfile, not just the root one: the triggers above
-      # fire on **/deno.lock, and a workspace can commit several.
-      # '*/deno.lock' is a git pathspec, where '*' crosses '/', so it
-      # matches at any depth. Without the no-lockfile guard, the weekly run
-      # on a lockfile-less repo would go green having audited nothing.
-      # --frozen fails loudly when a lockfile disagrees with its manifest
-      # instead of auditing it as-is.
+      # Every tracked lockfile ('*/deno.lock' is a git pathspec; '*'
+      # crosses '/'). The no-lockfile guard keeps the weekly run from
+      # going green having audited nothing; --frozen fails loudly when a
+      # lockfile disagrees with its manifest.
       - name: Audit dependencies (deno)
         shell: bash
         run: |
-          # Listing into a file, not a process substitution feeding the
-          # loop: a git failure must abort the step under -e, not read as
-          # "no lockfiles" and go green having audited nothing. -z keeps
-          # unusual parent-directory names lossless.
+          # Listing into a file: a git failure must abort the step under
+          # -e, not read as "no lockfiles" and go green.
           git ls-files -z -- 'deno.lock' '*/deno.lock' > "$RUNNER_TEMP/deno-locks"
           if [ ! -s "$RUNNER_TEMP/deno-locks" ]; then
             echo "::notice::no deno.lock tracked - nothing to audit; commit a lockfile to enable advisory coverage"

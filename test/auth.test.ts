@@ -95,6 +95,8 @@ test("auth --del clears the stored token and provider", async () => {
     profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogPatchVersion: 0,
+    claudeDesktopOwnedPaths: [],
+    claudeModelVerdicts: {},
     codexCatalogCodexVersion: null,
     webSearchDenyOwnedPaths: [],
   });
@@ -151,6 +153,8 @@ test("auth --provider gh-token stores the env token + provider, and does NOT con
     profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogPatchVersion: 0,
+    claudeDesktopOwnedPaths: [],
+    claudeModelVerdicts: {},
     codexCatalogCodexVersion: null,
     webSearchDenyOwnedPaths: [],
   });
@@ -169,6 +173,8 @@ test("auth --set <token> stores it verbatim (no env, no UI) and records gh-token
     profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogPatchVersion: 0,
+    claudeDesktopOwnedPaths: [],
+    claudeModelVerdicts: {},
     codexCatalogCodexVersion: null,
     webSearchDenyOwnedPaths: [],
   });

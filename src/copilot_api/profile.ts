@@ -28,7 +28,9 @@ const RESERVED_PROFILE_NAMES = ["default", "direct", "proxy", "all"] as const;
 // Windows reserved device names cannot become `profiles/<name>` directories there
 // (CreateFile treats them specially even with an extension), and cross-platform is
 // non-negotiable -- so they are invalid everywhere, not just on win32.
-const WINDOWS_DEVICE_NAME_RE = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/;
+/** Windows reserved device names (exact, lowercase). Exported for every consumer that
+ *  turns external strings into filenames (profile dirs here, Desktop entry ids). */
+export const WINDOWS_DEVICE_NAME_RE = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/;
 
 /** True when `name` is a syntactically valid, non-reserved profile name. */
 export function isValidProfileName(name: string): boolean {

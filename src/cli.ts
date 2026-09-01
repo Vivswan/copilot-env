@@ -14,11 +14,12 @@
 // '--x'`, exit 1) instead of silently accepted, and so help wraps to the
 // terminal width natively (no hand-rolled renderer needed).
 import "./utils/dotenv.ts";
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import { consola } from "consola";
 import { parseModeFlags } from "./agents/provider_mode.ts";
 import { DEFAULT_AUTOUPDATE_COOLDOWN_DAYS } from "./autoupdate/state.ts";
 import { runClaude } from "./claude/config.ts";
+import { refreshClaudeDesktopWiring } from "./agents/profile_wiring.ts";
 import { runCodex } from "./codex/config.ts";
 import { runCodexHost } from "./codex/host.ts";
 import { runCodexMobile } from "./codex/mobile.ts";
@@ -568,12 +569,24 @@ program
     "--check",
     "Report the configured provider and exit - no changes, no probe (0 direct, 1 other, 2 proxy/none).",
   )
-  .action((opts: Opts) =>
-    runClaude({
+  .option(
+    "--desktop",
+    "Refresh only the Claude Desktop config-library wiring (default + profiles); no settings.json changes.",
+  )
+  .action((opts: Opts) => {
+    if (opts.desktop) {
+      if (opts.check || opts.direct || opts.proxy) {
+        throw new InvalidArgumentError(
+          "--desktop cannot be combined with --check/--direct/--proxy.",
+        );
+      }
+      return refreshClaudeDesktopWiring();
+    }
+    return runClaude({
       check: Boolean(opts.check),
       mode: parseModeFlags(opts),
-    })
-  );
+    });
+  });
 
 program
   .command("mcp")

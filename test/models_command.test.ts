@@ -1,12 +1,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  formatTokens,
-  type ModelListEntry,
-  parseModelList,
-  renderModelTable,
-} from "../src/commands/models.ts";
+import { formatTokens, renderModelTable } from "../src/commands/models.ts";
+import { type ModelListEntry, parseModelList } from "../src/copilot_api/models.ts";
 import { runCli } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
 

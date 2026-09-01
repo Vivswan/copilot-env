@@ -4,13 +4,19 @@
 // and the settings-bundle import (src/agents/transfer.ts) -- it needs BOTH
 // src/codex/ and src/claude/, so it lives in src/agents/ like wiring.ts.
 import { claudeAdapter } from "../claude/config.ts";
+import { claudeDesktopInstalled, syncClaudeDesktopWiring } from "../claude/desktop.ts";
 import { codexAdapter, probeDirectIntegrationId } from "../codex/config.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
+import { Credential } from "../copilot_api/credential.ts";
 import { CODEX_IDENTITY_NAME } from "../copilot_api/integration_identity.ts";
 import { profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
+import { createStderrLogger } from "../utils/logger.ts";
 import type { AgentAdapter } from "./configure.ts";
+import { readAgentModesSafe } from "./wiring.ts";
+
+const logger = createStderrLogger();
 
 /** BOTH agents' adapters, in the wiring order profile operations use (Claude first --
  *  per-agent narration and failure aggregation keep their long-standing order). Built
@@ -39,7 +45,7 @@ export async function wireBothAgents(
   const failures: string[] = [];
   for (const agent of bothAgents()) {
     try {
-      agent.configureProfile(name, mode, { quiet, directIntegrationId });
+      await agent.configureProfile(name, mode, { quiet, directIntegrationId });
     } catch (e) {
       failures.push(`${agent.label}: ${errMessage(e)}`);
     }
@@ -72,4 +78,54 @@ export async function resolveAndPersistDirectIdentity(
   const probed = await probeDirectIntegrationId(name, credentialToken);
   new CopilotEnvState().setProfileIntegrationIdentity(name, probed ?? CODEX_IDENTITY_NAME);
   return probed;
+}
+
+/**
+ * `agent claude --desktop`: refresh ONLY the Claude Desktop config-library entries --
+ * the default entry mirroring settings.json's CURRENT managed mode (never rewired
+ * here; `none`/`other` skips with a hint), then every stored profile slot via the
+ * persisted-identity replay (network-free in the common case). Per-entry resilient,
+ * like `agent profile --sync`.
+ */
+export async function refreshClaudeDesktopWiring(): Promise<void> {
+  if (!claudeDesktopInstalled()) {
+    logger.info("Claude Desktop was not detected on this machine; nothing to wire.");
+    return;
+  }
+  const claudeMode = readAgentModesSafe().claude;
+  if (claudeMode === "direct" || claudeMode === "proxy") {
+    // Per-entry resilient: a rejected default credential/probe must not abort the
+    // profile refreshes below.
+    try {
+      const ghToken = claudeMode === "direct" ? new Credential().resolve() : undefined;
+      const directIntegrationId = claudeMode === "direct"
+        ? await probeDirectIntegrationId(null, ghToken)
+        : undefined;
+      await syncClaudeDesktopWiring({
+        profile: null,
+        mode: claudeMode,
+        directIntegrationId,
+        directToken: ghToken,
+      });
+    } catch (e) {
+      logger.warn(`  Could not refresh the default entry: ${errMessage(e)}`);
+    }
+  } else {
+    logger.info(
+      `  Claude's default wiring is ${claudeMode}; run \`agent claude\` first to manage it. Skipping the default entry.`,
+    );
+  }
+  const state = new CopilotEnvState();
+  for (const name of state.profileNames()) {
+    const mode = state.readProfileSlot(name).mode;
+    if (mode === null) continue;
+    try {
+      const directIntegrationId = mode === "direct"
+        ? await resolveAndPersistDirectIdentity(name)
+        : undefined;
+      await syncClaudeDesktopWiring({ profile: name, mode, directIntegrationId });
+    } catch (e) {
+      logger.warn(`  Could not refresh ${profileLabel(name)}: ${errMessage(e)}`);
+    }
+  }
 }

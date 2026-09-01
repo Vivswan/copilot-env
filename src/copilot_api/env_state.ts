@@ -96,6 +96,29 @@ export interface CopilotEnvStateData {
    * `agent mcp --remove` only ever takes back the entry we put in THAT file.
    */
   webSearchDenyOwnedPaths: string[];
+  /**
+   * The Claude Desktop config-library entry PATHS (absolute `<dir>/<uuid>.json`)
+   * copilot-env itself created or adopted (src/claude/desktop.ts). Same exact-path
+   * ownership doctrine as webSearchDenyOwnedPaths: an entry the user made - or one
+   * in a differently-located library - is never ours to rewrite or remove.
+   */
+  claudeDesktopOwnedPaths: string[];
+  /**
+   * Cached model-discovery verdicts, keyed
+   * `<credentialDigest>|<integrationId|default>|<modelId>`
+   * (src/copilot_api/discovery.ts): whether an unadvertised model verified as
+   * servable and 1M-capable. The verification pings are billed requests, so the
+   * shared cache (daily TTL) is what lets every consumer run the SAME pipeline
+   * without re-paying probes per invocation. Machine-local, never exported.
+   */
+  claudeModelVerdicts: Record<string, ModelVerdict>;
+}
+
+/** One cached discovery verdict (see claudeModelVerdicts). */
+export interface ModelVerdict {
+  servable: boolean;
+  is1m: boolean;
+  atMs: number;
 }
 
 // Mirror CopilotEnvRunState/AutoupdateState's patch spelling (`Data[K] | null`).
@@ -138,6 +161,18 @@ const STATE_SCHEMA = v.object({
   // ownedPathList owns the shape; the fallback only covers an ABSENT key (the
   // pipe itself never issues -- junk entries are dropped inside the transform).
   webSearchDenyOwnedPaths: v.fallback(v.pipe(v.unknown(), v.transform(ownedPathList)), []),
+  claudeDesktopOwnedPaths: v.fallback(v.pipe(v.unknown(), v.transform(ownedPathList)), []),
+  claudeModelVerdicts: v.fallback(
+    v.record(
+      v.string(),
+      v.object({
+        servable: v.boolean(),
+        is1m: v.boolean(),
+        atMs: v.pipe(v.number(), v.finite(), v.minValue(0)),
+      }),
+    ),
+    {},
+  ),
 });
 
 function emptyProfile(): ProfileSlotData {
@@ -321,6 +356,42 @@ export class CopilotEnvState {
       const list = ownedPathList(d.webSearchDenyOwnedPaths).filter((p) => p !== settingsPath);
       if (list.length === 0) delete d.webSearchDenyOwnedPaths;
       else d.webSearchDenyOwnedPaths = list;
+    });
+  }
+
+  /** Whether WE created or adopted this exact Claude Desktop config-library entry. */
+  ownsClaudeDesktopEntry(configPath: string): boolean {
+    return this.read().claudeDesktopOwnedPaths.includes(configPath);
+  }
+
+  /** Record ownership of the Desktop entry at `configPath` (atomic, idempotent). */
+  addClaudeDesktopOwnedPath(configPath: string): void {
+    this.store.update((d) => {
+      const list = ownedPathList(d.claudeDesktopOwnedPaths).filter((p) => p !== configPath);
+      list.push(configPath);
+      d.claudeDesktopOwnedPaths = list;
+    });
+  }
+
+  /** Forget ownership for `configPath`; an emptied list drops the key entirely. */
+  removeClaudeDesktopOwnedPath(configPath: string): void {
+    this.store.update((d) => {
+      const list = ownedPathList(d.claudeDesktopOwnedPaths).filter((p) => p !== configPath);
+      if (list.length === 0) delete d.claudeDesktopOwnedPaths;
+      else d.claudeDesktopOwnedPaths = list;
+    });
+  }
+
+  /** The cached discovery verdict for `key`, or null when never probed. */
+  readModelVerdict(key: string): ModelVerdict | null {
+    return this.read().claudeModelVerdicts[key] ?? null;
+  }
+
+  /** Record a discovery verdict (atomic; replaces any prior verdict for `key`). */
+  setModelVerdict(key: string, verdict: ModelVerdict): void {
+    this.store.update((d) => {
+      const verdicts = isRecord(d.claudeModelVerdicts) ? d.claudeModelVerdicts : {};
+      d.claudeModelVerdicts = { ...verdicts, [key]: verdict };
     });
   }
 

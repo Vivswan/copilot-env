@@ -9,6 +9,7 @@ import {
   directHelperCommand,
   directHelperResolvesViaAgent,
   inspectClaudeWiring,
+  managedHelperShape,
   proxyHelperCommand,
   removeClaudeDefaultWiring,
   runClaude,
@@ -516,4 +517,76 @@ test("directHelperResolvesViaAgent: inline command, legacy file body, and every 
   expect(directHelperResolvesViaAgent(legacyPath, readFile)).toBe(false);
   expect(directHelperResolvesViaAgent(join(home, "gone.sh"), readFile)).toBe(false);
   expect(directHelperResolvesViaAgent(null, readFile)).toBe(false);
+});
+
+test("mode inspection recognizes the managed helper from ANY copilot-env root", () => {
+  // A dev checkout and ~/.copilot-env spell different roots into apiKeyHelper; both
+  // resolve the same shared store, so inspection must read both as managed. Shapes
+  // are platform-parameterized so both run on every CI runner.
+  const posixDirect = ["/opt/somewhere/bin/agent auth --get", "'/with space/bin/agent' auth --get"];
+  for (const value of posixDirect) {
+    expect(managedHelperShape(value, ["auth", "--get"], false)).toBe(true);
+  }
+  expect(managedHelperShape("/opt/x/bin/agent proxy-token --yes", ["proxy-token", "--yes"], false))
+    .toBe(true);
+  expect(
+    managedHelperShape(
+      "/opt/x/bin/agent auth --get --profile work",
+      ["auth", "--get", "--profile", "work"],
+      false,
+    ),
+  ).toBe(true);
+  // Negatives: wrong binary name, trailing junk, foreign command, wrong profile args.
+  expect(managedHelperShape("/opt/x/bin/agent-evil auth --get", ["auth", "--get"], false)).toBe(
+    false,
+  );
+  expect(managedHelperShape("/opt/x/bin/agent auth --get --extra", ["auth", "--get"], false)).toBe(
+    false,
+  );
+  expect(managedHelperShape("gh auth token", ["auth", "--get"], false)).toBe(false);
+  // Shell metacharacters can never classify as managed: only shToken's bare charset
+  // (or a fully quoted path) is a spelling the writer can produce.
+  expect(managedHelperShape("evil;/bin/agent auth --get", ["auth", "--get"], false)).toBe(false);
+  expect(managedHelperShape("$(evil)/bin/agent auth --get", ["auth", "--get"], false)).toBe(false);
+  expect(managedHelperShape("a b/bin/agent auth --get", ["auth", "--get"], false)).toBe(false);
+  expect(
+    managedHelperShape("/opt/x/bin/agent auth --get", ["auth", "--get", "--profile", "w"], false),
+  ).toBe(false);
+  // Windows shape: only the QUOTED -File path spelling is managed.
+  expect(
+    managedHelperShape(
+      'powershell -NoProfile -ExecutionPolicy Bypass -File "C:\\Some Dir\\bin\\agent.ps1" auth --get',
+      ["auth", "--get"],
+      true,
+    ),
+  ).toBe(true);
+  // A bare (unquoted) -File path is NOT a spelling the writer can produce (a real
+  // agent.ps1 path carries \ and :, which winQuote always quotes): never managed.
+  expect(
+    managedHelperShape(
+      "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\x\\bin\\agent.ps1 auth --get",
+      ["auth", "--get"],
+      true,
+    ),
+  ).toBe(false);
+  expect(
+    managedHelperShape(
+      "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\x\\bin\\evil.ps1 auth --get",
+      ["auth", "--get"],
+      true,
+    ),
+  ).toBe(false);
+});
+
+test("inspectClaudeWiring reads a sibling root's wiring as its real mode, not other", () => {
+  const text = JSON.stringify({
+    apiKeyHelper: "/some/other/checkout/bin/agent auth --get",
+    env: { ANTHROPIC_BASE_URL: "https://api.githubcopilot.com" },
+  });
+  expect(inspectClaudeWiring(text, "/tmp/claude-home", 4141).providerMode).toBe("direct");
+  const proxyText = JSON.stringify({
+    apiKeyHelper: "/some/other/checkout/bin/agent proxy-token --yes",
+    env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4141" },
+  });
+  expect(inspectClaudeWiring(proxyText, "/tmp/claude-home", 4141).providerMode).toBe("proxy");
 });

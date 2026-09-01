@@ -60,12 +60,13 @@ export interface AgentAdapter {
    *  runAgentConfig already resolved (null = none stored), so the adapter never
    *  has to resolve it a second time. */
   configureDefault(mode: ManagedAgentMode, ghToken: string | null): Promise<void>;
-  /** Named-profile write (wraps the existing writer; never probes). */
+  /** Named-profile write (wraps the existing writer; never probes). Async when the
+   *  adapter also refreshes a derived surface (Claude's Desktop config library). */
   configureProfile(
     name: ProfileName,
     mode: ManagedAgentMode,
     options: AgentProfileWriteOptions,
-  ): void;
+  ): void | Promise<void>;
   /** Remove a named profile's managed artifacts from the agent's effective home. */
   removeProfile(name: ProfileName): void;
 }

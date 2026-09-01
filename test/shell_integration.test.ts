@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, sep } from "node:path";
 import {
   cheapWindowsProfilePaths,
   CI_PS_DOCUMENTS_DIR_ENV,
@@ -11,6 +11,7 @@ import {
   quotePosix,
   quotePowerShell,
   rcFiles,
+  windowsBlock,
   windowsExecutionPolicyCommand,
   windowsProfileTarget,
 } from "../src/shell/integration.ts";
@@ -214,6 +215,34 @@ skipWin("posixBlock safely quotes paths with shell metacharacters", () => {
     blockFile,
   ]);
   expect(proc.stdout).toBe(weird);
+});
+
+skipWin("posixBlock anchors a path under the home directory at $HOME", () => {
+  // The written block must follow $HOME wherever the rc file travels (dotfile syncs,
+  // renamed users): $HOME expands at source time while the tail -- metacharacters
+  // included -- stays literal. Proven by sourcing the block under a DIFFERENT $HOME.
+  const tail = join("we'ird $dir", "shell", "agents.bashrc");
+  const blockFile = join(home, "block.sh");
+  writeFileSync(blockFile, posixBlock(join(homedir(), tail)));
+  const movedHome = join(home, "moved");
+  const proc = runSync("bash", [
+    "-c",
+    `source "$1"; printf %s "$AGENTS_BASHRC"`,
+    "bash",
+    blockFile,
+  ], { env: { ...process.env, HOME: movedHome } });
+  expect(proc.stdout).toBe(join(movedHome, tail));
+});
+
+test("the PowerShell blocks anchor an under-home path at $HOME, and only then", () => {
+  // Parity with posixBlock: a profile synced across machines follows $HOME. A path
+  // outside home (e.g. a dev checkout) stays a single-quoted literal.
+  const tail = join(sep, "shell", "agents.ps1");
+  expect(windowsBlock(join(homedir(), "shell", "agents.ps1"))).toContain(
+    `$AgentsPs1 = $HOME + '${tail}'`,
+  );
+  const outside = join(sep, "opt", "agents.ps1");
+  expect(windowsBlock(outside)).toContain(`$AgentsPs1 = '${outside}'`);
 });
 
 test("quotePosix / quotePowerShell escape embedded single quotes", () => {

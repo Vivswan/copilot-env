@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { INSTALLER_PINS } from "../.github/scripts/release-assets.ts";
+import { compiledHealthFailures } from "../.github/scripts/installer-smoke.ts";
 import {
   BUNDLED_ONLY_ASSETS,
   LEGACY_ARTIFACTS,
@@ -129,5 +130,75 @@ describe("installers and the installer share one artifact list", () => {
     const body = installPs1.match(/\$LegacyArtifacts = @\(([^)]*)\)/)?.[1] ?? "";
     const names = [...body.matchAll(/'([^']+)'/g)].map((m) => m[1] ?? "").sort();
     expect(names).toEqual(expected);
+  });
+});
+
+describe("the install task spawns what it is allowed to run", () => {
+  // `deno task install` (scripts/install_local.ts) compiles the host binary
+  // and hands off to the platform installer. The task's --allow-run list and
+  // the script's spawn set are two hand-kept spellings of the same contract; a
+  // drift is a permission prompt (or hard denial) at run time.
+  const installLocal = readFileSync(join(ROOT, "scripts", "install_local.ts"), "utf8");
+
+  test("--allow-run covers exactly the spawned commands", () => {
+    const denoJson = JSON.parse(readFileSync(join(ROOT, "deno.json"), "utf8")) as {
+      tasks: Record<string, string>;
+    };
+    const allow = denoJson.tasks.install?.match(/--allow-run=(\S+)/)?.[1]?.split(",") ?? [];
+    const spawned = [...installLocal.matchAll(/run\(\s*\n?\s*"([^"]+)"/g)].map((m) => m[1]);
+    expect(new Set(spawned)).toEqual(new Set(allow));
+  });
+
+  test("install.sh is invoked under the shell its shebang declares", () => {
+    // /bin/sh is dash on Debian/Ubuntu and install.sh uses bash arrays: the
+    // spawn must match the script's own declaration, not a lowest common sh.
+    const shebang = installSh.split("\n", 1)[0] ?? "";
+    expect(shebang).toContain("bash");
+    expect(installLocal).toContain('run("bash", [join(ROOT, "install.sh")]');
+  });
+});
+
+describe("compiled-health smoke invariants fail closed", () => {
+  // The CI smoke's compiledHealthFailures must treat a missing row, a reshaped
+  // value, or an unexpected status/kind as a failure: optional-chaining past a
+  // renamed check id would print success while asserting nothing.
+  const good = () => ({
+    checks: [
+      { id: "bootstrap.nodeModules", status: "ok", value: { embedded: true } },
+      { id: "proxy.package", status: "ok", value: {} },
+      { id: "proxy.sidecar", status: "ok", value: { kind: "absent" } },
+    ],
+  });
+
+  test("a healthy compiled report passes (provisioned or absent sidecar)", () => {
+    expect(compiledHealthFailures(good())).toEqual([]);
+    const provisioned = good();
+    provisioned.checks[2] = { id: "proxy.sidecar", status: "ok", value: { kind: "provisioned" } };
+    expect(compiledHealthFailures(provisioned)).toEqual([]);
+  });
+
+  test("negative controls: dev/unknown sidecar kind, non-ok package, non-embedded deps", () => {
+    for (const kind of ["dev", "future-kind"]) {
+      const bad = good();
+      bad.checks[2] = { id: "proxy.sidecar", status: "ok", value: { kind } };
+      expect(compiledHealthFailures(bad)).toHaveLength(1);
+    }
+    for (const status of ["fail", "warn", undefined] as const) {
+      const bad = good();
+      bad.checks[1] = { id: "proxy.package", status: status as string, value: {} };
+      expect(compiledHealthFailures(bad)).toHaveLength(1);
+    }
+    const deps = good();
+    deps.checks[0] = { id: "bootstrap.nodeModules", status: "fail", value: {} };
+    expect(compiledHealthFailures(deps)).toHaveLength(1);
+  });
+
+  test("negative controls: missing rows, reshaped values, and non-report JSON all fail", () => {
+    expect(compiledHealthFailures({ checks: [] })).toHaveLength(3);
+    expect(compiledHealthFailures({})).toEqual(["health --json did not produce a checks array"]);
+    expect(compiledHealthFailures(null)).toHaveLength(1);
+    const reshaped = good();
+    reshaped.checks[2] = { id: "proxy.sidecar", status: "ok", value: {} as { kind: string } };
+    expect(compiledHealthFailures(reshaped)).toHaveLength(1);
   });
 });

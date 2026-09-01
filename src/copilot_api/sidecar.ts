@@ -21,7 +21,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { mkdir, open } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
-import { ASSET_ROOT, denoRuntime, isStandaloneBinary } from "../utils/root.ts";
+import { ASSET_ROOT, devDenoExecPath, isStandaloneBinary } from "../utils/root.ts";
 import { sidecarSha256 } from "./sidecar_pins.ts";
 import { crypto } from "@std/crypto";
 
@@ -66,8 +66,8 @@ export function resolveDenoBin(
 ): string {
   const override = env[SIDECAR_DENO_ENV]?.trim();
   if (override) return parseAbsolutePath(override);
-  const runtime = denoRuntime();
-  if (runtime && !isStandaloneBinary()) return runtime.execPath();
+  const devDeno = devDenoExecPath();
+  if (devDeno !== null) return devDeno;
 
   if (rootHome !== undefined) {
     const state = detectSidecar(rootHome, readDvmrcPin(), { "env": env });
@@ -98,7 +98,9 @@ export type SidecarState =
 export interface SidecarDetectOptions {
   env?: Record<string, string | undefined>;
   platform?: string;
-  /** Our own runtime binary when running under Deno, else null. */
+  /** Our own runtime binary when running under a real (non-compiled) deno, else null.
+   *  The default applies the same standalone guard as resolveDenoBin: a compiled
+   *  binary must never classify itself as the `dev` deno -- it cannot act as one. */
   runtimeExecPath?: string | null;
 }
 
@@ -119,7 +121,7 @@ export function detectSidecar(
     return { "kind": "provisioned", "denoBin": parseAbsolutePath(override), "version": pin };
   }
   const runtimeExecPath = opts.runtimeExecPath === undefined
-    ? (denoRuntime()?.execPath() ?? null)
+    ? devDenoExecPath()
     : opts.runtimeExecPath;
   if (runtimeExecPath !== null) {
     return { "kind": "dev", "denoBin": parseAbsolutePath(runtimeExecPath) };

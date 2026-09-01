@@ -579,13 +579,19 @@ test("mode inspection recognizes the managed helper from ANY copilot-env root", 
 });
 
 test("inspectClaudeWiring reads a sibling root's wiring as its real mode, not other", () => {
+  // Platform-native helper spelling: the writer only ever emits (and the inspector
+  // only ever recognizes) the current platform's shape, so the fixture follows it.
+  const helper = (args: string) =>
+    process.platform === "win32"
+      ? `powershell -NoProfile -ExecutionPolicy Bypass -File "C:\\other\\checkout\\bin\\agent.ps1" ${args}`
+      : `/some/other/checkout/bin/agent ${args}`;
   const text = JSON.stringify({
-    apiKeyHelper: "/some/other/checkout/bin/agent auth --get",
+    apiKeyHelper: helper("auth --get"),
     env: { ANTHROPIC_BASE_URL: "https://api.githubcopilot.com" },
   });
   expect(inspectClaudeWiring(text, "/tmp/claude-home", 4141).providerMode).toBe("direct");
   const proxyText = JSON.stringify({
-    apiKeyHelper: "/some/other/checkout/bin/agent proxy-token --yes",
+    apiKeyHelper: helper("proxy-token --yes"),
     env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4141" },
   });
   expect(inspectClaudeWiring(proxyText, "/tmp/claude-home", 4141).providerMode).toBe("proxy");

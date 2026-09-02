@@ -59,19 +59,32 @@ param(
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
+# Windows PowerShell 5.1 (the shell the README one-liner runs) inherits .NET
+# Framework's protocol default, which can exclude TLS 1.2 on older machines;
+# GitHub requires TLS 1.2+. -bor preserves anything newer the machine already
+# negotiates. pwsh needs no floor, and its HttpClient ignores this property.
+if ($PSVersionTable.PSVersion.Major -lt 6) {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+}
+# 5.1's Invoke-WebRequest redraws its progress bar per buffer, slowing large
+# downloads by orders of magnitude; the installer has no other progress UI.
+$ProgressPreference = 'SilentlyContinue'
+
 # The next line is rewritten to the release tag by .github/scripts/release-assets.ts
 # (byte-exact needle; test/installer_pinning.test.ts guards the match).
 $InstallRef = if ($env:COPILOT_ENV_INSTALL_REF) { $env:COPILOT_ENV_INSTALL_REF } else { 'latest' }
 $Repo = 'Vivswan/copilot-env'
 $BinaryName = 'copilot-env.exe'
 # The Authorization header goes only to api.github.com (tag resolution);
-# release-asset downloads ride the public URL with anonymous headers.
-$AuthHeaders = @{ 'User-Agent' = 'copilot-env'; 'Accept' = 'application/vnd.github+json' }
+# release-asset downloads ride the public URL anonymously. User-Agent rides
+# every call's dedicated -UserAgent parameter: Windows PowerShell 5.1's
+# -Headers cannot carry it (a restricted header on .NET Framework).
+$UserAgent = 'copilot-env'
+$AuthHeaders = @{ 'Accept' = 'application/vnd.github+json' }
 $AuthToken = if ($env:GH_TOKEN) { $env:GH_TOKEN } else { $env:GITHUB_TOKEN }
 if ($AuthToken) {
     $AuthHeaders['Authorization'] = "Bearer $AuthToken"
 }
-$PublicHeaders = @{ 'User-Agent' = 'copilot-env' }
 if (-not $InstallDir) {
     $InstallDir = if ($env:COPILOT_ENV_DIR) { $env:COPILOT_ENV_DIR } else { Join-Path $env:USERPROFILE '.copilot-env' }
 }
@@ -190,7 +203,7 @@ function Resolve-ReleaseTag {
     if ($Version) { return $Version }
     if ($InstallRef -ne 'latest') { return $InstallRef }
     $release = Invoke-WithRetry 'Resolve latest release' {
-        Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $AuthHeaders
+        Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -Headers $AuthHeaders -UserAgent $UserAgent
     }
     $tag = [string]$release.tag_name
     if ($tag -notmatch '^v[0-9]') { throw "Could not resolve a release tag (got '$tag')." }
@@ -207,10 +220,10 @@ function Get-ReleaseFile {
     )
 
     if ($DownloadDir) {
-        Copy-Item -LiteralPath (Join-Path $DownloadDir $Name) $Destination -Force
+        Copy-Item -LiteralPath (Join-Path $DownloadDir $Name) -Destination $Destination -Force
     } else {
         Invoke-WithRetry "Download $Name" {
-            Invoke-WebRequest -Uri "$DownloadUrlBase/$Name" -OutFile $Destination -UseBasicParsing -Headers $PublicHeaders
+            Invoke-WebRequest -Uri "$DownloadUrlBase/$Name" -OutFile $Destination -UseBasicParsing -UserAgent $UserAgent
         } | Out-Null
     }
 }

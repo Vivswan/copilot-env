@@ -1,3 +1,4 @@
+import * as v from "valibot";
 import {
   runConfig,
   sinceProxyVersionWarning,
@@ -5,6 +6,7 @@ import {
 } from "../src/commands/config.ts";
 import {
   CONFIG_REGISTRY,
+  type ConfigCli,
   configDefaultLabel,
   configDefaultNumber,
   type ConfigKeyDef,
@@ -152,6 +154,10 @@ test("the registry parsers accept valid input and reject bad input with a clear 
 
   expect(() => configKeyDef("auto-start")?.parse("maybe")).toThrow();
   expect(() => configKeyDef("passthrough")?.parse("sometimes")).toThrow();
+  // The rejection echoes the ORIGINAL raw input, not the trimmed/lowercased coercion.
+  expect(() => configKeyDef("passthrough")?.parse(" BAD ")).toThrow(
+    "expected one of auto|on|off, got ' BAD '",
+  );
   expect(() => configKeyDef("idle-timeout")?.parse("-5")).toThrow();
   expect(() => configKeyDef("port")?.parse("70000")).toThrow(); // out of range
   expect(() => configKeyDef("codex-model-catalog")?.parse("bogus")).toThrow();
@@ -166,6 +172,14 @@ test("the registry parsers accept valid input and reject bad input with a clear 
     /positive decimal/,
   );
   expect(() => configKeyDef("claude-token-multiplier")?.parse("1001")).toThrow(/at most 1000/);
+  // Overflow-sized digit strings coerce to Infinity; the schema's own integer/finite
+  // actions still answer with the range wording, not a bare valibot default.
+  expect(() => configKeyDef("port")?.parse("9".repeat(400))).toThrow(
+    /between 1 and 65535, got Infinity/,
+  );
+  expect(() => configKeyDef("claude-token-multiplier")?.parse("9".repeat(400))).toThrow(
+    /at most 1000, got Infinity/,
+  );
   expect(configKeyDef("nope")).toBeUndefined();
 });
 
@@ -232,6 +246,55 @@ test("runConfig --get <key> prints just the value to stdout (script-friendly)", 
   expect(written.join("")).toBe("gpt-5-mini\n");
 });
 
+// One valid `--set` string per registry key, typed over ConfigCli: adding a registry key
+// without extending this map is a compile error, so the round trip below provably covers
+// EVERY key.
+const ROUND_TRIP_RAW: Record<ConfigCli, string> = {
+  "alpha-search-codex-priority": "false",
+  "alpha-search-model": "gpt-5",
+  "auto-start": "true",
+  "claude-auto-model": "claude-haiku-4.5",
+  "claude-token-multiplier": "1.3",
+  "codex-model-catalog": "true",
+  "idle-timeout": "120",
+  "integration-id": "copilot-developer-cli",
+  "max-port": "60000",
+  "message-websearch-model": "gpt-5",
+  "messages-api": "false",
+  "min-port": "2000",
+  "passthrough": "on",
+  "port": "4242",
+  "proxy-logs": "false",
+  "proxy-version": "1.2.3",
+  "release-cooldown": "86400",
+  "responses-context-management": "true",
+  "responses-websearch": "false",
+  "responses-websocket": "false",
+  "small-model": "gpt-5-mini",
+  "strict-port": "true",
+  "update-cooldown": "7",
+  "wire-mcp": "false",
+};
+
+test("every registry key round-trips: a CLI-set value survives read() and reaches the projection", () => {
+  tmpHome();
+  for (const def of CONFIG_REGISTRY) {
+    runConfig({ set: [def.cli, ROUND_TRIP_RAW[def.cli as ConfigCli]] });
+  }
+  const data = new CopilotEnvConfig().read();
+  const projected = projectedProxyConfig();
+  for (const def of CONFIG_REGISTRY) {
+    const expected = def.parse(ROUND_TRIP_RAW[def.cli as ConfigCli]);
+    // The read schema is folded from the registry, so a registry key can never be
+    // write-only: read() returns the stored value, never the stripped-back default.
+    expect(data[def.key]).toBe(expected);
+    // ... and the projection reads through the same schema, so a projected key sees it.
+    if (isProxyProjected(def)) {
+      expect(projectedValue(projected, def.proxyPath ?? [def.key])).toBe(expected);
+    }
+  }
+});
+
 test("the registry covers exactly the documented keys, in alphabetical order", () => {
   const clis = CONFIG_REGISTRY.map((d) => d.cli);
   expect(clis).toEqual([
@@ -262,6 +325,10 @@ test("the registry covers exactly the documented keys, in alphabetical order", (
   ]);
   // The display order IS alphabetical -- a new key must be inserted in place.
   expect(clis).toEqual([...clis].sort());
+  // Storage keys are unique: the CONFIG_SCHEMA fold is fromEntries, where a duplicate
+  // would silently overwrite the earlier entry's read schema.
+  const keys = CONFIG_REGISTRY.map((d) => d.key);
+  expect(new Set(keys).size).toBe(keys.length);
 });
 
 test("projectedProxyConfig() force-projects the opinionated keys and opt-in keys only when set", () => {
@@ -408,11 +475,40 @@ test("the union rejects sinceProxyVersion on internal (non-projected) entries", 
     cli: "bogus",
     key: "autoStart",
     describe: "bogus",
+    schema: v.boolean(),
     parse: () => true,
     defaultValue: false,
     sinceProxyVersion: "1.0.0",
   };
   expect(bad.cli).toBe("bogus");
+});
+
+test("the entry type forces a schema matching the key's own value type", () => {
+  // Every registry entry must carry the key's VALUE domain schema: CONFIG_SCHEMA is folded
+  // from these, so an entry that compiled without one would be write-only (accepted by
+  // --set, stripped by the read schema) -- the exact bug the fold removes.
+  // @ts-expect-error - schema is required on every entry
+  const missing: ConfigKeyDef = {
+    cli: "bogus",
+    key: "autoStart",
+    describe: "bogus",
+    parse: () => true,
+    defaultValue: false,
+  };
+  expect(missing.cli).toBe("bogus");
+  // ... and the schema's output must BE the key's declared field type, so one key's entry
+  // cannot smuggle in another key's domain (autoStart is a boolean field; a number schema
+  // cannot serve it).
+  // @ts-expect-error - the schema must validate the key's own value type
+  const mismatched: ConfigKeyDef = {
+    cli: "bogus",
+    key: "autoStart",
+    describe: "bogus",
+    schema: v.number(),
+    parse: () => true,
+    defaultValue: false,
+  };
+  expect(mismatched.cli).toBe("bogus");
 });
 
 test("isProxyProjected marks force + opt-in keys, not copilot-env-internal ones", () => {

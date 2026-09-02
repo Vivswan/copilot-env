@@ -73,15 +73,11 @@ export interface CopilotEnvConfigData {
  *  for callers that rebuild the whole store (the settings-bundle import). */
 export type ConfigPatch = { [K in keyof CopilotEnvConfigData]?: CopilotEnvConfigData[K] | null };
 
-// Lenient read schema: each field validates the value we own and FALLS BACK to undefined
-// (treated as "unset" -> default by callers) rather than throwing on a bad/ill-typed value.
 const MAX_SECONDS = 365 * 24 * 60 * 60; // a year, a generous ceiling for cooldown/idle knobs
 const MAX_TOKEN_MULTIPLIER = 1000; // generous; anything larger is surely a typo, not an estimate
 const MAX_DAYS = 3650;
 
 const PASSTHROUGH_VALUES = ["auto", "on", "off"] as const;
-const wholeSeconds = v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(MAX_SECONDS));
-const wholeDays = v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(MAX_DAYS));
 
 /**
  * The shape of a Copilot-Integration-Id value. It is interpolated into HTTP
@@ -93,56 +89,6 @@ const wholeDays = v.pipe(v.number(), v.integer(), v.minValue(0), v.maxValue(MAX_
  */
 export const INTEGRATION_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
 
-/** Exported for the settings-bundle parser (src/agents/transfer.ts): it reuses
- *  this schema's per-key VALUE validation and hardens the leniency into strict
- *  rejections at its own trust boundary. */
-export const CONFIG_SCHEMA = v.object({
-  autoStart: v.fallback(v.optional(v.boolean()), undefined),
-  passthrough: v.fallback(v.optional(v.picklist(PASSTHROUGH_VALUES)), undefined),
-  // An invalid stored pin falls back to undefined = unset, so reads degrade to
-  // the per-credential probe rather than baking a header-splitting value.
-  integrationId: v.fallback(
-    v.optional(v.pipe(v.string(), v.trim(), v.regex(INTEGRATION_ID_RE))),
-    undefined,
-  ),
-  idleTimeout: v.fallback(v.optional(wholeSeconds), undefined),
-  proxyLogs: v.fallback(v.optional(v.boolean()), undefined),
-  smallModel: v.fallback(v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))), undefined),
-  useResponsesApiWebSocket: v.fallback(v.optional(v.boolean()), undefined),
-  useResponsesApiWebSearch: v.fallback(v.optional(v.boolean()), undefined),
-  useMessagesApi: v.fallback(v.optional(v.boolean()), undefined),
-  useResponsesApiContextManagement: v.fallback(v.optional(v.boolean()), undefined),
-  messageApiWebSearchModel: v.fallback(
-    v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
-    undefined,
-  ),
-  alphaSearchCodexPriority: v.fallback(v.optional(v.boolean()), undefined),
-  alphaSearchModel: v.fallback(v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))), undefined),
-  claudeAutoModel: v.fallback(v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))), undefined),
-  claudeTokenMultiplier: v.fallback(
-    v.optional(v.pipe(v.number(), v.finite(), v.gtValue(0), v.maxValue(MAX_TOKEN_MULTIPLIER))),
-    undefined,
-  ),
-  port: v.fallback(
-    v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(65535))),
-    undefined,
-  ),
-  minPort: v.fallback(
-    v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(65535))),
-    undefined,
-  ),
-  maxPort: v.fallback(
-    v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(65535))),
-    undefined,
-  ),
-  strictPort: v.fallback(v.optional(v.boolean()), undefined),
-  proxyVersion: v.fallback(v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))), undefined),
-  releaseCooldown: v.fallback(v.optional(wholeSeconds), undefined),
-  updateCooldown: v.fallback(v.optional(wholeDays), undefined),
-  codexModelCatalog: v.fallback(v.optional(v.boolean()), undefined),
-  wireMcp: v.fallback(v.optional(v.boolean()), undefined),
-});
-
 export type ConfigKey = keyof CopilotEnvConfigData;
 export type ConfigValue = boolean | number | string;
 
@@ -151,13 +97,19 @@ export type ConfigValue = boolean | number | string;
 export type ProxyConfigPath = readonly [string, ...string[]];
 
 /** Fields every config key carries: its CLI name (kebab), storage key (camel), help text,
- *  and a parser from the `--set <value>` string to the stored value (throws a clear message
- *  on bad input). */
-interface ConfigKeyDefCore {
+ *  and its value domain (see ConfigDomain). The generic ties `schema`/`parse` to the KEY'S
+ *  OWN field type in CopilotEnvConfigData, so an entry without a schema -- or with a schema
+ *  whose output cannot be its key's value -- is a compile error, and a registry key can never
+ *  be write-only again (accepted by `--set`, stripped by the folded read schema). */
+interface ConfigKeyDefCore<K extends ConfigKey = ConfigKey> {
   cli: string;
-  key: ConfigKey;
+  key: K;
   describe: string;
-  parse: (raw: string) => ConfigValue;
+  /** The key's VALUE domain, the single source CONFIG_SCHEMA folds. */
+  schema: v.GenericSchema<unknown, NonNullable<CopilotEnvConfigData[K]>>;
+  /** Parser from the `--set <value>` string to the stored value (throws a clear message
+   *  on bad input). Derived from `schema` by the domain builders, never hand-written. */
+  parse: (raw: string) => NonNullable<CopilotEnvConfigData[K]>;
 }
 
 /** How an internal key's rendered `--help` / `--get` default is sourced: a registry-owned
@@ -214,8 +166,8 @@ interface ProjectedKeyFields {
 
 /** A copilot-env-internal key: our own code reads it; nothing is written into the proxy
  *  config.json for it. */
-type InternalConfigKeyDef =
-  & ConfigKeyDefCore
+type InternalConfigKeyDef<K extends ConfigKey = ConfigKey> =
+  & ConfigKeyDefCore<K>
   & DefaultSpec
   & ApplySpec
   & {
@@ -228,8 +180,8 @@ type InternalConfigKeyDef =
 /** Force-projected into the proxy config.json at `agent start` as `stored ?? proxyDefault`
  *  (always written). Use for keys copilot-env has an opinion on. `proxyDefault` doubles as
  *  the rendered default. */
-type ForceProjectedConfigKeyDef =
-  & ConfigKeyDefCore
+type ForceProjectedConfigKeyDef<K extends ConfigKey = ConfigKey> =
+  & ConfigKeyDefCore<K>
   & ApplySpec
   & ProjectedKeyFields
   & {
@@ -245,8 +197,8 @@ type ForceProjectedConfigKeyDef =
  *  written value is cleared again once the key is unset -- ownership-tracked per daemon home
  *  (see applyDefaultConfig in src/copilot_api/launch.ts). Use for keys we merely expose
  *  without overriding. */
-type OptInProjectedConfigKeyDef =
-  & ConfigKeyDefCore
+type OptInProjectedConfigKeyDef<K extends ConfigKey = ConfigKey> =
+  & ConfigKeyDefCore<K>
   & ApplySpec
   & ProjectedKeyFields
   & {
@@ -264,11 +216,13 @@ type OptInProjectedConfigKeyDef =
  *  `defaultValue` / `defaultLabel`; a force-projected entry with either (`proxyDefault` is
  *  its source) and an opt-in entry with `defaultValue` (its `defaultLabel` is required
  *  instead); `defaultSuffix` without `defaultValue`; and `restartToApply` combined with
- *  `applyHint`. */
-export type ConfigKeyDef =
-  | InternalConfigKeyDef
-  | ForceProjectedConfigKeyDef
-  | OptInProjectedConfigKeyDef;
+ *  `applyHint`. Distributed over ConfigKey so each entry's schema/parse must fit ITS key. */
+export type ConfigKeyDef = {
+  [K in ConfigKey]:
+    | InternalConfigKeyDef<K>
+    | ForceProjectedConfigKeyDef<K>
+    | OptInProjectedConfigKeyDef<K>;
+}[ConfigKey];
 
 /** The "built-in default" label shown in `--help` / `--get`: the owned default value
  *  (`defaultValue`, else `proxyDefault`) plus any suffix, else the hand-written label.
@@ -289,58 +243,107 @@ export function isProxyProjected(def: ConfigKeyDef): boolean {
   return def.proxyDefault !== undefined || def.proxyProjected === true;
 }
 
+// --- Value domains. Each key's accepted domain is stated ONCE, as the valibot schema on
+// its registry entry: CONFIG_SCHEMA (below the registry) folds those schemas into the
+// lenient read schema, and each `--set` parse is derived from the same schema here (coerce
+// the CLI string, then v.parse), so the write and read domains can never disagree again.
+
+/** A key's value domain: the schema plus the `--set` parser derived from it. Spread into
+ *  a registry entry (`...BOOL_DOMAIN`). */
+interface ConfigDomain<T extends ConfigValue> {
+  schema: v.GenericSchema<unknown, T>;
+  parse: (raw: string) => T;
+}
+
+/** `coerce` only turns the CLI string into the value type (with its own grammar message);
+ *  the DOMAIN checks and their friendly messages live on the schema's actions. */
+function domain<T extends ConfigValue>(
+  schema: v.GenericSchema<unknown, T>,
+  coerce: (raw: string) => unknown,
+): ConfigDomain<T> {
+  return { schema, parse: (raw) => v.parse(schema, coerce(raw)) };
+}
+
 const TRUE_WORDS = new Set(["true", "1", "yes", "on", "enable", "enabled"]);
 const FALSE_WORDS = new Set(["false", "0", "no", "off", "disable", "disabled"]);
 
-function parseBool(raw: string): boolean {
+const BOOL_DOMAIN: ConfigDomain<boolean> = domain(v.boolean(), (raw) => {
   const t = raw.trim().toLowerCase();
   if (TRUE_WORDS.has(t)) return true;
   if (FALSE_WORDS.has(t)) return false;
   throw new Error(`expected a boolean (true/false), got '${raw}'`);
+});
+
+function wholeNumberDomain(min: number, max: number): ConfigDomain<number> {
+  const range = (issue: { input: unknown }) =>
+    `must be between ${min} and ${max}, got ${issue.input}`;
+  // The coercion grammar only lets digits through, so the sole non-integer reaching
+  // v.integer is an overflow's Infinity -- the range message fits it too.
+  return domain(
+    v.pipe(v.number(), v.integer(range), v.minValue(min, range), v.maxValue(max, range)),
+    (raw) => {
+      const t = raw.trim();
+      if (!/^\d+$/.test(t)) throw new Error(`expected a whole number, got '${raw}'`);
+      return Number.parseInt(t, 10);
+    },
+  );
 }
 
-function parseWholeNumber(raw: string, min: number, max: number): number {
-  const t = raw.trim();
-  if (!/^\d+$/.test(t)) throw new Error(`expected a whole number, got '${raw}'`);
-  const n = Number.parseInt(t, 10);
-  if (n < min || n > max) throw new Error(`must be between ${min} and ${max}, got ${n}`);
-  return n;
+function positiveDecimalDomain(max: number): ConfigDomain<number> {
+  const ceiling = (issue: { input: unknown }) => `must be at most ${max}, got ${issue.input}`;
+  // As above: the grammar bans signs/exponents/NaN, so v.finite only ever sees an
+  // overflow's +Infinity -- an over-the-ceiling value.
+  return domain(
+    v.pipe(
+      v.number(),
+      v.finite(ceiling),
+      v.gtValue(0, (issue) => `must be greater than 0, got ${issue.input}`),
+      v.maxValue(max, ceiling),
+    ),
+    (raw) => {
+      const t = raw.trim();
+      if (!/^\d+(\.\d+)?$/.test(t)) {
+        throw new Error(`expected a positive decimal number, got '${raw}'`);
+      }
+      return Number.parseFloat(t);
+    },
+  );
 }
 
-function parsePositiveDecimal(raw: string, max: number): number {
-  const t = raw.trim();
-  if (!/^\d+(\.\d+)?$/.test(t)) throw new Error(`expected a positive decimal number, got '${raw}'`);
-  const n = Number.parseFloat(t);
-  if (n <= 0) throw new Error(`must be greater than 0, got ${n}`);
-  if (n > max) throw new Error(`must be at most ${max}, got ${n}`);
-  return n;
-}
+const PASSTHROUGH_DOMAIN: ConfigDomain<PassthroughPref> = domain(
+  v.picklist(PASSTHROUGH_VALUES),
+  // Membership is checked here, like BOOL_DOMAIN's words, so the rejection can echo the
+  // ORIGINAL raw input rather than the trimmed/lowercased coercion the schema would see.
+  (raw) => {
+    const t = raw.trim().toLowerCase();
+    if (!PASSTHROUGH_VALUES.some((a) => a === t)) {
+      throw new Error(`expected one of ${PASSTHROUGH_VALUES.join("|")}, got '${raw}'`);
+    }
+    return t;
+  },
+);
 
-/** The `integration-id` value check (see INTEGRATION_ID_RE). The rejection never
- *  echoes the value: it goes into HTTP headers, and junk pasted here can be
- *  anything -- a token included. */
-function parseIntegrationId(raw: string): string {
-  const t = raw.trim();
-  if (!INTEGRATION_ID_RE.test(t)) {
-    throw new Error(
+const NON_EMPTY_DOMAIN: ConfigDomain<string> = domain(
+  v.pipe(v.string(), v.trim(), v.minLength(1, "expected a non-empty value")),
+  (raw) => raw,
+);
+
+/** The `integration-id` value domain (see INTEGRATION_ID_RE). The rejection message is a
+ *  FIXED string that never echoes the value: it goes into HTTP headers, and junk pasted
+ *  here can be anything -- a token included. On read, an invalid stored pin falls back to
+ *  undefined = unset, so reads degrade to the per-credential probe rather than baking a
+ *  header-splitting value. */
+const INTEGRATION_ID_DOMAIN: ConfigDomain<string> = domain(
+  v.pipe(
+    v.string(),
+    v.trim(),
+    v.regex(
+      INTEGRATION_ID_RE,
       "expected a header-safe identity token (1-64 chars of [A-Za-z0-9._-]) or `auto`",
-    );
-  }
-  return t;
-}
-
-function parseEnum<T extends string>(raw: string, allowed: readonly T[]): T {
-  const t = raw.trim().toLowerCase();
-  const hit = allowed.find((a) => a === t);
-  if (hit === undefined) throw new Error(`expected one of ${allowed.join("|")}, got '${raw}'`);
-  return hit;
-}
-
-function parseNonEmpty(raw: string): string {
-  const t = raw.trim();
-  if (t === "") throw new Error("expected a non-empty value");
-  return t;
-}
+    ),
+  ),
+  (raw) => raw,
+);
 
 /** The single source of truth for config keys, ordered ALPHABETICALLY by CLI name (the
  *  `--get` / `--help` display order; a test pins it, so insert new keys in place). */
@@ -349,7 +352,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "alpha-search-codex-priority",
     key: "alphaSearchCodexPriority",
     describe: "Prefer Codex for the proxy's /alpha/search endpoint (Codex search) (bool)",
-    parse: parseBool,
+    ...BOOL_DOMAIN,
     defaultLabel: "true (proxy default)",
     proxyProjected: true,
     sinceProxyVersion: "1.15.0",
@@ -359,7 +362,7 @@ const CONFIG_REGISTRY_LITERAL = [
     key: "alphaSearchModel",
     describe:
       "Native-Responses model for /alpha/search (Codex search) when the requested model is Messages-backed and cannot run the search itself",
-    parse: parseNonEmpty,
+    ...NON_EMPTY_DOMAIN,
     defaultLabel: "gpt-5-mini (proxy default)",
     proxyProjected: true,
     sinceProxyVersion: "1.16.3",
@@ -368,7 +371,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "auto-start",
     key: "autoStart",
     describe: "Managed proxy lifecycle: auto-start on agent open + idle auto-stop (bool)",
-    parse: parseBool,
+    ...BOOL_DOMAIN,
     defaultValue: false,
   },
   {
@@ -376,7 +379,7 @@ const CONFIG_REGISTRY_LITERAL = [
     key: "claudeAutoModel",
     describe:
       "Model override for Claude Code's background security-monitor requests (leave unset to disable)",
-    parse: parseNonEmpty,
+    ...NON_EMPTY_DOMAIN,
     defaultLabel: "unset (disabled)",
     proxyProjected: true,
     sinceProxyVersion: "1.14.22",
@@ -385,7 +388,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "claude-token-multiplier",
     key: "claudeTokenMultiplier",
     describe: "Multiplier the proxy applies when estimating Claude token usage",
-    parse: (r) => parsePositiveDecimal(r, MAX_TOKEN_MULTIPLIER),
+    ...positiveDecimalDomain(MAX_TOKEN_MULTIPLIER),
     defaultLabel: "1.15 (proxy default)",
     proxyProjected: true,
   },
@@ -393,7 +396,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "codex-model-catalog",
     key: "codexModelCatalog",
     describe: "Patched Codex model catalog with Copilot's real context windows (bool)",
-    parse: parseBool,
+    ...BOOL_DOMAIN,
     defaultValue: false,
     applyHint:
       "Applies at the next Codex auth refresh (within ~5 minutes) or `agent codex`/`agent init` wiring.",
@@ -402,7 +405,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "idle-timeout",
     key: "idleTimeout",
     describe: "Idle auto-stop window in seconds (0 disables)",
-    parse: (r) => parseWholeNumber(r, 0, MAX_SECONDS),
+    ...wholeNumberDomain(0, MAX_SECONDS),
     defaultValue: 3600,
     restartToApply: true,
   },
@@ -411,7 +414,7 @@ const CONFIG_REGISTRY_LITERAL = [
     key: "integrationId",
     describe:
       "Pin the Copilot client identity (Copilot-Integration-Id), or `auto` to probe per credential",
-    parse: parseIntegrationId,
+    ...INTEGRATION_ID_DOMAIN,
     defaultValue: "auto",
     defaultSuffix: " (probe per credential)",
     applyHint:
@@ -421,7 +424,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "max-port",
     key: "maxPort",
     describe: "Upper bound of the allowed proxy port range (1-65535)",
-    parse: (r) => parseWholeNumber(r, 1, 65535),
+    ...wholeNumberDomain(1, 65535),
     defaultValue: 65535,
     restartToApply: true,
   },
@@ -429,7 +432,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "message-websearch-model",
     key: "messageApiWebSearchModel",
     describe: "Model id for web search: the proxy's Messages-API path and the MCP web_search tool",
-    parse: parseNonEmpty,
+    ...NON_EMPTY_DOMAIN,
     // Composite: the proxy half is the proxy's OWN default; the mcp half is
     // DEFAULT_WEB_SEARCH_MODEL in web_search.ts (which imports this module, so it cannot be
     // referenced here) -- a registry test pins the label to that constant.
@@ -442,14 +445,14 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "messages-api",
     key: "useMessagesApi",
     describe: "Proxy Messages-API (Anthropic-shaped) endpoint (bool)",
-    parse: parseBool,
+    ...BOOL_DOMAIN,
     proxyDefault: true,
   },
   {
     cli: "min-port",
     key: "minPort",
     describe: "Lower bound of the allowed proxy port range (1-65535)",
-    parse: (r) => parseWholeNumber(r, 1, 65535),
+    ...wholeNumberDomain(1, 65535),
     defaultValue: 1024,
     restartToApply: true,
   },
@@ -457,7 +460,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "passthrough",
     key: "passthrough",
     describe: "PAT passthrough default: auto | on | off",
-    parse: (r) => parseEnum(r, PASSTHROUGH_VALUES),
+    ...PASSTHROUGH_DOMAIN,
     defaultValue: "auto",
     restartToApply: true,
   },
@@ -465,7 +468,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "port",
     key: "port",
     describe: "Default proxy port (1-65535)",
-    parse: (r) => parseWholeNumber(r, 1, 65535),
+    ...wholeNumberDomain(1, 65535),
     defaultValue: 4141,
     defaultSuffix: " (then next free)",
     restartToApply: true,
@@ -474,7 +477,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "proxy-logs",
     key: "proxyLogs",
     describe: "Proxy request logging under <home>/logs (false discards the writes)",
-    parse: parseBool,
+    ...BOOL_DOMAIN,
     defaultValue: true,
     restartToApply: true,
   },
@@ -482,14 +485,14 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "proxy-version",
     key: "proxyVersion",
     describe: "Pin the floated proxy to a version/tag",
-    parse: parseNonEmpty,
+    ...NON_EMPTY_DOMAIN,
     defaultLabel: "latest (floated)",
   },
   {
     cli: "release-cooldown",
     key: "releaseCooldown",
     describe: "Proxy float supply-chain cooldown in seconds",
-    parse: (r) => parseWholeNumber(r, 0, MAX_SECONDS),
+    ...wholeNumberDomain(0, MAX_SECONDS),
     defaultLabel: "7 days (built-in)",
   },
   {
@@ -498,7 +501,7 @@ const CONFIG_REGISTRY_LITERAL = [
     // migration); the projection lands at the nested key the proxy reads today.
     key: "useResponsesApiContextManagement",
     describe: "Proxy Responses-API server-side context management (bool)",
-    parse: parseBool,
+    ...BOOL_DOMAIN,
     defaultLabel: "false (proxy default)",
     proxyProjected: true,
     proxyPath: ["contextManagement", "responses"],
@@ -507,28 +510,28 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "responses-websearch",
     key: "useResponsesApiWebSearch",
     describe: "Proxy Responses-API web search (bool)",
-    parse: parseBool,
+    ...BOOL_DOMAIN,
     proxyDefault: true,
   },
   {
     cli: "responses-websocket",
     key: "useResponsesApiWebSocket",
     describe: "Proxy Responses-API transport: WebSocket (true) vs HTTP/SSE (false)",
-    parse: parseBool,
+    ...BOOL_DOMAIN,
     proxyDefault: true,
   },
   {
     cli: "small-model",
     key: "smallModel",
     describe: "Small/fast model id the proxy uses",
-    parse: parseNonEmpty,
+    ...NON_EMPTY_DOMAIN,
     proxyDefault: "gpt-5-mini",
   },
   {
     cli: "strict-port",
     key: "strictPort",
     describe: "Fail start when the default port is busy instead of auto-incrementing (bool)",
-    parse: parseBool,
+    ...BOOL_DOMAIN,
     defaultValue: false,
     restartToApply: true,
   },
@@ -536,7 +539,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "update-cooldown",
     key: "updateCooldown",
     describe: "copilot-env update cooldown in days",
-    parse: (r) => parseWholeNumber(r, 0, MAX_DAYS),
+    ...wholeNumberDomain(0, MAX_DAYS),
     defaultLabel: "none (immediate)",
   },
   {
@@ -544,7 +547,7 @@ const CONFIG_REGISTRY_LITERAL = [
     key: "wireMcp",
     describe:
       "Wire the copilot-env MCP server (web_search) and the WebSearch deny into Claude on direct writes (bool)",
-    parse: parseBool,
+    ...BOOL_DOMAIN,
     defaultValue: true,
     applyHint: "Applies at the next `agent claude`/`agent init` direct wiring.",
   },
@@ -556,6 +559,30 @@ export type ConfigCli = (typeof CONFIG_REGISTRY_LITERAL)[number]["cli"];
 
 /** The literal list above, widened so consumers see the uniform ConfigKeyDef shape. */
 export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = CONFIG_REGISTRY_LITERAL;
+
+/** Lenient read wrapper: the field validates the value we own and FALLS BACK to undefined
+ *  (treated as "unset" -> default by callers) rather than throwing on a bad/ill-typed
+ *  stored value, so a hand-mangled file still reads. */
+function lenientField(
+  schema: v.GenericSchema<unknown, ConfigValue>,
+): v.GenericSchema<unknown, ConfigValue | undefined> {
+  return v.fallback(v.optional(schema), undefined);
+}
+
+/**
+ * The lenient READ schema, folded from the registry's per-key domains -- so it covers
+ * exactly the registry's keys by construction, and a key can never be write-only again.
+ * Exported for the settings-bundle parser (src/agents/transfer.ts): it reuses this schema's
+ * per-key VALUE validation and hardens the leniency into strict rejections at its own trust
+ * boundary.
+ *
+ * The fromEntries fold erases the key-to-value-type correlation that ConfigKeyDefCore
+ * already enforces per entry (each schema's output IS its key's declared field type), so
+ * the assertion below only restates what the registry's `satisfies` checked.
+ */
+export const CONFIG_SCHEMA = v.object(
+  Object.fromEntries(CONFIG_REGISTRY.map((def) => [def.key, lenientField(def.schema)])),
+) as v.GenericSchema<unknown, CopilotEnvConfigData>;
 
 /** Look up a registry entry by its CLI (kebab) name. */
 export function configKeyDef(cli: string): ConfigKeyDef | undefined {

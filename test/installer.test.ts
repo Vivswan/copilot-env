@@ -1,19 +1,29 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   applyInstallPlan,
   buildInstallPlan,
   BUNDLED_ONLY_ASSETS,
+  CHECKOUT_MARKERS,
   type InstallOptions,
   type InstallPlan,
   LEGACY_ARTIFACTS,
   MATERIALIZED_ASSET_DIRS,
-  parseInstallArgs,
+  MATERIALIZED_ASSET_FILES,
   POSIX_SHIM,
   POWERSHELL_SHIM,
 } from "../src/install/installer.ts";
-import { INSTALL_ROOT_MARKERS } from "../src/utils/root.ts";
+import { INSTALL_MANIFEST_FILE, INSTALL_ROOT_MARKERS } from "../src/utils/root.ts";
+import { packageVersion } from "../src/utils/version.ts";
 import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
 
 const OPTIONS: InstallOptions = { noShellIntegration: false, allHosts: false, assetsOnly: false };
@@ -30,6 +40,10 @@ function writeAssetSource(dir: string): void {
   }
   mkdirSync(join(dir, "src", "scripts"), { recursive: true });
   writeFileSync(join(dir, "src", "scripts", "proxy-token.sh"), "#!/bin/sh\n");
+  for (const file of MATERIALIZED_ASSET_FILES) {
+    mkdirSync(dirname(join(dir, file)), { recursive: true });
+    writeFileSync(join(dir, file), `content of ${file}`);
+  }
   for (const file of BUNDLED_ONLY_ASSETS) {
     writeFileSync(join(dir, file), `content of ${file}`);
   }
@@ -56,36 +70,14 @@ afterEach(() => {
   }
 });
 
-describe("parseInstallArgs", () => {
-  test("defaults to a full install", () => {
-    expect(parseInstallArgs(["install"])).toEqual({
-      noShellIntegration: false,
-      allHosts: false,
-      assetsOnly: false,
-    });
-  });
-
-  test("parses every wiring flag", () => {
-    expect(parseInstallArgs(["install", "--no-shell-integration", "--all-hosts"])).toEqual({
-      noShellIntegration: true,
-      allHosts: true,
-      assetsOnly: false,
-    });
-    expect(parseInstallArgs(["install", "--assets-only"]).assetsOnly).toBe(true);
-  });
-
-  test("rejects unknown commands and flags", () => {
-    expect(() => parseInstallArgs([])).toThrow("usage:");
-    expect(() => parseInstallArgs(["repair"])).toThrow("usage:");
-    expect(() => parseInstallArgs(["install", "--launchers"])).toThrow("unknown argument");
-  });
-});
-
 describe("buildInstallPlan", () => {
   test("a checkout (asset source IS the root) plans no file writes", () => {
-    const plan = buildInstallPlan(OPTIONS, source, source);
     // A dev checkout already has its own bin/agent and working files; an
-    // install must never overwrite them.
+    // install must never overwrite them. In-place applies before the checkout
+    // refusal, so a checkout installing into itself never trips it either.
+    writeFileSync(join(source, "package.json"), "{}");
+    mkdirSync(join(source, ".git"));
+    const plan = buildInstallPlan(OPTIONS, source, source);
     expect(plan.kind).toBe("in-place");
     expect(plan.shell).toEqual({ allHosts: false });
   });
@@ -97,6 +89,9 @@ describe("buildInstallPlan", () => {
     const targets = plan.copies.map((c) => c.to);
     for (const dir of MATERIALIZED_ASSET_DIRS) {
       expect(targets.some((t) => t.startsWith(join(dest, dir)))).toBe(true);
+    }
+    for (const file of MATERIALIZED_ASSET_FILES) {
+      expect(targets).toContain(join(dest, file));
     }
   });
 
@@ -144,6 +139,10 @@ describe("buildInstallPlan", () => {
     writeAssetSource(source);
     rmSync(join(source, ".dvmrc"));
     expect(() => installedPlan()).toThrow("embedded assets are missing .dvmrc");
+
+    writeAssetSource(source);
+    rmSync(join(source, "src", "utils", "json.ts"));
+    expect(() => installedPlan()).toThrow("embedded assets are missing src/utils/json.ts");
   });
 
   test("plans removal of only the superseded artifacts actually present", () => {
@@ -161,6 +160,96 @@ describe("buildInstallPlan", () => {
     expect(installedPlan({ ...OPTIONS, assetsOnly: true }).shell).toBeNull();
     expect(installedPlan({ ...OPTIONS, noShellIntegration: true }).shell).toBeNull();
     expect(installedPlan({ ...OPTIONS, allHosts: true }).shell).toEqual({ allHosts: true });
+  });
+});
+
+describe("the checkout guard and the install manifest sentinel", () => {
+  // The install root is DERIVED (or an env override), so an installed-mode plan
+  // can be aimed at a dev checkout via COPILOT_ENV_INSTALL_ROOT -- and its
+  // writes would replace the checkout's bin/agent and src/scripts. The markers
+  // alone cannot decide: the pre-binary installer extracted source archives, so
+  // those roots carry package.json/deno.json too. `.git` is the discriminant
+  // (archives never have one), and the manifest records what a real install is.
+  test("refuses a root with checkout markers and .git", () => {
+    for (const marker of CHECKOUT_MARKERS) {
+      writeFileSync(join(dest, marker), "{}");
+      mkdirSync(join(dest, ".git"));
+      expect(() => installedPlan()).toThrow(`refusing to install into ${dest}`);
+      expect(() => installedPlan()).toThrow(marker);
+      expect(() => installedPlan()).toThrow(".git");
+      rmSync(join(dest, ".git"), { recursive: true });
+      // A worktree carries .git as a FILE; both spellings must refuse.
+      writeFileSync(join(dest, ".git"), "gitdir: /elsewhere");
+      expect(() => installedPlan()).toThrow(`refusing to install into ${dest}`);
+      rmSync(join(dest, ".git"));
+      rmSync(join(dest, marker));
+    }
+    expect(CHECKOUT_MARKERS).toContain("package.json");
+    expect(CHECKOUT_MARKERS).toContain("deno.json");
+  });
+
+  test("even a valid manifest does not override .git: a live checkout always refuses", () => {
+    applyInstallPlan(installedPlan({ ...OPTIONS, assetsOnly: true }));
+    writeFileSync(join(dest, "package.json"), "{}");
+    mkdirSync(join(dest, ".git"));
+    expect(() => installedPlan()).toThrow(`refusing to install into ${dest}`);
+  });
+
+  test("a legacy source-archive root (markers, no .git) is swept and installed over", () => {
+    // The source-archive installer era left roots byte-indistinguishable from a
+    // checkout minus .git; their first binary update must proceed, remove the
+    // stale markers alongside the other superseded artifacts, and write the
+    // manifest so the root is positively an install from then on.
+    writeFileSync(join(dest, "package.json"), "{}");
+    writeFileSync(join(dest, "deno.json"), "{}");
+    mkdirSync(join(dest, "node_modules"), { recursive: true });
+
+    const plan = installedPlan({ ...OPTIONS, assetsOnly: true });
+    if (plan.kind !== "installed") throw new Error("expected an installed plan");
+    expect(plan.legacyRemovals).toContain(join(dest, "package.json"));
+    expect(plan.legacyRemovals).toContain(join(dest, "deno.json"));
+    expect(plan.legacyRemovals).toContain(join(dest, "node_modules"));
+
+    applyInstallPlan(plan);
+    expect(existsSync(join(dest, "package.json"))).toBe(false);
+    expect(existsSync(join(dest, "deno.json"))).toBe(false);
+    expect(existsSync(join(dest, INSTALL_MANIFEST_FILE))).toBe(true);
+  });
+
+  test("a fresh root installs and gains the manifest", () => {
+    applyInstallPlan(installedPlan({ ...OPTIONS, assetsOnly: true }));
+
+    const manifest = JSON.parse(readFileSync(join(dest, INSTALL_MANIFEST_FILE), "utf8"));
+    expect(manifest).toEqual({
+      version: packageVersion(),
+      kind: "installed",
+      assets: [...MATERIALIZED_ASSET_DIRS, ...MATERIALIZED_ASSET_FILES],
+    });
+  });
+
+  test("an update over a manifest-carrying root refreshes the manifest", () => {
+    // A stale manifest (older release, superseded inventory) is rewritten
+    // wholesale by the release that owns the assets.
+    writeFileSync(
+      join(dest, INSTALL_MANIFEST_FILE),
+      JSON.stringify({ "version": "0.0.1", "kind": "installed", "assets": [] }),
+    );
+
+    applyInstallPlan(installedPlan({ ...OPTIONS, assetsOnly: true }));
+
+    const manifest = JSON.parse(readFileSync(join(dest, INSTALL_MANIFEST_FILE), "utf8"));
+    expect(manifest.version).toBe(packageVersion());
+    expect(manifest.assets).toEqual([...MATERIALIZED_ASSET_DIRS, ...MATERIALIZED_ASSET_FILES]);
+  });
+
+  test("a pre-manifest install (no manifest, no checkout markers) still updates", () => {
+    // Every binary install that predates the manifest looks like this; its
+    // first `agent update` must proceed and write the sentinel for the next one.
+    applyInstallPlan(installedPlan({ ...OPTIONS, assetsOnly: true }));
+    rmSync(join(dest, INSTALL_MANIFEST_FILE));
+
+    applyInstallPlan(installedPlan({ ...OPTIONS, assetsOnly: true }));
+    expect(existsSync(join(dest, INSTALL_MANIFEST_FILE))).toBe(true);
   });
 });
 

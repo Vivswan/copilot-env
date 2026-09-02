@@ -6,13 +6,15 @@
 // PROJECT_ROOT, the paths handed to other programs, and the kind -> protection
 // policy every destructive gate reads. Verifying the compiled half means building a
 // binary and running it from an install root.
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { isAbsolute, join, parse } from "node:path";
 import {
   AGENT_AUTH_GET_ARGS,
   ASSET_ROOT,
   devDenoExecPath,
+  INSTALL_MANIFEST_FILE,
+  INSTALL_ROOT_MARKERS,
   isProtectedRoot,
   looksLikeInstallRoot,
   PROJECT_ROOT,
@@ -69,6 +71,64 @@ test("looksLikeInstallRoot gates the recursive delete on the marker layout", () 
   expect(looksLikeInstallRoot(parse(PROJECT_ROOT).root)).toBe(false); // a filesystem root
   const strayBinOnly = join(PROJECT_ROOT, "bin");
   expect(looksLikeInstallRoot(strayBinOnly)).toBe(false); // has no shell/ or src/scripts
+});
+
+test("a valid manifest alone qualifies a root; unreadable fails closed", () => {
+  // The manifest `agent install` writes is the install's own record: a valid one
+  // qualifies the root by itself, so a user-deleted asset dir cannot make a real
+  // install invisible to uninstall. Absent or invalid falls back to the marker
+  // layout (checkouts and pre-manifest installs have no manifest to read).
+  const root = mkdtempSync(join(tmpdir(), "copilot-root-mode-"));
+  try {
+    const manifestPath = join(root, INSTALL_MANIFEST_FILE);
+    const valid = JSON.stringify({ "version": "0.0.1", "kind": "installed", "assets": ["shell"] });
+
+    expect(looksLikeInstallRoot(root)).toBe(false); // empty: no manifest, no markers
+    writeFileSync(manifestPath, valid);
+    expect(looksLikeInstallRoot(root)).toBe(true); // the manifest alone qualifies
+
+    writeFileSync(manifestPath, "not json");
+    expect(looksLikeInstallRoot(root)).toBe(false); // invalid, and no markers either
+
+    // Each fixture isolates ONE wrong field against the valid form above, so
+    // dropping any one validation in readInstallManifest breaks exactly one of
+    // them -- the recursive-delete gate must not trust a foreign file.
+    for (
+      const text of [
+        '{"version":"1.0.0","kind":"checkout","assets":[]}',
+        '{"version":1,"kind":"installed","assets":[]}',
+        '{"version":"1.0.0","kind":"installed","assets":"shell"}',
+        '{"version":"1.0.0","kind":"installed","assets":[1]}',
+      ]
+    ) {
+      writeFileSync(manifestPath, text);
+      expect(looksLikeInstallRoot(root)).toBe(false);
+    }
+    writeFileSync(manifestPath, "not json");
+
+    for (const marker of INSTALL_ROOT_MARKERS) {
+      mkdirSync(join(root, marker), { recursive: true });
+    }
+    expect(looksLikeInstallRoot(root)).toBe(true); // invalid manifest: markers decide
+
+    // Unreadable is NOT absent: a manifest we cannot read leaves ownership
+    // unproven, and a root we cannot inspect is not one we may rm -rf. A
+    // directory at the manifest path makes every platform's read fail.
+    rmSync(manifestPath);
+    mkdirSync(manifestPath);
+    expect(looksLikeInstallRoot(root)).toBe(false);
+
+    if (process.platform !== "win32") {
+      // A dangling symlink reads as ENOENT but IS a directory entry, so it must
+      // classify as unreadable, not absent. (Symlink creation needs privileges
+      // on Windows; the unreadable class itself is covered above.)
+      rmSync(manifestPath, { recursive: true });
+      symlinkSync(join(root, "no-such-target"), manifestPath);
+      expect(looksLikeInstallRoot(root)).toBe(false);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("copilot-env.config is read from ASSET_ROOT by default", () => {

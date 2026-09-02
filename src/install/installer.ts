@@ -29,7 +29,13 @@ import { dirname, join, resolve } from "node:path";
 import { consola } from "consola";
 
 import { runShellIntegration } from "../shell/integration.ts";
-import { ASSET_ROOT, PROJECT_ROOT } from "../utils/root.ts";
+import {
+  ASSET_ROOT,
+  INSTALL_MANIFEST_FILE,
+  type InstallManifest,
+  PROJECT_ROOT,
+} from "../utils/root.ts";
+import { packageVersion } from "../utils/version.ts";
 import { INSTALLED_BINARY_POSIX, INSTALLED_BINARY_WINDOWS } from "./targets.ts";
 
 /** Embedded AND materialized: something outside this process opens these by
@@ -40,14 +46,36 @@ import { INSTALLED_BINARY_POSIX, INSTALLED_BINARY_WINDOWS } from "./targets.ts";
  *
  *  `src/scripts` is materialized WHOLE rather than by naming the shims. The
  *  daemon loads a per-credential subset of `DAEMON_SHIM_FILES`
- *  (src/copilot_api/shims.ts) by absolute path, and those five entrypoints
- *  import three more siblings; copying the directory covers all of them by
- *  construction, so there is no second list to drift out of sync. */
+ *  (src/copilot_api/shims.ts) by absolute path, and those entrypoints import
+ *  further siblings; copying the directory covers the in-dir ones by
+ *  construction. Imports reaching OUTSIDE the directory are
+ *  `MATERIALIZED_ASSET_FILES` below. */
 export const MATERIALIZED_ASSET_DIRS = [
   "src/scripts",
   "shell",
   "skills",
   ".claude-plugin",
+] as const;
+
+/** Embedded and materialized as INDIVIDUAL files: the daemon shims in
+ *  `src/scripts` import these siblings from `src/copilot_api` and `src/utils`,
+ *  and the sidecar deno resolves those imports on real disk in the install
+ *  root -- a missing one kills the daemon at module load. The list is the
+ *  shims' full local import closure OUTSIDE the materialized dirs, pinned
+ *  bidirectionally to the computed closure by test/installer_pinning.test.ts
+ *  so a new shim import cannot silently break installs again. */
+export const MATERIALIZED_ASSET_FILES = [
+  "src/copilot_api/config.ts",
+  "src/copilot_api/env_config.ts",
+  "src/copilot_api/paths.ts",
+  "src/copilot_api/profile.ts",
+  "src/copilot_api/state.ts",
+  "src/utils/file_lock.ts",
+  "src/utils/fs.ts",
+  "src/utils/hostname.ts",
+  "src/utils/json.ts",
+  "src/utils/pid.ts",
+  "src/utils/time.ts",
 ] as const;
 
 /** Embedded and NEVER materialized: read in-process through `ASSET_ROOT`, which
@@ -101,31 +129,11 @@ export interface InstallOptions {
   assetsOnly: boolean;
 }
 
-export function parseInstallArgs(args: string[]): InstallOptions {
-  const command = args[0];
-  if (command !== "install") {
-    throw new Error("usage: agent install [--no-shell-integration] [--all-hosts] [--assets-only]");
-  }
-
-  const options: InstallOptions = {
-    noShellIntegration: false,
-    allHosts: false,
-    assetsOnly: false,
-  };
-  for (let i = 1; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === "--no-shell-integration") {
-      options.noShellIntegration = true;
-    } else if (arg === "--all-hosts") {
-      options.allHosts = true;
-    } else if (arg === "--assets-only") {
-      options.assetsOnly = true;
-    } else {
-      throw new Error(`unknown argument '${arg}'`);
-    }
-  }
-  return options;
-}
+/** Files only a source checkout OR a legacy source-archive install carries at
+ *  its root. With `.git` beside them they mark a live checkout an installed-mode
+ *  plan must refuse to clobber; without `.git` they are debris the old
+ *  source-archive installer left behind, swept like `LEGACY_ARTIFACTS`. */
+export const CHECKOUT_MARKERS = ["package.json", "deno.json"] as const;
 
 interface ShellWiring {
   allHosts: boolean;
@@ -143,6 +151,12 @@ interface ShimWrite {
   executable: boolean;
 }
 
+/** The sentinel manifest write: `INSTALL_MANIFEST_FILE` at the root. */
+interface ManifestWrite {
+  to: string;
+  text: string;
+}
+
 export type InstallPlan =
   | { kind: "in-place"; root: string; shell: ShellWiring | null }
   | {
@@ -150,6 +164,7 @@ export type InstallPlan =
     root: string;
     copies: AssetCopy[];
     shims: ShimWrite[];
+    manifest: ManifestWrite;
     legacyRemovals: string[];
     shell: ShellWiring | null;
   };
@@ -202,6 +217,24 @@ export function buildInstallPlan(
     return { kind: "in-place", root, shell };
   }
 
+  // Installed-mode writes replace bin/agent with the dispatch shim and
+  // materialize src/scripts over whatever is there -- exactly the files a dev
+  // checkout authored. But the markers alone cannot condemn a root: the
+  // source-archive installer era laid down roots byte-indistinguishable from a
+  // checkout (it extracted release source archives), and LEGACY_ARTIFACTS never
+  // swept package.json/deno.json out of them. `.git` (a directory, or a file in
+  // a worktree) is the one honest discriminant: archives never carry it.
+  // Markers + .git is a live checkout reached through COPILOT_ENV_INSTALL_ROOT
+  // -- refuse before planning any write. Markers without .git is a legacy
+  // source install: sweep the markers with the other superseded artifacts.
+  const presentMarkers = CHECKOUT_MARKERS.filter((marker) => existsSync(join(root, marker)));
+  if (presentMarkers.length > 0 && existsSync(join(root, ".git"))) {
+    throw new Error(
+      `refusing to install into ${root}: it holds ${presentMarkers[0]} and .git, so it is a ` +
+        `source checkout, and installing would overwrite its bin/agent and working files`,
+    );
+  }
+
   const copies: AssetCopy[] = [];
   for (const dir of MATERIALIZED_ASSET_DIRS) {
     if (!existsSync(join(sourceRoot, dir))) {
@@ -210,6 +243,18 @@ export function buildInstallPlan(
       );
     }
     copies.push(...collectAssetCopies(sourceRoot, root, dir));
+  }
+  for (const file of MATERIALIZED_ASSET_FILES) {
+    if (!existsSync(join(sourceRoot, file))) {
+      throw new Error(
+        `embedded assets are missing ${file}; deno.json compile.include did not embed it`,
+      );
+    }
+    copies.push({
+      from: join(sourceRoot, file),
+      to: join(root, file),
+      executable: file.endsWith(".sh"),
+    });
   }
   // Verified, never copied: these are read out of the VFS in-process.
   for (const file of BUNDLED_ONLY_ASSETS) {
@@ -220,6 +265,11 @@ export function buildInstallPlan(
     }
   }
 
+  const manifest: InstallManifest = {
+    version: packageVersion(),
+    kind: "installed",
+    assets: [...MATERIALIZED_ASSET_DIRS, ...MATERIALIZED_ASSET_FILES],
+  };
   return {
     kind: "installed",
     root,
@@ -228,7 +278,13 @@ export function buildInstallPlan(
       { to: join(root, "bin", "agent"), text: POSIX_SHIM, executable: true },
       { to: join(root, "bin", "agent.ps1"), text: POWERSHELL_SHIM, executable: false },
     ],
-    legacyRemovals: LEGACY_ARTIFACTS.map((name) => join(root, name)).filter(existsSync),
+    manifest: {
+      to: join(root, INSTALL_MANIFEST_FILE),
+      text: JSON.stringify(manifest, null, 2) + "\n",
+    },
+    legacyRemovals: [...LEGACY_ARTIFACTS, ...presentMarkers]
+      .map((name) => join(root, name))
+      .filter(existsSync),
     shell,
   };
 }
@@ -247,6 +303,8 @@ export function applyInstallPlan(plan: InstallPlan): void {
       writeFileSync(shim.to, shim.text);
       if (shim.executable) chmodSync(shim.to, 0o755);
     }
+    mkdirSync(dirname(plan.manifest.to), { recursive: true });
+    writeFileSync(plan.manifest.to, plan.manifest.text);
     consola.success(`Installed the copilot-env runtime files into ${plan.root}`);
     for (const path of plan.legacyRemovals) {
       consola.info(`Removing superseded ${path} ...`);

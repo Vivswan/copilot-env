@@ -518,7 +518,10 @@ export interface DaemonSpec {
 /**
  * The daemon's `--preload` pairs, in load order. Every shim is a RUNTIME shim that
  * touches none of copilot-api's files, so none of them pins the floated proxy version.
- *  - the token-argv shim FIRST, whenever a credential exists: it splices the token from
+ *  - the daemon-lock shim FIRST, ALWAYS: it takes the per-home liveness lock
+ *    (`<home>/daemon.lock`, held for the daemon's whole life) before anything else
+ *    touches the home; the liveness consults key off it (src/scripts/daemon_lock.ts).
+ *  - the token-argv shim, whenever a credential exists: it splices the token from
  *    an env var onto process.argv, and the PAT shim below reads it back from there.
  *  - the daemon-runtime shim, ALWAYS: it wraps Deno.serve to record inbound inference
  *    requests and to capture the server handle the shutdown path drains.
@@ -527,7 +530,7 @@ export interface DaemonSpec {
  *  - the log mute, which discards the daemon's handler-log writes under <home>/logs.
  */
 function daemonPreloadFlags(spec: DaemonSpec): string[] {
-  const shims: DaemonShimFile[] = [];
+  const shims: DaemonShimFile[] = ["daemon_lock_preload.ts"];
   if (spec.credential.kind !== "none") shims.push("token_argv_preload.ts");
   shims.push("daemon_runtime_preload.ts");
   if (spec.credential.kind === "pat") shims.push("pat_passthrough_preload.ts");

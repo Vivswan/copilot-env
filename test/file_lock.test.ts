@@ -373,12 +373,24 @@ test("the lock primitives and the update-lock test seam stay out of src/", () =>
   // contract tests only, and withUpdateLockForTests exists so suites can lock a hermetic
   // path; production code goes through the scoped API (withFileLock/withFileLockSync and
   // withUpdateLock), which is what keeps acquisition, release, and evidence in one owner.
-  // Each name is allowed ONLY in its defining module, never src-wide.
-  const allowedIn: Record<string, string> = {
-    tryAcquireFileLock: join(ROOT, "src", "utils", "file_lock.ts"),
-    releaseFileLock: join(ROOT, "src", "utils", "file_lock.ts"),
-    reclaimStaleLock: join(ROOT, "src", "utils", "file_lock.ts"),
-    withUpdateLockForTests: join(ROOT, "src", "autoupdate", "lock.ts"),
+  // Each name is allowed ONLY in its listed modules, never src-wide. The one production
+  // consumer of tryAcquireFileLock and probeFileLock is the daemon's hold-for-life
+  // liveness lock (src/scripts/daemon_lock.ts): its lock is released by process death, so
+  // acquisition has no scope to release in, and the CLI-side consult probes holder-ship
+  // without ever taking the lock over -- the copilot_api liveness sites go through that
+  // module's daemonLockVerdict/daemonLockHolderPid, never the raw primitives.
+  const allowedIn: Record<string, string[]> = {
+    tryAcquireFileLock: [
+      join(ROOT, "src", "utils", "file_lock.ts"),
+      join(ROOT, "src", "scripts", "daemon_lock.ts"),
+    ],
+    probeFileLock: [
+      join(ROOT, "src", "utils", "file_lock.ts"),
+      join(ROOT, "src", "scripts", "daemon_lock.ts"),
+    ],
+    releaseFileLock: [join(ROOT, "src", "utils", "file_lock.ts")],
+    reclaimStaleLock: [join(ROOT, "src", "utils", "file_lock.ts")],
+    withUpdateLockForTests: [join(ROOT, "src", "autoupdate", "lock.ts")],
   };
   const found: string[] = [];
   const walk = (dirPath: string): void => {
@@ -394,14 +406,16 @@ test("the lock primitives and the update-lock test seam stay out of src/", () =>
     }
   };
   walk(join(ROOT, "src"));
-  // Positive control: the scanner must find each definition site, or a zero-offender
-  // read below would prove nothing.
-  for (const [name, definingFile] of Object.entries(allowedIn)) {
-    expect(found).toContain(`${definingFile}: ${name}`);
+  // Positive control: the scanner must find each name at each of its allowed sites, or a
+  // zero-offender read below would prove nothing.
+  for (const [name, files] of Object.entries(allowedIn)) {
+    for (const file of files) {
+      expect(found).toContain(`${file}: ${name}`);
+    }
   }
   const offenders = found.filter((hit) => {
     const [file, name] = hit.split(": ") as [string, string];
-    return allowedIn[name] !== file;
+    return !(allowedIn[name] ?? []).includes(file);
   });
   expect(offenders).toEqual([]);
 });

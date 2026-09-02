@@ -17,6 +17,7 @@ export const NODE_COMPAT_SHIM = "node_compat_preload.ts";
  *  all of them, since any one may be loaded by a later start. */
 export const DAEMON_SHIM_FILES = [
   "node_compat_preload.ts",
+  "daemon_lock_preload.ts",
   "token_argv_preload.ts",
   "daemon_runtime_preload.ts",
   "pat_passthrough_preload.ts",

@@ -79,12 +79,19 @@ function preloads(spec: DaemonSpec): string[] {
 }
 
 test("the preload set derives from the credential kind, in load order", () => {
-  // No credential: nothing to splice onto argv, nothing for the PAT shim to read.
-  expect(preloads(BASE)).toEqual(["node_compat_preload.ts", "daemon_runtime_preload.ts"]);
+  // No credential: nothing to splice onto argv, nothing for the PAT shim to read. The
+  // daemon-lock shim is first among the daemon shims on EVERY spawn: the per-home
+  // liveness lock is taken before anything else touches the home.
+  expect(preloads(BASE)).toEqual([
+    "node_compat_preload.ts",
+    "daemon_lock_preload.ts",
+    "daemon_runtime_preload.ts",
+  ]);
 
-  // A plain token: the argv splice loads FIRST, but no passthrough shim.
+  // A plain token: the argv splice precedes the runtime shim, but no passthrough shim.
   expect(preloads({ ...BASE, credential: { kind: "token", token: "gho_x" } })).toEqual([
     "node_compat_preload.ts",
+    "daemon_lock_preload.ts",
     "token_argv_preload.ts",
     "daemon_runtime_preload.ts",
   ]);
@@ -97,6 +104,7 @@ test("the preload set derives from the credential kind, in load order", () => {
     }),
   ).toEqual([
     "node_compat_preload.ts",
+    "daemon_lock_preload.ts",
     "token_argv_preload.ts",
     "daemon_runtime_preload.ts",
     "pat_passthrough_preload.ts",
@@ -106,16 +114,19 @@ test("the preload set derives from the credential kind, in load order", () => {
 test("the watchdog and log-mute shims load only when their config knob is on", () => {
   expect(preloads({ ...BASE, idleWatchdog: true })).toEqual([
     "node_compat_preload.ts",
+    "daemon_lock_preload.ts",
     "daemon_runtime_preload.ts",
     "idle_watchdog_preload.ts",
   ]);
   expect(preloads({ ...BASE, muteProxyLogs: true })).toEqual([
     "node_compat_preload.ts",
+    "daemon_lock_preload.ts",
     "daemon_runtime_preload.ts",
     "log_mute_preload.ts",
   ]);
   expect(preloads({ ...BASE, idleWatchdog: true, muteProxyLogs: true })).toEqual([
     "node_compat_preload.ts",
+    "daemon_lock_preload.ts",
     "daemon_runtime_preload.ts",
     "idle_watchdog_preload.ts",
     "log_mute_preload.ts",

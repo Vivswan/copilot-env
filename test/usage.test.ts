@@ -12,6 +12,7 @@ import {
   record,
   sanitizeTokenCount,
   undatedUsage,
+  type UsageReport,
   usageReport,
 } from "../src/usage/usage.ts";
 import { localDayKey } from "../src/utils/time.ts";
@@ -325,6 +326,19 @@ test("undatedUsage fails fast on a perDay model that byModel does not carry", ()
     ]),
   };
   expect(() => undatedUsage(corrupt)).toThrow("inconsistent usage report");
+});
+
+test("a hand-built report shape does not compile as a mutable UsageReport", () => {
+  // Compile-time guard: an accidental hand-build (literal or spread) fails
+  // typecheck, so report birth runs usageReport()'s validation; only a deliberate
+  // cast or Object.assign forges one. Dropping the brand unuses the directives.
+  // @ts-expect-error -- an object literal cannot carry the mint brand
+  const handBuilt: UsageReport = { byModel: new Map(), perDay: new Map() };
+  void handBuilt;
+  // @ts-expect-error -- a spread of a minted report drops the private brand
+  const forged: UsageReport = { ...usageReport(), byModel: new Map(), perDay: new Map() };
+  void forged;
+  expect(usageReport().byModel.size).toBe(0);
 });
 
 test("mergeUsageReports sums models, unions days, and keeps day-less usage in the totals", () => {

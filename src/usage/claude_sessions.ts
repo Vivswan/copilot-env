@@ -32,7 +32,13 @@ import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { type DayKey, dayKeyIn, MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { canonicalModelName } from "./pricing.ts";
-import { record, sanitizeTokenCount, type TokenBuckets, type UsageReport } from "./usage.ts";
+import {
+  record,
+  sanitizeTokenCount,
+  type TokenBuckets,
+  type UsageReport,
+  usageReport,
+} from "./usage.ts";
 
 /** Error placeholders carry this model id and no real usage attribution. */
 const SYNTHETIC_MODEL = "<synthetic>";
@@ -94,7 +100,7 @@ export async function readClaudeSessions(
     collectTranscriptFiles(root, 1, sinceMs, files);
   }
 
-  const report: UsageReport = { byModel: new Map(), perDay: new Map() };
+  const report = usageReport();
   // One map across ALL files: streaming repeats a message.id within a file
   // (with a GROWING output_tokens snapshot) and resume/fork copies it across
   // files. Each id books the running per-bucket max -- later occurrences add

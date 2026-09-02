@@ -47,7 +47,12 @@ import {
 import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
-import { isEnoent, readTextOrNull } from "../utils/fs.ts";
+import {
+  isEnoentOrNotdir,
+  readTextOrNull,
+  readTextResult,
+  type TextReadResult,
+} from "../utils/fs.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import {
@@ -292,6 +297,17 @@ export function legacyProxyHelperScript(profile: Profile = null): string {
 /** The `agent claude` argument shape (the shared skeleton's, under this command's name). */
 export type ClaudeConfigArgs = AgentConfigArgs;
 
+/** Why an "other" classification is not ours -- minted together with
+ *  providerMode by inspectClaudeWiring, so consumers switch on it instead of
+ *  re-deriving the classifier's reasoning:
+ *    - "malformed":           settings present but not a JSON object
+ *    - "read-error":          settings exist but could not be read
+ *    - "legacy-unrecognized": apiKeyHelper is OUR retired helper-script path,
+ *                             but the file body could not be verified as a
+ *                             released one (missing, unreadable, or foreign)
+ *    - "custom":              a foreign apiKeyHelper or a custom base URL */
+export type ClaudeOtherReason = "malformed" | "custom" | "legacy-unrecognized" | "read-error";
+
 export interface ClaudeWiringStatus {
   /** settings.json exists. */
   settingsExists: boolean;
@@ -305,6 +321,8 @@ export interface ClaudeWiringStatus {
   baseUrlMatches: boolean;
   /** Which backend the current settings select. */
   providerMode: AgentProviderMode;
+  /** Set exactly when providerMode is "other": which classifier arm minted it. */
+  otherReason: ClaudeOtherReason | null;
 }
 
 /** Whether `baseUrl` is the managed Claude proxy URL for `expectedPort`:
@@ -319,7 +337,9 @@ function claudeBaseUrlMatchesProxy(baseUrl: string, expectedPort: number): boole
 /**
  * Inspect raw settings content against the managed contract for `profile` (default
  * profile = settings.json, named = settings-<name>.json). The caller passes the file
- * text (null = absent) plus the home, from which the two LEGACY helper paths are
+ * content as a TextReadResult (readTextResult keeps absent and unreadable apart; a
+ * plain string means text, null means absent, for callers reading through a
+ * string-or-null seam) plus the home, from which the two LEGACY helper paths are
  * derived; the only I/O is `readFile`, through which the legacy path arms verify the
  * helper file's body (never called for the inline arms) -- it defaults to the real
  * filesystem reader, and pure tests inject a fake. Mode is keyed off the EXACT
@@ -332,31 +352,43 @@ function claudeBaseUrlMatchesProxy(baseUrl: string, expectedPort: number): boole
  *   - proxy:  apiKeyHelper is the managed `agent proxy-token --yes` command (or the
  *             retired <home>/copilot-proxy-token[-<profile>] script path, same
  *             body condition)
- *   - other:  a foreign apiKeyHelper -- including a legacy helper path whose file
- *             is missing or rewritten -- a custom ANTHROPIC_BASE_URL, or malformed
- *             JSON (a config we must not clobber)
+ *   - other:  a config we must not clobber, with WHY in `otherReason` (see
+ *             ClaudeOtherReason): a foreign apiKeyHelper or custom base URL, a
+ *             legacy helper path whose file is missing or rewritten, malformed
+ *             JSON, or a settings file that exists but could not be read (where
+ *             a plain null would have read as "none" and authorized removal)
  *   - none:   no relevant keys (absent/empty) -- unconfigured; proxy is default
  */
 export function inspectClaudeWiring(
-  settingsText: string | null,
+  settings: TextReadResult | string | null,
   claudeHome: string,
   expectedPort: number,
   profile: Profile = null,
   readFile: (path: string) => string | null = readTextOrNull,
 ): ClaudeWiringStatus {
+  const read: TextReadResult = typeof settings === "string"
+    ? { kind: "text", text: settings }
+    : settings ?? { kind: "absent" };
   const status: ClaudeWiringStatus = {
-    settingsExists: settingsText !== null,
+    settingsExists: read.kind !== "absent",
     helperPath: null,
     baseUrl: null,
     baseUrlMatches: false,
     providerMode: "none",
+    otherReason: null,
   };
-  if (settingsText === null || settingsText.trim() === "") return status;
+  if (read.kind === "unreadable") {
+    status.providerMode = "other";
+    status.otherReason = "read-error";
+    return status;
+  }
+  if (read.kind === "absent" || read.text.trim() === "") return status;
 
-  const doc = parseJsonRecord(settingsText);
+  const doc = parseJsonRecord(read.text);
   if (doc === null) {
     // Present but unparseable: we can't manage it, so leave it alone (other).
     status.providerMode = "other";
+    status.otherReason = "malformed";
     return status;
   }
 
@@ -394,8 +426,15 @@ export function inspectClaudeWiring(
   ) {
     status.providerMode = "proxy";
   } else if (helperPath !== null || baseUrl !== null) {
-    // A foreign apiKeyHelper or a custom base URL the user set -- not ours.
+    // A foreign apiKeyHelper or a custom base URL the user set -- not ours. A
+    // helper at OUR legacy path landing here means the body verification above
+    // failed: likelier a broken leftover than custom wiring.
     status.providerMode = "other";
+    status.otherReason = helperPath !== null &&
+        (helperPath === directHelperPath(claudeHome, profile) ||
+          helperPath === proxyHelperPath(claudeHome, profile))
+      ? "legacy-unrecognized"
+      : "custom";
   }
   return status;
 }
@@ -403,15 +442,18 @@ export function inspectClaudeWiring(
 // --- config writes ----------------------------------------------------------
 
 /**
- * Load settings.json as a record. Missing or empty => {}. A present-but-malformed
- * file throws rather than letting us clobber settings we couldn't read.
+ * Load settings.json as a record. Missing or empty => {}. Absence means the same
+ * thing readTextResult's "absent" does (ENOENT or ENOTDIR -- nothing there), so
+ * a caller that classified the read as absent/none can never throw here. A
+ * present-but-malformed file throws rather than letting us clobber settings we
+ * couldn't read.
  */
 function loadSettings(settingsPath: string): Record<string, unknown> {
   let text: string;
   try {
     text = fs.readFileSync(settingsPath, "utf8");
   } catch (e) {
-    if (isEnoent(e)) return {};
+    if (isEnoentOrNotdir(e)) return {};
     throw e;
   }
   if (text.trim() === "") return {};
@@ -596,7 +638,7 @@ function applyWebSearchPair(
  */
 export function syncDefaultWebSearchWiring(claudeHome = resolveClaudeHome()): void {
   const settingsPath = settingsPathFor(claudeHome);
-  const status = inspectClaudeWiring(readTextOrNull(settingsPath), claudeHome, 0);
+  const status = inspectClaudeWiring(readTextResult(settingsPath), claudeHome, 0);
   if (status.providerMode === "other") return;
   const doc = loadSettings(settingsPath);
   const before = JSON.stringify(doc);
@@ -736,7 +778,7 @@ function checkClaudeConfig(): void {
   const claudeHome = resolveClaudeHome();
   const settingsPath = settingsPathFor(claudeHome);
   const status = inspectClaudeWiring(
-    readTextOrNull(settingsPath),
+    readTextResult(settingsPath),
     claudeHome,
     Number(copilotApiResolvePort()),
   );
@@ -751,45 +793,49 @@ function checkClaudeConfig(): void {
   process.exitCode = providerModeExitCode(status.providerMode);
 }
 
-/** The wiring classification a REMOVAL decides on: inspectClaudeWiring, except a
- *  settings file that exists but cannot be READ maps to "other" -- ownership we
- *  cannot verify gets the same hands-off treatment as foreign wiring, where the
- *  plain reader's null would have read as "none" and authorized file removal. */
-function removalWiringMode(
-  settingsPath: string,
-  claudeHome: string,
-  profile: Profile,
-): AgentProviderMode {
-  let text: string | null = null;
-  try {
-    text = fs.readFileSync(settingsPath, "utf8");
-  } catch (e) {
-    if (!isEnoent(e)) return "other";
-  }
-  return inspectClaudeWiring(text, claudeHome, 0, profile).providerMode;
-}
-
 /**
  * Remove a NAMED profile's managed Claude artifacts: its settings-<name>.json and
  * its LEGACY helper scripts -- but only when the wiring is actually OURS (managed
  * direct/proxy, or never configured). An "other" classification (foreign wiring,
- * or a settings file we cannot read) leaves EVERYTHING alone: the settings file is
+ * malformed JSON, or a settings file that exists but cannot be read -- the
+ * classifier's read-error arm, minted precisely so ownership we cannot verify is
+ * never read as "none") leaves EVERYTHING alone: the settings file is
  * the user's, and it may point AT a file under our legacy helper name (a foreign
  * body there classifies as "other" precisely so we never claim it) -- deleting the
  * file while keeping the settings key would leave dangling wiring. Used by
  * `agent profile --del`.
  */
+/** Remove a legacy helper file by name. rmSync's `force` tolerates ENOENT but
+ *  not ENOTDIR; a helper path under a non-directory home is equally "nothing
+ *  there" (the same absence readTextResult reports for the settings file). */
+function removeLegacyHelperFile(path: string): void {
+  try {
+    fs.rmSync(path, { force: true });
+  } catch (e) {
+    if (!isEnoentOrNotdir(e)) throw e;
+  }
+}
+
 export function removeClaudeProfile(claudeHome: string, name: ProfileName): void {
   const settingsPath = settingsPathFor(claudeHome, name);
-  const mode = removalWiringMode(settingsPath, claudeHome, name);
+  const mode = inspectClaudeWiring(readTextResult(settingsPath), claudeHome, 0, name).providerMode;
   if (mode === "other") return;
   if (mode === "direct" || mode === "proxy") {
     fs.rmSync(settingsPath, { force: true });
   }
   // Managed or unconfigured: any files at the legacy names are ours (or orphans
   // nothing points at) -- remove them by name (the inline wiring writes none).
-  fs.rmSync(directHelperPath(claudeHome, name), { force: true });
-  fs.rmSync(proxyHelperPath(claudeHome, name), { force: true });
+  removeLegacyHelperFile(directHelperPath(claudeHome, name));
+  removeLegacyHelperFile(proxyHelperPath(claudeHome, name));
+}
+
+/** What removeClaudeDefaultWiring left behind, for the caller to sequence on. */
+export interface ClaudeDefaultWiringRemoval {
+  /** The ledger still owns a WebSearch deny at the default settings path: the
+   *  file could not be read, parsed, or rewritten, so the strip could not land.
+   *  While it stands, the MCP registration (the deny's web-search replacement)
+   *  must stay too -- never a denied builtin with no replacement. */
+  ownedDenyRemains: boolean;
 }
 
 /**
@@ -798,19 +844,30 @@ export function removeClaudeProfile(claudeHome: string, name: ProfileName): void
  * ownership record says we added it), stripped only while apiKeyHelper still
  * points at the managed helper (inspectClaudeWiring reports direct/proxy) --
  * that helper is what makes the whole managed key set ours, exactly as an explicit
- * mode write would reclaim it; a foreign apiKeyHelper (`other`) leaves settings.json
- * alone -- and, like removeClaudeProfile, leaves the LEGACY helper files alone too
- * (the foreign wiring may point at one; deleting it would leave a settings key
+ * mode write would reclaim it; a foreign apiKeyHelper (`other`) leaves the managed
+ * keys alone -- and, like removeClaudeProfile, leaves the LEGACY helper files alone
+ * too (the foreign wiring may point at one; deleting it would leave a settings key
  * aimed at nothing we can vouch for). Otherwise the legacy scripts are removed by
- * name (the inline wiring writes none). The
- * strip is surgical so every other user setting (model, hooks, the user's own
+ * name (the inline wiring writes none).
+ *
+ * The exact-path-OWNED WebSearch deny is the one exception to the hands-off
+ * "other" rule: ownership is the proof it is ours, independent of how the rest of
+ * the file classifies, so any PARSEABLE settings doc gets the ownership-gated
+ * strip (a user's own deny is never touched -- stripManagedWebSearchDeny owns
+ * that gate). Only a file the strip cannot land on (unreadable, malformed, or
+ * unwritable) leaves an owned deny standing, reported via the returned
+ * `ownedDenyRemains` so the caller keeps the MCP registration as the deny's
+ * replacement.
+ *
+ * The strip is surgical so every other user setting (model, hooks, the user's own
  * permissions entries) survives; an emptied env object is dropped, and a doc
  * emptied entirely removes settings.json itself. Used by `agent uninstall`.
  */
-export function removeClaudeDefaultWiring(claudeHome: string): void {
+export function removeClaudeDefaultWiring(claudeHome: string): ClaudeDefaultWiringRemoval {
   const settingsPath = settingsPathFor(claudeHome);
-  const mode = removalWiringMode(settingsPath, claudeHome, null);
-  if (mode === "other") return;
+  const wiring = inspectClaudeWiring(readTextResult(settingsPath), claudeHome, 0);
+  const mode = wiring.providerMode;
+  const parseable = wiring.otherReason !== "malformed" && wiring.otherReason !== "read-error";
   if (mode === "direct" || mode === "proxy") {
     const doc = loadSettings(settingsPath);
     delete doc.apiKeyHelper;
@@ -822,9 +879,31 @@ export function removeClaudeDefaultWiring(claudeHome: string): void {
     const commit = stripManagedWebSearchDeny(doc, settingsPath);
     saveOrRemoveSettings(settingsPath, doc);
     commit();
+  } else if (parseable) {
+    // "none", or a parseable "other": the managed keys are not ours to touch
+    // here, but an owned deny still is -- strip exactly it (an untouched doc is
+    // not rewritten; the commit still releases a stale ownership marker). The
+    // write is best-effort on a file that is not otherwise ours: an unwritable
+    // one keeps its deny AND its ownership record (never released while the
+    // entry may still stand), reported via ownedDenyRemains below.
+    const doc = loadSettings(settingsPath);
+    const before = JSON.stringify(doc);
+    const commit = stripManagedWebSearchDeny(doc, settingsPath);
+    let saved = true;
+    if (JSON.stringify(doc) !== before) {
+      try {
+        saveOrRemoveSettings(settingsPath, doc);
+      } catch {
+        saved = false;
+      }
+    }
+    if (saved) commit();
   }
-  fs.rmSync(directHelperPath(claudeHome), { force: true });
-  fs.rmSync(proxyHelperPath(claudeHome), { force: true });
+  if (mode !== "other") {
+    removeLegacyHelperFile(directHelperPath(claudeHome));
+    removeLegacyHelperFile(proxyHelperPath(claudeHome));
+  }
+  return { ownedDenyRemains: new OwnershipLedger().owns("webSearchDeny", settingsPath) };
 }
 
 /**

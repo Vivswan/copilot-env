@@ -195,18 +195,31 @@ const UNINSTALL_STEPS: UninstallStep[] = [
   },
   {
     // 4. Default Claude wiring (surgical: only managed keys; helper scripts by
-    //    name), plus the copilot-env MCP registration in Claude's global
-    //    ~/.claude.json (best-effort: a warn, never an abort).
+    //    name; an exact-path-OWNED WebSearch deny is stripped even from a
+    //    foreign-edited config -- ownership is the proof), plus the copilot-env
+    //    MCP registration in Claude's global ~/.claude.json (best-effort: a
+    //    warn, never an abort). The registration is the deny's web-search
+    //    replacement, so it only goes once no owned deny remains.
     describe: (ctx) => [
       `Would remove the managed Claude wiring at ${settingsPathFor(ctx.claudeHome)}.`,
-      "Would remove the copilot-env MCP registration from Claude's global ~/.claude.json.",
+      "Would remove the copilot-env MCP registration from Claude's global ~/.claude.json " +
+      "(kept, with a warning, while an owned WebSearch deny cannot be stripped).",
     ],
     run: (ctx) => {
-      removeClaudeDefaultWiring(ctx.claudeHome);
-      try {
-        removeClaudeMcpRegistration();
-      } catch (e) {
-        consola.warn(`could not remove the copilot-env MCP registration: ${errMessage(e)}`);
+      const { ownedDenyRemains } = removeClaudeDefaultWiring(ctx.claudeHome);
+      if (ownedDenyRemains) {
+        consola.warn(
+          `the copilot-env WebSearch deny in ${settingsPathFor(ctx.claudeHome)} could not ` +
+            "be removed (the file could not be read, parsed, or rewritten); keeping the " +
+            "copilot-env MCP registration as its marker (it stops working once copilot-env " +
+            "is gone). Remove the deny by hand, then the copilot-env entry in ~/.claude.json.",
+        );
+      } else {
+        try {
+          removeClaudeMcpRegistration();
+        } catch (e) {
+          consola.warn(`could not remove the copilot-env MCP registration: ${errMessage(e)}`);
+        }
       }
       consola.info("Removed the copilot-env Claude wiring.");
     },

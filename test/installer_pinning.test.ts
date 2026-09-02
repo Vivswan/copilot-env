@@ -340,6 +340,26 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     for (const dir of dirs) removeDir(dir);
   }
 
+  /** The transcript a red on this remote-only platform needs to be diagnosed
+   *  without a rerun: the installer's exit code and both streams, plus which
+   *  root mutations landed (they bracket where the script died). Attached to
+   *  every assertion below -- a bare boolean carries none of that. The root's
+   *  own existence is reported too, so a vanished root can never read as a
+   *  successful sweep. */
+  function evidence(res: ReturnType<typeof runSync>, root: string): string {
+    const at = (...parts: string[]) => existsSync(join(root, ...parts));
+    return [
+      `installer exit=${res.exitCode}`,
+      `root exists=${existsSync(root)}; mutations: node_modules=${
+        at("node_modules")
+      } bin/${installedBinaryName()}=${at("bin", installedBinaryName())}`,
+      "--- installer stdout ---",
+      res.stdout,
+      "--- installer stderr ---",
+      res.stderr,
+    ].join("\n");
+  }
+
   skipWin("install.sh refuses a checkout root and leaves it byte-identical", () => {
     const downloadDir = makeDownloadDir();
     try {
@@ -348,9 +368,10 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
         try {
           const before = snapshotTree(root);
           const res = runInstaller(root, downloadDir);
-          expect(res.exitCode).toBe(2);
-          expect(res.stderr).toContain("source checkout");
-          expect(snapshotTree(root)).toEqual(before);
+          const why = evidence(res, root);
+          expect(res.exitCode, why).toBe(2);
+          expect(res.stderr, why).toContain("source checkout");
+          expect(snapshotTree(root), why).toEqual(before);
         } finally {
           cleanup(root);
         }
@@ -365,10 +386,11 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     const root = makeRoot("deno.json", "none");
     try {
       const res = runInstaller(root, downloadDir);
-      expect(res.exitCode).toBe(0);
-      expect(existsSync(join(root, "node_modules"))).toBe(false);
-      expect(existsSync(join(root, "deno.json"))).toBe(true);
-      expect(existsSync(join(root, "bin", installedBinaryName()))).toBe(true);
+      const why = evidence(res, root);
+      expect(res.exitCode, why).toBe(0);
+      expect(existsSync(join(root, "node_modules")), why).toBe(false);
+      expect(existsSync(join(root, "deno.json")), why).toBe(true);
+      expect(existsSync(join(root, "bin", installedBinaryName())), why).toBe(true);
     } finally {
       cleanup(root, downloadDir);
     }
@@ -382,9 +404,10 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
         try {
           const before = snapshotTree(root);
           const res = runInstaller(root, downloadDir);
-          expect(res.exitCode).not.toBe(0);
-          expect(res.stderr).toContain("source checkout");
-          expect(snapshotTree(root)).toEqual(before);
+          const why = evidence(res, root);
+          expect(res.exitCode, why).not.toBe(0);
+          expect(res.stderr, why).toContain("source checkout");
+          expect(snapshotTree(root), why).toEqual(before);
         } finally {
           cleanup(root);
         }
@@ -401,10 +424,11 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
       // The stand-in .exe cannot actually run, so the final handoff fails and
       // the exit code is non-zero; the mutations before it are the evidence
       // that the guard let a legacy root through.
-      runInstaller(root, downloadDir);
-      expect(existsSync(join(root, "node_modules"))).toBe(false);
-      expect(existsSync(join(root, "deno.json"))).toBe(true);
-      expect(existsSync(join(root, "bin", installedBinaryName()))).toBe(true);
+      const res = runInstaller(root, downloadDir);
+      const why = evidence(res, root);
+      expect(existsSync(join(root, "node_modules")), why).toBe(false);
+      expect(existsSync(join(root, "deno.json")), why).toBe(true);
+      expect(existsSync(join(root, "bin", installedBinaryName())), why).toBe(true);
     } finally {
       cleanup(root, downloadDir);
     }

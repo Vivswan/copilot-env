@@ -176,9 +176,12 @@ function Resolve-SafeInstallDir {
 # The Windows entry of the platform -> release-target mapping (install.sh
 # carries the Linux/macOS entries; src/install/targets.ts owns the target list).
 function Resolve-Target {
-    $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-    switch ("$arch") {
-        'X64' { return 'x86_64-pc-windows-msvc' }
+    # Not [RuntimeInformation]::OSArchitecture: that type is unresolvable on stock Windows
+    # PowerShell 5.1, the shell the README one-liner runs. PROCESSOR_ARCHITEW6432 carries
+    # the native architecture when a 32-bit process runs on a 64-bit OS.
+    $arch = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+    switch ($arch) {
+        'AMD64' { return 'x86_64-pc-windows-msvc' }
         default { throw "No prebuilt copilot-env binary for Windows/$arch." }
     }
 }

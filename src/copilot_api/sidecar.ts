@@ -339,30 +339,42 @@ export async function downloadSidecar(
  * does not. A no-op unless we are a compiled standalone: running under a real deno, that
  * binary IS the answer and nothing needs downloading.
  *
+ * The fast paths answer before the pin is read, so the COPILOT_ENV_SIDECAR_DENO recovery
+ * hatch and a checkout's own deno keep working when .dvmrc itself is unreadable.
+ *
  * Returns the binary every proxy spawn will use. Errors propagate -- a compiled install
  * with no sidecar cannot start the proxy at all, so failing loudly here beats an opaque
  * spawn failure later.
  */
 export async function ensureSidecar(
   rootHome: string,
-  seams: SidecarDownloadSeams = {},
+  seams:
+    & SidecarDownloadSeams
+    & Pick<SidecarDetectOptions, "runtimeExecPath">
+    & { readPin?: () => string } = {},
 ): Promise<AbsolutePath> {
-  const pin = readDvmrcPin();
-  const state = detectSidecar(rootHome, pin, { "platform": seams.platform });
+  const { readPin = readDvmrcPin, runtimeExecPath, ...download } = seams;
+  const fast = sidecarFastPath(process.env, runtimeExecPath);
+  if (fast !== null) return fast.denoBin;
+  const pin = readPin();
+  const state = detectSidecar(rootHome, pin, {
+    "platform": download.platform,
+    "runtimeExecPath": runtimeExecPath,
+  });
   switch (state.kind) {
     case "dev":
     case "provisioned":
       return state.denoBin;
     case "absent": {
       const target = denoReleaseTarget(
-        seams.platform ?? process.platform,
-        seams.arch ?? process.arch,
+        download.platform ?? process.platform,
+        download.arch ?? process.arch,
       );
       return await downloadSidecar(
         state.wantedVersion,
         rootHome,
         sidecarSha256(pin, target),
-        seams,
+        download,
       );
     }
     default: {

@@ -23,7 +23,12 @@
 // surgical: only the managed keys are touched; all other settings are preserved.
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { type AgentAdapter, type AgentConfigArgs, runAgentConfig } from "../agents/configure.ts";
+import {
+  type AgentAdapter,
+  type AgentRunAction,
+  type ManagedWrite,
+  runAgentConfig,
+} from "../agents/configure.ts";
 import { CLAUDE_PROBE, type DirectProbeDeps, probeDirectWorks } from "../agents/live_probe.ts";
 import {
   type AgentProviderMode,
@@ -294,9 +299,6 @@ export function legacyProxyHelperScript(profile: Profile = null): string {
   return posixExecBody(path.join(PROJECT_ROOT, "src", "scripts", "proxy-token.sh"), scriptArgs);
 }
 
-/** The `agent claude` argument shape (the shared skeleton's, under this command's name). */
-export type ClaudeConfigArgs = AgentConfigArgs;
-
 /** Why an "other" classification is not ours -- minted together with
  *  providerMode by inspectClaudeWiring, so consumers switch on it instead of
  *  re-deriving the classifier's reasoning:
@@ -308,22 +310,52 @@ export type ClaudeConfigArgs = AgentConfigArgs;
  *    - "custom":              a foreign apiKeyHelper or a custom base URL */
 export type ClaudeOtherReason = "malformed" | "custom" | "legacy-unrecognized" | "read-error";
 
-export interface ClaudeWiringStatus {
-  /** settings.json exists. */
-  settingsExists: boolean;
-  /** The configured `apiKeyHelper` value, for messaging (not a secret): the managed
-   *  inline command, a legacy install's helper-script path, or a foreign value. */
-  helperPath: string | null;
-  /** `env.ANTHROPIC_BASE_URL`, if present. */
-  baseUrl: string | null;
-  /** Whether `baseUrl` points at the resolved local proxy (host+port): proxy mode's
-   *  port check, and the mixed-config signal defaultSetupNeedsProxy keys off. */
-  baseUrlMatches: boolean;
-  /** Which backend the current settings select. */
-  providerMode: AgentProviderMode;
-  /** Set exactly when providerMode is "other": which classifier arm minted it. */
-  otherReason: ClaudeOtherReason | null;
-}
+/**
+ * The read-only counterpart to configureClaudeConfig, discriminated on
+ * providerMode so a combination the classifier can never mint ("other" without
+ * its reason, a reason outside "other", a managed mode without an apiKeyHelper)
+ * is unrepresentable rather than re-checked downstream. `wired` -- "the settings
+ * select a managed backend" -- is computed HERE, in the owner, so consumers
+ * never re-derive it from the mode pair.
+ */
+export type ClaudeWiringStatus =
+  | {
+    providerMode: "direct" | "proxy";
+    settingsExists: true;
+    wired: true;
+    otherReason: null;
+    /** The managed `apiKeyHelper` value, for messaging (not a secret): the
+     *  managed inline command or a legacy install's verified helper-script path. */
+    helperPath: string;
+    /** `env.ANTHROPIC_BASE_URL`, if present. */
+    baseUrl: string | null;
+    /** Whether `baseUrl` points at the resolved local proxy (host+port): proxy
+     *  mode's port check, and the mixed-config signal defaultSetupNeedsProxy
+     *  keys off (Claude's MODE keys off apiKeyHelper alone). */
+    baseUrlMatches: boolean;
+  }
+  | {
+    providerMode: "none";
+    /** False = no settings file at all; true = one with no relevant keys. */
+    settingsExists: boolean;
+    wired: false;
+    otherReason: null;
+    helperPath: null;
+    baseUrl: null;
+    baseUrlMatches: false;
+  }
+  | {
+    providerMode: "other";
+    settingsExists: true;
+    wired: false;
+    /** Which classifier arm minted the "other" (see ClaudeOtherReason). */
+    otherReason: ClaudeOtherReason;
+    /** The foreign/unverified apiKeyHelper value (null when the file could not
+     *  be read or parsed at all). */
+    helperPath: string | null;
+    baseUrl: string | null;
+    baseUrlMatches: boolean;
+  };
 
 /** Whether `baseUrl` is the managed Claude proxy URL for `expectedPort`:
  *  `http://127.0.0.1:<port>` (loopback, no path -- unlike Codex's `/v1`). Tolerates a trailing
@@ -369,27 +401,40 @@ export function inspectClaudeWiring(
   const read: TextReadResult = typeof settings === "string"
     ? { kind: "text", text: settings }
     : settings ?? { kind: "absent" };
-  const status: ClaudeWiringStatus = {
-    settingsExists: read.kind !== "absent",
+  const none = (settingsExists: boolean): ClaudeWiringStatus => ({
+    providerMode: "none",
+    settingsExists,
+    wired: false,
+    otherReason: null,
     helperPath: null,
     baseUrl: null,
     baseUrlMatches: false,
-    providerMode: "none",
-    otherReason: null,
-  };
+  });
   if (read.kind === "unreadable") {
-    status.providerMode = "other";
-    status.otherReason = "read-error";
-    return status;
+    return {
+      providerMode: "other",
+      settingsExists: true,
+      wired: false,
+      otherReason: "read-error",
+      helperPath: null,
+      baseUrl: null,
+      baseUrlMatches: false,
+    };
   }
-  if (read.kind === "absent" || read.text.trim() === "") return status;
+  if (read.kind === "absent" || read.text.trim() === "") return none(read.kind !== "absent");
 
   const doc = parseJsonRecord(read.text);
   if (doc === null) {
     // Present but unparseable: we can't manage it, so leave it alone (other).
-    status.providerMode = "other";
-    status.otherReason = "malformed";
-    return status;
+    return {
+      providerMode: "other",
+      settingsExists: true,
+      wired: false,
+      otherReason: "malformed",
+      helperPath: null,
+      baseUrl: null,
+      baseUrlMatches: false,
+    };
   }
 
   // `apiKeyHelper` in Claude's settings.json is a PATH to a token-printing script,
@@ -398,9 +443,7 @@ export function inspectClaudeWiring(
   const helperPath = readStringField(doc, "apiKeyHelper");
   const env = isRecord(doc.env) ? doc.env : undefined;
   const baseUrl = env ? readStringField(env, BASE_URL_ENV) : null;
-  status.helperPath = helperPath;
-  status.baseUrl = baseUrl;
-  status.baseUrlMatches = baseUrl !== null && claudeBaseUrlMatchesProxy(baseUrl, expectedPort);
+  const baseUrlMatches = baseUrl !== null && claudeBaseUrlMatchesProxy(baseUrl, expectedPort);
 
   // The inline command is the managed contract, recognized by SHAPE (any root's
   // spelling); the path arms are the legacy helper-file tolerance, and classify as
@@ -416,27 +459,52 @@ export function inspectClaudeWiring(
         legacyDirectHelperBodyMatches(readFile(helperPath), profile))
     )
   ) {
-    status.providerMode = "direct";
-  } else if (
+    return {
+      providerMode: "direct",
+      settingsExists: true,
+      wired: true,
+      otherReason: null,
+      helperPath,
+      baseUrl,
+      baseUrlMatches,
+    };
+  }
+  if (
     helperPath !== null && (
       managedHelperShape(helperPath, proxyTokenArgs(profile)) ||
       (helperPath === proxyHelperPath(claudeHome, profile) &&
         legacyProxyHelperBodyMatches(readFile(helperPath), profile))
     )
   ) {
-    status.providerMode = "proxy";
-  } else if (helperPath !== null || baseUrl !== null) {
+    return {
+      providerMode: "proxy",
+      settingsExists: true,
+      wired: true,
+      otherReason: null,
+      helperPath,
+      baseUrl,
+      baseUrlMatches,
+    };
+  }
+  if (helperPath !== null || baseUrl !== null) {
     // A foreign apiKeyHelper or a custom base URL the user set -- not ours. A
     // helper at OUR legacy path landing here means the body verification above
     // failed: likelier a broken leftover than custom wiring.
-    status.providerMode = "other";
-    status.otherReason = helperPath !== null &&
-        (helperPath === directHelperPath(claudeHome, profile) ||
-          helperPath === proxyHelperPath(claudeHome, profile))
-      ? "legacy-unrecognized"
-      : "custom";
+    return {
+      providerMode: "other",
+      settingsExists: true,
+      wired: false,
+      otherReason: helperPath !== null &&
+          (helperPath === directHelperPath(claudeHome, profile) ||
+            helperPath === proxyHelperPath(claudeHome, profile))
+        ? "legacy-unrecognized"
+        : "custom",
+      helperPath,
+      baseUrl,
+      baseUrlMatches,
+    };
   }
-  return status;
+  return none(true);
 }
 
 // --- config writes ----------------------------------------------------------
@@ -665,30 +733,26 @@ export function syncDefaultWebSearchWiring(claudeHome = resolveClaudeHome()): vo
  * credential (named profiles never fall back to the default one). Throws on an
  * unwritable home / malformed settings / unresolvable proxy port.
  */
-/** Options for configureClaudeConfig (mirrors the Codex writer's common knobs). */
-export interface ConfigureClaudeConfigOptions {
+/** One managed Claude settings write: the SHARED mode variant (ManagedWrite, so
+ *  the mode/identity pairing is enforced at the type) plus this writer's common
+ *  knobs -- the Claude twin of CodexWriteRequest. */
+export type ClaudeWriteRequest = ManagedWrite & {
   /** Suppress the "config written" info line (used by the temp-config probe). */
   quiet?: boolean;
   /** Wire a NAMED profile's settings-<name>.json instead of the default settings.json. */
   profile?: Profile;
-  /** Direct mode: the probed `Copilot-Integration-Id` to bake, or null to send none. */
-  directIntegrationId?: string | null;
-}
+};
 
-export function configureClaudeConfig(
-  claudeHome: string,
-  mode: ManagedAgentMode,
-  options: ConfigureClaudeConfigOptions = {},
-): void {
-  const quiet = options.quiet ?? false;
-  const profile = options.profile ?? null;
+export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRequest): void {
+  const quiet = request.quiet ?? false;
+  const profile = request.profile ?? null;
   // Cheap credential-presence gate (no `gh` spawn -- runClaude already did the full
   // resolve and fail-fasts on it; this backstops direct API callers like
   // --settings-for). The parsed union is fail-closed: a recorded provider whose
   // token is gone reads as "none", so a broken slot is refused here too.
   if (
     profile !== null &&
-    mode === "direct" &&
+    request.mode === "direct" &&
     new Credential(undefined, profile).read().kind === "none"
   ) {
     throw new Error(
@@ -718,12 +782,12 @@ export function configureClaudeConfig(
     }
   }
 
-  if (mode === "direct") {
+  if (request.mode === "direct") {
     // The inline command invokes `agent auth --get`; the token is never baked here, and
     // no helper file is written (a legacy install's helper files are left alone --
     // orphaned but harmless -- until uninstall/profile-del removes them by name).
     doc.apiKeyHelper = directHelperCommand(profile);
-    applyManagedEnv(doc, "direct", DIRECT_BASE_URL, profile, options.directIntegrationId);
+    applyManagedEnv(doc, "direct", DIRECT_BASE_URL, profile, request.directIntegrationId);
     // The MCP + deny pair is machine-global (default profile, the REAL Claude home
     // only -- the throwaway detect-probe home must not touch ~/.claude.json).
     const commit = profile === null && claudeHome === resolveClaudeHome()
@@ -820,9 +884,9 @@ function removeLegacyHelperFile(path: string): void {
 
 export function removeClaudeProfile(claudeHome: string, name: ProfileName): void {
   const settingsPath = settingsPathFor(claudeHome, name);
-  const mode = inspectClaudeWiring(readTextResult(settingsPath), claudeHome, 0, name).providerMode;
-  if (mode === "other") return;
-  if (mode === "direct" || mode === "proxy") {
+  const wiring = inspectClaudeWiring(readTextResult(settingsPath), claudeHome, 0, name);
+  if (wiring.providerMode === "other") return;
+  if (wiring.wired) {
     fs.rmSync(settingsPath, { force: true });
   }
   // Managed or unconfigured: any files at the legacy names are ours (or orphans
@@ -868,9 +932,8 @@ export interface ClaudeDefaultWiringRemoval {
 export function removeClaudeDefaultWiring(claudeHome: string): ClaudeDefaultWiringRemoval {
   const settingsPath = settingsPathFor(claudeHome);
   const wiring = inspectClaudeWiring(readTextResult(settingsPath), claudeHome, 0);
-  const mode = wiring.providerMode;
   const parseable = wiring.otherReason !== "malformed" && wiring.otherReason !== "read-error";
-  if (mode === "direct" || mode === "proxy") {
+  if (wiring.wired) {
     const doc = loadSettings(settingsPath);
     delete doc.apiKeyHelper;
     const env = isRecord(doc.env) ? doc.env : {};
@@ -901,7 +964,7 @@ export function removeClaudeDefaultWiring(claudeHome: string): ClaudeDefaultWiri
     }
     if (saved) commit();
   }
-  if (mode !== "other") {
+  if (wiring.providerMode !== "other") {
     removeLegacyHelperFile(directHelperPath(claudeHome));
     removeLegacyHelperFile(proxyHelperPath(claudeHome));
   }
@@ -917,7 +980,7 @@ export function detectClaudeDirect(deps?: DirectProbeDeps): boolean {
   return probeDirectWorks(
     CLAUDE_PROBE,
     (tmpHome) => {
-      configureClaudeConfig(tmpHome, "direct", { quiet: true });
+      configureClaudeConfig(tmpHome, { mode: "direct", quiet: true });
     },
     deps,
   );
@@ -929,38 +992,26 @@ export function detectClaudeDirect(deps?: DirectProbeDeps): boolean {
  */
 export function claudeAdapter(): AgentAdapter {
   return {
+    id: "claude",
     label: "Claude",
     check: checkClaudeConfig,
     detectDirect: detectClaudeDirect,
-    async configureDefault(mode, ghToken) {
-      // Direct bakes the client identity this credential is accepted under (shared with
-      // Codex Direct); proxy needs none. Reuses the already-resolved token so gh-cli isn't
-      // spawned twice.
-      const directIntegrationId = mode === "direct"
-        ? await probeDirectIntegrationId(null, ghToken)
-        : undefined;
-      configureClaudeConfig(resolveClaudeHome(), mode, { directIntegrationId });
+    // The shared identity resolution (baked identically by Codex Direct); the
+    // skeleton reuses the already-resolved token so gh-cli isn't spawned twice.
+    resolveDirectIdentity: (ghToken) => probeDirectIntegrationId(null, ghToken),
+    async configureDefault(write, ghToken) {
+      configureClaudeConfig(resolveClaudeHome(), write);
       // Claude Desktop's chat surface reads its own config library, not settings.json;
-      // every default rewire refreshes it too (best-effort, identity resolved above).
-      await syncClaudeDesktopWiring({
-        profile: null,
-        mode,
-        directIntegrationId,
-        directToken: ghToken,
-      });
+      // every default rewire refreshes it too (best-effort), baking the SAME write.
+      await syncClaudeDesktopWiring({ ...write, profile: null, directToken: ghToken });
     },
-    async configureProfile(name, mode, options) {
-      configureClaudeConfig(resolveClaudeHome(), mode, {
+    async configureProfile(name, write, options) {
+      configureClaudeConfig(resolveClaudeHome(), {
+        ...write,
         quiet: options.quiet,
         profile: name,
-        directIntegrationId: options.directIntegrationId,
       });
-      await syncClaudeDesktopWiring({
-        profile: name,
-        mode,
-        directIntegrationId: options.directIntegrationId,
-        quiet: options.quiet,
-      });
+      await syncClaudeDesktopWiring({ ...write, profile: name, quiet: options.quiet });
     },
     removeProfile(name) {
       removeClaudeProfile(resolveClaudeHome(), name);
@@ -971,14 +1022,15 @@ export function claudeAdapter(): AgentAdapter {
 
 /**
  * `agent claude`: configure Claude Code's wiring at the effective Claude home
- * ($CLAUDE_CONFIG_DIR, else ~/.claude). `--direct` forces GitHub Copilot Direct,
- * `--proxy` forces the local proxy, and with no mode flag it auto-detects (live
- * `claude -p` probe, else the proxy). A GitHub token provisioned via `agent auth`
- * (in the shared store) selects Direct without probing when no mode flag is given.
- * `--check` reports the configured mode (exit 0 direct / 2 proxy|none / 1 other)
- * without a probe. (Named profiles are managed by `agent profile`, not here.)
- * The body is the shared skeleton (runAgentConfig) over claudeAdapter.
+ * ($CLAUDE_CONFIG_DIR, else ~/.claude). The parsed action union carries the
+ * intent whole: a `check` action reports the configured mode (exit 0 direct /
+ * 2 proxy|none / 1 other) without a probe, and a `configure` action carries the
+ * requested mode (`--direct`/`--proxy` forced, "auto" = live `claude -p` probe,
+ * else the proxy). A GitHub token provisioned via `agent auth` (in the shared
+ * store) selects Direct without probing on "auto". (Named profiles are managed
+ * by `agent profile`, not here.) The body is the shared skeleton
+ * (runAgentConfig) over claudeAdapter.
  */
-export async function runClaude(args: ClaudeConfigArgs): Promise<void> {
-  return runAgentConfig(claudeAdapter(), args);
+export async function runClaude(action: AgentRunAction): Promise<void> {
+  return runAgentConfig(claudeAdapter(), action);
 }

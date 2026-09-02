@@ -148,6 +148,20 @@ describe("proxyUnusedEverywhere edge cases", () => {
     writeFileSync(join(codexHome, "config.toml"), "model_provider = [broken");
     const claudeHome = makeClaudeHome("direct");
     expect(proxyUnusedEverywhere({ codexHome, claudeHome })).toBe(false);
+    // The classifier mints the not-ours verdict itself (other/malformed), so a
+    // best-effort caller never mistakes an unparseable config for an unwired one.
+    expect(readAgentModes({ codexHome, claudeHome }).codex).toBe("other");
+  });
+
+  test("an UNREADABLE codex config reads other, never none (nothing synthesizes it)", () => {
+    // config.toml as a DIRECTORY: the entry exists but cannot be read as text,
+    // the portable stand-in for a permission failure. The classifier itself
+    // (not a caller-side seam) must report present-but-unknown.
+    const codexHome = join(dir, "codex-home");
+    mkdirSync(join(codexHome, "config.toml"), { recursive: true });
+    const claudeHome = makeClaudeHome("direct");
+    expect(readAgentModes({ codexHome, claudeHome }).codex).toBe("other");
+    expect(proxyUnusedEverywhere({ codexHome, claudeHome })).toBe(false);
   });
 });
 

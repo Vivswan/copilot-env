@@ -3,13 +3,13 @@
 // `agent init` (both agents, one mode) and the settings-bundle import (per-agent
 // recorded modes, either skippable) -- it needs BOTH src/codex/ and src/claude/,
 // so it lives in src/agents/ like wiring.ts, not in src/commands/.
-import { runClaude } from "../claude/config.ts";
 import type { CodexCatalogDeps } from "../codex/catalog.ts";
-import { runCodex } from "../codex/config.ts";
 import { CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
 import { bold } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { runAgentConfig } from "./configure.ts";
+import { bothAgents } from "./profile_wiring.ts";
 import type { AgentProviderMode, RequestedMode } from "./provider_mode.ts";
 import { readAgentModesSafe } from "./wiring.ts";
 
@@ -17,12 +17,15 @@ import { readAgentModesSafe } from "./wiring.ts";
 // the per-agent probe/config narration (also stderr) and never pollutes any stdout.
 const logger = createStderrLogger();
 
-/** What to write per agent: a requested mode, or null to leave that agent alone. */
+/** What to write per agent, keyed by ManagedAgentId: a requested mode, or null to
+ *  leave that agent alone. The per-adapter lookup below indexes this by
+ *  `adapter.id`, so a new agent in bothAgents() is a compile error here until the
+ *  request names it -- it can never be silently skipped. */
 export interface DefaultAgentRequest {
   codex: RequestedMode | null;
   claude: RequestedMode | null;
   /** Pre-resolved default credential for BOTH writers (undefined = each writer
-   *  resolves from the store itself) -- see AgentConfigArgs.ghToken. */
+   *  resolves from the store itself) -- see AgentRunOptions.ghToken. */
   ghToken?: string | null;
 }
 
@@ -31,11 +34,11 @@ export interface DefaultAgentRequest {
  * modes (a skipped agent still reports its current wiring) plus every per-agent
  * failure -- the warn here keeps init's narration, and the returned `failures`
  * let callers with a stricter contract (the settings-bundle import) fail the
- * run instead of printing success over a broken wiring. `runCodex`/`runClaude`
- * read the provisioned GitHub token from the shared store themselves (the single
- * source of truth), so callers persist the token separately. Each agent's
- * narration is grouped under a header with blank-line spacing. `catalogDeps` is
- * runCodex's catalog test seam, threaded through untouched.
+ * run instead of printing success over a broken wiring. Runs through the ONE
+ * cross-agent adapter list (bothAgents) and the shared skeleton (runAgentConfig),
+ * in the list's order. Each agent's narration is grouped under a header with
+ * blank-line spacing. `catalogDeps` is the Codex adapter's catalog test seam,
+ * threaded through untouched.
  */
 export async function configureDefaultAgents(
   request: DefaultAgentRequest,
@@ -46,25 +49,16 @@ export async function configureDefaultAgents(
   failures: string[];
 }> {
   const failures: string[] = [];
-  if (request.codex !== null) {
+  for (const adapter of bothAgents(catalogDeps)) {
+    const mode = request[adapter.id];
+    if (mode === null) continue;
     logger.log("");
-    logger.log(bold("▸ Codex"));
+    logger.log(bold(`▸ ${adapter.label}`));
     try {
-      await runCodex({ mode: request.codex, ghToken: request.ghToken }, catalogDeps);
+      await runAgentConfig(adapter, { kind: "configure", mode }, { ghToken: request.ghToken });
     } catch (e) {
-      logger.warn(`  Could not configure Codex: ${errMessage(e)}`);
-      failures.push(`Codex: ${errMessage(e)}`);
-    }
-  }
-
-  if (request.claude !== null) {
-    logger.log("");
-    logger.log(bold("▸ Claude"));
-    try {
-      await runClaude({ mode: request.claude, ghToken: request.ghToken });
-    } catch (e) {
-      logger.warn(`  Could not configure Claude: ${errMessage(e)}`);
-      failures.push(`Claude: ${errMessage(e)}`);
+      logger.warn(`  Could not configure ${adapter.label}: ${errMessage(e)}`);
+      failures.push(`${adapter.label}: ${errMessage(e)}`);
     }
   }
 

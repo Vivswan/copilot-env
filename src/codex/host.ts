@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { resolveDirectMode } from "../agents/direct_detect.ts";
+import type { ManagedWrite } from "../agents/configure.ts";
 import type { RequestedMode } from "../agents/provider_mode.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
@@ -11,7 +12,7 @@ import { errMessage } from "../utils/error.ts";
 import { isFile } from "../utils/fs.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../utils/hostname.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { applyCodexConfig, detectCodexDirect } from "./config.ts";
+import { applyCodexConfig, detectCodexDirect, probeDirectIntegrationId } from "./config.ts";
 
 const logger = createStderrLogger();
 
@@ -454,14 +455,18 @@ export async function runCodexHost(args: CodexHostArgs): Promise<void> {
       direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"
     } ...`,
   );
+  // Direct resolves the client identity HERE (reusing the just-resolved
+  // credential, so gh-cli is not shelled out to a second time) and passes it
+  // down inside the shared write; a dead direct credential fails the wiring
+  // instead of writing a config that 400s.
+  const write: ManagedWrite = direct
+    ? { mode: "direct", directIntegrationId: await probeDirectIntegrationId(null, ghToken) }
+    : { mode: "proxy" };
   await applyCodexConfig(
     codexHome,
-    direct ? "direct" : "proxy",
-    // Reuse the just-resolved credential for the catalog seed's direct fetch
-    // AND the identity probe, so gh-cli is not shelled out to a second time.
+    write,
+    // Reuse the credential for the catalog seed's direct fetch too.
     ghToken === null ? undefined : { directToken: ghToken },
-    null,
-    ghToken,
   );
   // Persist the active CODEX_HOME (opt-in: only set because a codex command ran).
   state.set({ codexHome });

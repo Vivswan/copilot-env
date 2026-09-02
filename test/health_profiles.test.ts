@@ -26,6 +26,7 @@ import {
 } from "../src/health/checks.ts";
 import {
   classifyPortState,
+  type ClaudeFacts,
   claudeLiveOmitEnv,
   type DaemonProbed,
   gatherFacts,
@@ -451,6 +452,7 @@ test("checkCodex(named): missing wiring warns with the profile re-add fix", () =
       directAuth: { command: null, authenticated: false },
       directUsesToken: false,
       directNeedsNoGh: false,
+      otherReason: null,
     },
     P,
   );
@@ -478,6 +480,7 @@ test("checkCodex(named): missing wiring warns with the profile re-add fix", () =
       directAuth: { command: null, authenticated: false },
       directUsesToken: false,
       directNeedsNoGh: false,
+      otherReason: null,
     },
     P,
   );
@@ -487,18 +490,20 @@ test("checkCodex(named): missing wiring warns with the profile re-add fix", () =
 });
 
 test("checkClaude(named): missing wiring warns; a stale proxy port points at the profile re-add", () => {
+  // `satisfies` keeps the literal arm narrow so the spreads below can flip arms.
   const base = {
     home: "/h/.claude",
     settingsPath: join("/h/.claude", "settings-p.json"),
     settingsExists: false,
+    wired: false,
     helperPath: null,
     baseUrl: null,
     baseUrlMatches: false,
-    providerMode: "none" as const,
+    providerMode: "none",
     otherReason: null,
     directAuth: { command: null, authenticated: false },
     directUsesToken: false,
-  };
+  } satisfies ClaudeFacts;
   const unwired = checkClaude(base, P);
   expect(unwired.status).toBe("warn");
   expect(unwired.profile).toBe(P);
@@ -511,6 +516,7 @@ test("checkClaude(named): missing wiring warns; a stale proxy port points at the
     {
       ...base,
       settingsExists: true,
+      wired: true,
       helperPath: join("/h/.claude", "copilot-proxy-token-p.sh"),
       baseUrl: "http://127.0.0.1:9999",
       baseUrlMatches: false,
@@ -542,6 +548,7 @@ test("checkClaude(named): missing wiring warns; a stale proxy port points at the
   expect(
     checkClaude({
       ...base,
+      settingsExists: true,
       helperPath: "/opt/x/helper.sh",
       providerMode: "other",
       otherReason: "custom",
@@ -569,6 +576,7 @@ test("named wiring in the OTHER mode than the slot records warns as an interrupt
       directAuth: { command: null, authenticated: false },
       directUsesToken: true,
       directNeedsNoGh: true,
+      otherReason: null,
       expectedMode: "proxy",
     },
     P,
@@ -595,6 +603,7 @@ test("named wiring in the OTHER mode than the slot records warns as an interrupt
       directAuth: { command: null, authenticated: false },
       directUsesToken: true,
       directNeedsNoGh: true,
+      otherReason: null,
       expectedMode: "direct",
     },
     P,
@@ -607,6 +616,7 @@ test("named wiring in the OTHER mode than the slot records warns as an interrupt
       home: "/h/.claude",
       settingsPath: join("/h/.claude", "settings-p.json"),
       settingsExists: true,
+      wired: true,
       helperPath: join("/h/.claude", "copilot-proxy-token-p.sh"),
       baseUrl: "http://127.0.0.1:4555",
       baseUrlMatches: true,

@@ -90,7 +90,7 @@ test("uninstall removes everything managed and preserves user config", async () 
   // Default wiring: Claude direct + Codex proxy, each with a user key alongside.
   mkdirSync(claudeHome, { recursive: true });
   writeFileSync(settingsPathFor(claudeHome), JSON.stringify({ model: "opus" }));
-  configureClaudeConfig(claudeHome, "direct", { quiet: true });
+  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true });
   // Legacy helper files from a pre-inline install (the current writer creates none):
   // uninstall must still remove them by name.
   writeFileSync(join(claudeHome, DIRECT_HELPER_NAME), "#!/bin/sh\nexec legacy\n");
@@ -114,7 +114,7 @@ test("uninstall removes everything managed and preserves user config", async () 
     credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
     mode: "direct",
   });
-  configureClaudeConfig(claudeHome, "direct", { quiet: true, profile: WORK });
+  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true, profile: WORK });
   configureCodexConfig(codexHome, { mode: "direct", quiet: true, profile: WORK });
   mkdirSync(profileHome(WORK), { recursive: true });
 
@@ -260,7 +260,7 @@ test("uninstall leaves foreign Claude/Codex wiring untouched", async () => {
 
 test("uninstall on a foreign-edited config strips OUR deny, then removes the registration", async () => {
   const { claudeHome, codexHome } = tmpHomes();
-  configureClaudeConfig(claudeHome, "direct", { quiet: true }); // deny + registration + ownership
+  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true }); // deny + registration + ownership
   const settingsPath = settingsPathFor(claudeHome);
   const doc = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
   doc.apiKeyHelper = "/usr/local/bin/my-helper"; // foreign edit: wiring classifies "other"
@@ -299,7 +299,7 @@ test("uninstall never touches a user's own deny on a foreign config (registratio
 
 test("uninstall keeps the MCP registration while an owned deny cannot be stripped", async () => {
   const { claudeHome, codexHome } = tmpHomes();
-  configureClaudeConfig(claudeHome, "direct", { quiet: true }); // deny + registration + ownership
+  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true }); // deny + registration + ownership
   const settingsPath = settingsPathFor(claudeHome);
   writeFileSync(settingsPath, "{ not json"); // the owned deny is now unverifiable
 
@@ -324,7 +324,7 @@ test("uninstall is idempotent: a second run finds nothing and exits 0", async ()
 test("uninstall without --yes on a non-TTY refuses and deletes nothing", async () => {
   const { proxyHome, claudeHome, codexHome } = tmpHomes();
   mkdirSync(claudeHome, { recursive: true });
-  configureClaudeConfig(claudeHome, "direct", { quiet: true });
+  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true });
   new Credential().store("gh-token", "ghp_default");
 
   // the test runner's stdin is not a TTY, so the guard fires before the prompt.
@@ -336,7 +336,7 @@ test("uninstall without --yes on a non-TTY refuses and deletes nothing", async (
 test("uninstall --dry-run changes nothing and narrates every step", async () => {
   const { proxyHome, claudeHome, codexHome } = tmpHomes();
   mkdirSync(claudeHome, { recursive: true });
-  configureClaudeConfig(claudeHome, "direct", { quiet: true });
+  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true });
   // A legacy helper file (pre-inline install): dry-run must leave even that alone.
   writeFileSync(join(claudeHome, DIRECT_HELPER_NAME), "#!/bin/sh\nexec legacy\n");
   configureCodexConfig(codexHome, {

@@ -786,7 +786,7 @@ export function evalShellFiles(
  */
 export function evalCodex(
   home: string,
-  configToml: string | null,
+  configToml: TextReadResult | string | null,
   envText: string | null,
   expectedPort: number,
   envKeyInEnviron: boolean,
@@ -1129,12 +1129,16 @@ export async function gatherFacts(
     jobs.push(
       (async () => {
         const home = deps.codexHome();
-        const configToml = deps.readFileSafe(codexConfigPath(home));
+        // config.toml is read three-way (deps.readFileResult) so an unreadable
+        // file classifies other/read-error instead of collapsing into the
+        // absent/none verdict readFileSafe's null would produce; the .env read
+        // stays don't-care (its absence and unreadability are alike here).
+        const configRead = deps.readFileResult(codexConfigPath(home));
         const envText = deps.readFileSafe(join(home, ".env"));
         // A named profile inspects ITS selection ([profiles.<name>] over the
         // suffixed provider table) against ITS resolved port.
         const wiring = inspectCodexWiring(
-          configToml,
+          configRead,
           envText,
           wiringPort(),
           deps.codexTokenInEnviron(),
@@ -1146,7 +1150,7 @@ export async function gatherFacts(
         // the meaning checkCodex consumes).
         const codexFacts = evalCodex(
           home,
-          configToml,
+          configRead,
           envText,
           wiringPort(),
           deps.codexTokenInEnviron(),

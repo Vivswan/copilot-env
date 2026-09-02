@@ -23,6 +23,7 @@ import { chmodSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { codexUserAgent } from "../codex/config.ts";
+import type { ManagedWrite } from "../agents/configure.ts";
 import { fetchRawModels } from "../copilot_api/catalog.ts";
 import { atomicWriteFile } from "../copilot_api/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
@@ -296,17 +297,16 @@ function managedMcpServers(profile: Profile, existing: unknown): Record<string, 
   };
 }
 
-export interface DesktopPayloadOptions {
-  mode: ProfileMode;
+/** The payload inputs: the SHARED write variant (mode/identity pairing enforced
+ *  by ManagedWrite; this module never probes) plus the entry-local fields. */
+export type DesktopPayloadOptions = ManagedWrite & {
   profile: Profile;
   baseUrl: string;
   helperPath: string;
-  /** Direct only; ALREADY resolved by the caller (this module never probes). */
-  directIntegrationId?: string | null;
   models?: readonly DesktopModelSpec[];
   /** The entry's current document; foreign keys survive the merge. */
   existing?: Record<string, unknown>;
-}
+};
 
 /** Build the entry document: the managed keys over `existing`. Every key below is an
  *  external contract (Desktop's documented flat config vocabulary) -- never rename. */
@@ -442,17 +442,15 @@ export function retireDesktopHelperScript(mode: ProfileMode, profile: Profile): 
 
 // --- wiring ------------------------------------------------------------------------
 
-export interface DesktopWireOptions {
+/** One Desktop-entry wiring: the SHARED write variant plus this surface's knobs. */
+export type DesktopWireOptions = ManagedWrite & {
   profile: Profile;
-  mode: ProfileMode;
-  /** Direct only; already resolved by the caller -- never probed here. */
-  directIntegrationId?: string | null;
   /** Direct only: credential for the catalog fetch (never re-resolved when given). */
   directToken?: string | null;
   quiet?: boolean;
   /** Test seam, threaded to fetchRawModels. */
   fetchImpl?: ProbeFetch;
-}
+};
 
 /** The hand-rolled pre-copilot-env helper this feature supersedes: retired during
  *  adoption iff the adopted entry referenced it AND nothing else still does. */
@@ -685,12 +683,16 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   if (created) meta.entries.push(entry);
 
   const helperPath = writeDesktopHelperScript(opts.mode, opts.profile);
+  // Re-extract the shared write variant so the payload receives the identity
+  // only alongside a direct mode (the union spread keeps the pairing).
+  const write: ManagedWrite = opts.mode === "direct"
+    ? { mode: "direct", directIntegrationId: opts.directIntegrationId }
+    : { mode: "proxy" };
   const payload = desktopConfigPayload({
-    mode: opts.mode,
+    ...write,
     profile: opts.profile,
     baseUrl,
     helperPath,
-    directIntegrationId: opts.directIntegrationId,
     models,
     existing,
   });

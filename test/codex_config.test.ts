@@ -365,7 +365,7 @@ test("runCodex --proxy writes the proxy provider at CODEX_HOME", async () => {
     ].join("\n"),
   );
 
-  await runCodex({ mode: "proxy" }, NOOP_CATALOG_DEPS);
+  await runCodex({ kind: "configure", mode: "proxy" }, NOOP_CATALOG_DEPS);
 
   const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
@@ -394,14 +394,14 @@ test("runCodex --proxy and --direct force the selected provider (no probe)", asy
     ].join("\n"),
   );
 
-  await runCodex({ mode: "proxy" }, NOOP_CATALOG_DEPS);
+  await runCodex({ kind: "configure", mode: "proxy" }, NOOP_CATALOG_DEPS);
   let doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
   expect(asRecord(asRecord(doc.model_providers)["copilot-env"]).base_url).toBe(
     "http://127.0.0.1:4141/v1",
   );
 
-  await runCodex({ mode: "direct" }, NOOP_CATALOG_DEPS);
+  await runCodex({ kind: "configure", mode: "direct" }, NOOP_CATALOG_DEPS);
   doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
   expect(doc.model_provider).toBe("copilot-env");
   const directProvider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
@@ -878,6 +878,33 @@ test("a genuinely foreign auth block still un-wires the proxy config", () => {
     false,
   );
   expect(strayCopy.providerWired).toBe(false);
+});
+
+test("inspectCodexWiring takes a TextReadResult: unreadable is other/read-error, never none", () => {
+  const unreadable = inspectCodexWiring({ kind: "unreadable", error: "EACCES" }, null, 4141, false);
+  expect(unreadable.providerMode).toBe("other");
+  expect(unreadable.otherReason).toBe("read-error");
+  expect(unreadable.configExists).toBe(true); // it EXISTS -- it just cannot be read
+
+  const absent = inspectCodexWiring({ kind: "absent" }, null, 4141, false);
+  expect(absent.providerMode).toBe("none");
+  expect(absent.configExists).toBe(false);
+
+  const text = inspectCodexWiring(
+    { kind: "text", text: 'model_provider = "copilot-env"' },
+    null,
+    4141,
+    false,
+  );
+  expect(text.providerSelected).toBe(true);
+  expect(text.otherReason).toBe(null);
+});
+
+test("a foreign model_provider classifies other/custom carrying the foreign id", () => {
+  const wiring = inspectCodexWiring('model_provider = "openai"', null, 4141, false);
+  expect(wiring.providerMode).toBe("other");
+  expect(wiring.otherReason).toBe("custom");
+  expect(wiring.modelProvider).toBe("openai");
 });
 
 test("a rewrite upgrades legacy script wiring to the subcommand shape", () => {

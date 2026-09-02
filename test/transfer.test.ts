@@ -88,8 +88,8 @@ async function seedStores(): Promise<void> {
   });
   state.set({ codexCatalogLastAttemptMs: 123, codexCatalogCodexVersion: "9.9.9" });
   new OwnershipLedger().record("webSearchDeny", "/some/other/machine/settings.json");
-  await runCodex({ mode: "proxy" }, NOOP_CATALOG_DEPS);
-  await runClaude({ mode: "proxy" });
+  await runCodex({ kind: "configure", mode: "proxy" }, NOOP_CATALOG_DEPS);
+  await runClaude({ kind: "configure", mode: "proxy" });
 }
 
 /** A minimal VALID raw bundle; tests override sections to probe the parser. */

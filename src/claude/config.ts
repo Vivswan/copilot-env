@@ -18,9 +18,9 @@
 // `agent env` re-exports ANTHROPIC_BASE_URL only for the proxy backend (to keep
 // the shell aligned with the live proxy port); direct is driven entirely by
 // settings.json. Mode is inferred from the EXACT apiKeyHelper value (the managed
-// command string, or -- reader tolerance -- the retired helper-script path). The
-// merge is surgical: only the managed keys are touched; all other settings are
-// preserved.
+// command string, or -- reader tolerance -- the retired helper-script path, accepted
+// only while the file's body is exactly what those releases wrote). The merge is
+// surgical: only the managed keys are touched; all other settings are preserved.
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type AgentAdapter, type AgentConfigArgs, runAgentConfig } from "../agents/configure.ts";
@@ -53,6 +53,7 @@ import { createStderrLogger } from "../utils/logger.ts";
 import {
   agentAuthGetArgs,
   agentLauncherCommand,
+  PROJECT_ROOT,
   proxyTokenArgs,
   proxyTokenCommand,
 } from "../utils/root.ts";
@@ -107,8 +108,12 @@ function shToken(s: string): string {
 // real agent.ps1 path carries `\` and `:`), so there is no bare Windows arm at all.
 const POSIX_LAUNCHER_SHAPE = String
   .raw`(?:'(?:[^']|'\\'')*/bin/agent'|[A-Za-z0-9_.:/=-]*/bin/agent)`;
+// The -File path excludes line breaks (a Windows path cannot carry them, and a value
+// smuggling a second line inside the apparent quotes must never read as managed);
+// raw `%` stays legal HERE -- the inline command is not a batch file, so the writer
+// never %%-doubles it (unlike the legacy .cmd bodies below).
 const WIN_LAUNCHER_SHAPE = String
-  .raw`powershell -NoProfile -ExecutionPolicy Bypass -File "[^"]*\\bin\\agent\.ps1"`;
+  .raw`powershell -NoProfile -ExecutionPolicy Bypass -File "[^"\r\n]*\\bin\\agent\.ps1"`;
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -149,38 +154,136 @@ export function proxyHelperCommand(profile: Profile = null): string {
   return helperCommandLine(proxyTokenCommand(profile));
 }
 
-/**
- * Reader tolerance (2026-08, the inline-apiKeyHelper move): releases before it wrote
- * apiKeyHelper as the PATH of a managed helper-script file (copilot-token[-<name>].{sh,cmd},
- * copilot-proxy-token[-<name>].{sh,cmd} -- src/claude/paths.ts still names them for this
- * tolerance and for removal). This builder reproduces the direct FILE BODY those releases
- * wrote, so health can keep positively identifying a legacy managed helper; any wiring
- * rewrite upgrades the config to the inline command -- self-healing, per the
- * migrate-or-reader rule in AGENTS.md. Remove (with the path arms in inspectClaudeWiring)
- * once no supported install can still carry helper-file wiring.
- */
-function legacyDirectHelperScript(profile: Profile = null): string {
+// --- legacy helper-file tolerance ---------------------------------------------
+//
+// Reader tolerance (2026-08, the inline-apiKeyHelper move): releases before it wrote
+// apiKeyHelper as the PATH of a managed helper-script file (copilot-token[-<name>].{sh,cmd},
+// copilot-proxy-token[-<name>].{sh,cmd} -- src/claude/paths.ts still names them for
+// this tolerance and for removal). The path arms in inspectClaudeWiring classify such
+// a value as managed only while the file still carries a body a release actually
+// wrote -- a missing, foreign, or hand-edited helper is NOT ours (it cannot produce
+// the managed credential, and the classification authorizes the uninstall strip and
+// the profile overwrite guard). Bodies are matched by SHAPE (any install root), like
+// the inline arm's launcher shapes. Any wiring rewrite upgrades the config to the
+// inline command -- self-healing, per the migrate-or-reader rule in AGENTS.md.
+// Remove (with the path arms) once no supported install can still carry helper-file
+// wiring.
+//
+// The released renderings, from tag history (only the install root varies):
+//   direct (unchanged across releases; `git show v3.5.6:src/claude/config.ts`,
+//   directHelperScript -- same shape at v3.3.17):
+//     POSIX  #!/bin/sh\nexec '<root>/bin/agent' 'auth' '--get' ['--profile' '<n>']\n
+//     WIN    @echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File
+//            "<root>\bin\agent.ps1" auth --get [--profile <n>]\r\n
+//   proxy, v3.5.x era (proxyHelperScript at v3.5.6): the src/scripts/proxy-token
+//   forwarder, every POSIX token shQuote'd:
+//     POSIX  #!/bin/sh\nexec '<root>/src/scripts/proxy-token.sh' '--yes' [...]\n
+//     WIN    ... -File "<root>\src\scripts\proxy-token.ps1" --yes [--profile <n>]\r\n
+//   proxy, v3.3.x era (proxyHelperScript at v3.3.17): POSIX spelled `--yes` BARE and
+//   predates named profiles: #!/bin/sh\nexec '<root>/.../proxy-token.sh' --yes\n
+//   (its WIN rendering equals the v3.5.x one). Unreleased mains briefly wrote the
+//   proxy body through the launcher ('<root>/bin/agent' 'proxy-token' '--yes' ...);
+//   accepted too -- it costs nothing and some installs are built from main.
+
+/** A shQuote'd POSIX token whose content ends in `suffix` (a pre-escaped regex
+ *  fragment): how every released POSIX helper rendered its command path. */
+function posixQuotedSuffix(suffix: string): string {
+  return String.raw`'(?:[^']|'\\'')*${suffix}'`;
+}
+const POSIX_BODY_LAUNCHER = posixQuotedSuffix(String.raw`/bin/agent`);
+const POSIX_BODY_PROXY_SCRIPT = posixQuotedSuffix(String.raw`/src/scripts/proxy-token\.sh`);
+// The legacy `.cmd` bodies' -File path: cmd.exe parses a batch file line by line (a
+// quoted path cannot span CRLF -- an embedded line break would BE a second command),
+// and cmdHelperBody %%-doubled every literal `%`, so raw `%` and line breaks are
+// foreign here (stricter than the inline arm's path, where raw `%` is legal).
+const WIN_CMD_PATH = String.raw`(?:[^"%\r\n]|%%)*`;
+const WIN_BODY_LAUNCHER = String
+  .raw`powershell -NoProfile -ExecutionPolicy Bypass -File "${WIN_CMD_PATH}\\bin\\agent\.ps1"`;
+const WIN_BODY_PROXY_SCRIPT = String
+  .raw`powershell -NoProfile -ExecutionPolicy Bypass -File "${WIN_CMD_PATH}\\src\\scripts\\proxy-token\.ps1"`;
+
+/** Fixed args as the eras rendered them: every POSIX token shQuote'd; winQuote on
+ *  Windows (flags and profile names stay bare there). */
+function posixQuotedArgs(args: readonly string[]): string {
+  return args.map((a) => escapeRegExp(shQuote(a))).join(" ");
+}
+function winArgs(args: readonly string[]): string {
+  return escapeRegExp(args.map(winQuote).join(" "));
+}
+
+/** Whether `body` is one of the legacy exec `lines` inside the platform frame. */
+function legacyBodyMatches(body: string | null, lines: string[], win: boolean): boolean {
+  if (body === null) return false;
+  return lines.some((line) =>
+    new RegExp(win ? `^@echo off\r\n${line}\r\n$` : `^#!/bin/sh\nexec ${line}\n$`).test(body)
+  );
+}
+
+/** v3.5.6's proxyTokenScriptArgs: the script forwarder's headless argv. */
+function legacyProxyScriptArgs(profile: Profile): string[] {
+  return profile === null ? ["--yes"] : ["--yes", "--profile", profile];
+}
+
+/** Whether `body` is a released DIRECT helper-file body for `profile`, from ANY
+ *  install root. `win` is a parameter (not the ambient platform) so both shapes
+ *  are testable on every CI runner, like managedHelperShape. */
+export function legacyDirectHelperBodyMatches(
+  body: string | null,
+  profile: Profile = null,
+  win: boolean = WIN,
+): boolean {
+  const args = agentAuthGetArgs(profile);
+  const line = win
+    ? `${WIN_BODY_LAUNCHER} ${winArgs(args)}`
+    : `${POSIX_BODY_LAUNCHER} ${posixQuotedArgs(args)}`;
+  return legacyBodyMatches(body, [line], win);
+}
+
+/** The proxy twin: any released PROXY helper-file body for `profile` -- both quoting
+ *  eras of the script forwarder, plus unreleased mains' launcher spelling. */
+export function legacyProxyHelperBodyMatches(
+  body: string | null,
+  profile: Profile = null,
+  win: boolean = WIN,
+): boolean {
+  const scriptArgs = legacyProxyScriptArgs(profile);
+  const lines = win
+    ? [
+      `${WIN_BODY_PROXY_SCRIPT} ${winArgs(scriptArgs)}`,
+      `${WIN_BODY_LAUNCHER} ${winArgs(proxyTokenArgs(profile))}`,
+    ]
+    : [
+      `${POSIX_BODY_PROXY_SCRIPT} ${posixQuotedArgs(scriptArgs)}`,
+      // v3.3.x rendered `--yes` bare (and predates named profiles).
+      ...(profile === null ? [`${POSIX_BODY_PROXY_SCRIPT} --yes`] : []),
+      `${POSIX_BODY_LAUNCHER} ${posixQuotedArgs(proxyTokenArgs(profile))}`,
+    ];
+  return legacyBodyMatches(body, lines, win);
+}
+
+/** The newest RELEASED direct body (v3.5.6's rendering, at the CURRENT root; the
+ *  matcher accepts it from any root) -- what test fixtures stage. */
+export function legacyDirectHelperScript(profile: Profile = null): string {
   const { command, args } = agentLauncherCommand(agentAuthGetArgs(profile));
   return WIN ? cmdHelperBody(command, args) : posixExecBody(command, args);
 }
 
-/**
- * True iff Claude's Direct credential resolution is the managed launcher for `profile`:
- * `helperValue` (settings.json's apiKeyHelper) IS the managed inline command, or --
- * legacy installs -- a helper FILE whose body (read via `readFile`) is exactly what the
- * pre-inline releases wrote. Health uses this to POSITIVELY confirm Direct resolves via
- * `agent auth --get` before deciding gh is unneeded -- a stale `gh auth token` helper, a
- * foreign script, a missing file, or a helper addressed at a DIFFERENT profile returns
- * false and stays on the gh-checked path.
- */
-export function directHelperResolvesViaAgent(
-  helperValue: string | null,
-  readFile: (path: string) => string | null,
-  profile: Profile = null,
-): boolean {
-  if (helperValue === null) return false;
-  if (managedHelperShape(helperValue, agentAuthGetArgs(profile))) return true;
-  return readFile(helperValue) === legacyDirectHelperScript(profile);
+/** The proxy twin: v3.5.6's rendering -- the src/scripts/proxy-token forwarder
+ *  (which still ships), NOT today's `agent proxy-token` launcher spelling. */
+export function legacyProxyHelperScript(profile: Profile = null): string {
+  const scriptArgs = legacyProxyScriptArgs(profile);
+  if (WIN) {
+    const ps1 = path.join(PROJECT_ROOT, "src", "scripts", "proxy-token.ps1");
+    return cmdHelperBody("powershell", [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      ps1,
+      ...scriptArgs,
+    ]);
+  }
+  return posixExecBody(path.join(PROJECT_ROOT, "src", "scripts", "proxy-token.sh"), scriptArgs);
 }
 
 /** The `agent claude` argument shape (the shared skeleton's, under this command's name). */
@@ -212,15 +315,22 @@ function claudeBaseUrlMatchesProxy(baseUrl: string, expectedPort: number): boole
 
 /**
  * Inspect raw settings content against the managed contract for `profile` (default
- * profile = settings.json, named = settings-<name>.json). Pure (no I/O): the caller
- * passes the file text (null = absent) plus the home, from which the two LEGACY
- * helper paths are derived. Mode is keyed off the EXACT apiKeyHelper value so a
- * user's own similar-looking helper is never mistaken for ours:
+ * profile = settings.json, named = settings-<name>.json). The caller passes the file
+ * text (null = absent) plus the home, from which the two LEGACY helper paths are
+ * derived; the only I/O is `readFile`, through which the legacy path arms verify the
+ * helper file's body (never called for the inline arms) -- it defaults to the real
+ * filesystem reader, and pure tests inject a fake. Mode is keyed off the EXACT
+ * apiKeyHelper value so a user's own similar-looking helper is never mistaken for
+ * ours -- the verdict authorizes `--check`, the uninstall strip, and the profile
+ * overwrite guard:
  *   - direct: apiKeyHelper is the managed `agent auth --get` command (or, reader
- *             tolerance, the retired <home>/copilot-token[-<profile>] script path)
+ *             tolerance, the retired <home>/copilot-token[-<profile>] script path
+ *             whose file body is one a release actually wrote, any install root)
  *   - proxy:  apiKeyHelper is the managed `agent proxy-token --yes` command (or the
- *             retired <home>/copilot-proxy-token[-<profile>] script path)
- *   - other:  a foreign apiKeyHelper, a custom ANTHROPIC_BASE_URL, or malformed
+ *             retired <home>/copilot-proxy-token[-<profile>] script path, same
+ *             body condition)
+ *   - other:  a foreign apiKeyHelper -- including a legacy helper path whose file
+ *             is missing or rewritten -- a custom ANTHROPIC_BASE_URL, or malformed
  *             JSON (a config we must not clobber)
  *   - none:   no relevant keys (absent/empty) -- unconfigured; proxy is default
  */
@@ -229,6 +339,7 @@ export function inspectClaudeWiring(
   claudeHome: string,
   expectedPort: number,
   profile: Profile = null,
+  readFile: (path: string) => string | null = readTextOrNull,
 ): ClaudeWiringStatus {
   const status: ClaudeWiringStatus = {
     settingsExists: settingsText !== null,
@@ -257,19 +368,24 @@ export function inspectClaudeWiring(
   status.baseUrlMatches = baseUrl !== null && claudeBaseUrlMatchesProxy(baseUrl, expectedPort);
 
   // The inline command is the managed contract, recognized by SHAPE (any root's
-  // spelling); the path arms are the legacy helper-file tolerance (see
-  // legacyDirectHelperScript for the dating and the removal condition).
+  // spelling); the path arms are the legacy helper-file tolerance, and classify as
+  // ours only when the file's body is one a release actually wrote (any install
+  // root) -- a missing/foreign body at the legacy path falls through to "other"
+  // (see the legacy helper-file tolerance block for the dating, the released
+  // renderings, and the removal condition).
   if (
     helperPath !== null && (
       managedHelperShape(helperPath, agentAuthGetArgs(profile)) ||
-      helperPath === directHelperPath(claudeHome, profile)
+      (helperPath === directHelperPath(claudeHome, profile) &&
+        legacyDirectHelperBodyMatches(readFile(helperPath), profile))
     )
   ) {
     status.providerMode = "direct";
   } else if (
     helperPath !== null && (
       managedHelperShape(helperPath, proxyTokenArgs(profile)) ||
-      helperPath === proxyHelperPath(claudeHome, profile)
+      (helperPath === proxyHelperPath(claudeHome, profile) &&
+        legacyProxyHelperBodyMatches(readFile(helperPath), profile))
     )
   ) {
     status.providerMode = "proxy";

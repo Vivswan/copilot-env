@@ -379,6 +379,61 @@ test("uninstall: help surfaces the flags; a non-TTY run without --yes refuses", 
   expect(refused.stderr).toContain("--yes");
 });
 
+test("install --help surfaces the wiring flags; unknown flags are rejected", () => {
+  const help = helpScreen("install", "--help");
+  expect(help.exitCode).toBe(0);
+  for (const flag of ["--no-shell-integration", "--all-hosts", "--assets-only"]) {
+    expect(help.output).toContain(flag);
+  }
+
+  // Commander's declaration is the argv boundary: a flag from another command
+  // (--launchers lives on `shell`) must be rejected, never absorbed into an install.
+  const unknown = runCli(["install", "--launchers"], { env: isolatedEnv() });
+  expect(unknown.exitCode).toBe(1);
+  expect(unknown.stderr).toContain("unknown option");
+  expect(unknown.stderr).toContain("--launchers");
+}, 30_000);
+
+// In a checkout `install` builds the in-place plan (the checkout's own files are
+// never rewritten), so what the flags observably steer is the shell wiring and
+// the epilogue -- exactly the option mapping under test. Both rc seams point at
+// a throwaway root, so the wiring runs for real without touching the machine.
+test("bare install defaults to shell wiring; the negated and assets-only flags map through", () => {
+  const root = mkdtempSync(join(tmpdir(), "copilot-install-smoke-"));
+  const documents = join(root, "Documents");
+  const wired = runCli(["install"], {
+    env: isolatedEnv({
+      HOME: root,
+      SHELL: "/bin/bash",
+      [CI_PS_DOCUMENTS_DIR_ENV]: documents,
+      [CI_RC_DIR_ENV]: root,
+    }),
+  });
+  expect({ exitCode: wired.exitCode, stderr: wired.stderr }).toMatchObject({ exitCode: 0 });
+  expect(wired.stdout).toContain("Next steps:");
+  const rcTargets = process.platform === "win32"
+    ? ["WindowsPowerShell", "PowerShell"].map((edition) =>
+      join(documents, edition, "Microsoft.PowerShell_profile.ps1")
+    )
+    : [join(root, ".bashrc")];
+  for (const file of rcTargets) {
+    expect(readFileSync(file, "utf-8")).toContain(SHELL_MARKER);
+  }
+
+  // --no-shell-integration: Commander's negated flag (opts.shellIntegration ===
+  // false) must reach the runner as a skip, announced as such.
+  const skipped = runCli(["install", "--no-shell-integration"], { env: isolatedEnv() });
+  expect(skipped.exitCode).toBe(0);
+  expect(skipped.stdout + skipped.stderr).toContain("Skipping shell integration");
+
+  // --assets-only parses and stays machine-quiet: it is the step `agent update`
+  // drives after the swap, so its stdout carries nothing for humans.
+  const assetsOnly = runCli(["install", "--assets-only"], { env: isolatedEnv() });
+  expect(assetsOnly.exitCode).toBe(0);
+  expect(assetsOnly.stdout).toBe("");
+  // Three cold CLI spawns; generous headroom for loaded Windows CI runners.
+}, 90_000);
+
 test("shell --help surfaces the install/launcher flags", () => {
   const help = helpScreen("shell", "--help");
   expect(help.exitCode).toBe(0);

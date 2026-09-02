@@ -367,9 +367,10 @@ function verifySidecarDaemonSpawn(launcher: string): void {
   console.log(`compiled start generated the daemon config at ${daemonConfig}`);
 }
 
-/** The installer's manifest at the install root. Its filename and `kind` value are
- *  external contracts (written by `agent install`): a missing or reshaped manifest is
- *  a broken install, not a cosmetic gap. */
+/** The installer's manifest at the install root, held to its reader's FULL contract
+ *  (readInstallManifest in src/utils/root.ts): kind == "installed", a string version,
+ *  a string-array asset inventory. Filename and shape are external contracts written
+ *  by `agent install`; mirroring the reader makes a writer regression fail this smoke. */
 function verifyInstallManifest(): void {
   const home = (isWindows ? process.env.USERPROFILE : process.env.HOME) ?? "";
   const manifest = join(installRoot(installerArgs(), home), ".copilot-env-install.json");
@@ -386,6 +387,17 @@ function verifyInstallManifest(): void {
   }
   if (!isRecord(parsed) || parsed.kind !== "installed") {
     console.error(`::error::install manifest at ${manifest} must carry kind == "installed"`);
+    process.exit(1);
+  }
+  if (typeof parsed.version !== "string") {
+    console.error(`::error::install manifest at ${manifest} must carry a string version`);
+    process.exit(1);
+  }
+  const assets = parsed.assets;
+  if (!Array.isArray(assets) || !assets.every((entry) => typeof entry === "string")) {
+    console.error(
+      `::error::install manifest at ${manifest} must carry a string-array assets inventory`,
+    );
     process.exit(1);
   }
   console.log(`install manifest ok: ${manifest}`);

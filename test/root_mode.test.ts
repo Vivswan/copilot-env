@@ -12,9 +12,11 @@ import { isAbsolute, join, parse } from "node:path";
 import {
   AGENT_AUTH_GET_ARGS,
   ASSET_ROOT,
+  derivedCompiledRoot,
   devDenoExecPath,
   INSTALL_MANIFEST_FILE,
   INSTALL_ROOT_MARKERS,
+  installStateRoot,
   isProtectedRoot,
   looksLikeInstallRoot,
   PROJECT_ROOT,
@@ -160,4 +162,97 @@ test("devDenoExecPath is the runtime binary under a real deno (the compiled half
   // binary never classifies itself as a dev deno) is pinned by the installer
   // smoke's compiled-health invariants, which run the real built binary.
   expect(devDenoExecPath()).toBe(Deno.execPath());
+});
+
+test("derivedCompiledRoot: a flat root derives two levels up from the binary", () => {
+  const root = mkdtempSync(join(tmpdir(), "copilot-root-derive-"));
+  try {
+    expect(derivedCompiledRoot(join(root, "bin", "copilot-env"))).toBe(root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("derivedCompiledRoot: a versioned binary roots at the current link, never its version dir", () => {
+  // The GC-survival property: every path persisted outside the install is built
+  // from this root, and a `versions/<name>` component in it would die with the
+  // next-but-one update's garbage collection.
+  const top = mkdtempSync(join(tmpdir(), "copilot-root-derive-"));
+  try {
+    const binary = join(top, "versions", "v9.9.9", "bin", "copilot-env");
+    mkdirSync(join(top, "versions", "v9.9.9", "bin"), { recursive: true });
+
+    // No `current` entry yet (mid-bootstrap): the derivation stays honest and
+    // answers the version dir rather than inventing a link that is not there.
+    expect(derivedCompiledRoot(binary)).toBe(join(top, "versions", "v9.9.9"));
+
+    // A REAL DIRECTORY named `current` never qualifies: only a link into
+    // versions/ is the layout, or a flat install that happens to live at
+    // <x>/versions/<name> beside an unrelated <x>/current would be misrooted
+    // (and the destructive gates would then aim at <x>).
+    mkdirSync(join(top, "current"));
+    expect(derivedCompiledRoot(binary)).toBe(join(top, "versions", "v9.9.9"));
+    rmSync(join(top, "current"), { recursive: true });
+
+    // A link pointing OUTSIDE versions/ is somebody else's `current`.
+    symlinkSync(join(top, "elsewhere"), join(top, "current"), "junction");
+    expect(derivedCompiledRoot(binary)).toBe(join(top, "versions", "v9.9.9"));
+    rmSync(join(top, "current"), { force: true });
+
+    // The real layout: a link whose target names a version dir.
+    symlinkSync(join(top, "versions", "v9.9.9"), join(top, "current"), "junction");
+    const derived = derivedCompiledRoot(binary);
+    expect(derived).toBe(join(top, "current"));
+    expect(derived.includes(join("versions", "v9.9.9"))).toBe(false);
+
+    // The current-shaped derivation (an execPath the OS did not resolve through
+    // the link) is already right and passes through unmapped.
+    expect(derivedCompiledRoot(join(top, "current", "bin", "copilot-env"))).toBe(
+      join(top, "current"),
+    );
+  } finally {
+    rmSync(top, { recursive: true, force: true });
+  }
+});
+
+test("installStateRoot: machine state lives at the versioned TOP, else at the root itself", () => {
+  const top = mkdtempSync(join(tmpdir(), "copilot-root-state-"));
+  try {
+    // A plain (flat or checkout) root keeps its state in place.
+    expect(installStateRoot(top)).toBe(top);
+    // `<top>/current` without the link layout is just a directory name.
+    expect(installStateRoot(join(top, "current"))).toBe(join(top, "current"));
+
+    mkdirSync(join(top, "versions", "v1.0.0"), { recursive: true });
+    symlinkSync(join(top, "versions", "v1.0.0"), join(top, "current"), "junction");
+    expect(installStateRoot(join(top, "current"))).toBe(top);
+    // The top spelling answers itself: state never moves twice.
+    expect(installStateRoot(top)).toBe(top);
+  } finally {
+    rmSync(top, { recursive: true, force: true });
+  }
+});
+
+test("looksLikeInstallRoot recognizes a versioned top only with the link and a manifest", () => {
+  const top = mkdtempSync(join(tmpdir(), "copilot-root-vtop-"));
+  const valid = JSON.stringify({ "version": "9.9.9", "kind": "installed", "assets": ["shell"] });
+  try {
+    // Layout-shaped names alone never qualify a directory for recursive
+    // deletion: a real dir named `current` is not the layout ...
+    mkdirSync(join(top, "versions", "v9.9.9"), { recursive: true });
+    mkdirSync(join(top, "current"));
+    writeFileSync(join(top, "versions", "v9.9.9", INSTALL_MANIFEST_FILE), valid);
+    expect(looksLikeInstallRoot(top)).toBe(false);
+
+    // ... and the real link still needs a per-version manifest behind it.
+    rmSync(join(top, "current"), { recursive: true });
+    symlinkSync(join(top, "versions", "v9.9.9"), join(top, "current"), "junction");
+    rmSync(join(top, "versions", "v9.9.9", INSTALL_MANIFEST_FILE));
+    expect(looksLikeInstallRoot(top)).toBe(false);
+
+    writeFileSync(join(top, "versions", "v9.9.9", INSTALL_MANIFEST_FILE), valid);
+    expect(looksLikeInstallRoot(top)).toBe(true);
+  } finally {
+    rmSync(top, { recursive: true, force: true });
+  }
 });

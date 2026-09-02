@@ -398,13 +398,25 @@ function verifySidecarDaemonSpawn(launcher: string): void {
   console.log(`compiled start generated the daemon config at ${daemonConfig}`);
 }
 
-/** The installer's manifest at the install root, held to its reader's FULL contract
- *  (readInstallManifest in src/utils/root.ts): kind == "installed", a string version,
- *  a string-array asset inventory. Filename and shape are external contracts written
- *  by `agent install`; mirroring the reader makes a writer regression fail this smoke. */
+/** The installer's manifest, per-version behind the `current` link, held to its
+ *  reader's FULL contract (readInstallManifest in src/utils/root.ts): kind ==
+ *  "installed", a string version, a string-array asset inventory. Filename and
+ *  shape are external contracts written by `agent install`; mirroring the
+ *  reader makes a writer regression fail this smoke. The layout entries are
+ *  asserted first: a missing link and a missing manifest are different
+ *  failures and must read differently in CI. */
 function verifyInstallManifest(): void {
   const home = (isWindows ? process.env.USERPROFILE : process.env.HOME) ?? "";
-  const manifest = join(installRoot(installerArgs(), home), ".copilot-env-install.json");
+  const root = installRoot(installerArgs(), home);
+  if (!existsSync(join(root, "versions"))) {
+    console.error(`::error::versioned layout missing: no versions/ dir under ${root}`);
+    process.exit(1);
+  }
+  if (!existsSync(join(root, "current"))) {
+    console.error(`::error::versioned layout missing: no current link under ${root}`);
+    process.exit(1);
+  }
+  const manifest = join(root, "current", ".copilot-env-install.json");
   if (!existsSync(manifest)) {
     console.error(`::error::install manifest missing at ${manifest}`);
     process.exit(1);

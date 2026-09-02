@@ -137,14 +137,14 @@ async function runManualUpdate(args: {
     return;
   }
 
-  // The sync overwrites/prunes the install root in place. Running from source means a
-  // dev clone that may hold uncommitted or untracked work -- refuse unless --force so an
-  // update can't silently destroy it. (The distinction is the RootMode this process was
-  // started in, not a file probe: an installed binary is freely replaceable.)
+  // Running from source means a dev clone that may hold uncommitted or untracked
+  // work -- refuse unless --force so an update can't silently touch it. (The
+  // distinction is the RootMode this process was started in, not a file probe:
+  // an installed binary is freely replaceable.)
   if (!args.force && isProtectedRoot()) {
     throw new Error(
-      "This is a source checkout and `agent update` overwrites files in place; " +
-        "commit or stash your changes and re-run with --force (or update via git).",
+      "This is a source checkout and `agent update` writes a versioned install layout " +
+        "into the root; update a checkout via git, or re-run with --force.",
     );
   }
 

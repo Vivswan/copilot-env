@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
-import { moveDataHome, v356, v356Ownership } from "../src/migrations/3.5.6.ts";
+import { moveDataHome, v356, v356Ownership, v356VersionedLayout } from "../src/migrations/3.5.6.ts";
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
 import { readResolvedVersionRecord, writeResolvedVersionRecord } from "../src/proxy_float.ts";
 import type { SemverString } from "../src/utils/semver.ts";
@@ -47,14 +47,20 @@ test("dueMigrations tolerates a leading v on either bound", () => {
   expect(dueMigrations("v1.2.1", "v1.3.0", LIST).map((m) => m.version)).toEqual(["1.2.1", "1.2.5"]);
 });
 
-test("the shipped registry holds exactly the two 3.5.6 fix-ups, home move first", () => {
+test("the shipped registry holds exactly the three 3.5.6 fix-ups, home move first", () => {
   // Adding a step has to be a deliberate edit to the registry, not an accident of
   // a stale import; this pins the full set. Order matters within the version: the
-  // ownership adoption reads the state store the home move relocates.
-  expect(dueMigrations("0.0.1", "999.0.0").map((m) => m.version)).toEqual(["3.5.6", "3.5.6"]);
+  // ownership adoption reads the state store the home move relocates, and the
+  // layout adoption runs last (it relocates the install the others fixed up).
+  expect(dueMigrations("0.0.1", "999.0.0").map((m) => m.version)).toEqual([
+    "3.5.6",
+    "3.5.6",
+    "3.5.6",
+  ]);
   expect(dueMigrations("0.0.1", "999.0.0").map((m) => m.description)).toEqual([
     v356.description,
     v356Ownership.description,
+    v356VersionedLayout.description,
   ]);
 });
 

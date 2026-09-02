@@ -19,7 +19,8 @@ import { profileHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { isRecord } from "../src/utils/json.ts";
-import type { RootMode } from "../src/utils/root.ts";
+import { INSTALL_MANIFEST_FILE, type RootMode } from "../src/utils/root.ts";
+import { pointCurrentAt } from "../src/install/installer.ts";
 import { ROOT } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, removeDir, resetExitCode } from "./helpers.ts";
@@ -214,6 +215,29 @@ test("uninstall refuses a root that does not look like a copilot-env install", a
 
   expect(existsSync(stray)).toBe(true);
   expect(process.exitCode).toBe(1);
+});
+
+test("uninstall on a VERSIONED install deletes the whole top, not just the link", async () => {
+  const { codexHome } = tmpHomes();
+  const deps = tmpDeps(codexHome);
+  // A versioned install's compiled root is the `<top>/current` link. The delete
+  // must resolve to the TOP (versions/, bin/, and the link), or an uninstall
+  // would remove one directory entry and leave the entire install behind.
+  const top = join(dir, "versioned-root");
+  const versionRoot = join(top, "versions", "v9.9.9");
+  mkdirSync(join(versionRoot, "bin"), { recursive: true });
+  mkdirSync(join(top, "bin"), { recursive: true });
+  writeFileSync(join(versionRoot, "bin", "copilot-env"), "#!/bin/sh\n");
+  writeFileSync(
+    join(versionRoot, INSTALL_MANIFEST_FILE),
+    JSON.stringify({ "version": "9.9.9", "kind": "installed", "assets": ["shell"] }),
+  );
+  pointCurrentAt(top, "v9.9.9");
+  deps.installRoot = { kind: "compiled", root: join(top, "current") };
+
+  await runUninstall({ yes: true }, deps);
+
+  expect(existsSync(top)).toBe(false);
 });
 
 test("uninstall leaves foreign Claude/Codex wiring untouched", async () => {

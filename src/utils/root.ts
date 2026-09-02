@@ -1,7 +1,7 @@
 // Install-root and bundled-asset discovery for launchers, tests, and compiled binaries.
-import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Profile } from "../copilot_api/profile.ts";
 
@@ -29,6 +29,62 @@ export type RootMode =
 
 /** Overrides the compiled binary's install root (relocatable/staged installs). */
 const ROOT_OVERRIDE_ENV = "COPILOT_ENV_INSTALL_ROOT";
+
+/** The per-release roots directory of a VERSIONED install (`<top>/versions/vX.Y.Z`).
+ *  Owned here because root detection reads the layout; the installer
+ *  (src/install/installer.ts) builds it from these same names. */
+export const VERSIONS_DIR = "versions";
+
+/** The link naming the live version root (`<top>/current`): a POSIX symlink, a
+ *  Windows directory junction. The one path prefix that survives updates and
+ *  version GC, so it IS the compiled root in a versioned layout. */
+export const CURRENT_LINK = "current";
+
+/** Whether a directory ENTRY exists at `path` itself (lstat, no link-following):
+ *  a dangling `current` link still marks a versioned layout -- broken, but
+ *  repairable by the next install/update, and never a flat root. */
+function entryExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether `top` is the top of a versioned install layout: `<top>/current` is a
+ * LINK (symlink/junction) whose target names a dir inside `<top>/versions`,
+ * and the versions dir entry exists. Names alone must never qualify -- a flat
+ * install that happens to sit at `<x>/versions/<name>` beside an unrelated
+ * `<x>/current` directory would otherwise be misrooted (and the destructive
+ * gates then aim at `<x>`). A DANGLING link still qualifies: readlink works
+ * without a target, and a broken link is a repairable versioned layout, not a
+ * flat one.
+ */
+export function isVersionedInstallTop(top: string): boolean {
+  const link = join(top, CURRENT_LINK);
+  try {
+    if (!lstatSync(link).isSymbolicLink()) return false;
+  } catch {
+    return false;
+  }
+  let target: string;
+  try {
+    target = readlinkSync(link);
+  } catch {
+    return false;
+  }
+  // Junction targets read back absolute, possibly `\\?\`-prefixed and with a
+  // trailing separator; a POSIX target is relative (`versions/<name>`).
+  const normalized = target.replace(/^\\\\\?\\/, "").replace(/[\\/]+$/, "");
+  const parent = dirname(resolve(top, normalized));
+  const versionsDir = resolve(join(top, VERSIONS_DIR));
+  const sameDir = process.platform === "win32"
+    ? parent.toLowerCase() === versionsDir.toLowerCase()
+    : parent === versionsDir;
+  return sameDir && entryExists(versionsDir);
+}
 
 /**
  * Walk up from this module's own directory to the nearest ancestor holding a
@@ -90,13 +146,37 @@ export function devDenoExecPath(): string | null {
   return runtime.execPath();
 }
 
+/**
+ * The compiled install root for a binary on disk at `binaryPath`. Exported for
+ * tests (the live answer is locked into ROOT_MODE at startup): the versioned
+ * mapping is a GC-survival property worth pinning -- a root naming
+ * `versions/<name>` would put version-dir paths into every persisted artifact.
+ *
+ * <root>/bin/copilot-env -> <root>. The installers put the binary there and the
+ * bin/agent shim next to it; nothing else may define the layout. In a VERSIONED
+ * layout that derivation lands on the version dir (execPath resolves the
+ * `current` link on most platforms) and the root must be the LINK instead:
+ * every path persisted outside the install (agent configs, rc blocks, daemon
+ * preload paths) is built from this root and has to survive version GC, which
+ * `<top>/versions/<name>/...` never would. A derivation that already reads
+ * `<top>/current` (an unresolved execPath) needs no mapping.
+ */
+export function derivedCompiledRoot(binaryPath: string): string {
+  const derived = dirname(dirname(binaryPath));
+  const versionsDir = dirname(derived);
+  if (basename(versionsDir) === VERSIONS_DIR && isVersionedInstallTop(dirname(versionsDir))) {
+    return join(dirname(versionsDir), CURRENT_LINK);
+  }
+  return derived;
+}
+
 function detectRootMode(): RootMode {
   if (!isStandaloneBinary()) return { kind: "checkout", root: findCheckoutRoot() };
   const override = process.env[ROOT_OVERRIDE_ENV];
-  // <root>/bin/copilot-env -> <root>. The installers put the binary there and the
-  // bin/agent shim next to it; nothing else may define the layout.
-  const root = override ? resolve(override) : dirname(dirname(denoRuntime()?.execPath() ?? ""));
-  return { kind: "compiled", root };
+  // An override is taken literally, never re-derived: `agent update` uses it to
+  // aim the staged binary INSIDE a not-yet-live version root.
+  if (override) return { kind: "compiled", root: resolve(override) };
+  return { kind: "compiled", root: derivedCompiledRoot(denoRuntime()?.execPath() ?? "") };
 }
 
 const ROOT_MODE: RootMode = detectRootMode();
@@ -108,6 +188,22 @@ export function rootMode(): RootMode {
 
 /** The on-disk install root: the checkout in dev, the binary's install dir when compiled. */
 export const PROJECT_ROOT: string = ROOT_MODE.root;
+
+/**
+ * Where an install keeps its MACHINE state (`.env`, `.autoupdate`): the top
+ * root of a versioned layout -- state must survive updates and version GC, so
+ * it can never live inside (or resolve through the `current` link into) a
+ * version dir -- and the root itself everywhere else (a flat install, a
+ * checkout). Pure path logic over the layout names, so callers can pass any
+ * root spelling they hold.
+ */
+export function installStateRoot(root: string = PROJECT_ROOT): string {
+  const resolved = resolve(root);
+  if (basename(resolved) === CURRENT_LINK && isVersionedInstallTop(dirname(resolved))) {
+    return dirname(resolved);
+  }
+  return resolved;
+}
 
 /**
  * Where the files that SHIP WITH THIS BUILD are read from: the compiled binary's
@@ -207,6 +303,25 @@ export function readInstallManifest(root: string): InstallManifestReading {
   return { kind: "valid", manifest: { version, kind, assets } };
 }
 
+/** Whether `resolved` is the TOP of a versioned install: the real link layout
+ *  (isVersionedInstallTop) plus a valid per-version manifest -- through the
+ *  link, or in any version dir when the link dangles. The manifest requirement
+ *  keeps the destructive gates honest: layout-shaped entries alone never
+ *  qualify a directory for recursive deletion. */
+function looksLikeVersionedInstallTop(resolved: string): boolean {
+  if (!isVersionedInstallTop(resolved)) return false;
+  if (readInstallManifest(join(resolved, CURRENT_LINK)).kind === "valid") return true;
+  let names: string[];
+  try {
+    names = readdirSync(join(resolved, VERSIONS_DIR));
+  } catch {
+    return false;
+  }
+  return names.some(
+    (name) => readInstallManifest(join(resolved, VERSIONS_DIR, name)).kind === "valid",
+  );
+}
+
 /**
  * Whether `root` actually looks like a copilot-env root, i.e. is safe to delete
  * recursively. `agent uninstall` removes the resolved root wholesale, and that root is
@@ -226,6 +341,9 @@ export function looksLikeInstallRoot(root: string): boolean {
   const reading = readInstallManifest(resolved);
   if (reading.kind === "valid") return true;
   if (reading.kind === "unreadable") return false;
+  // A versioned TOP has no root manifest (the sentinel is per-version); its
+  // layout entries plus a version manifest are the positive proof instead.
+  if (looksLikeVersionedInstallTop(resolved)) return true;
   return INSTALL_ROOT_MARKERS.every((marker) => existsSync(join(resolved, marker)));
 }
 

@@ -13,10 +13,9 @@ export const WIN = process.platform === "win32";
 // resolver as a helper file at these names (a `.cmd` on Windows, where a `.sh` is not
 // runnable by bare path); the current wiring stores an inline command instead and
 // writes no files. The names live on ONLY for the reader tolerance in
-// inspectClaudeWiring / directHelperResolvesViaAgent and for removal
-// (uninstall / profile --del) -- delete them with that tolerance. A NAMED profile
-// suffixes the stem (`copilot-token-work.sh`), keeping the default names
-// (external contracts) byte-identical.
+// inspectClaudeWiring and for removal (uninstall / profile --del) -- delete them
+// with that tolerance. A NAMED profile suffixes the stem (`copilot-token-work.sh`),
+// keeping the default names (external contracts) byte-identical.
 const HELPER_EXT = WIN ? "cmd" : "sh";
 export const DIRECT_HELPER_NAME = WIN ? "copilot-token.cmd" : "copilot-token.sh";
 export const PROXY_HELPER_NAME = WIN ? "copilot-proxy-token.cmd" : "copilot-proxy-token.sh";

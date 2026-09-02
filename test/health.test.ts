@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { directHelperCommand, legacyDirectHelperScript } from "../src/claude/config.ts";
-import { directHelperPath, settingsPathFor } from "../src/claude/paths.ts";
+import { directHelperPath, proxyHelperPath, settingsPathFor } from "../src/claude/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import {
   buildHealthJson,
@@ -936,6 +936,12 @@ test("the claude scope classifies a legacy helper through deps.readFileSafe (the
   const orphaned = await gatherFacts("claude", {}, deps);
   expect(orphaned.claude?.providerMode).toBe("other");
   expect(orphaned.claude?.directUsesToken).toBe(false);
+  // The final verdict, not just the classification: our helper filename with a
+  // body we cannot verify is warned about, not passed off as healthy custom wiring.
+  if (!orphaned.claude) throw new Error("expected claude facts");
+  const verdict = checkClaude(orphaned.claude);
+  expect(verdict.status).toBe("warn");
+  expect(verdict.fix).toBe("agent claude --direct");
 });
 
 test("gatherFacts still probes identity when an agent routes through the proxy", async () => {
@@ -1376,6 +1382,27 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   expect(other.status).toBe("ok");
   expect(other.detail).toContain("provider: other");
   expect(other.detail).toContain("not managed");
+
+  // ...but "other" AT our legacy helper path means the body is missing/foreign
+  // (a recognized released body classifies direct/proxy): a broken leftover, warned
+  // with the rewire fix for the mode the filename encodes.
+  const brokenLegacyDirect = checkClaude({
+    ...direct,
+    helperPath: directHelperPath("/h/.claude"),
+    baseUrl: null,
+    providerMode: "other",
+  });
+  expect(brokenLegacyDirect.status).toBe("warn");
+  expect(brokenLegacyDirect.detail).toContain("cannot verify the helper body");
+  expect(brokenLegacyDirect.fix).toBe("agent claude --direct");
+  const brokenLegacyProxy = checkClaude({
+    ...direct,
+    helperPath: proxyHelperPath("/h/.claude"),
+    baseUrl: null,
+    providerMode: "other",
+  });
+  expect(brokenLegacyProxy.status).toBe("warn");
+  expect(brokenLegacyProxy.fix).toBe("agent claude --proxy");
 });
 
 test("direct + stored token reports ok with gh absent (no gh requirement)", () => {

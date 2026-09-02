@@ -15,6 +15,7 @@ import {
   managedHelperShape,
   proxyHelperCommand,
   removeClaudeDefaultWiring,
+  removeClaudeProfile,
   runClaude,
   syncDefaultWebSearchWiring,
   WEBSEARCH_DENY_RULE,
@@ -432,6 +433,65 @@ test("removeClaudeDefaultWiring keeps user keys and drops an emptied permissions
   expect(doc.model).toBe("opus");
   expect(doc.permissions).toBeUndefined();
   expect(doc.apiKeyHelper).toBeUndefined();
+});
+
+test("removeClaudeDefaultWiring leaves an 'other' wiring AND its legacy-named helper whole", () => {
+  const home = tmpHome();
+  mkdirSync(home, { recursive: true });
+  // A user-owned helper AT our legacy name classifies "other" (foreign body): the
+  // settings key stays, so the file it points at must stay too -- deleting only
+  // the file would leave the wiring dangling.
+  const helper = join(home, DIRECT_HELPER_NAME);
+  writeFileSync(helper, "#!/bin/sh\nexec my-own-resolver\n");
+  writeFileSync(
+    join(home, "settings.json"),
+    `${JSON.stringify({ apiKeyHelper: helper }, null, 2)}\n`,
+  );
+
+  removeClaudeDefaultWiring(home);
+  expect(existsSync(helper)).toBe(true);
+  expect(readSettings(home).apiKeyHelper).toBe(helper);
+});
+
+test("removeClaudeProfile removes managed artifacts but leaves an 'other' profile whole", () => {
+  const home = tmpHome();
+  mkdirSync(home, { recursive: true });
+  const helper = directHelperPath(home, WORK);
+  const settingsPath = join(home, "settings-work.json");
+
+  // Managed legacy wiring (a released body at WORK's path): both artifacts go.
+  writeFileSync(helper, legacyDirectHelperScript(WORK));
+  writeFileSync(settingsPath, `${JSON.stringify({ apiKeyHelper: helper }, null, 2)}\n`);
+  removeClaudeProfile(home, WORK);
+  expect(existsSync(settingsPath)).toBe(false);
+  expect(existsSync(helper)).toBe(false);
+
+  // A foreign body at the same name classifies "other": both artifacts stay.
+  writeFileSync(helper, "#!/bin/sh\nexec my-own-resolver\n");
+  writeFileSync(settingsPath, `${JSON.stringify({ apiKeyHelper: helper }, null, 2)}\n`);
+  removeClaudeProfile(home, WORK);
+  expect(existsSync(settingsPath)).toBe(true);
+  expect(existsSync(helper)).toBe(true);
+
+  // Unconfigured ("none"): no wiring points at the legacy names, so files there
+  // are removed by name (orphan cleanup, the historical contract).
+  rmSync(settingsPath);
+  removeClaudeProfile(home, WORK);
+  expect(existsSync(helper)).toBe(false);
+});
+
+test("an unreadable settings file is hands-off for removal, never read as unconfigured", () => {
+  const home = tmpHome();
+  mkdirSync(home, { recursive: true });
+  const helper = directHelperPath(home, WORK);
+  writeFileSync(helper, "#!/bin/sh\nexec my-own-resolver\n");
+  // A directory at the settings path forces a non-ENOENT read error on every
+  // platform: the settings EXIST but cannot be read, so they may still point at
+  // the helper -- that must not classify as "none" and authorize file removal
+  // (removeClaudeDefaultWiring shares the same reader).
+  mkdirSync(join(home, "settings-work.json"));
+  removeClaudeProfile(home, WORK);
+  expect(existsSync(helper)).toBe(true);
 });
 
 test("syncDefaultWebSearchWiring applies the pair to existing direct wiring (the migration path)", () => {

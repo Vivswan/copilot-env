@@ -29,7 +29,9 @@ export interface UsageTokens {
   cacheCreation: number;
 }
 
-/** Cost breakdown for a single model. */
+/** Cost breakdown for a single model. USD fields are exact (unrounded), so no
+ *  intermediate rounding drifts derived sums; rounding happens once at the
+ *  render/JSON boundaries in cost.ts. */
 export interface ModelCost {
   pricingReference: string;
   estimatedCostUsd: number;
@@ -200,15 +202,15 @@ export function estimateCost(
 
     perModel[model] = {
       pricingReference: reference,
-      estimatedCostUsd: roundUsd(estimatedCostUsd),
-      inputCostUsd: roundUsd(inputCostUsd),
-      outputCostUsd: roundUsd(outputCostUsd),
-      cacheReadCostUsd: roundUsd(cacheReadCostUsd),
-      cacheCreationCostUsd: roundUsd(cacheCreationCostUsd),
+      estimatedCostUsd,
+      inputCostUsd,
+      outputCostUsd,
+      cacheReadCostUsd,
+      cacheCreationCostUsd,
     };
   }
 
-  return { perModel, totalUsd: roundUsd(totalUsd), unpriced: unpriced.sort() };
+  return { perModel, totalUsd, unpriced: unpriced.sort() };
 }
 
 // ---------- internals ----------
@@ -310,9 +312,10 @@ function perMillion(value: unknown): number | undefined {
   return Number.isFinite(num) ? num * PER_MILLION : undefined;
 }
 
-/** The ONE precision every reported USD amount uses: 4 decimal places. cost.ts routes
- *  its derived per-day/average figures through this too, so the `--json` payload can
- *  never mix precisions between the totals and the fields derived from them. */
+/** The ONE precision every SERIALIZED USD amount uses: 4 decimal places. Applied
+ *  only at cost.ts's `--json` boundary -- in-memory estimates stay exact, so sums
+ *  never accumulate rounding error (regrouped float sums can still differ by one
+ *  ulp; the render layer draws every TOTAL from one set of numbers for that). */
 export function roundUsd(value: number): number {
   return Math.round(value * 10_000) / 10_000;
 }

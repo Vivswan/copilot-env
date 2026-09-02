@@ -3,7 +3,7 @@ import { crypto } from "@std/crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyUpdate, type ApplyUpdateOptions } from "../src/autoupdate/apply.ts";
-import { withUpdateLock } from "../src/autoupdate/lock.ts";
+import { withUpdateLockForTests } from "../src/autoupdate/lock.ts";
 import { expectedDigest, fileSha256, parseChecksums } from "../src/install/checksums.ts";
 import {
   currentReleaseTarget,
@@ -144,12 +144,13 @@ describe("applyUpdate", () => {
   const quiet = { warn: () => {}, success: () => {} };
 
   /** Run applyUpdate the only way it can be run: under the update lock, whose held
-   *  branch mints the HeldLock evidence the signature demands. */
+   *  branch mints the HeldLock evidence the signature demands (via the hermetic-path
+   *  test seam, so the suite never touches the install root's real lock). */
   function applyLocked(current: string, opts: ApplyUpdateOptions): Promise<void> {
-    return withUpdateLock(Date.now(), (outcome) => {
+    return withUpdateLockForTests(join(root, "update.lock"), Date.now(), (outcome) => {
       if (!outcome.held) throw new Error("test could not take its own update lock");
       return applyUpdate(current, target, outcome, opts);
-    }, join(root, "update.lock"));
+    });
   }
 
   skipWin("verifies, swaps in the binary, and runs the new one", async () => {

@@ -37,20 +37,39 @@ export interface HeldUpdateLock {
 
 export type UpdateLockOutcome = HeldUpdateLock | { readonly held: false };
 
-const HELD_UPDATE_LOCK: HeldUpdateLock = { held: true } as HeldUpdateLock;
-const UPDATE_LOCK_NOT_HELD: UpdateLockOutcome = { held: false };
+const HELD_UPDATE_LOCK: HeldUpdateLock = Object.freeze({ held: true } as HeldUpdateLock);
+const UPDATE_LOCK_NOT_HELD: UpdateLockOutcome = Object.freeze({ held: false });
 
 /** Run `fn` scoped to ONE acquisition attempt of the update lock (stealing a stale one;
  *  a fresh holder means another update is running, and `fn` observes `held: false` to
  *  skip). Released exactly once, on every exit path, and only if WE own it (never a
- *  successor's lock). */
+ *  successor's lock). Always locks autoupdateLockFile(): HeldUpdateLock is evidence about
+ *  THE update lock, so no caller may point this at another path and mint it anyway. */
 export function withUpdateLock<T>(
   nowMs: number,
   fn: (outcome: UpdateLockOutcome) => T | Promise<T>,
-  path: string = autoupdateLockFile(),
+): Promise<T> {
+  return updateLockScope(autoupdateLockFile(), nowMs, fn);
+}
+
+/** TEST-ONLY seam: withUpdateLock against a hermetic temp path, so suites never touch the
+ *  install root's real lock. Production code calls withUpdateLock; the file-lock lint pin
+ *  (test/file_lock.test.ts) keeps this name out of src/. */
+export function withUpdateLockForTests<T>(
+  lockPath: string,
+  nowMs: number,
+  fn: (outcome: UpdateLockOutcome) => T | Promise<T>,
+): Promise<T> {
+  return updateLockScope(lockPath, nowMs, fn);
+}
+
+function updateLockScope<T>(
+  lockPath: string,
+  nowMs: number,
+  fn: (outcome: UpdateLockOutcome) => T | Promise<T>,
 ): Promise<T> {
   return withFileLock(
-    path,
+    lockPath,
     { staleMs: STALE_LOCK_MS, waitMs: 0, nowMs, jsonMarker: true },
     (outcome) => fn(outcome.held ? HELD_UPDATE_LOCK : UPDATE_LOCK_NOT_HELD),
   );

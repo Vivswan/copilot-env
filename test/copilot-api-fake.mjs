@@ -8,10 +8,11 @@
 // start -> wait-for-listen -> stop without GitHub Copilot auth. Invoked as:
 // deno run copilot-api-fake.mjs start --port N
 //
-// The filename MUST contain "copilot-api": isCopilotApiPid (process.ts) matches
-// the daemon's command line against /copilot-api.*\bstart\b/, so `stop` only
-// recognizes (and signals) this process when its launch path includes that
-// substring. Do not rename it to something without "copilot-api".
+// The filename MUST have a basename starting with "copilot-api": isCopilotApiPid
+// (process.ts) matches the daemon signature -- a runtime process whose entry token
+// carries a copilot-api path segment, immediately followed by `start` -- so `stop`
+// only recognizes (and signals) this process when its launch path reads as that
+// entry. Do not rename it to something without the "copilot-api" prefix.
 import { createServer } from "node:http";
 
 const portIdx = process.argv.indexOf("--port");

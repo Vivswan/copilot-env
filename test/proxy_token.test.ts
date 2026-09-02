@@ -205,12 +205,15 @@ test("spawned decline path: prompt and refusal live on stderr, stdout stays byte
 
 skipWin("spawned happy path: stdout is EXACTLY the persisted key + newline, exit 0", async () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-proxy-token-"));
-  // A live pid whose command line matches the daemon signature (`copilot-api ... start`
-  // as sh $0/argv), plus a real listening loopback port recorded in run state: exactly
-  // what proxyStatus verifies before the resolver prints a key. The compound body
-  // (`;`) stops sh from exec-ing the sleep, which would replace the argv ps reports.
-  const daemon = spawnChild("/bin/sh", {
-    args: ["-c", "sleep 30; exit 0", "copilot-api", "start"],
+  // A live pid whose command line matches the daemon signature -- since the sweep/status
+  // match was narrowed, that means a real deno process running a copilot-api-named entry
+  // file with the `start` subcommand (the COPILOT_API_ENTRY shape), not just any argv
+  // mentioning the words -- plus a real listening loopback port recorded in run state:
+  // exactly what proxyStatus verifies before the resolver prints a key.
+  const decoy = join(dir, "copilot-api-decoy.mjs");
+  writeFileSync(decoy, "setTimeout(() => {}, 30_000);\n");
+  const daemon = spawnChild(Deno.execPath(), {
+    args: ["run", decoy, "start"],
     stdout: "null",
     stderr: "null",
   });

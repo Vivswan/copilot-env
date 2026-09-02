@@ -318,8 +318,15 @@ function markerPid(raw: string): number | null {
  *  matches) -- never a successor's, which an old-release rename-steal may have put at the
  *  path. The OS lock drops after, when the sidecar handle closes; the sidecar file itself
  *  stays (see the orphan-inode note in the header). A PRIMITIVE like tryAcquireFileLock:
- *  production releases happen inside withFileLock/withFileLockSync. */
+ *  production releases happen inside withFileLock/withFileLockSync -- a primitive release
+ *  of a SCOPE-held path is refused outright, because it would strand the scope accounting
+ *  (SCOPE_HOLDS) and let the scope's own exit release a lock a later acquirer holds. */
 export function releaseFileLock(lockPath: string): void {
+  if (SCOPE_HOLDS.has(lockPath)) {
+    throw new Error(
+      "releaseFileLock called on a scope-held lock; the withFileLock/withFileLockSync scope owns the release",
+    );
+  }
   const ours = HELD_LOCKS.get(lockPath);
   try {
     const observed = readMarker(lockPath);
@@ -358,8 +365,8 @@ export interface HeldLock {
  *  best-effort by design. */
 export type LockOutcome = HeldLock | { readonly held: false };
 
-const HELD_OUTCOME: HeldLock = { held: true } as HeldLock;
-const NOT_HELD_OUTCOME: LockOutcome = { held: false };
+const HELD_OUTCOME: HeldLock = Object.freeze({ held: true } as HeldLock);
+const NOT_HELD_OUTCOME: LockOutcome = Object.freeze({ held: false });
 
 /** How one scoped acquisition waits. `waitMs` 0 makes a single attempt; Infinity never
  *  gives up, so the fn always observes `held` (for a lock that must not be bypassed).
@@ -447,6 +454,11 @@ function isAsyncFn(fn: (outcome: LockOutcome) => unknown): boolean {
   return fn.constructor?.name === "AsyncFunction";
 }
 
+/** The compile-time face of the same rule: a fn whose return type is PromiseLike can only
+ *  satisfy `never`, so handing one to withFileLockSync is a type error before the runtime
+ *  guards below ever see it. */
+type SyncResult<T> = T extends PromiseLike<unknown> ? never : T;
+
 /** The backup for a non-async fn that still returns a thenable (its sync body at least ran
  *  fully under the lock): refuse loudly instead of releasing under the pending promise. */
 function assertNotThenable(result: unknown): void {
@@ -466,7 +478,7 @@ function assertNotThenable(result: unknown): void {
 export function withFileLockSync<T>(
   lockPath: string,
   policy: LockPolicy,
-  fn: (outcome: LockOutcome) => T,
+  fn: (outcome: LockOutcome) => SyncResult<T>,
 ): T {
   if (isAsyncFn(fn)) {
     throw new Error("withFileLockSync fn is async; use withFileLock instead");

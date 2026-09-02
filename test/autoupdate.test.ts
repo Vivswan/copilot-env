@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isDue } from "../src/autoupdate/due.ts";
-import { withUpdateLock } from "../src/autoupdate/lock.ts";
+import { withUpdateLockForTests } from "../src/autoupdate/lock.ts";
 import {
   AutoupdateState,
   DEFAULT_AUTOUPDATE_COOLDOWN_DAYS,
@@ -127,58 +127,64 @@ test("bin/agent and bin/agent.ps1 gate the autoupdate preflight on the same subc
 });
 
 // --- lock -------------------------------------------------------------------
+// All through the TEST-ONLY path seam (withUpdateLockForTests): production
+// withUpdateLock always locks autoupdateLockFile() under the install root, so
+// pointing these at a temp dir any other way would mint HeldUpdateLock evidence
+// against a lock that is not THE update lock.
 
 const DEAD_PID = 2_147_483_646; // never alive -> pidAlive() returns false
 
 test("withUpdateLock holds across fn, reports a nested acquire not-held, releases on exit", async () => {
   const path = tmp("update.lock");
   const now = 1_000_000;
-  await withUpdateLock(now, async (outer) => {
+  await withUpdateLockForTests(path, now, async (outer) => {
     expect(outer.held).toBe(true);
+    expect(Object.isFrozen(outer)).toBe(true); // the evidence singleton is immutable
     expect(existsSync(path)).toBe(true);
     // A fresh lock held by this (alive) pid blocks a second acquire ...
-    await withUpdateLock(now, (inner) => {
+    await withUpdateLockForTests(path, now, (inner) => {
       expect(inner.held).toBe(false);
-    }, path);
+      expect(Object.isFrozen(inner)).toBe(true);
+    });
     // ... and the not-held scope must not have released the holder's lock.
     expect(existsSync(path)).toBe(true);
-  }, path);
+  });
   expect(existsSync(path)).toBe(false);
   // After release it can be acquired again.
-  await withUpdateLock(now, (again) => {
+  await withUpdateLockForTests(path, now, (again) => {
     expect(again.held).toBe(true);
-  }, path);
+  });
 });
 
 test("withUpdateLock steals a lock older than 30 minutes", async () => {
   const path = tmp("update.lock");
   const now = 100_000_000;
   writeFileSync(path, JSON.stringify({ pid: process.pid, ts: now - 31 * 60 * 1000 }));
-  await withUpdateLock(now, (outcome) => {
+  await withUpdateLockForTests(path, now, (outcome) => {
     expect(outcome.held).toBe(true);
     expect(JSON.parse(readFileSync(path, "utf-8")).pid).toBe(process.pid);
-  }, path);
+  });
 });
 
 test("withUpdateLock steals a lock owned by a dead pid even if recent", async () => {
   const path = tmp("update.lock");
   const now = 100_000_000;
   writeFileSync(path, JSON.stringify({ pid: DEAD_PID, ts: now }));
-  await withUpdateLock(now, (outcome) => expect(outcome.held).toBe(true), path);
+  await withUpdateLockForTests(path, now, (outcome) => expect(outcome.held).toBe(true));
 });
 
 test("withUpdateLock steals a malformed lock file", async () => {
   const path = tmp("update.lock");
   writeFileSync(path, "not json");
-  await withUpdateLock(1_000, (outcome) => expect(outcome.held).toBe(true), path);
+  await withUpdateLockForTests(path, 1_000, (outcome) => expect(outcome.held).toBe(true));
 });
 
 test("release leaves a lock a successor stole (marker no longer ours) in place", async () => {
   const path = tmp("update.lock");
-  await withUpdateLock(1_000, (outcome) => {
+  await withUpdateLockForTests(path, 1_000, (outcome) => {
     expect(outcome.held).toBe(true);
     // A successor stole our slot and now owns the lock under its own (alive) pid.
     writeFileSync(path, JSON.stringify({ pid: process.pid + 1, ts: 1_000 }));
-  }, path);
+  });
   expect(existsSync(path)).toBe(true); // not ours -> not deleted
 });

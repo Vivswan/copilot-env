@@ -14,6 +14,8 @@ import {
   daemonArgv,
   daemonEnvironment,
   type DaemonSpec,
+  isDaemonCommandLine,
+  isDaemonProcess,
   launchDaemon,
   noProxyWithLoopback,
   parseProcessRows,
@@ -390,22 +392,212 @@ test("NO_PROXY gains the loopback hosts without losing the user's own", () => {
 
 // --- the POSIX process scan ----------------------------------------------------------
 
-test("parseProcessRows splits only the pid off, keeping the command line verbatim", () => {
+test("parseProcessRows splits pid and ucomm off, keeping the command line verbatim", () => {
   const rows = parseProcessRows(
-    "  900 /usr/sbin/distnoted agent\n" +
-      "12345 /home/me/.deno/bin/deno run --allow-net @jeffreycao/copilot-api start --port 4141\n" +
+    "  900 distnoted        /usr/sbin/distnoted agent\n" +
+      "12345 deno             /home/me/.deno/bin/deno run --allow-net @jeffreycao/copilot-api start --port 4141\n" +
       "\n" +
       "not a row\n",
   );
   expect(rows).toEqual([
-    { pid: 900, command: "/usr/sbin/distnoted agent" },
+    { pid: 900, ucomm: "distnoted", command: "/usr/sbin/distnoted agent" },
     {
       pid: 12345,
+      ucomm: "deno",
       command: "/home/me/.deno/bin/deno run --allow-net @jeffreycao/copilot-api start --port 4141",
     },
   ]);
-  // A command line with runs of spaces survives intact -- only the first gap is a split.
-  expect(parseProcessRows("7 sh -c 'a   b'")).toEqual([{ pid: 7, command: "sh -c 'a   b'" }]);
+  // A command line with runs of spaces survives intact -- only the leading columns split.
+  expect(parseProcessRows("7 sh sh -c 'a   b'")).toEqual([
+    { pid: 7, ucomm: "sh", command: "sh -c 'a   b'" },
+  ]);
+});
+
+// --- the orphan-sweep signature ---------------------------------------------------------
+// The sweep SIGKILLs what this signature matches, so both directions are load-bearing:
+// every REAL daemon shape (pinned against daemonArgv itself, so a spawn change cannot
+// drift away from the sweep) still matches, and impostor argv that merely MENTIONS
+// copilot-api and start -- the shape that once got an innocent agent process killed for
+// prompt text in its argv -- never does. POSIX rows gate on ps's ucomm (the kernel's
+// executable name) via isDaemonProcess; the Windows CommandLine judgment the PS scripts
+// interpolate is mirrored by isDaemonCommandLine.
+
+/** The ps-visible row for a spec: ucomm "deno" plus argv0 (the deno binary) + daemonArgv. */
+function daemonRow(spec: DaemonSpec): { pid: number; ucomm: string; command: string } {
+  return { pid: 1, ucomm: "deno", command: [spec.denoBin, ...daemonArgv(spec)].join(" ") };
+}
+
+test("the sweep signature matches every real daemon shape, straight from daemonArgv", () => {
+  // The floated entry (the runtime answer on any install the float has run on).
+  delete process.env.COPILOT_API_ENTRY;
+  const denoDir = join(dir, "deno", "cache");
+  writeResolvedVersionRecord(dir, "1.14.30", Date.now(), denoDir);
+  const floated = { ...BASE, entry: resolveCopilotApiEntry() };
+  expect(floated.entry.kind).toBe("floated");
+  expect(isDaemonProcess(daemonRow(floated))).toBe(true);
+
+  // The mapped package fallback (a checkout where the float never ran).
+  expect(isDaemonProcess(daemonRow(BASE))).toBe(true);
+
+  // The COPILOT_API_ENTRY file form (the CI fake's shape).
+  const fake = join(ROOT, "test", "copilot-api-fake.mjs");
+  expect(
+    isDaemonProcess(
+      daemonRow({
+        ...BASE,
+        entry: { kind: "file", path: fake, configFile: join(ROOT, "deno.json") },
+      }),
+    ),
+  ).toBe(true);
+
+  // A deno binary (and home) at a SPACED path: ps flattens argv, but both fragments
+  // still carry slashes and read as invocation-shaped -- missing this daemon would make
+  // proxyStatus read it as down and `agent stop` skip it.
+  expect(
+    isDaemonProcess({
+      pid: 1,
+      ucomm: "deno",
+      command: "/Users/John Smith/.local/share/copilot-api/deno/2.1.4/deno run " +
+        "--config /Users/John Smith/.local/share/copilot-api/proxy/deno.json --cached-only " +
+        "npm:@jeffreycao/copilot-api@1.14.30 start --verbose --port 4141",
+    }),
+  ).toBe(true);
+  // The DOCUMENTED loss: a path component of two or more words flattens into a
+  // slash-less bare fragment ("Runtime"), which the signature refuses -- every
+  // bare-word tolerance re-admitted crafted impostor argv, and the sweep SIGKILLs
+  // what it matches, so the bias is against false positives.
+  expect(
+    isDaemonProcess({
+      pid: 1,
+      ucomm: "deno",
+      command: "/Applications/Deno Runtime Tools/deno run --cached-only " +
+        "npm:@jeffreycao/copilot-api@1.14.30 start --verbose --port 4141",
+    }),
+  ).toBe(false);
+
+  // A pre-rewrite install's daemon: node/bun hosting a node_modules entry path.
+  expect(
+    isDaemonProcess({
+      pid: 1,
+      ucomm: "node",
+      command: "node /usr/lib/node_modules/@jeffreycao/copilot-api/dist/main.js start --port 4141",
+    }),
+  ).toBe(true);
+});
+
+test("the Windows CommandLine mirror matches the image-quoted daemon shapes", () => {
+  // Quoted image path (spaces and all), .exe suffix -- the WMI CommandLine form.
+  expect(
+    isDaemonCommandLine(
+      '"C:\\Users\\John Smith\\.copilot-env\\home\\deno\\2.1.4\\deno.exe" run --cached-only ' +
+        "npm:@jeffreycao/copilot-api@1.14.30 start --verbose --port 4141",
+    ),
+  ).toBe(true);
+  // A quoted file entry whose path contains spaces is still a real daemon: missing it
+  // would make proxyStatus read the daemon as down and `agent stop` skip it.
+  expect(
+    isDaemonCommandLine(
+      '"C:\\Program Files\\Deno\\deno.exe" run "C:\\tmp\\copilot-api fake.mjs" start --port 4141',
+    ),
+  ).toBe(true);
+  expect(
+    isDaemonCommandLine("C:\\Users\\me\\.deno\\bin\\deno.exe run npm:@x/copilot-api@1.2.3 start"),
+  ).toBe(true);
+  // Prompt text in a non-runtime image's argv never matches, whatever it mentions.
+  expect(
+    isDaemonCommandLine(
+      '"C:\\Program Files\\Codex\\codex.exe" exec --prompt fix the copilot-api start sweep',
+    ),
+  ).toBe(false);
+});
+
+test("impostor argv that merely mentions copilot-api and start survives the sweep", () => {
+  // The incident shape: an agent CLI carrying prompt text about this very code. The
+  // ucomm gate rejects it outright, however daemon-like the text reads.
+  expect(
+    isDaemonProcess({
+      pid: 1,
+      ucomm: "codex",
+      command: "/usr/local/bin/codex exec --prompt narrow the copilot-api start sweep in launch.ts",
+    }),
+  ).toBe(false);
+  // A shell whose $0/argv spell the old substring exactly.
+  expect(
+    isDaemonProcess({ pid: 1, ucomm: "sh", command: "sh -c sleep 30 copilot-api start" }),
+  ).toBe(false);
+  // Even a real runtime process: the words as BARE tokens are not an entry.
+  expect(
+    isDaemonProcess({
+      pid: 1,
+      ucomm: "deno",
+      command: "/home/me/.deno/bin/deno run script.ts --note copilot-api start",
+    }),
+  ).toBe(false);
+  // A copilot-api-SHAPED path in a runtime's own arguments: the bare word before it
+  // ("inspect" -- prompt text, another script's argument) breaks the invocation shape.
+  expect(
+    isDaemonProcess({
+      pid: 1,
+      ucomm: "deno",
+      command: "deno run worker.ts --prompt inspect /tmp/copilot-api-notes start safely",
+    }),
+  ).toBe(false);
+  // A copilot-api path token NOT followed by the start subcommand (a foreground run).
+  expect(
+    isDaemonProcess({
+      pid: 1,
+      ucomm: "deno",
+      command: "/opt/deno/deno run @jeffreycao/copilot-api auth login",
+    }),
+  ).toBe(false);
+  // A codex process even with a perfectly daemon-shaped command line: ucomm decides.
+  expect(
+    isDaemonProcess({
+      pid: 1,
+      ucomm: "codex",
+      command: "/opt/deno/deno run npm:@jeffreycao/copilot-api@1.14.30 start",
+    }),
+  ).toBe(false);
+  // A copilot-api-named ROOT HOME in an unrelated flag never qualifies as the entry.
+  expect(
+    isDaemonProcess({
+      pid: 1,
+      ucomm: "deno",
+      command:
+        "deno run --config /home/me/.local/share/copilot-api/proxy/deno.json /repo/src/cli.ts env",
+    }),
+  ).toBe(false);
+  // Slash-carrying tokens between a bare word and the copilot-api path must not be
+  // readable as one "spaced path" that bridges over the bare word (the tolerance that
+  // would make this match is exactly what re-admits prompt-text argv).
+  expect(
+    isDaemonProcess({
+      pid: 1,
+      ucomm: "deno",
+      command: "deno run /tmp/tool.ts inspect /tmp/data /tmp/copilot-api-notes start",
+    }),
+  ).toBe(false);
+  // LITERAL quote characters in POSIX argv are prompt text (ps already stripped shell
+  // quoting), so a quoted run of bare words must not bridge the match either -- quoted
+  // tokens are honored only in the Windows CommandLine form.
+  expect(
+    isDaemonProcess({
+      pid: 1,
+      ucomm: "deno",
+      command: 'deno run /tmp/tool.ts --prompt "inspect bare words" /tmp/copilot-api-notes start',
+    }),
+  ).toBe(false);
+  // A long, slash-heavy non-matching line stays cheap to reject: every middle
+  // alternative consumes exactly one token and the classes are disjoint -- including
+  // `--flag=/path` tokens, which read as flags, never also as path fragments -- so a
+  // failing scan is linear. The elapsed bound catches a polynomially-slow regression;
+  // a truly exponential one hangs the suite here, which is still a failure.
+  const pathHeavy = `deno run ${
+    Array.from({ length: 60 }, (_v, i) => `/dir${i}/file${i}.ts --flag${i}=/opt/val${i}`).join(" ")
+  } tail`;
+  const startedMs = Date.now();
+  expect(isDaemonProcess({ pid: 1, ucomm: "deno", command: pathHeavy })).toBe(false);
+  expect(Date.now() - startedMs).toBeLessThan(1_000);
 });
 
 // --- the shared shutdown path --------------------------------------------------------

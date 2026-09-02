@@ -7,6 +7,7 @@ import {
   withFileLock,
   withFileLockSync,
 } from "../src/utils/file_lock.ts";
+import { ROOT } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { removeDir, tmpDir } from "./helpers.ts";
 
@@ -293,6 +294,7 @@ test("withFileLockSync refuses an async fn BEFORE its body runs", () => {
   const path = tmp("scoped.lock");
   let ran = false;
   expect(() =>
+    // @ts-expect-error the compile-time exclusion flags it too; this pins the RUNTIME guard
     withFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, async () => {
       ran = true;
       await Promise.resolve();
@@ -304,6 +306,7 @@ test("withFileLockSync refuses an async fn BEFORE its body runs", () => {
 
 test("withFileLockSync refuses a plain fn returning a thenable, still releasing", () => {
   const path = tmp("scoped.lock");
+  // @ts-expect-error the compile-time exclusion flags it too; this pins the RUNTIME guard
   expect(() => withFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, () => Promise.resolve(1)))
     .toThrow("use withFileLock");
   expect(existsSync(path)).toBe(false); // the misuse still released the scope's lock
@@ -333,4 +336,72 @@ test("withFileLock releases when the async fn rejects, and the rejection propaga
   expect(
     withFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, (outcome) => outcome.held),
   ).toBe(true);
+});
+
+test("the lock outcomes are frozen singletons: evidence cannot be doctored in place", () => {
+  const path = tmp("scoped.lock");
+  withFileLockSync(path, { staleMs: Number.POSITIVE_INFINITY, waitMs: 0 }, (outer) => {
+    expect(Object.isFrozen(outer)).toBe(true);
+    expect(() => {
+      (outer as { held: boolean }).held = false;
+    }).toThrow();
+    // The not-held branch hands out the same immutable evidence discipline.
+    withFileLockSync(path, { staleMs: Number.POSITIVE_INFINITY, waitMs: 0 }, (inner) => {
+      expect(inner.held).toBe(false);
+      expect(Object.isFrozen(inner)).toBe(true);
+      expect(() => {
+        (inner as { held: boolean }).held = true;
+      }).toThrow();
+    });
+  });
+});
+
+test("releaseFileLock refuses a scope-held path: the scope owns the release", () => {
+  // A primitive release mid-scope would strand SCOPE_HOLDS: the scope's own exit would
+  // then physically release a lock a LATER acquirer holds. Refused loudly instead.
+  const path = tmp("scoped.lock");
+  withFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, (outcome) => {
+    expect(outcome.held).toBe(true);
+    expect(() => releaseFileLock(path)).toThrow("scope-held");
+    expect(existsSync(path)).toBe(true); // the refusal released nothing
+  });
+  expect(existsSync(path)).toBe(false); // the scope's own exit still released exactly once
+});
+
+test("the lock primitives and the update-lock test seam stay out of src/", () => {
+  // tryAcquireFileLock/releaseFileLock/reclaimStaleLock are exported for the on-disk
+  // contract tests only, and withUpdateLockForTests exists so suites can lock a hermetic
+  // path; production code goes through the scoped API (withFileLock/withFileLockSync and
+  // withUpdateLock), which is what keeps acquisition, release, and evidence in one owner.
+  // Each name is allowed ONLY in its defining module, never src-wide.
+  const allowedIn: Record<string, string> = {
+    tryAcquireFileLock: join(ROOT, "src", "utils", "file_lock.ts"),
+    releaseFileLock: join(ROOT, "src", "utils", "file_lock.ts"),
+    reclaimStaleLock: join(ROOT, "src", "utils", "file_lock.ts"),
+    withUpdateLockForTests: join(ROOT, "src", "autoupdate", "lock.ts"),
+  };
+  const found: string[] = [];
+  const walk = (dirPath: string): void => {
+    for (const entry of Deno.readDirSync(dirPath)) {
+      const p = join(dirPath, entry.name);
+      if (entry.isDirectory) walk(p);
+      else if (entry.name.endsWith(".ts")) {
+        const source = readFileSync(p, "utf-8");
+        for (const name of Object.keys(allowedIn)) {
+          if (source.includes(name)) found.push(`${p}: ${name}`);
+        }
+      }
+    }
+  };
+  walk(join(ROOT, "src"));
+  // Positive control: the scanner must find each definition site, or a zero-offender
+  // read below would prove nothing.
+  for (const [name, definingFile] of Object.entries(allowedIn)) {
+    expect(found).toContain(`${definingFile}: ${name}`);
+  }
+  const offenders = found.filter((hit) => {
+    const [file, name] = hit.split(": ") as [string, string];
+    return allowedIn[name] !== file;
+  });
+  expect(offenders).toEqual([]);
 });

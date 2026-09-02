@@ -221,6 +221,19 @@ test("unparseable Claude settings read as 'other' (a config we must not clobber)
   expect(proxyUnusedEverywhere(opts)).toBe(false);
 });
 
+test("unreadable configs read as 'other', never as unconfigured 'none'", () => {
+  // A directory at each config path EXISTS but cannot be read as text (a
+  // non-ENOENT error on every platform) -- the cross-platform unreadable fixture.
+  const codexHome = join(dir, "codex-home");
+  mkdirSync(join(codexHome, "config.toml"), { recursive: true });
+  const claudeHome = join(dir, "claude-home");
+  mkdirSync(join(claudeHome, "settings.json"), { recursive: true });
+  const opts = { codexHome, claudeHome };
+  expect(readAgentModes(opts)).toEqual({ codex: "other", claude: "other" });
+  expect(defaultSetupNeedsProxy(opts)).toBe(true);
+  expect(proxyUnusedEverywhere(opts)).toBe(false);
+});
+
 describe("default home resolution", () => {
   test("codex follows the run-state codexHome override; claude follows $CLAUDE_CONFIG_DIR", () => {
     // The effective-home precedence every caller shares: a `--host` farm records

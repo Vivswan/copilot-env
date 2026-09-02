@@ -13,7 +13,7 @@ import { type CodexWiringStatus, effectiveCodexHome, inspectCodexWiring } from "
 import { codexConfigPath } from "../codex/paths.ts";
 import { profileHomeNames } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
-import { readTextOrNull } from "../utils/fs.ts";
+import { readTextResult } from "../utils/fs.ts";
 import type { AgentProviderMode } from "./provider_mode.ts";
 
 /**
@@ -36,15 +36,29 @@ function readAgentWirings(opts: AgentWiringOptions): {
 } {
   const expectedPort = opts.expectedPort ?? Number(copilotApiResolvePort());
   const codexHome = opts.codexHome ?? effectiveCodexHome();
-  const codex = inspectCodexWiring(
-    readTextOrNull(codexConfigPath(codexHome)),
-    null,
-    expectedPort,
-    false,
-  );
+  // inspectCodexWiring's content seam is string-or-null (null = absent), so an
+  // UNREADABLE config.toml passed as null would read "none"/unwired and let a
+  // best-effort caller treat it as free to write over. It exists but is
+  // unknown, so the verdict becomes "other" here -- the same not-ours-to-touch
+  // classification the Claude classifier mints as read-error.
+  const codexRead = readTextResult(codexConfigPath(codexHome));
+  const codex: CodexWiringStatus = codexRead.kind === "unreadable"
+    ? {
+      ...inspectCodexWiring(null, null, expectedPort, false),
+      configExists: true,
+      providerMode: "other",
+    }
+    : inspectCodexWiring(
+      codexRead.kind === "text" ? codexRead.text : null,
+      null,
+      expectedPort,
+      false,
+    );
   const claudeHome = opts.claudeHome ?? resolveClaudeHome();
+  // The Claude classifier takes the three-way read itself: unreadable settings
+  // classify as other/read-error, never as none.
   const claude = inspectClaudeWiring(
-    readTextOrNull(settingsPathFor(claudeHome)),
+    readTextResult(settingsPathFor(claudeHome)),
     claudeHome,
     expectedPort,
   );
@@ -54,9 +68,10 @@ function readAgentWirings(opts: AgentWiringOptions): {
 /**
  * The effective provider mode of both agents' DEFAULT selections (named
  * profiles have their own settings artifacts and are not read here). A missing
- * or unreadable config file reads as "none"; a malformed one as the inspect
- * functions classify it. Store-level failures (run state, port resolution)
- * propagate -- callers that must never throw use readAgentModesSafe.
+ * config file reads as "none"; an unreadable one as "other" (present but not
+ * ours to touch); a malformed one as the inspect functions classify it.
+ * Store-level failures (run state, port resolution) propagate -- callers that
+ * must never throw use readAgentModesSafe.
  */
 export function readAgentModes(opts: AgentWiringOptions = {}): {
   codex: AgentProviderMode;

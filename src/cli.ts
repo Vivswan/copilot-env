@@ -14,8 +14,9 @@
 // '--x'`, exit 1) instead of silently accepted, and so help wraps to the
 // terminal width natively (no hand-rolled renderer needed).
 import "./utils/dotenv.ts";
-import { Command, InvalidArgumentError } from "commander";
+import { Command } from "commander";
 import { consola } from "consola";
+import { parseClaudeAction, parseCodexAction } from "./agents/configure.ts";
 import { parseModeFlags } from "./agents/provider_mode.ts";
 import { DEFAULT_AUTOUPDATE_COOLDOWN_DAYS } from "./autoupdate/state.ts";
 import { runClaude } from "./claude/config.ts";
@@ -46,6 +47,7 @@ import { runMigrations } from "./migrations/index.ts";
 import { runCost } from "./usage/cost.ts";
 import { OPENROUTER_MODELS_URL } from "./usage/pricing.ts";
 import { bold, cyan, gray } from "./utils/ansi.ts";
+import { assertNever } from "./utils/assert.ts";
 import { errMessage } from "./utils/error.ts";
 import { disableConsolaTimestamps } from "./utils/logger.ts";
 import { packageVersion } from "./utils/version.ts";
@@ -536,24 +538,25 @@ program
   .option("--host", "(Linux/macOS) Build the per-host CODEX_HOME symlink farm and wire its config.")
   .option("--delete-host", "With --host: remove the per-host CODEX_HOME and stop exporting it.")
   .option("--mobile", "Interactive: pair the Codex desktop app with its phone remote-control flow.")
-  .action(async (opts: Opts) => {
-    const common = { mode: parseModeFlags(opts) };
-    // --mobile is its own interactive flow (toggles config around app pairing).
-    if (opts.mobile) {
-      return runCodexMobile();
-    }
-    // --check is read-only: never build/delete the host farm or probe, even when
-    // combined with --host/--delete-host. Route it to the check path first.
-    if (opts.check) {
-      await runCodex({ ...common, check: true });
-      return;
-    }
-    // --host (and --delete-host, which only makes sense with it) route to the
-    // per-host symlink farm; everything else configures the active CODEX_HOME.
-    if (opts.host || opts.deleteHost) {
-      await runCodexHost({ ...common, delete: Boolean(opts.deleteHost) });
-    } else {
-      await runCodex(common);
+  .action((opts: Opts) => {
+    const action = parseCodexAction({
+      check: Boolean(opts.check),
+      mode: parseModeFlags(opts),
+      mobile: Boolean(opts.mobile),
+      host: Boolean(opts.host),
+      deleteHost: Boolean(opts.deleteHost),
+    });
+    switch (action.kind) {
+      case "mobile":
+        return runCodexMobile();
+      case "check":
+        return runCodex({ mode: "auto", check: true });
+      case "host":
+        return runCodexHost({ mode: action.mode, delete: action.deleteHost });
+      case "configure":
+        return runCodex({ mode: action.mode });
+      default:
+        return assertNever(action);
     }
   });
 
@@ -574,18 +577,21 @@ program
     "Refresh only the Claude Desktop config-library wiring (default + profiles); no settings.json changes.",
   )
   .action((opts: Opts) => {
-    if (opts.desktop) {
-      if (opts.check || opts.direct || opts.proxy) {
-        throw new InvalidArgumentError(
-          "--desktop cannot be combined with --check/--direct/--proxy.",
-        );
-      }
-      return refreshClaudeDesktopWiring();
-    }
-    return runClaude({
+    const action = parseClaudeAction({
       check: Boolean(opts.check),
       mode: parseModeFlags(opts),
+      desktop: Boolean(opts.desktop),
     });
+    switch (action.kind) {
+      case "desktop":
+        return refreshClaudeDesktopWiring();
+      case "check":
+        return runClaude({ mode: "auto", check: true });
+      case "configure":
+        return runClaude({ mode: action.mode });
+      default:
+        return assertNever(action);
+    }
   });
 
 program

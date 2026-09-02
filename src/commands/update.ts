@@ -6,6 +6,7 @@ import { runPreflight } from "../autoupdate/preflight.ts";
 import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/state.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { resolveTarget } from "../install/resolve-release.ts";
+import { assertNever } from "../utils/assert.ts";
 import { isProtectedRoot } from "../utils/root.ts";
 import { isUpToDate } from "../utils/semver.ts";
 import { assertNonNegativeDays } from "../utils/time.ts";
@@ -30,19 +31,60 @@ export interface UpdateArgs {
   autoStatus?: boolean;
 }
 
+/**
+ * What ONE `agent update` invocation does -- a status report (`--check` /
+ * `--auto-status`), an autoupdate toggle, or the manual apply -- parsed ONCE by
+ * `parseUpdateAction` at the CLI boundary. `--force` lives on the apply arm
+ * alone, so `--auto-status --check` (or a report combined with `--force`) is a
+ * rejection instead of whichever flag the old if-chain reached first.
+ */
+export type UpdateAction =
+  | { kind: "check" }
+  | { kind: "auto-status" }
+  | { kind: "enable-auto" }
+  | { kind: "disable-auto" }
+  | { kind: "apply"; force: boolean };
+
+/** Parse the raw `agent update` flags into an UpdateAction (the CLI boundary). */
+export function parseUpdateAction(args: UpdateArgs): UpdateAction {
+  const reports = [args.check, args.auto, args.noAuto, args.autoStatus].filter(Boolean).length;
+  if (reports > 1) {
+    throw new Error("--check, --auto, --no-auto, and --auto-status are mutually exclusive");
+  }
+  if (args.force && reports > 0) {
+    throw new Error(
+      "--force only applies to the manual update; it does not combine with --check/--auto/--no-auto/--auto-status",
+    );
+  }
+  if (args.autoStatus) return { kind: "auto-status" };
+  if (args.noAuto) return { kind: "disable-auto" };
+  if (args.auto) return { kind: "enable-auto" };
+  if (args.check) return { kind: "check" };
+  return { kind: "apply", force: Boolean(args.force) };
+}
+
 export async function runUpdate(args: UpdateArgs): Promise<void> {
+  const action = parseUpdateAction(args);
   // The update/autoupdate cooldown is the stored config `update-cooldown` (set via
   // `agent config --set update-cooldown <days>`), else null (immediate). The config key is the
   // single knob -- there is no per-invocation flag.
   const cooldown = new CopilotEnvConfig().updateCooldownDays();
   assertNonNegativeDays(cooldown, "update-cooldown");
 
-  // Autoupdate management flags short-circuit the manual update flow.
-  if (args.autoStatus) return runAutoStatus();
-  if (args.noAuto) return runDisableAuto();
-  if (args.auto) return runEnableAuto();
-
-  await runManualUpdate({ check: args.check, cooldown, force: args.force });
+  switch (action.kind) {
+    case "auto-status":
+      return runAutoStatus();
+    case "disable-auto":
+      return runDisableAuto();
+    case "enable-auto":
+      return runEnableAuto();
+    case "check":
+      return runManualUpdate({ check: true, cooldown, force: false });
+    case "apply":
+      return runManualUpdate({ check: false, cooldown, force: action.force });
+    default:
+      assertNever(action);
+  }
 }
 
 function runAutoStatus(): void {
@@ -71,9 +113,9 @@ async function runEnableAuto(): Promise<void> {
 }
 
 async function runManualUpdate(args: {
-  check?: boolean;
+  check: boolean;
   cooldown: number | null;
-  force?: boolean;
+  force: boolean;
 }): Promise<void> {
   // Current checkout version as `vX.Y.Z`, to match the upstream tag format for display.
   const current = `v${packageVersion()}`;

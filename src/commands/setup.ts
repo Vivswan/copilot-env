@@ -340,14 +340,18 @@ export function installAgentClis(setup: CliSetup): void {
 }
 
 /**
- * `agent shell`: set up the shell environment for the agents. Wires the
- * copilot-env integration block; `--launchers` also wires the cl/co/cx launchers;
- * `--clis` also installs the optional agent CLIs (tuned by --cooldown/--no-sudo/
- * --no-prereqs). `--remove` unwires the integration (and launchers); `--remove
- * --launchers` unwires ONLY the launchers block. `--all-hosts` targets the
- * Windows CurrentUserAllHosts profile.
+ * What ONE `agent shell` invocation does -- an unwire (whole block or just the
+ * launchers) or a wire (optionally with a CLI install) -- parsed ONCE by
+ * `parseShellAction` at the CLI boundary. The install knobs live inside the
+ * wire arm's CliSetup alone, so a conflicting combination (`--remove --clis`,
+ * `--cooldown --no-prereqs`) is rejected here and the handlers never re-check.
  */
-export function runShell(args: ShellArgs): void {
+export type ShellAction =
+  | { kind: "remove"; allHosts: boolean; launchersOnly: boolean }
+  | { kind: "wire"; allHosts: boolean; launchers: boolean; clis: CliSetup | null };
+
+/** Parse the raw `agent shell` flags into a ShellAction (the CLI boundary). */
+export function parseShellAction(args: ShellArgs): ShellAction {
   const remove = Boolean(args.remove);
   const launchers = Boolean(args.launchers);
   const clis = Boolean(args.clis);
@@ -356,37 +360,52 @@ export function runShell(args: ShellArgs): void {
   const noPrereqs = Boolean(args.noPrereqs);
   const allHosts = Boolean(args.allHosts);
 
-  // Validate the install flags before touching anything.
   if (!clis && (cooldown !== null || noSudo || noPrereqs)) {
     throw new Error("--cooldown, --no-sudo, and --no-prereqs require --clis");
   }
-  if (clis) {
-    if (remove) throw new Error("--clis installs CLIs and cannot be combined with --remove");
-    if (noSudo && noPrereqs) {
-      throw new Error("--no-sudo and --no-prereqs are mutually exclusive");
-    }
-    // Same conflict as its sibling above: --no-prereqs installs nothing, so a cooldown
-    // has nothing to steer -- reject it instead of silently dropping it.
-    if (cooldown !== null && noPrereqs) {
-      throw new Error("--cooldown and --no-prereqs are mutually exclusive");
-    }
-    assertNonNegativeDays(cooldown);
-  }
-
-  // Opt-in CLI install (add path only). The flag conflict was rejected above, so
-  // the parsed CliSetup carries either verify-only intent or the install knobs.
-  if (clis) {
-    installAgentClis(noPrereqs ? { mode: "verify-only" } : { mode: "install", cooldown, noSudo });
-  }
-
-  // Wire / unwire the rc block(s).
   if (remove) {
+    if (clis) throw new Error("--clis installs CLIs and cannot be combined with --remove");
     // --launchers scopes the removal to just the launchers block; otherwise the
     // whole integration block (which also strips launchers) is removed.
+    return { kind: "remove", allHosts, launchersOnly: launchers };
+  }
+  if (!clis) return { kind: "wire", allHosts, launchers, clis: null };
+  if (noSudo && noPrereqs) {
+    throw new Error("--no-sudo and --no-prereqs are mutually exclusive");
+  }
+  // Same conflict as its sibling above: --no-prereqs installs nothing, so a cooldown
+  // has nothing to steer -- reject it instead of silently dropping it.
+  if (cooldown !== null && noPrereqs) {
+    throw new Error("--cooldown and --no-prereqs are mutually exclusive");
+  }
+  assertNonNegativeDays(cooldown);
+  return {
+    kind: "wire",
+    allHosts,
+    launchers,
+    clis: noPrereqs ? { mode: "verify-only" } : { mode: "install", cooldown, noSudo },
+  };
+}
+
+/**
+ * `agent shell`: set up the shell environment for the agents. Wires the
+ * copilot-env integration block; `--launchers` also wires the cl/co/cx launchers;
+ * `--clis` also installs the optional agent CLIs (tuned by --cooldown/--no-sudo/
+ * --no-prereqs). `--remove` unwires the integration (and launchers); `--remove
+ * --launchers` unwires ONLY the launchers block. `--all-hosts` targets the
+ * Windows CurrentUserAllHosts profile.
+ */
+export function runShell(args: ShellArgs): void {
+  const action = parseShellAction(args);
+  if (action.kind === "remove") {
     runShellIntegration(
-      launchers ? { allHosts, removeLaunchers: true } : { allHosts, remove: true },
+      action.launchersOnly
+        ? { allHosts: action.allHosts, removeLaunchers: true }
+        : { allHosts: action.allHosts, remove: true },
     );
     return;
   }
-  runShellIntegration({ allHosts, launchers });
+  // Opt-in CLI install (add path only) happens before the rc block is wired.
+  if (action.clis !== null) installAgentClis(action.clis);
+  runShellIntegration({ allHosts: action.allHosts, launchers: action.launchers });
 }

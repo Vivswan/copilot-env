@@ -25,6 +25,93 @@ export interface AgentConfigArgs {
   ghToken?: string | null;
 }
 
+/**
+ * What ONE `agent codex` / `agent claude` invocation does. Each arm carries
+ * only its own knobs (`mode` never travels with `check`/`mobile`/`desktop`),
+ * so a contradictory combination like `--check --direct` or `--mobile --host`
+ * is rejected at the boundary parse below instead of resolved by dispatch
+ * order. The per-command unions narrow this to the arms each command declares.
+ */
+export type AgentConfigAction =
+  | { kind: "check" }
+  | { kind: "mobile" }
+  | { kind: "host"; deleteHost: boolean; mode: RequestedMode }
+  | { kind: "desktop" }
+  | { kind: "configure"; mode: RequestedMode };
+
+/** The `agent codex` arms (no `--desktop`; that flag is Claude's). */
+export type CodexCliAction = Exclude<AgentConfigAction, { kind: "desktop" }>;
+
+/** The `agent claude` arms (no `--mobile`/`--host`; those flags are Codex's). */
+export type ClaudeCliAction = Extract<
+  AgentConfigAction,
+  { kind: "check" | "desktop" | "configure" }
+>;
+
+/** The shared `--check` conflict: reporting never combines with a forced mode. */
+function assertCheckStandsAlone(mode: RequestedMode): void {
+  if (mode !== "auto") {
+    throw new Error(
+      "--check only reports the configured provider; it does not combine with --direct/--proxy",
+    );
+  }
+}
+
+/** Parse the raw `agent codex` flags into a CodexCliAction (the CLI boundary).
+ *  `mode` arrives already parsed (parseModeFlags), so the `--direct --proxy`
+ *  conflict is rejected before any combination below is considered. */
+export function parseCodexAction(flags: {
+  check?: boolean;
+  mode: RequestedMode;
+  mobile?: boolean;
+  host?: boolean;
+  deleteHost?: boolean;
+}): CodexCliAction {
+  if (flags.mobile) {
+    if (flags.check || flags.host || flags.deleteHost || flags.mode !== "auto") {
+      throw new Error(
+        "--mobile is an interactive pairing flow; it does not combine with " +
+          "--check/--direct/--proxy/--host/--delete-host",
+      );
+    }
+    return { kind: "mobile" };
+  }
+  if (flags.check) {
+    if (flags.host || flags.deleteHost) {
+      throw new Error(
+        "--check only reports the configured provider; it does not combine with --host/--delete-host",
+      );
+    }
+    assertCheckStandsAlone(flags.mode);
+    return { kind: "check" };
+  }
+  // --delete-host only makes sense against the farm, so it selects the host arm
+  // on its own; the mode rides along (the farm write wires a config too).
+  if (flags.host || flags.deleteHost) {
+    return { kind: "host", deleteHost: Boolean(flags.deleteHost), mode: flags.mode };
+  }
+  return { kind: "configure", mode: flags.mode };
+}
+
+/** Parse the raw `agent claude` flags into a ClaudeCliAction (the CLI boundary). */
+export function parseClaudeAction(flags: {
+  check?: boolean;
+  mode: RequestedMode;
+  desktop?: boolean;
+}): ClaudeCliAction {
+  if (flags.desktop) {
+    if (flags.check || flags.mode !== "auto") {
+      throw new Error("--desktop cannot be combined with --check/--direct/--proxy.");
+    }
+    return { kind: "desktop" };
+  }
+  if (flags.check) {
+    assertCheckStandsAlone(flags.mode);
+    return { kind: "check" };
+  }
+  return { kind: "configure", mode: flags.mode };
+}
+
 /** The per-agent knobs of a NAMED-profile write (`agent profile`): the caller
  *  resolves the direct client identity ONCE and both agents bake the same value. */
 export interface AgentProfileWriteOptions {

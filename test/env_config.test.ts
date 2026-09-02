@@ -202,6 +202,20 @@ test("runConfig --set validates + persists; --del reverts; unknown key / bad val
   );
 });
 
+test("runConfig --get cannot combine with --set/--del (never silently dropped)", () => {
+  tmpHome();
+  // `--set port 5000 --get` used to write the key and drop --get; the boundary
+  // parse now rejects the combination (both --get spellings: bare and keyed).
+  expect(() => runConfig({ set: ["port", "5000"], get: true })).toThrow(
+    "--get reads a preference and cannot combine with --set/--del",
+  );
+  expect(() => runConfig({ del: "port", get: "port" })).toThrow(
+    "--get reads a preference and cannot combine with --set/--del",
+  );
+  // The rejected --set wrote nothing.
+  expect(new CopilotEnvConfig().read().port).toBeUndefined();
+});
+
 test("integration-id is header-safe end to end: --set rejects without echoing, stored junk reads unset", () => {
   tmpHome();
   // The pin lands in HTTP headers (and wins over probed identities), so a

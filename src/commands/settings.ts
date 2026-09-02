@@ -53,6 +53,41 @@ export interface SettingsDeps extends ImportDeps {
   applyPlan?: typeof applyImportPlan;
 }
 
+/**
+ * What ONE `agent settings` invocation does -- an export or an import, parsed
+ * ONCE by `parseSettingsAction` at the CLI boundary. Each arm carries only its
+ * own knobs, so a mismatched flag (`--import --with-credentials`, `--export
+ * --force`) is a rejection here and the handlers never re-narrow the raw bag.
+ */
+export type SettingsAction =
+  | { kind: "export"; target: string | boolean; withCredentials: boolean }
+  | { kind: "import"; file: string; force: boolean; noBackup: boolean };
+
+const EXACTLY_ONE = "pass exactly one of --export [file], --import <file>";
+
+/** Parse the raw `agent settings` flags into a SettingsAction (the CLI boundary). */
+export function parseSettingsAction(args: SettingsArgs): SettingsAction {
+  if (args.importFrom !== undefined) {
+    if (args.exportTo !== undefined) throw new Error(EXACTLY_ONE);
+    if (args.withCredentials) {
+      throw new Error(
+        "--with-credentials only applies to --export (an import reads whatever the bundle holds)",
+      );
+    }
+    return {
+      kind: "import",
+      file: args.importFrom,
+      force: Boolean(args.force),
+      noBackup: Boolean(args.noBackup),
+    };
+  }
+  if (args.exportTo === undefined) throw new Error(EXACTLY_ONE);
+  if (args.force || args.noBackup) {
+    throw new Error("--force/--no-backup only apply to --import");
+  }
+  return { kind: "export", target: args.exportTo, withCredentials: Boolean(args.withCredentials) };
+}
+
 /** The rollback invocation, path quoted for THIS machine's shell. */
 function rollbackCommand(backupPath: string): string {
   const quoted = process.platform === "win32"
@@ -124,7 +159,11 @@ async function confirmImport(writeLines: string[], file: string): Promise<boolea
   return confirmed === true;
 }
 
-async function runImport(args: SettingsArgs, file: string, deps: SettingsDeps): Promise<void> {
+async function runImport(
+  action: Extract<SettingsAction, { kind: "import" }>,
+  deps: SettingsDeps,
+): Promise<void> {
+  const file = action.file;
   let raw: string;
   try {
     raw = readFileSync(file, "utf8");
@@ -142,7 +181,7 @@ async function runImport(args: SettingsArgs, file: string, deps: SettingsDeps): 
   // ONE plan drives both the confirmation and the apply, so the prompt models
   // exactly what will be written (a plan with no writes needs no prompt).
   const plan = (deps.planImport ?? planImport)(bundle, deps);
-  if (plan.writes.length > 0 && !args.force && !(await confirmImport(plan.writes, file))) {
+  if (plan.writes.length > 0 && !action.force && !(await confirmImport(plan.writes, file))) {
     consola.info("Import aborted - nothing was changed.");
     process.exitCode = 1;
     return;
@@ -150,7 +189,7 @@ async function runImport(args: SettingsArgs, file: string, deps: SettingsDeps): 
 
   // Backup BEFORE any write (even with --force), unless opted out; empty
   // stores skip it inside writeSettingsBackup (nothing to roll back to).
-  const backupPath = args.noBackup ? null : writeSettingsBackup();
+  const backupPath = action.noBackup ? null : writeSettingsBackup();
   // Snapshot the prefs the full-replace import is about to drop: the restart
   // hint must fire for a projected key the bundle RESETS, not just one it sets.
   const preImportPrefs = new CopilotEnvConfig().read();
@@ -192,22 +231,10 @@ async function runImport(args: SettingsArgs, file: string, deps: SettingsDeps): 
 
 /** `agent settings`: export or import the portable-settings bundle. */
 export async function runSettings(args: SettingsArgs, deps: SettingsDeps = {}): Promise<void> {
-  const hasExport = args.exportTo !== undefined;
-  const hasImport = args.importFrom !== undefined;
-  if (hasExport === hasImport) {
-    throw new Error("pass exactly one of --export [file], --import <file>");
-  }
-  if (hasImport && args.withCredentials) {
-    throw new Error(
-      "--with-credentials only applies to --export (an import reads whatever the bundle holds)",
-    );
-  }
-  if (hasExport && (args.force || args.noBackup)) {
-    throw new Error("--force/--no-backup only apply to --import");
-  }
-  if (hasExport) {
-    runExport(args.exportTo as string | boolean, Boolean(args.withCredentials));
+  const action = parseSettingsAction(args);
+  if (action.kind === "export") {
+    runExport(action.target, action.withCredentials);
     return;
   }
-  await runImport(args, args.importFrom as string, deps);
+  await runImport(action, deps);
 }

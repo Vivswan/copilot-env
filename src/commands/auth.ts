@@ -50,6 +50,7 @@ import {
 import { resolveDenoBin } from "../copilot_api/sidecar.ts";
 import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { installedProxyVersion } from "../copilot_api/version.ts";
+import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { withFileLockSync } from "../utils/file_lock.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -525,16 +526,32 @@ export async function ensureAuthenticated(profile: Profile = null): Promise<void
 }
 
 /**
- * `agent auth`: manage the GitHub credential ONLY (never configures agents).
- * `--get`/`--del`/`--check`/`--list` are standalone, mutually exclusive
- * sub-actions; `--profile <name>` addresses a named credential slot (named
- * profiles never fall back to the default credential). Otherwise it
- * authenticates: bare (no `--provider`) is idempotent when a credential already
- * resolves and prompts for the provider when not; an explicit `--provider`
- * always runs (so it can switch the credential source). `--set [token]` is the
- * non-interactive gh-token path (provide the token inline, or via env).
+ * What ONE `agent auth` invocation does -- exactly one read-back/maintenance
+ * sub-action, the profile listing, or an authentication -- parsed ONCE by
+ * `parseAuthAction` at the CLI boundary. `--provider`/`--set` travel only inside
+ * the authenticate arm's acquisition, so `--get --provider bogus` is a rejection
+ * here instead of a silently dropped (and never validated) provider.
  */
-export async function runAuth(args: AuthArgs, catalogDeps?: CodexCatalogDeps): Promise<void> {
+export type AuthAction =
+  | { kind: "get"; profile: Profile }
+  | { kind: "del"; profile: Profile }
+  | { kind: "check"; profile: Profile }
+  | { kind: "print-proxy-token"; profile: Profile }
+  | { kind: "list" }
+  | { kind: "authenticate"; profile: Profile; acquisition: CredentialAcquisition };
+
+// The rejection for `--provider` alongside a sub-action: the provider steers
+// only an authentication, so combining it with a read-back/maintenance flag
+// used to silently drop (and never validate) it.
+function providerConflictError(): Error {
+  return new Error(
+    "--provider selects how to authenticate and cannot combine with " +
+      "--get/--del/--check/--list/--print-proxy-token",
+  );
+}
+
+/** Parse the raw `agent auth` flags into an AuthAction (the CLI boundary). */
+export function parseAuthAction(args: AuthArgs): AuthAction {
   const subActions = [args.get, args.del, args.check, args.printProxyToken, args.list].filter(
     Boolean,
   ).length;
@@ -552,36 +569,71 @@ export async function runAuth(args: AuthArgs, catalogDeps?: CodexCatalogDeps): P
     if (args.profile !== undefined) {
       throw new Error("--list reports every profile; it does not combine with --profile");
     }
-    runList();
-    return;
+    if (args.provider !== undefined) throw providerConflictError();
+    return { kind: "list" };
   }
+  // Profile-name validation stays ahead of the provider conflict, so an invalid
+  // name keeps reporting itself even when a stray --provider rides along.
   const profile: Profile = parseProfileFlag(args.profile);
-  if (args.printProxyToken) {
-    await runPrintProxyToken(profile, catalogDeps);
-    return;
-  }
-  if (args.get) {
-    await runGet(profile, catalogDeps);
-    return;
-  }
-  if (args.del) {
-    await runDel(profile);
-    return;
-  }
-  if (args.check) {
-    runCheck(profile);
-    return;
-  }
+  if (args.provider !== undefined && subActions > 0) throw providerConflictError();
+  if (args.printProxyToken) return { kind: "print-proxy-token", profile };
+  if (args.get) return { kind: "get", profile };
+  if (args.del) return { kind: "del", profile };
+  if (args.check) return { kind: "check", profile };
+  return { kind: "authenticate", profile, acquisition: parseAcquisition(args.provider, args.set) };
+}
 
-  // `--set` is the non-interactive gh-token path: parseAcquisition makes it imply
-  // `--provider gh-token` (and rejects a conflicting provider). Bare `agent auth`
-  // (no --provider, no --set) is idempotent only when the recorded provider STILL
-  // RESOLVES: if so, report it and how to change it; otherwise run the auth flow
-  // (prompt) -- covering both "no provider yet" and "provider chosen but broken
-  // (e.g. gh-cli after gh logout)". `gh` is never silently used without the `gh-cli`
-  // choice, and `agent auth --del` clears the provider so the next run starts fresh.
-  // An explicit `--provider` always runs.
-  const acquisition = parseAcquisition(args.provider, args.set);
+/**
+ * `agent auth`: manage the GitHub credential ONLY (never configures agents).
+ * `--get`/`--del`/`--check`/`--list` are standalone, mutually exclusive
+ * sub-actions; `--profile <name>` addresses a named credential slot (named
+ * profiles never fall back to the default credential). Otherwise it
+ * authenticates: bare (no `--provider`) is idempotent when a credential already
+ * resolves and prompts for the provider when not; an explicit `--provider`
+ * always runs (so it can switch the credential source). `--set [token]` is the
+ * non-interactive gh-token path (provide the token inline, or via env).
+ */
+export async function runAuth(args: AuthArgs, catalogDeps?: CodexCatalogDeps): Promise<void> {
+  const action = parseAuthAction(args);
+  switch (action.kind) {
+    case "list":
+      runList();
+      return;
+    case "print-proxy-token":
+      await runPrintProxyToken(action.profile, catalogDeps);
+      return;
+    case "get":
+      await runGet(action.profile, catalogDeps);
+      return;
+    case "del":
+      await runDel(action.profile);
+      return;
+    case "check":
+      runCheck(action.profile);
+      return;
+    case "authenticate":
+      await runAuthenticate(action.profile, action.acquisition);
+      return;
+    default:
+      assertNever(action);
+  }
+}
+
+/**
+ * The authenticate arm: `--set` is the non-interactive gh-token path
+ * (parseAcquisition made it imply `--provider gh-token` and rejected a
+ * conflicting provider). Bare `agent auth` (no --provider, no --set) is
+ * idempotent only when the recorded provider STILL RESOLVES: if so, report it
+ * and how to change it; otherwise run the auth flow (prompt) -- covering both
+ * "no provider yet" and "provider chosen but broken (e.g. gh-cli after gh
+ * logout)". `gh` is never silently used without the `gh-cli` choice, and
+ * `agent auth --del` clears the provider so the next run starts fresh. An
+ * explicit `--provider` always runs.
+ */
+async function runAuthenticate(
+  profile: Profile,
+  acquisition: CredentialAcquisition,
+): Promise<void> {
   if (acquisition.kind === "choose") {
     const { provider, resolves } = new Credential(undefined, profile).status();
     if (provider !== null && resolves) {

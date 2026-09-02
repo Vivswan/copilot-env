@@ -1,6 +1,7 @@
 // Pure evaluators: HealthFacts -> CheckResult[]. No I/O -- every input is a fact
 // gathered by probe.ts, so each check is independently unit-testable.
 import { DIRECT_BASE_URL } from "../claude/config.ts";
+import { directHelperPath, proxyHelperPath } from "../claude/paths.ts";
 import { codexProviderId } from "../codex/config.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import { credentialSource } from "../copilot_api/credential.ts";
@@ -1184,6 +1185,23 @@ export function checkClaude(f: ClaudeFacts, profile: Profile = null): CheckResul
         fix: `remove ${f.settingsPath} (not managed by copilot-env), then ${
           profileAddFix(profile)
         }`,
+      };
+    }
+    // One default-profile exception to "the user's own business": apiKeyHelper at
+    // OUR legacy helper path that still classified "other" means the body could
+    // not be verified as a recognized released one (missing, unreadable, or
+    // unrecognized) -- likelier a broken leftover than custom wiring, so surface it.
+    const legacyDirect = f.helperPath === directHelperPath(f.home);
+    if (legacyDirect || f.helperPath === proxyHelperPath(f.home)) {
+      return {
+        ...base,
+        status: "warn",
+        detail: [
+          "provider: other",
+          `settings.json: ${f.settingsPath}`,
+          `apiKeyHelper → ${f.helperPath} (the retired copilot-env helper path), but copilot-env cannot verify the helper body (missing, unreadable, or unrecognized)`,
+        ].join("\n"),
+        fix: legacyDirect ? "agent claude --direct" : "agent claude --proxy",
       };
     }
     return {

@@ -21,8 +21,9 @@ export const MARKER = "# copilot-env shell integration";
 export const LAUNCHERS_MARKER = "# copilot-env launchers";
 export const MARKER_END = `${MARKER} end`;
 export const LAUNCHERS_MARKER_END = `${LAUNCHERS_MARKER} end`;
-const ALL_MARKERS = [MARKER, LAUNCHERS_MARKER];
-const ALL_FENCE_LINES = [MARKER, LAUNCHERS_MARKER, MARKER_END, LAUNCHERS_MARKER_END];
+/** A marker this module owns a block under. Every shape lookup is typed against this
+ *  union, so an unknown marker is a compile error rather than a runtime throw. */
+export type BlockMarker = typeof MARKER | typeof LAUNCHERS_MARKER;
 
 // Per marker: the end-marker line that closes a fenced block, and the ordered
 // [assignment, guard] line pair every released copilot-env (or the pre-TS installers)
@@ -37,7 +38,7 @@ interface BlockShape {
   legacyBody: ReadonlyArray<readonly [RegExp, RegExp]>;
 }
 
-const BLOCK_SHAPES: Record<string, BlockShape> = {
+const BLOCK_SHAPES: Record<BlockMarker, BlockShape> = {
   [MARKER]: {
     end: MARKER_END,
     legacyBody: [
@@ -57,15 +58,17 @@ const BLOCK_SHAPES: Record<string, BlockShape> = {
   },
 };
 
-/** The one spelling of an owned block: leading blank, open fence, body, end fence. */
-function fencedBlock(marker: string, body: string[]): string {
-  return `\n${marker}\n${body.join("\n")}\n${blockShapes(marker).end}\n`;
-}
+// Derived from BLOCK_SHAPES (the Record is exhaustive over BlockMarker), so a new
+// marker cannot land without joining these lists.
+const ALL_MARKERS = Object.keys(BLOCK_SHAPES) as readonly BlockMarker[];
+const ALL_FENCE_LINES: readonly string[] = [
+  ...ALL_MARKERS,
+  ...ALL_MARKERS.map((m) => BLOCK_SHAPES[m].end),
+];
 
-function blockShapes(marker: string): BlockShape {
-  const shapes = BLOCK_SHAPES[marker];
-  if (shapes === undefined) throw new Error(`unknown block marker: ${marker}`);
-  return shapes;
+/** The one spelling of an owned block: leading blank, open fence, body, end fence. */
+function fencedBlock(marker: BlockMarker, body: string[]): string {
+  return `\n${marker}\n${body.join("\n")}\n${BLOCK_SHAPES[marker].end}\n`;
 }
 
 /** The opt-in cl/co/cx launchers file for each platform flavor -- the single owner of
@@ -83,7 +86,6 @@ export interface ShellIntegrationArgs {
   removeLaunchers?: boolean;
   allHosts?: boolean;
   launchers?: boolean;
-  existingOnly?: boolean;
 }
 
 /** A line equals the given marker ignoring a trailing CR (rc/profile files may be CRLF). */
@@ -102,20 +104,17 @@ export function runShellIntegration(args: ShellIntegrationArgs): void {
     return;
   }
   const launchers = Boolean(args.launchers);
-  const existingOnly = Boolean(args.existingOnly);
   if (windows) {
     const target = windowsProfileTarget(Boolean(args.allHosts));
-    const wired = wireBlocks(
+    wireBlocks(
       target.paths,
       windowsBlock(join(PROJECT_ROOT, "shell", "agents.ps1")),
       windowsLaunchersBlock(launchersFile(true)),
       launchers,
-      existingOnly,
     );
-    // Only relax execution policy when integration is actually present -- never for an
-    // opted-out user whose `existingOnly` migration found no owned block to refresh, and
-    // never for a redirected run, which owns no machine state (the type enforces it).
-    if (wired && target.source === "system") relaxWindowsExecutionPolicy(target);
+    // Only relax execution policy for a "system" target -- a redirected run owns no
+    // machine state (the type enforces it).
+    if (target.source === "system") relaxWindowsExecutionPolicy(target);
     consola.info("Restart PowerShell or run: . $PROFILE");
   } else {
     wireBlocks(
@@ -123,7 +122,6 @@ export function runShellIntegration(args: ShellIntegrationArgs): void {
       posixBlock(join(PROJECT_ROOT, "shell", "agents.bashrc")),
       posixLaunchersBlock(launchersFile(false)),
       launchers,
-      existingOnly,
     );
     consola.info("Restart your shell or run: source ~/.bashrc (or ~/.zshrc)");
   }
@@ -144,9 +142,9 @@ export function runShellIntegration(args: ShellIntegrationArgs): void {
 function blockExtent(
   lines: string[],
   idx: number,
-  marker: string,
+  marker: BlockMarker,
 ): { end: number; leftBehind: string | null } {
-  const shapes = blockShapes(marker);
+  const shapes = BLOCK_SHAPES[marker];
   const lineAt = (i: number): string | null =>
     i < lines.length ? (lines[i] ?? "").replace(/\r$/, "") : null;
   for (let i = idx + 1; i < lines.length; i++) {
@@ -170,17 +168,13 @@ function blockExtent(
   return { end: idx + 2, leftBehind: null };
 }
 
-/**
- * Strip owned blocks from rc/profile content, each bounded by its own extent (see
- * blockExtent) plus the blank line the block prepends (only when that preceding line
- * is actually empty). Pure: `leftBehind` reports the lines conservative legacy scans
- * refused to remove, for the caller to warn about. Exported for tests only.
- */
-export function stripBlocks(
-  content: string,
-  markers: string[],
-): { content: string; leftBehind: string[] } {
-  const lines = content.split("\n");
+/** The skip-set covering every owned block among `lines` (each block's extent plus its
+ *  preceding blank, only when that preceding line is actually empty), and the user lines
+ *  conservative legacy scans refused to remove, for the caller to warn about. */
+function ownedLineIndexes(
+  lines: string[],
+  markers: readonly BlockMarker[],
+): { skip: Set<number>; leftBehind: string[] } {
   const skip = new Set<number>();
   const leftBehind: string[] = [];
   lines.forEach((line, idx) => {
@@ -191,6 +185,20 @@ export function stripBlocks(
     for (let i = idx; i <= extent.end; i++) skip.add(i);
     if (extent.leftBehind !== null) leftBehind.push(extent.leftBehind);
   });
+  return { skip, leftBehind };
+}
+
+/**
+ * Strip owned blocks from rc/profile content, each bounded by its own extent (see
+ * blockExtent) plus the blank line the block prepends. Pure: `leftBehind` reports the
+ * lines conservative legacy scans refused to remove. Exported for tests only.
+ */
+export function stripBlocks(
+  content: string,
+  markers: readonly BlockMarker[],
+): { content: string; leftBehind: string[] } {
+  const lines = content.split("\n");
+  const { skip, leftBehind } = ownedLineIndexes(lines, markers);
   if (skip.size === 0) return { content, leftBehind };
   return { content: lines.filter((_, idx) => !skip.has(idx)).join("\n"), leftBehind };
 }
@@ -200,63 +208,69 @@ export function hasMarker(content: string, marker: string): boolean {
   return content.split("\n").some((l) => lineIs(l, marker));
 }
 
+/** The file's dominant line ending: CRLF only when strictly more lines end CRLF than
+ *  LF, so a stray CRLF in an LF file (or an empty file) stays LF. */
+function dominantEol(content: string): "\n" | "\r\n" {
+  const crlf = content.match(/\r\n/g)?.length ?? 0;
+  const lf = (content.match(/\n/g)?.length ?? 0) - crlf;
+  return crlf > lf ? "\r\n" : "\n";
+}
+
 /**
- * Insert or refresh ONE owned block, IN PLACE. If `marker` is already present, its
- * existing block (bounded by its own extent, plus a preceding blank when there is
- * one) is replaced where it sits -- so a stale path or a pre-end-marker block
- * migrates without moving the block or reordering anything around it, and an
- * already-current block reproduces the file byte-for-byte. If absent, the block is
- * appended at EOF (it leads with a blank). Exported for tests only.
+ * Insert or refresh ONE owned block, IN PLACE: the first `marker` block is replaced
+ * where it sits (extent-bounded, plus its preceding blank), so a stale or legacy block
+ * migrates without reordering the file and an already-current one reproduces it
+ * byte-for-byte; later duplicates of the same marker (a bad hand-merge, say) are
+ * stripped, extent-bounded, so the file converges on ONE owned block and user lines
+ * are never deleted. When absent, the block is appended at EOF (it leads with a
+ * blank) in the file's dominant line ending. Exported for tests only.
  */
-export function upsertBlock(content: string, marker: string, block: string): string {
+export function upsertBlock(content: string, marker: BlockMarker, block: string): string {
   const lines = content.split("\n");
   const idx = lines.findIndex((l) => lineIs(l, marker));
-  if (idx === -1) return content + block;
+  if (idx === -1) {
+    return content + (dominantEol(content) === "\r\n" ? block.replaceAll("\n", "\r\n") : block);
+  }
   const start = idx > 0 && (lines[idx - 1] ?? "").replace(/\r$/, "") === "" ? idx - 1 : idx;
   const { end } = blockExtent(lines, idx, marker);
   let blockLines = block.split("\n");
   if (blockLines[blockLines.length - 1] === "") blockLines = blockLines.slice(0, -1); // trailing newline
   if (start === idx && blockLines[0] === "") blockLines = blockLines.slice(1); // no preceding blank to keep
   // A CRLF rc keeps its endings: the refreshed block adopts the marker line's, so
-  // re-upserting an already-current block stays byte-idempotent there too. When the
-  // block's last line is also the file's and sits unterminated, it stays that way
-  // (its would-be \r belongs to a terminator it does not have).
+  // re-upserting an already-current block stays byte-idempotent there too.
   if ((lines[idx] ?? "").endsWith("\r")) {
     blockLines = blockLines.map((l) => `${l}\r`);
-    const last = blockLines.length - 1;
-    if (end === lines.length - 1 && !(lines[end] ?? "").endsWith("\r")) {
-      blockLines[last] = (blockLines[last] ?? "").replace(/\r$/, "");
-    }
   }
-  return [...lines.slice(0, start), ...blockLines, ...lines.slice(end + 1)].join("\n");
+  // Dedupe on the LINE array, not a string round-trip: "" is ambiguous there (no tail
+  // vs one terminator line), which would flip an EOF file's (un)terminated state.
+  const rest = lines.slice(end + 1);
+  const dupes = ownedLineIndexes(rest, [marker]).skip;
+  const tail = dupes.size === 0 ? rest : rest.filter((_, i) => !dupes.has(i));
+  // An empty tail means OUR block now ends the file unterminated (it already did, or
+  // the dedupe removed an unterminated duplicate after it): its last line keeps no
+  // \r -- that \r belongs to a "\r\n" terminator the line does not have.
+  if (tail.length === 0) {
+    const last = blockLines.length - 1;
+    blockLines[last] = (blockLines[last] ?? "").replace(/\r$/, "");
+  }
+  return [...lines.slice(0, start), ...blockLines, ...tail].join("\n");
 }
 
 /**
  * Wire (or refresh) the owned blocks. Each block is upserted IN PLACE, so re-running is
  * byte-idempotent and a stale (pre-`shell/`-move) path migrates without moving the block
  * or reordering the rest of the file. The launchers block is included when requested OR
- * already present, so a plain re-run never silently drops a user's launchers. With
- * `existingOnly`, a file that has no owned block is left untouched -- used by the update
- * migration so it never newly-wires a user who opted out of shell integration.
- *
- * Returns true if any target file has an owned block afterwards (i.e. integration is
- * active for this user) -- the caller uses this to decide whether Windows-side execution
- * policy relaxation is warranted, so an opted-out `existingOnly` run touches nothing.
+ * already present, so a plain re-run never silently drops a user's launchers.
  */
 function wireBlocks(
   files: string[],
   mainBlock: string,
   launchersBlock: string,
   wantLaunchers: boolean,
-  existingOnly = false,
-): boolean {
-  let active = false;
+): void {
   for (const file of files) {
     const original = existsSync(file) ? readFileSync(file, "utf-8") : "";
-    const hadMain = hasMarker(original, MARKER);
     const hadLaunchers = hasMarker(original, LAUNCHERS_MARKER);
-    if (existingOnly && !hadMain && !hadLaunchers) continue;
-    active = true; // this file has, or will have, an owned block
     let next = upsertBlock(original, MARKER, mainBlock);
     if (wantLaunchers || hadLaunchers) next = upsertBlock(next, LAUNCHERS_MARKER, launchersBlock);
     if (next === original) {
@@ -269,12 +283,11 @@ function wireBlocks(
     writeFileSync(file, next);
     consola.success(`Wired shell integration into ${file}`);
   }
-  return active;
 }
 
 function removeBlocksFrom(
   files: string[],
-  markers: string[],
+  markers: readonly BlockMarker[],
   removedMessage: (file: string) => string,
   missingMessage: string,
 ): boolean {

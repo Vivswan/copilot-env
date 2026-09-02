@@ -9,6 +9,7 @@ import {
   type ConfigCli,
   configDefaultLabel,
   configDefaultNumber,
+  type ConfigKey,
   type ConfigKeyDef,
   configKeyDef,
   CopilotEnvConfig,
@@ -16,6 +17,7 @@ import {
   optInProxyConfigPaths,
   projectedProxyConfig,
   type ProjectedProxyEntry,
+  type TotalOverConfigKeys,
 } from "../src/copilot_api/env_config.ts";
 import { DEFAULT_WEB_SEARCH_MODEL } from "../src/copilot_api/web_search.ts";
 import { DEFAULT_RELEASE_COOLDOWN_SECONDS } from "../src/proxy_float.ts";
@@ -509,6 +511,26 @@ test("the entry type forces a schema matching the key's own value type", () => {
     defaultValue: false,
   };
   expect(mismatched.cli).toBe("bogus");
+});
+
+test("the registry's storage keys are pinned total over CopilotEnvConfigData", () => {
+  // Every CopilotEnvConfigData field is optional, so a registry literal missing one would
+  // still compile: the key would be written by set() yet silently stripped by the folded
+  // read schema. The totality pin in env_config.ts makes the omission a compile error.
+  // @ts-expect-error - a mapped record missing a stored key (autoStart) fails the pin
+  type _Missing = TotalOverConfigKeys<{ [K in Exclude<ConfigKey, "autoStart">]: K }>;
+  // ... and the other direction: a storage key OUTSIDE CopilotEnvConfigData is rejected
+  // per entry by ConfigKeyDefCore's `key`, so the pinned union can never grow an extra key.
+  const extra: ConfigKeyDef = {
+    cli: "bogus",
+    // @ts-expect-error - 'bogus' is not a key of CopilotEnvConfigData
+    key: "bogus",
+    describe: "bogus",
+    schema: v.boolean(),
+    parse: () => true,
+    defaultValue: false,
+  };
+  expect(extra.cli).toBe("bogus");
 });
 
 test("isProxyProjected marks force + opt-in keys, not copilot-env-internal ones", () => {

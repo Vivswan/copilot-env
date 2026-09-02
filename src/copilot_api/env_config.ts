@@ -557,6 +557,20 @@ const CONFIG_REGISTRY_LITERAL = [
  *  string so a typo'd key is a compile error, not a module-load throw. */
 export type ConfigCli = (typeof CONFIG_REGISTRY_LITERAL)[number]["cli"];
 
+/** The registry literal's storage-key union, pinned below to be exactly ConfigKey. */
+type RegistryStorageKey = (typeof CONFIG_REGISTRY_LITERAL)[number]["key"];
+
+/** Compile pin: the mapped-record parameter must carry EVERY stored config key.
+ *  Exported only for the @ts-expect-error pin tests. */
+export type TotalOverConfigKeys<Pin extends { [K in ConfigKey]: K }> = Pin;
+
+/** Registry keys === ConfigKey, both directions. Missing: every CopilotEnvConfigData field
+ *  is optional, so a key omitted from CONFIG_REGISTRY_LITERAL would still compile -- written
+ *  by set() yet silently stripped by the folded CONFIG_SCHEMA on every read; this pin makes
+ *  the omission a compile error naming the key. Extra: ConfigKeyDefCore's `key: K` already
+ *  rejects a storage key outside CopilotEnvConfigData at its own entry. */
+type _RegistryIsTotalOverConfigKeys = TotalOverConfigKeys<{ [K in RegistryStorageKey]: K }>;
+
 /** The literal list above, widened so consumers see the uniform ConfigKeyDef shape. */
 export const CONFIG_REGISTRY: readonly ConfigKeyDef[] = CONFIG_REGISTRY_LITERAL;
 

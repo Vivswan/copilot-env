@@ -3,13 +3,18 @@ import { join } from "node:path";
 import { moveDataHome } from "../src/migrations/3.5.6.ts";
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
 import { readResolvedVersionRecord, writeResolvedVersionRecord } from "../src/proxy_float.ts";
+import type { SemverString } from "../src/utils/semver.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, removeDir, tmpDir } from "./helpers.ts";
 
 // Pure selection logic for which migrations run across a version range, with a synthetic
 // registry so the real migrations' side effects are never triggered here. Migrations are
 // named for the version they migrate AWAY FROM, and run for the range [from, to).
-const mig = (version: string): Migration => ({ version, description: version, run: () => {} });
+const mig = (version: SemverString): Migration => ({
+  version,
+  description: version,
+  run: () => {},
+});
 const LIST = [mig("1.2.1"), mig("1.2.5"), mig("1.3.0")];
 
 const restoreEnv = envSnapshot();
@@ -45,6 +50,27 @@ test("the shipped registry holds exactly the 3.5.6 data-home move", () => {
   // Adding a step has to be a deliberate edit to the registry, not an accident of
   // a stale import; this pins the full set.
   expect(dueMigrations("0.0.1", "999.0.0").map((m) => m.version)).toEqual(["3.5.6"]);
+});
+
+test("an unparseable registry version throws instead of silently never running", () => {
+  // The type demands a version-shaped literal, so only a cast reaches runtime -- but a
+  // registry entry the range filter cannot see is a migration that never fires, so the
+  // guard stays and names the offender.
+  const bad = [mig("1.2.1"), { ...mig("1.2.5"), version: "oops" as SemverString }];
+  expect(() => dueMigrations("1.0.0", "2.0.0", bad)).toThrow(
+    'registry version (1.2.5) "oops" is not a semver version',
+  );
+});
+
+test("an unparseable from or to bound throws instead of mis-selecting", () => {
+  // A garbage `to` would otherwise select [] (no migration runs); a garbage `from`
+  // would select everything below `to` -- both silent, both wrong.
+  expect(() => dueMigrations("1.0.0", "oops", LIST)).toThrow(
+    'to version "oops" is not a semver version',
+  );
+  expect(() => dueMigrations("oops", "2.0.0", LIST)).toThrow(
+    'from version "oops" is not a semver version',
+  );
 });
 
 test("runMigrations is best-effort: a failing step never stops the rest", async () => {

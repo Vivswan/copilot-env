@@ -30,7 +30,15 @@ import {
 } from "./env_config.ts";
 import { resolvePassthroughIntegrationId, usePatPassthrough } from "./integration_identity.ts";
 import { generateAliases } from "./models.ts";
-import { CopilotApiPaths, profileHomeNames, resolveRootHome, ROOT_HOME_ENV } from "./paths.ts";
+import {
+  CopilotApiPaths,
+  profileHome,
+  profileHomeNames,
+  resolveHome,
+  resolveRootHome,
+  ROOT_HOME_ENV,
+} from "./paths.ts";
+import { daemonLockHolderPid, daemonLockVerdict } from "../scripts/daemon_lock.ts";
 import { isStandaloneBinary } from "../utils/root.ts";
 import { ensureSidecar, resolveDenoBin } from "./sidecar.ts";
 import {
@@ -301,16 +309,32 @@ export function trackedDaemonPids(): Set<number> {
   return pids;
 }
 
-/** Orphaned copilot-api pids: every daemon-shaped process EXCEPT us, our parent, and the
+/** Live daemon.lock holders across the default and every profile home -- the sweep's
+ *  STRONGER keep-signal, beside the run-state tracking above: the held lock proves its
+ *  holder is a live daemon of ours (OS-enforced, immune to pid reuse and to run-state
+ *  loss), so a holder is never swept, whatever its argv looks like. */
+export function lockProtectedDaemonPids(): Set<number> {
+  const pids = new Set<number>();
+  for (const home of [resolveHome(), ...profileHomeNames().map(profileHome)]) {
+    const holder = daemonLockHolderPid(home);
+    if (holder !== null) pids.add(holder);
+  }
+  return pids;
+}
+
+/** Orphaned copilot-api pids: every daemon-shaped process EXCEPT us, our parent, the
  *  pids in `keepPids` (the tracked-daemon exclusion set -- another profile's healthy daemon
- *  must never be listed while (re)starting this one). `listPids` is injectable for tests. */
+ *  must never be listed while (re)starting this one), and every live daemon.lock holder
+ *  (applied HERE, at the one list producer, so no caller can forget it). `listPids` is
+ *  injectable for tests. */
 export async function listUntrackedOrphans(
   myPid: number,
   myPpid: number,
   keepPids: Set<number>,
   listPids: (myPid: number, myPpid: number) => Promise<number[]> = getOrphanPids,
 ): Promise<number[]> {
-  return (await listPids(myPid, myPpid)).filter((p) => !keepPids.has(p));
+  const lockHolders = lockProtectedDaemonPids();
+  return (await listPids(myPid, myPpid)).filter((p) => !keepPids.has(p) && !lockHolders.has(p));
 }
 
 /**
@@ -327,7 +351,14 @@ export async function cleanupExistingProxies(
 
   const tracked = state.read().pid;
   if (tracked !== undefined) {
-    if (await isCopilotApiPid(tracked)) {
+    // The lock rules first (the shared daemonLockVerdict table): "alive" is stopped even
+    // where the argv scan cannot see it, "dead" is never signalled however alive the pid
+    // table says it is (pid reuse), and only "unproven" -- a pre-lock daemon -- falls back
+    // to the argv-scan identity check.
+    const lock = daemonLockVerdict(new CopilotApiPaths(profile).home, tracked);
+    const trackedAlive = lock === "alive" ||
+      (lock === "unproven" && await isCopilotApiPid(tracked));
+    if (trackedAlive) {
       consola.info(`   Stopping tracked proxy (pid=${tracked}) ...`);
       await terminatePid(tracked, DAEMON_SIGKILL_GRACE_MS);
     }

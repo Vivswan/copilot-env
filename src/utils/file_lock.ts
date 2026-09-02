@@ -252,6 +252,79 @@ export function tryAcquireFileLock(
   }
 }
 
+/** What a non-mutating holder probe observed at a lock path. `held`/`free` carry the
+ *  marker's pid -- the holder's (`held`) or the LAST holder's (`free`) -- so a consumer
+ *  can tie the verdict to a specific pid; `absent` means no marker file exists, so no
+ *  lock-aware writer ever ran here; `unknown` is an unreadable marker or a failed probe. */
+export type FileLockProbe =
+  | { readonly kind: "held"; readonly markerPid: number | null }
+  | { readonly kind: "free"; readonly markerPid: number | null }
+  | { readonly kind: "absent" }
+  | { readonly kind: "unknown" };
+
+const PROBE_ABSENT: FileLockProbe = Object.freeze({ kind: "absent" });
+const PROBE_UNKNOWN: FileLockProbe = Object.freeze({ kind: "unknown" });
+
+/**
+ * Probe whether `lockPath`'s OS lock is currently held, WITHOUT taking the lock over:
+ * the sidecar is try-locked SHARED and, when that succeeds, immediately unlocked again,
+ * and the marker file is only read, never written or deleted. For a lock whose holder
+ * keeps it for its whole process lifetime (the daemon liveness lock), held-ness IS
+ * liveness -- enforced by the OS, immune to pid reuse, and released at process death with
+ * no unlock code running (SIGKILL included).
+ *
+ * The shared mode is what keeps probes honest about each other: any number of concurrent
+ * probes coexist without ever reading one another as a holder, and only a real holder's
+ * EXCLUSIVE lock reports `held`. A prober's momentary shared hold can still make an
+ * exclusive acquirer's single attempt fail, which is why acquirers contending with
+ * probes retry rather than judging one failed attempt final.
+ *
+ * The marker is read BEFORE and AFTER the lock observation and must agree, or the probe
+ * reports `unknown`: a holder change mid-probe (the old holder died and a successor
+ * acquired) would otherwise pair the previous holder's pid with the successor's lock
+ * state -- a verdict about the wrong process. The one residual window is a successor
+ * between its lock and its marker write while both reads still see the old marker;
+ * that is a sub-millisecond misread that the next probe corrects.
+ */
+export function probeFileLock(lockPath: string): FileLockProbe {
+  const observed = readMarker(lockPath);
+  if (observed.kind === "unreadable") return PROBE_UNKNOWN;
+  const pid = observed.kind === "present" ? markerPid(observed.raw) : null;
+  // Our own held lock: the OS may report a second same-process attempt either way, so
+  // answer from the process-local record instead of racing our own handle.
+  if (HELD_LOCKS.has(lockPath)) return Object.freeze({ kind: "held", markerPid: pid });
+  const lockState = observeOsLock(lockPath);
+  if (lockState === "unknown") return PROBE_UNKNOWN;
+  const reread = readMarker(lockPath);
+  if (reread.kind !== observed.kind) return PROBE_UNKNOWN;
+  if (observed.kind === "present" && reread.kind === "present" && reread.raw !== observed.raw) {
+    return PROBE_UNKNOWN;
+  }
+  if (lockState === "held") return Object.freeze({ kind: "held", markerPid: pid });
+  return observed.kind === "present"
+    ? Object.freeze({ kind: "free", markerPid: pid })
+    : PROBE_ABSENT;
+}
+
+/** Whether `lockPath`'s sidecar OS lock is exclusively held right now. `free` includes a
+ *  missing sidecar (no sidecar -> no OS lock can be held). */
+function observeOsLock(lockPath: string): "held" | "free" | "unknown" {
+  let file: Deno.FsFile;
+  try {
+    file = Deno.openSync(osLockPath(lockPath), { read: true, write: true });
+  } catch (e) {
+    return isEnoentOrNotdir(e) ? "free" : "unknown";
+  }
+  try {
+    // Shared-locked only to observe: dropHandle below releases it, marker untouched.
+    return file.tryLockSync(false) ? "free" : "held";
+  } catch {
+    return "unknown";
+  } finally {
+    dropHandle(file);
+  }
+}
+
 /**
  * The identity-verified steal of the marker-only protocol: renameSync the lock aside and
  * confirm the yanked marker MATCHES the stale one the caller observed; if a FRESH holder

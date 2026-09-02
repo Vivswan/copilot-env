@@ -17,16 +17,19 @@ import {
   awaitReadiness,
   type FloorCheckedEntry,
   listUntrackedOrphans,
+  lockProtectedDaemonPids,
   resolveLaunchCredential,
   resolveStartPort,
   trackedDaemonPids,
   withStartLock,
 } from "../src/copilot_api/launch.ts";
 import type { CopilotApiEntry } from "../src/copilot_api/process.ts";
-import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
+import { CopilotApiPaths, profileHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
 import { ProxyProjectionState } from "../src/copilot_api/ownership.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
+import { acquireDaemonLockForLife, daemonLockPath } from "../src/scripts/daemon_lock.ts";
+import { releaseFileLock } from "../src/utils/file_lock.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir, writeRunState } from "./helpers.ts";
 
@@ -284,10 +287,45 @@ test("resolveLaunchCredential: a named profile NEVER falls back to the default c
 // --- the orphan-sweep exclusion set --------------------------------------------------
 
 test("listUntrackedOrphans: pids in the keep set are never listed", async () => {
+  tmpHome(); // the lock keep-signal scans the effective home, so it must be isolated
   const listPids = () => Promise.resolve([100, 200, 300]);
   expect(await listUntrackedOrphans(1, 2, new Set([200]), listPids)).toEqual([100, 300]);
   expect(await listUntrackedOrphans(1, 2, new Set(), listPids)).toEqual([100, 200, 300]);
   expect(await listUntrackedOrphans(1, 2, new Set([100, 200, 300]), listPids)).toEqual([]);
+});
+
+test("a live daemon.lock holder is never listed for the sweep, whatever its argv", async () => {
+  const home = tmpHome();
+  // This test process holds the DEFAULT home's daemon lock, standing in for a daemon whose
+  // run-state tracking was lost -- with an empty keep set, only the lock protects it.
+  expect(acquireDaemonLockForLife(home, { waitMs: 0 })).toBe(true);
+  try {
+    const listPids = () => Promise.resolve([process.pid, 333]);
+    expect(lockProtectedDaemonPids()).toEqual(new Set([process.pid]));
+    expect(await listUntrackedOrphans(1, 2, new Set(), listPids)).toEqual([333]);
+  } finally {
+    releaseFileLock(daemonLockPath(home));
+  }
+  // Control: with the lock released, the same pid IS sweepable again.
+  expect(lockProtectedDaemonPids()).toEqual(new Set());
+  expect(
+    await listUntrackedOrphans(1, 2, new Set(), () => Promise.resolve([process.pid, 333])),
+  ).toEqual([process.pid, 333]);
+});
+
+test("the lock keep-signal covers profile homes too", async () => {
+  tmpHome();
+  // Acquiring creates the profile home dir, which is what profileHomeNames enumerates.
+  const workHome = profileHome(WORK);
+  expect(acquireDaemonLockForLife(workHome, { waitMs: 0 })).toBe(true);
+  try {
+    expect(lockProtectedDaemonPids()).toEqual(new Set([process.pid]));
+    expect(
+      await listUntrackedOrphans(1, 2, new Set(), () => Promise.resolve([process.pid, 444])),
+    ).toEqual([444]);
+  } finally {
+    releaseFileLock(daemonLockPath(workHome));
+  }
 });
 
 test("trackedDaemonPids collects the default AND every profile's tracked pid", () => {

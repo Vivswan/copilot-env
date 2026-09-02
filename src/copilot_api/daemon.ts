@@ -5,6 +5,9 @@
 // instead of from another command file.
 import { connect } from "node:net";
 import { clearPersistedInferenceActivity } from "../scripts/inference_activity.ts";
+import { daemonLockVerdict } from "../scripts/daemon_lock.ts";
+import { assertNever } from "../utils/assert.ts";
+import { CopilotApiPaths } from "./paths.ts";
 import { daemonPolicy, defaultProxyPort } from "./port.ts";
 import { classifyDaemonPid, pidAlive, terminatePid } from "./process.ts";
 import type { Profile } from "./profile.ts";
@@ -22,15 +25,30 @@ export type ProxyStatus = { up: false } | { up: true; port: number };
 // commands that need the same "is it up?" answer (`agent models` source auto-pick).
 export async function proxyStatus(profile: Profile = null): Promise<ProxyStatus> {
   const { pid, port } = CopilotEnvRunState.forProfile(profile).read();
-  if (pid === undefined || !pidAlive(pid)) {
+  if (pid === undefined) {
     return { up: false };
   }
-  // PID-reuse guard, but liveness-safe: only a CONFIDENT "no" (the recorded pid is gone or is a
-  // different, identifiable process) rules the proxy out. "unknown" -- the caller's token can't
-  // read the pid's command line, as in Codex's packaged/sandboxed app where WMI is unavailable --
-  // falls back to probing OUR recorded pid+port, so a healthy proxy isn't false-reported as down.
-  if ((await classifyDaemonPid(pid)) === "no") {
+  // The daemon lock is consulted BEFORE the pid table: the daemon holds
+  // `<home>/daemon.lock` for its whole life, so a held lock naming the tracked pid is
+  // OS-proven liveness and a released one naming it is death -- immune to pid reuse, and
+  // cheaper than the Windows WMI classification. "unproven" (a pre-lock daemon holds no
+  // lock; a marker naming some other pid proves nothing about this one) falls back to
+  // the pid-liveness and identity checks below.
+  const lock = daemonLockVerdict(new CopilotApiPaths(profile).home, pid);
+  if (lock === "dead") {
     return { up: false };
+  }
+  if (lock === "unproven") {
+    if (!pidAlive(pid)) {
+      return { up: false };
+    }
+    // PID-reuse guard, but liveness-safe: only a CONFIDENT "no" (the recorded pid is gone or is a
+    // different, identifiable process) rules the proxy out. "unknown" -- the caller's token can't
+    // read the pid's command line, as in Codex's packaged/sandboxed app where WMI is unavailable --
+    // falls back to probing OUR recorded pid+port, so a healthy proxy isn't false-reported as down.
+    if ((await classifyDaemonPid(pid)) === "no") {
+      return { up: false };
+    }
   }
   // Only a config-ported daemon has a meaningful port fallback (the configured/
   // built-in default); a reservation-ported daemon with a tracked pid but no
@@ -115,20 +133,40 @@ export async function stopTrackedProxy(
     clearPersistedInferenceActivity(profile);
     return { signalled: false, stopped: true };
   }
-  // Classify the tracked pid before signalling it -- the OS may have recycled a stale pid onto
-  // an unrelated process. Signal on "yes" (confirmed ours) AND "unknown" (a restricted/sandboxed
-  // token that can't read the pid's identity, e.g. Windows Constrained Language Mode): the
-  // tracked pid is almost certainly still our daemon, and treating "unknown" as "already gone"
-  // would leave a live daemon running while reporting it stopped. Only a confident "no" skips the
-  // signal. On Windows there are no POSIX signals: SIGTERM maps to TerminateProcess (a hard kill;
-  // SQLite WAL recovery makes that safe). Killing the daemon also tears down its idle watchdog.
-  const cls = await classifyDaemonPid(trackedPid);
-  const signalled = cls === "yes" || cls === "unknown";
+  // The daemon lock rules first (same table as proxyStatus): a held lock naming the
+  // tracked pid is our live daemon even where the argv scan cannot see it; a released
+  // lock naming it means the daemon is DEAD, so the pid is never signalled however alive
+  // the pid table says it is (the OS may have recycled it onto an unrelated process).
+  // "unproven" falls back to classification: signal on "yes" (confirmed ours) AND
+  // "unknown" (a restricted/sandboxed token that can't read the pid's identity, e.g.
+  // Windows Constrained Language Mode) -- the tracked pid is almost certainly still our
+  // daemon, and treating "unknown" as "already gone" would leave a live daemon running
+  // while reporting it stopped. Only a confident "no" skips the signal. On Windows there
+  // are no POSIX signals: SIGTERM maps to TerminateProcess (a hard kill; SQLite WAL
+  // recovery makes that safe). Killing the daemon also tears down its idle watchdog.
+  const lock = daemonLockVerdict(new CopilotApiPaths(profile).home, trackedPid);
+  let signalled: boolean;
+  switch (lock) {
+    case "alive":
+      signalled = true;
+      break;
+    case "dead":
+      signalled = false;
+      break;
+    case "unproven": {
+      const cls = await classifyDaemonPid(trackedPid);
+      signalled = cls === "yes" || cls === "unknown";
+      break;
+    }
+    default:
+      signalled = assertNever(lock);
+  }
   if (signalled) {
     await terminatePid(trackedPid, graceMs);
   }
-  // "stopped" = the tracked daemon is no longer alive as our process. A confident "no" (already
-  // gone / replaced) counts as stopped. With graceMs 0 (no wait) a just-SIGTERMed process can
+  // "stopped" = the tracked daemon is no longer alive as our process. A confident "no" -- or
+  // the lock's "dead" verdict (already gone / replaced) -- counts as stopped. With graceMs 0
+  // (no wait) a just-SIGTERMed process can
   // still be alive for a tick, so a caller needing certainty passes graceMs > 0 (waited + SIGKILL)
   // before this check.
   const stopped = !signalled || !pidAlive(trackedPid);

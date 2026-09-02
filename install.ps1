@@ -70,6 +70,20 @@ if ($PSVersionTable.PSVersion.Major -lt 6) {
 # downloads by orders of magnitude; the installer has no other progress UI.
 $ProgressPreference = 'SilentlyContinue'
 
+# Windows PowerShell 5.1 spawned from pwsh (the README one-liner run inside a
+# pwsh session) inherits pwsh's PSModulePath, whose prepended PowerShell 7
+# module directories shadow 5.1's own: in-box cmdlets (Invoke-WebRequest,
+# Get-FileHash) then autoload Core-edition modules 5.1 cannot load. Reset the
+# Desktop edition to its native machine module path -- the same defense as
+# src/shell/integration.ts's execution-policy command. pwsh resolves its own
+# modules fine, so it is left alone.
+if ($PSVersionTable.PSVersion.Major -lt 6) {
+    $MachineModulePath = [Environment]::GetEnvironmentVariable('PSModulePath', 'Machine')
+    # No cmdlet in the fallback: it runs exactly when autoload cannot be trusted.
+    if (-not $MachineModulePath) { $MachineModulePath = "$PSHOME\Modules" }
+    $env:PSModulePath = $MachineModulePath
+}
+
 # The next line is rewritten to the release tag by .github/scripts/release-assets.ts
 # (byte-exact needle; test/installer_pinning.test.ts guards the match).
 $InstallRef = if ($env:COPILOT_ENV_INSTALL_REF) { $env:COPILOT_ENV_INSTALL_REF } else { 'latest' }

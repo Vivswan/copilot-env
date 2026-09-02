@@ -115,19 +115,75 @@ export interface ProfileSlotFacts {
 }
 
 /**
+ * Who holds a probed target's port -- reconciled ONCE here at probe time from
+ * the raw reads, so the ownership verdict (runtime.orphan) is a single
+ * derivation instead of every consumer re-combining reachable/pidTracked/
+ * identity/proxyExpected. A foreign responder is runtime.identity's verdict,
+ * so it is its own state (never an "orphan"): the two checks can't double-warn.
+ */
+export type PortState =
+  /** Nothing reachable on the port. */
+  | { kind: "down" }
+  /** Something answers, but no agent routes to the port (both agents direct) --
+   *  its occupant is not ours to judge. */
+  | { kind: "unrouted" }
+  /** The port is held by the daemon we track. */
+  | { kind: "tracked" }
+  /** The responder is NOT copilot-api (no x-trace-id): a foreign listener. */
+  | { kind: "foreign" }
+  /** copilot-api ("confirmed") or an unprobed responder ("unconfirmed") outside
+   *  our tracking: started outside `agent start`, or the run-state was cleared. */
+  | { kind: "orphan"; identity: "confirmed" | "unconfirmed" };
+
+/** THE port-ownership derivation (see PortState). Exported for its unit tests
+ *  and the test fixtures, so a hand-built probe can never carry a torn verdict. */
+export function classifyPortState(f: {
+  proxyExpected: boolean;
+  reachable: boolean;
+  pidTracked: boolean;
+  identityConfirmed: boolean | null;
+}): PortState {
+  if (f.identityConfirmed === false) return { kind: "foreign" };
+  if (!f.proxyExpected) return f.reachable ? { kind: "unrouted" } : { kind: "down" };
+  if (!f.reachable) return { kind: "down" };
+  if (f.pidTracked) return { kind: "tracked" };
+  return { kind: "orphan", identity: f.identityConfirmed === true ? "confirmed" : "unconfirmed" };
+}
+
+/** The raw reads of one interrogated daemon, plus the reconciled PortState. */
+export interface DaemonProbeFacts {
+  reachable: boolean;
+  trackedPid: number | null;
+  pidTracked: boolean;
+  pidAlive: boolean;
+  /** Identity of whatever is reachable on the port: true = copilot-api (x-trace-id present),
+   *  false = reachable but NOT copilot-api (likely a foreign listener), null = not probed
+   *  (port down, the fast `runtime` scope which skips the extra request, or proxyExpected
+   *  false -- no agent routes to the port, so its occupant is not ours to interrogate). */
+  identityConfirmed: boolean | null;
+  portState: PortState;
+}
+
+/** A probed daemon's outcome record (the `probed` arm of DaemonProbe). */
+export type DaemonProbed = { kind: "probed" } & DaemonProbeFacts;
+
+/**
+ * Whether a target's daemon was actually interrogated -- THE row gate: the
+ * evaluator renders per-daemon rows exactly for `probed` targets, so a row can
+ * never describe a probe that did not happen, and probe-shaped fields cannot
+ * exist without the probe. `why` (internal, never rendered) records which
+ * skip rule fired. Mirrors LiveProbeFacts.
+ */
+export type DaemonProbe = { kind: "skipped"; why: string } | DaemonProbed;
+
+/**
  * The runtime facts for ONE daemon target: the default (profile null) or a
  * named profile's isolated daemon. Gathering is READ-ONLY -- the port comes
  * from the same run-state snapshot as the pid (proxyStatus's rule), with
  * copilotApiFallbackPort's non-reserving, non-re-reading fallback when none is
  * recorded; health never reserves a port or creates a file.
  */
-export interface RuntimeTarget {
-  /** The profile this target describes (null = the default daemon). */
-  profile: Profile;
-  /** Named targets only: the credential store slot (null for the default). */
-  slot: ProfileSlotFacts | null;
-  /** Named targets only: the isolated daemon home exists (null for the default). */
-  homeExists: boolean | null;
+interface RuntimeTargetCommon {
   /** Whether this target's setup routes anything through a local proxy; when
    *  false, a down daemon is not a failure (default target: the inverse of
    *  "both Codex and Claude are wired direct"). */
@@ -139,24 +195,30 @@ export interface RuntimeTarget {
    *  a guess no daemon or wiring has spoken for, so probing it could only
    *  misattribute whatever answers. */
   portPersisted: boolean;
-  /** The daemon was actually interrogated (reach/pid probes fired). THE row gate:
-   *  the evaluator renders per-daemon rows exactly for probed targets, so a row
-   *  can never describe a probe that did not happen. Always true for the default
-   *  target; a named target is probed only per gatherNamedTarget's policy. */
-  daemonProbed: boolean;
-  reachable: boolean;
-  trackedPid: number | null;
-  pidTracked: boolean;
-  pidAlive: boolean;
-  /** Identity of whatever is reachable on the port: true = copilot-api (x-trace-id present),
-   *  false = reachable but NOT copilot-api (likely a foreign listener), null = not probed
-   *  (port down, the fast `runtime` scope which skips the extra request, or proxyExpected
-   *  false -- no agent routes to the port, so its occupant is not ours to interrogate). */
-  identityConfirmed: boolean | null;
   paths: RuntimePathsView;
   /** Idle auto-stop watchdog state, observed from outside the daemon. */
   watchdog: WatchdogFacts;
 }
+
+/** The default daemon's target: always interrogated (the launchers' fast
+ *  readiness probe is a contract of this daemon alone). */
+export type DefaultRuntimeTarget = RuntimeTargetCommon & {
+  profile: null;
+  probe: DaemonProbed;
+};
+
+/** A named profile's target: its store slot and on-disk home are always read;
+ *  the daemon itself is interrogated only per gatherNamedTarget's policy. */
+export type NamedRuntimeTarget = RuntimeTargetCommon & {
+  profile: ProfileName;
+  /** The credential store slot (one snapshot; see ProfileSlotFacts). */
+  slot: ProfileSlotFacts;
+  /** The isolated daemon home exists on disk. */
+  homeExists: boolean;
+  probe: DaemonProbe;
+};
+
+export type RuntimeTarget = DefaultRuntimeTarget | NamedRuntimeTarget;
 
 /**
  * Idle-watchdog inputs the proxy exposes externally: the managed-lifecycle gate, the effective
@@ -766,45 +828,58 @@ export function evalClaude(
 // --- orchestration ----------------------------------------------------------
 
 /**
- * Gather ONE runtime target's facts. READ-ONLY: nothing here writes a file or
- * reserves a port. Snapshot semantics: pid and port come from a single
+ * Read ONE runtime target's shared fields. READ-ONLY: nothing here writes a
+ * file or reserves a port. Snapshot semantics: pid and port come from a single
  * run-state read (proxyStatus's documented rule), so a concurrent start/stop
  * can't pair one daemon's pid with another's port; fallbackPort covers the
- * no-recorded-port case without a second read of the same file.
- *
- * `target.probe` decides whether the daemon is interrogated at all: "always" for
- * the default target (its fallback is the configured default port -- the
- * historical behavior), "persisted-port-only" for a named target that may have a
- * daemon (only a port its own run state records is ever probed -- an unpersisted
- * candidate is never probed), "never" for a target with no daemon to describe (a
- * named DIRECT profile, or a proxy slot whose home is missing). The state
- * snapshot and paths are still reported either way.
+ * no-recorded-port case without a second read of the same file. The state is
+ * returned alongside so the caller can hand the SAME snapshot's pid to
+ * interrogateDaemon.
  */
-async function gatherRuntimeTarget(
+function snapshotTarget(
   profile: Profile,
-  scope: HealthScope,
   deps: ProbeDeps,
-  target: {
-    slot: ProfileSlotFacts | null;
-    homeExists: boolean | null;
-    proxyExpected: (port: number) => boolean;
-    probe?: "always" | "persisted-port-only" | "never";
-  },
-): Promise<RuntimeTarget> {
+  proxyExpectedFor: (port: number) => boolean,
+): { state: ReturnType<ProbeDeps["readState"]>; common: RuntimeTargetCommon } {
   const state = deps.readState(profile);
   const portPersisted = state.port !== undefined;
   const port = state.port ?? deps.fallbackPort(profile);
-  const policy = target.probe ?? "always";
-  const probeDaemon = policy === "always" || (policy === "persisted-port-only" && portPersisted);
-  const trackedPid = state.pid ?? null;
+  return {
+    state,
+    common: {
+      proxyExpected: proxyExpectedFor(port),
+      port,
+      portPersisted,
+      paths: deps.paths(profile),
+      watchdog: {
+        autoStart: deps.autoStartEnabled(),
+        idleTimeoutMs: deps.idleTimeoutMs(),
+        lastEnsureAt: state.lastEnsureAt ?? null,
+        // The observer's persisted mark; our own reach/identity GET / probes are not
+        // inference POSTs, so health observing the proxy never moves these numbers.
+        lastRequestMs: deps.lastRequestMs(profile),
+        now: deps.now(),
+      },
+    },
+  };
+}
+
+/** Interrogate one daemon: the reach/pid probes plus (in the full/proxy scopes)
+ *  the identity request, reconciled into the target's PortState. */
+async function interrogateDaemon(
+  scope: HealthScope,
+  deps: ProbeDeps,
+  port: number,
+  trackedPid: number | null,
+  proxyExpected: boolean,
+): Promise<DaemonProbed> {
   // proxyLoopbackOrigin, matching portListening: a localhost probe reads DOWN on Windows
   // while the proxy is up.
   const probeUrl = `${proxyLoopbackOrigin(port)}/`;
   const [reachable, pidTracked] = await Promise.all([
-    probeDaemon ? deps.reach(probeUrl, 2000) : Promise.resolve(false),
-    probeDaemon && trackedPid !== null ? deps.isTrackedPid(trackedPid) : Promise.resolve(false),
+    deps.reach(probeUrl, 2000),
+    trackedPid !== null ? deps.isTrackedPid(trackedPid) : Promise.resolve(false),
   ]);
-  const proxyExpected = target.proxyExpected(port);
   // Identity probe (an extra local request) only in the full/proxy scopes -- never the
   // launchers' fast `runtime` probe. Only meaningful when something is reachable AND this
   // target's setup actually routes through the port: with both agents direct, nothing we
@@ -814,28 +889,41 @@ async function gatherRuntimeTarget(
     ? await deps.proxyIdentity(probeUrl, 2000)
     : null;
   return {
-    profile,
-    slot: target.slot,
-    homeExists: target.homeExists,
-    proxyExpected,
-    port,
-    portPersisted,
-    daemonProbed: probeDaemon,
+    kind: "probed",
     reachable,
     trackedPid,
     pidTracked,
-    pidAlive: probeDaemon && trackedPid !== null ? deps.isPidAlive(trackedPid) : false,
+    pidAlive: trackedPid !== null ? deps.isPidAlive(trackedPid) : false,
     identityConfirmed,
-    paths: deps.paths(profile),
-    watchdog: {
-      autoStart: deps.autoStartEnabled(),
-      idleTimeoutMs: deps.idleTimeoutMs(),
-      lastEnsureAt: state.lastEnsureAt ?? null,
-      // The observer's persisted mark; our own reach/identity GET / probes are not
-      // inference POSTs, so health observing the proxy never moves these numbers.
-      lastRequestMs: deps.lastRequestMs(profile),
-      now: deps.now(),
-    },
+    portState: classifyPortState({ proxyExpected, reachable, pidTracked, identityConfirmed }),
+  };
+}
+
+/** Gather the DEFAULT daemon's target. Always interrogated, with the configured
+ *  default port as the fallback -- the historical fast-probe behavior. */
+async function gatherDefaultTarget(
+  scope: HealthScope,
+  deps: ProbeDeps,
+): Promise<DefaultRuntimeTarget> {
+  // When nothing in the default setup routes to the local daemon (both agents
+  // direct AND Claude's base URL not aimed at it), no proxy is required, so a
+  // down proxy must not read as a runtime failure.
+  const { state, common } = snapshotTarget(null, deps, (targetPort) =>
+    defaultSetupNeedsProxy({
+      codexHome: deps.codexHome(),
+      claudeHome: deps.claudeHome(),
+      expectedPort: targetPort,
+    }));
+  return {
+    profile: null,
+    ...common,
+    probe: await interrogateDaemon(
+      scope,
+      deps,
+      common.port,
+      state.pid ?? null,
+      common.proxyExpected,
+    ),
   };
 }
 
@@ -843,25 +931,36 @@ async function gatherRuntimeTarget(
  * Gather a NAMED profile's runtime target: its store slot + on-disk daemon home,
  * with `proxyExpected` derived from the slot's recorded mode -- or, when the slot
  * is missing but a home exists, assumed proxy (a homed daemon may be running,
- * and a running daemon always has its port in run state). The daemon is probed
- * only when a proxy is expected, the home exists, AND the port is persisted: a
- * DIRECT profile has no daemon, a homeless proxy slot has no persisted port, and
- * an unpersisted candidate port is never probed.
+ * and a running daemon always has its port in run state). The daemon is
+ * interrogated only when a proxy is expected, the home exists, AND the port is
+ * persisted: a DIRECT profile has no daemon, a homeless proxy slot has no
+ * persisted port, and an unpersisted candidate port is never probed.
  */
 async function gatherNamedTarget(
   name: ProfileName,
   scope: HealthScope,
   deps: ProbeDeps,
-): Promise<RuntimeTarget> {
+): Promise<NamedRuntimeTarget> {
   const slot = deps.profileSlot(name);
   const homeExists = deps.profileHomeExists(name);
   const proxyExpected = slot.mode === "proxy" || (homeExists && !slot.exists);
-  return gatherRuntimeTarget(name, scope, deps, {
+  const { state, common } = snapshotTarget(name, deps, () => proxyExpected);
+  const skipWhy = !proxyExpected
+    ? "no daemon expected (not a proxy-mode target)"
+    : !homeExists
+    ? "no daemon home on disk"
+    : !common.portPersisted
+    ? "no persisted port on this host"
+    : null;
+  return {
+    profile: name,
     slot,
     homeExists,
-    proxyExpected: () => proxyExpected,
-    probe: proxyExpected && homeExists ? "persisted-port-only" : "never",
-  });
+    ...common,
+    probe: skipWhy !== null
+      ? { kind: "skipped", why: skipWhy }
+      : await interrogateDaemon(scope, deps, common.port, state.pid ?? null, proxyExpected),
+  };
 }
 
 /**
@@ -962,20 +1061,8 @@ export async function gatherFacts(
         // but only in the diagnostic scopes (see PROFILE_SWEEP_SCOPES): the
         // launchers' fast `runtime` probe stays the default daemon alone.
         const names = SCOPE_PROFILE_SWEEP.includes(scope) ? deps.profileNames() : [];
-        facts.runtimes = await Promise.all([
-          gatherRuntimeTarget(null, scope, deps, {
-            slot: null,
-            homeExists: null,
-            // When nothing in the default setup routes to the local daemon (both
-            // agents direct AND Claude's base URL not aimed at it), no proxy is
-            // required, so a down proxy must not read as a runtime failure.
-            proxyExpected: (targetPort) =>
-              defaultSetupNeedsProxy({
-                codexHome: deps.codexHome(),
-                claudeHome: deps.claudeHome(),
-                expectedPort: targetPort,
-              }),
-          }),
+        facts.runtimes = await Promise.all<RuntimeTarget>([
+          gatherDefaultTarget(scope, deps),
           ...names.map((name) => gatherNamedTarget(name, scope, deps)),
         ]);
       })(),

@@ -71,7 +71,8 @@ export function renderReport(
           console.log(`  ${glyph(r.status)} ${r.label}`);
           for (const line of lines) console.log(`      ${gray("•")} ${line}`);
         }
-        if (r.fix && r.status !== "ok") console.log(`      ${gray(`→ fix: ${r.fix}`)}`);
+        // The CheckOutcome union: every warn/fail carries a fix, ok never does.
+        if (r.status !== "ok") console.log(`      ${gray(`→ fix: ${r.fix}`)}`);
       }
     }
   }

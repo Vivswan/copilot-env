@@ -27,7 +27,7 @@ export interface HealthArgs {
 function profileModes(facts: HealthFacts): Map<string, ProfileMode | null> {
   const modes = new Map<string, ProfileMode | null>();
   for (const target of facts.runtimes ?? []) {
-    if (target.profile !== null) modes.set(target.profile, target.slot?.mode ?? null);
+    if (target.profile !== null) modes.set(target.profile, target.slot.mode);
   }
   return modes;
 }

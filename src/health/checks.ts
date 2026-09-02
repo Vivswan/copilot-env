@@ -23,22 +23,29 @@ import type {
   CodexDirectAuthFacts,
   CodexFacts,
   CodexHostFacts,
+  DaemonProbeFacts,
   HealthFacts,
   LiveProbeFacts,
+  NamedRuntimeTarget,
   ProfileAuthFacts,
   ProxyFacts,
   RuntimeTarget,
   ShellFacts,
 } from "./probe.ts";
-import type { CheckResult, HealthScope } from "./types.ts";
-import {
-  AUTH_SCOPES as AUTH,
-  BOOTSTRAP_SCOPES as BOOTSTRAP,
-  CLAUDE_SCOPES as CLAUDE,
-  CODEX_SCOPES as CODEX,
-  RUNTIME_SCOPES as RUNTIME,
-  SETUP_SCOPES as SETUP,
-} from "./types.ts";
+import type { CheckGroup, CheckOutcome, CheckResult, HealthScope } from "./types.ts";
+import { CHECK_DESCRIPTORS, type RegisteredCheckId, SETUP_SCOPES as SETUP } from "./types.ts";
+
+/** The identity fields of a registered check, from the single descriptor table
+ *  (the one source of each id's label/group/scopes). */
+function meta(id: RegisteredCheckId): {
+  id: RegisteredCheckId;
+  label: string;
+  group: CheckGroup;
+  scopes: readonly HealthScope[];
+} {
+  const d = CHECK_DESCRIPTORS[id];
+  return { id, label: d.label, group: d.group, scopes: d.scopes };
+}
 
 /** The `agent start` fix for a runtime target, addressed at its profile. */
 function startFix(profile: Profile): string {
@@ -86,14 +93,17 @@ function describeDirectGhAuth(a: CodexDirectAuthFacts): {
   };
 }
 
+/** The shared direct-mode auth verdict: ok, or warn carrying its fix. */
+type DirectAuthVerdict =
+  | { status: "ok"; authLine: string }
+  | { status: "warn"; authLine: string; fix: string };
+
 /**
  * The shared direct-mode auth verdict for `checkCodex`/`checkClaude`: an identical
  * three-way decision (stored token -> gh-cli -> no credential resolves) over the same
  * facts. `wiringOk` is each agent's "rest of the wiring is correct" signal (Codex:
  * `providerWired`; Claude: base URL matches) and `directFix` is its `agent <cli> --direct`
- * repair hint. Returns the status, the auth detail line, and a fix that is present iff the
- * status is "warn" (every warn path has a fix; the ok path has none). Each check wraps this
- * with its own provider/base-url header lines.
+ * repair hint. Each check wraps this with its own provider/base-url header lines.
  */
 function directAuthVerdict(
   f: {
@@ -104,26 +114,20 @@ function directAuthVerdict(
   wiringOk: boolean,
   directFix: string,
   profile: Profile = null,
-): { status: "ok" | "warn"; authLine: string; fix?: string } {
+): DirectAuthVerdict {
   const getCommand = profile === null
     ? "agent auth --get"
     : `agent auth --get --profile ${profile}`;
   const authFix = profile === null ? "agent auth" : `agent auth --profile ${profile}`;
   if (f.directUsesToken) {
-    return {
-      status: wiringOk ? "ok" : "warn",
-      authLine: `auth: stored GitHub token (${getCommand}, no gh CLI)`,
-      ...(wiringOk ? {} : { fix: directFix }),
-    };
+    const authLine = `auth: stored GitHub token (${getCommand}, no gh CLI)`;
+    return wiringOk ? { status: "ok", authLine } : { status: "warn", authLine, fix: directFix };
   }
   if (f.provider === "gh-cli") {
-    const { ok: authOk, detail: authDetail, ghFix } = describeDirectGhAuth(f.directAuth);
-    const ok = wiringOk && authOk;
-    return {
-      status: ok ? "ok" : "warn",
-      authLine: authDetail,
-      ...(ok ? {} : { fix: wiringOk ? ghFix : directFix }),
-    };
+    const { ok: authOk, detail: authLine, ghFix } = describeDirectGhAuth(f.directAuth);
+    return wiringOk && authOk
+      ? { status: "ok", authLine }
+      : { status: "warn", authLine, fix: wiringOk ? ghFix : directFix };
   }
   return {
     status: "warn",
@@ -134,11 +138,8 @@ function directAuthVerdict(
 
 export function checkCliVersion(f: BootstrapFacts): CheckResult {
   return {
-    id: "bootstrap.version",
-    label: "copilot-env version",
-    group: "bootstrap",
+    ...meta("bootstrap.version"),
     profile: null,
-    scopes: BOOTSTRAP,
     status: "ok",
     detail: f.cliVersion,
     value: { version: f.cliVersion },
@@ -147,64 +148,57 @@ export function checkCliVersion(f: BootstrapFacts): CheckResult {
 
 export function checkDeno(f: BootstrapFacts): CheckResult {
   const { available, version } = f.deno;
-  return {
-    id: "bootstrap.deno",
-    label: "Deno runtime",
-    group: "bootstrap",
-    profile: null,
-    scopes: BOOTSTRAP,
-    status: available ? "ok" : "fail",
-    detail: available ? `deno ${version ?? "?"}` : "Deno runtime not detected",
-    ...(available ? {} : { fix: "install Deno (https://deno.com)" }),
-    value: { available, version },
+  const base = { ...meta("bootstrap.deno"), profile: null, value: { available, version } };
+  return available ? { ...base, status: "ok", detail: `deno ${version ?? "?"}` } : {
+    ...base,
+    status: "fail",
+    detail: "Deno runtime not detected",
+    fix: "install Deno (https://deno.com)",
   };
 }
 
 export function checkNodeModules(f: BootstrapFacts): CheckResult {
+  const base = { ...meta("bootstrap.nodeModules"), profile: null };
   if (f.nodeModules === null) {
     // Compiled binary: dependencies are embedded and the proxy floats into its
     // own cache, so there is no node_modules to be missing or stale.
     return {
-      id: "bootstrap.nodeModules",
-      label: "Dependencies (node_modules)",
-      group: "bootstrap",
-      profile: null,
-      scopes: BOOTSTRAP,
+      ...base,
       status: "ok",
       detail: "embedded in the compiled binary",
       value: { embedded: true },
     };
   }
   const { present, fresh } = f.nodeModules;
-  const status = !present ? "fail" : !fresh ? "warn" : "ok";
-  const detail = !present
-    ? "node_modules is missing"
-    : !fresh
-    ? "node_modules is stale (older than the lockfile)"
-    : "installed and up to date";
-  return {
-    id: "bootstrap.nodeModules",
-    label: "Dependencies (node_modules)",
-    group: "bootstrap",
-    profile: null,
-    scopes: BOOTSTRAP,
-    status,
-    detail,
-    ...(status === "ok" ? {} : { fix: "deno install --frozen" }),
-    value: { present, fresh },
-  };
+  const value = { present, fresh };
+  if (!present) {
+    return {
+      ...base,
+      status: "fail",
+      detail: "node_modules is missing",
+      fix: "deno install --frozen",
+      value,
+    };
+  }
+  if (!fresh) {
+    return {
+      ...base,
+      status: "warn",
+      detail: "node_modules is stale (older than the lockfile)",
+      fix: "deno install --frozen",
+      value,
+    };
+  }
+  return { ...base, status: "ok", detail: "installed and up to date", value };
 }
 
 export function checkProxyPackage(f: ProxyFacts): CheckResult {
+  const base = { ...meta("proxy.package"), profile: null };
   // A config that couldn't be read means we can't judge bounds -- surface that
   // as the failure rather than letting the exception escape the report.
   if (f.configError !== null || f.bounds === null) {
     return {
-      id: "proxy.package",
-      label: "Proxy package",
-      group: "proxy",
-      profile: null,
-      scopes: BOOTSTRAP,
+      ...base,
       status: "fail",
       detail: `could not read copilot-env.config: ${f.configError ?? "unknown error"}`,
       fix: "check copilot-env.config",
@@ -212,40 +206,48 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
     };
   }
   const bounds: ProxyVersionStatus = f.bounds;
-  let status: CheckResult["status"];
-  let detail: string;
-  let fix: string | undefined;
+  let outcome: CheckOutcome;
   let standaloneMissing = false;
   if (bounds.ok) {
-    status = "ok";
     // Version + cooldown as separate lines -> rendered as `-` sub-items.
-    detail = `${PROXY_PACKAGE_NAME} ${bounds.version}\nfloat ${
-      floatCooldownLabel(f.cooldownSeconds)
-    }`;
+    outcome = {
+      status: "ok",
+      detail: `${PROXY_PACKAGE_NAME} ${bounds.version}\nfloat ${
+        floatCooldownLabel(f.cooldownSeconds)
+      }`,
+    };
   } else if (bounds.reason === "missing") {
     if (f.sidecar.standalone) {
       // A compiled install ships no deno.json baseline: the float resolves the
       // proxy into its own cache at `agent start`, so "missing" is the normal
       // pre-start state there, not a broken install.
       standaloneMissing = true;
-      status = "ok";
-      detail = f.floatSkips
-        ? `${PROXY_PACKAGE_NAME} not resolved; not required (Codex + Claude are both direct, so the proxy is unused)`
-        : `${PROXY_PACKAGE_NAME} not resolved yet; \`agent start\` floats it in`;
+      outcome = {
+        status: "ok",
+        detail: f.floatSkips
+          ? `${PROXY_PACKAGE_NAME} not resolved; not required (Codex + Claude are both direct, so the proxy is unused)`
+          : `${PROXY_PACKAGE_NAME} not resolved yet; \`agent start\` floats it in`,
+      };
     } else {
       // In a checkout a missing package is a broken install; the fix always works.
-      status = "fail";
-      detail = `${PROXY_PACKAGE_NAME} is not installed`;
-      fix = "deno install --frozen";
+      outcome = {
+        status: "fail",
+        detail: `${PROXY_PACKAGE_NAME} is not installed`,
+        fix: "deno install --frozen",
+      };
     }
   } else if (bounds.reason === "belowFloor") {
-    status = "fail";
-    detail = `proxy ${bounds.version} is below the floor ${bounds.floor}`;
-    fix = "deno install --frozen";
+    outcome = {
+      status: "fail",
+      detail: `proxy ${bounds.version} is below the floor ${bounds.floor}`,
+      fix: "deno install --frozen",
+    };
   } else {
-    status = "warn";
-    detail = `proxy ${bounds.version} is above the ceiling ${bounds.ceiling}`;
-    fix = "agent update";
+    outcome = {
+      status: "warn",
+      detail: `proxy ${bounds.version} is above the ceiling ${bounds.ceiling}`,
+      fix: "agent update",
+    };
   }
   let exempted = false;
   if (!bounds.ok && bounds.reason !== "missing" && f.floatSkips) {
@@ -254,19 +256,15 @@ export function checkProxyPackage(f: ProxyFacts): CheckResult {
     // version -- and must not read as a failure. A proxy rewire (or a proxy
     // profile) re-enables the float, which enforces them again.
     exempted = true;
-    status = "ok";
-    detail = `${detail}; not enforced (Codex + Claude are both direct, so the proxy float skips)`;
-    fix = undefined;
+    outcome = {
+      status: "ok",
+      detail:
+        `${outcome.detail}; not enforced (Codex + Claude are both direct, so the proxy float skips)`,
+    };
   }
   return {
-    id: "proxy.package",
-    label: "Proxy package",
-    group: "proxy",
-    profile: null,
-    scopes: BOOTSTRAP,
-    status,
-    detail,
-    ...(fix ? { fix } : {}),
+    ...base,
+    ...outcome,
     // floatSkips/standalone are stamped only when they changed the verdict,
     // mirroring the runtime checks' bothDirect stamp, so --json consumers can
     // tell "in bounds" from "out of bounds but exempted".
@@ -288,24 +286,12 @@ function floatCooldownLabel(seconds: number | null): string {
 }
 
 /**
- * The float's resolved-version record and the cache it points at -- the pair the daemon
- * actually launches from. Absent, the deno.json baseline in node_modules runs instead,
- * which is a working fallback rather than a failure; a record whose cache has gone
- * missing is not (the launch asks for that exact version offline and would fail).
- */
-/**
  * The deno the proxy runs on. A checkout runs on its own runtime and needs nothing; a
  * compiled binary is not a deno CLI, so it CANNOT spawn the proxy until the pinned
  * sidecar is provisioned -- which is a failure, not a note.
  */
 export function checkProxySidecar(f: ProxyFacts): CheckResult {
-  const base = {
-    id: "proxy.sidecar",
-    label: "Deno sidecar",
-    group: "proxy" as const,
-    profile: null,
-    scopes: BOOTSTRAP,
-  };
+  const base = { ...meta("proxy.sidecar"), profile: null };
   const { kind, pin, denoBin, standalone } = f.sidecar;
   if (kind === "absent") {
     if (f.floatSkips) {
@@ -339,14 +325,14 @@ export function checkProxySidecar(f: ProxyFacts): CheckResult {
   };
 }
 
+/**
+ * The float's resolved-version record and the cache it points at -- the pair the daemon
+ * actually launches from. Absent, the deno.json baseline in node_modules runs instead,
+ * which is a working fallback rather than a failure; a record whose cache has gone
+ * missing is not (the launch asks for that exact version offline and would fail).
+ */
 export function checkProxyResolved(f: ProxyFacts): CheckResult {
-  const base = {
-    id: "proxy.resolved",
-    label: "Proxy resolved + cached",
-    group: "proxy" as const,
-    profile: null,
-    scopes: BOOTSTRAP,
-  };
+  const base = { ...meta("proxy.resolved"), profile: null };
   const resolved = f.resolved;
   if (resolved === null) {
     return {
@@ -378,61 +364,50 @@ export function checkProxyResolved(f: ProxyFacts): CheckResult {
   };
 }
 
-export function checkRuntimePort(f: RuntimeTarget): CheckResult {
-  const base = {
-    id: "runtime.port",
-    label: "Proxy port reachable",
-    group: "runtime" as const,
-    profile: f.profile,
-    scopes: RUNTIME,
-  };
+export function checkRuntimePort(f: RuntimeTarget, p: DaemonProbeFacts): CheckResult {
+  const base = { ...meta("runtime.port"), profile: f.profile };
   // Both agents direct => no agent routes to this port, so neither an empty port
   // nor some unrelated service listening there is a proxy problem.
   if (!f.proxyExpected) {
     return {
       ...base,
       status: "ok",
-      detail: f.reachable
+      detail: p.reachable
         ? `port ${f.port} has a listener, but no agent routes to it (Codex + Claude are both direct)`
         : `proxy not running on port ${f.port}; not required (Codex + Claude are both direct)`,
-      value: { port: f.port, reachable: f.reachable, bothDirect: true },
+      value: { port: f.port, reachable: p.reachable, bothDirect: true },
     };
   }
   // Managed lifecycle on => the resolver launches the daemon on demand, so a
   // down daemon is expected between sessions, not a failure.
-  if (!f.reachable && f.watchdog.autoStart) {
+  if (!p.reachable && f.watchdog.autoStart) {
     return {
       ...base,
       status: "ok",
       detail: `proxy not running on port ${f.port}; starts on demand (auto-start on)`,
-      value: { port: f.port, reachable: f.reachable, autoStart: true },
+      value: { port: f.port, reachable: p.reachable, autoStart: true },
     };
   }
-  return {
+  const value = { port: f.port, reachable: p.reachable };
+  return p.reachable ? { ...base, status: "ok", detail: `listening on port ${f.port}`, value } : {
     ...base,
-    status: f.reachable ? "ok" : "fail",
-    detail: f.reachable ? `listening on port ${f.port}` : `nothing reachable on port ${f.port}`,
-    ...(f.reachable ? {} : { fix: startFix(f.profile) }),
-    value: { port: f.port, reachable: f.reachable },
+    status: "fail",
+    detail: `nothing reachable on port ${f.port}`,
+    fix: startFix(f.profile),
+    value,
   };
 }
 
-export function checkRuntimePid(f: RuntimeTarget): CheckResult {
-  const tracked = f.pidTracked;
-  const base = {
-    id: "runtime.pid",
-    label: "Tracked proxy process",
-    group: "runtime" as const,
-    profile: f.profile,
-    scopes: RUNTIME,
-  };
+export function checkRuntimePid(f: RuntimeTarget, p: DaemonProbeFacts): CheckResult {
+  const tracked = p.pidTracked;
+  const base = { ...meta("runtime.pid"), profile: f.profile };
   let detail: string;
-  if (f.trackedPid === null) {
+  if (p.trackedPid === null) {
     detail = "no tracked copilot-api pid";
   } else if (tracked) {
-    detail = `tracked copilot-api pid ${f.trackedPid}`;
+    detail = `tracked copilot-api pid ${p.trackedPid}`;
   } else {
-    detail = `tracked pid ${f.trackedPid} is stale or foreign`;
+    detail = `tracked pid ${p.trackedPid} is stale or foreign`;
   }
   // Both agents direct => no proxy needed, so a missing tracked pid is fine.
   if (!tracked && !f.proxyExpected) {
@@ -440,37 +415,31 @@ export function checkRuntimePid(f: RuntimeTarget): CheckResult {
       ...base,
       status: "ok",
       detail: `${detail}; not required (Codex + Claude are both direct)`,
-      value: { pid: f.trackedPid, tracked, alive: f.pidAlive, bothDirect: true },
+      value: { pid: p.trackedPid, tracked, alive: p.pidAlive, bothDirect: true },
     };
   }
   // Down daemon + managed lifecycle on => it starts on demand; not a failure.
   // Reachable-but-untracked is NOT down (that is runtime.orphan/identity
   // territory), so auto-start never excuses it here.
-  if (!tracked && !f.reachable && f.watchdog.autoStart) {
+  if (!tracked && !p.reachable && f.watchdog.autoStart) {
     return {
       ...base,
       status: "ok",
       detail: `${detail}; starts on demand (auto-start on)`,
-      value: { pid: f.trackedPid, tracked, alive: f.pidAlive, autoStart: true },
+      value: { pid: p.trackedPid, tracked, alive: p.pidAlive, autoStart: true },
     };
   }
-  return {
-    ...base,
-    status: tracked ? "ok" : "fail",
-    detail,
-    ...(tracked ? {} : { fix: startFix(f.profile) }),
-    value: { pid: f.trackedPid, tracked, alive: f.pidAlive },
-  };
+  const value = { pid: p.trackedPid, tracked, alive: p.pidAlive };
+  return tracked
+    ? { ...base, status: "ok", detail, value }
+    : { ...base, status: "fail", detail, fix: startFix(f.profile), value };
 }
 
 export function checkRuntimePaths(f: RuntimeTarget): CheckResult {
   // Multi-line detail: report.ts indents each line so state/log sit on their own.
   return {
-    id: "runtime.paths",
-    label: "Paths",
-    group: "runtime",
+    ...meta("runtime.paths"),
     profile: f.profile,
-    scopes: ["full"],
     status: "ok",
     detail: `state ${f.paths.stateFile}\nlog ${f.paths.logFile}`,
     value: { ...f.paths },
@@ -481,14 +450,7 @@ export function checkRuntimeWatchdog(f: RuntimeTarget): CheckResult {
   const w = f.watchdog;
   // Scoped to full + proxy, NOT the launchers' fast `runtime` probe (this is informational and
   // reads the config + activity file). Always "ok": it reports state, it never fails a run.
-  const base = {
-    id: "runtime.watchdog",
-    label: "Idle watchdog",
-    group: "runtime" as const,
-    profile: f.profile,
-    scopes: ["full", "proxy"] as const,
-    status: "ok" as const,
-  };
+  const base = { ...meta("runtime.watchdog"), profile: f.profile, status: "ok" as const };
   if (!f.proxyExpected) {
     // Marks left by an earlier run would render a countdown for a daemon no
     // request will reach.
@@ -544,21 +506,15 @@ export function checkRuntimeWatchdog(f: RuntimeTarget): CheckResult {
   };
 }
 
-export function checkRuntimeIdentity(f: RuntimeTarget): CheckResult {
+export function checkRuntimeIdentity(f: RuntimeTarget, p: DaemonProbeFacts): CheckResult {
   // Is whatever is reachable on the port actually copilot-api? checkRuntimePort only proves
   // SOMETHING answers; a foreign service squatting the port would read green there while every
   // agent request silently misroutes. Warn-only (never fails a run) and full+proxy scope.
   // The misroute claim presumes something routes to the port: the probe gates on
   // proxyExpected, so a target with no route to the port (both modes direct and no
   // proxy base URL) always arrives here with identityConfirmed null.
-  const base = {
-    id: "runtime.identity",
-    label: "Proxy identity",
-    group: "runtime" as const,
-    profile: f.profile,
-    scopes: ["full", "proxy"] as const,
-  };
-  if (!f.reachable || f.identityConfirmed === null) {
+  const base = { ...meta("runtime.identity"), profile: f.profile };
+  if (!p.reachable || p.identityConfirmed === null) {
     // Nothing reachable (runtime.port owns that verdict) or identity not probed.
     const notProbed = !f.proxyExpected
       ? `not probed (no agent routes to port ${f.port}; Codex + Claude are both direct)`
@@ -566,11 +522,11 @@ export function checkRuntimeIdentity(f: RuntimeTarget): CheckResult {
     return {
       ...base,
       status: "ok",
-      detail: f.reachable ? notProbed : `not probed (nothing reachable on port ${f.port})`,
-      value: { reachable: f.reachable, confirmed: null },
+      detail: p.reachable ? notProbed : `not probed (nothing reachable on port ${f.port})`,
+      value: { reachable: p.reachable, confirmed: null },
     };
   }
-  if (f.identityConfirmed) {
+  if (p.identityConfirmed) {
     return {
       ...base,
       status: "ok",
@@ -588,83 +544,90 @@ export function checkRuntimeIdentity(f: RuntimeTarget): CheckResult {
   };
 }
 
-export function checkRuntimeOrphan(f: RuntimeTarget): CheckResult {
-  // Reconcile the otherwise-contradictory runtime.port (ok: reachable) + runtime.pid (fail: no
-  // tracked pid) when both describe the SAME state: copilot-api is on the port but is not the
-  // daemon we track. A foreign listener is runtime.identity's verdict, not an "orphan", so we
-  // defer that case to avoid double-warning. Pure (no I/O), full+proxy scope.
-  const base = {
-    id: "runtime.orphan",
-    label: "Proxy port ownership",
-    group: "runtime" as const,
-    profile: f.profile,
-    scopes: ["full", "proxy"] as const,
-  };
-  const foreign = f.identityConfirmed === false;
-  const orphan = f.reachable && !f.pidTracked && f.proxyExpected && !foreign;
-  if (!orphan) {
-    // The detail must not claim the tracked daemon owns the port when identity says the
-    // responder is foreign (pidTracked only proves the saved pid is a copilot-api process,
-    // not that it owns THIS port) -- defer that wording to runtime.identity.
-    let detail: string;
-    if (foreign) {
-      detail = "port responder is not copilot-api (see proxy identity)";
-    } else if (!f.proxyExpected && f.reachable) {
+export function checkRuntimeOrphan(f: RuntimeTarget, p: DaemonProbeFacts): CheckResult {
+  // The port-ownership verdict: one exhaustive switch over the probe's own
+  // PortState reconciliation (classifyPortState in probe.ts) -- this check no
+  // longer re-derives who holds the port. Pure (no I/O), full+proxy scope.
+  const base = { ...meta("runtime.orphan"), profile: f.profile };
+  const state = p.portState;
+  switch (state.kind) {
+    case "foreign":
+      // The detail must not claim the tracked daemon owns the port when identity says the
+      // responder is foreign (pidTracked only proves the saved pid is a copilot-api process,
+      // not that it owns THIS port) -- defer that wording to runtime.identity.
+      return {
+        ...base,
+        status: "ok",
+        detail: "port responder is not copilot-api (see proxy identity)",
+        value: { orphan: false },
+      };
+    case "unrouted":
       // SOMETHING is reachable on the port, but both agents are configured direct, so no
       // proxy is required -- the both-direct gate (not the facts) is why this isn't an
       // orphan warning. Say that -- even with a tracked pid alive, since identity is never
       // probed for a both-direct target (proxyExpected gates the probe), nothing here
       // proves who owns the port, and nothing routes to it anyway.
-      detail = `a process is on port ${f.port}, but both agents are direct (no proxy required)`;
-    } else if (f.reachable && f.pidTracked) {
-      detail = "port held by the tracked daemon";
-    } else {
-      detail = "no untracked copilot-api on the port";
+      return {
+        ...base,
+        status: "ok",
+        detail: `a process is on port ${f.port}, but both agents are direct (no proxy required)`,
+        value: { orphan: false },
+      };
+    case "tracked":
+      return {
+        ...base,
+        status: "ok",
+        detail: "port held by the tracked daemon",
+        value: { orphan: false },
+      };
+    case "down":
+      return {
+        ...base,
+        status: "ok",
+        detail: "no untracked copilot-api on the port",
+        value: { orphan: false },
+      };
+    case "orphan": {
+      // Identity is confirmed copilot-api or indeterminate (probe failed) -- don't
+      // over-claim "copilot-api".
+      const what = state.identity === "confirmed"
+        ? "copilot-api"
+        : "a process (identity unconfirmed)";
+      const stopFix = f.profile === null ? "agent stop" : `agent stop --profile ${f.profile}`;
+      return {
+        ...base,
+        status: "warn",
+        detail:
+          `${what} is on port ${f.port} but is not the tracked daemon (orphaned -- started outside 'agent start', or the run-state was cleared)`,
+        fix: `${stopFix}, then ${startFix(f.profile)} (re-tracks the daemon)`,
+        value: { orphan: true, trackedPid: p.trackedPid },
+      };
     }
-    return { ...base, status: "ok", detail, value: { orphan: false } };
   }
-  // Orphan: reachable, untracked, proxy required, not a known-foreign responder. Identity is
-  // confirmed copilot-api or indeterminate (probe failed) -- don't over-claim "copilot-api".
-  const what = f.identityConfirmed === true ? "copilot-api" : "a process (identity unconfirmed)";
-  const stopFix = f.profile === null ? "agent stop" : `agent stop --profile ${f.profile}`;
-  return {
-    ...base,
-    status: "warn",
-    detail:
-      `${what} is on port ${f.port} but is not the tracked daemon (orphaned -- started outside 'agent start', or the run-state was cleared)`,
-    fix: `${stopFix}, then ${startFix(f.profile)} (re-tracks the daemon)`,
-    value: { orphan: true, trackedPid: f.trackedPid },
-  };
 }
 
 /**
- * NAMED targets only: do the profile's two halves -- the store slot (the source
- * of truth for credential + mode) and the on-disk daemon home (derived, proxy
- * mode only) -- agree? A profile is created/deleted atomically by `agent
- * profile`, so a lone half is an interrupted add/del; warn with the command that
- * finishes the job. Never a failure: the profile's own runtime rows own hard
- * verdicts.
+ * NAMED targets only (the type says so): do the profile's two halves -- the
+ * store slot (the source of truth for credential + mode) and the on-disk daemon
+ * home (derived, proxy mode only) -- agree? A profile is created/deleted
+ * atomically by `agent profile`, so a lone half is an interrupted add/del; warn
+ * with the command that finishes the job. Never a failure: the profile's own
+ * runtime rows own hard verdicts.
  */
-export function checkProfileConsistency(f: RuntimeTarget): CheckResult {
+export function checkProfileConsistency(f: NamedRuntimeTarget): CheckResult {
   const name = f.profile;
-  if (name === null) {
-    throw new Error("profile.consistency is a named-target check (default target passed)");
-  }
   const slot = f.slot;
-  const homeExists = f.homeExists === true;
+  const homeExists = f.homeExists;
   const base = {
-    id: "profile.consistency",
-    label: "Profile consistency",
-    group: "runtime" as const,
+    ...meta("profile.consistency"),
     profile: name,
-    scopes: RUNTIME,
     value: {
-      slotExists: slot?.exists === true,
-      mode: slot?.mode ?? null,
+      slotExists: slot.exists,
+      mode: slot.mode,
       homeExists,
     },
   };
-  if (slot?.exists !== true) {
+  if (!slot.exists) {
     // No slot has no recorded mode, so a re-add must pick one explicitly.
     const fix = `agent profile --add ${name} --direct|--proxy (or agent profile --del ${name})`;
     return homeExists
@@ -725,11 +688,8 @@ export function checkProfileAuth(
   resolution: { storedToken: boolean; ghAuthenticated: boolean },
 ): CheckResult {
   const base = {
-    id: "setup.auth",
-    label: "Authentication",
-    group: "auth" as const,
+    ...meta("setup.auth"),
     profile: name,
-    scopes: AUTH,
     value: {
       provider: slot?.provider ?? null,
       mode: slot?.mode ?? null,
@@ -787,65 +747,60 @@ export function checkProfileAuth(
 }
 
 export function checkShellIntegration(f: ShellFacts): CheckResult {
-  return {
-    id: "setup.shell",
-    label: "Shell integration",
-    group: "setup",
+  const base = {
+    ...meta("setup.shell"),
     profile: null,
-    scopes: SETUP,
-    status: f.integrationWired ? "ok" : "warn",
-    detail: f.integrationWired
-      ? "wired into a shell rc/profile"
-      : "not wired into any shell rc/profile",
-    ...(f.integrationWired ? {} : { fix: "agent shell" }),
     value: { integrationWired: f.integrationWired, files: f.files },
+  };
+  return f.integrationWired ? { ...base, status: "ok", detail: "wired into a shell rc/profile" } : {
+    ...base,
+    status: "warn",
+    detail: "not wired into any shell rc/profile",
+    fix: "agent shell",
   };
 }
 
 export function checkLaunchers(f: ShellFacts): CheckResult {
-  return {
-    id: "setup.launchers",
-    label: "Launchers (cl/co/cx)",
-    group: "setup",
+  const base = {
+    ...meta("setup.launchers"),
     profile: null,
-    scopes: SETUP,
-    status: f.launchersWired ? "ok" : "warn",
-    detail: f.launchersWired
-      ? "enabled (the `launchers` config key; `agent env` defines them)"
-      : "not enabled (optional)",
-    ...(f.launchersWired ? {} : { fix: "agent shell --launchers" }),
     value: { launchersWired: f.launchersWired },
   };
+  return f.launchersWired
+    ? {
+      ...base,
+      status: "ok",
+      detail: "enabled (the `launchers` config key; `agent env` defines them)",
+    }
+    : {
+      ...base,
+      status: "warn",
+      detail: "not enabled (optional)",
+      fix: "agent shell --launchers",
+    };
 }
 
 export function checkCli(c: CliFacts): CheckResult {
-  const present = c.resolved !== null;
-  return {
-    id: `setup.cli.${c.command}`,
+  const base = {
+    // The one check family whose id is minted outside the descriptor table: the
+    // CLI list is runtime data (see CHECK_DESCRIPTORS).
+    id: `setup.cli.${c.command}` as const,
     label: `${c.name} (${c.command})`,
-    group: "setup",
+    group: "setup" as const,
     profile: null,
     scopes: SETUP,
-    status: present ? "ok" : "warn",
-    detail: present ? (c.resolved as string) : "not installed (optional)",
-    ...(present ? {} : { fix: "agent shell --clis" }),
     value: { command: c.command, resolved: c.resolved },
   };
+  return c.resolved !== null
+    ? { ...base, status: "ok", detail: c.resolved }
+    : { ...base, status: "warn", detail: "not installed (optional)", fix: "agent shell --clis" };
 }
 
 export function checkTool(name: "node" | "npm", resolved: string | null): CheckResult {
-  const present = resolved !== null;
-  return {
-    id: `setup.tool.${name}`,
-    label: name,
-    group: "setup",
-    profile: null,
-    scopes: SETUP,
-    status: present ? "ok" : "warn",
-    detail: present ? resolved : "not installed (optional)",
-    ...(present ? {} : { fix: "agent shell --clis" }),
-    value: { resolved },
-  };
+  const base = { ...meta(`setup.tool.${name}`), profile: null, value: { resolved } };
+  return resolved !== null
+    ? { ...base, status: "ok", detail: resolved }
+    : { ...base, status: "warn", detail: "not installed (optional)", fix: "agent shell --clis" };
 }
 
 export function checkAuth(f: AuthFacts): CheckResult {
@@ -868,11 +823,8 @@ export function checkAuth(f: AuthFacts): CheckResult {
     `Copilot integration id pinned to '${f.pinnedIntegrationId}' (\`agent config integration-id\`)`,
   ];
   const base = {
-    id: "setup.auth",
-    label: "Authentication",
-    group: "auth" as const,
+    ...meta("setup.auth"),
     profile: null,
-    scopes: AUTH,
     value: {
       storedToken: f.storedToken,
       ghAuthenticated: f.ghAuthenticated,
@@ -933,11 +885,8 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
   const directFix = profile === null ? "agent codex --direct" : profileAddFix(profile);
   const proxyFix = profile === null ? "agent codex --proxy" : profileAddFix(profile);
   const base = {
-    id: "setup.codex",
-    label: "Codex wiring",
-    group: "codex" as const,
+    ...meta("setup.codex"),
     profile,
-    scopes: CODEX,
     value: {
       home: f.home,
       configFile: configPath,
@@ -1004,17 +953,15 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
       directFix,
       profile,
     );
-    return {
-      ...base,
-      status: verdict.status,
-      detail: [
-        "provider: direct",
-        `config.toml: ${configPath}`,
-        `model_provider ${f.modelProvider ?? "(unset)"} (direct) → ${f.baseUrl ?? "(missing)"}`,
-        verdict.authLine,
-      ].join("\n"),
-      ...(verdict.fix ? { fix: verdict.fix } : {}),
-    };
+    const detail = [
+      "provider: direct",
+      `config.toml: ${configPath}`,
+      `model_provider ${f.modelProvider ?? "(unset)"} (direct) → ${f.baseUrl ?? "(missing)"}`,
+      verdict.authLine,
+    ].join("\n");
+    return verdict.status === "ok"
+      ? { ...base, status: "ok", detail }
+      : { ...base, status: "warn", detail, fix: verdict.fix };
   }
   // Config exists: report precisely which part of the wiring is off.
   const withConfigPath = (message: string) => `config.toml: ${configPath}\n${message}`;
@@ -1060,11 +1007,8 @@ export function checkCodexHost(f: CodexHostFacts): CheckResult {
   const configFile = codexConfigPath(f.hostHome);
   const detail = (summary: string) => f.exists ? `${summary}\nconfig.toml: ${configFile}` : summary;
   const base = {
-    id: "setup.codex-host",
-    label: "Per-host CODEX_HOME",
-    group: "codex" as const,
+    ...meta("setup.codex-host"),
     profile: null,
-    scopes: SETUP,
     value: {
       supported: f.supported,
       hostHome: f.hostHome,
@@ -1117,11 +1061,8 @@ function claudeOtherLine(f: ClaudeFacts): string {
 export function checkClaude(f: ClaudeFacts, profile: Profile = null): CheckResult {
   const directFix = profile === null ? "agent claude --direct" : profileAddFix(profile);
   const base = {
-    id: "setup.claude",
-    label: "Claude wiring",
-    group: "claude" as const,
+    ...meta("setup.claude"),
     profile,
-    scopes: CLAUDE,
     value: {
       home: f.home,
       settingsFile: f.settingsPath,
@@ -1161,17 +1102,15 @@ export function checkClaude(f: ClaudeFacts, profile: Profile = null): CheckResul
     const baseUrlLine = `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${
       baseOk ? "" : ` (expected ${DIRECT_BASE_URL})`
     }`;
-    return {
-      ...base,
-      status: verdict.status,
-      detail: [
-        "provider: direct",
-        `settings.json: ${f.settingsPath}`,
-        baseUrlLine,
-        verdict.authLine,
-      ].join("\n"),
-      ...(verdict.fix ? { fix: verdict.fix } : {}),
-    };
+    const detail = [
+      "provider: direct",
+      `settings.json: ${f.settingsPath}`,
+      baseUrlLine,
+      verdict.authLine,
+    ].join("\n");
+    return verdict.status === "ok"
+      ? { ...base, status: "ok", detail }
+      : { ...base, status: "warn", detail, fix: verdict.fix };
   }
   if (f.providerMode === "proxy") {
     // Proxy-backed via settings.json (apiKeyHelper prints the proxy token, base URL points at
@@ -1181,24 +1120,25 @@ export function checkClaude(f: ClaudeFacts, profile: Profile = null): CheckResul
     // Claude to the wrong/absent port, so it must not read green. Mirrors the Codex check.
     // A named profile's repair is its own atomic re-add (which re-reserves and re-bakes).
     const baseUrlOk = f.baseUrl !== null && f.baseUrlMatches;
-    return {
+    const detail = [
+      "provider: proxy",
+      `settings.json: ${f.settingsPath}`,
+      `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${
+        baseUrlOk ? "" : " (does not match the resolved proxy port)"
+      }`,
+      `apiKeyHelper → ${f.helperPath ?? "(missing)"}`,
+    ].join("\n");
+    return baseUrlOk ? { ...base, status: "ok", detail } : {
       ...base,
-      status: baseUrlOk ? "ok" : "warn",
-      detail: [
-        "provider: proxy",
-        `settings.json: ${f.settingsPath}`,
-        `ANTHROPIC_BASE_URL → ${f.baseUrl ?? "(missing)"}${
-          baseUrlOk ? "" : " (does not match the resolved proxy port)"
-        }`,
-        `apiKeyHelper → ${f.helperPath ?? "(missing)"}`,
-      ].join("\n"),
-      ...(baseUrlOk ? {} : {
-        fix: profile === null
-          ? "Re-run `agent init` (or `agent claude`) to repoint ANTHROPIC_BASE_URL at the current proxy port."
-          : `Re-run \`${
-            profileAddFix(profile)
-          }\` to repoint ANTHROPIC_BASE_URL at the profile's proxy port.`,
-      }),
+      status: "warn",
+      detail,
+      fix: profile === null
+        // --proxy explicitly: the bare commands auto-detect a mode, which is not
+        // guaranteed to re-bake the proxy wiring this fix is repairing.
+        ? "Re-run `agent claude --proxy` to repoint ANTHROPIC_BASE_URL at the current proxy port."
+        : `Re-run \`${
+          profileAddFix(profile)
+        }\` to repoint ANTHROPIC_BASE_URL at the profile's proxy port.`,
     };
   }
   if (f.providerMode === "other") {
@@ -1285,11 +1225,8 @@ export function checkClaude(f: ClaudeFacts, profile: Profile = null): CheckResul
 /** Report opt-in autoupdate status (mirrors `agent update --auto-status`). */
 export function checkAutoupdate(f: AutoupdateStatus): CheckResult {
   const base = {
-    id: "setup.autoupdate",
-    label: "Autoupdate",
-    group: "setup" as const,
+    ...meta("setup.autoupdate"),
     profile: null,
-    scopes: SETUP,
     value: {
       enabled: f.enabled,
       cooldownDays: f.cooldownDays,
@@ -1323,20 +1260,9 @@ function checkAgentLive(
   f: LiveProbeFacts,
   profile: Profile = null,
 ): CheckResult {
-  const meta = agent === "codex"
-    ? { id: "codex.live", label: "Codex live prompt", group: "codex" as const, scopes: CODEX }
-    : {
-      id: "claude.live",
-      label: "Claude live prompt",
-      group: "claude" as const,
-      scopes: CLAUDE,
-    };
   const base = {
-    id: meta.id,
-    label: meta.label,
-    group: meta.group,
+    ...meta(agent === "codex" ? "codex.live" : "claude.live"),
     profile,
-    scopes: meta.scopes,
     // The JSON report's historical shape: ran/ok/cli, derived from the probe kind.
     value: {
       ran: f.kind !== "skipped",
@@ -1386,16 +1312,15 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
   // One block of runtime checks per target, in gather order (the default target
   // first, then named profiles). A named target opens with its consistency
   // check; per-daemon rows render exactly for the targets whose daemon was
-  // interrogated (daemonProbed, the probe's own stamp -- rows can never describe
-  // a probe that did not happen).
+  // interrogated (the probe's own `probed` outcome -- rows can never describe a
+  // probe that did not happen).
   for (const target of facts.runtimes ?? []) {
-    if (target.profile !== null) {
-      out.push(checkProfileConsistency(target));
-      if (!target.daemonProbed) continue;
-    }
-    out.push(checkRuntimePort(target), checkRuntimePid(target));
+    if (target.profile !== null) out.push(checkProfileConsistency(target));
+    const probe = target.probe;
+    if (probe.kind === "skipped") continue;
+    out.push(checkRuntimePort(target, probe), checkRuntimePid(target, probe));
     out.push(checkRuntimePaths(target), checkRuntimeWatchdog(target));
-    out.push(checkRuntimeIdentity(target), checkRuntimeOrphan(target));
+    out.push(checkRuntimeIdentity(target, probe), checkRuntimeOrphan(target, probe));
   }
   if (facts.shell) {
     out.push(checkShellIntegration(facts.shell), checkLaunchers(facts.shell));

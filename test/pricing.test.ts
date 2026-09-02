@@ -8,9 +8,8 @@ import {
 } from "../src/usage/pricing.ts";
 import { expect, test } from "./helpers/testing.ts";
 
-// The ONE reported-USD precision: 4 decimal places, half-up. cost.ts's derived
-// per-day/average fields route through the same helper, so the --json payload can
-// never mix precisions.
+// The ONE serialized-USD precision: 4 decimal places, half-up, applied only at
+// cost.ts's --json boundary; in-memory estimates stay exact so sums reconcile.
 test("roundUsd pins the 4-decimal USD rounding rule", () => {
   expect(roundUsd(1.23456)).toBe(1.2346);
   expect(roundUsd(0.00004)).toBe(0);
@@ -137,11 +136,13 @@ test("estimateCost computes and includes cache bucket costs in totals", () => {
   expect(result.totalUsd).toBe(129.75);
 });
 
-test("estimateCost rounds cache bucket costs to four decimals", () => {
+test("estimateCost keeps USD amounts exact; rounding belongs to the boundary", () => {
   const pricing = new Map<string, PricingTier>([
     ["anthropic/claude-opus-4.8", { input: 15, cacheRead: 1.5 }],
   ]);
-  // 333_333 / 1M * 1.5 = 0.4999995 -> rounds to 0.5 ; input untouched.
+  // 333_333 / 1M * 1.5 = 0.4999995 -- stored EXACT, never pre-rounded to 0.5:
+  // per-model costs feed the per-day sums, so rounding here would make the
+  // by-model and per-day tables disagree. roundUsd applies once, at the boundary.
   const usage = new Map<string, UsageTokens>([
     ["claude-opus-4.8", { input: 0, output: 0, cacheRead: 333_333, cacheCreation: 0 }],
   ]);
@@ -149,9 +150,10 @@ test("estimateCost rounds cache bucket costs to four decimals", () => {
   const result = estimateCost(usage, pricing);
   const cost = result.perModel["claude-opus-4.8"];
 
-  expect(cost?.cacheReadCostUsd).toBe(0.5);
-  expect(cost?.estimatedCostUsd).toBe(0.5);
-  expect(result.totalUsd).toBe(0.5);
+  expect(cost?.cacheReadCostUsd).toBeCloseTo(0.4999995, 10);
+  expect(cost?.cacheReadCostUsd).not.toBe(0.5);
+  expect(result.totalUsd).toBe(cost?.estimatedCostUsd);
+  expect(roundUsd(cost?.estimatedCostUsd ?? 0)).toBe(0.5);
 });
 
 test("estimateCost prices known models and lists unpriceable ones", () => {

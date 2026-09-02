@@ -9,6 +9,7 @@ import {
   type CostEstimate,
   estimateCost,
   fetchPricing,
+  type ModelCost,
   OPENROUTER_MODELS_URL,
   type PricingTier,
   roundUsd,
@@ -442,9 +443,8 @@ function renderCostRows(
   return { body: cells.slice(0, body.length), footer: cells.slice(body.length) };
 }
 
-/** Running totals across the by-model rows, token buckets and priced cost alike.
- *  Not DayMetrics: it is not keyed by day, and it deliberately has no summed
- *  `cost` field -- the aggregate cost is read from `estimate.totalUsd`. */
+/** Running token totals across the by-model rows. Cost totals deliberately live
+ *  elsewhere (sumEstimateCosts): every TOTAL row renders the aggregate's numbers. */
 interface CostSums {
   reqs: number;
   input: number;
@@ -452,10 +452,35 @@ interface CostSums {
   cacheRead: number;
   cacheWrite: number;
   total: number;
-  inputCost: number;
-  outputCost: number;
-  cacheReadCost: number;
-  cacheWriteCost: number;
+}
+
+/** The DayMetrics cost fields. */
+type CostFields = Pick<
+  DayMetrics,
+  "inputCost" | "outputCost" | "cacheReadCost" | "cacheWriteCost" | "cost"
+>;
+
+/**
+ * Per-category cost sums over the estimate's exact per-model costs. EVERY total
+ * row (by-model TOTAL and per-day TOTAL alike) renders these same doubles:
+ * summing the same costs regrouped differently (by model vs by day) can differ
+ * by one ulp, which toFixed can stretch into a visible cent at a boundary.
+ */
+function sumEstimateCosts(estimate: CostEstimate): CostFields {
+  const sums = {
+    inputCost: 0,
+    outputCost: 0,
+    cacheReadCost: 0,
+    cacheWriteCost: 0,
+    cost: estimate.totalUsd,
+  };
+  for (const c of Object.values(estimate.perModel)) {
+    sums.inputCost += c.inputCostUsd;
+    sums.outputCost += c.outputCostUsd;
+    sums.cacheReadCost += c.cacheReadCostUsd;
+    sums.cacheWriteCost += c.cacheCreationCostUsd;
+  }
+  return sums;
 }
 
 /** One row per model (most expensive first) plus the totals they sum to. */
@@ -477,10 +502,6 @@ function buildModelRows(
     cacheRead: 0,
     cacheWrite: 0,
     total: 0,
-    inputCost: 0,
-    outputCost: 0,
-    cacheReadCost: 0,
-    cacheWriteCost: 0,
   };
   const rows: CostRow[] = [];
   for (const model of models) {
@@ -496,12 +517,6 @@ function buildModelRows(
     sum.cacheRead += u.cacheRead;
     sum.cacheWrite += u.cacheCreation;
     sum.total += total;
-    if (c !== undefined) {
-      sum.inputCost += c.inputCostUsd;
-      sum.outputCost += c.outputCostUsd;
-      sum.cacheReadCost += c.cacheReadCostUsd;
-      sum.cacheWriteCost += c.cacheCreationCostUsd;
-    }
     rows.push({
       label: model,
       reqs: formatTokensCompact(u.events),
@@ -524,6 +539,7 @@ function buildAggregateFooter(
   dayMetrics: DayMetrics[],
 ): CostRow[] {
   const div = activeDays > 0 ? activeDays : 1;
+  const agg = sumEstimateCosts(estimate);
   const avg = (n: number): number => n / div;
   const med = (sel: (d: DayMetrics) => number): number => median(dayMetrics.map(sel));
   const orNa = (s: string): string => (activeDays > 0 ? s : "N/A");
@@ -531,22 +547,22 @@ function buildAggregateFooter(
     {
       label: "TOTAL",
       reqs: formatTokensCompact(sum.reqs),
-      input: catCell(sum.input, sum.inputCost),
-      output: catCell(sum.output, sum.outputCost),
-      cacheRead: catCell(sum.cacheRead, sum.cacheReadCost),
-      cacheWrite: catCell(sum.cacheWrite, sum.cacheWriteCost),
+      input: catCell(sum.input, agg.inputCost),
+      output: catCell(sum.output, agg.outputCost),
+      cacheRead: catCell(sum.cacheRead, agg.cacheReadCost),
+      cacheWrite: catCell(sum.cacheWrite, agg.cacheWriteCost),
       total: formatTokensCompact(sum.total),
-      cost: formatCurrency(estimate.totalUsd),
+      cost: formatCurrency(agg.cost),
     },
     {
       label: "Avg/day",
       reqs: orNa(formatTokensCompact(Math.round(avg(sum.reqs)))),
-      input: catCell(Math.round(avg(sum.input)), avg(sum.inputCost)),
-      output: catCell(Math.round(avg(sum.output)), avg(sum.outputCost)),
-      cacheRead: catCell(Math.round(avg(sum.cacheRead)), avg(sum.cacheReadCost)),
-      cacheWrite: catCell(Math.round(avg(sum.cacheWrite)), avg(sum.cacheWriteCost)),
+      input: catCell(Math.round(avg(sum.input)), avg(agg.inputCost)),
+      output: catCell(Math.round(avg(sum.output)), avg(agg.outputCost)),
+      cacheRead: catCell(Math.round(avg(sum.cacheRead)), avg(agg.cacheReadCost)),
+      cacheWrite: catCell(Math.round(avg(sum.cacheWrite)), avg(agg.cacheWriteCost)),
       total: orNa(formatTokensCompact(Math.round(avg(sum.total)))),
-      cost: orNa(formatCurrency(estimate.totalUsd / div)),
+      cost: orNa(formatCurrency(avg(agg.cost))),
     },
     {
       label: "Median/day",
@@ -624,8 +640,12 @@ function dayRow(d: DayMetrics): CostRow {
   };
 }
 
-/** Sum per-day metrics field-by-field into the per-day table's TOTAL line. */
-function sumDayMetrics(days: DayMetrics[]): DayMetrics {
+/**
+ * The per-day table's TOTAL line: token and request fields sum the days; the
+ * cost fields are the aggregate's numbers via sumEstimateCosts, NOT the column
+ * sum, so this row always renders identically to the by-model TOTAL.
+ */
+export function sumDayMetrics(days: DayMetrics[], estimate: CostEstimate): DayMetrics {
   const sum: DayMetrics = {
     day: "TOTAL",
     reqs: 0,
@@ -647,13 +667,8 @@ function sumDayMetrics(days: DayMetrics[]): DayMetrics {
     sum.cacheRead += d.cacheRead;
     sum.cacheWrite += d.cacheWrite;
     sum.total += d.total;
-    sum.inputCost += d.inputCost;
-    sum.outputCost += d.outputCost;
-    sum.cacheReadCost += d.cacheReadCost;
-    sum.cacheWriteCost += d.cacheWriteCost;
-    sum.cost += d.cost;
   }
-  return sum;
+  return { ...sum, ...sumEstimateCosts(estimate) };
 }
 
 /**
@@ -674,7 +689,7 @@ function printPerDayReport(
   }
   const cells = renderCostRows(
     days.map((d) => dayRow(d)),
-    [dayRow(sumDayMetrics(days))],
+    [dayRow(sumDayMetrics(days, estimate))],
   );
 
   console.log(title);
@@ -687,8 +702,21 @@ function printPerDayReport(
   console.log("");
 }
 
-/** Build one source's usage/cost JSON block (shared by the proxy and each provider). */
-function buildSourceJson(
+/** Round a ModelCost's USD fields for serialization; in-memory values stay exact. */
+function roundModelCost(cost: ModelCost): ModelCost {
+  return {
+    pricingReference: cost.pricingReference,
+    estimatedCostUsd: roundUsd(cost.estimatedCostUsd),
+    inputCostUsd: roundUsd(cost.inputCostUsd),
+    outputCostUsd: roundUsd(cost.outputCostUsd),
+    cacheReadCostUsd: roundUsd(cost.cacheReadCostUsd),
+    cacheCreationCostUsd: roundUsd(cost.cacheCreationCostUsd),
+  };
+}
+
+/** Build one source's usage/cost JSON block (shared by the proxy and each provider).
+ *  This is the ONE place estimate USD values get rounded for machine output. */
+export function buildSourceJson(
   report: UsageReport,
   estimate: CostEstimate,
   pricing: Map<string, PricingTier>,
@@ -704,8 +732,10 @@ function buildSourceJson(
     activeDaySpan: coverage.spanDays,
     activeDayPercent: activeDays > 0 ? coverage.percent : null,
     usageByModel: Object.fromEntries(report.byModel),
-    perModel: estimate.perModel,
-    totalUsd: estimate.totalUsd,
+    perModel: Object.fromEntries(
+      Object.entries(estimate.perModel).map(([model, c]) => [model, roundModelCost(c)]),
+    ),
+    totalUsd: roundUsd(estimate.totalUsd),
     avgCostPerDayUsd: activeDays > 0 ? roundUsd(estimate.totalUsd / div) : null,
     medianCostPerDayUsd: activeDays > 0 ? roundUsd(median(dayCosts)) : null,
     ...(opts.perDay

@@ -23,7 +23,13 @@ import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { removeProxyFloatArtifacts } from "../proxy_float.ts";
 import { runShellIntegration } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
-import { isProtectedRoot, looksLikeInstallRoot, type RootMode, rootMode } from "../utils/root.ts";
+import {
+  installStateRoot,
+  isProtectedRoot,
+  looksLikeInstallRoot,
+  type RootMode,
+  rootMode,
+} from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { deleteProfileEverywhere } from "./profile.ts";
 
@@ -359,7 +365,13 @@ export async function runUninstall(args: UninstallArgs, deps: UninstallDeps = {}
   } else {
     ({ homes: codexHomes, complete: codexSweepComplete } = knownCodexHomes());
   }
-  const installRoot = deps.installRoot ?? rootMode();
+  const mode = deps.installRoot ?? rootMode();
+  // A versioned install's compiled root is the `<top>/current` link; the DELETE
+  // target is the TOP root (versions/, bin/, and the link itself), never just
+  // the link. Resolved once here so the narration and the removal agree.
+  const installRoot: RootMode = mode.kind === "compiled"
+    ? { kind: "compiled", root: installStateRoot(mode.root) }
+    : mode;
   const ctx: UninstallContext = {
     profiles: allProfileNames(),
     codexHomes,

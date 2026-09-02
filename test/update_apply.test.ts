@@ -1,10 +1,17 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { crypto } from "@std/crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyUpdate, type ApplyUpdateOptions } from "../src/autoupdate/apply.ts";
 import { withUpdateLockForTests } from "../src/autoupdate/lock.ts";
 import { expectedDigest, fileSha256, parseChecksums } from "../src/install/checksums.ts";
+import {
+  CURRENT_LINK,
+  pointCurrentAt,
+  POSIX_CURRENT_SHIM,
+  readCurrentVersionName,
+  VERSIONS_DIR,
+} from "../src/install/installer.ts";
 import {
   currentReleaseTarget,
   installedBinaryName,
@@ -14,9 +21,12 @@ import {
 import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
 
 // The compiled-era update: fetch this platform's binary, verify it against the
-// release manifest, swap it in, then hand off to the NEW binary. The download
-// source is redirected at a local directory through COPILOT_ENV_DOWNLOAD_BASE,
-// which is the same hook install.sh and the CI smokes use.
+// release manifest, STAGE it into its own version root, PROVISION that root by
+// running the new binary's `install --assets-only` inside it, then COMMIT by
+// flipping the `current` link -- prepare-then-commit, so a pre-flip failure
+// leaves the old version fully live. The download source is redirected at a
+// local directory through COPILOT_ENV_DOWNLOAD_BASE, which is the same hook
+// install.sh and the CI smokes use.
 
 const skipWin = test.skipIf(process.platform === "win32");
 
@@ -49,11 +59,52 @@ function hostTarget() {
   return target;
 }
 
-/** A shell script standing in for the swapped-in binary: it records every
- *  invocation so the post-swap handoff can be asserted. */
+/** A shell script standing in for the staged binary: it records every
+ *  invocation (with the root it was aimed at) so the provision/migrate handoff
+ *  can be asserted, and writes the per-version manifest `install` must leave
+ *  behind (the provision postcondition). It lives at <top>/versions/<v>/bin/,
+ *  hence the three hops up to the log at the top. */
 const RECORDING_BINARY = `#!/bin/sh
-echo "$@" >> "$(dirname "$0")/../invocations.log"
+HERE="$(dirname "$0")"
+echo "\${COPILOT_ENV_INSTALL_ROOT:-} $@" >> "$HERE/../../../invocations.log"
+if [ "$1" = "install" ]; then
+  printf '{"version":"9.9.9","kind":"installed","assets":[]}' > "$HERE/../.copilot-env-install.json"
+fi
 `;
+
+/** Like RECORDING_BINARY, but its `install` step fails: the provision stage. */
+const FAILING_PROVISION_BINARY = `#!/bin/sh
+echo "\${COPILOT_ENV_INSTALL_ROOT:-} $@" >> "$(dirname "$0")/../../../invocations.log"
+[ "$1" = "install" ] && exit 7
+exit 0
+`;
+
+/** Exit 0 but write NO manifest: the soft no-op the postcondition must catch. */
+const SOFT_NOOP_BINARY = `#!/bin/sh
+echo "\${COPILOT_ENV_INSTALL_ROOT:-} $@" >> "$(dirname "$0")/../../../invocations.log"
+exit 0
+`;
+
+/** Writes a VALID manifest for the wrong release: the version-match half. */
+const WRONG_VERSION_BINARY = `#!/bin/sh
+HERE="$(dirname "$0")"
+if [ "$1" = "install" ]; then
+  printf '{"version":"0.0.1","kind":"installed","assets":[]}' > "$HERE/../.copilot-env-install.json"
+fi
+exit 0
+`;
+
+/** Seed one version dir (with a stand-in binary) inside the install root. */
+function seedVersion(name: string, contents = name): string {
+  const dir = join(installDir, VERSIONS_DIR, name);
+  mkdirSync(join(dir, "bin"), { recursive: true });
+  writeFileSync(join(dir, "bin", installedBinaryName()), contents);
+  return dir;
+}
+
+function invocations(): string[] {
+  return readFileSync(join(installDir, "invocations.log"), "utf8").trim().split("\n");
+}
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "copilot-update-"));
@@ -153,8 +204,10 @@ describe("applyUpdate", () => {
     });
   }
 
-  skipWin("verifies, swaps in the binary, and runs the new one", async () => {
+  skipWin("stages, provisions inside the version root, then commits the flip", async () => {
     writeRelease(RECORDING_BINARY);
+    seedVersion("v9.9.8", "OLD");
+    pointCurrentAt(installDir, "v9.9.8");
 
     await applyLocked("v9.9.8", {
       root: installDir,
@@ -162,30 +215,175 @@ describe("applyUpdate", () => {
       childStdoutToStderr: true,
     });
 
-    const live = join(installDir, "bin", installedBinaryName());
-    expect(readFileSync(live, "utf8")).toBe(RECORDING_BINARY);
+    // The new binary landed in ITS version root; the old version is untouched.
+    const versionRoot = join(installDir, VERSIONS_DIR, "v9.9.9");
+    expect(readFileSync(join(versionRoot, "bin", installedBinaryName()), "utf8")).toBe(
+      RECORDING_BINARY,
+    );
+    expect(
+      readFileSync(
+        join(installDir, VERSIONS_DIR, "v9.9.8", "bin", installedBinaryName()),
+        "utf8",
+      ),
+    ).toBe("OLD");
 
-    // Both post-swap steps must run the NEW binary: it is the only thing that
-    // knows its own assets and its own migrations.
-    const log = readFileSync(join(installDir, "invocations.log"), "utf8").trim().split("\n");
-    expect(log).toEqual(["install --assets-only", "migrate 9.9.8 9.9.9"]);
+    // The commit: current points at the new version, and reads THROUGH the
+    // link reach the new binary (the shim dispatch path).
+    expect(readCurrentVersionName(installDir)).toBe("v9.9.9");
+    expect(
+      readFileSync(join(installDir, CURRENT_LINK, "bin", installedBinaryName()), "utf8"),
+    ).toBe(RECORDING_BINARY);
+    expect(readFileSync(join(installDir, "bin", "agent"), "utf8")).toBe(POSIX_CURRENT_SHIM);
+
+    // Both handoffs ran the NEW binary, each aimed at the right root: the
+    // provision INSIDE its version root (pre-flip), the migrations at the
+    // current link (post-flip).
+    expect(invocations()).toEqual([
+      `${versionRoot} install --assets-only`,
+      `${join(installDir, CURRENT_LINK)} migrate 9.9.8 9.9.9`,
+    ]);
+  });
+
+  skipWin("a flat (pre-versioned) root is versioned by the same update", async () => {
+    writeRelease(RECORDING_BINARY);
+    writeFileSync(join(installDir, "bin", installedBinaryName()), "FLAT-LIVE");
+    mkdirSync(join(installDir, "shell"), { recursive: true });
+    writeFileSync(join(installDir, "shell", "payload.txt"), "flat");
+
+    await applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true });
+
+    expect(readCurrentVersionName(installDir)).toBe("v9.9.9");
+    expect(readFileSync(join(installDir, "bin", "agent"), "utf8")).toBe(POSIX_CURRENT_SHIM);
+    // The flat binary is superseded and swept post-flip; the flat SHELL payload
+    // is spared -- nothing in the update rewires the rc block that may still
+    // source it (the 3.5.6 migration and `agent shell` own that).
+    expect(existsSync(join(installDir, "bin", installedBinaryName()))).toBe(false);
+    expect(existsSync(join(installDir, "shell"))).toBe(true);
+  });
+
+  skipWin("keeps exactly one previous version and GCs everything older", async () => {
+    writeRelease(RECORDING_BINARY);
+    seedVersion("v9.9.6");
+    seedVersion("v9.9.7");
+    seedVersion("v9.9.8", "OLD");
+    pointCurrentAt(installDir, "v9.9.8");
+
+    await applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true });
+
+    expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.9"))).toBe(true);
+    expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.8"))).toBe(true); // the rollback keep
+    expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.7"))).toBe(false);
+    expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.6"))).toBe(false);
+
+    // ROLLBACK: the kept previous version is actually usable -- pointing the
+    // link back at it dispatches its binary again.
+    pointCurrentAt(installDir, "v9.9.8");
+    expect(
+      readFileSync(join(installDir, CURRENT_LINK, "bin", installedBinaryName()), "utf8"),
+    ).toBe("OLD");
+  });
+
+  skipWin("a provision that exits 0 without the manifest still aborts pre-flip", async () => {
+    // Exit codes approximate; the per-version manifest is the postcondition.
+    // A soft no-op `install` must never see its version committed.
+    writeRelease(SOFT_NOOP_BINARY);
+    seedVersion("v9.9.8", "OLD");
+    pointCurrentAt(installDir, "v9.9.8");
+
+    await expect(
+      applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true }),
+    ).rejects.toThrow("no valid install manifest");
+
+    expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
+    expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.9"))).toBe(false);
+  });
+
+  skipWin("a provision whose manifest names the wrong release aborts pre-flip", async () => {
+    writeRelease(WRONG_VERSION_BINARY);
+    seedVersion("v9.9.8", "OLD");
+    pointCurrentAt(installDir, "v9.9.8");
+
+    await expect(
+      applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true }),
+    ).rejects.toThrow("provisioned version 0.0.1, not the v9.9.9 release");
+
+    expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
+    expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.9"))).toBe(false);
+  });
+
+  skipWin("a failed shim refresh keeps the flat binary the old shims still dispatch", async () => {
+    // The commit is best-effort about the shims, but while the OLD
+    // adjacent-dispatch shims are live, the flat binary is what they invoke --
+    // the GC must not take it out from under them.
+    writeRelease(RECORDING_BINARY);
+    writeFileSync(join(installDir, "bin", installedBinaryName()), "FLAT-LIVE");
+    // A DIRECTORY at the shim path defeats both the rename and the fallback write.
+    mkdirSync(join(installDir, "bin", "agent"), { recursive: true });
+
+    await applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true });
+
+    expect(readCurrentVersionName(installDir)).toBe("v9.9.9"); // committed regardless
+    expect(readFileSync(join(installDir, "bin", installedBinaryName()), "utf8")).toBe(
+      "FLAT-LIVE",
+    );
+  });
+
+  skipWin("a provision failure aborts BEFORE the flip: the old version stays live", async () => {
+    writeRelease(FAILING_PROVISION_BINARY);
+    seedVersion("v9.9.8", "OLD");
+    pointCurrentAt(installDir, "v9.9.8");
+
+    await expect(
+      applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true }),
+    ).rejects.toThrow("failed to lay down its runtime files");
+
+    // Nothing was committed: current still names the old version, the
+    // half-prepared version dir is gone, and no migration ran.
+    expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
+    expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.9"))).toBe(false);
+    expect(invocations()).toEqual([
+      `${join(installDir, VERSIONS_DIR, "v9.9.9")} install --assets-only`,
+    ]);
+    expect(stagingDirs()).toEqual([]);
   });
 
   skipWin("refuses a binary the release manifest does not vouch for", async () => {
     writeRelease(RECORDING_BINARY, "f".repeat(64));
+    seedVersion("v9.9.8", "OLD");
+    pointCurrentAt(installDir, "v9.9.8");
 
     await expect(
       applyLocked("v9.9.8", { root: installDir, logger: quiet }),
     ).rejects.toThrow("SHA256 verification failed");
 
-    // Nothing was swapped in, and the staging directory did not survive.
-    expect(() => readFileSync(join(installDir, "bin", installedBinaryName()))).toThrow();
+    // Nothing was staged or committed, and the staging directory is gone.
+    expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
+    expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.9"))).toBe(false);
     expect(stagingDirs()).toEqual([]);
+  });
+
+  skipWin("refuses when current already points at the target version", async () => {
+    // Releases only move forward; `current` naming the target while the version
+    // check said "behind" means a corrupt layout -- refuse rather than guess.
+    writeRelease(RECORDING_BINARY);
+    seedVersion("v9.9.9", "ALREADY");
+    pointCurrentAt(installDir, "v9.9.9");
+
+    await expect(
+      applyLocked("v9.9.8", { root: installDir, logger: quiet }),
+    ).rejects.toThrow("already points at v9.9.9");
+    // The live version dir was NOT clobbered by staging.
+    expect(
+      readFileSync(
+        join(installDir, VERSIONS_DIR, "v9.9.9", "bin", installedBinaryName()),
+        "utf8",
+      ),
+    ).toBe("ALREADY");
   });
 
   skipWin("leaves no staging directory behind on success", async () => {
     writeRelease(RECORDING_BINARY);
-    await applyLocked("v9.9.8", { root: installDir, logger: quiet });
+    await applyLocked("v9.9.8", { root: installDir, logger: quiet, childStdoutToStderr: true });
     expect(stagingDirs()).toEqual([]);
   });
 

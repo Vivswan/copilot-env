@@ -1,7 +1,8 @@
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isDue } from "../src/autoupdate/due.ts";
 import { withUpdateLockForTests } from "../src/autoupdate/lock.ts";
+import { autoupdateDir, autoupdateStateFile } from "../src/autoupdate/paths.ts";
 import {
   AutoupdateState,
   DEFAULT_AUTOUPDATE_COOLDOWN_DAYS,
@@ -22,6 +23,27 @@ function tmp(name: string): string {
   dir = tmpDir("copilot-env-autoupdate-");
   return join(dir, name);
 }
+
+// --- autoupdate paths -------------------------------------------------------
+
+test("autoupdate state lives at the TOP of a versioned root, never through the link", () => {
+  // The state is machine state: written through `<top>/current` it would land
+  // inside a version dir, and the next update's GC (or just the flip) would
+  // silently drop the opt-in.
+  const top = tmpDir("copilot-env-autoupdate-paths-");
+  try {
+    expect(autoupdateDir(top)).toBe(join(top, ".autoupdate")); // flat: in place
+    mkdirSync(join(top, "versions", "v1.0.0"), { recursive: true });
+    symlinkSync(join(top, "versions", "v1.0.0"), join(top, "current"), "junction");
+    expect(autoupdateDir(join(top, "current"))).toBe(join(top, ".autoupdate"));
+    expect(autoupdateStateFile(join(top, "current"))).toBe(
+      join(top, ".autoupdate", "state.json"),
+    );
+    expect(autoupdateDir(top)).toBe(join(top, ".autoupdate")); // top spelling agrees
+  } finally {
+    removeDir(top);
+  }
+});
 
 // --- AutoupdateState --------------------------------------------------------
 

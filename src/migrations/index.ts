@@ -16,7 +16,7 @@ import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
 import { disableConsolaTimestamps } from "../utils/logger.ts";
 import { type SemverString, stripV, toSemverString, versionLessThan } from "../utils/semver.ts";
-import { v356, v356Ownership } from "./3.5.6.ts";
+import { v356, v356Ownership, v356VersionedLayout } from "./3.5.6.ts";
 
 /**
  * One step in the version history, named for the release it migrates AWAY FROM (so a
@@ -45,7 +45,7 @@ export interface Migration {
  * could still be reached. Each deleted step's persisted-state fix was re-derivable by
  * `agent init` / `auth` / `claude` / `shell`, or self-healing on the catalog sync timer.
  */
-const MIGRATIONS: Migration[] = [v356, v356Ownership];
+const MIGRATIONS: Migration[] = [v356, v356Ownership, v356VersionedLayout];
 
 // versionLessThan tolerates unparseable input by answering "not less-than", so a
 // garbage version on either side of the range filter silently empties or floods the

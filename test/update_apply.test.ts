@@ -2,7 +2,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { crypto } from "@std/crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyUpdate } from "../src/autoupdate/apply.ts";
+import { applyUpdate, type ApplyUpdateOptions } from "../src/autoupdate/apply.ts";
+import { withUpdateLock } from "../src/autoupdate/lock.ts";
 import { expectedDigest, fileSha256, parseChecksums } from "../src/install/checksums.ts";
 import {
   currentReleaseTarget,
@@ -142,10 +143,19 @@ describe("applyUpdate", () => {
   const target = { tag: "v9.9.9", dateSeconds: 0 };
   const quiet = { warn: () => {}, success: () => {} };
 
+  /** Run applyUpdate the only way it can be run: under the update lock, whose held
+   *  branch mints the HeldLock evidence the signature demands. */
+  function applyLocked(current: string, opts: ApplyUpdateOptions): Promise<void> {
+    return withUpdateLock(Date.now(), (outcome) => {
+      if (!outcome.held) throw new Error("test could not take its own update lock");
+      return applyUpdate(current, target, outcome, opts);
+    }, join(root, "update.lock"));
+  }
+
   skipWin("verifies, swaps in the binary, and runs the new one", async () => {
     writeRelease(RECORDING_BINARY);
 
-    await applyUpdate("v9.9.8", target, {
+    await applyLocked("v9.9.8", {
       root: installDir,
       logger: quiet,
       childStdoutToStderr: true,
@@ -164,7 +174,7 @@ describe("applyUpdate", () => {
     writeRelease(RECORDING_BINARY, "f".repeat(64));
 
     await expect(
-      applyUpdate("v9.9.8", target, { root: installDir, logger: quiet }),
+      applyLocked("v9.9.8", { root: installDir, logger: quiet }),
     ).rejects.toThrow("SHA256 verification failed");
 
     // Nothing was swapped in, and the staging directory did not survive.
@@ -174,7 +184,7 @@ describe("applyUpdate", () => {
 
   skipWin("leaves no staging directory behind on success", async () => {
     writeRelease(RECORDING_BINARY);
-    await applyUpdate("v9.9.8", target, { root: installDir, logger: quiet });
+    await applyLocked("v9.9.8", { root: installDir, logger: quiet });
     expect(stagingDirs()).toEqual([]);
   });
 
@@ -184,7 +194,7 @@ describe("applyUpdate", () => {
     writeFileSync(join(releaseDir, releaseAssetName(hostTarget())), "x");
 
     await expect(
-      applyUpdate("v9.9.8", target, { root: installDir, logger: quiet }),
+      applyLocked("v9.9.8", { root: installDir, logger: quiet }),
     ).rejects.toThrow("checksums.txt has no entry for");
   });
 });

@@ -2,7 +2,7 @@
 import * as net from "node:net";
 import { join } from "node:path";
 
-import { acquireFileLockBounded, releaseFileLock } from "../utils/file_lock.ts";
+import { BOUNDED_LOCK_POLICY, withFileLockSync } from "../utils/file_lock.ts";
 import { CopilotEnvConfig } from "./env_config.ts";
 import { profileHomeNames, resolveRootHome } from "./paths.ts";
 import type { Profile, ProfileName } from "./profile.ts";
@@ -156,7 +156,7 @@ function candidateProfilePort(excluding: Profile = null): number {
 // The reservation is a cross-profile scan-then-write, so concurrent reservers (two
 // profiles being wired at once) must be serialized or both could record the same port.
 // Same best-effort bounded-wait contract as the JSON store's update lock -- literally:
-// both use acquireFileLockBounded (utils/file_lock.ts), the shared stale/wait/retry policy.
+// both use BOUNDED_LOCK_POLICY (utils/file_lock.ts), the shared stale/wait/retry policy.
 
 /**
  * Reserve (and persist) a stable port for the named profile: the recorded one when it
@@ -175,17 +175,15 @@ export function reserveProfilePort(profile: ProfileName): number {
   const recorded = state.read().port;
   if (recorded !== undefined) return recorded;
   const lockPath = join(resolveRootHome(), ".profile-ports.lock");
-  const held = acquireFileLockBounded(lockPath); // best-effort: proceed unlocked, never deadlock
-  try {
+  // Best-effort: after the bounded wait, proceed unlocked rather than deadlock.
+  return withFileLockSync(lockPath, BOUNDED_LOCK_POLICY, () => {
     // Re-check under the lock: a concurrent reserver may have just recorded one.
     const raced = state.read().port;
     if (raced !== undefined) return raced;
     const port = candidateProfilePort();
     state.set({ port });
     return port;
-  } finally {
-    if (held) releaseFileLock(lockPath);
-  }
+  });
 }
 
 /**

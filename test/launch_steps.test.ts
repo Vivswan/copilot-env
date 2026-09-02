@@ -19,6 +19,7 @@ import {
   resolveLaunchCredential,
   resolveStartPort,
   trackedDaemonPids,
+  withStartLock,
 } from "../src/copilot_api/launch.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
@@ -643,4 +644,15 @@ test("applyDefaultConfig: ownership clearing covers every opt-in key (claude-tok
 
   expect("claudeTokenMultiplier" in config.load()).toBe(false);
   expect(new ProxyProjectionState(paths).ownedPaths()).toEqual([]);
+});
+
+// --- withStartLock: the ONE owning scope of the global start lock ------------------------
+
+test("withStartLock releases the start lock on return and on throw alike", async () => {
+  tmpHome();
+  expect(await withStartLock(() => Promise.resolve(41))).toBe(41);
+  await expect(withStartLock(() => Promise.reject(new Error("boom")))).rejects.toThrow("boom");
+  // If either scope above had leaked the lock, this take would wait forever
+  // (the start lock's wait is unbounded) and time the suite out.
+  expect(await withStartLock(() => Promise.resolve(true))).toBe(true);
 });

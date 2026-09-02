@@ -1,6 +1,12 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { reclaimStaleLock, releaseFileLock, tryAcquireFileLock } from "../src/utils/file_lock.ts";
+import {
+  reclaimStaleLock,
+  releaseFileLock,
+  tryAcquireFileLock,
+  withFileLock,
+  withFileLockSync,
+} from "../src/utils/file_lock.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { removeDir, tmpDir } from "./helpers.ts";
 
@@ -139,4 +145,192 @@ test("release by the holder works even when the marker's ts half is corrupted", 
   writeFileSync(path, `${process.pid}\ngarbage`);
   releaseFileLock(path);
   expect(existsSync(path)).toBe(false);
+});
+
+// --- the scoped API (withFileLock / withFileLockSync) --------------------------------
+
+test("withFileLockSync runs fn held, returns its value, and releases on the way out", () => {
+  const path = tmp("scoped.lock");
+  const result = withFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, (outcome) => {
+    expect(outcome.held).toBe(true);
+    expect(existsSync(path)).toBe(true);
+    return 42;
+  });
+  expect(result).toBe(42);
+  expect(existsSync(path)).toBe(false);
+});
+
+test("withFileLockSync reports a fresh live holder as not-held and releases nothing", () => {
+  const path = tmp("scoped.lock");
+  withFileLockSync(path, { staleMs: Number.POSITIVE_INFINITY, waitMs: 0 }, (outer) => {
+    expect(outer.held).toBe(true);
+    const innerHeld = withFileLockSync(
+      path,
+      { staleMs: Number.POSITIVE_INFINITY, waitMs: 0 },
+      (outcome) => outcome.held,
+    );
+    expect(innerHeld).toBe(false);
+    // The not-held scope must not have released the holder's lock (the holder is this
+    // same pid, so a stray release here WOULD pass the pid guard and delete it).
+    expect(existsSync(path)).toBe(true);
+  });
+  expect(existsSync(path)).toBe(false);
+});
+
+test("a scope that refreshes a PRIMITIVE holder's aged lock never releases it", () => {
+  const path = tmp("scoped.lock");
+  expect(tryAcquireFileLock(path, Number.POSITIVE_INFINITY, { nowMs: 1_000 })).toBe(true);
+  const held = withFileLockSync(
+    path,
+    { staleMs: 5_000, waitMs: 0, nowMs: 20_000 },
+    (outcome) => outcome.held,
+  );
+  expect(held).toBe(true); // the refresh reports a (re-)acquire ...
+  expect(existsSync(path)).toBe(true); // ... but a lock no scope owns is not a scope's to release
+  releaseFileLock(path);
+  expect(existsSync(path)).toBe(false);
+});
+
+test("a nested scope that refreshes OUR aged lock never releases the outer scope's lock", () => {
+  const path = tmp("scoped.lock");
+  withFileLockSync(
+    path,
+    { staleMs: Number.POSITIVE_INFINITY, waitMs: 0, nowMs: 1_000 },
+    (outer) => {
+      expect(outer.held).toBe(true);
+      // Our own marker, aged past the inner staleMs: the primitive refreshes it in place and
+      // reports a (re-)acquire, so the nested scope observes held ...
+      const innerHeld = withFileLockSync(
+        path,
+        { staleMs: 5_000, waitMs: 0, nowMs: 20_000 },
+        (outcome) => outcome.held,
+      );
+      expect(innerHeld).toBe(true);
+      // ... but ownership stayed with the enclosing scope: the lock is still there.
+      expect(existsSync(path)).toBe(true);
+    },
+  );
+  expect(existsSync(path)).toBe(false); // the OUTER scope's finally did the one release
+});
+
+test("the LAST settling async scope does the physical release (owner settles first)", async () => {
+  const path = tmp("scoped.lock");
+  let openGate = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    openGate = resolve;
+  });
+  let inner: Promise<void> = Promise.resolve();
+  await withFileLock(
+    path,
+    { staleMs: Number.POSITIVE_INFINITY, waitMs: 0, nowMs: 1_000 },
+    (outer) => {
+      expect(outer.held).toBe(true);
+      // A second scope refresh-acquires OUR aged marker and outlives this one (the
+      // acquisition and the fn's run up to the gate happen synchronously here).
+      inner = withFileLock(path, { staleMs: 5_000, waitMs: 0, nowMs: 20_000 }, async (o) => {
+        expect(o.held).toBe(true);
+        await gate;
+      });
+      return Promise.resolve();
+    },
+  );
+  // The first (owning) scope settled while the refresher still runs: the lock must not
+  // have been released out from under it.
+  expect(existsSync(path)).toBe(true);
+  openGate();
+  await inner;
+  expect(existsSync(path)).toBe(false); // the last scope out did the one release
+});
+
+test("withFileLockSync releases exactly once when fn throws, and the throw propagates", () => {
+  const path = tmp("scoped.lock");
+  expect(() =>
+    withFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, () => {
+      throw new Error("boom");
+    })
+  ).toThrow("boom");
+  expect(existsSync(path)).toBe(false); // released by the scope's finally ...
+  // ... and genuinely free: a fresh scope acquires it.
+  expect(
+    withFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, (outcome) => outcome.held),
+  ).toBe(true);
+});
+
+test("withFileLockSync bounded wait retries, notices once, then proceeds not-held", () => {
+  const path = tmp("scoped.lock");
+  withFileLockSync(path, { staleMs: Number.POSITIVE_INFINITY, waitMs: 0 }, () => {
+    let notices = 0;
+    const held = withFileLockSync(
+      path,
+      { staleMs: Number.POSITIVE_INFINITY, waitMs: 40, retryMs: 5, onWait: () => notices++ },
+      (outcome) => outcome.held,
+    );
+    expect(held).toBe(false);
+    expect(notices).toBe(1); // once, not per retry
+  });
+});
+
+test("withFileLockSync never notices before noticeAfterMs has fully passed", () => {
+  const path = tmp("scoped.lock");
+  withFileLockSync(path, { staleMs: Number.POSITIVE_INFINITY, waitMs: 0 }, () => {
+    let notices = 0;
+    withFileLockSync(
+      path,
+      {
+        staleMs: Number.POSITIVE_INFINITY,
+        waitMs: 40,
+        retryMs: 5,
+        noticeAfterMs: 60_000, // far beyond the wait budget: strictly-after means never here
+        onWait: () => notices++,
+      },
+      () => {},
+    );
+    expect(notices).toBe(0);
+  });
+});
+
+test("withFileLockSync refuses an async fn BEFORE its body runs", () => {
+  const path = tmp("scoped.lock");
+  let ran = false;
+  expect(() =>
+    withFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, async () => {
+      ran = true;
+      await Promise.resolve();
+    })
+  ).toThrow("use withFileLock");
+  expect(ran).toBe(false); // rejected up front: not even the pre-await prefix ran
+  expect(existsSync(path)).toBe(false); // and no lock was taken for it
+});
+
+test("withFileLockSync refuses a plain fn returning a thenable, still releasing", () => {
+  const path = tmp("scoped.lock");
+  expect(() => withFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, () => Promise.resolve(1)))
+    .toThrow("use withFileLock");
+  expect(existsSync(path)).toBe(false); // the misuse still released the scope's lock
+});
+
+test("withFileLock holds across an async fn and releases only after it settles", async () => {
+  const path = tmp("scoped.lock");
+  const stillHeldAfterAwait = await withFileLock(
+    path,
+    { staleMs: 10_000, waitMs: 0 },
+    async (outcome) => {
+      expect(outcome.held).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return existsSync(path);
+    },
+  );
+  expect(stillHeldAfterAwait).toBe(true);
+  expect(existsSync(path)).toBe(false);
+});
+
+test("withFileLock releases when the async fn rejects, and the rejection propagates", async () => {
+  const path = tmp("scoped.lock");
+  await expect(
+    withFileLock(path, { staleMs: 10_000, waitMs: 0 }, () => Promise.reject(new Error("boom"))),
+  ).rejects.toThrow("boom");
+  expect(existsSync(path)).toBe(false);
+  expect(
+    withFileLockSync(path, { staleMs: 10_000, waitMs: 0 }, (outcome) => outcome.held),
+  ).toBe(true);
 });

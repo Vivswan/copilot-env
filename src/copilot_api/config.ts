@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync }
 import { basename, dirname, join } from "node:path";
 import { consola } from "consola";
 
-import { acquireFileLockBounded, releaseFileLock } from "../utils/file_lock.ts";
+import { BOUNDED_LOCK_POLICY, withFileLockSync } from "../utils/file_lock.ts";
 import { isFile } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { sleepSync } from "../utils/time.ts";
@@ -25,7 +25,7 @@ const LOAD_RETRY_MS = 4;
 // shims, several shells at once) don't lost-update one another -- e.g. a `start --record-event`
 // heartbeat clobbering a fresh pid/port, an `auth --del` undone by a concurrent catalog-throttle
 // write, or two ensureApiKey callers each minting a key. It is BEST-EFFORT, not a hard mutex:
-// the shared bounded-wait policy (acquireFileLockBounded) proceeds WITHOUT the lock after its
+// the shared bounded-wait policy (BOUNDED_LOCK_POLICY) proceeds WITHOUT the lock after its
 // wait rather than deadlock a command, and reclaims only a crashed/leaked holder.
 
 /**
@@ -117,15 +117,12 @@ export class CopilotApiConfig {
    *  by a best-effort `<file>.lock` so concurrent read-modify-writes don't lost-update. */
   update(mutate: (d: Record<string, unknown>) => void): Record<string, unknown> {
     const lockPath = `${this.path}.lock`;
-    const held = acquireFileLockBounded(lockPath);
-    try {
+    return withFileLockSync(lockPath, BOUNDED_LOCK_POLICY, () => {
       const data = this.load();
       mutate(data);
       this.save(data);
       return data;
-    } finally {
-      if (held) releaseFileLock(lockPath);
-    }
+    });
   }
 
   // ---------- domain helpers (auth) ----------

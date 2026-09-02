@@ -28,6 +28,7 @@ import {
 } from "../install/checksums.ts";
 import type { Release } from "../install/resolve-release.ts";
 import { currentReleaseTarget, installedBinaryName, releaseAssetName } from "../install/targets.ts";
+import type { HeldUpdateLock } from "./lock.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { stripV } from "../utils/semver.ts";
 
@@ -215,9 +216,12 @@ export interface ApplyUpdateOptions {
   root?: string;
 }
 
+/** `_lock` is the caller's evidence that the update lock is held (only withUpdateLock's
+ *  held branch mints one), so every apply happens inside that lock's scope. */
 export async function applyUpdate(
   current: string,
   target: Release,
+  _lock: HeldUpdateLock,
   opts: ApplyUpdateOptions = {},
 ): Promise<void> {
   const logger = opts.logger ?? consola;

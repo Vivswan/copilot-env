@@ -8,8 +8,7 @@
 import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
 import { resolveCommand } from "../utils/command.ts";
-import { releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
-import { sleepSync } from "../utils/time.ts";
+import { withFileLockSync } from "../utils/file_lock.ts";
 import {
   AUTH_PROVIDERS,
   type AuthProvider,
@@ -168,20 +167,18 @@ export class Credential {
     this.state.setCredential(this.profile, { githubToken: null, authProvider: null });
     if (this.profile === null) {
       const { githubTokenFile: tokenFile, githubTokenLoginLock: lockPath } = new CopilotApiPaths();
-      const deadline = Date.now() + 2000;
-      let held = false;
-      for (;;) {
-        held = tryAcquireFileLock(lockPath, Number.POSITIVE_INFINITY);
-        if (held || Date.now() >= deadline) break;
-        sleepSync(100);
-      }
-      try {
-        if (held) rmSync(tokenFile, { force: true });
-      } catch {
-        // best-effort
-      } finally {
-        if (held) releaseFileLock(lockPath);
-      }
+      withFileLockSync(
+        lockPath,
+        { staleMs: Number.POSITIVE_INFINITY, waitMs: 2000, retryMs: 100 },
+        (outcome) => {
+          if (!outcome.held) return; // a live login holds it past the bound: skip the scrub
+          try {
+            rmSync(tokenFile, { force: true });
+          } catch {
+            // best-effort
+          }
+        },
+      );
     }
     return had;
   }

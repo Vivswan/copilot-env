@@ -8,7 +8,6 @@ import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
-  acquireStartLock,
   applyDefaultConfig,
   awaitReadiness,
   cleanupExistingProxies,
@@ -17,9 +16,9 @@ import {
   resolveLaunchCredential,
   resolveStartPort,
   spawnConfiguredDaemon,
-  startLockPath,
   syncAliasesAfterStart,
   trackedDaemonPids,
+  withStartLock,
 } from "../copilot_api/launch.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { pidAlive } from "../copilot_api/process.ts";
@@ -27,7 +26,6 @@ import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/pro
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { installedProxyVersion, PROXY_PACKAGE_NAME } from "../copilot_api/version.ts";
 import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
-import { releaseFileLock } from "../utils/file_lock.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { formatDuration } from "../utils/time.ts";
 import { ensureAuthenticated } from "./auth.ts";
@@ -329,11 +327,9 @@ export async function runStart(action: StartAction): Promise<void> {
   await ensureProxyFloor();
 
   fs.mkdirSync(paths.runDir, { recursive: true });
-  const lockPath = startLockPath();
-  await acquireStartLock(lockPath);
   // Every human-facing follow-up command must address THIS daemon.
   const profileFlag = profile === null ? "" : ` --profile ${profile}`;
-  try {
+  await withStartLock(async () => {
     if (isIdempotentNoOp(action, ctx.envConfig)) {
       const status = await proxyStatus(profile);
       if (status.up) {
@@ -377,7 +373,5 @@ export async function runStart(action: StartAction): Promise<void> {
     }
     await syncAliasesAfterStart(ctx.config, live.port);
     await reportStartSummary(profile, live, paths, ctx.logFile);
-  } finally {
-    releaseFileLock(lockPath);
-  }
+  });
 }

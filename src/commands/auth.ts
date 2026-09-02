@@ -51,10 +51,9 @@ import { resolveDenoBin } from "../copilot_api/sidecar.ts";
 import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { installedProxyVersion } from "../copilot_api/version.ts";
 import { errMessage } from "../utils/error.ts";
-import { releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
+import { withFileLockSync } from "../utils/file_lock.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { printTable } from "../utils/table.ts";
-import { sleepSync } from "../utils/time.ts";
 
 // Narration to stderr so `--get`'s stdout stays a clean machine-readable token.
 const logger = createStderrLogger();
@@ -205,15 +204,13 @@ function loginWithCopilot(cred: Credential): void {
     );
   }
   const { githubTokenFile: tokenFile, githubTokenLoginLock: lockPath } = new CopilotApiPaths();
-  let noticed = false;
-  while (!tryAcquireFileLock(lockPath, Number.POSITIVE_INFINITY)) {
-    if (!noticed) {
-      logger.info("Another device-flow login is in progress; waiting for it to finish ...");
-      noticed = true;
-    }
-    sleepSync(500);
-  }
-  try {
+  withFileLockSync(lockPath, {
+    staleMs: Number.POSITIVE_INFINITY,
+    waitMs: Number.POSITIVE_INFINITY,
+    retryMs: 500,
+    onWait: () =>
+      logger.info("Another device-flow login is in progress; waiting for it to finish ..."),
+  }, () => {
     const result = spawnSync(
       resolveDenoBin(),
       copilotApiArgv(["auth", "login", "--provider", "copilot"], [], entry),
@@ -247,9 +244,7 @@ function loginWithCopilot(cred: Credential): void {
     } catch {
       // best-effort
     }
-  } finally {
-    releaseFileLock(lockPath);
-  }
+  });
 }
 
 /**

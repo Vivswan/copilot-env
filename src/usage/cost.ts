@@ -22,6 +22,7 @@ import {
   readUsage,
   undatedUsage,
   type UsageReport,
+  usageReport,
 } from "./usage.ts";
 
 /**
@@ -33,7 +34,7 @@ import {
 const SOURCES_NOTE =
   "Note: merges three sources -- the proxy DBs (proxied traffic) plus Codex session logs and Claude transcripts (each agent's full traffic, Direct included). Traffic through the proxy appears twice, so totals can double count it; use --sources for per-source tables.\nDisclaimer: these numbers are approximate -- gathered from local logs and priced at public OpenRouter rates; actual billing may differ.";
 
-const EMPTY_REPORT: ReadonlyUsageReport = { byModel: new Map(), perDay: new Map() };
+const EMPTY_REPORT: ReadonlyUsageReport = usageReport();
 
 /** `cost`: aggregate per-host SQLite + Codex session usage and estimate spend. */
 export async function runCost(args: {
@@ -248,9 +249,8 @@ function parseDaysCutoff(days: string | undefined): number | undefined {
   return Date.now() - n * MILLISECONDS_PER_DAY;
 }
 
-/** One day's totals across all models, including per-category cost. */
-export interface DayMetrics {
-  day: string;
+/** One row group's totals across all models, including per-category cost. */
+export interface DayTotals {
   reqs: number;
   input: number;
   output: number;
@@ -264,9 +264,21 @@ export interface DayMetrics {
   cost: number;
 }
 
+/** One calendar day's totals: DayTotals pinned to its YYYY-MM-DD day. */
+export interface DayMetrics extends DayTotals {
+  day: string;
+}
+
+/** One per-day table row: a calendar day's totals, or the undated rest (usage
+ *  recorded without a date). The discriminant replaces a magic day label; the
+ *  "(undated)" spelling is applied at render time only. */
+export type PerDayRow =
+  | ({ kind: "dated" } & DayMetrics)
+  | ({ kind: "undated" } & DayTotals);
+
 /**
  * Collapse the per-day, per-model breakdown into one DayMetrics per active day.
- * Dated days only: usage recorded without a day is undatedDayMetrics' row, kept
+ * Dated days only: usage recorded without a day is undatedTotals' row, kept
  * out of here so the per-day medians stay per-DAY statistics. (Avg/day is
  * different by design: it spreads the aggregate, undated included, over the
  * active days.)
@@ -283,21 +295,19 @@ export function computeDayMetrics(
   const priced = new Set(Object.keys(estimate.perModel));
   const out: DayMetrics[] = [];
   for (const [day, dayModels] of report.perDay) {
-    out.push(groupMetrics(day, dayModels, pricing, priced));
+    out.push({ day, ...groupTotals(dayModels, pricing, priced) });
   }
   return out;
 }
 
 /** One row group's totals across its models: a calendar day, or the undated rest. */
-function groupMetrics(
-  label: string,
+function groupTotals(
   models: ReadonlyMap<string, Readonly<ModelUsage>>,
   pricing: Map<string, PricingTier>,
   priced: ReadonlySet<string>,
-): DayMetrics {
+): DayTotals {
   const est = estimateCost(models, pricing);
-  const m: DayMetrics = {
-    day: label,
+  const m: DayTotals = {
     reqs: 0,
     input: 0,
     output: 0,
@@ -332,44 +342,45 @@ function groupMetrics(
   return m;
 }
 
-/** The label of the per-day table's synthetic row for usage no day claims. */
-const UNDATED_DAY_LABEL = "(undated)";
+/** The render-time label of the per-day table's row for usage no day claims.
+ *  Exported only to pin the spelling, an external display contract, in tests. */
+export const UNDATED_DAY_LABEL = "(undated)";
 
 /**
- * The per-day table's synthetic last row: usage recorded without a date reaches
- * byModel but no perDay entry, and without this row the table's columns could
- * not sum to the TOTAL line (which always carries the aggregate's numbers).
+ * The undated rest's totals: usage recorded without a date reaches byModel but
+ * no perDay entry, and without its row the per-day table's columns could not
+ * sum to the TOTAL line (which always carries the aggregate's numbers).
  * null when the days account for everything -- the normal case, since the
  * daemon timestamps every DB row.
  */
-function undatedDayMetrics(
+function undatedTotals(
   report: ReadonlyUsageReport,
   pricing: Map<string, PricingTier>,
   estimate: CostEstimate,
-): DayMetrics | null {
+): DayTotals | null {
   const rest = undatedUsage(report);
   if (rest.size === 0) {
     return null;
   }
-  return groupMetrics(UNDATED_DAY_LABEL, rest, pricing, new Set(Object.keys(estimate.perModel)));
+  return groupTotals(rest, pricing, new Set(Object.keys(estimate.perModel)));
 }
 
 /**
- * The per-day table's body rows: one per active day, oldest first, closed by
- * the synthetic "(undated)" row when one is due. THE row list the table prints
+ * The per-day table's body rows: one dated row per active day, oldest first,
+ * closed by the undated row when one is due. THE row list the table prints
  * and its TOTAL line sums over.
  */
 export function perDayRows(
   report: ReadonlyUsageReport,
   pricing: Map<string, PricingTier>,
   estimate: CostEstimate,
-): DayMetrics[] {
-  const rows = computeDayMetrics(report, pricing, estimate).sort((a, b) =>
-    a.day.localeCompare(b.day)
-  );
-  const undated = undatedDayMetrics(report, pricing, estimate);
+): PerDayRow[] {
+  const rows: PerDayRow[] = computeDayMetrics(report, pricing, estimate)
+    .sort((a, b) => a.day.localeCompare(b.day))
+    .map((d) => ({ kind: "dated", ...d }));
+  const undated = undatedTotals(report, pricing, estimate);
   if (undated !== null) {
-    rows.push(undated);
+    rows.push({ kind: "undated", ...undated });
   }
   return rows;
 }
@@ -521,7 +532,7 @@ interface CostSums {
 }
 
 type CostFields = Pick<
-  DayMetrics,
+  DayTotals,
   "inputCost" | "outputCost" | "cacheReadCost" | "cacheWriteCost" | "cost"
 >;
 
@@ -691,10 +702,10 @@ function printCostReport(
   console.log("");
 }
 
-/** One per-day table row, labeled by `d.day`; also renders the TOTAL footer. */
-function dayRow(d: DayMetrics): CostRow {
+/** One assembled per-day table row: the caller-chosen label over a group's totals. */
+function dayRow(label: string, d: DayTotals): CostRow {
   return {
-    label: d.day,
+    label,
     reqs: formatTokensCompact(d.reqs),
     input: catCell(d.input, d.inputCost),
     output: catCell(d.output, d.outputCost),
@@ -706,16 +717,16 @@ function dayRow(d: DayMetrics): CostRow {
 }
 
 /**
- * The per-day table's TOTAL line, summing the token and request columns of the
- * rows above it (the dated days, plus the undated row when one prints -- so the
- * columns really add up to it). The cost fields are the aggregate's numbers via
- * sumEstimateCosts, NOT the column sum: the two tables regroup the SAME
- * aggregate (by model there, by day plus the undated rest here), so both TOTAL
- * rows render the one true grand total, bit-identically.
+ * The per-day table's TOTAL line (the "TOTAL" label is the renderer's), summing
+ * the token and request columns of the rows above it (the dated days, plus the
+ * undated row when one prints -- so the columns really add up to it). The cost
+ * fields are the aggregate's numbers via sumEstimateCosts, NOT the column sum:
+ * the two tables regroup the SAME aggregate (by model there, by day plus the
+ * undated rest here), so both TOTAL rows render the one true grand total,
+ * bit-identically.
  */
-export function sumDayMetrics(days: DayMetrics[], estimate: CostEstimate): DayMetrics {
-  const sum: DayMetrics = {
-    day: "TOTAL",
+export function sumDayTotals(days: readonly DayTotals[], estimate: CostEstimate): DayTotals {
+  const sum: DayTotals = {
     reqs: 0,
     input: 0,
     output: 0,
@@ -755,8 +766,8 @@ function printPerDayReport(
     return;
   }
   const cells = renderCostRows(
-    rows.map((d) => dayRow(d)),
-    [dayRow(sumDayMetrics(rows, estimate))],
+    rows.map((r) => dayRow(r.kind === "dated" ? r.day : UNDATED_DAY_LABEL, r)),
+    [dayRow("TOTAL", sumDayTotals(rows, estimate))],
   );
 
   console.log(title);

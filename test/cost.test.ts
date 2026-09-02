@@ -4,10 +4,11 @@ import {
   computeDayMetrics,
   median,
   perDayRows,
-  sumDayMetrics,
+  sumDayTotals,
+  UNDATED_DAY_LABEL,
 } from "../src/usage/cost.ts";
 import { estimateCost, type ModelCost, type PricingTier } from "../src/usage/pricing.ts";
-import { type ModelUsage, record, type UsageReport } from "../src/usage/usage.ts";
+import { type ModelUsage, record, type UsageReport, usageReport } from "../src/usage/usage.ts";
 import { expect, test } from "./helpers/testing.ts";
 
 function usage(partial: Partial<ModelUsage>): ModelUsage {
@@ -20,7 +21,7 @@ function makeReport(
   perDay: Record<string, Record<string, ModelUsage>>,
   undated: Record<string, ModelUsage> = {},
 ): UsageReport {
-  const report: UsageReport = { byModel: new Map(), perDay: new Map() };
+  const report = usageReport();
   for (const [day, models] of Object.entries(perDay)) {
     for (const [model, u] of Object.entries(models)) {
       record(report, day, model, u);
@@ -126,12 +127,12 @@ test("computeDayMetrics keeps a model unpriced in the aggregate at $0 every day"
     expect(d.cost).toBe(0);
     expect(d.inputCost).toBe(0);
   }
-  const undated = perDayRows(report, pricing, estimate).find((d) => d.day === "(undated)");
+  const undated = perDayRows(report, pricing, estimate).find((r) => r.kind === "undated");
   expect(undated?.input).toBe(500_000);
   expect(undated?.cost).toBe(0);
 });
 
-test("sumDayMetrics carries the aggregate's cost numbers, bit-exact", () => {
+test("sumDayTotals carries the aggregate's cost numbers, bit-exact", () => {
   // 4 + 4_996 tokens at $1/M: the aggregate prices 5_000 tokens ($0.005) while
   // the day costs sum to 0.004999999999999999 -- one ulp apart, which toFixed(2)
   // stretches into $0.01 vs $0.00. The per-day TOTAL row must therefore carry
@@ -147,7 +148,7 @@ test("sumDayMetrics carries the aggregate's cost numbers, bit-exact", () => {
   // Control: this fixture really does regroup differently.
   expect(days.reduce((s, d) => s + d.cost, 0)).not.toBe(estimate.totalUsd);
 
-  const total = sumDayMetrics(days, estimate);
+  const total = sumDayTotals(days, estimate);
   expect(total.cost).toBe(estimate.totalUsd);
   expect(total.inputCost).toBe(estimate.perModel["openai/gpt-5.5"]?.inputCostUsd);
   expect(total.input).toBe(5_000);
@@ -175,9 +176,16 @@ test("undated usage prints as its own row so the TOTAL's columns add up", () => 
     "2026-06-02",
   ]);
 
-  // The printed row list: days oldest first, the undated remainder closing it.
+  // The printed row list: dated rows oldest first, the undated remainder
+  // closing it. Its label is applied at render time only; the spelling is an
+  // external display contract, pinned here.
+  expect(UNDATED_DAY_LABEL).toBe("(undated)");
   const rows = perDayRows(report, pricing, estimate);
-  expect(rows.map((d) => d.day)).toEqual(["2026-06-01", "2026-06-02", "(undated)"]);
+  expect(rows.map((r) => r.kind)).toEqual(["dated", "dated", "undated"]);
+  expect(rows.flatMap((r) => (r.kind === "dated" ? r.day : []))).toEqual([
+    "2026-06-01",
+    "2026-06-02",
+  ]);
   const undated = rows[2]!;
   expect(undated.input).toBe(1_000_000);
   expect(undated.reqs).toBe(1);
@@ -185,7 +193,7 @@ test("undated usage prints as its own row so the TOTAL's columns add up", () => 
 
   // Dated rows + the undated row: the TOTAL's token columns now really sum to
   // the aggregate cost it carries.
-  const total = sumDayMetrics(rows, estimate);
+  const total = sumDayTotals(rows, estimate);
   expect(total.input).toBe(2_000_000);
   expect(total.total).toBe(2_000_000);
   expect(total.reqs).toBe(3);
@@ -195,16 +203,18 @@ test("undated usage prints as its own row so the TOTAL's columns add up", () => 
   // An all-undated report still yields a printable row list.
   const allUndated = makeReport({}, { "openai/gpt-5.5": usage({ input: 42, events: 1 }) });
   const undatedEstimate = estimateCost(allUndated.byModel, pricing);
-  expect(perDayRows(allUndated, pricing, undatedEstimate).map((d) => d.day)).toEqual([
-    "(undated)",
+  expect(perDayRows(allUndated, pricing, undatedEstimate).map((r) => r.kind)).toEqual([
+    "undated",
   ]);
 
   // Fully dated usage: no synthetic row.
   const dated = makeReport({
     "2026-06-01": { "openai/gpt-5.5": usage({ input: 5, events: 1 }) },
   });
-  expect(perDayRows(dated, pricing, estimateCost(dated.byModel, pricing)).map((d) => d.day))
-    .toEqual(["2026-06-01"]);
+  expect(
+    perDayRows(dated, pricing, estimateCost(dated.byModel, pricing))
+      .map((r) => (r.kind === "dated" ? r.day : r.kind)),
+  ).toEqual(["2026-06-01"]);
 
   // The JSON contract is deliberately different: usageByModel and totalUsd
   // cover undated usage, while the perDay array stays dated-only.

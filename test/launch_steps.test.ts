@@ -23,7 +23,7 @@ import {
 } from "../src/copilot_api/launch.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
-import { ProxyProjectionState } from "../src/copilot_api/projection_state.ts";
+import { ProxyProjectionState } from "../src/copilot_api/ownership.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir, writeRunState } from "./helpers.ts";

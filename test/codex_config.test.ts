@@ -14,6 +14,7 @@ import {
 } from "../src/codex/config.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
+import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { agentLauncherCommand, PROJECT_ROOT, proxyTokenCommand } from "../src/utils/root.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
@@ -502,6 +503,42 @@ test("model_catalog_json is written when enabled and the catalog file exists (bo
   expect(doc.model_catalog_json).toBe(catalogFile);
 });
 
+test("the catalog reference is ledger-recorded on write and released on the disabled scrub", () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  const configPath = join(codexHome, "config.toml");
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  enableCatalog();
+  writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
+
+  configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0" });
+  expect(new OwnershipLedger().owns("codexCatalog", configPath)).toBe(true);
+
+  // Disabling scrubs the key on the next full write and drops our claim with it.
+  new CopilotEnvConfig().set({ codexModelCatalog: false });
+  configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0" });
+  expect(
+    asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json,
+  ).toBeUndefined();
+  expect(new OwnershipLedger().owns("codexCatalog", configPath)).toBe(false);
+});
+
+test("a write to an unknown home (the probe's throwaway dir) never enters the ledger", () => {
+  isolate();
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  enableCatalog();
+  writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
+
+  // detectCodexDirect writes a temp-home config exactly like this: the key is
+  // still written (inert in a throwaway config), but a home outside the cleanup
+  // sweep must never be claimed -- the ledger would accumulate dead tmp paths.
+  const probeHome = join(dir, "probe-home");
+  configureCodexConfig(probeHome, { mode: "direct", codexExecVersion: "0.144.0", quiet: true });
+  const doc = asRecord(parse(readFileSync(join(probeHome, "config.toml"), "utf8")));
+  expect(doc.model_catalog_json).toBe(catalogFile);
+  expect(new OwnershipLedger().ownedPaths("codexCatalog")).toEqual([]);
+});
+
 test("a stale model_catalog_json is scrubbed when the catalog file is absent", () => {
   isolate();
   const codexHome = join(dir, ".codex");
@@ -666,6 +703,32 @@ test("disabled: sync also strips per-host farm configs referencing the shared fi
     expect(doc.model_catalog_json).toBeUndefined();
   }
   expect(existsSync(catalogFile)).toBe(false);
+});
+
+test("disabled: the ledger extends the sweep beyond the enumerated homes and drops stale claims", () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  process.env.CODEX_HOME = codexHome;
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
+  writeFileSync(join(codexHome, "config.toml"), 'model_provider = "copilot-env"\n');
+  // A RECORDED config outside every known home (a retired farm home, a moved
+  // CODEX_HOME) still referencing our file: only the ledger knows to sweep it.
+  const outside = join(dir, "retired-home", "config.toml");
+  mkdirSync(join(dir, "retired-home"), { recursive: true });
+  writeFileSync(outside, stringify({ "model_catalog_json": catalogFile }));
+  const ledger = new OwnershipLedger();
+  ledger.record("codexCatalog", outside);
+  // And a stale claim: the recorded config no longer exists at all.
+  const gone = join(dir, "gone", "config.toml");
+  ledger.record("codexCatalog", gone);
+
+  syncCodexCatalogReference();
+
+  expect(asRecord(parse(readFileSync(outside, "utf8"))).model_catalog_json).toBeUndefined();
+  expect(existsSync(catalogFile)).toBe(false);
+  expect(new OwnershipLedger().ownedPaths("codexCatalog")).toEqual([]);
 });
 
 test("disabled: a user-pinned custom catalog path survives, but our file still goes", () => {

@@ -10,9 +10,9 @@
 //
 // Posture mirrors mcp_registration.ts: best-effort, and a foreign or surprising document
 // is warned about and left alone, never clobbered. Ownership of every entry we create or
-// adopt is recorded by exact path in CopilotEnvState (claudeDesktopOwnedPaths), with the
-// record-after-save ordering of the WebSearch deny: a failed save must never leave a
-// claim on an entry we did not actually write.
+// adopt is recorded by exact path in the ownership ledger (src/copilot_api/ownership.ts),
+// with the record-after-save ordering of the WebSearch deny: a failed save must never
+// leave a claim on an entry we did not actually write.
 //
 // Model discovery: Desktop fetches `<inferenceGatewayBaseUrl>/v1/models`, hardcoded.
 // Copilot Direct serves /models and 404s the v1 path, so direct entries carry an explicit
@@ -34,6 +34,7 @@ import {
   directClientHeaders,
   type ProbeFetch,
 } from "../copilot_api/integration_identity.ts";
+import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import {
   type ClaudeCatalogRow,
   claudeCatalogRows,
@@ -594,12 +595,12 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
     return;
   }
 
-  const state = new CopilotEnvState();
+  const ledger = new OwnershipLedger();
   const name = desktopEntryName(opts.profile);
   const configPathOf = (id: string) => join(dir, `${id}.json`);
 
   let entry = meta.entries.find(
-    (e) => e.name === name && state.ownsClaudeDesktopEntry(configPathOf(e.id)),
+    (e) => e.name === name && ledger.owns("claudeDesktop", configPathOf(e.id)),
   );
   const commits: (() => void)[] = [];
   if (entry === undefined) {
@@ -610,7 +611,7 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
     const nameTaken = meta.entries.some((e) => e.name === name);
     for (const candidate of nameTaken ? [] : meta.entries) {
       const path = configPathOf(candidate.id);
-      if (state.ownsClaudeDesktopEntry(path)) continue;
+      if (ledger.owns("claudeDesktop", path)) continue;
       const raw = readFileOrNull(path);
       if (raw === null) continue;
       let doc: unknown;
@@ -647,7 +648,7 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
     return;
   }
   const owned = entry !== undefined &&
-    state.ownsClaudeDesktopEntry(configPathOf(entry.id));
+    ledger.owns("claudeDesktop", configPathOf(entry.id));
   const created = entry === undefined;
   if (entry === undefined) {
     entry = { id: crypto.randomUUID(), name, extra: {} };
@@ -701,7 +702,7 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   saveJsonIfChanged(configPath, payload);
   if (meta.appliedId === null) meta.appliedId = entry.id;
   saveDesktopMeta(dir, meta);
-  state.addClaudeDesktopOwnedPath(configPath);
+  ledger.record("claudeDesktop", configPath);
   retireDesktopHelperScript(opts.mode, opts.profile);
   for (const commit of commits) commit();
   if (!opts.quiet) {
@@ -803,12 +804,12 @@ function removeOwnedEntries(
     );
     return "blocked"; // a live entry may reference the helper scripts: keep them
   }
-  const state = new CopilotEnvState();
+  const ledger = new OwnershipLedger();
   const removedPaths: string[] = [];
   const kept: DesktopMetaEntry[] = [];
   for (const entry of meta.entries) {
     const configPath = join(dir, `${entry.id}.json`);
-    if (selects(entry, state.ownsClaudeDesktopEntry(configPath))) {
+    if (selects(entry, ledger.owns("claudeDesktop", configPath))) {
       removedPaths.push(configPath);
       if (meta.appliedId === entry.id) meta.appliedId = null;
     } else {
@@ -820,7 +821,7 @@ function removeOwnedEntries(
   saveDesktopMeta(dir, meta);
   for (const path of removedPaths) {
     rmSync(path, { force: true });
-    state.removeClaudeDesktopOwnedPath(path);
+    ledger.release("claudeDesktop", path);
   }
   return "swept";
 }

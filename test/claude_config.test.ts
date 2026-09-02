@@ -23,8 +23,11 @@ import {
 import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
 import { DIRECT_HELPER_NAME, directHelperPath, PROXY_HELPER_NAME } from "../src/claude/paths.ts";
 import { runMcp } from "../src/commands/mcp.ts";
+import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
+import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
+import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../src/copilot_api/port.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
@@ -348,7 +351,7 @@ test("a direct default write registers the MCP server and denies the builtin Web
   expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
   const servers = readClaudeJson().mcpServers as Record<string, unknown>;
   expect(servers["copilot-env"]).toMatchObject({ "type": "stdio" });
-  expect(new CopilotEnvState().read().webSearchDenyOwnedPaths).toEqual([
+  expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([
     join(home, "settings.json"),
   ]);
 
@@ -365,7 +368,7 @@ test("a direct default write registers the MCP server and denies the builtin Web
   const after = readSettings(home);
   expect(denyOf(after)).toEqual(["Foreign"]);
   expect(readClaudeJson().mcpServers).toBeUndefined();
-  expect(new CopilotEnvState().read().webSearchDenyOwnedPaths).toEqual([]);
+  expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
 });
 
 test("a pre-existing user WebSearch deny is never claimed nor removed", () => {
@@ -377,7 +380,7 @@ test("a pre-existing user WebSearch deny is never claimed nor removed", () => {
     `${JSON.stringify({ permissions: { deny: [WEBSEARCH_DENY_RULE] } }, null, 2)}\n`,
   );
   configureClaudeConfig(home, "direct");
-  expect(new CopilotEnvState().read().webSearchDenyOwnedPaths).toEqual([]);
+  expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
 
   configureClaudeConfig(home, "proxy");
   expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]); // user policy survives
@@ -396,7 +399,7 @@ test("registration failure (foreign .claude.json entry) skips the deny - never d
   );
   configureClaudeConfig(home, "direct");
   expect(denyOf(readSettings(home))).toBeUndefined();
-  expect(new CopilotEnvState().read().webSearchDenyOwnedPaths).toEqual([]);
+  expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
 });
 
 test("wire-mcp false: a direct write wires nothing and clears prior managed artifacts", () => {
@@ -409,7 +412,7 @@ test("wire-mcp false: a direct write wires nothing and clears prior managed arti
   const doc = readSettings(home);
   expect(doc.permissions).toBeUndefined();
   expect(readClaudeJson().mcpServers).toBeUndefined();
-  expect(new CopilotEnvState().read().webSearchDenyOwnedPaths).toEqual([]);
+  expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
 });
 
 test("removeClaudeDefaultWiring strips our deny and deletes settings.json when emptied", () => {
@@ -418,7 +421,7 @@ test("removeClaudeDefaultWiring strips our deny and deletes settings.json when e
   // The managed keys + our deny are ALL the file holds -> uninstall removes the file.
   removeClaudeDefaultWiring(home);
   expect(existsSync(join(home, "settings.json"))).toBe(false);
-  expect(new CopilotEnvState().read().webSearchDenyOwnedPaths).toEqual([]);
+  expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
 });
 
 test("removeClaudeDefaultWiring keeps user keys and drops an emptied permissions object", () => {
@@ -502,7 +505,7 @@ test("syncDefaultWebSearchWiring applies the pair to existing direct wiring (the
   delete doc.permissions;
   writeFileSync(join(home, "settings.json"), `${JSON.stringify(doc, null, 2)}\n`);
   rmSync(claudeJsonPath(), { force: true });
-  new CopilotEnvState().set({ webSearchDenyOwnedPaths: null });
+  new OwnershipLedger().release("webSearchDeny", join(home, "settings.json"));
 
   syncDefaultWebSearchWiring(home);
   expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
@@ -538,7 +541,7 @@ test("registration failure with a PRIOR managed deny strips it - never denied wi
   writeFileSync(claudeJsonPath(), "{ not json");
   configureClaudeConfig(home, "direct");
   expect(denyOf(readSettings(home))).toBeUndefined();
-  expect(new CopilotEnvState().read().webSearchDenyOwnedPaths).toEqual([]);
+  expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
 });
 
 test("a malformed permissions value (non-object) is never replaced", () => {
@@ -550,6 +553,28 @@ test("a malformed permissions value (non-object) is never replaced", () => {
 
   configureClaudeConfig(home, "direct");
   expect(readSettings(home).permissions).toBe("everything");
+});
+
+test("a pre-ledger install's legacy deny record still authorizes the take-back", () => {
+  const home = tmpHome();
+  configureClaudeConfig(home, "direct");
+  const settingsPath = join(home, "settings.json");
+
+  // Rewind the record to the pre-ledger layout: ownership under the LEGACY
+  // state-store key, no ledger file (an install that never ran the migration).
+  const paths = new CopilotApiPaths();
+  rmSync(paths.ownershipFile, { force: true });
+  new CopilotApiConfig(paths.sharedStateFile).update((d) => {
+    d.webSearchDenyOwnedPaths = [settingsPath];
+  });
+
+  // The proxy write still recognizes the deny as ours, strips it, and clears
+  // the legacy record so it can never claim a future user-added deny.
+  configureClaudeConfig(home, "proxy");
+  expect(denyOf(readSettings(home))).toBeUndefined();
+  expect(new OwnershipLedger().owns("webSearchDeny", settingsPath)).toBe(false);
+  const raw = JSON.parse(readFileSync(paths.sharedStateFile, "utf8")) as Record<string, unknown>;
+  expect(raw.webSearchDenyOwnedPaths).toBeUndefined();
 });
 
 test("ownership is keyed to the settings path: a stale marker never strips another home's deny", () => {

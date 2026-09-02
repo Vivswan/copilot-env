@@ -16,7 +16,7 @@ import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
 import { disableConsolaTimestamps } from "../utils/logger.ts";
 import { type SemverString, stripV, toSemverString, versionLessThan } from "../utils/semver.ts";
-import { v356 } from "./3.5.6.ts";
+import { v356, v356Ownership } from "./3.5.6.ts";
 
 /**
  * One step in the version history, named for the release it migrates AWAY FROM (so a
@@ -34,8 +34,10 @@ export interface Migration {
 }
 
 /**
- * One file per version step (named for the from-version), registered in ascending order;
- * `dueMigrations` re-sorts defensively, so order here is for readability only.
+ * One file per version step (named for the from-version), registered in ascending order.
+ * A release that needs several INDEPENDENT fix-ups registers them all under its version
+ * (still in that one file); registry order is their run order -- dueMigrations sorts
+ * across versions but keeps registry order within one.
  *
  * Every step shipped before the deno rewrite was deleted: a pre-rewrite install runs the
  * OLD bun-based updater, which cannot even load this file (its first import reaches
@@ -43,7 +45,7 @@ export interface Migration {
  * could still be reached. Each deleted step's persisted-state fix was re-derivable by
  * `agent init` / `auth` / `claude` / `shell`, or self-healing on the catalog sync timer.
  */
-const MIGRATIONS: Migration[] = [v356];
+const MIGRATIONS: Migration[] = [v356, v356Ownership];
 
 // versionLessThan tolerates unparseable input by answering "not less-than", so a
 // garbage version on either side of the range filter silently empties or floods the
@@ -73,9 +75,13 @@ export function dueMigrations(
   }
   const f = requireSemver(from, "from version");
   const t = requireSemver(to, "to version");
+  // Equal versions (one release's several fix-ups) compare 0: Array.sort is
+  // stable, so their registry order is their run order.
   return migrations
     .filter((m) => !versionLessThan(m.version, f) && versionLessThan(m.version, t))
-    .sort((a, b) => (versionLessThan(a.version, b.version) ? -1 : 1));
+    .sort((a, b) =>
+      versionLessThan(a.version, b.version) ? -1 : versionLessThan(b.version, a.version) ? 1 : 0
+    );
 }
 
 /**

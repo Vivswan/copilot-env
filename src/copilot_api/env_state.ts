@@ -88,22 +88,6 @@ export interface CopilotEnvStateData {
    *  instead of serving the old patch for up to a day (src/codex/catalog.ts). */
   codexCatalogPatchVersion: number;
   /**
-   * The settings.json PATHS whose `permissions.deny` copilot-env itself ADDED the
-   * `WebSearch` entry to (the direct-wiring pair in src/claude/config.ts). Keying
-   * ownership to the exact files means a deny the user already had - or one in a
-   * different CLAUDE_CONFIG_DIR - is never ours to remove, and wiring one Claude
-   * home never forgets ownership taken in another; a proxy switch / uninstall /
-   * `agent mcp --remove` only ever takes back the entry we put in THAT file.
-   */
-  webSearchDenyOwnedPaths: string[];
-  /**
-   * The Claude Desktop config-library entry PATHS (absolute `<dir>/<uuid>.json`)
-   * copilot-env itself created or adopted (src/claude/desktop.ts). Same exact-path
-   * ownership doctrine as webSearchDenyOwnedPaths: an entry the user made - or one
-   * in a differently-located library - is never ours to rewrite or remove.
-   */
-  claudeDesktopOwnedPaths: string[];
-  /**
    * Cached model-discovery verdicts, keyed
    * `<credentialDigest>|<integrationId|default>|<modelId>`
    * (src/copilot_api/discovery.ts): whether an unadvertised model verified as
@@ -158,10 +142,11 @@ const STATE_SCHEMA = v.object({
     null,
   ),
   codexCatalogPatchVersion: v.fallback(v.pipe(v.number(), v.finite(), v.minValue(0)), 0),
-  // ownedPathList owns the shape; the fallback only covers an ABSENT key (the
-  // pipe itself never issues -- junk entries are dropped inside the transform).
-  webSearchDenyOwnedPaths: v.fallback(v.pipe(v.unknown(), v.transform(ownedPathList)), []),
-  claudeDesktopOwnedPaths: v.fallback(v.pipe(v.unknown(), v.transform(ownedPathList)), []),
+  // Recorded artifact ownership (the WebSearch-deny and Claude Desktop paths)
+  // lived here before the ownership ledger (ownership.ts). The legacy keys are
+  // deliberately NOT named in this schema: the lenient read ignores them and
+  // update() preserves them in the file, so the ledger's reader tolerance can
+  // still see them until the 3.5.6 ownership migration moves them out.
   claudeModelVerdicts: v.fallback(
     v.record(
       v.string(),
@@ -202,22 +187,6 @@ export function assertKnownProfile(name: ProfileName): void {
     ? "no profiles exist - create one with `agent profile --add <name> --direct|--proxy`"
     : `known profiles: ${names.join(", ")}`;
   throw new Error(`no such profile '${name}' (${hint})`);
-}
-
-/**
- * THE parser for the owned-paths entry: junk entries (non-strings, blanks) are
- * dropped INDIVIDUALLY, never the whole list, and survivors come back TRIMMED so
- * a hand-padded entry still matches the exact-path ownership checks. Both the
- * read schema above and the in-place update paths below go through it, so the
- * two can never disagree about the entry's shape.
- */
-function ownedPathList(value: unknown): string[] {
-  return Array.isArray(value)
-    ? value
-      .filter((p): p is string => typeof p === "string")
-      .map((p) => p.trim())
-      .filter((p) => p !== "")
-    : [];
 }
 
 /**
@@ -334,52 +303,6 @@ export class CopilotEnvState {
   /** Record (or clear, with null) a NAMED profile's probed direct-mode identity. */
   setProfileIntegrationIdentity(name: ProfileName, integrationIdentity: string | null): void {
     this.mergeProfileSlot(name, { integrationIdentity });
-  }
-
-  /** Whether WE added the WebSearch deny to this exact settings file. */
-  ownsWebSearchDeny(settingsPath: string): boolean {
-    return this.read().webSearchDenyOwnedPaths.includes(settingsPath);
-  }
-
-  /** Record that we added the WebSearch deny to `settingsPath` (atomic, idempotent). */
-  addWebSearchDenyOwnedPath(settingsPath: string): void {
-    this.store.update((d) => {
-      const list = ownedPathList(d.webSearchDenyOwnedPaths).filter((p) => p !== settingsPath);
-      list.push(settingsPath);
-      d.webSearchDenyOwnedPaths = list;
-    });
-  }
-
-  /** Forget ownership for `settingsPath`; an emptied list drops the key entirely. */
-  removeWebSearchDenyOwnedPath(settingsPath: string): void {
-    this.store.update((d) => {
-      const list = ownedPathList(d.webSearchDenyOwnedPaths).filter((p) => p !== settingsPath);
-      if (list.length === 0) delete d.webSearchDenyOwnedPaths;
-      else d.webSearchDenyOwnedPaths = list;
-    });
-  }
-
-  /** Whether WE created or adopted this exact Claude Desktop config-library entry. */
-  ownsClaudeDesktopEntry(configPath: string): boolean {
-    return this.read().claudeDesktopOwnedPaths.includes(configPath);
-  }
-
-  /** Record ownership of the Desktop entry at `configPath` (atomic, idempotent). */
-  addClaudeDesktopOwnedPath(configPath: string): void {
-    this.store.update((d) => {
-      const list = ownedPathList(d.claudeDesktopOwnedPaths).filter((p) => p !== configPath);
-      list.push(configPath);
-      d.claudeDesktopOwnedPaths = list;
-    });
-  }
-
-  /** Forget ownership for `configPath`; an emptied list drops the key entirely. */
-  removeClaudeDesktopOwnedPath(configPath: string): void {
-    this.store.update((d) => {
-      const list = ownedPathList(d.claudeDesktopOwnedPaths).filter((p) => p !== configPath);
-      if (list.length === 0) delete d.claudeDesktopOwnedPaths;
-      else d.claudeDesktopOwnedPaths = list;
-    });
   }
 
   /** The cached discovery verdict for `key`, or null when never probed. */

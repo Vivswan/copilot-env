@@ -14,6 +14,7 @@ import { configureCodexConfig } from "../src/codex/config.ts";
 import { runUninstall, type UninstallDeps } from "../src/commands/uninstall.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
+import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { profileHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
@@ -387,7 +388,7 @@ test("uninstall removes owned Claude Desktop entries via the injected library di
       })
     }\n`,
   );
-  new CopilotEnvState().addClaudeDesktopOwnedPath(join(library, "ours.json"));
+  new OwnershipLedger().record("claudeDesktop", join(library, "ours.json"));
 
   const deps = { ...tmpDeps(codexHome), claudeDesktopLibraryDir: library };
   await runUninstall({ yes: true }, deps);

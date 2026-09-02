@@ -26,8 +26,8 @@ import {
   writeDesktopHelperScript,
 } from "../src/claude/desktop.ts";
 import { resolveClaudeHome } from "../src/claude/paths.ts";
-import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { DEFAULT_COPILOT_API_BASE } from "../src/copilot_api/integration_identity.ts";
+import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { resolveRootHome } from "../src/copilot_api/paths.ts";
 import { agentLauncherCommand } from "../src/utils/root.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
@@ -327,7 +327,7 @@ test("fresh upsert: config + meta entry + appliedId only when the library had no
   expect(models.find((m) => m.name === "claude-opus-4-8")?.isFamilyDefault).toBe(false);
   expect(models.find((m) => m.name === "claude-opus-5")?.isFamilyDefault).toBe(true);
   // Ownership recorded AFTER save.
-  expect(new CopilotEnvState().ownsClaudeDesktopEntry(configPath)).toBe(true);
+  expect(new OwnershipLedger().owns("claudeDesktop", configPath)).toBe(true);
 
   // Byte-idempotence: a second wire rewrites nothing.
   const configM = statSync(configPath).mtimeMs;
@@ -455,7 +455,7 @@ test("adopt-and-replace: same-gateway foreign entry is taken over in place and r
   expect(doc["userKey"]).toBe("keep"); // surgical merge
   expect(doc["inferenceCredentialHelper"]).not.toBe(handMadeHelper); // managed helper now
   expect(existsSync(handMadeHelper)).toBe(false); // referenced hand-made helper retired
-  expect(new CopilotEnvState().ownsClaudeDesktopEntry(join(library, "hand-1.json"))).toBe(true);
+  expect(new OwnershipLedger().owns("claudeDesktop", join(library, "hand-1.json"))).toBe(true);
 });
 
 test("adoption keeps the hand-made helper while ANY other consumer references it", async () => {
@@ -548,7 +548,7 @@ test("never-clobber: a foreign entry carrying our name, or a malformed _meta.jso
   expect(readJson(join(library, "f-1.json"))["inferenceGatewayBaseUrl"]).toBe(
     "https://elsewhere.example",
   );
-  expect(new CopilotEnvState().read().claudeDesktopOwnedPaths).toEqual([]);
+  expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual([]);
 
   writeFileSync(join(library, "_meta.json"), "{ not json");
   await wireClaudeDesktopEntry(opts);
@@ -633,7 +633,7 @@ test("profile entries: named, removed owned-only, appliedId nulled when it was o
   expect(after.appliedId).toBeUndefined(); // ours was applied; reference dropped
   expect(existsSync(join(library, `${entry?.id}.json`))).toBe(false);
   expect(existsSync(join(library, "twin.json"))).toBe(true);
-  expect(new CopilotEnvState().read().claudeDesktopOwnedPaths).toEqual([]);
+  expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual([]);
   expect(existsSync(desktopHelperPath(resolveRootHome(), "direct", WORK))).toBe(false);
 });
 
@@ -656,7 +656,7 @@ test("removeAllClaudeDesktopWiring sweeps every owned entry via an injected dir"
   const after = metaOf(library);
   expect(after.entries).toEqual([{ id: "user-9", name: "Mine" }]);
   expect(existsSync(join(library, "user-9.json"))).toBe(true);
-  expect(new CopilotEnvState().read().claudeDesktopOwnedPaths).toEqual([]);
+  expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual([]);
 });
 
 test("payload: MCP entry carries the profile selector and merges over foreign servers", () => {

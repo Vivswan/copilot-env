@@ -14,7 +14,7 @@ import { consola } from "consola";
 import { floatProxy, proxyFloatVerifyStatus } from "../proxy_float.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
-import { acquireFileLockBounded, releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
+import { BOUNDED_LOCK_POLICY, withFileLock, withFileLockSync } from "../utils/file_lock.ts";
 import { isRecord } from "../utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
 import { CopilotAdminClient } from "./admin.ts";
@@ -65,32 +65,33 @@ import { installedProxyVersion, PROXY_PACKAGE_NAME, proxyVersionFloorStatus } fr
 // never age-stealing a live launcher -- a start may legitimately hold it for minutes while it
 // prompts for interactive auth, and stealing it then would let the waiter kill its daemon.
 const START_LOCK_RETRY_MS = 250;
+const START_LOCK_NOTICE_MS = 2000;
 
 /** The ONE GLOBAL start-lock path, in the DEFAULT run dir and shared by every profile:
  *  the orphan sweep scans copilot-api processes machine-wide, so two concurrent starts of
  *  DIFFERENT profiles could otherwise each reap the other's freshly spawned (not-yet-tracked)
  *  daemon. Serializing all starts also makes the tracked-pid snapshot race-free. Ensures the
  *  lock's directory exists. */
-export function startLockPath(): string {
+function startLockPath(): string {
   const lockDir = new CopilotApiPaths().runDir;
   fs.mkdirSync(lockDir, { recursive: true });
   return join(lockDir, ".start.lock");
 }
 
-/** Wait UNBOUNDED for the start lock: a live holder is waited out (it releases when done), and a
- *  crashed holder is reclaimed (dead pid), so this always terminates -- and never proceeds
- *  unlocked, which could let a waiter reap the holder's daemon. Emits a one-time notice once the
- *  wait is noticeable. */
-export async function acquireStartLock(lockPath: string): Promise<void> {
-  const started = Date.now();
-  let noticed = false;
-  while (!tryAcquireFileLock(lockPath, Number.POSITIVE_INFINITY)) {
-    if (!noticed && Date.now() - started > 2000) {
-      consola.info("Another `agent start` is in progress; waiting for it to finish ...");
-      noticed = true;
-    }
-    await sleep(START_LOCK_RETRY_MS);
-  }
+/** Run `fn` holding the start lock, waiting UNBOUNDED for it: a live holder is waited out
+ *  (it releases when done), and a crashed holder is reclaimed (dead pid), so the wait always
+ *  terminates -- and never proceeds unlocked, which could let a waiter reap the holder's
+ *  daemon. Emits a one-time notice once the wait is noticeable. The lock is scoped to `fn`
+ *  (released on every exit path, in ONE owner), so an early return cannot leak it. */
+export function withStartLock<T>(fn: () => Promise<T>): Promise<T> {
+  return withFileLock(startLockPath(), {
+    staleMs: Number.POSITIVE_INFINITY,
+    waitMs: Number.POSITIVE_INFINITY,
+    retryMs: START_LOCK_RETRY_MS,
+    noticeAfterMs: START_LOCK_NOTICE_MS,
+    onWait: () =>
+      consola.info("Another `agent start` is in progress; waiting for it to finish ..."),
+  }, fn);
 }
 
 // --- the proxy freshness + floor gate ---------------------------------------------
@@ -690,11 +691,10 @@ export function applyDefaultConfig(
   // Named `.apply.lock` because plain `<file>.lock` is CopilotApiConfig.update()'s own
   // inner per-file lock, which the writes below still take.
   const lockPath = `${ownership.path}.apply.lock`;
-  const held = acquireFileLockBounded(lockPath);
-  if (!held) {
-    consola.info("Proxy-config apply lock is busy; applying unlocked after the bounded wait.");
-  }
-  try {
+  withFileLockSync(lockPath, BOUNDED_LOCK_POLICY, (outcome) => {
+    if (!outcome.held) {
+      consola.info("Proxy-config apply lock is busy; applying unlocked after the bounded wait.");
+    }
     // Only paths the CURRENT registry projects opt-in may be deleted: a recorded path
     // outside that set (an older registry's, or a foreign write to the record) never
     // claims anything -- it stays in config.json and just falls out of the record.
@@ -713,9 +713,7 @@ export function applyDefaultConfig(
       }
     });
     ownership.setOwnedPaths(projection.filter((e) => e.optIn).map((e) => e.path));
-  } finally {
-    if (held) releaseFileLock(lockPath);
-  }
+  });
   // Persist an admin key so the live `/admin/config/model-mappings` route (used
   // by syncModelAliases) accepts our request instead of 401-ing.
   config.ensureAdminApiKey();

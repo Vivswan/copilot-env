@@ -10,7 +10,7 @@ import { isUpToDate } from "../utils/semver.ts";
 import { packageVersion } from "../utils/version.ts";
 import { applyUpdate } from "./apply.ts";
 import { isDue } from "./due.ts";
-import { acquireLock, releaseLock } from "./lock.ts";
+import { type HeldUpdateLock, withUpdateLock } from "./lock.ts";
 import { AutoupdateState, effectiveUpdateCooldownDays } from "./state.ts";
 
 const logger = createStderrLogger();
@@ -30,21 +30,22 @@ export async function runPreflight(opts: PreflightOptions): Promise<void> {
   if (!data.enabled) return;
   if (!opts.force && !isDue(data.lastCheckMs, opts.nowMs)) return;
 
-  if (!acquireLock(opts.nowMs)) {
-    logger.info("autoupdate: could not take the update lock (another check running?); skipping.");
-    return;
-  }
-  try {
-    await checkAndApply(state, effectiveUpdateCooldownDays(), opts.nowMs);
-  } finally {
-    releaseLock();
-  }
+  await withUpdateLock(opts.nowMs, async (outcome) => {
+    if (!outcome.held) {
+      logger.info(
+        "autoupdate: could not take the update lock (another check running?); skipping.",
+      );
+      return;
+    }
+    await checkAndApply(state, effectiveUpdateCooldownDays(), opts.nowMs, outcome);
+  });
 }
 
 async function checkAndApply(
   state: AutoupdateState,
   cooldownDays: number,
   nowMs: number,
+  lock: HeldUpdateLock,
 ): Promise<void> {
   const current = `v${packageVersion()}`;
 
@@ -81,7 +82,7 @@ async function checkAndApply(
   try {
     // Route applyUpdate's own + child-process output to stderr too, so an
     // autoupdate can never write to stdout (protects `agent env` on every OS).
-    await applyUpdate(current, target, { logger, childStdoutToStderr: true });
+    await applyUpdate(current, target, lock, { logger, childStdoutToStderr: true });
     state.set({ lastCheckMs: nowMs, lastResult: `updated ${target.tag}` });
   } catch (e) {
     state.set({ lastCheckMs: nowMs, lastResult: `error: ${errMessage(e)}` });

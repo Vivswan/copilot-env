@@ -1,7 +1,7 @@
 // `agent update`: resolves a release, applies it, refreshes deps, and runs migrations.
 import { consola } from "consola";
 import { applyUpdate } from "../autoupdate/apply.ts";
-import { acquireLock, releaseLock } from "../autoupdate/lock.ts";
+import { withUpdateLock } from "../autoupdate/lock.ts";
 import { runPreflight } from "../autoupdate/preflight.ts";
 import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/state.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -110,14 +110,14 @@ async function runManualUpdate(args: {
   // Take the autoupdate lock so a manual update can't race a concurrent autoupdate preflight
   // (triggered by `agent start` in another shell) applying a release onto the same checkout --
   // two simultaneous mirrors/migrations would corrupt the tree.
-  if (!acquireLock(Date.now())) {
-    consola.warn(
-      "Could not take the update lock (another update in progress?); skipping this run.",
-    );
-    process.exitCode = 1;
-    return;
-  }
-  try {
+  await withUpdateLock(Date.now(), async (outcome) => {
+    if (!outcome.held) {
+      consola.warn(
+        "Could not take the update lock (another update in progress?); skipping this run.",
+      );
+      process.exitCode = 1;
+      return;
+    }
     // Re-validate UNDER the lock: a concurrent preflight may have applied a NEWER release
     // between our resolve above and acquiring the lock. Re-read the on-disk version (fresh --
     // packageVersion() is not cached) and re-resolve, so we never apply a now-stale target
@@ -128,8 +128,6 @@ async function runManualUpdate(args: {
       consola.success(`copilot-env is already up to date (${currentNow}).`);
       return;
     }
-    await applyUpdate(currentNow, targetNow);
-  } finally {
-    releaseLock();
-  }
+    await applyUpdate(currentNow, targetNow, outcome);
+  });
 }

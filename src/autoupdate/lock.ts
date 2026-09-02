@@ -19,18 +19,39 @@
 // Both sides parse JSON `{pid,ts}`, so a live holder is always honored across versions;
 // changing the written format would make old readers misjudge a live new lock as
 // malformed and steal it mid-update.
-import { releaseFileLock, tryAcquireFileLock } from "../utils/file_lock.ts";
+import { withFileLock } from "../utils/file_lock.ts";
 import { autoupdateLockFile } from "./paths.ts";
 
 // 30 minutes -- chosen to dwarf any real update (see the invariant above).
 const STALE_LOCK_MS = 30 * 60 * 1000;
 
-/** Acquire the lock, stealing a stale one. Returns false if a fresh lock is held. */
-export function acquireLock(nowMs: number, path: string = autoupdateLockFile()): boolean {
-  return tryAcquireFileLock(path, STALE_LOCK_MS, { nowMs, jsonMarker: true });
+declare const updateLockBrand: unique symbol;
+
+/** Evidence that the UPDATE lock specifically is held: minted only by withUpdateLock's
+ *  held branch (a generic file-lock scope cannot produce one), and the evidence
+ *  applyUpdate demands. */
+export interface HeldUpdateLock {
+  readonly held: true;
+  readonly [updateLockBrand]: true;
 }
 
-/** Release the lock, but only if WE own it (never delete a successor's lock). */
-export function releaseLock(path: string = autoupdateLockFile()): void {
-  releaseFileLock(path);
+export type UpdateLockOutcome = HeldUpdateLock | { readonly held: false };
+
+const HELD_UPDATE_LOCK: HeldUpdateLock = { held: true } as HeldUpdateLock;
+const UPDATE_LOCK_NOT_HELD: UpdateLockOutcome = { held: false };
+
+/** Run `fn` scoped to ONE acquisition attempt of the update lock (stealing a stale one;
+ *  a fresh holder means another update is running, and `fn` observes `held: false` to
+ *  skip). Released exactly once, on every exit path, and only if WE own it (never a
+ *  successor's lock). */
+export function withUpdateLock<T>(
+  nowMs: number,
+  fn: (outcome: UpdateLockOutcome) => T | Promise<T>,
+  path: string = autoupdateLockFile(),
+): Promise<T> {
+  return withFileLock(
+    path,
+    { staleMs: STALE_LOCK_MS, waitMs: 0, nowMs, jsonMarker: true },
+    (outcome) => fn(outcome.held ? HELD_UPDATE_LOCK : UPDATE_LOCK_NOT_HELD),
+  );
 }

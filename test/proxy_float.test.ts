@@ -836,6 +836,17 @@ describe("writeDaemonConfig", () => {
   });
 });
 
+describe("floatContext", () => {
+  test("the sidecar resolves under the SAME rootHome the float warms (textual pin)", () => {
+    // Behaviorally invisible under `deno test`: resolveDenoBin's dev fast path answers
+    // before rootHome matters, and every float test injects denoBin anyway -- so a
+    // revert to a bare resolveDenoBin() would pass CI while warming one home and
+    // spawning another home's sidecar. Pin the call shape instead.
+    const source = readFileSync(join(ROOT, "src", "proxy_float.ts"), "utf8");
+    expect(source).toContain("resolveDenoBin(process.env, rootHome)");
+  });
+});
+
 describe("removeProxyFloatArtifacts", () => {
   test("removes the record, the cache it points at, and OUR .npmrc", async () => {
     const deno = fakeDeno();

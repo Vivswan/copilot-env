@@ -11,7 +11,7 @@ import { PROJECT_ROOT } from "../utils/root.ts";
 import { DAEMON_INTEGRATION_ID_ENV } from "./integration_identity.ts";
 import { resolveRootHome } from "./paths.ts";
 import { type DaemonShimFile, NODE_COMPAT_SHIM, shimPath } from "./shims.ts";
-import { resolveDenoBin } from "./sidecar.ts";
+import type { AbsolutePath } from "./sidecar.ts";
 import { PROXY_PACKAGE_NAME } from "./version.ts";
 
 /**
@@ -390,6 +390,10 @@ export interface DaemonSpec {
    *  argv and the environment derive from the same answer -- and so the bind-race
    *  relaunch reuses the identical entry rather than re-resolving mid-flight. */
   entry: CopilotApiEntry;
+  /** The deno binary that runs the proxy. Resolved ONCE per launch beside `entry`, for
+   *  the same reason: on a compiled install this is the provisioned sidecar, and the
+   *  bind-race relaunch must spawn the identical binary rather than re-derive it. */
+  denoBin: AbsolutePath;
 }
 
 /**
@@ -493,7 +497,7 @@ export function daemonArgv(spec: DaemonSpec): string[] {
 export function launchDaemon(spec: DaemonSpec): number {
   const logFd = openSync(spec.logFile, "w");
   const devnull = openSync(devNull, "r");
-  const proc = spawn(resolveDenoBin(), daemonArgv(spec), {
+  const proc = spawn(spec.denoBin, daemonArgv(spec), {
     stdio: [devnull, logFd, logFd],
     detached: true,
     // No console window on Windows (defensive; redirected stdio already avoids one).

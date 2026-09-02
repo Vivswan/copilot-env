@@ -22,6 +22,7 @@ import { chmodSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { mkdir, open } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { ASSET_ROOT, devDenoExecPath, isStandaloneBinary } from "../utils/root.ts";
+import { resolveRootHome } from "./paths.ts";
 import { sidecarSha256 } from "./sidecar_pins.ts";
 import { crypto } from "@std/crypto";
 
@@ -51,28 +52,44 @@ export function parseAbsolutePath(path: string): AbsolutePath {
 }
 
 /**
- * The deno binary copilot-env spawns for its own subprocess work. Precedence:
- * the COPILOT_ENV_SIDECAR_DENO env override, else our own runtime binary when that is a
- * real deno, else the provisioned sidecar under `rootHome`. Anything else is a hard
- * error -- there is no PATH probing, so the answer can never drift to a system deno of
- * an unpinned version.
+ * The two fast paths every sidecar resolution applies first, the ONE owner of their
+ * order: the COPILOT_ENV_SIDECAR_DENO override, then our own runtime binary when that is
+ * a real deno. Null means "look for the provisioned binary on disk". Neither touches the
+ * pin: the override is the documented recovery hatch, so it must keep working when
+ * .dvmrc itself is unreadable.
+ */
+function sidecarFastPath(
+  env: Record<string, string | undefined>,
+  runtimeExecPath: string | null | undefined,
+): { kind: "override" | "dev"; denoBin: AbsolutePath } | null {
+  const override = env[SIDECAR_DENO_ENV]?.trim();
+  if (override) return { "kind": "override", "denoBin": parseAbsolutePath(override) };
+  const exec = runtimeExecPath === undefined ? devDenoExecPath() : runtimeExecPath;
+  if (exec !== null) return { "kind": "dev", "denoBin": parseAbsolutePath(exec) };
+  return null;
+}
+
+/**
+ * The deno binary copilot-env spawns for its own subprocess work: the fast paths above,
+ * else the provisioned sidecar under `rootHome`, else a hard error. There is no PATH
+ * probing, so the answer can never drift to a system deno of an unpinned version.
  *
- * The standalone case is why the sidecar exists: a compiled binary IS a deno runtime,
- * but not a deno CLI, so it can neither warm the float's cache nor spawn the proxy.
+ * `rootHome` defaults to the resolved root home, so every bare call site -- the daemon
+ * spawn, the proxy float, the device-flow login -- finds the sidecar a compiled install
+ * provisioned there. The standalone case is why the sidecar exists: a compiled binary IS
+ * a deno runtime, but not a deno CLI, so it can neither warm the float's cache nor spawn
+ * the proxy.
  */
 export function resolveDenoBin(
   env: Record<string, string | undefined> = process.env,
-  rootHome?: string,
-): string {
-  const override = env[SIDECAR_DENO_ENV]?.trim();
-  if (override) return parseAbsolutePath(override);
-  const devDeno = devDenoExecPath();
-  if (devDeno !== null) return devDeno;
-
-  if (rootHome !== undefined) {
-    const state = detectSidecar(rootHome, readDvmrcPin(), { "env": env });
-    if (state.kind === "provisioned") return state.denoBin;
-  }
+  rootHome: string = resolveRootHome(),
+  opts: Omit<SidecarDetectOptions, "env"> & { readPin?: () => string } = {},
+): AbsolutePath {
+  const fast = sidecarFastPath(env, opts.runtimeExecPath);
+  if (fast !== null) return fast.denoBin;
+  const { readPin = readDvmrcPin, ...detect } = opts;
+  const state = detectSidecar(rootHome, readPin(), { ...detect, "env": env });
+  if (state.kind !== "absent") return state.denoBin;
   throw new Error(
     `no usable deno binary: this is a compiled build with no provisioned sidecar. ` +
       `Run \`agent start\` to provision it, or set ${SIDECAR_DENO_ENV} to a deno of the pinned version.`,
@@ -99,16 +116,15 @@ export interface SidecarDetectOptions {
   env?: Record<string, string | undefined>;
   platform?: string;
   /** Our own runtime binary when running under a real (non-compiled) deno, else null.
-   *  The default applies the same standalone guard as resolveDenoBin: a compiled
-   *  binary must never classify itself as the `dev` deno -- it cannot act as one. */
+   *  The default applies the standalone guard (devDenoExecPath): a compiled binary
+   *  must never classify itself as the `dev` deno -- it cannot act as one. */
   runtimeExecPath?: string | null;
 }
 
 /**
- * Detect the sidecar state for `pin`. Order mirrors resolveDenoBin: the env
- * override wins (reported as `provisioned` at the pin -- an override is only ever
- * pointed at a usable binary), then the dev fast path (running under a real deno,
- * never a compiled binary), then the provisioned binary on disk, else absent.
+ * Detect the sidecar state for `pin`: the shared fast paths (sidecarFastPath above --
+ * an override is reported as `provisioned` at the pin, since it is only ever pointed at
+ * a usable binary), then the provisioned binary on disk, else absent.
  */
 export function detectSidecar(
   rootHome: string,
@@ -116,15 +132,11 @@ export function detectSidecar(
   opts: SidecarDetectOptions = {},
 ): SidecarState {
   const env = opts.env ?? process.env;
-  const override = env[SIDECAR_DENO_ENV]?.trim();
-  if (override) {
-    return { "kind": "provisioned", "denoBin": parseAbsolutePath(override), "version": pin };
-  }
-  const runtimeExecPath = opts.runtimeExecPath === undefined
-    ? devDenoExecPath()
-    : opts.runtimeExecPath;
-  if (runtimeExecPath !== null) {
-    return { "kind": "dev", "denoBin": parseAbsolutePath(runtimeExecPath) };
+  const fast = sidecarFastPath(env, opts.runtimeExecPath);
+  if (fast !== null) {
+    return fast.kind === "override"
+      ? { "kind": "provisioned", "denoBin": fast.denoBin, "version": pin }
+      : { "kind": "dev", "denoBin": fast.denoBin };
   }
   const bin = sidecarBinPath(rootHome, pin, opts.platform);
   if (existsSync(bin)) {

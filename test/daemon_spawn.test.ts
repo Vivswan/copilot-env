@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   copilotApiArgv,
@@ -7,10 +7,13 @@ import {
   daemonArgv,
   daemonEnvironment,
   type DaemonSpec,
+  launchDaemon,
   noProxyWithLoopback,
   parseProcessRows,
+  pidAlive,
   resolveCopilotApiEntry,
 } from "../src/copilot_api/process.ts";
+import { parseAbsolutePath } from "../src/copilot_api/sidecar.ts";
 import { DAEMON_INTEGRATION_ID_ENV } from "../src/copilot_api/integration_identity.ts";
 import { DRAIN_DEADLINE_MS } from "../src/scripts/daemon_shutdown.ts";
 import { PROXY_PACKAGE_NAME } from "../src/copilot_api/version.ts";
@@ -55,6 +58,7 @@ const BASE: DaemonSpec = {
     specifier: PROXY_PACKAGE_NAME,
     configFile: join(ROOT, "deno.json"),
   },
+  denoBin: parseAbsolutePath("/opt/deno/deno"),
 };
 
 /** The shim filenames the argv preloads, in order. */
@@ -240,6 +244,59 @@ test("copilotApiArgv runs any proxy subcommand through the same entry and permis
   expect(argv.slice(-4)).toEqual(["auth", "login", "--provider", "copilot"]);
   expect(argv).toContain(PROXY_PACKAGE_NAME);
 });
+
+// --- the launched binary ---------------------------------------------------------------
+
+test("launchDaemon spawns exactly the spec's denoBin, never a re-derived one", async () => {
+  // Under `deno test` a re-derived resolveDenoBin() is the REAL deno (the dev fast
+  // path), so spawning a COPY at a different path is what makes this discriminating:
+  // the child reports its own executable, which must be the copy the spec carried.
+  const sidecar = join(dir, process.platform === "win32" ? "sidecar-deno.exe" : "sidecar-deno");
+  copyFileSync(Deno.execPath(), sidecar);
+  if (process.platform !== "win32") chmodSync(sidecar, 0o755);
+  const entryFile = join(dir, "report-exec-path.ts");
+  writeFileSync(entryFile, "console.log('EXEC:' + Deno.execPath());\n");
+  const logFile = join(dir, "spawn.log");
+  const pid = launchDaemon({
+    ...BASE,
+    denoBin: parseAbsolutePath(sidecar),
+    home: dir,
+    logFile,
+    entry: { kind: "file", path: entryFile, configFile: join(ROOT, "deno.json") },
+  });
+  try {
+    expect(pid).toBeGreaterThan(0);
+    const deadline = Date.now() + 20_000;
+    let logged = "";
+    while (Date.now() < deadline && !logged.includes("EXEC:")) {
+      logged = readFileSync(logFile, "utf8");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const reported = /EXEC:(.+)/.exec(logged)?.[1]?.trim();
+    if (reported === undefined) throw new Error(`no EXEC line; log was: ${logged}`);
+    // realpath both sides: Deno.execPath() canonicalizes, and the OS tmpdir may be a symlink.
+    expect(realpathSync(reported)).toBe(realpathSync(sidecar));
+  } finally {
+    // The child normally exits by itself, but a failure path must not leak it -- and on
+    // Windows the afterEach removeDir would race a still-running copied deno.exe, so wait
+    // until the pid is genuinely gone before the dir is torn down.
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      /* already gone */
+    }
+    const gone = Date.now() + 5_000;
+    while (pidAlive(pid) && Date.now() < gone) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    // The postcondition, not just the wait: a leaked child must fail loud, never pass.
+    expect(pidAlive(pid)).toBe(false);
+  }
+  // Explicit deadline ABOVE the inner bounds (20s log wait + 5s kill wait): under the
+  // 15s default the harness would abandon the body mid-cleanup, afterEach's removeDir
+  // would race the possibly-live copied deno, and the dead-pid assertion would fire
+  // invisibly inside the abandoned continuation.
+}, 30_000);
 
 // --- the daemon environment ----------------------------------------------------------
 

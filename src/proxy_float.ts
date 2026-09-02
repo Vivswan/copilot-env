@@ -503,10 +503,13 @@ export interface ProxyFloatDeps {
 }
 
 function floatContext(deps: ProxyFloatDeps): FloatContext {
+  // The sidecar resolves under the SAME home the float warms: a caller passing only
+  // rootHome must never warm one home while spawning another home's sidecar.
+  const rootHome = deps.rootHome ?? resolveRootHome();
   return {
-    "rootHome": deps.rootHome ?? resolveRootHome(),
+    "rootHome": rootHome,
     "config": deps.config ?? readProjectConfig(),
-    "denoBin": deps.denoBin ?? resolveDenoBin(),
+    "denoBin": deps.denoBin ?? resolveDenoBin(process.env, rootHome),
     "fetchLike": deps.fetchLike ?? fetch,
     "runner": deps.runner ?? defaultDenoRunner,
     "nowMs": deps.nowMs ?? Date.now(),

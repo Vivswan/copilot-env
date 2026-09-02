@@ -10,8 +10,12 @@
 // Run by installer-sh.yml / installer-ps1.yml:
 //   deno run -P=cli .github/scripts/installer-smoke.ts run-install|assert-no-optional-clis|verify-outcome
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { resolveRootHome } from "../../src/copilot_api/paths.ts";
+import { readDvmrcPin, SIDECAR_DENO_ENV, sidecarBinPath } from "../../src/copilot_api/sidecar.ts";
+import { writeDaemonConfig } from "../../src/proxy_float.ts";
 import { isRecord } from "../../src/utils/json.ts";
 
 const step = process.argv[2];
@@ -33,13 +37,30 @@ function installerArgs(): string[] {
   return args.trim() === "" ? [] : args.trim().split(/\s+/);
 }
 
-function run(command: string, args: string[]): void {
-  const proc = spawnSync(command, args, { stdio: "inherit", shell: false });
+function run(command: string, args: string[], extraEnv: Record<string, string> = {}): void {
+  const proc = spawnSync(command, args, {
+    stdio: "inherit",
+    shell: false,
+    env: { ...process.env, ...extraEnv },
+  });
   if (proc.error) {
     throw proc.error;
   }
   if (proc.status !== 0) {
     process.exit(proc.status ?? 1);
+  }
+}
+
+/** Run the INSTALLED launcher shim with `args` (through pwsh for the .ps1 on Windows). */
+function runLauncher(
+  launcher: string,
+  args: string[],
+  extraEnv: Record<string, string> = {},
+): void {
+  if (isWindows) {
+    run("pwsh", ["-NoProfile", "-File", launcher, ...args], extraEnv);
+  } else {
+    run(launcher, args, extraEnv);
   }
 }
 
@@ -216,11 +237,7 @@ function verifyInstalledLauncher(): string {
     console.error(`::error::installed launcher missing at ${launcher}`);
     process.exit(1);
   }
-  if (isWindows) {
-    run("pwsh", ["-NoProfile", "-File", launcher, "--version"]);
-  } else {
-    run(launcher, ["--version"]);
-  }
+  runLauncher(launcher, ["--version"]);
   console.log(`installed launcher works: ${launcher}`);
   return launcher;
 }
@@ -295,9 +312,67 @@ function verifyCompiledHealth(launcher: string): void {
   console.log("compiled-install health invariants hold");
 }
 
+/**
+ * The compiled binary's daemon spawn must resolve the deno sidecar the install
+ * provisions -- a compiled binary is not a deno CLI, so a resolve that misses the
+ * sidecar can start nothing at all. Kept offline: plant this runner's own deno at
+ * the pinned sidecar slot (standing in for the real provisioning download), write
+ * the daemon config a floated install would carry, then drive one start/stop of
+ * the fake proxy. The start can only succeed through the provisioned sidecar --
+ * a compiled build has no dev deno, and no override is set.
+ */
+function verifySidecarDaemonSpawn(launcher: string): void {
+  // A live override would let the start succeed WITHOUT the provisioned-sidecar path
+  // under test, so it is scrubbed -- and a bogus one is planted first as the scrub's
+  // negative control: removing the scrub turns this step red (the spawn would use the
+  // unspawnable path) instead of passing green whenever the runner leaves the var unset.
+  process.env[SIDECAR_DENO_ENV] = isWindows ? "C:\\bogus\\deno.exe" : "/bogus/deno";
+  delete process.env[SIDECAR_DENO_ENV];
+  const rootHome = resolveRootHome();
+  const sidecar = sidecarBinPath(rootHome, readDvmrcPin());
+  mkdirSync(dirname(sidecar), { recursive: true });
+  copyFileSync(process.execPath, sidecar);
+  if (!isWindows) {
+    chmodSync(sidecar, 0o755);
+  }
+  writeDaemonConfig(rootHome);
+  const entryEnv = {
+    COPILOT_API_ENTRY: fileURLToPath(new URL("../../test/copilot-api-fake.mjs", import.meta.url)),
+  };
+  runLauncher(launcher, ["start"], entryEnv);
+  runLauncher(launcher, ["stop"], entryEnv);
+  console.log(`compiled daemon spawn resolved the provisioned sidecar at ${sidecar}`);
+}
+
+/** The installer's manifest at the install root. Its filename and `kind` value are
+ *  external contracts (written by `agent install`): a missing or reshaped manifest is
+ *  a broken install, not a cosmetic gap. */
+function verifyInstallManifest(): void {
+  const home = (isWindows ? process.env.USERPROFILE : process.env.HOME) ?? "";
+  const manifest = join(installRoot(installerArgs(), home), ".copilot-env-install.json");
+  if (!existsSync(manifest)) {
+    console.error(`::error::install manifest missing at ${manifest}`);
+    process.exit(1);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(manifest, "utf8"));
+  } catch (e) {
+    console.error(`::error::install manifest at ${manifest} is not valid JSON: ${String(e)}`);
+    process.exit(1);
+  }
+  if (!isRecord(parsed) || parsed.kind !== "installed") {
+    console.error(`::error::install manifest at ${manifest} must carry kind == "installed"`);
+    process.exit(1);
+  }
+  console.log(`install manifest ok: ${manifest}`);
+}
+
 function verifyOutcome(): void {
   const launcher = verifyInstalledLauncher();
+  verifyInstallManifest();
   verifyCompiledHealth(launcher);
+  verifySidecarDaemonSpawn(launcher);
   verifyOptionalClis();
   verifyShellWiring();
   verifyLauncherWiring();

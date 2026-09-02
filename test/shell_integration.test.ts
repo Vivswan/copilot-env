@@ -376,6 +376,113 @@ test("re-upserting a CRLF fenced block is byte-idempotent and keeps CRLF", () =>
   expect(upsertBlock(unterminated, MARKER, block)).toBe(unterminated);
 });
 
+test("a first wire into a CRLF file appends CRLF, never mixed endings", () => {
+  // Before this, only the REFRESH path preserved CRLF (off the marker line); a first
+  // append into e.g. a Notepad-written $PROFILE left LF lines in a CRLF file.
+  const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
+  const wired = upsertBlock("Write-Host before\r\n", MARKER, block);
+  expect(wired).toBe(
+    upsertBlock("Write-Host before\n", MARKER, block).replaceAll("\n", "\r\n"),
+  );
+  expect(wired).not.toMatch(/[^\r]\n/); // no lone LF anywhere
+  // The append seeds a CRLF marker line, so the refresh path keeps it idempotent.
+  expect(upsertBlock(wired, MARKER, block)).toBe(wired);
+});
+
+test("an append matches the file's DOMINANT ending, not any stray one", () => {
+  const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
+  // One stray CRLF in an LF file must not flip the appended block to CRLF...
+  const mostlyLf = "a\nb\nc\r\nd\n";
+  expect(upsertBlock(mostlyLf, MARKER, block)).toBe(mostlyLf + block);
+  // ...and one stray LF in a CRLF file must not keep it LF.
+  const mostlyCrlf = "a\r\nb\r\nc\nd\r\n";
+  expect(upsertBlock(mostlyCrlf, MARKER, block)).toBe(
+    mostlyCrlf + block.replaceAll("\n", "\r\n"),
+  );
+  // A tie stays LF, like an empty (or new) file: the builders' platform-neutral form.
+  expect(upsertBlock("a\r\nb\n", MARKER, block)).toBe("a\r\nb\n" + block);
+  expect(upsertBlock("", MARKER, block)).toBe(block);
+  // A CRLF file with an unterminated last line still appends CRLF.
+  expect(upsertBlock("a\r\nb", MARKER, block)).toBe("a\r\nb" + block.replaceAll("\n", "\r\n"));
+});
+
+test("upsert refreshes the first duplicate block and strips the rest", () => {
+  // Two markers in one file (a bad hand-merge, a crashed editor) would source the
+  // integration twice; upsert must converge on ONE block, deterministically.
+  const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
+  const stale = `${MARKER}\n$AgentsPs1 = 'C:\\old\\agents.ps1'\n` +
+    `if (Test-Path -LiteralPath $AgentsPs1) { . $AgentsPs1 }\n${MARKER_END}`;
+  const content = `Write-Host before\n\n${stale}\n\nWrite-Host middle\n\n${stale}\n\n` +
+    `Write-Host after\n`;
+  const next = upsertBlock(content, MARKER, block);
+  expect(markerLines(next, MARKER)).toBe(1);
+  // Refreshed IN PLACE at the first site: user lines keep their order around it.
+  expect(next.indexOf("Write-Host before")).toBeLessThan(next.indexOf(MARKER));
+  expect(next.indexOf(MARKER_END)).toBeLessThan(next.indexOf("Write-Host middle"));
+  expect(next.indexOf("Write-Host middle")).toBeLessThan(next.indexOf("Write-Host after"));
+  expect(next).not.toContain("C:\\old\\agents.ps1");
+  expect(upsertBlock(next, MARKER, block)).toBe(next); // and the result is idempotent
+});
+
+test("stripping a duplicate block never deletes a user line under its marker", () => {
+  // The duplicate's extent is as conservative as removal's: an unrecognized line
+  // under the second marker survives the dedupe.
+  const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
+  const wired = upsertBlock("Write-Host before\n", MARKER, block);
+  const next = upsertBlock(`${wired}\n${MARKER}\nWrite-Host mine\n`, MARKER, block);
+  expect(markerLines(next, MARKER)).toBe(1);
+  expect(next).toContain("Write-Host mine");
+});
+
+test("deduping a block at EOF preserves the file's (un)terminated state", () => {
+  // A duplicate on the file's last line, with and without a final newline: the dedupe
+  // must not add or drop the terminator (a string round-trip through stripBlocks
+  // cannot tell "no tail" from "one empty terminator line").
+  const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
+  const wired = upsertBlock("Write-Host before\n", MARKER, block);
+  expect(upsertBlock(`${wired}\n${MARKER}\n`, MARKER, block)).toBe(wired);
+  expect(upsertBlock(`${wired}\n${MARKER}`, MARKER, block)).toBe(wired.replace(/\n$/, ""));
+});
+
+test("a legacy (unfenced) first block still migrates when a fenced duplicate follows", () => {
+  const legacy = `${MARKER}\nAGENTS_BASHRC="/old/agents.bashrc"\n` +
+    `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"`;
+  const block = posixBlock(join(homedir(), "shell", "agents.bashrc"));
+  const dup = block.slice(1); // the same fenced block, without its leading blank
+  const next = upsertBlock(`${legacy}\n\n${dup}export AFTER=1\n`, MARKER, block);
+  expect(markerLines(next, MARKER)).toBe(1);
+  expect(next).toContain(MARKER_END); // the FIRST site was refreshed to the fenced form
+  expect(next).not.toContain("/old/agents.bashrc");
+  expect(next).toContain("export AFTER=1");
+});
+
+test("CRLF duplicates dedupe to one all-CRLF block", () => {
+  const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
+  const lf = upsertBlock("Write-Host before\n", MARKER, block);
+  const crlf = `${lf}\n${MARKER}\n`.replaceAll("\n", "\r\n");
+  const next = upsertBlock(crlf, MARKER, block);
+  expect(markerLines(next, MARKER)).toBe(1);
+  expect(next).not.toMatch(/[^\r]\n/); // no lone LF anywhere
+  expect(upsertBlock(next, MARKER, block)).toBe(next);
+  // An UNTERMINATED duplicate at EOF: deduping it makes our block the new EOF, so its
+  // last line must shed the \r that now has no \n to pair with.
+  const unterm = upsertBlock(`${lf}\n${MARKER}`.replaceAll("\n", "\r\n"), MARKER, block);
+  expect(unterm).toBe(lf.replaceAll("\n", "\r\n").replace(/\r\n$/, ""));
+  expect(upsertBlock(unterm, MARKER, block)).toBe(unterm);
+});
+
+test("an unknown marker is unrepresentable, not a runtime throw", () => {
+  // The shape lookup is typed against the marker union (BlockMarker), so a marker
+  // this module does not own fails to compile; there is no throwing lookup left.
+  void (() => {
+    // @ts-expect-error -- not an owned block marker
+    upsertBlock("", "# some other marker", "");
+    // @ts-expect-error -- not an owned block marker
+    stripBlocks("", ["# some other marker"]);
+  });
+  expect(markerLines(`${MARKER}\n`, MARKER)).toBe(1);
+});
+
 test("upsert migrates a legacy PowerShell block (old Test-Path spelling) to the fenced format", () => {
   // Both historical guard spellings must be recognized: the pre-TS installers wrote
   // `Test-Path $AgentsPs1` (no -LiteralPath).

@@ -648,7 +648,9 @@ function importPreferences(config: CopilotEnvConfigData): void {
  * write, so a crash or wiring failure can never leave a half profile -- at
  * worst a complete-but-unwired slot that `agent profile --sync` (or a re-add)
  * re-derives. A skipped slot was already reported at plan time and writes
- * nothing. Per-profile resilient: one failing profile never blocks the rest
+ * nothing. Per-profile resilient, the commit itself included: a slot whose
+ * commit throws is reported and skipped whole -- the same "ask, never break"
+ * posture as a credential that fails to resolve -- and never blocks the rest
  * (mirrors `profile --sync`).
  *
  * Unlike the DEFAULT slot, a proxy-mode profile still requires a resolvable
@@ -683,9 +685,9 @@ async function importProfiles(plan: ImportPlan, outcome: ImportOutcome): Promise
       outcome.failures.push(`profile '${name}': its stored credential no longer resolves`);
       continue;
     }
-    state.commitProfile(name, { credential, mode: slot.mode });
-    replayBundledIdentity(state, name, slot, landing);
     try {
+      state.commitProfile(name, { credential, mode: slot.mode });
+      replayBundledIdentity(state, name, slot, landing);
       await wireBothAgents(name, slot.mode, false, landing.resolvedToken);
       outcome.wiredProfiles.push(name);
     } catch (e) {

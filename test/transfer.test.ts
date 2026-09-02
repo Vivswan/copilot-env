@@ -15,6 +15,7 @@ import {
 import { dirname, join } from "node:path";
 import {
   applyImportBundle,
+  applyImportPlan,
   buildExportBundle,
   parseSettingsBundle,
   planImport,
@@ -568,6 +569,39 @@ test("a profile wiring failure lands in failures and the command exits non-zero"
     mode: "proxy",
     integrationIdentity: null,
   });
+});
+
+test("a throwing profile COMMIT is contained per-slot: the rest of the import proceeds", async () => {
+  isolate();
+  const bundle = parseSettingsBundle(
+    rawBundle({
+      profiles: {
+        bad: { githubToken: "ghp_bad", authProvider: "gh-token", mode: "proxy" },
+        work: { githubToken: "ghp_work", authProvider: "gh-token", mode: "proxy" },
+      },
+    }),
+  );
+  const plan = planImport(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
+  // Make the FIRST slot's commit itself throw: a whitespace token travels fine
+  // in the plan's types but rawCredentialPatch (inside commitProfile) rejects
+  // it. The commit sits INSIDE the per-profile containment -- a slot whose
+  // commit throws is skipped whole ("ask, never break", same posture as a
+  // credential that fails to resolve) and never blocks the profiles after it.
+  const bad = plan.profiles.find((p) => p.name === parseProfileName("bad"));
+  if (
+    bad === undefined || bad.landing.action !== "write" || bad.landing.credential.kind !== "stored"
+  ) {
+    throw new Error("plan did not stage the bad profile as a token write");
+  }
+  bad.landing.credential.token = "   ";
+
+  const outcome = await applyImportPlan(plan, { catalogDeps: NOOP_CATALOG_DEPS });
+
+  expect(outcome.failures.length).toBe(1);
+  expect(outcome.failures[0]).toContain("profile 'bad'");
+  expect(outcome.wiredProfiles).toEqual([WORK]);
+  // The throwing slot landed NOWHERE: no half profile in the store.
+  expect(new CopilotEnvState().profileNames()).toEqual([WORK]);
 });
 
 test("a default-wiring failure surfaces into outcome.failures", async () => {

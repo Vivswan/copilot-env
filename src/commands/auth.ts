@@ -33,7 +33,11 @@ import {
   ghAuthToken,
 } from "../copilot_api/credential.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
-import { CopilotEnvState } from "../copilot_api/env_state.ts";
+import {
+  assertProfileSlot,
+  CopilotEnvState,
+  type ProvisionedCredential,
+} from "../copilot_api/env_state.ts";
 import {
   ghTokenEnvVarsLabel,
   ghTokenEnvVarsList,
@@ -186,9 +190,9 @@ async function chooseProvider(): Promise<AuthProvider> {
 /**
  * `copilot`: run the INSTALLED/floated copilot-api's device-flow login (not
  * `npx @latest`, which would bypass the supply-chain cooldown + the float). It
- * writes its own github_token file; copy that into our single-source store and
- * scrub copilot-api's copy. Interactive: inherits stdio so the device-code URL
- * and prompt are shown.
+ * writes its own github_token file; return that token for the caller's single
+ * store write and scrub copilot-api's copy. Interactive: inherits stdio so the
+ * device-code URL and prompt are shown.
  *
  * The WHOLE spawn+read+scrub sequence holds a lock on the shared github_token
  * file: every profile's device flow funnels through that ONE file, so two
@@ -196,7 +200,7 @@ async function chooseProvider(): Promise<AuthProvider> {
  * each other's token into the wrong slot. Dead-holder-only reclaim (Infinity):
  * an interactive login legitimately holds it for minutes.
  */
-function loginWithCopilot(cred: Credential): void {
+function loginWithCopilot(): string {
   const entry = resolveCopilotApiEntry();
   if (entry.kind === "package" && installedProxyVersion() === null) {
     throw new Error(
@@ -205,7 +209,7 @@ function loginWithCopilot(cred: Credential): void {
     );
   }
   const { githubTokenFile: tokenFile, githubTokenLoginLock: lockPath } = new CopilotApiPaths();
-  withFileLockSync(lockPath, {
+  return withFileLockSync(lockPath, {
     staleMs: Number.POSITIVE_INFINITY,
     waitMs: Number.POSITIVE_INFINITY,
     retryMs: 500,
@@ -237,14 +241,17 @@ function loginWithCopilot(cred: Credential): void {
       );
     }
     if (!token) throw new Error("the device-flow login did not produce a GitHub token");
-    cred.store("copilot", token);
     // Scrub copilot-api's copy so the token rests only in our state (the proxy
     // receives it via `--github-token` from there, so this file is redundant).
+    // The caller persists AFTER this scrub (the commit is the caller's, so it
+    // can land atomically with a profile's mode); a crash in between costs one
+    // re-login, never a leaked token file.
     try {
       rmSync(tokenFile, { force: true });
     } catch {
       // best-effort
     }
+    return token;
   });
 }
 
@@ -289,12 +296,12 @@ async function promptForGhToken(): Promise<string> {
 }
 
 /**
- * `gh-token`: store a token, from wherever `source` says it comes:
+ * `gh-token`: resolve the token to store, from wherever `source` says it comes:
  *   - inline (`--set <token>`) : the value verbatim (no UI / no env).
  *   - env (bare `--set`)       : read $COPILOT_GITHUB_TOKEN/$GH_TOKEN/$GITHUB_TOKEN, error if none set (headless).
  *   - env-or-prompt (no `--set`): prefer those env vars, else prompt for it in a TTY.
  */
-async function loginWithGhToken(cred: Credential, source: GhTokenSource): Promise<void> {
+async function loginWithGhToken(source: GhTokenSource): Promise<string> {
   let token: string;
   let fromEnv = true;
   if (source.kind === "env-or-prompt") {
@@ -312,49 +319,63 @@ async function loginWithGhToken(cred: Credential, source: GhTokenSource): Promis
     token = tokenFromSetFlag(source.kind === "inline" ? source.token : true);
     fromEnv = source.kind !== "inline";
   }
-  cred.store("gh-token", token);
   logger.success(
     fromEnv
       ? "  Stored the GitHub token from the environment."
       : "  Stored the provided GitHub token.",
   );
+  return token;
 }
 
 /** `gh-cli`: rely on the machine's gh login (store nothing, verify gh works). */
-function loginWithGhCli(cred: Credential): void {
+function loginWithGhCli(): void {
   // Verify gh works BEFORE recording -- otherwise a failed gh check would point
   // `--get` at a `gh` that can't produce a token.
   if (ghAuthToken() === null) {
     throw new Error("gh is not authenticated - run `gh auth login`, then retry `agent auth`");
   }
-  cred.useGhCli();
   logger.success("  Using the gh CLI login as the Direct credential.");
 }
 
 /**
- * Authenticate: settle the provider (a parsed acquisition, or the interactive choice
- * for `choose`), acquire + record the credential into `profile`'s slot. Does NOT
- * configure the agents -- that is `agent init` / `agent profile`'s job (`agent profile
- * --add` reuses this to attach a profile's own credential). Throws on failure.
+ * Acquire a credential WITHOUT persisting it: settle the provider (a parsed
+ * acquisition, or the interactive choice for `choose`) and run its flow. The
+ * caller owns the single store write -- `authenticate` records it into an
+ * existing slot, `agent profile --add` commits it atomically together with the
+ * profile's mode. Throws on failure.
+ */
+export async function acquireCredential(
+  acquisition: CredentialAcquisition,
+): Promise<ProvisionedCredential> {
+  const resolved = acquisition.kind === "choose"
+    ? acquisitionForProvider(await chooseProvider())
+    : acquisition;
+  if (resolved.kind === "gh-token") {
+    return { kind: "stored", provider: "gh-token", token: await loginWithGhToken(resolved.source) };
+  }
+  if (resolved.provider === "copilot") {
+    return { kind: "stored", provider: "copilot", token: loginWithCopilot() };
+  }
+  loginWithGhCli();
+  return { kind: "gh-cli" };
+}
+
+/**
+ * Authenticate: acquire a credential (acquireCredential) and record it into
+ * `profile`'s slot. Does NOT configure the agents -- that is `agent init` /
+ * `agent profile`'s job. A NAMED profile's store slot must already exist (this
+ * is the re-auth path; `agent profile --add` is the only creator), and the gate
+ * fires BEFORE the acquisition so a typo'd name never costs a device flow (the
+ * store's own in-update check backstops it at the write). Throws on failure.
  */
 export async function authenticate(
   acquisition: CredentialAcquisition,
   profile: Profile,
 ): Promise<AuthProvider> {
-  const resolved = acquisition.kind === "choose"
-    ? acquisitionForProvider(await chooseProvider())
-    : acquisition;
-  const cred = new Credential(undefined, profile);
-  if (resolved.kind === "gh-token") {
-    await loginWithGhToken(cred, resolved.source);
-    return "gh-token";
-  }
-  if (resolved.provider === "copilot") {
-    loginWithCopilot(cred);
-  } else {
-    loginWithGhCli(cred);
-  }
-  return resolved.provider;
+  if (profile !== null) assertProfileSlot(profile);
+  const credential = await acquireCredential(acquisition);
+  new Credential(undefined, profile).record(credential);
+  return credential.kind === "gh-cli" ? "gh-cli" : credential.provider;
 }
 
 // --- sub-actions ------------------------------------------------------------

@@ -44,6 +44,7 @@ import {
   PROFILE_MODES,
   type ProfileCredentialData,
   type ProfileSlotData,
+  type ProvisionedCredential,
 } from "../copilot_api/env_state.ts";
 import { resolveRootHome } from "../copilot_api/paths.ts";
 import {
@@ -371,20 +372,13 @@ export interface ImportOutcome {
   failures: string[];
 }
 
-/** Whether the bundle slot carries a credential the import could write: a real
- *  token, or the gh-cli provider (which holds no token by design). */
-function bundleSlotWritesCredential(slot: ProfileCredentialData): boolean {
-  if (slot.authProvider === "gh-cli") return true;
-  return (
-    slot.authProvider !== null && slot.githubToken !== null && slot.githubToken !== REDACTED_TOKEN
-  );
-}
-
 /**
  * One slot's planned landing, judged on the RESULTING store slot:
  *   - write: the bundle's credential lands (a real token, or gh-cli once the
- *     local `gh` proved it resolves). `resolvedToken` is what that slot
- *     resolves to, handed to the wiring so nothing re-runs a resolver.
+ *     local `gh` proved it resolves) -- already in the store's provisioned
+ *     union, so the apply can never write half a credential. `resolvedToken`
+ *     is what that slot resolves to, handed to the wiring so nothing re-runs
+ *     a resolver.
  *   - keep:  nothing usable travels -- the local slot survives untouched and
  *     ITS resolution decides wireability, so a redacted bundle over a working
  *     local credential still wires normally. A gh-cli slot whose `gh` does not
@@ -394,7 +388,7 @@ function bundleSlotWritesCredential(slot: ProfileCredentialData): boolean {
  *     gh-cli was involved) and the apply writes nothing to the slot.
  */
 type SlotPlan =
-  | { action: "write"; credential: ProfileCredentialData; resolvedToken: string | null }
+  | { action: "write"; credential: ProvisionedCredential; resolvedToken: string | null }
   | { action: "keep"; resolvedToken: string | null }
   | { action: "skip"; reason: string };
 
@@ -407,14 +401,11 @@ function planSlotCredential(
   profile: Profile,
   gh: () => string | null,
 ): SlotPlan {
-  if (slot.authProvider === "gh-cli") {
+  const { githubToken, authProvider } = slot;
+  if (authProvider === "gh-cli") {
     const ghToken = gh();
     if (ghToken !== null) {
-      return {
-        action: "write",
-        credential: { githubToken: null, authProvider: "gh-cli" },
-        resolvedToken: ghToken,
-      };
+      return { action: "write", credential: { kind: "gh-cli" }, resolvedToken: ghToken };
     }
     const local = localSlotToken(profile, gh);
     if (local !== null) return { action: "keep", resolvedToken: local };
@@ -424,11 +415,14 @@ function planSlotCredential(
         "machine (`gh auth login`), and no stored credential resolves either",
     };
   }
-  if (bundleSlotWritesCredential(slot)) {
+  // A writable token slot: a token-backed provider carrying a REAL token (the
+  // strict parse already banned token-without-provider; a redacted placeholder
+  // is "not a token", so the slot falls through to keep/skip).
+  if (authProvider !== null && githubToken !== null && githubToken !== REDACTED_TOKEN) {
     return {
       action: "write",
-      credential: { githubToken: slot.githubToken, authProvider: slot.authProvider },
-      resolvedToken: slot.githubToken,
+      credential: { kind: "stored", provider: authProvider, token: githubToken },
+      resolvedToken: githubToken,
     };
   }
   const local = localSlotToken(profile, gh);
@@ -590,13 +584,29 @@ export function planImport(bundle: SettingsBundle, deps: ImportDeps = {}): Impor
     claude: importableMode(bundle.modes.claude, "Claude", defaultUsable, skipped),
   };
   const profiles: PlannedProfile[] = [];
+  const state = new CopilotEnvState();
   for (const [rawName, slot] of Object.entries(bundle.profiles)) {
     const name = parseProfileName(rawName);
-    const landing = planSlotCredential(slot, name, gh);
+    let landing = planSlotCredential(slot, name, gh);
+    if (
+      landing.action === "write" && slot.mode === null &&
+      !state.profileSlotStatus(name).exists
+    ) {
+      // A credential with no mode can only RE-AUTH an existing profile; with no
+      // profile here to re-auth, writing it would create the half profile the
+      // atomic slot commit exists to prevent -- skip the slot whole instead.
+      landing = {
+        action: "skip",
+        reason:
+          "the bundle records a credential but no mode, and no profile exists here to re-auth",
+      };
+    }
     if (landing.action === "skip") {
+      // The re-add acquires the profile's own credential itself, so it is the
+      // one repair that works whether or not the profile already exists here.
       skipped.push(
         `profile '${name}': ${landing.reason} - not imported; run ` +
-          `\`agent auth --profile ${name}\`, then \`agent profile --add ${name}\``,
+          `\`agent profile --add ${name} --direct|--proxy\``,
       );
     }
     profiles.push({ name, slot, landing });
@@ -634,39 +644,80 @@ function importPreferences(config: CopilotEnvConfigData): void {
 
 /**
  * Execute the profile half of the plan through the same atomic machinery
- * `agent profile --add` uses. A skipped slot was already reported at plan time
- * and writes nothing (never a half-updated slot). Per-profile resilient: one
- * failing profile never blocks the rest (mirrors `profile --sync`).
+ * `agent profile --add` uses: credential + mode land as ONE commitProfile
+ * write, so a crash or wiring failure can never leave a half profile -- at
+ * worst a complete-but-unwired slot that `agent profile --sync` (or a re-add)
+ * re-derives. A skipped slot was already reported at plan time and writes
+ * nothing. Per-profile resilient: one failing profile never blocks the rest
+ * (mirrors `profile --sync`).
  *
  * Unlike the DEFAULT slot, a proxy-mode profile still requires a resolvable
  * credential: `agent profile --add` always ensures the profile's OWN
- * credential before wiring either mode (runAdd in src/commands/profile.ts), so
- * the import restores nothing weaker than what `--add` would create.
+ * credential before committing either mode (runAdd in src/commands/profile.ts),
+ * so the import restores nothing weaker than what `--add` would create.
  */
 async function importProfiles(plan: ImportPlan, outcome: ImportOutcome): Promise<void> {
   const state = new CopilotEnvState();
   for (const { name, slot, landing } of plan.profiles) {
     if (landing.action === "skip") continue;
-    if (landing.action === "write") {
-      state.setCredential(name, landing.credential);
-      // The bundled identity is derived from the bundle's own credential, so
-      // it is replayed ONLY when that exact token landed (letting a direct
-      // profile wire without re-probing the network). gh-cli and kept slots
-      // resolve a DIFFERENT credential here, so their identity is re-derived
-      // by the normal probe at wire time instead of trusting the bundle's.
-      if (landing.credential.githubToken !== null && slot.integrationIdentity !== null) {
-        state.setProfileIntegrationIdentity(name, slot.integrationIdentity);
+    if (slot.mode === null) {
+      // No mode travels: at most a re-auth of an existing profile's credential
+      // (planImport already skipped the slot when no profile exists here; the
+      // store's own guard can still fire if a concurrent --del removed it after
+      // planning, so this stays per-profile resilient like everything else).
+      if (landing.action === "write") {
+        try {
+          state.setCredential(name, landing.credential);
+          replayBundledIdentity(state, name, slot, landing);
+        } catch (e) {
+          outcome.failures.push(`profile '${name}': ${errMessage(e)}`);
+        }
       }
+      continue;
     }
-    if (slot.mode === null) continue;
+    const credential = landing.action === "write"
+      ? landing.credential
+      : keptCredential(state, name);
+    if (credential === null) {
+      // Only reachable if the local credential vanished between plan and apply.
+      outcome.failures.push(`profile '${name}': its stored credential no longer resolves`);
+      continue;
+    }
+    state.commitProfile(name, { credential, mode: slot.mode });
+    replayBundledIdentity(state, name, slot, landing);
     try {
       await wireBothAgents(name, slot.mode, false, landing.resolvedToken);
-      // The store commit is LAST -- the success marker, exactly as `--add` does it.
-      state.setProfileMode(name, slot.mode);
       outcome.wiredProfiles.push(name);
     } catch (e) {
       outcome.failures.push(`profile '${name}': ${errMessage(e)}`);
     }
+  }
+}
+
+/** A kept slot's own credential for the atomic mode commit; null only when the
+ *  slot stopped resolving after the plan judged it (a plan/apply race). */
+function keptCredential(state: CopilotEnvState, name: ProfileName): ProvisionedCredential | null {
+  const credential = state.readProfileSlot(name).credential;
+  return credential.kind === "none" ? null : credential;
+}
+
+/** The bundled identity is derived from the bundle's own credential, so it is
+ *  replayed ONLY when that exact token landed (letting a direct profile wire
+ *  without re-probing the network), and the write is keyed to that credential
+ *  (a concurrent rotation drops it, never mis-attaches it). gh-cli and kept
+ *  slots resolve a DIFFERENT credential here, so their identity is re-derived
+ *  by the normal probe at wire time instead of trusting the bundle's. */
+function replayBundledIdentity(
+  state: CopilotEnvState,
+  name: ProfileName,
+  slot: ProfileSlotData,
+  landing: SlotPlan,
+): void {
+  if (
+    landing.action === "write" && landing.credential.kind === "stored" &&
+    slot.integrationIdentity !== null
+  ) {
+    state.setProfileIntegrationIdentity(name, slot.integrationIdentity, landing.credential);
   }
 }
 

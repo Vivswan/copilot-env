@@ -182,8 +182,9 @@ test("env emits the launcher functions only when the launchers config key is on"
 
 // --- --profile ------------------------------------------------------------------
 
-/** Seed a named profile: its store slot (mode) + its run-state port reservation +
- *  its own settings-<name>.json (proxy or direct helper). */
+/** Seed a named profile: its store slot (credential + mode, the atomic unit) +
+ *  its run-state port reservation + its own settings-<name>.json (proxy or
+ *  direct helper). */
 function seedProfile(
   claudeHome: string,
   name: string,
@@ -191,7 +192,10 @@ function seedProfile(
   port: number,
 ): void {
   const profile = parseProfileName(name);
-  new CopilotEnvState().setProfileMode(profile, mode);
+  new CopilotEnvState().commitProfile(profile, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_seed" },
+    mode,
+  });
   writeRunState({ port }, profile);
   const helper = mode === "proxy" ? proxyHelperCommand(profile) : directHelperCommand(profile);
   const baseUrl = mode === "proxy" ? `http://127.0.0.1:${port}` : "https://api.githubcopilot.com";

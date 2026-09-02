@@ -25,13 +25,14 @@ import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { CODEX_ENV_KEY, type CodexWiringStatus, inspectCodexWiring } from "../codex/config.ts";
 import { getHostLocalCodexHome } from "../codex/host.ts";
 import { codexConfigPath, defaultCodexHome } from "../codex/paths.ts";
-import { credentialSource } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   allProfileNames,
   type AuthProvider,
   CopilotEnvState,
+  credentialProvider,
   type ProfileMode,
+  storedCredentialKind,
 } from "../copilot_api/env_state.ts";
 import { ghAuthTokenSpawnSpec } from "../copilot_api/gh_cli.ts";
 import { CopilotApiPaths, profileHomeExists, resolveRootHome } from "../copilot_api/paths.ts";
@@ -610,9 +611,9 @@ export function defaultProbeDeps(): ProbeDeps {
       const { exists, slot } = new CopilotEnvState().profileSlotStatus(name);
       return {
         exists,
-        provider: slot.authProvider,
+        provider: credentialProvider(slot.credential),
         mode: slot.mode,
-        storedToken: slot.githubToken !== null,
+        storedToken: slot.credential.kind === "stored",
         integrationIdentity: slot.integrationIdentity,
       };
     },
@@ -646,7 +647,7 @@ export function defaultProbeDeps(): ProbeDeps {
       for (const name of store.profileNames()) {
         const slot = store.readProfileSlot(name);
         profiles[name] = {
-          provider: slot.authProvider,
+          provider: credentialProvider(slot.credential),
           mode: slot.mode,
           integrationIdentity: slot.integrationIdentity,
         };
@@ -927,21 +928,24 @@ export async function gatherFacts(
 
   // Skip the (~5s) gh probe -- and report Direct as "uses token" -- only when the
   // config is `managed` (execs `agent auth --get [--profile <name>]`) AND the
-  // addressed credential classifies as stored-token; gh-cli classifies to a live gh
+  // addressed credential classifies as a stored token; gh-cli classifies to a live gh
   // probe. Shared by the Codex and Claude scope jobs so the gating stays identical.
-  // Classification is owned by credentialSource() (credential.ts) -- a leftover
-  // token with no provider is "none": no gh probe (no implicit fallback), and
-  // Direct never reads green.
+  // Classification is owned by storedCredentialKind() (env_state.ts, the same
+  // parse the credential union uses) -- a leftover token with no provider is
+  // "none": no gh probe (no implicit fallback), and Direct never reads green.
   const directAuthFor = async (
     managed: boolean,
   ): Promise<{ directAuth: CodexDirectAuthFacts; noGhNeeded: boolean }> => {
     const { provider, storedToken } = runCredential();
-    const source = credentialSource(provider, storedToken);
-    const noGhNeeded = managed && source === "stored-token";
-    const directAuth = source === "gh-cli"
-      ? await sharedDirectAuth()
-      : { command: null, authenticated: false };
-    return { directAuth, noGhNeeded };
+    const noProbe = { command: null, authenticated: false };
+    switch (storedCredentialKind(provider, storedToken)) {
+      case "stored":
+        return { directAuth: noProbe, noGhNeeded: managed };
+      case "gh-cli":
+        return { directAuth: await sharedDirectAuth(), noGhNeeded: false };
+      case "none":
+        return { directAuth: noProbe, noGhNeeded: false };
+    }
   };
 
   const jobs: Promise<void>[] = [];
@@ -1113,7 +1117,7 @@ export async function gatherFacts(
       jobs.push(
         (async () => {
           const slot = deps.profileSlot(profile);
-          const ghAuthenticated = credentialSource(slot.provider, slot.storedToken) === "gh-cli"
+          const ghAuthenticated = storedCredentialKind(slot.provider, slot.storedToken) === "gh-cli"
             ? (await sharedDirectAuth()).authenticated
             : false;
           facts.profileAuth = {
@@ -1134,11 +1138,11 @@ export async function gatherFacts(
       jobs.push(
         (async () => {
           // The credential state, agent-independent. gh is a credential ONLY when
-          // credentialSource() says gh-cli (no implicit fallback); reuses the shared
+          // storedCredentialKind() says gh-cli (no implicit fallback); reuses the shared
           // (cached) gh probe -- no extra spawn.
           const provider = deps.authProvider();
           const storedToken = deps.storedTokenPresent();
-          const ghAuthenticated = credentialSource(provider, storedToken) === "gh-cli"
+          const ghAuthenticated = storedCredentialKind(provider, storedToken) === "gh-cli"
             ? (await sharedDirectAuth()).authenticated
             : false;
           facts.auth = {

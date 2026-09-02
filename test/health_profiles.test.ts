@@ -644,10 +644,14 @@ test("the default sweep gathers the default target first, then sorted named targ
     // b: full proxy profile (slot + home + persisted port). a: direct slot only.
     const a = parseProfileName("a-direct");
     const b = parseProfileName("b-proxy");
-    store.setCredential(a, { githubToken: "tok-a", authProvider: "gh-token" });
-    store.setProfileMode(a, "direct");
-    store.setCredential(b, { githubToken: "tok-b", authProvider: "gh-token" });
-    store.setProfileMode(b, "proxy");
+    store.commitProfile(a, {
+      credential: { kind: "stored", provider: "gh-token", token: "tok-a" },
+      mode: "direct",
+    });
+    store.commitProfile(b, {
+      credential: { kind: "stored", provider: "gh-token", token: "tok-b" },
+      mode: "proxy",
+    });
     mkdirSync(profileHome(b), { recursive: true });
     writeRunState({ port: 4555 }, b);
     // c: half-created (home only, no slot).
@@ -696,7 +700,10 @@ test("the launchers' fast runtime scope never sweeps named profiles", async () =
   const home = isolateProxyHome("copilot-health-fastscope-");
   try {
     const b = parseProfileName("b-proxy");
-    new CopilotEnvState().setProfileMode(b, "proxy");
+    new CopilotEnvState().commitProfile(b, {
+      credential: { kind: "stored", provider: "gh-token", token: "tok-b" },
+      mode: "proxy",
+    });
     mkdirSync(profileHome(b), { recursive: true });
     writeRunState({ port: 4555 }, b);
     const facts = await gatherFacts("runtime", {}, offlineDeps());
@@ -711,8 +718,10 @@ test("--profile narrows gathering to the named target and excludes account-wide 
   const home = isolateProxyHome("copilot-health-narrow-");
   try {
     const store = new CopilotEnvState();
-    store.setCredential(P, { githubToken: "tok-p", authProvider: "gh-token" });
-    store.setProfileMode(P, "proxy");
+    store.commitProfile(P, {
+      credential: { kind: "stored", provider: "gh-token", token: "tok-p" },
+      mode: "proxy",
+    });
     mkdirSync(profileHome(P), { recursive: true });
     writeRunState({ port: 4555 }, P);
 
@@ -825,15 +834,19 @@ test("health gathering does zero writes over a home with seeded profiles", async
   const home = isolateProxyHome("copilot-health-zerowrites-");
   try {
     const store = new CopilotEnvState();
-    store.setCredential(P, { githubToken: "tok-p", authProvider: "gh-token" });
-    store.setProfileMode(P, "proxy");
+    store.commitProfile(P, {
+      credential: { kind: "stored", provider: "gh-token", token: "tok-p" },
+      mode: "proxy",
+    });
     mkdirSync(profileHome(P), { recursive: true });
     writeRunState({ port: 4555 }, P);
     // A proxy slot with NO home (its resolvePort answer is an unreserved
     // candidate -- resolving it must not persist anything).
     const q = parseProfileName("q-homeless");
-    store.setCredential(q, { githubToken: "tok-q", authProvider: "gh-token" });
-    store.setProfileMode(q, "proxy");
+    store.commitProfile(q, {
+      credential: { kind: "stored", provider: "gh-token", token: "tok-q" },
+      mode: "proxy",
+    });
     // A half-created home with no slot.
     mkdirSync(join(home, "profiles", "r-half"), { recursive: true });
 
@@ -858,8 +871,10 @@ test("gatherFacts narrowed to a DIRECT profile inspects direct wiring with the p
   const home = isolateProxyHome("copilot-health-narrowdirect-");
   try {
     const store = new CopilotEnvState();
-    store.setCredential(P, { githubToken: "tok-p", authProvider: "gh-token" });
-    store.setProfileMode(P, "direct");
+    store.commitProfile(P, {
+      credential: { kind: "stored", provider: "gh-token", token: "tok-p" },
+      mode: "direct",
+    });
 
     const codexHome = join(home, "codex-home");
     configureCodexConfig(codexHome, { mode: "direct", profile: P, quiet: true });
@@ -893,7 +908,10 @@ test("gatherFacts narrowed to a DIRECT profile inspects direct wiring with the p
 test("--live --profile routes both live probes through the profile's wiring", async () => {
   const home = isolateProxyHome("copilot-health-livenarrow-");
   try {
-    new CopilotEnvState().setProfileMode(P, "direct");
+    new CopilotEnvState().commitProfile(P, {
+      credential: { kind: "stored", provider: "gh-token", token: "tok-p" },
+      mode: "direct",
+    });
     const seen: { agent: string; home: string; profile: Profile }[] = [];
     const facts = await gatherFacts(
       "full",
@@ -925,7 +943,10 @@ test("the default sweep never runs per-profile live probes", async () => {
   const home = isolateProxyHome("copilot-health-livesweep-");
   try {
     const b = parseProfileName("b-proxy");
-    new CopilotEnvState().setProfileMode(b, "proxy");
+    new CopilotEnvState().commitProfile(b, {
+      credential: { kind: "stored", provider: "gh-token", token: "tok-b" },
+      mode: "proxy",
+    });
     mkdirSync(profileHome(b), { recursive: true });
     const liveProfiles: Profile[] = [];
     await gatherFacts(

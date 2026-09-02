@@ -18,9 +18,16 @@ import {
 import { providerModeExitCode, type RequestedMode } from "../agents/provider_mode.ts";
 import { configureClaudeConfig } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { Credential } from "../copilot_api/credential.ts";
+import { ghAuthToken } from "../copilot_api/credential.ts";
 import { type ProxyStatus, proxyStatus, stopTrackedProxy } from "../copilot_api/daemon.ts";
-import { allProfileNames, CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
+import {
+  allProfileNames,
+  CopilotEnvState,
+  credentialProvider,
+  type ProfileMode,
+  type ProfileSlot,
+  type ProvisionedCredential,
+} from "../copilot_api/env_state.ts";
 import { profileHome, profileHomeNames } from "../copilot_api/paths.ts";
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import { parseProfileFlag, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
@@ -28,7 +35,7 @@ import { cyan, gray, green, yellow } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { authenticate, type CredentialAcquisition, parseAcquisition } from "./auth.ts";
+import { acquireCredential, type CredentialAcquisition, parseAcquisition } from "./auth.ts";
 
 // Narration to stderr so `--settings-for`'s stdout stays a clean machine-readable path.
 const logger = createStderrLogger();
@@ -52,11 +59,6 @@ export interface ProfileArgs {
   /** `--provider` / `--set`: non-interactive credential acquisition for `--add`. */
   provider?: string;
   set?: string | boolean;
-}
-
-/** The profile's recorded mode from the store (the source of truth), or null. */
-function storedMode(name: ProfileName): ProfileMode | null {
-  return new CopilotEnvState().readProfileSlot(name).mode;
 }
 
 /**
@@ -129,7 +131,9 @@ async function runAdd(
   requested: RequestedMode,
   acquisition: CredentialAcquisition,
 ): Promise<void> {
-  const previous = storedMode(name);
+  const state = new CopilotEnvState();
+  const slot = state.readProfileSlot(name);
+  const previous = slot.mode;
   const mode: ProfileMode | null = requested === "auto" ? previous : requested;
   if (mode === null) {
     throw new Error(
@@ -137,14 +141,7 @@ async function runAdd(
         "always has exactly one mode",
     );
   }
-  // The profile's OWN credential (never the default's): reuse a resolving slot,
-  // acquire otherwise. Explicit --provider/--set always (re)provisions.
-  const cred = new Credential(undefined, name);
-  if (acquisition.kind !== "choose" || !cred.isAuthenticated()) {
-    await authenticate(acquisition, name);
-  } else {
-    logger.log(`  Reusing ${profileLabel(name)}'s existing credential (${cred.provider()}).`);
-  }
+  const credential = await profileCredential(name, slot, acquisition);
   // Switching AWAY from proxy strands the profile's daemon (nothing will route to it
   // anymore); stop it as part of the switch rather than leaving an orphan serving.
   if (previous === "proxy" && mode === "direct") {
@@ -152,14 +149,12 @@ async function runAdd(
     if (signalled) logger.log(`  Stopped ${profileLabel(name)}'s proxy daemon (now direct).`);
   }
   logger.log(configuringLine(profileLabel(name), mode, " (both agents)"));
-  // wireBothAgents resolves+persists the direct client identity (a rejected credential
-  // throws here, before the store commits the mode below, so the profile stays unwired).
+  // ONE atomic commit of the whole slot (credential + mode) BEFORE the wiring:
+  // the store can never hold a half profile, whatever happens next. A wiring
+  // failure below (including a rejected credential's identity probe) leaves a
+  // complete-but-unwired slot that a re-add or the launchers' `--sync` re-derives.
+  state.commitProfile(name, { credential, mode });
   await wireBothAgents(name, mode, false);
-  // The store commit is LAST -- it is the success marker. If wiring threw above, the
-  // store keeps the previous mode (or no profile at all), so `--check` and `--sync`
-  // keep answering for the last fully-applied state and a later `--sync` re-derives
-  // any partially written artifacts from it.
-  new CopilotEnvState().setProfileMode(name, mode);
   const switched = previous !== null && previous !== mode ? ` (switched from ${previous})` : "";
   logger.success(`${profileLabel(name)} is ready${switched}.`);
   logger.log(`  Launch it:  cl --profile ${name}  /  cx --profile ${name}`);
@@ -170,13 +165,37 @@ async function runAdd(
   }
 }
 
+/** The credential `--add` commits: the slot's own when it still resolves and no
+ *  explicit `--provider`/`--set` re-provisions, freshly acquired otherwise --
+ *  never the default's (a named profile never falls back). Reuse is judged on
+ *  the ONE slot snapshot the caller read (a stored token resolves by presence;
+ *  gh-cli by a live `gh` probe) -- never a second store read, so the value
+ *  returned is exactly the value that was judged. */
+async function profileCredential(
+  name: ProfileName,
+  slot: ProfileSlot,
+  acquisition: CredentialAcquisition,
+): Promise<ProvisionedCredential> {
+  const existing = slot.credential;
+  if (acquisition.kind === "choose" && existing.kind !== "none") {
+    const resolves = existing.kind === "stored" || ghAuthToken() !== null;
+    if (resolves) {
+      logger.log(
+        `  Reusing ${profileLabel(name)}'s existing credential (${credentialProvider(existing)}).`,
+      );
+      return existing;
+    }
+  }
+  return acquireCredential(acquisition);
+}
+
 /**
  * The shared profile teardown, in dependency order: stop its daemon (it holds the
  * credential in memory; a signalled-but-unstoppable daemon throws BEFORE anything
- * is deleted), strip both agents' artifacts, clear the store slot (credential +
- * mode), and remove its isolated daemon home (config/apiKeys/run-state/sqlite/
- * logs + the port reservation). Used by `agent profile --del` and `agent
- * uninstall`.
+ * is deleted), strip both agents' artifacts, remove the whole store slot in one
+ * atomic write (credential + mode together, never a half left behind), and remove
+ * its isolated daemon home (config/apiKeys/run-state/sqlite/logs + the port
+ * reservation). Used by `agent profile --del` and `agent uninstall`.
  */
 export async function deleteProfileEverywhere(name: ProfileName): Promise<void> {
   const { signalled, stopped } = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, name);
@@ -187,9 +206,7 @@ export async function deleteProfileEverywhere(name: ProfileName): Promise<void> 
     );
   }
   for (const agent of bothAgents()) agent.removeProfile(name);
-  const state = new CopilotEnvState();
-  state.setCredential(name, { githubToken: null, authProvider: null });
-  state.setProfileMode(name, null);
+  new CopilotEnvState().deleteProfile(name);
   rmSync(profileHome(name), { recursive: true, force: true });
 }
 
@@ -201,8 +218,7 @@ async function runDel(name: ProfileName): Promise<void> {
   // Sweep NOTHING for a profile that never existed: a foreign same-named
   // settings-<name>.json or a hand-made [model_providers.copilot-env-<name>]
   // is not ours to delete unless the store/home says the profile was real.
-  const existed = storedMode(name) !== null ||
-    new Credential(undefined, name).provider() !== null ||
+  const existed = new CopilotEnvState().profileSlotStatus(name).exists ||
     profileHomeNames().includes(name);
   if (!existed) {
     consola.info(`${profileLabel(name)} does not exist - nothing to delete.`);
@@ -282,7 +298,7 @@ async function runList(): Promise<void> {
     names.map(async (name): Promise<ProfileListRow> => {
       const slot = state.readProfileSlot(name);
       const daemon = slot.mode === "proxy" ? await proxyStatus(name) : null;
-      return { name, provider: slot.authProvider, mode: slot.mode, daemon };
+      return { name, provider: credentialProvider(slot.credential), mode: slot.mode, daemon };
     }),
   );
   // One consola message for the whole table (a single prefix, not one per row --
@@ -299,67 +315,79 @@ async function runList(): Promise<void> {
 /** `--check <name>`: the launcher contract, driven by the STORE slot. The exit
  *  codes come from providerModeExitCode (the shared `--check` contract): the
  *  slot's own direct/proxy when complete, "other" (1 -- never start a daemon)
- *  for no such profile OR an incomplete one (mode without credential). */
+ *  for no such profile OR an incomplete one -- a partial slot is never launchable. */
 function runCheck(name: ProfileName): void {
   const slot = new CopilotEnvState().readProfileSlot(name);
-  if (slot.mode === null) {
-    console.log(
-      `${
-        profileLabel(name)
-      } does not exist - create it with \`agent profile --add ${name} --direct|--proxy\``,
-    );
-    process.exitCode = providerModeExitCode("other");
-    return;
+  switch (slot.kind) {
+    case "partial":
+      console.log(
+        slot.mode === null
+          ? `${
+            profileLabel(name)
+          } does not exist - create it with \`agent profile --add ${name} --direct|--proxy\``
+          : `${
+            profileLabel(name)
+          } has no credential - repair it with \`agent auth --profile ${name}\` ` +
+            `or \`agent profile --add ${name}\``,
+      );
+      process.exitCode = providerModeExitCode("other");
+      return;
+    case "complete":
+      console.log(`${profileLabel(name)}: ${slot.mode}`);
+      process.exitCode = providerModeExitCode(slot.mode);
+      return;
+    default:
+      assertNever(slot);
   }
-  if (slot.authProvider === null) {
-    console.log(
-      `${profileLabel(name)} has no credential - repair it with \`agent auth --profile ${name}\` ` +
-        `or \`agent profile --add ${name}\``,
-    );
-    process.exitCode = providerModeExitCode("other");
-    return;
-  }
-  console.log(`${profileLabel(name)}: ${slot.mode}`);
-  process.exitCode = providerModeExitCode(slot.mode);
 }
 
 /**
  * `--settings-for <name>`: re-sync the profile's Claude settings file against the
- * live proxy port (mode from the store) and print its ABSOLUTE PATH on stdout --
- * the machine contract `cl --profile <name>` evals into `claude --settings <path>`.
+ * live proxy port (the COMPLETE store slot drives it -- a partial profile is not
+ * launchable, so it errors like `--check` instead of syncing half a setup) and
+ * print its ABSOLUTE PATH on stdout -- the machine contract `cl --profile <name>`
+ * evals into `claude --settings <path>`.
  */
 async function runSettingsFor(name: ProfileName): Promise<void> {
-  const mode = storedMode(name);
-  if (mode === null) {
+  const slot = new CopilotEnvState().readProfileSlot(name);
+  if (slot.kind === "partial") {
     throw new Error(
-      `${
-        profileLabel(name)
-      } does not exist - create it with \`agent profile --add ${name} --direct|--proxy\``,
+      slot.mode === null
+        ? `${
+          profileLabel(name)
+        } does not exist - create it with \`agent profile --add ${name} --direct|--proxy\``
+        : `${
+          profileLabel(name)
+        } has no credential - repair it with \`agent auth --profile ${name}\` ` +
+          `or \`agent profile --add ${name}\``,
     );
   }
   const claudeHome = resolveClaudeHome();
-  configureClaudeConfig(claudeHome, mode, {
+  configureClaudeConfig(claudeHome, slot.mode, {
     quiet: true,
     profile: name,
-    directIntegrationId: mode === "direct"
+    directIntegrationId: slot.mode === "direct"
       ? await resolveAndPersistDirectIdentity(name)
       : undefined,
   });
   process.stdout.write(`${settingsPathFor(claudeHome, name)}\n`);
 }
 
-/** `--sync`: refresh EVERY profile's wiring (both agents) against the live ports.
+/** `--sync`: refresh EVERY complete profile's wiring (both agents) against the
+ *  live ports -- this is also what heals a committed-but-unwired `--add`.
  *  Launcher plumbing (`cx --profile` runs it pre-launch); quiet and per-profile
- *  resilient (one broken profile never blocks the rest), never touches the
- *  default wiring -- but any failure still exits non-zero so callers can warn. */
+ *  resilient (one broken profile never blocks the rest; a partial slot is repair
+ *  territory, not syncable), never touches the default wiring -- but any failure
+ *  still exits non-zero so callers can warn. */
 async function runSync(): Promise<void> {
   let synced = 0;
   let failed = 0;
-  for (const name of new CopilotEnvState().profileNames()) {
-    const mode = storedMode(name);
-    if (mode === null) continue;
+  const state = new CopilotEnvState();
+  for (const name of state.profileNames()) {
+    const slot = state.readProfileSlot(name);
+    if (slot.kind !== "complete") continue;
     try {
-      await wireBothAgents(name, mode, true);
+      await wireBothAgents(name, slot.mode, true);
       synced++;
     } catch (e) {
       failed++;

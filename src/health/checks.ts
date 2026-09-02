@@ -4,8 +4,11 @@ import { DIRECT_BASE_URL } from "../claude/config.ts";
 import { directHelperPath } from "../claude/paths.ts";
 import { codexProviderId } from "../codex/config.ts";
 import { codexConfigPath } from "../codex/paths.ts";
-import { credentialSource } from "../copilot_api/credential.ts";
-import type { AuthProvider } from "../copilot_api/env_state.ts";
+import {
+  type AuthProvider,
+  type StoredCredential,
+  storedCredentialKind,
+} from "../copilot_api/env_state.ts";
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
 import { lastActivityMs } from "../scripts/idle_watchdog.ts";
@@ -45,6 +48,20 @@ function startFix(profile: Profile): string {
 /** The re-wire fix for a NAMED profile (mode is sticky from the store on a re-add). */
 function profileAddFix(name: ProfileName): string {
   return `agent profile --add ${name}`;
+}
+
+/** Whether a classified credential actually resolves -- THE predicate shared by
+ *  checkAuth and checkProfileAuth (a stored token resolves by presence, gh-cli
+ *  by the live gh probe, none never). Exhaustive on the credential union. */
+function credentialResolves(kind: StoredCredential["kind"], ghAuthenticated: boolean): boolean {
+  switch (kind) {
+    case "stored":
+      return true;
+    case "gh-cli":
+      return ghAuthenticated;
+    case "none":
+      return false;
+  }
 }
 
 /**
@@ -737,8 +754,8 @@ export function checkProfileAuth(
       fix: addFix,
     };
   }
-  const source = credentialSource(slot.provider, resolution.storedToken);
-  const resolves = source === "gh-cli" ? resolution.ghAuthenticated : source === "stored-token";
+  const source = storedCredentialKind(slot.provider, resolution.storedToken);
+  const resolves = credentialResolves(source, resolution.ghAuthenticated);
   if (!resolves) {
     return {
       ...base,
@@ -864,7 +881,7 @@ export function checkAuth(f: AuthFacts): CheckResult {
       pinnedIntegrationId: f.pinnedIntegrationId,
     },
   };
-  // Provider classification owned by credentialSource() (credential.ts); a
+  // Provider classification owned by storedCredentialKind() (env_state.ts); a
   // chosen-but-unresolved provider is a warn, not OK.
   if (f.provider === null) {
     return {
@@ -879,8 +896,8 @@ export function checkAuth(f: AuthFacts): CheckResult {
       fix: "agent auth",
     };
   }
-  const source = credentialSource(f.provider, f.storedToken);
-  const resolves = source === "gh-cli" ? f.ghAuthenticated : source === "stored-token";
+  const source = storedCredentialKind(f.provider, f.storedToken);
+  const resolves = credentialResolves(source, f.ghAuthenticated);
   if (resolves) {
     const how = f.provider === "gh-cli" ? "gh CLI (`gh auth token`)" : "stored GitHub token";
     return {

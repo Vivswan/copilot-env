@@ -10,9 +10,11 @@ import { rmSync } from "node:fs";
 import { resolveCommand } from "../utils/command.ts";
 import { withFileLockSync } from "../utils/file_lock.ts";
 import {
-  AUTH_PROVIDERS,
   type AuthProvider,
   CopilotEnvState,
+  credentialProvider,
+  type ProvisionedCredential,
+  type StoredCredential,
   type TokenProvider,
 } from "./env_state.ts";
 import { ghAuthTokenSpawnSpec } from "./gh_cli.ts";
@@ -28,37 +30,6 @@ export { AUTH_PROVIDERS } from "./env_state.ts";
 export interface CredentialStatus {
   provider: AuthProvider | null;
   resolves: boolean;
-}
-
-export type CredentialSource = "stored-token" | "gh-cli" | "none";
-
-// Adding a provider to AUTH_PROVIDERS forces an entry here (the Record is
-// exhaustive at compile time); "stored-token" additionally requires the token
-// to actually be present.
-const PROVIDER_SOURCE: Record<AuthProvider, Exclude<CredentialSource, "none">> = {
-  "copilot": "stored-token",
-  "gh-cli": "gh-cli",
-  "gh-token": "stored-token",
-};
-
-function isAuthProvider(provider: string): provider is AuthProvider {
-  return (AUTH_PROVIDERS as readonly string[]).includes(provider);
-}
-
-/**
- * Where the Direct credential comes from for a recorded provider -- the single
- * classification behind `Credential.resolve()` and the health gh-probe gating.
- * A null or unrecognized provider (stale state from a newer release) is "none",
- * fail-closed: no implicit gh fallback. Takes `string | null` so health's raw
- * provider facts feed it without casts.
- */
-export function credentialSource(
-  provider: string | null,
-  hasStoredToken: boolean,
-): CredentialSource {
-  if (provider === null || !isAuthProvider(provider)) return "none";
-  const source = PROVIDER_SOURCE[provider];
-  return source === "stored-token" && !hasStoredToken ? "none" : source;
 }
 
 /** Run `gh auth token` (nvm-safe), returning the trimmed token or null. */
@@ -95,19 +66,25 @@ export class Credential {
     this.profile = profile;
   }
 
+  /** The parsed credential in the addressed slot (the StoredCredential union). */
+  read(): StoredCredential {
+    return this.state.readCredential(this.profile);
+  }
+
   /** The recorded provider, or null when one was never chosen / is unrecognized. */
   provider(): AuthProvider | null {
-    // CopilotEnvState validates `authProvider` against the picklist on read, so an
-    // unknown/corrupt value already reads back as null -- no extra guard needed here.
-    return this.state.readCredential(this.profile).authProvider;
+    // CopilotEnvState parses the slot at the read boundary, so an unknown/corrupt
+    // provider already reads back as none -- no extra guard needed here.
+    return credentialProvider(this.read());
   }
 
   /**
-   * The resolved Direct credential, driven STRICTLY by the recorded provider -- NO
-   * implicit `gh` fallback and no token-without-provider:
-   *   - gh-cli           -> `gh auth token` (live)
-   *   - copilot/gh-token -> the stored token
-   *   - none / unknown   -> null (the caller prompts / errors; never silently gh)
+   * The resolved Direct credential, driven STRICTLY by the parsed credential -- NO
+   * implicit `gh` fallback and no token-without-provider (unrepresentable in the
+   * union):
+   *   - gh-cli -> `gh auth token` (live)
+   *   - stored -> the stored token (copilot/gh-token)
+   *   - none   -> null (the caller prompts / errors; never silently gh)
    *
    * `gh` substitutes the gh-cli probe: batch callers (the settings-bundle
    * import resolves many slots in one run) pass a memoized wrapper so the
@@ -115,10 +92,10 @@ export class Credential {
    * either way -- the parameter never changes WHICH source is consulted.
    */
   resolve(gh: () => string | null = ghAuthToken): string | null {
-    const { githubToken, authProvider } = this.state.readCredential(this.profile);
-    switch (credentialSource(authProvider, githubToken !== null)) {
-      case "stored-token":
-        return githubToken;
+    const credential = this.read();
+    switch (credential.kind) {
+      case "stored":
+        return credential.token;
       case "gh-cli":
         return gh();
       case "none":
@@ -141,14 +118,22 @@ export class Credential {
     return { provider: this.provider(), resolves: this.resolve() !== null };
   }
 
+  /** Record the provisioned credential into the addressed slot whole (the union
+   *  makes token-without-provider / token-with-gh-cli unwritable). A NAMED
+   *  profile must already exist -- creation is `agent profile --add`'s atomic
+   *  commit, so this can never leave a half profile behind. */
+  record(credential: ProvisionedCredential): void {
+    this.state.setCredential(this.profile, credential);
+  }
+
   /** Record a token-backed provider (copilot/gh-token) together with its token. */
   store(provider: TokenProvider, token: string): void {
-    this.state.setCredential(this.profile, { githubToken: token, authProvider: provider });
+    this.record({ kind: "stored", provider, token });
   }
 
   /** Record `gh-cli`: rely on the machine's `gh` login, hold no token of our own. */
   useGhCli(): void {
-    this.state.setCredential(this.profile, { githubToken: null, authProvider: "gh-cli" });
+    this.record({ kind: "gh-cli" });
   }
 
   /**
@@ -162,9 +147,7 @@ export class Credential {
    * scrub covers the file). Returns whether anything was actually cleared.
    */
   clear(): boolean {
-    const { githubToken, authProvider } = this.state.readCredential(this.profile);
-    const had = githubToken !== null || authProvider !== null;
-    this.state.setCredential(this.profile, { githubToken: null, authProvider: null });
+    const had = this.state.clearCredential(this.profile);
     if (this.profile === null) {
       const { githubTokenFile: tokenFile, githubTokenLoginLock: lockPath } = new CopilotApiPaths();
       withFileLockSync(

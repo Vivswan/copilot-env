@@ -59,15 +59,57 @@ describe("resolveDenoBin", () => {
     expect(resolveDenoBin()).toBe("/opt/deno/bin/deno");
   });
 
+  test("the override and dev fast paths never read the pin -- the recovery hatch survives a broken .dvmrc", () => {
+    const readPin = () => {
+      throw new Error("pin must not be read on this path");
+    };
+    expect(
+      resolveDenoBin({ [SIDECAR_DENO_ENV]: "/opt/deno/bin/deno" }, dir, { readPin }),
+    ).toBe("/opt/deno/bin/deno");
+    expect(
+      resolveDenoBin({}, dir, { "runtimeExecPath": "/checkout/deno", readPin }),
+    ).toBe("/checkout/deno");
+  });
+
   test("a relative override is rejected at the boundary", () => {
     process.env[SIDECAR_DENO_ENV] = "deno";
     expect(() => resolveDenoBin()).toThrow("absolute path");
   });
 
   test("without an override, the running Deno's own binary is used", () => {
-    // The suite runs under `deno test`, so the runtime fast path is live. The
-    // no-runtime hard-error branch is pinned via detectSidecar's seam below.
+    // The suite runs under `deno test`, so the runtime fast path is live; the
+    // standalone branches are pinned via the runtimeExecPath seam below.
     expect(resolveDenoBin()).toBe(runtimeExecPath() ?? "(not under deno)");
+  });
+
+  /** Plant a fake provisioned sidecar for the REAL pin (what a bare resolve reads). */
+  function plantSidecar(rootHome: string): string {
+    const pin = readDvmrcPin();
+    const bin = sidecarBinPath(rootHome, pin, "linux");
+    mkdirSync(join(rootHome, "deno", pin), { recursive: true });
+    writeFileSync(bin, "#!fake");
+    return bin;
+  }
+
+  test("a compiled standalone resolves the provisioned sidecar under the root home", () => {
+    const bin = plantSidecar(dir);
+    expect(resolveDenoBin({}, dir, { "runtimeExecPath": null, "platform": "linux" })).toBe(bin);
+  });
+
+  test("rootHome DEFAULTS to the resolved root home, so bare call sites find the sidecar", () => {
+    // The compiled-install regression: every production call site is bare, so the
+    // default must look where ensureSidecar provisions -- the root home, not nowhere.
+    process.env.COPILOT_API_HOME = dir;
+    delete process.env.COPILOT_ENV_ROOT_HOME;
+    const bin = plantSidecar(dir);
+    expect(resolveDenoBin({}, undefined, { "runtimeExecPath": null, "platform": "linux" })).toBe(
+      bin,
+    );
+  });
+
+  test("a compiled standalone with nothing provisioned is a hard, actionable error", () => {
+    expect(() => resolveDenoBin({}, dir, { "runtimeExecPath": null, "platform": "linux" }))
+      .toThrow("no usable deno binary");
   });
 });
 

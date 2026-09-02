@@ -32,7 +32,7 @@ import { resolvePassthroughIntegrationId, usePatPassthrough } from "./integratio
 import { generateAliases } from "./models.ts";
 import { CopilotApiPaths, profileHomeNames, resolveRootHome, ROOT_HOME_ENV } from "./paths.ts";
 import { isStandaloneBinary } from "../utils/root.ts";
-import { ensureSidecar } from "./sidecar.ts";
+import { ensureSidecar, resolveDenoBin } from "./sidecar.ts";
 import {
   checkProxyPort,
   copilotApiFindPort,
@@ -442,9 +442,12 @@ export function spawnConfiguredDaemon(opts: {
 }): SpawnedDaemon {
   const { port, logFile, profile, paths, credential } = opts;
   const config = opts.config ?? new CopilotEnvConfig();
-  // Resolve the entry ONCE for this launch (and every bind-race relaunch below), so the
-  // daemon can never be started from one resolution and pointed at another's cache.
+  // Resolve the entry AND the deno binary ONCE for this launch (and every bind-race
+  // relaunch below), so the daemon can never be started from one resolution and pointed
+  // at another's cache. On a compiled install the binary is the sidecar ensureProxyFloor
+  // provisioned under the same root home.
   const entry = resolveCopilotApiEntry();
+  const denoBin = resolveDenoBin();
   const daemonEnv: Record<string, string> = { COPILOT_API_SQLITE_DB_PATH: paths.sqliteDb };
   if (profile !== null) {
     // A named profile's daemon runs against its OWN isolated home (config.json incl.
@@ -480,6 +483,7 @@ export function spawnConfiguredDaemon(opts: {
       idleWatchdog,
       muteProxyLogs,
       entry,
+      denoBin,
     });
   };
   return { pid: relaunch(port), idleWatchdog, relaunch };

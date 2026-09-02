@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { legacyDirectHelperScript, legacyProxyHelperScript } from "../src/claude/config.ts";
 import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/paths.ts";
 import {
   CI_PS_DOCUMENTS_DIR_ENV,
@@ -244,6 +245,11 @@ test("claude exposes and runs check mode", () => {
   mkdirSync(noneHome, { recursive: true });
   writeClaudeSettings(directHome, { apiKeyHelper: join(directHome, DIRECT_HELPER_NAME) });
   writeClaudeSettings(proxyHome, { apiKeyHelper: join(proxyHome, PROXY_HELPER_NAME) });
+  // A helper-path apiKeyHelper classifies as ours only while the file body is exactly
+  // what the pre-inline releases wrote: stage genuine legacy installs (the path alone
+  // reads "other" -- exit 1 -- pinned in claude_config.test.ts).
+  writeFileSync(join(directHome, DIRECT_HELPER_NAME), legacyDirectHelperScript());
+  writeFileSync(join(proxyHome, PROXY_HELPER_NAME), legacyProxyHelperScript());
   writeClaudeSettings(otherHome, { apiKeyHelper: "/opt/x/helper.sh" });
 
   expect(helpScreen("claude", "--help").output).toContain("--check");
@@ -741,8 +747,10 @@ test("health --scope codex covers only Codex wiring", () => {
 test("health --scope claude covers only Claude wiring", () => {
   const home = mkdtempSync(join(tmpdir(), "copilot-claude-scope-"));
   // Proxy wiring (the proxy is Claude's default; CI has no gh/direct) =>
-  // providerMode "proxy", status ok.
+  // providerMode "proxy", status ok. Legacy helper-path wiring counts only with
+  // the exact pre-inline file body in place.
   writeClaudeSettings(home, { apiKeyHelper: join(home, PROXY_HELPER_NAME) });
+  writeFileSync(join(home, PROXY_HELPER_NAME), legacyProxyHelperScript());
   const proc = runCli(["health", "--scope", "claude", "--json"], {
     env: isolatedEnv({ CLAUDE_CONFIG_DIR: home }),
   });

@@ -6,7 +6,7 @@ import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CLAUDE_PROBE, CODEX_PROBE } from "../src/agents/live_probe.ts";
-import { proxyHelperPath } from "../src/claude/paths.ts";
+import { proxyHelperCommand } from "../src/claude/config.ts";
 import { configureCodexConfig } from "../src/codex/config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { profileHome } from "../src/copilot_api/paths.ts";
@@ -716,7 +716,7 @@ test("--profile narrows gathering to the named target and excludes account-wide 
     writeFileSync(
       join(claudeHome, "settings-p.json"),
       JSON.stringify({
-        "apiKeyHelper": proxyHelperPath(claudeHome, P),
+        "apiKeyHelper": proxyHelperCommand(P),
         "env": { "ANTHROPIC_BASE_URL": proxyLoopbackOrigin(4555) },
       }),
     );

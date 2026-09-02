@@ -1,7 +1,8 @@
 import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DIRECT_HELPER_NAME } from "../src/claude/paths.ts";
+import { directHelperCommand, legacyDirectHelperScript } from "../src/claude/config.ts";
+import { directHelperPath, settingsPathFor } from "../src/claude/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import {
   buildHealthJson,
@@ -812,7 +813,7 @@ test("gatherFacts never probes identity for a both-direct default target (proxyE
     writeCodexConfigToml(codexHome, { baseUrl: "https://api.githubcopilot.com" });
     const claudeHome = join(root, "claude-home");
     writeClaudeSettings(claudeHome, {
-      apiKeyHelper: join(claudeHome, DIRECT_HELPER_NAME),
+      apiKeyHelper: directHelperCommand(),
       baseUrl: "https://api.githubcopilot.com",
     });
     let identityCalls = 0;
@@ -860,7 +861,7 @@ test("a mixed default Claude config (direct helper, proxy base URL) expects the 
     writeCodexConfigToml(codexHome, { baseUrl: "https://api.githubcopilot.com" });
     const claudeHome = join(root, "claude-home");
     writeClaudeSettings(claudeHome, {
-      apiKeyHelper: join(claudeHome, DIRECT_HELPER_NAME),
+      apiKeyHelper: directHelperCommand(),
       baseUrl: "http://127.0.0.1:4141",
     });
     const deps = {
@@ -900,6 +901,41 @@ test("a mixed default Claude config (direct helper, proxy base URL) expects the 
     restoreEnv();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("the claude scope classifies a legacy helper through deps.readFileSafe (the injected reader)", async () => {
+  // The wiring classifier verifies a legacy helper PATH by reading the file's body;
+  // the probe must feed it deps.readFileSafe, so a fake fs here fully decides the
+  // verdict (nothing on the real disk). Body present and exact => direct, and the
+  // stored-token credential needs no gh; body missing => other (a helper that cannot
+  // produce a credential is not ours), never the token-backed direct report.
+  const claudeHome = "/hc";
+  const legacyPath = directHelperPath(claudeHome);
+  const settingsText = JSON.stringify({
+    apiKeyHelper: legacyPath,
+    env: { ANTHROPIC_BASE_URL: "https://api.githubcopilot.com" },
+  });
+  const files = new Map<string, string>([
+    [settingsPathFor(claudeHome), settingsText],
+    [legacyPath, legacyDirectHelperScript()],
+  ]);
+  const deps = {
+    claudeHome: () => claudeHome,
+    readFileSafe: (path: string) => files.get(path) ?? null,
+    resolvePort: () => "4141",
+    authProvider: () => "gh-token" as const,
+    storedTokenPresent: () => true,
+    codexDirectAuth: () => Promise.resolve({ command: null, authenticated: false }),
+  };
+
+  const legacy = await gatherFacts("claude", {}, deps);
+  expect(legacy.claude?.providerMode).toBe("direct");
+  expect(legacy.claude?.directUsesToken).toBe(true);
+
+  files.delete(legacyPath);
+  const orphaned = await gatherFacts("claude", {}, deps);
+  expect(orphaned.claude?.providerMode).toBe("other");
+  expect(orphaned.claude?.directUsesToken).toBe(false);
 });
 
 test("gatherFacts still probes identity when an agent routes through the proxy", async () => {
@@ -989,7 +1025,7 @@ test("gatherFacts derives proxy.floatSkips from the float's own predicate", asyn
     const codexHome = join(root, "codex-home");
     writeCodexConfigToml(codexHome, { baseUrl: "https://api.githubcopilot.com" });
     const claudeHome = join(root, "claude-home");
-    const apiKeyHelper = join(claudeHome, DIRECT_HELPER_NAME);
+    const apiKeyHelper = directHelperCommand();
     writeClaudeSettings(claudeHome, {
       apiKeyHelper,
       baseUrl: "https://api.githubcopilot.com",

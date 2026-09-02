@@ -20,12 +20,7 @@ import {
   AutoupdateState,
   effectiveUpdateCooldownDays,
 } from "../autoupdate/state.ts";
-import {
-  BASE_URL_ENV,
-  type ClaudeWiringStatus,
-  directHelperResolvesViaAgent,
-  inspectClaudeWiring,
-} from "../claude/config.ts";
+import { BASE_URL_ENV, type ClaudeWiringStatus, inspectClaudeWiring } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { CODEX_ENV_KEY, type CodexWiringStatus, inspectCodexWiring } from "../codex/config.ts";
 import { getHostLocalCodexHome } from "../codex/host.ts";
@@ -740,10 +735,9 @@ export function evalCodex(
 
 export function evalClaude(
   home: string,
-  settingsText: string | null,
-  directAuth: CodexDirectAuthFacts = { command: null, authenticated: false },
-  directUsesToken = false,
-  wiring: ClaudeWiringStatus = inspectClaudeWiring(settingsText, home, 0),
+  directAuth: CodexDirectAuthFacts,
+  directUsesToken: boolean,
+  wiring: ClaudeWiringStatus,
   profile: Profile = null,
 ): ClaudeFacts {
   return {
@@ -1071,16 +1065,21 @@ export async function gatherFacts(
         const home = deps.claudeHome();
         // A named profile answers from its own settings-<name>.json.
         const settingsText = deps.readFileSafe(settingsPathFor(home, profile));
-        const wiring = inspectClaudeWiring(settingsText, home, wiringPort(), profile);
-        // Managed iff the apiKeyHelper truly invokes `agent auth --get` addressed at
-        // THIS profile -- the inline managed command, or a legacy install's helper
-        // file whose body says so (not a stale/foreign/missing/mis-addressed helper);
-        // directAuthFor then decides the gh probe.
-        const usesManagedResolver = wiring.providerMode === "direct" &&
-          directHelperResolvesViaAgent(wiring.helperPath, deps.readFileSafe, profile);
-        const { directAuth, noGhNeeded } = await directAuthFor(usesManagedResolver);
+        // deps.readFileSafe backs the classifier's legacy-helper body check, so
+        // "direct" here means the apiKeyHelper truly invokes `agent auth --get`
+        // addressed at THIS profile -- the inline managed command, or a legacy
+        // install's helper file whose body says so (never a stale/foreign/missing/
+        // mis-addressed helper); directAuthFor then decides the gh probe.
+        const wiring = inspectClaudeWiring(
+          settingsText,
+          home,
+          wiringPort(),
+          profile,
+          deps.readFileSafe,
+        );
+        const { directAuth, noGhNeeded } = await directAuthFor(wiring.providerMode === "direct");
         facts.claude = {
-          ...evalClaude(home, settingsText, directAuth, noGhNeeded, wiring, profile),
+          ...evalClaude(home, directAuth, noGhNeeded, wiring, profile),
           provider: runCredential().provider,
           ...(profile === null ? {} : { expectedMode: runCredential().mode }),
         };

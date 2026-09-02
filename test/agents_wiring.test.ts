@@ -12,7 +12,7 @@ import {
   proxyUnusedEverywhere,
   readAgentModes,
 } from "../src/agents/wiring.ts";
-import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/paths.ts";
+import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
 import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
 import {
   envSnapshot,
@@ -58,13 +58,13 @@ function makeClaudeHome(mode: WiredMode): string {
   mkdirSync(home, { recursive: true });
   if (mode === "direct") {
     writeClaudeSettings(home, {
-      apiKeyHelper: join(home, DIRECT_HELPER_NAME),
+      apiKeyHelper: directHelperCommand(),
       baseUrl: DIRECT_BASE,
     });
   }
   if (mode === "proxy") {
     writeClaudeSettings(home, {
-      apiKeyHelper: join(home, PROXY_HELPER_NAME),
+      apiKeyHelper: proxyHelperCommand(),
       baseUrl: PROXY_CLAUDE_BASE,
     });
   }
@@ -118,10 +118,10 @@ describe("proxyUnusedEverywhere edge cases", () => {
     const codexHome = makeCodexHome("direct");
     const claudeHome = join(dir, "claude-home");
     writeClaudeSettings(claudeHome, {
-      apiKeyHelper: join(claudeHome, DIRECT_HELPER_NAME),
+      apiKeyHelper: directHelperCommand(),
       baseUrl: PROXY_CLAUDE_BASE,
     });
-    // The MODE alone keys off the helper path and still reads direct -- which
+    // The MODE alone keys off apiKeyHelper and still reads direct -- which
     // is exactly why BOTH predicates must also check the base URL: Claude's
     // traffic genuinely goes to the local daemon, so the default setup needs
     // the proxy (this assertion once said false -- that WAS the bug health
@@ -134,7 +134,7 @@ describe("proxyUnusedEverywhere edge cases", () => {
   test("false when the Claude direct base URL is missing (partially managed config)", () => {
     const codexHome = makeCodexHome("direct");
     const claudeHome = join(dir, "claude-home");
-    writeClaudeSettings(claudeHome, { apiKeyHelper: join(claudeHome, DIRECT_HELPER_NAME) });
+    writeClaudeSettings(claudeHome, { apiKeyHelper: directHelperCommand() });
     // The float refuses to skip on ANY deviation from the managed Direct URL,
     // but health's question is narrower: no base URL means no route to the
     // local daemon, so the default setup still needs no proxy.
@@ -187,7 +187,7 @@ describe("defaultSetupNeedsProxy base-URL matrix (codex direct + Claude direct h
       const codexHome = makeCodexHome("direct");
       const claudeHome = join(dir, "claude-home");
       writeClaudeSettings(claudeHome, {
-        apiKeyHelper: join(claudeHome, DIRECT_HELPER_NAME),
+        apiKeyHelper: directHelperCommand(),
         ...(baseUrl === undefined ? {} : { baseUrl }),
       });
       expect(defaultSetupNeedsProxy({ codexHome, claudeHome })).toBe(needsProxy);
@@ -198,7 +198,7 @@ describe("defaultSetupNeedsProxy base-URL matrix (codex direct + Claude direct h
     const codexHome = makeCodexHome("direct");
     const claudeHome = join(dir, "claude-home");
     writeClaudeSettings(claudeHome, {
-      apiKeyHelper: join(claudeHome, PROXY_HELPER_NAME),
+      apiKeyHelper: proxyHelperCommand(),
       baseUrl: DIRECT_BASE,
     });
     expect(defaultSetupNeedsProxy({ codexHome, claudeHome })).toBe(true);
@@ -233,7 +233,7 @@ describe("default home resolution", () => {
 
     const claudeHome = join(dir, "claude-env-home");
     writeClaudeSettings(claudeHome, {
-      apiKeyHelper: join(claudeHome, DIRECT_HELPER_NAME),
+      apiKeyHelper: directHelperCommand(),
       baseUrl: DIRECT_BASE,
     });
     process.env.CLAUDE_CONFIG_DIR = claudeHome;

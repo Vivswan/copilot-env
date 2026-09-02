@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DIRECT_HELPER_NAME } from "../src/claude/paths.ts";
+import { directHelperCommand } from "../src/claude/config.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import {
   daemonConfigFile,
@@ -907,7 +907,7 @@ describe("proxyFloatSkips", () => {
     writeFileSync(
       join(claudeHome, "settings.json"),
       JSON.stringify({
-        "apiKeyHelper": join(claudeHome, DIRECT_HELPER_NAME),
+        "apiKeyHelper": directHelperCommand(),
         "env": { "ANTHROPIC_BASE_URL": "https://api.githubcopilot.com" },
       }),
     );

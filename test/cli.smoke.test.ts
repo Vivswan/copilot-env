@@ -313,11 +313,15 @@ test("claude --desktop mode conflict: the exact stderr rendering is pinned", () 
   // The message is a boundary rejection users script against. The deno runtime may
   // interleave its own provisioning lines (Download/Warning) on a cold cache, so the
   // pin is the exact FINAL stderr line -- the rejection is always the last write.
-  const proc = runCli(["claude", "--desktop", "--check"], { env: isolatedEnv() });
+  // CI=1 pins consola to its basic reporter (it picks fancy vs basic from CI/test
+  // detection at import time, so the fancy " ERROR " form only renders outside CI):
+  // one reporter means ONE exact rendering on developer machines and runners alike,
+  // and it silences our own ANSI styling too (src/utils/ansi.ts gates on CI).
+  const proc = runCli(["claude", "--desktop", "--check"], { env: isolatedEnv({ "CI": "1" }) });
   expect(proc.exitCode).toBe(1);
   const lines = proc.stderr.split("\n").filter((l) => l !== "");
   expect(lines[lines.length - 1]).toBe(
-    " ERROR  --desktop cannot be combined with --check/--direct/--proxy.",
+    "[error] --desktop cannot be combined with --check/--direct/--proxy.",
   );
 });
 

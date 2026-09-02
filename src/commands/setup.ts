@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { dirname } from "node:path";
 import { consola } from "consola";
 import { AGENT_CLIS } from "../agents/clis.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { runShellIntegration } from "../shell/integration.ts";
 import { pickAgedVersion } from "../utils/aged_version.ts";
 import { assertNever } from "../utils/assert.ts";
@@ -31,9 +32,9 @@ export const DEFAULT_CLI_COOLDOWN_DAYS = 7;
  * setup-launchers commands plus the install flags.
  */
 export interface ShellArgs {
-  /** Unwire instead of wire. With `launchers`, unwire ONLY the launchers block. */
+  /** Unwire instead of wire. With `launchers`, disable ONLY the launchers. */
   remove?: boolean;
-  /** Also wire (or, with `remove`, only target) the opt-in cl/co/cx launchers. */
+  /** Also enable (or, with `remove`, only disable) the opt-in cl/co/cx launchers. */
   launchers?: boolean;
   /** Also install the optional Codex/Claude/Copilot CLIs. */
   clis?: boolean;
@@ -365,8 +366,8 @@ export function parseShellAction(args: ShellArgs): ShellAction {
   }
   if (remove) {
     if (clis) throw new Error("--clis installs CLIs and cannot be combined with --remove");
-    // --launchers scopes the removal to just the launchers block; otherwise the
-    // whole integration block (which also strips launchers) is removed.
+    // --launchers scopes the removal to just the launchers; otherwise the whole
+    // integration is removed (launchers included).
     return { kind: "remove", allHosts, launchersOnly: launchers };
   }
   if (!clis) return { kind: "wire", allHosts, launchers, clis: null };
@@ -389,23 +390,36 @@ export function parseShellAction(args: ShellArgs): ShellAction {
 
 /**
  * `agent shell`: set up the shell environment for the agents. Wires the
- * copilot-env integration block; `--launchers` also wires the cl/co/cx launchers;
+ * copilot-env integration block; `--launchers` also enables the cl/co/cx
+ * launchers (the `launchers` config key -- `agent env` emits the functions);
  * `--clis` also installs the optional agent CLIs (tuned by --cooldown/--no-sudo/
- * --no-prereqs). `--remove` unwires the integration (and launchers); `--remove
- * --launchers` unwires ONLY the launchers block. `--all-hosts` targets the
+ * --no-prereqs). `--remove` unwires the integration and disables the launchers;
+ * `--remove --launchers` disables ONLY the launchers. `--all-hosts` targets the
  * Windows CurrentUserAllHosts profile.
  */
 export function runShell(args: ShellArgs): void {
   const action = parseShellAction(args);
   if (action.kind === "remove") {
-    runShellIntegration(
-      action.launchersOnly
-        ? { allHosts: action.allHosts, removeLaunchers: true }
-        : { allHosts: action.allHosts, remove: true },
-    );
+    // The launchers ride on the config key now; deleting it is the disable. The
+    // rc strip below only clears blocks an older release wrote.
+    new CopilotEnvConfig().del("launchers");
+    if (action.launchersOnly) {
+      consola.success("Launchers disabled (new shells will no longer define cl/co/cx).");
+    }
+    runShellIntegration({
+      kind: "remove",
+      allHosts: action.allHosts,
+      launchersOnly: action.launchersOnly,
+    });
     return;
   }
   // Opt-in CLI install (add path only) happens before the rc block is wired.
   if (action.clis !== null) installAgentClis(action.clis);
-  runShellIntegration({ allHosts: action.allHosts, launchers: action.launchers });
+  if (action.launchers) {
+    new CopilotEnvConfig().set({ launchers: true });
+    consola.success(
+      "Launchers enabled: cl / co / cx (+ clx / cox / cxx) load via `agent env`.",
+    );
+  }
+  runShellIntegration({ kind: "wire", allHosts: action.allHosts });
 }

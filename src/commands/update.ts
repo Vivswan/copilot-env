@@ -23,10 +23,10 @@ import { packageVersion } from "../utils/version.ts";
 export interface UpdateArgs {
   check?: boolean;
   force?: boolean;
-  /** Enable autoupdate (and apply once immediately). */
+  /** The --auto/--no-auto toggle: Commander folds the pair into ONE option (last
+   *  one wins), so it arrives as one optional boolean -- true enables autoupdate
+   *  (and applies once immediately), false disables it, absent means neither. */
   auto?: boolean;
-  /** Disable autoupdate. */
-  noAuto?: boolean;
   /** Print autoupdate status and exit. */
   autoStatus?: boolean;
 }
@@ -47,9 +47,9 @@ export type UpdateAction =
 
 /** Parse the raw `agent update` flags into an UpdateAction (the CLI boundary). */
 export function parseUpdateAction(args: UpdateArgs): UpdateAction {
-  const reports = [args.check, args.auto, args.noAuto, args.autoStatus].filter(Boolean).length;
+  const reports = [args.check, args.auto !== undefined, args.autoStatus].filter(Boolean).length;
   if (reports > 1) {
-    throw new Error("--check, --auto, --no-auto, and --auto-status are mutually exclusive");
+    throw new Error("--check, --auto/--no-auto, and --auto-status are mutually exclusive");
   }
   if (args.force && reports > 0) {
     throw new Error(
@@ -57,8 +57,8 @@ export function parseUpdateAction(args: UpdateArgs): UpdateAction {
     );
   }
   if (args.autoStatus) return { kind: "auto-status" };
-  if (args.noAuto) return { kind: "disable-auto" };
-  if (args.auto) return { kind: "enable-auto" };
+  if (args.auto === false) return { kind: "disable-auto" };
+  if (args.auto === true) return { kind: "enable-auto" };
   if (args.check) return { kind: "check" };
   return { kind: "apply", force: Boolean(args.force) };
 }

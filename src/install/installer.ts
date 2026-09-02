@@ -318,7 +318,7 @@ export function applyInstallPlan(plan: InstallPlan): void {
   }
 
   if (plan.shell === null) return;
-  runShellIntegration({ allHosts: plan.shell.allHosts });
+  runShellIntegration({ kind: "wire", allHosts: plan.shell.allHosts });
 }
 
 /** What to tell the user once a real install finishes. Skipped for

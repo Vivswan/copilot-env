@@ -793,7 +793,9 @@ export function checkLaunchers(f: ShellFacts): CheckResult {
     profile: null,
     scopes: SETUP,
     status: f.launchersWired ? "ok" : "warn",
-    detail: f.launchersWired ? "wired into a shell rc/profile" : "not wired (optional)",
+    detail: f.launchersWired
+      ? "enabled (the `launchers` config key; `agent env` defines them)"
+      : "not enabled (optional)",
     ...(f.launchersWired ? {} : { fix: "agent shell --launchers" }),
     value: { launchersWired: f.launchersWired },
   };

@@ -202,16 +202,41 @@ function verifyShellWiring(): void {
   }
 }
 
-function verifyLauncherWiring(): void {
+/** Captured stdout of the installed launcher (through pwsh for the .ps1 on Windows),
+ *  or null when it exits nonzero. */
+function launcherOutput(launcher: string, args: string[]): string | null {
+  return isWindows
+    ? output("pwsh", ["-NoProfile", "-File", launcher, ...args])
+    : output(launcher, args);
+}
+
+function verifyLauncherWiring(launcher: string): void {
   if (!envBool("SETUP_LAUNCHERS")) {
     return;
   }
-  const marker = isWindows ? "agents.launchers.ps1" : "copilot-env launchers";
-  const wired = profilePaths().some((path) => fileContains(path, marker));
-  if (!wired) {
-    console.error("::error::expected launcher wiring, but none found");
+  // `agent shell --launchers` sets the `launchers` config key; the cl/co/cx
+  // launchers are `agent env` function emissions gated on it -- there is no
+  // launcher rc block anymore, so both halves of that contract are asserted:
+  // the stored key, and the emission the shell wrapper would eval.
+  const stored = launcherOutput(launcher, ["config", "--get", "launchers"]);
+  if (stored !== "true") {
+    console.error(
+      `::error::expected the launchers config key to read true after agent shell --launchers (got ${
+        stored ?? "a failing read"
+      })`,
+    );
     process.exit(1);
   }
+  const envArgs = isWindows ? ["env", "--format", "powershell"] : ["env"];
+  const emitted = launcherOutput(launcher, envArgs);
+  const clLine = isWindows
+    ? "function global:cl { agent launch claude '--' @args }"
+    : 'cl() { agent launch claude -- "$@"; }';
+  if (emitted === null || !emitted.includes(clLine)) {
+    console.error("::error::agent env does not emit the launcher functions with the key on");
+    process.exit(1);
+  }
+  console.log("launcher opt-in verified: config key on, agent env emits cl/co/cx");
 }
 
 /** The root the installer installed into: its default unless the scenario
@@ -410,7 +435,7 @@ function verifyOutcome(): void {
   verifySidecarDaemonSpawn(launcher);
   verifyOptionalClis();
   verifyShellWiring();
-  verifyLauncherWiring();
+  verifyLauncherWiring(launcher);
   console.log(
     `${isWindows ? "install.ps1" : "install.sh"} ${process.env.INSTALLER_ARGS ?? ""} verified on ${
       process.env.RUNNER_OS ?? process.platform

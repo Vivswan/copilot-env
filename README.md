@@ -61,6 +61,7 @@ Downloads a single self-contained `agent` binary for your platform into `~/.copi
 
 ```bash
 agent init                 # set up BOTH Codex + Claude (auto-detect direct vs the proxy) + next-step guidance
+agent launch <cli>         # launch claude|codex|copilot with the managed flags + provider wiring (--profile <name>, --relaxed; agent args after --)
 agent auth                 # manage the GitHub Copilot credential (--provider copilot|gh-cli|gh-token, --set, --get, --del, --check; --profile <name> addresses a named profile's slot, --list shows every slot)
 agent profile              # manage named profiles: --add <name> --direct|--proxy (one credential + one mode, both agents), --del <name>, --list, --check <name>
 agent config               # get/set preferences (--set <key> <value> / --get [key] / --del <key>; see Configuration below)
@@ -69,11 +70,11 @@ agent start                # launch the daemon and sync aliases (--dry-run to pr
 agent stop                 # stop the daemon (--profile <name> for one profile's daemon, --all for every daemon)
 agent health               # full environment diagnosis (--scope full|runtime|proxy|setup|auth|codex|claude, --json, --live)
 agent models               # list the model ids + names Copilot serves (--proxy / --direct / --json; no flag auto-picks)
-agent env                  # print shell exports for the calling shell (CODEX_HOME / proxy ANTHROPIC_BASE_URL)
+agent env                  # print shell directives for the calling shell (CODEX_HOME / proxy ANTHROPIC_BASE_URL exports + the opt-in launcher functions)
 agent mcp                  # MCP wiring status (--serve runs the stdio server; --remove unwires)
 agent cost                 # estimated token spend across all usage DBs (default + profile daemons)
 agent update               # update to the latest release (--check; cooldown via `agent config --set update-cooldown`)
-agent shell                # wire rc / $PROFILE; --launchers adds cl/co/cx, --clis installs the CLIs, --remove unwires
+agent shell                # wire rc / $PROFILE; --launchers enables cl/co/cx, --clis installs the CLIs, --remove unwires
 agent uninstall            # remove copilot-env entirely (--yes headless, --dry-run preview, --force to delete a source checkout)
 agent codex                # configure Codex; no flag auto-detects the backend, --check reports it
 agent codex --direct       # force GitHub Copilot Direct (no auto-detect probe)
@@ -94,14 +95,14 @@ The installer wires the `agent` wrapper into your shell and exports the proxy en
 - **macOS / Linux:** sources `shell/agents.bashrc` from `~/.bashrc` / `~/.zshrc`.
 - **Windows:** dot-sources `shell/agents.ps1` from your PowerShell `$PROFILE`.
 
-The `cl` / `co` / `cx` launchers are opt-in:
+The `cl` / `co` / `cx` launchers are opt-in shell functions over `agent launch`:
 
-- `cl` reads the configured Claude provider (`agent claude --check`), starts the proxy for proxy-backed or not-yet-configured setups (re-syncing the port/token), then Claude.
-- `co` runs Copilot.
-- `cx` does the same as `cl` for Codex (`agent codex --check`), then Codex.
+- `cl` (`agent launch claude`) reads the configured Claude provider, starts the proxy for proxy-backed or not-yet-configured setups (re-syncing the port/token), then Claude.
+- `co` (`agent launch copilot`) runs Copilot.
+- `cx` (`agent launch codex`) does the same as `cl` for Codex, then Codex.
 - `cl --profile <name>` / `cx --profile <name>` (leading arguments) launch under a named profile instead: the profile's wiring is honored as-is, its own daemon is ensured when proxy-mode, and the default setup is untouched.
 
-Each has a more-permissive variant that adds the agent's most-relaxed flag: `clx` (`--dangerously-skip-permissions`), `cox` (`--allow-all`), `cxx` (`--sandbox danger-full-access`).
+Each has a more-permissive variant that adds the agent's most-relaxed flag (`agent launch ... --relaxed`): `clx` (`--dangerously-skip-permissions`), `cox` (`--allow-all`), `cxx` (`--sandbox danger-full-access`).
 
 Enable them while installing optional CLIs:
 
@@ -109,22 +110,14 @@ Enable them while installing optional CLIs:
 agent shell --clis --launchers
 ```
 
-Or manage only the launcher block:
+Or toggle only the launchers (the `launchers` config key; `agent env` defines the functions in each new shell):
 
 ```bash
 agent shell --launchers
 agent shell --launchers --remove
 ```
 
-Manual sourcing is also supported:
-
-```bash
-source ~/.copilot-env/shell/agents.launchers.bashrc
-```
-
-```powershell
-. ~/.copilot-env/shell/agents.launchers.ps1
-```
+`agent launch <claude|codex|copilot> [--profile <name>] [--relaxed] -- <args...>` works directly too, without the shell functions.
 
 ### Managed proxy lifecycle (auto-start)
 
@@ -196,6 +189,7 @@ agent config --del idle-timeout       # revert one to its default
 | `codex-model-catalog` | `false` | Patched Codex model catalog serving Copilot's real context windows (opt-in). |
 | `idle-timeout` | `3600` | Idle auto-stop window in seconds (`0` disables). |
 | `integration-id` | `auto` (probe per credential) | Pin the Copilot client identity (`Copilot-Integration-Id`), or `auto` to probe per credential. |
+| `launchers` | `false` | Define the `cl` / `co` / `cx` (+ `clx` / `cox` / `cxx`) launcher functions via `agent env`. |
 | `min-port` / `max-port` | `1024` / `65535` | Allowed proxy port range. |
 | `message-websearch-model` | per surface | Web-search model id: the proxy's Messages-API path (default `gpt-5-mini`) and the MCP `web_search` tool (default `gpt-5.6-sol`). |
 | `messages-api` | `true` | Proxy Messages-API (Anthropic-shaped) endpoint. |

@@ -1,4 +1,9 @@
-import { childEnvWithPath, childPathPrepending } from "../src/utils/command.ts";
+import {
+  childEnvWithPath,
+  childPathPrepending,
+  pickVerbatimWindowsSpawn,
+  verbatimCliSpawn,
+} from "../src/utils/command.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 
 const SEP = process.platform === "win32" ? ";" : ":";
@@ -52,4 +57,71 @@ test("childEnvWithPath applies extra and honors the omit predicate (case-insensi
   });
   expect(env.HOME_OVERRIDE).toBe("/tmp/h");
   expect(Object.hasOwn(env, "Copilot_Mixed_Var")).toBe(false);
+});
+
+// --- verbatim agent-CLI spawn ------------------------------------------------
+//
+// User-typed launch args must reach the agent CLI verbatim: cmd.exe expands %VAR%
+// even inside double quotes, so the Windows dispatch may only fall back to it for
+// a batch-ONLY shim. The picker is pure (candidates + an injected sibling probe),
+// so the whole Windows decision table runs on every platform.
+
+const PS_PREFIX = ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"];
+const ARGS = ["--resume", "%USERPROFILE%", "x y"];
+
+test("pickVerbatimWindowsSpawn: a native .exe spawns directly with plain argv", () => {
+  const picked = pickVerbatimWindowsSpawn(
+    "claude",
+    ["C:\\apps\\claude.exe", "C:\\npm\\claude.cmd"],
+    ARGS,
+    () => true,
+  );
+  expect(picked.file).toBe("C:\\apps\\claude.exe");
+  expect(picked.args).toEqual(ARGS); // untouched: no quoting layer at all
+  expect(picked.shell).toBe(false);
+  expect(picked.binDir).toBe("C:\\apps");
+});
+
+test("pickVerbatimWindowsSpawn: the npm .ps1 shim runs via powershell -File (literal argv)", () => {
+  const direct = pickVerbatimWindowsSpawn("claude", ["C:\\npm\\claude.ps1"], ARGS, () => false);
+  expect(direct.file).toBe("powershell");
+  expect(direct.args).toEqual([...PS_PREFIX, "C:\\npm\\claude.ps1", ...ARGS]);
+  expect(direct.shell).toBe(false);
+  expect(direct.binDir).toBe("C:\\npm");
+
+  // A .cmd candidate with the .ps1 sibling npm always ships: prefer the sibling.
+  const sibling = pickVerbatimWindowsSpawn(
+    "claude",
+    ["C:\\npm\\claude", "C:\\npm\\claude.cmd"],
+    ARGS,
+    (path) => path === "C:\\npm\\claude.ps1",
+  );
+  expect(sibling.file).toBe("powershell");
+  expect(sibling.args).toEqual([...PS_PREFIX, "C:\\npm\\claude.ps1", ...ARGS]);
+  // The extensionless npm sh script was skipped, not spawned.
+});
+
+test("pickVerbatimWindowsSpawn: batch-only shims and no-candidate fall back to cmd.exe quoting", () => {
+  const batchOnly = pickVerbatimWindowsSpawn(
+    "claude",
+    ["C:\\hand\\claude.cmd"],
+    ["a b"],
+    () => false,
+  );
+  expect(batchOnly.file).toBe("C:\\hand\\claude.cmd");
+  expect(batchOnly.shell).toBe(true); // cmd.exe: batch parsing is that shim's own semantics
+  expect(batchOnly.args).toEqual(['"a b"']);
+  expect(batchOnly.binDir).toBe("C:\\hand");
+
+  const none = pickVerbatimWindowsSpawn("claude", [], ["a"], () => false);
+  expect(none.file).toBe("claude");
+  expect(none.binDir).toBeNull();
+});
+
+test("verbatimCliSpawn on POSIX resolves the command and never adds a shell", () => {
+  if (process.platform === "win32") return; // the Windows half is the pure picker above
+  const spawn = verbatimCliSpawn("sh", ["-c", "echo %USERPROFILE%"]);
+  expect(spawn.shell).toBe(false);
+  expect(spawn.args).toEqual(["-c", "echo %USERPROFILE%"]);
+  expect(spawn.file.endsWith("sh")).toBe(true);
 });

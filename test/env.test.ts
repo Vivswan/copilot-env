@@ -1,14 +1,11 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
-import { runEnv } from "../src/commands/env.ts";
+import { launcherFunctionLines, runEnv } from "../src/commands/env.ts";
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
-import {
-  CI_PS_DOCUMENTS_DIR_ENV,
-  CI_RC_DIR_ENV,
-  LAUNCHERS_MARKER,
-} from "../src/shell/integration.ts";
+import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../src/shell/integration.ts";
 import { importSpecifier, ROOT, runCli, runSync } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import {
@@ -57,29 +54,6 @@ function isolate(): string {
   return claudeHome;
 }
 
-/** Write a rc/profile file that wires the opt-in launchers block. */
-function wireLaunchers(): void {
-  if (process.platform === "win32") {
-    // On Windows, launchersWired() checks PowerShell profile paths under
-    // USERPROFILE/Documents/WindowsPowerShell/.
-    const psDir = join(dir, "Documents", "WindowsPowerShell");
-    mkdirSync(psDir, { recursive: true });
-    writeFileSync(
-      join(psDir, "Microsoft.PowerShell_profile.ps1"),
-      `${LAUNCHERS_MARKER}\n. '/x/agents.launchers.ps1'\n`,
-    );
-  } else {
-    writeFileSync(
-      join(dir, ".bashrc"),
-      `${LAUNCHERS_MARKER}\nAGENTS_LAUNCHERS='/x/agents.launchers.bashrc'\n[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"\n`,
-    );
-  }
-}
-
-const isLaunchersSource = (l: string): boolean =>
-  (l.includes("agents.launchers.bashrc") && l.includes("] && . ")) ||
-  (l.includes("agents.launchers.ps1") && l.includes("Test-Path"));
-
 /**
  * Run `runEnv` in a CHILD process (`deno eval`) with HOME set at spawn time.
  * `agent env` is always a fresh process in production, so its rc-file scan
@@ -105,8 +79,7 @@ function childBaseEnv(): Record<string, string | undefined> {
     USERPROFILE: dir,
     // The suite floor redirects rc lookups away from every real home; this child
     // wants them under ITS isolated home, so the seams point there explicitly -
-    // BOTH of them: the POSIX rc seam and the Windows PS-Documents seam, which
-    // must line up with the Documents tree wireLaunchers() writes under `dir`.
+    // BOTH of them: the POSIX rc seam and the Windows PS-Documents seam.
     [CI_RC_DIR_ENV]: dir,
     [CI_PS_DOCUMENTS_DIR_ENV]: join(dir, "Documents"),
     COPILOT_API_HOME: join(dir, "gw"),
@@ -172,17 +145,39 @@ test("env does not unset a CODEX_HOME the user pointed elsewhere", () => {
   expect(lines.some((l) => l.includes("CODEX_HOME"))).toBe(false);
 });
 
-test("env emits a launchers source when the launchers are wired", () => {
-  dir = tmpDir("copilot-env-cmd-");
-  wireLaunchers();
-  const lines = childEnvLines(childBaseEnv());
-  expect(lines.some(isLaunchersSource)).toBe(true);
+// The exact launcher emissions, pinned per platform flavor: the wrappers eval these
+// lines verbatim (agents.ps1 line by line, inside a function -- hence global:), so the
+// spellings are external contracts. Every function delegates to `agent launch` with the
+// user's args behind `--` (quoted on PowerShell, whose bare `--` token would be eaten).
+const POSIX_LAUNCHER_LINES = [
+  'cl() { agent launch claude -- "$@"; }',
+  'co() { agent launch copilot -- "$@"; }',
+  'cx() { agent launch codex -- "$@"; }',
+  'clx() { agent launch claude --relaxed -- "$@"; }',
+  'cox() { agent launch copilot --relaxed -- "$@"; }',
+  'cxx() { agent launch codex --relaxed -- "$@"; }',
+];
+const PS_LAUNCHER_LINES = [
+  "function global:cl { agent launch claude '--' @args }",
+  "function global:co { agent launch copilot '--' @args }",
+  "function global:cx { agent launch codex '--' @args }",
+  "function global:clx { agent launch claude --relaxed '--' @args }",
+  "function global:cox { agent launch copilot --relaxed '--' @args }",
+  "function global:cxx { agent launch codex --relaxed '--' @args }",
+];
+
+test("launcherFunctionLines pins both platform flavors, feature-matched", () => {
+  expect(launcherFunctionLines(false)).toEqual(POSIX_LAUNCHER_LINES);
+  expect(launcherFunctionLines(true)).toEqual(PS_LAUNCHER_LINES);
 });
 
-test("env skips the launchers source when the launchers are not wired", () => {
-  dir = tmpDir("copilot-env-cmd-"); // no .bashrc / launchers marker
-  const lines = childEnvLines(childBaseEnv());
-  expect(lines.some(isLaunchersSource)).toBe(false);
+test("env emits the launcher functions only when the launchers config key is on", () => {
+  isolate();
+  expect(envLines()).toEqual([]); // default: opt-in, so nothing is defined
+  new CopilotEnvConfig().set({ launchers: true });
+  expect(envLines()).toEqual(POSIX_LAUNCHER_LINES);
+  new CopilotEnvConfig().set({ launchers: false });
+  expect(envLines()).toEqual([]); // stored false stays off, same as unset
 });
 
 // --- --profile ------------------------------------------------------------------

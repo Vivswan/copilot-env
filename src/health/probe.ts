@@ -211,12 +211,15 @@ export interface ProxyFacts {
 export interface ShellFileFact {
   path: string;
   hasIntegration: boolean;
+  /** The file carries a LEGACY launchers rc block (retired; `agent shell` strips it). */
   hasLaunchers: boolean;
 }
 
 export interface ShellFacts {
   files: ShellFileFact[];
   integrationWired: boolean;
+  /** The `launchers` config key: the cl/co/cx launchers are `agent env` emissions
+   *  gated on it, so the key -- not any rc marker -- is what "wired" means. */
   launchersWired: boolean;
 }
 
@@ -694,8 +697,13 @@ export function defaultProbeDeps(): ProbeDeps {
 
 // --- pure sub-evaluators (no I/O) -------------------------------------------
 
-/** Derive shell-wiring facts from raw rc/profile contents (null = absent file). */
-export function evalShellFiles(contents: { path: string; content: string | null }[]): ShellFacts {
+/** Derive shell-wiring facts from raw rc/profile contents (null = absent file) plus
+ *  the stored launcher opt-in. Per-file hasLaunchers reports a leftover LEGACY block;
+ *  launchersWired is the `launchers` config key (see ShellFacts). */
+export function evalShellFiles(
+  contents: { path: string; content: string | null }[],
+  launchersEnabled: boolean,
+): ShellFacts {
   const files: ShellFileFact[] = contents.map(({ path, content }) => ({
     path,
     hasIntegration: content !== null && hasMarker(content, MARKER),
@@ -704,7 +712,7 @@ export function evalShellFiles(contents: { path: string; content: string | null 
   return {
     files,
     integrationWired: files.some((f) => f.hasIntegration),
-    launchersWired: files.some((f) => f.hasLaunchers),
+    launchersWired: launchersEnabled,
   };
 }
 
@@ -1178,7 +1186,7 @@ export async function gatherFacts(
           targets = [];
         }
         const contents = targets.map((path) => ({ path, content: deps.readFileSafe(path) }));
-        facts.shell = evalShellFiles(contents);
+        facts.shell = evalShellFiles(contents, new CopilotEnvConfig().launchersEnabled());
         facts.clis = deps.agentClis().map((c) => ({
           command: c.command,
           name: c.name,

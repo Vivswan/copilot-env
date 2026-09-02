@@ -6,6 +6,7 @@ import { runAuth } from "../src/commands/auth.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
+import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, removeDir, resetExitCode } from "./helpers.ts";
 
@@ -179,6 +180,31 @@ test("auth --set rejects a conflicting --provider", async () => {
   await expect(runAuth({ set: "ghu_x", provider: "copilot" })).rejects.toThrow(
     "--set only applies to `--provider gh-token`",
   );
+});
+
+test("auth --profile <unknown> errors instead of creating a half profile", async () => {
+  isolate();
+  // The old behavior wrote a credential-only half profile into the store; a
+  // profile is created ONLY by `agent profile --add`'s atomic commit, so the
+  // re-auth path refuses an unknown name -- BEFORE any acquisition runs.
+  await expect(runAuth({ set: "ghu_x", profile: "ghost" })).rejects.toThrow(
+    /no such profile 'ghost'/,
+  );
+  expect(state().read().profiles).toEqual({});
+
+  // An existing profile's re-auth still lands in ITS slot only.
+  const ghost = parseProfileName("ghost");
+  state().commitProfile(ghost, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghu_old" },
+    mode: "direct",
+  });
+  await runAuth({ set: "ghu_new", profile: "ghost" });
+  expect(new CopilotEnvState().readProfileSlot(ghost).credential).toEqual({
+    kind: "stored",
+    provider: "gh-token",
+    token: "ghu_new",
+  });
+  expect(state().read().githubToken).toBeNull(); // default slot untouched
 });
 
 test("auth --set cannot combine with --get/--del/--check", async () => {

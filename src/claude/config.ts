@@ -682,12 +682,14 @@ export function configureClaudeConfig(
 ): void {
   const quiet = options.quiet ?? false;
   const profile = options.profile ?? null;
-  // Cheap provider-presence gate (no `gh` spawn -- runClaude already did the full resolve
-  // and fail-fasts on it; this backstops direct API callers like --settings-for).
+  // Cheap credential-presence gate (no `gh` spawn -- runClaude already did the full
+  // resolve and fail-fasts on it; this backstops direct API callers like
+  // --settings-for). The parsed union is fail-closed: a recorded provider whose
+  // token is gone reads as "none", so a broken slot is refused here too.
   if (
     profile !== null &&
     mode === "direct" &&
-    new Credential(undefined, profile).provider() === null
+    new Credential(undefined, profile).read().kind === "none"
   ) {
     throw new Error(
       `${profileLabel(profile)} has no credential of its own (a named profile never falls back ` +

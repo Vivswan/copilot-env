@@ -2,7 +2,7 @@
 // (settings-<name>.json, [profiles.<name>], per-profile credential slots and
 // daemon homes). The default path must stay byte-identical throughout.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 import { configureClaudeConfig, inspectClaudeWiring } from "../src/claude/config.ts";
@@ -90,7 +90,7 @@ test("parseProfileName accepts kebab names and rejects reserved/invalid ones", (
 
 // --- credential store slots -----------------------------------------------------
 
-test("named credential slots are isolated and never fall back to the default", () => {
+test("a named credential write requires the profile to exist (no half-profile auto-create)", () => {
   tmpProxyHome();
   const state = new CopilotEnvState();
   new Credential(state).store("gh-token", "ghp_default");
@@ -100,15 +100,47 @@ test("named credential slots are isolated and never fall back to the default", (
   expect(work.resolve()).toBeNull();
   expect(work.isAuthenticated()).toBe(false);
 
-  work.store("gh-token", "ghp_work");
+  // The old behavior auto-created a credential-only half profile here; profiles
+  // are created ONLY by the atomic commit, so the write is a rejection.
+  expect(() => work.store("gh-token", "ghp_work")).toThrow(/no such profile 'work'/);
+  expect(state.profileNames()).toEqual([]);
+  expect(new Credential(state).resolve()).toBe("ghp_default"); // default untouched
+});
+
+test("a home-only half profile gets the half-created repair message on re-auth", () => {
+  tmpProxyHome();
+  mkdirSync(profileHome(WORK), { recursive: true });
+  // The home makes the profile KNOWN (env/models/health address it), but the
+  // credential write still needs a store slot: only `--add` creates one.
+  expect(() => new Credential(undefined, WORK).store("gh-token", "ghp_x")).toThrow(
+    /half-created.*agent profile --add work/,
+  );
+  expect(new CopilotEnvState().profileNames()).toEqual([]);
+});
+
+test("named credential slots are isolated and never fall back to the default", () => {
+  tmpProxyHome();
+  const state = new CopilotEnvState();
+  new Credential(state).store("gh-token", "ghp_default");
+  state.commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
+    mode: "direct",
+  });
+  const work = new Credential(state, WORK);
   expect(work.resolve()).toBe("ghp_work");
   expect(new Credential(state).resolve()).toBe("ghp_default");
 
-  // Clearing the profile leaves the default untouched and drops the slot entirely.
+  // Re-auth targets the existing slot only; the default stays untouched.
+  work.store("gh-token", "ghp_rotated");
+  expect(work.resolve()).toBe("ghp_rotated");
+  expect(new Credential(state).resolve()).toBe("ghp_default");
+
+  // De-auth clears the credential half (mode stays: de-auth is not deletion),
+  // and the emptied credential never falls back to the default.
   expect(work.clear()).toBe(true);
   expect(work.resolve()).toBeNull();
+  expect(state.readProfileSlot(WORK).mode).toBe("direct");
   expect(new Credential(state).resolve()).toBe("ghp_default");
-  expect(state.read().profiles).toEqual({});
 });
 
 test("a store that never used profiles keeps the pre-profile on-disk shape", () => {
@@ -121,10 +153,12 @@ test("a store that never used profiles keeps the pre-profile on-disk shape", () 
   >;
   expect(Object.keys(raw)).toEqual(["authProvider", "githubToken"]);
 
-  // Creating then fully clearing a profile drops the `profiles` key again.
-  const work = new Credential(state, WORK);
-  work.store("gh-token", "ghp_work");
-  work.clear();
+  // Creating then deleting a profile drops the `profiles` key again.
+  state.commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
+    mode: "proxy",
+  });
+  state.deleteProfile(WORK);
   const raw2 = JSON.parse(readFileSync(new CopilotApiPaths().sharedStateFile, "utf8")) as Record<
     string,
     unknown
@@ -214,7 +248,10 @@ test("a direct Claude profile writes settings-<name>.json + a --profile helper, 
   tmpProxyHome();
   const home = tmpClaudeHome();
   const state = new CopilotEnvState();
-  new Credential(state, WORK).store("gh-token", "ghp_work");
+  state.commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
+    mode: "direct",
+  });
 
   // Pre-existing default settings must stay byte-identical.
   configureClaudeConfig(home, "direct", { quiet: true });
@@ -304,7 +341,10 @@ test("a Codex profile writes [profiles.<name>] + its provider table, leaving the
   tmpProxyHome();
   const codexHome = tmpCodexHome();
   const state = new CopilotEnvState();
-  new Credential(state, WORK).store("gh-token", "ghp_work");
+  state.commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
+    mode: "direct",
+  });
 
   configureCodexConfig(codexHome, { mode: "direct", quiet: true });
   const before = readToml(join(codexHome, "config.toml"));
@@ -357,8 +397,10 @@ test("profile --sync refreshes wiring from the STORE mode and never touches mode
   tmpProxyHome();
   const claudeHome = tmpClaudeHome();
   const codexHome = tmpCodexHome();
-  new Credential(undefined, FAST).store("gh-token", "ghp_fast");
-  new CopilotEnvState().setProfileMode(FAST, "proxy");
+  new CopilotEnvState().commitProfile(FAST, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_fast" },
+    mode: "proxy",
+  });
   const port = copilotApiResolvePort(FAST);
   // Seed a deliberately stale codex table; leave the top-level provider unset
   // (the --mobile pairing state) to prove sync never touches it.
@@ -381,21 +423,31 @@ test("profile --sync refreshes wiring from the STORE mode and never touches mode
 });
 
 test("profile --check is store-driven: exit 1 unknown/incomplete, 2 proxy, 0 direct", async () => {
-  tmpProxyHome();
+  const proxyHome = tmpProxyHome();
   await runProfile({ check: "ghost", mode: "auto" });
   expect(process.exitCode).toBe(1);
   process.exitCode = 0;
-  const state = new CopilotEnvState();
-  // Mode without credential is INCOMPLETE under the atomic model: never launchable.
-  state.setProfileMode(FAST, "proxy");
+  // Mode without credential is INCOMPLETE under the atomic model: never
+  // launchable. The atomic commit cannot create this state, so seed it the way
+  // it really arises -- a pre-atomic install's interrupted add / a hand edit.
+  mkdirSync(proxyHome, { recursive: true });
+  writeFileSync(
+    new CopilotApiPaths().sharedStateFile,
+    `${JSON.stringify({ profiles: { fast: { mode: "proxy" } } })}\n`,
+  );
   await runProfile({ check: "fast", mode: "auto" });
   expect(process.exitCode).toBe(1);
   process.exitCode = 0;
+  const state = new CopilotEnvState();
+  // Re-auth of the (now existing) partial slot completes it.
   new Credential(state, FAST).store("gh-token", "ghp_fast");
   await runProfile({ check: "fast", mode: "auto" });
   expect(process.exitCode).toBe(2);
   process.exitCode = 0;
-  state.setProfileMode(FAST, "direct");
+  state.commitProfile(FAST, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_fast" },
+    mode: "direct",
+  });
   await runProfile({ check: "fast", mode: "auto" });
   expect(process.exitCode).toBe(0);
 });
@@ -429,8 +481,12 @@ test("profile --add wires both agents atomically; --del removes everything", asy
   await runProfile({ add: "work", mode: "proxy", set: "ghp_worktoken" });
 
   const state = new CopilotEnvState();
-  expect(state.readProfileSlot(WORK).mode).toBe("proxy");
-  expect(state.readProfileSlot(WORK).authProvider).toBe("gh-token");
+  expect(state.readProfileSlot(WORK)).toEqual({
+    kind: "complete",
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_worktoken" },
+    mode: "proxy",
+    integrationIdentity: null,
+  });
   expect(existsSync(settingsPathFor(claudeHome, WORK))).toBe(true);
   const doc = readToml(join(codexHome, "config.toml"));
   const providers = doc.model_providers as Record<string, Record<string, unknown>>;
@@ -450,8 +506,8 @@ test("profile --add wires both agents atomically; --del removes everything", asy
 
   await runProfile({ del: "work", mode: "auto" });
   expect(state.readProfileSlot(WORK)).toEqual({
-    githubToken: null,
-    authProvider: null,
+    kind: "partial",
+    credential: { kind: "none", provider: null },
     mode: null,
     integrationIdentity: null,
   });
@@ -462,6 +518,40 @@ test("profile --add wires both agents atomically; --del removes everything", asy
   ).toBeUndefined();
   expect(after.profiles).toBeUndefined();
   expect(existsSync(profileHome(WORK))).toBe(false);
+});
+
+test("a wiring failure after the atomic commit leaves a complete slot that --sync heals", async () => {
+  tmpProxyHome();
+  const claudeHome = tmpClaudeHome();
+  const codexHome = tmpCodexHome();
+  // A foreign settings-work.json makes the Claude profile writer refuse, so the
+  // add fails AFTER the slot committed (credential + mode landed together).
+  mkdirSync(claudeHome, { recursive: true });
+  writeFileSync(
+    settingsPathFor(claudeHome, WORK),
+    JSON.stringify({ apiKeyHelper: "/somewhere/else.sh" }),
+  );
+
+  await expect(runProfile({ add: "work", mode: "proxy", set: "ghp_worktoken" })).rejects.toThrow(
+    /could not wire/,
+  );
+
+  // Never a half profile: the slot is COMPLETE (both halves), only unwired.
+  const state = new CopilotEnvState();
+  expect(state.readProfileSlot(WORK)).toEqual({
+    kind: "complete",
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_worktoken" },
+    mode: "proxy",
+    integrationIdentity: null,
+  });
+
+  // Clearing the blocker and re-syncing re-derives the artifacts from the slot.
+  rmSync(settingsPathFor(claudeHome, WORK));
+  await runProfile({ sync: true, mode: "auto" });
+  expect(existsSync(settingsPathFor(claudeHome, WORK))).toBe(true);
+  const doc = readToml(join(codexHome, "config.toml"));
+  const providers = doc.model_providers as Record<string, Record<string, unknown>>;
+  expect(providers[codexProviderId(WORK)]).toBeDefined();
 });
 
 test("profile --add requires a mode for a new profile", async () => {

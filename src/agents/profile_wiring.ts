@@ -7,7 +7,12 @@ import { claudeAdapter } from "../claude/config.ts";
 import { claudeDesktopInstalled, syncClaudeDesktopWiring } from "../claude/desktop.ts";
 import { codexAdapter, probeDirectIntegrationId } from "../codex/config.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
+import {
+  CopilotEnvState,
+  type ProfileMode,
+  type ProvisionedCredential,
+  type StoredCredential,
+} from "../copilot_api/env_state.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CODEX_IDENTITY_NAME } from "../copilot_api/integration_identity.ts";
 import { profileLabel, type ProfileName } from "../copilot_api/profile.ts";
@@ -57,8 +62,9 @@ export async function wireBothAgents(
 
 /**
  * The direct client identity header to bake for `name`: the config pin, else the
- * persisted slot value, else a fresh probe (always persisted, so the launcher hot path
- * -- `--settings-for` / `--sync` on every `cl --profile` -- never re-probes).
+ * persisted slot value, else a fresh probe (persisted whenever it can be keyed to
+ * the credential it ran under, so the launcher hot path -- `--settings-for` /
+ * `--sync` on every `cl --profile` -- never re-probes).
  *
  * The slot stores the identity NAME, not the header value, so "probed, the default won"
  * (CODEX_IDENTITY_NAME) is distinguishable from "never probed" (null). Only a named
@@ -73,11 +79,43 @@ export async function resolveAndPersistDirectIdentity(
 ): Promise<string | null> {
   const pin = new CopilotEnvConfig().pinnedIntegrationId();
   if (pin !== null) return pin;
-  const stored = new CopilotEnvState().readProfileSlot(name).integrationIdentity;
-  if (stored !== null) return stored === CODEX_IDENTITY_NAME ? null : stored;
+  const slot = new CopilotEnvState().readProfileSlot(name);
+  if (slot.integrationIdentity !== null) {
+    return slot.integrationIdentity === CODEX_IDENTITY_NAME ? null : slot.integrationIdentity;
+  }
   const probed = await probeDirectIntegrationId(name, credentialToken);
-  new CopilotEnvState().setProfileIntegrationIdentity(name, probed ?? CODEX_IDENTITY_NAME);
+  // Persist keyed to the credential the probe ACTUALLY ran under, so a rotation
+  // racing the probe can only drop the verdict, never attach it to the wrong
+  // credential; identityCacheKey returns null when the two cannot be tied.
+  const keyCredential = identityCacheKey(slot.credential, credentialToken);
+  if (keyCredential !== null) {
+    new CopilotEnvState().setProfileIntegrationIdentity(
+      name,
+      probed ?? CODEX_IDENTITY_NAME,
+      keyCredential,
+    );
+  }
   return probed;
+}
+
+/**
+ * The credential to key a probed identity cache entry to: the pre-probe slot
+ * snapshot -- but when the probe ran under an EXPLICIT token, only if that
+ * token is the snapshot credential's own (a stored token must match
+ * byte-for-byte; gh-cli holds no token, so any explicit token is its live
+ * resolution). A mismatch means the slot rotated around the caller: return
+ * null and persist nothing, because the CAS alone would key the OLD
+ * credential's verdict to the NEW credential and succeed.
+ */
+function identityCacheKey(
+  snapshot: StoredCredential,
+  credentialToken: string | null | undefined,
+): ProvisionedCredential | null {
+  if (snapshot.kind === "none") return null;
+  if (credentialToken === undefined) return snapshot; // the probe resolved the snapshot slot itself
+  if (credentialToken === null) return null; // the probe ran credential-free: nothing to key to
+  if (snapshot.kind === "gh-cli") return snapshot;
+  return snapshot.token === credentialToken ? snapshot : null;
 }
 
 /**
@@ -117,13 +155,15 @@ export async function refreshClaudeDesktopWiring(): Promise<void> {
   }
   const state = new CopilotEnvState();
   for (const name of state.profileNames()) {
-    const mode = state.readProfileSlot(name).mode;
-    if (mode === null) continue;
+    const slot = state.readProfileSlot(name);
+    // Complete slots only: a partial profile (e.g. de-authed but mode kept) is
+    // repair territory, not a launchable entry to mirror into Desktop.
+    if (slot.kind !== "complete") continue;
     try {
-      const directIntegrationId = mode === "direct"
+      const directIntegrationId = slot.mode === "direct"
         ? await resolveAndPersistDirectIdentity(name)
         : undefined;
-      await syncClaudeDesktopWiring({ profile: name, mode, directIntegrationId });
+      await syncClaudeDesktopWiring({ profile: name, mode: slot.mode, directIntegrationId });
     } catch (e) {
       logger.warn(`  Could not refresh ${profileLabel(name)}: ${errMessage(e)}`);
     }

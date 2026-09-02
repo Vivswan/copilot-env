@@ -19,7 +19,7 @@ import {
   prepareLaunch,
 } from "../src/commands/launch.ts";
 import type { ManagedEnvValue } from "../src/commands/env.ts";
-import type { ProfileMode } from "../src/copilot_api/env_state.ts";
+import type { ProfileMode, ProfileSlot, TokenProvider } from "../src/copilot_api/env_state.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { runCli, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
@@ -112,10 +112,30 @@ test("parseLaunchAction rejects --profile on copilot and validates hoisted names
 
 // --- prepareLaunch over scripted deps --------------------------------------------
 
+/** A launchable (complete) store slot for the scripted deps. */
+function completeSlot(mode: ProfileMode, provider: TokenProvider = "gh-token"): ProfileSlot {
+  return {
+    kind: "complete",
+    credential: { kind: "stored", provider, token: "tok" },
+    mode,
+    integrationIdentity: null,
+  };
+}
+
+/** A non-launchable (partial) slot: mode-only when given, empty otherwise. */
+function partialSlot(mode: ProfileMode | null = null): ProfileSlot {
+  return {
+    kind: "partial",
+    credential: { kind: "none", provider: null },
+    mode,
+    integrationIdentity: null,
+  };
+}
+
 interface DepsScript {
   mode?: AgentProviderMode;
   proxyUp?: boolean;
-  slot?: { mode: ProfileMode | null; authProvider: string | null };
+  slot?: ProfileSlot;
   claudeUrl?: ManagedEnvValue;
   codexHome?: ManagedEnvValue;
   syncThrows?: boolean;
@@ -143,7 +163,7 @@ function scriptedDeps(script: DepsScript = {}): {
     },
     profileSlot: (name) => {
       calls.push(`slot:${name}`);
-      return script.slot ?? { mode: null, authProvider: null };
+      return script.slot ?? partialSlot();
     },
     writeClaudeProfileSettings: (name, mode) => {
       calls.push(`settings:${name}:${mode}`);
@@ -229,7 +249,7 @@ test("claude --relaxed: IS_SANDBOX=1 and the skip flag behind the managed set", 
 
 test("claude --profile: settings synced, base URL scrubbed unconditionally", async () => {
   const { deps, calls } = scriptedDeps({
-    slot: { mode: "proxy", authProvider: "gh-token" },
+    slot: completeSlot("proxy"),
     // Even a set-verdict must not leak into a profile launch: the profile's own
     // settings file carries its URL.
     claudeUrl: { value: "http://127.0.0.1:4141" },
@@ -255,18 +275,18 @@ test("claude --profile: settings synced, base URL scrubbed unconditionally", asy
 });
 
 test("a direct profile never touches the proxy; missing/credential-less ones hard-fail", async () => {
-  const direct = scriptedDeps({ slot: { mode: "direct", authProvider: "copilot" } });
+  const direct = scriptedDeps({ slot: completeSlot("direct", "copilot") });
   await prepareLaunch({ kind: "claude", profile: WORK, relaxed: false, args: [] }, direct.deps);
   expect(direct.calls).toEqual(["slot:work", "settings:work:direct"]);
 
-  const missing = scriptedDeps({ slot: { mode: null, authProvider: null } });
+  const missing = scriptedDeps({ slot: partialSlot() });
   await expect(
     prepareLaunch({ kind: "codex", profile: WORK, relaxed: false, args: [] }, missing.deps),
   ).rejects.toThrow(
     "profile 'work' does not exist - create it with `agent profile --add work --direct|--proxy`",
   );
 
-  const credless = scriptedDeps({ slot: { mode: "proxy", authProvider: null } });
+  const credless = scriptedDeps({ slot: partialSlot("proxy") });
   await expect(
     prepareLaunch({ kind: "claude", profile: WORK, relaxed: false, args: [] }, credless.deps),
   ).rejects.toThrow(
@@ -294,7 +314,7 @@ test("codex default: managed CODEX_HOME applied; proxy mode ensures then re-wire
 });
 
 test("codex --profile: ensure daemon FIRST, then sync; a failed sync warns and launches", async () => {
-  const ok = scriptedDeps({ slot: { mode: "proxy", authProvider: "gh-token" } });
+  const ok = scriptedDeps({ slot: completeSlot("proxy") });
   const plan = await prepareLaunch(
     { kind: "codex", profile: WORK, relaxed: false, args: ["--resume"] },
     ok.deps,
@@ -302,10 +322,7 @@ test("codex --profile: ensure daemon FIRST, then sync; a failed sync warns and l
   expect(ok.calls).toEqual(["slot:work", "ensure:work", "sync:work:proxy"]);
   expect(plan?.args).toEqual(["--profile", "work", "--resume"]);
 
-  const broken = scriptedDeps({
-    slot: { mode: "proxy", authProvider: "gh-token" },
-    syncThrows: true,
-  });
+  const broken = scriptedDeps({ slot: completeSlot("proxy"), syncThrows: true });
   const degraded = await prepareLaunch(
     { kind: "codex", profile: WORK, relaxed: false, args: [] },
     broken.deps,

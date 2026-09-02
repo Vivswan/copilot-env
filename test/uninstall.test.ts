@@ -109,8 +109,10 @@ test("uninstall removes everything managed and preserves user config", async () 
 
   // Default credential + a named direct profile (credential, mode, both agents, home).
   new Credential().store("gh-token", "ghp_default");
-  new Credential(undefined, WORK).store("gh-token", "ghp_work");
-  new CopilotEnvState().setProfileMode(WORK, "direct");
+  new CopilotEnvState().commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
+    mode: "direct",
+  });
   configureClaudeConfig(claudeHome, "direct", { quiet: true, profile: WORK });
   configureCodexConfig(codexHome, { mode: "direct", quiet: true, profile: WORK });
   mkdirSync(profileHome(WORK), { recursive: true });

@@ -82,8 +82,10 @@ async function seedStores(): Promise<void> {
   new CopilotEnvConfig().set({ autoStart: true, port: 5050, claudeTokenMultiplier: 2.5 });
   const state = new CopilotEnvState();
   new Credential(state).store("gh-token", "ghp_default");
-  new Credential(state, WORK).store("gh-token", "ghp_work");
-  state.setProfileMode(WORK, "proxy");
+  state.commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
+    mode: "proxy",
+  });
   state.set({ codexCatalogLastAttemptMs: 123, codexCatalogCodexVersion: "9.9.9" });
   new OwnershipLedger().record("webSearchDeny", "/some/other/machine/settings.json");
   await runCodex({ mode: "proxy" }, NOOP_CATALOG_DEPS);
@@ -303,7 +305,7 @@ test("a redacted bundle on a fresh machine imports prefs + proxy wiring, but no 
 
   const skipped = outcome.skipped.join("\n");
   expect(skipped).toContain("run `agent auth`");
-  expect(skipped).toContain("agent auth --profile work");
+  expect(skipped).toContain("agent profile --add work");
   expect(outcome.wiredProfiles).toEqual([]);
   // Proxy default wiring is credential-independent (like `agent init --proxy`),
   // so it re-derived even though no credential resolved.
@@ -335,7 +337,10 @@ test("a redacted bundle over resolvable LOCAL credentials wires normally (result
   isolate();
   const state = new CopilotEnvState();
   new Credential(state).store("gh-token", "ghp_local_default");
-  new Credential(state, WORK).store("gh-token", "ghp_local_work");
+  state.commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_local_work" },
+    mode: "direct",
+  });
 
   const outcome = await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
 
@@ -367,7 +372,7 @@ test("an unresolvable slot leaves the existing store byte-identical", async () =
   );
   const outcome = await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
 
-  expect(outcome.skipped.join("\n")).toContain("agent auth --profile work");
+  expect(outcome.skipped.join("\n")).toContain("agent profile --add work");
   expect(readFileSync(stateFile, "utf8")).toBe(before);
 });
 
@@ -439,7 +444,10 @@ test("gh-cli slots probe gh ONCE end to end, and gh-cli wiring re-derives the id
       return "gho_live";
     },
   });
-  expect(withGh.skipped).toEqual([]);
+  // The mode-less alt slot can only re-auth an existing profile; none exists
+  // here, so it is skipped whole instead of landing as a half profile.
+  expect(withGh.skipped.join("\n")).toContain("profile 'alt'");
+  expect(withGh.skipped.join("\n")).toContain("agent profile --add alt");
   expect(withGh.modes?.claude).toBe("direct");
   expect(withGh.wiredProfiles).toEqual([WORK]);
   expect(probeCount).toBe(1);
@@ -450,8 +458,9 @@ test("gh-cli slots probe gh ONCE end to end, and gh-cli wiring re-derives the id
   expect(existsSync(settingsPathFor(machine.claudeHome, WORK))).toBe(true);
   // The bundled identity was dropped; the wire-time probe re-derived the
   // default identity ("codex" = probed, the default won).
-  expect(new CopilotEnvState().readProfileSlot(WORK).authProvider).toBe("gh-cli");
+  expect(new CopilotEnvState().readProfileSlot(WORK).credential).toEqual({ kind: "gh-cli" });
   expect(new CopilotEnvState().readProfileSlot(WORK).integrationIdentity).toBe("codex");
+  expect(new CopilotEnvState().profileNames()).toEqual([WORK]); // alt never landed
 });
 
 test("a gh-cli default over a working local token falls through to the kept slot", async () => {
@@ -532,8 +541,15 @@ test("a profile wiring failure lands in failures and the command exits non-zero"
   await runSettings({ importFrom: file, force: true }, { catalogDeps: NOOP_CATALOG_DEPS });
 
   expect(process.exitCode).toBe(1);
-  // Wiring failed, so the mode never committed (the store's success marker).
-  expect(new CopilotEnvState().readProfileSlot(WORK).mode).toBeNull();
+  // The slot committed atomically (credential + mode) BEFORE the wiring, so the
+  // failure leaves a COMPLETE-but-unwired slot -- never a half profile -- and
+  // `agent profile --sync` re-derives the artifacts from it.
+  expect(new CopilotEnvState().readProfileSlot(WORK)).toEqual({
+    kind: "complete",
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
+    mode: "proxy",
+    integrationIdentity: null,
+  });
 });
 
 test("a default-wiring failure surfaces into outcome.failures", async () => {

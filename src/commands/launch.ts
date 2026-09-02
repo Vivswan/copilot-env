@@ -25,7 +25,7 @@ import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { runCodex } from "../codex/config.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
+import { CopilotEnvState, type ProfileMode, type ProfileSlot } from "../copilot_api/env_state.ts";
 import {
   parseProfileFlag,
   parseProfileName,
@@ -120,7 +120,7 @@ export interface LaunchDeps {
   /** Re-sync the agent's DEFAULT wiring to the proxy (`agent <name> --proxy`). */
   wireProxyDefault(agent: "claude" | "codex"): Promise<void>;
   /** The named profile's store slot -- the source of truth for its mode/credential. */
-  profileSlot(name: ProfileName): { mode: ProfileMode | null; authProvider: string | null };
+  profileSlot(name: ProfileName): ProfileSlot;
   /** Re-sync the profile's Claude settings file against the live port and return
    *  its absolute path (what `claude --settings` gets). */
   writeClaudeProfileSettings(name: ProfileName, mode: ProfileMode): Promise<string>;
@@ -153,17 +153,18 @@ async function ensureProfileReady(
   deps: LaunchDeps,
 ): Promise<ProfileMode | null> {
   const slot = deps.profileSlot(name);
-  if (slot.mode === null) {
+  // Only a COMPLETE slot (one credential + one mode) is launchable; a partial
+  // slot reports its gap -- exactly `agent profile --check`'s contract.
+  if (slot.kind === "partial") {
     throw new Error(
-      `${
-        profileLabel(name)
-      } does not exist - create it with \`agent profile --add ${name} --direct|--proxy\``,
-    );
-  }
-  if (slot.authProvider === null) {
-    throw new Error(
-      `${profileLabel(name)} has no credential - repair it with \`agent auth --profile ${name}\` ` +
-        `or \`agent profile --add ${name}\``,
+      slot.mode === null
+        ? `${
+          profileLabel(name)
+        } does not exist - create it with \`agent profile --add ${name} --direct|--proxy\``
+        : `${
+          profileLabel(name)
+        } has no credential - repair it with \`agent auth --profile ${name}\` ` +
+          `or \`agent profile --add ${name}\``,
     );
   }
   if (slot.mode === "proxy" && !(await deps.ensureProxy(name))) return null;

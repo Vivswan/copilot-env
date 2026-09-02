@@ -1,4 +1,11 @@
-import { chmodSync, copyFileSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
   copilotApiArgv,
@@ -200,6 +207,22 @@ test("a float record moves the entry to that exact version, run out of the cache
   expect(daemonEnvironment(spec, {}).DENO_DIR).toBe(denoDir);
   // The spec's own home wiring still wins over the entry's overlay.
   expect(daemonEnvironment({ ...spec, env: { DENO_DIR: "/pinned" } }, {}).DENO_DIR).toBe("/pinned");
+});
+
+test("a floated resolve never rewrites the daemon config: the verify/float gate owns it", () => {
+  // A rewrite here could hand `--cached-only` an import map the recorded cache was
+  // never warmed for, with nothing left in the launch to re-warm it. Regeneration
+  // for a changed build lives in proxyFloatVerifyStatus/floatProxy (proxy_float.ts),
+  // where a cache miss under the new map still triggers the float's re-warm.
+  delete process.env.COPILOT_API_ENTRY;
+  const sentinel = '{"imports":{"sentinel":"npm:sentinel@1.0.0"}}\n';
+  mkdirSync(join(dir, "proxy"), { recursive: true });
+  writeFileSync(daemonConfigFile(dir), sentinel);
+  writeResolvedVersionRecord(dir, "1.14.30", Date.now(), join(dir, "deno", "cache"));
+
+  const entry = resolveCopilotApiEntry();
+  expect(entry.kind).toBe("floated");
+  expect(readFileSync(daemonConfigFile(dir), "utf8")).toBe(sentinel);
 });
 
 test("a COPILOT_API_ENTRY override runs that file and never asks for a cached package", () => {

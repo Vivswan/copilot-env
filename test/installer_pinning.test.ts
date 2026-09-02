@@ -1,15 +1,23 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, posix } from "node:path";
 import { INSTALLER_PINS } from "../.github/scripts/release-assets.ts";
 import { compiledHealthFailures } from "../.github/scripts/installer-smoke.ts";
 import {
   BUNDLED_ONLY_ASSETS,
+  CHECKOUT_MARKERS,
   LEGACY_ARTIFACTS,
   MATERIALIZED_ASSET_DIRS,
   MATERIALIZED_ASSET_FILES,
 } from "../src/install/installer.ts";
-import { RELEASE_TARGETS } from "../src/install/targets.ts";
-import { ROOT } from "./helpers/run.ts";
+import {
+  currentReleaseTarget,
+  installedBinaryName,
+  RELEASE_TARGETS,
+  releaseAssetName,
+} from "../src/install/targets.ts";
+import { removeDir, tmpDir } from "./helpers.ts";
+import { ROOT, runSync } from "./helpers/run.ts";
 import { describe, expect, test } from "./helpers/testing.ts";
 
 // The installers hand-roll lists that TypeScript modules own, and nothing at
@@ -231,6 +239,175 @@ describe("installers and the installer share one artifact list", () => {
     const body = installPs1.match(/\$LegacyArtifacts = @\(([^)]*)\)/)?.[1] ?? "";
     const names = [...body.matchAll(/'([^']+)'/g)].map((m) => m[1] ?? "").sort();
     expect(names).toEqual(expected);
+  });
+});
+
+describe("installers mirror the binary's checkout refusal markers", () => {
+  // Both installers refuse a target root holding a checkout marker AND .git
+  // before their first write or sweep, mirroring buildInstallPlan's own
+  // refusal. Shell cannot import TS, so their marker lists are hand-rolled
+  // twins of CHECKOUT_MARKERS: pin them in EXACT order, both directions (the
+  // refusal names the first present marker, so order is part of the contract).
+  const expected = [...CHECKOUT_MARKERS];
+
+  test("install.sh guard markers match CHECKOUT_MARKERS in order", () => {
+    const list = installSh.match(/^\s*for _marker in ([^;]+); do$/m)?.[1] ?? "";
+    expect(list.split(/\s+/).filter(Boolean)).toEqual(expected);
+  });
+
+  test("install.ps1 guard markers match CHECKOUT_MARKERS in order", () => {
+    const body = installPs1.match(/foreach \(\$marker in @\(([^)]*)\)\)/)?.[1] ?? "";
+    const names = [...body.matchAll(/'([^']+)'/g)].map((m) => m[1] ?? "");
+    expect(names).toEqual(expected);
+  });
+});
+
+describe("installer checkout guard refuses before mutating, proceeds on legacy roots", () => {
+  // Runs the REAL installer scripts against throwaway roots and a directory
+  // download source (COPILOT_ENV_DOWNLOAD_BASE), because the guard's whole
+  // point is ordering: it must fire before the bin write and the legacy sweep
+  // (a checkout's node_modules used to be deleted before the binary's own
+  // refusal could run). install.sh runs on the POSIX platforms, install.ps1 on
+  // Windows, so the CI matrix covers both twins.
+  const skipWin = test.skipIf(Deno.build.os === "windows");
+  const winOnly = test.skipIf(Deno.build.os !== "windows");
+
+  /** Sorted relative paths + content hashes: byte-level proof a root was not touched. */
+  function snapshotTree(dir: string, prefix = ""): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const rel = posix.join(prefix, entry.name);
+      if (entry.isDirectory()) {
+        out.push(`${rel}/`, ...snapshotTree(join(dir, entry.name), rel));
+      } else {
+        const hash = createHash("sha256").update(readFileSync(join(dir, entry.name))).digest("hex");
+        out.push(`${rel} ${hash}`);
+      }
+    }
+    return out.sort();
+  }
+
+  /** A directory download source holding this platform's asset (a stand-in
+   *  binary; on POSIX a script so the handoff exec succeeds) + checksums.txt. */
+  function makeDownloadDir(): string {
+    const target = currentReleaseTarget();
+    if (target === null) throw new Error("no release target for this platform");
+    const dir = tmpDir("ce-guard-dl-");
+    const asset = releaseAssetName(target);
+    const body = Deno.build.os === "windows"
+      ? "not a real executable\n"
+      : "#!/usr/bin/env bash\nexit 0\n";
+    writeFileSync(join(dir, asset), body);
+    const sha = createHash("sha256").update(body).digest("hex");
+    writeFileSync(join(dir, "checksums.txt"), `${sha}  ${asset}\n`);
+    return dir;
+  }
+
+  /** A fresh target root: node_modules debris plus the given entries.
+   *  `git` plants .git as a directory, a worktree-style file, or not at all. */
+  function makeRoot(marker: string, git: "dir" | "file" | "none"): string {
+    const root = tmpDir("ce-guard-root-");
+    writeFileSync(join(root, marker), "{}\n");
+    mkdirSync(join(root, "node_modules"));
+    writeFileSync(join(root, "node_modules", "keep.txt"), "keep\n");
+    if (git === "dir") {
+      mkdirSync(join(root, ".git"));
+      writeFileSync(join(root, ".git", "HEAD"), "ref: refs/heads/main\n");
+    } else if (git === "file") {
+      writeFileSync(join(root, ".git"), "gitdir: /elsewhere\n");
+    }
+    return root;
+  }
+
+  function runInstaller(root: string, downloadDir: string): ReturnType<typeof runSync> {
+    const env = { ...process.env, "COPILOT_ENV_DOWNLOAD_BASE": downloadDir, "CI": "1" };
+    if (Deno.build.os === "windows") {
+      return runSync("powershell", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        join(ROOT, "install.ps1"),
+        "-InstallDir",
+        root,
+      ], { env });
+    }
+    return runSync("bash", [join(ROOT, "install.sh"), "--dir", root], { env });
+  }
+
+  function cleanup(...dirs: string[]): void {
+    for (const dir of dirs) removeDir(dir);
+  }
+
+  skipWin("install.sh refuses a checkout root and leaves it byte-identical", () => {
+    const downloadDir = makeDownloadDir();
+    try {
+      for (const git of ["dir", "file"] as const) {
+        const root = makeRoot("package.json", git);
+        try {
+          const before = snapshotTree(root);
+          const res = runInstaller(root, downloadDir);
+          expect(res.exitCode).toBe(2);
+          expect(res.stderr).toContain("source checkout");
+          expect(snapshotTree(root)).toEqual(before);
+        } finally {
+          cleanup(root);
+        }
+      }
+    } finally {
+      cleanup(downloadDir);
+    }
+  });
+
+  skipWin("install.sh proceeds on a legacy root (marker without .git) and sweeps it", () => {
+    const downloadDir = makeDownloadDir();
+    const root = makeRoot("deno.json", "none");
+    try {
+      const res = runInstaller(root, downloadDir);
+      expect(res.exitCode).toBe(0);
+      expect(existsSync(join(root, "node_modules"))).toBe(false);
+      expect(existsSync(join(root, "deno.json"))).toBe(true);
+      expect(existsSync(join(root, "bin", installedBinaryName()))).toBe(true);
+    } finally {
+      cleanup(root, downloadDir);
+    }
+  });
+
+  winOnly("install.ps1 refuses a checkout root and leaves it byte-identical", () => {
+    const downloadDir = makeDownloadDir();
+    try {
+      for (const git of ["dir", "file"] as const) {
+        const root = makeRoot("package.json", git);
+        try {
+          const before = snapshotTree(root);
+          const res = runInstaller(root, downloadDir);
+          expect(res.exitCode).not.toBe(0);
+          expect(res.stderr).toContain("source checkout");
+          expect(snapshotTree(root)).toEqual(before);
+        } finally {
+          cleanup(root);
+        }
+      }
+    } finally {
+      cleanup(downloadDir);
+    }
+  });
+
+  winOnly("install.ps1 proceeds on a legacy root (marker without .git) and sweeps it", () => {
+    const downloadDir = makeDownloadDir();
+    const root = makeRoot("deno.json", "none");
+    try {
+      // The stand-in .exe cannot actually run, so the final handoff fails and
+      // the exit code is non-zero; the mutations before it are the evidence
+      // that the guard let a legacy root through.
+      runInstaller(root, downloadDir);
+      expect(existsSync(join(root, "node_modules"))).toBe(false);
+      expect(existsSync(join(root, "deno.json"))).toBe(true);
+      expect(existsSync(join(root, "bin", installedBinaryName()))).toBe(true);
+    } finally {
+      cleanup(root, downloadDir);
+    }
   });
 });
 

@@ -86,6 +86,13 @@ export function parseUsageRow(raw: unknown): UsageRow | null {
   };
 }
 
+/** Declare-only brand class: privates are nominal, so no object literal or spread
+ *  compiles as UsageReport -- mutable reports are born in usageReport(). Deliberate
+ *  escape hatches (a cast, Object.assign) remain, as with any compile-time brand. */
+declare class UsageReportMint {
+  private readonly usageReportMint: true;
+}
+
 /**
  * Aggregated usage plus a per-day breakdown.
  *
@@ -97,7 +104,7 @@ export function parseUsageRow(raw: unknown): UsageRow | null {
  * mint one via usageReport() and fold into it through record(); readers take
  * ReadonlyUsageReport.
  */
-export interface UsageReport {
+export interface UsageReport extends UsageReportMint {
   byModel: Map<string, ModelUsage>;
   perDay: Map<string, Map<string, ModelUsage>>;
 }
@@ -150,7 +157,8 @@ export function usageReport(
       throw new Error(`inconsistent usage report: perDay exceeds byModel for model '${model}'`);
     }
   }
-  return { byModel: ownByModel, perDay: ownPerDay };
+  // The ONE brand assertion: the maps above were validated into consistency here.
+  return { byModel: ownByModel, perDay: ownPerDay } as UsageReport;
 }
 
 /** One validated copy of a hand-built ModelUsage. Counts must be non-negative

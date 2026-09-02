@@ -36,7 +36,13 @@ import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { type DayKey, dayKeyIn, MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { canonicalModelName } from "./pricing.ts";
-import { record, sanitizeTokenCount, type TokenBuckets, type UsageReport } from "./usage.ts";
+import {
+  record,
+  sanitizeTokenCount,
+  type TokenBuckets,
+  type UsageReport,
+  usageReport,
+} from "./usage.ts";
 
 const SESSION_SUBDIRS = ["sessions", "archived_sessions"];
 const ROLLOUT_FILE = /^rollout-(\d{4})-(\d{2})-(\d{2})T.*\.jsonl(\.zst)?$/;
@@ -331,7 +337,7 @@ async function parseRolloutFile(
 
     let report = providers.get(provider);
     if (report === undefined) {
-      report = { byModel: new Map(), perDay: new Map() };
+      report = usageReport();
       providers.set(provider, report);
     }
     // Bucket by the user's LOCAL calendar day (localDayKey), not the UTC day

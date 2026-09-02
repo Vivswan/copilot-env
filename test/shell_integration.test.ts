@@ -5,14 +5,19 @@ import {
   cheapWindowsProfilePaths,
   CI_PS_DOCUMENTS_DIR_ENV,
   CI_RC_DIR_ENV,
+  LAUNCHERS_MARKER_END,
   launchersWired,
+  MARKER_END,
   posixBlock,
   posixLaunchersBlock,
   quotePosix,
   quotePowerShell,
   rcFiles,
+  stripBlocks,
+  upsertBlock,
   windowsBlock,
   windowsExecutionPolicyCommand,
+  windowsLaunchersBlock,
   windowsProfileTarget,
 } from "../src/shell/integration.ts";
 import { runCli, runSync } from "./helpers/run.ts";
@@ -27,6 +32,12 @@ const LAUNCHERS_MARKER = "# copilot-env launchers";
 // rc file), so these POSIX-behavior tests only run off Windows.
 const skipWin = test.skipIf(process.platform === "win32");
 let home = "";
+
+/** Occurrences of `marker` as a whole line. The end markers contain the open markers
+ *  as substrings, so substring counting would double-count a fenced block. */
+function markerLines(content: string, marker: string): number {
+  return content.split("\n").filter((l) => l.replace(/\r$/, "") === marker).length;
+}
 
 function shellFunctionBody(source: string, name: string): string {
   const match = source.match(new RegExp(`function ${name} \\{([\\s\\S]*?)\\n\\}`));
@@ -74,6 +85,7 @@ skipWin("wires the integration into a freshly created rc file", () => {
   expect(code).toBe(0);
   const rc = readFileSync(join(home, ".bashrc"), "utf-8");
   expect(rc).toContain(MARKER);
+  expect(rc).toContain(MARKER_END); // the block is fenced, so removal is extent-exact
   expect(rc).toContain("agents.bashrc");
 });
 
@@ -83,7 +95,7 @@ skipWin("is idempotent -- a second wire is byte-for-byte identical", () => {
   run();
   const second = readFileSync(join(home, ".bashrc"), "utf-8");
   expect(second).toBe(first); // no duplicate block, no reordering
-  expect(second.split(MARKER).length - 1).toBe(1);
+  expect(markerLines(second, MARKER)).toBe(1);
 });
 
 skipWin("re-wiring refreshes the block in place without reordering later lines", () => {
@@ -94,6 +106,7 @@ skipWin("re-wiring refreshes the block in place without reordering later lines",
   run();
   const rc = readFileSync(join(home, ".bashrc"), "utf-8");
   expect(rc).toContain("shell/agents.bashrc"); // migrated in place
+  expect(rc).toContain(MARKER_END); // and upgraded to the fenced format
   expect(rc).not.toContain("/old/agents.bashrc");
   // BEFORE still precedes the block; AFTER still follows it.
   expect(rc.indexOf("export BEFORE=1")).toBeLessThan(rc.indexOf(MARKER));
@@ -135,6 +148,67 @@ skipWin("--remove strips a CRLF-written block (Windows-style line endings)", () 
   expect(rc).toContain("export KEEP=1");
 });
 
+skipWin("--remove still fully removes intact legacy (unfenced) blocks", () => {
+  const legacy =
+    `${MARKER}\nAGENTS_BASHRC="/x/agents.bashrc"\n[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"`;
+  const launchers =
+    `${LAUNCHERS_MARKER}\nAGENTS_LAUNCHERS="/x/agents.launchers.bashrc"\n[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"`;
+  writeFileSync(
+    join(home, ".bashrc"),
+    `export KEEP=1\n\n${legacy}\n\n${launchers}\nexport AFTER=1\n`,
+  );
+  const { code, out } = run("--remove");
+  expect(code).toBe(0);
+  expect(readFileSync(join(home, ".bashrc"), "utf-8")).toBe("export KEEP=1\nexport AFTER=1\n");
+  expect(out).not.toContain("left in place"); // complete blocks warn about nothing
+});
+
+skipWin("--remove on a hand-shortened legacy block spares the user's next line", () => {
+  // The user deleted the block's guard line, so the block is 1 line short and the
+  // user's own next line sits where the guard used to be. A fixed 3-line cut would
+  // eat it; the extent-bounded removal stops at it and says so.
+  writeFileSync(
+    join(home, ".bashrc"),
+    `${MARKER}\nAGENTS_BASHRC="/x/agents.bashrc"\nexport IMPORTANT=do-not-delete\n`,
+  );
+  const { code, out } = run("--remove");
+  expect(code).toBe(0);
+  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
+  expect(rc).toBe("export IMPORTANT=do-not-delete\n");
+  expect(out).toContain("export IMPORTANT=do-not-delete"); // the warning names the spared line
+});
+
+skipWin("--remove on a hand-extended legacy block leaves the foreign line, with a warning", () => {
+  // A line the user added INSIDE the block: removal stops there instead of cutting past it.
+  writeFileSync(
+    join(home, ".bashrc"),
+    `${MARKER}\nAGENTS_BASHRC="/x/agents.bashrc"\nexport FOREIGN=1\n` +
+      `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n`,
+  );
+  const { code, out } = run("--remove");
+  expect(code).toBe(0);
+  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
+  expect(rc).toContain("export FOREIGN=1");
+  expect(rc).not.toContain(MARKER);
+  expect(rc).not.toContain("AGENTS_BASHRC=");
+  expect(out).toContain("export FOREIGN=1");
+});
+
+skipWin(
+  "--remove on a fenceless current block (end marker deleted) degrades conservatively",
+  () => {
+    // The current body shapes are recognized even without the end fence, so removal
+    // still stops at the user's line instead of cutting a fixed extent.
+    const unfenced = posixBlock(join(homedir(), "shell", "agents.bashrc"))
+      .split("\n").filter((l) => l !== MARKER_END).join("\n");
+    writeFileSync(join(home, ".bashrc"), `${unfenced}export IMPORTANT=keep\n`);
+    const { code, out } = run("--remove");
+    expect(code).toBe(0);
+    expect(readFileSync(join(home, ".bashrc"), "utf-8")).toBe("export IMPORTANT=keep\n");
+    expect(out).not.toContain("left in place"); // the full body was recognized: no warning
+  },
+);
+
 skipWin("shell --launchers adds the opt-in launchers block; default does not", () => {
   run();
   let rc = readFileSync(join(home, ".bashrc"), "utf-8");
@@ -145,8 +219,8 @@ skipWin("shell --launchers adds the opt-in launchers block; default does not", (
   run("--launchers");
   rc = readFileSync(join(home, ".bashrc"), "utf-8");
   expect(rc).toContain("agents.launchers.bashrc");
-  expect(rc.split(MARKER).length - 1).toBe(1);
-  expect(rc.split(LAUNCHERS_MARKER).length - 1).toBe(1);
+  expect(markerLines(rc, MARKER)).toBe(1);
+  expect(markerLines(rc, LAUNCHERS_MARKER)).toBe(1);
 });
 
 skipWin("shell --launchers wires the opt-in launchers block", () => {
@@ -189,7 +263,7 @@ skipWin("re-wiring migrates a stale block to the current shell/ path", () => {
   expect(rc).toContain("export KEEP=1"); // user content preserved
   expect(rc).toContain("shell/agents.bashrc"); // migrated to the new path
   expect(rc).not.toContain("/old/agents.bashrc"); // stale path gone
-  expect(rc.split(MARKER).length - 1).toBe(1); // exactly one block, not duplicated
+  expect(markerLines(rc, MARKER)).toBe(1); // exactly one block, not duplicated
 });
 
 skipWin("a plain re-wire preserves an already-wired launchers block", () => {
@@ -199,7 +273,7 @@ skipWin("a plain re-wire preserves an already-wired launchers block", () => {
   run();
   const rc = readFileSync(join(home, ".bashrc"), "utf-8");
   expect(rc).toContain(LAUNCHERS_MARKER);
-  expect(rc.split(LAUNCHERS_MARKER).length - 1).toBe(1);
+  expect(markerLines(rc, LAUNCHERS_MARKER)).toBe(1);
 });
 
 skipWin("posixBlock safely quotes paths with shell metacharacters", () => {
@@ -251,6 +325,124 @@ test("the PowerShell blocks anchor an under-home path at $HOME, and only then", 
   );
   const outside = join(sep, "opt", "agents.ps1");
   expect(windowsBlock(outside)).toContain(`$AgentsPs1 = '${outside}'`);
+});
+
+// The end markers are new external contracts: existing installs carry only the open
+// markers, so those spellings are frozen, and the end fence extends each verbatim.
+test("the end markers extend the frozen open markers verbatim", () => {
+  expect(MARKER_END).toBe("# copilot-env shell integration end");
+  expect(LAUNCHERS_MARKER_END).toBe("# copilot-env launchers end");
+});
+
+test("every builder emits a fenced block: open marker first, end marker last", () => {
+  const path = join(homedir(), "shell", "x");
+  const blocks: Array<[string, string, string]> = [
+    [posixBlock(path), MARKER, MARKER_END],
+    [posixLaunchersBlock(path), LAUNCHERS_MARKER, LAUNCHERS_MARKER_END],
+    [windowsBlock(path), MARKER, MARKER_END],
+    [windowsLaunchersBlock(path), LAUNCHERS_MARKER, LAUNCHERS_MARKER_END],
+  ];
+  for (const [block, marker, end] of blocks) {
+    expect(block.startsWith(`\n${marker}\n`)).toBe(true);
+    expect(block.endsWith(`\n${end}\n`)).toBe(true);
+  }
+});
+
+test("a new-format PowerShell block round-trips: write, upsert over it, remove", () => {
+  const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
+  const launchers = windowsLaunchersBlock(join(homedir(), "shell", "agents.launchers.ps1"));
+  const original = "Write-Host before\n";
+  const wired = upsertBlock(upsertBlock(original, MARKER, block), LAUNCHERS_MARKER, launchers);
+  expect(wired).toContain(MARKER_END);
+  expect(wired).toContain(LAUNCHERS_MARKER_END);
+  // Upsert over the fenced blocks is byte-idempotent: the extent comes from the fence.
+  expect(upsertBlock(upsertBlock(wired, MARKER, block), LAUNCHERS_MARKER, launchers)).toBe(wired);
+  const removed = stripBlocks(wired, [MARKER, LAUNCHERS_MARKER]);
+  expect(removed.content).toBe(original);
+  expect(removed.leftBehind).toEqual([]);
+});
+
+test("re-upserting a CRLF fenced block is byte-idempotent and keeps CRLF", () => {
+  // e.g. a $PROFILE some Windows tool rewrote with CRLF: the refresh must not flip
+  // the block's endings (that would be a spurious diff on every re-wire).
+  const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
+  const crlf = upsertBlock("Write-Host before\n", MARKER, block).replaceAll("\n", "\r\n");
+  expect(upsertBlock(crlf, MARKER, block)).toBe(crlf);
+  const removed = stripBlocks(crlf, [MARKER]);
+  expect(removed.content).toBe("Write-Host before\r\n");
+  expect(removed.leftBehind).toEqual([]);
+  // A CRLF file with no final newline stays unterminated instead of gaining a lone \r.
+  const unterminated = crlf.replace(/\r\n$/, "");
+  expect(upsertBlock(unterminated, MARKER, block)).toBe(unterminated);
+});
+
+test("upsert migrates a legacy PowerShell block (old Test-Path spelling) to the fenced format", () => {
+  // Both historical guard spellings must be recognized: the pre-TS installers wrote
+  // `Test-Path $AgentsPs1` (no -LiteralPath).
+  const legacy = `${MARKER}\n$AgentsPs1 = "C:\\old\\agents.ps1"\n` +
+    `if (Test-Path $AgentsPs1) { . $AgentsPs1 }`;
+  const profile = `Write-Host before\n\n${legacy}\n\nWrite-Host after\n`;
+  const next = upsertBlock(profile, MARKER, windowsBlock(join(homedir(), "shell", "agents.ps1")));
+  expect(next).toContain(MARKER_END);
+  expect(next).not.toContain("C:\\old\\agents.ps1");
+  expect(next.indexOf("Write-Host before")).toBeLessThan(next.indexOf(MARKER));
+  expect(next.indexOf(MARKER_END)).toBeLessThan(next.indexOf("Write-Host after"));
+});
+
+test("stripBlocks removes an intact legacy PowerShell block but never a user line", () => {
+  const legacy = `${MARKER}\n$AgentsPs1 = "C:\\x\\agents.ps1"\n` +
+    `if (Test-Path -LiteralPath $AgentsPs1) { . $AgentsPs1 }`;
+  const intact = stripBlocks(`Write-Host before\n\n${legacy}\nWrite-Host after\n`, [MARKER]);
+  expect(intact.content).toBe("Write-Host before\nWrite-Host after\n");
+  expect(intact.leftBehind).toEqual([]);
+
+  // Hand-shortened: the guard line was deleted; the user's next line survives, reported.
+  const shortened = stripBlocks(
+    `${MARKER}\n$AgentsPs1 = "C:\\x\\agents.ps1"\n$env:IMPORTANT = 'keep'\n`,
+    [MARKER],
+  );
+  expect(shortened.content).toBe("$env:IMPORTANT = 'keep'\n");
+  expect(shortened.leftBehind).toEqual(["$env:IMPORTANT = 'keep'"]);
+
+  // Hand-extended: a foreign line inside the block stops the cut and is reported.
+  const extended = stripBlocks(
+    `${MARKER}\n$AgentsPs1 = "C:\\x\\agents.ps1"\nWrite-Host mine\n` +
+      `if (Test-Path -LiteralPath $AgentsPs1) { . $AgentsPs1 }\n`,
+    [MARKER],
+  );
+  expect(extended.content).toContain("Write-Host mine");
+  expect(extended.content).not.toContain(MARKER);
+  expect(extended.content).not.toContain("$AgentsPs1 = ");
+  expect(extended.leftBehind).toEqual(["Write-Host mine"]);
+
+  // Each marker recognizes only ITS body: a launchers-shaped line under the main
+  // marker is someone else's and stays put.
+  const crossed = stripBlocks(`${MARKER}\n$AgentsLaunchers = 'C:\\x\\l.ps1'\n`, [MARKER]);
+  expect(crossed.content).toBe("$AgentsLaunchers = 'C:\\x\\l.ps1'\n");
+  expect(crossed.leftBehind).toEqual(["$AgentsLaunchers = 'C:\\x\\l.ps1'"]);
+});
+
+test("legacy recognition is ordered: a lookalike line in the guard position is spared", () => {
+  // The user's own AGENTS_BASHRC= assignment right after ours matches the assignment
+  // shape but sits where the guard belongs -- an unordered any-two-recognized-lines
+  // scan would eat it.
+  const stripped = stripBlocks(
+    `${MARKER}\nAGENTS_BASHRC="/managed/agents.bashrc"\nAGENTS_BASHRC=/user-owned\nexport KEEP=1\n`,
+    [MARKER],
+  );
+  expect(stripped.content).toBe("AGENTS_BASHRC=/user-owned\nexport KEEP=1\n");
+  expect(stripped.leftBehind).toEqual(["AGENTS_BASHRC=/user-owned"]);
+});
+
+test("a shortened block abutting the next marker does not warn about that marker", () => {
+  // The launchers marker stopping the main block's legacy scan is ours, not the
+  // user's: it is removed as its own block, so reporting it "left in place" would lie.
+  const content = `${MARKER}\nAGENTS_BASHRC="/x/agents.bashrc"\n` +
+    `${LAUNCHERS_MARKER}\nAGENTS_LAUNCHERS="/x/l.bashrc"\n` +
+    `[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"\nexport AFTER=1\n`;
+  const stripped = stripBlocks(content, [MARKER, LAUNCHERS_MARKER]);
+  expect(stripped.content).toBe("export AFTER=1\n");
+  expect(stripped.leftBehind).toEqual([]);
 });
 
 test("quotePosix / quotePowerShell escape embedded single quotes", () => {

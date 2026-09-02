@@ -19,7 +19,54 @@ import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 
 export const MARKER = "# copilot-env shell integration";
 export const LAUNCHERS_MARKER = "# copilot-env launchers";
+export const MARKER_END = `${MARKER} end`;
+export const LAUNCHERS_MARKER_END = `${LAUNCHERS_MARKER} end`;
 const ALL_MARKERS = [MARKER, LAUNCHERS_MARKER];
+const ALL_FENCE_LINES = [MARKER, LAUNCHERS_MARKER, MARKER_END, LAUNCHERS_MARKER_END];
+
+// Per marker: the end-marker line that closes a fenced block, and the ordered
+// [assignment, guard] line pair every released copilot-env (or the pre-TS installers)
+// wrote under that marker -- how a LEGACY block (no end marker) is bounded without
+// eating user lines. Order matters: a lookalike line in the guard position (say a
+// user's own AGENTS_BASHRC= assignment right after ours) must not be consumed. Only
+// the assignment VALUE varied across releases (literal, "$HOME"'tail', "$HOME/tail"),
+// so the assignments match on prefix; the guards match whole, in both their
+// historical (no -LiteralPath) and current spellings.
+interface BlockShape {
+  end: string;
+  legacyBody: ReadonlyArray<readonly [RegExp, RegExp]>;
+}
+
+const BLOCK_SHAPES: Record<string, BlockShape> = {
+  [MARKER]: {
+    end: MARKER_END,
+    legacyBody: [
+      [/^AGENTS_BASHRC=/, /^\[ -f "\$AGENTS_BASHRC" \] && source "\$AGENTS_BASHRC"$/],
+      [/^\$AgentsPs1 = /, /^if \(Test-Path (-LiteralPath )?\$AgentsPs1\) \{ \. \$AgentsPs1 \}$/],
+    ],
+  },
+  [LAUNCHERS_MARKER]: {
+    end: LAUNCHERS_MARKER_END,
+    legacyBody: [
+      [/^AGENTS_LAUNCHERS=/, /^\[ -f "\$AGENTS_LAUNCHERS" \] && source "\$AGENTS_LAUNCHERS"$/],
+      [
+        /^\$AgentsLaunchers = /,
+        /^if \(Test-Path (-LiteralPath )?\$AgentsLaunchers\) \{ \. \$AgentsLaunchers \}$/,
+      ],
+    ],
+  },
+};
+
+/** The one spelling of an owned block: leading blank, open fence, body, end fence. */
+function fencedBlock(marker: string, body: string[]): string {
+  return `\n${marker}\n${body.join("\n")}\n${blockShapes(marker).end}\n`;
+}
+
+function blockShapes(marker: string): BlockShape {
+  const shapes = BLOCK_SHAPES[marker];
+  if (shapes === undefined) throw new Error(`unknown block marker: ${marker}`);
+  return shapes;
+}
 
 /** The opt-in cl/co/cx launchers file for each platform flavor -- the single owner of
  *  the two file names, shared with `agent env`'s one-shot launchers `source` line. */
@@ -85,24 +132,67 @@ export function runShellIntegration(args: ShellIntegrationArgs): void {
 // --- shared wire/remove core --------------------------------------------------
 
 /**
- * Strip owned blocks from rc/profile content. Each
- * block is its marker line + the two lines after it, plus the blank line the block
- * prepends (only when that preceding line is actually empty). Both block types share
- * this 3-line shape.
+ * The extent of the owned block whose marker sits at `idx`: through the end-marker
+ * line when one closes the block (everything fenced between the markers is ours),
+ * else -- a legacy or truncated block -- through the trailing lines matching one of
+ * this marker's ordered legacy [assignment, guard] pairs, stopping at the first line
+ * that breaks the pair. `end` is the inclusive index of the block's last line;
+ * `leftBehind` is the user line such a stop refused to consume (null when the stop
+ * was blank, another fence line, or EOF), for the caller to warn about. A user's
+ * line is never inside the extent.
  */
-function stripBlocks(content: string, markers: string[]): string {
+function blockExtent(
+  lines: string[],
+  idx: number,
+  marker: string,
+): { end: number; leftBehind: string | null } {
+  const shapes = blockShapes(marker);
+  const lineAt = (i: number): string | null =>
+    i < lines.length ? (lines[i] ?? "").replace(/\r$/, "") : null;
+  for (let i = idx + 1; i < lines.length; i++) {
+    const line = lineAt(i);
+    if (line === shapes.end) return { end: i, leftBehind: null };
+    // Any other fence line means this block was never closed: fall back to legacy.
+    if (line !== null && ALL_FENCE_LINES.includes(line)) break;
+  }
+  const stop = (end: number, at: number): { end: number; leftBehind: string | null } => {
+    const line = lineAt(at);
+    const isUsers = line !== null && line !== "" && !ALL_FENCE_LINES.includes(line);
+    return { end, leftBehind: isUsers ? line : null };
+  };
+  const assignment = lineAt(idx + 1);
+  const pairs = shapes.legacyBody.filter(
+    ([assign]) => assignment !== null && assign.test(assignment),
+  );
+  if (pairs.length === 0) return stop(idx, idx + 1);
+  const guard = lineAt(idx + 2);
+  if (guard === null || !pairs.some(([, g]) => g.test(guard))) return stop(idx + 1, idx + 2);
+  return { end: idx + 2, leftBehind: null };
+}
+
+/**
+ * Strip owned blocks from rc/profile content, each bounded by its own extent (see
+ * blockExtent) plus the blank line the block prepends (only when that preceding line
+ * is actually empty). Pure: `leftBehind` reports the lines conservative legacy scans
+ * refused to remove, for the caller to warn about. Exported for tests only.
+ */
+export function stripBlocks(
+  content: string,
+  markers: string[],
+): { content: string; leftBehind: string[] } {
   const lines = content.split("\n");
   const skip = new Set<number>();
+  const leftBehind: string[] = [];
   lines.forEach((line, idx) => {
-    if (!markers.some((marker) => lineIs(line, marker))) return;
+    const marker = markers.find((m) => lineIs(line, m));
+    if (marker === undefined) return;
     if (idx > 0 && (lines[idx - 1] ?? "").replace(/\r$/, "") === "") skip.add(idx - 1);
-    skip
-      .add(idx)
-      .add(idx + 1)
-      .add(idx + 2);
+    const extent = blockExtent(lines, idx, marker);
+    for (let i = idx; i <= extent.end; i++) skip.add(i);
+    if (extent.leftBehind !== null) leftBehind.push(extent.leftBehind);
   });
-  if (skip.size === 0) return content;
-  return lines.filter((_, idx) => !skip.has(idx)).join("\n");
+  if (skip.size === 0) return { content, leftBehind };
+  return { content: lines.filter((_, idx) => !skip.has(idx)).join("\n"), leftBehind };
 }
 
 /** True if any line of `content` is exactly `marker` (CR-tolerant). */
@@ -112,20 +202,32 @@ export function hasMarker(content: string, marker: string): boolean {
 
 /**
  * Insert or refresh ONE owned block, IN PLACE. If `marker` is already present, its
- * existing block (marker line + the two body lines, plus a preceding blank when there
- * is one) is replaced where it sits -- so a stale path migrates without moving the
- * block or reordering anything around it, and an already-current block reproduces the
- * file byte-for-byte. If absent, the block is appended at EOF (it leads with a blank).
+ * existing block (bounded by its own extent, plus a preceding blank when there is
+ * one) is replaced where it sits -- so a stale path or a pre-end-marker block
+ * migrates without moving the block or reordering anything around it, and an
+ * already-current block reproduces the file byte-for-byte. If absent, the block is
+ * appended at EOF (it leads with a blank). Exported for tests only.
  */
-function upsertBlock(content: string, marker: string, block: string): string {
+export function upsertBlock(content: string, marker: string, block: string): string {
   const lines = content.split("\n");
   const idx = lines.findIndex((l) => lineIs(l, marker));
   if (idx === -1) return content + block;
   const start = idx > 0 && (lines[idx - 1] ?? "").replace(/\r$/, "") === "" ? idx - 1 : idx;
-  const end = idx + 2; // marker + its two body lines
+  const { end } = blockExtent(lines, idx, marker);
   let blockLines = block.split("\n");
   if (blockLines[blockLines.length - 1] === "") blockLines = blockLines.slice(0, -1); // trailing newline
   if (start === idx && blockLines[0] === "") blockLines = blockLines.slice(1); // no preceding blank to keep
+  // A CRLF rc keeps its endings: the refreshed block adopts the marker line's, so
+  // re-upserting an already-current block stays byte-idempotent there too. When the
+  // block's last line is also the file's and sits unterminated, it stays that way
+  // (its would-be \r belongs to a terminator it does not have).
+  if ((lines[idx] ?? "").endsWith("\r")) {
+    blockLines = blockLines.map((l) => `${l}\r`);
+    const last = blockLines.length - 1;
+    if (end === lines.length - 1 && !(lines[end] ?? "").endsWith("\r")) {
+      blockLines[last] = (blockLines[last] ?? "").replace(/\r$/, "");
+    }
+  }
   return [...lines.slice(0, start), ...blockLines, ...lines.slice(end + 1)].join("\n");
 }
 
@@ -181,8 +283,14 @@ function removeBlocksFrom(
     if (!existsSync(file)) continue;
     const content = readFileSync(file, "utf-8");
     const stripped = stripBlocks(content, markers);
-    if (stripped === content) continue; // no owned block present
-    writeFileSync(file, stripped);
+    if (stripped.content === content) continue; // no owned block present
+    writeFileSync(file, stripped.content);
+    for (const line of stripped.leftBehind) {
+      consola.warn(
+        `Unrecognized line under a copilot-env marker in ${file} -- ` +
+          `not written by copilot-env, so it (and everything after it) was left in place: ${line}`,
+      );
+    }
     consola.success(removedMessage(file));
     removedAny = true;
   }
@@ -253,31 +361,35 @@ function quotePowerShellHomeAnchored(path: string): string {
 }
 
 export function posixBlock(agentsBashrc: string): string {
-  return `\n${MARKER}\nAGENTS_BASHRC=${
-    quotePosixHomeAnchored(agentsBashrc)
-  }\n[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n`;
+  return fencedBlock(MARKER, [
+    `AGENTS_BASHRC=${quotePosixHomeAnchored(agentsBashrc)}`,
+    `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"`,
+  ]);
 }
 
 /** Opt-in launchers block; sourced after posixBlock so the `agent` wrapper exists. */
 export function posixLaunchersBlock(launchersBashrc: string): string {
-  return `\n${LAUNCHERS_MARKER}\nAGENTS_LAUNCHERS=${
-    quotePosixHomeAnchored(launchersBashrc)
-  }\n[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"\n`;
+  return fencedBlock(LAUNCHERS_MARKER, [
+    `AGENTS_LAUNCHERS=${quotePosixHomeAnchored(launchersBashrc)}`,
+    `[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"`,
+  ]);
 }
 
 export function windowsBlock(agentsPs1: string): string {
   // -LiteralPath so a path with PowerShell wildcard chars ([ ] * ?) isn't treated
   // as a pattern (the quoting handles spaces/quotes, not wildcard semantics).
-  return `\n${MARKER}\n$AgentsPs1 = ${
-    quotePowerShellHomeAnchored(agentsPs1)
-  }\nif (Test-Path -LiteralPath $AgentsPs1) { . $AgentsPs1 }\n`;
+  return fencedBlock(MARKER, [
+    `$AgentsPs1 = ${quotePowerShellHomeAnchored(agentsPs1)}`,
+    `if (Test-Path -LiteralPath $AgentsPs1) { . $AgentsPs1 }`,
+  ]);
 }
 
 /** Opt-in launchers block; dot-sourced after windowsBlock so the `agent` wrapper exists. */
 export function windowsLaunchersBlock(launchersPs1: string): string {
-  return `\n${LAUNCHERS_MARKER}\n$AgentsLaunchers = ${
-    quotePowerShellHomeAnchored(launchersPs1)
-  }\nif (Test-Path -LiteralPath $AgentsLaunchers) { . $AgentsLaunchers }\n`;
+  return fencedBlock(LAUNCHERS_MARKER, [
+    `$AgentsLaunchers = ${quotePowerShellHomeAnchored(launchersPs1)}`,
+    `if (Test-Path -LiteralPath $AgentsLaunchers) { . $AgentsLaunchers }`,
+  ]);
 }
 
 export function windowsExecutionPolicyCommand(): string {

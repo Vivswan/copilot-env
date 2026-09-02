@@ -334,11 +334,15 @@ test("a selected profile whose provider table is absent reads unwired, not a fal
   expect(scalarWiring.providerWired).toBe(false);
 });
 
-test("malformed TOML reads unwired for the named view too", () => {
+test("malformed TOML reads other/malformed for the named view too, never none", () => {
+  // "none" would authorize a best-effort caller to write over a config it could
+  // not parse; the classifier mints other/malformed instead (the writer's own
+  // refuse-to-overwrite guard is the second layer of the same decision).
   const wiring = inspectCodexWiring('model_provider = "unclosed', null, PROFILE_PORT, false, WORK);
   expect(wiring.configExists).toBe(true);
   expect(wiring.modelProvider).toBeNull();
-  expect(wiring.providerMode).toBe("none");
+  expect(wiring.providerMode).toBe("other");
+  expect(wiring.otherReason).toBe("malformed");
   expect(wiring.providerSelected).toBe(false);
   expect(wiring.providerWired).toBe(false);
   expect(wiring.tokenAvailable).toBe(false);

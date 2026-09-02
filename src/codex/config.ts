@@ -7,13 +7,14 @@ import * as fs from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
 import { parse, stringify } from "smol-toml";
-import { type AgentAdapter, type AgentConfigArgs, runAgentConfig } from "../agents/configure.ts";
-import { CODEX_PROBE, type DirectProbeDeps, probeDirectWorks } from "../agents/live_probe.ts";
 import {
-  type AgentProviderMode,
-  type ManagedAgentMode,
-  providerModeExitCode,
-} from "../agents/provider_mode.ts";
+  type AgentAdapter,
+  type AgentRunAction,
+  type ManagedWrite,
+  runAgentConfig,
+} from "../agents/configure.ts";
+import { CODEX_PROBE, type DirectProbeDeps, probeDirectWorks } from "../agents/live_probe.ts";
+import { type AgentProviderMode, providerModeExitCode } from "../agents/provider_mode.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
@@ -35,7 +36,7 @@ import { type Profile, profileLabel, type ProfileName } from "../copilot_api/pro
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
-import { isEnoent, isEnoentOrNotdir } from "../utils/fs.ts";
+import { isEnoent, isEnoentOrNotdir, readTextResult, type TextReadResult } from "../utils/fs.ts";
 import { codexFarmHostsDir } from "../utils/hostname.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -85,19 +86,13 @@ export function codexProviderId(profile: Profile = null): string {
 // re-authenticate tool subprocesses as the token's account.
 export const DIRECT_ENV_KEY = "COPILOT_ENV_GH_TOKEN";
 
-/** The `agent codex` argument shape (the shared skeleton's, under this command's name). */
-export type CodexConfigArgs = AgentConfigArgs;
-
-/** The mode-dependent half of a Codex config write: direct carries the (optional)
- *  probed client-identity header, proxy ALWAYS carries a base URL -- a proxy write
- *  without one is unrepresentable, so nothing downstream re-checks for it. */
+/** The mode-dependent half of a Codex config write: the SHARED ManagedWrite
+ *  variants (src/agents/configure.ts), with the Codex-only fact that proxy
+ *  ALWAYS carries a base URL -- a proxy write without one is unrepresentable,
+ *  so nothing downstream re-checks for it. */
 type CodexModeRequest =
-  | {
-    mode: "direct";
-    /** Direct mode: the probed `Copilot-Integration-Id` to bake, or null to send none. */
-    directIntegrationId?: string | null;
-  }
-  | { mode: "proxy"; baseUrl: string };
+  | Extract<ManagedWrite, { mode: "direct" }>
+  | (Extract<ManagedWrite, { mode: "proxy" }> & { baseUrl: string });
 
 /** The mode-independent knobs of a Codex config write. */
 interface CodexWriteCommon {
@@ -150,10 +145,6 @@ function codexTableMode(table: unknown, expectedPort: number): AgentProviderMode
     return "proxy";
   }
   return "other";
-}
-
-function isManagedProviderMode(mode: AgentProviderMode): mode is ManagedAgentMode {
-  return mode === "direct" || mode === "proxy";
 }
 
 // The managed direct (GitHub Copilot) provider table. The bearer is fetched via
@@ -318,35 +309,17 @@ function isManagedProxyAuth(auth: unknown, profile: Profile = null): boolean {
 // custom. It lives HERE, next to the managed provider tables, so `agent health`
 // and `agent codex` reuse the same contract instead of shell/TOML copies.
 
-export interface CodexWiringStatus {
-  /** A config.toml exists at the home (false => the user never wired Codex). */
-  configExists: boolean;
-  /** Whatever the inspected selection's `model_provider` is set to, for messaging:
-   *  the top-level key for the default, the `[profiles.<name>]` selector's value
-   *  for a named profile. */
-  modelProvider: string | null;
-  /** Which provider family the current config selects. */
-  providerMode: AgentProviderMode;
-  /** The selection's `model_provider` selects our managed provider for the
-   *  inspected profile. */
-  providerSelected: boolean;
-  /** The managed provider table's `base_url`, if present. */
-  baseUrl: string | null;
-  /** `base_url` matches the selected provider contract. */
-  baseUrlMatches: boolean;
-  /** The env-key half of key resolution is compatible: satisfied by the managed
-   *  proxy auth.command or the default selection's legacy
-   *  `env_key = OPENAI_API_KEY`. Direct mode carries no env_key contract, so it
-   *  reads true there regardless of the auth block -- direct auth validity
-   *  travels on directUsesToken/providerWired instead. A named profile's table
-   *  must carry NO env_key at all: the writer never emits one and Codex rejects
-   *  `auth` + `env_key` on a single provider, so its presence is drift. */
-  envKeyMatches: boolean;
-  /** All of: provider selected, base_url matches, key resolution satisfied --
-   *  and for a named profile the auth block must be the managed one addressed
-   *  at THAT profile, or a mis-addressed config would silently resolve the
-   *  default credential (named profiles hard-fail, never fall back). */
-  providerWired: boolean;
+/** Why a Codex "other" classification is not ours -- minted together with
+ *  providerMode by inspectCodexWiring (mirrors ClaudeOtherReason; Codex has no
+ *  legacy helper files, so there is no "legacy-unrecognized" arm):
+ *    - "malformed":  config.toml is present but not valid TOML
+ *    - "read-error": config.toml exists but could not be read
+ *    - "custom":     a foreign `model_provider` is selected */
+export type CodexOtherReason = "malformed" | "custom" | "read-error";
+
+/** The `.env`/environment half of the Codex wiring facts, independent of how
+ *  config.toml classifies (they are read from different files). */
+interface CodexTokenFacts {
   /** A `.env` file exists at the home. */
   envFilePresent: boolean;
   /** `.env` defines the OPENAI_API_KEY token. Always false for a named profile
@@ -358,14 +331,85 @@ export interface CodexWiringStatus {
   /** The token is resolvable from .env OR the environment (the default selection's
    *  legacy proxy wiring needs one). Always false for a named profile. */
   tokenAvailable: boolean;
-  /**
-   * Direct mode only: true when the direct provider carries a managed
-   * `auth.command` (it resolves the bearer via `agent auth --get`). Always false
-   * outside direct mode. Whether a `gh` login is needed is a STORE question, not a
-   * config one -- the health probe decides that separately.
-   */
-  directUsesToken: boolean;
 }
+
+/**
+ * The read-only counterpart to configureCodexConfig, discriminated on
+ * providerMode so a flag combination the classifier can never mint (a wired
+ * "none", a direct table without the Direct base URL, a direct-auth verdict
+ * outside direct mode) is unrepresentable rather than re-checked downstream.
+ * Field meanings:
+ *   - modelProvider: the inspected selection's `model_provider`, for messaging
+ *     (the top-level key for the default, the `[profiles.<name>]` selector's
+ *     value for a named profile). Ours on the managed arms; the foreign value
+ *     (or null when unknowable: malformed/read-error) on "other"; null on "none".
+ *   - envKeyMatches: the key-resolution half is compatible -- managed proxy
+ *     auth.command or the default selection's legacy `env_key = OPENAI_API_KEY`.
+ *     Direct carries no env_key contract, so only a named table's forbidden
+ *     env_key (drift the writer never emits; Codex rejects `auth` + `env_key`)
+ *     can make it false there.
+ *   - providerWired: provider selected + base_url matches + key resolution
+ *     satisfied -- and for a named profile the auth block must be the managed
+ *     one addressed at THAT profile (named profiles hard-fail, never fall back).
+ *   - directUsesToken (direct only): the direct provider carries the managed
+ *     `auth.command` (resolves the bearer via `agent auth --get`). Whether a
+ *     `gh` login is needed is a STORE question the health probe answers.
+ */
+export type CodexWiringStatus =
+  & CodexTokenFacts
+  & (
+    | {
+      providerMode: "direct";
+      configExists: true;
+      modelProvider: string;
+      providerSelected: true;
+      /** Direct classification requires the exact Direct base URL, so both facts
+       *  are pinned at the type. */
+      baseUrl: typeof DIRECT_BASE_URL;
+      baseUrlMatches: true;
+      envKeyMatches: boolean;
+      providerWired: boolean;
+      directUsesToken: boolean;
+      otherReason: null;
+    }
+    | {
+      providerMode: "proxy";
+      configExists: true;
+      modelProvider: string;
+      providerSelected: true;
+      baseUrl: string | null;
+      baseUrlMatches: boolean;
+      envKeyMatches: boolean;
+      providerWired: boolean;
+      directUsesToken: false;
+      otherReason: null;
+    }
+    | {
+      providerMode: "none";
+      /** False = no config.toml at all; true = a config with no `model_provider`. */
+      configExists: boolean;
+      modelProvider: null;
+      providerSelected: false;
+      baseUrl: null;
+      baseUrlMatches: false;
+      envKeyMatches: false;
+      providerWired: false;
+      directUsesToken: false;
+      otherReason: null;
+    }
+    | {
+      providerMode: "other";
+      configExists: true;
+      modelProvider: string | null;
+      providerSelected: false;
+      baseUrl: null;
+      baseUrlMatches: false;
+      envKeyMatches: false;
+      providerWired: false;
+      directUsesToken: false;
+      otherReason: CodexOtherReason;
+    }
+  );
 
 /**
  * True when `baseUrl` matches the managed proxy contract: an http localhost
@@ -378,13 +422,22 @@ function baseUrlMatchesProxy(baseUrl: string, expectedPort: number): boolean {
 }
 
 /**
- * Inspect raw config.toml + .env content against the managed contracts for
- * `profile` (null = the default selection, mirroring inspectClaudeWiring). Pure
- * (no I/O): callers read the files and pass the strings (null = absent file),
- * plus whether OPENAI_API_KEY is set in the running environment (the default
- * selection's legacy proxy wiring needs a token; managed auth.command wiring
- * does not). `expectedPort` is the port the inspected selection's proxy base
- * URL must carry -- the profile's own reserved port for a named profile.
+ * Inspect the raw config.toml read + .env content against the managed contracts
+ * for `profile` (null = the default selection, mirroring inspectClaudeWiring).
+ * Pure (no I/O): callers pass the config as a TextReadResult (readTextResult
+ * keeps absent and unreadable apart; a plain string means text, null means
+ * absent, for callers reading through a string-or-null seam), the .env text
+ * (null = absent), and whether OPENAI_API_KEY is set in the running environment
+ * (the default selection's legacy proxy wiring needs a token; managed
+ * auth.command wiring does not). `expectedPort` is the port the inspected
+ * selection's proxy base URL must carry -- the profile's own reserved port for
+ * a named profile.
+ *
+ * An UNREADABLE config classifies as other/read-error, never as "none": it
+ * exists but is unknown, and "none" would authorize a best-effort caller to
+ * write over a config it could not read. A present-but-unparseable one is
+ * other/malformed for the same reason (the writer separately refuses to
+ * overwrite it).
  *
  * A NAMED profile is selected via Codex's native `[profiles.<name>]` table
  * pointing at `[model_providers.copilot-env-<name>]` (exactly what
@@ -395,108 +448,142 @@ function baseUrlMatchesProxy(baseUrl: string, expectedPort: number): boolean {
  * profile.
  */
 export function inspectCodexWiring(
-  configToml: string | null,
+  configToml: TextReadResult | string | null,
   envText: string | null,
   expectedPort: number,
   envKeyInEnviron: boolean,
   profile: Profile = null,
 ): CodexWiringStatus {
+  const read: TextReadResult = typeof configToml === "string"
+    ? { kind: "text", text: configToml }
+    : configToml ?? { kind: "absent" };
   const providerId = codexProviderId(profile);
   const envKeyInDotenv = profile === null &&
     envText !== null &&
     new RegExp(`^\\s*(?:export\\s+)?${CODEX_ENV_KEY}\\s*=\\s*\\S`, "m").test(envText);
   const envKeyExported = profile === null && envKeyInEnviron;
-  const status: CodexWiringStatus = {
-    configExists: configToml !== null,
-    modelProvider: null,
+  const tokenFacts: CodexTokenFacts = {
+    envFilePresent: envText !== null,
+    envKeyInDotenv,
+    envKeyInEnviron: envKeyExported,
+    tokenAvailable: envKeyInDotenv || envKeyExported,
+  };
+  const none = (configExists: boolean): CodexWiringStatus => ({
+    ...tokenFacts,
     providerMode: "none",
+    configExists,
+    modelProvider: null,
     providerSelected: false,
     baseUrl: null,
     baseUrlMatches: false,
     envKeyMatches: false,
     providerWired: false,
-    envFilePresent: envText !== null,
-    envKeyInDotenv,
-    envKeyInEnviron: envKeyExported,
-    tokenAvailable: envKeyInDotenv || envKeyExported,
     directUsesToken: false,
-  };
-  if (configToml === null) return status;
+    otherReason: null,
+  });
+  const other = (
+    otherReason: CodexOtherReason,
+    modelProvider: string | null,
+  ): CodexWiringStatus => ({
+    ...tokenFacts,
+    providerMode: "other",
+    configExists: true,
+    modelProvider,
+    providerSelected: false,
+    baseUrl: null,
+    baseUrlMatches: false,
+    envKeyMatches: false,
+    providerWired: false,
+    directUsesToken: false,
+    otherReason,
+  });
+  if (read.kind === "absent") return none(false);
+  if (read.kind === "unreadable") return other("read-error", null);
+  let doc: unknown;
   try {
-    const doc = parse(configToml);
-    // The selection fact mirrors what Codex itself reads: the top-level
-    // `model_provider` for the default, the `[profiles.<name>]` table's
-    // `model_provider` for a named profile (`codex --profile <name>`).
-    const profilesTable = isRecord(doc) ? doc.profiles : undefined;
-    const selector = profile === null
-      ? doc
-      : isRecord(profilesTable)
-      ? profilesTable[profile]
-      : undefined;
-    const modelProvider = isRecord(selector) && typeof selector.model_provider === "string"
-      ? selector.model_provider
-      : null;
-    const providers = isRecord(doc) ? doc.model_providers : undefined;
-    // We select our provider (per profile) by name, but read the MODE from its
-    // table's contents -- the unified table doesn't encode mode in its name.
-    const selected = modelProvider === providerId;
-    const table = selected && isRecord(providers) ? providers[providerId] : undefined;
-    const tableMode = selected ? codexTableMode(table, expectedPort) : "other";
-    // A selected-but-unrecognized table shape ("other") still counts as one of ours for
-    // messaging; report it as proxy so the wiring checks below flag what's off.
-    const providerMode: AgentProviderMode = selected
-      ? isManagedProviderMode(tableMode) ? tableMode : "proxy"
-      : modelProvider === null
-      ? "none"
-      : "other";
-    const baseUrl = isRecord(table) && typeof table.base_url === "string" ? table.base_url : null;
-    status.modelProvider = modelProvider;
-    status.providerMode = providerMode;
-    status.providerSelected = selected;
-    status.baseUrl = baseUrl;
-    status.baseUrlMatches = baseUrl !== null &&
-      (providerMode === "proxy"
-        ? baseUrlMatchesProxy(baseUrl, expectedPort)
-        : providerMode === "direct" && baseUrl === DIRECT_BASE_URL);
-    // Proxy mode resolves its key (and auto-starts the proxy) via the managed
-    // `auth.command` (the proxy-token resolver, addressed at the profile), so it
-    // needs no `env_key`. A legacy proxy config still using `env_key` is also accepted
-    // (back-compat) -- DEFAULT selection only: named profiles postdate the env_key era,
-    // so their wiring is managed auth.command alone.
-    const proxyUsesManagedAuth = providerMode === "proxy" && isRecord(table) &&
-      isManagedProxyAuth(table.auth, profile);
-    // A named profile's table must carry NO env_key at all: the writer strips it
-    // (MANAGED_PROVIDER_KEYS) and Codex rejects `auth` + `env_key` on one provider,
-    // so a present env_key is drift the writer would never produce.
-    const namedTableCarriesEnvKey = profile !== null && isRecord(table) &&
-      table.env_key !== undefined;
-    status.envKeyMatches = !namedTableCarriesEnvKey &&
-      (providerMode === "direct" ||
-        proxyUsesManagedAuth ||
-        (profile === null && isRecord(table) && table.env_key === CODEX_ENV_KEY));
+    doc = parse(read.text);
+  } catch {
+    return other("malformed", null);
+  }
+  // The selection fact mirrors what Codex itself reads: the top-level
+  // `model_provider` for the default, the `[profiles.<name>]` table's
+  // `model_provider` for a named profile (`codex --profile <name>`).
+  const profilesTable = isRecord(doc) ? doc.profiles : undefined;
+  const selector = profile === null
+    ? doc
+    : isRecord(profilesTable)
+    ? profilesTable[profile]
+    : undefined;
+  const modelProvider = isRecord(selector) && typeof selector.model_provider === "string"
+    ? selector.model_provider
+    : null;
+  if (modelProvider === null) return none(true);
+  if (modelProvider !== providerId) return other("custom", modelProvider);
+
+  // We select our provider (per profile) by name, but read the MODE from its
+  // table's contents -- the unified table doesn't encode mode in its name.
+  const providers = isRecord(doc) ? doc.model_providers : undefined;
+  const table = isRecord(providers) ? providers[providerId] : undefined;
+  const tableMode = codexTableMode(table, expectedPort);
+  const baseUrl = isRecord(table) && typeof table.base_url === "string" ? table.base_url : null;
+  // A named profile's table must carry NO env_key at all: the writer strips it
+  // (MANAGED_PROVIDER_KEYS) and Codex rejects `auth` + `env_key` on one provider,
+  // so a present env_key is drift the writer would never produce.
+  const namedTableCarriesEnvKey = profile !== null && isRecord(table) &&
+    table.env_key !== undefined;
+
+  if (tableMode === "direct") {
+    const envKeyMatches = !namedTableCarriesEnvKey;
     // Direct mode resolves its bearer via the managed `auth.command` (agent auth
     // --get, with --profile for a named profile). Positively identify OUR launcher
     // (command + args), not just any auth.command -- a stale `gh auth token` block
-    // must NOT read as managed. Whether a `gh` login is actually needed depends on
-    // the store (a token there means no gh) -- the health probe decides that from
-    // the store, not the static config.
-    status.directUsesToken = providerMode === "direct" && isRecord(table) &&
-      isManagedDirectAuth(table.auth, profile);
-    status.providerWired = status.providerSelected &&
-      status.baseUrlMatches &&
-      status.envKeyMatches &&
+    // must NOT read as managed.
+    const directUsesToken = isRecord(table) && isManagedDirectAuth(table.auth, profile);
+    return {
+      ...tokenFacts,
+      providerMode: "direct",
+      configExists: true,
+      modelProvider,
+      providerSelected: true,
+      // tableMode "direct" means table.base_url IS the Direct base URL.
+      baseUrl: DIRECT_BASE_URL,
+      baseUrlMatches: true,
+      envKeyMatches,
       // The default direct selection needs no further conjunct (the health probe
-      // layers the store question on top); everything else must positively carry
-      // ITS OWN key resolution. A named direct profile in particular requires the
+      // layers the store question on top); a named direct profile requires the
       // profile-addressed managed auth -- default-addressed or foreign auth would
       // resolve the wrong credential, so it must not read as wired.
-      (providerMode === "direct"
-        ? profile === null || status.directUsesToken
-        : proxyUsesManagedAuth || status.tokenAvailable);
-  } catch {
-    // Malformed TOML => leave everything but config/.env facts false.
+      providerWired: envKeyMatches && (profile === null || directUsesToken),
+      directUsesToken,
+      otherReason: null,
+    };
   }
-  return status;
+  // Proxy -- including a selected-but-unrecognized table shape (tableMode
+  // "other"): it still counts as one of ours for messaging, reported as proxy so
+  // the wiring facts below flag what's off. Proxy mode resolves its key (and
+  // auto-starts the proxy) via the managed `auth.command` (the proxy-token
+  // resolver, addressed at the profile), so it needs no `env_key`. A legacy proxy
+  // config still using `env_key` is also accepted (back-compat) -- DEFAULT
+  // selection only: named profiles postdate the env_key era.
+  const proxyUsesManagedAuth = isRecord(table) && isManagedProxyAuth(table.auth, profile);
+  const baseUrlMatches = baseUrl !== null && baseUrlMatchesProxy(baseUrl, expectedPort);
+  const envKeyMatches = !namedTableCarriesEnvKey &&
+    (proxyUsesManagedAuth ||
+      (profile === null && isRecord(table) && table.env_key === CODEX_ENV_KEY));
+  return {
+    ...tokenFacts,
+    providerMode: "proxy",
+    configExists: true,
+    modelProvider,
+    providerSelected: true,
+    baseUrl,
+    baseUrlMatches,
+    envKeyMatches,
+    providerWired: baseUrlMatches && envKeyMatches &&
+      (proxyUsesManagedAuth || tokenFacts.tokenAvailable),
+    directUsesToken: false,
+    otherReason: null,
+  };
 }
 
 // Seeded ONLY when no config.toml exists yet: select the requested provider and
@@ -744,45 +831,31 @@ export function configureCodexConfig(
 }
 
 /**
- * Resolve baseUrl/apiKey from the local proxy and write the Codex config at
- * `codexHome` for `profile` (null = the default selection); throws with the cause
- * when the write cannot proceed. The caller persists CODEX_HOME to state. Shared by
- * `runCodexConfig` and codex_host's `runCodexHost`. Direct mode fetches the bearer
- * at runtime via `agent auth --get`; nothing is baked into the config.
+ * Turn a shared ManagedWrite into the Codex write at `codexHome` for `profile`
+ * (null = the default selection); throws with the cause when the write cannot
+ * proceed. The caller persists CODEX_HOME to state, and -- for direct -- has
+ * already resolved the client identity carried in the write (this function never
+ * probes). Shared by the codexAdapter and codex_host's `runCodexHost`.
  */
 export async function applyCodexConfig(
   codexHome: string,
-  mode: ManagedAgentMode,
+  write: ManagedWrite,
   catalogDeps?: CodexCatalogDeps,
   profile: Profile = null,
-  directToken?: string | null,
 ): Promise<void> {
-  let request: CodexWriteRequest;
-
-  if (mode === "proxy") {
-    // The key is resolved at request time by the `auth.command` (the shared proxy-token
-    // script), so we only need the local proxy base URL here -- reserving the addressed
-    // profile's stable port via wiringPortFor (this is a write path; read-only checks
-    // peek without recording).
-    request = { mode, profile, baseUrl: openaiBaseUrl(wiringPortFor(profile)) };
-  } else {
-    // Direct: bake the client identity this credential is accepted under (probe, or the
-    // `integration-id` config pin). Throws with the real reason when nothing works, so a
-    // dead direct credential fails the wiring instead of writing a config that 400s.
-    // `directToken` skips the probe's own credential resolve when the caller already
-    // resolved one (the adapter path always has).
-    request = {
-      mode,
-      profile,
-      directIntegrationId: await probeDirectIntegrationId(profile, directToken),
-    };
-  }
+  // The proxy key is resolved at request time by the `auth.command` (the shared
+  // proxy-token resolver), so proxy only needs the local base URL -- reserving the
+  // addressed profile's stable port via wiringPortFor (this is a write path;
+  // read-only checks peek without recording).
+  const request: CodexWriteRequest = write.mode === "proxy"
+    ? { mode: "proxy", profile, baseUrl: openaiBaseUrl(wiringPortFor(profile)) }
+    : { ...write, profile };
 
   // Seed the patched model catalog (best-effort, unthrottled) BEFORE the config
   // write, so the very first wiring can already reference the file. The auth-time
   // refresh (src/commands/auth.ts) keeps it fresh afterwards. Account-wide, keyed
   // to the default credential -- named-profile writes never touch it.
-  if (profile === null) await generateCodexModelCatalog(mode, catalogDeps);
+  if (profile === null) await generateCodexModelCatalog(write.mode, catalogDeps);
 
   configureCodexConfig(codexHome, request);
 
@@ -986,59 +1059,52 @@ function cleanupCodexCatalogArtifacts(catalogFile: string): void {
   }
 }
 
-interface EffectiveCodexConfig {
-  codexHome: string;
-  configPath: string;
-  configExists: boolean;
-  providerMode: AgentProviderMode;
-}
-
-function inspectEffectiveCodexConfig(): EffectiveCodexConfig {
-  const codexHome = effectiveCodexHome();
-  const configPath = codexConfigPath(codexHome);
-  try {
-    const status = inspectCodexWiring(
-      fs.readFileSync(configPath, "utf8"),
-      null,
-      Number(copilotApiResolvePort()),
-      false,
-    );
-    return {
-      codexHome,
-      configPath,
-      configExists: status.configExists,
-      providerMode: status.providerMode,
-    };
-  } catch (e) {
-    if (!isEnoent(e)) throw e;
-    return { codexHome, configPath, configExists: false, providerMode: "none" };
+/** The `--check` reading of a Codex "other" classification, keyed off the
+ *  reason the classifier minted. */
+function codexOtherDetail(otherReason: CodexOtherReason): string {
+  switch (otherReason) {
+    case "malformed":
+      return "config.toml is present but not valid TOML";
+    case "read-error":
+      return "config.toml exists but could not be read";
+    case "custom":
+      return "custom or unsupported provider";
+    default:
+      return assertNever(otherReason);
   }
 }
 
-function providerModeDetail(mode: AgentProviderMode, configExists: boolean): string {
-  switch (mode) {
+/** Takes the status whole (not mode + reason separately) so an impossible pair
+ *  can never be rendered. */
+function providerModeDetail(status: CodexWiringStatus): string {
+  switch (status.providerMode) {
     case "proxy":
       return "local copilot-api proxy";
     case "direct":
       return "GitHub Copilot Direct";
     case "none":
-      return configExists ? "no model_provider configured" : "no config.toml found";
+      return status.configExists ? "no model_provider configured" : "no config.toml found";
     case "other":
-      return "custom or unsupported provider";
+      return codexOtherDetail(status.otherReason);
     default:
-      return assertNever(mode);
+      return assertNever(status);
   }
 }
 
 function checkCodexConfig(): void {
   try {
-    const { codexHome, configPath, configExists, providerMode } = inspectEffectiveCodexConfig();
-    console.log(
-      `Codex provider mode: ${providerMode} (${providerModeDetail(providerMode, configExists)})`,
+    const codexHome = effectiveCodexHome();
+    const configPath = codexConfigPath(codexHome);
+    const status = inspectCodexWiring(
+      readTextResult(configPath),
+      null,
+      Number(copilotApiResolvePort()),
+      false,
     );
+    console.log(`Codex provider mode: ${status.providerMode} (${providerModeDetail(status)})`);
     console.log(`CODEX_HOME: ${codexHome}`);
     console.log(`config.toml: ${configPath}`);
-    process.exitCode = providerModeExitCode(providerMode);
+    process.exitCode = providerModeExitCode(status.providerMode);
   } catch (e) {
     logger.error(`Codex provider check failed: ${errMessage(e)}`);
     process.exitCode = 1;
@@ -1148,29 +1214,26 @@ export function detectCodexDirect(deps?: DirectProbeDeps): boolean {
  */
 export function codexAdapter(catalogDeps?: CodexCatalogDeps): AgentAdapter {
   return {
+    id: "codex",
     label: "Codex",
     check: checkCodexConfig,
     detectDirect: detectCodexDirect,
-    async configureDefault(mode, ghToken) {
-      // Reuse the already-resolved credential for the catalog seed's direct fetch AND
-      // the identity probe, so the gh-cli provider isn't shelled out to a second time.
+    resolveDirectIdentity: (ghToken) => probeDirectIntegrationId(null, ghToken),
+    async configureDefault(write, ghToken) {
+      // Reuse the already-resolved credential for the catalog seed's direct fetch,
+      // so the gh-cli provider isn't shelled out to a second time.
       const seedDeps = catalogDeps ?? (ghToken === null ? undefined : { directToken: ghToken });
-      await applyCodexConfig(effectiveCodexHome(), mode, seedDeps, null, ghToken);
+      await applyCodexConfig(effectiveCodexHome(), write, seedDeps, null);
     },
-    configureProfile(name, mode, options) {
-      const request: CodexWriteRequest = mode === "proxy"
+    configureProfile(name, write, options) {
+      const request: CodexWriteRequest = write.mode === "proxy"
         ? {
-          mode,
+          mode: "proxy",
           profile: name,
           quiet: options.quiet,
           baseUrl: openaiBaseUrl(wiringPortFor(name)),
         }
-        : {
-          mode,
-          profile: name,
-          quiet: options.quiet,
-          directIntegrationId: options.directIntegrationId,
-        };
+        : { ...write, profile: name, quiet: options.quiet };
       configureCodexConfig(effectiveCodexHome(), request);
     },
     removeProfile(name) {
@@ -1181,20 +1244,21 @@ export function codexAdapter(catalogDeps?: CodexCatalogDeps): AgentAdapter {
 
 /**
  * `agent codex`: configure Codex at the active CODEX_HOME -- the one a `--host`
- * farm set in state, else `$CODEX_HOME`, else the default `~/.codex`. `--direct`
- * forces GitHub Copilot Direct, `--proxy` forces the local proxy, and with no
- * mode flag it auto-detects (live read-only probe, else the proxy). `--check`
- * reports the configured mode (exit 0 direct / 2 proxy|none / 1 other) without a
- * probe. Does NOT touch `state.codexHome` (only `--host` sets/clears that).
+ * farm set in state, else `$CODEX_HOME`, else the default `~/.codex`. The parsed
+ * action union carries the intent whole: a `check` action reports the configured
+ * mode (exit 0 direct / 2 proxy|none / 1 other) without a probe, and a
+ * `configure` action carries the requested mode (`--direct`/`--proxy` forced,
+ * "auto" = live read-only probe, else the proxy). Does NOT touch
+ * `state.codexHome` (only `--host` sets/clears that).
  *
  * A GitHub token provisioned via `agent auth` (in the shared store) is used as the
- * Direct credential automatically; with no mode flag, its presence selects Direct
+ * Direct credential automatically; on "auto", its presence selects Direct
  * without probing. (Named profiles are managed by `agent profile`, not here.)
  * The body is the shared skeleton (runAgentConfig) over codexAdapter.
  */
 export async function runCodex(
-  args: CodexConfigArgs,
+  action: AgentRunAction,
   catalogDeps?: CodexCatalogDeps,
 ): Promise<void> {
-  return runAgentConfig(codexAdapter(catalogDeps), args);
+  return runAgentConfig(codexAdapter(catalogDeps), action);
 }

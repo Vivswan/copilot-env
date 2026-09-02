@@ -1095,6 +1095,28 @@ test("an unreadable settings file reaches health as other/read-error, never as n
   expect(verdict.detail).toContain("could not be read");
 });
 
+test("an unreadable codex config reaches health as other/read-error, never as none", async () => {
+  // The codex config.toml is ALSO read three-way (deps.readFileResult): before
+  // that, its readFileSafe null collapsed an unreadable config into the
+  // absent/"not wired" OK verdict.
+  const deps = {
+    codexHome: () => "/hx",
+    readFileSafe: () => null,
+    readFileResult: (): TextReadResult => ({ kind: "unreadable", error: "EACCES" }),
+    resolvePort: () => "4141",
+    codexTokenInEnviron: () => false,
+    authProvider: () => null,
+    storedTokenPresent: () => false,
+    codexDirectAuth: () => Promise.resolve({ command: null, authenticated: false }),
+  };
+  const facts = await gatherFacts("codex", {}, deps);
+  expect(facts.codex?.providerMode).toBe("other");
+  expect(facts.codex?.otherReason).toBe("read-error");
+  expect(facts.codex?.configExists).toBe(true);
+  if (!facts.codex) throw new Error("expected codex facts");
+  expect(checkCodex(facts.codex).status).toBe("warn");
+});
+
 test("gatherFacts still probes identity when an agent routes through the proxy", async () => {
   // Codex wired to the local proxy: requests genuinely route to the port, so the
   // identity probe fires and a foreign responder still earns the misroute warning.
@@ -1304,8 +1326,18 @@ test("optional CLI + tools: missing warns (not fail), present ok", () => {
 });
 
 test("codex: not configured is ok; each broken part warns with a precise message", () => {
-  const wired: CodexFacts = {
+  // Shared non-wiring facts; `satisfies` keeps the literal arms narrow so the
+  // spreads below stay inside the discriminated union's proxy/direct variants.
+  const codexExtras = {
     home: "/c",
+    directAuth: { command: "/bin/gh", authenticated: true },
+    directUsesToken: false,
+    directNeedsNoGh: false,
+    provider: "gh-cli",
+    otherReason: null,
+  } as const;
+  const wired = {
+    ...codexExtras,
     configExists: true,
     providerSelected: true,
     providerMode: "proxy",
@@ -1318,13 +1350,21 @@ test("codex: not configured is ok; each broken part warns with a precise message
     envKeyInDotenv: true,
     envKeyInEnviron: false,
     tokenAvailable: true,
-    directAuth: { command: "/bin/gh", authenticated: true },
-    directUsesToken: false,
-    directNeedsNoGh: false,
-    provider: "gh-cli",
-  };
-  // No config at all -> ok (user never wired Codex).
-  expect(checkCodex({ ...wired, configExists: false, providerWired: false }).status).toBe("ok");
+  } satisfies CodexFacts;
+  // No config at all -> ok (user never wired Codex): the "none" arm.
+  expect(
+    checkCodex({
+      ...wired,
+      providerMode: "none",
+      configExists: false,
+      modelProvider: null,
+      providerSelected: false,
+      baseUrl: null,
+      baseUrlMatches: false,
+      envKeyMatches: false,
+      providerWired: false,
+    }).status,
+  ).toBe("ok");
   // Fully wired -> ok, multi-line detail: wiring, proxy, then the auth.command resolver.
   const ok = checkCodex(wired);
   expect(ok.status).toBe("ok");
@@ -1334,15 +1374,20 @@ test("codex: not configured is ok; each broken part warns with a precise message
   expect(ok.detail.split("\n")).toHaveLength(4);
   expect(ok.detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
   expect(ok.detail).toContain("proxy-token resolver");
-  // model_provider not selected.
-  expect(
-    checkCodex({ ...wired, providerSelected: false, modelProvider: "openai", providerWired: false })
-      .detail,
-  ).toContain("model_provider");
-  expect(
-    checkCodex({ ...wired, providerSelected: false, modelProvider: "openai", providerWired: false })
-      .detail,
-  ).toContain(`config.toml: ${join("/c", "config.toml")}`);
+  // A foreign model_provider selected: the "other" arm.
+  const foreign = {
+    ...wired,
+    providerMode: "other",
+    modelProvider: "openai",
+    providerSelected: false,
+    baseUrl: null,
+    baseUrlMatches: false,
+    envKeyMatches: false,
+    providerWired: false,
+    otherReason: "custom",
+  } satisfies CodexFacts;
+  expect(checkCodex(foreign).detail).toContain("model_provider");
+  expect(checkCodex(foreign).detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
   // base_url points at the wrong port.
   expect(
     checkCodex({
@@ -1436,10 +1481,12 @@ test("codex: not configured is ok; each broken part warns with a precise message
 });
 
 test("checkClaude: direct needs gh + managed base URL; proxy/none/other informational", () => {
-  const direct: ClaudeFacts = {
+  // `satisfies` keeps the literal arm narrow so spreads stay in the union.
+  const direct = {
     home: "/h/.claude",
     settingsPath: join("/h/.claude", "settings.json"),
     settingsExists: true,
+    wired: true,
     helperPath: join("/h/.claude", "copilot-token.sh"),
     baseUrl: "https://api.githubcopilot.com",
     baseUrlMatches: false,
@@ -1448,7 +1495,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
     directAuth: { command: "/bin/gh", authenticated: true },
     directUsesToken: false,
     provider: "gh-cli",
-  };
+  } satisfies ClaudeFacts;
   const directOk = checkClaude(direct);
   expect(directOk.status).toBe("ok");
   expect(directOk.detail).toContain("provider: direct");
@@ -1515,6 +1562,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   // Never configured: informational; cl defaults it to the proxy.
   const none = checkClaude({
     ...direct,
+    wired: false,
     settingsExists: false,
     helperPath: null,
     baseUrl: null,
@@ -1528,6 +1576,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   // Custom apiKeyHelper the user set -- left alone, reported informationally.
   const other = checkClaude({
     ...direct,
+    wired: false,
     helperPath: "/opt/x/helper.sh",
     baseUrl: null,
     providerMode: "other",
@@ -1543,6 +1592,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   // off the REASON, never a re-derivation of the classifier's path logic.
   const brokenLegacyDirect = checkClaude({
     ...direct,
+    wired: false,
     helperPath: directHelperPath("/h/.claude"),
     baseUrl: null,
     providerMode: "other",
@@ -1553,6 +1603,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   expect(brokenLegacyDirect.fix).toBe("agent claude --direct");
   const brokenLegacyProxy = checkClaude({
     ...direct,
+    wired: false,
     helperPath: proxyHelperPath("/h/.claude"),
     baseUrl: null,
     providerMode: "other",
@@ -1565,6 +1616,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   // over it, and copilot-env can verify nothing there.
   const malformed = checkClaude({
     ...direct,
+    wired: false,
     helperPath: null,
     baseUrl: null,
     providerMode: "other",
@@ -1575,6 +1627,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   expect(malformed.fix).toContain("repair");
   const unreadable = checkClaude({
     ...direct,
+    wired: false,
     helperPath: null,
     baseUrl: null,
     providerMode: "other",
@@ -1603,6 +1656,7 @@ test("direct + stored token reports ok with gh absent (no gh requirement)", () =
     directAuth: { command: null, authenticated: false },
     directUsesToken: true,
     directNeedsNoGh: true,
+    otherReason: null,
   };
   const codexRes = checkCodex(codexToken);
   expect(codexRes.status).toBe("ok");
@@ -1618,6 +1672,7 @@ test("direct + stored token reports ok with gh absent (no gh requirement)", () =
     baseUrl: "https://api.githubcopilot.com",
     baseUrlMatches: false,
     providerMode: "direct",
+    wired: true,
     otherReason: null,
     directAuth: { command: null, authenticated: false },
     directUsesToken: true,
@@ -1904,6 +1959,7 @@ test("evaluateAll(codex) yields only the Codex wiring check", () => {
       directAuth: { command: null, authenticated: false },
       directUsesToken: false,
       directNeedsNoGh: false,
+      otherReason: null,
     },
     codexHost: { supported: false, hostHome: "/h/.codex/hosts/box", exists: false, active: false },
   };
@@ -1944,6 +2000,7 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       directAuth: { command: null, authenticated: false },
       directUsesToken: false,
       directNeedsNoGh: false,
+      otherReason: null,
     },
     codexHost: { supported: false, hostHome: "/h/.codex/hosts/box", exists: false, active: false },
     claude: {
@@ -1954,6 +2011,7 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       baseUrl: null,
       baseUrlMatches: false,
       providerMode: "none",
+      wired: false,
       otherReason: null,
       directAuth: { command: null, authenticated: false },
       directUsesToken: false,

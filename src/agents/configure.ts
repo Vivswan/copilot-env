@@ -13,17 +13,23 @@ import type { ManagedAgentMode, RequestedMode } from "./provider_mode.ts";
 
 const logger = createStderrLogger();
 
-/** The `agent codex` / `agent claude` argument shape (shared; each agent file
- *  re-exports its own alias so cli.ts keeps its per-command names). */
-export interface AgentConfigArgs {
-  check?: boolean;
-  /** `--direct`/`--proxy`, parsed once at the CLI boundary (auto = neither). */
-  mode: RequestedMode;
-  /** Pre-resolved Direct credential: skips the store resolve below. The
-   *  settings-bundle import passes its plan's already-resolved token so the
-   *  gh-cli provider is shelled out to once per import, not once per writer. */
-  ghToken?: string | null;
-}
+/**
+ * The mode-dependent half of ONE managed wiring write -- the SHARED request
+ * shape every agent adapter (and the Claude Desktop wiring) accepts. Direct
+ * alone carries the probed client identity, so a proxy write paired with an
+ * integration id is unrepresentable rather than silently ignored. The identity
+ * is always resolved ABOVE the writers (runAgentConfig for the default
+ * selection, wireBothAgents for a named profile) and passed down, so one
+ * resolution serves every surface a write touches (agent config + Claude
+ * Desktop) instead of each layer re-probing.
+ */
+export type ManagedWrite =
+  | {
+    mode: "direct";
+    /** The probed `Copilot-Integration-Id` to bake, or null/absent to send none. */
+    directIntegrationId?: string | null;
+  }
+  | { mode: "proxy" };
 
 /**
  * What ONE `agent codex` / `agent claude` invocation does. Each arm carries
@@ -47,6 +53,19 @@ export type ClaudeCliAction = Extract<
   AgentConfigAction,
   { kind: "check" | "desktop" | "configure" }
 >;
+
+/** The arms the shared skeleton (runAgentConfig) executes itself; `mobile`,
+ *  `host`, and `desktop` are dispatched to their own handlers at the CLI
+ *  boundary, so they never reach the run* functions at all. */
+export type AgentRunAction = Extract<AgentConfigAction, { kind: "check" | "configure" }>;
+
+/** Cross-cutting knobs of one run (never part of the parsed CLI action). */
+export interface AgentRunOptions {
+  /** Pre-resolved Direct credential: skips the store resolve. The settings-bundle
+   *  import passes its plan's already-resolved token so the gh-cli provider is
+   *  shelled out to once per import, not once per writer. */
+  ghToken?: string | null;
+}
 
 /** The shared `--check` conflict: reporting never combines with a forced mode. */
 function assertCheckStandsAlone(mode: RequestedMode): void {
@@ -112,13 +131,16 @@ export function parseClaudeAction(flags: {
   return { kind: "configure", mode: flags.mode };
 }
 
-/** The per-agent knobs of a NAMED-profile write (`agent profile`): the caller
- *  resolves the direct client identity ONCE and both agents bake the same value. */
+/** The per-agent knobs of a NAMED-profile write (`agent profile`); the write's
+ *  mode + direct identity travel in the shared ManagedWrite beside it. */
 export interface AgentProfileWriteOptions {
   quiet: boolean;
-  /** Direct mode: the probed `Copilot-Integration-Id` to bake, or null to send none. */
-  directIntegrationId?: string | null;
 }
+
+/** The managed agents, as adapter/request keys. Every cross-agent map (the
+ *  default-selection request, bothAgents' list) is keyed on this union, so
+ *  adding an agent is a compile error everywhere one could be silently missed. */
+export type ManagedAgentId = "codex" | "claude";
 
 /**
  * One CLI agent's wiring surface, as runAgentConfig and `agent profile` consume
@@ -128,13 +150,14 @@ export interface AgentProfileWriteOptions {
  *
  * Default-selection and named-profile writes are separate methods on purpose:
  * the default flow hands the adapter the already-resolved credential (Codex
- * seeds its catalog with it, Claude reuses it for the identity probe) and probes
- * the client identity itself, while a profile write receives a pre-resolved
- * identity and must never probe. Folding them into one method would just move
- * the branch inside every adapter and force each path to carry the other's
- * ignored inputs.
+ * seeds its catalog with it), while a profile write must never resolve one.
+ * Both receive the SAME ManagedWrite -- the direct client identity is resolved
+ * once by the caller (runAgentConfig via resolveDirectIdentity for the default,
+ * wireBothAgents via the persisted-slot cache for a profile) and passed down.
  */
 export interface AgentAdapter {
+  /** The stable agent key (request maps and adapter lists are keyed on it). */
+  readonly id: ManagedAgentId;
   /** The capitalized user-facing label ("Codex"/"Claude") for narration and errors. */
   readonly label: string;
   /** The `--check` report: print the configured provider and set the exit code
@@ -143,15 +166,20 @@ export interface AgentAdapter {
   check(): void;
   /** Live Direct auto-detect probe (the "auto" fallback when no credential is stored). */
   detectDirect(): boolean;
-  /** Default-selection write for the resolved mode. `ghToken` is the credential
-   *  runAgentConfig already resolved (null = none stored), so the adapter never
-   *  has to resolve it a second time. */
-  configureDefault(mode: ManagedAgentMode, ghToken: string | null): Promise<void>;
-  /** Named-profile write (wraps the existing writer; never probes). Async when the
-   *  adapter also refreshes a derived surface (Claude's Desktop config library). */
+  /** Resolve the DEFAULT credential's direct client identity (config pin, else
+   *  probe). Lives on the adapter because this module must not import the
+   *  per-agent probe machinery (the dependency edge points agent file -> here). */
+  resolveDirectIdentity(ghToken: string | null): Promise<string | null>;
+  /** Default-selection write. `ghToken` is the credential runAgentConfig already
+   *  resolved (null = none stored), so the adapter never resolves it a second
+   *  time; the write's direct identity arrives inside `write`. */
+  configureDefault(write: ManagedWrite, ghToken: string | null): Promise<void>;
+  /** Named-profile write (wraps the existing writer; never probes -- the identity
+   *  arrives inside `write`). Async when the adapter also refreshes a derived
+   *  surface (Claude's Desktop config library). */
   configureProfile(
     name: ProfileName,
-    mode: ManagedAgentMode,
+    write: ManagedWrite,
     options: AgentProfileWriteOptions,
   ): void | Promise<void>;
   /** Remove a named profile's managed artifacts from the agent's effective home. */
@@ -172,21 +200,30 @@ export function configuringLine(subject: string, mode: ManagedAgentMode, suffix 
 }
 
 /**
- * The shared body of `agent codex` / `agent claude`: `--check` reports and
- * returns; otherwise resolve the stored credential ONCE (provider-aware: gh-cli
- * -> gh, copilot/gh-token -> stored token, none -> null, so a recorded-but-broken
- * provider correctly falls through to the probe), decide the mode (explicit flag
- * > stored credential selects Direct > live probe), narrate, and hand the write
- * to the adapter (which reuses the resolved credential instead of resolving twice).
+ * The shared body of `agent codex` / `agent claude`: a `check` action reports and
+ * returns; a `configure` action resolves the stored credential ONCE (provider-aware:
+ * gh-cli -> gh, copilot/gh-token -> stored token, none -> null, so a
+ * recorded-but-broken provider correctly falls through to the probe), decides the
+ * mode (explicit flag > stored credential selects Direct > live probe), narrates,
+ * resolves the direct client identity ONCE, and hands the adapter one ManagedWrite
+ * (so the write and every derived surface bake the same identity without
+ * re-probing, and the adapter reuses the resolved credential too).
  */
-export async function runAgentConfig(adapter: AgentAdapter, args: AgentConfigArgs): Promise<void> {
-  if (args.check) {
+export async function runAgentConfig(
+  adapter: AgentAdapter,
+  action: AgentRunAction,
+  opts: AgentRunOptions = {},
+): Promise<void> {
+  if (action.kind === "check") {
     adapter.check();
     return;
   }
-  const ghToken = args.ghToken !== undefined ? args.ghToken : new Credential().resolve();
-  const direct = resolveDirectMode(args.mode, ghToken, () => adapter.detectDirect());
+  const ghToken = opts.ghToken !== undefined ? opts.ghToken : new Credential().resolve();
+  const direct = resolveDirectMode(action.mode, ghToken, () => adapter.detectDirect());
   const mode: ManagedAgentMode = direct ? "direct" : "proxy";
   logger.log(configuringLine(adapter.label, mode));
-  await adapter.configureDefault(mode, ghToken);
+  const write: ManagedWrite = mode === "direct"
+    ? { mode, directIntegrationId: await adapter.resolveDirectIdentity(ghToken) }
+    : { mode };
+  await adapter.configureDefault(write, ghToken);
 }

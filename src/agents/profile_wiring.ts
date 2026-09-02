@@ -5,6 +5,7 @@
 // src/codex/ and src/claude/, so it lives in src/agents/ like wiring.ts.
 import { claudeAdapter } from "../claude/config.ts";
 import { claudeDesktopInstalled, syncClaudeDesktopWiring } from "../claude/desktop.ts";
+import type { CodexCatalogDeps } from "../codex/catalog.ts";
 import { codexAdapter, probeDirectIntegrationId } from "../codex/config.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
@@ -18,7 +19,7 @@ import { CODEX_IDENTITY_NAME } from "../copilot_api/integration_identity.ts";
 import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import type { AgentAdapter } from "./configure.ts";
+import type { AgentAdapter, ManagedWrite } from "./configure.ts";
 import { readAgentModesSafe } from "./wiring.ts";
 
 const logger = createStderrLogger();
@@ -26,16 +27,21 @@ const logger = createStderrLogger();
 /** BOTH agents' adapters, in the wiring order profile operations use (Claude first --
  *  per-agent narration and failure aggregation keep their long-standing order). Built
  *  fresh per call: adapters are cheap closures and a stale one would pin a stale
- *  effective home. */
-export function bothAgents(): AgentAdapter[] {
-  return [claudeAdapter(), codexAdapter()];
+ *  effective home. `catalogDeps` is runCodex's catalog test seam, threaded to the
+ *  Codex adapter untouched. THE single cross-agent list: every both-agent flow
+ *  (profile wiring, teardown, the default-selection writes) iterates it, so a
+ *  third agent lands everywhere by construction. */
+export function bothAgents(catalogDeps?: CodexCatalogDeps): AgentAdapter[] {
+  return [claudeAdapter(), codexAdapter(catalogDeps)];
 }
 
 /** Wire BOTH agents for `name` at `mode`. Order and resilience mirror
  *  configureDefaultAgents: try each adapter, report per-agent, fail if either failed.
- *  Direct mode resolves the client identity as pin > persisted slot > probe, persisting
- *  a freshly probed non-default id so a later launcher `--sync` replays it offline (a
- *  null slot means "re-derive", which is network-free for the non-PAT common case).
+ *  Direct mode resolves the client identity ONCE (pin > persisted slot > probe,
+ *  persisting a freshly probed non-default id so a later launcher `--sync` replays
+ *  it offline; a null slot means "re-derive", which is network-free for the
+ *  non-PAT common case) and passes it DOWN inside the shared ManagedWrite, so
+ *  both agents and their derived surfaces bake the same value without re-probing.
  *  `credentialToken` hands the identity probe an already-resolved credential
  *  (undefined = the probe resolves the slot itself). */
 export async function wireBothAgents(
@@ -44,13 +50,16 @@ export async function wireBothAgents(
   quiet: boolean,
   credentialToken?: string | null,
 ): Promise<void> {
-  const directIntegrationId = mode === "direct"
-    ? await resolveAndPersistDirectIdentity(name, credentialToken)
-    : undefined;
+  const write: ManagedWrite = mode === "direct"
+    ? {
+      mode,
+      directIntegrationId: await resolveAndPersistDirectIdentity(name, credentialToken),
+    }
+    : { mode };
   const failures: string[] = [];
   for (const agent of bothAgents()) {
     try {
-      await agent.configureProfile(name, mode, { quiet, directIntegrationId });
+      await agent.configureProfile(name, write, { quiet });
     } catch (e) {
       failures.push(`${agent.label}: ${errMessage(e)}`);
     }
@@ -62,10 +71,12 @@ export async function wireBothAgents(
 
 /**
  * The direct client identity header to bake for `profile` (null = the default
- * slot): the config pin, else the persisted slot value, else a fresh probe
- * (persisted whenever it can be keyed to the credential it ran under, so the
- * launcher hot path -- `--settings-for` / `--sync` on every `cl --profile` --
- * and the default's re-wires never re-probe).
+ * slot): the config pin, else the persisted slot value, else a fresh probe --
+ * persisted only when it can be keyed to the credential it ran under, so the
+ * launcher hot path (`--settings-for` / `--sync` on every `cl --profile`) and
+ * the default's re-wires replay the stored verdict and re-probe only while no
+ * verdict could be keyed (a rotation raced the probe, or it ran
+ * credential-free).
  *
  * The slot stores the identity NAME, not the header value, so "probed, the default won"
  * (CODEX_IDENTITY_NAME) is distinguishable from "never probed" (null). Only a named
@@ -140,15 +151,13 @@ export async function refreshClaudeDesktopWiring(): Promise<void> {
       // The default slot caches its probed identity like every profile slot, so
       // this refresh replays it instead of re-probing (network-free in the
       // common case, exactly like the profile loop below).
-      const directIntegrationId = claudeMode === "direct"
-        ? await resolveAndPersistDirectIdentity(null, ghToken)
-        : undefined;
-      await syncClaudeDesktopWiring({
-        profile: null,
-        mode: claudeMode,
-        directIntegrationId,
-        directToken: ghToken,
-      });
+      const write: ManagedWrite = claudeMode === "direct"
+        ? {
+          mode: "direct",
+          directIntegrationId: await resolveAndPersistDirectIdentity(null, ghToken),
+        }
+        : { mode: "proxy" };
+      await syncClaudeDesktopWiring({ ...write, profile: null, directToken: ghToken });
     } catch (e) {
       logger.warn(`  Could not refresh the default entry: ${errMessage(e)}`);
     }
@@ -164,10 +173,10 @@ export async function refreshClaudeDesktopWiring(): Promise<void> {
     // repair territory, not a launchable entry to mirror into Desktop.
     if (slot.kind !== "complete") continue;
     try {
-      const directIntegrationId = slot.mode === "direct"
-        ? await resolveAndPersistDirectIdentity(name)
-        : undefined;
-      await syncClaudeDesktopWiring({ profile: name, mode: slot.mode, directIntegrationId });
+      const write: ManagedWrite = slot.mode === "direct"
+        ? { mode: "direct", directIntegrationId: await resolveAndPersistDirectIdentity(name) }
+        : { mode: "proxy" };
+      await syncClaudeDesktopWiring({ ...write, profile: name });
     } catch (e) {
       logger.warn(`  Could not refresh ${profileLabel(name)}: ${errMessage(e)}`);
     }

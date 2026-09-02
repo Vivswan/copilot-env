@@ -17,6 +17,7 @@
 // exit code (or 128+signal) through.
 import { spawnSync } from "node:child_process";
 import { constants } from "node:os";
+import type { ManagedWrite } from "../agents/configure.ts";
 import { resolveAndPersistDirectIdentity, wireBothAgents } from "../agents/profile_wiring.ts";
 import type { AgentProviderMode } from "../agents/provider_mode.ts";
 import { readAgentModes } from "../agents/wiring.ts";
@@ -309,17 +310,16 @@ function commandDeps(): LaunchDeps {
     agentMode: (agent) => readAgentModes()[agent],
     ensureProxy: ensureProxyUp,
     wireProxyDefault: (agent) =>
-      agent === "claude" ? runClaude({ mode: "proxy" }) : runCodex({ mode: "proxy" }),
+      agent === "claude"
+        ? runClaude({ kind: "configure", mode: "proxy" })
+        : runCodex({ kind: "configure", mode: "proxy" }),
     profileSlot: (name) => new CopilotEnvState().readProfileSlot(name),
     writeClaudeProfileSettings: async (name, mode) => {
       const claudeHome = resolveClaudeHome();
-      configureClaudeConfig(claudeHome, mode, {
-        quiet: true,
-        profile: name,
-        directIntegrationId: mode === "direct"
-          ? await resolveAndPersistDirectIdentity(name)
-          : undefined,
-      });
+      const write: ManagedWrite = mode === "direct"
+        ? { mode, directIntegrationId: await resolveAndPersistDirectIdentity(name) }
+        : { mode };
+      configureClaudeConfig(claudeHome, { ...write, quiet: true, profile: name });
       return settingsPathFor(claudeHome, name);
     },
     syncProfileWiring: (name, mode) => wireBothAgents(name, mode, true),

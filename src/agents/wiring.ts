@@ -36,27 +36,16 @@ function readAgentWirings(opts: AgentWiringOptions): {
 } {
   const expectedPort = opts.expectedPort ?? Number(copilotApiResolvePort());
   const codexHome = opts.codexHome ?? effectiveCodexHome();
-  // inspectCodexWiring's content seam is string-or-null (null = absent), so an
-  // UNREADABLE config.toml passed as null would read "none"/unwired and let a
-  // best-effort caller treat it as free to write over. It exists but is
-  // unknown, so the verdict becomes "other" here -- the same not-ours-to-touch
-  // classification the Claude classifier mints as read-error.
-  const codexRead = readTextResult(codexConfigPath(codexHome));
-  const codex: CodexWiringStatus = codexRead.kind === "unreadable"
-    ? {
-      ...inspectCodexWiring(null, null, expectedPort, false),
-      configExists: true,
-      providerMode: "other",
-    }
-    : inspectCodexWiring(
-      codexRead.kind === "text" ? codexRead.text : null,
-      null,
-      expectedPort,
-      false,
-    );
+  // Both classifiers take the three-way read themselves: an unreadable config
+  // classifies as other/read-error (present but not ours to touch), never as
+  // "none", which would let a best-effort caller treat it as free to write over.
+  const codex = inspectCodexWiring(
+    readTextResult(codexConfigPath(codexHome)),
+    null,
+    expectedPort,
+    false,
+  );
   const claudeHome = opts.claudeHome ?? resolveClaudeHome();
-  // The Claude classifier takes the three-way read itself: unreadable settings
-  // classify as other/read-error, never as none.
   const claude = inspectClaudeWiring(
     readTextResult(settingsPathFor(claudeHome)),
     claudeHome,

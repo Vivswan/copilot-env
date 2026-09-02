@@ -583,12 +583,11 @@ program
     switch (action.kind) {
       case "mobile":
         return runCodexMobile();
-      case "check":
-        return runCodex({ mode: "auto", check: true });
       case "host":
         return runCodexHost({ mode: action.mode, delete: action.deleteHost });
+      case "check":
       case "configure":
-        return runCodex({ mode: action.mode });
+        return runCodex(action);
       default:
         return assertNever(action);
     }
@@ -620,9 +619,8 @@ program
       case "desktop":
         return refreshClaudeDesktopWiring();
       case "check":
-        return runClaude({ mode: "auto", check: true });
       case "configure":
-        return runClaude({ mode: action.mode });
+        return runClaude(action);
       default:
         return assertNever(action);
     }

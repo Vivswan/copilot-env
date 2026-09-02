@@ -9,7 +9,7 @@
 // profile's credential.
 import { rmSync } from "node:fs";
 import { consola } from "consola";
-import { configuringLine } from "../agents/configure.ts";
+import { configuringLine, type ManagedWrite } from "../agents/configure.ts";
 import {
   bothAgents,
   resolveAndPersistDirectIdentity,
@@ -363,13 +363,10 @@ async function runSettingsFor(name: ProfileName): Promise<void> {
     );
   }
   const claudeHome = resolveClaudeHome();
-  configureClaudeConfig(claudeHome, slot.mode, {
-    quiet: true,
-    profile: name,
-    directIntegrationId: slot.mode === "direct"
-      ? await resolveAndPersistDirectIdentity(name)
-      : undefined,
-  });
+  const write: ManagedWrite = slot.mode === "direct"
+    ? { mode: "direct", directIntegrationId: await resolveAndPersistDirectIdentity(name) }
+    : { mode: "proxy" };
+  configureClaudeConfig(claudeHome, { ...write, quiet: true, profile: name });
   process.stdout.write(`${settingsPathFor(claudeHome, name)}\n`);
 }
 

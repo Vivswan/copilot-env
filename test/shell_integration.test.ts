@@ -1,15 +1,12 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, isAbsolute, join, sep } from "node:path";
+import { basename, isAbsolute, join, sep } from "node:path";
 import {
-  cheapWindowsProfilePaths,
   CI_PS_DOCUMENTS_DIR_ENV,
   CI_RC_DIR_ENV,
   LAUNCHERS_MARKER_END,
-  launchersWired,
   MARKER_END,
   posixBlock,
-  posixLaunchersBlock,
   quotePosix,
   quotePowerShell,
   rcFiles,
@@ -17,7 +14,6 @@ import {
   upsertBlock,
   windowsBlock,
   windowsExecutionPolicyCommand,
-  windowsLaunchersBlock,
   windowsProfileTarget,
 } from "../src/shell/integration.ts";
 import { runCli, runSync } from "./helpers/run.ts";
@@ -32,6 +28,22 @@ const LAUNCHERS_MARKER = "# copilot-env launchers";
 // rc file), so these POSIX-behavior tests only run off Windows.
 const skipWin = test.skipIf(process.platform === "win32");
 let home = "";
+
+/** upsertBlock's content, for the round-trip assertions that don't inspect leftBehind. */
+function up(content: string, marker: Parameters<typeof upsertBlock>[1], block: string): string {
+  return upsertBlock(content, marker, block).content;
+}
+
+/** A launchers block exactly as pre-`agent launch` releases wired it (the builders are
+ *  gone; the strip machinery must still recognize both platform flavors). */
+function legacyLaunchersBlock(powershell: boolean): string {
+  const body = powershell
+    ? "$AgentsLaunchers = 'C:\\x\\shell\\agents.launchers.ps1'\n" +
+      "if (Test-Path -LiteralPath $AgentsLaunchers) { . $AgentsLaunchers }"
+    : 'AGENTS_LAUNCHERS="/x/shell/agents.launchers.bashrc"\n' +
+      '[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"';
+  return `\n${LAUNCHERS_MARKER}\n${body}\n${LAUNCHERS_MARKER_END}\n`;
+}
 
 /** Occurrences of `marker` as a whole line. The end markers contain the open markers
  *  as substrings, so substring counting would double-count a fenced block. */
@@ -67,7 +79,13 @@ function run(...args: string[]): { code: number | null; out: string } {
   // reach the child: it outranks $HOME, and a suite-wide floor may set it.
   const proc = withEnv(CI_RC_DIR_ENV, null, () =>
     runCli(["shell", ...args], {
-      env: { ...process.env, HOME: home, SHELL: "/bin/bash", CONSOLA_LEVEL: "5" },
+      env: {
+        ...process.env,
+        HOME: home,
+        SHELL: "/bin/bash",
+        CONSOLA_LEVEL: "5",
+        COPILOT_API_HOME: home,
+      },
     }));
   return { code: proc.exitCode, out: proc.stdout + proc.stderr };
 }
@@ -209,48 +227,45 @@ skipWin(
   },
 );
 
-skipWin("shell --launchers adds the opt-in launchers block; default does not", () => {
-  run();
-  let rc = readFileSync(join(home, ".bashrc"), "utf-8");
+/** The stored launchers preference (the config key `agent shell --launchers` sets),
+ *  read from the per-test store run() points COPILOT_API_HOME at. */
+function storedLaunchersKey(): boolean | undefined {
+  const file = join(home, ".copilot-env-config.json");
+  if (!existsSync(file)) return undefined;
+  return (JSON.parse(readFileSync(file, "utf-8")) as { launchers?: boolean }).launchers;
+}
+
+skipWin("shell --launchers sets the config key and wires NO launchers block", () => {
+  // The launchers are `agent env` emissions now: --launchers flips the `launchers`
+  // config key; the rc file carries only the integration block.
+  expect(run("--launchers").code).toBe(0);
+  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
   expect(rc).toContain(MARKER);
   expect(rc).not.toContain(LAUNCHERS_MARKER);
-  // Re-running with --launchers adds the launchers block without duplicating the
-  // integration block (incremental opt-in).
-  run("--launchers");
-  rc = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(rc).toContain("agents.launchers.bashrc");
   expect(markerLines(rc, MARKER)).toBe(1);
-  expect(markerLines(rc, LAUNCHERS_MARKER)).toBe(1);
+  expect(storedLaunchersKey()).toBe(true);
+  // A plain re-run leaves the opt-in alone.
+  run();
+  expect(storedLaunchersKey()).toBe(true);
 });
 
-skipWin("shell --launchers wires the opt-in launchers block", () => {
+skipWin("shell --launchers --remove disables only the launchers", () => {
   expect(run("--launchers").code).toBe(0);
-  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(rc).toContain(MARKER);
-  expect(rc).toContain(LAUNCHERS_MARKER);
-});
-
-skipWin("shell --launchers --remove strips only the launchers block", () => {
-  expect(run("--launchers").code).toBe(0);
-  let rc = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(rc).toContain(MARKER);
-  expect(rc).toContain(LAUNCHERS_MARKER);
-
   expect(run("--launchers", "--remove").code).toBe(0);
-  rc = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(rc).toContain(MARKER);
-  expect(rc).not.toContain(LAUNCHERS_MARKER);
+  expect(storedLaunchersKey()).toBeUndefined();
+  // The integration block stays wired.
+  expect(readFileSync(join(home, ".bashrc"), "utf-8")).toContain(MARKER);
 });
 
-skipWin("--remove strips both the integration and launchers blocks", () => {
+skipWin("--remove strips the integration, a legacy launchers block, and the opt-in", () => {
   run("--launchers");
-  const wired = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(wired).toContain(MARKER);
-  expect(wired).toContain(LAUNCHERS_MARKER);
+  const rcPath = join(home, ".bashrc");
+  writeFileSync(rcPath, readFileSync(rcPath, "utf-8") + legacyLaunchersBlock(false));
   run("--remove");
-  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
+  const rc = readFileSync(rcPath, "utf-8");
   expect(rc).not.toContain(MARKER);
   expect(rc).not.toContain(LAUNCHERS_MARKER);
+  expect(storedLaunchersKey()).toBeUndefined();
 });
 
 skipWin("re-wiring migrates a stale block to the current shell/ path", () => {
@@ -266,14 +281,30 @@ skipWin("re-wiring migrates a stale block to the current shell/ path", () => {
   expect(markerLines(rc, MARKER)).toBe(1); // exactly one block, not duplicated
 });
 
-skipWin("a plain re-wire preserves an already-wired launchers block", () => {
-  run("--launchers");
-  expect(readFileSync(join(home, ".bashrc"), "utf-8")).toContain(LAUNCHERS_MARKER);
-  // Re-running plain shell wiring must not drop the user's launchers block.
-  run();
+skipWin("wiring strips old launchers blocks and carries the opt-in to the config key", () => {
+  // A wire over a marker-less rc leaves the opt-in alone (default off) ...
+  expect(run().code).toBe(0);
+  expect(storedLaunchersKey()).toBeUndefined();
+  // ... while the launchers blocks older releases wrote are cleared on the next
+  // wire (the file they sourced no longer ships) -- fenced and unfenced legacy
+  // flavors alike -- and the opt-in they carried moves to the `launchers` key,
+  // so an upgrading user never loses cl/co/cx.
+  const unfenced = 'AGENTS_LAUNCHERS="/x/agents.launchers.bashrc"\n' +
+    '[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"';
+  writeFileSync(
+    join(home, ".bashrc"),
+    `export KEEP=1\n${
+      legacyLaunchersBlock(false)
+    }\n${LAUNCHERS_MARKER}\n${unfenced}\nexport AFTER=1\n`,
+  );
+  expect(run().code).toBe(0);
   const rc = readFileSync(join(home, ".bashrc"), "utf-8");
-  expect(rc).toContain(LAUNCHERS_MARKER);
-  expect(markerLines(rc, LAUNCHERS_MARKER)).toBe(1);
+  expect(rc).toContain(MARKER);
+  expect(rc).not.toContain(LAUNCHERS_MARKER);
+  expect(rc).not.toContain("agents.launchers");
+  expect(rc).toContain("export KEEP=1");
+  expect(rc).toContain("export AFTER=1");
+  expect(storedLaunchersKey()).toBe(true); // the migrated opt-in
 });
 
 skipWin("posixBlock safely quotes paths with shell metacharacters", () => {
@@ -338,9 +369,11 @@ test("every builder emits a fenced block: open marker first, end marker last", (
   const path = join(homedir(), "shell", "x");
   const blocks: Array<[string, string, string]> = [
     [posixBlock(path), MARKER, MARKER_END],
-    [posixLaunchersBlock(path), LAUNCHERS_MARKER, LAUNCHERS_MARKER_END],
     [windowsBlock(path), MARKER, MARKER_END],
-    [windowsLaunchersBlock(path), LAUNCHERS_MARKER, LAUNCHERS_MARKER_END],
+    // Not a builder anymore, but the legacy fixture must keep the retired fence
+    // spelling so the strip coverage below can never drift from what was shipped.
+    [legacyLaunchersBlock(false), LAUNCHERS_MARKER, LAUNCHERS_MARKER_END],
+    [legacyLaunchersBlock(true), LAUNCHERS_MARKER, LAUNCHERS_MARKER_END],
   ];
   for (const [block, marker, end] of blocks) {
     expect(block.startsWith(`\n${marker}\n`)).toBe(true);
@@ -350,13 +383,12 @@ test("every builder emits a fenced block: open marker first, end marker last", (
 
 test("a new-format PowerShell block round-trips: write, upsert over it, remove", () => {
   const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
-  const launchers = windowsLaunchersBlock(join(homedir(), "shell", "agents.launchers.ps1"));
   const original = "Write-Host before\n";
-  const wired = upsertBlock(upsertBlock(original, MARKER, block), LAUNCHERS_MARKER, launchers);
+  const wired = up(original, MARKER, block) + legacyLaunchersBlock(true);
   expect(wired).toContain(MARKER_END);
   expect(wired).toContain(LAUNCHERS_MARKER_END);
-  // Upsert over the fenced blocks is byte-idempotent: the extent comes from the fence.
-  expect(upsertBlock(upsertBlock(wired, MARKER, block), LAUNCHERS_MARKER, launchers)).toBe(wired);
+  // Upsert over the fenced block is byte-idempotent: the extent comes from the fence.
+  expect(up(wired, MARKER, block)).toBe(wired);
   const removed = stripBlocks(wired, [MARKER, LAUNCHERS_MARKER]);
   expect(removed.content).toBe(original);
   expect(removed.leftBehind).toEqual([]);
@@ -366,44 +398,44 @@ test("re-upserting a CRLF fenced block is byte-idempotent and keeps CRLF", () =>
   // e.g. a $PROFILE some Windows tool rewrote with CRLF: the refresh must not flip
   // the block's endings (that would be a spurious diff on every re-wire).
   const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
-  const crlf = upsertBlock("Write-Host before\n", MARKER, block).replaceAll("\n", "\r\n");
-  expect(upsertBlock(crlf, MARKER, block)).toBe(crlf);
+  const crlf = up("Write-Host before\n", MARKER, block).replaceAll("\n", "\r\n");
+  expect(up(crlf, MARKER, block)).toBe(crlf);
   const removed = stripBlocks(crlf, [MARKER]);
   expect(removed.content).toBe("Write-Host before\r\n");
   expect(removed.leftBehind).toEqual([]);
   // A CRLF file with no final newline stays unterminated instead of gaining a lone \r.
   const unterminated = crlf.replace(/\r\n$/, "");
-  expect(upsertBlock(unterminated, MARKER, block)).toBe(unterminated);
+  expect(up(unterminated, MARKER, block)).toBe(unterminated);
 });
 
 test("a first wire into a CRLF file appends CRLF, never mixed endings", () => {
   // Before this, only the REFRESH path preserved CRLF (off the marker line); a first
   // append into e.g. a Notepad-written $PROFILE left LF lines in a CRLF file.
   const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
-  const wired = upsertBlock("Write-Host before\r\n", MARKER, block);
+  const wired = up("Write-Host before\r\n", MARKER, block);
   expect(wired).toBe(
-    upsertBlock("Write-Host before\n", MARKER, block).replaceAll("\n", "\r\n"),
+    up("Write-Host before\n", MARKER, block).replaceAll("\n", "\r\n"),
   );
   expect(wired).not.toMatch(/[^\r]\n/); // no lone LF anywhere
   // The append seeds a CRLF marker line, so the refresh path keeps it idempotent.
-  expect(upsertBlock(wired, MARKER, block)).toBe(wired);
+  expect(up(wired, MARKER, block)).toBe(wired);
 });
 
 test("an append matches the file's DOMINANT ending, not any stray one", () => {
   const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
   // One stray CRLF in an LF file must not flip the appended block to CRLF...
   const mostlyLf = "a\nb\nc\r\nd\n";
-  expect(upsertBlock(mostlyLf, MARKER, block)).toBe(mostlyLf + block);
+  expect(up(mostlyLf, MARKER, block)).toBe(mostlyLf + block);
   // ...and one stray LF in a CRLF file must not keep it LF.
   const mostlyCrlf = "a\r\nb\r\nc\nd\r\n";
-  expect(upsertBlock(mostlyCrlf, MARKER, block)).toBe(
+  expect(up(mostlyCrlf, MARKER, block)).toBe(
     mostlyCrlf + block.replaceAll("\n", "\r\n"),
   );
   // A tie stays LF, like an empty (or new) file: the builders' platform-neutral form.
-  expect(upsertBlock("a\r\nb\n", MARKER, block)).toBe("a\r\nb\n" + block);
-  expect(upsertBlock("", MARKER, block)).toBe(block);
+  expect(up("a\r\nb\n", MARKER, block)).toBe("a\r\nb\n" + block);
+  expect(up("", MARKER, block)).toBe(block);
   // A CRLF file with an unterminated last line still appends CRLF.
-  expect(upsertBlock("a\r\nb", MARKER, block)).toBe("a\r\nb" + block.replaceAll("\n", "\r\n"));
+  expect(up("a\r\nb", MARKER, block)).toBe("a\r\nb" + block.replaceAll("\n", "\r\n"));
 });
 
 test("upsert refreshes the first duplicate block and strips the rest", () => {
@@ -414,24 +446,26 @@ test("upsert refreshes the first duplicate block and strips the rest", () => {
     `if (Test-Path -LiteralPath $AgentsPs1) { . $AgentsPs1 }\n${MARKER_END}`;
   const content = `Write-Host before\n\n${stale}\n\nWrite-Host middle\n\n${stale}\n\n` +
     `Write-Host after\n`;
-  const next = upsertBlock(content, MARKER, block);
+  const next = up(content, MARKER, block);
   expect(markerLines(next, MARKER)).toBe(1);
   // Refreshed IN PLACE at the first site: user lines keep their order around it.
   expect(next.indexOf("Write-Host before")).toBeLessThan(next.indexOf(MARKER));
   expect(next.indexOf(MARKER_END)).toBeLessThan(next.indexOf("Write-Host middle"));
   expect(next.indexOf("Write-Host middle")).toBeLessThan(next.indexOf("Write-Host after"));
   expect(next).not.toContain("C:\\old\\agents.ps1");
-  expect(upsertBlock(next, MARKER, block)).toBe(next); // and the result is idempotent
+  expect(up(next, MARKER, block)).toBe(next); // and the result is idempotent
 });
 
 test("stripping a duplicate block never deletes a user line under its marker", () => {
   // The duplicate's extent is as conservative as removal's: an unrecognized line
-  // under the second marker survives the dedupe.
+  // under the second marker survives the dedupe -- and is REPORTED, the same
+  // leftBehind contract stripBlocks gives removal, so the wire path warns too.
   const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
-  const wired = upsertBlock("Write-Host before\n", MARKER, block);
+  const wired = up("Write-Host before\n", MARKER, block);
   const next = upsertBlock(`${wired}\n${MARKER}\nWrite-Host mine\n`, MARKER, block);
-  expect(markerLines(next, MARKER)).toBe(1);
-  expect(next).toContain("Write-Host mine");
+  expect(markerLines(next.content, MARKER)).toBe(1);
+  expect(next.content).toContain("Write-Host mine");
+  expect(next.leftBehind).toEqual(["Write-Host mine"]);
 });
 
 test("deduping a block at EOF preserves the file's (un)terminated state", () => {
@@ -439,9 +473,9 @@ test("deduping a block at EOF preserves the file's (un)terminated state", () => 
   // must not add or drop the terminator (a string round-trip through stripBlocks
   // cannot tell "no tail" from "one empty terminator line").
   const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
-  const wired = upsertBlock("Write-Host before\n", MARKER, block);
-  expect(upsertBlock(`${wired}\n${MARKER}\n`, MARKER, block)).toBe(wired);
-  expect(upsertBlock(`${wired}\n${MARKER}`, MARKER, block)).toBe(wired.replace(/\n$/, ""));
+  const wired = up("Write-Host before\n", MARKER, block);
+  expect(up(`${wired}\n${MARKER}\n`, MARKER, block)).toBe(wired);
+  expect(up(`${wired}\n${MARKER}`, MARKER, block)).toBe(wired.replace(/\n$/, ""));
 });
 
 test("a legacy (unfenced) first block still migrates when a fenced duplicate follows", () => {
@@ -449,26 +483,36 @@ test("a legacy (unfenced) first block still migrates when a fenced duplicate fol
     `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"`;
   const block = posixBlock(join(homedir(), "shell", "agents.bashrc"));
   const dup = block.slice(1); // the same fenced block, without its leading blank
-  const next = upsertBlock(`${legacy}\n\n${dup}export AFTER=1\n`, MARKER, block);
-  expect(markerLines(next, MARKER)).toBe(1);
-  expect(next).toContain(MARKER_END); // the FIRST site was refreshed to the fenced form
-  expect(next).not.toContain("/old/agents.bashrc");
-  expect(next).toContain("export AFTER=1");
+  // A user line BETWEEN the legacy block and the fenced duplicate: the legacy
+  // extent must stop before it and the dedupe must not eat it either.
+  const next = upsertBlock(
+    `${legacy}\nexport BETWEEN=1\n\n${dup}export AFTER=1\n`,
+    MARKER,
+    block,
+  );
+  expect(markerLines(next.content, MARKER)).toBe(1);
+  expect(next.content).toContain(MARKER_END); // the FIRST site was refreshed to the fenced form
+  expect(next.content).not.toContain("/old/agents.bashrc");
+  expect(next.content.indexOf(MARKER_END)).toBeLessThan(next.content.indexOf("export BETWEEN=1"));
+  expect(next.content.indexOf("export BETWEEN=1")).toBeLessThan(
+    next.content.indexOf("export AFTER=1"),
+  );
+  expect(next.leftBehind).toEqual([]); // both lines sit OUTSIDE the owned extents
 });
 
 test("CRLF duplicates dedupe to one all-CRLF block", () => {
   const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
-  const lf = upsertBlock("Write-Host before\n", MARKER, block);
+  const lf = up("Write-Host before\n", MARKER, block);
   const crlf = `${lf}\n${MARKER}\n`.replaceAll("\n", "\r\n");
-  const next = upsertBlock(crlf, MARKER, block);
+  const next = up(crlf, MARKER, block);
   expect(markerLines(next, MARKER)).toBe(1);
   expect(next).not.toMatch(/[^\r]\n/); // no lone LF anywhere
-  expect(upsertBlock(next, MARKER, block)).toBe(next);
+  expect(up(next, MARKER, block)).toBe(next);
   // An UNTERMINATED duplicate at EOF: deduping it makes our block the new EOF, so its
   // last line must shed the \r that now has no \n to pair with.
-  const unterm = upsertBlock(`${lf}\n${MARKER}`.replaceAll("\n", "\r\n"), MARKER, block);
+  const unterm = up(`${lf}\n${MARKER}`.replaceAll("\n", "\r\n"), MARKER, block);
   expect(unterm).toBe(lf.replaceAll("\n", "\r\n").replace(/\r\n$/, ""));
-  expect(upsertBlock(unterm, MARKER, block)).toBe(unterm);
+  expect(up(unterm, MARKER, block)).toBe(unterm);
 });
 
 test("an unknown marker is unrepresentable, not a runtime throw", () => {
@@ -476,7 +520,7 @@ test("an unknown marker is unrepresentable, not a runtime throw", () => {
   // this module does not own fails to compile; there is no throwing lookup left.
   void (() => {
     // @ts-expect-error -- not an owned block marker
-    upsertBlock("", "# some other marker", "");
+    up("", "# some other marker", "");
     // @ts-expect-error -- not an owned block marker
     stripBlocks("", ["# some other marker"]);
   });
@@ -489,7 +533,7 @@ test("upsert migrates a legacy PowerShell block (old Test-Path spelling) to the 
   const legacy = `${MARKER}\n$AgentsPs1 = "C:\\old\\agents.ps1"\n` +
     `if (Test-Path $AgentsPs1) { . $AgentsPs1 }`;
   const profile = `Write-Host before\n\n${legacy}\n\nWrite-Host after\n`;
-  const next = upsertBlock(profile, MARKER, windowsBlock(join(homedir(), "shell", "agents.ps1")));
+  const next = up(profile, MARKER, windowsBlock(join(homedir(), "shell", "agents.ps1")));
   expect(next).toContain(MARKER_END);
   expect(next).not.toContain("C:\\old\\agents.ps1");
   expect(next.indexOf("Write-Host before")).toBeLessThan(next.indexOf(MARKER));
@@ -577,17 +621,6 @@ test("the Windows $PROFILE lookup honors the Documents redirect on every OS", ()
   });
 });
 
-test("both profile resolvers land on the same redirected tree", () => {
-  // The authoritative resolver wires; the cheap one (behind `agent env`) inspects. Let
-  // them disagree and a redirected run wires the launchers, then reports them unwired.
-  const documents = join(home, "Documents");
-  withEnv(CI_PS_DOCUMENTS_DIR_ENV, documents, () => {
-    expect(new Set(cheapWindowsProfilePaths())).toEqual(
-      new Set([...windowsProfileTarget(false).paths, ...windowsProfileTarget(true).paths]),
-    );
-  });
-});
-
 test("a set-but-unusable seam value is refused by every resolver", () => {
   // Quietly falling back to the machine's real startup file is the one failure a seam
   // whose job is isolation must not have: an empty value is an unexpanded interpolation,
@@ -598,7 +631,6 @@ test("a set-but-unusable seam value is refused by every resolver", () => {
   for (const value of bad) {
     withEnv(CI_PS_DOCUMENTS_DIR_ENV, value, () => {
       expect(() => windowsProfileTarget(false)).toThrow("must be an absolute path");
-      expect(() => cheapWindowsProfilePaths()).toThrow("must be an absolute path");
     });
     withEnv(CI_RC_DIR_ENV, value, () => {
       expect(() => rcFiles(true)).toThrow("must be an absolute path");
@@ -670,23 +702,6 @@ test.skipIf(process.platform !== "win32")(
   },
 );
 
-// Windows only: the cheap resolver behind `agent env` has to read the redirected tree.
-// Asserting false on an empty tree FIRST is what proves the redirect was honored -- a
-// resolver ignoring it could report true off an already-wired real profile.
-test.skipIf(process.platform !== "win32")(
-  "launchersWired inspects the redirected profile tree, not the machine's",
-  () => {
-    const documents = join(home, "Documents");
-    const profile = join(documents, "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1");
-    withEnv(CI_PS_DOCUMENTS_DIR_ENV, documents, () => {
-      expect(launchersWired()).toBe(false);
-      mkdirSync(dirname(profile), { recursive: true });
-      writeFileSync(profile, `${LAUNCHERS_MARKER}\n`);
-      expect(launchersWired()).toBe(true);
-    });
-  },
-);
-
 test("windows execution policy command skips unavailable policy cmdlets", () => {
   const command = windowsExecutionPolicyCommand();
   expect(command).toContain("Get-Command Get-ExecutionPolicy -ErrorAction Stop");
@@ -699,25 +714,6 @@ test("windows execution policy command skips unavailable policy cmdlets", () => 
   expect(command).toContain("[Environment]::GetEnvironmentVariable('PSModulePath','Machine')");
   expect(command).toContain(
     "Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force",
-  );
-});
-
-test("posixLaunchersBlock sources the launchers file under its own marker", () => {
-  const block = posixLaunchersBlock("/x/shell/agents.launchers.bashrc");
-  expect(block).toContain(LAUNCHERS_MARKER);
-  expect(block).toContain("agents.launchers.bashrc");
-  // Distinct marker from the integration block, so removal can target each.
-  expect(block).not.toContain(MARKER);
-});
-
-test("both launcher shell files exist for the env-emitted source directive", () => {
-  // env.ts emits `source <shell/agents.launchers.{bashrc,ps1}>`; keep both present so
-  // the wired path can never point at a missing file.
-  expect(readFileSync(join(process.cwd(), "shell", "agents.launchers.bashrc"), "utf8")).toContain(
-    "function cl",
-  );
-  expect(readFileSync(join(process.cwd(), "shell", "agents.launchers.ps1"), "utf8")).toContain(
-    "function cl",
   );
 });
 
@@ -765,72 +761,6 @@ test("env-refresh stderr parity: Import-CopilotEnv takes -Quiet, eager passes it
   expect(refresh).toBeDefined();
   expect(refresh?.trim()).toBe("Import-CopilotEnv");
   expect(refresh).not.toContain("-Quiet");
-});
-
-test("cx launchers start the proxy only for proxy-backed Codex configs", () => {
-  const posix = readFileSync(join(process.cwd(), "shell", "agents.launchers.bashrc"), "utf8");
-  // cl/cx delegate the provider sync to the shared helper.
-  expect(shellFunctionBody(posix, "cx")).toContain("_copilot_wire_provider codex cx Codex");
-  expect(shellFunctionBody(posix, "cl")).toContain("_copilot_wire_provider claude cl Claude");
-  // Check-only: read the configured provider (no live probe), and re-sync proxy.
-  const posixWire = shellFunctionBody(posix, "_copilot_wire_provider");
-  expect(posixWire).toContain("--check");
-  expect(posixWire).toContain("--proxy");
-  expect(posixWire).toContain("_copilot_provider_status");
-  expect(posixWire).toContain("-eq 0");
-  expect(posixWire).toContain("-eq 2");
-  expect(posixWire).toContain("_copilot_ensure_server");
-  expect(posixWire).not.toContain("--json");
-  expect(posixWire).not.toContain("jq");
-  // The launchers ensure the proxy through the resolver SUBCOMMAND (interactive: no
-  // --yes, so a down unmanaged proxy prompts), never the retired script path.
-  expect(shellFunctionBody(posix, "_copilot_ensure_server")).toContain("proxy-token");
-  expect(shellFunctionBody(posix, "_copilot_ensure_server")).not.toContain("proxy-token.sh");
-  expect(shellFunctionBody(posix, "_copilot_ensure_server")).not.toContain("--yes");
-  expect(shellFunctionBody(posix, "_copilot_ensure_profile_server")).toContain("proxy-token");
-  expect(shellFunctionBody(posix, "_copilot_ensure_profile_server")).not.toContain("--yes");
-  expect(posix).not.toContain("_copilot_codex_config_file");
-  expect(posix).not.toContain("_copilot_codex_uses_proxy");
-  // The launcher reconfigures proxy only; it never runs the live auto-detect.
-  expect(posixWire).not.toContain("--auto");
-
-  const powershell = readFileSync(join(process.cwd(), "shell", "agents.launchers.ps1"), "utf8");
-  expect(shellFunctionBody(powershell, "cx")).toContain(
-    "Sync-AgentProvider -Agent codex -Launcher cx -Display Codex",
-  );
-  expect(shellFunctionBody(powershell, "cl")).toContain(
-    "Sync-AgentProvider -Agent claude -Launcher cl -Display Claude",
-  );
-  const powershellWire = shellFunctionBody(powershell, "Sync-AgentProvider");
-  expect(powershellWire).toContain("--check");
-  expect(powershellWire).toContain("--proxy");
-  expect(powershellWire).toContain("$status -eq 2");
-  expect(powershellWire).toContain("$status -ne 0");
-  expect(powershellWire).toContain("Confirm-CopilotServer");
-  expect(powershellWire).not.toContain("--json");
-  expect(powershellWire).not.toContain("jq");
-  // Same resolver-subcommand contract on the PowerShell twin.
-  expect(shellFunctionBody(powershell, "Confirm-CopilotServer")).toContain("proxy-token");
-  expect(shellFunctionBody(powershell, "Confirm-CopilotServer")).not.toContain("proxy-token.ps1");
-  expect(shellFunctionBody(powershell, "Confirm-CopilotServer")).not.toContain("--yes");
-  expect(shellFunctionBody(powershell, "Confirm-CopilotProfileServer")).toContain("proxy-token");
-  expect(shellFunctionBody(powershell, "Confirm-CopilotProfileServer")).not.toContain("--yes");
-  expect(powershell).not.toContain("Get-CodexConfigPath");
-  expect(powershell).not.toContain("Test-CodexProxyProvider");
-  expect(powershellWire).not.toContain("--auto");
-});
-
-test("the cl launchers state the same Claude flag set on both platforms", () => {
-  // Each launcher spells the shared flag set once; this pin keeps the pair from
-  // drifting apart again on the next edit.
-  const posix = readFileSync(join(process.cwd(), "shell", "agents.launchers.bashrc"), "utf8");
-  const powershell = readFileSync(join(process.cwd(), "shell", "agents.launchers.ps1"), "utf8");
-  const posixSet = posix.match(/set -- (--[a-z- ]+?) "\$@"/)?.[1]?.split(" ") ?? [];
-  const psSet = [
-    ...(powershell.match(/\$claudeFlags = @\(([^)]*)\)/)?.[1] ?? "").matchAll(/'([^']+)'/g),
-  ].map((m) => m[1]);
-  expect(posixSet.length).toBeGreaterThan(0);
-  expect(psSet).toEqual(posixSet);
 });
 
 // The seam NAMES are external contracts: the suite floor (test/helpers/testing.ts) exports

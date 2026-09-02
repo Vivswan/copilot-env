@@ -282,6 +282,45 @@ test("claude exposes and runs check mode", () => {
   expect(conflicting.stderr).toContain("--direct and --proxy are mutually exclusive");
 });
 
+test("launch --help documents the contract; bad invocations are boundary rejections", () => {
+  const help = helpScreen("launch", "--help");
+  expect(help.exitCode).toBe(0);
+  for (const needle of ["claude | codex | copilot", "--profile", "--relaxed"]) {
+    expect(help.output).toContain(needle);
+  }
+
+  const unknown = runCli(["launch", "cursor"], { env: isolatedEnv() });
+  expect(unknown.exitCode).toBe(1);
+  expect(unknown.stderr).toContain(
+    "unknown agent CLI 'cursor' (expected claude | codex | copilot)",
+  );
+
+  const copilotProfile = runCli(["launch", "copilot", "--profile", "work"], {
+    env: isolatedEnv(),
+  });
+  expect(copilotProfile.exitCode).toBe(1);
+  expect(copilotProfile.stderr).toContain("--profile does not apply to copilot");
+
+  // Agent-CLI flags belong AFTER `--`; before it they are Commander's to reject,
+  // so a typo'd launch flag is never silently forwarded to the agent.
+  const beforeDashes = runCli(["launch", "claude", "--resume"], { env: isolatedEnv() });
+  expect(beforeDashes.exitCode).toBe(1);
+  expect(beforeDashes.stderr).toContain("unknown option");
+  // Four cold CLI spawns; generous headroom for loaded Windows CI runners.
+}, 90_000);
+
+test("claude --desktop mode conflict: the exact stderr rendering is pinned", () => {
+  // The message is a boundary rejection users script against. The deno runtime may
+  // interleave its own provisioning lines (Download/Warning) on a cold cache, so the
+  // pin is the exact FINAL stderr line -- the rejection is always the last write.
+  const proc = runCli(["claude", "--desktop", "--check"], { env: isolatedEnv() });
+  expect(proc.exitCode).toBe(1);
+  const lines = proc.stderr.split("\n").filter((l) => l !== "");
+  expect(lines[lines.length - 1]).toBe(
+    " ERROR  --desktop cannot be combined with --check/--direct/--proxy.",
+  );
+});
+
 test("init configures both agents and rejects --direct + --proxy", () => {
   const help = helpScreen("init", "--help");
   expect(help.exitCode).toBe(0);

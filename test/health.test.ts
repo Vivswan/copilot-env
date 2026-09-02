@@ -1597,21 +1597,28 @@ test("evaluateAll(full) includes the live checks only when their facts are prese
 
 // --- pure sub-evaluators ----------------------------------------------------
 
-test("evalShellFiles detects integration and launcher markers", () => {
+test("evalShellFiles: launchersWired is the config key; markers stay per-file facts", () => {
   const integration = "# copilot-env shell integration";
   const launchers = "# copilot-env launchers";
   const facts = evalShellFiles([
     { path: "/a", content: `before\n${integration}\nsource x\n` },
     { path: "/b", content: `${launchers}\nsource y\n` },
     { path: "/c", content: null },
-  ]);
+  ], true);
   expect(facts.integrationWired).toBe(true);
   expect(facts.launchersWired).toBe(true);
+  // The legacy launchers marker stays a per-file fact (a leftover block), but it
+  // no longer decides launchersWired -- the config key does.
+  expect(facts.files.find((f) => f.path === "/b")?.hasLaunchers).toBe(true);
   expect(facts.files.find((f) => f.path === "/c")?.hasIntegration).toBe(false);
+  expect(
+    evalShellFiles([{ path: "/b", content: `${launchers}\nsource y\n` }], false)
+      .launchersWired,
+  ).toBe(false);
 });
 
-test("evalShellFiles reports unwired when no markers present", () => {
-  const facts = evalShellFiles([{ path: "/a", content: "export FOO=1\n" }]);
+test("evalShellFiles reports unwired when no markers present and the key is off", () => {
+  const facts = evalShellFiles([{ path: "/a", content: "export FOO=1\n" }], false);
   expect(facts.integrationWired).toBe(false);
   expect(facts.launchersWired).toBe(false);
 });

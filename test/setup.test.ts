@@ -1,10 +1,20 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
   buildNodePosixInstallScript,
   computePathRefresh,
   parseShellAction,
   runShell,
 } from "../src/commands/setup.ts";
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import {
+  CI_RC_DIR_ENV,
+  LAUNCHERS_MARKER,
+  LAUNCHERS_MARKER_END,
+  windowsProfileTarget,
+} from "../src/shell/integration.ts";
 import { expect, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
 
 // runShell's flag validation throws BEFORE any install or rc wiring, so these
 // need no filesystem/network isolation.
@@ -70,6 +80,57 @@ test("shell --clis: a non-integer/negative cooldown is rejected", () => {
 
 test("shell --clis cannot combine with --remove", () => {
   expect(() => runShell({ clis: true, remove: true })).toThrow("cannot be combined with --remove");
+});
+
+// runShell's launcher toggle is the `launchers` config key (the rc writes ride the
+// suite's rc-dir/Documents seams, so this runs for real on every OS): --launchers
+// sets it, every remove flavor clears it, and a plain wire leaves it alone.
+test("runShell toggles the launchers config key; a plain wire leaves it alone", () => {
+  const restore = envSnapshot();
+  let dir = isolateProxyHome("copilot-setup-");
+  try {
+    runShell({ launchers: true });
+    expect(new CopilotEnvConfig().launchersEnabled()).toBe(true);
+    runShell({}); // a plain re-wire never drops the opt-in
+    expect(new CopilotEnvConfig().launchersEnabled()).toBe(true);
+    runShell({ remove: true, launchers: true }); // launchers-only disable
+    expect(new CopilotEnvConfig().launchersEnabled()).toBe(false);
+    runShell({ launchers: true });
+    runShell({ remove: true }); // the full unwire disables them too
+    expect(new CopilotEnvConfig().launchersEnabled()).toBe(false);
+  } finally {
+    restore();
+    dir = removeDir(dir);
+  }
+});
+
+// The upgrade path, on THIS platform's own wire target (the rc-dir seam on POSIX,
+// the redirected $PROFILE tree on Windows): a legacy launchers rc block carries the
+// old opt-in, so a wire migrates it to the config key -- but a stored preference,
+// either way, is the user's decision and is never overwritten.
+test("a wire migrates a legacy launchers block's opt-in, never over a stored value", () => {
+  const restore = envSnapshot();
+  let dir = isolateProxyHome("copilot-setup-migrate-");
+  try {
+    const target = process.platform === "win32"
+      ? windowsProfileTarget(false).paths[0]
+      : join(process.env[CI_RC_DIR_ENV] ?? "", ".bashrc");
+    if (target === undefined) throw new Error("no wire target resolved");
+    const legacyBlock = `\n${LAUNCHERS_MARKER}\n${LAUNCHERS_MARKER_END}\n`;
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, legacyBlock);
+    runShell({});
+    expect(new CopilotEnvConfig().launchersEnabled()).toBe(true);
+    // Explicit false + another legacy block: the wire strips the block but the
+    // stored decision stands.
+    new CopilotEnvConfig().set({ launchers: false });
+    writeFileSync(target, legacyBlock);
+    runShell({});
+    expect(new CopilotEnvConfig().launchersEnabled()).toBe(false);
+  } finally {
+    restore();
+    dir = removeDir(dir);
+  }
 });
 
 // computePathRefresh is the platform-parameterized core of syncNpmGlobalBinToPath:

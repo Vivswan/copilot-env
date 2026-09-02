@@ -25,6 +25,8 @@ export interface CopilotEnvConfigData {
   integrationId?: string;
   /** Idle auto-stop window in whole seconds (`0` disables). */
   idleTimeout?: number;
+  /** Define the opt-in cl/co/cx launcher functions in the shell (`agent env` emits them). */
+  launchers?: boolean;
   /** Proxy request logging under `<home>/logs` (`false` discards the writes). */
   proxyLogs?: boolean;
   /** Small/fast model id the proxy uses. */
@@ -421,6 +423,16 @@ const CONFIG_REGISTRY_LITERAL = [
       "Applies at the next `agent start` (proxy) and `agent init`/`agent profile --add` (direct wiring).",
   },
   {
+    cli: "launchers",
+    key: "launchers",
+    describe:
+      "Define the cl / co / cx (+ clx / cox / cxx) launcher functions via `agent env` (bool)",
+    ...BOOL_DOMAIN,
+    defaultValue: false,
+    applyHint: "New shells pick a change up; the current one picks up an ENABLE on the next " +
+      "`agent` command (a disable applies to new shells only).",
+  },
+  {
     cli: "max-port",
     key: "maxPort",
     describe: "Upper bound of the allowed proxy port range (1-65535)",
@@ -718,6 +730,11 @@ export class CopilotEnvConfig {
   /** Whether the patched Codex model catalog is enabled (opt-in, default off). */
   codexModelCatalogEnabled(): boolean {
     return this.read().codexModelCatalog ?? configDefaultBoolean("codex-model-catalog");
+  }
+
+  /** Whether `agent env` defines the opt-in cl/co/cx launcher functions (default off). */
+  launchersEnabled(): boolean {
+    return this.read().launchers ?? configDefaultBoolean("launchers");
   }
 
   /** Whether direct Claude wiring registers the MCP server + WebSearch deny (default ON). */

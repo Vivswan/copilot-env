@@ -29,6 +29,7 @@ import { runConfig } from "./commands/config.ts";
 import { runEnv } from "./commands/env.ts";
 import { runHealth } from "./commands/health.ts";
 import { runInit } from "./commands/init.ts";
+import { parseLaunchAction, runLaunch } from "./commands/launch.ts";
 import { runMcp } from "./commands/mcp.ts";
 import { runModels } from "./commands/models.ts";
 import { runProfile } from "./commands/profile.ts";
@@ -178,6 +179,39 @@ program
   .option("--direct", "Force both agents to GitHub Copilot Direct (no auto-detect probe).")
   .option("--proxy", "Force both agents to the local copilot-api proxy (no auto-detect probe).")
   .action((opts: Opts) => runInit({ mode: parseModeFlags(opts) }));
+
+program
+  .command("launch")
+  .helpGroup("Setup:")
+  .description(
+    "Launch an agent CLI (claude | codex | copilot) with the managed flags, provider " +
+      "wiring, and environment - what the opt-in cl / co / cx shell launchers run.",
+  )
+  .argument("<cli>", "Which agent CLI to launch: claude | codex | copilot.")
+  .argument(
+    "[args...]",
+    "Arguments for the agent CLI, passed through verbatim (put them after --).",
+  )
+  .option(
+    "--profile <name>",
+    "Launch under the named profile (its own credential, wiring, and daemon; " +
+      "never falls back to the default). Not for copilot.",
+  )
+  .option(
+    "--relaxed",
+    "Add the agent's most-relaxed flag: Claude --dangerously-skip-permissions " +
+      "(with IS_SANDBOX=1), Codex --sandbox danger-full-access, Copilot --allow-all.",
+  )
+  .action((cli: string, args: string[], opts: Opts) =>
+    runLaunch(
+      parseLaunchAction({
+        cli,
+        args,
+        profile: opts.profile as string | undefined,
+        relaxed: Boolean(opts.relaxed),
+      }),
+    )
+  );
 
 program
   .command("auth")
@@ -646,8 +680,7 @@ program
     runUpdate({
       check: Boolean(opts.check),
       force: Boolean(opts.force),
-      auto: opts.auto === true,
-      noAuto: opts.auto === false,
+      auto: opts.auto as boolean | undefined,
       autoStatus: Boolean(opts.autoStatus),
     })
   );
@@ -670,11 +703,15 @@ program
     "With --clis: avoid sudo/system package managers; use only user-local tooling.",
   )
   .option("--no-prereqs", "With --clis: verify prerequisites and CLIs only; install nothing.")
-  .option("--launchers", "Also wire the opt-in cl / co / cx launchers.")
+  .option(
+    "--launchers",
+    "Also enable the opt-in cl / co / cx launchers (sets the `launchers` config key; " +
+      "`agent env` defines the functions).",
+  )
   .option("--all-hosts", "Windows only: target the CurrentUserAllHosts profile.")
   .option(
     "--remove",
-    "Unwire the integration (and launchers); with --launchers, remove only the launcher block.",
+    "Unwire the integration (and disable launchers); with --launchers, disable only the launchers.",
   )
   .action((opts: Opts) =>
     runShell({

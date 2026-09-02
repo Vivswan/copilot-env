@@ -50,8 +50,10 @@ function Import-CopilotEnv {
 # Uniform wrapper over bin\agent.ps1 (mirrors the POSIX agents.bashrc `agent`):
 # run the requested command, then re-apply the full session env from the single
 # source of truth -- `agent env`, which prints `$env:KEY = ...` / `Remove-Item
-# Env:KEY` lines (CODEX_HOME + the proxy ANTHROPIC_BASE_URL, set or cleared). No
-# per-subcommand logic; we only ever eval the dedicated, contract-stable `env` output.
+# Env:KEY` lines (CODEX_HOME + the proxy ANTHROPIC_BASE_URL, set or cleared) and,
+# when the `launchers` config key is on, the one-line global cl/co/cx launcher
+# functions (each delegating to `agent launch`). No per-subcommand logic; we only
+# ever eval the dedicated, contract-stable `env` output.
 # The refresh is NOT -Quiet: a real failure should be visible (it stays non-fatal).
 function agent {
     Invoke-Agent @args

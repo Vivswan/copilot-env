@@ -1,4 +1,4 @@
-// Cross-platform shell/profile integration writer for agent wrappers and launchers.
+// Cross-platform shell/profile integration writer for the `agent` wrapper block.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -6,6 +6,7 @@ import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { consola } from "consola";
 
 import { isEnoent } from "../utils/fs.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 
@@ -22,7 +23,10 @@ export const LAUNCHERS_MARKER = "# copilot-env launchers";
 export const MARKER_END = `${MARKER} end`;
 export const LAUNCHERS_MARKER_END = `${LAUNCHERS_MARKER} end`;
 /** A marker this module owns a block under. Every shape lookup is typed against this
- *  union, so an unknown marker is a compile error rather than a runtime throw. */
+ *  union, so an unknown marker is a compile error rather than a runtime throw.
+ *  LAUNCHERS_MARKER is retired as a WRITE target (the launchers are `agent env`
+ *  function emissions now, gated by the `launchers` config key) but stays owned so
+ *  blocks older releases wrote are still recognized and stripped. */
 export type BlockMarker = typeof MARKER | typeof LAUNCHERS_MARKER;
 
 // Per marker: the end-marker line that closes a fenced block, and the ordered
@@ -71,62 +75,65 @@ function fencedBlock(marker: BlockMarker, body: string[]): string {
   return `\n${marker}\n${body.join("\n")}\n${BLOCK_SHAPES[marker].end}\n`;
 }
 
-/** The opt-in cl/co/cx launchers file for each platform flavor -- the single owner of
- *  the two file names, shared with `agent env`'s one-shot launchers `source` line. */
-export function launchersFile(powershell: boolean): string {
-  return join(
-    PROJECT_ROOT,
-    "shell",
-    powershell ? "agents.launchers.ps1" : "agents.launchers.bashrc",
-  );
-}
-
-export interface ShellIntegrationArgs {
-  remove?: boolean;
-  removeLaunchers?: boolean;
-  allHosts?: boolean;
-  launchers?: boolean;
-}
+/**
+ * What ONE `agent shell` file operation does: wire (or refresh) the integration
+ * block, or strip owned blocks (all of them, or just the retired launchers
+ * blocks). A union so a wire can never carry removal knobs and vice versa.
+ */
+export type ShellIntegrationAction =
+  | { kind: "wire"; allHosts: boolean }
+  | { kind: "remove"; allHosts: boolean; launchersOnly: boolean };
 
 /** A line equals the given marker ignoring a trailing CR (rc/profile files may be CRLF). */
 const lineIs = (line: string, marker: string): boolean => line.replace(/\r$/, "") === marker;
 
-export function runShellIntegration(args: ShellIntegrationArgs): void {
-  const remove = Boolean(args.remove);
-  const removeLaunchers = Boolean(args.removeLaunchers);
+export function runShellIntegration(action: ShellIntegrationAction): void {
   const windows = process.platform === "win32";
 
-  if (remove || removeLaunchers) {
-    const files = windows ? windowsProfileTarget(Boolean(args.allHosts)).paths : rcFiles(true);
+  if (action.kind === "remove") {
+    const files = windows ? windowsProfileTarget(action.allHosts).paths : rcFiles(true);
     const restartHint = windows ? "Restart PowerShell." : "Restart your shell.";
-    const removed = remove ? removeFrom(files) : removeLaunchersFrom(files);
+    const removed = action.launchersOnly ? removeLaunchersFrom(files) : removeFrom(files);
     if (removed) consola.info(restartHint);
     return;
   }
-  const launchers = Boolean(args.launchers);
   if (windows) {
-    const target = windowsProfileTarget(Boolean(args.allHosts));
-    wireBlocks(
-      target.paths,
-      windowsBlock(join(PROJECT_ROOT, "shell", "agents.ps1")),
-      windowsLaunchersBlock(launchersFile(true)),
-      launchers,
-    );
+    const target = windowsProfileTarget(action.allHosts);
+    migrateLaunchersOptIn(target.paths);
+    wireBlocks(target.paths, windowsBlock(join(PROJECT_ROOT, "shell", "agents.ps1")));
     // Only relax execution policy for a "system" target -- a redirected run owns no
     // machine state (the type enforces it).
     if (target.source === "system") relaxWindowsExecutionPolicy(target);
     consola.info("Restart PowerShell or run: . $PROFILE");
   } else {
-    wireBlocks(
-      rcFiles(false),
-      posixBlock(join(PROJECT_ROOT, "shell", "agents.bashrc")),
-      posixLaunchersBlock(launchersFile(false)),
-      launchers,
-    );
+    const files = rcFiles(false);
+    migrateLaunchersOptIn(files);
+    wireBlocks(files, posixBlock(join(PROJECT_ROOT, "shell", "agents.bashrc")));
     consola.info("Restart your shell or run: source ~/.bashrc (or ~/.zshrc)");
   }
 }
 
+/**
+ * A launchers rc block is the pre-`agent launch` opt-in artifact: wiring strips it,
+ * so the opt-in it carried must move to the `launchers` config key first, or an
+ * upgrading user would silently lose cl/co/cx. BEFORE the strip writes on purpose
+ * (a failed write can retry the migration; stripping first would destroy the only
+ * record of the opt-in), and only when the preference is UNSET -- a stored value,
+ * either way, is the user's own decision and is never overwritten.
+ */
+function migrateLaunchersOptIn(files: string[]): void {
+  const hadLaunchers = files.some(
+    (file) => existsSync(file) && hasMarker(readFileSync(file, "utf-8"), LAUNCHERS_MARKER),
+  );
+  if (!hadLaunchers) return;
+  const config = new CopilotEnvConfig();
+  if (config.read().launchers !== undefined) return;
+  config.set({ launchers: true });
+  consola.info(
+    "Carried the launcher opt-in over to the `launchers` config key " +
+      "(cl/co/cx now load via `agent env`).",
+  );
+}
 // --- shared wire/remove core --------------------------------------------------
 
 /**
@@ -223,13 +230,23 @@ function dominantEol(content: string): "\n" | "\r\n" {
  * byte-for-byte; later duplicates of the same marker (a bad hand-merge, say) are
  * stripped, extent-bounded, so the file converges on ONE owned block and user lines
  * are never deleted. When absent, the block is appended at EOF (it leads with a
- * blank) in the file's dominant line ending. Exported for tests only.
+ * blank) in the file's dominant line ending. `leftBehind` reports the user lines the
+ * duplicate strips refused to consume -- the same warning contract stripBlocks gives
+ * removal. Exported for tests only.
  */
-export function upsertBlock(content: string, marker: BlockMarker, block: string): string {
+export function upsertBlock(
+  content: string,
+  marker: BlockMarker,
+  block: string,
+): { content: string; leftBehind: string[] } {
   const lines = content.split("\n");
   const idx = lines.findIndex((l) => lineIs(l, marker));
   if (idx === -1) {
-    return content + (dominantEol(content) === "\r\n" ? block.replaceAll("\n", "\r\n") : block);
+    return {
+      content: content +
+        (dominantEol(content) === "\r\n" ? block.replaceAll("\n", "\r\n") : block),
+      leftBehind: [],
+    };
   }
   const start = idx > 0 && (lines[idx - 1] ?? "").replace(/\r$/, "") === "" ? idx - 1 : idx;
   const { end } = blockExtent(lines, idx, marker);
@@ -244,7 +261,7 @@ export function upsertBlock(content: string, marker: BlockMarker, block: string)
   // Dedupe on the LINE array, not a string round-trip: "" is ambiguous there (no tail
   // vs one terminator line), which would flip an EOF file's (un)terminated state.
   const rest = lines.slice(end + 1);
-  const dupes = ownedLineIndexes(rest, [marker]).skip;
+  const { skip: dupes, leftBehind } = ownedLineIndexes(rest, [marker]);
   const tail = dupes.size === 0 ? rest : rest.filter((_, i) => !dupes.has(i));
   // An empty tail means OUR block now ends the file unterminated (it already did, or
   // the dedupe removed an unterminated duplicate after it): its last line keeps no
@@ -253,34 +270,44 @@ export function upsertBlock(content: string, marker: BlockMarker, block: string)
     const last = blockLines.length - 1;
     blockLines[last] = (blockLines[last] ?? "").replace(/\r$/, "");
   }
-  return [...lines.slice(0, start), ...blockLines, ...tail].join("\n");
+  return {
+    content: [...lines.slice(0, start), ...blockLines, ...tail].join("\n"),
+    leftBehind,
+  };
+}
+
+/** The removal warning for a user line a conservative legacy/duplicate scan refused
+ *  to consume -- ONE spelling for the wire (dedupe + launcher strip) and remove paths. */
+function warnLeftBehind(file: string, lines: readonly string[]): void {
+  for (const line of lines) {
+    consola.warn(
+      `Unrecognized line under a copilot-env marker in ${file} -- ` +
+        `not written by copilot-env, so it (and everything after it) was left in place: ${line}`,
+    );
+  }
 }
 
 /**
- * Wire (or refresh) the owned blocks. Each block is upserted IN PLACE, so re-running is
+ * Wire (or refresh) the integration block. It is upserted IN PLACE, so re-running is
  * byte-idempotent and a stale (pre-`shell/`-move) path migrates without moving the block
- * or reordering the rest of the file. The launchers block is included when requested OR
- * already present, so a plain re-run never silently drops a user's launchers.
+ * or reordering the rest of the file. Any launchers block an older release wrote is
+ * stripped in the same pass (the launchers are `agent env` emissions now, so a leftover
+ * block would source a file that no longer ships); the caller migrated its opt-in first.
  */
-function wireBlocks(
-  files: string[],
-  mainBlock: string,
-  launchersBlock: string,
-  wantLaunchers: boolean,
-): void {
+function wireBlocks(files: string[], mainBlock: string): void {
   for (const file of files) {
     const original = existsSync(file) ? readFileSync(file, "utf-8") : "";
-    const hadLaunchers = hasMarker(original, LAUNCHERS_MARKER);
-    let next = upsertBlock(original, MARKER, mainBlock);
-    if (wantLaunchers || hadLaunchers) next = upsertBlock(next, LAUNCHERS_MARKER, launchersBlock);
-    if (next === original) {
+    const upserted = upsertBlock(original, MARKER, mainBlock);
+    const stripped = stripBlocks(upserted.content, [LAUNCHERS_MARKER]);
+    warnLeftBehind(file, [...upserted.leftBehind, ...stripped.leftBehind]);
+    if (stripped.content === original) {
       consola.info(`Shell integration already wired in ${file} -- skipping.`);
       continue;
     }
     // OneDrive-backed Documents folders are reparse points; Node's recursive mkdir throws
     // EEXIST on an existing reparse point instead of no-op'ing, so skip when it already exists.
     if (!existsSync(dirname(file))) mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, next);
+    writeFileSync(file, stripped.content);
     consola.success(`Wired shell integration into ${file}`);
   }
 }
@@ -298,12 +325,7 @@ function removeBlocksFrom(
     const stripped = stripBlocks(content, markers);
     if (stripped.content === content) continue; // no owned block present
     writeFileSync(file, stripped.content);
-    for (const line of stripped.leftBehind) {
-      consola.warn(
-        `Unrecognized line under a copilot-env marker in ${file} -- ` +
-          `not written by copilot-env, so it (and everything after it) was left in place: ${line}`,
-      );
-    }
+    warnLeftBehind(file, stripped.leftBehind);
     consola.success(removedMessage(file));
     removedAny = true;
   }
@@ -380,28 +402,12 @@ export function posixBlock(agentsBashrc: string): string {
   ]);
 }
 
-/** Opt-in launchers block; sourced after posixBlock so the `agent` wrapper exists. */
-export function posixLaunchersBlock(launchersBashrc: string): string {
-  return fencedBlock(LAUNCHERS_MARKER, [
-    `AGENTS_LAUNCHERS=${quotePosixHomeAnchored(launchersBashrc)}`,
-    `[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"`,
-  ]);
-}
-
 export function windowsBlock(agentsPs1: string): string {
   // -LiteralPath so a path with PowerShell wildcard chars ([ ] * ?) isn't treated
   // as a pattern (the quoting handles spaces/quotes, not wildcard semantics).
   return fencedBlock(MARKER, [
     `$AgentsPs1 = ${quotePowerShellHomeAnchored(agentsPs1)}`,
     `if (Test-Path -LiteralPath $AgentsPs1) { . $AgentsPs1 }`,
-  ]);
-}
-
-/** Opt-in launchers block; dot-sourced after windowsBlock so the `agent` wrapper exists. */
-export function windowsLaunchersBlock(launchersPs1: string): string {
-  return fencedBlock(LAUNCHERS_MARKER, [
-    `$AgentsLaunchers = ${quotePowerShellHomeAnchored(launchersPs1)}`,
-    `if (Test-Path -LiteralPath $AgentsLaunchers) { . $AgentsLaunchers }`,
   ]);
 }
 
@@ -473,8 +479,7 @@ export function rcFiles(remove: boolean): string[] {
  * Shell rc/profile files to INSPECT for owned blocks (read-only) on this platform:
  * existing POSIX rc files, or the Windows `$PROFILE` candidates (both the
  * current-host and all-hosts profiles, so a `--all-hosts` wiring is still seen).
- * Used by `agent health` to report shell-integration / launcher wiring without
- * mutating anything.
+ * Used by `agent health` to report shell-integration wiring without mutating anything.
  */
 export function shellTargetFiles(): string[] {
   if (process.platform !== "win32") return rcFiles(true);
@@ -483,39 +488,11 @@ export function shellTargetFiles(): string[] {
   ];
 }
 
-/**
- * Best-effort: are the opt-in launchers wired into this user's shell startup? Used
- * by `agent env` (a hot path, run after every `agent` command and at shell startup)
- * to decide whether to emit a one-shot directive that sources the launchers into the
- * CURRENT shell right after `agent shell --launchers`, so cl/co/cx work without a
- * restart. Deliberately CHEAP: on Windows it resolves the profile directory from env
- * vars (USERPROFILE / OneDrive) rather than spawning PowerShell like
- * shellTargetFiles(), so a Documents folder relocated somewhere it does not guess may
- * be missed -- in which case the auto-source simply doesn't fire and the printed
- * "restart" hint still applies.
- * Any READ error resolves to false (no emission), never a throw into `agent env`. The
- * candidates are resolved outside that catch on purpose: a set-but-unusable seam is a
- * mistake everywhere, not a quiet "not wired" here.
- */
-export function launchersWired(): boolean {
-  const files = process.platform === "win32" ? cheapWindowsProfilePaths() : rcFiles(true);
-  try {
-    return files.some(
-      (file) => existsSync(file) && hasMarker(readFileSync(file, "utf-8"), LAUNCHERS_MARKER),
-    );
-  } catch {
-    return false;
-  }
-}
-
 // --- Windows $PROFILE vocabulary ------------------------------------------------
 //
-// The names BOTH profile-path resolvers share: the per-edition dirs under Documents
-// (5.1 vs pwsh 7) and the current-host / all-hosts profile filenames. Only HOW the
-// Documents folder is found differs between the resolvers (cheap env-var guess vs
-// authoritative PowerShell GetFolderPath) -- that dual implementation is deliberate;
-// the four literals are not allowed to drift. The CI redirect short-circuits both, so
-// a redirected run cannot wire one tree and inspect another.
+// The per-edition dirs under Documents (5.1 vs pwsh 7) and the current-host /
+// all-hosts profile filenames. The CI redirect short-circuits the Documents lookup,
+// so a redirected run cannot wire one tree and inspect another.
 const PS_PROFILE_DIRS = ["WindowsPowerShell", "PowerShell"] as const;
 const PS_PROFILE_CURRENT_HOST = "Microsoft.PowerShell_profile.ps1";
 const PS_PROFILE_ALL_HOSTS = "profile.ps1";
@@ -524,7 +501,7 @@ const PS_PROFILE_ALL_HOSTS = "profile.ps1";
 const PS_EXES = ["powershell", "pwsh"] as const;
 
 /** Every `<root>/<edition>/<name>` profile path, deduped -- the one spelling of the
- *  layout both resolvers produce. */
+ *  layout the resolver produces. */
 function profilePathsUnder(documentRoots: string[], names: string[]): string[] {
   const paths: string[] = [];
   for (const root of documentRoots) {
@@ -533,24 +510,6 @@ function profilePathsUnder(documentRoots: string[], names: string[]): string[] {
     }
   }
   return [...new Set(paths)];
-}
-
-/**
- * PowerShell `$PROFILE` candidates resolved WITHOUT shelling out (see launchersWired).
- * Covers the current-host and all-hosts profiles under the default Documents folder
- * and its common OneDrive redirections. Exported so a test can pin it against
- * windowsProfileTarget: under the seam the two must resolve the same tree, or a
- * redirected run would wire one place and inspect another.
- */
-export function cheapWindowsProfilePaths(): string[] {
-  const override = absolutePathEnv(CI_PS_DOCUMENTS_DIR_ENV);
-  const home = process.env.USERPROFILE ?? homedir();
-  const docRoots = override ? [override] : [
-    join(home, "Documents"),
-    process.env.OneDrive ? join(process.env.OneDrive, "Documents") : "",
-    process.env.OneDriveConsumer ? join(process.env.OneDriveConsumer, "Documents") : "",
-  ].filter(Boolean);
-  return profilePathsUnder(docRoots, [PS_PROFILE_CURRENT_HOST, PS_PROFILE_ALL_HOSTS]);
 }
 
 // --- Windows (file ops in TS; PS only for what it must) ------------------------

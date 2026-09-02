@@ -23,9 +23,11 @@ unset _COPILOT_DENO_BIN
 # Uniform wrapper over bin/agent: run the requested command, then re-apply the
 # full session env from the single source of truth -- `agent env`, which prints
 # `export KEY=val` and `unset KEY` lines (CODEX_HOME + the proxy ANTHROPIC_BASE_URL,
-# set or cleared). There is no per-subcommand logic: adding a bin/agent subcommand
-# never touches this, and we only ever eval the dedicated, contract-stable `env`
-# output (never a command's incidental stdout).
+# set or cleared) plus, when the `launchers` config key is on, the one-line
+# cl/co/cx launcher functions (each delegating to `agent launch`). There is no
+# per-subcommand logic: adding a bin/agent subcommand never touches this, and we
+# only ever eval the dedicated, contract-stable `env` output (never a command's
+# incidental stdout).
 function agent {
     "${_COPILOT_AGENTS_DIR}/bin/agent" "$@" || return $?
     # Best-effort env refresh from the dedicated `env` command. Its stderr is NOT

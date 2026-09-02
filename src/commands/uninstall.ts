@@ -65,8 +65,10 @@ export interface UninstallDeps {
  *  windowsProfileTarget covers ONE profile filename per call, so Windows removes
  *  both the per-host and the CurrentUserAllHosts profiles with two calls. */
 function removeShellIntegrationEverywhere(): void {
-  runShellIntegration({ remove: true });
-  if (process.platform === "win32") runShellIntegration({ remove: true, allHosts: true });
+  runShellIntegration({ kind: "remove", allHosts: false, launchersOnly: false });
+  if (process.platform === "win32") {
+    runShellIntegration({ kind: "remove", allHosts: true, launchersOnly: false });
+  }
 }
 
 /** The run-state-recorded CODEX_HOME farm dir an uninstall would remove, or null

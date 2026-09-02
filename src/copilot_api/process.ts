@@ -83,6 +83,12 @@ export function resolveCopilotApiEntry(mode: RootMode = rootMode()): CopilotApiE
   }
   const record = readResolvedVersionRecord(rootHome);
   if (record !== null) {
+    // DELIBERATELY no regeneration here, unlike the other branches: rewriting at
+    // resolve time could hand `--cached-only` an import map the recorded cache was
+    // never warmed for. The verify/float gate ahead of every daemon start
+    // (proxyFloatVerifyStatus) regenerates a stale build's config where a cache miss
+    // can still trigger a re-warm; foreground runs keep the config that matches the
+    // cache until then.
     return {
       kind: "floated",
       specifier: `npm:${PROXY_PACKAGE_NAME}@${record.version}`,

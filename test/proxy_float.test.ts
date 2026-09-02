@@ -1,9 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { directHelperCommand } from "../src/claude/config.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import {
   daemonConfigFile,
+  daemonConfigFingerprint,
   DEFAULT_RELEASE_COOLDOWN_SECONDS,
   type DenoRunner,
   ensureProxyNpmrc,
@@ -373,6 +374,7 @@ describe("floatProxy", () => {
       "version": "1.10.30",
       "resolvedAtMs": NOW_MS,
       "denoDir": proxyDenoDir(dir),
+      "buildFingerprint": daemonConfigFingerprint(),
     });
   });
 
@@ -435,6 +437,76 @@ describe("floatProxy", () => {
 
     expect(cacheCalls(deno.calls)).toEqual([]);
     expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.29");
+  });
+
+  test("a refused target re-warms a kept record whose cache the new map orphaned", async () => {
+    // A build change regenerates the daemon config; when the new map no longer
+    // resolves against the old warm, the kept record must be re-warmed, not thrown
+    // away -- the daemon would otherwise launch `--cached-only` against a cold cache.
+    seedFloat("1.10.29", NOW_MS - 30 * MILLISECONDS_PER_DAY, join(dir, "old-cache"));
+    const { fetchLike } = docFetch(
+      registryDoc({ "1.10.29": 40, "1.10.30": 8 }, { "scripts": { "1.10.30": ["install"] } }),
+    );
+    const deno = fakeDeno(); // nothing cached: the regenerated map resolves nothing
+
+    await floatProxy(deps(fetchLike, deno.runner, WEEK_SECONDS));
+
+    const warmed = proxyCacheCalls(deno.calls);
+    // The KEPT version is the only warm, never the refused one -- under the same
+    // supply-chain window as any other install.
+    expect(warmed.map((c) => c.args[c.args.length - 1])).toEqual([`npm:${PROXY_PKG}@1.10.29`]);
+    expect(warmed[0]?.args).toContain("--minimum-dependency-age=PT604800S");
+    expect(warmed[0]?.env.DENO_DIR).toBe(proxyDenoDir(dir));
+    // The record repoints at the cache dir the warm landed in, restamped and refreshed.
+    const record = readResolvedVersionRecord(dir);
+    expect(record).toEqual({
+      "version": "1.10.29",
+      "resolvedAtMs": NOW_MS,
+      "denoDir": proxyDenoDir(dir),
+      "buildFingerprint": daemonConfigFingerprint(),
+    });
+  });
+
+  test("a cold record that itself declares lifecycle scripts is never re-warmed", async () => {
+    // An explicit pin bypasses the refusal, so a scripted version can be on record
+    // (e.g. the pin was later removed). Re-warming it automatically would install
+    // the refused version without the pin's consent.
+    seedFloat("1.10.30", NOW_MS - 30 * MILLISECONDS_PER_DAY);
+    const { fetchLike } = docFetch(
+      registryDoc({ "1.10.30": 8 }, { "scripts": { "1.10.30": ["install"] } }),
+    );
+    const deno = fakeDeno(); // cold: the keep-without-install path is not available
+
+    await expect(floatProxy(deps(fetchLike, deno.runner, WEEK_SECONDS))).rejects.toThrow(
+      "lifecycle scripts",
+    );
+    expect(cacheCalls(deno.calls)).toEqual([]);
+  });
+
+  test("a cold record the registry does not list is never re-warmed either", async () => {
+    // Absent from the doc means the scripts cannot be vetted: fail closed, exactly
+    // like a scripted record.
+    seedFloat("1.10.5", NOW_MS - 30 * MILLISECONDS_PER_DAY);
+    const { fetchLike } = docFetch(
+      registryDoc({ "1.10.30": 8 }, { "scripts": { "1.10.30": ["install"] } }),
+    );
+    const deno = fakeDeno();
+
+    await expect(floatProxy(deps(fetchLike, deno.runner, WEEK_SECONDS))).rejects.toThrow(
+      "lifecycle scripts",
+    );
+    expect(cacheCalls(deno.calls)).toEqual([]);
+  });
+
+  test("a refused target whose kept record cannot re-warm still fails loud", async () => {
+    seedFloat("1.10.29", NOW_MS - 30 * MILLISECONDS_PER_DAY);
+    const { fetchLike } = docFetch(
+      registryDoc({ "1.10.29": 40, "1.10.30": 8 }, { "scripts": { "1.10.30": ["install"] } }),
+    );
+
+    await expect(
+      floatProxy(deps(fetchLike, fakeDeno([], { "cacheExit": 1 }).runner, WEEK_SECONDS)),
+    ).rejects.toThrow("lifecycle scripts");
   });
 
   test("registry failure keeps a usable recorded version above the floor", async () => {
@@ -562,6 +634,127 @@ describe("resolved-version record", () => {
     expect(readResolvedVersionRecord(dir)).toBeNull();
     writeFileSync(resolvedVersionFile(dir), JSON.stringify({ "version": "not-a-version" }));
     expect(readResolvedVersionRecord(dir)).toBeNull();
+  });
+});
+
+// The build-identity fingerprint: the record remembers WHICH build's import map the
+// daemon config was generated from, so an `agent update` behind a still-young record
+// (no float due) cannot leave the old build's config steering daemon spawns until the
+// record ages out of the cooldown window.
+describe("the build-identity fingerprint", () => {
+  test("a float-written record carries it; the on-disk key is the external contract", async () => {
+    const deno = fakeDeno();
+    await floatProxy(
+      deps(docFetch(registryDoc({ "1.10.30": 8 })).fetchLike, deno.runner, WEEK_SECONDS),
+    );
+    expect(readResolvedVersionRecord(dir)?.buildFingerprint).toBe(daemonConfigFingerprint());
+    const raw = JSON.parse(readFileSync(resolvedVersionFile(dir), "utf8"));
+    expect(Object.keys(raw).sort()).toEqual([
+      "build_fingerprint",
+      "deno_dir",
+      "resolved_at_ms",
+      "version",
+    ]);
+  });
+
+  test("a malformed fingerprint reads as absent, never invalidating the record", async () => {
+    seedFloat("1.10.30", NOW_MS);
+    const raw = JSON.parse(readFileSync(resolvedVersionFile(dir), "utf8"));
+    raw.build_fingerprint = 42;
+    writeFileSync(resolvedVersionFile(dir), JSON.stringify(raw));
+    const record = readResolvedVersionRecord(dir);
+    expect(record?.version).toBe("1.10.30");
+    expect(record?.buildFingerprint).toBeUndefined();
+
+    // Any non-matching STRING behaves the same way -- the only consumer is equality
+    // with the computed hash, so garbage means "regenerate once, then stamp" too.
+    raw.build_fingerprint = "not-the-running-build";
+    writeFileSync(resolvedVersionFile(dir), JSON.stringify(raw));
+    await proxyFloatVerifyStatus(
+      deps(offlineFetch().fetchLike, fakeDeno(["1.10.30"]).runner, WEEK_SECONDS),
+    );
+    expect(readResolvedVersionRecord(dir)?.buildFingerprint).toBe(daemonConfigFingerprint());
+  });
+
+  test("a young record from an older build regenerates the daemon config on verify", async () => {
+    // The `agent update` gap this closes: the record is younger than the cooldown, so
+    // no float runs -- but the old build's generated config must not keep steering
+    // daemon spawns until the record ages out. An unstamped record (seedFloat writes
+    // none) stands for any build whose fingerprint is not the running one.
+    seedFloat("1.10.30", NOW_MS - 1000);
+    writeFileSync(daemonConfigFile(dir), '{"imports":{"stale":"npm:stale@1.0.0"}}\n');
+    const offline = offlineFetch();
+    const status = await proxyFloatVerifyStatus(
+      deps(offline.fetchLike, fakeDeno(["1.10.30"]).runner, WEEK_SECONDS),
+    );
+    expect(status.upToDate).toBe(true); // the cooldown fast path still holds...
+    expect(offline.calls).toEqual([]);
+    // ...but the config was regenerated from THIS build's import map,
+    const config = JSON.parse(readFileSync(daemonConfigFile(dir), "utf8"));
+    expect(config.imports.stale).toBeUndefined();
+    expect(config.imports[PROXY_PKG]).toBeDefined();
+    // and the record restamped WITHOUT touching the resolution timestamp -- build
+    // identity must never extend the cooldown window.
+    const record = readResolvedVersionRecord(dir);
+    expect(record?.buildFingerprint).toBe(daemonConfigFingerprint());
+    expect(record?.resolvedAtMs).toBe(NOW_MS - 1000);
+    expect(record?.denoDir).toBe(proxyDenoDir(dir));
+  });
+
+  test("a record stamped by THIS build leaves the config alone: regenerate once, then stop", async () => {
+    seedFloat("1.10.30", NOW_MS - 1000);
+    const d = deps(offlineFetch().fetchLike, fakeDeno(["1.10.30"]).runner, WEEK_SECONDS);
+    await proxyFloatVerifyStatus(d); // first verify stamps
+    const sentinel = '{"imports":{"sentinel":"npm:sentinel@1.0.0"}}\n';
+    writeFileSync(daemonConfigFile(dir), sentinel);
+    await proxyFloatVerifyStatus(d);
+    expect(readFileSync(daemonConfigFile(dir), "utf8")).toBe(sentinel);
+  });
+
+  test("a stamped record whose config file is gone regenerates it", async () => {
+    seedFloat("1.10.30", NOW_MS - 1000);
+    const d = deps(offlineFetch().fetchLike, fakeDeno(["1.10.30"]).runner, WEEK_SECONDS);
+    await proxyFloatVerifyStatus(d); // stamp
+    rmSync(daemonConfigFile(dir));
+    const status = await proxyFloatVerifyStatus(d);
+    expect(existsSync(daemonConfigFile(dir))).toBe(true);
+    expect(status.upToDate).toBe(true);
+  });
+
+  test("regeneration happens BEFORE the cache probe, so a changed map can trigger the re-warm", async () => {
+    // fakeDeno's cache ignores config content, so a regeneration moved AFTER
+    // cacheResolves would still pass the other tests -- while production would trust
+    // a probe of the OLD map and skip the re-warm the new map needs. Pin the order:
+    // every probe in the verify must already see the regenerated config.
+    seedFloat("1.10.30", NOW_MS - 1000);
+    writeFileSync(daemonConfigFile(dir), '{"imports":{"stale":"npm:stale@1.0.0"}}\n');
+    const probed: string[] = [];
+    const runner: DenoRunner = (_command, args, _options) => {
+      if (args[0] === "info") probed.push(readFileSync(daemonConfigFile(dir), "utf8"));
+      return { "status": 0, "stdout": "", "stderr": "" };
+    };
+    const status = await proxyFloatVerifyStatus(
+      deps(offlineFetch().fetchLike, runner, WEEK_SECONDS),
+    );
+    expect(status.upToDate).toBe(true);
+    expect(probed.length).toBeGreaterThan(0);
+    for (const config of probed) {
+      expect(JSON.parse(config).imports.stale).toBeUndefined();
+    }
+  });
+
+  test("floatProxy's up-to-date refresh restamps the record", async () => {
+    seedFloat("1.10.30", NOW_MS - 30 * MILLISECONDS_PER_DAY);
+    await floatProxy(
+      deps(
+        docFetch(registryDoc({ "1.10.30": 8 })).fetchLike,
+        fakeDeno(["1.10.30"]).runner,
+        WEEK_SECONDS,
+      ),
+    );
+    const record = readResolvedVersionRecord(dir);
+    expect(record?.resolvedAtMs).toBe(NOW_MS);
+    expect(record?.buildFingerprint).toBe(daemonConfigFingerprint());
   });
 });
 

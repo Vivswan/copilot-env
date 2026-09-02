@@ -48,6 +48,7 @@
 
 import "./utils/dotenv.ts";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createConsola } from "consola";
@@ -311,12 +312,18 @@ export interface ResolvedVersionRecord {
   version: string;
   resolvedAtMs: number;
   denoDir: string;
+  /** daemonConfigFingerprint() of the build that stamped the record; absent on
+   *  records written by builds that predate the fingerprint. */
+  buildFingerprint?: string;
 }
 
 const RECORD_SCHEMA = v.object({
   "version": v.pipe(v.string(), v.regex(SEMVER_RE)),
   "resolved_at_ms": v.pipe(v.number(), v.finite(), v.minValue(0)),
   "deno_dir": v.pipe(v.string(), v.minLength(1)),
+  // Lenient on purpose: an absent (old-format) or malformed fingerprint reads as
+  // "regenerate the config once, then stamp", never invalidating the resolution.
+  "build_fingerprint": v.optional(v.unknown()),
 });
 
 /** The DENO_DIR holding the proxy's npm cache, under the root copilot-api home. */
@@ -372,6 +379,11 @@ export function proxyLockFile(rootHome: string): string {
  * through it, which is why the daemon spawn passes a `--config` at all.
  */
 export function writeDaemonConfig(rootHome: string, sourceRoot: string = ASSET_ROOT): void {
+  atomicWriteFile(daemonConfigFile(rootHome), renderDaemonConfig(sourceRoot));
+}
+
+/** The exact daemon-config text writeDaemonConfig writes (and the fingerprint hashes). */
+function renderDaemonConfig(sourceRoot: string): string {
   const source = parseJsonRecord(readTextOrNull(join(sourceRoot, "deno.json")) ?? "");
   if (source === null) {
     throw new Error(`could not read the import map from ${join(sourceRoot, "deno.json")}`);
@@ -380,7 +392,18 @@ export function writeDaemonConfig(rootHome: string, sourceRoot: string = ASSET_R
     "imports": source.imports ?? {},
     "compilerOptions": source.compilerOptions ?? {},
   };
-  atomicWriteFile(daemonConfigFile(rootHome), `${JSON.stringify(config, null, 2)}\n`);
+  return `${JSON.stringify(config, null, 2)}\n`;
+}
+
+/**
+ * The build-identity fingerprint stamped into the resolved-version record: a hash of
+ * the daemon config THIS build writes. A content hash rather than the copilot-env
+ * version, so it moves exactly when the generated config would -- an update that
+ * leaves the import map alone regenerates nothing, and a dev checkout's deno.json
+ * edits are caught without a release.
+ */
+export function daemonConfigFingerprint(sourceRoot: string = ASSET_ROOT): string {
+  return createHash("sha256").update(renderDaemonConfig(sourceRoot)).digest("hex");
 }
 
 /** Read the record back through its schema; absent or malformed reads as null
@@ -396,29 +419,59 @@ export function readResolvedVersionRecord(rootHome: string): ResolvedVersionReco
   }
   const parsed = v.safeParse(RECORD_SCHEMA, raw);
   if (!parsed.success) return null;
+  const fingerprint = parsed.output.build_fingerprint;
   return {
     "version": parsed.output.version,
     "resolvedAtMs": parsed.output.resolved_at_ms,
     "denoDir": parsed.output.deno_dir,
+    ...(typeof fingerprint === "string" ? { "buildFingerprint": fingerprint } : {}),
   };
 }
 
 /** Atomically (tmp+rename) write the record for a just-verified cache entry.
  *  `denoDir` defaults to the current cache dir (fresh installs); a timestamp
  *  refresh of an existing record passes the record's own dir through, so the
- *  pointer never drifts away from where the cache actually lives. */
+ *  pointer never drifts away from where the cache actually lives. An omitted
+ *  `buildFingerprint` stays omitted: only the float, which just wrote the daemon
+ *  config, may claim the config is this build's. */
 export function writeResolvedVersionRecord(
   rootHome: string,
   version: string,
   nowMs: number,
   denoDir: string = proxyDenoDir(rootHome),
+  buildFingerprint?: string,
 ): void {
   const record = {
     "version": version,
     "resolved_at_ms": nowMs,
     "deno_dir": denoDir,
+    ...(buildFingerprint === undefined ? {} : { "build_fingerprint": buildFingerprint }),
   };
   atomicWriteFile(resolvedVersionFile(rootHome), `${JSON.stringify(record, null, 2)}\n`);
+}
+
+/**
+ * Regenerate the daemon config when the record was stamped by a DIFFERENT build (or
+ * never stamped), then restamp -- the resolution timestamp stays untouched, because
+ * build identity and freshness are separate questions and this must never extend the
+ * cooldown window. Runs ahead of every verify/float so a young record from an older
+ * build cannot keep an outdated import map steering daemon spawns until it ages out;
+ * when the new map needs packages the recorded cache never warmed, the cacheResolves
+ * that follows fails and the float re-warms both graphs.
+ */
+function ensureDaemonConfigCurrent(rootHome: string): void {
+  const record = readResolvedVersionRecord(rootHome);
+  if (record === null) return; // nothing resolved -> the resolve-time paths own the config
+  const fingerprint = daemonConfigFingerprint();
+  if (record.buildFingerprint === fingerprint && existsSync(daemonConfigFile(rootHome))) return;
+  writeDaemonConfig(rootHome);
+  writeResolvedVersionRecord(
+    rootHome,
+    record.version,
+    record.resolvedAtMs,
+    record.denoDir,
+    fingerprint,
+  );
 }
 
 // --- .npmrc trust policy ---------------------------------------------------------
@@ -640,6 +693,16 @@ export function removeProxyFloatArtifacts(rootHome: string = resolveRootHome()):
 
 // --- Float actions -----------------------------------------------------------------
 
+/** The float's own record write, always stamped with the running build's fingerprint:
+ *  the daemon config beside it was just written (or ensured) by this build. */
+function recordFloatResolution(
+  ctx: FloatContext,
+  version: string,
+  denoDir: string = proxyDenoDir(ctx.rootHome),
+): void {
+  writeResolvedVersionRecord(ctx.rootHome, version, ctx.nowMs, denoDir, daemonConfigFingerprint());
+}
+
 function logNowUsing(ctx: FloatContext): void {
   const record = readResolvedVersionRecord(ctx.rootHome);
   logger.success(`now using ${PROXY_PKG}@${record?.version ?? "unknown"}`);
@@ -705,7 +768,7 @@ async function handlePinnedOverride(ctx: FloatContext, override: string): Promis
   warnPinnedLifecycleScripts(doc, target);
   const status = denoCacheVersion(ctx, target, 0);
   if (status === 0) {
-    writeResolvedVersionRecord(ctx.rootHome, target, ctx.nowMs);
+    recordFloatResolution(ctx, target);
     logNowUsing(ctx);
     return;
   }
@@ -731,7 +794,7 @@ function handleUnavailable(ctx: FloatContext, reason: string, cooldownSeconds: n
   logger.warn(`update check failed (${reason}); installing floor ${PROXY_PKG}@${floor}`);
   const status = denoCacheVersion(ctx, floor, cooldownSeconds);
   if (status === 0) {
-    writeResolvedVersionRecord(ctx.rootHome, floor, ctx.nowMs);
+    recordFloatResolution(ctx, floor);
     logNowUsing(ctx);
     return;
   }
@@ -743,12 +806,32 @@ function handleUnavailable(ctx: FloatContext, reason: string, cooldownSeconds: n
 }
 
 /** Newest eligible release refuses on lifecycle scripts: keep a usable in-bounds
- *  record (loudly), else fail loud -- never install the refused version. */
-function handleRefused(ctx: FloatContext, sel: Extract<ProxySelection, { kind: "refused" }>): void {
-  const record = usableRecord(ctx);
+ *  record (loudly), re-warming it first when its cache no longer resolves (a build
+ *  change regenerates the daemon config, and the new map may need packages the old
+ *  warm never cached); else fail loud -- never install the refused version. The
+ *  re-warm only runs when the registry doc CONFIRMS the recorded version is
+ *  script-free: a scripted record (left behind by an explicit pin, which bypasses
+ *  the refusal) must not be reinstalled without the pin's explicit consent. */
+function handleRefused(
+  ctx: FloatContext,
+  sel: Extract<ProxySelection, { kind: "refused" }>,
+  cooldownSeconds: number,
+  doc: ProxyRegistryDoc,
+): void {
+  const record = readResolvedVersionRecord(ctx.rootHome);
   if (record !== null && proxyVersionBoundsStatus(record.version, ctx.config).ok) {
-    logger.warn(`${refusalMessage(sel)} Keeping ${PROXY_PKG}@${record.version}.`);
-    return;
+    if (cacheResolves(ctx, record.version, record.denoDir)) {
+      logger.warn(`${refusalMessage(sel)} Keeping ${PROXY_PKG}@${record.version}.`);
+      return;
+    }
+    if (
+      doc.releases.get(record.version)?.lifecycleScripts.length === 0 &&
+      denoCacheVersion(ctx, record.version, cooldownSeconds) === 0
+    ) {
+      recordFloatResolution(ctx, record.version); // the re-warm lands in the default cache dir
+      logger.warn(`${refusalMessage(sel)} Keeping ${PROXY_PKG}@${record.version}.`);
+      return;
+    }
   }
   throw new Error(refusalMessage(sel));
 }
@@ -761,7 +844,7 @@ function handleResolved(
   const record = readResolvedVersionRecord(ctx.rootHome);
   if (record?.version === sel.version && cacheResolves(ctx, sel.version, record.denoDir)) {
     // Refresh the record's timestamp so proxyFloatVerifyStatus stays on its offline fast path.
-    writeResolvedVersionRecord(ctx.rootHome, sel.version, ctx.nowMs, record.denoDir);
+    recordFloatResolution(ctx, sel.version, record.denoDir);
     logger.success(`up to date: ${PROXY_PKG}@${sel.version} (${sel.reason}); no install`);
     return;
   }
@@ -771,7 +854,7 @@ function handleResolved(
   );
   const status = denoCacheVersion(ctx, sel.version, cooldownSeconds);
   if (status === 0) {
-    writeResolvedVersionRecord(ctx.rootHome, sel.version, ctx.nowMs);
+    recordFloatResolution(ctx, sel.version);
     logNowUsing(ctx);
     return;
   }
@@ -796,6 +879,7 @@ function handleResolved(
  */
 export async function floatProxy(deps: ProxyFloatDeps = {}): Promise<void> {
   const ctx = floatContext(deps);
+  ensureDaemonConfigCurrent(ctx.rootHome);
   const npmrc = ensureProxyNpmrc(ctx.rootHome);
   if (npmrc.kind === "kept-foreign") {
     logger.warn(`${npmrc.path} exists without the copilot-env marker; leaving it untouched`);
@@ -829,7 +913,7 @@ export async function floatProxy(deps: ProxyFloatDeps = {}): Promise<void> {
       handleResolved(ctx, selection, cooldownSeconds);
       break;
     case "refused":
-      handleRefused(ctx, selection);
+      handleRefused(ctx, selection, cooldownSeconds, doc);
       break;
     case "unavailable":
       handleUnavailable(ctx, selection.reason, cooldownSeconds);
@@ -853,12 +937,16 @@ export type ProxyInstallAssertStatus = {
  * Offline while the record is younger than the cooldown window (record parse +
  * bounds + cache check only); once stale, the registry is re-consulted. An
  * exact COPILOT_API_VERSION semver pin never needs the network. Read-only by
- * contract: the record's timestamp only refreshes when the float itself runs.
+ * contract with ONE self-heal: a record stamped by a different build regenerates
+ * the daemon config (and restamps) first, so a young record can never keep an
+ * old build's import map steering daemon spawns until it ages out. The record's
+ * timestamp only refreshes when the float itself runs.
  */
 export async function proxyFloatVerifyStatus(
   deps: ProxyFloatDeps = {},
 ): Promise<ProxyFloatVerifyStatus> {
   const ctx = floatContext(deps);
+  ensureDaemonConfigCurrent(ctx.rootHome);
   const record = readResolvedVersionRecord(ctx.rootHome);
 
   const override = resolveProxyVersionOverride();

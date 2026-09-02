@@ -234,6 +234,19 @@ done
 INSTALL_DIR="${INSTALL_DIR_ARG:-${COPILOT_ENV_DIR:-$HOME/.copilot-env}}"
 resolve_safe_install_dir "$INSTALL_DIR"
 
+# A source checkout must never be an install target: checkout markers plus .git
+# (a directory, or a file in a worktree) mirrors the binary's own plan-time
+# refusal (CHECKOUT_MARKERS in src/install/installer.ts), before any write or
+# legacy sweep touches the root. Markers without .git are a legacy source
+# install, whose sweep the binary handles.
+if [ -e "$INSTALL_DIR/.git" ]; then
+    for _marker in package.json deno.json; do
+        if [ -e "$INSTALL_DIR/$_marker" ]; then
+            die "refusing to install into $INSTALL_DIR: it holds $_marker and .git, so it is a source checkout; choose another target with --dir or COPILOT_ENV_DIR."
+        fi
+    done
+fi
+
 _tmp="$(mktemp -d)"
 trap 'rm -rf "$_tmp"' EXIT
 

@@ -1,11 +1,12 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, posix } from "node:path";
 import { INSTALLER_PINS } from "../.github/scripts/release-assets.ts";
 import { compiledHealthFailures } from "../.github/scripts/installer-smoke.ts";
 import {
   BUNDLED_ONLY_ASSETS,
   LEGACY_ARTIFACTS,
   MATERIALIZED_ASSET_DIRS,
+  MATERIALIZED_ASSET_FILES,
 } from "../src/install/installer.ts";
 import { RELEASE_TARGETS } from "../src/install/targets.ts";
 import { ROOT } from "./helpers/run.ts";
@@ -81,12 +82,13 @@ describe("compile targets match the installers", () => {
 });
 
 describe("compile.include matches what the binary actually needs", () => {
-  // Two fates, one embed list. MATERIALIZED_* is written to the install root
-  // because something outside this process opens it by path; BUNDLED_ONLY_* is
-  // read in-process through ASSET_ROOT and must never be written. Both have to
-  // be embedded, and nothing else should be: an entry with neither fate is dead
-  // weight in all five binaries, and a fate with no entry is a file that is
-  // missing exactly when it is first needed.
+  // Three fates, one embed list. MATERIALIZED_* is written to the install root
+  // because something outside this process opens it by path (the shim DIRS, and
+  // the individual FILES their imports reach); BUNDLED_ONLY_* is read in-process
+  // through ASSET_ROOT and must never be written. All have to be embedded, and
+  // nothing else should be: an entry with no fate is dead weight in all five
+  // binaries, and a fate with no entry is a file that is missing exactly when it
+  // is first needed.
   //
   // The list lives in deno.json rather than in scripts/compile.ts on purpose:
   // a CLI --include MERGES with the config's list instead of replacing it, so
@@ -94,17 +96,22 @@ describe("compile.include matches what the binary actually needs", () => {
   const compileInclude: string[] = JSON.parse(
     readFileSync(join(ROOT, "deno.json"), "utf8"),
   ).compile?.include ?? [];
-  const needed = [...MATERIALIZED_ASSET_DIRS, ...BUNDLED_ONLY_ASSETS];
+  const needed = [...MATERIALIZED_ASSET_DIRS, ...MATERIALIZED_ASSET_FILES, ...BUNDLED_ONLY_ASSETS];
 
-  test("compile.include is exactly the union of the two fates", () => {
+  test("compile.include is exactly the union of the fates", () => {
     expect([...compileInclude].sort()).toEqual([...needed].sort());
   });
 
-  test("the two fates are disjoint", () => {
-    // A path in both would be materialized AND read from the VFS, i.e. two
-    // copies that can disagree after an update.
+  test("the fates are disjoint", () => {
+    // A path in two fates would be materialized AND read from the VFS, i.e. two
+    // copies that can disagree after an update; a file already inside a
+    // materialized dir would be copied twice.
     for (const entry of BUNDLED_ONLY_ASSETS) {
       expect(MATERIALIZED_ASSET_DIRS).not.toContain(entry);
+      expect(MATERIALIZED_ASSET_FILES).not.toContain(entry);
+    }
+    for (const file of MATERIALIZED_ASSET_FILES) {
+      expect(MATERIALIZED_ASSET_DIRS.some((dir) => file.startsWith(`${dir}/`))).toBe(false);
     }
   });
 
@@ -112,6 +119,52 @@ describe("compile.include matches what the binary actually needs", () => {
     // Comments may mention --include; no executable line may pass it.
     const code = compileTs.split("\n").filter((line) => !line.trim().startsWith("//"));
     expect(code.some((line) => line.includes("--include"))).toBe(false);
+  });
+});
+
+describe("the materialized files are the shims' import closure", () => {
+  // The daemon shims in src/scripts run on real disk in the install root, so
+  // every LOCAL file their imports reach (transitively) must be materialized
+  // beside them or the daemon dies at module load -- exactly the failure a new
+  // shim import would silently reintroduce. This computes the closure from the
+  // sources and pins MATERIALIZED_ASSET_FILES to it in both directions: a
+  // missing file is a broken daemon on every install, an extra one is dead
+  // weight nothing imports.
+  const importRe = /(?:import|export)[^"']*?["'](\.[^"']+\.ts)["']/g;
+
+  function localImportClosure(seeds: string[]): Set<string> {
+    const seen = new Set<string>();
+    const queue = [...seeds];
+    while (queue.length > 0) {
+      const rel = queue.pop() as string;
+      if (seen.has(rel)) continue;
+      seen.add(rel);
+      const text = readFileSync(join(ROOT, rel), "utf8");
+      for (const match of text.matchAll(importRe)) {
+        queue.push(posix.normalize(posix.join(posix.dirname(rel), match[1] ?? "")));
+      }
+    }
+    return seen;
+  }
+
+  test("MATERIALIZED_ASSET_FILES is exactly the closure outside the materialized dirs", () => {
+    const seeds = readdirSync(join(ROOT, "src", "scripts"))
+      .filter((name) => name.endsWith(".ts"))
+      .map((name) => `src/scripts/${name}`);
+    expect(seeds.length).toBeGreaterThan(0);
+    const closure = localImportClosure(seeds);
+    const outside = [...closure].filter((rel) =>
+      !MATERIALIZED_ASSET_DIRS.some((dir) => rel.startsWith(`${dir}/`))
+    );
+    expect(outside.sort()).toEqual([...MATERIALIZED_ASSET_FILES].sort());
+  });
+
+  test("negative control: the closure walk actually follows imports", () => {
+    // A closure of only the seeds would mean the regex matched nothing and the
+    // pin above was comparing empty sets of "outside" files by accident.
+    const closure = localImportClosure(["src/scripts/daemon_runtime_preload.ts"]);
+    expect(closure.size).toBeGreaterThan(1);
+    expect(closure.has("src/copilot_api/config.ts")).toBe(true);
   });
 });
 

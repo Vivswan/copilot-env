@@ -1,5 +1,5 @@
 // Install-root and bundled-asset discovery for launchers, tests, and compiled binaries.
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -142,6 +142,72 @@ export function isProtectedRoot(mode: RootMode = rootMode()): boolean {
 export const INSTALL_ROOT_MARKERS = ["bin", "shell", join("src", "scripts")] as const;
 
 /**
+ * The sentinel manifest `agent install` writes into every installed root (JSON:
+ * version, install kind, materialized-asset inventory). A checkout never has one,
+ * so a valid manifest is positive proof a root is an install -- `looksLikeInstallRoot`
+ * accepts it on its own. An external contract: renaming it would make every existing
+ * install look pre-manifest again.
+ */
+export const INSTALL_MANIFEST_FILE = ".copilot-env-install.json";
+
+/** What the manifest records: which release wrote the root and what it put there. */
+export interface InstallManifest {
+  version: string;
+  kind: "installed";
+  assets: string[];
+}
+
+/**
+ * The manifest, read and validated. The states matter to different consumers:
+ * `absent` is normal (a checkout, a pre-manifest install), `invalid` is a
+ * corrupted or foreign file, and `unreadable` means we could not even look --
+ * the destructive gates treat that last one as "cannot prove", never as "absent".
+ */
+export type InstallManifestReading =
+  | { kind: "absent" }
+  | { kind: "unreadable" }
+  | { kind: "invalid" }
+  | { kind: "valid"; manifest: InstallManifest };
+
+export function readInstallManifest(root: string): InstallManifestReading {
+  const path = join(root, INSTALL_MANIFEST_FILE);
+  let text: string;
+  try {
+    text = readFileSync(path, "utf-8");
+  } catch (error) {
+    if ((error as { code?: string }).code !== "ENOENT") return { kind: "unreadable" };
+    // A dangling symlink also reads as ENOENT; only a missing directory entry
+    // is genuinely absent, anything else is an entry we could not read.
+    try {
+      lstatSync(path);
+      return { kind: "unreadable" };
+    } catch (statError) {
+      return (statError as { code?: string }).code === "ENOENT"
+        ? { kind: "absent" }
+        : { kind: "unreadable" };
+    }
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { kind: "invalid" };
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { kind: "invalid" };
+  }
+  const record = parsed as Record<string, unknown>;
+  const { version, kind, assets } = record;
+  if (typeof version !== "string" || kind !== "installed" || !Array.isArray(assets)) {
+    return { kind: "invalid" };
+  }
+  if (!assets.every((entry): entry is string => typeof entry === "string")) {
+    return { kind: "invalid" };
+  }
+  return { kind: "valid", manifest: { version, kind, assets } };
+}
+
+/**
  * Whether `root` actually looks like a copilot-env root, i.e. is safe to delete
  * recursively. `agent uninstall` removes the resolved root wholesale, and that root is
  * DERIVED (two levels up from the binary, or an env override), so a binary copied
@@ -152,6 +218,14 @@ export function looksLikeInstallRoot(root: string): boolean {
   const resolved = resolve(root);
   if (resolved === dirname(resolved)) return false; // a filesystem root
   if (resolved === resolve(homedir())) return false;
+  // A valid manifest alone qualifies: it is the install's own record, and a
+  // user-deleted asset dir must not make a real install invisible to uninstall.
+  // Unreadable means we could not look, and a root we cannot inspect is not one
+  // we may delete. Absent or invalid (a checkout, a pre-manifest install, a
+  // corrupted file) falls back to the fixed marker layout.
+  const reading = readInstallManifest(resolved);
+  if (reading.kind === "valid") return true;
+  if (reading.kind === "unreadable") return false;
   return INSTALL_ROOT_MARKERS.every((marker) => existsSync(join(resolved, marker)));
 }
 

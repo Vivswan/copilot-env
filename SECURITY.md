@@ -1,3 +1,4 @@
+<!-- BEGIN REPO-PLATFORM MANAGED -->
 # Security policy
 
 ## Supported versions
@@ -18,8 +19,8 @@ Expect an acknowledgement within a few days, and a fix in the next release once 
 
 Never include real credentials in a report; redact everything that looks like a key.
 
-<!-- Everything above this line is managed by Vivswan/repo-platform and replaced on template sync. Repository-specific security documentation (scope, threat model, review expectations for security-relevant changes) goes below this line; it is this repository's own and survives template updates via three-way merge. -->
-<!-- repo-platform:local-section -->
+<!-- Everything between the BEGIN/END markers is managed by Vivswan/repo-platform and replaced on template sync. Repository-specific security documentation (scope, threat model, review expectations for security-relevant changes) goes outside the markers - below the END marker, or above BEGIN; it is this repository's own and survives template updates. -->
+<!-- END REPO-PLATFORM MANAGED -->
 
 ## Security model / scope
 

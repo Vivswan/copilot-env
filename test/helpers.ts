@@ -8,6 +8,7 @@ import { join } from "node:path";
 
 import type { ProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
+import { sleepSync } from "../src/utils/time.ts";
 
 // --- env snapshot / restore ---------------------------------------------------
 
@@ -71,10 +72,27 @@ export function tmpDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
 }
 
-/** rmSync -rf a temp dir (no-op on ""); returns "" so callers can `dir = removeDir(dir)`. */
+/**
+ * rmSync -rf a temp dir (no-op on ""); returns "" so callers can `dir = removeDir(dir)`.
+ * Windows can hold a handle (antivirus, the indexer, a just-killed child's executable
+ * image) briefly past process death, so transient failures retry with backoff -- same
+ * philosophy as renameWithRetry (src/copilot_api/config.ts); the final attempt rethrows.
+ */
 export function removeDir(dir: string): "" {
-  if (dir) rmSync(dir, { recursive: true, force: true });
-  return "";
+  if (!dir) return "";
+  const maxRetries = 9;
+  for (let i = 0;; i++) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return "";
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      // ENOTEMPTY: a delete-pending file inside surfaces as not-empty on the dir itself.
+      const transient = code === "EPERM" || code === "EBUSY" || code === "ENOTEMPTY";
+      if (i >= maxRetries || !transient) throw err;
+      sleepSync(300);
+    }
+  }
 }
 
 function clearInheritedEnv(): void {

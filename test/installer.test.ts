@@ -5,10 +5,11 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, parse } from "node:path";
 import {
   applyInstallPlan,
   buildInstallPlan,
@@ -160,6 +161,63 @@ describe("buildInstallPlan", () => {
     expect(installedPlan({ ...OPTIONS, assetsOnly: true }).shell).toBeNull();
     expect(installedPlan({ ...OPTIONS, noShellIntegration: true }).shell).toBeNull();
     expect(installedPlan({ ...OPTIONS, allHosts: true }).shell).toEqual({ allHosts: true });
+  });
+});
+
+describe("the unsafe-target canonical guard", () => {
+  // The shell installers keep only a lexical pre-check before they download;
+  // the CANONICAL refusal lives in the plan, because the install root is
+  // DERIVED (binary location or COPILOT_ENV_INSTALL_ROOT) and the plan's
+  // writes and legacy removals aim at it. Building a plan writes nothing, so
+  // aiming one at the real home directory here is safe.
+  const skipWin = test.skipIf(process.platform === "win32");
+  const winOnly = test.skipIf(process.platform !== "win32");
+
+  test("refuses the home directory as an installed-mode target", () => {
+    expect(() => buildInstallPlan(OPTIONS, homedir(), source)).toThrow(
+      "it is the home directory",
+    );
+  });
+
+  test("refuses a filesystem root", () => {
+    expect(() => buildInstallPlan(OPTIONS, parse(dest).root, source)).toThrow(
+      "it is a filesystem root",
+    );
+  });
+
+  skipWin("refuses a symlink alias of the home directory", () => {
+    // Exactly what a lexical string comparison cannot catch -- the reason the
+    // check is canonical.
+    const alias = join(root, "home-alias");
+    symlinkSync(homedir(), alias);
+    expect(() => buildInstallPlan(OPTIONS, alias, source)).toThrow(
+      "it is the home directory",
+    );
+  });
+
+  winOnly("refuses a junction alias of the home directory", () => {
+    // The Windows spelling of the same alias class the removed install.ps1
+    // P/Invoke resolver used to catch; realpath resolves junctions too.
+    const alias = join(root, "home-alias");
+    symlinkSync(homedir(), alias, "junction");
+    expect(() => buildInstallPlan(OPTIONS, alias, source)).toThrow(
+      "it is the home directory",
+    );
+  });
+
+  skipWin("refuses a target whose path cannot be canonicalized", () => {
+    // A dangling symlink IS a directory entry, so it must not be peeled as a
+    // not-yet-existing tail: realpath cannot prove where it leads.
+    const dangling = join(root, "dangling");
+    symlinkSync(join(root, "nowhere"), dangling);
+    expect(() => buildInstallPlan(OPTIONS, dangling, source)).toThrow(
+      "cannot be resolved",
+    );
+  });
+
+  test("a not-yet-existing target under a safe parent still plans", () => {
+    const fresh = join(dest, "not-yet", "there");
+    expect(buildInstallPlan(OPTIONS, fresh, source).kind).toBe("installed");
   });
 });
 

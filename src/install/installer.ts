@@ -19,13 +19,16 @@
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { consola } from "consola";
 
 import { runShellIntegration } from "../shell/integration.ts";
@@ -100,8 +103,9 @@ export const BUNDLED_ONLY_ASSETS = ["copilot-env.config", ".dvmrc", "deno.json"]
 /** Superseded files a pre-binary source install leaves in the root. The binary
  *  install has no runtime bootstrap left to use them and `node_modules` alone
  *  is hundreds of megabytes, so they are removed outright (clean break --
- *  there is no upgrade bridge). install.sh / install.ps1 carry the same list
- *  for the sweep they do before handing off. */
+ *  there is no upgrade bridge). This list lives ONLY here: install.sh /
+ *  install.ps1 do no sweeping of their own, they hand off to `agent install`,
+ *  which plans and applies the removal. */
 export const LEGACY_ARTIFACTS = ["node_modules", "bun.lock", "bunfig.toml"] as const;
 
 /** Installed-mode bin/agent: a thin dispatcher to the adjacent compiled
@@ -174,6 +178,63 @@ export type InstallPlan =
     shell: ShellWiring | null;
   };
 
+/** Whether a directory ENTRY exists at `path`, without following a final
+ *  symlink: a dangling link or a loop IS an entry, and the guard must hand it
+ *  to realpath (which refuses it) instead of peeling it as a missing tail.
+ *  Errors other than a clean ENOENT count as existing for the same reason --
+ *  "cannot prove absent" must fail closed at the realpath step. */
+function directoryEntryExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    return (error as { code?: string }).code !== "ENOENT";
+  }
+}
+
+/** Canonicalize a path for the unsafe-target guard: resolve the longest
+ *  existing prefix physically (symlinks; on Windows also junctions and 8.3
+ *  short names, via the OS realpath) and re-append the not-yet-existing tail
+ *  lexically. Null when the existing prefix cannot be resolved (a dangling
+ *  symlink, a loop, an unreadable parent), so the guard refuses rather than
+ *  trust a path it cannot prove. */
+function canonicalizeForGuard(path: string): string | null {
+  let base = resolve(path);
+  const tail: string[] = [];
+  while (!directoryEntryExists(base)) {
+    const parent = dirname(base);
+    if (parent === base) break; // walked off the root; realpath below decides
+    tail.unshift(basename(base));
+    base = parent;
+  }
+  try {
+    base = realpathSync.native(base);
+  } catch {
+    return null;
+  }
+  return tail.length > 0 ? join(base, ...tail) : base;
+}
+
+/** Why `root` is unsafe to finalize an install into, or null when it is fine.
+ *  The REAL canonical twin of the shell installers' pre-download check: they
+ *  only absolutize lexically and compare strings, so an alias of the home
+ *  directory (a symlink, a Windows junction or 8.3 short name) or of a
+ *  filesystem root has to be caught here, where the writes and removals are
+ *  planned. */
+function unsafeRootReason(root: string): string | null {
+  const canonical = canonicalizeForGuard(root);
+  if (canonical === null) return "its canonical path cannot be resolved";
+  if (canonical === dirname(canonical)) return "it is a filesystem root";
+  const home = homedir() ? canonicalizeForGuard(homedir()) : null;
+  if (home !== null) {
+    const sameAsHome = process.platform === "win32"
+      ? canonical.toLowerCase() === home.toLowerCase()
+      : canonical === home;
+    if (sameAsHome) return "it is the home directory";
+  }
+  return null;
+}
+
 /** Collect every file under `dir` (recursively, sorted for determinism) as
  *  install-root-relative copies. `.sh` files get the executable bit: they are
  *  the only embedded assets ever handed to an OS exec directly. */
@@ -220,6 +281,16 @@ export function buildInstallPlan(
   // branch unreachable from a test, which is exactly the branch worth testing.
   if (resolve(sourceRoot) === resolve(root)) {
     return { kind: "in-place", root, shell };
+  }
+
+  // The install root is DERIVED (from the binary's location, or the
+  // COPILOT_ENV_INSTALL_ROOT override), and the installed-mode writes and
+  // legacy removals aim at it, so an unsafe target must be refused before
+  // anything is planned. The shell installers keep only a lexical pre-check;
+  // this is the canonical one.
+  const unsafe = unsafeRootReason(root);
+  if (unsafe !== null) {
+    throw new Error(`refusing to install into ${root}: ${unsafe}`);
   }
 
   // Installed-mode writes replace bin/agent with the dispatch shim and

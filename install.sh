@@ -26,12 +26,6 @@ EXEC_SHELL=true
 AUTH_CURL_ARGS=(-H "User-Agent: copilot-env" -H "Accept: application/vnd.github+json")
 PUBLIC_CURL_ARGS=(-H "User-Agent: copilot-env")
 
-# Artifacts a pre-binary source install leaves in the install root; the binary
-# install has no runtime bootstrap left to use them, so they are removed
-# outright (mirrors LEGACY_ARTIFACTS in src/install/installer.ts, which
-# test/installer_pinning.test.ts pins this list to).
-LEGACY_ARTIFACTS="node_modules bun.lock bunfig.toml"
-
 usage() {
     cat <<'EOF'
 Usage: install.sh [--dir DIR] [--version TAG] [--no-shell-integration] [--no-exec-shell]
@@ -87,55 +81,40 @@ retry() {
     done
 }
 
-# Canonicalize a directory for the safety guard below: return a clean ABSOLUTE path with
-# the existing prefix resolved via cd+pwd -P (so symlinks and the "//" root alias collapse)
-# and any not-yet-existing trailing components re-appended. Rejects an unresolved "."/".."
-# component and returns empty when it cannot canonicalize, so the guard refuses rather than
-# risk `rm -rf` on the wrong target. `set -e`-safe: every command substitution that can fail
-# is guarded, so a missing parent never aborts the script.
-canonical_dir() {
-    _p="$1"
-    [ -n "$_p" ] || { printf '\n'; return 0; }
-    case "$_p" in
-        /*) ;;
-        *) _p="$PWD/$_p" ;;
-    esac
-    # Peel not-yet-existing trailing components (rejecting . and ..) down to an existing dir.
-    _tail=""
-    while [ ! -d "$_p" ]; do
-        _leaf=$(basename -- "$_p")
-        case "$_leaf" in
-            .|..) printf '\n'; return 0 ;;
-        esac
-        if [ -n "$_tail" ]; then _tail="$_leaf/$_tail"; else _tail="$_leaf"; fi
-        _next=$(dirname -- "$_p")
-        [ "$_next" != "$_p" ] || { printf '\n'; return 0; } # walked off the root, nothing existed
-        _p="$_next"
-    done
-    # Resolve the existing base; collapse any "//" (POSIX root alias) to "/".
-    _base=$( CDPATH='' cd -- "$_p" 2>/dev/null && pwd -P ) || { printf '\n'; return 0; }
-    _base=$(printf '%s' "$_base" | sed 's://*:/:g')
-    if [ -n "$_tail" ]; then
-        printf '%s/%s\n' "$_base" "$_tail"
-    else
-        printf '%s\n' "$_base"
-    fi
-}
-
-# Canonicalize $1 into INSTALL_DIR and refuse unsafe targets (uncanonicalizable, any
-# filesystem root, the user's home). Mirrors Resolve-SafeInstallDir in install.ps1.
+# Lexically absolutize $1 into INSTALL_DIR and refuse the obviously unsafe
+# targets (empty, "/", the user's home, any "."/".." component). Deliberately
+# minimal and purely lexical: the binary's own `install` re-checks the
+# CANONICAL path (symlinks resolved) when it plans the install
+# (src/install/installer.ts); this pre-check only keeps the bootstrap's
+# mkdir/mv away from the worst targets. Mirrors Resolve-SafeInstallDir in
+# install.ps1 (whose GetFullPath collapses dot components instead).
 resolve_safe_install_dir() {
-    INSTALL_DIR=$(canonical_dir "$1")
-    _home=$(canonical_dir "$HOME")
-    # Refuse anything that is not a clean absolute path (empty => could not canonicalize),
-    # any filesystem root (a path that is its own parent, covering "/", "//", drive roots),
-    # and the user's home directory.
+    INSTALL_DIR="$1"
     case "$INSTALL_DIR" in
         /*) ;;
-        *) die "refusing to use unsafe install directory '$INSTALL_DIR'." ;;
+        "") die "refusing to use unsafe install directory '$1'." ;;
+        *) INSTALL_DIR="$PWD/$INSTALL_DIR" ;;
     esac
-    if [ "$INSTALL_DIR" = "$(dirname -- "$INSTALL_DIR")" ] || [ "$INSTALL_DIR" = "$_home" ]; then
-        die "refusing to use unsafe install directory '$INSTALL_DIR'."
+    # Collapse consecutive slashes on both sides of the compare: without this,
+    # "/Users//me" is a distinct string that slips past the home refusal below
+    # (the ps1 twin's GetFullPath collapses separators the same way).
+    INSTALL_DIR=$(printf '%s' "$INSTALL_DIR" | sed 's://*:/:g')
+    _home=$(printf '%s' "$HOME" | sed 's://*:/:g')
+    # Refuse "."/".." components outright rather than resolving them: resolved
+    # lexically they could alias "/" or "$HOME" past the checks below.
+    case "$INSTALL_DIR/" in
+        */./* | */../*) die "refusing to use unsafe install directory '$1'." ;;
+    esac
+    # Trim trailing slashes ("/opt/ce/" and "$HOME/" compare clean; "/" trims
+    # to empty and is refused).
+    while [ "$INSTALL_DIR" != "${INSTALL_DIR%/}" ]; do
+        INSTALL_DIR="${INSTALL_DIR%/}"
+    done
+    while [ -n "$_home" ] && [ "$_home" != "${_home%/}" ]; do
+        _home="${_home%/}"
+    done
+    if [ -z "$INSTALL_DIR" ] || [ "$INSTALL_DIR" = "$_home" ]; then
+        die "refusing to use unsafe install directory '$1'."
     fi
 }
 
@@ -236,9 +215,9 @@ resolve_safe_install_dir "$INSTALL_DIR"
 
 # A source checkout must never be an install target: checkout markers plus .git
 # (a directory, or a file in a worktree) mirrors the binary's own plan-time
-# refusal (CHECKOUT_MARKERS in src/install/installer.ts), before any write or
-# legacy sweep touches the root. Markers without .git are a legacy source
-# install, whose sweep the binary handles.
+# refusal (CHECKOUT_MARKERS in src/install/installer.ts), before the bin write
+# touches the root. Markers without .git are a legacy source install, whose
+# superseded artifacts the binary sweeps.
 if [ -e "$INSTALL_DIR/.git" ]; then
     for _marker in package.json deno.json; do
         if [ -e "$INSTALL_DIR/$_marker" ]; then
@@ -297,13 +276,6 @@ mkdir -p "$INSTALL_DIR/bin"
 # fail with ETXTBSY; a rename swaps the inode out from under it safely.
 mv -f "$_tmp/$ASSET" "$INSTALL_DIR/bin/$BINARY_NAME"
 chmod 0755 "$INSTALL_DIR/bin/$BINARY_NAME"
-
-for _legacy in $LEGACY_ARTIFACTS; do
-    if [ -e "$INSTALL_DIR/$_legacy" ]; then
-        echo "Removing superseded $_legacy from $INSTALL_DIR ..."
-        rm -rf -- "${INSTALL_DIR:?}/$_legacy"
-    fi
-done
 
 INSTALLER_ARGS=(install)
 if [ "$SKIP_SHELL_INTEGRATION" = true ]; then

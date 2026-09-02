@@ -1,12 +1,11 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, posix } from "node:path";
+import { join, parse, posix } from "node:path";
 import { INSTALLER_PINS } from "../.github/scripts/release-assets.ts";
 import { compiledHealthFailures } from "../.github/scripts/installer-smoke.ts";
 import {
   BUNDLED_ONLY_ASSETS,
   CHECKOUT_MARKERS,
-  LEGACY_ARTIFACTS,
   MATERIALIZED_ASSET_DIRS,
   MATERIALIZED_ASSET_FILES,
 } from "../src/install/installer.ts";
@@ -224,27 +223,9 @@ describe("the materialized files are the shims' import closure", () => {
   });
 });
 
-describe("installers and the installer share one artifact list", () => {
-  // install.sh / install.ps1 sweep the superseded source-install artifacts
-  // before handing off, and `agent install` sweeps them again after. Both
-  // lists have to name the same things or one of them leaves debris.
-  const expected = [...LEGACY_ARTIFACTS].sort();
-
-  test("install.sh LEGACY_ARTIFACTS matches", () => {
-    const list = installSh.match(/^LEGACY_ARTIFACTS="([^"]*)"/m)?.[1] ?? "";
-    expect(list.split(/\s+/).filter(Boolean).sort()).toEqual(expected);
-  });
-
-  test("install.ps1 $LegacyArtifacts matches", () => {
-    const body = installPs1.match(/\$LegacyArtifacts = @\(([^)]*)\)/)?.[1] ?? "";
-    const names = [...body.matchAll(/'([^']+)'/g)].map((m) => m[1] ?? "").sort();
-    expect(names).toEqual(expected);
-  });
-});
-
 describe("installers mirror the binary's checkout refusal markers", () => {
   // Both installers refuse a target root holding a checkout marker AND .git
-  // before their first write or sweep, mirroring buildInstallPlan's own
+  // before their first write, mirroring buildInstallPlan's own
   // refusal. Shell cannot import TS, so their marker lists are hand-rolled
   // twins of CHECKOUT_MARKERS: pin them in EXACT order, both directions (the
   // refusal names the first present marker, so order is part of the contract).
@@ -265,10 +246,10 @@ describe("installers mirror the binary's checkout refusal markers", () => {
 describe("installer checkout guard refuses before mutating, proceeds on legacy roots", () => {
   // Runs the REAL installer scripts against throwaway roots and a directory
   // download source (COPILOT_ENV_DOWNLOAD_BASE), because the guard's whole
-  // point is ordering: it must fire before the bin write and the legacy sweep
-  // (a checkout's node_modules used to be deleted before the binary's own
-  // refusal could run). install.sh runs on the POSIX platforms, install.ps1 on
-  // Windows, so the CI matrix covers both twins.
+  // point is ordering: it must fire before the bin write (the only mutation
+  // the slimmed installers make) touches the root. install.sh runs on the
+  // POSIX platforms, install.ps1 on Windows, so the CI matrix covers both
+  // twins.
   const skipWin = test.skipIf(Deno.build.os === "windows");
   const winOnly = test.skipIf(Deno.build.os !== "windows");
 
@@ -288,7 +269,8 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
   }
 
   /** A directory download source holding this platform's asset (a stand-in
-   *  binary; on POSIX a script so the handoff exec succeeds) + checksums.txt. */
+   *  binary; on POSIX a script that records its own invocation so a test can
+   *  prove the handoff ran) + checksums.txt. */
   function makeDownloadDir(): string {
     const target = currentReleaseTarget();
     if (target === null) throw new Error("no release target for this platform");
@@ -296,7 +278,7 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     const asset = releaseAssetName(target);
     const body = Deno.build.os === "windows"
       ? "not a real executable\n"
-      : "#!/usr/bin/env bash\nexit 0\n";
+      : '#!/usr/bin/env bash\ntouch "$0.invoked"\nexit 0\n';
     writeFileSync(join(dir, asset), body);
     const sha = createHash("sha256").update(body).digest("hex");
     writeFileSync(join(dir, "checksums.txt"), `${sha}  ${asset}\n`);
@@ -398,20 +380,30 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     }
   });
 
-  skipWin("install.sh proceeds on a legacy root (marker without .git) and sweeps it", () => {
-    const downloadDir = makeDownloadDir();
-    const root = makeRoot("deno.json", "none");
-    try {
-      const res = runInstaller(root, downloadDir);
-      const why = evidence(res, root);
-      expect(res.exitCode, why).toBe(0);
-      expect(existsSync(join(root, "node_modules")), why).toBe(false);
-      expect(existsSync(join(root, "deno.json")), why).toBe(true);
-      expect(existsSync(join(root, "bin", installedBinaryName())), why).toBe(true);
-    } finally {
-      cleanup(root, downloadDir);
-    }
-  });
+  skipWin(
+    "install.sh proceeds on a legacy root (marker without .git) and leaves the sweep to the binary",
+    () => {
+      const downloadDir = makeDownloadDir();
+      const root = makeRoot("deno.json", "none");
+      try {
+        const res = runInstaller(root, downloadDir);
+        const why = evidence(res, root);
+        expect(res.exitCode, why).toBe(0);
+        // The installer carries no sweep of its own: the superseded artifacts
+        // are the binary's legacyRemovals (src/install/installer.ts), and the
+        // stand-in binary does nothing, so the debris must survive the handoff.
+        expect(existsSync(join(root, "node_modules")), why).toBe(true);
+        expect(existsSync(join(root, "deno.json")), why).toBe(true);
+        expect(existsSync(join(root, "bin", installedBinaryName())), why).toBe(true);
+        // ... and the handoff must actually have happened: the sweep now lives
+        // on the other side of it, so an installer that never invoked the
+        // binary would pass the assertions above while installing nothing.
+        expect(existsSync(join(root, "bin", `${installedBinaryName()}.invoked`)), why).toBe(true);
+      } finally {
+        cleanup(root, downloadDir);
+      }
+    },
+  );
 
   winOnly("install.ps1 refuses a checkout root and leaves it byte-identical", () => {
     const downloadDir = makeDownloadDir();
@@ -434,20 +426,113 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     }
   });
 
-  winOnly("install.ps1 proceeds on a legacy root (marker without .git) and sweeps it", () => {
-    const downloadDir = makeDownloadDir();
-    const root = makeRoot("deno.json", "none");
+  winOnly(
+    "install.ps1 proceeds on a legacy root (marker without .git) and leaves the sweep to the binary",
+    () => {
+      const downloadDir = makeDownloadDir();
+      const root = makeRoot("deno.json", "none");
+      try {
+        // The stand-in .exe cannot actually run, so the ATTEMPTED handoff is
+        // what the non-zero exit proves; the mutations before it are the
+        // evidence that the guard let a legacy root through. The installer
+        // carries no sweep of its own (the binary's legacyRemovals own it),
+        // so the debris must survive up to the handoff.
+        const res = runInstaller(root, downloadDir);
+        const why = evidence(res, root);
+        expect(res.exitCode, why).not.toBe(0);
+        expect(existsSync(join(root, "node_modules")), why).toBe(true);
+        expect(existsSync(join(root, "deno.json")), why).toBe(true);
+        expect(existsSync(join(root, "bin", installedBinaryName())), why).toBe(true);
+      } finally {
+        cleanup(root, downloadDir);
+      }
+    },
+  );
+
+  skipWin("install.sh refuses the lexically unsafe targets before any other work", () => {
+    // The slimmed installer keeps only this lexical pre-check (the canonical
+    // one lives in the binary); it must still stop the worst spellings before
+    // the first network call or write. The doubled-slash spellings are the
+    // regression pins for the internal-"//" bypass: "/Users//me" is a distinct
+    // string from home unless separators are collapsed first, and the
+    // internal-only form must be pinned separately or a leading-"//" rejection
+    // could satisfy the test while leaving the original bypass. An empty
+    // download source keeps a regressed run hermetic: it fails at the local
+    // copy instead of reaching the network, and its stderr fails the
+    // refusal-message assertion.
+    const home = process.env.HOME ?? "";
+    expect(home.length).toBeGreaterThan(0);
+    const unsafe = [
+      "/",
+      "//",
+      home,
+      `${home}/`,
+      home.replaceAll("/", "//"),
+      home.replace(/\/(?=[^/]*$)/, "//"), // internal-only: double just the last slash
+      "/tmp/..",
+      `${home}/.`,
+      ".",
+    ];
+    const emptyDownloadDir = tmpDir("ce-lexical-dl-");
     try {
-      // The stand-in .exe cannot actually run, so the final handoff fails and
-      // the exit code is non-zero; the mutations before it are the evidence
-      // that the guard let a legacy root through.
-      const res = runInstaller(root, downloadDir);
-      const why = evidence(res, root);
-      expect(existsSync(join(root, "node_modules")), why).toBe(false);
-      expect(existsSync(join(root, "deno.json")), why).toBe(true);
-      expect(existsSync(join(root, "bin", installedBinaryName())), why).toBe(true);
+      for (const dir of unsafe) {
+        const res = runSync("bash", [join(ROOT, "install.sh"), "--dir", dir], {
+          env: { ...process.env, "CI": "1", "COPILOT_ENV_DOWNLOAD_BASE": emptyDownloadDir },
+        });
+        const why = `--dir '${dir}' exit=${res.exitCode}:\n${res.stderr}`;
+        expect(res.exitCode, why).toBe(2);
+        expect(res.stderr, why).toContain("unsafe install directory");
+      }
     } finally {
-      cleanup(root, downloadDir);
+      removeDir(emptyDownloadDir);
+    }
+  });
+
+  winOnly("install.ps1 refuses the lexically unsafe targets before any other work", () => {
+    // The ps1 twin of the refusal list above, driven under the real
+    // powershell.exe like the other winOnly tests (its guard collapses
+    // separators and dot components via GetFullPath instead of refusing
+    // them, so those spellings translate to the same refusals). An empty
+    // download source keeps a regressed run hermetic: it fails at the local
+    // copy instead of reaching the network or mutating the real target.
+    const home = process.env.USERPROFILE ?? "";
+    expect(home.length).toBeGreaterThan(0);
+    const unsafe = [
+      parse(home).root, // the filesystem root, e.g. C:\
+      home,
+      `${home}\\`, // trailing separator must not defeat the compare
+      `${home}/`, // the alt separator spelling of the same
+      home.replaceAll("\\", "\\\\"), // internal doubled separators
+      `${home}\\.`, // GetFullPath collapses the dot component back to home
+      `${home}\\*`, // wildcard rejection
+    ];
+    const emptyDownloadDir = tmpDir("ce-lexical-dl-");
+    try {
+      for (const dir of unsafe) {
+        const env: Record<string, string | undefined> = {
+          ...process.env,
+          "CI": "1",
+          "COPILOT_ENV_DOWNLOAD_BASE": emptyDownloadDir,
+        };
+        for (const key of Object.keys(env)) {
+          if (key.toLowerCase() === "psmodulepath") delete env[key];
+        }
+        const res = runSync("powershell", [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          join(ROOT, "install.ps1"),
+          "-InstallDir",
+          dir,
+        ], { env });
+        const why = `-InstallDir '${dir}' exit=${res.exitCode}:\n${res.stderr}`;
+        expect(res.exitCode, why).not.toBe(0);
+        expect(res.stderr, why).toContain("unsafe install directory");
+      }
+    } finally {
+      removeDir(emptyDownloadDir);
     }
   });
 

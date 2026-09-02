@@ -103,12 +103,6 @@ if (-not $InstallDir) {
     $InstallDir = if ($env:COPILOT_ENV_DIR) { $env:COPILOT_ENV_DIR } else { Join-Path $env:USERPROFILE '.copilot-env' }
 }
 
-# Artifacts a pre-binary source install leaves in the install root; the binary
-# install has no runtime bootstrap left to use them, so they are removed
-# outright (mirrors LEGACY_ARTIFACTS in src/install/installer.ts, which
-# test/installer_pinning.test.ts pins this list to).
-$LegacyArtifacts = @('node_modules', 'bun.lock', 'bunfig.toml')
-
 function Invoke-WithRetry {
     param(
         [Parameter(Mandatory)][string]$Label,
@@ -126,72 +120,27 @@ function Invoke-WithRetry {
     }
 }
 
-function Resolve-PhysicalPath {
-    param([string]$Path)
-    # A non-existent path cannot be a reparse/8.3 alias of an existing directory and is never
-    # the target of Remove-Item, so its lexical full path is sufficient.
-    $full = [System.IO.Path]::GetFullPath($Path)
-    if (-not (Test-Path -LiteralPath $full)) { return $full }
-    # Existing path (the only kind Remove-Item can delete): resolve the TRUE physical path --
-    # ALL reparse points including INTERMEDIATE junctions, plus 8.3 short names -- via Win32
-    # GetFinalPathNameByHandle. That is the only PS 5.1-compatible way to canonicalize
-    # intermediate components. If the resolver can't be loaded or the call fails, FAIL CLOSED:
-    # refuse to delete a directory we cannot prove is not the profile. (A machine locked down
-    # enough to block Add-Type also blocks the [System.IO.Path] static calls this script relies
-    # on elsewhere, so there is no weaker-but-working fallback to prefer.)
-    if (-not ('Ce_PathResolver' -as [type])) {
-        Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-using Microsoft.Win32.SafeHandles;
-public static class Ce_PathResolver {
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr sec, uint disp, uint flags, IntPtr tmpl);
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    static extern uint GetFinalPathNameByHandleW(SafeFileHandle h, StringBuilder buf, uint len, uint flags);
-    public static string Resolve(string path) {
-        const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000; // required to open a directory handle
-        const uint OPEN_EXISTING = 3;
-        const uint SHARE_ALL = 0x07;
-        using (var h = CreateFileW(path, 0, SHARE_ALL, IntPtr.Zero, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero)) {
-            if (h.IsInvalid) return null;
-            var sb = new StringBuilder(1024);
-            uint n = GetFinalPathNameByHandleW(h, sb, (uint)sb.Capacity, 0);
-            if (n == 0) return null;
-            if (n > sb.Capacity) { sb = new StringBuilder((int)n); n = GetFinalPathNameByHandleW(h, sb, (uint)sb.Capacity, 0); if (n == 0) return null; }
-            var s = sb.ToString();
-            if (s.StartsWith(@"\\?\UNC\")) return @"\\" + s.Substring(8);
-            if (s.StartsWith(@"\\?\")) return s.Substring(4);
-            return s;
-        }
-    }
-}
-'@
-    }
-    $physical = [Ce_PathResolver]::Resolve($full)
-    if (-not $physical) {
-        throw "Refusing to use install directory '$InstallDir': could not resolve its physical path."
-    }
-    return $physical
-}
-
+# Lexically absolutize and normalize $InstallDir and refuse the obviously
+# unsafe targets (wildcards, any filesystem root, the user's home).
+# Deliberately minimal and purely lexical: the binary's own `install`
+# re-checks the CANONICAL path (reparse points and 8.3 short names resolved)
+# when it plans the install (src/install/installer.ts); this pre-check only
+# keeps the bootstrap's writes away from the worst targets. Mirrors
+# resolve_safe_install_dir in install.sh.
 function Resolve-SafeInstallDir {
-    $sep = [System.IO.Path]::DirectorySeparatorChar
-    $alt = [System.IO.Path]::AltDirectorySeparatorChar
-    # Reject wildcard characters up front: PowerShell's Remove-Item/Test-Path expand them,
-    # so an input like 'C:\Users\*' would otherwise pass the guard and then delete every
-    # match. (The POSIX twin is safe here because it quotes every use of the path.)
+    # Reject wildcard characters up front: PowerShell's file cmdlets expand
+    # them, so an input like 'C:\Users\*' would otherwise act on every match.
     if ([System.Management.Automation.WildcardPattern]::ContainsWildcardCharacters($InstallDir)) {
         throw "Refusing to use unsafe install directory '$InstallDir' (contains wildcard characters)."
     }
-    # Resolve physically (all reparse points + 8.3 short names) so an alias of the profile
-    # directory cannot slip past the home guard, then trim trailing separators (never past
-    # the path root) on both sides so 'C:\Users\me\' -ieq 'C:\Users\me'.
-    $resolved = Resolve-PhysicalPath $InstallDir
-    $root = [System.IO.Path]::GetPathRoot($resolved)
-    $normResolved = if ($resolved.Length -gt $root.Length) { $resolved.TrimEnd($sep, $alt) } else { $resolved }
-    $userHome = Resolve-PhysicalPath $env:USERPROFILE
+    $sep = [System.IO.Path]::DirectorySeparatorChar
+    $alt = [System.IO.Path]::AltDirectorySeparatorChar
+    # GetFullPath is lexical (absolutize, collapse '.'/'..'); trim trailing
+    # separators (never past the path root) so 'C:\Users\me\' -ieq 'C:\Users\me'.
+    $full = [System.IO.Path]::GetFullPath($InstallDir)
+    $root = [System.IO.Path]::GetPathRoot($full)
+    $normResolved = if ($full.Length -gt $root.Length) { $full.TrimEnd($sep, $alt) } else { $full }
+    $userHome = [System.IO.Path]::GetFullPath($env:USERPROFILE)
     $homeRoot = [System.IO.Path]::GetPathRoot($userHome)
     $normHome = if ($userHome.Length -gt $homeRoot.Length) { $userHome.TrimEnd($sep, $alt) } else { $userHome }
     if (-not $normResolved -or $normResolved -eq $root -or $normResolved -ieq $normHome) {
@@ -262,9 +211,9 @@ $InstallDir = Resolve-SafeInstallDir
 
 # A source checkout must never be an install target: checkout markers plus .git
 # (a directory, or a file in a worktree) mirrors the binary's own plan-time
-# refusal (CHECKOUT_MARKERS in src/install/installer.ts), before any write or
-# legacy sweep touches the root. Markers without .git are a legacy source
-# install, whose sweep the binary handles.
+# refusal (CHECKOUT_MARKERS in src/install/installer.ts), before the bin write
+# touches the root. Markers without .git are a legacy source install, whose
+# superseded artifacts the binary sweeps.
 if (Test-Path -LiteralPath (Join-Path $InstallDir '.git')) {
     foreach ($marker in @('package.json', 'deno.json')) {
         if (Test-Path -LiteralPath (Join-Path $InstallDir $marker)) {
@@ -311,14 +260,6 @@ try {
     Move-Item -LiteralPath $binTmp -Destination (Join-Path $binDir $BinaryName) -Force
 } finally {
     Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
-}
-
-foreach ($legacy in $LegacyArtifacts) {
-    $legacyPath = Join-Path $InstallDir $legacy
-    if (Test-Path -LiteralPath $legacyPath) {
-        Write-Host "Removing superseded $legacy from $InstallDir ..."
-        Remove-Item -LiteralPath $legacyPath -Recurse -Force
-    }
 }
 
 $installerArgs = @('install')

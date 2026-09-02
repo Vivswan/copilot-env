@@ -69,7 +69,7 @@ import { errMessage } from "./utils/error.ts";
 import { readTextOrNull } from "./utils/fs.ts";
 import { parseJsonRecord } from "./utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
-import { PROJECT_ROOT } from "./utils/root.ts";
+import { ASSET_ROOT } from "./utils/root.ts";
 import { versionLessThan } from "./utils/semver.ts";
 import { SECONDS_PER_DAY } from "./utils/time.ts";
 
@@ -351,10 +351,15 @@ export function proxyLockFile(rootHome: string): string {
 }
 
 /**
- * Write the config the floated daemon runs under: the checkout's import map and
+ * Write the config the floated daemon runs under: this build's import map and
  * compiler options, with `lock` and `nodeModulesDir` DELIBERATELY dropped.
  *
- * The daemon cannot use the checkout's own deno.json, for two independent reasons:
+ * The source is the build's OWN deno.json, read through ASSET_ROOT: the embedded
+ * VFS in a compiled binary, the checkout root in dev. A compiled install root
+ * deliberately carries no deno.json on disk (there it is a checkout marker the
+ * install refusal reads), so a disk read under the install root can never work.
+ *
+ * The daemon cannot use that deno.json as-is, for two independent reasons:
  *   - `lock: {frozen: true}` rejects `npm:<proxy>@<floated version>` outright, because
  *     that exact specifier is not in deno.lock. Any version the float actually floats
  *     to would fail -- the frozen lock is a DEV contract, and the whole point of the
@@ -366,10 +371,10 @@ export function proxyLockFile(rootHome: string): string {
  * The import map itself is still needed: the preload shims resolve their own imports
  * through it, which is why the daemon spawn passes a `--config` at all.
  */
-export function writeDaemonConfig(rootHome: string, projectRoot: string = PROJECT_ROOT): void {
-  const source = parseJsonRecord(readTextOrNull(join(projectRoot, "deno.json")) ?? "");
+export function writeDaemonConfig(rootHome: string, sourceRoot: string = ASSET_ROOT): void {
+  const source = parseJsonRecord(readTextOrNull(join(sourceRoot, "deno.json")) ?? "");
   if (source === null) {
-    throw new Error(`could not read the import map from ${join(projectRoot, "deno.json")}`);
+    throw new Error(`could not read the import map from ${join(sourceRoot, "deno.json")}`);
   }
   const config = {
     "imports": source.imports ?? {},

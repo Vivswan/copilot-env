@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveRootHome } from "../../src/copilot_api/paths.ts";
 import { readDvmrcPin, SIDECAR_DENO_ENV, sidecarBinPath } from "../../src/copilot_api/sidecar.ts";
-import { writeDaemonConfig } from "../../src/proxy_float.ts";
+import { daemonConfigFile } from "../../src/proxy_float.ts";
 import { isRecord } from "../../src/utils/json.ts";
 
 const step = process.argv[2];
@@ -316,10 +316,11 @@ function verifyCompiledHealth(launcher: string): void {
  * The compiled binary's daemon spawn must resolve the deno sidecar the install
  * provisions -- a compiled binary is not a deno CLI, so a resolve that misses the
  * sidecar can start nothing at all. Kept offline: plant this runner's own deno at
- * the pinned sidecar slot (standing in for the real provisioning download), write
- * the daemon config a floated install would carry, then drive one start/stop of
- * the fake proxy. The start can only succeed through the provisioned sidecar --
- * a compiled build has no dev deno, and no override is set.
+ * the pinned sidecar slot (standing in for the real provisioning download), then
+ * drive one start/stop of the fake proxy. The start can only succeed through the
+ * provisioned sidecar -- a compiled build has no dev deno, and no override is set.
+ * Nothing is pre-written under the daemon home: generating the daemon config from
+ * the binary's own embedded assets is part of what this start proves.
  */
 function verifySidecarDaemonSpawn(launcher: string): void {
   // A live override would let the start succeed WITHOUT the provisioned-sidecar path
@@ -335,13 +336,35 @@ function verifySidecarDaemonSpawn(launcher: string): void {
   if (!isWindows) {
     chmodSync(sidecar, 0o755);
   }
-  writeDaemonConfig(rootHome);
+  // The compiled binary must generate the daemon config itself; anything pre-existing
+  // here would stub exactly the step under test and hollow out this smoke's proof.
+  const daemonConfig = daemonConfigFile(rootHome);
+  if (existsSync(daemonConfig)) {
+    console.error(
+      `::error::daemon config pre-exists at ${daemonConfig}; nothing may write it before the compiled start`,
+    );
+    process.exit(1);
+  }
   const entryEnv = {
     COPILOT_API_ENTRY: fileURLToPath(new URL("../../test/copilot-api-fake.mjs", import.meta.url)),
   };
   runLauncher(launcher, ["start"], entryEnv);
   runLauncher(launcher, ["stop"], entryEnv);
+  let generated: unknown;
+  try {
+    generated = JSON.parse(readFileSync(daemonConfig, "utf8"));
+  } catch (e) {
+    console.error(
+      `::error::the compiled start left no readable daemon config at ${daemonConfig}: ${String(e)}`,
+    );
+    process.exit(1);
+  }
+  if (!isRecord(generated) || !isRecord(generated.imports)) {
+    console.error(`::error::the generated daemon config at ${daemonConfig} carries no import map`);
+    process.exit(1);
+  }
   console.log(`compiled daemon spawn resolved the provisioned sidecar at ${sidecar}`);
+  console.log(`compiled start generated the daemon config at ${daemonConfig}`);
 }
 
 /** The installer's manifest at the install root. Its filename and `kind` value are

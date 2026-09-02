@@ -4,10 +4,10 @@ import { closeSync, existsSync, openSync, readFileSync } from "node:fs";
 import { devNull } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { daemonConfigFile, readResolvedVersionRecord } from "../proxy_float.ts";
+import { daemonConfigFile, readResolvedVersionRecord, writeDaemonConfig } from "../proxy_float.ts";
 import { runCaptured } from "../utils/command.ts";
 import { pidAlive } from "../utils/pid.ts";
-import { PROJECT_ROOT } from "../utils/root.ts";
+import { type RootMode, rootMode } from "../utils/root.ts";
 import { DAEMON_INTEGRATION_ID_ENV } from "./integration_identity.ts";
 import { resolveRootHome } from "./paths.ts";
 import { type DaemonShimFile, NODE_COMPAT_SHIM, shimPath } from "./shims.ts";
@@ -30,18 +30,32 @@ export type CopilotApiEntry =
   /** The float's recorded resolution: an exact version in the cache it pre-warmed,
    *  resolved under the daemon config the float wrote beside the record. */
   | { kind: "floated"; specifier: string; version: string; denoDir: string; configFile: string }
-  /** deno.json's mapped specifier, resolved through the frozen lock. */
+  /** deno.json's mapped specifier: resolved through the frozen lock in a checkout,
+   *  or through the generated daemon config on a compiled root. */
   | { kind: "package"; specifier: string; configFile: string };
 
+/** The daemon config under `rootHome`, (re)generated from the embedded import map. The
+ *  float rewrites this file with the same content on every warm, so regenerating here
+ *  too costs nothing and means a stale or foreign file can never steer a compiled
+ *  spawn. Covers the spawns that come BEFORE any float on a compiled install (a
+ *  `COPILOT_API_ENTRY` override, the mapped fallback), where no other config can exist. */
+function ensuredDaemonConfig(rootHome: string): string {
+  writeDaemonConfig(rootHome);
+  return daemonConfigFile(rootHome);
+}
+
 /**
- * The config a proxy spawn resolves under. The float's generated one when it exists --
- * an installed binary has no checkout, so that is the ONLY config on disk there -- else
- * the checkout's. The preload shims resolve their own imports through whichever it is,
- * which is why every spawn passes one.
+ * The config a proxy spawn resolves under. A compiled root ALWAYS answers with the
+ * daemon config, regenerated from the embedded assets -- an install root deliberately
+ * carries no deno.json on disk (there it is a checkout marker), so it is the only
+ * config that can exist. A checkout prefers the float's generated config and falls
+ * back to its own deno.json. The preload shims resolve their own imports through
+ * whichever it is, which is why every spawn passes one.
  */
-function entryConfigFile(rootHome: string): string {
+function entryConfigFile(rootHome: string, mode: RootMode): string {
+  if (mode.kind === "compiled") return ensuredDaemonConfig(rootHome);
   const daemonConfig = daemonConfigFile(rootHome);
-  return existsSync(daemonConfig) ? daemonConfig : join(PROJECT_ROOT, "deno.json");
+  return existsSync(daemonConfig) ? daemonConfig : join(mode.root, "deno.json");
 }
 
 /**
@@ -51,17 +65,21 @@ function entryConfigFile(rootHome: string): string {
  *    so the daemon lifecycle runs without GitHub Copilot auth.
  * 2. The proxy float's resolved-version record: an exact version, run out of the DENO_DIR
  *    the float pre-warmed. This is the runtime answer on any install the float has run on.
- * 3. deno.json's import map, resolved through the frozen lock -- the dev baseline, and the
- *    fallback on a fresh checkout or a Direct-only install where the float never ran.
+ * 3. deno.json's import map -- resolved through the frozen lock in a checkout (the dev
+ *    baseline), or through the generated daemon config on a compiled install where the
+ *    float never ran (a Direct-only install).
  *
  * Both package forms keep `--cached-only`: the float pre-warms its cache and the lock
  * pre-warms node_modules, so neither launch has any business reaching the network.
+ *
+ * `mode` is injectable so tests can exercise the compiled split; the default is the
+ * process's own RootMode, resolved once at startup.
  */
-export function resolveCopilotApiEntry(): CopilotApiEntry {
+export function resolveCopilotApiEntry(mode: RootMode = rootMode()): CopilotApiEntry {
   const rootHome = resolveRootHome();
   const override = process.env.COPILOT_API_ENTRY?.trim();
   if (override) {
-    return { kind: "file", path: override, configFile: entryConfigFile(rootHome) };
+    return { kind: "file", path: override, configFile: entryConfigFile(rootHome, mode) };
   }
   const record = readResolvedVersionRecord(rootHome);
   if (record !== null) {
@@ -76,7 +94,9 @@ export function resolveCopilotApiEntry(): CopilotApiEntry {
   return {
     kind: "package",
     specifier: PROXY_PACKAGE_NAME,
-    configFile: join(PROJECT_ROOT, "deno.json"),
+    configFile: mode.kind === "compiled"
+      ? ensuredDaemonConfig(rootHome)
+      : join(mode.root, "deno.json"),
   };
 }
 
@@ -110,9 +130,9 @@ const PROXY_PERMISSIONS = [
  * discover from, so discovery would fall back to the caller's cwd and could pick up an
  * unrelated project's import map -- which the preload shims resolve their own imports
  * through. The entry already chose WHICH config (see entryConfigFile): the float's
- * generated one wherever it exists, because the checkout's deno.json carries a frozen
- * lock that rejects a floated version outright and is absent entirely on an installed
- * binary.
+ * generated one wherever it exists -- a compiled root generates it from the embedded
+ * assets on demand, having no deno.json on disk at all -- because the checkout's
+ * deno.json carries a frozen lock that rejects a floated version outright.
  *
  * `--cached-only` then guarantees the launch never reaches the network: the float
  * pre-warmed its own cache (proxy AND shims) for a floated entry, and the frozen lock

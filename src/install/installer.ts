@@ -84,13 +84,18 @@ export const MATERIALIZED_ASSET_FILES = [
  *  and writing a second copy into the install root would only create something
  *  nothing reads and that can drift from the binary that shipped it.
  *
- *  `copilot-env.config` is the proxy-float floor/ceiling (`readProjectConfig`)
- *  and `.dvmrc` is the deno version the sidecar provisions against
- *  (`readDvmrcPin`); both default to ASSET_ROOT.
+ *  `copilot-env.config` is the proxy-float floor/ceiling (`readProjectConfig`),
+ *  `.dvmrc` is the deno version the sidecar provisions against
+ *  (`readDvmrcPin`), and `deno.json` is the import map the daemon config is
+ *  generated from (`writeDaemonConfig`); all default to ASSET_ROOT.
+ *
+ *  `deno.json` MUST stay bundled-only for a second reason: on disk it is a
+ *  CHECKOUT_MARKERS entry, so materializing it would make every install root
+ *  read as checkout debris.
  *
  *  They are still verified present at plan time: absent from the VFS means the
  *  build is broken, and failing here beats failing at first proxy start. */
-export const BUNDLED_ONLY_ASSETS = ["copilot-env.config", ".dvmrc"] as const;
+export const BUNDLED_ONLY_ASSETS = ["copilot-env.config", ".dvmrc", "deno.json"] as const;
 
 /** Superseded files a pre-binary source install leaves in the root. The binary
  *  install has no runtime bootstrap left to use them and `node_modules` alone

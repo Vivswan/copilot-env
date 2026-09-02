@@ -39,40 +39,82 @@ import {
 } from "../src/health/checks.ts";
 import {
   type BootstrapFacts,
+  classifyPortState,
   type ClaudeFacts,
   type CodexFacts,
+  type DaemonProbed,
+  type DefaultRuntimeTarget,
   evalCodex,
   evalShellFiles,
   gatherFacts,
   type HealthFacts,
+  type PortState,
   type ProxyFacts,
   type RuntimeTarget,
+  type WatchdogFacts,
 } from "../src/health/probe.ts";
-import type { CheckResult, CheckStatus, HealthScope } from "../src/health/types.ts";
+import type { CheckId, CheckResult, CheckStatus, HealthScope } from "../src/health/types.ts";
 import { expect, test } from "./helpers/testing.ts";
 import { envSnapshot, writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
 
 // --- fixtures ---------------------------------------------------------------
 
-function result(id: string, status: CheckStatus, scopes: HealthScope[]): CheckResult {
-  return { id, label: id, group: "runtime", profile: null, scopes, status, detail: "" };
+function result(id: CheckId, status: CheckStatus, scopes: HealthScope[]): CheckResult {
+  const base = { id, label: String(id), group: "runtime" as const, profile: null, scopes };
+  // The CheckOutcome union: warn/fail must carry a fix, ok cannot.
+  return status === "ok"
+    ? { ...base, status, detail: "" }
+    : { ...base, status, detail: "", fix: "fix-hint" };
 }
 
+/** Flat probe/target overrides, assembled into the RuntimeTarget union shape
+ *  (PortState always derived through the probe's own classifier, so a fixture
+ *  can never carry a torn ownership verdict). */
+interface TargetOverrides {
+  proxyExpected?: boolean;
+  port?: number;
+  portPersisted?: boolean;
+  reachable?: boolean;
+  trackedPid?: number | null;
+  pidTracked?: boolean;
+  pidAlive?: boolean;
+  identityConfirmed?: boolean | null;
+  watchdog?: WatchdogFacts;
+}
+
+function probedFrom(proxyExpected: boolean, o: TargetOverrides): DaemonProbed {
+  const raw = {
+    reachable: o.reachable ?? true,
+    trackedPid: o.trackedPid === undefined ? 1234 : o.trackedPid,
+    pidTracked: o.pidTracked ?? true,
+    pidAlive: o.pidAlive ?? true,
+    identityConfirmed: o.identityConfirmed === undefined ? true : o.identityConfirmed,
+  };
+  return { kind: "probed", ...raw, portState: classifyPortState({ proxyExpected, ...raw }) };
+}
+
+/** The probed outcome of a target (all fixtures here interrogate the daemon;
+ *  gatherFacts-produced targets are narrowed the same way). */
+function probeOf(t: RuntimeTarget | undefined): DaemonProbed {
+  if (!t || t.probe.kind !== "probed") throw new Error("expected a probed runtime target");
+  return t.probe;
+}
+
+// Per-daemon checks take (target, probed facts); the fixtures are always probed.
+const runPort = (t: RuntimeTarget) => checkRuntimePort(t, probeOf(t));
+const runPid = (t: RuntimeTarget) => checkRuntimePid(t, probeOf(t));
+const runIdentity = (t: RuntimeTarget) => checkRuntimeIdentity(t, probeOf(t));
+const runOrphan = (t: RuntimeTarget) => checkRuntimeOrphan(t, probeOf(t));
+
 /** A default-target runtime fixture (profile null, healthy tracked daemon). */
-function defaultTarget(overrides: Partial<RuntimeTarget> = {}): RuntimeTarget {
+function defaultTarget(overrides: TargetOverrides = {}): DefaultRuntimeTarget {
+  const proxyExpected = overrides.proxyExpected ?? true;
   return {
     profile: null,
-    slot: null,
-    homeExists: null,
-    proxyExpected: true,
-    port: 4141,
-    portPersisted: true,
-    daemonProbed: true,
-    reachable: true,
-    trackedPid: 1234,
-    pidTracked: true,
-    pidAlive: true,
-    identityConfirmed: true,
+    proxyExpected,
+    port: overrides.port ?? 4141,
+    portPersisted: overrides.portPersisted ?? true,
+    probe: probedFrom(proxyExpected, overrides),
     paths: {
       home: "/h",
       configFile: "/h/config.json",
@@ -81,20 +123,21 @@ function defaultTarget(overrides: Partial<RuntimeTarget> = {}): RuntimeTarget {
       logFile: "/h/.run/x/.log",
       sqliteDb: "/h/.run/x/db.sqlite",
     },
-    watchdog: {
+    watchdog: overrides.watchdog ?? {
       autoStart: false,
       idleTimeoutMs: 3_600_000,
       lastEnsureAt: null,
       lastRequestMs: null,
       now: 1_000_000_000,
     },
-    ...overrides,
   };
 }
 
 /** A named-profile runtime target fixture (used by the profile-aware tier). */
-function profileTarget(name: string, overrides: Partial<RuntimeTarget> = {}): RuntimeTarget {
-  return defaultTarget({
+function profileTarget(name: string, overrides: TargetOverrides = {}): RuntimeTarget {
+  const base = defaultTarget(overrides);
+  return {
+    ...base,
     profile: parseProfileName(name),
     slot: {
       exists: true,
@@ -104,8 +147,7 @@ function profileTarget(name: string, overrides: Partial<RuntimeTarget> = {}): Ru
       integrationIdentity: null,
     },
     homeExists: true,
-    ...overrides,
-  });
+  };
 }
 
 const BOOTSTRAP_OK: BootstrapFacts = {
@@ -118,19 +160,23 @@ const BOOTSTRAP_OK: BootstrapFacts = {
 
 test("worstStatus picks fail > warn > ok and defaults ok when empty", () => {
   expect(worstStatus([])).toBe("ok");
-  expect(worstStatus([result("a", "ok", ["full"]), result("b", "warn", ["full"])])).toBe("warn");
+  expect(
+    worstStatus([result("runtime.port", "ok", ["full"]), result("runtime.pid", "warn", ["full"])]),
+  ).toBe("warn");
   expect(
     worstStatus([
-      result("a", "warn", ["full"]),
-      result("b", "fail", ["full"]),
-      result("c", "ok", ["full"]),
+      result("runtime.port", "warn", ["full"]),
+      result("runtime.pid", "fail", ["full"]),
+      result("runtime.paths", "ok", ["full"]),
     ]),
   ).toBe("fail");
 });
 
 test("exitCodeFor is 1 iff any fail; warnings alone exit 0", () => {
-  expect(exitCodeFor([result("a", "ok", ["full"]), result("b", "warn", ["full"])])).toBe(0);
-  expect(exitCodeFor([result("a", "fail", ["full"])])).toBe(1);
+  expect(
+    exitCodeFor([result("runtime.port", "ok", ["full"]), result("runtime.pid", "warn", ["full"])]),
+  ).toBe(0);
+  expect(exitCodeFor([result("runtime.port", "fail", ["full"])])).toBe(1);
   expect(exitCodeFor([])).toBe(0);
 });
 
@@ -161,15 +207,20 @@ test("isHealthScope narrows known scopes and rejects others", () => {
 });
 
 test("buildHealthJson exposes scope/ok/status/exitCode/checks with ok === no-fail", () => {
-  const okJson = buildHealthJson("full", [result("a", "warn", ["full"])]);
+  const okJson = buildHealthJson("full", [result("runtime.port", "warn", ["full"])]);
   expect(okJson).toMatchObject({ scope: "full", ok: true, status: "warn", exitCode: 0 });
   expect(okJson.checks).toHaveLength(1);
+  // The CheckOutcome union projected into JSON: fix present exactly on non-ok.
+  expect(okJson.checks[0]?.fix).toBe("fix-hint");
+  expect(
+    buildHealthJson("full", [result("runtime.port", "ok", ["full"])]).checks[0]?.fix,
+  ).toBeUndefined();
   // The profile dimension: top-level = the run's narrowing (default null), and
   // every check names its own target (environment checks are null).
   expect(okJson.profile).toBeNull();
   expect(okJson.checks[0]?.profile).toBeNull();
 
-  const failJson = buildHealthJson("runtime", [result("a", "fail", ["runtime"])]);
+  const failJson = buildHealthJson("runtime", [result("runtime.port", "fail", ["runtime"])]);
   expect(failJson).toMatchObject({ ok: false, status: "fail", exitCode: 1 });
 });
 
@@ -482,19 +533,24 @@ test("gatherFacts probes the proxy at 127.0.0.1, never localhost (Windows IPv6 s
 });
 
 test("runtime port fails only when unreachable", () => {
-  expect(checkRuntimePort(defaultTarget()).status).toBe("ok");
-  expect(checkRuntimePort(defaultTarget({ reachable: false })).status).toBe("fail");
+  expect(runPort(defaultTarget()).status).toBe("ok");
+  expect(runPort(defaultTarget({ reachable: false })).status).toBe("fail");
 });
 
 test("runtime: a down proxy is OK when both Codex and Claude are direct", () => {
   const down = defaultTarget({ reachable: false, trackedPid: null, pidTracked: false });
   // Proxy not required => no failure (warnings/ok only), so the overall exit is 0.
-  expect(checkRuntimePort(down).status).toBe("fail");
-  expect(checkRuntimePid(down).status).toBe("fail");
-  const bothDirect = { ...down, proxyExpected: false };
-  expect(checkRuntimePort(bothDirect).status).toBe("ok");
-  expect(checkRuntimePort(bothDirect).detail).toContain("both direct");
-  expect(checkRuntimePid(bothDirect).status).toBe("ok");
+  expect(runPort(down).status).toBe("fail");
+  expect(runPid(down).status).toBe("fail");
+  const bothDirect = defaultTarget({
+    reachable: false,
+    trackedPid: null,
+    pidTracked: false,
+    proxyExpected: false,
+  });
+  expect(runPort(bothDirect).status).toBe("ok");
+  expect(runPort(bothDirect).detail).toContain("both direct");
+  expect(runPid(bothDirect).status).toBe("ok");
   expect(exitCodeFor(evaluateAll("runtime", { runtimes: [down] }))).toBe(1);
   expect(exitCodeFor(evaluateAll("runtime", { runtimes: [bothDirect] }))).toBe(0);
 });
@@ -508,26 +564,26 @@ test("runtime: a foreign listener on the port is not a problem when both agents 
     pidTracked: false,
     identityConfirmed: null, // the probe gate: identity is never probed when nothing routes
   });
-  const port = checkRuntimePort(listener);
+  const port = runPort(listener);
   expect(port.status).toBe("ok");
   expect(port.detail).toContain(`port ${listener.port} has a listener, but no agent routes`);
   expect(port.fix).toBeUndefined();
   expect((port.value as Record<string, unknown>).bothDirect).toBe(true);
-  const identity = checkRuntimeIdentity(listener);
+  const identity = runIdentity(listener);
   expect(identity.status).toBe("ok");
   expect(identity.detail).toContain("not probed");
   expect(identity.detail).toContain("no agent routes");
-  const orphan = checkRuntimeOrphan(listener);
+  const orphan = runOrphan(listener);
   expect(orphan.status).toBe("ok");
   expect(orphan.detail).toContain("both agents are direct");
   // The pid check carries the same machine-readable stamp for --json consumers.
-  const pid = checkRuntimePid(listener);
+  const pid = runPid(listener);
   expect(pid.status).toBe("ok");
   expect((pid.value as Record<string, unknown>).bothDirect).toBe(true);
   // Even a tracked-and-alive pid never lets ownership wording claim the port for a
   // both-direct target: identity was never probed, so who owns the port is unknown.
   const trackedListener = defaultTarget({ proxyExpected: false, identityConfirmed: null });
-  expect(checkRuntimeOrphan(trackedListener).detail).toContain("both agents are direct");
+  expect(runOrphan(trackedListener).detail).toContain("both agents are direct");
   // The whole run: nothing warns or fails, so the summary is clean and exit 0.
   const results = evaluateAll("full", { runtimes: [listener] });
   expect(worstStatus(results)).toBe("ok");
@@ -545,12 +601,12 @@ test("runtime: a down daemon reads ok (starts on demand) when auto-start is on",
     identityConfirmed: null,
     watchdog: { ...defaultTarget().watchdog, autoStart: true },
   });
-  const port = checkRuntimePort(down);
+  const port = runPort(down);
   expect(port.status).toBe("ok");
   expect(port.detail).toContain("starts on demand (auto-start on)");
   expect(port.fix).toBeUndefined();
   expect((port.value as Record<string, unknown>).autoStart).toBe(true);
-  const pid = checkRuntimePid(down);
+  const pid = runPid(down);
   expect(pid.status).toBe("ok");
   expect(pid.detail).toContain("starts on demand (auto-start on)");
   expect(pid.fix).toBeUndefined();
@@ -566,7 +622,7 @@ test("runtime: a down daemon reads ok (starts on demand) when auto-start is on",
     pidTracked: false,
     watchdog: { ...defaultTarget().watchdog, autoStart: true },
   });
-  expect(checkRuntimePid(occupied).status).toBe("fail");
+  expect(runPid(occupied).status).toBe("fail");
 });
 
 test("runtime: a down daemon still fails with the agent start fix when auto-start is off", () => {
@@ -576,10 +632,10 @@ test("runtime: a down daemon still fails with the agent start fix when auto-star
     pidTracked: false,
     identityConfirmed: null,
   }); // the fixture's watchdog has autoStart false
-  const port = checkRuntimePort(down);
+  const port = runPort(down);
   expect(port.status).toBe("fail");
   expect(port.fix).toBe("agent start");
-  const pid = checkRuntimePid(down);
+  const pid = runPid(down);
   expect(pid.status).toBe("fail");
   expect(pid.fix).toBe("agent start");
   expect(exitCodeFor(evaluateAll("runtime", { runtimes: [down] }))).toBe(1);
@@ -588,20 +644,86 @@ test("runtime: a down daemon still fails with the agent start fix when auto-star
 test("runtime identity: the misroute warning remains when the proxy IS expected", () => {
   // proxyExpected + reachable + no x-trace-id: agent requests genuinely route to the
   // foreign occupant, so this warning is real and must survive the both-direct fix.
-  const foreign = checkRuntimeIdentity(defaultTarget({ identityConfirmed: false }));
+  const foreign = runIdentity(defaultTarget({ identityConfirmed: false }));
   expect(foreign.status).toBe("warn");
   expect(foreign.detail).toContain("misroute");
   expect(foreign.fix).toContain("free the port");
 });
 
 test("runtime pid: stale/foreign and untracked fail, tracked ok", () => {
-  expect(checkRuntimePid(defaultTarget()).status).toBe("ok");
+  expect(runPid(defaultTarget()).status).toBe("ok");
   // reachable but not our pid (foreign squatter / stale): pid check fails, port ok
   const foreign = defaultTarget({ pidTracked: false });
-  expect(checkRuntimePid(foreign).status).toBe("fail");
-  expect(checkRuntimePort(foreign).status).toBe("ok");
+  expect(runPid(foreign).status).toBe("fail");
+  expect(runPort(foreign).status).toBe("ok");
   const untracked = defaultTarget({ trackedPid: null, pidTracked: false, pidAlive: false });
-  expect(checkRuntimePid(untracked).status).toBe("fail");
+  expect(runPid(untracked).status).toBe("fail");
+});
+
+test("classifyPortState matches the pre-union ownership decision tree over every input", () => {
+  // The retired checkRuntimeOrphan derivation, kept verbatim as the oracle: the
+  // classifier must agree on the FULL input product, not hand-picked cases.
+  const oracle = (f: {
+    proxyExpected: boolean;
+    reachable: boolean;
+    pidTracked: boolean;
+    identityConfirmed: boolean | null;
+  }): PortState => {
+    const foreign = f.identityConfirmed === false;
+    const orphan = f.reachable && !f.pidTracked && f.proxyExpected && !foreign;
+    if (foreign) return { kind: "foreign" };
+    if (orphan) {
+      return {
+        kind: "orphan",
+        identity: f.identityConfirmed === true ? "confirmed" : "unconfirmed",
+      };
+    }
+    if (!f.proxyExpected && f.reachable) return { kind: "unrouted" };
+    if (f.reachable && f.pidTracked) return { kind: "tracked" };
+    return { kind: "down" };
+  };
+  for (const proxyExpected of [true, false]) {
+    for (const reachable of [true, false]) {
+      for (const pidTracked of [true, false]) {
+        for (const identityConfirmed of [true, false, null]) {
+          const input = { proxyExpected, reachable, pidTracked, identityConfirmed };
+          expect(classifyPortState(input)).toEqual(oracle(input));
+        }
+      }
+    }
+  }
+  // A few named anchors, so a broken oracle cannot silently agree with a broken
+  // classifier on the states the checks actually branch on.
+  expect(classifyPortState({
+    proxyExpected: true,
+    reachable: true,
+    pidTracked: true,
+    identityConfirmed: true,
+  })).toEqual({ kind: "tracked" });
+  expect(classifyPortState({
+    proxyExpected: true,
+    reachable: true,
+    pidTracked: true,
+    identityConfirmed: false,
+  })).toEqual({ kind: "foreign" });
+  expect(classifyPortState({
+    proxyExpected: true,
+    reachable: true,
+    pidTracked: false,
+    identityConfirmed: null,
+  })).toEqual({ kind: "orphan", identity: "unconfirmed" });
+  expect(classifyPortState({
+    proxyExpected: false,
+    reachable: true,
+    pidTracked: false,
+    identityConfirmed: null,
+  })).toEqual({ kind: "unrouted" });
+  expect(classifyPortState({
+    proxyExpected: true,
+    reachable: false,
+    pidTracked: false,
+    identityConfirmed: null,
+  })).toEqual({ kind: "down" });
 });
 
 test("runtime watchdog: off, disabled, and active states are all ok with informative detail", () => {
@@ -722,27 +844,27 @@ test("runtime watchdog is scoped to full + proxy, not the launchers' fast runtim
 
 test("runtime identity: confirmed ok, foreign warns, down/not-probed stays ok", () => {
   // x-trace-id present -> confirmed copilot-api.
-  const ok = checkRuntimeIdentity(defaultTarget()); // identityConfirmed: true
+  const ok = runIdentity(defaultTarget()); // identityConfirmed: true
   expect(ok.status).toBe("ok");
   expect(ok.detail).toContain("confirmed copilot-api");
 
   // Reachable but no x-trace-id -> a foreign service squats the port.
-  const foreign = checkRuntimeIdentity(defaultTarget({ identityConfirmed: false }));
+  const foreign = runIdentity(defaultTarget({ identityConfirmed: false }));
   expect(foreign.status).toBe("warn");
   expect(foreign.detail).toContain("non-copilot-api");
   expect(foreign.fix).toContain("free the port");
 
   // Not reachable / not probed -> ok (runtime.port owns the down verdict).
   expect(
-    checkRuntimeIdentity(defaultTarget({ reachable: false, identityConfirmed: null })).status,
+    runIdentity(defaultTarget({ reachable: false, identityConfirmed: null })).status,
   ).toBe("ok");
-  expect(checkRuntimeIdentity(defaultTarget({ identityConfirmed: null })).status).toBe("ok");
-  expect(checkRuntimeIdentity(defaultTarget()).scopes).toEqual(["full", "proxy"]);
+  expect(runIdentity(defaultTarget({ identityConfirmed: null })).status).toBe("ok");
+  expect(runIdentity(defaultTarget()).scopes).toEqual(["full", "proxy"]);
 });
 
 test("runtime orphan: untracked-but-ours warns, foreign defers to identity, tracked ok", () => {
   // Reachable copilot-api (or unknown) but no tracked pid, proxy required -> orphan warn.
-  const orphan = checkRuntimeOrphan(
+  const orphan = runOrphan(
     defaultTarget({ pidTracked: false, trackedPid: null, identityConfirmed: true }),
   );
   expect(orphan.status).toBe("warn");
@@ -751,33 +873,33 @@ test("runtime orphan: untracked-but-ours warns, foreign defers to identity, trac
 
   // A foreign listener is runtime.identity's verdict -> orphan must NOT also warn.
   expect(
-    checkRuntimeOrphan(defaultTarget({ pidTracked: false, identityConfirmed: false })).status,
+    runOrphan(defaultTarget({ pidTracked: false, identityConfirmed: false })).status,
   ).toBe("ok");
 
   // Foreign responder while our tracked pid is alive: orphan stays ok but must NOT claim the
   // tracked daemon owns the port (that wording belongs to runtime.identity).
-  const foreignTracked = checkRuntimeOrphan(defaultTarget({ identityConfirmed: false }));
+  const foreignTracked = runOrphan(defaultTarget({ identityConfirmed: false }));
   expect(foreignTracked.status).toBe("ok");
   expect(foreignTracked.detail).not.toContain("tracked daemon");
   expect(foreignTracked.detail).toContain("not copilot-api");
 
   // Tracked daemon -> ok.
-  expect(checkRuntimeOrphan(defaultTarget()).status).toBe("ok");
+  expect(runOrphan(defaultTarget()).status).toBe("ok");
 
   // Both agents direct -> no proxy required -> a missing tracked pid is not an orphan.
   expect(
-    checkRuntimeOrphan(defaultTarget({ pidTracked: false, proxyExpected: false })).status,
+    runOrphan(defaultTarget({ pidTracked: false, proxyExpected: false })).status,
   ).toBe("ok");
 });
 
 test("runtime checks stamp the target's profile; environment checks stay null", () => {
   // The default target's checks carry profile null (today's only shape); a named
   // target's checks carry its name -- the plumbing the profile tier builds on.
-  expect(checkRuntimePort(defaultTarget()).profile).toBeNull();
+  expect(runPort(defaultTarget()).profile).toBeNull();
   expect(checkRuntimeWatchdog(defaultTarget()).profile).toBeNull();
   const named = profileTarget("work", { reachable: false });
-  expect(checkRuntimePort(named).profile).toBe(parseProfileName("work"));
-  expect(checkRuntimeOrphan(named).profile).toBe(parseProfileName("work"));
+  expect(runPort(named).profile).toBe(parseProfileName("work"));
+  expect(runOrphan(named).profile).toBe(parseProfileName("work"));
   expect(checkDeno(BOOTSTRAP_OK).profile).toBeNull();
   expect(checkCliVersion(BOOTSTRAP_OK).profile).toBeNull();
 });
@@ -799,7 +921,7 @@ test("the identity probe (an extra request) is skipped in the launchers' fast ru
     },
   );
   expect(identityCalls).toBe(0);
-  expect(facts.runtimes?.[0]?.identityConfirmed).toBeNull();
+  expect(probeOf(facts.runtimes?.[0]).identityConfirmed).toBeNull();
 });
 
 test("gatherFacts never probes identity for a both-direct default target (proxyExpected gate)", async () => {
@@ -837,7 +959,7 @@ test("gatherFacts never probes identity for a both-direct default target (proxyE
     if (!target) throw new Error("expected the default runtime target");
     expect(identityCalls).toBe(0);
     expect(target.proxyExpected).toBe(false);
-    expect(target.identityConfirmed).toBeNull();
+    expect(probeOf(target).identityConfirmed).toBeNull();
     // End to end: the gathered facts evaluate warning-free.
     const runtime = evaluateAll("proxy", { runtimes: facts.runtimes });
     expect(worstStatus(runtime)).toBe("ok");
@@ -877,10 +999,10 @@ test("a mixed default Claude config (direct helper, proxy base URL) expects the 
     const downTarget = down.runtimes?.[0];
     if (!downTarget) throw new Error("expected the default runtime target");
     expect(downTarget.proxyExpected).toBe(true);
-    const port = checkRuntimePort(downTarget);
+    const port = runPort(downTarget);
     expect(port.status).toBe("fail");
     expect(port.fix).toContain("agent start");
-    expect(checkRuntimePid(downTarget).status).toBe("fail");
+    expect(runPid(downTarget).status).toBe("fail");
 
     // Reachable: the identity probe fires again (proxyExpected gates it).
     let identityCalls = 0;
@@ -897,7 +1019,7 @@ test("a mixed default Claude config (direct helper, proxy base URL) expects the 
       },
     );
     expect(identityCalls).toBe(1);
-    expect(up.runtimes?.[0]?.identityConfirmed).toBe(true);
+    expect(probeOf(up.runtimes?.[0]).identityConfirmed).toBe(true);
   } finally {
     restoreEnv();
     rmSync(root, { recursive: true, force: true });
@@ -1005,8 +1127,8 @@ test("gatherFacts still probes identity when an agent routes through the proxy",
     if (!target) throw new Error("expected the default runtime target");
     expect(identityCalls).toBe(1);
     expect(target.proxyExpected).toBe(true);
-    expect(target.identityConfirmed).toBe(false);
-    const identity = checkRuntimeIdentity(target);
+    expect(probeOf(target).identityConfirmed).toBe(false);
+    const identity = runIdentity(target);
     expect(identity.status).toBe("warn");
     expect(identity.detail).toContain("misroute");
   } finally {
@@ -1126,10 +1248,9 @@ test("gatherFacts is read-only: no files appear in a fresh isolated home", async
         claudeHome: () => join(root, "claude-home"),
       },
     );
-    // Exactly one runtime target this commit: the default (profile null).
+    // Exactly one runtime target this commit: the default (profile null) --
+    // slot/homeExists no longer exist on the default variant (type-level).
     expect(facts.runtimes?.map((t) => t.profile)).toEqual([null]);
-    expect(facts.runtimes?.[0]?.slot).toBeNull();
-    expect(facts.runtimes?.[0]?.homeExists).toBeNull();
     // The zero-writes invariant: the home was never created and nothing else
     // landed under the isolated root.
     expect(existsSync(home)).toBe(false);
@@ -1387,7 +1508,9 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   });
   expect(proxyStale.status).toBe("warn");
   expect(proxyStale.detail).toContain("does not match the resolved proxy port");
-  expect(proxyStale.fix).toContain("agent init");
+  // The fix names the deterministic proxy rewire (the bare commands auto-detect
+  // a mode, which is not guaranteed to re-bake the proxy wiring).
+  expect(proxyStale.fix).toContain("agent claude --proxy");
 
   // Never configured: informational; cl defaults it to the proxy.
   const none = checkClaude({

@@ -25,11 +25,16 @@ import {
   evaluateAll,
 } from "../src/health/checks.ts";
 import {
+  classifyPortState,
   claudeLiveOmitEnv,
+  type DaemonProbed,
   gatherFacts,
+  type NamedRuntimeTarget,
   type ProbeDeps,
+  type ProfileSlotFacts,
   runLiveCli,
   type RuntimeTarget,
+  type WatchdogFacts,
 } from "../src/health/probe.ts";
 import { expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir, writeRunState } from "./helpers.ts";
@@ -40,27 +45,54 @@ const restoreEnv = envSnapshot();
 
 const P = parseProfileName("p");
 
+/** Flat named-target overrides, assembled into the union shape. `skipped` turns
+ *  the daemon probe into a skipped outcome (its why is fixture copy); otherwise
+ *  the probe is built with PortState derived through the real classifier. */
+interface NamedOverrides {
+  slot?: ProfileSlotFacts;
+  homeExists?: boolean;
+  proxyExpected?: boolean;
+  port?: number;
+  portPersisted?: boolean;
+  skipped?: string;
+  reachable?: boolean;
+  trackedPid?: number | null;
+  pidTracked?: boolean;
+  pidAlive?: boolean;
+  identityConfirmed?: boolean | null;
+  watchdog?: WatchdogFacts;
+}
+
 /** A named-profile runtime target (healthy homed proxy daemon by default). */
-function namedTarget(name: string, overrides: Partial<RuntimeTarget> = {}): RuntimeTarget {
+function namedTarget(name: string, overrides: NamedOverrides = {}): NamedRuntimeTarget {
+  const proxyExpected = overrides.proxyExpected ?? true;
+  const raw = {
+    reachable: overrides.reachable ?? true,
+    trackedPid: overrides.trackedPid === undefined ? 4321 : overrides.trackedPid,
+    pidTracked: overrides.pidTracked ?? true,
+    pidAlive: overrides.pidAlive ?? true,
+    identityConfirmed: overrides.identityConfirmed === undefined
+      ? true
+      : overrides.identityConfirmed,
+  };
   return {
     profile: parseProfileName(name),
-    slot: {
+    slot: overrides.slot ?? {
       exists: true,
       provider: "gh-token",
       mode: "proxy",
       storedToken: true,
       integrationIdentity: null,
     },
-    homeExists: true,
-    proxyExpected: true,
-    port: 4242,
-    portPersisted: true,
-    daemonProbed: true,
-    reachable: true,
-    trackedPid: 4321,
-    pidTracked: true,
-    pidAlive: true,
-    identityConfirmed: true,
+    homeExists: overrides.homeExists ?? true,
+    proxyExpected,
+    port: overrides.port ?? 4242,
+    portPersisted: overrides.portPersisted ?? true,
+    probe: overrides.skipped !== undefined ? { kind: "skipped", why: overrides.skipped } : {
+      kind: "probed",
+      ...raw,
+      portState: classifyPortState({ proxyExpected, ...raw }),
+    },
     paths: {
       home: "/h/profiles/p",
       configFile: "/h/profiles/p/config.json",
@@ -69,16 +101,33 @@ function namedTarget(name: string, overrides: Partial<RuntimeTarget> = {}): Runt
       logFile: "/h/profiles/p/.run/x/.log",
       sqliteDb: "/h/profiles/p/.run/x/db.sqlite",
     },
-    watchdog: {
+    watchdog: overrides.watchdog ?? {
       autoStart: false,
       idleTimeoutMs: 3_600_000,
       lastEnsureAt: null,
       lastRequestMs: null,
       now: 1_000_000_000,
     },
-    ...overrides,
   };
 }
+
+/** The probed outcome of a target (throws on the skipped arm). */
+function probeOf(t: RuntimeTarget | undefined): DaemonProbed {
+  if (!t || t.probe.kind !== "probed") throw new Error("expected a probed runtime target");
+  return t.probe;
+}
+
+/** A named target narrowed to the union arm gatherNamedTarget produces. */
+function named(t: RuntimeTarget | undefined): NamedRuntimeTarget {
+  if (!t || t.profile === null) throw new Error("expected a named runtime target");
+  return t;
+}
+
+// Per-daemon checks take (target, probed facts); these fixtures are probed.
+const runPort = (t: RuntimeTarget) => checkRuntimePort(t, probeOf(t));
+const runPid = (t: RuntimeTarget) => checkRuntimePid(t, probeOf(t));
+const runIdentity = (t: RuntimeTarget) => checkRuntimeIdentity(t, probeOf(t));
+const runOrphan = (t: RuntimeTarget) => checkRuntimeOrphan(t, probeOf(t));
 
 /** Overrides that keep gatherFacts offline and deterministic (no ps/gh spawns). */
 function offlineDeps(extra: Partial<ProbeDeps> = {}): Partial<ProbeDeps> {
@@ -163,11 +212,8 @@ test("profile.consistency: a slot with no recorded mode warns", () => {
   expect(modeless.fix).toContain("agent profile --add p");
 });
 
-test("profile.consistency rejects the default target (named-only check)", () => {
-  expect(() => checkProfileConsistency(namedTarget("p", { profile: null }))).toThrow(
-    "named-target",
-  );
-});
+// (A default target can no longer reach checkProfileConsistency: the
+// RuntimeTarget union makes it a compile error, not a runtime throw.)
 
 // --- named-target severity (pure) ---------------------------------------------
 
@@ -179,11 +225,11 @@ test("named target down + auto-start off fails with the profile-addressed start 
     pidAlive: false,
     identityConfirmed: null,
   });
-  const port = checkRuntimePort(down);
+  const port = runPort(down);
   expect(port.status).toBe("fail");
   expect(port.fix).toBe("agent start --profile p");
   expect(port.profile).toBe(P);
-  const pid = checkRuntimePid(down);
+  const pid = runPid(down);
   expect(pid.status).toBe("fail");
   expect(pid.fix).toBe("agent start --profile p");
 });
@@ -197,17 +243,17 @@ test("named target down + auto-start on reads ok (starts on demand)", () => {
     identityConfirmed: null,
   });
   down.watchdog = { ...down.watchdog, autoStart: true };
-  const port = checkRuntimePort(down);
+  const port = runPort(down);
   expect(port.status).toBe("ok");
   expect(port.detail).toContain("starts on demand (auto-start on)");
   expect(port.fix).toBeUndefined();
-  expect(checkRuntimePid(down).status).toBe("ok");
+  expect(runPid(down).status).toBe("ok");
 });
 
 test("a foreign listener on a named profile's port is a real misroute warning", () => {
   // The profile's configs bake THIS port, so a foreign occupant genuinely
   // captures the profile's traffic -- unlike the default both-direct case.
-  const foreign = checkRuntimeIdentity(namedTarget("p", { identityConfirmed: false }));
+  const foreign = runIdentity(namedTarget("p", { identityConfirmed: false }));
   expect(foreign.status).toBe("warn");
   expect(foreign.detail).toContain("misroute");
   expect(foreign.fix).toBe(
@@ -216,7 +262,7 @@ test("a foreign listener on a named profile's port is a real misroute warning", 
 });
 
 test("an orphaned named daemon's fix addresses the profile on both commands", () => {
-  const orphan = checkRuntimeOrphan(
+  const orphan = runOrphan(
     namedTarget("p", { pidTracked: false, trackedPid: null, identityConfirmed: true }),
   );
   expect(orphan.status).toBe("warn");
@@ -239,12 +285,7 @@ test("a named DIRECT profile yields only the consistency check, no daemon rows",
     homeExists: false,
     proxyExpected: false,
     portPersisted: false,
-    daemonProbed: false,
-    reachable: false,
-    trackedPid: null,
-    pidTracked: false,
-    pidAlive: false,
-    identityConfirmed: null,
+    skipped: "no daemon expected (not a proxy-mode target)",
   });
   const results = evaluateAll("full", { runtimes: [direct] });
   expect(results.map((r) => r.id)).toEqual(["profile.consistency"]);
@@ -255,12 +296,7 @@ test("a homeless proxy slot yields only the consistency warn (no probes of a can
   const homeless = namedTarget("p", {
     homeExists: false,
     portPersisted: false,
-    daemonProbed: false,
-    reachable: false,
-    trackedPid: null,
-    pidTracked: false,
-    pidAlive: false,
-    identityConfirmed: null,
+    skipped: "no daemon home on disk",
   });
   const results = evaluateAll("full", { runtimes: [homeless] });
   expect(results.map((r) => r.id)).toEqual(["profile.consistency"]);
@@ -272,12 +308,7 @@ test("a homed proxy profile whose port is not persisted here says so instead of 
   // must not read as "daemon fine" -- it says what is missing on this host.
   const unstarted = namedTarget("p", {
     portPersisted: false,
-    daemonProbed: false,
-    reachable: false,
-    trackedPid: null,
-    pidTracked: false,
-    pidAlive: false,
-    identityConfirmed: null,
+    skipped: "no persisted port on this host",
   });
   const results = evaluateAll("full", { runtimes: [unstarted] });
   expect(results.map((r) => r.id)).toEqual(["profile.consistency"]);
@@ -301,9 +332,17 @@ test("a homed proxy profile with a persisted port yields the full daemon row blo
 });
 
 test("the sweep renders default rows before profile rows (gather order preserved)", () => {
-  const results = evaluateAll("full", {
-    runtimes: [namedTarget("p", { profile: null, slot: null, homeExists: null }), namedTarget("p")],
-  });
+  const p = namedTarget("p");
+  const defaultTarget: RuntimeTarget = {
+    profile: null,
+    proxyExpected: p.proxyExpected,
+    port: p.port,
+    portPersisted: p.portPersisted,
+    probe: probeOf(p),
+    paths: p.paths,
+    watchdog: p.watchdog,
+  };
+  const results = evaluateAll("full", { runtimes: [defaultTarget, namedTarget("p")] });
   const profiles = results.map((r) => r.profile);
   expect(profiles.slice(0, 6)).toEqual([null, null, null, null, null, null]);
   expect(new Set(profiles.slice(6))).toEqual(new Set([P]));
@@ -674,18 +713,21 @@ test("the default sweep gathers the default target first, then sorted named targ
 
     const [, aTarget, bTarget, cTarget] = facts.runtimes ?? [];
     // a-direct: no daemon -- proxy not expected, nothing probed.
-    expect(aTarget?.proxyExpected).toBe(false);
-    expect(aTarget?.homeExists).toBe(false);
+    expect(named(aTarget).proxyExpected).toBe(false);
+    expect(named(aTarget).homeExists).toBe(false);
+    expect(named(aTarget).probe.kind).toBe("skipped");
     // b-proxy: homed daemon on its persisted reserved port.
-    expect(bTarget?.proxyExpected).toBe(true);
-    expect(bTarget?.homeExists).toBe(true);
-    expect(bTarget?.port).toBe(4555);
-    expect(bTarget?.portPersisted).toBe(true);
+    expect(named(bTarget).proxyExpected).toBe(true);
+    expect(named(bTarget).homeExists).toBe(true);
+    expect(named(bTarget).port).toBe(4555);
+    expect(named(bTarget).portPersisted).toBe(true);
+    expect(named(bTarget).probe.kind).toBe("probed");
     // c-half: a homed daemon MAY be running, but with no persisted port there is
     // nothing safe to probe.
-    expect(cTarget?.proxyExpected).toBe(true);
-    expect(cTarget?.slot?.exists).toBe(false);
-    expect(cTarget?.portPersisted).toBe(false);
+    expect(named(cTarget).proxyExpected).toBe(true);
+    expect(named(cTarget).slot.exists).toBe(false);
+    expect(named(cTarget).portPersisted).toBe(false);
+    expect(named(cTarget).probe.kind).toBe("skipped");
     // Exactly two reach probes fired: the default port and b's persisted 4555 --
     // never a-direct or c-half's unpersisted candidates.
     expect(probed.some((u) => u.includes(":4555/"))).toBe(true);

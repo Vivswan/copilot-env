@@ -57,7 +57,8 @@ export function buildHealthJson(
       profile: r.profile,
       status: r.status,
       detail: r.detail,
-      ...(r.fix ? { fix: r.fix } : {}),
+      // The CheckOutcome union: a fix exists exactly when the status is not ok.
+      ...(r.status === "ok" ? {} : { fix: r.fix }),
       ...(r.value ? { value: r.value } : {}),
     })),
   };

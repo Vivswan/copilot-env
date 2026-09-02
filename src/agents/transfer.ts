@@ -7,7 +7,8 @@
 // profile slots). Everything else is DERIVED or machine-local and is re-derived
 // on import, never copied: agent config files, helper scripts, daemon homes,
 // port reservations, the Codex catalog cache fields (`codexCatalog*`), and the
-// WebSearch-deny ownership paths (they name THIS machine's settings files).
+// artifact-ownership ledger (its own machine-local store, naming THIS machine's
+// files -- src/copilot_api/ownership.ts).
 //
 // Import is NON-destructive toward the target machine: profiles that exist only
 // here are preserved, a bundle mode of "none" leaves that agent's wiring alone,
@@ -106,8 +107,8 @@ function storedPrefs(): CopilotEnvConfigData {
  * Build the export bundle from the current stores. Tokens are replaced by
  * REDACTED_TOKEN unless `withCredentials` -- redaction is the default so a
  * casually shared bundle never leaks a credential. The machine-local state
- * fields (`codexCatalog*`, `webSearchDenyOwnedPaths`, `claudeDesktopOwnedPaths`)
- * are never included.
+ * fields (`codexCatalog*`) are never included; artifact ownership lives in its
+ * own machine-local ledger file, outside both exported stores.
  */
 export function buildExportBundle(options: { withCredentials?: boolean } = {}): SettingsBundle {
   const withCredentials = options.withCredentials ?? false;

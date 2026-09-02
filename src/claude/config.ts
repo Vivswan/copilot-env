@@ -33,11 +33,11 @@ import {
 import { codexUserAgent, probeDirectIntegrationId } from "../codex/config.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import {
   DEFAULT_COPILOT_API_BASE,
   directClientHeaders,
 } from "../copilot_api/integration_identity.ts";
+import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import {
   copilotApiResolvePort,
   matchesProxyOrigin,
@@ -483,21 +483,21 @@ export const WEBSEARCH_DENY_RULE = "WebSearch";
 
 /**
  * Deferred state writes for the web-search pair. The document mutations happen
- * eagerly, but the ownership record in the copilot-env state (and the registration
+ * eagerly, but the ownership record in the ledger (and the registration
  * removal on the take-back path) must only land once the settings doc is actually
  * persisted -- run the returned commit AFTER a successful save, so a failed write
- * leaves store and file consistent and a retry can still recover.
+ * leaves ledger and file consistent and a retry can still recover.
  */
 type WebSearchPairCommit = () => void;
 const NO_COMMIT: WebSearchPairCommit = () => {};
 
 /**
- * Add `WebSearch` to `permissions.deny`. Ownership is recorded (post-save) as the
- * exact settings PATH the entry was added to -- a deny the user already had, or one
- * living in a different CLAUDE_CONFIG_DIR, is never claimed, so the removal path can
- * only ever take back ours. Preserves every other permissions entry (allow, foreign
- * deny rules, order); a malformed `permissions`/`deny` is warned about and left
- * alone, never replaced.
+ * Add `WebSearch` to `permissions.deny`. Ownership is recorded (post-save) in the
+ * ledger as the exact settings PATH the entry was added to -- a deny the user
+ * already had, or one living in a different CLAUDE_CONFIG_DIR, is never claimed,
+ * so the removal path can only ever take back ours. Preserves every other
+ * permissions entry (allow, foreign deny rules, order); a malformed
+ * `permissions`/`deny` is warned about and left alone, never replaced.
  */
 function addManagedWebSearchDeny(
   doc: Record<string, unknown>,
@@ -523,17 +523,17 @@ function addManagedWebSearchDeny(
   // unclaimed marker would let a deny the USER adds later become ours to delete.
   // The inverse failure (save ok, record write fails) merely orphans OUR entry --
   // the user removes one line by hand -- which is the acceptable direction.
-  return () => new CopilotEnvState().addWebSearchDenyOwnedPath(settingsPath);
+  return () => new OwnershipLedger().record("webSearchDeny", settingsPath);
 }
 
 /** Remove OUR `WebSearch` deny entry (ownership-gated by exact settings path),
- *  dropping emptied objects; the ownership record clears post-save. */
+ *  dropping emptied objects; the ledger record clears post-save. */
 function stripManagedWebSearchDeny(
   doc: Record<string, unknown>,
   settingsPath: string,
 ): WebSearchPairCommit {
-  const state = new CopilotEnvState();
-  if (!state.ownsWebSearchDeny(settingsPath)) return NO_COMMIT;
+  const ledger = new OwnershipLedger();
+  if (!ledger.owns("webSearchDeny", settingsPath)) return NO_COMMIT;
   const permissions = isRecord(doc.permissions) ? doc.permissions : null;
   if (permissions !== null && Array.isArray(permissions.deny)) {
     const filtered = permissions.deny.filter((rule) => rule !== WEBSEARCH_DENY_RULE);
@@ -541,7 +541,7 @@ function stripManagedWebSearchDeny(
     else delete permissions.deny;
     if (Object.keys(permissions).length === 0) delete doc.permissions;
   }
-  return () => state.removeWebSearchDenyOwnedPath(settingsPath);
+  return () => ledger.release("webSearchDeny", settingsPath);
 }
 
 /**

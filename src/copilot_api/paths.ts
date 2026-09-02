@@ -164,6 +164,14 @@ export class CopilotApiPaths {
    */
   envConfigFile: string;
   /**
+   * The machine-local artifact-ownership ledger (`.copilot-env-ownership.json`,
+   * OwnershipLedger in ownership.ts): which entries copilot-env itself wrote into
+   * external config artifacts. Root-home anchored like the state file -- the
+   * artifacts it describes are account/machine-wide -- and never exported by
+   * `agent settings` (its records name THIS machine's files).
+   */
+  ownershipFile: string;
+  /**
    * copilot-api's OWN device-login token file (`github_token`), written when the
    * proxy authenticates itself via the device flow. copilot-env never writes it
    * (we pass `--github-token` from `sharedStateFile`); we only read+scrub it when
@@ -207,6 +215,7 @@ export class CopilotApiPaths {
     this.sqliteDb = join(runDir, SQLITE_DB_FILENAME);
     this.sharedStateFile = join(rootHome, ".copilot-env-state.json");
     this.envConfigFile = join(rootHome, ".copilot-env-config.json");
+    this.ownershipFile = join(rootHome, ".copilot-env-ownership.json");
     this.githubTokenFile = join(rootHome, "github_token");
     this.githubTokenLoginLock = `${this.githubTokenFile}.login.lock`;
     this.codexModelCatalogFile = join(rootHome, "codex-model-catalog.json");

@@ -23,6 +23,7 @@ import {
   directClientHeaders,
   resolveDirectIntegrationId,
 } from "../copilot_api/integration_identity.ts";
+import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import {
   copilotApiResolvePort,
@@ -672,13 +673,17 @@ export function configureCodexConfig(
   // means an unconditional delete (even of a user-pinned custom path): the
   // full managed write owns this key wholesale, and the managed contract when
   // the feature is off is "no catalog key". (Account-wide, so the DEFAULT
-  // selection's write owns it; named-profile writes leave it alone.)
+  // selection's write owns it; named-profile writes leave it alone.) The
+  // ownership-ledger verdict is decided here and committed after the save.
+  let catalogRef: "written" | "cleared" | null = null;
   if (profile === null) {
     const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
     if (new CopilotEnvConfig().codexModelCatalogEnabled() && isCatalogFileUsable(catalogFile)) {
       doc.model_catalog_json = catalogFile;
+      catalogRef = "written";
     } else {
       delete doc.model_catalog_json;
+      catalogRef = "cleared";
     }
   }
 
@@ -707,6 +712,17 @@ export function configureCodexConfig(
   }
 
   saveCodexToml(hostConfig, doc);
+  // Ownership lands only AFTER the successful save (the ledger's crash-direction
+  // contract), and only for a KNOWN Codex home -- the set the cleanup sweep
+  // visits -- so detectCodexDirect's throwaway probe home never enters the
+  // ledger (the Claude pair's real-home gate, in Codex's many-homes shape).
+  // Recording on every enabled write also ADOPTS a pre-ledger install's
+  // reference the next time it rewires; the cleared branch drops any claim on
+  // this config, ours or stale.
+  if (catalogRef !== null && knownCodexHomes().homes.includes(codexHome)) {
+    if (catalogRef === "written") new OwnershipLedger().record("codexCatalog", hostConfig);
+    else new OwnershipLedger().release("codexCatalog", hostConfig);
+  }
   if (!request.quiet) {
     logger.log(
       `  ✓ Codex config written → ${hostConfig}` +
@@ -852,6 +868,7 @@ export function syncCodexCatalogReference(): void {
     if (doc.model_catalog_json !== undefined) return;
     doc.model_catalog_json = catalogFile;
     saveCodexToml(configPath, doc);
+    new OwnershipLedger().record("codexCatalog", configPath);
   } catch {
     // An unreadable config (non-ENOENT) or a write race: the next
     // `agent codex`/`agent init` wiring writes the key anyway.
@@ -913,27 +930,39 @@ function resolvesToCatalogFile(value: unknown, catalogFile: string): boolean {
 /** The disabled branch of syncCodexCatalogReference: strip our reference from
  *  every candidate config, delete the generated file, clear the throttle state
  *  -- in that order, each step skipped when already clean so the 300s auth
- *  cadence stays write-free. */
+ *  cadence stays write-free. The ownership ledger EXTENDS the sweep (a recorded
+ *  config outside the enumerated homes still gets its reference stripped), but
+ *  the exact value match below stays the per-config proof for every candidate:
+ *  pre-ledger installs recorded nothing, and a user-repointed key is no longer
+ *  ours even at a recorded path. */
 function cleanupCodexCatalogArtifacts(catalogFile: string): void {
+  const ledger = new OwnershipLedger();
   const { configs, complete } = codexCatalogConfigCandidates();
+  const recordedPaths = new Set(ledger.ownedPaths("codexCatalog"));
   let deletionSafe = complete;
-  for (const configPath of configs) {
+  for (const configPath of new Set([...configs, ...recordedPaths])) {
     try {
       const doc = parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
       if (doc.model_catalog_json === catalogFile) {
         delete doc.model_catalog_json;
         fs.writeFileSync(configPath, stringify(doc));
+        ledger.release("codexCatalog", configPath);
       } else if (resolvesToCatalogFile(doc.model_catalog_json, catalogFile)) {
         // An alternate spelling of OUR path (case variant on Windows, a
         // symlinked home): not provably ours to strip, but deleting the file
         // would dangle it -- keep the file.
         deletionSafe = false;
+      } else if (recordedPaths.has(configPath)) {
+        // Recorded, but the config no longer references our file (the user
+        // removed or repointed the key since we wrote it): a stale claim.
+        ledger.release("codexCatalog", configPath);
       }
     } catch (e) {
-      // ENOENT (Codex never wired there) cannot hold a reference; any other
-      // failure might, so keep the file until every readable config proves it
-      // unreferenced.
+      // ENOENT (no config there anymore) cannot hold a reference -- a recorded
+      // claim on it is stale; any other failure might hold one, so keep the
+      // file until every readable config proves it unreferenced.
       if (!isEnoent(e)) deletionSafe = false;
+      else if (recordedPaths.has(configPath)) ledger.release("codexCatalog", configPath);
     }
   }
   if (deletionSafe && fs.existsSync(catalogFile)) {
@@ -1077,11 +1106,13 @@ export function removeCodexDefaultWiring(codexHome: string): void {
       changed = true;
     }
     const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+    let catalogWasReferenced = false;
     if (
       doc.model_catalog_json === catalogFile ||
       resolvesToCatalogFile(doc.model_catalog_json, catalogFile)
     ) {
       delete doc.model_catalog_json;
+      catalogWasReferenced = true;
       changed = true;
     }
     if (selectorWasOurs && doc.web_search === "live") {
@@ -1089,6 +1120,8 @@ export function removeCodexDefaultWiring(codexHome: string): void {
       changed = true;
     }
     if (changed) saveCodexToml(configPath, doc);
+    // Post-save (never claim-drop before the artifact write actually landed).
+    if (catalogWasReferenced) new OwnershipLedger().release("codexCatalog", configPath);
   }
   removeEnvKey(path.join(codexHome, ".env"), DIRECT_ENV_KEY);
 }

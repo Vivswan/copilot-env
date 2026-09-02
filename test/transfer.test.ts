@@ -31,6 +31,7 @@ import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { setIntegrationProbeFetch } from "../src/copilot_api/integration_identity.ts";
+import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { afterEach, beforeEach, expect, test } from "./helpers/testing.ts";
@@ -75,8 +76,8 @@ function isolate(): AgentHomes {
 
 /** Seed a representative setup: prefs (including a registry key newer than the
  *  bundle feature itself, proving the schema reuse tracks the registry), a
- *  default credential, a proxy profile, both agents wired proxy, plus every
- *  machine-local state field. */
+ *  default credential, a proxy profile, both agents wired proxy, plus the
+ *  machine-local state fields and an ownership-ledger record. */
 async function seedStores(): Promise<void> {
   new CopilotEnvConfig().set({ autoStart: true, port: 5050, claudeTokenMultiplier: 2.5 });
   const state = new CopilotEnvState();
@@ -84,7 +85,7 @@ async function seedStores(): Promise<void> {
   new Credential(state, WORK).store("gh-token", "ghp_work");
   state.setProfileMode(WORK, "proxy");
   state.set({ codexCatalogLastAttemptMs: 123, codexCatalogCodexVersion: "9.9.9" });
-  state.addWebSearchDenyOwnedPath("/some/other/machine/settings.json");
+  new OwnershipLedger().record("webSearchDeny", "/some/other/machine/settings.json");
   await runCodex({ mode: "proxy" }, NOOP_CATALOG_DEPS);
   await runClaude({ mode: "proxy" });
 }
@@ -128,7 +129,7 @@ test("export carries the stores + modes and never the machine-local state keys",
   expect(bundle.profiles.work?.mode).toBe("proxy");
   const text = JSON.stringify(bundle);
   expect(text).not.toContain("codexCatalog");
-  expect(text).not.toContain("webSearchDenyOwnedPaths");
+  expect(text).not.toContain("webSearchDeny");
 });
 
 // --- validation (strict parse boundary) ---------------------------------------
@@ -281,7 +282,9 @@ test("round trip: export -> wipe -> import restores stores and re-derives wiring
   // Machine-local state was re-derived (reset), never copied from the source.
   expect(state.codexCatalogLastAttemptMs).toBe(0);
   expect(state.codexCatalogCodexVersion).toBeNull();
-  expect(state.webSearchDenyOwnedPaths).toEqual([]);
+  expect(new OwnershipLedger().ownedPaths("webSearchDeny")).not.toContain(
+    "/some/other/machine/settings.json",
+  );
   // The wiring artifacts exist on the new machine (default + profile, both agents).
   expect(existsSync(settingsPathFor(machine2.claudeHome))).toBe(true);
   expect(existsSync(settingsPathFor(machine2.claudeHome, WORK))).toBe(true);

@@ -1,11 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { moveDataHome } from "../src/migrations/3.5.6.ts";
+import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
+import { moveDataHome, v356, v356Ownership } from "../src/migrations/3.5.6.ts";
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
 import { readResolvedVersionRecord, writeResolvedVersionRecord } from "../src/proxy_float.ts";
 import type { SemverString } from "../src/utils/semver.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, removeDir, tmpDir } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome, removeDir, tmpDir } from "./helpers.ts";
 
 // Pure selection logic for which migrations run across a version range, with a synthetic
 // registry so the real migrations' side effects are never triggered here. Migrations are
@@ -46,10 +47,24 @@ test("dueMigrations tolerates a leading v on either bound", () => {
   expect(dueMigrations("v1.2.1", "v1.3.0", LIST).map((m) => m.version)).toEqual(["1.2.1", "1.2.5"]);
 });
 
-test("the shipped registry holds exactly the 3.5.6 data-home move", () => {
+test("the shipped registry holds exactly the two 3.5.6 fix-ups, home move first", () => {
   // Adding a step has to be a deliberate edit to the registry, not an accident of
-  // a stale import; this pins the full set.
-  expect(dueMigrations("0.0.1", "999.0.0").map((m) => m.version)).toEqual(["3.5.6"]);
+  // a stale import; this pins the full set. Order matters within the version: the
+  // ownership adoption reads the state store the home move relocates.
+  expect(dueMigrations("0.0.1", "999.0.0").map((m) => m.version)).toEqual(["3.5.6", "3.5.6"]);
+  expect(dueMigrations("0.0.1", "999.0.0").map((m) => m.description)).toEqual([
+    v356.description,
+    v356Ownership.description,
+  ]);
+});
+
+test("equal-version fix-ups keep their registry order across the sort", () => {
+  const first = { ...mig("1.2.5"), description: "first" };
+  const second = { ...mig("1.2.5"), description: "second" };
+  expect(dueMigrations("1.0.0", "2.0.0", [first, second]).map((m) => m.description)).toEqual([
+    "first",
+    "second",
+  ]);
 });
 
 test("an unparseable registry version throws instead of silently never running", () => {
@@ -203,4 +218,37 @@ test("3.5.6 move: foreign helper paths are never repointed", async () => {
   await fx.run();
   const entry = JSON.parse(readFileSync(fx.desktopEntry, "utf8")) as Record<string, unknown>;
   expect(entry["inferenceCredentialHelper"]).toBe("/opt/own/helper.sh");
+});
+
+// --- the 3.5.6 ownership adoption (second fix-up of the step) --------------------
+
+test("3.5.6 ownership: legacy records move into the ledger; a re-run finds nothing", async () => {
+  dir = isolateProxyHome("copilot-migrate-own-");
+  writeFileSync(
+    join(dir, ".copilot-env-state.json"),
+    `${
+      JSON.stringify({
+        githubToken: "ghu_keep",
+        webSearchDenyOwnedPaths: ["/home/u/.claude/settings.json"],
+        claudeDesktopOwnedPaths: ["/lib/uuid.json"],
+      })
+    }\n`,
+  );
+
+  await v356Ownership.run();
+  const ledger = new OwnershipLedger();
+  expect(ledger.ownedPaths("webSearchDeny")).toEqual(["/home/u/.claude/settings.json"]);
+  expect(ledger.ownedPaths("claudeDesktop")).toEqual(["/lib/uuid.json"]);
+  const raw = JSON.parse(readFileSync(join(dir, ".copilot-env-state.json"), "utf8")) as Record<
+    string,
+    unknown
+  >;
+  expect(raw.webSearchDenyOwnedPaths).toBeUndefined();
+  expect(raw.claudeDesktopOwnedPaths).toBeUndefined();
+  expect(raw.githubToken).toBe("ghu_keep");
+
+  // Idempotent: the re-run has nothing to adopt and rewrites nothing.
+  const stateBytes = readFileSync(join(dir, ".copilot-env-state.json"), "utf8");
+  await v356Ownership.run();
+  expect(readFileSync(join(dir, ".copilot-env-state.json"), "utf8")).toBe(stateBytes);
 });

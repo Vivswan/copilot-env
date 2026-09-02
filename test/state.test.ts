@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
@@ -63,9 +63,7 @@ test("the auth provider round-trips and clears alongside the token", () => {
     codexCatalogLastAttemptMs: 0,
     codexCatalogCodexVersion: null,
     codexCatalogPatchVersion: 0,
-    claudeDesktopOwnedPaths: [],
     claudeModelVerdicts: {},
-    webSearchDenyOwnedPaths: [],
   });
 });
 
@@ -116,22 +114,20 @@ test("a named profile's integrationIdentity is a credential-derived cache: setCr
   expect(state.profileNames()).toEqual([]);
 });
 
-test("webSearchDenyOwnedPaths drops junk entries individually and trims survivors", () => {
+test("legacy ownership keys in the state file survive writes and stay out of read()", () => {
   tmpHome();
-  // Hand-edited state: junk siblings must not nuke the real entry, and a padded
-  // path must read back trimmed so exact-path ownership checks still match.
+  // Pre-ledger installs recorded artifact ownership under these keys; the
+  // ledger's tolerance still reads them (ownership.test.ts), so the state
+  // store must neither surface them nor destroy them on its own writes.
   writeFileSync(
     join(dir, ".copilot-env-state.json"),
-    `${
-      JSON.stringify({
-        webSearchDenyOwnedPaths: ["/a/settings.json", 123, "", null, "  /b/settings.json  "],
-      })
-    }\n`,
+    `${JSON.stringify({ webSearchDenyOwnedPaths: ["/a/settings.json"] })}\n`,
   );
-  expect(new CopilotEnvState().read().webSearchDenyOwnedPaths).toEqual([
-    "/a/settings.json",
-    "/b/settings.json",
-  ]);
+  const state = new CopilotEnvState();
+  expect("webSearchDenyOwnedPaths" in state.read()).toBe(false);
+  state.set({ githubToken: "ghu_x" });
+  const raw = JSON.parse(readFileSync(join(dir, ".copilot-env-state.json"), "utf8"));
+  expect(raw.webSearchDenyOwnedPaths).toEqual(["/a/settings.json"]);
 });
 
 test("profileNames skips a hand-edited invalid profile key so it can never reach a path join", () => {

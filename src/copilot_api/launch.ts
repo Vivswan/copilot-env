@@ -53,7 +53,7 @@ import {
   terminatePid,
 } from "./process.ts";
 import type { Profile } from "./profile.ts";
-import { ProxyProjectionState } from "./projection_state.ts";
+import { ProxyProjectionState } from "./ownership.ts";
 import { CopilotEnvRunState } from "./state.ts";
 import { installedProxyVersion, PROXY_PACKAGE_NAME, proxyVersionFloorStatus } from "./version.ts";
 

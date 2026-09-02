@@ -15,7 +15,7 @@ import { knownCodexHomes } from "../codex/config.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import { readCodexToml, saveCodexToml } from "../codex/toml_io.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
-import { CopilotEnvState } from "../copilot_api/env_state.ts";
+import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import { DEFAULT_HOME, profileHomeNames } from "../copilot_api/paths.ts";
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import { readResolvedVersionRecord, writeResolvedVersionRecord } from "../proxy_float.ts";
@@ -137,6 +137,21 @@ export const v356: Migration = {
       nextHome: DEFAULT_HOME,
       stopDaemons: stopLegacyDaemons,
       codexConfigPaths: () => knownCodexHomes().homes.map((home) => codexConfigPath(home)),
-      desktopEntryPaths: () => new CopilotEnvState().read().claudeDesktopOwnedPaths,
+      // Through the ledger (ledger entries plus the not-yet-adopted legacy
+      // record): this step runs BEFORE the ownership adoption below, and on a
+      // re-run after it, so both layouts must answer.
+      desktopEntryPaths: () => new OwnershipLedger().ownedPaths("claudeDesktop"),
     }),
+};
+
+/** Second fix-up of the same step: recorded artifact ownership (the
+ *  WebSearch-deny and Claude Desktop paths) moved from the shared state store
+ *  into the machine-local ownership ledger. The ledger's readers tolerate the
+ *  legacy keys until this has run (a dev checkout never runs migrations), so
+ *  the adoption is a tidy-up, not a correctness gate. Registered AFTER the
+ *  home move: the state store it reads lives inside the moved home. */
+export const v356Ownership: Migration = {
+  version: "3.5.6",
+  description: "move recorded artifact ownership into the ownership ledger",
+  run: () => new OwnershipLedger().adoptLegacyRecords(),
 };

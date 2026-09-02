@@ -15,7 +15,7 @@ import "../utils/dotenv.ts";
 import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
 import { disableConsolaTimestamps } from "../utils/logger.ts";
-import { stripV, versionLessThan } from "../utils/semver.ts";
+import { type SemverString, stripV, toSemverString, versionLessThan } from "../utils/semver.ts";
 import { v356 } from "./3.5.6.ts";
 
 /**
@@ -27,7 +27,7 @@ import { v356 } from "./3.5.6.ts";
  */
 export interface Migration {
   /** The release this migrates away from, as a bare "X.Y.Z" (the file name). */
-  version: string;
+  version: SemverString;
   /** One line shown when the migration runs. */
   description: string;
   run: () => void | Promise<void>;
@@ -45,6 +45,17 @@ export interface Migration {
  */
 const MIGRATIONS: Migration[] = [v356];
 
+// versionLessThan tolerates unparseable input by answering "not less-than", so a
+// garbage version on either side of the range filter silently empties or floods the
+// selection instead of failing. Every version entering dueMigrations goes through here.
+function requireSemver(value: string, what: string): SemverString {
+  const parsed = toSemverString(value);
+  if (parsed === null) {
+    throw new Error(`migrate: ${what} "${value}" is not a semver version`);
+  }
+  return parsed;
+}
+
 /**
  * The migrations whose (from-)version falls in the half-open range [from, to), sorted
  * ascending -- i.e. every version left behind by an update from `from` to `to`. Pure (no
@@ -56,8 +67,12 @@ export function dueMigrations(
   to: string,
   migrations: Migration[] = MIGRATIONS,
 ): Migration[] {
-  const f = stripV(from);
-  const t = stripV(to);
+  // The Migration type already demands a version-shaped literal; this catches a cast.
+  for (const m of migrations) {
+    requireSemver(m.version, `registry version (${m.description})`);
+  }
+  const f = requireSemver(from, "from version");
+  const t = requireSemver(to, "to version");
   return migrations
     .filter((m) => !versionLessThan(m.version, f) && versionLessThan(m.version, t))
     .sort((a, b) => (versionLessThan(a.version, b.version) ? -1 : 1));

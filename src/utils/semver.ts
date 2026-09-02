@@ -2,7 +2,28 @@
 // the update/migration machinery. Backed by @std/semver for correct precedence
 // (prerelease identifiers, build metadata) with tolerant parsing so a ragged
 // (`1.2`) or `v`-prefixed input never throws.
-import { lessThan, type SemVer, tryParse } from "semver";
+import { format, lessThan, type SemVer, tryParse } from "semver";
+
+/**
+ * A version-shaped string. The template shape lets a literal `x.y.z` (a migration
+ * registry entry, a test fixture) assign structurally, while an arbitrary runtime
+ * string must pass through `toSemverString` first. The shape is a compile-time
+ * tripwire, not a proof of parseability -- boundaries still parse.
+ */
+export type SemverString =
+  | `${number}.${number}.${number}`
+  | `${number}.${number}.${number}-${string}`
+  | `${number}.${number}.${number}+${string}`;
+
+/**
+ * Normalize to a canonical SemverString (`v1.10` -> `1.10.0`), with the same
+ * tolerance as `versionLessThan`. Returns null only for un-version-like text --
+ * the throwing is the caller's, so each boundary can name its own offender.
+ */
+export function toSemverString(v: string): SemverString | null {
+  const parsed = toSemver(v);
+  return parsed === null ? null : format(parsed) as SemverString;
+}
 
 /**
  * Parse to a comparable SemVer, tolerating a leading `v`, prerelease/build, and

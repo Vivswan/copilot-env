@@ -48,6 +48,22 @@ PROXY_MAX_VERSION=null
     );
   });
 
+  test("rejects an unparseable floor or ceiling, naming the key and value", () => {
+    // The floor fails OPEN downstream (versionLessThan treats an unparseable side as
+    // not-less-than), so garbage bounds must die here at the boundary.
+    expect(() => parseProjectConfig("PROXY_MIN_VERSION=latest\nPROXY_MAX_VERSION=oops", "fixture"))
+      .toThrow('PROXY_MIN_VERSION is not a semver version: "latest"');
+    expect(() => parseProjectConfig("PROXY_MIN_VERSION=1.10.30\nPROXY_MAX_VERSION=oops", "fixture"))
+      .toThrow('PROXY_MAX_VERSION is not a semver version: "oops"');
+  });
+
+  test("normalizes tolerant spellings to canonical x.y.z", () => {
+    expect(parseProjectConfig("PROXY_MIN_VERSION=v1.10\nPROXY_MAX_VERSION=", "fixture")).toEqual({
+      "proxyMinVersion": "1.10.0",
+      "proxyMaxVersion": null,
+    });
+  });
+
   test("rejects an inverted configured version window", () => {
     expect(() =>
       parseProjectConfig("PROXY_MIN_VERSION=1.10.30\nPROXY_MAX_VERSION=1.10.0", "fixture")

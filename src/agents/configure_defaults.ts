@@ -6,6 +6,7 @@
 import { runClaude } from "../claude/config.ts";
 import type { CodexCatalogDeps } from "../codex/catalog.ts";
 import { runCodex } from "../codex/config.ts";
+import { CopilotEnvState, type ProfileMode } from "../copilot_api/env_state.ts";
 import { bold } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -68,5 +69,29 @@ export async function configureDefaultAgents(
   }
 
   // Read-back is also best-effort: a config-read error must not abort the caller.
-  return { ...readAgentModesSafe(), failures };
+  const modes = readAgentModesSafe();
+  recordDefaultModeSafe(modes);
+  return { ...modes, failures };
+}
+
+/**
+ * Record the default slot's desired mode from the just-written wiring: one
+ * managed mode when BOTH agents landed on it, null when they diverge (or could
+ * not be read back -- the record is derived state the next successful configure
+ * re-derives, so clearing beats keeping a value the artifacts contradict).
+ * Best-effort like the read-back it derives from: a store-write failure only
+ * warns, never fails an otherwise-successful wiring.
+ */
+function recordDefaultModeSafe(
+  modes: { codex: AgentProviderMode; claude: AgentProviderMode },
+): void {
+  const agreed: ProfileMode | null =
+    modes.codex === modes.claude && (modes.codex === "direct" || modes.codex === "proxy")
+      ? modes.codex
+      : null;
+  try {
+    new CopilotEnvState().recordDefaultMode(agreed);
+  } catch (e) {
+    logger.warn(`  Could not record the default wiring mode: ${errMessage(e)}`);
+  }
 }

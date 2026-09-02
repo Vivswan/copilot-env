@@ -5,6 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
+import { resolveAndPersistDirectIdentity } from "../src/agents/profile_wiring.ts";
 import { configureClaudeConfig, inspectClaudeWiring } from "../src/claude/config.ts";
 import { CLAUDE_DESKTOP_DIR_ENV, desktopLibraryDirUnder } from "../src/claude/desktop.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
@@ -143,17 +144,22 @@ test("named credential slots are isolated and never fall back to the default", (
   expect(new Credential(state).resolve()).toBe("ghp_default");
 });
 
-test("a store that never used profiles keeps the pre-profile on-disk shape", () => {
+test("the default credential lives in the reserved default slot on disk", () => {
   tmpProxyHome();
   const state = new CopilotEnvState();
   new Credential(state).store("gh-token", "ghp_default");
   const raw = JSON.parse(readFileSync(new CopilotApiPaths().sharedStateFile, "utf8")) as Record<
     string,
-    unknown
+    Record<string, unknown>
   >;
-  expect(Object.keys(raw)).toEqual(["authProvider", "githubToken"]);
+  // No legacy top-level pair: the write landed in profiles.default whole.
+  expect(Object.keys(raw)).toEqual(["profiles"]);
+  expect(raw.profiles).toEqual({
+    default: { "authProvider": "gh-token", "githubToken": "ghp_default" },
+  });
 
-  // Creating then deleting a profile drops the `profiles` key again.
+  // Creating then deleting a named profile drops ITS key again; the reserved
+  // default slot stays (it is the default credential's home, not a profile).
   state.commitProfile(WORK, {
     credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
     mode: "proxy",
@@ -161,9 +167,9 @@ test("a store that never used profiles keeps the pre-profile on-disk shape", () 
   state.deleteProfile(WORK);
   const raw2 = JSON.parse(readFileSync(new CopilotApiPaths().sharedStateFile, "utf8")) as Record<
     string,
-    unknown
+    Record<string, unknown>
   >;
-  expect(raw2.profiles).toBeUndefined();
+  expect(Object.keys(raw2.profiles ?? {})).toEqual(["default"]);
 });
 
 // --- profile homes + ports ------------------------------------------------------
@@ -621,6 +627,36 @@ test("stop/record-event against a never-existing profile fabricate NOTHING", asy
   // stop --all, and the proxy float all enumerate profile homes).
   expect(existsSync(profileHome(TYPO))).toBe(false);
   expect(profileHomeNames()).toEqual([]);
+});
+
+test("the DEFAULT slot's identity cache replays without a probe and re-arms on rotation", async () => {
+  tmpProxyHome();
+  // Count only the identity probes (the /models candidate requests).
+  let probes = 0;
+  setIntegrationProbeFetch((input) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.includes("/models")) probes++;
+    return Promise.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+  });
+  const state = new CopilotEnvState();
+  new Credential(state).store("gh-token", "ghp_default");
+
+  // First resolution probes and persists the verdict (the identity NAME, so
+  // "probed, the default won" is distinguishable from "never probed").
+  expect(await resolveAndPersistDirectIdentity(null)).toBeNull();
+  expect(state.readProfileSlot(null).integrationIdentity).toBe("codex");
+  const afterFirst = probes;
+  expect(afterFirst).toBeGreaterThan(0);
+
+  // The replay path: no further network (same contract as a named profile).
+  expect(await resolveAndPersistDirectIdentity(null)).toBeNull();
+  expect(probes).toBe(afterFirst);
+
+  // A credential change invalidates the cached verdict, re-arming the probe.
+  new Credential(state).store("gh-token", "ghp_rotated");
+  expect(state.readProfileSlot(null).integrationIdentity).toBeNull();
+  await resolveAndPersistDirectIdentity(null);
+  expect(probes).toBeGreaterThan(afterFirst);
 });
 
 test("a direct profile probes the client identity ONCE, persisting the verdict for later syncs", async () => {

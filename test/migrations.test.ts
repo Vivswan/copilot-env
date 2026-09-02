@@ -1,7 +1,14 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
-import { moveDataHome, v356, v356Ownership, v356VersionedLayout } from "../src/migrations/3.5.6.ts";
+import {
+  moveDataHome,
+  v356,
+  v356DefaultSlot,
+  v356Ownership,
+  v356VersionedLayout,
+} from "../src/migrations/3.5.6.ts";
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
 import { readResolvedVersionRecord, writeResolvedVersionRecord } from "../src/proxy_float.ts";
 import type { SemverString } from "../src/utils/semver.ts";
@@ -47,20 +54,18 @@ test("dueMigrations tolerates a leading v on either bound", () => {
   expect(dueMigrations("v1.2.1", "v1.3.0", LIST).map((m) => m.version)).toEqual(["1.2.1", "1.2.5"]);
 });
 
-test("the shipped registry holds exactly the three 3.5.6 fix-ups, home move first", () => {
+test("the shipped registry holds exactly the FOUR named 3.5.6 fix-ups in order, home move first", () => {
   // Adding a step has to be a deliberate edit to the registry, not an accident of
-  // a stale import; this pins the full set. Order matters within the version: the
-  // ownership adoption reads the state store the home move relocates, and the
-  // layout adoption runs last (it relocates the install the others fixed up).
-  expect(dueMigrations("0.0.1", "999.0.0").map((m) => m.version)).toEqual([
-    "3.5.6",
-    "3.5.6",
-    "3.5.6",
-  ]);
-  expect(dueMigrations("0.0.1", "999.0.0").map((m) => m.description)).toEqual([
-    v356.description,
-    v356Ownership.description,
-    v356VersionedLayout.description,
+  // a stale import; this pins the full set BY IDENTITY and in order -- a count
+  // (or a list of version strings) could stay green while a same-version fix-up
+  // was silently dropped in a merge. Order matters within the version: the
+  // later fix-ups read the state store the home move relocates, and the
+  // layout adoption runs LAST (it relocates the install the others fixed up).
+  expect(dueMigrations("0.0.1", "999.0.0")).toEqual([
+    v356,
+    v356Ownership,
+    v356DefaultSlot,
+    v356VersionedLayout,
   ]);
 });
 
@@ -257,4 +262,89 @@ test("3.5.6 ownership: legacy records move into the ledger; a re-run finds nothi
   const stateBytes = readFileSync(join(dir, ".copilot-env-state.json"), "utf8");
   await v356Ownership.run();
   expect(readFileSync(join(dir, ".copilot-env-state.json"), "utf8")).toBe(stateBytes);
+});
+
+// --- the 3.5.6 default-slot lift (third fix-up of the step) -----------------------
+
+test("3.5.6 default slot: the top-level pair lifts into profiles.default; a re-run is a no-op", async () => {
+  dir = isolateProxyHome("copilot-migrate-slot-");
+  const stateFile = join(dir, ".copilot-env-state.json");
+  writeFileSync(
+    stateFile,
+    `${
+      JSON.stringify({
+        githubToken: "ghu_keep",
+        authProvider: "copilot",
+        profiles: { work: { githubToken: "ghp_work", authProvider: "gh-token", mode: "proxy" } },
+      })
+    }\n`,
+  );
+
+  await v356DefaultSlot.run();
+  const raw = JSON.parse(readFileSync(stateFile, "utf8")) as Record<
+    string,
+    Record<string, Record<string, unknown>>
+  >;
+  expect(raw.githubToken).toBeUndefined();
+  expect(raw.authProvider).toBeUndefined();
+  expect(raw.profiles?.default).toEqual({
+    "authProvider": "copilot",
+    "githubToken": "ghu_keep",
+  });
+  // Named slots are untouched (their stored keys are an external contract).
+  expect(raw.profiles?.work).toEqual({
+    "authProvider": "gh-token",
+    "githubToken": "ghp_work",
+    "mode": "proxy",
+  });
+  // The unified read answers identically after the lift.
+  expect(new CopilotEnvState().readCredential(null)).toEqual({
+    kind: "stored",
+    provider: "copilot",
+    token: "ghu_keep",
+  });
+
+  // Idempotent: the re-run finds nothing to lift and rewrites nothing.
+  const stateBytes = readFileSync(stateFile, "utf8");
+  await v356DefaultSlot.run();
+  expect(readFileSync(stateFile, "utf8")).toBe(stateBytes);
+});
+
+test("3.5.6 default slot: a slot already holding a credential wins over a lingering pair", async () => {
+  dir = isolateProxyHome("copilot-migrate-slot-");
+  const stateFile = join(dir, ".copilot-env-state.json");
+  writeFileSync(
+    stateFile,
+    `${
+      JSON.stringify({
+        githubToken: "ghu_stale",
+        authProvider: "copilot",
+        profiles: { default: { githubToken: "ghu_slot", authProvider: "gh-token" } },
+      })
+    }\n`,
+  );
+  await v356DefaultSlot.run();
+  const raw = JSON.parse(readFileSync(stateFile, "utf8")) as Record<
+    string,
+    Record<string, Record<string, unknown>>
+  >;
+  expect(raw.githubToken).toBeUndefined();
+  expect(raw.profiles?.default?.githubToken).toBe("ghu_slot");
+  expect(raw.profiles?.default?.authProvider).toBe("gh-token");
+});
+
+test("3.5.6 default slot: a store without legacy keys is untouched; an absent file is never created", async () => {
+  dir = isolateProxyHome("copilot-migrate-slot-");
+  const stateFile = join(dir, ".copilot-env-state.json");
+  // Fresh install: no state file at all -- the migration must not materialize one.
+  await v356DefaultSlot.run();
+  expect(existsSync(stateFile)).toBe(false);
+  // Already-migrated (or never-authenticated) store: byte-identical after the run.
+  writeFileSync(
+    stateFile,
+    `${JSON.stringify({ profiles: { default: { authProvider: "gh-cli" } } })}\n`,
+  );
+  const bytes = readFileSync(stateFile, "utf8");
+  await v356DefaultSlot.run();
+  expect(readFileSync(stateFile, "utf8")).toBe(bytes);
 });

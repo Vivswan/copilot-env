@@ -23,6 +23,7 @@ import {
   withStartLock,
 } from "../copilot_api/launch.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
+import { daemonPolicy } from "../copilot_api/port.ts";
 import { pidAlive } from "../copilot_api/process.ts";
 import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
@@ -329,7 +330,7 @@ export async function runStart(action: StartAction): Promise<void> {
 
   fs.mkdirSync(paths.runDir, { recursive: true });
   // Every human-facing follow-up command must address THIS daemon.
-  const profileFlag = profile === null ? "" : ` --profile ${profile}`;
+  const profileFlag = daemonPolicy(profile).flagSuffix;
   await withStartLock(async (lock) => {
     // The float/floor gate runs INSIDE the start lock: it rewrites the shared daemon
     // config and re-warms the float's cache, so two concurrent starts must not run it

@@ -5,7 +5,7 @@
 // instead of from another command file.
 import { connect } from "node:net";
 import { clearPersistedInferenceActivity } from "../scripts/inference_activity.ts";
-import { defaultProxyPort } from "./port.ts";
+import { daemonPolicy, defaultProxyPort } from "./port.ts";
 import { classifyDaemonPid, pidAlive, terminatePid } from "./process.ts";
 import type { Profile } from "./profile.ts";
 import { CopilotEnvRunState } from "./state.ts";
@@ -32,9 +32,11 @@ export async function proxyStatus(profile: Profile = null): Promise<ProxyStatus>
   if ((await classifyDaemonPid(pid)) === "no") {
     return { up: false };
   }
-  // Only the default daemon has a meaningful port fallback (the configured/built-in
-  // default); a named profile with a tracked pid but no recorded port is unprobeable.
-  const probePort = port ?? (profile === null ? defaultProxyPort() : undefined);
+  // Only a config-ported daemon has a meaningful port fallback (the configured/
+  // built-in default); a reservation-ported daemon with a tracked pid but no
+  // recorded port is unprobeable (the reservation IS the recorded port).
+  const probePort = port ??
+    (daemonPolicy(profile).port.source === "config" ? defaultProxyPort() : undefined);
   if (probePort === undefined) return { up: false };
   // Return the port actually probed (not the raw state field, which can be
   // absent): callers reuse it for follow-up requests, so probe and fetch must
@@ -99,10 +101,10 @@ export async function stopTrackedProxy(
   profile: Profile = null,
 ): Promise<{ trackedPid?: number; signalled: boolean; stopped: boolean }> {
   const state = CopilotEnvRunState.forProfile(profile);
-  // A named profile's `port` is its stable reservation (the baked agent wiring points at
-  // it), so stopping the daemon must NOT release it -- only the default's port tracking
-  // reverts to the configured/built-in default on stop.
-  const clearPort = profile === null ? { port: null } : {};
+  // Whether stopping releases the port tracking is the daemon's policy: a named
+  // profile's `port` is its stable reservation (the baked agent wiring points at
+  // it), so only the default's port tracking reverts on stop.
+  const clearPort = daemonPolicy(profile).releasesPortOnStop ? { port: null } : {};
   const trackedPid = state.read().pid;
   if (trackedPid === undefined) {
     // Nothing tracked. Still clear any stale activity marks so a fresh start is not seen

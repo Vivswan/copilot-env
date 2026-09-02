@@ -37,6 +37,7 @@ import {
   checkProxyPort,
   copilotApiFindPort,
   copilotApiResolvePort,
+  daemonPolicy,
   proxyPortFree,
   reserveProfilePort,
 } from "./port.ts";
@@ -237,22 +238,24 @@ export async function resolveStartPort(
         return pinned;
     }
   }
-  // No hard `--port` pin: the auto-resolve base is the default proxy port (config `port`,
-  // else the built-in 4141) for the default daemon, or the profile's stable reservation --
-  // a SOFT base that moves to the next free port if busy, unless `strict-port` is set for
-  // the DEFAULT daemon (then a busy default is fatal, no auto-increment). An EXISTING
+  // No hard `--port` pin: the auto-resolve base is the policy's port source -- the default
+  // proxy port (config `port`, else the built-in 4141) or the profile's stable reservation
+  // -- a SOFT base that moves to the next free port if busy, unless `strict-port` gates
+  // this daemon (then a busy default is fatal, no auto-increment). An EXISTING
   // reservation is honored even when min/max later narrowed past it (the range governs
   // NEW allocations -- same round-trip contract as the default's recorded port), so it
   // gets a liveness-only probe instead of the range gate.
+  const policy = daemonPolicy(profile);
   let honoredReservation = false;
   let def: number;
-  if (profile === null) {
+  if (policy.port.source === "config") {
     def = config.defaultPort();
   } else {
-    const recorded = CopilotEnvRunState.forProfile(profile).read().port;
+    const name = policy.port.name;
+    const recorded = CopilotEnvRunState.forProfile(name).read().port;
     honoredReservation = recorded !== undefined;
     def = recorded ??
-      (reserve ? reserveProfilePort(profile) : Number(copilotApiResolvePort(profile)));
+      (reserve ? reserveProfilePort(name) : Number(copilotApiResolvePort(name)));
   }
   switch (await checkProxyPort(def)) {
     case "free":
@@ -268,7 +271,7 @@ export async function resolveStartPort(
     case "busy":
       break; // fall through to strict-port / auto-increment below
   }
-  if (profile === null && config.strictPortEnabled()) {
+  if (policy.strictPortEligible && config.strictPortEnabled()) {
     throw new Error(
       `port ${def} is busy and auto-increment is disabled (\`strict-port\`); free it, pick another \`--port\`, or set \`agent config --set strict-port false\`.`,
     );
@@ -329,9 +332,9 @@ export async function cleanupExistingProxies(
       await terminatePid(tracked, DAEMON_SIGKILL_GRACE_MS);
     }
     // Clear both pid and port up front: if the relaunch below throws, we don't
-    // leave a stale port pointing at the now-dead daemon. (A named profile's
-    // port is its stable reservation, so only the pid is cleared there.)
-    state.set(profile === null ? { pid: null, port: null } : { pid: null });
+    // leave a stale port pointing at the now-dead daemon. (A daemon whose policy
+    // keeps its port -- a named profile's stable reservation -- only clears the pid.)
+    state.set(daemonPolicy(profile).releasesPortOnStop ? { pid: null, port: null } : { pid: null });
   }
 
   const myPid = process.pid;
@@ -480,12 +483,13 @@ export function spawnConfiguredDaemon(opts: {
   const config = opts.config ?? new CopilotEnvConfig();
   const denoBin = resolveDenoBin();
   const daemonEnv: Record<string, string> = { COPILOT_API_SQLITE_DB_PATH: paths.sqliteDb };
-  if (profile !== null) {
-    // A named profile's daemon runs against its OWN isolated home (config.json incl.
-    // auth.apiKeys, .run/, sqlite, logs) so concurrent daemons never contend on one
-    // home -- the root home is passed alongside so the in-daemon preloads still
-    // find the ACCOUNT-WIDE files (credential store, preferences) there. The home
-    // itself rides in DaemonSpec.home (pinned for every daemon, default included).
+  if (daemonPolicy(profile).isolatedHome) {
+    // An isolated-home daemon (a named profile) runs against its OWN home
+    // (config.json incl. auth.apiKeys, .run/, sqlite, logs) so concurrent
+    // daemons never contend on one home -- the root home is passed alongside so
+    // the in-daemon preloads still find the ACCOUNT-WIDE files (credential
+    // store, preferences) there. The home itself rides in DaemonSpec.home
+    // (pinned for every daemon, default included).
     daemonEnv[ROOT_HOME_ENV] = resolveRootHome();
   }
   // Managed lifecycle on (the `auto-start` config key)? Preload the in-daemon idle watchdog
@@ -528,7 +532,7 @@ export function spawnConfiguredDaemon(opts: {
  *  `profile`'s credential slot). */
 function copilotTokenFailureHint(log: string, profile: Profile): string | null {
   if (!/Failed to get Copilot token/i.test(log)) return null;
-  const flag = profile === null ? "" : ` --profile ${profile}`;
+  const flag = daemonPolicy(profile).flagSuffix;
   return (
     "The credential was not accepted by Copilot's token exchange. For a gh-cli or PAT credential, " +
     "enable passthrough (`agent config --set passthrough on`); otherwise re-authenticate with a " +
@@ -571,9 +575,10 @@ export async function awaitReadiness(opts: {
       logContent = "";
     }
     if (/address already in use|EADDRINUSE|bind.*failed/i.test(logContent)) {
-      // `strict-port` steers the DEFAULT daemon only (same exemption as resolveStartPort):
-      // a named profile's reservation is soft, so a bind race retries on another port.
-      const strictPort = profile === null && config.strictPortEnabled();
+      // `strict-port` gates only the policy-eligible daemon (same exemption as
+      // resolveStartPort): a named profile's reservation is soft, so a bind race
+      // retries on another port.
+      const strictPort = daemonPolicy(profile).strictPortEligible && config.strictPortEnabled();
       if (pinnedPort !== undefined || strictPort) {
         // A pinned port -- or any port under strict-port -- that loses the race fails rather
         // than silently moving to a different port.

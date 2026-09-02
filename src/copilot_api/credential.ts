@@ -52,10 +52,9 @@ export function ghAuthToken(): string | null {
  * The Direct GitHub credential, keyed off the recorded provider. Construct freely
  * (it's a thin facade over `CopilotEnvState`); pass an existing state instance only
  * to share one read/write cursor. `profile` addresses that named profile's slot
- * instead of the default (top-level) credential; the store's
- * readCredential/setCredential pair is the single routing point, and a named
- * profile NEVER falls back to the default credential (ask, never silently fall
- * back).
+ * instead of the default (reserved) slot; the store's readCredential/setCredential
+ * pair is the single routing point, and a named profile NEVER falls back to the
+ * default credential (ask, never silently fall back).
  */
 export class Credential {
   private readonly state: CopilotEnvState;

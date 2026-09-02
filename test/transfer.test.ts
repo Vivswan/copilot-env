@@ -12,7 +12,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   applyImportBundle,
   buildExportBundle,
@@ -129,9 +129,25 @@ test("export carries the stores + modes and never the machine-local state keys",
   expect(bundle.config).toEqual({ autoStart: true, port: 5050, claudeTokenMultiplier: 2.5 });
   expect(bundle.modes).toEqual({ codex: "proxy", claude: "proxy" });
   expect(bundle.profiles.work?.mode).toBe("proxy");
+  // The reserved default slot travels as the `credential` section, never as a
+  // profiles entry (the bundle format is an external contract).
+  expect(bundle.profiles.default).toBeUndefined();
   const text = JSON.stringify(bundle);
   expect(text).not.toContain("codexCatalog");
   expect(text).not.toContain("webSearchDeny");
+});
+
+test("export reads the default credential from an unmigrated (top-level pair) store", () => {
+  isolate();
+  // A store a pre-slot release wrote and no new write/migration has touched yet.
+  const stateFile = new CopilotApiPaths().sharedStateFile;
+  mkdirSync(dirname(stateFile), { recursive: true });
+  writeFileSync(
+    stateFile,
+    `${JSON.stringify({ githubToken: "ghp_legacy", authProvider: "gh-token" })}\n`,
+  );
+  const bundle = buildExportBundle({ withCredentials: true });
+  expect(bundle.credential).toEqual({ githubToken: "ghp_legacy", authProvider: "gh-token" });
 });
 
 // --- validation (strict parse boundary) ---------------------------------------
@@ -281,6 +297,8 @@ test("round trip: export -> wipe -> import restores stores and re-derives wiring
   expect(state.githubToken).toBe("ghp_default");
   expect(state.authProvider).toBe("gh-token");
   expect(state.profiles.work).toMatchObject({ githubToken: "ghp_work", mode: "proxy" });
+  // The default-wiring pass recorded the agreed mode into the reserved slot.
+  expect(new CopilotEnvState().readProfileSlot(null).mode).toBe("proxy");
   // Machine-local state was re-derived (reset), never copied from the source.
   expect(state.codexCatalogLastAttemptMs).toBe(0);
   expect(state.codexCatalogCodexVersion).toBeNull();

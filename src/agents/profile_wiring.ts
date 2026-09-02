@@ -15,7 +15,7 @@ import {
 } from "../copilot_api/env_state.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { CODEX_IDENTITY_NAME } from "../copilot_api/integration_identity.ts";
-import { profileLabel, type ProfileName } from "../copilot_api/profile.ts";
+import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import type { AgentAdapter } from "./configure.ts";
@@ -61,10 +61,11 @@ export async function wireBothAgents(
 }
 
 /**
- * The direct client identity header to bake for `name`: the config pin, else the
- * persisted slot value, else a fresh probe (persisted whenever it can be keyed to
- * the credential it ran under, so the launcher hot path -- `--settings-for` /
- * `--sync` on every `cl --profile` -- never re-probes).
+ * The direct client identity header to bake for `profile` (null = the default
+ * slot): the config pin, else the persisted slot value, else a fresh probe
+ * (persisted whenever it can be keyed to the credential it ran under, so the
+ * launcher hot path -- `--settings-for` / `--sync` on every `cl --profile` --
+ * and the default's re-wires never re-probe).
  *
  * The slot stores the identity NAME, not the header value, so "probed, the default won"
  * (CODEX_IDENTITY_NAME) is distinguishable from "never probed" (null). Only a named
@@ -74,23 +75,23 @@ export async function wireBothAgents(
  * Throws if the credential is rejected under every identity.
  */
 export async function resolveAndPersistDirectIdentity(
-  name: ProfileName,
+  profile: Profile,
   credentialToken?: string | null,
 ): Promise<string | null> {
   const pin = new CopilotEnvConfig().pinnedIntegrationId();
   if (pin !== null) return pin;
-  const slot = new CopilotEnvState().readProfileSlot(name);
+  const slot = new CopilotEnvState().readProfileSlot(profile);
   if (slot.integrationIdentity !== null) {
     return slot.integrationIdentity === CODEX_IDENTITY_NAME ? null : slot.integrationIdentity;
   }
-  const probed = await probeDirectIntegrationId(name, credentialToken);
+  const probed = await probeDirectIntegrationId(profile, credentialToken);
   // Persist keyed to the credential the probe ACTUALLY ran under, so a rotation
   // racing the probe can only drop the verdict, never attach it to the wrong
   // credential; identityCacheKey returns null when the two cannot be tied.
   const keyCredential = identityCacheKey(slot.credential, credentialToken);
   if (keyCredential !== null) {
     new CopilotEnvState().setProfileIntegrationIdentity(
-      name,
+      profile,
       probed ?? CODEX_IDENTITY_NAME,
       keyCredential,
     );
@@ -136,8 +137,11 @@ export async function refreshClaudeDesktopWiring(): Promise<void> {
     // profile refreshes below.
     try {
       const ghToken = claudeMode === "direct" ? new Credential().resolve() : undefined;
+      // The default slot caches its probed identity like every profile slot, so
+      // this refresh replays it instead of re-probing (network-free in the
+      // common case, exactly like the profile loop below).
       const directIntegrationId = claudeMode === "direct"
-        ? await probeDirectIntegrationId(null, ghToken)
+        ? await resolveAndPersistDirectIdentity(null, ghToken)
         : undefined;
       await syncClaudeDesktopWiring({
         profile: null,

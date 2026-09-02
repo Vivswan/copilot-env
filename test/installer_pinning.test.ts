@@ -319,8 +319,25 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     return root;
   }
 
-  function runInstaller(root: string, downloadDir: string): ReturnType<typeof runSync> {
-    const env = { ...process.env, "COPILOT_ENV_DOWNLOAD_BASE": downloadDir, "CI": "1" };
+  function runInstaller(
+    root: string,
+    downloadDir: string,
+    extraEnv: Record<string, string> = {},
+  ): ReturnType<typeof runSync> {
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      "COPILOT_ENV_DOWNLOAD_BASE": downloadDir,
+      "CI": "1",
+    };
+    // On GitHub's windows runner this process inherits the CI step shell's --
+    // pwsh's -- PSModulePath, which breaks 5.1's module autoload (see the
+    // reset in install.ps1). Drop it (case-insensitively: Windows does not fix
+    // the key's spelling) so the spawn models the stock powershell.exe session
+    // the README one-liner runs in. Harmless on POSIX, where bash runs.
+    for (const key of Object.keys(env)) {
+      if (key.toLowerCase() === "psmodulepath") delete env[key];
+    }
+    Object.assign(env, extraEnv);
     if (Deno.build.os === "windows") {
       return runSync("powershell", [
         "-NoProfile",
@@ -428,6 +445,48 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
       const why = evidence(res, root);
       expect(existsSync(join(root, "node_modules")), why).toBe(false);
       expect(existsSync(join(root, "deno.json")), why).toBe(true);
+      expect(existsSync(join(root, "bin", installedBinaryName())), why).toBe(true);
+    } finally {
+      cleanup(root, downloadDir);
+    }
+  });
+
+  // PowerShell 7's own module directory: prepended onto a 5.1 child's
+  // PSModulePath (what a pwsh parent does), its Core-edition in-box modules
+  // shadow 5.1's and cannot load there, so autoload of Get-FileHash dies.
+  const ps7Modules = Deno.build.os === "windows"
+    ? join(process.env.ProgramFiles ?? "C:\\Program Files", "PowerShell", "7", "Modules")
+    : "";
+  // Off CI a machine without pwsh 7 genuinely cannot host the poison; on CI a
+  // missing directory must fail the test below instead, or a runner-image
+  // change would silently retire this coverage.
+  const winWithPwsh7 = test.skipIf(
+    Deno.build.os !== "windows" || (!existsSync(ps7Modules) && !process.env.CI),
+  );
+
+  winWithPwsh7("install.ps1 shields itself from a pwsh-poisoned PSModulePath", () => {
+    // Regression guard for install.ps1's own PSModulePath reset: without it,
+    // this exact environment killed the install at checksum verification.
+    expect(existsSync(ps7Modules), `pwsh 7 module dir vanished: ${ps7Modules}`).toBe(true);
+    const poisoned = `${ps7Modules};${process.env.PSModulePath ?? ""}`;
+    // Negative control: the poison must bite on this machine, or the run below
+    // proves nothing about the reset. Pin the failure to the Get-FileHash
+    // autoload itself, so a timeout or an unrelated error cannot stand in.
+    const probe = runSync("powershell", [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Get-FileHash -LiteralPath $PSHOME\\powershell.exe -Algorithm SHA256",
+    ], { env: { ...process.env, "PSModulePath": poisoned } });
+    const probeWhy = `unshielded probe exit=${probe.exitCode}:\n${probe.stderr}`;
+    expect(probe.exitCode, probeWhy).not.toBe(0);
+    expect(probe.stderr, probeWhy).toContain("Get-FileHash");
+
+    const downloadDir = makeDownloadDir();
+    const root = makeRoot("deno.json", "none");
+    try {
+      const res = runInstaller(root, downloadDir, { "PSModulePath": poisoned });
+      const why = evidence(res, root);
       expect(existsSync(join(root, "bin", installedBinaryName())), why).toBe(true);
     } finally {
       cleanup(root, downloadDir);

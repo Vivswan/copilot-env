@@ -341,4 +341,33 @@ describe("ensureSidecar", () => {
     });
     expect(bin).toBe("/opt/deno/bin/deno");
   });
+
+  test("the override and dev fast paths never read the pin -- the recovery hatch survives a broken .dvmrc", async () => {
+    const readPin = () => {
+      throw new Error("pin must not be read on this path");
+    };
+    process.env[SIDECAR_DENO_ENV] = "/opt/deno/bin/deno";
+    await expect(ensureSidecar(dir, { readPin })).resolves.toBe("/opt/deno/bin/deno");
+    delete process.env[SIDECAR_DENO_ENV];
+    await expect(ensureSidecar(dir, { readPin })).resolves.toBe(
+      runtimeExecPath() ?? "(not under deno)",
+    );
+  });
+
+  test("the pin is read lazily, exactly once, on the download path", async () => {
+    let reads = 0;
+    const readPin = () => {
+      reads += 1;
+      return "0.0.0"; // no sha256 is pinned for this version, so the download refuses
+    };
+    await expect(
+      ensureSidecar(dir, {
+        readPin,
+        "runtimeExecPath": null,
+        "platform": "linux",
+        fetchLike: () => Promise.reject(new Error("must not fetch")),
+      }),
+    ).rejects.toThrow("refusing to download");
+    expect(reads).toBe(1);
+  });
 });

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { directHelperCommand, legacyDirectHelperScript } from "../src/claude/config.ts";
 import { directHelperPath, proxyHelperPath, settingsPathFor } from "../src/claude/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
+import type { TextReadResult } from "../src/utils/fs.ts";
 import {
   buildHealthJson,
   exitCodeFor,
@@ -922,6 +923,10 @@ test("the claude scope classifies a legacy helper through deps.readFileSafe (the
   const deps = {
     claudeHome: () => claudeHome,
     readFileSafe: (path: string) => files.get(path) ?? null,
+    readFileResult: (path: string): TextReadResult => {
+      const text = files.get(path);
+      return text === undefined ? { kind: "absent" } : { kind: "text", text };
+    },
     resolvePort: () => "4141",
     authProvider: () => "gh-token" as const,
     storedTokenPresent: () => true,
@@ -935,6 +940,7 @@ test("the claude scope classifies a legacy helper through deps.readFileSafe (the
   files.delete(legacyPath);
   const orphaned = await gatherFacts("claude", {}, deps);
   expect(orphaned.claude?.providerMode).toBe("other");
+  expect(orphaned.claude?.otherReason).toBe("legacy-unrecognized");
   expect(orphaned.claude?.directUsesToken).toBe(false);
   // The final verdict, not just the classification: our helper filename with a
   // body we cannot verify is warned about, not passed off as healthy custom wiring.
@@ -942,6 +948,29 @@ test("the claude scope classifies a legacy helper through deps.readFileSafe (the
   const verdict = checkClaude(orphaned.claude);
   expect(verdict.status).toBe("warn");
   expect(verdict.fix).toBe("agent claude --direct");
+});
+
+test("an unreadable settings file reaches health as other/read-error, never as none", async () => {
+  // The settings file is read three-way (deps.readFileResult); an unreadable
+  // file must not collapse into the absent/none verdict readFileSafe's null
+  // would produce -- and the warn keys off the classifier's reason.
+  const claudeHome = "/hc";
+  const deps = {
+    claudeHome: () => claudeHome,
+    readFileSafe: () => null,
+    readFileResult: (): TextReadResult => ({ kind: "unreadable", error: "EACCES" }),
+    resolvePort: () => "4141",
+    authProvider: () => null,
+    storedTokenPresent: () => false,
+    codexDirectAuth: () => Promise.resolve({ command: null, authenticated: false }),
+  };
+  const facts = await gatherFacts("claude", {}, deps);
+  expect(facts.claude?.providerMode).toBe("other");
+  expect(facts.claude?.otherReason).toBe("read-error");
+  if (!facts.claude) throw new Error("expected claude facts");
+  const verdict = checkClaude(facts.claude);
+  expect(verdict.status).toBe("warn");
+  expect(verdict.detail).toContain("could not be read");
 });
 
 test("gatherFacts still probes identity when an agent routes through the proxy", async () => {
@@ -1294,6 +1323,7 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
     baseUrl: "https://api.githubcopilot.com",
     baseUrlMatches: false,
     providerMode: "direct",
+    otherReason: null,
     directAuth: { command: "/bin/gh", authenticated: true },
     directUsesToken: false,
     provider: "gh-cli",
@@ -1378,19 +1408,22 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
     helperPath: "/opt/x/helper.sh",
     baseUrl: null,
     providerMode: "other",
+    otherReason: "custom",
   });
   expect(other.status).toBe("ok");
   expect(other.detail).toContain("provider: other");
   expect(other.detail).toContain("not managed");
 
-  // ...but "other" AT our legacy helper path means the body is missing/foreign
-  // (a recognized released body classifies direct/proxy): a broken leftover, warned
-  // with the rewire fix for the mode the filename encodes.
+  // ...but the classifier's "legacy-unrecognized" reason (apiKeyHelper at our
+  // legacy helper path with a body it could not verify) is a broken leftover,
+  // warned with the rewire fix for the mode the filename encodes. The warn keys
+  // off the REASON, never a re-derivation of the classifier's path logic.
   const brokenLegacyDirect = checkClaude({
     ...direct,
     helperPath: directHelperPath("/h/.claude"),
     baseUrl: null,
     providerMode: "other",
+    otherReason: "legacy-unrecognized",
   });
   expect(brokenLegacyDirect.status).toBe("warn");
   expect(brokenLegacyDirect.detail).toContain("cannot verify the helper body");
@@ -1400,9 +1433,32 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
     helperPath: proxyHelperPath("/h/.claude"),
     baseUrl: null,
     providerMode: "other",
+    otherReason: "legacy-unrecognized",
   });
   expect(brokenLegacyProxy.status).toBe("warn");
   expect(brokenLegacyProxy.fix).toBe("agent claude --proxy");
+
+  // A file that could not be parsed or read warns too: Claude itself will trip
+  // over it, and copilot-env can verify nothing there.
+  const malformed = checkClaude({
+    ...direct,
+    helperPath: null,
+    baseUrl: null,
+    providerMode: "other",
+    otherReason: "malformed",
+  });
+  expect(malformed.status).toBe("warn");
+  expect(malformed.detail).toContain("not valid JSON");
+  expect(malformed.fix).toContain("repair");
+  const unreadable = checkClaude({
+    ...direct,
+    helperPath: null,
+    baseUrl: null,
+    providerMode: "other",
+    otherReason: "read-error",
+  });
+  expect(unreadable.status).toBe("warn");
+  expect(unreadable.detail).toContain("could not be read");
 });
 
 test("direct + stored token reports ok with gh absent (no gh requirement)", () => {
@@ -1439,6 +1495,7 @@ test("direct + stored token reports ok with gh absent (no gh requirement)", () =
     baseUrl: "https://api.githubcopilot.com",
     baseUrlMatches: false,
     providerMode: "direct",
+    otherReason: null,
     directAuth: { command: null, authenticated: false },
     directUsesToken: true,
   };
@@ -1767,6 +1824,7 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       baseUrl: null,
       baseUrlMatches: false,
       providerMode: "none",
+      otherReason: null,
       directAuth: { command: null, authenticated: false },
       directUsesToken: false,
     },

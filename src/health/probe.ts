@@ -59,7 +59,7 @@ import { persistedInferenceMs } from "../scripts/inference_activity.ts";
 import { hasMarker, LAUNCHERS_MARKER, MARKER, shellTargetFiles } from "../shell/integration.ts";
 import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
-import { readTextOrNull } from "../utils/fs.ts";
+import { readTextOrNull, readTextResult, type TextReadResult } from "../utils/fs.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { packageVersion } from "../utils/version.ts";
@@ -397,6 +397,10 @@ export interface ProbeDeps {
   agentClis(): readonly { command: string; name: string }[];
   shellTargets(): string[];
   readFileSafe(path: string): string | null;
+  /** Three-way read for the Claude settings file: its classification must keep
+   *  "absent" and "unreadable" apart (the read-error verdict), where
+   *  readFileSafe's null deliberately collapses them for don't-care reads. */
+  readFileResult(path: string): TextReadResult;
   installedProxyVersion(): string | null;
   /** The float's resolved-version record, or null when it has never resolved here. */
   proxyResolved(): ProxyResolvedFacts | null;
@@ -614,6 +618,7 @@ export function defaultProbeDeps(): ProbeDeps {
     agentClis: () => AGENT_CLIS,
     shellTargets: shellTargetFiles,
     readFileSafe: readTextOrNull,
+    readFileResult: readTextResult,
     installedProxyVersion: () => installedProxyVersion(root),
     proxyResolved: () => {
       const record = readResolvedVersionRecord(resolveRootHome());
@@ -1063,15 +1068,17 @@ export async function gatherFacts(
     jobs.push(
       (async () => {
         const home = deps.claudeHome();
-        // A named profile answers from its own settings-<name>.json.
-        const settingsText = deps.readFileSafe(settingsPathFor(home, profile));
+        // A named profile answers from its own settings-<name>.json. The settings
+        // file itself is read three-way (deps.readFileResult) so an unreadable
+        // file classifies other/read-error instead of collapsing into "none".
+        const settingsRead = deps.readFileResult(settingsPathFor(home, profile));
         // deps.readFileSafe backs the classifier's legacy-helper body check, so
         // "direct" here means the apiKeyHelper truly invokes `agent auth --get`
         // addressed at THIS profile -- the inline managed command, or a legacy
         // install's helper file whose body says so (never a stale/foreign/missing/
         // mis-addressed helper); directAuthFor then decides the gh probe.
         const wiring = inspectClaudeWiring(
-          settingsText,
+          settingsRead,
           home,
           wiringPort(),
           profile,

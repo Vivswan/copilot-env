@@ -7,8 +7,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { consola } from "consola";
 import { parse } from "smol-toml";
-import { configureClaudeConfig } from "../src/claude/config.ts";
-import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
+import { configureClaudeConfig, WEBSEARCH_DENY_RULE } from "../src/claude/config.ts";
+import { claudeJsonPath, registerClaudeMcpServer } from "../src/claude/mcp_registration.ts";
 import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME, settingsPathFor } from "../src/claude/paths.ts";
 import { configureCodexConfig } from "../src/codex/config.ts";
 import { runUninstall, type UninstallDeps } from "../src/commands/uninstall.ts";
@@ -230,6 +230,61 @@ test("uninstall leaves foreign Claude/Codex wiring untouched", async () => {
 
   expect(readFileSync(settingsPathFor(claudeHome), "utf8")).toBe(settingsText);
   expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(tomlText);
+});
+
+test("uninstall on a foreign-edited config strips OUR deny, then removes the registration", async () => {
+  const { claudeHome, codexHome } = tmpHomes();
+  configureClaudeConfig(claudeHome, "direct", { quiet: true }); // deny + registration + ownership
+  const settingsPath = settingsPathFor(claudeHome);
+  const doc = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
+  doc.apiKeyHelper = "/usr/local/bin/my-helper"; // foreign edit: wiring classifies "other"
+  writeFileSync(settingsPath, JSON.stringify(doc));
+
+  await runUninstall({ yes: true }, tmpDeps(codexHome));
+
+  // The OWNED deny went (ownership is the proof, not the mode classification);
+  // the foreign wiring itself stayed whole.
+  const after = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
+  expect(after.permissions).toBeUndefined();
+  expect(after.apiKeyHelper).toBe("/usr/local/bin/my-helper");
+  // With no owned deny left, the MCP registration was removable.
+  expect(
+    (JSON.parse(readFileSync(claudeJsonPath(), "utf8")) as Record<string, unknown>).mcpServers,
+  ).toBeUndefined();
+});
+
+test("uninstall never touches a user's own deny on a foreign config (registration still goes)", async () => {
+  const { claudeHome, codexHome } = tmpHomes();
+  mkdirSync(claudeHome, { recursive: true });
+  const settingsText = JSON.stringify({
+    apiKeyHelper: "/usr/local/bin/my-helper",
+    permissions: { deny: [WEBSEARCH_DENY_RULE] }, // the user's own rule, never claimed
+  });
+  writeFileSync(settingsPathFor(claudeHome), settingsText);
+  expect(registerClaudeMcpServer()).toBe(true); // a leftover registration
+
+  await runUninstall({ yes: true }, tmpDeps(codexHome));
+
+  expect(readFileSync(settingsPathFor(claudeHome), "utf8")).toBe(settingsText);
+  expect(
+    (JSON.parse(readFileSync(claudeJsonPath(), "utf8")) as Record<string, unknown>).mcpServers,
+  ).toBeUndefined();
+});
+
+test("uninstall keeps the MCP registration while an owned deny cannot be stripped", async () => {
+  const { claudeHome, codexHome } = tmpHomes();
+  configureClaudeConfig(claudeHome, "direct", { quiet: true }); // deny + registration + ownership
+  const settingsPath = settingsPathFor(claudeHome);
+  writeFileSync(settingsPath, "{ not json"); // the owned deny is now unverifiable
+
+  await runUninstall({ yes: true }, tmpDeps(codexHome));
+
+  // Never a denied builtin with no replacement: the file stays whole and the
+  // registration (the deny's web-search replacement) stays with it.
+  expect(readFileSync(settingsPath, "utf8")).toBe("{ not json");
+  expect(
+    (JSON.parse(readFileSync(claudeJsonPath(), "utf8")) as Record<string, unknown>).mcpServers,
+  ).toBeDefined();
 });
 
 test("uninstall is idempotent: a second run finds nothing and exits 0", async () => {

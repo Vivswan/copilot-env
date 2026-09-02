@@ -456,6 +456,7 @@ test("checkClaude(named): missing wiring warns; a stale proxy port points at the
     baseUrl: null,
     baseUrlMatches: false,
     providerMode: "none" as const,
+    otherReason: null,
     directAuth: { command: null, authenticated: false },
     directUsesToken: false,
   };
@@ -486,7 +487,13 @@ test("checkClaude(named): missing wiring warns; a stale proxy port points at the
   // profile promises managed wiring, and the writer refuses to overwrite an
   // unmanaged file, so the fix names the removal first.
   const other = checkClaude(
-    { ...base, settingsExists: true, helperPath: "/opt/x/helper.sh", providerMode: "other" },
+    {
+      ...base,
+      settingsExists: true,
+      helperPath: "/opt/x/helper.sh",
+      providerMode: "other",
+      otherReason: "custom",
+    },
     P,
   );
   expect(other.status).toBe("warn");
@@ -494,7 +501,12 @@ test("checkClaude(named): missing wiring warns; a stale proxy port points at the
   expect(other.fix).toContain(join("/h/.claude", "settings-p.json"));
   expect(other.fix).toContain("agent profile --add p");
   expect(
-    checkClaude({ ...base, helperPath: "/opt/x/helper.sh", providerMode: "other" }).status,
+    checkClaude({
+      ...base,
+      helperPath: "/opt/x/helper.sh",
+      providerMode: "other",
+      otherReason: "custom",
+    }).status,
   ).toBe("ok");
 });
 
@@ -560,6 +572,7 @@ test("named wiring in the OTHER mode than the slot records warns as an interrupt
       baseUrl: "http://127.0.0.1:4555",
       baseUrlMatches: true,
       providerMode: "proxy",
+      otherReason: null,
       directAuth: { command: null, authenticated: false },
       directUsesToken: false,
       expectedMode: "direct",

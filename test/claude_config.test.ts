@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
   cmdHelperBody,
@@ -217,10 +225,16 @@ test("inspectClaudeWiring classifies direct / proxy / other / none / malformed (
   expect(inspect(JSON.stringify({ apiKeyHelper: directHelper })).providerMode).toBe("direct");
   expect(inspect(JSON.stringify({ apiKeyHelper: proxyHelper })).providerMode).toBe("proxy");
 
-  // A legacy path whose file is MISSING cannot produce the managed credential: not ours.
+  // A legacy path whose file is MISSING cannot produce the managed credential: not
+  // ours -- and the reason names the legacy arm, so consumers (the health warn)
+  // never re-derive the path comparison.
   files.clear();
-  expect(inspect(JSON.stringify({ apiKeyHelper: directHelper })).providerMode).toBe("other");
-  expect(inspect(JSON.stringify({ apiKeyHelper: proxyHelper })).providerMode).toBe("other");
+  const missingDirect = inspect(JSON.stringify({ apiKeyHelper: directHelper }));
+  expect(missingDirect.providerMode).toBe("other");
+  expect(missingDirect.otherReason).toBe("legacy-unrecognized");
+  const missingProxy = inspect(JSON.stringify({ apiKeyHelper: proxyHelper }));
+  expect(missingProxy.providerMode).toBe("other");
+  expect(missingProxy.otherReason).toBe("legacy-unrecognized");
   // ...nor is a foreign/hand-edited body at the right path (a bare gh helper, say)...
   files.set(directHelper, "#!/bin/sh\nexec gh auth token\n");
   expect(inspect(JSON.stringify({ apiKeyHelper: directHelper })).providerMode).toBe("other");
@@ -228,23 +242,51 @@ test("inspectClaudeWiring classifies direct / proxy / other / none / malformed (
   files.set(directHelper, proxy356);
   expect(inspect(JSON.stringify({ apiKeyHelper: directHelper })).providerMode).toBe("other");
 
-  // A foreign helper sharing our basename but elsewhere is NOT ours.
-  expect(
-    inspect(JSON.stringify({ apiKeyHelper: "/opt/company/copilot-token.sh" })).providerMode,
-  ).toBe("other");
-  // A custom base URL with no managed helper is also "other".
-  expect(
-    inspect(JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://other.example" } })).providerMode,
-  ).toBe("other");
+  // A foreign helper sharing our basename but elsewhere is NOT ours: "custom".
+  const foreign = inspect(JSON.stringify({ apiKeyHelper: "/opt/company/copilot-token.sh" }));
+  expect(foreign.providerMode).toBe("other");
+  expect(foreign.otherReason).toBe("custom");
+  // A custom base URL with no managed helper is also "other"/"custom".
+  const customBase = inspect(
+    JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://other.example" } }),
+  );
+  expect(customBase.providerMode).toBe("other");
+  expect(customBase.otherReason).toBe("custom");
 
   expect(inspect("{}").providerMode).toBe("none");
   expect(inspect(JSON.stringify({ model: "sonnet" })).providerMode).toBe("none");
+  // The reason travels ONLY on the "other" arm.
+  expect(inspect(JSON.stringify({ apiKeyHelper: directHelperCommand() })).otherReason).toBe(null);
+  expect(inspect("{}").otherReason).toBe(null);
 
   const absent = inspect(null);
   expect(absent.providerMode).toBe("none");
   expect(absent.settingsExists).toBe(false);
+  expect(absent.otherReason).toBe(null);
 
-  expect(inspect("{not json").providerMode).toBe("other");
+  const malformed = inspect("{not json");
+  expect(malformed.providerMode).toBe("other");
+  expect(malformed.otherReason).toBe("malformed");
+});
+
+test("inspectClaudeWiring takes a TextReadResult: unreadable is other/read-error, never none", () => {
+  const home = "/home/x/.claude";
+  const unreadable = inspectClaudeWiring({ kind: "unreadable", error: "EACCES" }, home, 0);
+  expect(unreadable.providerMode).toBe("other");
+  expect(unreadable.otherReason).toBe("read-error");
+  expect(unreadable.settingsExists).toBe(true); // it EXISTS -- it just cannot be read
+
+  const absent = inspectClaudeWiring({ kind: "absent" }, home, 0);
+  expect(absent.providerMode).toBe("none");
+  expect(absent.settingsExists).toBe(false);
+
+  const text = inspectClaudeWiring(
+    { kind: "text", text: JSON.stringify({ apiKeyHelper: directHelperCommand() }) },
+    home,
+    0,
+  );
+  expect(text.providerMode).toBe("direct");
+  expect(text.otherReason).toBe(null);
 });
 
 test("runClaude direct/proxy round-trip cleans the other mode", async () => {
@@ -456,6 +498,107 @@ test("removeClaudeDefaultWiring leaves an 'other' wiring AND its legacy-named he
   expect(readSettings(home).apiKeyHelper).toBe(helper);
 });
 
+test("removeClaudeDefaultWiring strips an OWNED deny from a foreign-edited config", () => {
+  const home = tmpHome();
+  configureClaudeConfig(home, "direct"); // deny written + ownership recorded
+  const doc = readSettings(home);
+  doc.apiKeyHelper = "/usr/local/bin/my-helper"; // foreign edit: classifies "other"
+  writeFileSync(join(home, "settings.json"), `${JSON.stringify(doc, null, 2)}\n`);
+
+  // Ownership is the proof the deny is ours, independent of the classification:
+  // exactly it goes, the foreign wiring stays, and nothing owned remains.
+  const { ownedDenyRemains } = removeClaudeDefaultWiring(home);
+  expect(ownedDenyRemains).toBe(false);
+  const after = readSettings(home);
+  expect(denyOf(after)).toBeUndefined();
+  expect(after.apiKeyHelper).toBe("/usr/local/bin/my-helper");
+  expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
+});
+
+test("removeClaudeDefaultWiring never strips a deny it does not own from a foreign config", () => {
+  const home = tmpHome();
+  mkdirSync(home, { recursive: true });
+  const settingsText = `${
+    JSON.stringify(
+      {
+        apiKeyHelper: "/usr/local/bin/my-helper",
+        permissions: { deny: [WEBSEARCH_DENY_RULE] },
+      },
+      null,
+      2,
+    )
+  }\n`;
+  writeFileSync(join(home, "settings.json"), settingsText);
+
+  const { ownedDenyRemains } = removeClaudeDefaultWiring(home);
+  // The user's own deny stands (it was never ours), but nothing OWNED remains
+  // either, so the caller is free to remove the MCP registration.
+  expect(ownedDenyRemains).toBe(false);
+  expect(readFileSync(join(home, "settings.json"), "utf8")).toBe(settingsText);
+});
+
+test("removeClaudeDefaultWiring reports an owned deny it cannot strip (unverifiable file)", () => {
+  const home = tmpHome();
+  configureClaudeConfig(home, "direct"); // deny written + ownership recorded
+  const settingsPath = join(home, "settings.json");
+  writeFileSync(settingsPath, "{ not json"); // the deny is now unverifiable
+
+  const { ownedDenyRemains } = removeClaudeDefaultWiring(home);
+  expect(ownedDenyRemains).toBe(true);
+  expect(readFileSync(settingsPath, "utf8")).toBe("{ not json"); // untouched
+  expect(new OwnershipLedger().owns("webSearchDeny", settingsPath)).toBe(true);
+});
+
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "an UNWRITABLE foreign config keeps its owned deny (reported), never aborts the removal",
+  () => {
+    // POSIX, non-root only: 0444 blocks the rewrite (root bypasses file modes).
+    const home = tmpHome();
+    configureClaudeConfig(home, "direct"); // deny written + ownership recorded
+    const settingsPath = join(home, "settings.json");
+    const doc = readSettings(home);
+    doc.apiKeyHelper = "/usr/local/bin/my-helper"; // foreign edit: classifies "other"
+    writeFileSync(settingsPath, `${JSON.stringify(doc, null, 2)}\n`);
+    chmodSync(settingsPath, 0o444);
+    try {
+      // The deny-only write fails; the throw is contained (best-effort), the deny
+      // stays in the file, and ownership is NOT released while it may still stand.
+      const { ownedDenyRemains } = removeClaudeDefaultWiring(home);
+      expect(ownedDenyRemains).toBe(true);
+      expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
+      expect(new OwnershipLedger().owns("webSearchDeny", settingsPath)).toBe(true);
+    } finally {
+      chmodSync(settingsPath, 0o644);
+    }
+  },
+);
+
+test("removeClaudeDefaultWiring releases a stale ownership marker for a vanished file", () => {
+  const home = tmpHome();
+  configureClaudeConfig(home, "direct");
+  const settingsPath = join(home, "settings.json");
+  rmSync(settingsPath); // the user deleted the file; the marker lingers
+
+  const { ownedDenyRemains } = removeClaudeDefaultWiring(home);
+  expect(ownedDenyRemains).toBe(false);
+  expect(existsSync(settingsPath)).toBe(false); // no file resurrected
+  expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
+});
+
+test("removeClaudeDefaultWiring tolerates a Claude home that is a file (nothing there)", () => {
+  // A settings path under a non-directory parent reads "absent" (ENOTDIR), and
+  // the loader and the legacy-helper removal must agree -- an uninstall or
+  // profile delete over a bogus CLAUDE_CONFIG_DIR must finish, not throw.
+  const home = tmpHome();
+  mkdirSync(dir, { recursive: true });
+  const bogusHome = join(dir, "claude-as-file");
+  writeFileSync(bogusHome, "not a directory");
+  void home;
+  const { ownedDenyRemains } = removeClaudeDefaultWiring(bogusHome);
+  expect(ownedDenyRemains).toBe(false);
+  removeClaudeProfile(bogusHome, WORK); // same absence tolerance
+});
+
 test("removeClaudeProfile removes managed artifacts but leaves an 'other' profile whole", () => {
   const home = tmpHome();
   mkdirSync(home, { recursive: true });
@@ -495,6 +638,28 @@ test("an unreadable settings file is hands-off for removal, never read as unconf
   mkdirSync(join(home, "settings-work.json"));
   removeClaudeProfile(home, WORK);
   expect(existsSync(helper)).toBe(true);
+});
+
+test("--check: absent settings exit 2 (none), unreadable settings exit 1 (other)", async () => {
+  const home = tmpHome();
+  mkdirSync(home, { recursive: true });
+  const before = process.exitCode;
+  try {
+    // Absent: unconfigured -- the launcher defaults to the proxy (exit 2).
+    await runClaude({ mode: "auto", check: true });
+    expect(process.exitCode).toBe(2);
+
+    // A directory at the settings path (a non-ENOENT read error on every
+    // platform): the settings EXIST but cannot be read -- ownership we cannot
+    // verify must read "other" (exit 1: the launcher must not take over), never
+    // collapse into the absent case above.
+    process.exitCode = 0;
+    mkdirSync(join(home, "settings.json"));
+    await runClaude({ mode: "auto", check: true });
+    expect(process.exitCode).toBe(1);
+  } finally {
+    process.exitCode = before ?? 0;
+  }
 });
 
 test("syncDefaultWebSearchWiring applies the pair to existing direct wiring (the migration path)", () => {

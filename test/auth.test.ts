@@ -186,6 +186,34 @@ test("auth --set cannot combine with --get/--del/--check", async () => {
   await expect(runAuth({ set: "ghu_x", get: true })).rejects.toThrow("cannot combine");
 });
 
+test("auth: --provider cannot combine with a sub-action (never silently dropped)", async () => {
+  isolate();
+  // `--get --provider bogus` used to run --get and drop the provider without
+  // ever validating it; the boundary parse now rejects the combination.
+  for (
+    const args of [
+      { get: true, provider: "bogus" },
+      { del: true, provider: "copilot" },
+      { check: true, provider: "gh-cli" },
+      { printProxyToken: true, provider: "gh-token" },
+      { list: true, provider: "copilot" },
+    ]
+  ) {
+    await expect(runAuth(args)).rejects.toThrow(
+      "--provider selects how to authenticate and cannot combine with " +
+        "--get/--del/--check/--list/--print-proxy-token",
+    );
+  }
+  // Pre-existing rejections keep their precedence over the new conflict: the
+  // --list/--profile error and an invalid profile name still report themselves.
+  await expect(runAuth({ list: true, profile: "work", provider: "copilot" })).rejects.toThrow(
+    "--list reports every profile; it does not combine with --profile",
+  );
+  await expect(runAuth({ get: true, profile: "NOT valid", provider: "copilot" })).rejects.toThrow(
+    /invalid profile name/,
+  );
+});
+
 test("auth --get stdout stays EXACTLY the token even when the catalog refresh runs", async () => {
   isolate();
   enableCatalog();

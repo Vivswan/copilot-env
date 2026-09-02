@@ -15,7 +15,7 @@ import {
   resolveAndPersistDirectIdentity,
   wireBothAgents,
 } from "../agents/profile_wiring.ts";
-import type { RequestedMode } from "../agents/provider_mode.ts";
+import { providerModeExitCode, type RequestedMode } from "../agents/provider_mode.ts";
 import { configureClaudeConfig } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { Credential } from "../copilot_api/credential.ts";
@@ -25,9 +25,10 @@ import { profileHome, profileHomeNames } from "../copilot_api/paths.ts";
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import { parseProfileFlag, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { cyan, gray, green, yellow } from "../utils/ansi.ts";
+import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { authenticate, parseAcquisition } from "./auth.ts";
+import { authenticate, type CredentialAcquisition, parseAcquisition } from "./auth.ts";
 
 // Narration to stderr so `--settings-for`'s stdout stays a clean machine-readable path.
 const logger = createStderrLogger();
@@ -59,20 +60,77 @@ function storedMode(name: ProfileName): ProfileMode | null {
 }
 
 /**
+ * What ONE `agent profile` invocation does -- exactly one of the six verbs,
+ * parsed ONCE by `parseProfileAction` at the CLI boundary. The `--add`-only
+ * knobs (mode, credential acquisition) live on the add arm alone, so a stray
+ * `--direct`/`--provider` on another verb is a rejection here, never a silently
+ * ignored flag.
+ */
+export type ProfileAction =
+  | { kind: "add"; name: ProfileName; mode: RequestedMode; acquisition: CredentialAcquisition }
+  | { kind: "del"; name: ProfileName }
+  | { kind: "check"; name: ProfileName }
+  | { kind: "settings-for"; name: ProfileName }
+  | { kind: "sync" }
+  | { kind: "list" };
+
+/** Parse the raw `agent profile` flags into a ProfileAction (the CLI boundary). */
+export function parseProfileAction(args: ProfileArgs): ProfileAction {
+  const actions = [args.add, args.del, args.check, args.settingsFor].filter(
+    (v) => v !== undefined,
+  ).length;
+  const subActions = actions + (args.list ? 1 : 0) + (args.sync ? 1 : 0);
+  if (subActions !== 1) {
+    throw new Error(
+      "pass exactly one of --add <name>, --del <name>, --list, --check <name>, " +
+        "--settings-for <name>, --sync",
+    );
+  }
+  if (args.mode !== "auto" && args.add === undefined) {
+    throw new Error("--direct/--proxy only apply to --add (a profile's mode is set there)");
+  }
+  if ((args.provider !== undefined || args.set !== undefined) && args.add === undefined) {
+    throw new Error(
+      "--provider/--set only apply to --add (re-auth an existing profile with `agent auth --profile <name>`)",
+    );
+  }
+  const add = parseProfileFlag(args.add);
+  if (add !== null) {
+    // Same conflict contract as `agent auth`: `--set` IS the gh-token path, so an
+    // explicit different provider must error, never be silently coerced. Here the
+    // --set conflict wins even over a bogus provider name (setConflictWins) -- the
+    // two commands intentionally report that combination differently.
+    return {
+      kind: "add",
+      name: add,
+      mode: args.mode,
+      acquisition: parseAcquisition(args.provider, args.set, { setConflictWins: true }),
+    };
+  }
+  const del = parseProfileFlag(args.del);
+  if (del !== null) return { kind: "del", name: del };
+  const check = parseProfileFlag(args.check);
+  if (check !== null) return { kind: "check", name: check };
+  const settingsFor = parseProfileFlag(args.settingsFor);
+  if (settingsFor !== null) return { kind: "settings-for", name: settingsFor };
+  if (args.sync) return { kind: "sync" };
+  return { kind: "list" };
+}
+
+/**
  * `--add <name>`: make the profile exist end-to-end -- its own credential
  * (acquired now unless the slot already resolves; `--provider`/`--set` are the
  * non-interactive path), its single mode (from `--direct`/`--proxy`; sticky from
  * the store on a re-add), and BOTH agents wired. Re-running with the other mode
  * flag SWITCHES the profile (one mode, never both).
  */
-async function runAdd(name: ProfileName, args: ProfileArgs): Promise<void> {
-  // Same conflict contract as `agent auth`: `--set` IS the gh-token path, so an
-  // explicit different provider must error, never be silently coerced. Here the
-  // --set conflict wins even over a bogus provider name (setConflictWins) -- the
-  // two commands intentionally report that combination differently.
-  const acquisition = parseAcquisition(args.provider, args.set, { setConflictWins: true });
+async function runAdd(
+  name: ProfileName,
+  requested: RequestedMode,
+  acquisition: CredentialAcquisition,
+): Promise<void> {
   const previous = storedMode(name);
-  const mode: ProfileMode | null = args.mode === "auto" ? previous : args.mode;
+  const mode: ProfileMode | null = requested === "auto" ? previous : requested;
   if (mode === null) {
     throw new Error(
       `pass --direct or --proxy: ${profileLabel(name)} does not exist yet, and a profile ` +
@@ -238,9 +296,10 @@ async function runList(): Promise<void> {
   );
 }
 
-/** `--check <name>`: the launcher contract, driven by the STORE slot.
- *  Exit 0 = direct, 2 = proxy (ensure the daemon), 1 = no such profile OR an
- *  incomplete one (mode without credential) -- never start a daemon for it. */
+/** `--check <name>`: the launcher contract, driven by the STORE slot. The exit
+ *  codes come from providerModeExitCode (the shared `--check` contract): the
+ *  slot's own direct/proxy when complete, "other" (1 -- never start a daemon)
+ *  for no such profile OR an incomplete one (mode without credential). */
 function runCheck(name: ProfileName): void {
   const slot = new CopilotEnvState().readProfileSlot(name);
   if (slot.mode === null) {
@@ -249,7 +308,7 @@ function runCheck(name: ProfileName): void {
         profileLabel(name)
       } does not exist - create it with \`agent profile --add ${name} --direct|--proxy\``,
     );
-    process.exitCode = 1;
+    process.exitCode = providerModeExitCode("other");
     return;
   }
   if (slot.authProvider === null) {
@@ -257,11 +316,11 @@ function runCheck(name: ProfileName): void {
       `${profileLabel(name)} has no credential - repair it with \`agent auth --profile ${name}\` ` +
         `or \`agent profile --add ${name}\``,
     );
-    process.exitCode = 1;
+    process.exitCode = providerModeExitCode("other");
     return;
   }
   console.log(`${profileLabel(name)}: ${slot.mode}`);
-  process.exitCode = slot.mode === "direct" ? 0 : 2;
+  process.exitCode = providerModeExitCode(slot.mode);
 }
 
 /**
@@ -313,32 +372,21 @@ async function runSync(): Promise<void> {
 
 /** `agent profile`: create, list, check, sync, and delete named profiles. */
 export async function runProfile(args: ProfileArgs): Promise<void> {
-  const actions = [args.add, args.del, args.check, args.settingsFor].filter(
-    (v) => v !== undefined,
-  ).length;
-  const subActions = actions + (args.list ? 1 : 0) + (args.sync ? 1 : 0);
-  if (subActions !== 1) {
-    throw new Error(
-      "pass exactly one of --add <name>, --del <name>, --list, --check <name>, " +
-        "--settings-for <name>, --sync",
-    );
+  const action = parseProfileAction(args);
+  switch (action.kind) {
+    case "add":
+      return runAdd(action.name, action.mode, action.acquisition);
+    case "del":
+      return runDel(action.name);
+    case "check":
+      return runCheck(action.name);
+    case "settings-for":
+      return runSettingsFor(action.name);
+    case "sync":
+      return runSync();
+    case "list":
+      return runList();
+    default:
+      assertNever(action);
   }
-  if (args.mode !== "auto" && args.add === undefined) {
-    throw new Error("--direct/--proxy only apply to --add (a profile's mode is set there)");
-  }
-  if ((args.provider !== undefined || args.set !== undefined) && args.add === undefined) {
-    throw new Error(
-      "--provider/--set only apply to --add (re-auth an existing profile with `agent auth --profile <name>`)",
-    );
-  }
-  const add = parseProfileFlag(args.add);
-  if (add !== null) return runAdd(add, args);
-  const del = parseProfileFlag(args.del);
-  if (del !== null) return runDel(del);
-  const check = parseProfileFlag(args.check);
-  if (check !== null) return runCheck(check);
-  const settingsFor = parseProfileFlag(args.settingsFor);
-  if (settingsFor !== null) return runSettingsFor(settingsFor);
-  if (args.sync) return runSync();
-  return runList();
 }

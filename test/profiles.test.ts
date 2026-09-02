@@ -9,9 +9,9 @@ import { configureClaudeConfig, inspectClaudeWiring } from "../src/claude/config
 import { CLAUDE_DESKTOP_DIR_ENV, desktopLibraryDirUnder } from "../src/claude/desktop.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
 import { codexProviderId, configureCodexConfig } from "../src/codex/config.ts";
-import { renderProfileTable, runProfile } from "../src/commands/profile.ts";
+import { parseProfileAction, renderProfileTable, runProfile } from "../src/commands/profile.ts";
 import { runStart } from "../src/commands/start.ts";
-import { runStop } from "../src/commands/stop.ts";
+import { parseStopAction, runStop } from "../src/commands/stop.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { setIntegrationProbeFetch } from "../src/copilot_api/integration_identity.ts";
@@ -478,6 +478,47 @@ test("profile --add requires a mode for a new profile", async () => {
   expect(
     runProfile({ add: "work", mode: "proxy", provider: "copilot", set: "ghp_x" }),
   ).rejects.toThrow(/--set only applies/);
+});
+
+test("parseProfileAction: one verb per invocation, add-only knobs live on the add arm", () => {
+  // Each verb maps to its own arm; --add carries the mode and the parsed acquisition.
+  expect(parseProfileAction({ add: "work", mode: "proxy" })).toEqual({
+    kind: "add",
+    name: WORK,
+    mode: "proxy",
+    acquisition: { kind: "choose" },
+  });
+  expect(parseProfileAction({ del: "work", mode: "auto" })).toEqual({ kind: "del", name: WORK });
+  expect(parseProfileAction({ check: "work", mode: "auto" })).toEqual({
+    kind: "check",
+    name: WORK,
+  });
+  expect(parseProfileAction({ settingsFor: "work", mode: "auto" })).toEqual({
+    kind: "settings-for",
+    name: WORK,
+  });
+  expect(parseProfileAction({ sync: true, mode: "auto" })).toEqual({ kind: "sync" });
+  expect(parseProfileAction({ list: true, mode: "auto" })).toEqual({ kind: "list" });
+  // Zero or two verbs, or an add-only knob on another verb: boundary rejections.
+  expect(() => parseProfileAction({ mode: "auto" })).toThrow(/exactly one/);
+  expect(() => parseProfileAction({ add: "work", list: true, mode: "auto" })).toThrow(
+    /exactly one/,
+  );
+  expect(() => parseProfileAction({ del: "work", mode: "direct" })).toThrow(
+    "--direct/--proxy only apply to --add",
+  );
+  expect(() => parseProfileAction({ list: true, mode: "auto", provider: "copilot" })).toThrow(
+    "--provider/--set only apply to --add",
+  );
+});
+
+test("parseStopAction: all/profile/default arms; --all --profile is a rejection", () => {
+  expect(parseStopAction({})).toEqual({ kind: "default" });
+  expect(parseStopAction({ all: true })).toEqual({ kind: "all" });
+  expect(parseStopAction({ profile: "work" })).toEqual({ kind: "profile", name: WORK });
+  expect(() => parseStopAction({ all: true, profile: "work" })).toThrow(
+    "--all stops every daemon; it does not combine with --profile",
+  );
 });
 
 test("stop/record-event against a never-existing profile fabricate NOTHING", async () => {

@@ -26,7 +26,7 @@ import { runClaude } from "../src/claude/config.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { runCodex } from "../src/codex/config.ts";
-import { importRestartHints, runSettings } from "../src/commands/settings.ts";
+import { importRestartHints, parseSettingsAction, runSettings } from "../src/commands/settings.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
@@ -564,6 +564,31 @@ test("settings requires exactly one of --export/--import and gates the modifier 
   );
   expect(runSettings({ exportTo: true, force: true })).rejects.toThrow(/only apply to --import/);
   expect(runSettings({ exportTo: true, noBackup: true })).rejects.toThrow(/only apply to --import/);
+});
+
+test("parseSettingsAction: each arm carries only its own knobs", () => {
+  expect(parseSettingsAction({ exportTo: true })).toEqual({
+    kind: "export",
+    target: true,
+    withCredentials: false,
+  });
+  expect(parseSettingsAction({ exportTo: "out.json", withCredentials: true })).toEqual({
+    kind: "export",
+    target: "out.json",
+    withCredentials: true,
+  });
+  expect(parseSettingsAction({ importFrom: "in.json", force: true })).toEqual({
+    kind: "import",
+    file: "in.json",
+    force: true,
+    noBackup: false,
+  });
+  expect(parseSettingsAction({ importFrom: "in.json", noBackup: true })).toEqual({
+    kind: "import",
+    file: "in.json",
+    force: false,
+    noBackup: true,
+  });
 });
 
 test("bare --export writes the redacted bundle to stdout", async () => {

@@ -1,3 +1,4 @@
+import { parseClaudeAction, parseCodexAction } from "../src/agents/configure.ts";
 import { parseModeFlags } from "../src/agents/provider_mode.ts";
 import { expect, test } from "./helpers/testing.ts";
 
@@ -22,4 +23,71 @@ test("parseModeFlags: a command can keep its own rejection wording (profile)", (
   expect(() => parseModeFlags({ direct: true, proxy: true }, message)).toThrow(message);
   // The message override never changes the valid-input mapping.
   expect(parseModeFlags({ direct: true }, message)).toBe("direct");
+});
+
+// The `agent codex`/`agent claude` flag bags parse ONCE into per-command action
+// unions (src/agents/configure.ts), so a combination the old if-chain resolved
+// by routing order (`--check --direct` ran the check and dropped the mode,
+// `--mobile --host` ran mobile) is a rejection instead.
+
+test("parseCodexAction: each single-intent invocation maps to its own arm", () => {
+  expect(parseCodexAction({ mode: "auto" })).toEqual({ kind: "configure", mode: "auto" });
+  expect(parseCodexAction({ mode: "direct" })).toEqual({ kind: "configure", mode: "direct" });
+  expect(parseCodexAction({ mode: "auto", check: true })).toEqual({ kind: "check" });
+  expect(parseCodexAction({ mode: "auto", mobile: true })).toEqual({ kind: "mobile" });
+  // The farm write takes a mode, and --delete-host selects the host arm alone.
+  expect(parseCodexAction({ mode: "proxy", host: true })).toEqual({
+    kind: "host",
+    deleteHost: false,
+    mode: "proxy",
+  });
+  expect(parseCodexAction({ mode: "auto", deleteHost: true })).toEqual({
+    kind: "host",
+    deleteHost: true,
+    mode: "auto",
+  });
+});
+
+test("parseCodexAction: --check combinations are rejections, not routing-order picks", () => {
+  expect(() => parseCodexAction({ mode: "direct", check: true })).toThrow(
+    "--check only reports the configured provider; it does not combine with --direct/--proxy",
+  );
+  expect(() => parseCodexAction({ mode: "auto", check: true, host: true })).toThrow(
+    "--check only reports the configured provider; it does not combine with --host/--delete-host",
+  );
+  expect(() => parseCodexAction({ mode: "auto", check: true, deleteHost: true })).toThrow(
+    "does not combine with --host/--delete-host",
+  );
+});
+
+test("parseCodexAction: --mobile combines with nothing", () => {
+  for (
+    const flags of [
+      { mode: "direct" as const, mobile: true },
+      { mode: "auto" as const, mobile: true, check: true },
+      { mode: "auto" as const, mobile: true, host: true },
+      { mode: "auto" as const, mobile: true, deleteHost: true },
+    ]
+  ) {
+    expect(() => parseCodexAction(flags)).toThrow(
+      "--mobile is an interactive pairing flow; it does not combine with " +
+        "--check/--direct/--proxy/--host/--delete-host",
+    );
+  }
+});
+
+test("parseClaudeAction: arms and rejections mirror codex minus the host/mobile flags", () => {
+  expect(parseClaudeAction({ mode: "proxy" })).toEqual({ kind: "configure", mode: "proxy" });
+  expect(parseClaudeAction({ mode: "auto", check: true })).toEqual({ kind: "check" });
+  expect(parseClaudeAction({ mode: "auto", desktop: true })).toEqual({ kind: "desktop" });
+  expect(() => parseClaudeAction({ mode: "proxy", check: true })).toThrow(
+    "--check only reports the configured provider; it does not combine with --direct/--proxy",
+  );
+  // The --desktop wording is the pre-union message, kept byte-identical.
+  expect(() => parseClaudeAction({ mode: "direct", desktop: true })).toThrow(
+    "--desktop cannot be combined with --check/--direct/--proxy.",
+  );
+  expect(() => parseClaudeAction({ mode: "auto", desktop: true, check: true })).toThrow(
+    "--desktop cannot be combined with --check/--direct/--proxy.",
+  );
 });

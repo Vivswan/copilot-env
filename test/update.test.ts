@@ -1,3 +1,4 @@
+import { parseUpdateAction } from "../src/commands/update.ts";
 import {
   parseReleasesJson,
   pickAged,
@@ -20,6 +21,46 @@ const rel = (tag: string, date: string, over: Record<string, unknown> = {}): unk
   draft: false,
   prerelease: false,
   ...over,
+});
+
+// The CLI boundary: `agent update`'s flags parse ONCE into an UpdateAction, so
+// a combination the old if-chain would resolve by order (`--auto-status --check`
+// ran the status and dropped --check) is a rejection instead.
+describe("parseUpdateAction", () => {
+  test("each single-intent invocation maps to its own arm", () => {
+    expect(parseUpdateAction({})).toEqual({ kind: "apply", force: false });
+    expect(parseUpdateAction({ force: true })).toEqual({ kind: "apply", force: true });
+    expect(parseUpdateAction({ check: true })).toEqual({ kind: "check" });
+    expect(parseUpdateAction({ auto: true })).toEqual({ kind: "enable-auto" });
+    expect(parseUpdateAction({ noAuto: true })).toEqual({ kind: "disable-auto" });
+    expect(parseUpdateAction({ autoStatus: true })).toEqual({ kind: "auto-status" });
+  });
+
+  test("two report/toggle flags together are a rejection, never an if-order pick", () => {
+    for (
+      const args of [
+        { autoStatus: true, check: true },
+        { auto: true, check: true },
+        { noAuto: true, autoStatus: true },
+      ]
+    ) {
+      expect(() => parseUpdateAction(args)).toThrow(
+        "--check, --auto, --no-auto, and --auto-status are mutually exclusive",
+      );
+    }
+  });
+
+  test("--force lives on the apply arm alone", () => {
+    for (
+      const args of [
+        { check: true, force: true },
+        { auto: true, force: true },
+        { autoStatus: true, force: true },
+      ]
+    ) {
+      expect(() => parseUpdateAction(args)).toThrow("--force only applies to the manual update");
+    }
+  });
 });
 
 describe("parseReleasesJson", () => {

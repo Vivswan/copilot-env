@@ -1,6 +1,7 @@
 import {
   buildNodePosixInstallScript,
   computePathRefresh,
+  parseShellAction,
   runShell,
 } from "../src/commands/setup.ts";
 import { expect, test } from "./helpers/testing.ts";
@@ -12,6 +13,40 @@ test("shell: the CLI-install tuning flags require --clis", () => {
   expect(() => runShell({ cooldown: 7 })).toThrow("require --clis");
   expect(() => runShell({ noSudo: true })).toThrow("require --clis");
   expect(() => runShell({ noPrereqs: true })).toThrow("require --clis");
+});
+
+test("parseShellAction: remove vs wire arms, with the CLI install inside the wire arm", () => {
+  // Removal: --launchers scopes it to just the launchers block.
+  expect(parseShellAction({ remove: true })).toEqual({
+    kind: "remove",
+    allHosts: false,
+    launchersOnly: false,
+  });
+  expect(parseShellAction({ remove: true, launchers: true, allHosts: true })).toEqual({
+    kind: "remove",
+    allHosts: true,
+    launchersOnly: true,
+  });
+  // Wiring: no --clis means no CliSetup at all; --clis folds the install knobs
+  // into the arm (verify-only under --no-prereqs).
+  expect(parseShellAction({ launchers: true })).toEqual({
+    kind: "wire",
+    allHosts: false,
+    launchers: true,
+    clis: null,
+  });
+  expect(parseShellAction({ clis: true, cooldown: 7 })).toEqual({
+    kind: "wire",
+    allHosts: false,
+    launchers: false,
+    clis: { mode: "install", cooldown: 7, noSudo: false },
+  });
+  expect(parseShellAction({ clis: true, noPrereqs: true })).toEqual({
+    kind: "wire",
+    allHosts: false,
+    launchers: false,
+    clis: { mode: "verify-only" },
+  });
 });
 
 test("shell --clis: --no-sudo and --no-prereqs are mutually exclusive", () => {

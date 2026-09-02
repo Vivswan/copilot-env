@@ -320,12 +320,14 @@ test("profile rejects --direct + --proxy at the CLI boundary with its own wordin
 
 test("the mode conflict is rejected at the boundary on every command that takes the pair", () => {
   // Boundary parse runs before any per-command logic, so even invocations whose
-  // command would error later (non---add profile, --mobile) reject the pair first.
+  // command would error later (non---add profile, --mobile, --desktop) reject
+  // the pair first.
   for (
     const argv of [
       ["models", "--direct", "--proxy"],
       ["profile", "--list", "--direct", "--proxy"],
       ["codex", "--mobile", "--direct", "--proxy"],
+      ["claude", "--desktop", "--direct", "--proxy"],
     ]
   ) {
     const conflict = runCli([...argv], { env: isolatedEnv() });
@@ -333,6 +335,28 @@ test("the mode conflict is rejected at the boundary on every command that takes 
     expect(conflict.stderr).toContain("--direct and --proxy are mutually exclusive");
   }
 });
+
+test("codex/claude reject flag combinations the old routing order silently resolved", () => {
+  // `codex --check --direct` used to run the check and drop the mode;
+  // `codex --mobile --host` used to run mobile and drop the farm flag. Each
+  // combination is now a boundary rejection (units in provider_mode.test.ts;
+  // this pins the cli.ts wiring end-to-end).
+  const cases: Array<{ argv: string[]; message: string }> = [
+    { argv: ["codex", "--check", "--direct"], message: "does not combine with --direct/--proxy" },
+    {
+      argv: ["codex", "--check", "--host"],
+      message: "does not combine with --host/--delete-host",
+    },
+    { argv: ["codex", "--mobile", "--host"], message: "--mobile is an interactive pairing flow" },
+    { argv: ["claude", "--check", "--proxy"], message: "does not combine with --direct/--proxy" },
+  ];
+  for (const { argv, message } of cases) {
+    const proc = runCli(argv, { env: isolatedEnv() });
+    expect(proc.exitCode).toBe(1);
+    expect(proc.stderr).toContain(message);
+  }
+  // Four cold CLI spawns; generous headroom for loaded Windows CI runners.
+}, 90_000);
 
 test("codex --mobile refuses to run (non-TTY, or unsupported platform)", () => {
   // Spawned without a TTY: the interactive pairing flow must bail with a clear

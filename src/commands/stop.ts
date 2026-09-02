@@ -2,7 +2,13 @@
 import { consola } from "consola";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { profileHomeNames } from "../copilot_api/paths.ts";
-import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
+import {
+  parseProfileFlag,
+  type Profile,
+  profileLabel,
+  type ProfileName,
+} from "../copilot_api/profile.ts";
+import { assertNever } from "../utils/assert.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 
 export interface StopArgs {
@@ -10,6 +16,26 @@ export interface StopArgs {
   profile?: string;
   /** `--all`: stop the default daemon AND every named profile's daemon. */
   all?: boolean;
+}
+
+/**
+ * What ONE `agent stop` invocation addresses -- every daemon, one named
+ * profile's, or the default's -- parsed ONCE by `parseStopAction` at the CLI
+ * boundary, where `--all --profile` is rejected instead of one flag winning.
+ */
+export type StopAction =
+  | { kind: "all" }
+  | { kind: "profile"; name: ProfileName }
+  | { kind: "default" };
+
+/** Parse the raw `agent stop` flags into a StopAction (the CLI boundary). */
+export function parseStopAction(args: StopArgs): StopAction {
+  if (args.all && args.profile !== undefined) {
+    throw new Error("--all stops every daemon; it does not combine with --profile");
+  }
+  if (args.all) return { kind: "all" };
+  const named = parseProfileFlag(args.profile);
+  return named === null ? { kind: "default" } : { kind: "profile", name: named };
 }
 
 /** Stop one daemon and report the outcome. Returns true when something was stopped. */
@@ -28,15 +54,25 @@ async function stopOne(profile: Profile): Promise<boolean> {
   return true;
 }
 
+/** The daemons one StopAction addresses (`null` = the default daemon). */
+function stopTargets(action: StopAction): Profile[] {
+  switch (action.kind) {
+    case "all":
+      return [null, ...profileHomeNames()];
+    case "profile":
+      return [action.name];
+    case "default":
+      return [null];
+    default:
+      return assertNever(action);
+  }
+}
+
 /** `stop`: terminate the proxy daemon(s) tracked on this host. */
 export async function runStop(args: StopArgs = {}): Promise<void> {
-  if (args.all && args.profile !== undefined) {
-    throw new Error("--all stops every daemon; it does not combine with --profile");
-  }
-  const named: Profile = parseProfileFlag(args.profile);
-  const profiles: Profile[] = args.all ? [null, ...profileHomeNames()] : [named];
+  const action = parseStopAction(args);
   let stoppedAny = false;
-  for (const profile of profiles) {
+  for (const profile of stopTargets(action)) {
     if (await stopOne(profile)) stoppedAny = true;
   }
   if (!stoppedAny) {

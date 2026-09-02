@@ -11,6 +11,7 @@ import {
   isProxyProjected,
 } from "../copilot_api/env_config.ts";
 import { installedProxyVersion } from "../copilot_api/version.ts";
+import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { versionLessThan } from "../utils/semver.ts";
 import { formatTable } from "../utils/table.ts";
@@ -69,31 +70,56 @@ export function sinceProxyVersionWarning(
   );
 }
 
-/** `agent config`: get (default/`--get`), set, or delete one preference. */
-export function runConfig(args: ConfigArgs): void {
-  const actions = [args.set !== undefined, args.del !== undefined].filter(Boolean).length;
-  if (actions > 1) {
+/**
+ * What ONE `agent config` invocation does -- exactly one of set, delete, or read
+ * (one key or all), parsed ONCE by `parseConfigAction` at the CLI boundary so a
+ * conflicting combination (e.g. `--set port 5000 --get`) is rejected instead of
+ * one flag being silently dropped.
+ */
+export type ConfigAction =
+  | { kind: "set"; key: string; value: string }
+  | { kind: "del"; key: string }
+  | { kind: "get"; key?: string };
+
+/** Parse the raw `agent config` flags into a ConfigAction (the CLI boundary). */
+export function parseConfigAction(args: ConfigArgs): ConfigAction {
+  if (args.set !== undefined && args.del !== undefined) {
     throw new Error("--set and --del are mutually exclusive");
   }
-
+  if (args.get !== undefined && (args.set !== undefined || args.del !== undefined)) {
+    throw new Error("--get reads a preference and cannot combine with --set/--del");
+  }
   if (args.set !== undefined) {
-    runSet(args.set);
-    return;
+    const [key, value] = args.set;
+    if (args.set.length !== 2 || key === undefined || value === undefined) {
+      throw new Error("usage: agent config --set <key> <value>");
+    }
+    return { kind: "set", key, value };
   }
-  if (args.del !== undefined) {
-    runDel(args.del);
-    return;
-  }
+  if (args.del !== undefined) return { kind: "del", key: args.del };
   // No --set/--del: print one key (`--get <key>`) or all (bare `agent config` / `--get`).
-  runGet(args.get);
+  return { kind: "get", key: typeof args.get === "string" ? args.get : undefined };
 }
 
-function runSet(pair: string[]): void {
-  const cli = pair[0];
-  const raw = pair[1];
-  if (pair.length !== 2 || cli === undefined || raw === undefined) {
-    throw new Error("usage: agent config --set <key> <value>");
+/** `agent config`: get (default/`--get`), set, or delete one preference. */
+export function runConfig(args: ConfigArgs): void {
+  const action = parseConfigAction(args);
+  switch (action.kind) {
+    case "set":
+      runSet(action.key, action.value);
+      return;
+    case "del":
+      runDel(action.key);
+      return;
+    case "get":
+      runGet(action.key);
+      return;
+    default:
+      assertNever(action);
   }
+}
+
+function runSet(cli: string, raw: string): void {
   const def = configKeyDef(cli);
   if (def === undefined) throw unknownKeyError(cli);
   let value: boolean | number | string;
@@ -137,7 +163,7 @@ function runDel(cli: string): void {
   noteHowItApplies(def);
 }
 
-function runGet(get: string | boolean | undefined): void {
+function runGet(get: string | undefined): void {
   const data = new CopilotEnvConfig().read();
 
   if (typeof get === "string") {

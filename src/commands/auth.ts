@@ -52,7 +52,12 @@ import {
   resolveCopilotApiEntry,
 } from "../copilot_api/process.ts";
 import { resolveDenoBin } from "../copilot_api/sidecar.ts";
-import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
+import {
+  parseProfileFlag,
+  type Profile,
+  profileLabel,
+  type ProfileName,
+} from "../copilot_api/profile.ts";
 import { installedProxyVersion } from "../copilot_api/version.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
@@ -319,10 +324,14 @@ async function loginWithGhToken(source: GhTokenSource): Promise<string> {
     token = tokenFromSetFlag(source.kind === "inline" ? source.token : true);
     fromEnv = source.kind !== "inline";
   }
+  // Narrate the acquisition only ("Using", never "Stored"): persistence is the
+  // CALLER's single store write -- `agent profile --add` commits the token
+  // later, atomically with the profile's mode, and could still fail after this
+  // prints. The caller's own success line reports the stored outcome.
   logger.success(
     fromEnv
-      ? "  Stored the GitHub token from the environment."
-      : "  Stored the provided GitHub token.",
+      ? "  Using the GitHub token from the environment."
+      : "  Using the provided GitHub token.",
   );
   return token;
 }
@@ -380,17 +389,38 @@ export async function authenticate(
 
 // --- sub-actions ------------------------------------------------------------
 
+/** True when the named profile has NO store slot at all. The read-back
+ *  sub-actions (--get/--del/--check) report instead of hard-failing, so their
+ *  repair hint must branch the way the store's write gate does: an existing
+ *  slot (complete or partial) re-auths via `agent auth --profile`, while a
+ *  nonexistent name can only be created by `agent profile --add`
+ *  (assertProfileSlot would refuse the re-auth). */
+function profileSlotMissing(profile: ProfileName): boolean {
+  return !new CopilotEnvState().profileSlotStatus(profile).exists;
+}
+
+/** The store's unknown-profile phrasing (unknownProfileError in env_state.ts),
+ *  reused as a hint pointing at the one command that creates a profile. */
+function noSuchProfileHint(profile: ProfileName): string {
+  return `no such profile '${profile}' - create it with ` +
+    `\`agent profile --add ${profile} --direct|--proxy\``;
+}
+
 async function runGet(profile: Profile, catalogDeps?: CodexCatalogDeps): Promise<void> {
   const token = new Credential(undefined, profile).resolve();
   if (token === null) {
-    logger.error(
-      profile === null
-        ? "no GitHub credential - run `agent auth` to log in"
-        : `no GitHub credential for ${
+    if (profile === null) {
+      logger.error("no GitHub credential - run `agent auth` to log in");
+    } else if (profileSlotMissing(profile)) {
+      logger.error(noSuchProfileHint(profile));
+    } else {
+      logger.error(
+        `no GitHub credential for ${
           profileLabel(profile)
         } - run \`agent auth --profile ${profile}\` ` +
           "to log in (a named profile never falls back to the default credential)",
-    );
+      );
+    }
     process.exitCode = 1;
     return;
   }
@@ -484,6 +514,8 @@ async function runDel(profile: Profile): Promise<void> {
     }
   } else if (profile === null) {
     logger.info("Nothing to clear - not authenticated. Run `agent auth` to log in.");
+  } else if (profileSlotMissing(profile)) {
+    logger.info(`Nothing to clear - ${noSuchProfileHint(profile)}.`);
   } else {
     logger.info(
       `Nothing to clear for ${profileLabel(profile)} - not authenticated. Run ` +
@@ -501,7 +533,11 @@ function runCheck(profile: Profile): void {
   const flag = profile === null ? "" : ` --profile ${profile}`;
   const label = profile === null ? "" : ` (${profileLabel(profile)})`;
   if (provider === null) {
-    console.log(`not authenticated${label} - run \`agent auth${flag}\``);
+    if (profile !== null && profileSlotMissing(profile)) {
+      console.log(noSuchProfileHint(profile));
+    } else {
+      console.log(`not authenticated${label} - run \`agent auth${flag}\``);
+    }
     process.exitCode = 1;
   } else if (resolves) {
     console.log(`authenticated (${provider})${label}`);

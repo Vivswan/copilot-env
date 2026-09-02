@@ -55,6 +55,23 @@ async function captureStdout(fn: () => Promise<void>): Promise<string> {
   return out;
 }
 
+/** Capture process.stderr.write output (the command's narration logger) while
+ *  awaiting `fn`. */
+async function captureStderr(fn: () => Promise<void>): Promise<string> {
+  const original = process.stderr.write.bind(process.stderr);
+  let out = "";
+  process.stderr.write = (chunk: string | Uint8Array): boolean => {
+    out += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    return true;
+  };
+  try {
+    await fn();
+  } finally {
+    process.stderr.write = original;
+  }
+  return out;
+}
+
 /** Capture console.log output while awaiting `fn`. */
 async function captureLog(fn: () => Promise<void>): Promise<string> {
   const original = console.log;
@@ -211,6 +228,62 @@ test("auth --profile <unknown> errors instead of creating a half profile", async
 test("auth --set cannot combine with --get/--del/--check", async () => {
   isolate();
   await expect(runAuth({ set: "ghu_x", get: true })).rejects.toThrow("cannot combine");
+});
+
+test("gh-token acquisition narrates 'Using', never 'Stored' (persistence is the caller's write)", async () => {
+  isolate();
+  // The token is only ACQUIRED here -- `agent profile --add` commits it later,
+  // atomically with the profile's mode, so a "Stored" claim at this point would
+  // be false on that path (and premature even on the plain auth path).
+  const inline = await captureStderr(() => runAuth({ set: "ghu_inline_value" }));
+  expect(inline).toContain("Using the provided GitHub token.");
+  expect(inline).not.toContain("Stored");
+  process.env.GH_TOKEN = "ghu_env_value";
+  const fromEnv = await captureStderr(() => runAuth({ provider: "gh-token" }));
+  expect(fromEnv).toContain("Using the GitHub token from the environment.");
+  expect(fromEnv).not.toContain("Stored");
+});
+
+test("auth --get/--del/--check on a NONEXISTENT profile hint at `agent profile --add`", async () => {
+  isolate();
+  // `agent auth --profile` refuses a name with no store slot (creation belongs
+  // to `agent profile --add` alone), so recommending a re-auth here would just
+  // hit that gate -- the hint reuses the store's no-such-profile phrasing.
+  // Asserted without backticks: consola renders code spans, stripping them.
+  const addHint = "no such profile 'ghost' - create it with ";
+  const addCommand = "agent profile --add ghost --direct|--proxy";
+  const got = await captureStderr(() => runAuth({ get: true, profile: "ghost" }));
+  expect(got).toContain(addHint);
+  expect(got).toContain(addCommand);
+  expect(got).not.toContain("agent auth --profile");
+  expect(process.exitCode).toBe(1);
+  resetExitCode();
+  const deleted = await captureStderr(() => runAuth({ del: true, profile: "ghost" }));
+  expect(deleted).toContain("Nothing to clear");
+  expect(deleted).toContain(addCommand);
+  const checked = await captureLog(() => runAuth({ check: true, profile: "ghost" }));
+  expect(checked).toContain(addHint);
+  expect(checked).toContain(addCommand);
+  expect(process.exitCode).toBe(1);
+  resetExitCode();
+
+  // An EXISTING slot (here partial: de-authed, mode kept) re-auths in place, so
+  // the hint stays `agent auth --profile`.
+  const ghost = parseProfileName("ghost");
+  state().commitProfile(ghost, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghu_old" },
+    mode: "direct",
+  });
+  state().clearCredential(ghost);
+  const gotExisting = await captureStderr(() => runAuth({ get: true, profile: "ghost" }));
+  expect(gotExisting).toContain("agent auth --profile ghost");
+  expect(gotExisting).not.toContain("profile --add");
+  const deletedExisting = await captureStderr(() => runAuth({ del: true, profile: "ghost" }));
+  expect(deletedExisting).toContain("Nothing to clear for profile 'ghost'");
+  expect(deletedExisting).toContain("agent auth --profile ghost");
+  expect(deletedExisting).not.toContain("profile --add");
+  const checkedExisting = await captureLog(() => runAuth({ check: true, profile: "ghost" }));
+  expect(checkedExisting).toContain("run `agent auth --profile ghost`");
 });
 
 test("auth: --provider cannot combine with a sub-action (never silently dropped)", async () => {

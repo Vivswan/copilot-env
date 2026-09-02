@@ -78,12 +78,24 @@ function startLockPath(): string {
   return join(lockDir, ".start.lock");
 }
 
+declare const startLockBrand: unique symbol;
+
+/** Evidence that the global start lock is held for the caller's scope: minted only by
+ *  withStartLock (whose wait is unbounded, so its fn ALWAYS runs held). APIs that must
+ *  stay inside the launch critical section (ensureProxyFloor) demand one. */
+export interface HeldStartLock {
+  readonly held: true;
+  readonly [startLockBrand]: true;
+}
+
+const HELD_START_LOCK: HeldStartLock = Object.freeze({ held: true } as HeldStartLock);
+
 /** Run `fn` holding the start lock, waiting UNBOUNDED for it: a live holder is waited out
  *  (it releases when done), and a crashed holder is reclaimed (dead pid), so the wait always
  *  terminates -- and never proceeds unlocked, which could let a waiter reap the holder's
  *  daemon. Emits a one-time notice once the wait is noticeable. The lock is scoped to `fn`
  *  (released on every exit path, in ONE owner), so an early return cannot leak it. */
-export function withStartLock<T>(fn: () => Promise<T>): Promise<T> {
+export function withStartLock<T>(fn: (lock: HeldStartLock) => Promise<T>): Promise<T> {
   return withFileLock(startLockPath(), {
     staleMs: Number.POSITIVE_INFINITY,
     waitMs: Number.POSITIVE_INFINITY,
@@ -91,7 +103,7 @@ export function withStartLock<T>(fn: () => Promise<T>): Promise<T> {
     noticeAfterMs: START_LOCK_NOTICE_MS,
     onWait: () =>
       consola.info("Another `agent start` is in progress; waiting for it to finish ..."),
-  }, fn);
+  }, () => fn(HELD_START_LOCK));
 }
 
 // --- the proxy freshness + floor gate ---------------------------------------------
@@ -99,7 +111,7 @@ export function withStartLock<T>(fn: () => Promise<T>): Promise<T> {
 /** The proxy version `entry` will actually run, or null when it cannot be known ahead of
  *  the launch: a mapped entry whose node_modules copy is missing, or a file override,
  *  which runs whatever that file is (the CI fake has no version at all). */
-function entryProxyVersion(entry: CopilotApiEntry): string | null {
+export function entryProxyVersion(entry: CopilotApiEntry): string | null {
   switch (entry.kind) {
     case "floated":
       return entry.version;
@@ -112,20 +124,35 @@ function entryProxyVersion(entry: CopilotApiEntry): string | null {
   }
 }
 
+declare const floorCheckedBrand: unique symbol;
+
+/** Evidence that an entry passed the start gate: floated when stale, then judged against
+ *  the PROXY_MIN_VERSION floor (or exempt as a file override). Minted only by
+ *  ensureProxyFloor, so spawnConfiguredDaemon -- which demands one -- cannot be handed an
+ *  entry the gate never saw, and the gate-then-spawn order is carried by the data. */
+export type FloorCheckedEntry = CopilotApiEntry & { readonly [floorCheckedBrand]: true };
+
+function floorChecked(entry: CopilotApiEntry): FloorCheckedEntry {
+  return entry as FloorCheckedEntry;
+}
+
 /**
  * The `agent start` proxy gate: float the proxy if its recorded resolution has gone
- * stale, then refuse to launch below the PROXY_MIN_VERSION floor.
+ * stale, then refuse to launch below the PROXY_MIN_VERSION floor. Returns the entry it
+ * validated -- the one the launch must spawn from.
  *
- * The float runs HERE, at start, because `start` is the one command
- * that needs a runnable proxy -- and `proxyFloatVerifyStatus` is offline while the
- * record is younger than the cooldown, so the common start pays no network cost. The
- * float itself is best-effort (an offline machine keeps whatever is already cached),
- * but the floor is a hard runtime contract: fail-closed, and before disturbing any
- * running daemon. A `COPILOT_API_ENTRY` override skips both -- it runs a file we did
- * not resolve and do not version.
+ * The float runs at start, INSIDE the start lock (`_lock` is the evidence), because
+ * `start` is the one command that needs a runnable proxy -- and serializing it there
+ * means two concurrent starts can never re-warm the float's cache over each other.
+ * `proxyFloatVerifyStatus` is offline while the record is younger than the cooldown, so
+ * the common start pays no network cost. The float itself is best-effort (an offline
+ * machine keeps whatever is already cached), but the floor is a hard runtime contract:
+ * fail-closed, and before disturbing any running daemon. A `COPILOT_API_ENTRY` override
+ * skips both -- it runs a file we did not resolve and do not version.
  */
-export async function ensureProxyFloor(): Promise<void> {
-  if (resolveCopilotApiEntry().kind === "file") return;
+export async function ensureProxyFloor(_lock: HeldStartLock): Promise<FloorCheckedEntry> {
+  const preflight = resolveCopilotApiEntry();
+  if (preflight.kind === "file") return floorChecked(preflight);
 
   // Before anything spawns deno: a compiled build's own executable is not a deno CLI, so
   // the pinned sidecar has to exist before the float can warm a cache or the daemon can
@@ -145,7 +172,8 @@ export async function ensureProxyFloor(): Promise<void> {
 
   // Re-resolve: a successful float just wrote the record, which moves the entry from the
   // mapped fallback to the floated version.
-  const version = entryProxyVersion(resolveCopilotApiEntry());
+  const entry = resolveCopilotApiEntry();
+  const version = entryProxyVersion(entry);
   if (version === null) {
     throw new Error(
       `${PROXY_PACKAGE_NAME} is not resolved or installed - run 'agent start' online to float it, ` +
@@ -167,6 +195,7 @@ export async function ensureProxyFloor(): Promise<void> {
         `known-good release, or rewire an agent to the proxy ('agent init --proxy') first.`,
     );
   }
+  return floorChecked(entry);
 }
 
 // --- port resolution --------------------------------------------------------------
@@ -439,15 +468,16 @@ export function spawnConfiguredDaemon(opts: {
   profile: Profile;
   paths: CopilotApiPaths;
   credential: DaemonCredential;
+  /** The gate's validated entry (only ensureProxyFloor mints one): the spawn -- and every
+   *  bind-race relaunch below -- runs exactly what the floor check judged, and a spawn
+   *  without the gate does not compile. The deno binary is resolved ONCE beside it; on a
+   *  compiled install that is the sidecar ensureProxyFloor provisioned under the same
+   *  root home. */
+  entry: FloorCheckedEntry;
   config?: CopilotEnvConfig;
 }): SpawnedDaemon {
-  const { port, logFile, profile, paths, credential } = opts;
+  const { port, logFile, profile, paths, credential, entry } = opts;
   const config = opts.config ?? new CopilotEnvConfig();
-  // Resolve the entry AND the deno binary ONCE for this launch (and every bind-race
-  // relaunch below), so the daemon can never be started from one resolution and pointed
-  // at another's cache. On a compiled install the binary is the sidecar ensureProxyFloor
-  // provisioned under the same root home.
-  const entry = resolveCopilotApiEntry();
   const denoBin = resolveDenoBin();
   const daemonEnv: Record<string, string> = { COPILOT_API_SQLITE_DB_PATH: paths.sqliteDb };
   if (profile !== null) {

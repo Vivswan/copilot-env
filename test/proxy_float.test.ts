@@ -711,6 +711,22 @@ describe("the build-identity fingerprint", () => {
     expect(readFileSync(daemonConfigFile(dir), "utf8")).toBe(sentinel);
   });
 
+  test("the fingerprint is content-sensitive: it moves exactly when the rendered config would", () => {
+    const roots = (["a", "b"] as const).map((name) => {
+      const root = join(dir, `fp-${name}`);
+      mkdirSync(root, { recursive: true });
+      return root;
+    });
+    const [a, b] = roots as [string, string];
+    writeFileSync(join(a, "deno.json"), '{"imports":{"x":"npm:x@1.0.0"}}\n');
+    writeFileSync(join(b, "deno.json"), '{"imports":{"x":"npm:x@2.0.0"}}\n');
+    expect(daemonConfigFingerprint(a)).not.toBe(daemonConfigFingerprint(b));
+    // Identical content hashes identically, wherever it lives: the fingerprint is the
+    // rendered config's, not the source path's or the build's version string.
+    writeFileSync(join(b, "deno.json"), '{"imports":{"x":"npm:x@1.0.0"}}\n');
+    expect(daemonConfigFingerprint(b)).toBe(daemonConfigFingerprint(a));
+  });
+
   test("a stamped record whose config file is gone regenerates it", async () => {
     seedFloat("1.10.30", NOW_MS - 1000);
     const d = deps(offlineFetch().fetchLike, fakeDeno(["1.10.30"]).runner, WEEK_SECONDS);

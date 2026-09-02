@@ -26,13 +26,19 @@ import { PROXY_PACKAGE_NAME } from "./version.ts";
  */
 export type CopilotApiEntry =
   /** The `COPILOT_API_ENTRY` override: run this file, resolve nothing. */
-  | { kind: "file"; path: string; configFile: string }
+  | { readonly kind: "file"; readonly path: string; readonly configFile: string }
   /** The float's recorded resolution: an exact version in the cache it pre-warmed,
    *  resolved under the daemon config the float wrote beside the record. */
-  | { kind: "floated"; specifier: string; version: string; denoDir: string; configFile: string }
+  | {
+    readonly kind: "floated";
+    readonly specifier: string;
+    readonly version: string;
+    readonly denoDir: string;
+    readonly configFile: string;
+  }
   /** deno.json's mapped specifier: resolved through the frozen lock in a checkout,
    *  or through the generated daemon config on a compiled root. */
-  | { kind: "package"; specifier: string; configFile: string };
+  | { readonly kind: "package"; readonly specifier: string; readonly configFile: string };
 
 /** The daemon config under `rootHome`, (re)generated from the embedded import map. The
  *  float rewrites this file with the same content on every warm, so regenerating here
@@ -173,14 +179,89 @@ export function copilotApiArgv(
 // shares it); re-export it here so lifecycle callers keep their one import site.
 export { pidAlive };
 
-// THE daemon command-line signature (preserves the original `pgrep "copilot-api.*start"`
-// shape): `copilot-api` must appear BEFORE `start`, and `start` is word-bounded so we
-// don't match unrelated processes that merely mention "start" (or "restart") near a path
-// containing "copilot-api". One source string: compiled below for the POSIX scan, and
-// interpolated VERBATIM into the two single-quoted PowerShell `-match` scripts (the
-// backslashes pass through argv unmangled; .NET regexes read `\b` the same way).
-const DAEMON_CMDLINE_PATTERN = "copilot-api.*\\bstart\\b";
+// THE daemon signature. Narrowed from the historical pgrep-shaped `copilot-api.*\bstart\b`
+// SUBSTRING match, which killed innocent processes whose arguments merely mentioned those
+// words (an agent CLI carrying prompt text in its argv). A match now requires the process
+// to LOOK like a daemon invocation end to end:
+//   - the RUNTIME identity comes from the process table, never from flat argv text: the
+//     POSIX scan gates on ps's `ucomm` (the kernel's executable name) and the Windows
+//     scan on the WMI image Name -- both against DAEMON_RUNTIMES (deno; node/bun only
+//     for daemons left running by pre-rewrite installs). Flat argv cannot carry this
+//     reliably: a POSIX executable path with spaces is indistinguishable from arguments.
+//     The gate wants the CANONICAL binary names, matching the Windows image list's
+//     long-standing exact-name contract -- a renamed deno (e.g. a COPILOT_ENV_SIDECAR_DENO
+//     override pointing at one) is an accepted exotic loss on every platform.
+//   - every argv token up to the entry is invocation-shaped: a runtime name or `run`, a
+//     `-` flag, or a slash-carrying path fragment. A ps-flattened spaced path like
+//     `/Users/John Smith/.deno/bin/deno` still reads as two such fragments; a
+//     free-standing bare word (prompt text, a different script's own arguments) breaks
+//     the match. A path COMPONENT of two or more words (`/x/Deno Runtime Tools/deno`
+//     flattens to a slash-less `Runtime`) is an accepted loss: the sweep SIGKILLs what
+//     it matches, so the bias is against false positives -- every tolerance for bare
+//     words re-admits crafted impostor argv. QUOTED tokens are honored only in the
+//     Windows CommandLine form, where quoting is the OS's own convention; in POSIX ps
+//     output shell quoting is already stripped, so a literal quote character is prompt
+//     text and must not bridge bare words;
+//   - the entry token has a path segment STARTING with `copilot-api` (the npm:/scoped
+//     package specifier, a node_modules path, or the COPILOT_API_ENTRY file form, e.g.
+//     the CI fake) -- never the bare word. A POSIX file entry whose own name contains a
+//     space is an accepted loss too (the escape hatch is spaceless in practice; npm
+//     entries always are);
+//   - `start` is the very next token (daemonArgv's shape: entry, then `start`).
+// Residual risk, accepted: a genuine runtime process whose flag VALUE is a
+// copilot-api-segment path immediately followed by a literal `start` token still matches
+// -- that is indistinguishable from a real launch in flat ps/WMI text.
+// test/daemon_spawn.test.ts pins the signature against daemonArgv and against impostor
+// argv fixtures. One invocation-tail source: the POSIX regex compiles it bare, and the
+// Windows pattern -- prefixed with the argv[0] clause the CommandLine carries, plus the
+// quoted-token forms -- is interpolated VERBATIM into the single-quoted PowerShell
+// `-match` scripts (the backslashes pass through argv unmangled; .NET regexes read the
+// pattern the same way).
+
+/** Runtimes that can host the daemon. The POSIX ucomm gate and the Windows image list
+ *  both derive from this, so the two scans cannot drift apart. */
+const DAEMON_RUNTIMES = ["deno", "node", "bun"] as const;
+const RUNTIME_ALTERNATION = DAEMON_RUNTIMES.join("|");
+
+// One middle token per alternation pass: run/runtime, a flag, or a slash-carrying
+// fragment -- whose first char must not be a dash (a `--x=/path` token is a FLAG, or
+// the two classes would overlap) and which anchors on its FIRST slash ([^\s"\/]*
+// before it). Every alternative consumes exactly one whitespace-delimited token and
+// the classes are disjoint, so middle parsing never backtracks combinatorially (a
+// multi-token "spaced path unit" tolerance was tried and rejected: exponential AND an
+// impostor re-admission); the entry probe below is at worst quadratic in the line.
+const MIDDLE_TOKEN =
+  `run|${RUNTIME_ALTERNATION}|-[^\\s"]*|(?:[^\\s"\\\\/-][^\\s"\\\\/]*)?[\\\\/][^\\s"]*`;
+const ENTRY_TOKEN = '[^\\s"]*[\\\\/]copilot-api[^\\s"]*';
+
+/** The POSIX invocation tail: no quoted forms (see the header). */
+const DAEMON_INVOCATION_RE = new RegExp(
+  `^\\s*(?:(?:${MIDDLE_TOKEN})\\s+)*${ENTRY_TOKEN}\\s+start(?:\\s|$)`,
+);
+
+/** The Windows CommandLine form: argv[0] is present (the image path, quoted when it has
+ *  spaces), then the invocation tail with the quoted middle/entry forms admitted. The
+ *  image NAME is filtered separately in the PS scripts, mirroring the POSIX ucomm gate. */
+const DAEMON_CMDLINE_PATTERN =
+  `^\\s*(?:"[^"]*[\\\\/](?:${RUNTIME_ALTERNATION})(?:\\.exe)?"|(?:[^\\s"]*[\\\\/])?(?:${RUNTIME_ALTERNATION})(?:\\.exe)?)\\s+` +
+  `(?:(?:${MIDDLE_TOKEN}|"[^"]*")\\s+)*` +
+  `(?:"[^"]*[\\\\/]copilot-api[^"]*"|${ENTRY_TOKEN})\\s+start(?:\\s|$)`;
 const DAEMON_CMDLINE_RE = new RegExp(DAEMON_CMDLINE_PATTERN);
+
+/** The POSIX judgment: is this scanned process row the daemon's own launch shape?
+ *  `ucomm` carries the runtime gate; the command line (which begins with argv[0],
+ *  possibly a spaced path flattened by ps) must be a daemon invocation. Exported for
+ *  the impostor/orphan fixtures in test/daemon_spawn.test.ts. */
+export function isDaemonProcess(row: ProcessRow): boolean {
+  if (!(DAEMON_RUNTIMES as readonly string[]).includes(row.ucomm)) return false;
+  return DAEMON_INVOCATION_RE.test(row.command);
+}
+
+/** The Windows judgment the PowerShell `-match` scripts compute, mirrored here so the
+ *  fixtures in test/daemon_spawn.test.ts pin the interpolated pattern's semantics. */
+export function isDaemonCommandLine(command: string): boolean {
+  return DAEMON_CMDLINE_RE.test(command);
+}
 
 /** How long an escalating teardown waits after SIGTERM before it SIGKILLs, shared by every
  *  path that must guarantee the daemon is gone. It also bounds the daemon's own drain:
@@ -270,19 +351,20 @@ function listCopilotApiPids(): Promise<number[]> {
 }
 
 /** Process images that can host the daemon on Windows, where the command-line query
- *  filters by image name. `deno.exe` is what launchDaemon spawns today; `node.exe` and
- *  `bun.exe` exist only so an `agent update` from 3.5.6 or older (the last releases whose
- *  launcher ran the daemon under bun) can still find -- and stop -- the daemon that
- *  install left running. */
-const WINDOWS_DAEMON_IMAGES = ["deno.exe", "node.exe", "bun.exe"] as const;
+ *  filters by image name -- DAEMON_RUNTIMES with the Windows suffix. `deno.exe` is what
+ *  launchDaemon spawns today; `node.exe` and `bun.exe` exist only so an `agent update`
+ *  from 3.5.6 or older (the last releases whose launcher ran the daemon under bun) can
+ *  still find -- and stop -- the daemon that install left running. */
+const WINDOWS_DAEMON_IMAGES = DAEMON_RUNTIMES.map((runtime) => `${runtime}.exe`);
 
 async function listCopilotApiPidsWindows(): Promise<number[]> {
   // Windows has no portable command-line column in `ps`, so match on the daemon's command
   // line via WMI: runtime processes whose CommandLine is the launch
   // (`<runtime> ... copilot-api ... start`). `wmic` is removed on newer Windows, so go
-  // through PowerShell + Get-CimInstance. The signature is the shared
-  // DAEMON_CMDLINE_PATTERN (same match as POSIX). Single quotes only, so the script
-  // passes through argv quoting unmangled.
+  // through PowerShell + Get-CimInstance. The signature is DAEMON_CMDLINE_PATTERN (the
+  // same invocation tail the POSIX scan judges, plus the argv[0] clause and the quoted
+  // forms CommandLine carries). Single quotes only, so the script passes through argv
+  // quoting unmangled.
   //
   // Restrict to the CURRENT user's processes (GetOwner Domain+User == $env:USERDOMAIN/$env:USERNAME)
   // to mirror the POSIX `ps -U <uid>` (`pgrep -u me`): otherwise, from an elevated
@@ -318,56 +400,67 @@ async function listCopilotApiPidsWindows(): Promise<number[]> {
   return pids;
 }
 
-/** One process as the POSIX scan reads it: its pid and full command line. */
+/** One process as the POSIX scan reads it: its pid, its executable name as the process
+ *  table reports it (ps `ucomm` -- the runtime gate reads THIS, never argv text), and
+ *  its full command line. */
 export interface ProcessRow {
   pid: number;
+  ucomm: string;
   command: string;
 }
 
-/** Parse `ps -o pid=,args=` output: leading-blank-padded pid, one space, then the command
- *  line verbatim (which may itself contain runs of spaces, so only the pid is split off).
- *  Lines that are not pid-prefixed -- a header a future `ps` might emit, or a wrapped
- *  continuation -- are dropped rather than guessed at. */
+/** Parse `ps -o pid=,ucomm=,args=` output: leading-blank-padded pid, the executable name
+ *  (an executable pathologically named with spaces mis-splits here and simply never
+ *  reads as a runtime), then the command line verbatim (which may itself contain runs
+ *  of spaces, so only the leading columns are split off). Lines that are not pid-prefixed
+ *  -- a header a future `ps` might emit, or a wrapped continuation -- are dropped rather
+ *  than guessed at. */
 export function parseProcessRows(stdout: string): ProcessRow[] {
   const rows: ProcessRow[] = [];
   for (const line of stdout.split(/\r?\n/)) {
-    const match = /^\s*(\d+)\s+(\S.*)$/.exec(line);
+    const match = /^\s*(\d+)\s+(\S+)\s+(\S.*)$/.exec(line);
     if (match === null) continue;
-    rows.push({ pid: Number.parseInt(match[1] as string, 10), command: match[2] as string });
+    rows.push({
+      pid: Number.parseInt(match[1] as string, 10),
+      ucomm: match[2] as string,
+      command: match[3] as string,
+    });
   }
   return rows;
 }
 
 /**
- * The current user's processes as (pid, command line) rows. `-U <uid>` restricts the scan
- * to OUR processes on both BSD (macOS) and procps (Linux) -- the orphan sweep SIGKILLs
- * what this returns, so an elevated shell must never see another user's daemons.
- * Best-effort, like the `pgrep` this descends from: any failure (including a user with no
- * processes, where `ps` exits non-zero) degrades to no rows rather than aborting. The
- * raised maxBuffer keeps a process-heavy machine's listing from overflowing into that
- * degrade path and silently weakening the orphan scan.
+ * The current user's processes as (pid, executable name, command line) rows. `-U <uid>`
+ * restricts the scan to OUR processes on both BSD (macOS) and procps (Linux) -- the
+ * orphan sweep SIGKILLs what this feeds, so an elevated shell must never see another
+ * user's daemons. Best-effort, like the `pgrep` this descends from: any failure
+ * (including a user with no processes, where `ps` exits non-zero) degrades to no rows
+ * rather than aborting. The raised maxBuffer keeps a process-heavy machine's listing
+ * from overflowing into that degrade path and silently weakening the orphan scan.
  */
 async function listUserProcesses(): Promise<ProcessRow[]> {
   const uid = process.getuid?.();
   if (uid === undefined) return [];
-  const { exitCode, stdout } = await runCaptured("ps", ["-U", String(uid), "-o", "pid=,args="], {
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  const { exitCode, stdout } = await runCaptured(
+    "ps",
+    ["-U", String(uid), "-o", "pid=,ucomm=,args="],
+    { maxBuffer: 64 * 1024 * 1024 },
+  );
   if (exitCode !== 0) return [];
   return parseProcessRows(stdout);
 }
 
 async function listCopilotApiPidsPosix(): Promise<number[]> {
   const pids: number[] = [];
-  for (const { pid, command } of await listUserProcesses()) {
-    // The shared daemon signature (DAEMON_CMDLINE_PATTERN above).
-    if (!DAEMON_CMDLINE_RE.test(command)) {
+  for (const row of await listUserProcesses()) {
+    // The shared daemon signature (DAEMON_RUNTIMES + DAEMON_INVOCATION_RE above).
+    if (!isDaemonProcess(row)) {
       continue;
     }
-    if (command.includes("copilot-api.sh") || command.includes("copilot_api.py")) {
+    if (row.command.includes("copilot-api.sh") || row.command.includes("copilot_api.py")) {
       continue;
     }
-    pids.push(pid);
+    pids.push(row.pid);
   }
   return pids;
 }

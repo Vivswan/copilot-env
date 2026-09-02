@@ -116,9 +116,14 @@ export class OwnershipLedger {
   }
 
   /** Every artifact path recorded for `kind` -- ledger entries plus any legacy
-   *  pre-ledger record still in the state store -- deduped. */
+   *  pre-ledger record still in the state store -- deduped. Under the ops lock (the
+   *  same best-effort bounded scope every mutation takes) so a read does not observe
+   *  the adoption's mid-move half-state (ledger written, legacy not yet cleared, or
+   *  vice versa). */
   ownedPaths(kind: OwnedArtifactKind): string[] {
-    return [...new Set([...this.ledgerPaths(kind), ...this.legacyPaths(kind)])];
+    return withFileLockSync(this.opsLock, BOUNDED_LOCK_POLICY, () => [
+      ...new Set([...this.ledgerPaths(kind), ...this.legacyPaths(kind)]),
+    ]);
   }
 
   /** Whether WE wrote the `kind` entry at this exact artifact path. */

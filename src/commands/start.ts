@@ -12,6 +12,8 @@ import {
   awaitReadiness,
   cleanupExistingProxies,
   ensureProxyFloor,
+  entryProxyVersion,
+  type FloorCheckedEntry,
   listUntrackedOrphans,
   resolveLaunchCredential,
   resolveStartPort,
@@ -24,7 +26,7 @@ import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { pidAlive } from "../copilot_api/process.ts";
 import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
-import { installedProxyVersion, PROXY_PACKAGE_NAME } from "../copilot_api/version.ts";
+import { PROXY_PACKAGE_NAME } from "../copilot_api/version.ts";
 import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { formatDuration } from "../utils/time.ts";
@@ -210,13 +212,13 @@ function reportManagedLifecycle(state: CopilotEnvRunState): void {
 }
 
 /**
- * Log the running proxy's version and (best-effort) its npm publish date.
- * The installed package.json carries only the version; the publish timestamp
- * lives in the registry's `time` map, so we fetch it with a short timeout and
- * fall back to version-only when offline.
+ * Log the proxy version `entry` will run and (best-effort) its npm publish date.
+ * The version comes from the floor-checked entry itself (a file override has none,
+ * so nothing is logged); the publish timestamp lives in the registry's `time` map,
+ * so we fetch it with a short timeout and fall back to version-only when offline.
  */
-async function logProxyVersion(): Promise<void> {
-  const version = installedProxyVersion();
+async function logProxyVersion(entry: FloorCheckedEntry): Promise<void> {
+  const version = entryProxyVersion(entry);
   if (version === null) {
     return;
   }
@@ -246,8 +248,9 @@ async function reportStartSummary(
   live: { pid: number; port: number },
   paths: CopilotApiPaths,
   logFile: string,
+  entry: FloorCheckedEntry,
 ): Promise<void> {
-  await logProxyVersion();
+  await logProxyVersion(entry);
   const summary: Array<[string, string]> = [
     ["Logs", logFile],
     ["PID", String(live.pid)],
@@ -324,12 +327,15 @@ export async function runStart(action: StartAction): Promise<void> {
     return;
   }
 
-  await ensureProxyFloor();
-
   fs.mkdirSync(paths.runDir, { recursive: true });
   // Every human-facing follow-up command must address THIS daemon.
   const profileFlag = profile === null ? "" : ` --profile ${profile}`;
-  await withStartLock(async () => {
+  await withStartLock(async (lock) => {
+    // The float/floor gate runs INSIDE the start lock: it rewrites the shared daemon
+    // config and re-warms the float's cache, so two concurrent starts must not run it
+    // over each other. Its console narration still reaches the user unchanged.
+    const entry = await ensureProxyFloor(lock);
+
     if (isIdempotentNoOp(action, ctx.envConfig)) {
       const status = await proxyStatus(profile);
       if (status.up) {
@@ -355,6 +361,7 @@ export async function runStart(action: StartAction): Promise<void> {
       profile,
       paths,
       credential,
+      entry,
       config: ctx.envConfig,
     });
     const live = await awaitReadiness({
@@ -372,6 +379,6 @@ export async function runStart(action: StartAction): Promise<void> {
       reportManagedLifecycle(ctx.state);
     }
     await syncAliasesAfterStart(ctx.config, live.port);
-    await reportStartSummary(profile, live, paths, ctx.logFile);
+    await reportStartSummary(profile, live, paths, ctx.logFile, entry);
   });
 }

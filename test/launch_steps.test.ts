@@ -15,12 +15,14 @@ import {
 import {
   applyDefaultConfig,
   awaitReadiness,
+  type FloorCheckedEntry,
   listUntrackedOrphans,
   resolveLaunchCredential,
   resolveStartPort,
   trackedDaemonPids,
   withStartLock,
 } from "../src/copilot_api/launch.ts";
+import type { CopilotApiEntry } from "../src/copilot_api/process.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
 import { ProxyProjectionState } from "../src/copilot_api/ownership.ts";
@@ -655,4 +657,20 @@ test("withStartLock releases the start lock on return and on throw alike", async
   // If either scope above had leaked the lock, this take would wait forever
   // (the start lock's wait is unbounded) and time the suite out.
   expect(await withStartLock(() => Promise.resolve(true))).toBe(true);
+});
+
+// --- the floor-checked entry: gate-then-spawn ordered by data ----------------------------
+
+test("spawnConfiguredDaemon demands ensureProxyFloor's evidence (compile-enforced)", () => {
+  // Only ensureProxyFloor mints a FloorCheckedEntry, so a spawn from an entry the
+  // gate never judged does not compile -- the float/floor-before-spawn ordering is
+  // carried by the data, not by statement order in runStart.
+  const plain: CopilotApiEntry = {
+    kind: "package",
+    specifier: "@jeffreycao/copilot-api",
+    configFile: "deno.json",
+  };
+  // @ts-expect-error a plain resolved entry is not floor-checked evidence
+  const gated: FloorCheckedEntry = plain;
+  expect(gated).toBe(plain); // the brand is type-level only; no runtime shape exists
 });

@@ -35,7 +35,8 @@ export function sanitizeTokenCount(v: unknown): number {
   return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0;
 }
 
-/** Per-model token totals, summed across every DB. */
+/** The four token buckets plus an event count: an accumulated per-model total in the
+ *  report maps, and equally a usage increment on its way into record. */
 export interface ModelUsage extends TokenBuckets {
   events: number;
 }
@@ -98,17 +99,30 @@ export interface UsageReport {
 }
 
 /**
- * Fold one source's token buckets into a model->usage map, seeding a zero-valued record
- * the first time a model appears. `events` is this occurrence's event-count increment (a
- * grouped SQL row carries its COUNT, a session line counts 1, a streaming delta 0). The
- * ONE fold every usage source shares -- add a token bucket here and every source folds it.
+ * Fold one usage increment into a report: always into `byModel`, and into
+ * `perDay[day]` too unless `day` is null (byModel only -- e.g. a timestamp-less
+ * row, which cannot be placed on a local calendar day but must still reach the
+ * totals). `usage.events` is the increment's event count (a grouped SQL row
+ * carries its COUNT, a session line counts 1, a streaming delta 0). The ONE
+ * owner of the two maps' consistency: every producer records through here, so
+ * the per-day split can never drift from the roll-up.
  */
-export function addUsage(
-  target: Map<string, ModelUsage>,
+export function record(
+  report: UsageReport,
+  day: string | null,
   model: string,
-  buckets: TokenBuckets,
-  events: number,
+  usage: ModelUsage,
 ): void {
+  addUsage(report.byModel, model, usage);
+  if (day !== null) {
+    addUsage(dayUsageMap(report.perDay, day), model, usage);
+  }
+}
+
+/** Fold one usage increment into a model->usage map, seeding a zero-valued record the
+ *  first time a model appears. The ONE fold both report maps share -- add a token
+ *  bucket here and every source folds it. Never retains `usage` by reference. */
+function addUsage(target: Map<string, ModelUsage>, model: string, usage: ModelUsage): void {
   const prev = target.get(model) ?? {
     input: 0,
     output: 0,
@@ -116,29 +130,25 @@ export function addUsage(
     cacheCreation: 0,
     events: 0,
   };
-  prev.input += buckets.input;
-  prev.output += buckets.output;
-  prev.cacheRead += buckets.cacheRead;
-  prev.cacheCreation += buckets.cacheCreation;
-  prev.events += events;
+  prev.input += usage.input;
+  prev.output += usage.output;
+  prev.cacheRead += usage.cacheRead;
+  prev.cacheCreation += usage.cacheCreation;
+  prev.events += usage.events;
   target.set(model, prev);
 }
 
-/** addUsage into the per-day split: fold into `perDay[day]`, creating the day's
- *  model->usage map the first time that day appears. */
-export function addDayUsage(
+/** The per-day model map for `day`, created empty the first time the day appears. */
+function dayUsageMap(
   perDay: Map<string, Map<string, ModelUsage>>,
   day: string,
-  model: string,
-  buckets: TokenBuckets,
-  events: number,
-): void {
+): Map<string, ModelUsage> {
   let dayModels = perDay.get(day);
   if (dayModels === undefined) {
     dayModels = new Map<string, ModelUsage>();
     perDay.set(day, dayModels);
   }
-  addUsage(dayModels, model, buckets, events);
+  return dayModels;
 }
 
 /**
@@ -249,8 +259,7 @@ function openSqliteReadOnlyWithWalFallback<T>(path: string, query: (db: Database
  * deno honors on unix only.
  */
 export function readUsage(dbPaths: string[], sinceMs?: number, timeZone?: string): UsageReport {
-  const byModel = new Map<string, ModelUsage>();
-  const perDay = new Map<string, Map<string, ModelUsage>>();
+  const report: UsageReport = { byModel: new Map(), perDay: new Map() };
   const since = sinceMs ?? null;
   // Resolved BEFORE any DB is opened: an unknown zone must fail here, not once per row
   // inside the per-path catch below, which would report it as an unreadable database.
@@ -296,42 +305,38 @@ export function readUsage(dbPaths: string[], sinceMs?: number, timeZone?: string
 
     for (const row of rows) {
       // Sources spell the same model differently; key rows by the shared form.
-      const model = canonicalModelName(row.model);
-      addUsage(byModel, model, row.buckets, row.events);
-      // Distinct LOCAL calendar days with data, unioned across all DBs. The
-      // daemon writes created_at_ms on every row, so a null bucket is not
-      // expected; such a row still counts toward byModel (the aggregate total)
-      // but is omitted from the per-day split.
-      if (row.bucket !== null) {
-        addDayUsage(
-          perDay,
-          dayKey(row.bucket * MINUTE_MS),
-          model,
-          row.buckets,
-          row.events,
-        );
-      }
+      // The day is the row's LOCAL calendar day; the daemon writes created_at_ms
+      // on every row, so a null bucket is not expected -- record still totals
+      // such a row, just outside the per-day split.
+      record(
+        report,
+        row.bucket !== null ? dayKey(row.bucket * MINUTE_MS) : null,
+        canonicalModelName(row.model),
+        { ...row.buckets, events: row.events },
+      );
     }
   }
 
-  return { byModel, perDay };
+  return report;
 }
 
 /** Sum several usage reports into one (models and days unioned). */
 export function mergeUsageReports(reports: Iterable<UsageReport>): UsageReport {
-  const byModel = new Map<string, ModelUsage>();
-  const perDay = new Map<string, Map<string, ModelUsage>>();
+  const merged: UsageReport = { byModel: new Map(), perDay: new Map() };
   for (const report of reports) {
+    // A merge unions two already-consistent reports rather than recording rows:
+    // each byModel entry is a full roll-up (its dated rows included), so it
+    // folds in day-less, and the per-day split unions day-wise below.
     for (const [model, u] of report.byModel) {
-      addUsage(byModel, model, u, u.events);
+      record(merged, null, model, u);
     }
     for (const [day, dayModels] of report.perDay) {
       // A day with an empty model map still counts as active in the union.
-      if (!perDay.has(day)) perDay.set(day, new Map());
+      const target = dayUsageMap(merged.perDay, day);
       for (const [model, u] of dayModels) {
-        addDayUsage(perDay, day, model, u, u.events);
+        addUsage(target, model, u);
       }
     }
   }
-  return { byModel, perDay };
+  return merged;
 }

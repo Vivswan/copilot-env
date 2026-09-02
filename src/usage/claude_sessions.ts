@@ -32,13 +32,7 @@ import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { type DayKey, dayKeyIn, MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { canonicalModelName } from "./pricing.ts";
-import {
-  addDayUsage,
-  addUsage,
-  sanitizeTokenCount,
-  type TokenBuckets,
-  type UsageReport,
-} from "./usage.ts";
+import { record, sanitizeTokenCount, type TokenBuckets, type UsageReport } from "./usage.ts";
 
 /** Error placeholders carry this model id and no real usage attribution. */
 const SYNTHETIC_MODEL = "<synthetic>";
@@ -252,19 +246,16 @@ async function parseTranscriptFile(
       }
 
       // A repeated id is the same message continuing (streaming) or copied
-      // (resume/fork), so only the FIRST occurrence counts as an event.
-      addUsage(report.byModel, model, buckets, isNewMessage ? 1 : 0);
-      // Bucket by the user's LOCAL calendar day (localDayKey), not the UTC day
-      // the transcript timestamp spells.
-      if (Number.isFinite(tsMs)) {
-        addDayUsage(
-          report.perDay,
-          dayKey(tsMs),
-          model,
-          buckets,
-          isNewMessage ? 1 : 0,
-        );
-      }
+      // (resume/fork), so only the FIRST occurrence counts as an event. Bucket
+      // by the user's LOCAL calendar day (localDayKey), not the UTC day the
+      // transcript timestamp spells; a line with no parseable timestamp still
+      // counts toward the totals.
+      record(
+        report,
+        Number.isFinite(tsMs) ? dayKey(tsMs) : null,
+        model,
+        { ...buckets, events: isNewMessage ? 1 : 0 },
+      );
     }
   } finally {
     rl.close();

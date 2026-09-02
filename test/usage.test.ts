@@ -4,9 +4,12 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
   discoverUsageDbs,
+  mergeUsageReports,
   parseUsageRow,
   readUsage,
+  record,
   sanitizeTokenCount,
+  type UsageReport,
 } from "../src/usage/usage.ts";
 import { localDayKey } from "../src/utils/time.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
@@ -91,6 +94,97 @@ test("parseUsageRow normalizes every count and drops rows it cannot attribute", 
   expect(parseUsageRow({ model: 42, input: 10, events: 1 })).toBeNull();
   expect(parseUsageRow(null)).toBeNull();
   expect(parseUsageRow("not a row")).toBeNull();
+});
+
+// record is the ONE owner of the report's two maps: every producer folds through it,
+// so its contract -- always byModel, perDay only when a day is given -- is what every
+// source's totals-vs-split behavior reduces to.
+test("record folds into byModel always and into perDay only when a day is given", () => {
+  const report: UsageReport = { byModel: new Map(), perDay: new Map() };
+  record(report, "2026-06-01", "m", {
+    input: 10,
+    output: 5,
+    cacheRead: 2,
+    cacheCreation: 1,
+    events: 1,
+  });
+  record(report, "2026-06-01", "m", {
+    input: 10,
+    output: 5,
+    cacheRead: 2,
+    cacheCreation: 1,
+    events: 1,
+  });
+  // The day-less occurrence (a timestamp-less row) reaches the totals only.
+  record(report, null, "m", { input: 3, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 });
+
+  expect(report.byModel.get("m")).toEqual({
+    input: 23,
+    output: 10,
+    cacheRead: 4,
+    cacheCreation: 2,
+    events: 3,
+  });
+  expect(report.perDay.size).toBe(1);
+  expect(report.perDay.get("2026-06-01")?.get("m")).toEqual({
+    input: 20,
+    output: 10,
+    cacheRead: 4,
+    cacheCreation: 2,
+    events: 2,
+  });
+});
+
+test("mergeUsageReports sums models, unions days, and keeps day-less usage in the totals", () => {
+  const a: UsageReport = { byModel: new Map(), perDay: new Map() };
+  record(a, "2026-06-01", "m", { input: 1, output: 2, cacheRead: 3, cacheCreation: 4, events: 1 });
+  // Day-less usage lives in byModel only; the merge must not lose it.
+  record(a, null, "m", { input: 10, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 });
+
+  const b: UsageReport = { byModel: new Map(), perDay: new Map() };
+  record(b, "2026-06-01", "m", {
+    input: 100,
+    output: 0,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 1,
+  });
+  record(b, "2026-06-02", "n", { input: 7, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 });
+  // A day with an empty model map still counts as active in the union.
+  b.perDay.set("2026-06-03", new Map());
+
+  const merged = mergeUsageReports([a, b]);
+
+  expect(merged.byModel.get("m")).toEqual({
+    input: 111,
+    output: 2,
+    cacheRead: 3,
+    cacheCreation: 4,
+    events: 3,
+  });
+  expect(merged.byModel.get("n")?.input).toBe(7);
+  expect([...merged.perDay.keys()].sort()).toEqual(["2026-06-01", "2026-06-02", "2026-06-03"]);
+  // The shared day sums across reports; the day-less share stays out of it.
+  expect(merged.perDay.get("2026-06-01")?.get("m")).toEqual({
+    input: 101,
+    output: 2,
+    cacheRead: 3,
+    cacheCreation: 4,
+    events: 2,
+  });
+  // The merge folded copies, never references: mutating the merged report must
+  // not reach back into a source, and the sources are unchanged.
+  expect(merged.byModel.get("m")).not.toBe(a.byModel.get("m"));
+  expect(merged.byModel.get("m")).not.toBe(b.byModel.get("m"));
+  expect(merged.perDay.get("2026-06-01")?.get("m")).not.toBe(a.perDay.get("2026-06-01")?.get("m"));
+  expect(merged.perDay.get("2026-06-01")?.get("m")).not.toBe(b.perDay.get("2026-06-01")?.get("m"));
+  const mergedM = merged.byModel.get("m");
+  if (mergedM !== undefined) mergedM.input += 1_000;
+  const mergedDayM = merged.perDay.get("2026-06-01")?.get("m");
+  if (mergedDayM !== undefined) mergedDayM.input += 1_000;
+  expect(a.byModel.get("m")?.input).toBe(11);
+  expect(a.perDay.get("2026-06-01")?.get("m")?.input).toBe(1);
+  expect(b.perDay.get("2026-06-01")?.get("m")?.input).toBe(100);
 });
 
 test("readUsage drops an unattributable DB row instead of reporting a phantom model", () => {

@@ -36,13 +36,7 @@ import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { type DayKey, dayKeyIn, MILLISECONDS_PER_DAY } from "../utils/time.ts";
 import { canonicalModelName } from "./pricing.ts";
-import {
-  addDayUsage,
-  addUsage,
-  sanitizeTokenCount,
-  type TokenBuckets,
-  type UsageReport,
-} from "./usage.ts";
+import { record, sanitizeTokenCount, type TokenBuckets, type UsageReport } from "./usage.ts";
 
 const SESSION_SUBDIRS = ["sessions", "archived_sessions"];
 const ROLLOUT_FILE = /^rollout-(\d{4})-(\d{2})-(\d{2})T.*\.jsonl(\.zst)?$/;
@@ -340,13 +334,15 @@ async function parseRolloutFile(
       report = { byModel: new Map(), perDay: new Map() };
       providers.set(provider, report);
     }
-    const buckets = tokenBuckets(last);
-    addUsage(report.byModel, model, buckets, 1);
     // Bucket by the user's LOCAL calendar day (localDayKey), not the UTC day
-    // the rollout timestamp spells.
-    if (Number.isFinite(tsMs)) {
-      addDayUsage(report.perDay, dayKey(tsMs), model, buckets, 1);
-    }
+    // the rollout timestamp spells; a line with no parseable timestamp still
+    // counts toward the totals.
+    record(
+      report,
+      Number.isFinite(tsMs) ? dayKey(tsMs) : null,
+      model,
+      { ...tokenBuckets(last), events: 1 },
+    );
   }
 
   if (sessionId !== undefined && ownHashes.size > 0) {

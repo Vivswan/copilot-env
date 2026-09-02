@@ -28,11 +28,13 @@ export interface TokenBuckets {
   cacheCreation: number;
 }
 
-/** Clamp one raw token count for the report: only a finite positive number passes.
- *  Non-finite or negative counts (hostile or torn lines) never enter a report --
- *  the ONE sanitization rule every session reader applies to its buckets. */
+/** Clamp one raw token count for the report: only a finite positive number passes,
+ *  floored to an integer. Non-finite or negative counts (hostile or torn lines)
+ *  never enter a report -- the ONE sanitization rule every session reader applies
+ *  to its buckets. Counts are integral by nature; flooring drops torn fractions
+ *  and keeps report arithmetic (sums, the undated remainder) exact. */
 export function sanitizeTokenCount(v: unknown): number {
-  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0;
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
 }
 
 /** The four token buckets plus an event count: an accumulated per-model total in the
@@ -91,11 +93,20 @@ export function parseUsageRow(raw: unknown): UsageRow | null {
  * timezone) to that day's per-model token totals, unioned across every DB.
  * `byModel` is the all-days roll-up -- derived from the same rows, kept as a
  * field so callers don't recompute it. The active-day count is `perDay.size`,
- * always read from the map itself.
+ * always read from the map itself. The mutable shape is for producers, which
+ * build one and fold into it through record(); readers take ReadonlyUsageReport.
  */
 export interface UsageReport {
   byModel: Map<string, ModelUsage>;
   perDay: Map<string, Map<string, ModelUsage>>;
+}
+
+/** The read-only face of a UsageReport (every UsageReport is assignable to it).
+ *  Consumers take this shape so they cannot mutate a report they were handed;
+ *  producers keep the mutable UsageReport and fold through record(). */
+export interface ReadonlyUsageReport {
+  readonly byModel: ReadonlyMap<string, Readonly<ModelUsage>>;
+  readonly perDay: ReadonlyMap<string, ReadonlyMap<string, Readonly<ModelUsage>>>;
 }
 
 /**
@@ -111,18 +122,26 @@ export function record(
   report: UsageReport,
   day: string | null,
   model: string,
-  usage: ModelUsage,
+  usage: Readonly<ModelUsage>,
 ): void {
-  addUsage(report.byModel, model, usage);
+  // Snapshot first: the byModel fold mutates its entry in place, and `usage` may
+  // BE that entry (a caller folding a report's own accumulator back in), which
+  // would hand the perDay fold an already-doubled increment.
+  const increment = { ...usage };
+  addUsage(report.byModel, model, increment);
   if (day !== null) {
-    addUsage(dayUsageMap(report.perDay, day), model, usage);
+    addUsage(dayUsageMap(report.perDay, day), model, increment);
   }
 }
 
 /** Fold one usage increment into a model->usage map, seeding a zero-valued record the
  *  first time a model appears. The ONE fold both report maps share -- add a token
  *  bucket here and every source folds it. Never retains `usage` by reference. */
-function addUsage(target: Map<string, ModelUsage>, model: string, usage: ModelUsage): void {
+function addUsage(
+  target: Map<string, ModelUsage>,
+  model: string,
+  usage: Readonly<ModelUsage>,
+): void {
   const prev = target.get(model) ?? {
     input: 0,
     output: 0,
@@ -321,7 +340,7 @@ export function readUsage(dbPaths: string[], sinceMs?: number, timeZone?: string
 }
 
 /** Sum several usage reports into one (models and days unioned). */
-export function mergeUsageReports(reports: Iterable<UsageReport>): UsageReport {
+export function mergeUsageReports(reports: Iterable<ReadonlyUsageReport>): UsageReport {
   const merged: UsageReport = { byModel: new Map(), perDay: new Map() };
   for (const report of reports) {
     // A merge unions two already-consistent reports rather than recording rows:
@@ -339,4 +358,45 @@ export function mergeUsageReports(reports: Iterable<UsageReport>): UsageReport {
     }
   }
   return merged;
+}
+
+/**
+ * The share of `byModel` no perDay row accounts for: per model, byModel minus
+ * the sum over the days, dropping models the days fully cover. record() folds
+ * every dated increment into both maps and sanitizeTokenCount keeps every count
+ * an integer, so the difference is exactly the usage recorded with a null day
+ * (e.g. a timestamp-less DB row).
+ */
+export function undatedUsage(report: ReadonlyUsageReport): Map<string, ModelUsage> {
+  const rest = new Map<string, ModelUsage>();
+  for (const [model, u] of report.byModel) {
+    rest.set(model, { ...u });
+  }
+  for (const dayModels of report.perDay.values()) {
+    for (const [model, u] of dayModels) {
+      const r = rest.get(model);
+      if (r === undefined) continue; // impossible via record(); tolerate hand-built maps
+      r.input -= u.input;
+      r.output -= u.output;
+      r.cacheRead -= u.cacheRead;
+      r.cacheCreation -= u.cacheCreation;
+      r.events -= u.events;
+    }
+  }
+  for (const [model, r] of rest) {
+    // The clamp only guards hand-built reports whose totals passed 2^53, where
+    // float addition stops being exact and a remainder could dip negative.
+    r.input = Math.max(0, r.input);
+    r.output = Math.max(0, r.output);
+    r.cacheRead = Math.max(0, r.cacheRead);
+    r.cacheCreation = Math.max(0, r.cacheCreation);
+    r.events = Math.max(0, r.events);
+    if (
+      r.input === 0 && r.output === 0 && r.cacheRead === 0 && r.cacheCreation === 0 &&
+      r.events === 0
+    ) {
+      rest.delete(model);
+    }
+  }
+  return rest;
 }

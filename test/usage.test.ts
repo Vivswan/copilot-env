@@ -9,6 +9,7 @@ import {
   readUsage,
   record,
   sanitizeTokenCount,
+  undatedUsage,
   type UsageReport,
 } from "../src/usage/usage.ts";
 import { localDayKey } from "../src/utils/time.ts";
@@ -38,7 +39,7 @@ afterEach(() => {
 });
 
 // The ONE token-count sanitization rule both session readers apply: only a finite
-// positive number passes; hostile or torn values become 0.
+// positive number passes, floored to an integer; hostile or torn values become 0.
 test("sanitizeTokenCount clamps non-finite, negative, and non-number counts to 0", () => {
   expect(sanitizeTokenCount(42)).toBe(42);
   expect(sanitizeTokenCount(0)).toBe(0);
@@ -47,6 +48,10 @@ test("sanitizeTokenCount clamps non-finite, negative, and non-number counts to 0
   expect(sanitizeTokenCount(Number.POSITIVE_INFINITY)).toBe(0);
   expect(sanitizeTokenCount("7")).toBe(0);
   expect(sanitizeTokenCount(undefined)).toBe(0);
+  // Counts are integral by nature; a fraction is a torn value and floors, which
+  // is also what keeps report arithmetic (the undated remainder) exact.
+  expect(sanitizeTokenCount(1.9)).toBe(1);
+  expect(sanitizeTokenCount(0.4)).toBe(0);
 });
 
 // parseUsageRow is THE boundary between untyped SQLite output and the report. It runs on
@@ -133,6 +138,80 @@ test("record folds into byModel always and into perDay only when a day is given"
     cacheCreation: 2,
     events: 2,
   });
+});
+
+test("record snapshots the increment, so an aliasing accumulator cannot double-count", () => {
+  const report: UsageReport = { byModel: new Map(), perDay: new Map() };
+  record(report, "2026-06-01", "m", {
+    input: 10,
+    output: 5,
+    cacheRead: 2,
+    cacheCreation: 1,
+    events: 1,
+  });
+  // Fold the report's OWN byModel entry back in. Without the snapshot, the
+  // byModel fold doubles that entry in place and the perDay fold then reads the
+  // doubled values: 10 + 20 = 30 instead of 20.
+  record(report, "2026-06-01", "m", report.byModel.get("m")!);
+
+  const doubled = { input: 20, output: 10, cacheRead: 4, cacheCreation: 2, events: 2 };
+  expect(report.byModel.get("m")).toEqual(doubled);
+  expect(report.perDay.get("2026-06-01")?.get("m")).toEqual(doubled);
+});
+
+test("undatedUsage returns exactly the share of byModel no day accounts for", () => {
+  const report: UsageReport = { byModel: new Map(), perDay: new Map() };
+  record(report, "2026-06-01", "m", {
+    input: 1,
+    output: 2,
+    cacheRead: 3,
+    cacheCreation: 4,
+    events: 1,
+  });
+  record(report, null, "m", { input: 10, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 });
+  record(report, "2026-06-02", "n", {
+    input: 7,
+    output: 0,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 1,
+  });
+
+  const rest = undatedUsage(report);
+  expect(rest.get("m")).toEqual({
+    input: 10,
+    output: 0,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 1,
+  });
+  // A model the days fully cover is absent, not zero-filled.
+  expect(rest.has("n")).toBe(false);
+  // The remainder is a copy: the report keeps its full roll-up.
+  expect(report.byModel.get("m")?.input).toBe(11);
+
+  const dated: UsageReport = { byModel: new Map(), perDay: new Map() };
+  record(dated, "2026-06-01", "m", {
+    input: 1,
+    output: 0,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 1,
+  });
+  expect(undatedUsage(dated).size).toBe(0);
+
+  // A hand-built report whose days exceed byModel (impossible via record) is
+  // clamped to zero and dropped, never reported as negative undated usage.
+  const inconsistent: UsageReport = {
+    byModel: new Map([["m", { input: 1, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 }]]),
+    perDay: new Map([
+      [
+        "2026-06-01",
+        new Map([["m", { input: 5, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 }]]),
+      ],
+    ]),
+  };
+  expect(undatedUsage(inconsistent).size).toBe(0);
 });
 
 test("mergeUsageReports sums models, unions days, and keeps day-less usage in the totals", () => {

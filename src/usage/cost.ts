@@ -14,7 +14,15 @@ import {
   type PricingTier,
   roundUsd,
 } from "./pricing.ts";
-import { discoverUsageDbs, mergeUsageReports, readUsage, type UsageReport } from "./usage.ts";
+import {
+  discoverUsageDbs,
+  mergeUsageReports,
+  type ModelUsage,
+  type ReadonlyUsageReport,
+  readUsage,
+  undatedUsage,
+  type UsageReport,
+} from "./usage.ts";
 
 /**
  * The default table merges the proxy DBs (proxied traffic) with the Codex and
@@ -25,7 +33,7 @@ import { discoverUsageDbs, mergeUsageReports, readUsage, type UsageReport } from
 const SOURCES_NOTE =
   "Note: merges three sources -- the proxy DBs (proxied traffic) plus Codex session logs and Claude transcripts (each agent's full traffic, Direct included). Traffic through the proxy appears twice, so totals can double count it; use --sources for per-source tables.\nDisclaimer: these numbers are approximate -- gathered from local logs and priced at public OpenRouter rates; actual billing may differ.";
 
-const EMPTY_REPORT: UsageReport = { byModel: new Map(), perDay: new Map() };
+const EMPTY_REPORT: ReadonlyUsageReport = { byModel: new Map(), perDay: new Map() };
 
 /** `cost`: aggregate per-host SQLite + Codex session usage and estimate spend. */
 export async function runCost(args: {
@@ -142,20 +150,20 @@ interface ReportOpts {
 }
 
 interface ProxySource {
-  report: UsageReport;
+  report: ReadonlyUsageReport;
   estimate: CostEstimate;
   dbCount: number;
 }
 
 interface ClaudeSource {
-  report: UsageReport;
+  report: ReadonlyUsageReport;
   roots: number;
 }
 
 /** `--sources`: one full table (with day stats) per source and Codex provider. */
 function printSeparateReports(
   proxy: ProxySource,
-  codexByProvider: Map<string, UsageReport>,
+  codexByProvider: ReadonlyMap<string, ReadonlyUsageReport>,
   claude: ClaudeSource,
   opts: ReportOpts,
 ): void {
@@ -202,7 +210,7 @@ function printSeparateReports(
 /** Default layout: the classic single table over the union of all sources. */
 function printCombinedView(
   proxy: ProxySource,
-  codexByProvider: Map<string, UsageReport>,
+  codexByProvider: ReadonlyMap<string, ReadonlyUsageReport>,
   claude: ClaudeSource,
   opts: ReportOpts,
 ): void {
@@ -258,56 +266,112 @@ export interface DayMetrics {
 
 /**
  * Collapse the per-day, per-model breakdown into one DayMetrics per active day.
+ * Dated days only: usage recorded without a day is undatedDayMetrics' row, kept
+ * out of here so the per-day medians stay per-DAY statistics. (Avg/day is
+ * different by design: it spreads the aggregate, undated included, over the
+ * active days.)
  * Cost is priced per day (estimateCost is linear in tokens), but only for models
  * the aggregate `estimate` actually priced: a model the aggregate excluded as
  * unpriced (some non-zero bucket lacks a rate) must contribute $0 every day too,
  * or summing the days would not reconcile with the aggregate totalUsd.
  */
 export function computeDayMetrics(
-  report: UsageReport,
+  report: ReadonlyUsageReport,
   pricing: Map<string, PricingTier>,
   estimate: CostEstimate,
 ): DayMetrics[] {
   const priced = new Set(Object.keys(estimate.perModel));
   const out: DayMetrics[] = [];
   for (const [day, dayModels] of report.perDay) {
-    const est = estimateCost(dayModels, pricing);
-    const m: DayMetrics = {
-      day,
-      reqs: 0,
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      total: 0,
-      inputCost: 0,
-      outputCost: 0,
-      cacheReadCost: 0,
-      cacheWriteCost: 0,
-      cost: 0,
-    };
-    for (const [model, u] of dayModels) {
-      m.reqs += u.events;
-      m.input += u.input;
-      m.output += u.output;
-      m.cacheRead += u.cacheRead;
-      m.cacheWrite += u.cacheCreation;
-      const c = est.perModel[model];
-      // A day's tokens are a subset of the aggregate's, so any model the
-      // aggregate priced is priced here too; gating on `priced` only drops the
-      // models the aggregate already excluded.
-      if (c !== undefined && priced.has(model)) {
-        m.inputCost += c.inputCostUsd;
-        m.outputCost += c.outputCostUsd;
-        m.cacheReadCost += c.cacheReadCostUsd;
-        m.cacheWriteCost += c.cacheCreationCostUsd;
-        m.cost += c.estimatedCostUsd;
-      }
-    }
-    m.total = m.input + m.output + m.cacheRead + m.cacheWrite;
-    out.push(m);
+    out.push(groupMetrics(day, dayModels, pricing, priced));
   }
   return out;
+}
+
+/** One row group's totals across its models: a calendar day, or the undated rest. */
+function groupMetrics(
+  label: string,
+  models: ReadonlyMap<string, Readonly<ModelUsage>>,
+  pricing: Map<string, PricingTier>,
+  priced: ReadonlySet<string>,
+): DayMetrics {
+  const est = estimateCost(models, pricing);
+  const m: DayMetrics = {
+    day: label,
+    reqs: 0,
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    total: 0,
+    inputCost: 0,
+    outputCost: 0,
+    cacheReadCost: 0,
+    cacheWriteCost: 0,
+    cost: 0,
+  };
+  for (const [model, u] of models) {
+    m.reqs += u.events;
+    m.input += u.input;
+    m.output += u.output;
+    m.cacheRead += u.cacheRead;
+    m.cacheWrite += u.cacheCreation;
+    const c = est.perModel[model];
+    // A group's tokens are a subset of the aggregate's, so any model the
+    // aggregate priced is priced here too; gating on `priced` only drops the
+    // models the aggregate already excluded.
+    if (c !== undefined && priced.has(model)) {
+      m.inputCost += c.inputCostUsd;
+      m.outputCost += c.outputCostUsd;
+      m.cacheReadCost += c.cacheReadCostUsd;
+      m.cacheWriteCost += c.cacheCreationCostUsd;
+      m.cost += c.estimatedCostUsd;
+    }
+  }
+  m.total = m.input + m.output + m.cacheRead + m.cacheWrite;
+  return m;
+}
+
+/** The label of the per-day table's synthetic row for usage no day claims. */
+const UNDATED_DAY_LABEL = "(undated)";
+
+/**
+ * The per-day table's synthetic last row: usage recorded without a date reaches
+ * byModel but no perDay entry, and without this row the table's columns could
+ * not sum to the TOTAL line (which always carries the aggregate's numbers).
+ * null when the days account for everything -- the normal case, since the
+ * daemon timestamps every DB row.
+ */
+function undatedDayMetrics(
+  report: ReadonlyUsageReport,
+  pricing: Map<string, PricingTier>,
+  estimate: CostEstimate,
+): DayMetrics | null {
+  const rest = undatedUsage(report);
+  if (rest.size === 0) {
+    return null;
+  }
+  return groupMetrics(UNDATED_DAY_LABEL, rest, pricing, new Set(Object.keys(estimate.perModel)));
+}
+
+/**
+ * The per-day table's body rows: one per active day, oldest first, closed by
+ * the synthetic "(undated)" row when one is due. THE row list the table prints
+ * and its TOTAL line sums over.
+ */
+export function perDayRows(
+  report: ReadonlyUsageReport,
+  pricing: Map<string, PricingTier>,
+  estimate: CostEstimate,
+): DayMetrics[] {
+  const rows = computeDayMetrics(report, pricing, estimate).sort((a, b) =>
+    a.day.localeCompare(b.day)
+  );
+  const undated = undatedDayMetrics(report, pricing, estimate);
+  if (undated !== null) {
+    rows.push(undated);
+  }
+  return rows;
 }
 
 /** Median of a numeric sample (mean of the two middles when even). 0 if empty. */
@@ -325,7 +389,9 @@ export function median(values: number[]): number {
  * usage out of the inclusive min..max calendar window, and what fraction of
  * that window was active. `spanDays` is 0 (and `percent` 100) when no days.
  */
-export function activeDayCoverage(report: UsageReport): { spanDays: number; percent: number } {
+export function activeDayCoverage(
+  report: ReadonlyUsageReport,
+): { spanDays: number; percent: number } {
   const days = [...report.perDay.keys()].sort();
   if (days.length === 0) {
     return { spanDays: 0, percent: 100 };
@@ -454,7 +520,6 @@ interface CostSums {
   total: number;
 }
 
-/** The DayMetrics cost fields. */
 type CostFields = Pick<
   DayMetrics,
   "inputCost" | "outputCost" | "cacheReadCost" | "cacheWriteCost" | "cost"
@@ -485,7 +550,7 @@ function sumEstimateCosts(estimate: CostEstimate): CostFields {
 
 /** One row per model (most expensive first) plus the totals they sum to. */
 function buildModelRows(
-  report: UsageReport,
+  report: ReadonlyUsageReport,
   estimate: CostEstimate,
 ): { rows: CostRow[]; sum: CostSums } {
   const { byModel } = report;
@@ -591,7 +656,7 @@ function buildAggregateFooter(
 
 /** Print one source's by-model usage + cost table (tokens with $ per category). */
 function printCostReport(
-  report: UsageReport,
+  report: ReadonlyUsageReport,
   estimate: CostEstimate,
   pricing: Map<string, PricingTier>,
   opts: { title: string; sourceLabel: string; days: string | undefined },
@@ -641,9 +706,12 @@ function dayRow(d: DayMetrics): CostRow {
 }
 
 /**
- * The per-day table's TOTAL line: token and request fields sum the days; the
- * cost fields are the aggregate's numbers via sumEstimateCosts, NOT the column
- * sum, so this row always renders identically to the by-model TOTAL.
+ * The per-day table's TOTAL line, summing the token and request columns of the
+ * rows above it (the dated days, plus the undated row when one prints -- so the
+ * columns really add up to it). The cost fields are the aggregate's numbers via
+ * sumEstimateCosts, NOT the column sum: the two tables regroup the SAME
+ * aggregate (by model there, by day plus the undated rest here), so both TOTAL
+ * rows render the one true grand total, bit-identically.
  */
 export function sumDayMetrics(days: DayMetrics[], estimate: CostEstimate): DayMetrics {
   const sum: DayMetrics = {
@@ -672,24 +740,23 @@ export function sumDayMetrics(days: DayMetrics[], estimate: CostEstimate): DayMe
 }
 
 /**
- * Print a day-by-day table (one row per active day, oldest first) plus a TOTAL
- * footer, sharing the main report's per-category token+cost sub-alignment.
+ * Print a day-by-day table (one row per active day, oldest first, plus the
+ * undated row when usage carries no date) and a TOTAL footer, sharing the main
+ * report's per-category token+cost sub-alignment.
  */
 function printPerDayReport(
-  report: UsageReport,
+  report: ReadonlyUsageReport,
   pricing: Map<string, PricingTier>,
   estimate: CostEstimate,
   title: string,
 ): void {
-  const days = computeDayMetrics(report, pricing, estimate).sort((a, b) =>
-    a.day.localeCompare(b.day)
-  );
-  if (days.length === 0) {
+  const rows = perDayRows(report, pricing, estimate);
+  if (rows.length === 0) {
     return;
   }
   const cells = renderCostRows(
-    days.map((d) => dayRow(d)),
-    [dayRow(sumDayMetrics(days, estimate))],
+    rows.map((d) => dayRow(d)),
+    [dayRow(sumDayMetrics(rows, estimate))],
   );
 
   console.log(title);
@@ -717,7 +784,7 @@ function roundModelCost(cost: ModelCost): ModelCost {
 /** Build one source's usage/cost JSON block (shared by the proxy and each provider).
  *  This is the ONE place estimate USD values get rounded for machine output. */
 export function buildSourceJson(
-  report: UsageReport,
+  report: ReadonlyUsageReport,
   estimate: CostEstimate,
   pricing: Map<string, PricingTier>,
   opts: { perDay: boolean },
@@ -764,7 +831,7 @@ export function buildSourceJson(
  * key so existing consumers are unaffected.
  */
 function buildCostJson(
-  report: UsageReport,
+  report: ReadonlyUsageReport,
   estimate: CostEstimate,
   pricing: Map<string, PricingTier>,
   dbCount: number,

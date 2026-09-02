@@ -3,36 +3,33 @@ import {
   buildSourceJson,
   computeDayMetrics,
   median,
+  perDayRows,
   sumDayMetrics,
 } from "../src/usage/cost.ts";
 import { estimateCost, type ModelCost, type PricingTier } from "../src/usage/pricing.ts";
-import type { ModelUsage, UsageReport } from "../src/usage/usage.ts";
+import { type ModelUsage, record, type UsageReport } from "../src/usage/usage.ts";
 import { expect, test } from "./helpers/testing.ts";
 
 function usage(partial: Partial<ModelUsage>): ModelUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, events: 0, ...partial };
 }
 
-/** A report with a per-day, per-model breakdown; byModel derived. */
-function makeReport(perDay: Record<string, Record<string, ModelUsage>>): UsageReport {
-  const perDayMap = new Map<string, Map<string, ModelUsage>>();
-  const byModel = new Map<string, ModelUsage>();
+/** A report folded through record(), the real producer path: a per-day, per-model
+ *  breakdown plus optional `undated` usage that reaches byModel only. */
+function makeReport(
+  perDay: Record<string, Record<string, ModelUsage>>,
+  undated: Record<string, ModelUsage> = {},
+): UsageReport {
+  const report: UsageReport = { byModel: new Map(), perDay: new Map() };
   for (const [day, models] of Object.entries(perDay)) {
-    const dayMap = new Map<string, ModelUsage>();
     for (const [model, u] of Object.entries(models)) {
-      dayMap.set(model, u);
-      const prev = byModel.get(model) ?? usage({});
-      byModel.set(model, {
-        input: prev.input + u.input,
-        output: prev.output + u.output,
-        cacheRead: prev.cacheRead + u.cacheRead,
-        cacheCreation: prev.cacheCreation + u.cacheCreation,
-        events: prev.events + u.events,
-      });
+      record(report, day, model, u);
     }
-    perDayMap.set(day, dayMap);
   }
-  return { byModel, perDay: perDayMap };
+  for (const [model, u] of Object.entries(undated)) {
+    record(report, null, model, u);
+  }
+  return report;
 }
 
 test("median handles odd, even, and empty samples", () => {
@@ -111,6 +108,9 @@ test("computeDayMetrics keeps a model unpriced in the aggregate at $0 every day"
       "anthropic/claude-opus-4.8": usage({ input: 1_000_000, cacheCreation: 50, events: 1 }),
     },
     "2026-06-02": { "anthropic/claude-opus-4.8": usage({ input: 3_000_000, events: 1 }) },
+  }, {
+    // Undated usage of the same model: its synthetic row obeys the same rule.
+    "anthropic/claude-opus-4.8": usage({ input: 500_000, events: 1 }),
   });
   const pricing = new Map<string, PricingTier>([
     ["anthropic/claude-opus-4.8", { input: 1, output: 2 }], // no cacheCreation rate
@@ -126,6 +126,9 @@ test("computeDayMetrics keeps a model unpriced in the aggregate at $0 every day"
     expect(d.cost).toBe(0);
     expect(d.inputCost).toBe(0);
   }
+  const undated = perDayRows(report, pricing, estimate).find((d) => d.day === "(undated)");
+  expect(undated?.input).toBe(500_000);
+  expect(undated?.cost).toBe(0);
 });
 
 test("sumDayMetrics carries the aggregate's cost numbers, bit-exact", () => {
@@ -149,6 +152,72 @@ test("sumDayMetrics carries the aggregate's cost numbers, bit-exact", () => {
   expect(total.inputCost).toBe(estimate.perModel["openai/gpt-5.5"]?.inputCostUsd);
   expect(total.input).toBe(5_000);
   expect(total.reqs).toBe(2);
+});
+
+test("undated usage prints as its own row so the TOTAL's columns add up", () => {
+  // 1M dated + 1M undated at $1/M. The TOTAL cost is the aggregate's ($2.00);
+  // without the undated row the token columns above it summed only the dated
+  // 1M, rendering "1M tokens, $2.00" -- the row must surface the missing 1M.
+  const report = makeReport(
+    {
+      // Days deliberately recorded out of order: the rows must sort.
+      "2026-06-02": { "openai/gpt-5.5": usage({ input: 300_000, events: 1 }) },
+      "2026-06-01": { "openai/gpt-5.5": usage({ input: 700_000, events: 1 }) },
+    },
+    { "openai/gpt-5.5": usage({ input: 1_000_000, events: 1 }) },
+  );
+  const pricing = new Map<string, PricingTier>([["openai/gpt-5.5", { input: 1 }]]);
+  const estimate = estimateCost(report.byModel, pricing);
+
+  // computeDayMetrics stays dated-only (per-day medians are per-DAY statistics).
+  expect(computeDayMetrics(report, pricing, estimate).map((d) => d.day).sort()).toEqual([
+    "2026-06-01",
+    "2026-06-02",
+  ]);
+
+  // The printed row list: days oldest first, the undated remainder closing it.
+  const rows = perDayRows(report, pricing, estimate);
+  expect(rows.map((d) => d.day)).toEqual(["2026-06-01", "2026-06-02", "(undated)"]);
+  const undated = rows[2]!;
+  expect(undated.input).toBe(1_000_000);
+  expect(undated.reqs).toBe(1);
+  expect(undated.cost).toBeCloseTo(1, 10);
+
+  // Dated rows + the undated row: the TOTAL's token columns now really sum to
+  // the aggregate cost it carries.
+  const total = sumDayMetrics(rows, estimate);
+  expect(total.input).toBe(2_000_000);
+  expect(total.total).toBe(2_000_000);
+  expect(total.reqs).toBe(3);
+  expect(total.cost).toBe(estimate.totalUsd);
+  expect(estimate.totalUsd).toBe(2);
+
+  // An all-undated report still yields a printable row list.
+  const allUndated = makeReport({}, { "openai/gpt-5.5": usage({ input: 42, events: 1 }) });
+  const undatedEstimate = estimateCost(allUndated.byModel, pricing);
+  expect(perDayRows(allUndated, pricing, undatedEstimate).map((d) => d.day)).toEqual([
+    "(undated)",
+  ]);
+
+  // Fully dated usage: no synthetic row.
+  const dated = makeReport({
+    "2026-06-01": { "openai/gpt-5.5": usage({ input: 5, events: 1 }) },
+  });
+  expect(perDayRows(dated, pricing, estimateCost(dated.byModel, pricing)).map((d) => d.day))
+    .toEqual(["2026-06-01"]);
+
+  // The JSON contract is deliberately different: usageByModel and totalUsd
+  // cover undated usage, while the perDay array stays dated-only.
+  const json = buildSourceJson(report, estimate, pricing, { perDay: true });
+  const byModel = json.usageByModel as Record<string, ModelUsage>;
+  expect(byModel["openai/gpt-5.5"]?.input).toBe(2_000_000);
+  expect(json.totalUsd).toBe(2);
+  const perDay = json.perDay as Array<{ day: string; costUsd: number }>;
+  expect(perDay.map((d) => d.day)).toEqual(["2026-06-01", "2026-06-02"]);
+  // Avg/day spreads the aggregate (undated included) over the dated active
+  // days by design: $2 across 2 active days, not the $0.50/day the dated rows
+  // alone would average.
+  expect(json.avgCostPerDayUsd).toBe(1);
 });
 
 test("buildSourceJson rounds every USD field once at the boundary", () => {

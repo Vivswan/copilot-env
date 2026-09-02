@@ -5,12 +5,14 @@ import { DatabaseSync } from "node:sqlite";
 import {
   discoverUsageDbs,
   mergeUsageReports,
+  type ModelUsage,
   parseUsageRow,
+  type ReadonlyUsageReport,
   readUsage,
   record,
   sanitizeTokenCount,
   undatedUsage,
-  type UsageReport,
+  usageReport,
 } from "../src/usage/usage.ts";
 import { localDayKey } from "../src/utils/time.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
@@ -105,7 +107,7 @@ test("parseUsageRow normalizes every count and drops rows it cannot attribute", 
 // so its contract -- always byModel, perDay only when a day is given -- is what every
 // source's totals-vs-split behavior reduces to.
 test("record folds into byModel always and into perDay only when a day is given", () => {
-  const report: UsageReport = { byModel: new Map(), perDay: new Map() };
+  const report = usageReport();
   record(report, "2026-06-01", "m", {
     input: 10,
     output: 5,
@@ -141,7 +143,7 @@ test("record folds into byModel always and into perDay only when a day is given"
 });
 
 test("record snapshots the increment, so an aliasing accumulator cannot double-count", () => {
-  const report: UsageReport = { byModel: new Map(), perDay: new Map() };
+  const report = usageReport();
   record(report, "2026-06-01", "m", {
     input: 10,
     output: 5,
@@ -160,7 +162,7 @@ test("record snapshots the increment, so an aliasing accumulator cannot double-c
 });
 
 test("undatedUsage returns exactly the share of byModel no day accounts for", () => {
-  const report: UsageReport = { byModel: new Map(), perDay: new Map() };
+  const report = usageReport();
   record(report, "2026-06-01", "m", {
     input: 1,
     output: 2,
@@ -190,7 +192,7 @@ test("undatedUsage returns exactly the share of byModel no day accounts for", ()
   // The remainder is a copy: the report keeps its full roll-up.
   expect(report.byModel.get("m")?.input).toBe(11);
 
-  const dated: UsageReport = { byModel: new Map(), perDay: new Map() };
+  const dated = usageReport();
   record(dated, "2026-06-01", "m", {
     input: 1,
     output: 0,
@@ -199,28 +201,139 @@ test("undatedUsage returns exactly the share of byModel no day accounts for", ()
     events: 1,
   });
   expect(undatedUsage(dated).size).toBe(0);
+});
 
-  // A hand-built report whose days exceed byModel (impossible via record) is
-  // clamped to zero and dropped, never reported as negative undated usage.
-  const inconsistent: UsageReport = {
-    byModel: new Map([["m", { input: 1, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 }]]),
+test("usageReport validates a hand-built perDay split against the byModel roll-up", () => {
+  // The default mint is the empty report every producer folds into via record().
+  const empty = usageReport();
+  expect(empty.byModel.size).toBe(0);
+  expect(empty.perDay.size).toBe(0);
+
+  // A consistent pair passes through: the days may cover the roll-up partially
+  // (the difference is undated usage).
+  const byModel = new Map<string, ModelUsage>([
+    ["m", { input: 5, output: 0, cacheRead: 0, cacheCreation: 0, events: 2 }],
+  ]);
+  const perDay = new Map([
+    [
+      "2026-06-01",
+      new Map<string, ModelUsage>([
+        ["m", { input: 3, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 }],
+      ]),
+    ],
+  ]);
+  const report = usageReport(byModel, perDay);
+  expect(undatedUsage(report).get("m")?.input).toBe(2);
+
+  // The factory deep-copies both maps top to bottom: the report never aliases
+  // caller maps or entries, so a caller edit cannot invalidate a report
+  // already validated.
+  expect(report.byModel).not.toBe(byModel);
+  expect(report.byModel.get("m")).not.toBe(byModel.get("m"));
+  expect(report.perDay).not.toBe(perDay);
+  expect(report.perDay.get("2026-06-01")).not.toBe(perDay.get("2026-06-01"));
+  expect(report.perDay.get("2026-06-01")?.get("m")).not.toBe(perDay.get("2026-06-01")?.get("m"));
+  byModel.get("m")!.input = 0;
+  expect(report.byModel.get("m")?.input).toBe(5);
+
+  // One ModelUsage object shared between the two maps cannot double-mutate:
+  // record() folds into the report's own copies, never the caller's object.
+  const shared: ModelUsage = { input: 1, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 };
+  const aliased = usageReport(
+    new Map([["m", shared]]),
+    new Map([["2026-06-01", new Map([["m", shared]])]]),
+  );
+  record(aliased, "2026-06-01", "m", {
+    input: 1,
+    output: 0,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 1,
+  });
+  expect(aliased.byModel.get("m")?.input).toBe(2);
+  expect(aliased.perDay.get("2026-06-01")?.get("m")?.input).toBe(2);
+  expect(shared.input).toBe(1);
+
+  // Days exceeding the roll-up -- even only when SUMMED across days -- are a
+  // construction error, never a report whose undated remainder dips negative.
+  const twoDays = new Map([
+    [
+      "2026-06-01",
+      new Map<string, ModelUsage>([
+        ["m", { input: 3, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 }],
+      ]),
+    ],
+    [
+      "2026-06-02",
+      new Map<string, ModelUsage>([
+        ["m", { input: 3, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 }],
+      ]),
+    ],
+  ]);
+  expect(() => usageReport(byModel, twoDays)).toThrow("inconsistent usage report");
+
+  // Any bucket can trip it, events included.
+  expect(() =>
+    usageReport(
+      new Map([["m", { input: 9, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 }]]),
+      new Map([
+        [
+          "2026-06-01",
+          new Map([["m", { input: 1, output: 0, cacheRead: 0, cacheCreation: 0, events: 2 }]]),
+        ],
+      ]),
+    )
+  ).toThrow("inconsistent usage report");
+
+  // A perDay model byModel does not carry at all is inconsistent too.
+  expect(() => usageReport(new Map(), perDay)).toThrow("inconsistent usage report");
+
+  // Hostile counts are rejected, not compared -- NaN passes every ordering
+  // check, so admitting one would let the split validation fail open. Every
+  // bucket is checked, on both maps.
+  const zero: ModelUsage = { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, events: 0 };
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, -1, 0.5]) {
+    expect(() => usageReport(new Map([["m", { ...zero, input: bad }]]))).toThrow(
+      "invalid usage report",
+    );
+  }
+  for (const field of ["input", "output", "cacheRead", "cacheCreation", "events"] as const) {
+    expect(() => usageReport(new Map([["m", { ...zero, [field]: -1 }]]))).toThrow(
+      "invalid usage report",
+    );
+    // The perDay side runs the same check: byModel here is valid and would
+    // cover the split, so only the entry validation can be what throws.
+    expect(() =>
+      usageReport(
+        new Map([["m", { ...zero, [field]: 1 }]]),
+        new Map([["2026-06-01", new Map([["m", { ...zero, [field]: Number.NaN }]])]]),
+      )
+    ).toThrow("invalid usage report");
+  }
+});
+
+test("undatedUsage fails fast on a perDay model that byModel does not carry", () => {
+  // Impossible via record()/usageReport(); a structurally hand-built report
+  // that reaches this state is corrupt and must surface, not print low totals.
+  const corrupt: ReadonlyUsageReport = {
+    byModel: new Map(),
     perDay: new Map([
       [
         "2026-06-01",
-        new Map([["m", { input: 5, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 }]]),
+        new Map([["m", { input: 1, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 }]]),
       ],
     ]),
   };
-  expect(undatedUsage(inconsistent).size).toBe(0);
+  expect(() => undatedUsage(corrupt)).toThrow("inconsistent usage report");
 });
 
 test("mergeUsageReports sums models, unions days, and keeps day-less usage in the totals", () => {
-  const a: UsageReport = { byModel: new Map(), perDay: new Map() };
+  const a = usageReport();
   record(a, "2026-06-01", "m", { input: 1, output: 2, cacheRead: 3, cacheCreation: 4, events: 1 });
   // Day-less usage lives in byModel only; the merge must not lose it.
   record(a, null, "m", { input: 10, output: 0, cacheRead: 0, cacheCreation: 0, events: 1 });
 
-  const b: UsageReport = { byModel: new Map(), perDay: new Map() };
+  const b = usageReport();
   record(b, "2026-06-01", "m", {
     input: 100,
     output: 0,

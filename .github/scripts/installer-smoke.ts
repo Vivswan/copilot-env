@@ -13,6 +13,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { launcherFunctionLines } from "../../src/commands/env.ts";
 import { resolveRootHome } from "../../src/copilot_api/paths.ts";
 import { readDvmrcPin, SIDECAR_DENO_ENV, sidecarBinPath } from "../../src/copilot_api/sidecar.ts";
 import { daemonConfigFile } from "../../src/proxy_float.ts";
@@ -229,14 +230,19 @@ function verifyLauncherWiring(launcher: string): void {
   }
   const envArgs = isWindows ? ["env", "--format", "powershell"] : ["env"];
   const emitted = launcherOutput(launcher, envArgs);
-  const clLine = isWindows
-    ? "function global:cl { agent launch claude '--' @args }"
-    : 'cl() { agent launch claude -- "$@"; }';
-  if (emitted === null || !emitted.includes(clLine)) {
-    console.error("::error::agent env does not emit the launcher functions with the key on");
+  // The same source constant test/env.test.ts pins verbatim, so the smoke can
+  // never assert a spelling the emitter no longer produces.
+  const expected = launcherFunctionLines(isWindows);
+  const missing = expected.filter((line) => emitted === null || !emitted.includes(line));
+  if (missing.length > 0) {
+    console.error(
+      `::error::agent env does not emit the launcher functions with the key on (missing: ${
+        missing.join(" | ")
+      })`,
+    );
     process.exit(1);
   }
-  console.log("launcher opt-in verified: config key on, agent env emits cl/co/cx");
+  console.log("launcher opt-in verified: config key on, agent env emits the launcher functions");
 }
 
 /** The root the installer installed into: its default unless the scenario

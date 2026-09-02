@@ -33,12 +33,11 @@ import {
   profileLabel,
   type ProfileName,
 } from "../copilot_api/profile.ts";
-import { agentLauncherCommand } from "../utils/root.ts";
 import { childEnvWithPath, commandExists, verbatimCliSpawn } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { managedClaudeBaseUrl, managedCodexHome, type ManagedEnvValue } from "./env.ts";
 import {
-  type LaunchOutput,
+  launchProxy,
   type ProxyTokenDeps,
   readStartAnswer,
   resolveProxyToken,
@@ -282,21 +281,6 @@ export async function prepareLaunch(
 
 // --- production effects --------------------------------------------------------
 
-/** Launch `agent start [--profile <name>]` as a child (proxy_token.ts's twin --
- *  that module keeps its own copy private). The exit status is deliberately
- *  unread; the resolver's follow-up probe is the verdict. */
-function launchProxyChild(profile: Profile, output: LaunchOutput): void {
-  const { command, args } = agentLauncherCommand(
-    profile === null ? ["start"] : ["start", "--profile", profile],
-  );
-  spawnSync(command, args, {
-    // `2` = our stderr fd: the visible child's start progress shows on stderr,
-    // leaving stdout to the agent CLI about to take over the terminal.
-    stdio: output === "suppressed" ? ["ignore", "ignore", "ignore"] : ["inherit", 2, "inherit"],
-    windowsHide: true,
-  });
-}
-
 /**
  * Ensure the addressed proxy is reachable via the SHARED resolver decision matrix
  * (resolveProxyToken): managed auto-start silently, else offer to start it (no
@@ -308,7 +292,7 @@ async function ensureProxyUp(profile: Profile): Promise<boolean> {
   const deps: ProxyTokenDeps = {
     proxyUp: async (p) => (await proxyStatus(p)).up,
     autoStartEnabled: () => new CopilotEnvConfig().autoStartEnabled(),
-    launchProxy: launchProxyChild,
+    launchProxy,
     readAnswer: readStartAnswer,
     recordHeartbeat,
     printProxyToken: async () => {},

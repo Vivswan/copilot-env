@@ -72,9 +72,12 @@ export interface ProxyTokenDeps {
 
 /** Launch `agent start [--profile <name>]` as a child (see LaunchOutput). Through
  *  bin/agent (agentLauncherCommand), NOT in-process: deno + deps get bootstrapped in a
- *  dev checkout, and the child's stdio placement keeps our stdout key-only. The exit
- *  status is deliberately unread -- the follow-up proxyUp probe is the verdict. */
-function launchProxy(profile: Profile, output: LaunchOutput): void {
+ *  dev checkout, and the child's stdio placement keeps the caller's stdout untouched
+ *  (key-only here, the launched agent's terminal in `agent launch`). The exit
+ *  status is deliberately unread -- the follow-up proxyUp probe is the verdict.
+ *  Exported as `agent launch`'s launchProxy dependency too, so the child-start
+ *  shape is stated once. */
+export function launchProxy(profile: Profile, output: LaunchOutput): void {
   const { command, args } = agentLauncherCommand(
     profile === null ? ["start"] : ["start", "--profile", profile],
   );

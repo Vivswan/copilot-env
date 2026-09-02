@@ -834,6 +834,70 @@ describe("writeDaemonConfig", () => {
     await floatProxy(deps(docFetch(registryDoc({ "1.10.30": 8 })).fetchLike, deno.runner, 0));
     expect(existsSync(daemonConfigFile(dir))).toBe(true);
   });
+
+  test("defaults to the build's own embedded assets, no explicit source needed", () => {
+    // The default source is ASSET_ROOT (the compiled VFS; the checkout root under
+    // `deno test`), NEVER the install root: a compiled install root deliberately
+    // carries no deno.json on disk -- there it is a checkout marker.
+    writeDaemonConfig(dir);
+    const config = JSON.parse(readFileSync(daemonConfigFile(dir), "utf8"));
+    const source = JSON.parse(readFileSync(join(ROOT, "deno.json"), "utf8"));
+    expect(Object.keys(config.imports).sort()).toEqual(Object.keys(source.imports).sort());
+  });
+});
+
+// A compiled install root has no deno.json on disk (the checkout marker), so the
+// two no-float spawn paths -- a COPILOT_API_ENTRY override and the mapped package
+// fallback -- must generate the daemon config from the embedded assets instead of
+// pointing `deno run --config` at a file that cannot exist. The mode is injected
+// (the suite itself always runs in checkout mode); the ambient-default half is
+// exercised by the installer smoke against a real compiled binary.
+describe("resolveCopilotApiEntry on a compiled root", () => {
+  const compiledMode = () => ({ "kind": "compiled", "root": join(dir, "install-root") }) as const;
+
+  test("the package fallback generates the daemon config from the embedded assets", () => {
+    const entry = resolveCopilotApiEntry(compiledMode());
+    expect(entry.kind).toBe("package");
+    expect(entry.configFile).toBe(daemonConfigFile(dir));
+    const config = JSON.parse(readFileSync(daemonConfigFile(dir), "utf8"));
+    expect(config.imports[PROXY_PKG]).toBeDefined();
+    expect(config.lock).toBeUndefined();
+  });
+
+  test("a COPILOT_API_ENTRY override resolves under the generated daemon config", () => {
+    process.env.COPILOT_API_ENTRY = join(dir, "fake-proxy.mjs");
+    try {
+      const entry = resolveCopilotApiEntry(compiledMode());
+      expect(entry).toEqual({
+        "kind": "file",
+        "path": join(dir, "fake-proxy.mjs"),
+        "configFile": daemonConfigFile(dir),
+      });
+      expect(existsSync(daemonConfigFile(dir))).toBe(true);
+    } finally {
+      delete process.env.COPILOT_API_ENTRY;
+    }
+  });
+
+  test("a stale or foreign daemon config is regenerated, not trusted", () => {
+    // The float rewrites this file with the same content on every warm; the
+    // resolver regenerates it too, so no leftover can steer a compiled spawn.
+    const sentinel = '{"imports":{"sentinel":"npm:sentinel@1.0.0"}}\n';
+    mkdirSync(join(dir, "proxy"), { recursive: true });
+    writeFileSync(daemonConfigFile(dir), sentinel);
+    const entry = resolveCopilotApiEntry(compiledMode());
+    expect(entry.configFile).toBe(daemonConfigFile(dir));
+    const config = JSON.parse(readFileSync(daemonConfigFile(dir), "utf8"));
+    expect(config.imports.sentinel).toBeUndefined();
+    expect(config.imports[PROXY_PKG]).toBeDefined();
+  });
+
+  test("a checkout root keeps the on-disk fallback, with no write side effect", () => {
+    const entry = resolveCopilotApiEntry({ "kind": "checkout", "root": ROOT });
+    expect(entry.kind).toBe("package");
+    expect(entry.configFile).toBe(join(ROOT, "deno.json"));
+    expect(existsSync(daemonConfigFile(dir))).toBe(false);
+  });
 });
 
 describe("floatContext", () => {

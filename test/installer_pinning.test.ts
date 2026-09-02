@@ -120,6 +120,54 @@ describe("compile.include matches what the binary actually needs", () => {
     const code = compileTs.split("\n").filter((line) => !line.trim().startsWith("//"));
     expect(code.some((line) => line.includes("--include"))).toBe(false);
   });
+
+  test("deno.json itself stays bundled-only", () => {
+    // writeDaemonConfig (src/proxy_float.ts) generates the daemon's config from
+    // the embedded deno.json; dropping it from the bundle breaks every compiled
+    // install's proxy launch while staying green under `deno test`, where the
+    // checkout copy answers. And it must never gain a materialized fate: on
+    // disk, deno.json is a CHECKOUT_MARKERS entry.
+    expect(BUNDLED_ONLY_ASSETS).toContain("deno.json");
+  });
+});
+
+describe("bundled-only assets are never read through PROJECT_ROOT", () => {
+  // A bundled-only asset exists in the VFS and in a checkout, but never in a
+  // compiled install root. A production read of one through PROJECT_ROOT
+  // typechecks and passes every checkout test -- the two roots coincide there --
+  // and fails only on a real install (the daemon-config launch failure this
+  // guards against recurring). Such reads must go through ASSET_ROOT.
+  function srcFiles(dir: string): string[] {
+    const files: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) files.push(...srcFiles(path));
+      else if (entry.name.endsWith(".ts")) files.push(path);
+    }
+    return files;
+  }
+
+  test("no src line names PROJECT_ROOT and a bundled-only asset together", () => {
+    let projectRootLines = 0;
+    for (const file of srcFiles(join(ROOT, "src"))) {
+      const lines = readFileSync(file, "utf8").split("\n");
+      lines.forEach((line, index) => {
+        if (!line.includes("PROJECT_ROOT")) return;
+        projectRootLines += 1;
+        for (const asset of BUNDLED_ONLY_ASSETS) {
+          if (line.includes(asset)) {
+            throw new Error(
+              `${file}:${index + 1} reads ${asset} through PROJECT_ROOT; ` +
+                `bundled-only assets exist only in the VFS/checkout -- read them via ASSET_ROOT`,
+            );
+          }
+        }
+      });
+    }
+    // Negative control: the scan must actually be seeing PROJECT_ROOT lines,
+    // or the loop above was comparing nothing.
+    expect(projectRootLines).toBeGreaterThan(0);
+  });
 });
 
 describe("the materialized files are the shims' import closure", () => {

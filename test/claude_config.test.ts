@@ -363,7 +363,11 @@ test("runClaude with a stored token selects Direct WITHOUT baking it; --proxy st
 
   // A configured credential selects Direct with NO probe -- but the inline helper
   // resolves it at fetch time (`agent auth --get`), so it's never written anywhere.
-  new CopilotEnvState().set({ githubToken: "ghu_stored", authProvider: "gh-token" });
+  new CopilotEnvState().setCredential(null, {
+    kind: "stored",
+    provider: "gh-token",
+    token: "ghu_stored",
+  });
   await runClaude({ mode: "auto" });
   expect(read().providerMode).toBe("direct");
   const helperCommand = String(readSettings(home).apiKeyHelper);

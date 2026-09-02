@@ -1,4 +1,5 @@
-// Port selection and discovery helpers for the local copilot-api proxy.
+// Port selection and discovery helpers for the local copilot-api proxy, plus the
+// resolved per-daemon policy (daemonPolicy) the launch/status/stop sites share.
 import * as net from "node:net";
 import { join } from "node:path";
 
@@ -7,6 +8,74 @@ import { CopilotEnvConfig } from "./env_config.ts";
 import { profileHomeNames, resolveRootHome } from "./paths.ts";
 import type { Profile, ProfileName } from "./profile.ts";
 import { CopilotEnvRunState } from "./state.ts";
+
+// --- the per-daemon policy ------------------------------------------------------
+
+/** Where a daemon's port comes from when its run state records none: the
+ *  config-driven default port, or a named profile's stable reservation. The
+ *  name travels with the reservation arm so its consumers never re-derive it. */
+export type DaemonPortSource =
+  | { readonly source: "config" }
+  | { readonly source: "reservation"; readonly name: ProfileName };
+
+/**
+ * The resolved lifecycle policy for one daemon -- THE single place the default
+ * profile's genuinely-default-only behavior is decided. The launch pipeline,
+ * the status probe, and the stop path read these fields instead of each
+ * re-deriving the answer from `profile === null`, so a policy can only be
+ * changed here, in one resolver. A union of the two literal shapes (not one
+ * wide interface), so a contradictory combination is unrepresentable.
+ *
+ * Fields:
+ * - `port`: origin when run state records none (see DaemonPortSource).
+ * - `strictPortEligible`: whether the `strict-port` preference may gate this
+ *   daemon -- the default only; a named profile's reservation is soft and
+ *   always auto-increments.
+ * - `releasesPortOnStop`: whether stop/cleanup releases the port tracking --
+ *   the default's recorded port reverts to the configured default; a named
+ *   profile's port is its stable reservation (the baked agent wiring points
+ *   at it), so it stays.
+ * - `isolatedHome`: whether the daemon runs in its own isolated home (named
+ *   profiles, so concurrent daemons never contend on one home) and therefore
+ *   needs the root-home pointer passed alongside for the account-wide files.
+ * - `flagSuffix`: the ` --profile <name>` suffix follow-up-command hints must
+ *   carry ("" for the default daemon).
+ */
+export type DaemonPolicy =
+  | {
+    readonly port: { readonly source: "config" };
+    readonly strictPortEligible: true;
+    readonly releasesPortOnStop: true;
+    readonly isolatedHome: false;
+    readonly flagSuffix: "";
+  }
+  | {
+    readonly port: { readonly source: "reservation"; readonly name: ProfileName };
+    readonly strictPortEligible: false;
+    readonly releasesPortOnStop: false;
+    readonly isolatedHome: true;
+    readonly flagSuffix: ` --profile ${string}`;
+  };
+
+/** Resolve `profile`'s daemon policy (the one `profile === null` decision). */
+export function daemonPolicy(profile: Profile): DaemonPolicy {
+  if (profile === null) {
+    return {
+      port: { source: "config" },
+      strictPortEligible: true,
+      releasesPortOnStop: true,
+      isolatedHome: false,
+      flagSuffix: "",
+    };
+  }
+  return {
+    port: { source: "reservation", name: profile },
+    strictPortEligible: false,
+    releasesPortOnStop: false,
+    isolatedHome: true,
+    flagSuffix: ` --profile ${profile}`,
+  };
+}
 
 /** The configured lower bound of the allowed proxy port range (`agent config --set min-port`),
  *  else the built-in default (owned by the config registry; privileged ports <1024 are
@@ -110,7 +179,8 @@ export function copilotApiResolvePort(profile: Profile = null): string {
  * steering the answer.
  */
 export function copilotApiFallbackPort(profile: Profile): number {
-  return profile === null ? defaultProxyPort() : candidateProfilePort(profile);
+  const port = daemonPolicy(profile).port;
+  return port.source === "config" ? defaultProxyPort() : candidateProfilePort(port.name);
 }
 
 /** Every port currently reserved/recorded across the default and all profile
@@ -194,7 +264,8 @@ export function reserveProfilePort(profile: ProfileName): number {
  * Shared by the two agent writers (src/claude/config.ts, src/codex/config.ts).
  */
 export function wiringPortFor(profile: Profile): string {
-  return profile === null ? copilotApiResolvePort() : String(reserveProfilePort(profile));
+  const port = daemonPolicy(profile).port;
+  return port.source === "config" ? copilotApiResolvePort() : String(reserveProfilePort(port.name));
 }
 
 /** The proxy's loopback origin for `port` (single source for the emitted string, no path, no

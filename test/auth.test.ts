@@ -81,14 +81,14 @@ test("auth: --provider rejects unknown values", async () => {
 
 test("auth --get prints the stored token to stdout (nothing else)", async () => {
   isolate();
-  state().set({ githubToken: "ghu_stored123", authProvider: "gh-token" });
+  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
   const out = await captureStdout(() => runAuth({ get: true }, NOOP_CATALOG_DEPS));
   expect(out).toBe("ghu_stored123\n");
 });
 
 test("auth --del clears the stored token and provider", async () => {
   isolate();
-  state().set({ githubToken: "ghu_stored123", authProvider: "gh-token" });
+  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
   await runAuth({ del: true });
   expect(state().read()).toEqual({
     githubToken: null,
@@ -103,7 +103,7 @@ test("auth --del clears the stored token and provider", async () => {
 
 test("auth --check: a configured provider reports authenticated, exit 0", async () => {
   isolate();
-  state().set({ githubToken: "ghu_stored123", authProvider: "gh-token" });
+  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
   const out = await captureLog(() => runAuth({ check: true }));
   // Exit 0 is the machine "authenticated" contract; the status line is human
   // copy, so pin only the parenthesized provider identifier it must name (the
@@ -114,7 +114,7 @@ test("auth --check: a configured provider reports authenticated, exit 0", async 
 
 test("auth (bare) is idempotent on a RECORDED provider - no re-auth, no config writes", async () => {
   const { claudeHome } = isolate();
-  state().set({ githubToken: "ghu_stored123", authProvider: "copilot" });
+  state().setCredential(null, { kind: "stored", provider: "copilot", token: "ghu_stored123" });
   // A recorded provider => runAuth returns WITHOUT prompting, acquiring, or configuring.
   await runAuth({});
   expect(state().read().githubToken).toBe("ghu_stored123");
@@ -136,15 +136,16 @@ test("auth --provider gh-token: missing GH_TOKEN/GITHUB_TOKEN errors clearly", a
   isolate();
   delete process.env.GH_TOKEN;
   delete process.env.GITHUB_TOKEN;
-  state().set({ githubToken: null });
+  state().clearCredential(null);
   await expect(runAuth({ provider: "gh-token" })).rejects.toThrow(/GH_TOKEN|GITHUB_TOKEN/);
 });
 
 test("auth --provider gh-token stores the env token + provider, and does NOT configure agents", async () => {
   const { claudeHome } = isolate();
-  state().set({ githubToken: "ghu_old" });
+  // A recorded, RESOLVING credential under another provider: an explicit
+  // provider must still run (never short-circuited by "already authenticated").
+  state().setCredential(null, { kind: "stored", provider: "copilot", token: "ghu_old" });
   process.env.GH_TOKEN = "ghu_new_from_env";
-  // An explicit provider always runs (not short-circuited by "already authenticated").
   await runAuth({ provider: "gh-token" });
   expect(state().read()).toEqual({
     githubToken: "ghu_new_from_env",
@@ -243,7 +244,7 @@ test("auth: --provider cannot combine with a sub-action (never silently dropped)
 test("auth --get stdout stays EXACTLY the token even when the catalog refresh runs", async () => {
   isolate();
   enableCatalog();
-  state().set({ githubToken: "ghu_stored123", authProvider: "gh-token" });
+  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
   const out = await captureStdout(() =>
     runAuth(
       { get: true },
@@ -262,7 +263,7 @@ test("auth --get stdout stays EXACTLY the token even when the catalog refresh ru
 test("auth --get succeeds (exit 0) even when the catalog refresh blows up", async () => {
   isolate();
   enableCatalog();
-  state().set({ githubToken: "ghu_stored123", authProvider: "gh-token" });
+  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
   const out = await captureStdout(() =>
     runAuth(
       { get: true },
@@ -318,9 +319,8 @@ test("disabled: auth --get removes the catalog artifacts and stdout stays EXACTL
     // basic string reads as escape sequences.
     stringify({ "model_provider": "copilot-env", "model_catalog_json": catalogFile }),
   );
+  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
   state().set({
-    githubToken: "ghu_stored123",
-    authProvider: "gh-token",
     codexCatalogLastAttemptMs: 123,
     codexCatalogCodexVersion: "1.0.0",
     codexCatalogPatchVersion: 2,

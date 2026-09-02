@@ -126,7 +126,7 @@ test("legacy pre-ledger records in the state store still answer owns(); release 
   // The state store's own reader ignores the legacy keys, and its writes
   // preserve them in the file -- the tolerance window the migration closes.
   const state = new CopilotEnvState();
-  state.set({ authProvider: "gh-token" });
+  state.set({ codexCatalogLastAttemptMs: 5 });
   expect(readStateRaw(paths).webSearchDenyOwnedPaths).toEqual(["/a/settings.json"]);
 
   // A take-back on a pre-ledger claim clears the LEGACY record too, so a deny
@@ -175,7 +175,11 @@ test("adoptLegacyRecords moves both legacy kinds into the ledger and is idempote
 
 test("adoptLegacyRecords on a store without legacy keys writes nothing at all", () => {
   const paths = isolate();
-  new CopilotEnvState().set({ githubToken: "ghu_x" });
+  new CopilotEnvState().setCredential(null, {
+    kind: "stored",
+    provider: "gh-token",
+    token: "ghu_x",
+  });
   const stateBytes = readFileSync(paths.sharedStateFile, "utf8");
   new OwnershipLedger().adoptLegacyRecords();
   expect(existsSync(paths.ownershipFile)).toBe(false);

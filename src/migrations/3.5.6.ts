@@ -15,6 +15,7 @@ import { knownCodexHomes } from "../codex/config.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import { readCodexToml, saveCodexToml } from "../codex/toml_io.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
+import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import { DEFAULT_HOME, profileHomeNames } from "../copilot_api/paths.ts";
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
@@ -157,16 +158,33 @@ export const v356Ownership: Migration = {
   run: () => new OwnershipLedger().adoptLegacyRecords(),
 };
 
-/** Third fix-up of the same step: installs moved from the flat layout (one
- *  binary and its runtime files at the install root) to the versioned one
- *  (`<top>/versions/vX.Y.Z/` roots behind a `current` link). The pre-versioned
- *  updater has already swapped THIS binary into `<top>/bin` when it spawns the
- *  migrate step, so the adoption builds the layout around the live binary:
- *  copy it (its own running image -- readable everywhere, deletable nowhere on
- *  Windows) into its version root, materialize the release's runtime files
- *  there, flip `current`, rewrite the top shims to dispatch through it, and
- *  only then sweep the flat leftovers. Idempotent, and a no-op for versioned
- *  roots and dev checkouts (adoptVersionedLayout owns those guards). */
+/** Third fix-up of the same step: the default credential moved from the state
+ *  store's top-level pair into the reserved `default` profile slot. The store's
+ *  read boundary tolerates the legacy pair and every default-slot write lifts
+ *  it too (the runner is best-effort), so this is the same tidy-up-not-gate
+ *  posture as the ownership adoption. Registered after the home move for the
+ *  same reason (the state store lives inside the moved home) and BEFORE the
+ *  versioned-layout adoption: this fix-up is install-layout-independent, and
+ *  the adoption's invariant is that it runs last (it relocates the install
+ *  everything else fixed up). */
+export const v356DefaultSlot: Migration = {
+  version: "3.5.6",
+  description: "lift the default credential into the reserved 'default' profile slot",
+  run: () => new CopilotEnvState().adoptLegacyDefaultCredential(),
+};
+
+/** Fourth (and LAST) fix-up of the same step: installs moved from the flat
+ *  layout (one binary and its runtime files at the install root) to the
+ *  versioned one (`<top>/versions/vX.Y.Z/` roots behind a `current` link). The
+ *  pre-versioned updater has already swapped THIS binary into `<top>/bin` when
+ *  it spawns the migrate step, so the adoption builds the layout around the
+ *  live binary: copy it (its own running image -- readable everywhere,
+ *  deletable nowhere on Windows) into its version root, materialize the
+ *  release's runtime files there, flip `current`, rewrite the top shims to
+ *  dispatch through it, and only then sweep the flat leftovers. Idempotent,
+ *  and a no-op for versioned roots and dev checkouts (adoptVersionedLayout
+ *  owns those guards). Registered last: it relocates the install the earlier
+ *  fix-ups operated on. */
 export const v356VersionedLayout: Migration = {
   version: "3.5.6",
   description: "adopt the versioned install layout (versions/ + a current link)",

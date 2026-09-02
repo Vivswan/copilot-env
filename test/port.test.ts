@@ -1,5 +1,6 @@
 import { configDefaultNumber, CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import {
+  daemonPolicy,
   matchesProxyOrigin,
   maxProxyPort,
   minProxyPort,
@@ -8,6 +9,7 @@ import {
   proxyLoopbackOrigin,
   proxyPortInRange,
 } from "../src/copilot_api/port.ts";
+import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
 
@@ -22,6 +24,27 @@ afterEach(() => {
 function tmpHome(): void {
   dir = isolateProxyHome("copilot-port-");
 }
+
+test("daemonPolicy pins every default-vs-named lifecycle policy in one place", () => {
+  // The policy object is what the launch/status/stop sites read INSTEAD of
+  // `profile === null`; a change to any of these answers must be a deliberate
+  // edit to the resolver, so the full field set is pinned for both kinds.
+  expect(daemonPolicy(null)).toEqual({
+    port: { source: "config" },
+    strictPortEligible: true,
+    releasesPortOnStop: true,
+    isolatedHome: false,
+    flagSuffix: "",
+  });
+  const work = parseProfileName("work");
+  expect(daemonPolicy(work)).toEqual({
+    port: { source: "reservation", name: work },
+    strictPortEligible: false,
+    releasesPortOnStop: false,
+    isolatedHome: true,
+    flagSuffix: " --profile work",
+  });
+});
 
 test("the range defaults to [1024, 65535] and excludes privileged/out-of-range ports", () => {
   tmpHome();

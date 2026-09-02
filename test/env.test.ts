@@ -138,6 +138,16 @@ test("env never touches a user's own (non-local) ANTHROPIC_BASE_URL", () => {
   expect(lines.some((l) => l.includes("ANTHROPIC_BASE_URL"))).toBe(false);
 });
 
+test("env leaves a localhost ANTHROPIC_BASE_URL alone when settings.json is unreadable", () => {
+  const home = isolate();
+  // A directory at the settings path EXISTS but cannot be read (the
+  // cross-platform unreadable fixture).
+  mkdirSync(join(home, "settings.json"));
+  process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:4141";
+  const lines = envLines();
+  expect(lines.some((l) => l.includes("ANTHROPIC_BASE_URL"))).toBe(false);
+});
+
 test("env does not unset a CODEX_HOME the user pointed elsewhere", () => {
   isolate();
   process.env.CODEX_HOME = join(dir, "my-own-codex"); // not the host farm path

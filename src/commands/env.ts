@@ -25,7 +25,7 @@ import { assertKnownProfile } from "../copilot_api/env_state.ts";
 import { copilotApiResolvePort, parseLoopbackProxyUrl } from "../copilot_api/port.ts";
 import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
-import { readTextOrNull } from "../utils/fs.ts";
+import { readTextResult } from "../utils/fs.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 
 export interface EnvArgs {
@@ -76,18 +76,24 @@ export function managedCodexHome(): ManagedEnvValue {
  * ANTHROPIC_BASE_URL's managed value for `profile`: the LOCAL proxy URL when the
  * profile's Claude wiring selects the proxy at one; a clear when the shell carries
  * a localhost proxy URL (one WE set) but Claude is no longer proxy; otherwise
- * hands-off (a non-local URL is the user's). Read-only -- a named profile answers
- * from ITS settings-<name>.json and ITS resolved port (never reserves one).
- * Shared by `agent env` and `agent launch` (see managedCodexHome).
+ * hands-off (a non-local URL is the user's, and a settings file that exists but
+ * could not be read is unknown wiring -- neither set nor cleared). Read-only -- a
+ * named profile answers from ITS settings-<name>.json and ITS resolved port
+ * (never reserves one). Shared by `agent env` and `agent launch` (see
+ * managedCodexHome).
  */
 export function managedClaudeBaseUrl(profile: Profile): ManagedEnvValue {
   const claudeHome = resolveClaudeHome();
   const claude = inspectClaudeWiring(
-    readTextOrNull(settingsPathFor(claudeHome, profile)),
+    readTextResult(settingsPathFor(claudeHome, profile)),
     claudeHome,
     Number(copilotApiResolvePort(profile)),
     profile,
   );
+  // The clear below is authorized by "Claude is no longer proxy" -- a fact an
+  // unreadable settings file cannot establish (an ABSENT one can: nothing is
+  // wired). On a read failure the eval'd output degrades safely to hands-off.
+  if (claude.otherReason === "read-error") return null;
   const proxyUrl = claude.providerMode === "proxy" &&
       claude.baseUrl &&
       claude.baseUrl !== DIRECT_BASE_URL &&

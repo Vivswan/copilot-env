@@ -116,6 +116,40 @@ skipWin("is idempotent -- a second wire is byte-for-byte identical", () => {
   expect(markerLines(second, MARKER)).toBe(1);
 });
 
+skipWin("a fresh wire ends the rc with the end fence and ONE blank line", () => {
+  run();
+  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
+  expect(rc.endsWith(`${MARKER_END}\n\n`)).toBe(true);
+  expect(rc.endsWith(`${MARKER_END}\n\n\n`)).toBe(false); // no trailing-blank pileup at EOF
+});
+
+skipWin("the wired block is separated from the user's next line by exactly ONE blank", () => {
+  // The motivating rc shape: a stale block sits directly against the user's next line.
+  // The refresh must leave `... end`, ONE blank line, then their line -- and re-runs
+  // must REUSE that blank, never stack another.
+  const stale =
+    `${MARKER}\nAGENTS_BASHRC="/old/agents.bashrc"\n[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"`;
+  writeFileSync(
+    join(home, ".bashrc"),
+    `# ---- Agent environments ----\n${stale}\nexport PATH="/opt/x/bin:$PATH"\n`,
+  );
+  run();
+  const rc = readFileSync(join(home, ".bashrc"), "utf-8");
+  expect(rc).toContain(`${MARKER_END}\n\nexport PATH=`);
+  expect(rc).not.toContain(`${MARKER_END}\n\n\n`);
+  run();
+  expect(readFileSync(join(home, ".bashrc"), "utf-8")).toBe(rc);
+});
+
+skipWin("wire then --remove restores the rc byte-for-byte, owned blanks included", () => {
+  const original = "export BEFORE=1\n\nexport AFTER=1\n";
+  writeFileSync(join(home, ".bashrc"), original);
+  expect(run().code).toBe(0);
+  expect(readFileSync(join(home, ".bashrc"), "utf-8")).not.toBe(original);
+  expect(run("--remove").code).toBe(0);
+  expect(readFileSync(join(home, ".bashrc"), "utf-8")).toBe(original);
+});
+
 skipWin("re-wiring refreshes the block in place without reordering later lines", () => {
   // A stale block followed by a user line that must stay AFTER the integration.
   const stale =
@@ -302,6 +336,26 @@ skipWin("wiring strips old launchers blocks and carries the opt-in to the config
   expect(storedLaunchersKey()).toBe(true); // the migrated opt-in
 });
 
+skipWin("a launchers block directly below the main one: ONE wire converges", () => {
+  // The shipped adjacency: main block, launchers block, then the user's line. The
+  // launchers strip and the main refresh share the blank between the blocks, so the
+  // strip must run FIRST -- stripping after would eat the separator the refresh just
+  // emitted and only the SECOND run would converge.
+  const main = `${MARKER}\nAGENTS_BASHRC="/old/agents.bashrc"\n` +
+    `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"\n${MARKER_END}`;
+  writeFileSync(
+    join(home, ".bashrc"),
+    `export A=1\n\n${main}\n${legacyLaunchersBlock(false)}export B=1\n`,
+  );
+  run();
+  const once = readFileSync(join(home, ".bashrc"), "utf-8");
+  expect(once).not.toContain(LAUNCHERS_MARKER);
+  expect(once).toContain(`${MARKER_END}\n\nexport B=1`); // separator present on the FIRST run
+  expect(once).not.toContain(`${MARKER_END}\n\n\n`);
+  run();
+  expect(readFileSync(join(home, ".bashrc"), "utf-8")).toBe(once);
+});
+
 skipWin("posixBlock safely quotes paths with shell metacharacters", () => {
   // A path containing a single quote, $, backtick, and a space must round-trip
   // through `source` as the exact literal -- never expand or break parsing.
@@ -360,19 +414,21 @@ test("the end markers extend the frozen open markers verbatim", () => {
   expect(LAUNCHERS_MARKER_END).toBe("# copilot-env launchers end");
 });
 
-test("every builder emits a fenced block: open marker first, end marker last", () => {
+test("every builder emits a fenced block: open marker first, end fence + ONE blank last", () => {
   const path = join(homedir(), "shell", "x");
-  const blocks: Array<[string, string, string]> = [
-    [posixBlock(path), MARKER, MARKER_END],
-    [windowsBlock(path), MARKER, MARKER_END],
-    // Not a builder anymore, but the legacy fixture must keep the retired fence
-    // spelling so the strip coverage below can never drift from what was shipped.
-    [legacyLaunchersBlock(false), LAUNCHERS_MARKER, LAUNCHERS_MARKER_END],
-    [legacyLaunchersBlock(true), LAUNCHERS_MARKER, LAUNCHERS_MARKER_END],
-  ];
-  for (const [block, marker, end] of blocks) {
-    expect(block.startsWith(`\n${marker}\n`)).toBe(true);
-    expect(block.endsWith(`\n${end}\n`)).toBe(true);
+  // The builders end in the block's ONE owned separating blank -- what keeps the
+  // wired block apart from whatever the user has next in the file.
+  for (const block of [posixBlock(path), windowsBlock(path)]) {
+    expect(block.startsWith(`\n${MARKER}\n`)).toBe(true);
+    expect(block.endsWith(`\n${MARKER_END}\n\n`)).toBe(true);
+    expect(block.endsWith(`\n${MARKER_END}\n\n\n`)).toBe(false); // one blank, never more
+  }
+  // Not builders anymore, but the legacy fixtures must keep the retired blank-less
+  // fence spelling so the strip coverage below can never drift from what was shipped.
+  for (const block of [legacyLaunchersBlock(false), legacyLaunchersBlock(true)]) {
+    expect(block.startsWith(`\n${LAUNCHERS_MARKER}\n`)).toBe(true);
+    expect(block.endsWith(`\n${LAUNCHERS_MARKER_END}\n`)).toBe(true);
+    expect(block.endsWith("\n\n")).toBe(false);
   }
 });
 
@@ -398,9 +454,11 @@ test("re-upserting a CRLF fenced block is byte-idempotent and keeps CRLF", () =>
   const removed = stripBlocks(crlf, [MARKER]);
   expect(removed.content).toBe("Write-Host before\r\n");
   expect(removed.leftBehind).toEqual([]);
-  // A CRLF file with no final newline stays unterminated instead of gaining a lone \r.
+  // A CRLF file ending INSIDE the block's owned region (its separating blank lost its
+  // final newline) is normalized back to the wired form -- never a lone \r at EOF,
+  // never a stacked blank.
   const unterminated = crlf.replace(/\r\n$/, "");
-  expect(up(unterminated, MARKER, block)).toBe(unterminated);
+  expect(up(unterminated, MARKER, block)).toBe(crlf);
 });
 
 test("a first wire into a CRLF file appends CRLF, never mixed endings", () => {
@@ -463,14 +521,58 @@ test("stripping a duplicate block never deletes a user line under its marker", (
   expect(next.leftBehind).toEqual(["Write-Host mine"]);
 });
 
-test("deduping a block at EOF preserves the file's (un)terminated state", () => {
-  // A duplicate on the file's last line, with and without a final newline: the dedupe
-  // must not add or drop the terminator (a string round-trip through stripBlocks
-  // cannot tell "no tail" from "one empty terminator line").
+test("deduping a block at EOF converges on the wired form, terminated", () => {
+  // A duplicate on the file's last line, with and without a final newline: both ends
+  // of the junk sit inside owned territory, so the dedupe normalizes back to the ONE
+  // EOF shape an append writes (end fence, one blank, final newline) -- re-runs
+  // converge instead of flip-flopping the terminator or stacking blanks.
   const block = windowsBlock(join(homedir(), "shell", "agents.ps1"));
   const wired = up("Write-Host before\n", MARKER, block);
+  expect(wired.endsWith(`${MARKER_END}\n\n`)).toBe(true);
   expect(up(`${wired}\n${MARKER}\n`, MARKER, block)).toBe(wired);
-  expect(up(`${wired}\n${MARKER}`, MARKER, block)).toBe(wired.replace(/\n$/, ""));
+  expect(up(`${wired}\n${MARKER}`, MARKER, block)).toBe(wired);
+});
+
+test("upsert owns ONE separating blank: adds it once, reuses it forever", () => {
+  const block = posixBlock(join(homedir(), "shell", "agents.bashrc"));
+  // A pre-blank wired file (end fence directly against the user's next line) gains
+  // the separator on the next wire...
+  const snug = `A=1\n${block.slice(1, -1)}B=1\n`; // block sans leading blank + separator
+  const migrated = up(snug, MARKER, block);
+  expect(migrated).toBe(`A=1\n${block.slice(1)}B=1\n`);
+  // ...and every later wire REUSES that blank: byte-identical, no accumulation.
+  expect(up(migrated, MARKER, block)).toBe(migrated);
+  // A user's own extra blank beyond the owned one is their spacing: kept, and stable.
+  const spaced = `A=1\n${block.slice(1)}\nB=1\n`;
+  expect(up(spaced, MARKER, block)).toBe(spaced);
+});
+
+test("a block at EOF normalizes to end-fence + ONE blank, then never grows", () => {
+  const block = posixBlock(join(homedir(), "shell", "agents.bashrc"));
+  const wired = up("A=1\n", MARKER, block);
+  expect(wired).toBe(`A=1\n${block}`);
+  // Blank-less EOF shapes older releases wrote -- fence-terminated and unterminated --
+  // converge on that one appended form...
+  expect(up(`A=1\n${block.slice(0, -1)}`, MARKER, block)).toBe(wired);
+  expect(up(`A=1\n${block.trimEnd()}`, MARKER, block)).toBe(wired);
+  // ...which is a fixed point: no trailing-blank pileup at EOF, ever.
+  expect(up(wired, MARKER, block)).toBe(wired);
+});
+
+test("removal owns ONE separating blank: the reused blank goes, extra user spacing stays", () => {
+  const fenced = posixBlock(join(homedir(), "shell", "agents.bashrc")).slice(1);
+  // Wired mid-file: the block plus its two owned blanks vanish, nothing else.
+  const wired = `export A=1\n\n${fenced}export B=1\n`;
+  expect(stripBlocks(wired, [MARKER]).content).toBe("export A=1\nexport B=1\n");
+  // The user's OWN blank beyond the owned one survives the removal.
+  const spaced = `export A=1\n\n${fenced}\nexport B=1\n`;
+  expect(stripBlocks(spaced, [MARKER]).content).toBe("export A=1\n\nexport B=1\n");
+  // A fenced block with NO trailing blank (pre-blank releases) still strips cleanly
+  // without eating the user's adjacent line...
+  const snug = `export A=1\n${fenced.replace(/\n$/, "")}export B=1\n`;
+  expect(stripBlocks(snug, [MARKER]).content).toBe("export A=1\nexport B=1\n");
+  // ...and a block at EOF round-trips the pre-wire bytes exactly, final newline intact.
+  expect(stripBlocks(`export A=1\n\n${fenced}`, [MARKER]).content).toBe("export A=1\n");
 });
 
 test("a legacy (unfenced) first block still migrates when a fenced duplicate follows", () => {
@@ -503,10 +605,10 @@ test("CRLF duplicates dedupe to one all-CRLF block", () => {
   expect(markerLines(next, MARKER)).toBe(1);
   expect(next).not.toMatch(/[^\r]\n/); // no lone LF anywhere
   expect(up(next, MARKER, block)).toBe(next);
-  // An UNTERMINATED duplicate at EOF: deduping it makes our block the new EOF, so its
-  // last line must shed the \r that now has no \n to pair with.
+  // An UNTERMINATED duplicate at EOF: deduping it normalizes to the wired CRLF form --
+  // terminated, ONE owned blank, and never a lone \r at EOF.
   const unterm = up(`${lf}\n${MARKER}`.replaceAll("\n", "\r\n"), MARKER, block);
-  expect(unterm).toBe(lf.replaceAll("\n", "\r\n").replace(/\r\n$/, ""));
+  expect(unterm).toBe(lf.replaceAll("\n", "\r\n"));
   expect(up(unterm, MARKER, block)).toBe(unterm);
 });
 

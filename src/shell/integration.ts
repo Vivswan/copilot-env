@@ -70,9 +70,11 @@ const ALL_FENCE_LINES: readonly string[] = [
   ...ALL_MARKERS.map((m) => BLOCK_SHAPES[m].end),
 ];
 
-/** The one spelling of an owned block: leading blank, open fence, body, end fence. */
+/** The one spelling of an owned block: leading blank, open fence, body, end fence,
+ *  trailing blank -- the trailing blank separates the block from whatever the user
+ *  has next in the file, and the writer owns exactly that one line. */
 function fencedBlock(marker: BlockMarker, body: string[]): string {
-  return `\n${marker}\n${body.join("\n")}\n${BLOCK_SHAPES[marker].end}\n`;
+  return `\n${marker}\n${body.join("\n")}\n${BLOCK_SHAPES[marker].end}\n\n`;
 }
 
 /**
@@ -86,6 +88,10 @@ export type ShellIntegrationAction =
 
 /** A line equals the given marker ignoring a trailing CR (rc/profile files may be CRLF). */
 const lineIs = (line: string, marker: string): boolean => line.replace(/\r$/, "") === marker;
+
+/** A blank line, CR-tolerant. NOTE: the final "" a trailing newline splits into is the
+ *  file TERMINATOR, not a blank line -- callers that walk split arrays must exclude it. */
+const isBlankLine = (line: string | undefined): boolean => (line ?? "").replace(/\r$/, "") === "";
 
 export function runShellIntegration(action: ShellIntegrationAction): void {
   const windows = process.platform === "win32";
@@ -175,9 +181,11 @@ function blockExtent(
   return { end: idx + 2, leftBehind: null };
 }
 
-/** The skip-set covering every owned block among `lines` (each block's extent plus its
- *  preceding blank, only when that preceding line is actually empty), and the user lines
- *  conservative legacy scans refused to remove, for the caller to warn about. */
+/** The skip-set covering every owned block among `lines` (each block's extent plus the
+ *  blank line before it and the ONE blank after its end fence -- both only when actually
+ *  blank, and never the file terminator, so a legacy block with no trailing blank still
+ *  strips cleanly and user spacing beyond the one owned line survives), and the user
+ *  lines conservative legacy scans refused to remove, for the caller to warn about. */
 function ownedLineIndexes(
   lines: string[],
   markers: readonly BlockMarker[],
@@ -187,9 +195,17 @@ function ownedLineIndexes(
   lines.forEach((line, idx) => {
     const marker = markers.find((m) => lineIs(line, m));
     if (marker === undefined) return;
-    if (idx > 0 && (lines[idx - 1] ?? "").replace(/\r$/, "") === "") skip.add(idx - 1);
+    if (idx > 0 && isBlankLine(lines[idx - 1])) skip.add(idx - 1);
     const extent = blockExtent(lines, idx, marker);
     for (let i = idx; i <= extent.end; i++) skip.add(i);
+    // The ONE separating blank the block writes after its end fence is owned too --
+    // but the lone final "" is the file terminator, not a blank line, so eating it
+    // would strip the file's final newline.
+    const after = extent.end + 1;
+    if (
+      after < lines.length && isBlankLine(lines[after]) &&
+      !(after === lines.length - 1 && lines[after] === "")
+    ) skip.add(after);
     if (extent.leftBehind !== null) leftBehind.push(extent.leftBehind);
   });
   return { skip, leftBehind };
@@ -197,8 +213,9 @@ function ownedLineIndexes(
 
 /**
  * Strip owned blocks from rc/profile content, each bounded by its own extent (see
- * blockExtent) plus the blank line the block prepends. Pure: `leftBehind` reports the
- * lines conservative legacy scans refused to remove. Exported for tests only.
+ * blockExtent) plus the blank line the block prepends and the ONE separating blank it
+ * appends. Pure: `leftBehind` reports the lines conservative legacy scans refused to
+ * remove. Exported for tests only.
  */
 export function stripBlocks(
   content: string,
@@ -225,14 +242,15 @@ function dominantEol(content: string): "\n" | "\r\n" {
 
 /**
  * Insert or refresh ONE owned block, IN PLACE: the first `marker` block is replaced
- * where it sits (extent-bounded, plus its preceding blank), so a stale or legacy block
- * migrates without reordering the file and an already-current one reproduces it
- * byte-for-byte; later duplicates of the same marker (a bad hand-merge, say) are
- * stripped, extent-bounded, so the file converges on ONE owned block and user lines
- * are never deleted. When absent, the block is appended at EOF (it leads with a
- * blank) in the file's dominant line ending. `leftBehind` reports the user lines the
- * duplicate strips refused to consume -- the same warning contract stripBlocks gives
- * removal. Exported for tests only.
+ * where it sits (extent-bounded, plus its preceding blank and the one separating blank
+ * after its end fence), so a stale or legacy block migrates without reordering the file
+ * and an already-current one reproduces it byte-for-byte; later duplicates of the same
+ * marker (a bad hand-merge, say) are stripped, extent-bounded, so the file converges on
+ * ONE owned block and user lines are never deleted. When absent, the block is appended
+ * at EOF (it leads with a blank and ends in its separating blank) in the file's dominant
+ * line ending. `leftBehind` reports the user lines the duplicate strips refused to
+ * consume -- the same warning contract stripBlocks gives removal. Exported for tests
+ * only.
  */
 export function upsertBlock(
   content: string,
@@ -248,7 +266,7 @@ export function upsertBlock(
       leftBehind: [],
     };
   }
-  const start = idx > 0 && (lines[idx - 1] ?? "").replace(/\r$/, "") === "" ? idx - 1 : idx;
+  const start = idx > 0 && isBlankLine(lines[idx - 1]) ? idx - 1 : idx;
   const { end } = blockExtent(lines, idx, marker);
   let blockLines = block.split("\n");
   if (blockLines[blockLines.length - 1] === "") blockLines = blockLines.slice(0, -1); // trailing newline
@@ -259,17 +277,23 @@ export function upsertBlock(
     blockLines = blockLines.map((l) => `${l}\r`);
   }
   // Dedupe on the LINE array, not a string round-trip: "" is ambiguous there (no tail
-  // vs one terminator line), which would flip an EOF file's (un)terminated state.
+  // vs one terminator line), which would flip the termination of USER content at EOF.
   const rest = lines.slice(end + 1);
   const { skip: dupes, leftBehind } = ownedLineIndexes(rest, [marker]);
-  const tail = dupes.size === 0 ? rest : rest.filter((_, i) => !dupes.has(i));
-  // An empty tail means OUR block now ends the file unterminated (it already did, or
-  // the dedupe removed an unterminated duplicate after it): its last line keeps no
-  // \r -- that \r belongs to a "\r\n" terminator the line does not have.
-  if (tail.length === 0) {
-    const last = blockLines.length - 1;
-    blockLines[last] = (blockLines[last] ?? "").replace(/\r$/, "");
+  let tail = dupes.size === 0 ? rest : rest.filter((_, i) => !dupes.has(i));
+  // blockLines already ends in the block's ONE owned separating blank (fencedBlock
+  // emits it), so a blank left over from the previous wire is REUSED: consume one
+  // leading blank from the tail rather than stacking a second -- but never the lone
+  // final "", the file terminator, whose loss would drop the file's final newline.
+  if (tail.length > 0 && isBlankLine(tail[0]) && !(tail.length === 1 && tail[0] === "")) {
+    tail = tail.slice(1);
   }
+  // An owned region reaching EOF (empty tail: the file ended inside the old extent or
+  // a deduped duplicate) normalizes to the terminated, blank-followed form an append
+  // produces -- ONE shape at EOF, so re-runs converge instead of accumulating blanks.
+  // User content past the block keeps the file's own termination state (tail's last
+  // element is untouched).
+  if (tail.length === 0) tail = [""];
   return {
     content: [...lines.slice(0, start), ...blockLines, ...tail].join("\n"),
     leftBehind,
@@ -293,21 +317,24 @@ function warnLeftBehind(file: string, lines: readonly string[]): void {
  * or reordering the rest of the file. Any launchers block an older release wrote is
  * stripped in the same pass (the launchers are `agent env` emissions now, so a leftover
  * block would source a file that no longer ships); the caller migrated its opt-in first.
+ * The strip runs BEFORE the upsert: a launchers block directly below the main one shares
+ * the separating blank, so stripping after would claim the separator the upsert just
+ * emitted and the first run would not converge.
  */
 function wireBlocks(files: string[], mainBlock: string): void {
   for (const file of files) {
     const original = existsSync(file) ? readFileSync(file, "utf-8") : "";
-    const upserted = upsertBlock(original, MARKER, mainBlock);
-    const stripped = stripBlocks(upserted.content, [LAUNCHERS_MARKER]);
-    warnLeftBehind(file, [...upserted.leftBehind, ...stripped.leftBehind]);
-    if (stripped.content === original) {
+    const stripped = stripBlocks(original, [LAUNCHERS_MARKER]);
+    const upserted = upsertBlock(stripped.content, MARKER, mainBlock);
+    warnLeftBehind(file, [...stripped.leftBehind, ...upserted.leftBehind]);
+    if (upserted.content === original) {
       consola.info(`Shell integration already wired in ${file} -- skipping.`);
       continue;
     }
     // OneDrive-backed Documents folders are reparse points; Node's recursive mkdir throws
     // EEXIST on an existing reparse point instead of no-op'ing, so skip when it already exists.
     if (!existsSync(dirname(file))) mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, stripped.content);
+    writeFileSync(file, upserted.content);
     consola.success(`Wired shell integration into ${file}`);
   }
 }

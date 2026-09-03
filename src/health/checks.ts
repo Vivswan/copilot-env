@@ -2,7 +2,7 @@
 // gathered by probe.ts, so each check is independently unit-testable.
 import { DIRECT_BASE_URL } from "../claude/config.ts";
 import { directHelperPath } from "../claude/paths.ts";
-import { codexProviderId } from "../codex/config.ts";
+import { type CodexOtherReason, codexProviderId } from "../codex/config.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import {
   type AuthProvider,
@@ -12,6 +12,7 @@ import {
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
 import { lastActivityMs } from "../scripts/idle_watchdog.ts";
+import { assertNever } from "../utils/assert.ts";
 import { formatDuration, SECONDS_PER_DAY } from "../utils/time.ts";
 import { filterByScope } from "./aggregate.ts";
 import type {
@@ -878,6 +879,23 @@ export function checkAuth(f: AuthFacts): CheckResult {
   };
 }
 
+/** The repair line of a Codex "other" classification, keyed off the reason the
+ *  classifier minted (exhaustive, so a new reason forces a verdict here). Null
+ *  = "custom": a foreign selection is re-wirable, so the generic model_provider
+ *  reporting in checkCodex owns it. */
+function codexOtherLine(reason: CodexOtherReason): string | null {
+  switch (reason) {
+    case "malformed":
+      return "config.toml is present but not valid TOML";
+    case "read-error":
+      return "config.toml exists but could not be read";
+    case "custom":
+      return null;
+    default:
+      return assertNever(reason);
+  }
+}
+
 export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult {
   const configPath = codexConfigPath(f.home);
   // A named profile's whole wiring (both agents, one mode) is (re)written by ONE
@@ -893,6 +911,7 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
       configExists: f.configExists,
       modelProvider: f.modelProvider,
       providerMode: f.providerMode,
+      otherReason: f.otherReason,
       baseUrl: f.baseUrl,
       providerWired: f.providerWired,
       envFilePresent: f.envFilePresent,
@@ -962,6 +981,22 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
     return verdict.status === "ok"
       ? { ...base, status: "ok", detail }
       : { ...base, status: "warn", detail, fix: verdict.fix };
+  }
+  // A config.toml we could not parse or read: the managed writers REFUSE such a
+  // file, so a re-wire fix cannot land -- the repair comes first (mirrors the
+  // Claude malformed/read-error arm; codexOtherLine's null sends a foreign
+  // "custom" selection to the generic re-wire path below).
+  if (f.providerMode === "other") {
+    const otherLine = codexOtherLine(f.otherReason);
+    if (otherLine !== null) {
+      const rewire = profile === null ? "agent codex" : profileAddFix(profile);
+      return {
+        ...base,
+        status: "warn",
+        detail: ["provider: other", `config.toml: ${configPath}`, otherLine].join("\n"),
+        fix: `repair ${configPath}, then re-run \`${rewire}\``,
+      };
+    }
   }
   // Config exists: report precisely which part of the wiring is off.
   const withConfigPath = (message: string) => `config.toml: ${configPath}\n${message}`;
@@ -1043,7 +1078,7 @@ export function checkCodexHost(f: CodexHostFacts): CheckResult {
 
 /** The one-line reading of a Claude "other" classification, keyed off the
  *  reason the classifier minted (never re-derived from paths here). */
-function claudeOtherLine(f: ClaudeFacts): string {
+function claudeOtherLine(f: ClaudeFacts & { providerMode: "other" }): string {
   switch (f.otherReason) {
     case "malformed":
       return "settings.json is present but not valid JSON";
@@ -1051,8 +1086,10 @@ function claudeOtherLine(f: ClaudeFacts): string {
       return "settings.json exists but could not be read";
     case "legacy-unrecognized":
       return `apiKeyHelper → ${f.helperPath} (the retired copilot-env helper path), but copilot-env cannot verify the helper body (missing, unreadable, or unrecognized)`;
-    default:
+    case "custom":
       return `custom apiKeyHelper/ANTHROPIC_BASE_URL set (${f.helperPath ?? f.baseUrl})`;
+    default:
+      return assertNever(f.otherReason);
   }
 }
 

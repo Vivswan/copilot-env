@@ -17,6 +17,7 @@ import "./utils/dotenv.ts";
 import { Command } from "commander";
 import { consola } from "consola";
 import { parseClaudeAction, parseCodexAction } from "./agents/configure.ts";
+import { recordDefaultModeFromWiring } from "./agents/configure_defaults.ts";
 import { parseModeFlags } from "./agents/provider_mode.ts";
 import { DEFAULT_AUTOUPDATE_COOLDOWN_DAYS } from "./autoupdate/state.ts";
 import { runClaude } from "./claude/config.ts";
@@ -586,8 +587,11 @@ program
       case "host":
         return runCodexHost({ mode: action.mode, delete: action.deleteHost });
       case "check":
-      case "configure":
         return runCodex(action);
+      case "configure":
+        // A single-agent default rewire stales the default slot's recorded
+        // mode; re-derive it after a successful write (same step as init).
+        return runCodex(action).then(() => recordDefaultModeFromWiring());
       default:
         return assertNever(action);
     }
@@ -619,8 +623,10 @@ program
       case "desktop":
         return refreshClaudeDesktopWiring();
       case "check":
-      case "configure":
         return runClaude(action);
+      case "configure":
+        // Same re-derivation as `agent codex`: one default wiring changed.
+        return runClaude(action).then(() => recordDefaultModeFromWiring());
       default:
         return assertNever(action);
     }

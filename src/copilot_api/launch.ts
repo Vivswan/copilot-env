@@ -560,6 +560,9 @@ export async function cleanupExistingProxies(
       case "stop-tracked":
         if (await isCopilotApiPid(action.pid)) {
           consola.info(`   Stopping tracked proxy (pid=${action.pid}) ...`);
+          // Verdict deliberately unused: the plan's clear-tracking action (always queued
+          // right behind this one) unbinds the pid whichever way the kill went, and
+          // terminatePid reports a refused escalation itself.
           await terminatePid(action.pid, DAEMON_SIGKILL_GRACE_MS);
         }
         break;

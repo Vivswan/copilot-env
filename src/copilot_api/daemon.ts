@@ -114,12 +114,18 @@ export function recordHeartbeat(profile: Profile = null): void {
  * escalates to SIGKILL if the daemon is still alive (use it when the caller must be sure it
  * stopped, e.g. de-auth); `0` sends a single SIGTERM without waiting. A lock-"alive" pid the
  * owner-filtered scan cannot confirm as our daemon is REFUSED with a warning and tracking
- * left intact ({ signalled: false, stopped: false }) -- see the alive arm below. Returns the
- * tracked pid, whether we signalled it, and whether it is confirmed stopped afterwards.
+ * left intact ({ signalled: false, stopped: false }) -- see the alive arm below. A kill
+ * REFUSED at terminatePid's SIGKILL boundary ("refused-reused-pid": our daemon died inside
+ * the grace and the OS recycled the pid onto a foreign process) counts as STOPPED with the
+ * tracking cleared -- the opposite disposition, because there the daemon is provably gone.
+ * `classify` is the identity seam (classifyDaemonPid) shared by the TERM gate below and
+ * terminatePid's KILL boundary, injectable for tests. Returns the tracked pid, whether we
+ * signalled it, and whether it is confirmed stopped afterwards.
  */
 export async function stopTrackedProxy(
   graceMs = 0,
   profile: Profile = null,
+  classify: (pid: number) => Promise<"yes" | "no" | "unknown"> = classifyDaemonPid,
 ): Promise<{ trackedPid?: number; signalled: boolean; stopped: boolean }> {
   const state = CopilotEnvRunState.forProfile(profile);
   // Whether stopping releases the port tracking is the daemon's policy: a named
@@ -169,22 +175,44 @@ export async function stopTrackedProxy(
       signalled = false;
       break;
     case "unproven": {
-      const cls = await classifyDaemonPid(trackedPid);
+      const cls = await classify(trackedPid);
       signalled = cls === "yes" || cls === "unknown";
       break;
     }
     default:
       signalled = assertNever(lock);
   }
-  if (signalled) {
-    await terminatePid(trackedPid, graceMs);
-  }
   // "stopped" = the tracked daemon is no longer alive as our process. A confident "no" -- or
-  // the lock's "dead" verdict (already gone / replaced) -- counts as stopped. With graceMs 0
-  // (no wait) a just-SIGTERMed process can
-  // still be alive for a tick, so a caller needing certainty passes graceMs > 0 (waited + SIGKILL)
-  // before this check.
-  const stopped = !signalled || !pidAlive(trackedPid);
+  // the lock's "dead" verdict (already gone / replaced) -- counts as stopped.
+  let stopped: boolean;
+  if (signalled) {
+    const verdict = await terminatePid(trackedPid, graceMs, classify);
+    switch (verdict) {
+      case "refused-reused-pid":
+        // The KILL boundary proved the tracked daemon died inside the grace and the OS
+        // recycled its pid onto a FOREIGN process: our daemon is provably gone, so keeping
+        // the tracking would point every follow-up stop (and the de-auth "still running"
+        // warning) at an innocent bystander. Report the true outcome (terminatePid already
+        // warned that the impostor was spared) and let the clear below unbind it.
+        consola.info(
+          `The tracked proxy (pid ${trackedPid}) already exited and its pid now belongs to a different process; cleared the stale tracking.`,
+        );
+        stopped = true;
+        break;
+      case "term-only":
+      case "died-in-grace":
+      case "killed":
+        // With graceMs 0 ("term-only", no wait) a just-SIGTERMed process can still be
+        // alive for a tick, so a caller needing certainty passes graceMs > 0 (waited +
+        // SIGKILL) before this check.
+        stopped = !pidAlive(trackedPid);
+        break;
+      default:
+        stopped = assertNever(verdict);
+    }
+  } else {
+    stopped = true;
+  }
   // Preserve the pid/port tracking ONLY when we actually waited (graceMs > 0) and the daemon is
   // confirmed still alive -- a genuinely stuck daemon a follow-up `agent stop` must be able to
   // target. Otherwise clear it (the graceMs 0 path can't confirm death, so it stays optimistic,

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
+import { consola } from "consola";
 import { proxyStatus, stopTrackedProxy } from "../src/copilot_api/daemon.ts";
 import { launchDaemon, pidAlive } from "../src/copilot_api/process.ts";
 import { parseAbsolutePath } from "../src/copilot_api/sidecar.ts";
@@ -78,6 +79,30 @@ async function until(deadlineMs: number, probe: () => boolean): Promise<boolean>
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   return probe();
+}
+
+/** Run `body` with stdout/stderr captured (consola routes through one of them); the
+ *  consola level is raised so info/warn are not self-silenced under the test runner. */
+async function captureAllWrites(body: () => Promise<void>): Promise<string> {
+  const written: string[] = [];
+  const savedLevel = consola.level;
+  const origOut = process.stdout.write.bind(process.stdout);
+  const origErr = process.stderr.write.bind(process.stderr);
+  const capture = (chunk: string | Uint8Array): boolean => {
+    written.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    return true;
+  };
+  process.stdout.write = capture;
+  process.stderr.write = capture;
+  try {
+    consola.level = 3;
+    await body();
+  } finally {
+    process.stdout.write = origOut;
+    process.stderr.write = origErr;
+    consola.level = savedLevel;
+  }
+  return written.join("");
 }
 
 // --- the decision table, in-process ------------------------------------------------------
@@ -320,6 +345,75 @@ test(
       }
       await until(5_000, () => !pidAlive(child.pid));
       releaseFileLock(daemonLockPath(home));
+    }
+  },
+  30_000,
+);
+
+// The KILL-boundary reuse, on the STOP path: the TERM'd daemon dies inside the grace and
+// the OS recycles its pid onto a foreign process, so terminatePid's boundary re-proof
+// refuses the SIGKILL ("refused-reused-pid"). OUR daemon is provably gone -- the stop
+// must count as STOPPED, CLEAR the tracking, and say so honestly, never keep pointing
+// follow-up stops (or de-auth's "still running" warning) at an innocent bystander. Under
+// the historical void-returning terminatePid this control goes red: the caller could only
+// guess from the live foreign pid, computed stopped=false, and KEPT the tracking. The
+// classify seam answers "yes" at the TERM gate (the seconds-old proof that authorized the
+// signal) and "no" at the KILL boundary; the TERM-surviving bystander needs a trappable
+// SIGTERM, so POSIX-only (same gating as the terminate_pid controls).
+test.skipIf(process.platform === "win32")(
+  "stopTrackedProxy: a KILL-boundary pid-reuse refusal counts as stopped, clears tracking, reports",
+  async () => {
+    dir = isolateProxyHome("copilot-daemon-lock-");
+    const ready = join(dir, "ready");
+    const bystander = join(dir, "bystander.ts");
+    // Stands in for the foreign process wearing the recycled pid: ignores SIGTERM so it
+    // is provably alive at the KILL boundary, and its survival proves the refusal.
+    writeFileSync(
+      bystander,
+      'Deno.addSignalListener("SIGTERM", () => {});\n' +
+        `Deno.writeTextFileSync(${JSON.stringify(ready)}, "up");\n` +
+        "setInterval(() => {}, 60_000);\n",
+    );
+    const child = spawnChild(Deno.execPath(), {
+      args: [...denoRunArgs(), bystander],
+      stdout: "null",
+      stderr: "inherit",
+    });
+    try {
+      expect(await until(10_000, () => existsSync(ready))).toBe(true);
+      // No daemon.lock at all ("unproven"), so the TERM gate falls back to classification.
+      writeRunState({ pid: child.pid, port: 4141 });
+      const answers: ("yes" | "no")[] = ["yes", "no"];
+      const calls: number[] = [];
+      const classify = (pid: number): Promise<"yes" | "no" | "unknown"> => {
+        calls.push(pid);
+        return Promise.resolve(answers.shift() ?? "no");
+      };
+
+      let result: Awaited<ReturnType<typeof stopTrackedProxy>> | undefined;
+      const output = await captureAllWrites(async () => {
+        result = await stopTrackedProxy(300, null, classify);
+      });
+
+      // Signalled on the TERM-gate "yes", stopped on the boundary's proof of death --
+      // and both identity reads happened, against the tracked pid.
+      expect(result).toEqual({ trackedPid: child.pid, signalled: true, stopped: true });
+      expect(calls).toEqual([child.pid, child.pid]);
+      expect(pidAlive(child.pid)).toBe(true); // the foreign process was spared
+      // Tracking cleared: our daemon is gone, so nothing may still point at the bystander.
+      expect(new CopilotEnvRunState().read().pid).toBe(undefined);
+      // Honest report: terminatePid's refusal warning plus the stop's own clearing line.
+      expect(output).toContain(`Not escalating pid ${child.pid} to SIGKILL`);
+      expect(output).toContain(
+        `The tracked proxy (pid ${child.pid}) already exited and its pid now belongs to a different process; cleared the stale tracking.`,
+      );
+    } finally {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+      await until(5_000, () => !pidAlive(child.pid));
     }
   },
   30_000,

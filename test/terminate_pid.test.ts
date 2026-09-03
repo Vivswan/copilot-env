@@ -1,20 +1,22 @@
 // terminatePid's SIGKILL boundary (src/copilot_api/process.ts): the escalation re-proves
 // daemon identity through the injected classify seam (classifyDaemonPid in production)
 // instead of firing on the seconds-old proof the caller held at SIGTERM time. Each
-// three-state arm gets one control:
-//   - "no"      -> the KILL is refused and the pid reuse reported (the arm that goes red
-//                  under the historical pidAlive-only escalation),
-//   - "yes"     -> the KILL proceeds,
-//   - "unknown" -> the KILL proceeds (the documented deliberate default: every caller
-//                  gates its TERM on an identity read at least as demanding as the kill
-//                  gate, and a transient scan failure must not strand a stop).
+// three-state arm gets one control, and each control asserts the returned
+// TerminateVerdict alongside the observable behavior (the whole outcome -- signals sent
+// AND the answer callers act on):
+//   - "no"      -> the KILL is refused ("refused-reused-pid") and the reuse reported (the
+//                  arm that goes red under the historical pidAlive-only escalation),
+//   - "yes"     -> the KILL proceeds ("killed"),
+//   - "unknown" -> the KILL proceeds ("killed" -- the documented deliberate default:
+//                  every caller gates its TERM on an identity read at least as demanding
+//                  as the kill gate, and a transient scan failure must not strand a stop).
 // The TERM-survivor arms need a trappable SIGTERM, which Windows does not have
 // (process.kill maps to TerminateProcess), so they are POSIX-only -- same gating as the
 // stopLockHolder escalation controls in test/launch_steps.test.ts.
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { consola } from "consola";
-import { pidAlive, terminatePid } from "../src/copilot_api/process.ts";
+import { pidAlive, terminatePid, type TerminateVerdict } from "../src/copilot_api/process.ts";
 import { killAndAwaitExit, removeDir, tmpDir, until } from "./helpers.ts";
 import { denoRunArgs, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
@@ -96,12 +98,15 @@ test.skipIf(process.platform === "win32")(
     const child = await spawnTermIgnoringChild();
     try {
       const { calls, classify } = classifyStub("no");
+      let verdict: TerminateVerdict | undefined;
       const output = await withCapturedOutput(async () => {
-        await terminatePid(child.pid, 300, classify);
+        verdict = await terminatePid(child.pid, 300, classify);
       });
       // The identity was re-proven at the boundary (exactly once), the KILL was refused
       // (the child ignored SIGTERM, so only terminatePid's SIGKILL could have ended it),
-      // and the refusal was reported honestly.
+      // and the refusal was reported honestly -- in the log AND in the verdict, so the
+      // caller learns the daemon is gone instead of guessing from a live foreign pid.
+      expect(verdict).toBe("refused-reused-pid");
       expect(calls).toEqual([child.pid]);
       expect(pidAlive(child.pid)).toBe(true);
       expect(output).toContain(`Not escalating pid ${child.pid} to SIGKILL`);
@@ -120,7 +125,7 @@ test.skipIf(process.platform === "win32")(
     const child = await spawnTermIgnoringChild();
     try {
       const { calls, classify } = classifyStub("yes");
-      await terminatePid(child.pid, 300, classify);
+      expect(await terminatePid(child.pid, 300, classify)).toBe("killed");
       expect(calls).toEqual([child.pid]);
       expect(await until(5_000, () => !pidAlive(child.pid))).toBe(true);
     } finally {
@@ -142,7 +147,9 @@ test.skipIf(process.platform === "win32")(
     const child = await spawnTermIgnoringChild();
     try {
       const { calls, classify } = classifyStub("unknown");
-      await terminatePid(child.pid, 300, classify);
+      // Same verdict as "yes": the kill-on-unknown carries no behavioral difference,
+      // so it earns no separate arm.
+      expect(await terminatePid(child.pid, 300, classify)).toBe("killed");
       expect(calls).toEqual([child.pid]);
       expect(await until(5_000, () => !pidAlive(child.pid))).toBe(true);
     } finally {
@@ -179,10 +186,45 @@ test(
       // a lingering zombie would still read pidAlive at the boundary.
       const exited = child.status;
       const { calls, classify } = classifyStub("no");
-      await terminatePid(child.pid, 3_000, classify);
+      expect(await terminatePid(child.pid, 3_000, classify)).toBe("died-in-grace");
       await exited;
       expect(calls).toEqual([]);
       expect(pidAlive(child.pid)).toBe(false);
+    } finally {
+      await killAndAwaitExit(child.pid);
+    }
+  },
+  30_000,
+);
+
+// graceMs 0 is the no-escalation mode: one SIGTERM, no wait, no identity consult. The
+// verdict says exactly that ("term-only" -- signalled, nothing verified) rather than
+// claiming a death it never observed -- and the compliant child's exit proves the TERM
+// was genuinely sent, so a do-nothing "term-only" stub could not pass. Cross-platform:
+// no signal is trapped (SIGTERM is TerminateProcess on Windows).
+test(
+  "graceMs 0 sends the TERM only, consults no identity, and answers 'term-only'",
+  async () => {
+    dir = tmpDir("copilot-terminate-");
+    const ready = join(dir, "ready");
+    const script = join(dir, "compliant.ts");
+    writeFileSync(
+      script,
+      `Deno.writeTextFileSync(${JSON.stringify(ready)}, "up");\n` +
+        "setInterval(() => {}, 60_000);\n",
+    );
+    const child = spawnChild(Deno.execPath(), {
+      args: [...denoRunArgs(), script],
+      stdout: "null",
+      stderr: "inherit",
+    });
+    try {
+      expect(await until(10_000, () => existsSync(ready))).toBe(true);
+      const exited = child.status;
+      const { calls, classify } = classifyStub("no");
+      expect(await terminatePid(child.pid, 0, classify)).toBe("term-only");
+      await exited; // the SIGTERM alone ends the compliant child: the signal was sent
+      expect(calls).toEqual([]);
     } finally {
       await killAndAwaitExit(child.pid);
     }

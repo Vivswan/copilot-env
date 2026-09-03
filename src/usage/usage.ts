@@ -12,7 +12,12 @@ import { copyFileSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "no
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { consola } from "consola";
-import { PROFILES_DIR_NAME, resolveHome, usageDbsUnderHome } from "../copilot_api/paths.ts";
+import {
+  DEFAULT_PROFILE_DIR,
+  PROFILES_DIR_NAME,
+  resolveHome,
+  usageDbsUnderHome,
+} from "../copilot_api/paths.ts";
 import { isValidProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { isDir } from "../utils/fs.ts";
@@ -238,13 +243,14 @@ function dayUsageMap(
 }
 
 /**
- * Locate every usage DB under `home`: the root daemon home's DBs (legacy
- * top-level file plus one per host directory under `.run/`) AND every named
- * profile daemon's isolated home under `<home>/profiles/<name>` -- each profile
- * proxy records its own traffic in its own DB, and the cost report covers all
- * of them. Only valid profile names are swept (a stray hand-made folder is not
- * a daemon home), and the result is realpath-deduped so a symlinked alias can
- * never double-count a DB. Only paths that exist on disk are returned.
+ * Locate every usage DB under `home`: any unmigrated FLAT root DBs (legacy
+ * top-level file plus one per host directory under `.run/`) AND every profile
+ * daemon's isolated home under `<home>/profiles/<name>` -- the default
+ * profile's `profiles/default` included -- each proxy records its own traffic
+ * in its own DB, and the cost report covers all of them. Only the default dir
+ * and valid profile names are swept (a stray hand-made folder is not a daemon
+ * home), and the result is realpath-deduped so a symlinked alias can never
+ * double-count a DB. Only paths that exist on disk are returned.
  */
 export function discoverUsageDbs(home: string = resolveHome()): string[] {
   const paths = usageDbsUnderHome(home);
@@ -257,13 +263,16 @@ export function discoverUsageDbs(home: string = resolveHome()): string[] {
     profiles = []; // no profiles dir yet
   }
   for (const profile of profiles.sort()) {
-    if (!isValidProfileName(profile)) continue;
+    if (profile !== DEFAULT_PROFILE_DIR && !isValidProfileName(profile)) continue;
     const profileHome = join(profilesDir, profile);
     if (isDir(profileHome)) {
       paths.push(...usageDbsUnderHome(profileHome));
     }
   }
 
+  // Realpath-dedup: a symlinked alias never double-counts a DB. A hand-COPIED DB
+  // across homes (distinct inodes) still counts twice -- accepted: the default-home
+  // migration only moves or refuses, never copies, so only a hand copy reaches it.
   const seen = new Set<string>();
   return paths.filter((path) => {
     let canonical = path;

@@ -8,6 +8,7 @@ import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { daemonLockHolderPid } from "../src/scripts/daemon_lock.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import {
+  defaultHomeDir,
   envSnapshot,
   isolateProxyHome,
   killAndAwaitExit,
@@ -18,7 +19,6 @@ import {
   until,
   writeRunState,
 } from "./helpers.ts";
-
 // The lifecycle primitives the proxy-token resolver orchestrates: `start --record-event`
 // (heartbeat) and `start --check` (is-it-up probe). Each is isolated in a temp
 // COPILOT_API_HOME and resets the shared process.exitCode.
@@ -37,9 +37,12 @@ afterEach(() => {
   dir = removeDir(dir);
 });
 
+/** Isolate a root and return the DEFAULT daemon's home under it (profiles/default,
+ *  created on disk) -- what the dry-run plan and the lock/holder staging both
+ *  resolve. `dir` (the root) owns cleanup. */
 function tmpHome(): string {
   dir = isolateProxyHome("copilot-lifecycle-");
-  return dir;
+  return defaultHomeDir();
 }
 
 /** Run `start --dry-run` for the default profile and return its captured narration. */

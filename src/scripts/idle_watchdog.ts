@@ -15,7 +15,7 @@
 // pure helpers. idle_watchdog_preload.ts is the tiny `--preload` entry that arms it (and is
 // never imported by tests), the same split pat_passthrough_preload.ts gets from its own file.
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { ROOT_HOME_ENV } from "../copilot_api/paths.ts";
+import { DAEMON_KEEP_PORT_ENV } from "../copilot_api/paths.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { shutdownDaemon } from "./daemon_shutdown.ts";
 import { lastObservedInferenceMs } from "./inference_activity.ts";
@@ -98,14 +98,15 @@ export function idleCheck(startedAtMs: number, timeoutMs: number): void {
   // Clear our run-state tracking, but ONLY if it still points at THIS daemon. clearIfPid
   // does the pid check INSIDE the atomic read-modify-write, so a newer daemon that replaced
   // us between ticks can't have its freshly written pid/port clobbered. We stop either way
-  // (this daemon is idle / has been replaced). A profile daemon (ROOT_HOME_ENV set at
-  // spawn) keeps its `port` -- that's the profile's stable reservation, which the baked
-  // agent wiring points at. The persisted `.activity.json` mark is left
+  // (this daemon is idle / has been replaced). Whether `port` survives is the daemon's
+  // releasesPortOnStop policy, transported at spawn in DAEMON_KEEP_PORT_ENV: a named
+  // profile's port is its stable reservation (the baked agent wiring points at it), the
+  // default's reverts. The persisted `.activity.json` mark is left
   // alone on purpose: it can't be pid-guarded (separate file), so deleting it here could
   // clobber a successor daemon's mark -- `agent stop` (explicit teardown) removes it instead,
   // and a leftover mark is only ever a health-display detail.
   try {
-    state.clearIfPid(process.pid, process.env[ROOT_HOME_ENV] !== undefined);
+    state.clearIfPid(process.pid, process.env[DAEMON_KEEP_PORT_ENV] === "1");
   } catch {
     // best-effort: a failed state clear must not stop us from shutting down
   }

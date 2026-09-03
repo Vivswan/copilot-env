@@ -62,23 +62,67 @@ export function usageDbsUnderHome(home: string): string[] {
 
 // --- profile homes ------------------------------------------------------------
 //
-// A NAMED profile's daemon runs against its own isolated home,
-// `<root>/profiles/<name>` (own config.json + auth.apiKeys, .run/, sqlite,
-// logs), because two daemons over one home would contend on sqlite/config.json.
-// The ACCOUNT-WIDE copilot-env files (credential store, preferences, the Codex
-// catalog, copilot-api's device-login file) always anchor at the ROOT home, so
-// every profile shares one credential store and one preference set.
+// EVERY profile's daemon -- the default included -- runs against its own
+// isolated home, `<root>/profiles/<name>` (own config.json + auth.apiKeys,
+// .run/, sqlite, logs), because two daemons over one home would contend on
+// sqlite/config.json. The ACCOUNT-WIDE copilot-env files (credential store,
+// preferences, ownership ledger, the Codex catalog, copilot-api's device-login
+// file, the proxy float record and its caches) always anchor at the ROOT home,
+// so every profile shares one credential store and one preference set.
 //
-// A profile daemon is spawned with COPILOT_API_HOME pointing at its profile
-// home (so the daemon and its in-process preloads read/write there) plus
+// A daemon is spawned with COPILOT_API_HOME pointing at its profile home (so
+// the daemon and its in-process preloads read/write there) plus
 // COPILOT_ENV_ROOT_HOME pointing back at the root -- the explicit signal that
 // lets the preloads' zero-arg constructors still find the shared files.
 
 /** Directory under the root home that holds the per-profile daemon homes. */
 export const PROFILES_DIR_NAME = "profiles";
 
+/** Directory name of the DEFAULT profile's daemon home under `profiles/`. The
+ *  name is reserved for exactly this reason: a user profile can never claim it
+ *  (profile.ts rejects it), so the join can never collide. */
+export const DEFAULT_PROFILE_DIR = "default";
+
+/** Directory under a daemon home where the proxy writes its per-endpoint
+ *  handler logs (shared across hosts, unlike `.run/<host>/`). */
+export const LOGS_DIR_NAME = "logs";
+
+/** Basename of the per-home record of the opt-in config.json projections we
+ *  wrote (ProxyProjectionState) -- lives beside the config.json it describes. */
+export const PROJECTIONS_FILENAME = ".copilot-env-projections.json";
+
+/** The artifacts that make up ONE daemon home, relative to it. Their presence
+ *  directly at the ROOT home is what marks an unmigrated FLAT default daemon
+ *  home (see defaultDaemonHome); the 3.5.6 default-home fix-up moves exactly
+ *  this set into `profiles/default/`. daemon.lock is deliberately absent: a
+ *  home that ever ran a daemon always carries `.run/` (the CLI creates it
+ *  before any spawn), and keeping the list lock-free keeps this module out of
+ *  the daemon shims' import closures. */
+export const DAEMON_HOME_ARTIFACTS = [
+  PROXY_CONFIG_FILENAME,
+  PROJECTIONS_FILENAME,
+  RUN_DIR_NAME,
+  LOGS_DIR_NAME,
+  SQLITE_DB_FILENAME,
+] as const;
+
+/** The 3.5.6 default-home move's staging dir under `profiles/` (never a valid
+ *  profile name, so every enumerator skips it). Declared here because its
+ *  EXISTENCE is part of the precedence rule below: artifacts staged but not yet
+ *  flipped are still the flat layout's, so reads must keep resolving flat until
+ *  the migration's one atomic rename creates `profiles/default`. */
+export const DEFAULT_HOME_STAGING_DIR = ".default.migrating";
+
 /** Env var carrying the ROOT home inside a profile daemon (set at spawn). */
 export const ROOT_HOME_ENV = "COPILOT_ENV_ROOT_HOME";
+
+/** Env var carrying the daemon's keep-port-on-auto-stop decision ("1"/"0", set on
+ *  EVERY spawn): DaemonPolicy.releasesPortOnStop, decided once in port.ts and
+ *  transported here so the in-daemon idle watchdog never re-derives the policy.
+ *  A named profile's port is its stable reservation and survives auto-stop ("1");
+ *  the default's reverts ("0"). Declared in this module (not port.ts) because the
+ *  watchdog already has paths.ts in its preload import closure. */
+export const DAEMON_KEEP_PORT_ENV = "COPILOT_ENV_DAEMON_KEEP_PORT";
 
 /** The ROOT copilot-api home (where the account-wide files live): inside a
  *  profile daemon `$COPILOT_ENV_ROOT_HOME`, else the effective home itself. */
@@ -90,6 +134,36 @@ export function resolveRootHome(): string {
  *  proof the segment is safe to join (parsed at the producer boundaries). */
 export function profileHome(name: ProfileName): string {
   return join(resolveRootHome(), PROFILES_DIR_NAME, name);
+}
+
+/**
+ * THE default daemon's home -- the one place its precedence is decided:
+ *   1. Inside a daemon (COPILOT_ENV_ROOT_HOME set at spawn), COPILOT_API_HOME
+ *      IS the daemon's own pinned home; nothing is derived.
+ *   2. Otherwise the default daemon lives at `<root>/profiles/default` -- the
+ *      same shape as every named profile -- whenever that directory exists,
+ *      and on a fresh root carrying no daemon files at all.
+ *   3. Only a root still holding an unmigrated FLAT daemon home resolves to the
+ *      root itself, until the 3.5.6 default-home fix-up moves those files:
+ *      any of DAEMON_HOME_ARTIFACTS directly at the root, or an unfinished
+ *      staging move (DEFAULT_HOME_STAGING_DIR -- its artifacts are still the
+ *      flat home's until the flip), with no profiles/default beside them.
+ */
+export function defaultDaemonHome(): string {
+  if (process.env[ROOT_HOME_ENV]) return resolveHome();
+  const root = resolveHome();
+  const migrated = join(root, PROFILES_DIR_NAME, DEFAULT_PROFILE_DIR);
+  if (existsSync(migrated)) return migrated;
+  const flat = DAEMON_HOME_ARTIFACTS.some((name) => existsSync(join(root, name))) ||
+    existsSync(join(root, PROFILES_DIR_NAME, DEFAULT_HOME_STAGING_DIR));
+  return flat ? root : migrated;
+}
+
+/** Every daemon home on this root: the default profile's plus each named
+ *  profile's with a home on disk -- the sweep/corroboration sites' one list
+ *  producer, so no caller can enumerate homes with a different rule. */
+export function allDaemonHomes(): string[] {
+  return [defaultDaemonHome(), ...profileHomeNames().map(profileHome)];
 }
 
 /** Names of profiles that have a daemon home on disk (sorted; missing dir = none).
@@ -118,6 +192,11 @@ export function profileHomeNames(): ProfileName[] {
 export function profileHomeExists(name: ProfileName): boolean {
   return existsSync(profileHome(name));
 }
+
+/** Basename of OUR per-host run-state file under `.run/<host>/` (port + pid +
+ *  active CODEX_HOME), written by this tooling and read back by
+ *  start/stop/env/health/port. */
+export const RUN_STATE_FILENAME = ".state.json";
 
 /** Per-host runtime file paths for the copilot-api proxy. */
 export class CopilotApiPaths {
@@ -153,8 +232,8 @@ export class CopilotApiPaths {
    * Shared (NOT per-host, NOT per-profile) copilot-env state under the ROOT
    * copilot-api home -- holds the provisioned GitHub credentials (default +
    * named profile slots), which are account/machine-wide regardless of host.
-   * Lives beside the root config.json, never inside `.run/<host>/` or a
-   * profile home.
+   * Anchors at the root home itself, never inside `.run/<host>/` or any
+   * daemon home under `profiles/`.
    */
   sharedStateFile: string;
   /**
@@ -196,22 +275,22 @@ export class CopilotApiPaths {
   codexModelCatalogFile: string;
 
   /** `profile` selects a NAMED profile's isolated daemon home (null = the
-   *  effective home). Account-wide files anchor at the root home either way. */
+   *  default profile's, resolved by defaultDaemonHome). Account-wide files
+   *  anchor at the root home either way. */
   constructor(profile: Profile = null) {
-    this.home = profile === null ? resolveHome() : profileHome(profile);
+    this.home = profile === null ? defaultDaemonHome() : profileHome(profile);
     const rootHome = resolveRootHome();
     const hostname = getSanitizedHostname();
     const runDir = join(this.home, RUN_DIR_NAME, hostname);
     this.configFile = join(this.home, PROXY_CONFIG_FILENAME);
-    this.projectionsFile = join(this.home, ".copilot-env-projections.json");
+    this.projectionsFile = join(this.home, PROJECTIONS_FILENAME);
     this.runDir = runDir;
-    // Our own per-host state (port + pid + active CODEX_HOME), written by this
-    // tooling and read back by start/stop/env/health/port.
-    this.stateFile = join(runDir, ".state.json");
+    // Our own per-host state; see RUN_STATE_FILENAME.
+    this.stateFile = join(runDir, RUN_STATE_FILENAME);
     this.activityFile = join(runDir, ".activity.json");
     this.logFile = join(runDir, ".log");
     // The proxy writes its inference handler logs to <home>/logs (shared, not per-host).
-    this.logsDir = join(this.home, "logs");
+    this.logsDir = join(this.home, LOGS_DIR_NAME);
     this.sqliteDb = join(runDir, SQLITE_DB_FILENAME);
     this.sharedStateFile = join(rootHome, ".copilot-env-state.json");
     this.envConfigFile = join(rootHome, ".copilot-env-config.json");

@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import {
+  classifyPidFromRows,
   copilotApiArgv,
   DAEMON_GH_TOKEN_ENV,
   DAEMON_SIGKILL_GRACE_MS,
@@ -422,6 +423,25 @@ test("parseProcessRows splits pid and ucomm off, keeping the command line verbat
   expect(parseProcessRows("7 sh sh -c 'a   b'")).toEqual([
     { pid: 7, ucomm: "sh", command: "sh -c 'a   b'" },
   ]);
+});
+
+test("classifyPidFromRows preserves a FAILED scan as unknown, never a confident no", () => {
+  const self = { pid: 111, ucomm: "deno", command: "deno test" };
+  const daemon = {
+    pid: 222,
+    ucomm: "deno",
+    command: "/home/me/.deno/bin/deno run --allow-net npm:@jeffreycao/copilot-api start",
+  };
+  // The scan's control is the calling process itself: a readable `ps -U <uid>` always
+  // contains it, so rows WITHOUT it prove the scan failed -- "failed to look" must not
+  // become "definitely not a daemon" (the 3.5.6 default-home move refuses on unknown;
+  // a flattened "no" there would move the home out from under an unjudged pid).
+  expect(classifyPidFromRows([], 222, 111)).toBe("unknown");
+  expect(classifyPidFromRows([daemon], 222, 111)).toBe("unknown"); // self missing: failed scan
+  // A scan that passes its control judges confidently, both ways.
+  expect(classifyPidFromRows([self, daemon], 222, 111)).toBe("yes");
+  expect(classifyPidFromRows([self], 222, 111)).toBe("no");
+  expect(classifyPidFromRows([self, daemon], 333, 111)).toBe("no");
 });
 
 // --- the orphan-sweep signature ---------------------------------------------------------

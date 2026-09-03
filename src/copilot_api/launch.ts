@@ -8,7 +8,7 @@
 // String literals here are external contracts (config-file keys, copilot-api
 // model ids, log markers). Do not change them during refactors.
 import * as fs from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { consola } from "consola";
 import { floatProxy, proxyFloatVerifyStatus } from "../proxy_float.ts";
@@ -31,10 +31,10 @@ import {
 import { resolvePassthroughIntegrationId, usePatPassthrough } from "./integration_identity.ts";
 import { generateAliases } from "./models.ts";
 import {
+  allDaemonHomes,
   CopilotApiPaths,
-  profileHome,
+  DAEMON_KEEP_PORT_ENV,
   profileHomeNames,
-  resolveHome,
   resolveRootHome,
   ROOT_HOME_ENV,
 } from "./paths.ts";
@@ -79,12 +79,12 @@ const START_LOCK_NOTICE_MS = 2000;
 /** The ONE GLOBAL start-lock path, in the DEFAULT run dir and shared by every profile:
  *  the orphan sweep scans copilot-api processes machine-wide, so two concurrent starts of
  *  DIFFERENT profiles could otherwise each reap the other's freshly spawned (not-yet-tracked)
- *  daemon. Serializing all starts also makes the tracked-pid snapshot race-free. Ensures the
- *  lock's directory exists. */
-function startLockPath(): string {
-  const lockDir = new CopilotApiPaths().runDir;
-  fs.mkdirSync(lockDir, { recursive: true });
-  return join(lockDir, ".start.lock");
+ *  daemon. Serializing all starts also makes the tracked-pid snapshot race-free. PURE (no
+ *  dir creation): withStartLock ensures the dir when acquiring, and the 3.5.6 default-home
+ *  migration probes the path without materializing run dirs (a lock cannot be held where
+ *  its directory does not exist). */
+export function startLockPath(): string {
+  return join(new CopilotApiPaths().runDir, ".start.lock");
 }
 
 declare const startLockBrand: unique symbol;
@@ -105,7 +105,9 @@ const HELD_START_LOCK: HeldStartLock = Object.freeze({ held: true } as HeldStart
  *  daemon. Emits a one-time notice once the wait is noticeable. The lock is scoped to `fn`
  *  (released on every exit path, in ONE owner), so an early return cannot leak it. */
 export function withStartLock<T>(fn: (lock: HeldStartLock) => Promise<T>): Promise<T> {
-  return withFileLock(startLockPath(), {
+  const lockPath = startLockPath();
+  fs.mkdirSync(dirname(lockPath), { recursive: true });
+  return withFileLock(lockPath, {
     staleMs: Number.POSITIVE_INFINITY,
     waitMs: Number.POSITIVE_INFINITY,
     retryMs: START_LOCK_RETRY_MS,
@@ -324,7 +326,7 @@ export type LockSweepSpares =
 
 export function lockProtectedDaemonPids(): LockSweepSpares {
   const pids = new Set<number>();
-  for (const home of [resolveHome(), ...profileHomeNames().map(profileHome)]) {
+  for (const home of allDaemonHomes()) {
     const hold = daemonLockHold(home);
     switch (hold.kind) {
       case "held":
@@ -394,7 +396,7 @@ async function corroborateLockHolder(
   trackedSpares: Set<number> = trackedDaemonPids(),
 ): Promise<boolean> {
   if (trackedSpares.has(holder)) return false;
-  for (const other of [resolveHome(), ...profileHomeNames().map(profileHome)]) {
+  for (const other of allDaemonHomes()) {
     if (other === home) continue;
     const hold = daemonLockHold(other);
     switch (hold.kind) {
@@ -726,11 +728,32 @@ export interface SpawnedDaemon {
 }
 
 /**
- * Assemble the daemon's environment (sqlite path; the isolated home + root-home pair for a
- * named profile), decide the config-driven knobs (idle watchdog, log mute), and launch
- * copilot-api detached on `port`. The credential's own environment and preload set are
- * derived inside launchDaemon from the DaemonCredential, so they can't disagree with it
- * here.
+ * The copilot-env lifecycle environment every daemon spawn gets. Every daemon -- the
+ * default included -- runs against its OWN home under `<root>/profiles/` (config.json
+ * incl. auth.apiKeys, .run/, sqlite, logs) so concurrent daemons never contend on one
+ * home; the root home is passed alongside so the in-daemon preloads still find the
+ * ACCOUNT-WIDE files (credential store, preferences) there. The home itself rides in
+ * DaemonSpec.home (pinned for every daemon). The keep-port value transports the
+ * daemon's releasesPortOnStop policy to the idle watchdog's auto-stop clear -- always
+ * set (never inherited), so a stale environment can't steer it. Pure, so the contract
+ * is testable without spawning anything.
+ */
+export function daemonLifecycleEnv(
+  profile: Profile,
+  paths: CopilotApiPaths,
+): Record<string, string> {
+  return {
+    COPILOT_API_SQLITE_DB_PATH: paths.sqliteDb,
+    [ROOT_HOME_ENV]: resolveRootHome(),
+    [DAEMON_KEEP_PORT_ENV]: daemonPolicy(profile).releasesPortOnStop ? "0" : "1",
+  };
+}
+
+/**
+ * Assemble the daemon's environment (daemonLifecycleEnv), decide the config-driven
+ * knobs (idle watchdog, log mute), and launch copilot-api detached on `port`. The
+ * credential's own environment and preload set are derived inside launchDaemon from
+ * the DaemonCredential, so they can't disagree with it here.
  */
 export function spawnConfiguredDaemon(opts: {
   port: number;
@@ -749,16 +772,7 @@ export function spawnConfiguredDaemon(opts: {
   const { port, logFile, profile, paths, credential, entry } = opts;
   const config = opts.config ?? new CopilotEnvConfig();
   const denoBin = resolveDenoBin();
-  const daemonEnv: Record<string, string> = { COPILOT_API_SQLITE_DB_PATH: paths.sqliteDb };
-  if (daemonPolicy(profile).isolatedHome) {
-    // An isolated-home daemon (a named profile) runs against its OWN home
-    // (config.json incl. auth.apiKeys, .run/, sqlite, logs) so concurrent
-    // daemons never contend on one home -- the root home is passed alongside so
-    // the in-daemon preloads still find the ACCOUNT-WIDE files (credential
-    // store, preferences) there. The home itself rides in DaemonSpec.home
-    // (pinned for every daemon, default included).
-    daemonEnv[ROOT_HOME_ENV] = resolveRootHome();
-  }
+  const daemonEnv = daemonLifecycleEnv(profile, paths);
   // Managed lifecycle on (the `auto-start` config key)? Preload the in-daemon idle watchdog
   // so the proxy stops itself after the idle window. It lives in the daemon process, so
   // the server and watchdog are one unit (no orphan either way), and every (re)start

@@ -35,25 +35,25 @@ export type DaemonPortSource =
  *   the default's recorded port reverts to the configured default; a named
  *   profile's port is its stable reservation (the baked agent wiring points
  *   at it), so it stays.
- * - `isolatedHome`: whether the daemon runs in its own isolated home (named
- *   profiles, so concurrent daemons never contend on one home) and therefore
- *   needs the root-home pointer passed alongside for the account-wide files.
  * - `flagSuffix`: the ` --profile <name>` suffix follow-up-command hints must
  *   carry ("" for the default daemon).
+ *
+ * There is deliberately NO home field here: every daemon -- the default
+ * included -- runs in its own home under `<root>/profiles/`, resolved by the
+ * paths layer (defaultDaemonHome/profileHome), and every spawn passes the
+ * root-home pointer alongside for the account-wide files.
  */
 export type DaemonPolicy =
   | {
     readonly port: { readonly source: "config" };
     readonly strictPortEligible: true;
     readonly releasesPortOnStop: true;
-    readonly isolatedHome: false;
     readonly flagSuffix: "";
   }
   | {
     readonly port: { readonly source: "reservation"; readonly name: ProfileName };
     readonly strictPortEligible: false;
     readonly releasesPortOnStop: false;
-    readonly isolatedHome: true;
     readonly flagSuffix: ` --profile ${string}`;
   };
 
@@ -64,7 +64,6 @@ export function daemonPolicy(profile: Profile): DaemonPolicy {
       port: { source: "config" },
       strictPortEligible: true,
       releasesPortOnStop: true,
-      isolatedHome: false,
       flagSuffix: "",
     };
   }
@@ -72,7 +71,6 @@ export function daemonPolicy(profile: Profile): DaemonPolicy {
     port: { source: "reservation", name: profile },
     strictPortEligible: false,
     releasesPortOnStop: false,
-    isolatedHome: true,
     flagSuffix: ` --profile ${profile}`,
   };
 }

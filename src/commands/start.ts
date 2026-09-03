@@ -334,25 +334,33 @@ export async function runStart(action: StartAction): Promise<void> {
     recordHeartbeat(profile);
     return;
   }
-  const paths = new CopilotApiPaths(profile);
-  const ctx: LaunchContext = {
-    profile,
-    paths,
-    config: CopilotApiConfig.forProfile(profile),
-    envConfig: new CopilotEnvConfig(),
-    state: CopilotEnvRunState.forProfile(profile),
-    logFile: paths.logFile,
+  /** Paths + stores, resolved together so they can never disagree. The LIVE launch
+   *  resolves INSIDE the start lock below: the 3.5.6 default-home migration refuses
+   *  to move the home while that lock is held, so a held-lock resolution cannot go
+   *  stale against a concurrent move (the read-only dry run resolves unlocked). */
+  const launchContext = (): LaunchContext => {
+    const paths = new CopilotApiPaths(profile);
+    return {
+      profile,
+      paths,
+      config: CopilotApiConfig.forProfile(profile),
+      envConfig: new CopilotEnvConfig(),
+      state: CopilotEnvRunState.forProfile(profile),
+      logFile: paths.logFile,
+    };
   };
 
   if (action.dryRun) {
-    await reportDryRun(action, ctx);
+    await reportDryRun(action, launchContext());
     return;
   }
 
-  fs.mkdirSync(paths.runDir, { recursive: true });
   // Every human-facing follow-up command must address THIS daemon.
   const profileFlag = daemonPolicy(profile).flagSuffix;
   await withStartLock(async (lock) => {
+    const ctx = launchContext();
+    const paths = ctx.paths;
+    fs.mkdirSync(paths.runDir, { recursive: true });
     // The float/floor gate runs INSIDE the start lock: it rewrites the shared daemon
     // config and re-warms the float's cache, so two concurrent starts must not run it
     // over each other. Its console narration still reaches the user unchanged.

@@ -322,7 +322,22 @@ export async function isCopilotApiPid(pid: number): Promise<boolean> {
  */
 export async function classifyDaemonPid(pid: number): Promise<"yes" | "no" | "unknown"> {
   if (process.platform === "win32") return classifyDaemonPidWindows(pid);
-  return (await listCopilotApiPidsPosix()).includes(pid) ? "yes" : "no";
+  return classifyPidFromRows(await listUserProcesses(), pid, process.pid);
+}
+
+/** The POSIX classification judgment over a completed scan, pure for testing. The scan's
+ *  own CONTROL is `selfPid`: a readable `ps -U <uid>` always contains the calling process,
+ *  so rows without it prove the scan FAILED (ps error, truncation) -- that is "unknown"
+ *  ("failed to look"), never a confident "no". Without this control a broken `ps` would
+ *  read as "definitely not a daemon" and let refuse-on-unknown consumers (the 3.5.6
+ *  default-home move) act on a pid the host never actually judged. */
+export function classifyPidFromRows(
+  rows: ProcessRow[],
+  pid: number,
+  selfPid: number,
+): "yes" | "no" | "unknown" {
+  if (!rows.some((row) => row.pid === selfPid)) return "unknown";
+  return posixDaemonPids(rows).includes(pid) ? "yes" : "no";
 }
 
 async function classifyDaemonPidWindows(pid: number): Promise<"yes" | "no" | "unknown"> {
@@ -450,10 +465,11 @@ async function listUserProcesses(): Promise<ProcessRow[]> {
   return parseProcessRows(stdout);
 }
 
-async function listCopilotApiPidsPosix(): Promise<number[]> {
+/** The daemon-shaped pids among `rows` (the shared POSIX judgment: DAEMON_RUNTIMES +
+ *  DAEMON_INVOCATION_RE, minus the historical shell/python wrappers). */
+function posixDaemonPids(rows: ProcessRow[]): number[] {
   const pids: number[] = [];
-  for (const row of await listUserProcesses()) {
-    // The shared daemon signature (DAEMON_RUNTIMES + DAEMON_INVOCATION_RE above).
+  for (const row of rows) {
     if (!isDaemonProcess(row)) {
       continue;
     }
@@ -463,6 +479,10 @@ async function listCopilotApiPidsPosix(): Promise<number[]> {
     pids.push(row.pid);
   }
   return pids;
+}
+
+async function listCopilotApiPidsPosix(): Promise<number[]> {
+  return posixDaemonPids(await listUserProcesses());
 }
 
 /**

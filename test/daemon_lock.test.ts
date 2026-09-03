@@ -14,7 +14,14 @@ import {
 import { releaseFileLock } from "../src/utils/file_lock.ts";
 import { denoRunArgs, importSpecifier, ROOT, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, removeDir, tmpDir, writeRunState } from "./helpers.ts";
+import {
+  defaultHomeDir,
+  envSnapshot,
+  isolateProxyHome,
+  removeDir,
+  tmpDir,
+  writeRunState,
+} from "./helpers.ts";
 
 // The daemon liveness lock: the daemon holds `<home>/daemon.lock` for its whole life
 // (acquired by the daemon_lock_preload shim), and the liveness consults judge it BEFORE
@@ -196,16 +203,17 @@ test("a launched daemon holds its home's lock for life, released by SIGKILL", as
 
 test("proxyStatus: a held lock proves the tracked daemon alive where classification says no", async () => {
   dir = isolateProxyHome("copilot-daemon-lock-");
+  const home = defaultHomeDir();
   const { server, port } = await listenEphemeral();
   // This test process holds the default home's daemon lock and is the tracked pid: the
   // pre-lock classification would judge our argv "no" and report DOWN -- the lock-first
   // consult is exactly what makes this read UP.
-  expect(acquireDaemonLockForLife(dir, { waitMs: 0 })).toBe(true);
+  expect(acquireDaemonLockForLife(home, { waitMs: 0 })).toBe(true);
   try {
     writeRunState({ pid: process.pid, port });
     expect(await proxyStatus()).toEqual({ up: true, port });
   } finally {
-    releaseFileLock(daemonLockPath(dir));
+    releaseFileLock(daemonLockPath(home));
     await closeServer(server);
   }
 });
@@ -217,7 +225,7 @@ test("proxyStatus: an acquirable lock naming the tracked pid reads DOWN, pid tab
     // The pid is alive and the port genuinely listens, but the lock's marker names the
     // tracked pid under a FREE lock: the daemon that wrote it died, so the answer is
     // DOWN without consulting the pid table (pid-reuse immunity).
-    plantMarker(dir, process.pid);
+    plantMarker(defaultHomeDir(), process.pid);
     writeRunState({ pid: process.pid, port });
     expect(await proxyStatus()).toEqual({ up: false });
   } finally {
@@ -231,19 +239,20 @@ test(
   "stopTrackedProxy: a lock-held corroborated daemon is signalled, lock-first",
   async () => {
     dir = isolateProxyHome("copilot-daemon-lock-");
+    const home = defaultHomeDir();
     const ready = join(dir, "ready");
     // A DAEMON-SHAPED holder (copilot-api entry basename + `start`): a lock-"alive" pid is
     // signalled only under the owner-filtered scan's corroboration -- on a shared home the
     // lock can be another host's daemon whose marker pid names an innocent local process
-    // (the refusal is pinned by the coincidence test below). It locks the EFFECTIVE home
-    // (dir), which is what stopTrackedProxy consults for the default profile.
+    // (the refusal is pinned by the coincidence test below). It locks the EFFECTIVE home,
+    // which is what stopTrackedProxy consults for the default profile.
     const holder = join(dir, "copilot-api-holder.ts");
     writeFileSync(
       holder,
       `import { acquireDaemonLockForLife } from ${
         importSpecifier(join(ROOT, "src", "scripts", "daemon_lock.ts"))
       };\n` +
-        `if (!acquireDaemonLockForLife(${JSON.stringify(dir)})) Deno.exit(1);\n` +
+        `if (!acquireDaemonLockForLife(${JSON.stringify(home)})) Deno.exit(1);\n` +
         `Deno.writeTextFileSync(${JSON.stringify(ready)}, "locked");\n` +
         "setInterval(() => {}, 60_000);\n",
     );
@@ -281,6 +290,7 @@ test(
   "stopTrackedProxy: stale tracking + a held lock naming a local NON-daemon pid is refused, tracking kept",
   async () => {
     dir = isolateProxyHome("copilot-daemon-lock-");
+    const home = defaultHomeDir();
     const bystander = join(dir, "bystander.ts");
     writeFileSync(bystander, "setInterval(() => {}, 60_000);\n");
     const child = spawnChild(Deno.execPath(), {
@@ -290,11 +300,11 @@ test(
     });
     // Stand-in for the remote host's daemon: THIS test process holds the lock, while the
     // marker and the stale run state both name the local bystander.
-    expect(acquireDaemonLockForLife(dir, { waitMs: 0 })).toBe(true);
+    expect(acquireDaemonLockForLife(home, { waitMs: 0 })).toBe(true);
     try {
-      writeFileSync(daemonLockPath(dir), `${child.pid}\n${Date.now()}\n`);
+      writeFileSync(daemonLockPath(home), `${child.pid}\n${Date.now()}\n`);
       writeRunState({ pid: child.pid, port: 4141 });
-      expect(daemonLockVerdict(dir, child.pid)).toBe("alive"); // the old signal-alone arm
+      expect(daemonLockVerdict(home, child.pid)).toBe("alive"); // the old signal-alone arm
 
       const result = await stopTrackedProxy();
 
@@ -309,7 +319,7 @@ test(
         // already gone
       }
       await until(5_000, () => !pidAlive(child.pid));
-      releaseFileLock(daemonLockPath(dir));
+      releaseFileLock(daemonLockPath(home));
     }
   },
   30_000,
@@ -319,7 +329,7 @@ test("stopTrackedProxy: a lock-dead tracked pid is never signalled, and tracking
   dir = isolateProxyHome("copilot-daemon-lock-");
   // The tracked pid is OUR OWN live pid with a free lock naming it: the dead verdict must
   // win over the live pid table, or this very test process would be signalled here.
-  plantMarker(dir, process.pid);
+  plantMarker(defaultHomeDir(), process.pid);
   writeRunState({ pid: process.pid, port: 4141 });
 
   const result = await stopTrackedProxy();

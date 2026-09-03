@@ -15,7 +15,7 @@ import { runUninstall, type UninstallDeps } from "../src/commands/uninstall.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
-import { profileHome } from "../src/copilot_api/paths.ts";
+import { CopilotApiPaths, profileHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { isRecord } from "../src/utils/json.ts";
@@ -97,7 +97,7 @@ test(
     mkdirSync(codexHome, { recursive: true });
     writeFileSync(join(codexHome, "config.toml"), 'foo = "bar"\n');
     const deps = tmpDeps(codexHome);
-    const fx = stageRefusedStop(proxyHome);
+    const fx = stageRefusedStop(new CopilotApiPaths().home);
     try {
       // The refusal (an uncorroborated lock holder) surfaces from the FIRST step, so
       // no wiring, farm, shell, or data removal ever runs under the live daemon.

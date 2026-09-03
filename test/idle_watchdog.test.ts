@@ -1,4 +1,5 @@
 import { configDefaultNumber, CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import { DAEMON_KEEP_PORT_ENV } from "../src/copilot_api/paths.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import {
   armIdleWatchdog,
@@ -17,7 +18,7 @@ import {
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir, writeRunState } from "./helpers.ts";
 
-const restoreEnv = envSnapshot([IDLE_TIMEOUT_ENV]);
+const restoreEnv = envSnapshot([IDLE_TIMEOUT_ENV, DAEMON_KEEP_PORT_ENV]);
 let dir = "";
 
 afterEach(() => {
@@ -77,6 +78,30 @@ test("idleCheck: with no activity past the window, clears run state and exits", 
   expect(after.pid).toBeUndefined();
   expect(after.port).toBeUndefined();
   expect(after.lastEnsureAt).toBeUndefined();
+});
+
+test("idleCheck: the spawn's keep-port value preserves a profile reservation across auto-stop", () => {
+  tmpHome();
+  new CopilotEnvConfig().set({ autoStart: true });
+  const state = new CopilotEnvRunState();
+  state.set({ pid: process.pid, port: 4242, lastEnsureAt: 1 });
+  // A named profile's daemon is spawned with keep-port "1" (releasesPortOnStop false):
+  // auto-stop clears the pid tracking but the port -- the profile's stable reservation
+  // the baked agent wiring points at -- must survive. The default daemon's spawn sets
+  // "0", which the test above pins (port cleared).
+  process.env[DAEMON_KEEP_PORT_ENV] = "1";
+  const realExit = Deno.exit;
+  Deno.exit = ((): never => {
+    throw new Error("exit");
+  }) as typeof Deno.exit;
+  try {
+    expect(() => idleCheck(2, 1)).toThrow("exit");
+  } finally {
+    Deno.exit = realExit;
+  }
+  const after = state.read();
+  expect(after.pid).toBeUndefined();
+  expect(after.port).toBe(4242);
 });
 
 test("idleTimeoutMs: default is 1 hour; the env knob overrides in whole seconds", () => {

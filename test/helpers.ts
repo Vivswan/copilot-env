@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { ProfileName } from "../src/copilot_api/profile.ts";
+import { defaultDaemonHome } from "../src/copilot_api/paths.ts";
 import { launchDaemon } from "../src/copilot_api/process.ts";
 import { parseAbsolutePath } from "../src/copilot_api/sidecar.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
@@ -116,6 +117,18 @@ export function isolateProxyHome(prefix: string): string {
   process.env.COPILOT_API_HOME = dir;
   clearInheritedEnv();
   return dir;
+}
+
+/**
+ * The DEFAULT daemon's home under the current (isolated) root, created on
+ * disk: `<root>/profiles/default` on a fresh root. Tests that stage a
+ * daemon.lock or run files by hand use this so they land where the consult
+ * sites (proxyStatus, stopTrackedProxy, the launch cleanup) resolve them.
+ */
+export function defaultHomeDir(): string {
+  const home = defaultDaemonHome();
+  mkdirSync(home, { recursive: true });
+  return home;
 }
 
 export interface AgentHomes {

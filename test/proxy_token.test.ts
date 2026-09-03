@@ -12,6 +12,7 @@ import {
   type ProxyTokenDeps,
   resolveProxyToken,
 } from "../src/commands/proxy_token.ts";
+import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
 import { envSnapshot, removeDir, writeRunState } from "./helpers.ts";
 import { importSpecifier, ROOT, runCli, runScript, spawnChild } from "./helpers/run.ts";
@@ -238,7 +239,11 @@ skipWin("spawned happy path: stdout is EXACTLY the persisted key + newline, exit
     expect(res.exitCode).toBe(0);
     // The whole stdout is one key line -- the external contract every consumer
     // (Codex auth.command, Claude apiKeyHelper, the launchers' eval) relies on.
-    const config = JSON.parse(readFileSync(join(dir, "config.json"), "utf8")) as {
+    // The key is persisted in the DEFAULT daemon home's config.json (resolved
+    // through the paths layer: profiles/default on a fresh root).
+    const config = JSON.parse(
+      readFileSync(new CopilotApiPaths().configFile, "utf8"),
+    ) as {
       auth?: { apiKeys?: string[] };
     };
     const key = config.auth?.apiKeys?.[0];

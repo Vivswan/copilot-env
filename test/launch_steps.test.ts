@@ -17,6 +17,7 @@ import {
   awaitReadiness,
   type CleanupAction,
   cleanupExistingProxies,
+  daemonLifecycleEnv,
   type FloorCheckedEntry,
   type HeldStartLock,
   listUntrackedOrphans,
@@ -42,6 +43,7 @@ import { releaseFileLock } from "../src/utils/file_lock.ts";
 import { denoRunArgs, importSpecifier, ROOT, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import {
+  defaultHomeDir,
   envSnapshot,
   isolateProxyHome,
   killAndAwaitExit,
@@ -70,10 +72,28 @@ afterEach(() => {
   dir = removeDir(dir);
 });
 
+/** Isolate a root and return the DEFAULT daemon's home under it
+ *  (profiles/default, created on disk) -- what the lock/holder staging and the
+ *  consult sites both resolve. `dir` (the root) owns cleanup. */
 function tmpHome(): string {
   dir = isolateProxyHome("copilot-launch-");
-  return dir;
+  return defaultHomeDir();
 }
+
+// The env keys are pinned as LITERALS: they are the spawn-to-preload contract, so a
+// rename on either side must fail here.
+test("daemonLifecycleEnv transports home, root, and the keep-port policy per daemon", () => {
+  tmpHome();
+  const defaults = daemonLifecycleEnv(null, new CopilotApiPaths());
+  expect(defaults["COPILOT_ENV_ROOT_HOME"]).toBe(dir);
+  expect(defaults["COPILOT_API_SQLITE_DB_PATH"]).toBe(new CopilotApiPaths().sqliteDb);
+  // The default daemon releases its port on auto-stop (DaemonPolicy.releasesPortOnStop).
+  expect(defaults["COPILOT_ENV_DAEMON_KEEP_PORT"]).toBe("0");
+  // A named profile's port is its stable reservation: the watchdog must keep it.
+  const work = daemonLifecycleEnv(WORK, new CopilotApiPaths(WORK));
+  expect(work["COPILOT_ENV_DAEMON_KEEP_PORT"]).toBe("1");
+  expect(work["COPILOT_ENV_ROOT_HOME"]).toBe(dir);
+});
 
 /** A login stub for paths that must NEVER prompt: fails the test if invoked. */
 async function loginMustNotRun(): Promise<void> {

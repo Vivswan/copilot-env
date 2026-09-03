@@ -735,6 +735,36 @@ test("discoverUsageDbs also sweeps named profile daemon homes", () => {
   expect(found).toHaveLength(2);
 });
 
+test("discoverUsageDbs sweeps the DEFAULT profile's home; a stray invalid dir stays out", () => {
+  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+
+  // The migrated shape: the default daemon's DBs live under profiles/default (a name
+  // isValidProfileName REJECTS as reserved, so the sweep must admit it explicitly),
+  // beside an unmigrated flat legacy DB still at the root.
+  const flatLegacy = join(dir, "copilot-api.sqlite");
+  writeFileSync(flatLegacy, "");
+  const defaultHost = join(dir, "profiles", "default", ".run", "host-a");
+  mkdirSync(defaultHost, { recursive: true });
+  const defaultDb = join(defaultHost, "copilot-api.sqlite");
+  writeFileSync(defaultDb, "");
+  const defaultLegacy = join(dir, "profiles", "default", "copilot-api.sqlite");
+  writeFileSync(defaultLegacy, "");
+
+  // Control: a stray non-profile dir under profiles/ (the migration staging name)
+  // carrying a DB must NOT be swept -- proving the default is admitted by name,
+  // not by the filter having gone permissive.
+  const strayHost = join(dir, "profiles", ".default.migrating", ".run", "host-a");
+  mkdirSync(strayHost, { recursive: true });
+  writeFileSync(join(strayHost, "copilot-api.sqlite"), "");
+
+  const found = discoverUsageDbs(dir);
+
+  expect(found).toContain(flatLegacy);
+  expect(found).toContain(defaultDb);
+  expect(found).toContain(defaultLegacy);
+  expect(found).toHaveLength(3);
+});
+
 test("discoverUsageDbs excludes a stray .run file and a host dir missing the sqlite", () => {
   dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
 

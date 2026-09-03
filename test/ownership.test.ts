@@ -2,7 +2,7 @@
 // record (src/copilot_api/ownership.ts): per-kind exact-path round-trips, junk
 // degradation, the legacy pre-ledger tolerance against the shared state store,
 // and the 3.5.6 adoption.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger, ProxyProjectionState } from "../src/copilot_api/ownership.ts";
@@ -20,7 +20,11 @@ afterEach(() => {
 
 function isolate(): CopilotApiPaths {
   dir = isolateProxyHome("copilot-ownership-");
-  return new CopilotApiPaths();
+  const paths = new CopilotApiPaths();
+  // The daemon home (profiles/default on a fresh root) so tests can seed
+  // paths.projectionsFile with raw writeFileSync.
+  mkdirSync(paths.home, { recursive: true });
+  return paths;
 }
 
 function readStateRaw(paths: CopilotApiPaths): Record<string, unknown> {

@@ -15,20 +15,22 @@ import {
 import {
   applyDefaultConfig,
   awaitReadiness,
+  type CleanupAction,
   cleanupExistingProxies,
   type FloorCheckedEntry,
+  type HeldStartLock,
   listUntrackedOrphans,
   lockProtectedDaemonPids,
+  planCleanup,
   resolveLaunchCredential,
   resolveStartPort,
   trackedDaemonPids,
   withStartLock,
 } from "../src/copilot_api/launch.ts";
-import { type CopilotApiEntry, launchDaemon, pidAlive } from "../src/copilot_api/process.ts";
+import { type CopilotApiEntry, isCopilotApiPid, pidAlive } from "../src/copilot_api/process.ts";
 import { CopilotApiPaths, profileHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
 import { ProxyProjectionState } from "../src/copilot_api/ownership.ts";
-import { parseAbsolutePath } from "../src/copilot_api/sidecar.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import {
   acquireDaemonLockForLife,
@@ -39,7 +41,15 @@ import {
 import { releaseFileLock } from "../src/utils/file_lock.ts";
 import { denoRunArgs, importSpecifier, ROOT, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, removeDir, writeRunState } from "./helpers.ts";
+import {
+  envSnapshot,
+  isolateProxyHome,
+  killAndAwaitExit,
+  launchFakeDaemon,
+  removeDir,
+  until,
+  writeRunState,
+} from "./helpers.ts";
 
 // Pure-unit coverage for the launch-pipeline steps extracted out of `agent start`:
 // the credential decision table (provider x PAT shape x passthrough override), the
@@ -361,7 +371,7 @@ test("a held lock whose marker names nobody also reads indeterminate, and the ho
     expect(await listUntrackedOrphans(1, 2, new Set(), () => Promise.resolve([333]))).toEqual([]);
 
     // The full cleanup neither signals us (the anonymous holder) nor throws.
-    await cleanupExistingProxies(null, new CopilotEnvRunState(), NO_ORPHANS);
+    await cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS);
   } finally {
     releaseFileLock(daemonLockPath(home));
   }
@@ -407,48 +417,169 @@ test("the exclusion set end-to-end: another profile's tracked daemon is not an o
 /** An inert machine-wide scan: no orphans, so only the tracked/holder stops can act. */
 const NO_ORPHANS = (): Promise<number[]> => Promise.resolve([]);
 
-/** Launch the fake proxy as a real detached daemon over `home` (all preloads, so it takes
- *  `home`'s daemon.lock at boot exactly like a production daemon). */
-function launchFakeDaemon(home: string, port: number): number {
-  mkdirSync(home, { recursive: true });
-  const logFile = join(home, "daemon.log");
-  writeFileSync(logFile, "");
-  return launchDaemon({
-    port,
-    logFile,
+/** Run the cleanup under the real start lock -- the held-lock evidence its signature
+ *  demands (only withStartLock mints one), exactly as runStart threads it. */
+function cleanupUnderLock(
+  profile: Profile,
+  state: CopilotEnvRunState,
+  listPids?: (myPid: number, myPpid: number) => Promise<number[]>,
+): Promise<void> {
+  return withStartLock((lock) => cleanupExistingProxies(lock, profile, state, listPids));
+}
+
+// --- planCleanup: the enumerated decision source (executed live, narrated by --dry-run) --
+
+test("planCleanup: a dead tracked pid plans only the tracking clear, orphans enumerated", async () => {
+  const home = tmpHome();
+  writeRunState({ pid: DEAD_PID, port: 4141 });
+  // process.pid stands in as the injected "orphan": alive, untracked, holding no lock.
+  const plan = await planCleanup(
     home,
-    env: {},
-    credential: { kind: "none" },
-    idleWatchdog: false,
-    muteProxyLogs: false,
-    entry: {
-      kind: "file",
-      path: join(ROOT, "test", "copilot-api-fake.mjs"),
-      configFile: join(ROOT, "deno.json"),
-    },
-    denoBin: parseAbsolutePath(Deno.execPath()),
-  });
-}
+    null,
+    new CopilotEnvRunState(),
+    () => Promise.resolve([process.pid]),
+  );
+  expect(plan).toEqual(
+    [
+      { kind: "clear-tracking", pid: DEAD_PID },
+      { kind: "stop-orphan", pid: process.pid },
+    ] satisfies CleanupAction[],
+  );
+  // Planning is read-only: the stale tracking survives until the EXECUTION clears it.
+  expect(new CopilotEnvRunState().read().pid).toBe(DEAD_PID);
+});
 
-async function until(deadlineMs: number, probe: () => boolean): Promise<boolean> {
-  const deadline = Date.now() + deadlineMs;
-  while (Date.now() < deadline) {
-    if (probe()) return true;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return probe();
-}
+test(
+  "planCleanup: a corroborated lock holder is planned for the stop even while tracked (the deferred tracked stop)",
+  async () => {
+    const home = tmpHome();
+    const pid = launchFakeDaemon(home, await freePort());
+    try {
+      expect(await until(20_000, () => daemonLockVerdict(home, pid) === "alive")).toBe(true);
+      writeRunState({ pid, port: 4141 });
 
-/** SIGKILL `pid` and wait until it is genuinely gone -- asserted, so a daemon outliving
- *  its test (or holding the temp home open into the afterEach removeDir) fails loudly. */
-async function killAndAwaitExit(pid: number): Promise<void> {
-  try {
-    process.kill(pid, "SIGKILL");
-  } catch {
-    // already gone
-  }
-  expect(await until(5_000, () => !pidAlive(pid))).toBe(true);
-}
+      // The lock's "alive" verdict defers the tracked stop to the holder stop, and the
+      // corroboration must not refuse the holder over the very tracking this plan clears.
+      expect(await planCleanup(home, null, new CopilotEnvRunState(), NO_ORPHANS)).toEqual(
+        [
+          { kind: "clear-tracking", pid },
+          { kind: "stop-holder", pid },
+        ] satisfies CleanupAction[],
+      );
+
+      // Planning is read-only: nothing signalled, nothing cleared.
+      expect(pidAlive(pid)).toBe(true);
+      expect(new CopilotEnvRunState().read().pid).toBe(pid);
+    } finally {
+      await killAndAwaitExit(pid);
+    }
+  },
+  60_000,
+);
+
+// The class pin for the deferral's SHAPE: the corroboration exempts the RECORD this plan
+// clears, never the pid. A stale-state pid-reuse collision -- a SECOND slot's run state
+// tracking the SAME pid -- must still refuse the holder stop even though this slot's clear
+// is planned (a pid-equality exemption would corroborate here and regress the kill-safety
+// refusal).
+test(
+  "planCleanup: a holder another slot ALSO tracks is refused, even with this slot's clear planned",
+  async () => {
+    const home = tmpHome();
+    const pid = launchFakeDaemon(home, await freePort());
+    try {
+      expect(await until(20_000, () => daemonLockVerdict(home, pid) === "alive")).toBe(true);
+      writeRunState({ pid, port: 4141 });
+      writeRunState({ pid, port: 4242 }, WORK); // the surviving second claim
+
+      expect(await planCleanup(home, null, new CopilotEnvRunState(), NO_ORPHANS)).toEqual(
+        [
+          { kind: "clear-tracking", pid },
+          { kind: "leave-holder", pid },
+        ] satisfies CleanupAction[],
+      );
+    } finally {
+      await killAndAwaitExit(pid);
+    }
+  },
+  60_000,
+);
+
+// The post-clear keep set covers the SWEEP too: a lock-dead tracked pid (verdict "dead",
+// so the tracked stop never signals it) recycled onto a live lockless daemon must still be
+// enumerated for the orphan sweep -- pre-split, the sweep's keep-set snapshot was taken
+// AFTER the clear, so this slot's stale record never spared it.
+test(
+  "planCleanup: a lock-dead tracked pid recycled onto a lockless daemon is still swept",
+  async () => {
+    const home = tmpHome();
+    const child = spawnChild(Deno.execPath(), {
+      args: [...denoRunArgs(), join(ROOT, "test", "copilot-api-fake.mjs"), "start"],
+      stdout: "null",
+      stderr: "null",
+    });
+    try {
+      mkdirSync(home, { recursive: true });
+      // A free lock whose marker names the child: the daemon that wrote it died and the
+      // OS released the lock; the pid number was then recycled onto the lockless child.
+      writeFileSync(daemonLockPath(home), `${child.pid}\n${Date.now()}\n`);
+      writeRunState({ pid: child.pid, port: 4141 });
+      expect(daemonLockVerdict(home, child.pid)).toBe("dead"); // control: no tracked signal
+
+      const plan = await planCleanup(
+        home,
+        null,
+        new CopilotEnvRunState(),
+        () => Promise.resolve([child.pid]),
+      );
+      expect(plan).toEqual(
+        [
+          { kind: "clear-tracking", pid: child.pid },
+          { kind: "stop-orphan", pid: child.pid },
+        ] satisfies CleanupAction[],
+      );
+      expect(pidAlive(child.pid)).toBe(true); // planning is read-only
+    } finally {
+      await killAndAwaitExit(child.pid);
+    }
+  },
+  30_000,
+);
+
+test(
+  "planCleanup: a tracked pre-lock daemon (no lock) plans the argv-gated stop, then the clear",
+  async () => {
+    const home = tmpHome();
+    // The fake proxy WITHOUT the daemon preloads: daemon-shaped argv, no daemon.lock --
+    // exactly the "unproven" verdict the argv-gated tracked stop exists for.
+    const child = spawnChild(Deno.execPath(), {
+      args: [...denoRunArgs(), join(ROOT, "test", "copilot-api-fake.mjs"), "start"],
+      stdout: "null",
+      stderr: "null",
+    });
+    try {
+      // Wait until the argv scan can actually see the spawn (the plan's identity gate).
+      const deadline = Date.now() + 10_000;
+      while (!(await isCopilotApiPid(child.pid)) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      writeRunState({ pid: child.pid, port: 4141 });
+
+      expect(await planCleanup(home, null, new CopilotEnvRunState(), NO_ORPHANS)).toEqual(
+        [
+          { kind: "stop-tracked", pid: child.pid },
+          { kind: "clear-tracking", pid: child.pid },
+        ] satisfies CleanupAction[],
+      );
+
+      // Planning is read-only: the daemon-shaped child was never signalled.
+      expect(pidAlive(child.pid)).toBe(true);
+    } finally {
+      await killAndAwaitExit(child.pid);
+    }
+  },
+  30_000,
+);
 
 test(
   "cleanupExistingProxies: a live lock holder with NO run state is stopped, and a new daemon re-acquires",
@@ -462,7 +593,7 @@ test(
       // holder and the sweep (inert here regardless) would only spare it.
       expect(new CopilotEnvRunState().read().pid).toBeUndefined();
 
-      await cleanupExistingProxies(null, new CopilotEnvRunState(), NO_ORPHANS);
+      await cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS);
 
       // The holder was stopped and its lock reads dead by pid -- genuinely released, not
       // merely unobserved.
@@ -496,7 +627,7 @@ test(
       // machine-wide scan DOES see the profile's daemon -- only the lock spares it.
       expect(daemonLockHolderPid(home)).toBe(null);
 
-      await cleanupExistingProxies(
+      await cleanupUnderLock(
         null,
         new CopilotEnvRunState(),
         () => Promise.resolve([workPid]),
@@ -538,14 +669,50 @@ test(
       expect(new CopilotEnvRunState().read().pid).toBeUndefined();
 
       let scans = 0;
-      await cleanupExistingProxies(null, new CopilotEnvRunState(), () => {
+      await cleanupUnderLock(null, new CopilotEnvRunState(), () => {
         scans++;
         return Promise.resolve([child.pid]);
       });
 
       await child.status; // the sweep's SIGTERM (TerminateProcess on Windows) ends it
       expect(pidAlive(child.pid)).toBe(false);
-      // The injected seam served BOTH sweep passes (list, TERM, re-list for survivors).
+      // The injected seam served all THREE sweep passes: the plan's enumeration, the
+      // signal-boundary confirmation before TERM, and the survivor re-list before KILL.
+      expect(scans).toBe(3);
+    } finally {
+      await killAndAwaitExit(child.pid);
+    }
+  },
+  30_000,
+);
+
+// The signal-boundary confirmation is LOAD-BEARING, not a count: a pid the plan listed
+// but a fresh scan no longer returns (exited and recycled between planning and the sweep
+// -- the tracked/holder stops in between can take a whole grace) is never signalled. The
+// bystander is deliberately NOT daemon-shaped and pidAlive alone would still pass, so
+// only the fresh-scan intersect protects it.
+test(
+  "cleanupExistingProxies: a planned orphan a fresh scan no longer lists is not signalled",
+  async () => {
+    const home = tmpHome();
+    const script = join(home, "bystander.ts");
+    writeFileSync(script, "setInterval(() => {}, 60_000);\n");
+    const child = spawnChild(Deno.execPath(), {
+      args: [...denoRunArgs(), script],
+      stdout: "null",
+      stderr: "null",
+    });
+    try {
+      let scans = 0;
+      // Scan 1 (the plan) lists the child; the confirmation scan comes back empty.
+      await cleanupUnderLock(null, new CopilotEnvRunState(), () => {
+        scans++;
+        return Promise.resolve(scans === 1 ? [child.pid] : []);
+      });
+
+      // Never TERM'd (a signal would have ended the plain script), and the empty
+      // confirmation also ended the sweep: no grace wait, no survivor pass.
+      expect(pidAlive(child.pid)).toBe(true);
       expect(scans).toBe(2);
     } finally {
       await killAndAwaitExit(child.pid);
@@ -564,7 +731,7 @@ test(
       expect(await until(20_000, () => daemonLockVerdict(home, pid) === "alive")).toBe(true);
       writeRunState({ pid, port });
 
-      await cleanupExistingProxies(null, new CopilotEnvRunState(), NO_ORPHANS);
+      await cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS);
 
       expect(await until(5_000, () => !pidAlive(pid))).toBe(true);
       const after = new CopilotEnvRunState().read();
@@ -586,7 +753,7 @@ test("cleanupExistingProxies: a lock-dead tracked pid is never signalled, and tr
   writeFileSync(daemonLockPath(home), `${process.pid}\n${Date.now()}\n`);
   writeRunState({ pid: process.pid, port: 4141 });
 
-  await cleanupExistingProxies(null, new CopilotEnvRunState(), NO_ORPHANS);
+  await cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS);
 
   expect(new CopilotEnvRunState().read().pid).toBeUndefined();
 });
@@ -598,7 +765,7 @@ test("cleanupExistingProxies: a lock THIS process holds is never signalled (self
   // two-daemons failure rather than signalling the running process.
   expect(acquireDaemonLockForLife(home, { waitMs: 0 })).toBe(true);
   try {
-    await cleanupExistingProxies(null, new CopilotEnvRunState(), NO_ORPHANS);
+    await cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS);
     // Still alive (this line runs) and still the holder.
     expect(daemonLockHolderPid(home)).toBe(process.pid);
   } finally {
@@ -639,7 +806,7 @@ test.skipIf(process.platform === "win32")(
       expect(await until(10_000, () => existsSync(ready))).toBe(true);
       expect(daemonLockHolderPid(home)).toBe(child.pid);
 
-      await cleanupExistingProxies(null, new CopilotEnvRunState(), NO_ORPHANS);
+      await cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS);
 
       // SIGTERM was ignored, so only the SIGKILL escalation explains the death -- and the
       // lock reads dead by pid afterwards (released by the OS at process death).
@@ -685,7 +852,7 @@ test.skipIf(process.platform === "win32")(
       expect(await until(10_000, () => existsSync(ready))).toBe(true);
       expect(daemonLockHolderPid(home)).toBe(child.pid);
 
-      await cleanupExistingProxies(null, new CopilotEnvRunState(), NO_ORPHANS);
+      await cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS);
 
       // The lock is gone (the SIGTERM handler released it) but the process was left
       // alive: the escalation re-derived its proof and found no holder to kill.
@@ -725,7 +892,7 @@ test(
       expect(daemonLockHolderPid(home)).toBe(child.pid);
       expect(pidAlive(child.pid)).toBe(true);
 
-      await cleanupExistingProxies(null, new CopilotEnvRunState(), NO_ORPHANS);
+      await cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS);
 
       // Never signalled (a TERM would have ended the plain script), and the lock is
       // still held: a real start now fails legibly in the preload's lock acquisition.
@@ -764,7 +931,7 @@ test(
       // tracked pid) -- the case that used to signal uncorroborated.
       expect(daemonLockVerdict(home, child.pid)).toBe("alive");
 
-      await cleanupExistingProxies(null, new CopilotEnvRunState(), NO_ORPHANS);
+      await cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS);
 
       // Never signalled, tracking cleared, lock still held: the start would then fail
       // legibly in the preload rather than kill the innocent local process.
@@ -790,14 +957,14 @@ test(
       // prove the holder is not THAT home's daemon, so nothing may be signalled.
       mkdirSync(daemonLockPath(profileHome(WORK)), { recursive: true });
 
-      await cleanupExistingProxies(null, new CopilotEnvRunState(), NO_ORPHANS);
+      await cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS);
 
       expect(pidAlive(pid)).toBe(true);
       expect(daemonLockHolderPid(home)).toBe(pid);
 
       // Control: with the other home readable again, the same start recovers as usual.
       rmSync(daemonLockPath(profileHome(WORK)), { recursive: true, force: true });
-      await cleanupExistingProxies(null, new CopilotEnvRunState(), NO_ORPHANS);
+      await cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS);
       expect(await until(5_000, () => !pidAlive(pid))).toBe(true);
     } finally {
       await killAndAwaitExit(pid);
@@ -839,7 +1006,7 @@ test.skipIf(process.platform === "win32")(
       expect(await until(10_000, () => existsSync(ready))).toBe(true);
       expect(daemonLockHolderPid(home)).toBe(child.pid);
 
-      await cleanupExistingProxies(null, new CopilotEnvRunState(), NO_ORPHANS);
+      await cleanupUnderLock(null, new CopilotEnvRunState(), NO_ORPHANS);
 
       // Alive and holding BOTH locks: the TERM was corroborated and sent, then the
       // SIGKILL was refused once the pid read as another home's holder.
@@ -1213,4 +1380,20 @@ test("spawnConfiguredDaemon demands ensureProxyFloor's evidence (compile-enforce
   // @ts-expect-error a plain resolved entry is not floor-checked evidence
   const gated: FloorCheckedEntry = plain;
   expect(gated).toBe(plain); // the brand is type-level only; no runtime shape exists
+});
+
+test("cleanupExistingProxies demands withStartLock's evidence (compile-enforced)", () => {
+  // Only withStartLock mints a HeldStartLock, so an un-locked cleanup does not compile --
+  // the lock-before-sweep ordering is carried by the data. The first parameter must BE the
+  // evidence type EXACTLY: a widening (HeldStartLock | null) or a dropped parameter turns
+  // `paramIsEvidence` into never and fails the typecheck.
+  type FirstParam = Parameters<typeof cleanupExistingProxies>[0];
+  const paramIsEvidence: FirstParam extends HeldStartLock
+    ? HeldStartLock extends FirstParam ? true : never
+    : never = true;
+  const bare = { held: true } as const;
+  // @ts-expect-error a bare { held: true } literal is not held-start-lock evidence
+  const held: HeldStartLock = bare;
+  expect(held).toBe(bare); // the brand is type-level only; no runtime shape exists
+  expect(paramIsEvidence).toBe(true);
 });

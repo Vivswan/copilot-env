@@ -10,25 +10,25 @@ import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   applyDefaultConfig,
   awaitReadiness,
+  type CleanupAction,
   cleanupExistingProxies,
   ensureProxyFloor,
   entryProxyVersion,
   type FloorCheckedEntry,
-  listUntrackedOrphans,
+  planCleanup,
   resolveLaunchCredential,
   resolveStartPort,
   spawnConfiguredDaemon,
   syncAliasesAfterStart,
-  trackedDaemonPids,
   withStartLock,
 } from "../copilot_api/launch.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { daemonPolicy } from "../copilot_api/port.ts";
-import { pidAlive } from "../copilot_api/process.ts";
 import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { PROXY_PACKAGE_NAME } from "../copilot_api/version.ts";
 import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
+import { assertNever } from "../utils/assert.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { formatDuration } from "../utils/time.ts";
 import { ensureAuthenticated } from "./auth.ts";
@@ -140,8 +140,37 @@ interface LaunchContext {
   logFile: string;
 }
 
-/** Report what a live launch WOULD do (no runtime changes): the would-be port, the tracked
- *  pid and orphans that would be stopped, and the files that would be written. */
+/** The "Would ..." line for one cleanup action -- the narration half of the planCleanup
+ *  contract (the live half executes the same enumeration). Exhaustive on purpose: a new
+ *  CleanupAction without a line here does not compile. Each string is a pinned output
+ *  contract. */
+function narrateCleanupAction(step: CleanupAction): void {
+  switch (step.kind) {
+    case "stop-tracked":
+      consola.info(`   Would stop tracked proxy (pid=${step.pid}).`);
+      break;
+    case "clear-tracking":
+      consola.info(`   Would clear tracked run state (pid=${step.pid}).`);
+      break;
+    case "stop-holder":
+      consola.info(`   Would stop this home's untracked daemon.lock holder (pid=${step.pid}).`);
+      break;
+    case "leave-holder":
+      consola.warn(
+        `   Would leave the daemon.lock holder (pid=${step.pid}) alone: this host cannot identify that pid as our daemon.`,
+      );
+      break;
+    case "stop-orphan":
+      consola.info(`   Would stop orphaned proxy (pid=${step.pid}).`);
+      break;
+    default:
+      assertNever(step);
+  }
+}
+
+/** Report what a live launch WOULD do (no runtime changes): the would-be port, the
+ *  cleanup plan (planCleanup -- the SAME decision source the live path executes, so no
+ *  live action can go unreported), and the files that would be written. */
 async function reportDryRun(
   action: { force: boolean; port?: number },
   ctx: LaunchContext,
@@ -154,21 +183,13 @@ async function reportDryRun(
     return;
   }
   const port = await resolveStartPort(action.port, false, profile, false, envConfig);
-  const statePid = state.read().pid;
-  const trackedPid = statePid !== undefined && pidAlive(statePid) ? statePid : null;
-  const keep = trackedDaemonPids();
-  const orphans = (await listUntrackedOrphans(process.pid, process.ppid, keep)).filter((p) =>
-    pidAlive(p)
-  );
+  const plan = await planCleanup(paths.home, profile, state);
 
   consola.info(`DRY RUN: no proxy runtime changes will be made (${profileLabel(profile)}).`);
   consola.info(`   Would ensure runtime directories: ${paths.home}, ${paths.runDir}`);
   consola.info(`   Would apply default configuration: ${config.path}`);
-  if (trackedPid !== null) {
-    consola.info(`   Would stop tracked proxy (pid=${trackedPid}).`);
-  }
-  for (const orphan of orphans) {
-    consola.info(`   Would stop orphaned proxy (pid=${orphan}).`);
+  for (const step of plan) {
+    narrateCleanupAction(step);
   }
   consola.info(`   Would launch the proxy on port ${port}.`);
   consola.info(`   Would write runtime state + log: ${paths.stateFile}, ${logFile}`);
@@ -350,7 +371,7 @@ export async function runStart(action: StartAction): Promise<void> {
     for (const warning of unreadProjectedKeyWarnings(ctx.envConfig)) {
       consola.warn(warning);
     }
-    await cleanupExistingProxies(profile, ctx.state);
+    await cleanupExistingProxies(lock, profile, ctx.state);
 
     const port = await resolveStartPort(action.port, true, profile, true, ctx.envConfig);
     const credential = await resolveLaunchCredential(profile, ctx.envConfig, {

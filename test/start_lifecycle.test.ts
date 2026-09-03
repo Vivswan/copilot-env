@@ -1,15 +1,21 @@
 import { createServer, type Server } from "node:net";
+import { consola } from "consola";
 import { parseStartAction, runStart } from "../src/commands/start.ts";
 import { portListening } from "../src/copilot_api/daemon.ts";
-import { classifyDaemonPid } from "../src/copilot_api/process.ts";
+import { classifyDaemonPid, pidAlive } from "../src/copilot_api/process.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
+import { daemonLockHolderPid } from "../src/scripts/daemon_lock.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import {
   envSnapshot,
   isolateProxyHome,
+  killAndAwaitExit,
+  launchFakeDaemon,
   removeDir,
   resetExitCode,
+  stageRefusedStop,
+  until,
   writeRunState,
 } from "./helpers.ts";
 
@@ -18,6 +24,9 @@ import {
 // COPILOT_API_HOME and resets the shared process.exitCode.
 // A branded fixture name: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
+
+// A pid no real process holds (far above any OS pid ceiling we run on).
+const DEAD_PID = 2_147_483_646;
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -28,8 +37,34 @@ afterEach(() => {
   dir = removeDir(dir);
 });
 
-function tmpHome(): void {
+function tmpHome(): string {
   dir = isolateProxyHome("copilot-lifecycle-");
+  return dir;
+}
+
+/** Run `start --dry-run` for the default profile and return its captured narration. */
+async function dryRunNarration(): Promise<string> {
+  const written: string[] = [];
+  const savedLevel = consola.level;
+  const origOut = process.stdout.write;
+  const origErr = process.stderr.write;
+  process.stdout.write = (s: string | Uint8Array) => {
+    written.push(String(s));
+    return true;
+  };
+  process.stderr.write = (s: string | Uint8Array) => {
+    written.push(String(s));
+    return true;
+  };
+  try {
+    consola.level = 3; // ensure info is not self-silenced under the test runner
+    await runStart({ kind: "launch", dryRun: true, force: false, port: undefined, profile: null });
+  } finally {
+    process.stdout.write = origOut;
+    process.stderr.write = origErr;
+    consola.level = savedLevel;
+  }
+  return written.join("");
 }
 
 // Open a loopback TCP server on an ephemeral port and resolve once it is accepting
@@ -51,6 +86,13 @@ function listenEphemeral(host = "127.0.0.1"): Promise<{ server: Server; port: nu
 
 function closeServer(server: Server): Promise<void> {
   return new Promise((resolve) => server.close(() => resolve()));
+}
+
+/** A free loopback port: grabbed on an ephemeral listener, then released. */
+async function freePort(): Promise<number> {
+  const { server, port } = await listenEphemeral();
+  await closeServer(server);
+  return port;
 }
 
 test("start --record-event writes the lastEnsureAt heartbeat and never launches", async () => {
@@ -128,6 +170,76 @@ test("start --check exits non-zero when no proxy is tracked/running", async () =
   expect(process.exitCode).toBe(1);
 });
 
+// The dry run narrates cleanupExistingProxies' plan (planCleanup, the SHARED decision
+// source) and never acts on it. Staged via the refused-stop fixture: the test process
+// holds the lock (so it stays held through both dry runs) while the marker and run state
+// name a live local bystander the plan cannot corroborate.
+test(
+  "start --dry-run narrates the refused holder and the tracking clear, and never acts",
+  async () => {
+    const home = tmpHome();
+    const fixture = stageRefusedStop(home);
+    try {
+      const leaveLine = `Would leave the daemon.lock holder (pid=${fixture.bystanderPid}) alone`;
+
+      // Tracked control: the lock's "alive" verdict plans no tracked signal -- only the
+      // state clear -- and the uncorroborated holder plans a leave, never a stop.
+      const tracked = await dryRunNarration();
+      expect(tracked).toContain(`Would clear tracked run state (pid=${fixture.bystanderPid}).`);
+      expect(tracked).toContain(leaveLine);
+      expect(tracked).not.toContain("Would stop tracked proxy");
+      expect(tracked).not.toContain("untracked daemon.lock holder");
+      // The honest "never acts" detector: the live cleanup ALWAYS clears a tracked pid
+      // (even when it defers or refuses the signal), so tracking surviving the dry run
+      // proves the cleanup never ran.
+      expect(new CopilotEnvRunState().read().pid).toBe(fixture.bystanderPid);
+
+      // The untracked state: run state lost, only the lock names the (refused) holder.
+      writeRunState({ pid: null, port: null });
+      const untracked = await dryRunNarration();
+      expect(untracked).toContain(leaveLine);
+      expect(untracked).not.toContain("Would clear tracked run state");
+
+      // Never signalled: the bystander lives and the lock is still held over it.
+      expect(pidAlive(fixture.bystanderPid)).toBe(true);
+      expect(daemonLockHolderPid(home)).toBe(fixture.bystanderPid);
+    } finally {
+      await fixture.teardown();
+    }
+  },
+  30_000,
+);
+
+// The two live actions the dry run once omitted, staged together: stale tracking of a
+// DEAD pid (live: a durable state-file clear) and a corroborated daemon.lock holder
+// beside it (live: the holder stop). The dry run must narrate both and perform neither.
+test(
+  "start --dry-run reports the corroborated holder stop and the dead-pid tracking clear without acting",
+  async () => {
+    const home = tmpHome();
+    const daemonPid = launchFakeDaemon(home, await freePort());
+    try {
+      expect(await until(20_000, () => daemonLockHolderPid(home) === daemonPid)).toBe(true);
+      writeRunState({ pid: DEAD_PID, port: 4141 });
+
+      const narration = await dryRunNarration();
+      expect(narration).toContain(`Would clear tracked run state (pid=${DEAD_PID}).`);
+      expect(narration).toContain(
+        `Would stop this home's untracked daemon.lock holder (pid=${daemonPid}).`,
+      );
+      expect(narration).not.toContain("Would stop tracked proxy"); // dead: no signal to report
+
+      // Never acts: the live cleanup would clear this tracking and stop this daemon.
+      expect(new CopilotEnvRunState().read().pid).toBe(DEAD_PID);
+      expect(pidAlive(daemonPid)).toBe(true);
+      expect(daemonLockHolderPid(home)).toBe(daemonPid);
+    } finally {
+      await killAndAwaitExit(daemonPid);
+    }
+  },
+  60_000,
+);
+
 // portListening is the liveness half of proxyStatus's UP-path composition. proxyStatus's
 // OTHER half (classifyDaemonPid) checks the recorded pid's identity against a `copilot-api
 // ... start` command line, which the deno test runner's own pid cannot satisfy -- so the full
@@ -198,7 +310,6 @@ test("start --check stays DOWN for a live pid + listening port that is not a cop
 // restricted token that cannot read a command line) is reserved for sandboxed callers and is
 // exercised by proxyStatus's fall-through, not reproducible here.
 test("classifyDaemonPid returns 'no' for a dead pid and a live non-daemon pid", async () => {
-  const DEAD_PID = 2_147_483_646; // far above any real pid -> not running anywhere
   expect(await classifyDaemonPid(DEAD_PID)).toBe("no");
   // The test runner is alive and identifiable, but its command line is not `copilot-api ... start`.
   expect(await classifyDaemonPid(process.pid)).toBe("no");

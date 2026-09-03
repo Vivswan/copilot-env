@@ -7,12 +7,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import type { ProfileName } from "../src/copilot_api/profile.ts";
+import { launchDaemon } from "../src/copilot_api/process.ts";
+import { parseAbsolutePath } from "../src/copilot_api/sidecar.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { acquireDaemonLockForLife, daemonLockPath } from "../src/scripts/daemon_lock.ts";
 import { releaseFileLock } from "../src/utils/file_lock.ts";
 import { pidAlive } from "../src/utils/pid.ts";
 import { sleepSync } from "../src/utils/time.ts";
-import { denoRunArgs, spawnChild } from "./helpers/run.ts";
+import { denoRunArgs, ROOT, spawnChild } from "./helpers/run.ts";
 
 // --- env snapshot / restore ---------------------------------------------------
 
@@ -218,6 +220,54 @@ export function writeRunState(
 ): void {
   const state = profile ? CopilotEnvRunState.forProfile(profile) : new CopilotEnvRunState();
   state.set(patch);
+}
+
+// --- live-daemon fixtures -------------------------------------------------------------
+
+/** Launch the fake proxy as a real detached daemon over `home` (all preloads, so it takes
+ *  `home`'s daemon.lock at boot exactly like a production daemon). */
+export function launchFakeDaemon(home: string, port: number): number {
+  mkdirSync(home, { recursive: true });
+  const logFile = join(home, "daemon.log");
+  writeFileSync(logFile, "");
+  return launchDaemon({
+    port,
+    logFile,
+    home,
+    env: {},
+    credential: { kind: "none" },
+    idleWatchdog: false,
+    muteProxyLogs: false,
+    entry: {
+      kind: "file",
+      path: join(ROOT, "test", "copilot-api-fake.mjs"),
+      configFile: join(ROOT, "deno.json"),
+    },
+    denoBin: parseAbsolutePath(Deno.execPath()),
+  });
+}
+
+/** Poll `probe` until it holds or `deadlineMs` passes; returns the final reading. */
+export async function until(deadlineMs: number, probe: () => boolean): Promise<boolean> {
+  const deadline = Date.now() + deadlineMs;
+  while (Date.now() < deadline) {
+    if (probe()) return true;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return probe();
+}
+
+/** SIGKILL `pid` and wait until it is genuinely gone -- throws if it survives, so a daemon
+ *  outliving its test (or holding the temp home open into removeDir) fails loudly. */
+export async function killAndAwaitExit(pid: number): Promise<void> {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // already gone
+  }
+  if (!(await until(5_000, () => !pidAlive(pid)))) {
+    throw new Error(`pid ${pid} did not exit after SIGKILL`);
+  }
 }
 
 // --- the refused-stop fixture -------------------------------------------------------

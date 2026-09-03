@@ -299,10 +299,13 @@ export async function resolveStartPort(
 
 /** Tracked daemon pids across the default and every profile's run state -- the set the
  *  orphan sweep must NEVER signal (in a multi-daemon world, another profile's healthy
- *  daemon is not an orphan). */
-export function trackedDaemonPids(): Set<number> {
+ *  daemon is not an orphan). `except` drops ONE slot's claim: the planner judges against
+ *  the POST-clear tracking, whose own slot the same plan clears before any signal --
+ *  another slot's claim on the same pid still counts. */
+export function trackedDaemonPids(except?: Profile): Set<number> {
   const pids = new Set<number>();
   for (const profile of [null, ...profileHomeNames()]) {
+    if (except !== undefined && profile === except) continue;
     const pid = CopilotEnvRunState.forProfile(profile).read().pid;
     if (pid !== undefined) pids.add(pid);
   }
@@ -373,7 +376,11 @@ const HOLDER_STOP_POLL_MS = 100;
  * may name any innocent local process. Nor can run state: the per-host record proves the
  * pid was ours on this host ONCE, never that today's process is still it -- so every
  * lock-held signal, tracked or not, earns its provenance here, requiring all of:
- *   - the pid is no run state's tracked daemon,
+ *   - no run-state record in `trackedSpares` tracks the pid. The default is EVERY slot's
+ *     record; the planner passes the POST-clear set (its own slot's record is cleared
+ *     before any holder stop executes) -- exempting that one RECORD, never the pid, so a
+ *     second slot's claim on the same pid (a stale-state pid-reuse collision) still
+ *     refuses,
  *   - no OTHER home's lock can claim it -- judged fail-closed: a hold this host cannot
  *     read or attribute might be exactly this pid, so it also refuses, and
  *   - the OWNER-FILTERED process scan confirms a daemon invocation of the CURRENT user
@@ -381,8 +388,12 @@ const HOLDER_STOP_POLL_MS = 100;
  *     unreadable scan reads false), trading auto-recovery where the process table is
  *     unreadable for never signalling a pid this host cannot prove.
  */
-async function corroborateLockHolder(home: string, holder: number): Promise<boolean> {
-  if (trackedDaemonPids().has(holder)) return false;
+async function corroborateLockHolder(
+  home: string,
+  holder: number,
+  trackedSpares: Set<number> = trackedDaemonPids(),
+): Promise<boolean> {
+  if (trackedSpares.has(holder)) return false;
   for (const other of [resolveHome(), ...profileHomeNames().map(profileHome)]) {
     if (other === home) continue;
     const hold = daemonLockHold(other);
@@ -438,16 +449,100 @@ async function stopLockHolder(home: string, holder: number): Promise<void> {
   }
 }
 
+/** One would-be action of the launch cleanup. planCleanup is the SINGLE decision source:
+ *  the live cleanup executes exactly this enumeration and `start --dry-run` narrates it,
+ *  both through exhaustive switches -- so a future live action cannot ship without its
+ *  dry-run line (omitting it does not compile). */
+export type CleanupAction =
+  | { readonly kind: "stop-tracked"; readonly pid: number }
+  | { readonly kind: "clear-tracking"; readonly pid: number }
+  | { readonly kind: "stop-holder"; readonly pid: number }
+  | { readonly kind: "leave-holder"; readonly pid: number }
+  | { readonly kind: "stop-orphan"; readonly pid: number };
+
 /**
- * Stop everything in the way of a fresh launch for `profile`: the tracked pre-lock daemon
- * (confirmed by the argv scan; a lock-held one is deferred to the corroborated holder
- * stop), then THIS home's live daemon.lock holder -- tracked or not, only under
- * host-local corroboration (see corroborateLockHolder) -- then the machine-wide
- * orphan sweep (SIGTERM, a grace wait, SIGKILL for survivors), sparing every pid another
- * run state tracks. Ends with a settle pause before the caller probes ports. `listPids`
- * is the sweep's process-scan seam, injectable for tests.
+ * Decide -- READ-ONLY: no signals, no writes -- what stands in the way of a fresh launch
+ * over `home` (passed in, not derived: the callers own the path derivation), in execution
+ * order:
+ *   - the tracked pid: signalled only when the lock rules it "unproven" (the shared
+ *     daemonLockVerdict table: "dead" is never signalled however alive the pid table says
+ *     it is -- pid reuse -- and "alive" DEFERS to the corroborated holder stop below) AND
+ *     the argv scan confirms a pre-lock daemon; its tracking is cleared regardless (a
+ *     durable state write, so it is an enumerated action the dry run must report),
+ *   - THIS home's live daemon.lock holder -- tracked or not: stopped only under host-local
+ *     corroboration, left alone (with the shared-home warning) otherwise; the self/parent
+ *     case is no action at all,
+ *   - the machine-wide orphans (`listPids` is the scan seam, injectable for tests),
+ *     sparing every tracked pid and every live lock holder.
+ * Every tracked-pid judgment past the clear uses the POST-clear set (`profile`'s own
+ * record is exempted as a RECORD, never as a pid -- another slot's claim on the same pid
+ * still spares/refuses), matching the pre-split order where the clear preceded both the
+ * corroboration and the sweep's keep-set snapshot.
+ */
+export async function planCleanup(
+  home: string,
+  profile: Profile,
+  state: CopilotEnvRunState = CopilotEnvRunState.forProfile(profile),
+  listPids: (myPid: number, myPpid: number) => Promise<number[]> = getOrphanPids,
+): Promise<CleanupAction[]> {
+  const actions: CleanupAction[] = [];
+  const tracked = state.read().pid;
+  if (tracked !== undefined) {
+    if (daemonLockVerdict(home, tracked) === "unproven" && (await isCopilotApiPid(tracked))) {
+      actions.push({ kind: "stop-tracked", pid: tracked });
+    }
+    actions.push({ kind: "clear-tracking", pid: tracked });
+  }
+  const postClearTracked = trackedDaemonPids(profile);
+  // Without the holder stop a live holder is unstoppable: the sweep spares every holder,
+  // so the new daemon's preload fails lock acquisition on every retry of `agent start`,
+  // and `agent stop` no-ops. Every uncorroborated case -- and the self/parent guard --
+  // falls back to the preload's legible failure instead of signalling what this host
+  // cannot prove.
+  const holder = daemonLockHolderPid(home);
+  if (holder !== null && holder !== process.pid && holder !== process.ppid) {
+    actions.push(
+      (await corroborateLockHolder(home, holder, postClearTracked))
+        ? { kind: "stop-holder", pid: holder }
+        : { kind: "leave-holder", pid: holder },
+    );
+  }
+  const orphans = await listUntrackedOrphans(
+    process.pid,
+    process.ppid,
+    postClearTracked,
+    listPids,
+  );
+  for (const pid of orphans) {
+    if (pidAlive(pid)) actions.push({ kind: "stop-orphan", pid });
+  }
+  return actions;
+}
+
+/** The shared-home leave warning: emitted for a planned leave, and again when a planned
+ *  holder stop finds its corroboration lapsed at the signal boundary. */
+function warnLeaveHolder(pid: number): void {
+  consola.warn(
+    `   Leaving the daemon.lock holder (pid=${pid}) alone: this host cannot identify that pid as our daemon (a shared home's daemon on another host, or an unreadable process table). If the lock stays held, the launch below fails its lock acquisition - stop that daemon from its own host.`,
+  );
+}
+
+/**
+ * Execute the cleanup plan for `profile` (planCleanup above -- the same decision source
+ * `start --dry-run` narrates): stop the tracked pre-lock daemon, clear its tracking (up
+ * front, so a throw below never leaves a stale port pointing at a dead daemon), stop or
+ * spare this home's daemon.lock holder, then run the orphan sweep as one batch (SIGTERM
+ * the enumerated pids, one grace wait, SIGKILL whatever a fresh scan still lists). The
+ * plan authorizes; every SIGNAL still re-derives its proof at the signal boundary (the
+ * argv re-scan, the still-holds + re-corroborate check, the fresh orphan scan the batch
+ * is intersected with), so a pid that exited or lapsed since planning is never signalled
+ * on the stale snapshot. Ends with a settle pause before the caller probes ports.
+ * Demands the held start lock (`_lock`, like ensureProxyFloor): the plan's snapshots and
+ * the sweep are only race-free serialized against every other start, so an un-locked
+ * cleanup must not compile.
  */
 export async function cleanupExistingProxies(
+  _lock: HeldStartLock,
   profile: Profile,
   state: CopilotEnvRunState = CopilotEnvRunState.forProfile(profile),
   listPids: (myPid: number, myPpid: number) => Promise<number[]> = getOrphanPids,
@@ -455,72 +550,83 @@ export async function cleanupExistingProxies(
   consola.start("Cleaning up existing proxy processes ...");
 
   const home = new CopilotApiPaths(profile).home;
-  const tracked = state.read().pid;
-  if (tracked !== undefined) {
-    // The lock rules first (the shared daemonLockVerdict table): "dead" is never
-    // signalled however alive the pid table says it is (pid reuse), "alive" DEFERS to
-    // the corroborated holder stop below -- run state only proves the pid was ours on
-    // this host ONCE, while on a shared home the held lock can be another HOST's daemon
-    // whose marker pid names a recycled local process, so a tracked signal must earn
-    // the same host-local corroboration as an untracked one -- and only "unproven" (a
-    // pre-lock daemon, which holds no lock for the holder stop to see) is signalled
-    // here, gated on the argv-scan identity check.
-    const lock = daemonLockVerdict(home, tracked);
-    if (lock === "unproven" && (await isCopilotApiPid(tracked))) {
-      consola.info(`   Stopping tracked proxy (pid=${tracked}) ...`);
-      await terminatePid(tracked, DAEMON_SIGKILL_GRACE_MS);
-    }
-    // Clear both pid and port up front: if the relaunch below throws, we don't
-    // leave a stale port pointing at the now-dead daemon. (A daemon whose policy
-    // keeps its port -- a named profile's stable reservation -- only clears the pid.)
-    state.set(daemonPolicy(profile).releasesPortOnStop ? { pid: null, port: null } : { pid: null });
-  }
+  const plan = await planCleanup(home, profile, state, listPids);
 
-  // THE stop for every lock-held daemon of this home, tracked (deferred from above,
-  // its tracking already cleared) or untracked (run state lost, or an optimistic pid
-  // clear whose SIGTERM the daemon outlived). Without it a live holder is unstoppable:
-  // the sweep below spares every holder, so the new daemon's preload fails lock
-  // acquisition on every retry of `agent start`, and `agent stop` no-ops. Every signal
-  // needs HOST-LOCAL corroboration on top of the lock (corroborateLockHolder: on a
-  // shared home the marker's pid means nothing in this host's pid table); every
-  // uncorroborated case -- and the self/parent guard -- falls back to the preload's
-  // legible failure instead of signalling what it cannot prove. A pre-lock daemon holds
-  // no lock: argv sweep as before.
-  const holder = daemonLockHolderPid(home);
-  if (holder !== null && holder !== process.pid && holder !== process.ppid) {
-    if (await corroborateLockHolder(home, holder)) {
-      consola.info(`   Stopping this home's daemon.lock holder (pid=${holder}) ...`);
-      await stopLockHolder(home, holder);
-    } else {
-      consola.warn(
-        `   Leaving the daemon.lock holder (pid=${holder}) alone: this host cannot identify that pid as our daemon (a shared home's daemon on another host, or an unreadable process table). If the lock stays held, the launch below fails its lock acquisition - stop that daemon from its own host.`,
-      );
+  const orphans: number[] = [];
+  for (const action of plan) {
+    switch (action.kind) {
+      case "stop-tracked":
+        if (await isCopilotApiPid(action.pid)) {
+          consola.info(`   Stopping tracked proxy (pid=${action.pid}) ...`);
+          await terminatePid(action.pid, DAEMON_SIGKILL_GRACE_MS);
+        }
+        break;
+      case "clear-tracking":
+        // A daemon whose policy keeps its port -- a named profile's stable
+        // reservation -- only clears the pid.
+        state.set(
+          daemonPolicy(profile).releasesPortOnStop ? { pid: null, port: null } : { pid: null },
+        );
+        break;
+      case "stop-holder":
+        // Gone (released the lock, or died) means nothing to stop; a lapsed
+        // corroboration draws the same leave the plan would have decided then.
+        if (daemonLockHolderPid(home) !== action.pid) break;
+        if (await corroborateLockHolder(home, action.pid)) {
+          consola.info(`   Stopping this home's daemon.lock holder (pid=${action.pid}) ...`);
+          await stopLockHolder(home, action.pid);
+        } else {
+          warnLeaveHolder(action.pid);
+        }
+        break;
+      case "leave-holder":
+        warnLeaveHolder(action.pid);
+        break;
+      case "stop-orphan":
+        orphans.push(action.pid);
+        break;
+      default:
+        assertNever(action);
     }
   }
 
-  const myPid = process.pid;
-  const myPpid = process.ppid;
-  const keepPids = trackedDaemonPids();
-  let orphans = await listUntrackedOrphans(myPid, myPpid, keepPids, listPids);
   if (orphans.length > 0) {
-    for (const opid of orphans) {
-      if (pidAlive(opid)) {
-        consola.info(`   Stopping orphaned proxy (pid=${opid}) ...`);
-        try {
-          process.kill(opid, "SIGTERM");
-        } catch {
-          /* OSError */
+    // The plan authorizes, a FRESH scan confirms: only pids in both are signalled, so a
+    // pid recycled since planning (the tracked/holder stops above can take a grace) is
+    // never TERM'd off the stale snapshot. An empty confirmation ends the sweep -- the
+    // same gate the scan-just-before-TERM carried pre-split.
+    const planned = new Set(orphans);
+    const confirmed = (await listUntrackedOrphans(
+      process.pid,
+      process.ppid,
+      trackedDaemonPids(),
+      listPids,
+    )).filter((p) => planned.has(p));
+    if (confirmed.length > 0) {
+      for (const opid of confirmed) {
+        if (pidAlive(opid)) {
+          consola.info(`   Stopping orphaned proxy (pid=${opid}) ...`);
+          try {
+            process.kill(opid, "SIGTERM");
+          } catch {
+            /* OSError */
+          }
         }
       }
-    }
-    await sleep(DAEMON_SIGKILL_GRACE_MS);
-    orphans = await listUntrackedOrphans(myPid, myPpid, keepPids, listPids);
-    for (const opid of orphans) {
-      if (pidAlive(opid)) {
-        try {
-          process.kill(opid, "SIGKILL");
-        } catch {
-          /* OSError */
+      await sleep(DAEMON_SIGKILL_GRACE_MS);
+      const survivors = (await listUntrackedOrphans(
+        process.pid,
+        process.ppid,
+        trackedDaemonPids(),
+        listPids,
+      )).filter((p) => planned.has(p));
+      for (const opid of survivors) {
+        if (pidAlive(opid)) {
+          try {
+            process.kill(opid, "SIGKILL");
+          } catch {
+            /* OSError */
+          }
         }
       }
     }

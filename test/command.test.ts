@@ -1,7 +1,10 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   childEnvWithPath,
   childPathPrepending,
   pickVerbatimWindowsSpawn,
+  runCaptured,
   verbatimCliSpawn,
 } from "../src/utils/command.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
@@ -124,4 +127,24 @@ test("verbatimCliSpawn on POSIX resolves the command and never adds a shell", ()
   expect(spawn.shell).toBe(false);
   expect(spawn.args).toEqual(["-c", "echo %USERPROFILE%"]);
   expect(spawn.file.endsWith("sh")).toBe(true);
+});
+
+test("runCaptured: the launch-failure mark rides ONLY the synthesized exit", async () => {
+  // Ran and succeeded: exit 0, no mark.
+  const ok = await runCaptured(process.execPath, ["eval", "console.log('ok')"]);
+  expect(ok.exitCode).toBe(0);
+  expect(ok.launchFailed).toBeUndefined();
+  expect(ok.stdout.trim()).toBe("ok");
+
+  // Ran and failed: the child's OWN nonzero exit, still no mark -- to a scan this is
+  // a COMPLETED look (pgrep's "ran, found nothing" exit 1 rides exactly here).
+  const ranNonzero = await runCaptured(process.execPath, ["eval", "Deno.exit(1)"]);
+  expect(ranNonzero.exitCode).toBe(1);
+  expect(ranNonzero.launchFailed).toBeUndefined();
+
+  // Never ran: ENOENT coerces to the SAME exit 1, and the mark is the only thing
+  // separating it from a real completed exit 1.
+  const missing = await runCaptured(join(tmpdir(), "copilot-env-no-such-tool"), []);
+  expect(missing.exitCode).toBe(1);
+  expect(missing.launchFailed).toBe(true);
 });

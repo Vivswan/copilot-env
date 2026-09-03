@@ -111,16 +111,21 @@ export function childEnvWithPath(
  * Run `file` with `args` and capture stdout, never rejecting: a nonzero exit
  * reports through `exitCode`, and a spawn failure (ENOENT, a killing signal)
  * maps to a nonzero `exitCode` too, so `exitCode === 0` always means "ran and
- * succeeded". `windowsHide` keeps a no-console Windows parent from flashing a
- * console window. `maxBuffer` defaults to 16 MiB (well past node's 1 MiB);
- * callers that collect large listings raise it -- an overflow kills the child
- * and reads as a spawn failure, silently degrading their scans.
+ * succeeded". That mapping synthesizes exit 1 -- the same code many scans use
+ * for a REAL "ran, found nothing" -- so the synthesized case additionally carries
+ * `launchFailed: true`: the child never reported an exit code of its own, and a
+ * consumer that must not read a failed look as a proven absence keys on the mark
+ * (a completed run, zero or nonzero, never carries it). `windowsHide` keeps a
+ * no-console Windows parent from flashing a console window. `maxBuffer` defaults
+ * to 16 MiB (well past node's 1 MiB); callers that collect large listings raise
+ * it -- an overflow kills the child and reads as a marked launch failure,
+ * silently degrading unmarked-only scans.
  */
 export function runCaptured(
   file: string,
   args: readonly string[],
   opts: { maxBuffer?: number } = {},
-): Promise<{ exitCode: number; stdout: string }> {
+): Promise<{ exitCode: number; stdout: string; launchFailed?: true }> {
   return new Promise((resolve) => {
     execFile(
       file,
@@ -128,8 +133,10 @@ export function runCaptured(
       { windowsHide: true, maxBuffer: opts.maxBuffer ?? 16 * 1024 * 1024 },
       (error, stdout) => {
         if (error === null) return resolve({ exitCode: 0, stdout });
-        const exitCode = typeof error.code === "number" && error.code !== 0 ? error.code : 1;
-        resolve({ exitCode, stdout });
+        if (typeof error.code === "number" && error.code !== 0) {
+          return resolve({ exitCode: error.code, stdout });
+        }
+        resolve({ exitCode: 1, stdout, launchFailed: true });
       },
     );
   });

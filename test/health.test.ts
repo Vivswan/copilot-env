@@ -1114,7 +1114,10 @@ test("an unreadable codex config reaches health as other/read-error, never as no
   expect(facts.codex?.otherReason).toBe("read-error");
   expect(facts.codex?.configExists).toBe(true);
   if (!facts.codex) throw new Error("expected codex facts");
-  expect(checkCodex(facts.codex).status).toBe("warn");
+  const verdict = checkCodex(facts.codex);
+  expect(verdict.status).toBe("warn");
+  expect(verdict.detail).toContain("could not be read");
+  expect(verdict.fix).toContain("repair");
 });
 
 test("gatherFacts still probes identity when an agent routes through the proxy", async () => {
@@ -1388,6 +1391,30 @@ test("codex: not configured is ok; each broken part warns with a precise message
   } satisfies CodexFacts;
   expect(checkCodex(foreign).detail).toContain("model_provider");
   expect(checkCodex(foreign).detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
+  // The classifier's reason travels into the --json value on every arm.
+  expect(checkCodex(foreign).value?.otherReason).toBe("custom");
+  expect(ok.value?.otherReason).toBe(null);
+  // A config.toml the writers REFUSE (malformed/read-error) gets the repair fix,
+  // never the generic `agent codex --proxy` re-wire that cannot land.
+  const malformed = checkCodex({ ...foreign, modelProvider: null, otherReason: "malformed" });
+  expect(malformed.status).toBe("warn");
+  expect(malformed.detail).toContain("not valid TOML");
+  expect(malformed.detail).toContain("provider: other");
+  expect(malformed.fix).toBe(`repair ${join("/c", "config.toml")}, then re-run \`agent codex\``);
+  expect(malformed.value?.otherReason).toBe("malformed");
+  const unreadable = checkCodex({ ...foreign, modelProvider: null, otherReason: "read-error" });
+  expect(unreadable.status).toBe("warn");
+  expect(unreadable.detail).toContain("could not be read");
+  expect(unreadable.fix).toBe(`repair ${join("/c", "config.toml")}, then re-run \`agent codex\``);
+  // A named profile's repair re-runs its atomic re-add instead of `agent codex`.
+  const namedMalformed = checkCodex(
+    { ...foreign, modelProvider: null, otherReason: "malformed" },
+    parseProfileName("work"),
+  );
+  expect(namedMalformed.status).toBe("warn");
+  expect(namedMalformed.fix).toBe(
+    `repair ${join("/c", "config.toml")}, then re-run \`agent profile --add work\``,
+  );
   // base_url points at the wrong port.
   expect(
     checkCodex({

@@ -29,7 +29,7 @@ export type ManagedWrite =
     /** The probed `Copilot-Integration-Id` to bake, or null/absent to send none. */
     directIntegrationId?: string | null;
   }
-  | { mode: "proxy" };
+  | { mode: "proxy"; directIntegrationId?: never };
 
 /**
  * What ONE `agent codex` / `agent claude` invocation does. Each arm carries

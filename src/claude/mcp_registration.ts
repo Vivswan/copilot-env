@@ -9,12 +9,12 @@
 // Everything here is BEST-EFFORT and must never fail the wiring that calls it:
 // Claude Code rewrites this file constantly and owns its schema, so a malformed
 // or surprising document is warned about and left alone, never clobbered.
-import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { consola } from "consola";
 import { atomicWriteFile } from "../copilot_api/config.ts";
 import { MCP_SERVER_NAME } from "../mcp/server.ts";
+import { readTextResult } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
 import { claudeConfigDirOverride } from "./paths.ts";
@@ -92,16 +92,18 @@ interface ClaudeJsonDoc {
   raw: string;
 }
 
-/** Read `.claude.json` (missing/empty -> {}); null = malformed, leave it alone. */
+/** Read `.claude.json` (PROVEN-missing/empty -> {}); null = unreadable or
+ *  malformed, leave it alone. Absence comes from readTextResult, so a dangling
+ *  symlink reads unreadable, never absent: the entry at the path exists, and
+ *  writing "back" through {} would replace the user's link with a plain file. */
 function loadClaudeJson(): ClaudeJsonDoc | null {
   const path = claudeJsonPath();
-  let raw = "";
-  try {
-    raw = existsSync(path) ? readFileSync(path, "utf8") : "";
-  } catch (e) {
-    logger.warn(`could not read ${path}: ${String(e)}`);
+  const read = readTextResult(path);
+  if (read.kind === "unreadable") {
+    logger.warn(`could not read ${path}: ${read.error}`);
     return null;
   }
+  const raw = read.kind === "text" ? read.text : "";
   if (raw.trim() === "") return { path, doc: {}, raw };
   try {
     const doc: unknown = JSON.parse(raw);

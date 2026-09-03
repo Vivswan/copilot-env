@@ -1,4 +1,13 @@
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
   classifyMcpEntry,
@@ -222,3 +231,26 @@ test("inspectMcpRegistration reports path and status without creating the file",
   writeFileSync(join(home, ".claude.json"), "{ not json");
   expect(inspectMcpRegistration().status).toBe("unreadable");
 });
+
+// POSIX only: creating symlinks on Windows needs elevation/dev-mode.
+test.skipIf(process.platform === "win32")(
+  "a dangling .claude.json symlink is unreadable, never treated as an empty file",
+  () => {
+    const home = tmpConfigDir();
+    // A link whose target existed and was removed: the entry AT the path
+    // remains (lstat), but every follow -- existsSync included -- reads ENOENT.
+    const target = join(home, "real-claude.json");
+    writeFileSync(target, `${JSON.stringify({ "numStartups": 3 })}\n`);
+    symlinkSync(target, claudeJsonPath());
+    rmSync(target);
+
+    expect(inspectMcpRegistration()).toEqual({ path: claudeJsonPath(), status: "unreadable" });
+    expect(registerClaudeMcpServer()).toBe(false);
+    expect(removeClaudeMcpRegistration()).toBe(false);
+    // Never clobbered: still the same link to the same place (not replaced by
+    // a plain file), and nothing materialized at its target.
+    expect(lstatSync(claudeJsonPath()).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(claudeJsonPath())).toBe(target);
+    expect(existsSync(target)).toBe(false);
+  },
+);

@@ -19,7 +19,7 @@
 // inferenceModels list derived from live discovery (offline wires keep prior rows); the local
 // proxy daemon mounts its model routes at BOTH /models and /v1/models, so proxy entries
 // use discovery and always track the catalog.
-import { chmodSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { codexUserAgent } from "../codex/config.ts";
@@ -47,7 +47,7 @@ import { resolveRootHome } from "../copilot_api/paths.ts";
 import { proxyLoopbackOrigin, wiringPortFor } from "../copilot_api/port.ts";
 import { type Profile, profileLabel, WINDOWS_DEVICE_NAME_RE } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
-import { isEnoent } from "../utils/fs.ts";
+import { readTextResult } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenArgs } from "../utils/root.ts";
@@ -217,16 +217,16 @@ export function parseDesktopMeta(raw: string | null): DesktopMeta | null {
   return { appliedId: typeof doc.appliedId === "string" ? doc.appliedId : null, entries, extra };
 }
 
-/** Read a file, or null ONLY when it does not exist -- any other read error (permission,
- *  I/O) propagates: treating an unreadable library as absent would re-create it beside
- *  the app's real one. */
+/** Read a file, or null ONLY when it is PROVEN absent (readTextResult's rule: a
+ *  dangling symlink is unreadable, never absent -- the entry itself exists, and
+ *  a rewrite would replace the app's or user's link with a plain file). Any
+ *  other read failure (permission, I/O, the dangling link) throws: treating an
+ *  unreadable library as absent would re-create it beside the app's real one. */
 function readFileOrNull(path: string): string | null {
-  try {
-    return readFileSync(path, "utf8");
-  } catch (e) {
-    if (isEnoent(e)) return null;
-    throw e;
-  }
+  const read = readTextResult(path);
+  if (read.kind === "absent") return null;
+  if (read.kind === "unreadable") throw new Error(`could not read ${path}: ${read.error}`);
+  return read.text;
 }
 
 /** Pretty JSON + trailing newline, atomically, skipping byte-identical rewrites. */

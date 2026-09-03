@@ -3,7 +3,18 @@
 // Isolation: the suite floor points CLAUDE_DESKTOP_DIR_ENV at a NON-created dir, so
 // nothing here can reach a real library; each test that wants Desktop "installed"
 // creates its own data dir and re-points the seam at it.
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
   CLAUDE_DESKTOP_DIR_ENV,
@@ -588,6 +599,65 @@ test("never-clobber: a foreign entry carrying our name, or a malformed _meta.jso
   await wireClaudeDesktopEntry(opts);
   expect(readFileSync(join(library, "_meta.json"), "utf8")).toBe("{ not json");
 });
+
+// POSIX only: creating symlinks on Windows needs elevation/dev-mode.
+test.skipIf(process.platform === "win32")(
+  "a dangling _meta.json symlink is could-not-read, never an empty library to rebuild",
+  async () => {
+    const { library } = isolateWithDesktop();
+    mkdirSync(library, { recursive: true });
+    // A link whose target existed and was removed: the entry AT the path
+    // remains (lstat), but readFileSync follows it and reads ENOENT.
+    const target = join(library, "real-meta.json");
+    writeFileSync(target, `${JSON.stringify({ appliedId: null, entries: [] })}\n`);
+    symlinkSync(target, join(library, "_meta.json"));
+    rmSync(target);
+    await expect(
+      wireClaudeDesktopEntry({
+        profile: null,
+        mode: "direct",
+        directIntegrationId: null,
+        directToken: "ghu_x",
+        quiet: false,
+        fetchImpl: catalogFetch(CATALOG),
+      }),
+    ).rejects.toThrow("could not read");
+    // Never clobbered: the link survives as a link, nothing materialized at its
+    // target, no entry config or ownership record was minted.
+    expect(lstatSync(join(library, "_meta.json")).isSymbolicLink()).toBe(true);
+    expect(existsSync(target)).toBe(false);
+    expect(readdirSync(library)).toEqual(["_meta.json"]);
+    expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual([]);
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "an owned entry whose config is a dangling symlink is unreadable, not rebuilt from empty",
+  async () => {
+    const { library } = isolateWithDesktop();
+    const opts = {
+      profile: null,
+      mode: "direct" as const,
+      directIntegrationId: null,
+      directToken: "ghu_x",
+      quiet: false,
+      fetchImpl: catalogFetch(CATALOG),
+    };
+    await wireClaudeDesktopEntry(opts);
+    const entries = metaOf(library).entries as { id: string }[];
+    const configPath = join(library, `${entries[0]?.id}.json`);
+    const target = join(library, "moved-away.json");
+    writeFileSync(target, "{}\n");
+    rmSync(configPath);
+    symlinkSync(target, configPath);
+    rmSync(target);
+    // Re-wire: the owned entry's config cannot be read -- refuse, never rebuild
+    // the document from {} over the user's link.
+    await expect(wireClaudeDesktopEntry(opts)).rejects.toThrow("could not read");
+    expect(lstatSync(configPath).isSymbolicLink()).toBe(true);
+    expect(existsSync(target)).toBe(false);
+  },
+);
 
 test("parseDesktopMeta: empty/missing is an empty library; anything not understood is null", () => {
   expect(parseDesktopMeta(null)).toEqual({ appliedId: null, entries: [], extra: {} });

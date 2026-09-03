@@ -137,7 +137,8 @@
       "*.md",
       "**/*.md",
       ".github/agents.md",
-      ".github/copilot-instructions.md"
+      ".github/copilot-instructions.md",
+    ".github/.copier-answers.yml"
     ]
   }
 }

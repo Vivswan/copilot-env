@@ -987,16 +987,24 @@ function codexCatalogConfigCandidates(): { configs: string[]; complete: boolean 
   return { configs: homes.map((home) => codexConfigPath(home)), complete };
 }
 
-/** True when `value` is a non-identical spelling of `catalogFile` that still
- *  resolves to the same file (case variant, symlink, relative segmenting).
- *  Exact matches are handled upstream; a resolve failure (the path does not
- *  exist) means it cannot denote our existing file. */
-function resolvesToCatalogFile(value: unknown, catalogFile: string): boolean {
-  if (typeof value !== "string" || value === catalogFile) return false;
+/** Whether `value` may denote `catalogFile` ALIAS-wise: "yes" when it is a
+ *  non-identical spelling that still resolves to the same file (case variant,
+ *  symlink, relative segmenting), "no" when it is not a candidate at all (not a
+ *  string, the exact spelling -- which callers test themselves before asking -- or a
+ *  path that resolves elsewhere or does not exist), "unknown" when the resolve
+ *  itself FAILED and the question stays open. The three-state matters because the
+ *  callers act destructively on "no": a resolve that could not run (EACCES on a path
+ *  component, ELOOP, a path under a non-directory) must not authorize deleting a
+ *  catalog file this config may still reference -- the same fail-closed direction the
+ *  sibling catch in cleanupCodexCatalogArtifacts takes. */
+function resolvesToCatalogFile(value: unknown, catalogFile: string): "yes" | "no" | "unknown" {
+  if (typeof value !== "string" || value === catalogFile) return "no";
   try {
-    return fs.realpathSync(value) === fs.realpathSync(catalogFile);
-  } catch {
-    return false;
+    return fs.realpathSync(value) === fs.realpathSync(catalogFile) ? "yes" : "no";
+  } catch (e) {
+    // A path proven absent is a proven "no": it cannot denote our existing file.
+    // Every other failure leaves the question open.
+    return isEnoent(e) ? "no" : "unknown";
   }
 }
 
@@ -1020,10 +1028,11 @@ function cleanupCodexCatalogArtifacts(catalogFile: string): void {
         delete doc.model_catalog_json;
         fs.writeFileSync(configPath, stringify(doc));
         ledger.release("codexCatalog", configPath);
-      } else if (resolvesToCatalogFile(doc.model_catalog_json, catalogFile)) {
+      } else if (resolvesToCatalogFile(doc.model_catalog_json, catalogFile) !== "no") {
         // An alternate spelling of OUR path (case variant on Windows, a
-        // symlinked home): not provably ours to strip, but deleting the file
-        // would dangle it -- keep the file.
+        // symlinked home) -- or a resolve that could not RUN, which leaves the
+        // question open. Either way not provably ours to strip, and deleting the
+        // file would dangle it -- keep the file.
         deletionSafe = false;
       } else if (recordedPaths.has(configPath)) {
         // Recorded, but the config no longer references our file (the user
@@ -1175,7 +1184,13 @@ export function removeCodexDefaultWiring(codexHome: string): void {
     let catalogWasReferenced = false;
     if (
       doc.model_catalog_json === catalogFile ||
-      resolvesToCatalogFile(doc.model_catalog_json, catalogFile)
+      // "yes" only: an UNKNOWN resolve is not proof the key is ours, and this
+      // function's rule is to touch a key only when it denotes OUR file. Stripping
+      // on doubt would silently delete a user-owned key; leaving it risks a dangling
+      // reference only in the case where it WAS ours -- and that failure is loud and
+      // fixable, where the other is silent data loss. Same direction as the cleanup
+      // sweep above, which also refuses to act on "unknown".
+      resolvesToCatalogFile(doc.model_catalog_json, catalogFile) === "yes"
     ) {
       delete doc.model_catalog_json;
       catalogWasReferenced = true;

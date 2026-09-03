@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -789,4 +789,75 @@ test("discoverUsageDbs excludes a stray .run file and a host dir missing the sql
 
   expect(found).toEqual([goodDb]);
   expect(found).not.toContain(strayFile);
+});
+
+// A scan that FAILED must not read as an empty one. discoverUsageDbs backs a
+// rendered "no copilot-api usage databases ... found" line and a summed cost TOTAL,
+// so a silently short answer under-reports money without ever saying so. Only a
+// MISSING directory is the proven "nothing here" -- the same narrowing (and the same
+// stated reason) as profileHomeNames in copilot_api/paths.ts, which has always done
+// it this way. ENOENT/ENOTDIR both stay "nothing here" (a lookup under a
+// non-directory parent finds nothing); the class that must NOT be swallowed is a
+// directory that exists and cannot be read, so these drive a real EACCES.
+// POSIX, non-root only: 0000 blocks the readdir, and root bypasses file modes.
+const skipUnreadableDir = process.platform === "win32" || process.getuid?.() === 0;
+
+test.skipIf(skipUnreadableDir)(
+  "an UNREADABLE .run dir raises instead of reporting no databases",
+  () => {
+    dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+    const legacy = join(dir, "copilot-api.sqlite");
+    writeFileSync(legacy, "");
+    const runDir = join(dir, ".run");
+    mkdirSync(runDir, { recursive: true });
+    chmodSync(runDir, 0o000);
+    try {
+      let threw = "";
+      try {
+        discoverUsageDbs(dir);
+      } catch (e) {
+        threw = e instanceof Error ? e.message : String(e);
+      }
+      // Positive assertion: a call that did NOT throw fails here rather than
+      // passing on an empty string.
+      expect(threw).toContain("EACCES");
+    } finally {
+      chmodSync(runDir, 0o755);
+    }
+  },
+);
+
+test.skipIf(skipUnreadableDir)(
+  "an UNREADABLE profiles dir raises instead of reporting no profiles",
+  () => {
+    dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+    const legacy = join(dir, "copilot-api.sqlite");
+    writeFileSync(legacy, "");
+    const profilesDir = join(dir, "profiles");
+    mkdirSync(profilesDir, { recursive: true });
+    chmodSync(profilesDir, 0o000);
+    try {
+      let threw = "";
+      try {
+        discoverUsageDbs(dir);
+      } catch (e) {
+        threw = e instanceof Error ? e.message : String(e);
+      }
+      expect(threw).toContain("EACCES");
+    } finally {
+      chmodSync(profilesDir, 0o755);
+    }
+  },
+);
+
+test("both scans still read ABSENT dirs as empty, never as a failure (the control)", () => {
+  // The control for the two rows above, and the one that runs everywhere (no
+  // permission dependency): absence is the PROVEN "nothing here" and must keep
+  // flowing through silently -- a fresh home has neither .run nor profiles/, and
+  // `agent cost` must not raise on it.
+  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  const legacy = join(dir, "copilot-api.sqlite");
+  writeFileSync(legacy, "");
+
+  expect(discoverUsageDbs(dir)).toEqual([legacy]);
 });

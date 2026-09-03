@@ -988,6 +988,12 @@ export async function awaitReadiness(opts: {
       }
       logContent = logBytes.toString("utf-8");
     } catch {
+      // A failed log read is not a proven "not listening", and the readiness verdict
+      // below is drawn from this text alone. Accepted here because the loop RE-READS
+      // every second: a transient failure self-heals within the window, so only a
+      // persistently unreadable log -- one we created ourselves, moments ago -- could
+      // hold `ready` false, and that path still fails loudly pointing at the log file
+      // rather than reporting a confident health verdict.
       logContent = "";
     }
     if (logContent.includes("Listening on:")) {

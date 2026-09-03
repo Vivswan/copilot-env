@@ -2,8 +2,16 @@
 // plus one test per call-site POLICY in src/codex/config.ts, proving each site
 // still maps the shared read variants onto its pre-refactor behavior.
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import { stringify } from "smol-toml";
 import {
   configureCodexConfig,
@@ -245,3 +253,57 @@ test("policy: removeCodexDefaultWiring skips an absent config but still scrubs .
   ).toBe(true);
   expect(readFileSync(envPath, "utf8")).toBe("COPILOT_ENV_GH_TOKEN=ghp_legacy\n");
 });
+
+// The removal strips `model_catalog_json` only when it DENOTES our catalog file.
+// The cases differ solely in what the reference resolves to, so this pins the
+// ownership rule rather than one errno. The "ours" case deliberately uses a SYMLINK
+// alias, not the exact path: the exact spelling short-circuits before the resolver,
+// so only an alias exercises the resolver's "yes" branch that the other arms are
+// contrasted against.
+test("policy: removeCodexDefaultWiring strips model_catalog_json only when it is provably ours", () => {
+  if (process.platform === "win32") return; // symlink creation needs privileges there
+  dir = isolateAgentHomes("codex-toml-io-", { mkdirs: true }).dir;
+  const codexHome = join(dir, ".codex");
+  const configPath = join(codexHome, "config.toml");
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  mkdirSync(dirname(catalogFile), { recursive: true });
+  writeFileSync(catalogFile, '{"models":[]}');
+
+  // 1. Ours via a non-identical spelling that RESOLVES to our file: stripped.
+  const alias = join(dir, "catalog-alias.json");
+  symlinkSync(catalogFile, alias);
+  writeFileSync(configPath, stringify({ "model_catalog_json": alias }));
+  removeCodexDefaultWiring(codexHome);
+  expect(readFileSync(configPath, "utf8")).not.toContain("model_catalog_json");
+
+  // 2. Provably NOT ours: another file that resolves fine, elsewhere. Left alone.
+  const foreign = join(dir, "someone-elses-catalog.json");
+  writeFileSync(foreign, "{}");
+  writeFileSync(configPath, stringify({ "model_catalog_json": foreign }));
+  removeCodexDefaultWiring(codexHome);
+  expect(readFileSync(configPath, "utf8")).toContain("model_catalog_json");
+});
+
+// The third arm, in its own test so the platform skip is VISIBLE in the output
+// rather than silently emptying a passing test: a reference whose resolve cannot
+// run is not proof the key is ours, so it is left alone like the foreign one --
+// never stripped on doubt. Non-root POSIX only: root bypasses file modes.
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "policy: removeCodexDefaultWiring leaves a reference it CANNOT resolve alone",
+  () => {
+    dir = isolateAgentHomes("codex-toml-io-", { mkdirs: true }).dir;
+    const codexHome = join(dir, ".codex");
+    const configPath = join(codexHome, "config.toml");
+    const blocked = join(dir, "blocked");
+    mkdirSync(blocked, { recursive: true });
+    const pinned = stringify({ "model_catalog_json": join(blocked, "catalog.json") });
+    writeFileSync(configPath, pinned);
+    chmodSync(blocked, 0o000); // realpathSync raises EACCES -> "unknown"
+    try {
+      removeCodexDefaultWiring(codexHome);
+      expect(readFileSync(configPath, "utf8")).toContain("model_catalog_json");
+    } finally {
+      chmodSync(blocked, 0o755);
+    }
+  },
+);

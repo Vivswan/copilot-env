@@ -5,7 +5,7 @@ import { withUpdateLock } from "../autoupdate/lock.ts";
 import { runPreflight } from "../autoupdate/preflight.ts";
 import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/state.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { resolveTarget } from "../install/resolve-release.ts";
+import { type Release, resolveTarget } from "../install/resolve-release.ts";
 import { assertNever } from "../utils/assert.ts";
 import { isProtectedRoot } from "../utils/root.ts";
 import { isUpToDate } from "../utils/semver.ts";
@@ -44,6 +44,29 @@ export type UpdateAction =
   | { kind: "enable-auto" }
   | { kind: "disable-auto" }
   | { kind: "apply"; force: boolean };
+
+/**
+ * The under-lock re-validate judgment, pure for testing. `targetNow` is
+ * resolveTarget's SECOND look, taken after the update lock is held, and its null
+ * unions two different facts: "no eligible release" and "the look failed" (an API
+ * error or an offline read, swallowed into null by resolve-release.ts). By the time
+ * this runs, the pre-lock resolve has ALREADY proved an eligible release exists, so
+ * a null here can only be the failed look -- `unproven`, never the confident
+ * `up-to-date`. Keeping the two apart is what stops a transient 5xx from rendering a
+ * green "already up to date" over a skipped update; falling back to the pre-lock
+ * target instead would defeat the downgrade guard the re-validate exists to be.
+ */
+export type RecheckVerdict =
+  | { kind: "apply"; target: Release }
+  | { kind: "up-to-date" }
+  | { kind: "unproven" };
+
+/** The pure judgment over the under-lock re-check (see RecheckVerdict). */
+export function recheckVerdict(currentNow: string, targetNow: Release | null): RecheckVerdict {
+  if (targetNow === null) return { kind: "unproven" };
+  if (isUpToDate(currentNow, targetNow.tag)) return { kind: "up-to-date" };
+  return { kind: "apply", target: targetNow };
+}
 
 /** Parse the raw `agent update` flags into an UpdateAction (the CLI boundary). */
 export function parseUpdateAction(args: UpdateArgs): UpdateAction {
@@ -165,11 +188,18 @@ async function runManualUpdate(args: {
     // packageVersion() is not cached) and re-resolve, so we never apply a now-stale target
     // that would DOWNGRADE the checkout (releases only ever move forward).
     const currentNow = `v${packageVersion()}`;
-    const targetNow = await resolveTarget(args.cooldown);
-    if (!targetNow || isUpToDate(currentNow, targetNow.tag)) {
+    const verdict = recheckVerdict(currentNow, await resolveTarget(args.cooldown));
+    if (verdict.kind === "unproven") {
+      // A failed re-check, not an up-to-date verdict (see RecheckVerdict): say so
+      // and refuse, rather than claim a check that did not happen.
+      consola.warn("Could not re-check the latest release under the update lock; not updating.");
+      process.exitCode = 2; // same code the pre-lock resolve failure reports
+      return;
+    }
+    if (verdict.kind === "up-to-date") {
       consola.success(`copilot-env is already up to date (${currentNow}).`);
       return;
     }
-    await applyUpdate(currentNow, targetNow, outcome);
+    await applyUpdate(currentNow, verdict.target, outcome);
   });
 }

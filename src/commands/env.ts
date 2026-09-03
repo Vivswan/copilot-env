@@ -178,6 +178,8 @@ export function runEnv(args: EnvArgs): void {
     if ("unset" in directive) {
       // Clear the var. Both wrappers eval every emitted directive
       // (agents.bashrc's unconditional eval; agents.ps1's Import-CopilotEnv).
+      // SilentlyContinue: clearing an already-absent var must be a no-op (POSIX
+      // `unset` parity); the wrapper reads no verdict from the eval'd line.
       console.log(
         isPowershell
           ? `Remove-Item -LiteralPath Env:${directive.key} -ErrorAction SilentlyContinue`

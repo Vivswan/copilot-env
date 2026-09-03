@@ -1,4 +1,4 @@
-import { parseUpdateAction } from "../src/commands/update.ts";
+import { parseUpdateAction, recheckVerdict } from "../src/commands/update.ts";
 import {
   parseReleasesJson,
   pickAged,
@@ -194,5 +194,49 @@ describe("resolveTarget retry (de-flakes the release lookup)", () => {
     }) as unknown as typeof fetch;
     expect(await resolveTarget(null)).toBeNull();
     expect(calls).toBe(4); // MAX_FETCH_ATTEMPTS
+  });
+});
+
+// The under-lock re-validate. resolveTarget's null unions "no eligible release"
+// with "the look FAILED" (an API error or offline read, swallowed into null by
+// the retry loop above -- the two tests directly above prove a persistent 503 and
+// a 404 both land there). By the time the re-check runs, the pre-lock resolve has
+// already proved an eligible release exists, so a null can only be the failed
+// look. Reading it as "already up to date" would render a green success line over
+// a SKIPPED update; `unproven` is what keeps the two apart.
+describe("recheckVerdict (the under-lock re-validate)", () => {
+  const target = (tag: string): Release => ({ tag, dateSeconds: secs("2026-06-01T00:00:00Z") });
+
+  test("a failed re-check is unproven, NOT up-to-date", () => {
+    // The whole point: the same null the 503/404 cases above produce must not
+    // reach the up-to-date arm.
+    expect(recheckVerdict("v1.0.0", null)).toEqual({ kind: "unproven" });
+  });
+
+  test("a genuine up-to-date re-check still reports up-to-date", () => {
+    // The control for the row above: a SUCCESSFUL look at the same version is
+    // what the success line is for, and it must keep working.
+    expect(recheckVerdict("v1.2.3", target("v1.2.3"))).toEqual({ kind: "up-to-date" });
+    // A concurrent updater having moved us PAST the target is up-to-date too --
+    // the downgrade guard this re-validate exists to be.
+    expect(recheckVerdict("v2.0.0", target("v1.2.3"))).toEqual({ kind: "up-to-date" });
+  });
+
+  test("a newer release still applies, carrying the re-resolved target", () => {
+    // The third arm: the update must still happen on the happy path, and the
+    // target it applies is the one resolved UNDER the lock, not the pre-lock one.
+    expect(recheckVerdict("v1.0.0", target("v1.5.0"))).toEqual({
+      kind: "apply",
+      target: target("v1.5.0"),
+    });
+  });
+
+  test("the three arms are distinct, so no failure can wear a verdict's words", () => {
+    const kinds = [
+      recheckVerdict("v1.0.0", null).kind,
+      recheckVerdict("v1.2.3", target("v1.2.3")).kind,
+      recheckVerdict("v1.0.0", target("v1.5.0")).kind,
+    ];
+    expect(new Set(kinds).size).toBe(3);
   });
 });

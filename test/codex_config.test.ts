@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { parse, stringify } from "smol-toml";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
@@ -811,6 +819,60 @@ test("disabled: a symlinked spelling of our path blocks deletion (fail closed)",
 
   expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(pinned);
   expect(existsSync(catalogFile)).toBe(true);
+});
+
+// The same fail-closed policy, one step further out: the symlink case above is a
+// reference we PROVED points at our file, this is one we could not resolve AT ALL.
+// A realpath that cannot run (EACCES on a path component, ELOOP) is not proof the
+// reference is someone else's, so it must not authorize deleting the catalog --
+// Codex treats a dangling model_catalog_json as a STARTUP error. Non-root POSIX
+// only: 0000 blocks the resolve, and root bypasses file modes.
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "disabled: a reference we CANNOT resolve blocks deletion too (fail closed)",
+  () => {
+    isolate();
+    const codexHome = join(dir, ".codex");
+    process.env.CODEX_HOME = codexHome;
+    const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
+    // A reference under a directory we cannot traverse: realpathSync raises EACCES,
+    // so whether it denotes our file is UNKNOWN, not "no".
+    const blocked = join(dir, "blocked");
+    mkdirSync(blocked, { recursive: true });
+    const pinned = stringify({ "model_catalog_json": join(blocked, "catalog.json") });
+    writeFileSync(join(codexHome, "config.toml"), pinned);
+    chmodSync(blocked, 0o000);
+    try {
+      syncCodexCatalogReference();
+
+      expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(pinned);
+      expect(existsSync(catalogFile)).toBe(true);
+    } finally {
+      chmodSync(blocked, 0o755);
+    }
+  },
+);
+
+test("disabled: a reference that provably is NOT ours still lets the catalog go (the control)", () => {
+  // The control for the two fail-closed rows above: the refusals must not seize up
+  // the ordinary cleanup. A resolvable reference pointing somewhere else is a proven
+  // "not ours", so the catalog file is still deleted and the foreign key left alone.
+  isolate();
+  const codexHome = join(dir, ".codex");
+  process.env.CODEX_HOME = codexHome;
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}');
+  const foreign = join(dir, "someone-elses-catalog.json");
+  writeFileSync(foreign, "{}");
+  const pinned = stringify({ "model_catalog_json": foreign });
+  writeFileSync(join(codexHome, "config.toml"), pinned);
+
+  syncCodexCatalogReference();
+
+  expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toBe(pinned); // untouched
+  expect(existsSync(catalogFile)).toBe(false); // ours went
 });
 
 // --- reader tolerance: the retired script-shaped proxy auth ---------------------

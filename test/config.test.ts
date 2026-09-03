@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -201,4 +202,72 @@ test("renameWithRetry surfaces a non-transient error immediately", () => {
   expect(() => renameWithRetry("a", "b", 5, bad)).toThrow("nope");
   // ENOENT is not transient, so it is not retried.
   expect(calls).toBe(1);
+});
+
+// An UNREADABLE store is not an empty one. update() is a read-modify-WRITE, so
+// treating a failed read as `{}` would persist the emptiness and wipe every key the
+// file holds -- the daemon's api key, admin key and providers. The file's retry loop
+// exists for exactly that wipe (the proxy writes config.json non-atomically), and the
+// read-error arm used to return BEFORE the retry could run.
+//
+// This is the row that REPRODUCES the wipe: an unreadable file (0000) inside a
+// writable directory, so the read fails while the atomic rename would still succeed.
+// A directory at the config path would NOT prove anything -- the rename fails there
+// on its own, so the content survives with or without the fix.
+// POSIX, non-root only: root bypasses file modes.
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "update REFUSES an unreadable store instead of WIPING it",
+  () => {
+    dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+    const path = join(dir, "config.json");
+    const cfg = new CopilotApiConfig(path);
+    cfg.save({ auth: { apiKeys: ["secret-key"], adminApiKey: "admin-secret" } });
+    const before = readFileSync(path, "utf8");
+    chmodSync(path, 0o000); // readable no more; the parent dir stays writable
+
+    try {
+      let threw = "";
+      try {
+        cfg.update((d) => {
+          d.smallModel = "gpt-6";
+        });
+      } catch (e) {
+        threw = e instanceof Error ? e.message : String(e);
+      }
+      // Positive assertion, so a call that did NOT throw fails this test rather
+      // than passing on an empty string.
+      expect(threw).toContain("refusing to overwrite it");
+      // THE outcome: the secrets are still on disk, byte for byte.
+      chmodSync(path, 0o600);
+      expect(readFileSync(path, "utf8")).toBe(before);
+    } finally {
+      chmodSync(path, 0o600);
+    }
+  },
+);
+
+test("update still writes normally when the store IS readable (the control)", () => {
+  // The control for the row above: the refusal must not cost the ordinary path.
+  // Same shape, same keys -- the only difference is that the store is readable.
+  dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+  const path = join(dir, "config.json");
+  const cfg = new CopilotApiConfig(path);
+  cfg.save({ existing: "keep", smallModel: "gpt-5.5" });
+
+  cfg.update((d) => {
+    d.smallModel = "gpt-6";
+  });
+
+  expect(cfg.load()).toEqual({ existing: "keep", smallModel: "gpt-6" });
+});
+
+test("a genuinely absent store still reads as an empty document, not unreadable", () => {
+  // The other control: absence is a PROVEN answer and must keep flowing through
+  // update() as `{}` -- otherwise first-run key generation would refuse.
+  dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+  const cfg = new CopilotApiConfig(join(dir, "config.json"));
+  cfg.update((d) => {
+    d.created = true;
+  });
+  expect(cfg.load()).toEqual({ created: true });
 });

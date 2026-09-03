@@ -20,7 +20,7 @@ import {
 } from "../copilot_api/paths.ts";
 import { isValidProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
-import { isDir } from "../utils/fs.ts";
+import { isDir, isEnoentOrNotdir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { dayKeyIn } from "../utils/time.ts";
 import { canonicalModelName } from "./pricing.ts";
@@ -259,8 +259,13 @@ export function discoverUsageDbs(home: string = resolveHome()): string[] {
   let profiles: string[] = [];
   try {
     profiles = readdirSync(profilesDir);
-  } catch {
-    profiles = []; // no profiles dir yet
+  } catch (e) {
+    // Only a MISSING dir reads as "no profiles" -- the same narrowing (and the same
+    // reason) as usageDbsUnderHome's host scan and profileHomeNames in
+    // copilot_api/paths.ts: this sweep backs a rendered "no usage databases found"
+    // and a summed cost TOTAL, so a scan that failed must not read as an empty one.
+    if (!isEnoentOrNotdir(e)) throw e;
+    profiles = [];
   }
   for (const profile of profiles.sort()) {
     if (profile !== DEFAULT_PROFILE_DIR && !isValidProfileName(profile)) continue;

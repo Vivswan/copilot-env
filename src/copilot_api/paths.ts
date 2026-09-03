@@ -47,8 +47,13 @@ export function usageDbsUnderHome(home: string): string[] {
   let hosts: string[] = [];
   try {
     hosts = readdirSync(runDir);
-  } catch {
-    hosts = []; // no .run dir yet
+  } catch (e) {
+    // Only a MISSING dir reads as "no hosts": any other enumeration failure
+    // (permissions, I/O) propagates, exactly as profileHomeNames below does and for
+    // the same reason -- this list is rendered as "no usage databases found" and
+    // summed into a cost total, so a silently short answer is worse than an error.
+    if (!isEnoentOrNotdir(e)) throw e;
+    hosts = [];
   }
   for (const host of hosts) {
     const candidate = join(runDir, host, SQLITE_DB_FILENAME);

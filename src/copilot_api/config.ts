@@ -5,7 +5,7 @@ import { basename, dirname, join } from "node:path";
 import { consola } from "consola";
 
 import { BOUNDED_LOCK_POLICY, withFileLockSync } from "../utils/file_lock.ts";
-import { isFile } from "../utils/fs.ts";
+import { isEnoentOrNotdir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { sleepSync } from "../utils/time.ts";
 import { CopilotApiPaths, PROXY_CONFIG_FILENAME } from "./paths.ts";
@@ -56,47 +56,76 @@ export class CopilotApiConfig {
 
   // ---------- low-level I/O ----------
 
-  load(): Record<string, unknown> {
-    if (!isFile(this.path)) {
-      return {};
-    }
+  /**
+   * What one read of the store found. `doc` is a read that COMPLETED: the file
+   * parsed, or it is genuinely absent/empty -- plus, kept from the pre-existing
+   * behavior, a file that is present but unparseable, which this warns about and
+   * describes as `{}` (see the parse arm below). `unreadable` is a read that FAILED:
+   * absence was not established and the contents could not be seen either. Those two
+   * must not collapse, because `update()` writes back what this returns -- persisting
+   * a failed read as `{}` is what would WIPE the file (the daemon's api key, admin
+   * key, providers).
+   */
+  private read(): { kind: "doc"; data: Record<string, unknown> } | { kind: "unreadable" } {
     // The proxy DAEMON writes config.json non-atomically (a plain truncate-then-write in the
-    // floated package), so a concurrent read can momentarily see it empty or half-written.
-    // Retry a few times before concluding it is really empty/corrupt -- otherwise update()'s
-    // save would persist the emptied doc and WIPE the daemon's keys (api key, admin key,
-    // providers). Only config.json needs this: our own stores (state, prefs) write via atomic
-    // rename, so a reader never sees a partial state from us. The window is sub-millisecond, so
-    // a short bounded backoff closes it at negligible cost.
+    // floated package), so a concurrent read can momentarily see it empty, half-written, or --
+    // on Windows -- fail outright with a sharing violation. Retry a few times before concluding
+    // anything: otherwise update()'s save would persist the emptied doc and WIPE the daemon's
+    // keys (api key, admin key, providers). Only config.json needs this: our own stores (state,
+    // prefs) write via atomic rename, so a reader never sees a partial state from us. The window
+    // is sub-millisecond, so a short bounded backoff closes it at negligible cost.
     const retryTransient = basename(this.path) === PROXY_CONFIG_FILENAME;
     const maxAttempts = retryTransient ? LOAD_RETRY_ATTEMPTS : 1;
     for (let attempt = 1;; attempt++) {
+      const last = attempt >= maxAttempts;
       let raw: string;
       try {
         raw = readFileSync(this.path, "utf8");
       } catch (e) {
+        // Absence is a PROVEN answer (no file -> an empty document); every other
+        // failure is a look that did not complete. It retries on the same cadence as
+        // the torn-write arms below -- a Windows sharing violation is transient in
+        // exactly the same way -- and then reports honestly rather than as empty.
+        if (isEnoentOrNotdir(e)) return { kind: "doc", data: {} };
+        if (!last) {
+          sleepSync(LOAD_RETRY_MS);
+          continue;
+        }
         logger.warn(`could not read ${this.path}: ${String(e)}`);
-        return {};
+        return { kind: "unreadable" };
       }
       if (raw.trim()) {
         try {
           const data: unknown = JSON.parse(raw);
-          return isRecord(data) ? data : {};
+          return { kind: "doc", data: isRecord(data) ? data : {} };
         } catch (e) {
-          if (attempt < maxAttempts) {
+          if (!last) {
             sleepSync(LOAD_RETRY_MS);
             continue;
           }
           logger.warn(`${this.path} is not valid JSON (${String(e)}); treating as empty`);
-          return {};
+          return { kind: "doc", data: {} };
         }
       }
       // Empty read: retry (a transient truncate window) before accepting it as genuinely empty.
-      if (attempt < maxAttempts) {
+      if (!last) {
         sleepSync(LOAD_RETRY_MS);
         continue;
       }
-      return {};
+      return { kind: "doc", data: {} };
     }
+  }
+
+  /** The store as a document, with a failed read flattened to `{}`. The flatten is
+   *  KEPT for read-only callers (a caller that writes the result back goes through
+   *  `update()`, which refuses an unreadable store instead), but it is a real
+   *  flatten, not a safe one: a reader that renders "owns nothing" / "no preference
+   *  set" from this cannot tell an unreadable store from an empty one. Readers whose
+   *  emptiness is a VERDICT should grow an error-bearing read rather than lean on
+   *  this. */
+  load(): Record<string, unknown> {
+    const read = this.read();
+    return read.kind === "doc" ? read.data : {};
   }
 
   /** Atomically write ``data`` to disk with mode 0600. */
@@ -114,11 +143,21 @@ export class CopilotApiConfig {
   }
 
   /** Load, apply ``mutate`` in place, save, and return the result. Serialized across processes
-   *  by a best-effort `<file>.lock` so concurrent read-modify-writes don't lost-update. */
+   *  by a best-effort `<file>.lock` so concurrent read-modify-writes don't lost-update.
+   *  REFUSES on a store that could not be read: this is a read-modify-WRITE, so treating a
+   *  failed read as an empty document would persist the emptiness and wipe every key the file
+   *  holds. Same direction as codex/toml_io.ts's "refusing to overwrite it" -- an unreadable
+   *  document is never clobbered, it is reported. */
   update(mutate: (d: Record<string, unknown>) => void): Record<string, unknown> {
     const lockPath = `${this.path}.lock`;
     return withFileLockSync(lockPath, BOUNDED_LOCK_POLICY, () => {
-      const data = this.load();
+      const read = this.read();
+      if (read.kind === "unreadable") {
+        throw new Error(
+          `Could not read ${this.path}; refusing to overwrite it (writing now would discard everything it holds).`,
+        );
+      }
+      const data = read.data;
       mutate(data);
       this.save(data);
       return data;

@@ -371,7 +371,9 @@ describe("applyUpdate", () => {
 
     await expect(
       applyLocked("v9.9.8", { root: installDir, logger: quiet }),
-    ).rejects.toThrow("already points at v9.9.9");
+    ).rejects.toThrow(
+      "already points at v9.9.9; to refresh this version in place, re-run `agent install`",
+    );
     // The live version dir was NOT clobbered by staging.
     expect(
       readFileSync(

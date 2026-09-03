@@ -14,7 +14,7 @@ import { parseProfileAction, renderProfileTable, runProfile } from "../src/comma
 import { runStart } from "../src/commands/start.ts";
 import { parseStopAction, runStop } from "../src/commands/stop.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
-import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
+import { CopilotEnvState, partialSlotGap } from "../src/copilot_api/env_state.ts";
 import { setIntegrationProbeFetch } from "../src/copilot_api/integration_identity.ts";
 import { CopilotApiPaths, profileHome, profileHomeNames } from "../src/copilot_api/paths.ts";
 import {
@@ -456,6 +456,32 @@ test("profile --check is store-driven: exit 1 unknown/incomplete, 2 proxy, 0 dir
   });
   await runProfile({ check: "fast", mode: "auto" });
   expect(process.exitCode).toBe(0);
+});
+
+test("partialSlotGap: the ONE spelling of a partial slot's repair line (output contract)", () => {
+  // Rendered at three sites (profile --check, --settings-for, agent launch);
+  // pinned once here, byte for byte.
+  expect(
+    partialSlotGap(WORK, {
+      kind: "partial",
+      credential: { kind: "none", provider: null },
+      mode: null,
+      integrationIdentity: null,
+    }),
+  ).toBe(
+    "profile 'work' does not exist - create it with `agent profile --add work --direct|--proxy`",
+  );
+  expect(
+    partialSlotGap(WORK, {
+      kind: "partial",
+      credential: { kind: "none", provider: null },
+      mode: "proxy",
+      integrationIdentity: null,
+    }),
+  ).toBe(
+    "profile 'work' has no credential - repair it with `agent auth --profile work` " +
+      "or `agent profile --add work`",
+  );
 });
 
 test("renderProfileTable aligns columns under a header and flags incomplete slots", () => {

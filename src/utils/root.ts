@@ -196,6 +196,11 @@ export const PROJECT_ROOT: string = ROOT_MODE.root;
  * version dir -- and the root itself everywhere else (a flat install, a
  * checkout). Pure path logic over the layout names, so callers can pass any
  * root spelling they hold.
+ *
+ * Constraint: an update's provision stage aims the child binary (via
+ * COPILOT_ENV_INSTALL_ROOT) at `<top>/versions/vNEW` before `current` points at
+ * it, so for that child this resolves machine state inside the version dir --
+ * safe only while `install --assets-only` reads none of it.
  */
 export function installStateRoot(root: string = PROJECT_ROOT): string {
   const resolved = resolve(root);

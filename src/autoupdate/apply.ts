@@ -215,7 +215,8 @@ function stage(verified: Verified, top: string, versionName: string): Staged {
   const previous = readCurrentVersionName(top);
   if (previous === versionName) {
     throw new Error(
-      `refusing to update: ${currentLinkPath(top)} already points at ${versionName}`,
+      `refusing to update: ${currentLinkPath(top)} already points at ${versionName}; ` +
+        "to refresh this version in place, re-run `agent install`",
     );
   }
   const versionRoot = versionRootPath(top, versionName);

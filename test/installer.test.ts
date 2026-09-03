@@ -41,6 +41,7 @@ import {
   versionDirName,
   versionRootPath,
   VERSIONS_DIR,
+  wiredShellTargets,
   writeTopLevelShims,
 } from "../src/install/installer.ts";
 import { installedBinaryName } from "../src/install/targets.ts";
@@ -832,6 +833,33 @@ describe("adoptVersionedLayout (the 3.5.6 migration core)", () => {
     });
     expect(existsSync(join(dest, VERSIONS_DIR))).toBe(false);
     expect(existsSync(currentLinkPath(dest))).toBe(false);
+  });
+});
+
+describe("wiredShellTargets", () => {
+  /** The rc/profile file the adoption inspects in this suite's sandbox. */
+  function sandboxRcFile(): string {
+    return process.platform === "win32"
+      ? join(root, "rc", "WindowsPowerShell", "Microsoft.PowerShell_profile.ps1")
+      : join(root, "rc", ".bashrc");
+  }
+
+  test("an unwired rc yields no rewire targets (the opt-out is honored)", () => {
+    const file = sandboxRcFile();
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "export UNRELATED=1\n");
+    expect(wiredShellTargets()).toEqual([]);
+  });
+
+  test("a launchers-only rc counts as wired: the shell pass must migrate its opt-in", () => {
+    // A pre-`agent launch` user could carry ONLY the launchers block (main
+    // integration removed by hand). The adoption's shell pass is what carries
+    // that opt-in to the `launchers` config key and strips the retired block,
+    // so such an rc must still be a rewire target.
+    const file = sandboxRcFile();
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "# copilot-env launchers\n# copilot-env launchers end\n");
+    expect(wiredShellTargets()).toEqual([{ allHosts: false }]);
   });
 });
 

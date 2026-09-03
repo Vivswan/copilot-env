@@ -2,7 +2,7 @@
 import { consola } from "consola";
 import { errMessage } from "../utils/error.ts";
 import { type Align, printTable } from "../utils/table.ts";
-import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
+import { formatDuration, MILLISECONDS_PER_DAY, startOfLocalDay } from "../utils/time.ts";
 import { discoverClaudeSessionRoots, readClaudeSessions } from "./claude_sessions.ts";
 import { discoverCodexSessionRoots, readCodexSessions } from "./codex_sessions.ts";
 import {
@@ -44,7 +44,8 @@ export async function runCost(args: {
   pricingUrl?: string;
   sources?: boolean;
 }): Promise<void> {
-  const sinceMs = parseDaysCutoff(args.days);
+  const window = args.days === undefined ? undefined : parseDaysWindow(args.days);
+  const sinceMs = window === undefined ? undefined : daysCutoffMs(window);
 
   const dbPaths = discoverUsageDbs();
   const proxyReport = dbPaths.length > 0 ? readUsage(dbPaths, sinceMs) : EMPTY_REPORT;
@@ -127,14 +128,14 @@ export async function runCost(args: {
       { report: proxyReport, estimate: proxyEstimate, dbCount: dbPaths.length },
       codexByProvider,
       claude,
-      { pricing, days: args.days, perDay: Boolean(args.perDay), roots: sessionRoots.length },
+      { pricing, window, perDay: Boolean(args.perDay), roots: sessionRoots.length },
     );
   } else {
     printCombinedView(
       { report: proxyReport, estimate: proxyEstimate, dbCount: dbPaths.length },
       codexByProvider,
       claude,
-      { pricing, days: args.days, perDay: Boolean(args.perDay), roots: sessionRoots.length },
+      { pricing, window, perDay: Boolean(args.perDay), roots: sessionRoots.length },
     );
   }
 
@@ -145,7 +146,7 @@ export async function runCost(args: {
 /** Shared per-call context for the two report layouts. */
 interface ReportOpts {
   pricing: Map<string, PricingTier>;
-  days: string | undefined;
+  window: DaysWindow | undefined;
   perDay: boolean;
   roots: number;
 }
@@ -172,7 +173,7 @@ function printSeparateReports(
     printCostReport(proxy.report, proxy.estimate, opts.pricing, {
       title: "Proxy usage by model",
       sourceLabel: `${proxy.dbCount} db${proxy.dbCount === 1 ? "" : "s"}`,
-      days: opts.days,
+      window: opts.window,
     });
     if (opts.perDay) {
       printPerDayReport(proxy.report, opts.pricing, proxy.estimate, "Per-day breakdown (proxy)");
@@ -188,7 +189,7 @@ function printSeparateReports(
     printCostReport(report, estimate, opts.pricing, {
       title: `Codex sessions (provider: ${provider}) by model`,
       sourceLabel: `${opts.roots} root${opts.roots === 1 ? "" : "s"}`,
-      days: opts.days,
+      window: opts.window,
     });
     if (opts.perDay) {
       printPerDayReport(report, opts.pricing, estimate, `Per-day breakdown (codex: ${provider})`);
@@ -200,7 +201,7 @@ function printSeparateReports(
     printCostReport(claude.report, estimate, opts.pricing, {
       title: "Claude sessions by model",
       sourceLabel: `${claude.roots} root${claude.roots === 1 ? "" : "s"}`,
-      days: opts.days,
+      window: opts.window,
     });
     if (opts.perDay) {
       printPerDayReport(claude.report, opts.pricing, estimate, "Per-day breakdown (claude)");
@@ -230,23 +231,76 @@ function printCombinedView(
   printCostReport(merged, estimate, opts.pricing, {
     title: "Usage by model",
     sourceLabel: parts.join(" + "),
-    days: opts.days,
+    window: opts.window,
   });
   if (opts.perDay) {
     printPerDayReport(merged, opts.pricing, estimate, "Per-day breakdown");
   }
 }
 
-/** Translate `--days N` into a unix-ms cutoff, or undefined for "all time". */
-function parseDaysCutoff(days: string | undefined): number | undefined {
-  if (days === undefined) {
-    return undefined;
+/**
+ * The `--days` window, told apart by SPELLING: a whole number counts local
+ * calendar days (`1` = today since local midnight, `7` = today plus the six
+ * days before), while a decimal is an exact span of 24-hour days (`1.0` = the
+ * last 24 hours, `0.5` = the last 12). Number("1.0") === 1, so the raw flag
+ * text is the only place the two can be distinguished -- which is why the
+ * parser takes the string, not a number.
+ */
+export type DaysWindow =
+  | { kind: "calendar"; days: number }
+  | { kind: "exact"; days: number };
+
+/** The two admitted spellings: ASCII digits alone for calendar days, digits with one
+ *  decimal point for exact days. Nothing else parses. Number() would also admit a
+ *  sign, whitespace, an exponent, or hex, and each of those would silently land in a
+ *  window kind the user never chose. */
+const WHOLE_DAYS = /^\d+$/;
+const DECIMAL_DAYS = /^(\d+\.\d*|\.\d+)$/;
+
+/** The longest window with a valid cutoff instant: Date represents 8.64e15 ms either
+ *  side of the epoch, which is exactly this many 24-hour days. */
+const MAX_DAYS = 8.64e15 / MILLISECONDS_PER_DAY;
+
+/** Parse the raw `--days` text into a DaysWindow; the ONE mint, so a window's `days`
+ *  is always positive, finite, and small enough to yield a real cutoff. */
+export function parseDaysWindow(raw: string): DaysWindow {
+  const kind = WHOLE_DAYS.test(raw) ? "calendar" : DECIMAL_DAYS.test(raw) ? "exact" : null;
+  const days = Number(raw);
+  if (kind === null || !(days > 0)) {
+    throw new Error(
+      `--days must be a positive number, got '${raw}' (a whole number counts calendar days, a decimal counts exact 24-hour days)`,
+    );
   }
-  const n = Number(days);
-  if (!Number.isFinite(n) || n <= 0) {
-    throw new Error(`--days must be a positive number, got '${days}'`);
+  if (days > MAX_DAYS) {
+    throw new Error(`--days must be at most ${MAX_DAYS}, got '${raw}'`);
   }
-  return Date.now() - n * MILLISECONDS_PER_DAY;
+  return { kind, days };
+}
+
+/**
+ * Translate a DaysWindow into the unix-ms cutoff the readers apply. A calendar
+ * window starts at a real local midnight (`days - 1` days before today's), so
+ * it always covers whole calendar days and its first day is never partial; an
+ * exact window is a plain multiple of 24 hours back from now.
+ */
+export function daysCutoffMs(window: DaysWindow, nowMs: number = Date.now()): number {
+  return window.kind === "calendar"
+    ? startOfLocalDay(nowMs, window.days - 1)
+    : nowMs - window.days * MILLISECONDS_PER_DAY;
+}
+
+/** The report header's period phrase: "all time", "today", "last 7 calendar
+ *  days", or the exact span as a duration ("last 36h"). formatDuration rounds to
+ *  whole seconds, so a span it would render as "0s" falls back to the day count. */
+export function describeDaysWindow(window: DaysWindow | undefined): string {
+  if (window === undefined) {
+    return "all time";
+  }
+  if (window.kind === "exact") {
+    const duration = formatDuration(window.days * MILLISECONDS_PER_DAY);
+    return duration === "0s" ? `last ${window.days} days` : `last ${duration}`;
+  }
+  return window.days === 1 ? "today" : `last ${window.days} calendar days`;
 }
 
 /** One row group's totals across all models, including per-category cost. */
@@ -670,7 +724,7 @@ function printCostReport(
   report: ReadonlyUsageReport,
   estimate: CostEstimate,
   pricing: Map<string, PricingTier>,
-  opts: { title: string; sourceLabel: string; days: string | undefined },
+  opts: { title: string; sourceLabel: string; window: DaysWindow | undefined },
 ): void {
   const activeDays = report.perDay.size;
   const dayMetrics = computeDayMetrics(report, pricing, estimate);
@@ -679,7 +733,7 @@ function printCostReport(
   const cells = renderCostRows(rows, footer);
 
   console.log("");
-  const period = opts.days ? `last ${opts.days} days` : "all time";
+  const period = describeDaysWindow(opts.window);
   const coverage = activeDayCoverage(report);
   const activeDaysLabel = activeDays > 0
     ? `${activeDays} active day${

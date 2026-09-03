@@ -58,6 +58,18 @@ export function localDayKey(ms: number, timeZone?: string): string {
 }
 
 /**
+ * The instant the SYSTEM zone's calendar day began, `daysBack` days before the day
+ * holding `ms` (0 = that day's own midnight). Walks the calendar through Date's local
+ * accessors, so a DST day is 23 or 25 hours long here, never 24: the cutoff is a real
+ * local midnight, which is what makes a calendar-day window agree with the per-day
+ * split SYSTEM_DAY_KEY cuts. System zone only, like the readers' default day key.
+ */
+export function startOfLocalDay(ms: number, daysBack = 0): number {
+  const d = new Date(ms);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate() - daysBack).getTime();
+}
+
+/**
  * Format a millisecond duration as a compact, human string: "1h", "30m", "1m30s", "45s", "0s".
  * Negative inputs clamp to "0s"; zero components are omitted (3600000 -> "1h", not "1h0m0s").
  * Shared by `agent start` (idle-window banner) and `agent health` (idle watchdog report) --

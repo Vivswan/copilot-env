@@ -126,11 +126,12 @@ export const test: TestApi = Object.assign(register(it), {
  * support is unix-only: on Windows the zone comes from the OS and a runtime assignment
  * is ignored.
  *
- * ONE test still needs this, and it is the only reason the flag survives:
- * test/time.test.ts's "the DEFAULT zone honors the process TZ", which pins the property
- * that justifies deriving the day key in JS rather than with SQLite's `localtime`. Day
- * SLICING itself is no longer gated -- `localDayKey(ms, timeZone)` takes an explicit
+ * Two tests need this, and they are the only reason the flag survives: test/time.test.ts's
+ * "the DEFAULT zone honors the process TZ", which pins the property that justifies deriving
+ * the day key in JS rather than with SQLite's `localtime`, and test/cost.test.ts's calendar
+ * `--days` cutoff test, whose subject (`startOfLocalDay`) is system-zone only by design.
+ * Day SLICING itself is no longer gated -- `localDayKey(ms, timeZone)` takes an explicit
  * IANA zone, so every usage source's local-day bucketing is asserted on all three
- * platforms. Reach for that parameter, not this flag.
+ * platforms. Reach for that parameter when the code under test offers one.
  */
 export const TZ_PINNABLE = Deno.build.os !== "windows";

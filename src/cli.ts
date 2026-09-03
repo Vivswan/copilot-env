@@ -518,7 +518,12 @@ program
   .description(
     "Aggregate token usage (proxy SQLite DBs + Codex session logs + Claude transcripts) and estimate cost.",
   )
-  .option("--days <days>", "Only include usage from the last N days (default: all).")
+  .option(
+    "--days <days>",
+    "Only include usage from the last N days (default: all). A whole number counts local " +
+      "calendar days (1 = today, 7 = today plus the six days before); a decimal is an exact " +
+      "span of 24-hour days (1.0 = the last 24 hours, 0.5 = the last 12).",
+  )
   .option("--json", "Emit a JSON object instead of a formatted report.")
   .option("--per-day", "Also print a day-by-day cost/token breakdown.")
   .option(

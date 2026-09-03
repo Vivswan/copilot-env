@@ -25,6 +25,7 @@ import type {
   CodexFacts,
   CodexHostFacts,
   DaemonProbeFacts,
+  DefaultHomeMigrationFacts,
   HealthFacts,
   LiveProbeFacts,
   NamedRuntimeTarget,
@@ -747,6 +748,34 @@ export function checkProfileAuth(
   };
 }
 
+/**
+ * An unfinished 3.5.6 default-home move: the fix-up stages the flat root's
+ * daemon files under `profiles/` and flips with one atomic rename, so a kill
+ * inside that window leaves the staging dir behind. The system still works --
+ * home resolution keeps answering the flat root until the flip -- so this is an
+ * unfinished migration (warn), never a breakage (fail); re-running the
+ * migration completes the move.
+ */
+export function checkDefaultHomeMigration(f: DefaultHomeMigrationFacts): CheckResult {
+  const base = {
+    ...meta("runtime.defaultHomeMigration"),
+    profile: null,
+    value: { stagingPath: f.stagingPath, staged: f.staged },
+  };
+  if (!f.staged) {
+    return { ...base, status: "ok", detail: "no unfinished default-home migration" };
+  }
+  return {
+    ...base,
+    status: "warn",
+    detail: [
+      `an interrupted default-home migration left the staging dir ${f.stagingPath} behind`,
+      "the default daemon still runs from the flat root until the move completes",
+    ].join("\n"),
+    fix: "agent migrate 3.5.6 3.5.7",
+  };
+}
+
 export function checkShellIntegration(f: ShellFacts): CheckResult {
   const base = {
     ...meta("setup.shell"),
@@ -1358,6 +1387,9 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
     out.push(checkRuntimePort(target, probe), checkRuntimePid(target, probe));
     out.push(checkRuntimePaths(target), checkRuntimeWatchdog(target));
     out.push(checkRuntimeIdentity(target, probe), checkRuntimeOrphan(target, probe));
+  }
+  if (facts.defaultHomeMigration) {
+    out.push(checkDefaultHomeMigration(facts.defaultHomeMigration));
   }
   if (facts.shell) {
     out.push(checkShellIntegration(facts.shell), checkLaunchers(facts.shell));

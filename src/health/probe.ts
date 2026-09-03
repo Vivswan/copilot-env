@@ -35,7 +35,13 @@ import {
   storedCredentialKind,
 } from "../copilot_api/env_state.ts";
 import { ghAuthTokenSpawnSpec } from "../copilot_api/gh_cli.ts";
-import { CopilotApiPaths, profileHomeExists, resolveRootHome } from "../copilot_api/paths.ts";
+import {
+  CopilotApiPaths,
+  DEFAULT_HOME_STAGING_DIR,
+  profileHomeExists,
+  PROFILES_DIR_NAME,
+  resolveRootHome,
+} from "../copilot_api/paths.ts";
 import {
   copilotApiFallbackPort,
   copilotApiResolvePort,
@@ -360,6 +366,20 @@ export interface CodexHostFacts {
 }
 
 /**
+ * The 3.5.6 default-home move's staging state: the fix-up stages the flat
+ * root's daemon files into `profiles/` under DEFAULT_HOME_STAGING_DIR and flips
+ * with one atomic rename, so a kill inside that window leaves the staging dir
+ * behind. `staged` true means exactly that unfinished move (the flat root still
+ * answers until the flip, so the system keeps working).
+ */
+export interface DefaultHomeMigrationFacts {
+  /** The staging dir's absolute path under the root's profiles dir. */
+  stagingPath: string;
+  /** The staging dir exists on disk (an interrupted move). */
+  staged: boolean;
+}
+
+/**
  * Autoupdate status for health: the persisted state plus the effective cooldown,
  * which is the LIVE `update-cooldown` config (never snapshotted into state) -- so
  * `agent health` matches `agent update --auto-status`.
@@ -395,6 +415,9 @@ export interface HealthFacts {
   codexLive?: LiveProbeFacts;
   claudeLive?: LiveProbeFacts;
   autoupdate?: AutoupdateStatus;
+  /** The 3.5.6 default-home move's staging state (root-wide, so never gathered
+   *  on a narrowed `--profile` run). */
+  defaultHomeMigration?: DefaultHomeMigrationFacts;
 }
 
 /** One named profile's facts: recorded provider + mode + baked direct identity
@@ -488,6 +511,8 @@ export interface ProbeDeps {
   claudeHome(): string;
   hostCodexHome(): string;
   dirExists(path: string): boolean;
+  /** The 3.5.6 default-home move's staging state under the root's profiles dir. */
+  defaultHomeMigration(): DefaultHomeMigrationFacts;
   readAutoupdate(): AutoupdateStatus;
   nodeModulesPresent(): boolean;
   nodeModulesFresh(): boolean;
@@ -722,6 +747,12 @@ export function defaultProbeDeps(): ProbeDeps {
     claudeHome: () => resolveClaudeHome(),
     hostCodexHome: getHostLocalCodexHome,
     dirExists: (path: string) => existsSync(path),
+    defaultHomeMigration: () => {
+      // The same spelling defaultDaemonHome's precedence rule reads (paths.ts):
+      // the staging dir the 3.5.6 fix-up renames into profiles/default.
+      const stagingPath = join(resolveRootHome(), PROFILES_DIR_NAME, DEFAULT_HOME_STAGING_DIR);
+      return { stagingPath, staged: existsSync(stagingPath) };
+    },
     readAutoupdate: () => ({
       ...new AutoupdateState().read(),
       cooldownDays: effectiveUpdateCooldownDays(),
@@ -1072,6 +1103,8 @@ export async function gatherFacts(
   if (profile === null && SCOPE_BOOTSTRAP.includes(scope)) {
     jobs.push(
       (async () => {
+        // An interrupted 3.5.6 default-home move (root-wide, one root per run).
+        facts.defaultHomeMigration = deps.defaultHomeMigration();
         const sidecar = deps.sidecar();
         facts.bootstrap = {
           cliVersion: deps.cliVersion(),

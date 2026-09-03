@@ -1,7 +1,9 @@
 // Per-host Codex home manager: builds the per-host CODEX_HOME symlink farm (Linux/macOS).
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
+import { homedir } from "node:os";
 import * as path from "node:path";
+import { recordDefaultModeFromWiring } from "../agents/configure_defaults.ts";
 import { resolveDirectMode } from "../agents/direct_detect.ts";
 import type { ManagedWrite } from "../agents/configure.ts";
 import type { RequestedMode } from "../agents/provider_mode.ts";
@@ -432,6 +434,18 @@ export async function runCodexHost(args: CodexHostArgs): Promise<void> {
     fs.rmSync(codexHome, { recursive: true, force: true });
     logger.info(`Removed per-host CODEX_HOME: ${codexHome}`);
     state.set({ codexHome: null });
+    // Re-derive the recorded default mode from the POST-delete truth. The
+    // inherited CODEX_HOME may still name the farm just removed (only the next
+    // `agent env` clears it), so a default read-back through it would see the
+    // deleted dir. The override mirrors managedCodexHome's stale-env clear
+    // predicate EXACTLY, so the record always matches the home the next shell
+    // effectively uses (a spelling the clear leaves alone stays the truth).
+    const envHome = process.env.CODEX_HOME;
+    recordDefaultModeFromWiring(
+      envHome && envHome === getHostLocalCodexHome() && !fs.existsSync(envHome)
+        ? { codexHome: path.join(homedir(), ".codex") }
+        : {},
+    );
     return;
   }
 
@@ -470,4 +484,8 @@ export async function runCodexHost(args: CodexHostArgs): Promise<void> {
   );
   // Persist the active CODEX_HOME (opt-in: only set because a codex command ran).
   state.set({ codexHome });
+  // The default Codex selection just moved to the farm home; with the state
+  // recorded, the default read-back resolves to the config written above, so
+  // re-derive the recorded default mode (a failed wire never reaches here).
+  recordDefaultModeFromWiring();
 }

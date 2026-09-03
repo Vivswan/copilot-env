@@ -8,7 +8,9 @@
 
 import * as fs from "node:fs";
 import { join } from "node:path";
+import { proxyHelperCommand } from "../src/claude/config.ts";
 import { getHostLocalCodexHome, runCodexHost } from "../src/codex/host.ts";
+import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../src/utils/hostname.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
@@ -17,6 +19,8 @@ import {
   isolateAgentHomes,
   removeDir,
   resetExitCode,
+  writeClaudeSettings,
+  writeCodexConfigToml,
   writeRunState,
 } from "./helpers.ts";
 
@@ -565,3 +569,70 @@ skipWin("delete with no farm built is a quiet no-op that still clears the state"
   expect(lexists(hostHome)).toBe(false);
   expect(new CopilotEnvRunState().read().codexHome).toBeUndefined();
 });
+
+// --- default-mode recording (the read-back after a host switch) ----------------
+// Fixtures mirror test/configure_defaults.test.ts: proxy on the default daemon
+// port (4141), so the read-back classifies both agents as proxy-wired.
+
+const PROXY_CODEX_BASE = "http://127.0.0.1:4141/v1";
+const PROXY_CLAUDE_BASE = "http://127.0.0.1:4141";
+
+skipWin("--host records the agreed default mode from the post-switch wiring", async () => {
+  const { hostHome } = isolate();
+  // Claude already proxy-wired: the farm's proxy config creates the agreement.
+  writeClaudeSettings(join(dir, ".claude"), {
+    apiKeyHelper: proxyHelperCommand(),
+    baseUrl: PROXY_CLAUDE_BASE,
+  });
+
+  await build();
+  expect(new CopilotEnvRunState().read().codexHome).toBe(hostHome);
+  // The read-back resolved Codex through the just-persisted farm home (the
+  // inherited CODEX_HOME still points elsewhere), so the record is the truth.
+  expect(new CopilotEnvState().readProfileSlot(null).mode).toBe("proxy");
+});
+
+skipWin(
+  "--delete-host records from the post-delete home, never the stale env farm path",
+  async () => {
+    const { sharedRoot, hostHome } = isolate();
+    // Both agents proxy-wired at the default homes the delete falls back to
+    // (sharedRoot IS <home>/.codex here).
+    writeCodexConfigToml(sharedRoot, { baseUrl: PROXY_CODEX_BASE, envKey: "OPENAI_API_KEY" });
+    writeClaudeSettings(join(dir, ".claude"), {
+      apiKeyHelper: proxyHelperCommand(),
+      baseUrl: PROXY_CLAUDE_BASE,
+    });
+    writeRunState({ codexHome: hostHome });
+    // The shell's inherited CODEX_HOME still carries the farm path being deleted.
+    process.env.CODEX_HOME = hostHome;
+
+    await runCodexHost({ mode: "proxy", delete: true });
+    expect(new CopilotEnvRunState().read().codexHome).toBeUndefined();
+    // A read-back through the stale env would see the deleted farm ("none") and
+    // record null; the truthful one reads ~/.codex and lands on the agreement.
+    expect(new CopilotEnvState().readProfileSlot(null).mode).toBe("proxy");
+  },
+);
+
+skipWin(
+  "--delete-host keeps a CODEX_HOME spelling `agent env` would not clear as the truth",
+  async () => {
+    const { sharedRoot, hostHome } = isolate();
+    writeCodexConfigToml(sharedRoot, { baseUrl: PROXY_CODEX_BASE, envKey: "OPENAI_API_KEY" });
+    writeClaudeSettings(join(dir, ".claude"), {
+      apiKeyHelper: proxyHelperCommand(),
+      baseUrl: PROXY_CLAUDE_BASE,
+    });
+    new CopilotEnvState().recordDefaultMode("proxy"); // the stale agreement to clear
+    writeRunState({ codexHome: hostHome });
+    // A spelling managedCodexHome's exact-match clear leaves alone: it survives
+    // into the next shell, so the deleted farm IS the effective Codex home and
+    // the read-back must NOT be redirected to ~/.codex (which would re-record
+    // the sharedRoot agreement above instead of clearing it).
+    process.env.CODEX_HOME = `${hostHome}/`;
+
+    await runCodexHost({ mode: "proxy", delete: true });
+    expect(new CopilotEnvState().readProfileSlot(null).mode).toBeNull();
+  },
+);

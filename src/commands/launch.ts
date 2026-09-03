@@ -18,6 +18,7 @@
 import { spawnSync } from "node:child_process";
 import { constants } from "node:os";
 import type { ManagedWrite } from "../agents/configure.ts";
+import { recordDefaultModeFromWiring } from "../agents/configure_defaults.ts";
 import { resolveAndPersistDirectIdentity, wireBothAgents } from "../agents/profile_wiring.ts";
 import type { AgentProviderMode } from "../agents/provider_mode.ts";
 import { readAgentModes } from "../agents/wiring.ts";
@@ -313,10 +314,16 @@ function commandDeps(): LaunchDeps {
   return {
     agentMode: (agent) => readAgentModes()[agent],
     ensureProxy: ensureProxyUp,
-    wireProxyDefault: (agent) =>
-      agent === "claude"
+    wireProxyDefault: async (agent) => {
+      await (agent === "claude"
         ? runClaude({ kind: "configure", mode: "proxy" })
-        : runCodex({ kind: "configure", mode: "proxy" }),
+        : runCodex({ kind: "configure", mode: "proxy" }));
+      // A DEFAULT wiring changed: re-derive the recorded default mode, the same
+      // success-only step the `agent codex`/`agent claude` configure arms run
+      // (non-throwing, so it can never abort the launch; profile launches never
+      // reach this dep).
+      recordDefaultModeFromWiring();
+    },
     profileSlot: (name) => new CopilotEnvState().readProfileSlot(name),
     writeClaudeProfileSettings: async (name, mode) => {
       const claudeHome = resolveClaudeHome();

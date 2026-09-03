@@ -6,7 +6,15 @@
 // isolated COPILOT_API_HOME. The parse/plan/picker units run everywhere; most
 // e2e spawns are POSIX (sh fakes), and a Windows-only e2e drives the verbatim
 // .ps1-shim dispatch (verbatimCliSpawn) with a %VAR% literalness control.
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +28,7 @@ import {
 } from "../src/commands/launch.ts";
 import type { ManagedEnvValue } from "../src/commands/env.ts";
 import type { ProfileMode, ProfileSlot, TokenProvider } from "../src/copilot_api/env_state.ts";
+import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { runCli, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
@@ -392,6 +401,17 @@ function launchEnv(root: string, bin: string): Record<string, string> {
 
 const DIRECT_BASE = "https://api.githubcopilot.com";
 
+/** The default slot's recorded mode inside root's isolated state store (see
+ *  launchEnv: COPILOT_API_HOME is <root>/api-home). */
+function recordedMode(root: string): string | undefined {
+  const statePath = join(root, "api-home", ".copilot-env-state.json");
+  if (!existsSync(statePath)) return undefined;
+  const state = JSON.parse(readFileSync(statePath, "utf8")) as {
+    profiles?: { default?: { mode?: string } };
+  };
+  return state.profiles?.default?.mode;
+}
+
 skipWin("e2e: a direct Claude launch composes flags and scrubs a stale local URL", () => {
   const root = e2eRoot();
   const bin = fakeCliBin(root, "claude", 7);
@@ -507,15 +527,12 @@ skipWin("e2e: a proxy-wired Claude launch aborts (exit 1) when the start offer i
   expect(res.stderr).toContain("copilot proxy not running. Start it now? [Y/n]");
   expect(res.stderr).toContain("Continuing without the proxy");
   expect(res.stdout).not.toContain("ARGS="); // claude was never launched
+  expect(recordedMode(root)).toBeUndefined(); // aborted before the wire: no record
 });
 
-skipWin("e2e: with the proxy up, Claude is re-synced and gets the live proxy URL", async () => {
+skipWin("e2e: with the proxy up, the wire re-syncs Claude and only success records", async () => {
   const root = e2eRoot();
   const bin = fakeCliBin(root, "claude");
-  writeClaudeSettings(join(root, ".claude"), {
-    apiKeyHelper: proxyHelperCommand(),
-    baseUrl: "http://127.0.0.1:1", // stale port; the launch must re-sync it
-  });
   // A live "daemon": since the sweep/status match was narrowed, that means a real
   // deno process running a copilot-api-named entry file with the `start` subcommand
   // (the COPILOT_API_ENTRY shape), plus a real listening loopback port, recorded in
@@ -545,12 +562,40 @@ skipWin("e2e: with the proxy up, Claude is re-synced and gets the live proxy URL
   try {
     process.env.COPILOT_API_HOME = join(root, "api-home"); // writeRunState resolves from env
     writeRunState({ pid: daemon.pid, port });
+    // Codex already wired to the live proxy: once the auto-wire re-syncs Claude,
+    // the pair agrees, so the launch must record the default mode as proxy.
+    writeCodexConfigToml(join(root, ".codex"), {
+      baseUrl: `http://127.0.0.1:${port}/v1`,
+      envKey: "OPENAI_API_KEY",
+    });
+
+    // Success-only: a FAILED wire records nothing. A plain file in the Claude
+    // home's place reads as unwired ("none", so the wire IS attempted after the
+    // ensure succeeds) and then fails the settings write for any uid (mkdir
+    // over a file). The seeded sentinel makes any premature record visible: a
+    // hook firing despite the failure would clear it (the pair reads as
+    // proxy/none) or overwrite it, never leave it "direct".
+    new CopilotEnvState().recordDefaultMode("direct");
+    writeFileSync(join(root, ".claude"), "");
+    const failed = runCli(["launch", "claude", "--"], { env: launchEnv(root, bin) });
+    expect(failed.exitCode).not.toBe(0);
+    expect(failed.stdout).not.toContain("ARGS="); // claude was never launched
+    expect(recordedMode(root)).toBe("direct"); // the sentinel survived: no record
+
+    // The wirable home again: the same launch now re-syncs, records, and spawns.
+    rmSync(join(root, ".claude"), { force: true });
+    writeClaudeSettings(join(root, ".claude"), {
+      apiKeyHelper: proxyHelperCommand(),
+      baseUrl: "http://127.0.0.1:1", // stale port; the launch must re-sync it
+    });
     const res = runCli(["launch", "claude", "--"], { env: launchEnv(root, bin) });
     expect(res.stderr).not.toContain("Start it now?"); // up: nothing to offer
     expect(res.stdout).toContain(`BASE=http://127.0.0.1:${port}`);
     const settings = readFileSync(join(root, ".claude", "settings.json"), "utf8");
     expect(settings).toContain(`http://127.0.0.1:${port}`); // re-synced off the stale port
     expect(res.exitCode).toBe(0);
+    // The auto-wire's read-back recorded the agreement into the default slot.
+    expect(recordedMode(root)).toBe("proxy");
   } finally {
     process.env.COPILOT_API_HOME = previousHome;
     await new Promise<void>((resolve) => server.close(() => resolve()));

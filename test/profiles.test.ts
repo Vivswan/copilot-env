@@ -408,6 +408,12 @@ test("a Codex profile write on an EMPTY config file also leaves no dangling mode
   configureCodexConfig(codexHome, { mode: "direct", quiet: true, profile: FAST });
   const doc = readToml(join(codexHome, "config.toml"));
   expect(doc.model_provider).toBeUndefined();
+  // The write LANDED: the whitespace-only file parses as empty, and the profile
+  // wiring must still arrive whole -- selection plus its provider table.
+  const profiles = doc.profiles as Record<string, Record<string, unknown>>;
+  expect(profiles.fast?.model_provider).toBe(codexProviderId(FAST));
+  const providers = doc.model_providers as Record<string, Record<string, unknown>>;
+  expect(providers[codexProviderId(FAST)]).toBeDefined();
 });
 
 test("profile --sync refreshes wiring from the STORE mode and never touches model_provider", async () => {

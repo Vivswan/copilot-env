@@ -225,8 +225,9 @@ test("payload: direct shape (headers + models + no discovery), proxy shape (disc
   expect(proxy["inferenceCustomHeaders"]).toBeUndefined();
   expect(proxy["inferenceCredentialHelperTimeoutSec"]).toBe(120);
   // The 1m annotations stay even with discovery on (claude-code#88345: discovery
-  // alone carries no capability metadata).
-  expect(Array.isArray(proxy["inferenceModels"])).toBe(true);
+  // alone carries no capability metadata): the proxy payload keeps the direct
+  // payload's rows byte-for-byte, annotations included.
+  expect(proxy["inferenceModels"]).toEqual(direct["inferenceModels"]);
 });
 
 function isRecordLike(v: unknown): boolean {
@@ -402,13 +403,17 @@ test("offline direct: a FRESH entry is never created; an owned entry keeps its r
   // An OWNED entry wired online first keeps its recorded rows through an
   // offline re-wire (no hardcoded fallback list exists to clobber them).
   await wireClaudeDesktopEntry({ ...offline, fetchImpl: catalogFetch(CATALOG) });
-  await wireClaudeDesktopEntry(offline);
   meta = metaOf(library);
   const ours = (meta.entries as { id: string; name: string }[]).find(
     (e) => e.name === "copilot-env",
   );
-  const doc = readJson(join(library, `${ours?.id}.json`));
-  expect((doc["inferenceModels"] as unknown[]).length).toBeGreaterThan(0);
+  const wired = readJson(join(library, `${ours?.id}.json`))["inferenceModels"];
+  expect(wired).toHaveLength(3); // catalog-derived, so the survival check below is non-vacuous
+
+  await wireClaudeDesktopEntry(offline);
+  // The WHOLE rows survive -- a clobber that keeps the names but blanks the
+  // labels or flips the 1m flags must fail here, not just an emptied list.
+  expect(readJson(join(library, `${ours?.id}.json`))["inferenceModels"]).toEqual(wired);
   // The foreign entry is untouched (different gateway: not adoptable).
   expect(readJson(join(library, "user-1.json"))).toEqual({
     "inferenceGatewayBaseUrl": "https://elsewhere.example",

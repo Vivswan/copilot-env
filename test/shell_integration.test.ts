@@ -131,15 +131,10 @@ skipWin("re-wiring refreshes the block in place without reordering later lines",
   expect(rc.indexOf(MARKER)).toBeLessThan(rc.indexOf("export AFTER=1"));
 });
 
-skipWin("--remove strips the block back out", () => {
-  run();
-  expect(readFileSync(join(home, ".bashrc"), "utf-8")).toContain(MARKER);
-  const { code } = run("--remove");
-  expect(code).toBe(0);
-  expect(readFileSync(join(home, ".bashrc"), "utf-8")).not.toContain(MARKER);
-});
-
 skipWin("shell wires and removes the integration", () => {
+  // Also the strip test: wire (exit 0, block present), then --remove (exit 0,
+  // block gone) -- the former separate "--remove strips the block back out"
+  // test asserted a strict subset of exactly these steps.
   expect(run().code).toBe(0);
   expect(readFileSync(join(home, ".bashrc"), "utf-8")).toContain(MARKER);
   expect(run("--remove").code).toBe(0);

@@ -314,7 +314,15 @@ test("readCodexSessions reads zstd-compressed archived rollouts", async () => {
   );
 
   const byProvider = await readCodexSessions([root]);
-  expect(byProvider.get("copilot-env")?.byModel.get("gpt-5.6")?.input).toBe(100);
+  // The whole row: decompression that mangled counts (not just the input column)
+  // must fail here, and events pins that the archive was read exactly once.
+  expect(byProvider.get("copilot-env")?.byModel.get("gpt-5.6")).toEqual({
+    input: 100,
+    output: 10,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 1,
+  });
 });
 
 test("discoverCodexSessionRoots dedupes farm symlinks by realpath", () => {

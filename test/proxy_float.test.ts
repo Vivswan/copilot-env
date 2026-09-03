@@ -608,9 +608,18 @@ describe("ensureProxyNpmrc", () => {
   });
 
   test("floatProxy writes it before installing", async () => {
-    const deno = fakeDeno();
-    await floatProxy(deps(docFetch(registryDoc({ "1.10.30": 8 })).fetchLike, deno.runner, 0));
-    expect(readFileSync(join(dir, ".npmrc"), "utf8")).toContain(NPMRC_MARKER);
+    // Read at cache-spawn time, inside the runner: an .npmrc written after the
+    // install could not steer deno's trust policy, so an assertion made once
+    // floatProxy returned would pass on exactly the ordering bug this guards.
+    const seen: string[] = [];
+    const inner = fakeDeno();
+    const runner: DenoRunner = (command, args, options) => {
+      if (args[0] === "cache") seen.push(readFileSync(join(dir, ".npmrc"), "utf8"));
+      return inner.runner(command, args, options);
+    };
+    await floatProxy(deps(docFetch(registryDoc({ "1.10.30": 8 })).fetchLike, runner, 0));
+    expect(seen.length).toBeGreaterThan(0);
+    for (const content of seen) expect(content).toContain(NPMRC_MARKER);
   });
 });
 
@@ -1039,9 +1048,21 @@ describe("writeDaemonConfig", () => {
   });
 
   test("the float writes it before caching", async () => {
-    const deno = fakeDeno();
-    await floatProxy(deps(docFetch(registryDoc({ "1.10.30": 8 })).fetchLike, deno.runner, 0));
-    expect(existsSync(daemonConfigFile(dir))).toBe(true);
+    // Captured inside the runner's cache call: the spawned `deno cache` resolves
+    // through this very config, so a config written only after the warm would
+    // leave the cache built against nothing -- an existsSync after floatProxy
+    // returned could not tell the difference.
+    const seen: string[] = [];
+    const inner = fakeDeno();
+    const runner: DenoRunner = (command, args, options) => {
+      if (args[0] === "cache") seen.push(readFileSync(daemonConfigFile(dir), "utf8"));
+      return inner.runner(command, args, options);
+    };
+    await floatProxy(deps(docFetch(registryDoc({ "1.10.30": 8 })).fetchLike, runner, 0));
+    expect(seen.length).toBeGreaterThan(0);
+    for (const config of seen) {
+      expect(JSON.parse(config).imports[PROXY_PKG]).toBeDefined();
+    }
   });
 
   test("defaults to the build's own embedded assets, no explicit source needed", () => {

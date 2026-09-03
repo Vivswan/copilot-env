@@ -61,6 +61,10 @@ test("plugin.json's inline mcpServers entry registers bin/agent mcp --serve", ()
 
 test("the skill folder's .mcp.json.example parses and points at bin/agent mcp --serve", () => {
   const doc = readJson(join(PROJECT_ROOT, "skills", "web-search", ".mcp.json.example"));
-  const servers = doc.mcpServers as Record<string, { command: string; args: string[] }>;
-  expect(servers["copilot-env"]?.args).toEqual(["mcp", "--serve"]);
+  const servers = doc.mcpServers as Record<string, unknown>;
+  expect(servers["copilot-env"]).toEqual({
+    "type": "stdio",
+    "command": "/path/to/copilot-env/bin/agent",
+    "args": ["mcp", "--serve"],
+  });
 });

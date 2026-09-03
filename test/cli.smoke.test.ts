@@ -147,20 +147,32 @@ test("cli.ts mcp --serve --profile '' hard-fails instead of serving the default 
   expect(blank.stderr).toContain("--profile expects a profile name");
 });
 
-for (const args of [["shell"]] as const) {
-  test(`cli.ts ${args.join(" ")} --help loads command help and exits 0`, () => {
-    const { exitCode, output } = helpScreen(...args, "--help");
+// One help-surface case per command: shared shape (exit 0, the usage header, every
+// flag named), varying needles. Successor of the former per-command env/shell/
+// health/start/update --help tests; commands whose help test carries extra
+// rejection runs (mcp, launch, codex, claude, init, uninstall, install) stay separate.
+// "--auto " keeps its trailing space: bare "--auto" is a substring of --auto-status
+// and --no-auto, so it alone could not miss a dropped --auto flag.
+const HELP_SURFACES: { cmd: string; needles: string[] }[] = [
+  { cmd: "env", needles: ["--format", "--profile"] },
+  {
+    cmd: "shell",
+    needles: ["--launchers", "--clis", "--cooldown", "--no-sudo", "--no-prereqs", "--remove"],
+  },
+  { cmd: "health", needles: ["--scope", "--json"] },
+  { cmd: "start", needles: ["--dry-run", "--port", "--record-event", "--check", "--force"] },
+  { cmd: "update", needles: ["--auto ", "--no-auto", "--auto-status", "--check", "--force"] },
+];
 
-    expect(exitCode).toBe(0);
-    expect(output).toContain(args[0]);
-  });
-}
-
-test("env --help surfaces --format and --profile", () => {
-  const help = helpScreen("env", "--help");
-  expect(help.exitCode).toBe(0);
-  expect(help.output).toContain("--format");
-  expect(help.output).toContain("--profile");
+test("each command's --help exits 0 and surfaces its flags", () => {
+  for (const { cmd, needles } of HELP_SURFACES) {
+    const help = helpScreen(cmd, "--help");
+    expect(help.exitCode, cmd).toBe(0);
+    expect(help.output, cmd).toContain(`Usage: agent ${cmd}`);
+    for (const needle of needles) {
+      expect(help.output, `${cmd} --help must surface ${needle}`).toContain(needle);
+    }
+  }
 });
 
 for (const args of [["codex"], ["claude"]] as const) {
@@ -501,23 +513,6 @@ test("bare install defaults to shell wiring; the negated and assets-only flags m
   // Three cold CLI spawns; generous headroom for loaded Windows CI runners.
 }, 90_000);
 
-test("shell --help surfaces the install/launcher flags", () => {
-  const help = helpScreen("shell", "--help");
-  expect(help.exitCode).toBe(0);
-  for (
-    const flag of [
-      "--launchers",
-      "--clis",
-      "--cooldown",
-      "--no-sudo",
-      "--no-prereqs",
-      "--remove",
-    ]
-  ) {
-    expect(help.output).toContain(flag);
-  }
-});
-
 // `agent shell` wires whatever this platform's startup file is: the POSIX rc files under
 // an isolated HOME, or the PowerShell $PROFILE under a redirected Documents folder. The
 // Windows lookup asks the OS where Documents is, so no HOME override can move it --
@@ -598,18 +593,18 @@ test("--full-help prints the overview plus every subcommand's help", () => {
   }
 });
 
-test("health --help surfaces --scope and --json", () => {
-  const help = helpScreen("health", "--help");
-  expect(help.exitCode).toBe(0);
-  expect(help.output).toContain("--scope");
-  expect(help.output).toContain("--json");
-});
-
-test("health --scope runtime exits 1 when no proxy is running", () => {
+test("health --scope runtime exits 1 naming the failed checks when no proxy is running", () => {
   // Proxy-wired Codex (not both-direct) so a down proxy is a genuine failure;
   // the default port has nothing listening + isolated state => probe always fails.
   const proc = runCli(["health", "--scope", "runtime"], { env: isolatedProxyEnv({}) });
   expect(proc.exitCode).toBe(1);
+  // The report must NAME a failed check: a bare exit 1 could come from any
+  // crash in the child. The pid verdict is the deterministic one (the isolated
+  // home tracks no pid; the port probe's wording could vary if something
+  // unrelated happened to listen on the pinned 4199).
+  const out = proc.stdout + proc.stderr;
+  expect(out).toContain("no tracked copilot-api pid");
+  expect(out).toContain("fix: agent start");
 });
 
 test("health --json emits a parseable report with scope/exitCode/checks", () => {
@@ -884,22 +879,6 @@ test("health --scope claude covers only Claude wiring", () => {
 }, 15_000);
 
 // --- autoupdate management flags --------------------------------------------
-
-test("start --help documents its flags including --force", () => {
-  const help = helpScreen("start", "--help");
-  expect(help.exitCode).toBe(0);
-  for (const flag of ["--dry-run", "--port", "--record-event", "--check", "--force"]) {
-    expect(help.output).toContain(flag);
-  }
-});
-
-test("update --help documents the autoupdate flags alongside the manual ones", () => {
-  const help = helpScreen("update", "--help");
-  expect(help.exitCode).toBe(0);
-  for (const flag of ["--auto", "--no-auto", "--auto-status", "--check", "--force"]) {
-    expect(help.output).toContain(flag);
-  }
-});
 
 test("update --auto-status reports status and exits 0 (offline, read-only)", () => {
   const proc = runCli(["update", "--auto-status"], { env: { ...process.env, CONSOLA_LEVEL: "5" } });

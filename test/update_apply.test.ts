@@ -172,15 +172,29 @@ describe("release targets", () => {
     }
   });
 
-  test("the running platform resolves to a target", () => {
+  test("currentReleaseTarget maps each shipped (platform, arch) to its triple, null otherwise", () => {
+    // The full mapping, positives and negatives in one table: an unsupported
+    // pair must resolve to null (never a guess), and each supported pair to
+    // exactly its triple -- these are the release-asset names, so they are
+    // external contracts, not restated implementation.
+    const cases: { platform: string; arch: string; triple: string | null }[] = [
+      { platform: "darwin", arch: "x64", triple: "x86_64-apple-darwin" },
+      { platform: "darwin", arch: "arm64", triple: "aarch64-apple-darwin" },
+      { platform: "linux", arch: "x64", triple: "x86_64-unknown-linux-gnu" },
+      { platform: "linux", arch: "arm64", triple: "aarch64-unknown-linux-gnu" },
+      { platform: "win32", arch: "x64", triple: "x86_64-pc-windows-msvc" },
+      { platform: "win32", arch: "arm64", triple: null },
+      { platform: "aix", arch: "ppc64", triple: null },
+      { platform: "linux", arch: "riscv64", triple: null },
+    ];
+    for (const { platform, arch, triple } of cases) {
+      expect(currentReleaseTarget(platform, arch)?.triple ?? null, `${platform}/${arch}`).toBe(
+        triple,
+      );
+    }
     // If this fails, copilot-env cannot update itself on the machine running
     // the suite -- which is also a machine we claim to support.
     expect(currentReleaseTarget()).not.toBeNull();
-  });
-
-  test("an unsupported platform resolves to null rather than guessing", () => {
-    expect(currentReleaseTarget("aix", "ppc64")).toBeNull();
-    expect(currentReleaseTarget("linux", "riscv64")).toBeNull();
   });
 
   test("the installed binary name is platform-shaped", () => {

@@ -102,9 +102,13 @@ test("start --record-event writes the lastEnsureAt heartbeat and never launches"
   tmpHome();
   expect(new CopilotEnvRunState().read().lastEnsureAt).toBeUndefined();
 
+  const before = Date.now();
   await runStart({ kind: "record-event", profile: null });
 
-  expect(typeof new CopilotEnvRunState().read().lastEnsureAt).toBe("number");
+  // A real clock reading, not just "some number" (NaN/0 would satisfy typeof).
+  const at = new CopilotEnvRunState().read().lastEnsureAt;
+  expect(at).toBeGreaterThanOrEqual(before);
+  expect(at).toBeLessThanOrEqual(Date.now());
   expect(new CopilotEnvRunState().read().pid).toBeUndefined(); // no daemon was started
 });
 
@@ -113,9 +117,12 @@ test("start --record-event --profile heartbeats ONLY the profile's run state", a
   // A real proxy profile always has run state before its resolver heartbeats (the
   // port reservation writes it); a profile WITHOUT state must not be fabricated.
   writeRunState({ port: 4242 }, WORK);
+  const before = Date.now();
   await runStart({ kind: "record-event", profile: WORK });
 
-  expect(typeof CopilotEnvRunState.forProfile(WORK).read().lastEnsureAt).toBe("number");
+  const at = CopilotEnvRunState.forProfile(WORK).read().lastEnsureAt;
+  expect(at).toBeGreaterThanOrEqual(before);
+  expect(at).toBeLessThanOrEqual(Date.now());
   expect(new CopilotEnvRunState().read().lastEnsureAt).toBeUndefined();
 });
 

@@ -1039,7 +1039,24 @@ test("profile.consistency and setup.auth reuse ids across targets, disambiguated
   const results = evaluateAll("full", {
     profile: null,
     runtimes: [namedTarget("p"), namedTarget("q-two")],
+    // Both setup.auth producers at once: the default credential (checkAuth) and a
+    // narrowed profile's credential (checkProfileAuth) share the id by design.
+    auth: {
+      storedToken: true,
+      ghAuthenticated: false,
+      provider: "gh-token",
+      profiles: {},
+      pinnedIntegrationId: null,
+    },
+    profileAuth: {
+      name: P,
+      slot: { provider: "gh-token", mode: "direct", integrationIdentity: null },
+      storedToken: true,
+      ghAuthenticated: false,
+    },
   });
   const consistency = results.filter((r) => r.id === "profile.consistency");
   expect(consistency.map((r) => r.profile)).toEqual([P, "q-two" as ProfileName]);
+  const auth = results.filter((r) => r.id === "setup.auth");
+  expect(auth.map((r) => `${r.profile}:${r.status}`)).toEqual(["null:ok", "p:ok"]);
 });

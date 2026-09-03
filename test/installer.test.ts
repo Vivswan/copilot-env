@@ -1,7 +1,6 @@
 import {
   chmodSync,
   existsSync,
-  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -49,6 +48,7 @@ import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../src/shell/integration
 import { INSTALL_MANIFEST_FILE, INSTALL_ROOT_MARKERS } from "../src/utils/root.ts";
 import { packageVersion } from "../src/utils/version.ts";
 import { envSnapshot } from "./helpers.ts";
+import { runSync } from "./helpers/run.ts";
 import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
 
 const OPTIONS: InstallOptions = { noShellIntegration: false, allHosts: false, assetsOnly: false };
@@ -441,8 +441,17 @@ describe("the current link primitives", () => {
     mkdirSync(join(dest, VERSIONS_DIR, "v1.0.0"), { recursive: true });
     writeFileSync(join(dest, VERSIONS_DIR, "v1.0.0", "who"), "one");
     pointCurrentAt(dest, "v1.0.0");
-    const stat = lstatSync(currentLinkPath(dest));
-    expect(stat.isSymbolicLink() || stat.isDirectory()).toBe(true);
+    // Junction-ness read from the reparse point itself (LinkType is derived from
+    // the reparse tag): a directory SYMLINK (privilege-gated) or a plain copied
+    // directory would both traverse fine, so traversal alone proves nothing.
+    const link = currentLinkPath(dest).replace(/'/g, "''");
+    const linkType = runSync("powershell.exe", [
+      "-NoProfile",
+      "-Command",
+      `(Get-Item -LiteralPath '${link}' -Force).LinkType`,
+    ]);
+    expect(linkType.exitCode).toBe(0);
+    expect(linkType.stdout.trim()).toBe("Junction");
     expect(readCurrentVersionName(dest)).toBe("v1.0.0");
     expect(readFileSync(join(dest, CURRENT_LINK, "who"), "utf8")).toBe("one");
     // And the flip-while-open property: replacing the junction never touches

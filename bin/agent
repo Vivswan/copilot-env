@@ -25,8 +25,15 @@ fi
 # node_modules, or a deno.lock that has moved ahead of it (the lockfile is the source of
 # truth for what should be installed, and every dependency change updates it).
 # `find -prune -newer` is the freshness test because POSIX sh does not define `[ a -nt b ]`.
-if [ ! -d "${SNAP}/node_modules" ] ||
-    [ -n "$(find "${SNAP}/deno.lock" -prune -newer "${SNAP}/node_modules" 2>/dev/null)" ]; then
+# Deps are PROVEN current only when the freshness read itself succeeds AND reports no
+# newer lockfile: a failed read must reinstall (the self-healing direction), never read
+# as "deps current" and run stale node_modules.
+deps_proven_current() {
+    [ -d "${SNAP}/node_modules" ] || return 1
+    newer="$(find "${SNAP}/deno.lock" -prune -newer "${SNAP}/node_modules" 2>/dev/null)" || return 1
+    [ -z "${newer}" ]
+}
+if ! deps_proven_current; then
     if ! ( cd "${SNAP}" && deno install --frozen >&2 ); then
         echo "copilot-env bootstrap failed: deno install did not complete -- check network/deno, then re-run." >&2
         exit 1

@@ -21,11 +21,15 @@ Install-Deno -Root $Snap
 # Install dependencies in-place in the checkout, but only when needed: a missing
 # node_modules, or a deno.lock that has moved ahead of it (the lockfile is the source of
 # truth for what should be installed, and every dependency change updates it).
+# Deps are PROVEN current only when both freshness reads succeed AND the lockfile is not
+# newer: a failed read must reinstall (the self-healing direction), never read as
+# "deps current" and run stale node_modules.
 $NodeModules = Join-Path $Snap 'node_modules'
-$needInstall = -not (Test-Path $NodeModules)
-if (-not $needInstall) {
+$needInstall = $true
+if (Test-Path $NodeModules) {
     $lock = Get-Item (Join-Path $Snap 'deno.lock') -ErrorAction SilentlyContinue
-    if ($lock -and $lock.LastWriteTime -gt (Get-Item $NodeModules).LastWriteTime) { $needInstall = $true }
+    $mods = Get-Item $NodeModules -ErrorAction SilentlyContinue
+    if ($lock -and $mods -and $lock.LastWriteTime -le $mods.LastWriteTime) { $needInstall = $false }
 }
 if ($needInstall) {
     Push-Location $Snap

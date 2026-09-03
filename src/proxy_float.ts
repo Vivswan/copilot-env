@@ -49,7 +49,7 @@
 import "./utils/dotenv.ts";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createConsola } from "consola";
 import * as v from "valibot";
@@ -506,11 +506,15 @@ export function ensureProxyNpmrc(rootHome: string): NpmrcStatus {
 
 // --- Deno cache commands ----------------------------------------------------------
 
-/** Result of one spawned deno command. */
+/** Result of one spawned deno command. `launchFailed` marks a spawn that never
+ *  completed (an error, or killed -- no status of deno's own): the same mark
+ *  contract as runCaptured in src/utils/command.ts, so a failed look at the
+ *  cache never has to read as deno's own "cannot resolve". */
 export interface DenoRunResult {
   status: number;
   stdout: string;
   stderr: string;
+  launchFailed?: true;
 }
 
 /** Injectable deno-subprocess seam. `env` is an OVERLAY the runner merges over
@@ -535,6 +539,8 @@ function defaultDenoRunner(
     "status": result.status ?? 1,
     "stdout": result.stdout?.toString() ?? "",
     "stderr": result.stderr?.toString() ?? "",
+    // A spawn error or a null status (killed) means deno itself never answered.
+    ...(result.error || result.status === null ? { "launchFailed": true as const } : {}),
   };
 }
 
@@ -638,8 +644,15 @@ function dropSupersededCache(ctx: FloatContext, version: string): void {
   rmSync(proxyDenoDir(ctx.rootHome), { "recursive": true, "force": true });
 }
 
+/** A look at the cache: "resolves"/"missing" are PROVEN readings (deno info ran
+ *  and answered), "unproven" is a look that FAILED (the deno spawn itself). A
+ *  string union rather than a boolean so no call site can flatten it by
+ *  truthiness -- every consumer must pick an arm (the failed-look discipline of
+ *  classifyPidFromScan in src/copilot_api/process.ts). */
+type CacheLook = "resolves" | "missing" | "unproven";
+
 /**
- * True when `denoDir` holds EVERYTHING a floated launch resolves offline: the proxy
+ * Whether `denoDir` holds EVERYTHING a floated launch resolves offline: the proxy
  * package AND the preload shims' own graph.
  *
  * Checking only the proxy is what makes a half-warmed cache read as up to date -- the
@@ -647,11 +660,13 @@ function dropSupersededCache(ctx: FloatContext, version: string): void {
  * package instead. Both graphs are warmed together, so both are checked together.
  *
  * Without the daemon config there is no floated launch to verify at all, so that reads
- * false rather than falling back to a laxer check.
+ * "missing" rather than falling back to a laxer check. A `deno info` that never ran
+ * (launchFailed) is "unproven", never "missing": the missing arm feeds recoveries
+ * that drop or re-warm the cache, and a failed look must not trigger those.
  */
-function cacheResolves(ctx: FloatContext, version: string, denoDir: string): boolean {
+function cacheResolves(ctx: FloatContext, version: string, denoDir: string): CacheLook {
   const config = daemonConfigFile(ctx.rootHome);
-  if (!existsSync(config)) return false;
+  if (!existsSync(config)) return "missing";
   const pinned = ["--json", "--config", config, "--lock", proxyLockFile(ctx.rootHome)];
   const options = { "cwd": ctx.rootHome, "env": denoEnv(denoDir) };
 
@@ -661,17 +676,48 @@ function cacheResolves(ctx: FloatContext, version: string, denoDir: string): boo
       ["info", ...pinned, "--node-modules-dir=none", ...target],
       options,
     );
-    if (result.status !== 0) return false;
+    if (result.launchFailed) {
+      // A failed look may only read "unproven" while there is a cache dir it
+      // could be vouching for: a dir PROVEN absent (ENOENT, via throwIfNoEntry)
+      // is a "missing" by direct observation (dropSupersededCache may have
+      // removed it this very invocation), and the keep paths must never vouch
+      // for a cache that is gone. Any other stat error (permissions, I/O) is
+      // itself a failed look and stays unproven.
+      try {
+        return statSync(denoDir, { "throwIfNoEntry": false }) === undefined
+          ? "missing"
+          : "unproven";
+      } catch {
+        return "unproven";
+      }
+    }
+    if (result.status !== 0) return "missing";
   }
-  return true;
+  return "resolves";
+}
+
+/** The one honest warn for a cache look that failed -- shared by every keep path. */
+function warnCacheUnverified(version: string): void {
+  logger.warn(
+    `could not verify the ${PROXY_PKG}@${version} cache (deno info failed to run); keeping it`,
+  );
 }
 
 /** The record, but only when its cache entry still resolves -- the one notion of
- *  "a usable installed proxy" every keep/fallback path shares. */
+ *  "a usable installed proxy" every keep/fallback path shares. An UNPROVEN look
+ *  keeps the record too, with a warning: the null arm feeds destructive
+ *  recoveries (a floor install drops the recorded cache; several callers fail
+ *  loud), a failed look must never trigger those, and a genuinely broken cache
+ *  still fails honestly at daemon launch. */
 function usableRecord(ctx: FloatContext): ResolvedVersionRecord | null {
   const record = readResolvedVersionRecord(ctx.rootHome);
   if (record === null) return null;
-  return cacheResolves(ctx, record.version, record.denoDir) ? record : null;
+  const look = cacheResolves(ctx, record.version, record.denoDir);
+  if (look === "unproven") {
+    warnCacheUnverified(record.version);
+    return record;
+  }
+  return look === "resolves" ? record : null;
 }
 
 /**
@@ -727,7 +773,12 @@ async function handlePinnedOverride(ctx: FloatContext, override: string): Promis
   let doc: ProxyRegistryDoc | null = null;
 
   if (SEMVER_RE.test(override)) {
-    if (record?.version === override && cacheResolves(ctx, override, record.denoDir)) {
+    // Only a PROVEN "resolves" earns the no-install fast path: an unproven look
+    // falls through to the (same-version, non-destructive) re-warm below.
+    if (
+      record?.version === override &&
+      cacheResolves(ctx, override, record.denoDir) === "resolves"
+    ) {
       logger.success(`up to date: ${PROXY_PKG}@${override} pinned; no install`);
       return;
     }
@@ -820,7 +871,12 @@ function handleRefused(
 ): void {
   const record = readResolvedVersionRecord(ctx.rootHome);
   if (record !== null && proxyVersionBoundsStatus(record.version, ctx.config).ok) {
-    if (cacheResolves(ctx, record.version, record.denoDir)) {
+    const look = cacheResolves(ctx, record.version, record.denoDir);
+    // "resolves" keeps; an UNPROVEN look keeps too (with the honest warn) rather
+    // than re-warming: the re-warm's failure arm is the loud refusal throw, and
+    // a failed look must not brick a possibly-working install.
+    if (look !== "missing") {
+      if (look === "unproven") warnCacheUnverified(record.version);
       logger.warn(`${refusalMessage(sel)} Keeping ${PROXY_PKG}@${record.version}.`);
       return;
     }
@@ -842,16 +898,30 @@ function handleResolved(
   cooldownSeconds: number,
 ): void {
   const record = readResolvedVersionRecord(ctx.rootHome);
-  if (record?.version === sel.version && cacheResolves(ctx, sel.version, record.denoDir)) {
+  // Only a PROVEN "resolves" earns the up-to-date fast path: an unproven look
+  // falls through to the (same-version, non-destructive) re-warm below, whose own
+  // failure arm keeps the record via usableRecord.
+  const recordedLook: CacheLook = record?.version === sel.version
+    ? cacheResolves(ctx, sel.version, record.denoDir)
+    : "missing";
+  if (record?.version === sel.version && recordedLook === "resolves") {
     // Refresh the record's timestamp so proxyFloatVerifyStatus stays on its offline fast path.
     recordFloatResolution(ctx, sel.version, record.denoDir);
     logger.success(`up to date: ${PROXY_PKG}@${sel.version} (${sel.reason}); no install`);
     return;
   }
 
-  logger.info(
-    `update needed: ${PROXY_PKG} ${record?.version ?? "none"} -> ${sel.version} (${sel.reason})`,
-  );
+  if (recordedLook === "unproven") {
+    // The honest wording for the fallthrough: the version already matches, only
+    // its cache could not be verified -- never the confident "update needed".
+    logger.info(
+      `re-warming ${PROXY_PKG}@${sel.version}: could not verify its cache (deno info failed to run)`,
+    );
+  } else {
+    logger.info(
+      `update needed: ${PROXY_PKG} ${record?.version ?? "none"} -> ${sel.version} (${sel.reason})`,
+    );
+  }
   const status = denoCacheVersion(ctx, sel.version, cooldownSeconds);
   if (status === 0) {
     recordFloatResolution(ctx, sel.version);
@@ -966,7 +1036,17 @@ export async function proxyFloatVerifyStatus(
         }`,
       };
     }
-    if (!cacheResolves(ctx, override, record.denoDir)) {
+    const look = cacheResolves(ctx, override, record.denoDir);
+    if (look === "unproven") {
+      // A failed look is never "not in the cache"; upToDate:false still hands the
+      // decision to the float, whose failure arms now keep rather than discard.
+      return {
+        "upToDate": false,
+        "message":
+          `install unverified: could not verify ${PROXY_PKG}@${override} in the deno cache (${record.denoDir}); deno info failed to run`,
+      };
+    }
+    if (look === "missing") {
       return {
         "upToDate": false,
         "message":
@@ -993,7 +1073,17 @@ export async function proxyFloatVerifyStatus(
     return { "upToDate": false, "message": `update needed: ${detail}` };
   }
 
-  if (!cacheResolves(ctx, record.version, record.denoDir)) {
+  const recordedLook = cacheResolves(ctx, record.version, record.denoDir);
+  if (recordedLook === "unproven") {
+    // Same honest arm as the pin path above: never claim "not in the cache" off a
+    // look that failed; the float's failure arms keep rather than discard.
+    return {
+      "upToDate": false,
+      "message":
+        `install unverified: could not verify ${PROXY_PKG}@${record.version} in the deno cache (${record.denoDir}); deno info failed to run`,
+    };
+  }
+  if (recordedLook === "missing") {
     return {
       "upToDate": false,
       "message":
@@ -1080,7 +1170,17 @@ export async function proxyInstallAssertStatus(
           `proxy float did not install the pinned ${PROXY_PKG}@${override}; check the version/tag exists (offline?)`,
       };
     }
-    if (!cacheResolves(ctx, record.version, record.denoDir)) {
+    const pinLook = cacheResolves(ctx, record.version, record.denoDir);
+    if (pinLook === "unproven") {
+      // A hard check must not claim OK off a failed look -- nor the specific
+      // "not in the cache" it never proved.
+      return {
+        "ok": false,
+        "message":
+          `could not verify ${PROXY_PKG}@${record.version} in the deno cache (${record.denoDir}); deno info failed to run`,
+      };
+    }
+    if (pinLook === "missing") {
       return {
         "ok": false,
         "message":
@@ -1139,7 +1239,17 @@ export async function proxyInstallAssertStatus(
         return assertNever(bounds);
     }
   }
-  if (!cacheResolves(ctx, record.version, record.denoDir)) {
+  const recordedLook = cacheResolves(ctx, record.version, record.denoDir);
+  if (recordedLook === "unproven") {
+    // Same honest arm as the pin path above: fail the hard check, but with the
+    // could-not-verify reason, never the "did not land" it never proved.
+    return {
+      "ok": false,
+      "message":
+        `could not verify ${PROXY_PKG}@${record.version} in the deno cache (${record.denoDir}); deno info failed to run`,
+    };
+  }
+  if (recordedLook === "missing") {
     return {
       "ok": false,
       "message":

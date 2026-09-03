@@ -321,8 +321,8 @@ test("detectClaudeDirect: true only when CLI+gh present, gh authed, and the prob
   // tmpHome()/COPILOT_API_HOME isolation keeps it off any real state.
   void home;
   const ok = {
-    resolveCommand: (c: string) => `/bin/${c}`,
-    ghAuthOk: () => true,
+    findCommand: (c: string) => ({ path: `/bin/${c}` }),
+    ghAuthOk: () => true as const,
     runProbe: () => ({ ok: true }),
     retryDelayMs: 0,
   };
@@ -330,10 +330,16 @@ test("detectClaudeDirect: true only when CLI+gh present, gh authed, and the prob
   expect(detectClaudeDirect({ ...ok, runProbe: () => ({ ok: false }) })).toBe(false);
   expect(detectClaudeDirect({ ...ok, ghAuthOk: () => false })).toBe(false);
   expect(
-    detectClaudeDirect({ ...ok, resolveCommand: (c) => (c === "claude" ? null : `/bin/${c}`) }),
+    detectClaudeDirect({
+      ...ok,
+      findCommand: (c: string) => ({ path: c === "claude" ? null : `/bin/${c}` }),
+    }),
   ).toBe(false);
   expect(
-    detectClaudeDirect({ ...ok, resolveCommand: (c) => (c === "gh" ? null : `/bin/${c}`) }),
+    detectClaudeDirect({
+      ...ok,
+      findCommand: (c: string) => ({ path: c === "gh" ? null : `/bin/${c}` }),
+    }),
   ).toBe(false);
 });
 

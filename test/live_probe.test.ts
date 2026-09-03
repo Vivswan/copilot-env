@@ -4,6 +4,7 @@ import {
   CODEX_CATALOG_NOISE_RE,
   CODEX_PROBE,
   DEFAULT_PROBE_RETRIES,
+  ghAuthVerdict,
   type ProbeDescriptor,
   probeDirectWorks,
   type ProbeOutcome,
@@ -54,8 +55,8 @@ type RunProbe = (cliPath: string, args: string[], env: Record<string, string>) =
 // with no real backoff so the suite stays fast.
 function passingDeps(runProbe: RunProbe) {
   return {
-    resolveCommand: (c: string) => `/bin/${c}`,
-    ghAuthOk: () => true,
+    findCommand: (c: string) => ({ path: `/bin/${c}` }),
+    ghAuthOk: () => true as const,
     runProbe,
     retryDelayMs: 0,
   };
@@ -170,6 +171,51 @@ test("resolveDirectMode: a stored token selects Direct only when no forced mode 
   expect(resolveDirectMode("auto", "ghu_x", probe)).toBe(true);
   expect(resolveDirectMode("auto", null, probe)).toBe(false);
   expect(resolveDirectMode("auto", null, () => true)).toBe(true);
+});
+
+// --- probeDirectWorks: failed cheap looks --------------------------------------
+//
+// A look that FAILED (the command probe or `gh auth token` spawn never completed)
+// must fall back to the proxy like a proven miss -- the safe direction -- but never
+// borrow the proven arms' advice ("not found", "run `gh auth login`").
+
+test("ghAuthVerdict: exit 0 proves auth, a completed nonzero disproves it, a dead spawn proves nothing", () => {
+  expect(ghAuthVerdict({ status: 0 })).toBe(true);
+  expect(ghAuthVerdict({ status: 1 })).toBe(false); // gh RAN and said "not authenticated"
+  // The spawn never completed (an error, or the timeout kill): auth was never
+  // actually checked, so neither confident verdict may be minted.
+  expect(ghAuthVerdict({ status: null, error: new Error("spawnSync ETIMEDOUT") })).toBe("unproven");
+  expect(ghAuthVerdict({ status: null })).toBe("unproven");
+});
+
+test("probeDirectWorks: failed cheap looks fall back to proxy without reaching later gates", () => {
+  // An unproven gh-auth look: proxy fallback, and the live model call never runs.
+  let probeCalls = 0;
+  const deps = {
+    findCommand: (c: string) => ({ path: `/bin/${c}` }),
+    ghAuthOk: () => "unproven" as const,
+    runProbe: () => {
+      probeCalls++;
+      return { ok: true };
+    },
+    retryDelayMs: 0,
+  };
+  expect(probeDirectWorks(FAKE_DESCRIPTOR, () => {}, deps)).toBe(false);
+  expect(probeCalls).toBe(0);
+
+  // A failed CLI look: proxy fallback before gh auth is even asked.
+  let ghAuthCalls = 0;
+  const failedLook = probeDirectWorks(FAKE_DESCRIPTOR, () => {}, {
+    ...deps,
+    findCommand: () => ({ path: null, launchFailed: true as const }),
+    ghAuthOk: () => {
+      ghAuthCalls++;
+      return true as const;
+    },
+  });
+  expect(failedLook).toBe(false);
+  expect(ghAuthCalls).toBe(0);
+  expect(probeCalls).toBe(0);
 });
 
 // --- probeDirectWorks: retry on transient failure ---------------------------

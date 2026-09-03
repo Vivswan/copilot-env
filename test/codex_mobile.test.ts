@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { parse } from "smol-toml";
 import {
   appScanFromExit,
+  appScanVerdict,
   closeGateFromScan,
   CodexAppController,
   installGateFromScan,
@@ -124,6 +125,19 @@ test("appScanFromExit: only an UNMARKED exit 1 is the proven absence", () => {
   // launch-failure mark is what keeps it from reading as a proven absence.
   expect(appScanFromExit({ exitCode: 1, launchFailed: true })).toBe("unproven");
   expect(appScanFromExit({ exitCode: 3 })).toBe("unproven"); // the tool's own hard error
+});
+
+test("appScanVerdict: a verdict word only counts with exit 0 (killed-after-speaking)", () => {
+  expect(appScanVerdict({ exitCode: 0, stdout: "present\n" })).toBe("present");
+  expect(appScanVerdict({ exitCode: 0, stdout: "absent" })).toBe("absent");
+  // A scan killed AFTER printing its verdict (a timeout kill, OOM, an interrupt)
+  // exits nonzero with a valid word already on stdout: the exit-0 guard is the
+  // sole protection against that look minting a proven reading.
+  expect(appScanVerdict({ exitCode: 1, stdout: "present\n" })).toBe("unproven");
+  expect(appScanVerdict({ exitCode: 1, stdout: "absent\n" })).toBe("unproven");
+  // A clean exit without a verdict word proves nothing either.
+  expect(appScanVerdict({ exitCode: 0, stdout: "garbled" })).toBe("unproven");
+  expect(appScanVerdict({ exitCode: 0, stdout: "" })).toBe("unproven");
 });
 
 test("installGateFromScan: present proceeds; proven absence aborts; unproven asks", () => {

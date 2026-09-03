@@ -3,6 +3,8 @@ import { join } from "node:path";
 import {
   childEnvWithPath,
   childPathPrepending,
+  commandLookFromSpawn,
+  findCommand,
   pickVerbatimWindowsSpawn,
   runCaptured,
   verbatimCliSpawn,
@@ -127,6 +129,35 @@ test("verbatimCliSpawn on POSIX resolves the command and never adds a shell", ()
   expect(spawn.shell).toBe(false);
   expect(spawn.args).toEqual(["-c", "echo %USERPROFILE%"]);
   expect(spawn.file.endsWith("sh")).toBe(true);
+});
+
+// --- the command look: a failed probe never reads "command missing" ------------
+
+test("commandLookFromSpawn: only a completed probe yields a proven verdict", () => {
+  const resolved = () => "/bin/gh";
+  // Ran and found: exit 0 asks for the resolution.
+  expect(commandLookFromSpawn({ status: 0 }, resolved)).toEqual({ path: "/bin/gh" });
+  // Ran and found nothing: a PROVEN absence, no mark.
+  expect(commandLookFromSpawn({ status: 1 }, resolved)).toEqual({ path: null });
+  // Never completed -- a spawn error, or killed (status null): the marked failed
+  // look, never a proven "command missing" (the runCaptured mark contract).
+  expect(commandLookFromSpawn({ status: null, error: new Error("ENOENT") }, resolved)).toEqual({
+    path: null,
+    launchFailed: true,
+  });
+  expect(commandLookFromSpawn({ status: null }, resolved)).toEqual({
+    path: null,
+    launchFailed: true,
+  });
+});
+
+test("findCommand: a real found command and a real proven absence, both unmarked", () => {
+  // The probe shell itself is always findable where the probe can run at all.
+  const found = findCommand(process.platform === "win32" ? "powershell" : "sh");
+  expect(found.path).toBeTruthy();
+  expect(found.launchFailed).toBeUndefined();
+  // Ran, found nothing: a proven absence carries no mark.
+  expect(findCommand("copilot-env-no-such-command-xyz")).toEqual({ path: null });
 });
 
 test("runCaptured: the launch-failure mark rides ONLY the synthesized exit", async () => {

@@ -447,8 +447,8 @@ test("detectCodexDirect: true only when CLI+gh present, gh authed, and the probe
   // simulated) model call.
   let probeCalls = 0;
   const ok = {
-    resolveCommand: (c: string) => `/bin/${c}`,
-    ghAuthOk: () => true,
+    findCommand: (c: string) => ({ path: `/bin/${c}` }),
+    ghAuthOk: () => true as const,
     runProbe: () => {
       probeCalls++;
       return { ok: true };
@@ -464,10 +464,16 @@ test("detectCodexDirect: true only when CLI+gh present, gh authed, and the probe
   probeCalls = 0;
   expect(detectCodexDirect({ ...ok, ghAuthOk: () => false })).toBe(false);
   expect(
-    detectCodexDirect({ ...ok, resolveCommand: (c) => (c === "codex" ? null : `/bin/${c}`) }),
+    detectCodexDirect({
+      ...ok,
+      findCommand: (c: string) => ({ path: c === "codex" ? null : `/bin/${c}` }),
+    }),
   ).toBe(false);
   expect(
-    detectCodexDirect({ ...ok, resolveCommand: (c) => (c === "gh" ? null : `/bin/${c}`) }),
+    detectCodexDirect({
+      ...ok,
+      findCommand: (c: string) => ({ path: c === "gh" ? null : `/bin/${c}` }),
+    }),
   ).toBe(false);
   expect(probeCalls).toBe(0);
 });

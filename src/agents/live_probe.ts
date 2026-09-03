@@ -19,7 +19,7 @@ import { dirname, join } from "node:path";
 import { settingsPathFor } from "../claude/paths.ts";
 import { ghAuthTokenSpawnSpec } from "../copilot_api/gh_cli.ts";
 import type { Profile } from "../copilot_api/profile.ts";
-import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
+import { childEnvWithPath, cliSpawn, type CommandLook, findCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { sleepSync } from "../utils/time.ts";
@@ -144,10 +144,11 @@ export interface ProbeOutcome {
 
 /** Injectable I/O so unit tests decide the probe outcome without real model calls. */
 export interface DirectProbeDeps {
-  /** Resolve a CLI binary on PATH / via nvm (null = not installed). */
-  resolveCommand?: (cmd: string) => string | null;
-  /** True when `gh auth token` succeeds -- given gh's RESOLVED path (nvm-safe). */
-  ghAuthOk?: (ghPath: string) => boolean;
+  /** Look for a CLI binary on PATH / via nvm, failure arm kept (see CommandLook). */
+  findCommand?: (cmd: string) => CommandLook;
+  /** Whether `gh auth token` succeeds -- given gh's RESOLVED path (nvm-safe).
+   *  "unproven" = the spawn never completed, so auth was never actually checked. */
+  ghAuthOk?: (ghPath: string) => boolean | "unproven";
   /** Run the agent CLI's read-only smoke prompt at its RESOLVED path (ok = exit 0). */
   runProbe?: (cliPath: string, args: string[], env: Record<string, string>) => ProbeOutcome;
   /** Extra live-call retries on failure (default DEFAULT_PROBE_RETRIES). */
@@ -156,7 +157,19 @@ export interface DirectProbeDeps {
   retryDelayMs?: number;
 }
 
-function defaultGhAuthOk(ghPath: string): boolean {
+/** Verdict over a finished `gh auth token` spawn (exported for tests): exit 0
+ *  proves auth, any other completed exit proves its absence, and a spawn that
+ *  never completed (an error, the timeout kill -- status null) proves NOTHING.
+ *  "unproven" keeps the caller from handing out the false "run `gh auth login`"
+ *  advice when gh was never actually asked. */
+export function ghAuthVerdict(
+  result: { status: number | null; error?: unknown },
+): boolean | "unproven" {
+  if (result.error || result.status === null) return "unproven";
+  return result.status === 0;
+}
+
+function defaultGhAuthOk(ghPath: string): boolean | "unproven" {
   const s = ghAuthTokenSpawnSpec(ghPath);
   const result = spawnSync(s.file, s.args, {
     stdio: "ignore",
@@ -165,7 +178,7 @@ function defaultGhAuthOk(ghPath: string): boolean {
     shell: s.shell,
     env: s.env,
   });
-  return !result.error && result.status === 0;
+  return ghAuthVerdict(result);
 }
 
 /**
@@ -260,14 +273,14 @@ function defaultRunProbe(
  * prompt against a temp direct config must exit 0. Any miss => false (the caller
  * configures proxy instead). Never throws; always removes the temp home. The gh
  * and agent-CLI RESOLVED paths are threaded to the spawns so the nvm fallback in
- * resolveCommand isn't defeated by spawning a bare (PATH-only) command name.
+ * findCommand isn't defeated by spawning a bare (PATH-only) command name.
  */
 export function probeDirectWorks(
   descriptor: ProbeDescriptor,
   writeDirectConfig: (tmpHome: string) => void,
   deps: DirectProbeDeps = {},
 ): boolean {
-  const resolve = deps.resolveCommand ?? resolveCommand;
+  const find = deps.findCommand ?? findCommand;
   const ghAuthOk = deps.ghAuthOk ?? defaultGhAuthOk;
   const runProbe = deps.runProbe ?? defaultRunProbe;
   const retries = deps.retries ?? DEFAULT_PROBE_RETRIES;
@@ -275,18 +288,39 @@ export function probeDirectWorks(
 
   logger.log(`  Probing GitHub Copilot Direct for ${descriptor.cli} ...`);
 
-  const cliPath = resolve(descriptor.cli);
-  if (cliPath === null) {
-    logger.log(`    • ${descriptor.cli} CLI not found → using the local proxy`);
+  // Every cheap-gate miss falls back to the proxy (the safe direction either
+  // way), but a FAILED look never borrows a proven verdict's words: "not found"
+  // and "not authenticated" carry advice that is wrong when the look itself
+  // failed, so those arms say "could not check" instead.
+  const cliLook = find(descriptor.cli);
+  if (cliLook.path === null) {
+    logger.log(
+      cliLook.launchFailed
+        ? `    • could not check for the ${descriptor.cli} CLI (the command probe failed to run) → using the local proxy`
+        : `    • ${descriptor.cli} CLI not found → using the local proxy`,
+    );
     return false;
   }
-  const ghPath = resolve("gh");
-  if (ghPath === null) {
-    logger.log("    • GitHub CLI (gh) not found → using the local proxy");
+  const cliPath = cliLook.path;
+  const ghLook = find("gh");
+  if (ghLook.path === null) {
+    logger.log(
+      ghLook.launchFailed
+        ? "    • could not check for the GitHub CLI (gh) (the command probe failed to run) → using the local proxy"
+        : "    • GitHub CLI (gh) not found → using the local proxy",
+    );
     return false;
   }
+  const ghPath = ghLook.path;
   logger.log("    • checking gh authentication ...");
-  if (!ghAuthOk(ghPath)) {
+  const ghAuth = ghAuthOk(ghPath);
+  if (ghAuth === "unproven") {
+    logger.log(
+      "    • could not check gh authentication (`gh auth token` did not run to completion) → using the local proxy",
+    );
+    return false;
+  }
+  if (!ghAuth) {
     logger.log("    • gh is not authenticated (run `gh auth login`) → using the local proxy");
     return false;
   }

@@ -26,6 +26,11 @@ function isEngine(v: string): v is Engine {
   return (ENGINES as readonly string[]).includes(v);
 }
 
+// Accepted flatten: a spawn that never ran (the catch) and an engine that ran
+// `--version` and failed both read "engine not usable" here -- so a failed look can
+// surface as the "neither podman nor docker on PATH" hint below. Kept deliberately:
+// this is a dev convenience script, the miss costs one wrong hint line, and
+// CONTAINER_ENGINE overrides the scan outright.
 async function engineWorks(name: string): Promise<boolean> {
   try {
     const out = await new Deno.Command(name, {

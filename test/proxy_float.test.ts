@@ -120,10 +120,11 @@ interface DenoCall {
  *  modelled: the proxy package keyed by version, and the preload shims as one unit --
  *  `cache` populates whichever the argv names, `info` answers for it. A cache seeded
  *  with any proxy version stands for a completed prior float, so its shims are warm
- *  too. */
+ *  too. `infoLaunchFails` makes every `deno info` a marked FAILED look (the spawn
+ *  never completed), leaving the cache warms working. */
 function fakeDeno(
   initialCached: string[] = [],
-  opts: { cacheExit?: number } = {},
+  opts: { cacheExit?: number; infoLaunchFails?: boolean } = {},
 ): { calls: DenoCall[]; cached: Set<string>; runner: DenoRunner } {
   const cached = new Set(initialCached);
   let shimsWarm = initialCached.length > 0;
@@ -141,6 +142,9 @@ function fakeDeno(
       return { "status": 0, "stdout": "", "stderr": "" };
     }
     if (args[0] === "info") {
+      if (opts.infoLaunchFails) {
+        return { "status": 1, "stdout": "", "stderr": "", "launchFailed": true as const };
+      }
       const ok = isProxy ? cached.has(version) : shimsWarm;
       return { "status": ok ? 0 : 1, "stdout": "", "stderr": "" };
     }
@@ -149,12 +153,14 @@ function fakeDeno(
   return { calls, cached, runner };
 }
 
-/** Seed the artifact set a COMPLETED prior float leaves behind: the daemon config plus
- *  the record. A record alone is a half-written float, which the freshness check now
- *  (correctly) refuses to trust. */
+/** Seed the artifact set a COMPLETED prior float leaves behind: the daemon config, the
+ *  record, and the cache dir the record points at (cacheResolves' unproven arm checks
+ *  the dir exists before vouching). A record alone is a half-written float, which the
+ *  freshness check now (correctly) refuses to trust. */
 function seedFloat(version: string, atMs: number, denoDir?: string): void {
   writeDaemonConfig(dir, ROOT);
   writeResolvedVersionRecord(dir, version, atMs, denoDir);
+  mkdirSync(denoDir ?? proxyDenoDir(dir), { "recursive": true });
 }
 
 /** The `cache` spawns a float made. Each successful float warms TWO graphs into the
@@ -530,6 +536,70 @@ describe("floatProxy", () => {
     expect(cache).toHaveLength(1);
     expect(cache[0]?.args[cache[0].args.length - 1]).toBe(`npm:${PROXY_PKG}@1.10.30`);
     expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.30");
+  });
+
+  test("a FAILED cache look keeps the recorded version -- never the floor reinstall", async () => {
+    // Registry unreachable AND `deno info` itself never runs: the record must be
+    // KEPT untouched. The flatten this replaced read the failed look as "cache
+    // missing", installed the floor, and dropSupersededCache discarded the recorded
+    // (possibly working) cache on the way -- contrast the proven-missing control
+    // above, where the floor install is the correct recovery.
+    seedFloat("1.10.30", NOW_MS - 30 * MILLISECONDS_PER_DAY);
+    const deno = fakeDeno(["1.10.30"], { "infoLaunchFails": true });
+
+    await floatProxy(deps(offlineFetch().fetchLike, deno.runner, WEEK_SECONDS));
+
+    expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.30");
+    expect(cacheCalls(deno.calls)).toEqual([]); // no floor install, no re-warm
+  });
+
+  test("verify: a FAILED cache look says could-not-verify, never 'not in the deno cache'", async () => {
+    seedFloat("1.10.30", NOW_MS);
+    const unproven = await proxyFloatVerifyStatus(
+      deps(
+        offlineFetch().fetchLike,
+        fakeDeno(["1.10.30"], { "infoLaunchFails": true }).runner,
+        WEEK_SECONDS,
+      ),
+    );
+    expect(unproven.upToDate).toBe(false);
+    expect(unproven.message).toContain("could not verify");
+    expect(unproven.message).not.toContain("is not in the deno cache");
+
+    // The proven-missing control: `deno info` RAN and said no -- that (and only
+    // that) earns the confident "is not in the deno cache".
+    const missing = await proxyFloatVerifyStatus(
+      deps(offlineFetch().fetchLike, fakeDeno().runner, WEEK_SECONDS),
+    );
+    expect(missing.upToDate).toBe(false);
+    expect(missing.message).toContain("is not in the deno cache");
+  });
+
+  test("an exact pin whose cache look failed re-warms instead of claiming up to date", async () => {
+    process.env[VERSION_ENV] = "1.10.30";
+    seedFloat("1.10.30", NOW_MS);
+    const deno = fakeDeno(["1.10.30"], { "infoLaunchFails": true });
+
+    await floatProxy(deps(offlineFetch().fetchLike, deno.runner));
+
+    // Not the "pinned; no install" fast path: the unverified cache is re-warmed
+    // (same version -- non-destructive) and the record stays on the pin.
+    expect(proxyCacheCalls(deno.calls)).toHaveLength(1);
+    expect(readResolvedVersionRecord(dir)?.version).toBe("1.10.30");
+  });
+
+  test("a superseded-then-failed install never 'keeps' the cache it just dropped", async () => {
+    // Target B replaces recorded A: the warm DROPS A's cache first
+    // (dropSupersededCache), then fails -- and the deno info look fails too. The
+    // unproven keep must not vouch for A: its cache dir is observably gone, so
+    // this stays the loud throw it always was.
+    seedFloat("1.10.5", NOW_MS - 30 * MILLISECONDS_PER_DAY);
+    const { fetchLike } = docFetch(registryDoc({ "1.10.30": 8 }));
+    const deno = fakeDeno(["1.10.5"], { "cacheExit": 1, "infoLaunchFails": true });
+
+    await expect(floatProxy(deps(fetchLike, deno.runner, WEEK_SECONDS))).rejects.toThrow(
+      "could not install",
+    );
   });
 
   test("a failed cache write below the floor throws", async () => {

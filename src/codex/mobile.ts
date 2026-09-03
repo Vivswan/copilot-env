@@ -98,9 +98,12 @@ export type AppScan = "present" | "absent" | "unproven";
 
 /** The shared verdict over a scripted platform scan, pure for testing: the scan script
  *  emits an explicit verdict word on stdout WITH exit 0, so those two readings are the
- *  only confident ones. The verdict word doubles as the ran-to-completion control: a
- *  nonzero exit (a script error, or a PowerShell launch that never ran) proves nothing,
- *  and neither does a missing or garbled verdict -- both read "unproven". */
+ *  only confident ones. The exit-0 guard is LOAD-BEARING beside the word check, not
+ *  redundant with it: a scan killed AFTER printing its verdict (a timeout kill, OOM,
+ *  a user interrupt) exits nonzero with a valid word already on stdout, and without
+ *  the guard that killed look would mint a proven reading -- on the Windows path this
+ *  guard is the sole protection. A missing or garbled word on exit 0 is equally
+ *  unproven. */
 export function appScanVerdict(result: { exitCode: number; stdout: string }): AppScan {
   if (result.exitCode !== 0) return "unproven";
   const verdict = result.stdout.trim();

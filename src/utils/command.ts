@@ -13,8 +13,35 @@ import { dirname, win32 } from "node:path";
 // Node/CLI resolves in the same process that installed it (PATH not yet reloaded).
 const POSIX_NVM_SH = '"$' + '{NVM_DIR:-$HOME/.nvm}/nvm.sh"';
 
-/** True when `command` is runnable (PATH, or via the nvm fallback on POSIX). */
-export function commandExists(command: string): boolean {
+/**
+ * One look for a command. `path` is the resolution (the bare name on Windows,
+ * where Get-Command probes but the spawn recipe stays the name); null means the
+ * probe RAN and found nothing. A probe that never completed (the `sh`/
+ * `powershell` spawn itself erroring or killed) additionally carries
+ * `launchFailed: true` -- the same mark contract as runCaptured below -- so a
+ * failed look never has to read as a proven "command missing".
+ */
+export interface CommandLook {
+  path: string | null;
+  launchFailed?: true;
+}
+
+/** Pure verdict over a finished probe spawn (exported for tests): a spawn error
+ *  or a null status (killed, never ran) is the marked failed look; exit 0 asks
+ *  `resolvedPath` for the resolution; any other exit is a proven absence. */
+export function commandLookFromSpawn(
+  result: { status: number | null; error?: unknown },
+  resolvedPath: () => string | null,
+): CommandLook {
+  if (result.error || result.status === null) return { path: null, launchFailed: true };
+  if (result.status !== 0) return { path: null };
+  return { path: resolvedPath() };
+}
+
+/** Look for `command` (PATH, or via the nvm fallback on POSIX) with the failure
+ *  arm kept: consumers that render a "missing" verdict key on the mark to say
+ *  "could not check" instead. */
+export function findCommand(command: string): CommandLook {
   if (process.platform === "win32") {
     const result = spawnSync(
       "powershell",
@@ -25,25 +52,9 @@ export function commandExists(command: string): boolean {
       ],
       { stdio: "ignore" },
     );
-    return result.status === 0;
+    return commandLookFromSpawn(result, () => command);
   }
 
-  const result = spawnSync(
-    "sh",
-    [
-      "-c",
-      `command -v "$1" >/dev/null 2>&1 || { [ -s ${POSIX_NVM_SH} ] && . ${POSIX_NVM_SH} >/dev/null 2>&1 && command -v "$1" >/dev/null 2>&1; }`,
-      "sh",
-      command,
-    ],
-    { stdio: "ignore" },
-  );
-  return result.status === 0;
-}
-
-/** Resolve `command` to its path (PATH, or via the nvm fallback on POSIX); null if absent. */
-export function resolveCommand(command: string): string | null {
-  if (process.platform === "win32") return commandExists(command) ? command : null;
   const result = spawnSync(
     "sh",
     [
@@ -54,8 +65,24 @@ export function resolveCommand(command: string): string | null {
     ],
     { encoding: "utf8" },
   );
-  if (result.status !== 0) return null;
-  return result.stdout.trim() || null;
+  return commandLookFromSpawn(result, () => result.stdout.trim() || null);
+}
+
+/** True when `command` is runnable (PATH, or via the nvm fallback on POSIX).
+ *  Accepted flatten: a FAILED look (findCommand's launchFailed) reads false here,
+ *  for boolean consumers whose miss action is non-destructive (an abort, a skip
+ *  warn, a proxy fallback) -- a machine that cannot spawn `sh`/`powershell` fails
+ *  those follow-ups loudly on its own. Sites that render a "missing" verdict or
+ *  would MUTATE on the miss (setup's installs, the launch gate) go through
+ *  findCommand instead and treat the mark honestly. */
+export function commandExists(command: string): boolean {
+  return findCommand(command).path !== null;
+}
+
+/** Resolve `command` to its path (PATH, or via the nvm fallback on POSIX); null
+ *  if absent -- the same accepted flatten as commandExists (see there). */
+export function resolveCommand(command: string): string | null {
+  return findCommand(command).path;
 }
 
 /**

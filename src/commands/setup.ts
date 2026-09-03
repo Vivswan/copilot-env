@@ -7,7 +7,7 @@ import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { runShellIntegration } from "../shell/integration.ts";
 import { pickAgedVersion } from "../utils/aged_version.ts";
 import { assertNever } from "../utils/assert.ts";
-import { childEnvWithPath, commandExists, resolveCommand } from "../utils/command.ts";
+import { childEnvWithPath, commandExists, findCommand, resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { assertNonNegativeDays, MILLISECONDS_PER_DAY } from "../utils/time.ts";
@@ -73,11 +73,17 @@ function run(
 }
 
 function warnMissing(command: string, name: string): void {
-  if (!commandExists(command)) {
-    consola.warn(
-      `${name} ('${command}') is not installed; skipping. Install it yourself to use it.`,
-    );
+  const look = findCommand(command);
+  if (look.path !== null) return;
+  if (look.launchFailed) {
+    // A failed look must not hand out "install it yourself" advice: the probe
+    // shell never ran, which proves nothing about the CLI.
+    consola.warn(`Could not check for ${name} ('${command}'): the command probe failed to run.`);
+    return;
   }
+  consola.warn(
+    `${name} ('${command}') is not installed; skipping. Install it yourself to use it.`,
+  );
 }
 
 function refreshWindowsPath(): void {
@@ -181,7 +187,15 @@ function installNodeWindows(): void {
 }
 
 function ensureNpm(options: CliInstall): boolean {
-  if (commandExists(NPM_COMMAND)) return true;
+  const npmLook = findCommand(NPM_COMMAND);
+  if (npmLook.path !== null) return true;
+  if (npmLook.launchFailed) {
+    // Never install off a failed look: npm may well be there already.
+    consola.warn(
+      "Could not check for npm (the command probe failed to run); skipping the CLI install.",
+    );
+    return false;
+  }
 
   if (process.platform === "win32" && options.noSudo) {
     consola.warn(
@@ -279,8 +293,16 @@ function resolveAgedVersion(packageName: string, days: number): string {
 }
 
 function installCli(cli: (typeof AGENT_CLIS)[number], options: CliInstall): void {
-  if (commandExists(cli.command)) {
+  const look = findCommand(cli.command);
+  if (look.path !== null) {
     consola.info(`${cli.name} already installed.`);
+    return;
+  }
+  if (look.launchFailed) {
+    // Never install off a failed look: the CLI may well be there already.
+    consola.warn(
+      `Could not check whether ${cli.name} is installed (the command probe failed to run); skipping its install.`,
+    );
     return;
   }
 
@@ -293,7 +315,15 @@ function installCli(cli: (typeof AGENT_CLIS)[number], options: CliInstall): void
   }
   runNpm(["install", "-g", spec]);
   refreshWindowsPath();
-  if (!commandExists(cli.command)) {
+  const verify = findCommand(cli.command);
+  if (verify.path === null) {
+    if (verify.launchFailed) {
+      // The install itself succeeded; only the verifying look failed.
+      consola.warn(
+        `Could not verify ${cli.name} after install (the command probe failed to run).`,
+      );
+      return;
+    }
     throw new Error(
       `${cli.name} was installed but '${cli.command}' is still unavailable. Open a new shell and rerun 'agent shell --clis'.`,
     );

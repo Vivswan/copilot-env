@@ -40,7 +40,7 @@ import {
   type Profile,
   type ProfileName,
 } from "../copilot_api/profile.ts";
-import { childEnvWithPath, commandExists, verbatimCliSpawn } from "../utils/command.ts";
+import { childEnvWithPath, findCommand, verbatimCliSpawn } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { managedClaudeBaseUrl, managedCodexHome, type ManagedEnvValue } from "./env.ts";
 import {
@@ -389,11 +389,21 @@ export async function runLaunch(
   action: LaunchAction,
   deps: LaunchDeps = commandDeps(),
 ): Promise<void> {
-  if (!commandExists(action.kind)) {
-    // The rc launchers' wording, verbatim -- the fix is the same command.
-    throw new Error(
-      `'${action.kind}' is not installed. Run 'agent shell --clis' to install the agent CLIs.`,
-    );
+  const cliLook = findCommand(action.kind);
+  if (cliLook.path === null) {
+    if (cliLook.launchFailed) {
+      // A failed look must not read "not installed": the probe shell never ran,
+      // which proves nothing about the CLI. The launch below is the honest test --
+      // its own spawn error names the real problem if there is one.
+      process.stderr.write(
+        `could not check whether '${action.kind}' is installed (the command probe failed to run); launching anyway\n`,
+      );
+    } else {
+      // The rc launchers' wording, verbatim -- the fix is the same command.
+      throw new Error(
+        `'${action.kind}' is not installed. Run 'agent shell --clis' to install the agent CLIs.`,
+      );
+    }
   }
   const plan = await prepareLaunch(action, deps);
   if (plan === null) {

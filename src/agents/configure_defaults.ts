@@ -11,7 +11,7 @@ import { createStderrLogger } from "../utils/logger.ts";
 import { runAgentConfig } from "./configure.ts";
 import { bothAgents } from "./profile_wiring.ts";
 import type { AgentProviderMode, RequestedMode } from "./provider_mode.ts";
-import { readAgentModesSafe } from "./wiring.ts";
+import { type AgentWiringOptions, readAgentModesSafe } from "./wiring.ts";
 
 // All output goes to stderr (one logger) so it interleaves deterministically with
 // the per-agent probe/config narration (also stderr) and never pollutes any stdout.
@@ -66,6 +66,16 @@ export async function configureDefaultAgents(
   const modes = readAgentModesSafe();
   recordDefaultModeSafe(modes);
   return { ...modes, failures };
+}
+
+/**
+ * Re-derive and record the default slot's mode from the CURRENT wiring: the
+ * read-back + record step configureDefaultAgents ends on, exported for the
+ * single-agent default rewires (`agent codex` / `agent claude`) so there is
+ * ONE recording path. Best-effort; `opts` is the wiring read's test seam.
+ */
+export function recordDefaultModeFromWiring(opts: AgentWiringOptions = {}): void {
+  recordDefaultModeSafe(readAgentModesSafe(opts));
 }
 
 /**

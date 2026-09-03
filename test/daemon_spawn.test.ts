@@ -9,11 +9,13 @@ import {
 import { join } from "node:path";
 import {
   classifyPidFromRows,
+  classifyPidFromScan,
   copilotApiArgv,
   DAEMON_GH_TOKEN_ENV,
   DAEMON_SIGKILL_GRACE_MS,
   daemonArgv,
   daemonEnvironment,
+  daemonPidsFromRows,
   type DaemonSpec,
   isDaemonCommandLine,
   isDaemonProcess,
@@ -442,6 +444,35 @@ test("classifyPidFromRows preserves a FAILED scan as unknown, never a confident 
   expect(classifyPidFromRows([self, daemon], 222, 111)).toBe("yes");
   expect(classifyPidFromRows([self], 222, 111)).toBe("no");
   expect(classifyPidFromRows([self, daemon], 333, 111)).toBe("no");
+});
+
+test("daemonPidsFromRows preserves a FAILED scan as unproven, never a confident empty list", () => {
+  const self = { pid: 111, ucomm: "deno", command: "deno test" };
+  const daemon = {
+    pid: 222,
+    ucomm: "deno",
+    command: "/home/me/.deno/bin/deno run --allow-net npm:@jeffreycao/copilot-api start",
+  };
+  // The orphan list's producer carries the same selfPid control as classifyPidFromRows:
+  // rows without the calling process prove the scan failed, and "failed to look" must
+  // ride to the sweep as "unproven" -- not flatten into "no orphans anywhere".
+  expect(daemonPidsFromRows([], 111)).toBe("unproven");
+  expect(daemonPidsFromRows([daemon], 111)).toBe("unproven"); // self missing: failed scan
+  // Controls: a scan that passes judges confidently -- empty AND populated.
+  expect(daemonPidsFromRows([self], 111)).toEqual([]);
+  expect(daemonPidsFromRows([self, daemon], 111)).toEqual([222]);
+});
+
+test("classifyPidFromScan: a FAILED owner scan is unknown, a proven-foreign owner stays no", () => {
+  // The win32 owner-composition arm of classifyOwnedDaemonPid: after a classify-"yes",
+  // an owner scan that FAILED must compose to "unknown" (health says could-not-verify;
+  // no owner-gated "yes" is minted) -- restoring the old confident-"no" flatten turns
+  // this arm red for exactly that reason.
+  expect(classifyPidFromScan("unproven", 222)).toBe("unknown");
+  // Control: a COMPLETED scan without the pid is the genuine another-user's-pid case.
+  expect(classifyPidFromScan([333], 222)).toBe("no");
+  expect(classifyPidFromScan([], 222)).toBe("no");
+  expect(classifyPidFromScan([222, 333], 222)).toBe("yes");
 });
 
 // --- the orphan-sweep signature ---------------------------------------------------------

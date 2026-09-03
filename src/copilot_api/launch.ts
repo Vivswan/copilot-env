@@ -51,6 +51,7 @@ import {
 } from "./port.ts";
 import {
   classifyDaemonPid,
+  classifyOwnedDaemonPid,
   type CopilotApiEntry,
   DAEMON_SIGKILL_GRACE_MS,
   type DaemonCredential,
@@ -300,25 +301,6 @@ export async function resolveStartPort(
 
 // --- the tracked-pid / orphan cleanup -------------------------------------------------
 
-/**
- * The three-state daemon identity of `pid` WITH the current-user ownership gate the kill
- * paths have always trusted. classifyDaemonPid alone is not signal authorization on
- * Windows: classifyDaemonPidWindows judges only the pid's command line, while the
- * owner-filtered list scan (isCopilotApiPid -> GetOwner == current user) is what keeps an
- * elevated shell from claiming -- and signalling -- ANOTHER user's daemon after pid
- * reuse. So a "yes" is re-checked against that list there; POSIX needs no second scan
- * (classifyDaemonPid already reads the owner-filtered `ps -U`). The composed "no" a
- * failed second look can produce inherits isCopilotApiPid's documented flatten, which is
- * the safe direction at every consumer: signals are withheld, and health renders the
- * same stale/foreign verdict the plain boolean always produced. Ideal home is
- * process.ts beside its two halves; it lives here for now.
- */
-export async function classifyOwnedDaemonPid(pid: number): Promise<"yes" | "no" | "unknown"> {
-  const cls = await classifyDaemonPid(pid);
-  if (cls !== "yes" || process.platform !== "win32") return cls;
-  return (await isCopilotApiPid(pid)) ? "yes" : "no";
-}
-
 /** Tracked daemon pids across the default and every profile's run state -- the set the
  *  orphan sweep must NEVER signal (in a multi-daemon world, another profile's healthy
  *  daemon is not an orphan). `except` drops ONE slot's claim: the planner judges against
@@ -369,12 +351,15 @@ export function lockProtectedDaemonPids(): LockSweepSpares {
  *  must never be listed while (re)starting this one), and every live daemon.lock holder
  *  (applied HERE, at the one list producer, so no caller can forget it). A home whose
  *  lock state is indeterminate empties the list outright -- fail closed, since the spare
- *  set can then vouch for nobody. `listPids` is injectable for tests. */
+ *  set can then vouch for nobody -- and so does an "unproven" pid scan (the scan itself
+ *  failed): the same safe direction the flattened scan always took, but SAID, so an
+ *  operator never mistakes a broken process table for a clean machine. `listPids` is
+ *  injectable for tests. */
 export async function listUntrackedOrphans(
   myPid: number,
   myPpid: number,
   keepPids: Set<number>,
-  listPids: (myPid: number, myPpid: number) => Promise<number[]> = getOrphanPids,
+  listPids: (myPid: number, myPpid: number) => Promise<number[] | "unproven"> = getOrphanPids,
 ): Promise<number[]> {
   const spares = lockProtectedDaemonPids();
   if (spares.kind === "indeterminate") {
@@ -383,7 +368,14 @@ export async function listUntrackedOrphans(
     );
     return [];
   }
-  return (await listPids(myPid, myPpid)).filter((p) => !keepPids.has(p) && !spares.pids.has(p));
+  const scanned = await listPids(myPid, myPpid);
+  if (scanned === "unproven") {
+    consola.warn(
+      "Skipping the orphan sweep: the process scan failed, so no process can be proven orphaned.",
+    );
+    return [];
+  }
+  return scanned.filter((p) => !keepPids.has(p) && !spares.pids.has(p));
 }
 
 /** How often the lock-holder stop below re-derives its proof while waiting out the
@@ -507,7 +499,7 @@ export async function planCleanup(
   home: string,
   profile: Profile,
   state: CopilotEnvRunState = CopilotEnvRunState.forProfile(profile),
-  listPids: (myPid: number, myPpid: number) => Promise<number[]> = getOrphanPids,
+  listPids: (myPid: number, myPpid: number) => Promise<number[] | "unproven"> = getOrphanPids,
   classifyPid: typeof classifyDaemonPid = classifyOwnedDaemonPid,
 ): Promise<CleanupAction[]> {
   const actions: CleanupAction[] = [];
@@ -600,7 +592,7 @@ export async function cleanupExistingProxies(
   _lock: HeldStartLock,
   profile: Profile,
   state: CopilotEnvRunState = CopilotEnvRunState.forProfile(profile),
-  listPids: (myPid: number, myPpid: number) => Promise<number[]> = getOrphanPids,
+  listPids: (myPid: number, myPpid: number) => Promise<number[] | "unproven"> = getOrphanPids,
   classifyPid: typeof classifyDaemonPid = classifyOwnedDaemonPid,
 ): Promise<void> {
   consola.start("Cleaning up existing proxy processes ...");

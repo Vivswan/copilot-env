@@ -347,9 +347,18 @@ export async function terminatePid(
   return "killed";
 }
 
-export function getOrphanPids(myPid: number, myPpid: number): Promise<number[]> {
-  /** Find orphaned copilot-api daemon processes (excluding us + our parent). */
-  return listCopilotApiPids().then((pids) => pids.filter((p) => p !== myPid && p !== myPpid));
+/** Find orphaned copilot-api daemon processes (excluding us + our parent), or "unproven"
+ *  when the scan itself failed: the failure arm rides to the consumer
+ *  (listUntrackedOrphans SAYS the sweep is skipped) instead of a broken process table
+ *  silently reading as "no orphans" -- the same direction (nothing signalled), made
+ *  honest. */
+export function getOrphanPids(
+  myPid: number,
+  myPpid: number,
+): Promise<number[] | "unproven"> {
+  return scanCopilotApiPids().then((scan) =>
+    scan === "unproven" ? scan : scan.filter((p) => p !== myPid && p !== myPpid)
+  );
 }
 
 /**
@@ -371,8 +380,10 @@ export async function isCopilotApiPid(pid: number): Promise<boolean> {
  *                like Codex's packaged app, where WMI can't read other processes' command lines
  *
  * proxyStatus uses this so "unknown" falls back to the port probe instead of false-reporting a
- * healthy proxy as down. isCopilotApiPid stays a plain boolean for the terminate/orphan paths,
- * which must NOT act on an unconfirmed pid (a failed scan there correctly reads as "not ours").
+ * healthy proxy as down. isCopilotApiPid stays a plain boolean for the pre-signal identity
+ * gates (the tracked stop, the lock-holder corroboration), which must NOT act on an
+ * unconfirmed pid (a failed scan there correctly reads as "not ours"); the orphan list
+ * instead keeps the failure arm (getOrphanPids "unproven"), so the sweep can SAY it skipped.
  */
 export async function classifyDaemonPid(pid: number): Promise<"yes" | "no" | "unknown"> {
   if (process.platform === "win32") return classifyDaemonPidWindows(pid);
@@ -390,15 +401,50 @@ export function classifyPidFromRows(
   pid: number,
   selfPid: number,
 ): "yes" | "no" | "unknown" {
-  if (!rows.some((row) => row.pid === selfPid)) return "unknown";
-  return posixDaemonPids(rows).includes(pid) ? "yes" : "no";
+  return classifyPidFromScan(daemonPidsFromRows(rows, selfPid), pid);
+}
+
+/** The shared verdict over a daemon-pid scan that kept its failure arm: an "unproven"
+ *  scan is "unknown" ("failed to look"), never a confident "no" -- while a COMPLETED
+ *  scan without `pid` is exactly the confident "no" the kill gates exist to mint (the
+ *  pid is gone, recycled, or another user's). Pure for testing: it is both the POSIX
+ *  row judgment's tail and classifyOwnedDaemonPid's win32 owner-composition, so the
+ *  two cannot drift on how a failed look reads. */
+export function classifyPidFromScan(
+  scan: number[] | "unproven",
+  pid: number,
+): "yes" | "no" | "unknown" {
+  if (scan === "unproven") return "unknown";
+  return scan.includes(pid) ? "yes" : "no";
+}
+
+/**
+ * The three-state daemon identity of `pid` WITH the current-user ownership gate the kill
+ * paths have always trusted. classifyDaemonPid alone is not signal authorization on
+ * Windows: classifyDaemonPidWindows judges only the pid's command line, while the
+ * owner-filtered list scan (GetOwner == current user) is what keeps an elevated shell
+ * from claiming -- and signalling -- ANOTHER user's daemon after pid reuse. So a "yes"
+ * is re-checked against that list here; POSIX needs no second scan (classifyDaemonPid
+ * already reads the owner-filtered `ps -U`). The second look keeps its failure arm: a
+ * FAILED owner scan composes to "unknown" (health renders could-not-verify, and no
+ * owner-gated "yes" is ever minted from a scan that did not run), while a completed
+ * scan without the pid stays the confident "no" (proven another user's, or gone) --
+ * both fail-closed at every kill gate, since only "yes" authorizes a signal there.
+ */
+export async function classifyOwnedDaemonPid(pid: number): Promise<"yes" | "no" | "unknown"> {
+  const cls = await classifyDaemonPid(pid);
+  if (cls !== "yes" || process.platform !== "win32") return cls;
+  return classifyPidFromScan(await scanCopilotApiPids(), pid);
 }
 
 async function classifyDaemonPidWindows(pid: number): Promise<"yes" | "no" | "unknown"> {
   // Query the SPECIFIC pid so we can tell a "different process" (CommandLine present, no match)
   // from "unreadable" (CommandLine null -- a restricted token). `pid` is our own integer from
-  // state, so inlining it is safe. A wholesale CIM failure (access denied) also reads "unknown".
-  const script = `$p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}'; ` +
+  // state, so inlining it is safe. A wholesale CIM failure (access denied) also reads "unknown":
+  // CIM errors are non-terminating (an empty $p and exit 0, which would flatten into "no"), so
+  // the query is trapped to exit non-zero instead.
+  const script = "$ErrorActionPreference = 'Stop'; " +
+    `try { $p = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' } catch { exit 1 }; ` +
     "if (-not $p) { 'no' } " +
     "elseif ([string]::IsNullOrEmpty($p.CommandLine)) { 'unknown' } " +
     `elseif ($p.CommandLine -match '${DAEMON_CMDLINE_PATTERN}') { 'yes' } ` +
@@ -414,9 +460,21 @@ async function classifyDaemonPidWindows(pid: number): Promise<"yes" | "no" | "un
   return verdict === "yes" || verdict === "no" ? verdict : "unknown";
 }
 
-/** All copilot-api daemon pids of the current user (best-effort, no exclusions). */
+/** All copilot-api daemon pids of the current user (no exclusions), or "unproven" when
+ *  the scan itself failed -- POSIX proves completion via the selfPid control
+ *  (daemonPidsFromRows), Windows via the script's exit code. */
+function scanCopilotApiPids(): Promise<number[] | "unproven"> {
+  return process.platform === "win32"
+    ? scanCopilotApiPidsWindows()
+    : listUserProcesses().then((rows) => daemonPidsFromRows(rows, process.pid));
+}
+
+/** scanCopilotApiPids with the failure arm flattened to "nobody" -- KEPT deliberately
+ *  for isCopilotApiPid, whose boolean consumers gate signals and must read a failed
+ *  scan as "not ours" (never signal what this host cannot prove). List consumers that
+ *  can report go through scanCopilotApiPids instead. */
 function listCopilotApiPids(): Promise<number[]> {
-  return process.platform === "win32" ? listCopilotApiPidsWindows() : listCopilotApiPidsPosix();
+  return scanCopilotApiPids().then((scan) => (scan === "unproven" ? [] : scan));
 }
 
 /** Process images that can host the daemon on Windows, where the command-line query
@@ -426,7 +484,7 @@ function listCopilotApiPids(): Promise<number[]> {
  *  still find -- and stop -- the daemon that install left running. */
 const WINDOWS_DAEMON_IMAGES = DAEMON_RUNTIMES.map((runtime) => `${runtime}.exe`);
 
-async function listCopilotApiPidsWindows(): Promise<number[]> {
+async function scanCopilotApiPidsWindows(): Promise<number[] | "unproven"> {
   // Windows has no portable command-line column in `ps`, so match on the daemon's command
   // line via WMI: runtime processes whose CommandLine is the launch
   // (`<runtime> ... copilot-api ... start`). `wmic` is removed on newer Windows, so go
@@ -444,20 +502,30 @@ async function listCopilotApiPidsWindows(): Promise<number[]> {
   // ReturnValue != 0) is excluded -- safer to skip an unconfirmed process than to signal another
   // user's.
   const nameTest = WINDOWS_DAEMON_IMAGES.map((image) => `$_.Name -eq '${image}'`).join(" -or ");
-  const script = "Get-CimInstance Win32_Process | Where-Object { " +
+  // The whole pipeline is trapped to exit non-zero on a wholesale failure: CIM errors are
+  // non-terminating, so an untrapped access-denied would exit 0 with no pids and read as a
+  // confidently empty machine. The per-process GetOwner SilentlyContinue below stays: an
+  // explicit -ErrorAction overrides the Stop preference, and skipping ONE unattributable
+  // process (rather than failing the scan) is that filter's documented contract.
+  const script = "$ErrorActionPreference = 'Stop'; try { " +
+    "Get-CimInstance Win32_Process | Where-Object { " +
     `(${nameTest}) ` +
     `-and $_.CommandLine -match '${DAEMON_CMDLINE_PATTERN}' ` +
     "} | Where-Object { " +
     "$o = Invoke-CimMethod -InputObject $_ -MethodName GetOwner -ErrorAction SilentlyContinue; " +
     "$o -and $o.ReturnValue -eq 0 -and $o.User -eq $env:USERNAME -and $o.Domain -eq $env:USERDOMAIN " +
-    "} | ForEach-Object { $_.ProcessId }";
+    "} | ForEach-Object { $_.ProcessId } " +
+    "} catch { exit 1 }";
   const { exitCode, stdout } = await runCaptured("powershell", [
     "-NoProfile",
     "-NonInteractive",
     "-Command",
     script,
   ]);
-  if (exitCode !== 0) return [];
+  // The exit code is this scan's completion control: a script that could not run -- or
+  // whose CIM query failed wholesale (trapped above) -- reads "failed to look", never
+  // "nobody there".
+  if (exitCode !== 0) return "unproven";
 
   const pids: number[] = [];
   for (const line of stdout.split(/\r?\n/)) {
@@ -504,8 +572,10 @@ export function parseProcessRows(stdout: string): ProcessRow[] {
  * orphan sweep SIGKILLs what this feeds, so an elevated shell must never see another
  * user's daemons. Best-effort, like the `pgrep` this descends from: any failure
  * (including a user with no processes, where `ps` exits non-zero) degrades to no rows
- * rather than aborting. The raised maxBuffer keeps a process-heavy machine's listing
- * from overflowing into that degrade path and silently weakening the orphan scan.
+ * rather than aborting -- rows the selfPid control downstream (daemonPidsFromRows,
+ * classifyPidFromRows) then reads as a FAILED scan, not an empty machine. The raised
+ * maxBuffer keeps a process-heavy machine's listing from overflowing into that degrade
+ * path in the first place.
  */
 async function listUserProcesses(): Promise<ProcessRow[]> {
   const uid = process.getuid?.();
@@ -535,8 +605,17 @@ function posixDaemonPids(rows: ProcessRow[]): number[] {
   return pids;
 }
 
-async function listCopilotApiPidsPosix(): Promise<number[]> {
-  return posixDaemonPids(await listUserProcesses());
+/** The POSIX daemon-pid scan judgment over completed `ps` rows, pure for testing. Same
+ *  CONTROL as classifyPidFromRows and for the same reason: a readable `ps -U <uid>`
+ *  always contains the calling process, so rows without `selfPid` prove the scan FAILED
+ *  (ps error, truncation) -- that is "unproven" ("failed to look"), never a confident
+ *  empty list a broken `ps` could pass off as "no daemons anywhere". */
+export function daemonPidsFromRows(
+  rows: ProcessRow[],
+  selfPid: number,
+): number[] | "unproven" {
+  if (!rows.some((row) => row.pid === selfPid)) return "unproven";
+  return posixDaemonPids(rows);
 }
 
 /**

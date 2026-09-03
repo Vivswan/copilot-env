@@ -47,8 +47,7 @@ import {
   copilotApiResolvePort,
   proxyLoopbackOrigin,
 } from "../copilot_api/port.ts";
-import { classifyOwnedDaemonPid } from "../copilot_api/launch.ts";
-import { pidAlive } from "../copilot_api/process.ts";
+import { classifyOwnedDaemonPid, pidAlive } from "../copilot_api/process.ts";
 import { type SidecarStatus, sidecarStatus } from "../copilot_api/sidecar.ts";
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";

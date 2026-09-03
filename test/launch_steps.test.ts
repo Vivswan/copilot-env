@@ -15,7 +15,6 @@ import {
 import {
   applyDefaultConfig,
   awaitReadiness,
-  classifyOwnedDaemonPid,
   type CleanupAction,
   cleanupExistingProxies,
   daemonLifecycleEnv,
@@ -29,7 +28,12 @@ import {
   trackedDaemonPids,
   withStartLock,
 } from "../src/copilot_api/launch.ts";
-import { type CopilotApiEntry, isCopilotApiPid, pidAlive } from "../src/copilot_api/process.ts";
+import {
+  classifyOwnedDaemonPid,
+  type CopilotApiEntry,
+  isCopilotApiPid,
+  pidAlive,
+} from "../src/copilot_api/process.ts";
 import { CopilotApiPaths, profileHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
 import { ProxyProjectionState } from "../src/copilot_api/ownership.ts";
@@ -331,6 +335,24 @@ test("listUntrackedOrphans: pids in the keep set are never listed", async () => 
   expect(await listUntrackedOrphans(1, 2, new Set([200]), listPids)).toEqual([100, 300]);
   expect(await listUntrackedOrphans(1, 2, new Set(), listPids)).toEqual([100, 200, 300]);
   expect(await listUntrackedOrphans(1, 2, new Set([100, 200, 300]), listPids)).toEqual([]);
+});
+
+test("an UNPROVEN process scan skips the sweep and SAYS so; a proven-empty scan is silent", async () => {
+  tmpHome();
+  // The scan itself failed: the sweep must skip (nothing can be proven orphaned) AND say
+  // so -- silently returning [] would read as "clean machine" off a broken process table.
+  const unproven = await captureAllWrites(async () => {
+    expect(
+      await listUntrackedOrphans(1, 2, new Set(), () => Promise.resolve("unproven" as const)),
+    ).toEqual([]);
+  });
+  expect(unproven).toContain("Skipping the orphan sweep");
+  expect(unproven).toContain("the process scan failed");
+  // Control: a scan that COMPLETED and found nobody is an honest empty -- no warning.
+  const provenEmpty = await captureAllWrites(async () => {
+    expect(await listUntrackedOrphans(1, 2, new Set(), () => Promise.resolve([]))).toEqual([]);
+  });
+  expect(provenEmpty).not.toContain("Skipping the orphan sweep");
 });
 
 test("a live daemon.lock holder is never listed for the sweep, whatever its argv", async () => {

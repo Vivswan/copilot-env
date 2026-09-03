@@ -199,8 +199,12 @@ async function profileCredential(
  * reservation). Used by `agent profile --del` and `agent uninstall`.
  */
 export async function deleteProfileEverywhere(name: ProfileName): Promise<void> {
-  const { signalled, stopped } = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, name);
-  if (signalled && !stopped) {
+  const { stopped } = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, name);
+  // Anything short of CONFIRMED stopped aborts -- a survivor of the kill, or a stop
+  // refused because the pid could not be corroborated as our daemon (the refusal has
+  // already warned with the reason). Deleting the home under a possibly-live daemon
+  // would corrupt what it is still writing.
+  if (!stopped) {
     throw new Error(
       `${profileLabel(name)}'s proxy daemon did not stop; retry, or stop it manually ` +
         `(\`agent stop --profile ${name}\`) before deleting`,

@@ -10,7 +10,12 @@ import { configureClaudeConfig, inspectClaudeWiring } from "../src/claude/config
 import { CLAUDE_DESKTOP_DIR_ENV, desktopLibraryDirUnder } from "../src/claude/desktop.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
 import { codexProviderId, configureCodexConfig } from "../src/codex/config.ts";
-import { parseProfileAction, renderProfileTable, runProfile } from "../src/commands/profile.ts";
+import {
+  deleteProfileEverywhere,
+  parseProfileAction,
+  renderProfileTable,
+  runProfile,
+} from "../src/commands/profile.ts";
 import { runStart } from "../src/commands/start.ts";
 import { parseStopAction, runStop } from "../src/commands/stop.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
@@ -26,7 +31,13 @@ import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { isRecord } from "../src/utils/json.ts";
 import { afterEach, beforeEach, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes, removeDir, resetExitCode } from "./helpers.ts";
+import {
+  envSnapshot,
+  isolateAgentHomes,
+  removeDir,
+  resetExitCode,
+  stageRefusedStop,
+} from "./helpers.ts";
 
 // Branded fixture names: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
@@ -642,6 +653,72 @@ test("parseStopAction: all/profile/default arms; --all --profile is a rejection"
     "--all stops every daemon; it does not combine with --profile",
   );
 });
+
+// --- the refused stop's consumers (guard + summary line) ---------------------------------
+
+/** Capture BOTH process write streams (consola routes by level) while awaiting `fn`. */
+async function captureAllWrites(fn: () => Promise<void>): Promise<string> {
+  const stdout = process.stdout.write.bind(process.stdout);
+  const stderr = process.stderr.write.bind(process.stderr);
+  let out = "";
+  const capture = (chunk: string | Uint8Array): boolean => {
+    out += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    return true;
+  };
+  process.stdout.write = capture;
+  process.stderr.write = capture;
+  try {
+    await fn();
+  } finally {
+    process.stdout.write = stdout;
+    process.stderr.write = stderr;
+  }
+  return out;
+}
+
+test(
+  "profile delete: a REFUSED stop aborts the deletion; home, slot, and tracking survive",
+  async () => {
+    tmpProxyHome();
+    new CopilotEnvState().commitProfile(WORK, {
+      credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
+      mode: "proxy",
+    });
+    const fx = stageRefusedStop(profileHome(WORK), WORK);
+    try {
+      // The uncorroborated lock holder cannot be stopped, so nothing may be deleted
+      // under it: the daemon -- wherever it runs -- is still writing into this home.
+      await expect(deleteProfileEverywhere(WORK)).rejects.toThrow("did not stop");
+      expect(existsSync(profileHome(WORK))).toBe(true);
+      expect(new Credential(undefined, WORK).resolve()).toBe("ghp_work");
+      expect(CopilotEnvRunState.forProfile(WORK).read().pid).toBe(fx.bystanderPid);
+    } finally {
+      await fx.teardown();
+    }
+  },
+  30_000,
+);
+
+test(
+  "stop: a REFUSED stop reports the daemon left running -- never 'cleared stale tracking'",
+  async () => {
+    tmpProxyHome();
+    const fx = stageRefusedStop(new CopilotApiPaths().home);
+    try {
+      const out = await captureAllWrites(() => runStop({}));
+      // stopTrackedProxy's warning explains the refusal; the summary line must agree
+      // that nothing changed instead of claiming cleared tracking over a kept one.
+      expect(out).toContain("was left running; tracking kept");
+      expect(out).not.toContain("cleared stale tracking");
+      expect(process.exitCode).toBe(1); // nothing was stopped
+      resetExitCode();
+      expect(new CopilotEnvRunState().read().pid).toBe(fx.bystanderPid);
+    } finally {
+      await fx.teardown();
+    }
+  },
+  30_000,
+);
 
 test("stop/record-event against a never-existing profile fabricate NOTHING", async () => {
   tmpProxyHome();

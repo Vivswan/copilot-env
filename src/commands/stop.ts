@@ -40,14 +40,20 @@ export function parseStopAction(args: StopArgs): StopAction {
 
 /** Stop one daemon and report the outcome. Returns true when something was stopped. */
 async function stopOne(profile: Profile): Promise<boolean> {
-  const { trackedPid, signalled } = await stopTrackedProxy(0, profile);
+  const { trackedPid, signalled, stopped } = await stopTrackedProxy(0, profile);
   const what = profile === null ? "proxy" : `${profileLabel(profile)} proxy`;
   if (trackedPid === undefined) {
     consola.info(`The ${what} is not running on this host (nothing to stop).`);
     return false;
   }
   if (!signalled) {
-    consola.info(`The ${what} (PID ${trackedPid}) was already stopped; cleared stale tracking.`);
+    if (!stopped) {
+      // The refusal: stopTrackedProxy just warned why the pid could not be signalled
+      // (an uncorroborated lock holder); the summary must agree that nothing changed.
+      consola.info(`The ${what} (PID ${trackedPid}) was left running; tracking kept.`);
+    } else {
+      consola.info(`The ${what} (PID ${trackedPid}) was already stopped; cleared stale tracking.`);
+    }
     return false;
   }
   consola.info(`Stopped the ${what} (PID ${trackedPid})`);

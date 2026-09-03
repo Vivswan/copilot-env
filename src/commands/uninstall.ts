@@ -105,12 +105,14 @@ function manualRemoveCommand(dir: string): string {
     : `rm -rf ${quotePosix(dir)}`;
 }
 
-/** Stop the default daemon plus every profile's. A signalled-but-unstoppable
- *  daemon throws, so the caller aborts instead of deleting under a live proxy. */
+/** Stop the default daemon plus every profile's. Any daemon NOT confirmed stopped --
+ *  a kill survivor, or a stop refused because the pid could not be corroborated as our
+ *  daemon (the refusal has already warned with the reason) -- throws, so the caller
+ *  aborts instead of deleting under a possibly-live proxy. */
 async function stopAllDaemons(profiles: ProfileName[]): Promise<void> {
   for (const profile of [null, ...profiles]) {
-    const { signalled, stopped } = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, profile);
-    if (signalled && !stopped) {
+    const { stopped } = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, profile);
+    if (!stopped) {
       throw new Error(
         `the ${profileLabel(profile)} proxy daemon did not stop; retry, or stop it ` +
           "manually (`agent stop --all`) before uninstalling",

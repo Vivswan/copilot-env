@@ -23,7 +23,13 @@ import { INSTALL_MANIFEST_FILE, type RootMode } from "../src/utils/root.ts";
 import { pointCurrentAt } from "../src/install/installer.ts";
 import { ROOT } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes, removeDir, resetExitCode } from "./helpers.ts";
+import {
+  envSnapshot,
+  isolateAgentHomes,
+  removeDir,
+  resetExitCode,
+  stageRefusedStop,
+} from "./helpers.ts";
 
 // A branded fixture name: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");
@@ -83,6 +89,29 @@ function tmpDeps(codexHome: string): UninstallDeps & { calls: string[]; installR
 function readToml(codexHome: string): Record<string, unknown> {
   return parse(readFileSync(join(codexHome, "config.toml"), "utf8")) as Record<string, unknown>;
 }
+
+test(
+  "uninstall: a REFUSED stop aborts before anything is deleted",
+  async () => {
+    const { proxyHome, codexHome } = tmpHomes();
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(join(codexHome, "config.toml"), 'foo = "bar"\n');
+    const deps = tmpDeps(codexHome);
+    const fx = stageRefusedStop(proxyHome);
+    try {
+      // The refusal (an uncorroborated lock holder) surfaces from the FIRST step, so
+      // no wiring, farm, shell, or data removal ever runs under the live daemon.
+      await expect(runUninstall({ yes: true }, deps)).rejects.toThrow("did not stop");
+      expect(existsSync(proxyHome)).toBe(true);
+      expect(readFileSync(join(codexHome, "config.toml"), "utf8")).toContain('foo = "bar"');
+      expect(deps.calls).toEqual([]);
+      expect(new CopilotEnvRunState().read().pid).toBe(fx.bystanderPid);
+    } finally {
+      await fx.teardown();
+    }
+  },
+  30_000,
+);
 
 test("uninstall removes everything managed and preserves user config", async () => {
   const { proxyHome, claudeHome, codexHome } = tmpHomes();

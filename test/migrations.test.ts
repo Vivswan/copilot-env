@@ -11,9 +11,12 @@ import {
 } from "../src/migrations/3.5.6.ts";
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
 import { readResolvedVersionRecord, writeResolvedVersionRecord } from "../src/proxy_float.ts";
+import { acquireDaemonLockForLife, daemonLockPath } from "../src/scripts/daemon_lock.ts";
+import { releaseFileLock } from "../src/utils/file_lock.ts";
 import type { SemverString } from "../src/utils/semver.ts";
+import { denoRunArgs, importSpecifier, ROOT, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, removeDir, tmpDir } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome, removeDir, tmpDir, writeRunState } from "./helpers.ts";
 
 // Pure selection logic for which migrations run across a version range, with a synthetic
 // registry so the real migrations' side effects are never triggered here. Migrations are
@@ -201,6 +204,89 @@ test("3.5.6 move: daemons stopped, dir renamed, both artifact kinds repointed", 
   await fx.run();
   expect(fx.stopped.count).toBe(1);
 });
+
+test("3.5.6 move: a stopDaemons refusal aborts the move -- the legacy home is untouched", async () => {
+  const fx = moveFixture();
+  // The production stopDaemons (stopLegacyDaemons) throws for ANY daemon not confirmed
+  // stopped -- a kill survivor, or a stop refused because the pid could not be
+  // corroborated as ours. The move must then never race the (possibly live) writer.
+  await expect(
+    moveDataHome({
+      legacyHome: fx.legacy,
+      nextHome: fx.next,
+      stopDaemons: () =>
+        Promise.reject(new Error("a daemon (pid 123) under the legacy home would not stop")),
+      codexConfigPaths: () => [fx.codexConfig],
+      desktopEntryPaths: () => [fx.desktopEntry],
+    }),
+  ).rejects.toThrow("would not stop");
+  expect(existsSync(join(fx.legacy, "config.json"))).toBe(true);
+  expect(existsSync(fx.next)).toBe(false);
+});
+
+test(
+  "3.5.6 move: the REAL stopLegacyDaemons guard aborts on a refused stop (subprocess)",
+  async () => {
+    dir = tmpDir("copilot-migrate-guard-");
+    const home = join(dir, "home");
+    // LEGACY_HOME is frozen from homedir() at module load, so the real guard is only
+    // reachable in a subprocess whose HOME points at the sandbox BEFORE the import.
+    const legacy = join(home, ".local", "share", "copilot-api");
+    const next = join(home, ".local", "share", "copilot-env");
+    mkdirSync(legacy, { recursive: true });
+    writeFileSync(join(legacy, "config.json"), "{}\n");
+    // The refusal, staged for real: THIS test process holds legacy's daemon.lock (the
+    // marker names our pid -- alive, but nothing like a daemon), and legacy's run state
+    // tracks the same pid. The child's stopTrackedProxy reads lock-"alive", cannot
+    // corroborate the pid, and refuses with stopped: false -- the guard must abort the
+    // rename rather than race the (possibly live) writer.
+    expect(acquireDaemonLockForLife(legacy, { waitMs: 0 })).toBe(true);
+    const savedApiHome = process.env.COPILOT_API_HOME;
+    process.env.COPILOT_API_HOME = legacy;
+    try {
+      writeRunState({ pid: process.pid, port: 4141 });
+    } finally {
+      if (savedApiHome === undefined) delete process.env.COPILOT_API_HOME;
+      else process.env.COPILOT_API_HOME = savedApiHome;
+    }
+    const worker = join(dir, "worker.ts");
+    writeFileSync(
+      worker,
+      `import { v356 } from ${importSpecifier(join(ROOT, "src", "migrations", "3.5.6.ts"))};\n` +
+        "try {\n" +
+        "  await v356.run();\n" +
+        "  console.log('guard-missed: the move ran');\n" +
+        "} catch (e) {\n" +
+        "  console.log(`aborted: ${(e as Error).message}`);\n" +
+        "}\n",
+    );
+    // Full parent env (Windows children need SystemRoot etc.) with HOME repointed and
+    // COPILOT_API_HOME removed -- set, it would opt the whole migration out.
+    const env: Record<string, string> = {
+      ...Deno.env.toObject(),
+      HOME: home,
+      USERPROFILE: home,
+    };
+    delete env.COPILOT_API_HOME;
+    delete env.COPILOT_ENV_ROOT_HOME;
+    try {
+      const child = spawnChild(Deno.execPath(), {
+        args: [...denoRunArgs(), worker],
+        env,
+        clearEnv: true,
+        stdout: "piped",
+        stderr: "piped",
+      });
+      const output = await child.output();
+      expect(new TextDecoder().decode(output.stdout)).toContain("would not stop");
+      expect(existsSync(join(legacy, "config.json"))).toBe(true);
+      expect(existsSync(next)).toBe(false);
+    } finally {
+      releaseFileLock(daemonLockPath(legacy));
+    }
+  },
+  60_000,
+);
 
 test("3.5.6 move: both dirs existing is a refusal, never a merge", async () => {
   const fx = moveFixture();

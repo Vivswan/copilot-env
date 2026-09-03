@@ -80,10 +80,42 @@ export function daemonLockVerdict(home: string, pid: number): DaemonLockVerdict 
   return "unproven";
 }
 
-/** The pid of the LIVE holder of `home`'s daemon lock, or null when nothing provably
- *  holds it. The orphan sweep's stronger keep-signal: a process holding its home's
- *  daemon.lock is never swept, whatever its argv looks like. */
-export function daemonLockHolderPid(home: string): number | null {
+/** One home's daemon.lock hold, discriminating what a sweep/stop consumer must NOT
+ *  conflate: `held` carries the marker-named holder pid, or null when the lock is
+ *  provably held but the marker names nobody readable; `free` is a provably free (or
+ *  never-written) lock; `unreadable` is a probe that could not judge at all. The two
+ *  unattributable kinds (`unreadable`, `held` with a null pid) are "failed to look",
+ *  never "nobody there" -- a caller about to signal processes fails closed on them. */
+export type DaemonLockHold =
+  | { readonly kind: "held"; readonly pid: number | null }
+  | { readonly kind: "free" }
+  | { readonly kind: "unreadable" };
+
+/** Probe `home`'s daemon lock into the DaemonLockHold judgment above. */
+export function daemonLockHold(home: string): DaemonLockHold {
   const probe = probeFileLock(daemonLockPath(home));
-  return probe.kind === "held" ? probe.markerPid : null;
+  switch (probe.kind) {
+    case "held":
+      return { kind: "held", pid: probe.markerPid };
+    case "free":
+    case "absent":
+      return { kind: "free" };
+    case "unknown":
+      return { kind: "unreadable" };
+    default: {
+      // Inline exhaustiveness: importing assertNever would widen the daemon shims'
+      // materialized import closure, which test/installer_pinning.test.ts pins.
+      const unhandled: never = probe;
+      throw new Error(`unreachable: unhandled lock probe ${JSON.stringify(unhandled)}`);
+    }
+  }
+}
+
+/** The pid of the LIVE holder of `home`'s daemon lock, or null when no live holder can be
+ *  NAMED (free, unreadable, or held anonymously -- daemonLockHold discriminates those for
+ *  callers that must not collapse them). Null-safe for a stop path (nobody to signal),
+ *  and derived from daemonLockHold so the two can never judge a probe differently. */
+export function daemonLockHolderPid(home: string): number | null {
+  const hold = daemonLockHold(home);
+  return hold.kind === "held" ? hold.pid : null;
 }

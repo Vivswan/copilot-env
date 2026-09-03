@@ -109,8 +109,10 @@ export async function moveDataHome(opts: DataHomeMoveOptions): Promise<void> {
 /** Stop every daemon still tracked under the LEGACY home (default + profiles) so
  *  none keeps writing into (or re-creating) the old dir mid-move. The env override
  *  is how the whole paths layer is pointed at the legacy layout for the duration.
- *  A daemon that survives its kill aborts the migration (the move must not race a
- *  live writer); the runner treats that as non-fatal and the re-run retries. */
+ *  Any daemon NOT confirmed stopped -- a kill survivor, or a stop refused because
+ *  the pid could not be corroborated as ours -- aborts the migration (the move must
+ *  not race a live writer); the runner treats that as non-fatal and the re-run
+ *  retries. */
 async function stopLegacyDaemons(): Promise<void> {
   const saved = process.env.COPILOT_API_HOME;
   process.env.COPILOT_API_HOME = LEGACY_HOME;
@@ -118,7 +120,7 @@ async function stopLegacyDaemons(): Promise<void> {
     const profiles = profileHomeNames();
     for (const profile of [null, ...profiles]) {
       const result = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, profile);
-      if (result.signalled && !result.stopped) {
+      if (!result.stopped) {
         throw new Error(
           `a daemon (pid ${result.trackedPid}) under ${LEGACY_HOME} would not stop`,
         );

@@ -9,7 +9,13 @@ import { CopilotApiPaths, profileHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { errMessage } from "../src/utils/error.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes, removeDir, resetExitCode } from "./helpers.ts";
+import {
+  envSnapshot,
+  isolateAgentHomes,
+  removeDir,
+  resetExitCode,
+  stageRefusedStop,
+} from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -103,6 +109,26 @@ test("auth --get prints the stored token to stdout (nothing else)", async () => 
   const out = await captureStdout(() => runAuth({ get: true }, NOOP_CATALOG_DEPS));
   expect(out).toBe("ghu_stored123\n");
 });
+
+test(
+  "auth --del: a REFUSED stop warns the proxy is still running -- never the plain success",
+  async () => {
+    isolate();
+    state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_refused" });
+    const fx = stageRefusedStop(new CopilotApiPaths().home);
+    try {
+      // The credential clears, but the daemon (whose lock-held pid this host cannot
+      // corroborate) was refused: the summary must say it may still be serving, never
+      // the plain "De-authenticated." success.
+      const err = await captureStderr(() => runAuth({ del: true }));
+      expect(err).toContain("but the proxy is still running");
+      expect(err).not.toContain("De-authenticated. Run");
+    } finally {
+      await fx.teardown();
+    }
+  },
+  30_000,
+);
 
 test("auth --del clears the stored token and provider", async () => {
   isolate();

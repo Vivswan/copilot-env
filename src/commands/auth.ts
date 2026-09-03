@@ -492,33 +492,35 @@ async function runDel(profile: Profile): Promise<void> {
     // revoked.
     const { signalled, stopped } = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, profile);
     if (profile === null) {
-      // The default wording is an output contract -- keep it byte-identical.
-      if (!signalled) {
-        logger.success("De-authenticated. Run `agent auth` to log in again.");
-      } else if (stopped) {
-        logger.success("De-authenticated and stopped the proxy. Run `agent auth` to log in again.");
-      } else {
+      // The wordings are an output contract -- keep each byte-identical. Branch on
+      // `stopped` first: a stop REFUSED (unprovable pid, nothing signalled) must report
+      // the still-running daemon, never the plain success.
+      if (!stopped) {
         logger.warn(
           "De-authenticated, but the proxy is still running and may keep serving the old " +
             "credential -- stop it with `agent stop`.",
         );
+      } else if (signalled) {
+        logger.success("De-authenticated and stopped the proxy. Run `agent auth` to log in again.");
+      } else {
+        logger.success("De-authenticated. Run `agent auth` to log in again.");
       }
       return;
     }
     const again = `\`agent auth --profile ${profile}\``;
-    if (!signalled) {
-      logger.success(`De-authenticated ${profileLabel(profile)}. Run ${again} to log in again.`);
-    } else if (stopped) {
+    if (!stopped) {
+      logger.warn(
+        `De-authenticated ${profileLabel(profile)}, but its proxy is still running and may keep ` +
+          `serving the old credential -- stop it with \`agent stop --profile ${profile}\`.`,
+      );
+    } else if (signalled) {
       logger.success(
         `De-authenticated ${
           profileLabel(profile)
         } and stopped its proxy. Run ${again} to log in again.`,
       );
     } else {
-      logger.warn(
-        `De-authenticated ${profileLabel(profile)}, but its proxy is still running and may keep ` +
-          `serving the old credential -- stop it with \`agent stop --profile ${profile}\`.`,
-      );
+      logger.success(`De-authenticated ${profileLabel(profile)}. Run ${again} to log in again.`);
     }
   } else if (profile === null) {
     logger.info("Nothing to clear - not authenticated. Run `agent auth` to log in.");

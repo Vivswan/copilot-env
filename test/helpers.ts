@@ -8,7 +8,11 @@ import { join } from "node:path";
 
 import type { ProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
+import { acquireDaemonLockForLife, daemonLockPath } from "../src/scripts/daemon_lock.ts";
+import { releaseFileLock } from "../src/utils/file_lock.ts";
+import { pidAlive } from "../src/utils/pid.ts";
 import { sleepSync } from "../src/utils/time.ts";
+import { denoRunArgs, spawnChild } from "./helpers/run.ts";
 
 // --- env snapshot / restore ---------------------------------------------------
 
@@ -214,4 +218,54 @@ export function writeRunState(
 ): void {
   const state = profile ? CopilotEnvRunState.forProfile(profile) : new CopilotEnvRunState();
   state.set(patch);
+}
+
+// --- the refused-stop fixture -------------------------------------------------------
+
+export interface RefusedStopFixture {
+  /** The live local pid the marker and run state both name (never a daemon). */
+  bystanderPid: number;
+  /** Kill the bystander, wait out its exit, and release the held lock. */
+  teardown: () => Promise<void>;
+}
+
+/**
+ * Stage the shared-home stop REFUSAL for `home` (which must be the effective home of
+ * `profile` under the current env): THIS test process holds home's daemon.lock --
+ * standing in for the remote host's daemon, so the lock stays held through whatever
+ * runs against it -- while the lock marker and the slot's run state both name a live
+ * local bystander whose argv is nothing like a daemon. stopTrackedProxy then reads
+ * lock-"alive" but cannot corroborate the pid, and refuses with tracking kept
+ * ({ signalled: false, stopped: false }) -- the fixture every refusal-consumer pin
+ * builds on.
+ */
+export function stageRefusedStop(home: string, profile?: ProfileName): RefusedStopFixture {
+  mkdirSync(home, { recursive: true });
+  const script = join(home, "bystander.ts");
+  writeFileSync(script, "setInterval(() => {}, 60_000);\n");
+  const child = spawnChild(Deno.execPath(), {
+    args: [...denoRunArgs(), script],
+    stdout: "null",
+    stderr: "null",
+  });
+  if (!acquireDaemonLockForLife(home, { waitMs: 0 })) {
+    throw new Error(`could not hold ${home}'s daemon.lock for the refused-stop fixture`);
+  }
+  writeFileSync(daemonLockPath(home), `${child.pid}\n${Date.now()}\n`);
+  writeRunState({ pid: child.pid, port: 4141 }, profile);
+  return {
+    bystanderPid: child.pid,
+    teardown: async () => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+      const deadline = Date.now() + 5_000;
+      while (pidAlive(child.pid) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      releaseFileLock(daemonLockPath(home));
+    },
+  };
 }

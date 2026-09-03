@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { proxyStatus, stopTrackedProxy } from "../src/copilot_api/daemon.ts";
 import { launchDaemon, pidAlive } from "../src/copilot_api/process.ts";
 import { parseAbsolutePath } from "../src/copilot_api/sidecar.ts";
+import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import {
   acquireDaemonLockForLife,
   daemonLockHolderPid,
@@ -227,15 +228,16 @@ test("proxyStatus: an acquirable lock naming the tracked pid reads DOWN, pid tab
 // --- stopTrackedProxy consults the lock first ---------------------------------------------
 
 test(
-  "stopTrackedProxy: a lock-held daemon is signalled even when its argv is not daemon-shaped",
+  "stopTrackedProxy: a lock-held corroborated daemon is signalled, lock-first",
   async () => {
     dir = isolateProxyHome("copilot-daemon-lock-");
     const ready = join(dir, "ready");
-    const holder = join(dir, "holder.ts");
-    // A plain deno script -- nothing in its argv reads as a copilot-api daemon, so the
-    // pre-lock classification would answer "no" and skip the signal; the held lock is what
-    // proves it is ours and alive. It locks the EFFECTIVE home (dir), which is what
-    // stopTrackedProxy consults for the default profile.
+    // A DAEMON-SHAPED holder (copilot-api entry basename + `start`): a lock-"alive" pid is
+    // signalled only under the owner-filtered scan's corroboration -- on a shared home the
+    // lock can be another host's daemon whose marker pid names an innocent local process
+    // (the refusal is pinned by the coincidence test below). It locks the EFFECTIVE home
+    // (dir), which is what stopTrackedProxy consults for the default profile.
+    const holder = join(dir, "copilot-api-holder.ts");
     writeFileSync(
       holder,
       `import { acquireDaemonLockForLife } from ${
@@ -246,7 +248,7 @@ test(
         "setInterval(() => {}, 60_000);\n",
     );
     const child = spawnChild(Deno.execPath(), {
-      args: [...denoRunArgs(), holder],
+      args: [...denoRunArgs(), holder, "start"],
       stdout: "null",
       stderr: "inherit",
     });
@@ -256,7 +258,7 @@ test(
 
       const result = await stopTrackedProxy();
       expect(result.trackedPid).toBe(child.pid);
-      expect(result.signalled).toBe(true); // lock-alive, despite the non-daemon argv
+      expect(result.signalled).toBe(true); // lock-alive AND corroborated as our daemon
       await child.status; // the SIGTERM (TerminateProcess on Windows) ends it
     } finally {
       try {
@@ -264,6 +266,50 @@ test(
       } catch {
         // already gone
       }
+    }
+  },
+  30_000,
+);
+
+// The shared-home coincidence, on the STOP path: our daemon crashed leaving its state pid
+// uncleared, the remote host's live daemon over the same home wrote the SAME number into
+// the marker, and the local number was recycled onto an innocent process. The verdict
+// reads "alive" -- the arm that used to signal uncorroborated -- but the stop must refuse
+// and KEEP the tracking: the user asked to stop something provably still up, and silently
+// unbinding it would lie.
+test(
+  "stopTrackedProxy: stale tracking + a held lock naming a local NON-daemon pid is refused, tracking kept",
+  async () => {
+    dir = isolateProxyHome("copilot-daemon-lock-");
+    const bystander = join(dir, "bystander.ts");
+    writeFileSync(bystander, "setInterval(() => {}, 60_000);\n");
+    const child = spawnChild(Deno.execPath(), {
+      args: [...denoRunArgs(), bystander],
+      stdout: "null",
+      stderr: "null",
+    });
+    // Stand-in for the remote host's daemon: THIS test process holds the lock, while the
+    // marker and the stale run state both name the local bystander.
+    expect(acquireDaemonLockForLife(dir, { waitMs: 0 })).toBe(true);
+    try {
+      writeFileSync(daemonLockPath(dir), `${child.pid}\n${Date.now()}\n`);
+      writeRunState({ pid: child.pid, port: 4141 });
+      expect(daemonLockVerdict(dir, child.pid)).toBe("alive"); // the old signal-alone arm
+
+      const result = await stopTrackedProxy();
+
+      expect(result).toEqual({ trackedPid: child.pid, signalled: false, stopped: false });
+      expect(pidAlive(child.pid)).toBe(true); // never signalled
+      // Tracking intact: the daemon (somewhere) is still up, so nothing was unbound.
+      expect(new CopilotEnvRunState().read().pid).toBe(child.pid);
+    } finally {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+      await until(5_000, () => !pidAlive(child.pid));
+      releaseFileLock(daemonLockPath(dir));
     }
   },
   30_000,

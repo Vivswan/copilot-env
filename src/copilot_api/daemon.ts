@@ -4,12 +4,13 @@
 // other consumers (models, profile, auth, uninstall) import it from this layer
 // instead of from another command file.
 import { connect } from "node:net";
+import { consola } from "consola";
 import { clearPersistedInferenceActivity } from "../scripts/inference_activity.ts";
 import { daemonLockVerdict } from "../scripts/daemon_lock.ts";
 import { assertNever } from "../utils/assert.ts";
 import { CopilotApiPaths } from "./paths.ts";
 import { daemonPolicy, defaultProxyPort } from "./port.ts";
-import { classifyDaemonPid, pidAlive, terminatePid } from "./process.ts";
+import { classifyDaemonPid, isCopilotApiPid, pidAlive, terminatePid } from "./process.ts";
 import type { Profile } from "./profile.ts";
 import { CopilotEnvRunState } from "./state.ts";
 
@@ -108,11 +109,13 @@ export function recordHeartbeat(profile: Profile = null): void {
 
 /**
  * Terminate `profile`'s tracked proxy daemon if it is ours, clearing our run-state tracking
- * and the persisted activity mark. Quiet (no logging, no exit code) -- the shared core of
- * `agent stop` and the de-authenticate teardown. `graceMs > 0` waits that long and escalates
- * to SIGKILL if the daemon is still alive (use it when the caller must be sure it stopped,
- * e.g. de-auth); `0` sends a single SIGTERM without waiting. Returns the tracked pid, whether
- * we signalled it, and whether it is confirmed stopped afterwards.
+ * and the persisted activity mark. Quiet on success (no logging, no exit code) -- the shared
+ * core of `agent stop` and the de-authenticate teardown. `graceMs > 0` waits that long and
+ * escalates to SIGKILL if the daemon is still alive (use it when the caller must be sure it
+ * stopped, e.g. de-auth); `0` sends a single SIGTERM without waiting. A lock-"alive" pid the
+ * owner-filtered scan cannot confirm as our daemon is REFUSED with a warning and tracking
+ * left intact ({ signalled: false, stopped: false }) -- see the alive arm below. Returns the
+ * tracked pid, whether we signalled it, and whether it is confirmed stopped afterwards.
  */
 export async function stopTrackedProxy(
   graceMs = 0,
@@ -133,9 +136,8 @@ export async function stopTrackedProxy(
     clearPersistedInferenceActivity(profile);
     return { signalled: false, stopped: true };
   }
-  // The daemon lock rules first (same table as proxyStatus): a held lock naming the
-  // tracked pid is our live daemon even where the argv scan cannot see it; a released
-  // lock naming it means the daemon is DEAD, so the pid is never signalled however alive
+  // The daemon lock rules first (same table as proxyStatus): a released lock naming the
+  // tracked pid means the daemon is DEAD, so the pid is never signalled however alive
   // the pid table says it is (the OS may have recycled it onto an unrelated process).
   // "unproven" falls back to classification: signal on "yes" (confirmed ours) AND
   // "unknown" (a restricted/sandboxed token that can't read the pid's identity, e.g.
@@ -148,6 +150,19 @@ export async function stopTrackedProxy(
   let signalled: boolean;
   switch (lock) {
     case "alive":
+      // "alive" proves a live holder SOMEWHERE, not that the local pid is it: on a home
+      // shared across hosts the holder is another HOST's daemon, and per-host run state
+      // only proves the tracked number was ours ONCE -- today it can sit on any innocent
+      // local process. So the signal needs the owner-filtered scan's corroboration (the
+      // same rule as the start cleanup's holder stop); an unconfirmed pid is refused
+      // LOUDLY with tracking kept, because the user asked to stop something provably
+      // still up and silently unbinding it would lie.
+      if (!(await isCopilotApiPid(trackedPid))) {
+        consola.warn(
+          `Not stopping pid ${trackedPid}: its daemon.lock is held, but this host cannot identify the pid as our daemon (a shared home's daemon on another host, or an unreadable process table). Stop it from its own host; tracking is left in place.`,
+        );
+        return { trackedPid, signalled: false, stopped: false };
+      }
       signalled = true;
       break;
     case "dead":

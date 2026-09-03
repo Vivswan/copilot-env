@@ -89,7 +89,10 @@ export function markInference(now: number): void {
 
 /** The persisted mark (epoch ms), or 0 when absent/unreadable. The out-of-process view of
  *  lastObservedInferenceMs, read by `agent health` -- per daemon, like the clear below, so
- *  it takes the profile whose activity file to read (null = the effective home's). */
+ *  it takes the profile whose activity file to read (null = the effective home's). The
+ *  plain load() flatten is DECIDED here, not inherited: the mark only feeds the health
+ *  DISPLAY (the watchdog trusts the in-memory signal), 0 already means "no mark seen",
+ *  and the write side is best-effort for the same reason. */
 export function persistedInferenceMs(profile: Profile = null): number {
   try {
     const value = new CopilotApiConfig(new CopilotApiPaths(profile).activityFile).load()[

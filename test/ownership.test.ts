@@ -2,7 +2,7 @@
 // record (src/copilot_api/ownership.ts): per-kind exact-path round-trips, junk
 // degradation, the legacy pre-ledger tolerance against the shared state store,
 // and the 3.5.6 adoption.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger, ProxyProjectionState } from "../src/copilot_api/ownership.ts";
@@ -236,3 +236,37 @@ test("a non-array optInPaths value reads as owning nothing", () => {
   writeFileSync(paths.projectionsFile, JSON.stringify({ optInPaths: { bogus: true } }));
   expect(new ProxyProjectionState(paths).ownedPaths()).toEqual([]);
 });
+
+// THE ownership-boundary control: an unreadable record must NOT read as
+// owns-nothing. owns()/ownedPaths() gate every take-back (the WebSearch deny,
+// desktop entries, the codex catalog reference) and the projection record gates
+// applyDefaultConfig's config.json deletions -- a false "not ours" leaves a deny
+// with its replacement removed, so a failed read must surface, never flatten.
+// Junk CONTENT keeps degrading (the tests above); a failed READ is different.
+// POSIX, non-root only: root bypasses file modes.
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "an unreadable ownership record THROWS at the read instead of owning nothing",
+  () => {
+    const paths = isolate();
+    const ledger = new OwnershipLedger();
+    ledger.record("webSearchDeny", "/a/settings.json");
+    const projections = new ProxyProjectionState(paths);
+    projections.setOwnedPaths([["smallModel"]]);
+
+    chmodSync(paths.ownershipFile, 0o000);
+    chmodSync(paths.projectionsFile, 0o000);
+    try {
+      expect(() => ledger.owns("webSearchDeny", "/a/settings.json")).toThrow(
+        "refusing to treat an unreadable store as empty",
+      );
+      expect(() => ledger.ownedPaths("webSearchDeny")).toThrow(paths.ownershipFile);
+      expect(() => projections.ownedPaths()).toThrow(paths.projectionsFile);
+    } finally {
+      chmodSync(paths.ownershipFile, 0o600);
+      chmodSync(paths.projectionsFile, 0o600);
+    }
+    // Control: readable again, the recorded claims still answer in full.
+    expect(ledger.owns("webSearchDeny", "/a/settings.json")).toBe(true);
+    expect(projections.ownedPaths()).toEqual([["smallModel"]]);
+  },
+);

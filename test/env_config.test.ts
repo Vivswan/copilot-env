@@ -1,3 +1,4 @@
+import { chmodSync } from "node:fs";
 import * as v from "valibot";
 import {
   runConfig,
@@ -20,6 +21,7 @@ import {
   type TotalOverConfigKeys,
 } from "../src/copilot_api/env_config.ts";
 import { DEFAULT_WEB_SEARCH_MODEL } from "../src/copilot_api/web_search.ts";
+import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { DEFAULT_RELEASE_COOLDOWN_SECONDS } from "../src/proxy_float.ts";
 import { SECONDS_PER_DAY } from "../src/utils/time.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
@@ -624,3 +626,34 @@ test("the release-cooldown label tracks the built-in default it describes", () =
   const days = DEFAULT_RELEASE_COOLDOWN_SECONDS / SECONDS_PER_DAY;
   expect(configDefaultLabel(configKeyDef("release-cooldown")!)).toBe(`${days} days (built-in)`);
 });
+
+// The prefs store's read() is STRICT -- wiring (wire-mcp), the float pin, and the
+// port knobs must never decide on an unproven "no preference set" -- while the
+// gates the in-daemon idle watchdog reads on its tick degrade to their built-in
+// defaults: a throw escaping the timer callback would kill the serving daemon,
+// and their flatten direction is the safe one (disengage / default window). One
+// unreadable file, both contracts. POSIX, non-root only: root bypasses file modes.
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "an unreadable prefs store: read() throws; the watchdog gates degrade to defaults",
+  () => {
+    tmpHome();
+    const cfg = new CopilotEnvConfig();
+    cfg.set({ autoStart: true, idleTimeout: 30, port: 5555 });
+    const file = new CopilotApiPaths().envConfigFile;
+    chmodSync(file, 0o000);
+    try {
+      expect(() => cfg.read()).toThrow("refusing to treat an unreadable store as empty");
+      expect(() => cfg.defaultPort()).toThrow(file);
+      expect(() => cfg.wireMcpEnabled()).toThrow(file);
+      // The watchdog-reachable gates must NOT throw; they answer the defaults.
+      expect(cfg.autoStartEnabled()).toBe(false);
+      expect(cfg.idleTimeoutSeconds()).toBe(configDefaultNumber("idle-timeout"));
+    } finally {
+      chmodSync(file, 0o600);
+    }
+    // Control: readable again, every reader answers the stored values.
+    expect(cfg.autoStartEnabled()).toBe(true);
+    expect(cfg.idleTimeoutSeconds()).toBe(30);
+    expect(cfg.defaultPort()).toBe(5555);
+  },
+);

@@ -1,11 +1,14 @@
 import {
   chmodSync,
+  lstatSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   renameSync as realRename,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -270,4 +273,101 @@ test("a genuinely absent store still reads as an empty document, not unreadable"
     d.created = true;
   });
   expect(cfg.load()).toEqual({ created: true });
+});
+
+// A DANGLING SYMLINK reads ENOENT through readFileSync, but the entry itself
+// exists -- readTextResult's rule, shared by the store: "absent" must be PROVEN
+// (entryAbsent), or update() would replace the user's link with a plain file.
+// Windows symlink creation needs privileges, hence the visible skip.
+test.skipIf(process.platform === "win32")(
+  "a dangling symlink at the store path is unreadable, never a writable empty doc",
+  () => {
+    dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+    const path = join(dir, "config.json");
+    const target = join(dir, "missing-target.json");
+    symlinkSync(target, path);
+    const cfg = new CopilotApiConfig(path);
+
+    expect(() => cfg.loadStrict()).toThrow("refusing to treat an unreadable store as empty");
+    expect(() =>
+      cfg.update((d) => {
+        d.smallModel = "gpt-6";
+      })
+    ).toThrow("refusing to overwrite it");
+    // THE outcome: the entry is still the user's symlink, pointing where it did.
+    expect(lstatSync(path).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(path)).toBe(target);
+    // The display flatten still answers {} on the same store (warned).
+    expect(cfg.load()).toEqual({});
+    // Control: once the target exists, the same symlinked store reads and writes.
+    writeFileSync(target, '{"kept": true}');
+    expect(cfg.loadStrict()).toEqual({ kept: true });
+  },
+);
+
+// The strict/display split over the SAME failed read: loadStrict is the
+// DECISION reader (ownership take-backs, wiring, the float pin) and must throw,
+// while load keeps its documented display flatten -- only the reader's stakes
+// differ. POSIX, non-root only: root bypasses file modes.
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "an unreadable store: loadStrict THROWS while load still degrades to {}",
+  () => {
+    dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+    const path = join(dir, "config.json");
+    const cfg = new CopilotApiConfig(path);
+    cfg.save({ auth: { apiKeys: ["secret-key"] } });
+    chmodSync(path, 0o000);
+    try {
+      let threw = "";
+      try {
+        cfg.loadStrict();
+      } catch (e) {
+        threw = e instanceof Error ? e.message : String(e);
+      }
+      // Positive assertion, so a call that did NOT throw fails here.
+      expect(threw).toContain("refusing to treat an unreadable store as empty");
+      expect(threw).toContain(path);
+      // The documented display flatten survives on the very same store.
+      expect(cfg.load()).toEqual({});
+    } finally {
+      chmodSync(path, 0o600);
+    }
+    // Control: readable again, both readers answer the document.
+    expect(cfg.loadStrict()).toEqual({ auth: { apiKeys: ["secret-key"] } });
+  },
+);
+
+test("update REFUSES a store that is present but not valid JSON, preserving its bytes", () => {
+  // Parse-fail is refused like the read-error arm, decided separately: for
+  // config.json the torn-write window can outlast the retries, and for our own
+  // atomic stores the junk is outside corruption whose salvageable content a
+  // reset would silently discard. The read-only readers still degrade it to {}.
+  // A parsed NON-OBJECT root is the same class -- content a write-back would
+  // discard -- so the cases differ only in what corrupted the root.
+  const cases = ['{ "auth": { "apiKeys": ["secret-key"] }, half-written', '[42, "secret-key"]'];
+  for (const content of cases) {
+    dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+    const path = join(dir, "config.json");
+    const cfg = new CopilotApiConfig(path);
+    writeFileSync(path, content);
+
+    let threw = "";
+    try {
+      cfg.update((d) => {
+        d.smallModel = "gpt-6";
+      });
+    } catch (e) {
+      threw = e instanceof Error ? e.message : String(e);
+    }
+    expect(threw).toContain("not valid JSON");
+    expect(threw).toContain("refusing to overwrite it");
+    // THE outcome: the corrupt bytes (a torn write's salvageable half included)
+    // are still on disk, byte for byte -- never reset to the mutation alone.
+    expect(readFileSync(path, "utf8")).toBe(content);
+    // Junk CONTENT is a proven fact about the file: both read-only readers degrade.
+    expect(cfg.load()).toEqual({});
+    expect(cfg.loadStrict()).toEqual({});
+    rmSync(dir, { recursive: true, force: true });
+    dir = "";
+  }
 });

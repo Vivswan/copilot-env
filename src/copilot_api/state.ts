@@ -62,7 +62,14 @@ export class CopilotEnvRunState {
     return new CopilotEnvRunState(profile);
   }
 
-  /** Current state; absent or ill-typed/out-of-range fields come back `undefined`. */
+  /** Current state; absent or ill-typed/out-of-range fields come back `undefined`.
+   *  The plain load() flatten (unreadable reads as "nothing recorded") is ACCEPTED
+   *  here, decided rather than inherited: the in-daemon idle watchdog reads this
+   *  every tick, where a throw would escape the timer callback and KILL the
+   *  serving daemon -- and the destructive acts fed from this store (kill,
+   *  orphan-sweep protection) never trust the record alone: they re-verify the
+   *  pid's daemon identity through the owner-gated classification before acting,
+   *  so a flattened empty can degrade a display, never authorize a kill. */
   read(): CopilotEnvRunStateData {
     return v.parse(RUN_STATE_SCHEMA, this.store.load());
   }

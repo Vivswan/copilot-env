@@ -427,6 +427,37 @@ test("a direct default write registers the MCP server and denies the builtin Web
   expect(new OwnershipLedger().ownedPaths("webSearchDeny")).toEqual([]);
 });
 
+// The boundary the ledger's strict read exists FOR: were an unreadable ledger to
+// read as owns-nothing, the proxy take-back would keep the deny (not ours to
+// strip) while still removing the MCP registration -- the builtin denied with no
+// replacement, the exact torn state the register-then-deny pair forbids. The
+// take-back must REFUSE instead, leaving the consistent old pair intact.
+// POSIX, non-root only: root bypasses file modes.
+test.skipIf(WIN || process.getuid?.() === 0)(
+  "an unreadable ownership ledger refuses the take-back instead of leaving a deny with no replacement",
+  () => {
+    const home = tmpHome();
+    configureClaudeConfig(home, { mode: "direct" });
+    expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
+    const ledgerFile = new CopilotApiPaths().ownershipFile;
+    chmodSync(ledgerFile, 0o000);
+    try {
+      expect(() => configureClaudeConfig(home, { mode: "proxy" })).toThrow(ledgerFile);
+      // The whole outcome: BOTH halves still stand -- deny and registration --
+      // never "denied with the replacement removed".
+      expect(denyOf(readSettings(home))).toEqual([WEBSEARCH_DENY_RULE]);
+      expect((readClaudeJson().mcpServers as Record<string, unknown>)["copilot-env"])
+        .toMatchObject({ "type": "stdio" });
+    } finally {
+      chmodSync(ledgerFile, 0o600);
+    }
+    // Control: readable again, the same take-back strips both halves.
+    configureClaudeConfig(home, { mode: "proxy" });
+    expect(denyOf(readSettings(home))).toBeUndefined();
+    expect(readClaudeJson().mcpServers).toBeUndefined();
+  },
+);
+
 test("a pre-existing user WebSearch deny is never claimed nor removed", () => {
   const home = tmpHome();
   // Seed the user's own deny BEFORE any managed write.

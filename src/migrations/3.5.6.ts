@@ -358,10 +358,12 @@ export async function moveDefaultDaemonHome(
 /** The FLAT root's tracked daemon pid for THIS host, read by explicit path (the run-state
  *  store would resolve through defaultDaemonHome, which no longer answers the flat root
  *  once profiles/default exists). Only the pid is wanted; any other shape reads as none.
- *  A missing or unreadable file also flattens to none -- accepted: our store writes
- *  atomically, so the common case is "never written", and the residue (a permissions or
- *  corruption failure hiding a live pre-lock daemon) joins this consult's existing
- *  accepted residuals (see the call site: cross-host daemons are undetectable too). */
+ *  A missing or unreadable file also flattens to none (the plain load(), DECIDED over the
+ *  strict read) -- accepted: our store writes atomically, so the common case is "never
+ *  written", and the residue (a permissions or corruption failure hiding a live pre-lock
+ *  daemon) joins this consult's existing accepted residuals (see the call site: cross-host
+ *  daemons are undetectable too), while a strict throw would fail the whole best-effort
+ *  migration over a blind spot it tolerates elsewhere. */
 function flatTrackedPid(root: string): number | undefined {
   const stateFile = join(root, RUN_DIR_NAME, getSanitizedHostname(), RUN_STATE_FILENAME);
   const pid = new CopilotApiConfig(stateFile).load()["pid"];

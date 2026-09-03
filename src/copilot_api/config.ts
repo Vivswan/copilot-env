@@ -5,13 +5,32 @@ import { basename, dirname, join } from "node:path";
 import { consola } from "consola";
 
 import { BOUNDED_LOCK_POLICY, withFileLockSync } from "../utils/file_lock.ts";
-import { isEnoentOrNotdir } from "../utils/fs.ts";
+import { entryAbsent, isEnoentOrNotdir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { sleepSync } from "../utils/time.ts";
 import { CopilotApiPaths, PROXY_CONFIG_FILENAME } from "./paths.ts";
 import type { Profile } from "./profile.ts";
 
 const logger = consola.withTag("copilot_api.config");
+
+/** One read of a store file; see CopilotApiConfig.read() for the kinds' meaning. */
+type StoreRead =
+  | { kind: "doc"; data: Record<string, unknown> }
+  | { kind: "unparseable"; error: string }
+  | { kind: "unreadable"; error: string };
+
+/** The shared unparseable degrade for the two read-only loaders: warn once,
+ *  answer `{}` -- junk content reads as empty, never as a crash. */
+function dataOrDegrade(
+  path: string,
+  read: Exclude<StoreRead, { kind: "unreadable" }>,
+): Record<string, unknown> {
+  if (read.kind === "unparseable") {
+    logger.warn(`${path} is not valid JSON (${read.error}); treating as empty`);
+    return {};
+  }
+  return read.data;
+}
 
 // Bounded backoff for reading config.json across the daemon's non-atomic write (see load()):
 // ~5 attempts x 4ms = up to ~16ms of retry, far longer than a truncate-then-write window.
@@ -58,57 +77,62 @@ export class CopilotApiConfig {
 
   /**
    * What one read of the store found. `doc` is a read that COMPLETED: the file
-   * parsed, or it is genuinely absent/empty -- plus, kept from the pre-existing
-   * behavior, a file that is present but unparseable, which this warns about and
-   * describes as `{}` (see the parse arm below). `unreadable` is a read that FAILED:
-   * absence was not established and the contents could not be seen either. Those two
-   * must not collapse, because `update()` writes back what this returns -- persisting
-   * a failed read as `{}` is what would WIPE the file (the daemon's api key, admin
-   * key, providers).
+   * parsed, or it is genuinely absent/empty. `unparseable` is content that WAS
+   * seen but is not JSON -- a proven fact about the file. `unreadable` is a read
+   * that FAILED: absence was not established and the contents could not be seen
+   * either. The kinds must not collapse, because `update()` writes back what this
+   * returns -- persisting a failed (or half-seen) read as `{}` is what would WIPE
+   * the file (the daemon's api key, admin key, providers).
    */
-  private read(): { kind: "doc"; data: Record<string, unknown> } | { kind: "unreadable" } {
+  private read(): StoreRead {
     // The proxy DAEMON writes config.json non-atomically (a plain truncate-then-write in the
     // floated package), so a concurrent read can momentarily see it empty, half-written, or --
     // on Windows -- fail outright with a sharing violation. Retry a few times before concluding
     // anything: otherwise update()'s save would persist the emptied doc and WIPE the daemon's
-    // keys (api key, admin key, providers). Only config.json needs this: our own stores (state,
-    // prefs) write via atomic rename, so a reader never sees a partial state from us. The window
-    // is sub-millisecond, so a short bounded backoff closes it at negligible cost.
-    const retryTransient = basename(this.path) === PROXY_CONFIG_FILENAME;
-    const maxAttempts = retryTransient ? LOAD_RETRY_ATTEMPTS : 1;
+    // keys (api key, admin key, providers). Only config.json can be seen TORN, so only it gets
+    // the empty/parse-arm retries: our own stores (state, prefs) write via atomic rename. The
+    // read-ERROR arm retries for EVERY store -- a transient failure (a Windows sharing
+    // violation) is not a fact about the file, and "unreadable" is refused at update() and
+    // loadStrict(), so <=16ms of backoff is worth not refusing on a blip.
+    const retryTorn = basename(this.path) === PROXY_CONFIG_FILENAME;
     for (let attempt = 1;; attempt++) {
-      const last = attempt >= maxAttempts;
+      const last = attempt >= LOAD_RETRY_ATTEMPTS;
       let raw: string;
       try {
         raw = readFileSync(this.path, "utf8");
       } catch (e) {
-        // Absence is a PROVEN answer (no file -> an empty document); every other
-        // failure is a look that did not complete. It retries on the same cadence as
-        // the torn-write arms below -- a Windows sharing violation is transient in
-        // exactly the same way -- and then reports honestly rather than as empty.
-        if (isEnoentOrNotdir(e)) return { kind: "doc", data: {} };
+        // Absence is a PROVEN answer (no file -> an empty document) -- proven by
+        // entryAbsent, readTextResult's rule: a DANGLING SYMLINK reads ENOENT
+        // through readFileSync but the entry itself exists, and writing "absent"
+        // back would replace the user's link with a plain file. Every other
+        // failure is a look that did not complete, reported honestly after the
+        // retries rather than as empty.
+        if (isEnoentOrNotdir(e) && entryAbsent(this.path)) return { kind: "doc", data: {} };
         if (!last) {
           sleepSync(LOAD_RETRY_MS);
           continue;
         }
-        logger.warn(`could not read ${this.path}: ${String(e)}`);
-        return { kind: "unreadable" };
+        return { kind: "unreadable", error: String(e) };
       }
       if (raw.trim()) {
         try {
           const data: unknown = JSON.parse(raw);
-          return { kind: "doc", data: isRecord(data) ? data : {} };
+          // A parsed non-object root (a scalar, an array) is the same class as a
+          // parse failure: content we could not interpret as the store, which a
+          // write-back would discard -- so it degrades on read and refuses on
+          // update, never collapses to a writable empty doc.
+          if (isRecord(data)) return { kind: "doc", data };
+          return { kind: "unparseable", error: "the JSON root is not an object" };
         } catch (e) {
-          if (!last) {
+          if (retryTorn && !last) {
             sleepSync(LOAD_RETRY_MS);
             continue;
           }
-          logger.warn(`${this.path} is not valid JSON (${String(e)}); treating as empty`);
-          return { kind: "doc", data: {} };
+          return { kind: "unparseable", error: String(e) };
         }
       }
       // Empty read: retry (a transient truncate window) before accepting it as genuinely empty.
-      if (!last) {
+      if (retryTorn && !last) {
         sleepSync(LOAD_RETRY_MS);
         continue;
       }
@@ -116,16 +140,36 @@ export class CopilotApiConfig {
     }
   }
 
-  /** The store as a document, with a failed read flattened to `{}`. The flatten is
-   *  KEPT for read-only callers (a caller that writes the result back goes through
-   *  `update()`, which refuses an unreadable store instead), but it is a real
-   *  flatten, not a safe one: a reader that renders "owns nothing" / "no preference
-   *  set" from this cannot tell an unreadable store from an empty one. Readers whose
-   *  emptiness is a VERDICT should grow an error-bearing read rather than lean on
-   *  this. */
+  /** The store as a document, with a failed or unparsed read flattened to `{}`
+   *  (warned). The flatten is KEPT for readers whose degraded answer is safe --
+   *  pure display, and the surfaces that must never throw (the in-daemon watchdog
+   *  gates) -- but it is a real flatten: a reader that renders "owns nothing" /
+   *  "no preference set" from this cannot tell an unreadable store from an empty
+   *  one. Readers whose emptiness is a DECISION read `loadStrict()` instead; a
+   *  caller that writes the result back goes through `update()`, which refuses. */
   load(): Record<string, unknown> {
     const read = this.read();
-    return read.kind === "doc" ? read.data : {};
+    if (read.kind === "unreadable") {
+      logger.warn(`could not read ${this.path}: ${read.error}`);
+      return {};
+    }
+    return dataOrDegrade(this.path, read);
+  }
+
+  /** `load()` for DECISION-bearing readers (ownership take-backs, wiring, the
+   *  proxy float pin, credential resolution): a read that FAILED throws -- a
+   *  destructive or ownership decision must never act on an unproven empty --
+   *  while unparseable CONTENT still degrades to `{}` like `load()`: junk in the
+   *  file is a proven fact about the file (warned), which the stores' lenient
+   *  schemas already read as "owns less" / defaults. */
+  loadStrict(): Record<string, unknown> {
+    const read = this.read();
+    if (read.kind === "unreadable") {
+      throw new Error(
+        `Could not read ${this.path} (${read.error}); refusing to treat an unreadable store as empty.`,
+      );
+    }
+    return dataOrDegrade(this.path, read);
   }
 
   /** Atomically write ``data`` to disk with mode 0600. */
@@ -144,10 +188,10 @@ export class CopilotApiConfig {
 
   /** Load, apply ``mutate`` in place, save, and return the result. Serialized across processes
    *  by a best-effort `<file>.lock` so concurrent read-modify-writes don't lost-update.
-   *  REFUSES on a store that could not be read: this is a read-modify-WRITE, so treating a
-   *  failed read as an empty document would persist the emptiness and wipe every key the file
-   *  holds. Same direction as codex/toml_io.ts's "refusing to overwrite it" -- an unreadable
-   *  document is never clobbered, it is reported. */
+   *  REFUSES on a store that could not be read OR parsed: this is a read-modify-WRITE, so
+   *  treating either as an empty document would persist the emptiness and wipe every key the
+   *  file holds. Same direction as codex/toml_io.ts's "refusing to overwrite it" -- an
+   *  unreadable or unparsed document is never clobbered, it is reported. */
   update(mutate: (d: Record<string, unknown>) => void): Record<string, unknown> {
     const lockPath = `${this.path}.lock`;
     return withFileLockSync(lockPath, BOUNDED_LOCK_POLICY, () => {
@@ -155,6 +199,19 @@ export class CopilotApiConfig {
       if (read.kind === "unreadable") {
         throw new Error(
           `Could not read ${this.path}; refusing to overwrite it (writing now would discard everything it holds).`,
+        );
+      }
+      if (read.kind === "unparseable") {
+        // The same refusal as the unreadable arm, decided separately: a corrupt-but-
+        // readable file is NOT a reset candidate here, because (a) for config.json the
+        // daemon's torn-write window read() retries over can outlast the retries, so
+        // "unparseable" may still be a half-written LIVE store, and (b) for our own
+        // atomic stores it is outside corruption (a hand edit) whose salvageable
+        // content a reset would silently discard. The reset stays an explicit user
+        // act: fix or delete the file.
+        throw new Error(
+          `${this.path} is not valid JSON (${read.error}); refusing to overwrite it ` +
+            `(a rewrite would discard whatever it still holds - fix or delete the file to reset it).`,
         );
       }
       const data = read.data;
@@ -171,7 +228,10 @@ export class CopilotApiConfig {
     return randomBytes(32).toString("hex");
   }
 
-  /** The `auth` block narrowed to a record, or null when absent/ill-typed. */
+  /** The `auth` block narrowed to a record, or null when absent/ill-typed. The
+   *  plain load() flatten is ACCEPTED here: this only feeds the ensure* fast
+   *  paths, and their slow path re-checks inside update(), which refuses an
+   *  unreadable or unparsed store before anything could be clobbered. */
   private readAuth(): Record<string, unknown> | null {
     const auth = this.load().auth;
     return isRecord(auth) ? auth : null;

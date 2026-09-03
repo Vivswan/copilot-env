@@ -21,7 +21,9 @@
 //     reproduces it re-claims it, e.g. the catalog reference; otherwise it is a
 //     harmless orphan the user removes by hand) -- never a claim on something
 //     we did not write.
-//   - a junk-degraded record file reads as "owns less", never as a crash.
+//   - a junk-degraded record file reads as "owns less", never as a crash. An
+//     UNREADABLE store, by contrast, THROWS (loadStrict): "owns nothing" is a
+//     verdict take-back paths act on, never assumed from a read that failed.
 //   - every mutation serializes on ONE ops lock, so a take-back racing the
 //     legacy adoption cannot resurrect a released claim (advisory, like every
 //     lock in this codebase: bounded wait, then proceed).
@@ -106,13 +108,17 @@ export class OwnershipLedger {
     this.opsLock = `${paths.ownershipFile}.ops.lock`;
   }
 
+  // Both record reads are STRICT (loadStrict): they feed owns()/ownedPaths(),
+  // the predicate every take-back gates on -- an unreadable store must surface,
+  // never read as owns-nothing (which would strip a deny's replacement while
+  // leaving the deny). Junk CONTENT still degrades via the lenient schemas.
   private ledgerPaths(kind: OwnedArtifactKind): string[] {
-    return v.parse(LEDGER_SCHEMA, this.store.load())[LEDGER_KEYS[kind]];
+    return v.parse(LEDGER_SCHEMA, this.store.loadStrict())[LEDGER_KEYS[kind]];
   }
 
   private legacyPaths(kind: OwnedArtifactKind): string[] {
     const key = LEGACY_STATE_KEYS[kind];
-    return key === undefined ? [] : ownedPathList(this.legacyStore.load()[key]);
+    return key === undefined ? [] : ownedPathList(this.legacyStore.loadStrict()[key]);
   }
 
   /** Every artifact path recorded for `kind` -- ledger entries plus any legacy
@@ -177,7 +183,10 @@ export class OwnershipLedger {
    */
   adoptLegacyRecords(): void {
     withFileLockSync(this.opsLock, BOUNDED_LOCK_POLICY, () => {
-      const legacy = this.legacyStore.load();
+      // Strict: "no legacy records" is the decision to skip the move, so it must
+      // be proven, not flattened from a failed read (the runner is best-effort,
+      // so the throw defers the adoption instead of falsely completing it).
+      const legacy = this.legacyStore.loadStrict();
       const present = (Object.entries(LEGACY_STATE_KEYS) as [OwnedArtifactKind, string][])
         .filter(([, key]) => key in legacy);
       if (present.length === 0) return;
@@ -251,9 +260,12 @@ export class ProxyProjectionState {
     this.store = new CopilotApiConfig(this.path);
   }
 
-  /** The opt-in paths copilot-env last projected into this home's config.json. */
+  /** The opt-in paths copilot-env last projected into this home's config.json.
+   *  Strict read: the record decides which config.json paths applyDefaultConfig
+   *  may DELETE (and whether setOwnedPaths skips its write), so an unreadable
+   *  record throws rather than reading as "we projected nothing". */
   ownedPaths(): ProxyConfigPath[] {
-    return v.parse(PROJECTION_STATE_SCHEMA, this.store.load()).optInPaths;
+    return v.parse(PROJECTION_STATE_SCHEMA, this.store.loadStrict()).optInPaths;
   }
 
   /** Replace the record with the paths the CURRENT apply projected. An empty record drops

@@ -1,8 +1,8 @@
 // Path helper for per-host copilot-api runtime files under COPILOT_API_HOME.
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, type Stats, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { isDir, isEnoentOrNotdir } from "../utils/fs.ts";
+import { isEnoentOrNotdir } from "../utils/fs.ts";
 import { getSanitizedHostname } from "../utils/hostname.ts";
 import { isValidProfileName, parseProfileName, type Profile, type ProfileName } from "./profile.ts";
 
@@ -24,8 +24,9 @@ export function resolveHome(): string {
 export const RUN_DIR_NAME = ".run";
 
 /** Basename of the proxy's OWN config file under a daemon home (the daemon writes it
- *  too, which is why CopilotApiConfig.load() gives exactly this name its transient-read
- *  retry). */
+ *  too, non-atomically, which is why CopilotApiConfig's store read gives exactly this
+ *  name its torn-content (empty/parse) retries; the read-ERROR retry covers every
+ *  store). */
 export const PROXY_CONFIG_FILENAME = "config.json";
 
 /** Basename of the proxy's SQLite DB (`token_usage_events` etc.), one per host dir; a
@@ -39,7 +40,7 @@ export function usageDbsUnderHome(home: string): string[] {
   const paths: string[] = [];
 
   const legacy = join(home, SQLITE_DB_FILENAME);
-  if (existsSync(legacy)) {
+  if (statIfPresent(legacy) !== null) {
     paths.push(legacy);
   }
 
@@ -56,13 +57,27 @@ export function usageDbsUnderHome(home: string): string[] {
     hosts = [];
   }
   for (const host of hosts) {
+    const hostStat = statIfPresent(join(runDir, host));
     const candidate = join(runDir, host, SQLITE_DB_FILENAME);
-    if (isDir(join(runDir, host)) && existsSync(candidate)) {
+    if (hostStat !== null && hostStat.isDirectory() && statIfPresent(candidate) !== null) {
       paths.push(candidate);
     }
   }
 
   return paths;
+}
+
+/** stat with only ENOENT/ENOTDIR reading as "nothing there" (null); any other
+ *  failure (permissions, I/O) propagates -- the same narrowing as the readdir in
+ *  usageDbsUnderHome and for the same reason: a swallowed stat error one level
+ *  below it would silently drop a DB from the cost totals it feeds. */
+function statIfPresent(path: string): Stats | null {
+  try {
+    return statSync(path);
+  } catch (e) {
+    if (isEnoentOrNotdir(e)) return null;
+    throw e;
+  }
 }
 
 // --- profile homes ------------------------------------------------------------

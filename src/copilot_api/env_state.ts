@@ -492,9 +492,13 @@ export class CopilotEnvState {
   }
 
   /** The store as PERSISTED (both layouts, the reserved slot included) --
-   *  strictly for the unifying readers below; everything else reads read(). */
+   *  strictly for the unifying readers below; everything else reads read().
+   *  Strict store read: an unreadable credential store THROWS rather than
+   *  reading as "no credential / no such profile" -- auth resolution and the
+   *  named-profile hard-fail must diagnose the failed read, not fabricate an
+   *  empty store from it. */
   private rawRead(): CopilotEnvStateData {
-    return v.parse(STATE_SCHEMA, this.store.load());
+    return v.parse(STATE_SCHEMA, this.store.loadStrict());
   }
 
   /**
@@ -767,7 +771,9 @@ export class CopilotEnvState {
    * legacy keys anymore.
    */
   adoptLegacyDefaultCredential(): void {
-    const raw = this.store.load();
+    // Strict like rawRead: "no legacy keys" is the decision to skip the lift, so
+    // it must be proven, not flattened from a failed read.
+    const raw = this.store.loadStrict();
     if (raw.githubToken === undefined && raw.authProvider === undefined) return;
     this.store.update((d) => liftLegacyDefaultPair(d));
   }

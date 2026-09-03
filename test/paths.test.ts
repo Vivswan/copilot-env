@@ -1,5 +1,5 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   CopilotApiPaths,
@@ -7,6 +7,9 @@ import {
   defaultDaemonHome,
   profileHome,
   resolveHome,
+  RUN_DIR_NAME,
+  SQLITE_DB_FILENAME,
+  usageDbsUnderHome,
 } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { getSanitizedHostname } from "../src/utils/hostname.ts";
@@ -137,3 +140,32 @@ test("account-wide files resolve to the ROOT home, never a daemon home or .run/<
     expect(rootFile.startsWith(dir)).toBe(true);
   }
 });
+
+// The usage sweep's stat checks narrow like its own readdir: only ENOENT/ENOTDIR
+// read as "nothing there". An EACCES one level below the home (a host dir the
+// sweep cannot look into) must propagate -- swallowed, it silently drops that
+// host's DB from the cost totals the list is summed into. POSIX, non-root only:
+// root bypasses file modes.
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "usageDbsUnderHome propagates a stat failure instead of silently dropping a DB",
+  () => {
+    dir = mkdtempSync(join(tmpdir(), "copilot-paths-"));
+    const home = join(dir, "home");
+    const open = join(home, RUN_DIR_NAME, "host-a");
+    const blocked = join(home, RUN_DIR_NAME, "host-b");
+    mkdirSync(open, { recursive: true });
+    mkdirSync(blocked, { recursive: true });
+    writeFileSync(join(open, SQLITE_DB_FILENAME), "db");
+    writeFileSync(join(blocked, SQLITE_DB_FILENAME), "db");
+    chmodSync(blocked, 0o000);
+    try {
+      expect(() => usageDbsUnderHome(home)).toThrow(/EACCES/);
+    } finally {
+      chmodSync(blocked, 0o755);
+    }
+    // Control: with the dir readable again the sweep counts BOTH hosts' DBs.
+    expect(usageDbsUnderHome(home).sort()).toEqual(
+      [join(open, SQLITE_DB_FILENAME), join(blocked, SQLITE_DB_FILENAME)].sort(),
+    );
+  },
+);

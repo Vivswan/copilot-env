@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse, stringify } from "smol-toml";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
@@ -524,3 +524,40 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss keeps
   );
   expect(() => loginWithGhCli(() => ({ token: "tok" }))).not.toThrow();
 });
+
+// The credential store reads STRICTLY: an unreadable store must diagnose the
+// failed read, never read as "no credential" (a wrong fix pointer) or "no such
+// profile" (a false hard-fail naming the profile instead of the store). The
+// named-profile arm is the sharper one -- profiles never fall back, so a
+// fabricated empty would deny a credential that exists. POSIX, non-root only:
+// root bypasses file modes.
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "an unreadable credential store throws at read, never 'no credential / no such profile'",
+  () => {
+    isolate();
+    state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_keep" });
+    const work = parseProfileName("work");
+    state().commitProfile(work, {
+      credential: { kind: "stored", provider: "gh-token", token: "ghu_work" },
+      mode: "proxy",
+    });
+    const stateFile = new CopilotApiPaths().sharedStateFile;
+    chmodSync(stateFile, 0o000);
+    try {
+      expect(() => state().readCredential(null)).toThrow(
+        "refusing to treat an unreadable store as empty",
+      );
+      expect(() => state().profileSlotStatus(work)).toThrow(stateFile);
+      expect(() => assertProfileSlot(work)).toThrow(stateFile);
+    } finally {
+      chmodSync(stateFile, 0o600);
+    }
+    // Control: readable again, the same reads answer the stored slots.
+    expect(state().readCredential(null)).toEqual({
+      kind: "stored",
+      provider: "gh-token",
+      token: "ghu_keep",
+    });
+    expect(state().profileSlotStatus(work).exists).toBe(true);
+  },
+);

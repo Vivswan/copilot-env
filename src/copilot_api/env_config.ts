@@ -717,14 +717,31 @@ export class CopilotEnvConfig {
     this.store = new CopilotApiConfig(path ?? new CopilotApiPaths().envConfigFile);
   }
 
-  /** Current preferences; absent/ill-typed/out-of-range fields come back `undefined`. */
+  /** Current preferences; absent/ill-typed/out-of-range fields come back `undefined`.
+   *  The store read is STRICT: an unreadable file THROWS instead of reading as "no
+   *  preference set" -- wiring (wire-mcp), the proxy float pin, and the port knobs
+   *  are decisions that must never act on an unproven empty. Junk content still
+   *  degrades per-field via the lenient schema. */
   read(): CopilotEnvConfigData {
+    return v.parse(CONFIG_SCHEMA, this.store.loadStrict());
+  }
+
+  /** read() with an unreadable store degraded to "no preferences" (built-in
+   *  defaults). ONLY for the gates the in-daemon idle watchdog reads on its
+   *  interval tick (idle_watchdog.ts): a throw there escapes the timer callback
+   *  and kills the serving daemon, and the flatten direction is the safe one --
+   *  the lifecycle disengages / the default window applies. The CLI's auto-start
+   *  gates share these accessors and inherit the same fail-closed direction (the
+   *  opt-in lifecycle stays off), warned by load(); every other preference read
+   *  stays strict. */
+  private readDegraded(): CopilotEnvConfigData {
     return v.parse(CONFIG_SCHEMA, this.store.load());
   }
 
-  /** Whether the managed proxy lifecycle (auto-start + idle auto-stop) is enabled. */
+  /** Whether the managed proxy lifecycle (auto-start + idle auto-stop) is enabled.
+   *  Watchdog-reachable, so the read degrades (see readDegraded). */
   autoStartEnabled(): boolean {
-    return this.read().autoStart ?? configDefaultBoolean("auto-start");
+    return this.readDegraded().autoStart ?? configDefaultBoolean("auto-start");
   }
 
   /** Whether the patched Codex model catalog is enabled (opt-in, default off). */
@@ -800,9 +817,10 @@ export class CopilotEnvConfig {
    * Idle auto-stop window in whole seconds (`0` disables), else the registry built-in.
    * The per-invocation env layer above this (COPILOT_API_IDLE_TIMEOUT) stays at the read
    * site (src/scripts/idle_watchdog.ts), per the flag/env > stored > default precedence.
+   * Watchdog-reachable, so the read degrades (see readDegraded).
    */
   idleTimeoutSeconds(): number {
-    return this.read().idleTimeout ?? configDefaultNumber("idle-timeout");
+    return this.readDegraded().idleTimeout ?? configDefaultNumber("idle-timeout");
   }
 
   /**

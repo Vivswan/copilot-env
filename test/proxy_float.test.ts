@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { directHelperCommand } from "../src/claude/config.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
@@ -22,6 +22,7 @@ import {
   removeProxyFloatArtifacts,
   resolvedVersionFile,
   resolveMinimumReleaseAgeSeconds,
+  resolveProxyVersionOverride,
   selectProxyVersion,
   writeDaemonConfig,
   writeResolvedVersionRecord,
@@ -32,6 +33,7 @@ import {
   resolveCopilotApiEntry,
 } from "../src/copilot_api/process.ts";
 import { DAEMON_SHIM_FILES } from "../src/copilot_api/shims.ts";
+import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import type { ProjectConfig } from "../src/utils/project_config.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
@@ -334,6 +336,33 @@ describe("resolveMinimumReleaseAgeSeconds", () => {
     process.env[MIN_RELEASE_AGE_ENV] = "abc";
     expect(() => resolveMinimumReleaseAgeSeconds()).toThrow("whole number of seconds");
   });
+
+  // The float-pin honesty control: a stored version pin or cooldown behind an
+  // unreadable store must FAIL the read, never silently read as "no pin" /
+  // default cooldown -- floating past a supply-chain pin on an unproven empty
+  // defeats the control outright. The env layer still wins first, so an
+  // explicit per-invocation value never even consults the store. POSIX,
+  // non-root only: root bypasses file modes.
+  test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "an unreadable prefs store fails the version-pin and cooldown reads; the env override still wins first",
+    () => {
+      new CopilotEnvConfig().set({ releaseCooldown: 60, proxyVersion: "1.2.3" });
+      const file = new CopilotApiPaths().envConfigFile;
+      chmodSync(file, 0o000);
+      try {
+        expect(() => resolveProxyVersionOverride()).toThrow(file);
+        expect(() => resolveMinimumReleaseAgeSeconds()).toThrow(file);
+        process.env[MIN_RELEASE_AGE_ENV] = "0";
+        expect(resolveMinimumReleaseAgeSeconds()).toBe(0);
+      } finally {
+        delete process.env[MIN_RELEASE_AGE_ENV];
+        chmodSync(file, 0o600);
+      }
+      // Control: readable again, the stored pin and cooldown answer.
+      expect(resolveProxyVersionOverride()).toBe("1.2.3");
+      expect(resolveMinimumReleaseAgeSeconds()).toBe(60);
+    },
+  );
 });
 
 describe("floatProxy", () => {
@@ -676,6 +705,24 @@ describe("ensureProxyNpmrc", () => {
     expect(ensureProxyNpmrc(dir).kind).toBe("kept-foreign");
     expect(readFileSync(join(dir, ".npmrc"), "utf8")).toBe("registry=https://example.test\n");
   });
+
+  // The unreadable variant of the row above: ownership (the marker) was not
+  // proven, so the file is kept, never rewritten over content we could not see.
+  // POSIX, non-root only: root bypasses file modes.
+  test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "never clobbers an UNREADABLE .npmrc either (ownership unproven)",
+    () => {
+      const npmrc = join(dir, ".npmrc");
+      writeFileSync(npmrc, "registry=https://example.test\n");
+      chmodSync(npmrc, 0o000);
+      try {
+        expect(ensureProxyNpmrc(dir).kind).toBe("kept-foreign");
+      } finally {
+        chmodSync(npmrc, 0o600);
+      }
+      expect(readFileSync(npmrc, "utf8")).toBe("registry=https://example.test\n");
+    },
+  );
 
   test("floatProxy writes it before installing", async () => {
     // Read at cache-spawn time, inside the runner: an .npmrc written after the

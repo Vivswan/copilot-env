@@ -46,7 +46,11 @@ export class AutoupdateState {
     this.store = new CopilotApiConfig(path ?? autoupdateStateFile());
   }
 
-  /** Current state; absent or ill-typed fields fall back to safe defaults. */
+  /** Current state; absent or ill-typed fields fall back to safe defaults. The
+   *  plain load() flatten (unreadable reads as "never checked, disabled") is
+   *  ACCEPTED, decided rather than inherited: this state only paces the
+   *  best-effort preflight, its flatten direction is "do nothing" (enabled
+   *  degrades to false), and its writes go through update(), which refuses. */
   read(): AutoupdateData {
     return v.parse(AUTOUPDATE_SCHEMA, this.store.load());
   }

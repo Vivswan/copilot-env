@@ -259,30 +259,33 @@ test("policy: removeCodexDefaultWiring skips an absent config but still scrubs .
 // ownership rule rather than one errno. The "ours" case deliberately uses a SYMLINK
 // alias, not the exact path: the exact spelling short-circuits before the resolver,
 // so only an alias exercises the resolver's "yes" branch that the other arms are
-// contrasted against.
-test("policy: removeCodexDefaultWiring strips model_catalog_json only when it is provably ours", () => {
-  if (process.platform === "win32") return; // symlink creation needs privileges there
-  dir = isolateAgentHomes("codex-toml-io-", { mkdirs: true }).dir;
-  const codexHome = join(dir, ".codex");
-  const configPath = join(codexHome, "config.toml");
-  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-  mkdirSync(dirname(catalogFile), { recursive: true });
-  writeFileSync(catalogFile, '{"models":[]}');
+// contrasted against. Windows is a VISIBLE skip like the sibling below (symlink
+// creation needs privileges there), never a silent early return.
+test.skipIf(process.platform === "win32")(
+  "policy: removeCodexDefaultWiring strips model_catalog_json only when it is provably ours",
+  () => {
+    dir = isolateAgentHomes("codex-toml-io-", { mkdirs: true }).dir;
+    const codexHome = join(dir, ".codex");
+    const configPath = join(codexHome, "config.toml");
+    const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+    mkdirSync(dirname(catalogFile), { recursive: true });
+    writeFileSync(catalogFile, '{"models":[]}');
 
-  // 1. Ours via a non-identical spelling that RESOLVES to our file: stripped.
-  const alias = join(dir, "catalog-alias.json");
-  symlinkSync(catalogFile, alias);
-  writeFileSync(configPath, stringify({ "model_catalog_json": alias }));
-  removeCodexDefaultWiring(codexHome);
-  expect(readFileSync(configPath, "utf8")).not.toContain("model_catalog_json");
+    // 1. Ours via a non-identical spelling that RESOLVES to our file: stripped.
+    const alias = join(dir, "catalog-alias.json");
+    symlinkSync(catalogFile, alias);
+    writeFileSync(configPath, stringify({ "model_catalog_json": alias }));
+    removeCodexDefaultWiring(codexHome);
+    expect(readFileSync(configPath, "utf8")).not.toContain("model_catalog_json");
 
-  // 2. Provably NOT ours: another file that resolves fine, elsewhere. Left alone.
-  const foreign = join(dir, "someone-elses-catalog.json");
-  writeFileSync(foreign, "{}");
-  writeFileSync(configPath, stringify({ "model_catalog_json": foreign }));
-  removeCodexDefaultWiring(codexHome);
-  expect(readFileSync(configPath, "utf8")).toContain("model_catalog_json");
-});
+    // 2. Provably NOT ours: another file that resolves fine, elsewhere. Left alone.
+    const foreign = join(dir, "someone-elses-catalog.json");
+    writeFileSync(foreign, "{}");
+    writeFileSync(configPath, stringify({ "model_catalog_json": foreign }));
+    removeCodexDefaultWiring(codexHome);
+    expect(readFileSync(configPath, "utf8")).toContain("model_catalog_json");
+  },
+);
 
 // The third arm, in its own test so the platform skip is VISIBLE in the output
 // rather than silently emptying a passing test: a reference whose resolve cannot

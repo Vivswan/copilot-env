@@ -62,8 +62,10 @@ export function readTextResult(path: string): TextReadResult {
 /** Whether NO directory entry exists at `path` (lstat: a dangling symlink still
  *  counts as an entry). Fail-closed: only lstat's own ENOENT/ENOTDIR confirms
  *  absence -- any other failure (EACCES, a transient error) reads as "something
- *  may be there", so the caller reports unreadable rather than absent. */
-function entryAbsent(path: string): boolean {
+ *  may be there", so the caller reports unreadable rather than absent. Shared by
+ *  readTextResult above and the JSON store's read (src/copilot_api/config.ts),
+ *  so "absent" can never mean two different things between them. */
+export function entryAbsent(path: string): boolean {
   try {
     lstatSync(path);
     return false;

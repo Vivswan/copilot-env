@@ -55,7 +55,7 @@ import { createConsola } from "consola";
 import * as v from "valibot";
 import { proxyUnusedEverywhere } from "./agents/wiring.ts";
 import { atomicWriteFile } from "./copilot_api/config.ts";
-import { CopilotEnvConfig, type CopilotEnvConfigData } from "./copilot_api/env_config.ts";
+import { CopilotEnvConfig } from "./copilot_api/env_config.ts";
 import { resolveRootHome } from "./copilot_api/paths.ts";
 import { allShimPaths } from "./copilot_api/shims.ts";
 import { resolveDenoBin } from "./copilot_api/sidecar.ts";
@@ -67,7 +67,7 @@ import {
 import { pickAgedVersion } from "./utils/aged_version.ts";
 import { assertNever } from "./utils/assert.ts";
 import { errMessage } from "./utils/error.ts";
-import { readTextOrNull } from "./utils/fs.ts";
+import { readTextOrNull, readTextResult } from "./utils/fs.ts";
 import { parseJsonRecord } from "./utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
 import { ASSET_ROOT } from "./utils/root.ts";
@@ -86,21 +86,15 @@ export const DEFAULT_RELEASE_COOLDOWN_SECONDS = 7 * SECONDS_PER_DAY;
  *  the publish times the cooldown needs; the abbreviated install doc lacks it). */
 export const PROXY_REGISTRY_URL = `https://registry.npmjs.org/${PROXY_PKG.replaceAll("/", "%2F")}`;
 
-// The float runs inside `agent start` (ensureProxyFloor), so config reads are best-effort:
-// any failure (missing/corrupt file) falls back to env/default. `agent config` is the
-// persistent home for the proxy-version pin and the release-cooldown window (env still
-// overrides per-invocation).
-function configRead(): CopilotEnvConfigData | undefined {
-  try {
-    return new CopilotEnvConfig().read();
-  } catch {
-    return undefined;
-  }
-}
-
-/** Proxy-version override: an explicit env pin wins over the config pin (undefined if neither). */
-function resolveProxyVersionOverride(): string | undefined {
-  return process.env[PROXY_VERSION_ENV]?.trim() || configRead()?.proxyVersion;
+/** Proxy-version override: an explicit env pin wins over the config pin (undefined if
+ *  neither). The config read is the store's STRICT one: an unreadable prefs store
+ *  throws rather than reading as "no pin" -- floating past a supply-chain pin on an
+ *  unproven empty is exactly what the pin exists to prevent (junk content still
+ *  degrades per-field via the lenient schema). An env pin short-circuits before the
+ *  store is consulted, so it keeps working even then. Exported for the test that pins
+ *  exactly that refusal. */
+export function resolveProxyVersionOverride(): string | undefined {
+  return process.env[PROXY_VERSION_ENV]?.trim() || new CopilotEnvConfig().read().proxyVersion;
 }
 
 type ProxyConsolaOptions = NonNullable<Parameters<typeof createConsola>[0]> & {
@@ -128,7 +122,9 @@ export function resolveMinimumReleaseAgeSeconds(): number {
     }
     return Number.parseInt(raw, 10);
   }
-  return configRead()?.releaseCooldown ?? DEFAULT_RELEASE_COOLDOWN_SECONDS;
+  // Strict config read, like the version pin above: a stored cooldown must not be
+  // shortened to the default by an unreadable store (env wins before the read).
+  return new CopilotEnvConfig().read().releaseCooldown ?? DEFAULT_RELEASE_COOLDOWN_SECONDS;
 }
 
 function formatReleaseAge(seconds: number): string {
@@ -489,11 +485,18 @@ export type NpmrcStatus =
 /**
  * Ensure `<rootHome>/.npmrc` carries the no-downgrade trust policy. A
  * user-authored .npmrc (no marker) is NEVER clobbered -- it is kept and the
- * caller surfaces a note instead.
+ * caller surfaces a note instead. An UNREADABLE file is kept the same way:
+ * ownership (the marker) was not proven, so the write below would clobber
+ * content we never saw -- the same never-act-on-an-unproven-empty rule the
+ * JSON store's loadStrict applies.
  */
 export function ensureProxyNpmrc(rootHome: string): NpmrcStatus {
   const path = join(rootHome, ".npmrc");
-  const existing = readTextOrNull(path);
+  const read = readTextResult(path);
+  if (read.kind === "unreadable") {
+    return { "kind": "kept-foreign", "path": path };
+  }
+  const existing = read.kind === "text" ? read.text : null;
   if (existing !== null && !existing.includes(NPMRC_MARKER)) {
     return { "kind": "kept-foreign", "path": path };
   }

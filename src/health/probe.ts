@@ -1321,7 +1321,10 @@ export async function gatherFacts(
       // comes from ONE profileSlot() snapshot, so provider and token presence
       // can never pair across a concurrent credential write; resolution mirrors
       // the default checkAuth (a token slot resolves by presence, a gh-cli slot
-      // by the shared (cached) gh probe).
+      // by the shared (cached) gh probe). The snapshot reads the credential
+      // store STRICTLY: an unreadable store propagates (profileHomeNames'
+      // stance), so `slot: null` below always means the store was READ and
+      // holds no slot -- never an unproven empty rendered as "no credential".
       jobs.push(
         (async () => {
           const slot = deps.profileSlot(profile);

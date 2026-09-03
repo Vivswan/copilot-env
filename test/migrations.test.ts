@@ -40,25 +40,23 @@ afterEach(() => {
   dir = removeDir(dir);
 });
 
-test("dueMigrations selects [from, to) in ascending order", () => {
-  expect(dueMigrations("1.2.1", "1.3.0", LIST).map((m) => m.version)).toEqual(["1.2.1", "1.2.5"]);
-});
-
-test("dueMigrations includes the from-version, excludes the to-version", () => {
-  expect(dueMigrations("1.2.5", "1.3.0", LIST).map((m) => m.version)).toEqual(["1.2.5"]);
-});
-
-test("dueMigrations skips versions already left behind", () => {
-  // Updating 1.2.5 -> 3.0.0 must not re-run the 1.2.1 migration.
-  expect(dueMigrations("1.2.5", "3.0.0", LIST).map((m) => m.version)).toEqual(["1.2.5", "1.3.0"]);
-});
-
-test("dueMigrations is empty when already up to date", () => {
-  expect(dueMigrations("1.3.0", "1.3.0", LIST)).toEqual([]);
-});
-
-test("dueMigrations tolerates a leading v on either bound", () => {
-  expect(dueMigrations("v1.2.1", "v1.3.0", LIST).map((m) => m.version)).toEqual(["1.2.1", "1.2.5"]);
+test("dueMigrations selects [from, to) in ascending order over the registry", () => {
+  // One row per selection guarantee, each named by its comment.
+  const cases: { from: string; to: string; expected: string[] }[] = [
+    { from: "1.2.1", to: "1.3.0", expected: ["1.2.1", "1.2.5"] }, // ascending [from, to)
+    { from: "1.2.5", to: "1.3.0", expected: ["1.2.5"] }, // from included, to excluded
+    { from: "1.2.5", to: "3.0.0", expected: ["1.2.5", "1.3.0"] }, // 1.2.1 already left behind never re-runs
+    { from: "1.3.0", to: "1.3.0", expected: [] }, // already up to date: nothing due
+    { from: "v1.2.1", to: "v1.3.0", expected: ["1.2.1", "1.2.5"] }, // leading v tolerated on either bound
+  ];
+  for (const { from, to, expected } of cases) {
+    // The bounds ride along in the asserted value so a red run names the failing row.
+    expect({ from, to, due: dueMigrations(from, to, LIST).map((m) => m.version) }).toEqual({
+      from,
+      to,
+      due: expected,
+    });
+  }
 });
 
 test("the shipped registry holds exactly the FIVE named 3.5.6 fix-ups in order, home move first", () => {

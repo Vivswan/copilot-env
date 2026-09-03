@@ -1144,8 +1144,18 @@ test("resolveStartPort: reserve=false peeks at a profile's candidate without rec
 
 test("resolveStartPort: reserve=true persists a profile's reservation", async () => {
   tmpHome();
-  await resolveStartPort(undefined, false, WORK, true, new CopilotEnvConfig());
-  expect(CopilotEnvRunState.forProfile(WORK).read().port).toBeDefined();
+  // The range pinned to one OS-verified free port: a busy candidate would legitimately
+  // return the auto-incremented port while the record keeps the reservation, and this
+  // test pins the happy path where the two agree.
+  const free = await freePort();
+  // The built-in default 4141 always seeds the candidate scan's used set, so a pick
+  // colliding with it would exhaust the one-port range. OS ephemeral picks sit far
+  // above it; checked, not assumed:
+  expect(free).not.toBe(4141);
+  new CopilotEnvConfig().set({ minPort: free, maxPort: free });
+  const reserved = await resolveStartPort(undefined, false, WORK, true, new CopilotEnvConfig());
+  expect(reserved).toBe(free);
+  expect(CopilotEnvRunState.forProfile(WORK).read().port).toBe(reserved);
 });
 
 // --- awaitReadiness: the EADDRINUSE bind race ------------------------------------------

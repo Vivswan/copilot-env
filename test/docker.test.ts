@@ -27,6 +27,30 @@ test("Dockerfile FROM is fully qualified for podman", () => {
 
 // The image must never inherit the host's installed dependency tree or local
 // secrets: the dependency layer is built from the lockfile alone.
+const KEEP_OUT = ["node_modules/", ".git/", ".claude/", ".env"];
+
+/** Whether a `.dockerignore` negation (the text after `!`) could re-admit `entry`.
+ *  Dot segments are cleaned first (docker normalizes them before matching), then
+ *  the pattern is judged by its literal prefix (up to the first glob/backslash
+ *  metachar): exact/under the protected root always counts, and for a glob
+ *  pattern any literal that the root extends counts too (conservative:
+ *  `!**` and `!.env*` fail, a disjoint `!README.md` passes). */
+function negationReadmits(pattern: string, entry: string): boolean {
+  const cleaned = pattern
+    .split("/")
+    .reduce<string[]>((parts, seg) => {
+      if (seg === "" || seg === ".") return parts;
+      if (seg === "..") return parts.slice(0, -1);
+      return [...parts, seg];
+    }, [])
+    .join("/");
+  const literal = cleaned.split(/[*?[\\]/)[0] ?? "";
+  const hasGlob = /[*?[\\]/.test(cleaned);
+  const root = entry.replace(/\/$/, "");
+  return literal === root || literal.startsWith(`${root}/`) ||
+    (hasGlob && root.startsWith(literal));
+}
+
 test(".dockerignore keeps host state out of the build context", () => {
   // Parsed entries, not substring hits: a commented-out `# .env` or a substring
   // inside a longer pattern must not count.
@@ -34,38 +58,36 @@ test(".dockerignore keeps host state out of the build context", () => {
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line !== "" && !line.startsWith("#"));
-  const keepOut = ["node_modules/", ".git/", ".claude/", ".env"];
-  for (const entry of keepOut) {
+  for (const entry of KEEP_OUT) {
     expect(entries).toContain(entry);
   }
   // Negations are fine in general -- but never one that could re-admit a
-  // protected path. Dot segments are cleaned first (docker normalizes them
-  // before matching), then judged by the pattern's literal prefix (up to the
-  // first glob metachar): exact/under the protected root always counts, and for
-  // a glob pattern any literal that the root extends counts too (conservative:
-  // `!**` and `!.env*` fail, a disjoint `!README.md` passes).
-  const negated = entries
-    .filter((line) => line.startsWith("!"))
-    .map((line) =>
-      line
-        .slice(1)
-        .split("/")
-        .reduce<string[]>((parts, seg) => {
-          if (seg === "" || seg === ".") return parts;
-          if (seg === "..") return parts.slice(0, -1);
-          return [...parts, seg];
-        }, [])
-        .join("/")
-    );
-  for (const pattern of negated) {
-    const literal = pattern.split(/[*?[\\]/)[0] ?? "";
-    const hasGlob = /[*?[\\]/.test(pattern);
-    for (const entry of keepOut) {
-      const root = entry.replace(/\/$/, "");
-      const readmits = literal === root || literal.startsWith(`${root}/`) ||
-        (hasGlob && root.startsWith(literal));
-      expect(readmits, `!${pattern} re-admits ${entry}`).toBe(false);
+  // protected path.
+  for (const line of entries.filter((entry) => entry.startsWith("!"))) {
+    for (const entry of KEEP_OUT) {
+      expect(negationReadmits(line.slice(1), entry), `${line} re-admits ${entry}`).toBe(false);
     }
+  }
+});
+
+// The committed .dockerignore carries no negation lines, so the live-file loop
+// above never executes the predicate; these synthetic patterns keep every branch
+// exercised (dot-segment cleaning, the literal prefix, the glob/backslash
+// metachar class) against the KEEP_OUT set.
+test(".dockerignore negation verdicts hold for synthetic patterns", () => {
+  const cases: { pattern: string; readmits: boolean }[] = [
+    { pattern: "README.md", readmits: false }, // disjoint literal
+    { pattern: "docs/**", readmits: false }, // glob under a disjoint root
+    { pattern: ".env*", readmits: true }, // glob extending a protected root
+    { pattern: "**", readmits: true }, // matches everything
+    { pattern: "\\.env", readmits: true }, // backslash escape: judged by the empty literal
+    { pattern: "./node_modules", readmits: true }, // dot segment cleans onto the root
+    { pattern: "logs/../.git/config", readmits: true }, // parent segment cleans under the root
+  ];
+  for (const { pattern, readmits } of cases) {
+    // The pattern rides along in the asserted value so a red run names the row.
+    expect({ pattern, readmits: KEEP_OUT.some((entry) => negationReadmits(pattern, entry)) })
+      .toEqual({ pattern, readmits });
   }
 });
 

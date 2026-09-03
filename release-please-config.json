@@ -6,7 +6,8 @@
       "release-type": "node",
       "draft": true,
       "force-tag-creation": true,
-      "versioning": "always-bump-patch"
+      "versioning": "always-bump-patch",
+      "release-as": "4.0.0"
     }
   }
 }

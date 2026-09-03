@@ -15,6 +15,7 @@ import {
 import {
   applyDefaultConfig,
   awaitReadiness,
+  classifyOwnedDaemonPid,
   type CleanupAction,
   cleanupExistingProxies,
   daemonLifecycleEnv,
@@ -41,7 +42,7 @@ import {
 } from "../src/scripts/daemon_lock.ts";
 import { releaseFileLock } from "../src/utils/file_lock.ts";
 import { denoRunArgs, importSpecifier, ROOT, spawnChild } from "./helpers/run.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
+import { afterEach, describe, expect, test } from "./helpers/testing.ts";
 import {
   defaultHomeDir,
   envSnapshot,
@@ -1426,4 +1427,228 @@ test("cleanupExistingProxies demands withStartLock's evidence (compile-enforced)
   const held: HeldStartLock = bare;
   expect(held).toBe(bare); // the brand is type-level only; no runtime shape exists
   expect(paramIsEvidence).toBe(true);
+});
+
+// --- unproven tracked-pid identity scans (the plan gate + the signal boundary) ----------
+//
+// A FAILED identity scan (classifyDaemonPid "unknown") and a CONFIRMED "not ours" ("no")
+// both skip the courtesy SIGTERM -- fail-closed is the safe direction -- but they are not
+// the same reading: the failed look is SAID (a warn naming the pid), never silently
+// flattened into "proven not ours". These pin both sites: the plan gate and the
+// execution's signal-boundary re-check.
+
+/** Capture BOTH process write streams (consola routes by level) while awaiting `fn`. */
+async function captureAllWrites(fn: () => Promise<void>): Promise<string> {
+  const stdout = process.stdout.write.bind(process.stdout);
+  const stderr = process.stderr.write.bind(process.stderr);
+  let out = "";
+  const capture = (chunk: string | Uint8Array): boolean => {
+    out += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    return true;
+  };
+  process.stdout.write = capture;
+  process.stderr.write = capture;
+  try {
+    await fn();
+  } finally {
+    process.stdout.write = stdout;
+    process.stderr.write = stderr;
+  }
+  return out;
+}
+
+/** A live inert child (NOT daemon-shaped): with the classifier injected, its only job
+ *  is to be genuinely alive so a skipped SIGTERM is observable as survival. */
+function spawnInertChild(): Deno.ChildProcess {
+  return spawnChild(Deno.execPath(), {
+    args: ["eval", "setTimeout(() => {}, 60000)"],
+    stdout: "null",
+    stderr: "null",
+  });
+}
+
+describe("unproven tracked-pid identity scans", () => {
+  test(
+    "classifyOwnedDaemonPid: confirms our daemon-shaped child, denies self and a dead pid",
+    async () => {
+      tmpHome();
+      // The lockless daemon-shaped fake (argv signature, no daemon.lock) -- the shape
+      // the courtesy stop's default classifier must confirm as OURS.
+      const child = spawnChild(Deno.execPath(), {
+        args: [...denoRunArgs(), join(ROOT, "test", "copilot-api-fake.mjs"), "start"],
+        stdout: "null",
+        stderr: "null",
+      });
+      try {
+        const deadline = Date.now() + 10_000;
+        while ((await classifyOwnedDaemonPid(child.pid)) !== "yes" && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        expect(await classifyOwnedDaemonPid(child.pid)).toBe("yes");
+        // Controls: a live NON-daemon (this test process) and a dead pid read "no".
+        expect(await classifyOwnedDaemonPid(process.pid)).toBe("no");
+        expect(await classifyOwnedDaemonPid(DEAD_PID)).toBe("no");
+      } finally {
+        await killAndAwaitExit(child.pid);
+      }
+    },
+    30_000,
+  );
+
+  test("planCleanup: a FAILED scan skips the courtesy stop but SAYS so; the clear still lands", async () => {
+    const home = tmpHome();
+    writeRunState({ pid: DEAD_PID, port: 4141 });
+    let plan: CleanupAction[] = [];
+    const out = await captureAllWrites(async () => {
+      plan = await planCleanup(
+        home,
+        null,
+        new CopilotEnvRunState(),
+        NO_ORPHANS,
+        () => Promise.resolve("unknown" as const),
+      );
+    });
+    // Fail-closed holds: no stop is planned. But the skip is said, naming the pid.
+    expect(plan).toEqual([{ kind: "clear-tracking", pid: DEAD_PID }] satisfies CleanupAction[]);
+    expect(out).toContain(`Skipping the tracked-pid stop (pid=${DEAD_PID})`);
+    expect(out).toContain("could not prove its identity");
+  });
+
+  test("planCleanup controls: 'yes' plans the stop and 'no' skips -- both silently", async () => {
+    const home = tmpHome();
+    writeRunState({ pid: DEAD_PID, port: 4141 });
+    let plan: CleanupAction[] = [];
+    const confirmed = await captureAllWrites(async () => {
+      plan = await planCleanup(
+        home,
+        null,
+        new CopilotEnvRunState(),
+        NO_ORPHANS,
+        () => Promise.resolve("yes" as const),
+      );
+    });
+    expect(plan).toEqual(
+      [
+        { kind: "stop-tracked", pid: DEAD_PID },
+        { kind: "clear-tracking", pid: DEAD_PID },
+      ] satisfies CleanupAction[],
+    );
+    expect(confirmed).not.toContain("Skipping the tracked-pid stop");
+
+    const denied = await captureAllWrites(async () => {
+      plan = await planCleanup(
+        home,
+        null,
+        new CopilotEnvRunState(),
+        NO_ORPHANS,
+        () => Promise.resolve("no" as const),
+      );
+    });
+    expect(plan).toEqual([{ kind: "clear-tracking", pid: DEAD_PID }] satisfies CleanupAction[]);
+    expect(denied).not.toContain("Skipping the tracked-pid stop");
+  });
+
+  test(
+    "cleanupExistingProxies: a scan that FAILS at the signal boundary skips the SIGTERM and says so",
+    async () => {
+      tmpHome();
+      const child = spawnInertChild();
+      try {
+        writeRunState({ pid: child.pid, port: 4141 });
+        // Plan-time the identity CONFIRMS (authorizing stop-tracked); the boundary
+        // re-scan FAILS -- the fail-closed skip must hold there too, and be said.
+        let calls = 0;
+        const out = await captureAllWrites(() =>
+          withStartLock((lock) =>
+            cleanupExistingProxies(
+              lock,
+              null,
+              new CopilotEnvRunState(),
+              NO_ORPHANS,
+              () => Promise.resolve(++calls === 1 ? "yes" as const : "unknown" as const),
+            )
+          )
+        );
+        expect(calls).toBeGreaterThanOrEqual(2); // the boundary re-check really ran
+        expect(out).toContain(`Skipping the tracked-pid stop (pid=${child.pid})`);
+        expect(out).not.toContain("Stopping tracked proxy");
+        expect(pidAlive(child.pid)).toBe(true); // never signalled
+        expect(new CopilotEnvRunState().read().pid).toBeUndefined(); // the clear still landed
+      } finally {
+        await killAndAwaitExit(child.pid);
+      }
+    },
+    30_000,
+  );
+
+  test(
+    "cleanupExistingProxies control: a boundary scan that CONFIRMS still stops the daemon",
+    async () => {
+      tmpHome();
+      const child = spawnInertChild();
+      try {
+        writeRunState({ pid: child.pid, port: 4141 });
+        const out = await captureAllWrites(() =>
+          withStartLock((lock) =>
+            cleanupExistingProxies(
+              lock,
+              null,
+              new CopilotEnvRunState(),
+              NO_ORPHANS,
+              () => Promise.resolve("yes" as const),
+            )
+          )
+        );
+        expect(out).toContain(`Stopping tracked proxy (pid=${child.pid})`);
+        expect(out).not.toContain("Skipping the tracked-pid stop");
+        expect(await until(5_000, () => !pidAlive(child.pid))).toBe(true);
+        expect(new CopilotEnvRunState().read().pid).toBeUndefined();
+      } finally {
+        await killAndAwaitExit(child.pid);
+      }
+    },
+    30_000,
+  );
+
+  // Windows has no trappable SIGTERM (process.kill maps to TerminateProcess), so the
+  // escalation branch this pins is only reachable on POSIX.
+  test.skipIf(process.platform === "win32")(
+    "cleanupExistingProxies hands ITS classifier to the SIGKILL escalation (one identity standard)",
+    async () => {
+      tmpHome();
+      const ready = join(dir, "term-trap-ready");
+      // A TERM-trapping child: only the escalation's SIGKILL can end it, and that kill
+      // must re-prove identity through the SAME injected seam as the plan and the TERM.
+      const child = spawnChild(Deno.execPath(), {
+        args: [
+          "eval",
+          `Deno.addSignalListener("SIGTERM", () => {}); Deno.writeTextFileSync(${
+            JSON.stringify(ready)
+          }, "r"); setTimeout(() => {}, 60000);`,
+        ],
+        stdout: "null",
+        stderr: "null",
+      });
+      try {
+        expect(await until(10_000, () => existsSync(ready))).toBe(true);
+        writeRunState({ pid: child.pid, port: 4141 });
+        let calls = 0;
+        await captureAllWrites(() =>
+          withStartLock((lock) =>
+            cleanupExistingProxies(lock, null, new CopilotEnvRunState(), NO_ORPHANS, () => {
+              calls += 1;
+              return Promise.resolve("yes" as const);
+            })
+          )
+        );
+        // The seam saw the plan, the signal boundary, AND the escalation's re-proof --
+        // an escalation judging through the owner-blind default would leave calls at 2.
+        expect(calls).toBeGreaterThanOrEqual(3);
+        expect(await until(5_000, () => !pidAlive(child.pid))).toBe(true); // SIGKILLed
+      } finally {
+        await killAndAwaitExit(child.pid);
+      }
+    },
+    30_000,
+  );
 });

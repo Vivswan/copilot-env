@@ -37,7 +37,7 @@ import {
   type RuntimeTarget,
   type WatchdogFacts,
 } from "../src/health/probe.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { describe, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir, writeRunState } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
@@ -59,6 +59,8 @@ interface NamedOverrides {
   reachable?: boolean;
   trackedPid?: number | null;
   pidTracked?: boolean;
+  /** The tracked-pid identity scan FAILED (probe fact pidScanUnproven). */
+  pidScanUnproven?: true;
   pidAlive?: boolean;
   identityConfirmed?: boolean | null;
   watchdog?: WatchdogFacts;
@@ -92,6 +94,7 @@ function namedTarget(name: string, overrides: NamedOverrides = {}): NamedRuntime
     probe: overrides.skipped !== undefined ? { kind: "skipped", why: overrides.skipped } : {
       kind: "probed",
       ...raw,
+      ...(overrides.pidScanUnproven ? { pidScanUnproven: true as const } : {}),
       portState: classifyPortState({ proxyExpected, ...raw }),
     },
     paths: {
@@ -135,7 +138,7 @@ function offlineDeps(extra: Partial<ProbeDeps> = {}): Partial<ProbeDeps> {
   return {
     reach: async () => false,
     proxyIdentity: async () => null,
-    isTrackedPid: async () => false,
+    classifyTrackedPid: async () => "no" as const,
     codexDirectAuth: () => Promise.resolve({ command: null, authenticated: false }),
     ...extra,
   };
@@ -1059,4 +1062,112 @@ test("profile.consistency and setup.auth reuse ids across targets, disambiguated
   expect(consistency.map((r) => r.profile)).toEqual([P, "q-two" as ProfileName]);
   const auth = results.filter((r) => r.id === "setup.auth");
   expect(auth.map((r) => `${r.profile}:${r.status}`)).toEqual(["null:ok", "p:ok"]);
+});
+
+// --- unproven tracked-pid scans (three-state identity, never a silent flatten) ----------
+//
+// A FAILED identity scan (classifyDaemonPid "unknown") used to flatten into
+// pidTracked:false, which rendered a confident "orphaned" warn and a confident
+// "stale or foreign" fail for a daemon health simply failed to look at. The probe now
+// carries the failure (pidScanUnproven) and the renderers say "could not be verified".
+
+describe("unproven tracked-pid scans", () => {
+  test("interrogation carries a FAILED scan as pidScanUnproven, never a confident untracked", async () => {
+    const home = isolateProxyHome("copilot-health-unproven-");
+    try {
+      new CopilotEnvState().commitProfile(P, {
+        credential: { kind: "stored", provider: "gh-token", token: "tok-p" },
+        mode: "proxy",
+      });
+      mkdirSync(profileHome(P), { recursive: true });
+      writeRunState({ pid: 4321, port: 4555 }, P);
+      const gather = (cls: "yes" | "no" | "unknown") =>
+        gatherFacts(
+          "runtime",
+          { profile: P },
+          offlineDeps({
+            reach: async () => true,
+            classifyTrackedPid: async () => cls,
+          }),
+        );
+
+      // The failed scan: pidTracked stays the fail-closed false (never upgraded to
+      // "tracked"), but the probe SAYS the reading is unproven. Restoring the boolean
+      // flatten (unknown -> plain false) turns exactly these assertions red.
+      const unknown = probeOf((await gather("unknown")).runtimes?.[0]);
+      expect(unknown.pidTracked).toBe(false);
+      expect(unknown.pidScanUnproven).toBe(true);
+      expect(unknown.portState.kind).toBe("orphan");
+
+      // Controls: completed scans keep their confident verdicts, with NO unproven mark.
+      const yes = probeOf((await gather("yes")).runtimes?.[0]);
+      expect(yes.pidTracked).toBe(true);
+      expect(yes.pidScanUnproven).toBeUndefined();
+      expect(yes.portState).toEqual({ kind: "tracked" });
+      const no = probeOf((await gather("no")).runtimes?.[0]);
+      expect(no.pidTracked).toBe(false);
+      expect(no.pidScanUnproven).toBeUndefined();
+      expect(no.portState.kind).toBe("orphan");
+    } finally {
+      restoreEnv();
+      removeDir(home);
+    }
+  });
+
+  test("runtime.pid renders could-not-verify (warn), never the confident stale-or-foreign fail", () => {
+    const pid = runPid(namedTarget("p", { pidTracked: false, pidScanUnproven: true }));
+    expect(pid.status).toBe("warn");
+    expect(pid.detail).toBe("tracked pid 4321 could not be verified (the process scan failed)");
+    expect(pid.detail).not.toContain("stale or foreign");
+    expect(pid.value?.scanUnproven).toBe(true);
+
+    // Control: the same facts WITHOUT the unproven mark keep the confident fail.
+    const confident = runPid(namedTarget("p", { pidTracked: false }));
+    expect(confident.status).toBe("fail");
+    expect(confident.detail).toBe("tracked pid 4321 is stale or foreign");
+    expect(confident.value?.scanUnproven).toBeUndefined();
+  });
+
+  test("runtime.pid excused arms stay ok under an unproven scan (verdict-invariant), worded honestly", () => {
+    // Both-direct: a tracked pid would also read ok, so the unknown decides nothing --
+    // the ok survives, but the detail and value still carry the failed look.
+    const bothDirect = runPid(
+      namedTarget("p", { pidTracked: false, pidScanUnproven: true, proxyExpected: false }),
+    );
+    expect(bothDirect.status).toBe("ok");
+    expect(bothDirect.detail).toContain("could not be verified");
+    expect(bothDirect.detail).not.toContain("stale or foreign");
+    expect(bothDirect.value?.scanUnproven).toBe(true);
+
+    // Down + auto-start: same invariance, same honest wording.
+    const onDemand = namedTarget("p", {
+      pidTracked: false,
+      pidScanUnproven: true,
+      reachable: false,
+      identityConfirmed: null,
+    });
+    onDemand.watchdog = { ...onDemand.watchdog, autoStart: true };
+    const excused = runPid(onDemand);
+    expect(excused.status).toBe("ok");
+    expect(excused.detail).toContain("could not be verified");
+    expect(excused.detail).toContain("starts on demand");
+    expect(excused.value?.scanUnproven).toBe(true);
+  });
+
+  test("runtime.orphan on an unproven scan says the daemon may be tracked, not that it is an orphan", () => {
+    const unproven = runOrphan(namedTarget("p", { pidTracked: false, pidScanUnproven: true }));
+    expect(unproven.status).toBe("warn");
+    expect(unproven.detail).toContain(
+      "tracked pid 4321 could not be verified (the process scan failed)",
+    );
+    expect(unproven.detail).toContain("may be the tracked daemon");
+    expect(unproven.detail).not.toContain("is not the tracked daemon");
+    expect(unproven.value?.orphan).toBe(null);
+
+    // Control: a completed scan keeps the confident orphan warning.
+    const confident = runOrphan(namedTarget("p", { pidTracked: false }));
+    expect(confident.status).toBe("warn");
+    expect(confident.detail).toContain("is not the tracked daemon");
+    expect(confident.value?.orphan).toBe(true);
+  });
 });

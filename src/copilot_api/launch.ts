@@ -50,6 +50,7 @@ import {
   reserveProfilePort,
 } from "./port.ts";
 import {
+  classifyDaemonPid,
   type CopilotApiEntry,
   DAEMON_SIGKILL_GRACE_MS,
   type DaemonCredential,
@@ -299,6 +300,25 @@ export async function resolveStartPort(
 
 // --- the tracked-pid / orphan cleanup -------------------------------------------------
 
+/**
+ * The three-state daemon identity of `pid` WITH the current-user ownership gate the kill
+ * paths have always trusted. classifyDaemonPid alone is not signal authorization on
+ * Windows: classifyDaemonPidWindows judges only the pid's command line, while the
+ * owner-filtered list scan (isCopilotApiPid -> GetOwner == current user) is what keeps an
+ * elevated shell from claiming -- and signalling -- ANOTHER user's daemon after pid
+ * reuse. So a "yes" is re-checked against that list there; POSIX needs no second scan
+ * (classifyDaemonPid already reads the owner-filtered `ps -U`). The composed "no" a
+ * failed second look can produce inherits isCopilotApiPid's documented flatten, which is
+ * the safe direction at every consumer: signals are withheld, and health renders the
+ * same stale/foreign verdict the plain boolean always produced. Ideal home is
+ * process.ts beside its two halves; it lives here for now.
+ */
+export async function classifyOwnedDaemonPid(pid: number): Promise<"yes" | "no" | "unknown"> {
+  const cls = await classifyDaemonPid(pid);
+  if (cls !== "yes" || process.platform !== "win32") return cls;
+  return (await isCopilotApiPid(pid)) ? "yes" : "no";
+}
+
 /** Tracked daemon pids across the default and every profile's run state -- the set the
  *  orphan sweep must NEVER signal (in a multi-daemon world, another profile's healthy
  *  daemon is not an orphan). `except` drops ONE slot's claim: the planner judges against
@@ -469,7 +489,9 @@ export type CleanupAction =
  *   - the tracked pid: signalled only when the lock rules it "unproven" (the shared
  *     daemonLockVerdict table: "dead" is never signalled however alive the pid table says
  *     it is -- pid reuse -- and "alive" DEFERS to the corroborated holder stop below) AND
- *     the argv scan confirms a pre-lock daemon; its tracking is cleared regardless (a
+ *     the three-state argv scan (classifyOwnedDaemonPid) CONFIRMS a pre-lock daemon -- a
+ *     failed scan ("unknown") also skips the signal, fail-closed, but warns instead of
+ *     silently reading as "not ours"; its tracking is cleared regardless (a
  *     durable state write, so it is an enumerated action the dry run must report),
  *   - THIS home's live daemon.lock holder -- tracked or not: stopped only under host-local
  *     corroboration, left alone (with the shared-home warning) otherwise; the self/parent
@@ -486,12 +508,30 @@ export async function planCleanup(
   profile: Profile,
   state: CopilotEnvRunState = CopilotEnvRunState.forProfile(profile),
   listPids: (myPid: number, myPpid: number) => Promise<number[]> = getOrphanPids,
+  classifyPid: typeof classifyDaemonPid = classifyOwnedDaemonPid,
 ): Promise<CleanupAction[]> {
   const actions: CleanupAction[] = [];
   const tracked = state.read().pid;
   if (tracked !== undefined) {
-    if (daemonLockVerdict(home, tracked) === "unproven" && (await isCopilotApiPid(tracked))) {
-      actions.push({ kind: "stop-tracked", pid: tracked });
+    if (daemonLockVerdict(home, tracked) === "unproven") {
+      // Three-state identity (classifyOwnedDaemonPid): only a CONFIRMED daemon of the
+      // current user earns the courtesy stop. "unknown" -- the scan FAILED -- skips the
+      // signal too (fail-closed, the same direction as "no": never signal what this host
+      // cannot prove), but it is SAID: a silent skip would read as "proven not ours" to
+      // the operator, and the possibly-live daemon it leaves running still holds its port.
+      const cls = await classifyPid(tracked);
+      switch (cls) {
+        case "yes":
+          actions.push({ kind: "stop-tracked", pid: tracked });
+          break;
+        case "unknown":
+          warnUnprovenTrackedPid(tracked);
+          break;
+        case "no":
+          break; // dead, or provably another process (pid reuse): nothing to stop
+        default:
+          assertNever(cls);
+      }
     }
     actions.push({ kind: "clear-tracking", pid: tracked });
   }
@@ -529,6 +569,19 @@ function warnLeaveHolder(pid: number): void {
   );
 }
 
+/** The unproven-scan notice shared by the planner and the signal boundary: skipping the
+ *  courtesy SIGTERM on a FAILED identity scan is the safe direction (never signal what
+ *  this host cannot prove), but it must be said -- silently, the skip reads as "proven
+ *  not ours", and the possibly-live daemon it leaves running still holds its port.
+ *  planCleanup also narrates `start --dry-run`, where NOTHING executes, so the wording
+ *  claims no completed action (no "tracking was cleared"); it advises stopping by raw
+ *  pid because the live path's clear-tracking leaves `agent stop` no record to target. */
+function warnUnprovenTrackedPid(pid: number): void {
+  consola.warn(
+    `   Skipping the tracked-pid stop (pid=${pid}): the process scan could not prove its identity, so this stop sends no signal (fail-closed). If it remains running, stop it by pid from a shell that can read the process table.`,
+  );
+}
+
 /**
  * Execute the cleanup plan for `profile` (planCleanup above -- the same decision source
  * `start --dry-run` narrates): stop the tracked pre-lock daemon, clear its tracking (up
@@ -548,24 +601,36 @@ export async function cleanupExistingProxies(
   profile: Profile,
   state: CopilotEnvRunState = CopilotEnvRunState.forProfile(profile),
   listPids: (myPid: number, myPpid: number) => Promise<number[]> = getOrphanPids,
+  classifyPid: typeof classifyDaemonPid = classifyOwnedDaemonPid,
 ): Promise<void> {
   consola.start("Cleaning up existing proxy processes ...");
 
   const home = new CopilotApiPaths(profile).home;
-  const plan = await planCleanup(home, profile, state, listPids);
+  const plan = await planCleanup(home, profile, state, listPids, classifyPid);
 
   const orphans: number[] = [];
   for (const action of plan) {
     switch (action.kind) {
-      case "stop-tracked":
-        if (await isCopilotApiPid(action.pid)) {
+      case "stop-tracked": {
+        // The plan authorized on a CONFIRMED identity; re-derive it at the signal
+        // boundary (the same rule every other signal here follows). Three-state:
+        // "no" (exited or recycled since planning) is silently nothing-to-stop;
+        // "unknown" -- the re-scan FAILED -- also skips the signal, fail-closed,
+        // but is said rather than flattened into "gone". The SAME classifier rides
+        // into terminatePid's SIGKILL re-proof, so the escalation never judges under
+        // a weaker (owner-blind) standard than the TERM it escalates.
+        const cls = await classifyPid(action.pid);
+        if (cls === "yes") {
           consola.info(`   Stopping tracked proxy (pid=${action.pid}) ...`);
           // Verdict deliberately unused: the plan's clear-tracking action (always queued
           // right behind this one) unbinds the pid whichever way the kill went, and
           // terminatePid reports a refused escalation itself.
-          await terminatePid(action.pid, DAEMON_SIGKILL_GRACE_MS);
+          await terminatePid(action.pid, DAEMON_SIGKILL_GRACE_MS, classifyPid);
+        } else if (cls === "unknown") {
+          warnUnprovenTrackedPid(action.pid);
         }
         break;
+      }
       case "clear-tracking":
         // A daemon whose policy keeps its port -- a named profile's stable
         // reservation -- only clears the pid.

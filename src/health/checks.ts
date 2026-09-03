@@ -403,21 +403,30 @@ export function checkRuntimePort(f: RuntimeTarget, p: DaemonProbeFacts): CheckRe
 export function checkRuntimePid(f: RuntimeTarget, p: DaemonProbeFacts): CheckResult {
   const tracked = p.pidTracked;
   const base = { ...meta("runtime.pid"), profile: f.profile };
+  // An unproven identity scan (pidScanUnproven) is "failed to look", never "not ours":
+  // every arm below words it honestly, and the final verdict is a warn, not the
+  // confident stale-or-foreign fail. The two excused arms (both-direct, down +
+  // auto-start) may keep their ok: there the verdict is INVARIANT under the unknown --
+  // a "yes" reading would also land on ok (tracked pids always do) -- so the flatten
+  // decides nothing; only the honest detail and the value stamp carry the failed look.
   let detail: string;
   if (p.trackedPid === null) {
     detail = "no tracked copilot-api pid";
   } else if (tracked) {
     detail = `tracked copilot-api pid ${p.trackedPid}`;
+  } else if (p.pidScanUnproven) {
+    detail = `tracked pid ${p.trackedPid} could not be verified (the process scan failed)`;
   } else {
     detail = `tracked pid ${p.trackedPid} is stale or foreign`;
   }
+  const scanNote = p.pidScanUnproven ? { scanUnproven: true } : {};
   // Both agents direct => no proxy needed, so a missing tracked pid is fine.
   if (!tracked && !f.proxyExpected) {
     return {
       ...base,
       status: "ok",
       detail: `${detail}; not required (Codex + Claude are both direct)`,
-      value: { pid: p.trackedPid, tracked, alive: p.pidAlive, bothDirect: true },
+      value: { pid: p.trackedPid, tracked, alive: p.pidAlive, bothDirect: true, ...scanNote },
     };
   }
   // Down daemon + managed lifecycle on => it starts on demand; not a failure.
@@ -428,13 +437,21 @@ export function checkRuntimePid(f: RuntimeTarget, p: DaemonProbeFacts): CheckRes
       ...base,
       status: "ok",
       detail: `${detail}; starts on demand (auto-start on)`,
-      value: { pid: p.trackedPid, tracked, alive: p.pidAlive, autoStart: true },
+      value: { pid: p.trackedPid, tracked, alive: p.pidAlive, autoStart: true, ...scanNote },
     };
   }
-  const value = { pid: p.trackedPid, tracked, alive: p.pidAlive };
-  return tracked
-    ? { ...base, status: "ok", detail, value }
-    : { ...base, status: "fail", detail, fix: startFix(f.profile), value };
+  const value = { pid: p.trackedPid, tracked, alive: p.pidAlive, ...scanNote };
+  if (tracked) return { ...base, status: "ok", detail, value };
+  if (p.trackedPid !== null && p.pidScanUnproven) {
+    return {
+      ...base,
+      status: "warn",
+      detail,
+      fix: "re-run `agent health` from a shell that can read the process table",
+      value,
+    };
+  }
+  return { ...base, status: "fail", detail, fix: startFix(f.profile), value };
 }
 
 export function checkRuntimePaths(f: RuntimeTarget): CheckResult {
@@ -590,12 +607,25 @@ export function checkRuntimeOrphan(f: RuntimeTarget, p: DaemonProbeFacts): Check
         value: { orphan: false },
       };
     case "orphan": {
+      const stopFix = f.profile === null ? "agent stop" : `agent stop --profile ${f.profile}`;
+      // An unproven identity scan means "not the tracked daemon" was never established:
+      // the responder may well BE the tracked daemon. Warn with the honest unproven
+      // detail instead of the confident orphan claim below.
+      if (p.pidScanUnproven && p.trackedPid !== null) {
+        return {
+          ...base,
+          status: "warn",
+          detail:
+            `a process is on port ${f.port}, but the tracked pid ${p.trackedPid} could not be verified (the process scan failed) - it may be the tracked daemon`,
+          fix: "re-run `agent health` from a shell that can read the process table",
+          value: { orphan: null, trackedPid: p.trackedPid, scanUnproven: true },
+        };
+      }
       // Identity is confirmed copilot-api or indeterminate (probe failed) -- don't
       // over-claim "copilot-api".
       const what = state.identity === "confirmed"
         ? "copilot-api"
         : "a process (identity unconfirmed)";
-      const stopFix = f.profile === null ? "agent stop" : `agent stop --profile ${f.profile}`;
       return {
         ...base,
         status: "warn",

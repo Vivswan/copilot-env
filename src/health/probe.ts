@@ -47,7 +47,8 @@ import {
   copilotApiResolvePort,
   proxyLoopbackOrigin,
 } from "../copilot_api/port.ts";
-import { isCopilotApiPid, pidAlive } from "../copilot_api/process.ts";
+import { classifyOwnedDaemonPid } from "../copilot_api/launch.ts";
+import { pidAlive } from "../copilot_api/process.ts";
 import { type SidecarStatus, sidecarStatus } from "../copilot_api/sidecar.ts";
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
@@ -161,6 +162,12 @@ export interface DaemonProbeFacts {
   reachable: boolean;
   trackedPid: number | null;
   pidTracked: boolean;
+  /** The tracked-pid identity scan FAILED (classifyDaemonPid "unknown"): pidTracked
+   *  false is then UNPROVEN -- "failed to look", never "proven not ours" -- so the
+   *  renderers say "could not be verified" instead of a confident stale/orphan
+   *  verdict. Absent (the common case) means the scan completed and pidTracked is a
+   *  real verdict. Optional so hand-built probe fixtures stay valid. */
+  pidScanUnproven?: true;
   pidAlive: boolean;
   /** Identity of whatever is reachable on the port: true = copilot-api (x-trace-id present),
    *  false = reachable but NOT copilot-api (likely a foreign listener), null = not probed
@@ -465,7 +472,10 @@ export interface ProbeDeps {
     codexHome?: string;
     lastEnsureAt?: number;
   };
-  isTrackedPid(pid: number): Promise<boolean>;
+  /** Three-state identity of the tracked pid (classifyDaemonPid): "unknown" means the
+   *  scan FAILED and must render as "could not verify", never as a confident "not
+   *  tracked" -- the boolean flatten this replaced read a broken scan as an orphan. */
+  classifyTrackedPid(pid: number): Promise<"yes" | "no" | "unknown">;
   isPidAlive(pid: number): boolean;
   paths(profile: Profile): RuntimePathsView;
   /** Idle-watchdog inputs (injected for deterministic tests). */
@@ -683,7 +693,10 @@ export function defaultProbeDeps(): ProbeDeps {
     reach: reachUrl,
     proxyIdentity,
     readState: (profile) => CopilotEnvRunState.forProfile(profile).read(),
-    isTrackedPid: isCopilotApiPid,
+    // The owner-gated three-state (not bare classifyDaemonPid): the boolean scan this
+    // replaced was owner-filtered, so an elevated Windows health run must not start
+    // claiming another user's daemon as our tracked pid.
+    classifyTrackedPid: classifyOwnedDaemonPid,
     isPidAlive: pidAlive,
     now: () => Date.now(),
     idleTimeoutMs: () => idleTimeoutMs(),
@@ -907,10 +920,17 @@ async function interrogateDaemon(
   // proxyLoopbackOrigin, matching portListening: a localhost probe reads DOWN on Windows
   // while the proxy is up.
   const probeUrl = `${proxyLoopbackOrigin(port)}/`;
-  const [reachable, pidTracked] = await Promise.all([
+  // The pid identity is a three-state read (deps.classifyTrackedPid): "no tracked pid"
+  // is a genuine "no" (nothing to look at), but a FAILED scan is "unknown" -- carried
+  // as pidScanUnproven beside the pidTracked flatten, so a broken `ps` renders as
+  // "could not verify" instead of a confident orphan/stale verdict.
+  const [reachable, pidClass] = await Promise.all([
     deps.reach(probeUrl, 2000),
-    trackedPid !== null ? deps.isTrackedPid(trackedPid) : Promise.resolve(false),
+    trackedPid !== null
+      ? deps.classifyTrackedPid(trackedPid)
+      : Promise.resolve<"yes" | "no" | "unknown">("no"),
   ]);
+  const pidTracked = pidClass === "yes";
   // Identity probe (an extra local request) only in the full/proxy scopes -- never the
   // launchers' fast `runtime` probe. Only meaningful when something is reachable AND this
   // target's setup actually routes through the port: with both agents direct, nothing we
@@ -924,6 +944,7 @@ async function interrogateDaemon(
     reachable,
     trackedPid,
     pidTracked,
+    ...(pidClass === "unknown" ? { pidScanUnproven: true as const } : {}),
     pidAlive: trackedPid !== null ? deps.isPidAlive(trackedPid) : false,
     identityConfirmed,
     portState: classifyPortState({ proxyExpected, reachable, pidTracked, identityConfirmed }),

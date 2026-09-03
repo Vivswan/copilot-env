@@ -23,15 +23,20 @@ import type { AgentProviderMode } from "../agents/provider_mode.ts";
 import { readAgentModes } from "../agents/wiring.ts";
 import { BASE_URL_ENV, configureClaudeConfig, runClaude } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { runCodex } from "../codex/config.ts";
+import { refreshCodexModelCatalogIfStale } from "../codex/catalog.ts";
+import { runCodex, syncCodexCatalogReference } from "../codex/config.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { CopilotEnvState, type ProfileMode, type ProfileSlot } from "../copilot_api/env_state.ts";
+import {
+  CopilotEnvState,
+  partialSlotGap,
+  type ProfileMode,
+  type ProfileSlot,
+} from "../copilot_api/env_state.ts";
 import {
   parseProfileFlag,
   parseProfileName,
   type Profile,
-  profileLabel,
   type ProfileName,
 } from "../copilot_api/profile.ts";
 import { childEnvWithPath, commandExists, verbatimCliSpawn } from "../utils/command.ts";
@@ -156,16 +161,7 @@ async function ensureProfileReady(
   // Only a COMPLETE slot (one credential + one mode) is launchable; a partial
   // slot reports its gap -- exactly `agent profile --check`'s contract.
   if (slot.kind === "partial") {
-    throw new Error(
-      slot.mode === null
-        ? `${
-          profileLabel(name)
-        } does not exist - create it with \`agent profile --add ${name} --direct|--proxy\``
-        : `${
-          profileLabel(name)
-        } has no credential - repair it with \`agent auth --profile ${name}\` ` +
-          `or \`agent profile --add ${name}\``,
-    );
+    throw new Error(partialSlotGap(name, slot));
   }
   if (slot.mode === "proxy" && !(await deps.ensureProxy(name))) return null;
   return slot.mode;
@@ -286,8 +282,12 @@ export async function prepareLaunch(
  * Ensure the addressed proxy is reachable via the SHARED resolver decision matrix
  * (resolveProxyToken): managed auto-start silently, else offer to start it (no
  * `--yes` -- a down unmanaged proxy prompts, exactly like the rc launchers'
- * `agent proxy-token` call). The key print is a no-op: launch needs reachability,
- * not the credential; the agent's own wiring resolves the token itself.
+ * `agent proxy-token` call). The print step emits no key -- launch needs
+ * reachability, not the credential; the agent's own wiring resolves the token
+ * itself -- but it keeps runPrintProxyToken's OTHER duty: the retired launchers'
+ * pre-flight also refreshed the Codex model catalog, so the freshness hook runs
+ * here directly (default profile only, like every catalog write; the resolver
+ * guarantees the proxy is up before this step).
  */
 async function ensureProxyUp(profile: Profile): Promise<boolean> {
   const deps: ProxyTokenDeps = {
@@ -296,7 +296,11 @@ async function ensureProxyUp(profile: Profile): Promise<boolean> {
     launchProxy,
     readAnswer: readStartAnswer,
     recordHeartbeat,
-    printProxyToken: async () => {},
+    printProxyToken: async (p) => {
+      if (p !== null) return;
+      await refreshCodexModelCatalogIfStale("proxy");
+      syncCodexCatalogReference();
+    },
     notify: (line) => {
       process.stderr.write(`${line}\n`);
     },

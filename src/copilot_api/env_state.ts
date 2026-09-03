@@ -20,7 +20,13 @@ import { isRecord } from "../utils/json.ts";
 import { CopilotApiConfig } from "./config.ts";
 import { INTEGRATION_ID_RE } from "./env_config.ts";
 import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
-import { isValidProfileName, parseProfileName, type Profile, type ProfileName } from "./profile.ts";
+import {
+  isValidProfileName,
+  parseProfileName,
+  type Profile,
+  profileLabel,
+  type ProfileName,
+} from "./profile.ts";
 
 // The provider vocabulary lives HERE, with the store that persists `authProvider`,
 // so env_state can validate it at the read boundary without importing from the
@@ -207,6 +213,21 @@ function parseProfileSlot(data: ProfileSlotData): ProfileSlot {
     mode: data.mode,
     integrationIdentity: data.integrationIdentity,
   };
+}
+
+/** The repair line for a PARTIAL named slot -- the ONE spelling of its two gaps
+ *  (never created vs credential-less), shared by `agent profile --check` /
+ *  `--settings-for` and `agent launch`. The rendered strings are output
+ *  contracts, pinned centrally by test. */
+export function partialSlotGap(
+  name: ProfileName,
+  slot: Extract<ProfileSlot, { kind: "partial" }>,
+): string {
+  return slot.mode === null
+    ? `${profileLabel(name)} does not exist - create it with ` +
+      `\`agent profile --add ${name} --direct|--proxy\``
+    : `${profileLabel(name)} has no credential - repair it with ` +
+      `\`agent auth --profile ${name}\` or \`agent profile --add ${name}\``;
 }
 
 /** The fields persisted in `.copilot-env-state.json` (absent/blank read back as null). */

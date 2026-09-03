@@ -24,6 +24,7 @@ import {
   allProfileNames,
   CopilotEnvState,
   credentialProvider,
+  partialSlotGap,
   type ProfileMode,
   type ProfileSlot,
   type ProvisionedCredential,
@@ -320,16 +321,7 @@ function runCheck(name: ProfileName): void {
   const slot = new CopilotEnvState().readProfileSlot(name);
   switch (slot.kind) {
     case "partial":
-      console.log(
-        slot.mode === null
-          ? `${
-            profileLabel(name)
-          } does not exist - create it with \`agent profile --add ${name} --direct|--proxy\``
-          : `${
-            profileLabel(name)
-          } has no credential - repair it with \`agent auth --profile ${name}\` ` +
-            `or \`agent profile --add ${name}\``,
-      );
+      console.log(partialSlotGap(name, slot));
       process.exitCode = providerModeExitCode("other");
       return;
     case "complete":
@@ -351,16 +343,7 @@ function runCheck(name: ProfileName): void {
 async function runSettingsFor(name: ProfileName): Promise<void> {
   const slot = new CopilotEnvState().readProfileSlot(name);
   if (slot.kind === "partial") {
-    throw new Error(
-      slot.mode === null
-        ? `${
-          profileLabel(name)
-        } does not exist - create it with \`agent profile --add ${name} --direct|--proxy\``
-        : `${
-          profileLabel(name)
-        } has no credential - repair it with \`agent auth --profile ${name}\` ` +
-          `or \`agent profile --add ${name}\``,
-    );
+    throw new Error(partialSlotGap(name, slot));
   }
   const claudeHome = resolveClaudeHome();
   const write: ManagedWrite = slot.mode === "direct"

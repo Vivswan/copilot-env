@@ -53,6 +53,7 @@ import { consola } from "consola";
 
 import {
   hasMarker,
+  LAUNCHERS_MARKER,
   MARKER,
   rcFiles,
   runShellIntegration,
@@ -65,6 +66,7 @@ import {
   denoRuntime,
   INSTALL_MANIFEST_FILE,
   type InstallManifest,
+  installStateRoot,
   isStandaloneBinary,
   isVersionedInstallTop,
   PROJECT_ROOT,
@@ -192,14 +194,10 @@ export type InstallRootShape =
   | { kind: "versioned"; top: string };
 
 export function classifyInstallRoot(root: string): InstallRootShape {
-  const r = resolve(root);
-  if (basename(r) === CURRENT_LINK && isVersionedInstallTop(dirname(r))) {
-    return { kind: "versioned", top: dirname(r) };
-  }
-  if (isVersionedInstallTop(r)) {
-    return { kind: "versioned", top: r };
-  }
-  return { kind: "flat", top: r };
+  // installStateRoot (src/utils/root.ts) owns the current-link -> top mapping;
+  // the verdict here is only whether that top carries the real link layout.
+  const top = installStateRoot(root);
+  return isVersionedInstallTop(top) ? { kind: "versioned", top } : { kind: "flat", top };
 }
 
 /**
@@ -887,7 +885,11 @@ export function applyInstallPlan(plan: InstallPlan): void {
 
 /** The shell-integration targets currently carrying our wiring block: what a
  *  layout adoption must REWIRE (the block's source path changes), never widen --
- *  a user who opted out stays opted out. */
+ *  a user who opted out stays opted out. A LAUNCHERS-only rc counts as wired:
+ *  the launchers ride the main block now (`agent env` function emissions), so
+ *  the shell pass is what carries that opt-in into the `launchers` config key
+ *  and strips the retired block -- skipping it would leave the user silently
+ *  launcher-less once the payload sweep runs. */
 export function wiredShellTargets(): ShellWiring[] {
   const wiredIn = (paths: string[]): boolean =>
     paths.some((path) => {
@@ -899,7 +901,7 @@ export function wiredShellTargets(): ShellWiring[] {
         // flat shell payload may be swept, and "could not look" must retain.
         return (error as { code?: string }).code !== "ENOENT";
       }
-      return hasMarker(content, MARKER);
+      return hasMarker(content, MARKER) || hasMarker(content, LAUNCHERS_MARKER);
     });
   if (process.platform !== "win32") {
     return wiredIn(rcFiles(true)) ? [{ allHosts: false }] : [];

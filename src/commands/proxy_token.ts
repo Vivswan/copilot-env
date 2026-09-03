@@ -64,7 +64,10 @@ export interface ProxyTokenDeps {
   /** Show `query` on stderr and read one answer line from stdin (EOF resolves ""). */
   readAnswer(query: string): Promise<string>;
   recordHeartbeat(profile: Profile): void;
-  /** Print the key line (the sole stdout write) -- runPrintProxyToken in production. */
+  /** The step run once the proxy is confirmed up -- runPrintProxyToken in
+   *  production (the key line, the sole stdout write). `agent launch` injects a
+   *  keyless variant that keeps only its catalog-freshness side effect: launch
+   *  needs reachability, not the credential. */
   printProxyToken(profile: Profile): Promise<void>;
   /** A human-facing stderr line (never stdout). */
   notify(line: string): void;

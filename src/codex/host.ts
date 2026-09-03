@@ -31,6 +31,16 @@ export function getHostLocalCodexHome(): string {
   return path.join(codexFarmHostsDir(), getSanitizedHostname());
 }
 
+// True when the inherited CODEX_HOME names the host-local farm home and that
+// home no longer exists. Exact string equality on purpose (no path
+// normalization): only the spelling we export ourselves is ours to clear, so a
+// trailing-slash spelling stays hands-off. Shared by managedCodexHome's
+// stale-env clear (src/commands/env.ts) and the --delete-host read-back
+// override below, so the two can never drift.
+export function isStaleFarmEnvHome(envHome: string | undefined): boolean {
+  return Boolean(envHome && envHome === getHostLocalCodexHome() && !fs.existsSync(envHome));
+}
+
 /**
  * Guard a feature that needs POSIX symlinks (Linux or macOS). Returns false on
  * Windows after printing a friendly note and setting a non-zero exit code --
@@ -437,12 +447,12 @@ export async function runCodexHost(args: CodexHostArgs): Promise<void> {
     // Re-derive the recorded default mode from the POST-delete truth. The
     // inherited CODEX_HOME may still name the farm just removed (only the next
     // `agent env` clears it), so a default read-back through it would see the
-    // deleted dir. The override mirrors managedCodexHome's stale-env clear
-    // predicate EXACTLY, so the record always matches the home the next shell
-    // effectively uses (a spelling the clear leaves alone stays the truth).
-    const envHome = process.env.CODEX_HOME;
+    // deleted dir. The override applies managedCodexHome's stale-env clear
+    // predicate (isStaleFarmEnvHome, shared), so the record always matches the
+    // home the next shell effectively uses (a spelling the clear leaves alone
+    // stays the truth).
     recordDefaultModeFromWiring(
-      envHome && envHome === getHostLocalCodexHome() && !fs.existsSync(envHome)
+      isStaleFarmEnvHome(process.env.CODEX_HOME)
         ? { codexHome: path.join(homedir(), ".codex") }
         : {},
     );

@@ -9,7 +9,7 @@
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { proxyHelperCommand } from "../src/claude/config.ts";
-import { getHostLocalCodexHome, runCodexHost } from "../src/codex/host.ts";
+import { getHostLocalCodexHome, isStaleFarmEnvHome, runCodexHost } from "../src/codex/host.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../src/utils/hostname.ts";
@@ -179,6 +179,22 @@ test("getHostLocalCodexHome is <home>/.codex/hosts/<sanitized hostname>, resolve
   // HOME is read per call (the farm's contract), so retargeting it moves the farm.
   process.env.HOME = join(dir, "other-home");
   expect(getHostLocalCodexHome()).toBe(join(dir, "other-home", ".codex", "hosts", host));
+});
+
+// The shared stale-farm-env predicate's truth table, pinned directly: it gates
+// both managedCodexHome's CODEX_HOME clear and the --delete-host read-back
+// override, so its exact-spelling contract must never loosen.
+test("isStaleFarmEnvHome is true only for the exact farm spelling of a missing home", () => {
+  dir = isolateAgentHomes("copilot-codex-host-").dir;
+  const hostHome = getHostLocalCodexHome();
+  expect(fs.existsSync(hostHome)).toBe(false);
+  expect(isStaleFarmEnvHome(hostHome)).toBe(true); // the farm path, gone => stale
+  expect(isStaleFarmEnvHome(`${hostHome}/`)).toBe(false); // trailing slash: not our exact spelling
+  expect(isStaleFarmEnvHome(join(dir, "my-own-codex"))).toBe(false); // foreign path, even missing
+  expect(isStaleFarmEnvHome(undefined)).toBe(false); // no inherited CODEX_HOME
+  expect(isStaleFarmEnvHome("")).toBe(false); // empty spelling
+  fs.mkdirSync(hostHome, { recursive: true });
+  expect(isStaleFarmEnvHome(hostHome)).toBe(false); // the farm exists => nothing stale
 });
 
 // --- platform guard (mirrors assertUnix: the Windows CI job runs only this) --

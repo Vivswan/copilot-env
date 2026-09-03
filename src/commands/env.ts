@@ -19,7 +19,7 @@
 import { existsSync } from "node:fs";
 import { BASE_URL_ENV, DIRECT_BASE_URL, inspectClaudeWiring } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { getHostLocalCodexHome } from "../codex/host.ts";
+import { isStaleFarmEnvHome } from "../codex/host.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { assertKnownProfile } from "../copilot_api/env_state.ts";
 import { copilotApiResolvePort, parseLoopbackProxyUrl } from "../copilot_api/port.ts";
@@ -65,10 +65,7 @@ function isLocalProxyUrl(url: string): boolean {
 export function managedCodexHome(): ManagedEnvValue {
   const codexHome = new CopilotEnvRunState().read().codexHome;
   if (codexHome && existsSync(codexHome)) return { value: codexHome };
-  const current = process.env.CODEX_HOME;
-  if (current && current === getHostLocalCodexHome() && !existsSync(current)) {
-    return { unset: true };
-  }
+  if (isStaleFarmEnvHome(process.env.CODEX_HOME)) return { unset: true };
   return null;
 }
 

@@ -4,6 +4,7 @@ import { closeSync, existsSync, openSync, readFileSync } from "node:fs";
 import { devNull } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { consola } from "consola";
 import { daemonConfigFile, readResolvedVersionRecord, writeDaemonConfig } from "../proxy_float.ts";
 import { runCaptured } from "../utils/command.ts";
 import { pidAlive } from "../utils/pid.ts";
@@ -271,11 +272,23 @@ export const DAEMON_SIGKILL_GRACE_MS = 2_000;
 
 /**
  * Terminate `pid`: SIGTERM, then -- when `graceMs > 0` -- wait that long and SIGKILL
- * if it's still alive. Signal errors (e.g. ESRCH on an already-gone pid) are
- * swallowed. The caller must confirm `pid` is OURS (PID-reuse guard) before calling.
- * `graceMs: 0` sends a single SIGTERM with no force-kill escalation.
+ * if it's still alive AND still classifies as our daemon. Signal errors (e.g. ESRCH on
+ * an already-gone pid) are swallowed. The caller must confirm `pid` is OURS (PID-reuse
+ * guard) before calling; that confirmation authorizes the SIGTERM only. The grace
+ * window is long enough for the OS to recycle a died-during-grace pid, so the KILL
+ * re-proves identity at its own signal boundary (the same boundary rule as
+ * stopLockHolder's re-corroborated KILL and the orphan sweep's fresh-scan intersect in
+ * launch.ts) instead of firing on the seconds-old evidence -- narrowing the stale
+ * window from the whole grace to the scan-to-signal instant, the residue every
+ * re-proving escalation carries. `graceMs: 0` sends a single SIGTERM with no
+ * force-kill escalation. `classify` is the identity seam (classifyDaemonPid),
+ * injectable for tests; test/terminate_pid.test.ts pins each arm.
  */
-export async function terminatePid(pid: number, graceMs: number): Promise<void> {
+export async function terminatePid(
+  pid: number,
+  graceMs: number,
+  classify: (pid: number) => Promise<"yes" | "no" | "unknown"> = classifyDaemonPid,
+): Promise<void> {
   try {
     process.kill(pid, "SIGTERM");
   } catch {
@@ -284,6 +297,26 @@ export async function terminatePid(pid: number, graceMs: number): Promise<void> 
   if (graceMs > 0) {
     await sleep(graceMs);
     if (pidAlive(pid)) {
+      // Three-state on purpose: a boolean isCopilotApiPid re-check would read a FAILED
+      // scan as "not ours" and strand the stop behind a flaky process table -- the known
+      // fail-open this change replaces.
+      const verdict = await classify(pid);
+      if (verdict === "no") {
+        // classifyDaemonPid's confident verdict: whatever wears the pid now (it read
+        // alive just above) is not our daemon. Report instead of killing.
+        consola.warn(
+          `Not escalating pid ${pid} to SIGKILL: it no longer identifies as our copilot-api daemon, and the pid may now belong to a different process.`,
+        );
+        return;
+      }
+      // "yes" KILLs, and "unknown" KILLs DELIBERATELY -- unlike the fail-closed reads
+      // elsewhere (corroborateLockHolder refuses an unreadable scan outright, with no
+      // recent identity read behind its pid): every terminatePid caller gates its TERM
+      // on an identity read at least as demanding as this kill gate, so a
+      // kill-on-unknown never acts under a weaker identity standard than some TERM in
+      // this tree already does. Refusing on "unknown" would instead strand every stop
+      // behind a transient scan failure, and permanently so where identity is never
+      // readable (a restricted token, e.g. Windows Constrained Language Mode).
       try {
         process.kill(pid, "SIGKILL");
       } catch {

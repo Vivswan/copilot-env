@@ -1,5 +1,14 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
+import { consola } from "consola";
+import { AGENT_CLIS } from "../src/agents/clis.ts";
 import {
   buildNodePosixInstallScript,
   computePathRefresh,
@@ -11,10 +20,11 @@ import {
   CI_RC_DIR_ENV,
   LAUNCHERS_MARKER,
   LAUNCHERS_MARKER_END,
+  MARKER,
   windowsProfileTarget,
 } from "../src/shell/integration.ts";
 import { expect, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome, removeDir, tmpDir } from "./helpers.ts";
 
 // runShell's flag validation throws BEFORE any install or rc wiring, so these
 // need no filesystem/network isolation.
@@ -133,6 +143,193 @@ test("a wire migrates a legacy launchers block's opt-in, never over a stored val
   }
 });
 
+// --- the best-effort `--clis` install run ---------------------------------------
+//
+// These drive the REAL install arm end to end against a fake `npm` on PATH (a sh
+// script, so the trio is POSIX-only: the win32 arm additionally rewrites the real
+// user-registry PATH, which no test may touch). The whole outcome under guard: a
+// contained npm failure warns honestly, the remaining CLIs are still attempted,
+// and the rc wiring `runShell` does afterwards still lands.
+
+interface CliInstallFixture {
+  dir: string;
+  /** Where the fake `npm install -g` lays down CLI shims (`<prefix>/bin`). */
+  globalBin: string;
+  /** The rc file the wire targets (pre-created so rcFiles picks it). */
+  bashrc: string;
+}
+
+/**
+ * Stage a hermetic `--clis` run: PATH holds ONLY a fixture bin -- the fake npm plus
+ * `sh`/`chmod` symlinks (all the probes and the fake need) -- so no real CLI on the
+ * host can satisfy a look; NVM_DIR points nowhere (so findCommand's nvm fallback
+ * cannot resolve real CLIs either) and the rc seam targets a fresh dir. The fake
+ * npm answers `prefix -g` and `install -g <pkg>` per the options, silently (stdio
+ * is inherited, so a chatty fake would bypass the capture below).
+ */
+function stageCliInstallFixture(opts: {
+  /** `npm prefix -g` exits 1 instead of printing the prefix. */
+  prefixFails?: boolean;
+  /** Packages whose `npm install -g` exits 1 instead of laying down the shim. */
+  failInstalls?: readonly string[];
+  /** Commands pre-placed on PATH, so installCli reads them as already installed. */
+  preinstalled?: readonly string[];
+}): CliInstallFixture {
+  const dir = tmpDir("copilot-setup-clis-");
+  const pathBin = join(dir, "path-bin");
+  const prefix = join(dir, "npm-prefix");
+  const globalBin = join(prefix, "bin");
+  const rcDir = join(dir, "rc");
+  for (const d of [pathBin, globalBin, rcDir]) mkdirSync(d, { recursive: true });
+  const bashrc = join(rcDir, ".bashrc");
+  writeFileSync(bashrc, "");
+  symlinkSync("/bin/sh", join(pathBin, "sh"));
+  const chmod = ["/bin/chmod", "/usr/bin/chmod"].find((p) => existsSync(p));
+  if (!chmod) throw new Error("no chmod found for the fake npm");
+  symlinkSync(chmod, join(pathBin, "chmod"));
+
+  const shim = (path: string): void => {
+    writeFileSync(path, "#!/bin/sh\nexit 0\n");
+    chmodSync(path, 0o755);
+  };
+  const installArms = AGENT_CLIS.map((cli) => {
+    if (opts.failInstalls?.includes(cli.packageName)) return `  "${cli.packageName}") exit 1 ;;`;
+    const target = `"${globalBin}/${cli.command}"`;
+    return `  "${cli.packageName}") printf '#!/bin/sh\\nexit 0\\n' > ${target}` +
+      `; chmod +x ${target}; exit 0 ;;`;
+  });
+  writeFileSync(
+    join(pathBin, "npm"),
+    [
+      "#!/bin/sh",
+      'case "$1" in',
+      opts.prefixFails ? "  prefix) exit 1 ;;" : `  prefix) echo "${prefix}"; exit 0 ;;`,
+      '  install) case "$3" in',
+      ...installArms,
+      "  *) exit 1 ;;",
+      "  esac ;;",
+      "  *) exit 1 ;;",
+      "esac",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(join(pathBin, "npm"), 0o755);
+  for (const command of opts.preinstalled ?? []) shim(join(pathBin, command));
+
+  process.env.PATH = pathBin;
+  process.env.NVM_DIR = join(dir, "no-nvm");
+  process.env[CI_RC_DIR_ENV] = rcDir;
+  return { dir, globalBin, bashrc };
+}
+
+/** Run `fn` with stdout/stderr captured and consola at info level; returns the output. */
+function captureRun(fn: () => void): string {
+  const written: string[] = [];
+  const savedLevel = consola.level;
+  const origOut = process.stdout.write.bind(process.stdout);
+  const origErr = process.stderr.write.bind(process.stderr);
+  process.stdout.write = (s: string | Uint8Array) => {
+    written.push(String(s));
+    return true;
+  };
+  process.stderr.write = (s: string | Uint8Array) => {
+    written.push(String(s));
+    return true;
+  };
+  try {
+    consola.level = 3; // ensure info is not self-silenced under the test runner
+    fn();
+  } finally {
+    process.stdout.write = origOut;
+    process.stderr.write = origErr;
+    consola.level = savedLevel;
+  }
+  return written.join("");
+}
+
+const CLI_ENV_EXTRAS = ["PATH", "Path", "NVM_DIR"] as const;
+
+test.skipIf(process.platform === "win32")(
+  "shell --clis: one CLI's npm failure warns, the rest still install, the wiring lands",
+  () => {
+    const restore = envSnapshot(CLI_ENV_EXTRAS);
+    const [broken, ...others] = AGENT_CLIS;
+    let dir = "";
+    try {
+      const fixture = stageCliInstallFixture({ failInstalls: [broken.packageName] });
+      dir = fixture.dir;
+      const output = captureRun(() => runShell({ clis: true }));
+      // The genuine npm failure warns as ITSELF (which CLI, why, and that the run
+      // goes on) -- never dressed in the could-not-check look-failure wording.
+      expect(output).toContain(
+        `Could not install ${broken.name} (npm install -g ${broken.packageName} failed); continuing.`,
+      );
+      expect(output).not.toContain("probe failed to run");
+      expect(existsSync(join(fixture.globalBin, broken.command))).toBe(false);
+      // The remaining CLIs really installed, and the rc wiring still ran.
+      for (const cli of others) {
+        expect(existsSync(join(fixture.globalBin, cli.command))).toBe(true);
+      }
+      expect(readFileSync(fixture.bashrc, "utf-8")).toContain(MARKER);
+    } finally {
+      restore();
+      dir = removeDir(dir);
+    }
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "shell --clis: a failed npm PATH sync warns, the CLIs are still checked, the wiring lands",
+  () => {
+    const restore = envSnapshot(CLI_ENV_EXTRAS);
+    let dir = "";
+    try {
+      const fixture = stageCliInstallFixture({
+        prefixFails: true,
+        preinstalled: AGENT_CLIS.map((cli) => cli.command),
+      });
+      dir = fixture.dir;
+      const output = captureRun(() => runShell({ clis: true }));
+      expect(output).toContain(
+        "Could not sync npm's global bin dir to PATH (npm prefix -g failed); continuing.",
+      );
+      // The loop still ran over every CLI, and the sync failure was never dressed
+      // as a per-CLI install failure or a could-not-check look failure.
+      for (const cli of AGENT_CLIS) expect(output).toContain(`${cli.name} already installed.`);
+      expect(output).not.toContain("Could not install");
+      expect(output).not.toContain("probe failed to run");
+      expect(readFileSync(fixture.bashrc, "utf-8")).toContain(MARKER);
+    } finally {
+      restore();
+      dir = removeDir(dir);
+    }
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "shell --clis: the all-good run installs every CLI, extends PATH, and wires -- warn-free",
+  () => {
+    const restore = envSnapshot(CLI_ENV_EXTRAS);
+    let dir = "";
+    try {
+      const fixture = stageCliInstallFixture({});
+      dir = fixture.dir;
+      const output = captureRun(() => runShell({ clis: true }));
+      expect(output).not.toContain("Could not");
+      for (const cli of AGENT_CLIS) {
+        expect(output).toContain(`Installing ${cli.name} ...`);
+        expect(existsSync(join(fixture.globalBin, cli.command))).toBe(true);
+      }
+      // syncNpmGlobalBinToPath prepended npm's global bin, so the fresh installs
+      // resolved in THIS process.
+      expect(process.env.PATH?.startsWith(`${fixture.globalBin}:`)).toBe(true);
+      expect(readFileSync(fixture.bashrc, "utf-8")).toContain(MARKER);
+    } finally {
+      restore();
+      dir = removeDir(dir);
+    }
+  },
+);
 // computePathRefresh is the platform-parameterized core of syncNpmGlobalBinToPath:
 // it picks the bin dir + PATH separator and produces the Path/PATH assignments.
 // Parameterizing on platform lets these run on POSIX CI without win32 gating.

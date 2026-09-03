@@ -268,7 +268,17 @@ export function computePathRefresh(
 }
 
 function syncNpmGlobalBinToPath(): void {
-  const prefix = runNpm(["prefix", "-g"], true);
+  // Best-effort, the same containment as installAgentClis' per-CLI loop: this PATH
+  // sync is a nicety, and `npm prefix -g` throws on ANY npm failure (registry,
+  // permission, disk) -- escaping here would abort the CLI installs and the
+  // shell-integration wiring runShell does after installAgentClis returns.
+  let prefix: string;
+  try {
+    prefix = runNpm(["prefix", "-g"], true);
+  } catch (e) {
+    consola.warn(`Could not sync npm's global bin dir to PATH (${errMessage(e)}); continuing.`);
+    return;
+  }
   if (!prefix) return;
   const path = process.env.PATH ?? process.env.Path ?? "";
   const { bin, assignments } = computePathRefresh(process.platform, prefix, path);

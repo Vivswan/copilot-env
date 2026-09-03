@@ -9,7 +9,7 @@ import {
 } from "../src/utils/file_lock.ts";
 import { ROOT } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
-import { removeDir, tmpDir } from "./helpers.ts";
+import { removeDir, tmpDir, withUnprovablePidProbe } from "./helpers.ts";
 
 // Direct tests of the shared lock's parameterization (staleMs, injected nowMs, marker
 // format) and of the steal path's restore contract. The multi-process mutual-exclusion
@@ -418,4 +418,40 @@ test("the lock primitives and the update-lock test seam stay out of src/", () =>
     return !(allowedIn[name] ?? []).includes(file);
   });
   expect(offenders).toEqual([]);
+});
+
+// --- the unprovable-liveness posture at the steal boundary --------------------------------
+
+// The marker's dead-holder steal fires only on a PROVEN death (pidAlive's flatten is
+// "not provably dead"). Under a permission set without --allow-run (the daemon's own
+// preload environment; the real NotCapable shape is pinned in test/pid.test.ts) every
+// pid reads "unproven" -- which must never license a steal of a possibly-live holder's
+// lock, however the pid table would have read. The age-horizon arm beside it is the
+// capability control (the refusal above is the judgment, not a probe-broken harness
+// that cannot acquire at all) AND the no-brick direction: the daemon lock's own
+// staleMs-0 acquire is age-governed, so an unprovable token still boots. Under the
+// historical dead-on-unproven read -- or a wrapper flattened the unsafe way
+// (`=== "alive"`) -- the first arm goes red: the unprovable probe steals the live
+// holder's lock and rewrites its marker.
+test("an unprovable liveness probe never licenses a steal; the age horizon still reclaims", async () => {
+  const path = tmp("unprovable.lock");
+  const agedPath = join(dir, "aged.lock");
+  const planted = marker(process.pid, Date.now());
+  writeFileSync(path, planted); // a test-planted marker: a LIVE holder, freshly stamped
+  await withUnprovablePidProbe(async () => {
+    // staleMs=Infinity is the dead-holder-only reclaim (the autoupdate/start-lock
+    // policy): with the holder's death unprovable, the acquire must back off ...
+    expect(tryAcquireFileLock(path, Number.POSITIVE_INFINITY)).toBe(false);
+    // ... with the WHOLE outcome intact: the lock is kept and the holder's own marker
+    // is untouched (nothing stolen, nothing rewritten).
+    expect(readFileSync(path, "utf-8")).toBe(planted);
+    // A genuinely dead holder reads the same to this token ("failed to look" is never
+    // "nobody there"), so dead-holder-only reclaim honestly refuses it too ...
+    writeFileSync(agedPath, marker(DEAD_PID, 1_000));
+    expect(tryAcquireFileLock(agedPath, Number.POSITIVE_INFINITY)).toBe(false);
+    // ... and the FINITE age horizon is what still reclaims for an unprovable token:
+    // the same aged marker is stolen by age alone, probe or no probe.
+    expect(tryAcquireFileLock(agedPath, 5_000, { nowMs: 6_001 })).toBe(true);
+  });
+  releaseFileLock(agedPath);
 });

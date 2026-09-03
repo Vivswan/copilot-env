@@ -55,6 +55,7 @@ import {
   launchFakeDaemon,
   removeDir,
   until,
+  withUnprovablePidProbe,
   writeRunState,
 } from "./helpers.ts";
 
@@ -1281,6 +1282,61 @@ test("awaitReadiness: a dead daemon without a bind race fails with the plain sta
       config: new CopilotEnvConfig(),
     }),
   ).rejects.toThrow(`the proxy failed to start. See ${logFile}`);
+});
+
+// --- the unprovable-liveness posture (probe cannot run: every pid reads "unproven") ------
+
+// awaitReadiness under a liveness probe that cannot run (the real NotCapable shape is
+// pinned in test/pid.test.ts): only a PROVEN death may enter the failed-to-start /
+// bind-race branches. An unprovable read defers to the log's own "Listening on:"
+// readiness verdict, records the pid+port, and reports the daemon up -- under the
+// historical dead-on-unproven read this control goes red ("the proxy failed to start"
+// thrown over a daemon that is really up, leaving it running but untracked).
+test(
+  "awaitReadiness: an unprovable liveness read defers to the log's readiness verdict",
+  async () => {
+    const home = tmpHome();
+    const logFile = seedLog(home, "Listening on: http://127.0.0.1\n");
+    const state = new CopilotEnvRunState();
+    await withUnprovablePidProbe(async () => {
+      const live = await awaitReadiness({
+        pid: process.pid,
+        port: 4848,
+        logFile,
+        profile: null,
+        pinnedPort: undefined,
+        state,
+        relaunch: () => {
+          throw new Error("an unprovable read must never trigger the bind-race relaunch");
+        },
+        config: new CopilotEnvConfig(),
+      });
+      expect(live).toEqual({ pid: process.pid, port: 4848 });
+    });
+    // The winning pid/port pair was recorded: the daemon stays tracked and stoppable.
+    expect(state.read().pid).toBe(process.pid);
+    expect(state.read().port).toBe(4848);
+  },
+  30_000,
+);
+
+// The orphan sweep's died-since-scan filter under the same unprovable probe: the scan
+// already corroborated the pid as a live daemon-shaped process, so only a PROVEN death
+// may drop it from the plan -- a failed look keeps the scan's verdict. The in-test
+// control (probe restored) pins the filter's real job: a genuinely dead scanned pid is
+// dropped. Under the historical read both plans came back empty.
+test("planCleanup: an unprovable liveness read keeps a scanned orphan planned", async () => {
+  const home = tmpHome();
+  const listPids = (): Promise<number[] | "unproven"> => Promise.resolve([DEAD_PID]);
+  // Control first: a runnable probe proves the scanned pid died since the scan -> dropped.
+  expect(await planCleanup(home, null, new CopilotEnvRunState(), listPids)).toEqual([]);
+  // Unprovable probe: the scan's verdict stands and the stop is planned (the execute
+  // path re-proves against a fresh scan before any signal).
+  await withUnprovablePidProbe(async () => {
+    expect(await planCleanup(home, null, new CopilotEnvRunState(), listPids)).toEqual([
+      { kind: "stop-orphan", pid: DEAD_PID },
+    ]);
+  });
 });
 
 // --- applyDefaultConfig: the pre-launch config.json projection --------------------------

@@ -17,7 +17,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { consola } from "consola";
 import { pidAlive, terminatePid, type TerminateVerdict } from "../src/copilot_api/process.ts";
-import { killAndAwaitExit, removeDir, tmpDir, until } from "./helpers.ts";
+import { killAndAwaitExit, removeDir, tmpDir, until, withUnprovablePidProbe } from "./helpers.ts";
 import { denoRunArgs, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 
@@ -225,6 +225,51 @@ test(
       expect(await terminatePid(child.pid, 0, classify)).toBe("term-only");
       await exited; // the SIGTERM alone ends the compliant child: the signal was sent
       expect(calls).toEqual([]);
+    } finally {
+      await killAndAwaitExit(child.pid);
+    }
+  },
+  30_000,
+);
+
+// The unprovable-liveness arm at the grace boundary: under the daemon's own permission
+// set the liveness probe throws NotCapable (pinned real in test/pid.test.ts) and every
+// pid reads "unproven" -- which must never mint "died-in-grace", the verdict callers
+// read as a confirmed death (stopTrackedProxy clears tracking on it). Instead the
+// classify boundary rules, exactly as it does for a proven-alive pid. Under the
+// historical EPERM-only catch this control goes red: the unprovable probe reads dead,
+// the verdict claims "died-in-grace", and the classify seam is never consulted.
+test(
+  "an unprovable liveness read at the KILL boundary never mints 'died-in-grace'",
+  async () => {
+    dir = tmpDir("copilot-terminate-");
+    const ready = join(dir, "ready");
+    const script = join(dir, "compliant.ts");
+    // No SIGTERM listener needed: with the probe (and every signal send) unprovable,
+    // nothing can reach the child at all -- its survival proves exactly that.
+    writeFileSync(
+      script,
+      `Deno.writeTextFileSync(${JSON.stringify(ready)}, "up");\n` +
+        "setInterval(() => {}, 60_000);\n",
+    );
+    const child = spawnChild(Deno.execPath(), {
+      args: [...denoRunArgs(), script],
+      stdout: "null",
+      stderr: "inherit",
+    });
+    try {
+      expect(await until(10_000, () => existsSync(ready))).toBe(true);
+      const { calls, classify } = classifyStub("yes");
+      let verdict: TerminateVerdict | undefined;
+      await withUnprovablePidProbe(async () => {
+        verdict = await terminatePid(child.pid, 200, classify);
+      });
+      // The classify boundary ruled ("killed", the same deliberate arm as proven-alive),
+      // it was consulted exactly once (a died-in-grace return would have skipped it),
+      // and no false death was reported: the child is provably still alive.
+      expect(verdict).toBe("killed");
+      expect(calls).toEqual([child.pid]);
+      expect(pidAlive(child.pid)).toBe(true);
     } finally {
       await killAndAwaitExit(child.pid);
     }

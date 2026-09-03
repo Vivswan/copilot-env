@@ -283,6 +283,29 @@ export async function killAndAwaitExit(pid: number): Promise<void> {
   }
 }
 
+/**
+ * Run `body` with process.kill replaced by a thrower mimicking Deno's NotCapable --
+ * name "NotCapable", `code` undefined, which is what a permission set without
+ * --allow-run (the daemon's own) really throws; the fidelity of that shape is pinned
+ * by the restricted-subprocess control in test/pid.test.ts. Every pidLiveness read
+ * inside `body` is therefore "unproven", and every signal send fails like it does in
+ * the daemon. The real kill is restored on every exit path, so teardown (and every
+ * later test) signals normally.
+ */
+export async function withUnprovablePidProbe(body: () => Promise<void>): Promise<void> {
+  const realKill = process.kill;
+  process.kill = ((_pid: number, _signal?: string | number): true => {
+    throw Object.assign(new Error("Requires run access to signal processes"), {
+      name: "NotCapable",
+    });
+  }) as typeof process.kill;
+  try {
+    await body();
+  } finally {
+    process.kill = realKill;
+  }
+}
+
 // --- the refused-stop fixture -------------------------------------------------------
 
 export interface RefusedStopFixture {

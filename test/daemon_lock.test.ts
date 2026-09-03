@@ -21,6 +21,7 @@ import {
   isolateProxyHome,
   removeDir,
   tmpDir,
+  withUnprovablePidProbe,
   writeRunState,
 } from "./helpers.ts";
 
@@ -429,3 +430,93 @@ test("stopTrackedProxy: a lock-dead tracked pid is never signalled, and tracking
   const result = await stopTrackedProxy();
   expect(result).toEqual({ trackedPid: process.pid, signalled: false, stopped: true });
 });
+
+// --- the unprovable-liveness posture (probe cannot run: every pid reads "unproven") ------
+
+// proxyStatus under a token whose liveness probe cannot run (the real NotCapable shape is
+// pinned in test/pid.test.ts): a healthy proxy must not be false-reported as DOWN. With no
+// lock to consult and an unprovable pid-table read, the identity scan and the port probe
+// own the verdict -- a live daemon-shaped tracked pid whose recorded port answers reads UP.
+// Under the historical dead-on-unproven read this control goes red ({ up: false }).
+test(
+  "proxyStatus: an unprovable liveness read defers to identity + port probe, not DOWN",
+  async () => {
+    dir = isolateProxyHome("copilot-daemon-lock-");
+    // A daemon-shaped process (copilot-api entry basename + `start`): the real
+    // classification must answer "yes" for the status to survive the pid-reuse guard.
+    const decoy = join(dir, "copilot-api-decoy.mjs");
+    writeFileSync(decoy, "setTimeout(() => {}, 30_000);\n");
+    const child = spawnChild(Deno.execPath(), {
+      args: ["run", decoy, "start"],
+      stdout: "null",
+      stderr: "null",
+    });
+    const { server, port } = await listenEphemeral();
+    try {
+      writeRunState({ pid: child.pid, port });
+      await withUnprovablePidProbe(async () => {
+        expect(await proxyStatus()).toEqual({ up: true, port });
+      });
+    } finally {
+      await closeServer(server);
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+      await child.status;
+    }
+  },
+  30_000,
+);
+
+// stopTrackedProxy under the same unprovable probe, graceMs > 0 (the caller that must be
+// SURE it stopped, e.g. de-auth): with no signal deliverable and no death provable, the
+// stop must NOT claim "stopped" -- and must KEEP the tracking, so a follow-up `agent stop`
+// from a capable shell can still target the possibly-live daemon. Under the historical
+// read the unprovable probe minted died-in-grace/stopped=true and CLEARED the tracking of
+// a daemon that is provably still alive.
+test(
+  "stopTrackedProxy: an unprovable stop keeps the tracking and never claims stopped",
+  async () => {
+    dir = isolateProxyHome("copilot-daemon-lock-");
+    const ready = join(dir, "ready");
+    const bystander = join(dir, "bystander.ts");
+    writeFileSync(
+      bystander,
+      `Deno.writeTextFileSync(${JSON.stringify(ready)}, "up");\n` +
+        "setInterval(() => {}, 60_000);\n",
+    );
+    const child = spawnChild(Deno.execPath(), {
+      args: [...denoRunArgs(), bystander],
+      stdout: "null",
+      stderr: "inherit",
+    });
+    try {
+      expect(await until(10_000, () => existsSync(ready))).toBe(true);
+      writeRunState({ pid: child.pid, port: 4141 });
+      // No lock file: the verdict is "unproven" and the injected TERM-gate classify
+      // answers "yes" (a confirmed daemon this token still cannot signal or re-probe).
+      const classify = (): Promise<"yes" | "no" | "unknown"> => Promise.resolve("yes");
+      let result: Awaited<ReturnType<typeof stopTrackedProxy>> | undefined;
+      await withUnprovablePidProbe(async () => {
+        result = await stopTrackedProxy(300, null, classify);
+      });
+      // Signalled (attempted, honestly reported) but NOT stopped: no death was proven.
+      expect(result).toEqual({ trackedPid: child.pid, signalled: true, stopped: false });
+      // The whole outcome: the daemon is genuinely still alive (nothing could signal
+      // it), and the tracking is KEPT for a follow-up stop -- never cleared on a
+      // failed look.
+      expect(pidAlive(child.pid)).toBe(true);
+      expect(new CopilotEnvRunState().read().pid).toBe(child.pid);
+    } finally {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+      await child.status;
+    }
+  },
+  30_000,
+);

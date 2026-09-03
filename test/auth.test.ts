@@ -4,9 +4,10 @@ import { parse, stringify } from "smol-toml";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { runAuth } from "../src/commands/auth.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
-import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
-import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
+import { assertProfileSlot, CopilotEnvState } from "../src/copilot_api/env_state.ts";
+import { CopilotApiPaths, profileHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
+import { errMessage } from "../src/utils/error.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, removeDir, resetExitCode } from "./helpers.ts";
 
@@ -284,6 +285,45 @@ test("auth --get/--del/--check on a NONEXISTENT profile hint at `agent profile -
   expect(deletedExisting).not.toContain("profile --add");
   const checkedExisting = await captureLog(() => runAuth({ check: true, profile: "ghost" }));
   expect(checkedExisting).toContain("run `agent auth --profile ghost`");
+});
+
+test("auth --get/--del/--check on a HALF-CREATED profile reuse the store's missing-slot phrasing", async () => {
+  isolate();
+  // A daemon home without a store slot (an interrupted add): the store's write
+  // gate (missingProfileSlotError via assertProfileSlot) words this as
+  // "half-created", so the read-back hints must say the same instead of
+  // claiming "no such profile". The repair command stays the atomic re-add.
+  const ghost = parseProfileName("ghost");
+  mkdirSync(profileHome(ghost), { recursive: true });
+  const phrase = "profile 'ghost' has no store slot (half-created; its daemon home exists)";
+  const addCommand = "agent profile --add ghost --direct|--proxy";
+  // Alignment pin: the store's own gate renders the same phrase + command, so a
+  // rewording on either side fails here.
+  let storeMessage = "";
+  try {
+    assertProfileSlot(ghost);
+  } catch (e) {
+    storeMessage = errMessage(e);
+  }
+  expect(storeMessage).toContain(phrase);
+  expect(storeMessage).toContain(addCommand);
+
+  const got = await captureStderr(() => runAuth({ get: true, profile: "ghost" }));
+  expect(got).toContain(phrase);
+  expect(got).toContain(addCommand);
+  expect(got).not.toContain("no such profile");
+  expect(process.exitCode).toBe(1);
+  resetExitCode();
+  const deleted = await captureStderr(() => runAuth({ del: true, profile: "ghost" }));
+  expect(deleted).toContain("Nothing to clear");
+  expect(deleted).toContain(phrase);
+  expect(deleted).toContain(addCommand);
+  const checked = await captureLog(() => runAuth({ check: true, profile: "ghost" }));
+  // --check prints the raw hint (console.log, no consola rendering), so the
+  // WHOLE store message pins verbatim -- byte-level drift fails here.
+  expect(checked).toContain(storeMessage);
+  expect(process.exitCode).toBe(1);
+  resetExitCode();
 });
 
 test("auth: --provider cannot combine with a sub-action (never silently dropped)", async () => {

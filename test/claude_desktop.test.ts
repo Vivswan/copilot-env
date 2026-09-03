@@ -256,6 +256,35 @@ test("payload: foreign keys in the existing document survive the surgical merge"
   });
 });
 
+test("payload: a rotation to a null integration id drops the stale header; foreign extras survive", () => {
+  const withId = desktopConfigPayload({
+    mode: "direct",
+    profile: null,
+    baseUrl: DEFAULT_COPILOT_API_BASE,
+    helperPath: "/x/h.sh",
+    directIntegrationId: "copilot-developer-cli",
+    existing: { "inferenceCustomHeaders": { "X-Custom": "keep" } },
+  });
+  const before = withId["inferenceCustomHeaders"] as Record<string, string>;
+  expect(before["Copilot-Integration-Id"]).toBe("copilot-developer-cli");
+  expect(before["X-Custom"]).toBe("keep");
+
+  // PAT -> non-PAT rotation: directClientHeaders omits the id when it is null,
+  // so the direct branch's own strip is what removes the stale header.
+  const rotated = desktopConfigPayload({
+    mode: "direct",
+    profile: null,
+    baseUrl: DEFAULT_COPILOT_API_BASE,
+    helperPath: "/x/h.sh",
+    directIntegrationId: null,
+    existing: withId,
+  });
+  const headers = rotated["inferenceCustomHeaders"] as Record<string, string>;
+  expect(headers["Copilot-Integration-Id"]).toBeUndefined();
+  expect(headers["X-Custom"]).toBe("keep");
+  expect(headers["Openai-Intent"]).toBe("conversation-edits");
+});
+
 // --- helper scripts ----------------------------------------------------------------
 
 test("helper scripts: written 0755, regenerated when tampered, other mode removed", () => {

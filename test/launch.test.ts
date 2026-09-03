@@ -238,8 +238,8 @@ test("claude 'other': launched as-is with a note, config never touched", async (
   expect(plan?.args).toEqual(["--permission-mode", "auto", "--enable-auto-mode"]);
   expect(calls).toEqual(["mode:claude"]);
   expect(notes).toEqual([
-    "agent launch: Claude has a custom provider config (not managed by copilot-env); " +
-    "launching it as-is.",
+    "agent launch: Claude has a custom or unrecognized provider config " +
+    "(not managed by copilot-env); launching it as-is.",
   ]);
 });
 

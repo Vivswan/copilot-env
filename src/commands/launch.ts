@@ -185,8 +185,8 @@ async function wireDefaultProvider(
     await deps.wireProxyDefault(agent);
   } else if (mode === "other") {
     deps.notify(
-      `agent launch: ${display} has a custom provider config (not managed by copilot-env); ` +
-        "launching it as-is.",
+      `agent launch: ${display} has a custom or unrecognized provider config ` +
+        "(not managed by copilot-env); launching it as-is.",
     );
   }
   return true;

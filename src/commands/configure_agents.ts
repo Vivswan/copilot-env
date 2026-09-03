@@ -28,7 +28,9 @@ export async function configureBothAgents(mode: RequestedMode): Promise<{
 function modeLabel(mode: AgentProviderMode): string {
   if (mode === "direct") return "GitHub Copilot Direct";
   if (mode === "proxy") return "the local proxy";
-  if (mode === "other") return "a custom provider (not managed)";
+  // "other" is any config that is not ours: a foreign provider, but also a
+  // malformed or unreadable one (the classifiers fold read/parse failures in).
+  if (mode === "other") return "a custom or unrecognized provider config (not managed)";
   if (mode === "none") return "not configured";
   return assertNever(mode);
 }

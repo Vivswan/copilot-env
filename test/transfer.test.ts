@@ -75,6 +75,23 @@ function isolate(): AgentHomes {
   return homes;
 }
 
+/** Capture process.stderr.write output (the command's narration logger) while
+ *  awaiting `fn`. */
+async function captureStderr(fn: () => Promise<void>): Promise<string> {
+  const original = process.stderr.write.bind(process.stderr);
+  let out = "";
+  process.stderr.write = (chunk: string | Uint8Array): boolean => {
+    out += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    return true;
+  };
+  try {
+    await fn();
+  } finally {
+    process.stderr.write = original;
+  }
+  return out;
+}
+
 /** Seed a representative setup: prefs (including a registry key newer than the
  *  bundle feature itself, proving the schema reuse tracks the registry), a
  *  default credential, a proxy profile, both agents wired proxy, plus the
@@ -557,9 +574,14 @@ test("a profile wiring failure lands in failures and the command exits non-zero"
     ),
   );
 
-  await runSettings({ importFrom: file, force: true }, { catalogDeps: NOOP_CATALOG_DEPS });
+  const err = await captureStderr(() =>
+    runSettings({ importFrom: file, force: true }, { catalogDeps: NOOP_CATALOG_DEPS })
+  );
 
   expect(process.exitCode).toBe(1);
+  // The summary covers BOTH failure kinds outcome.failures carries (a profile
+  // whose commit failed and a wiring failure), not just "wiring".
+  expect(err).toContain("but some profiles or wiring could not be applied (see above).");
   // The slot committed atomically (credential + mode) BEFORE the wiring, so the
   // failure leaves a COMPLETE-but-unwired slot -- never a half profile -- and
   // `agent profile --sync` re-derives the artifacts from it.

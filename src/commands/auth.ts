@@ -44,7 +44,7 @@ import {
   ghTokenFromEnv,
   tokenFromSetFlag,
 } from "../copilot_api/gh_cli.ts";
-import { CopilotApiPaths } from "../copilot_api/paths.ts";
+import { CopilotApiPaths, profileHomeNames } from "../copilot_api/paths.ts";
 import {
   copilotApiArgv,
   copilotApiEnv,
@@ -399,9 +399,17 @@ function profileSlotMissing(profile: ProfileName): boolean {
   return !new CopilotEnvState().profileSlotStatus(profile).exists;
 }
 
-/** The store's unknown-profile phrasing (unknownProfileError in env_state.ts),
- *  reused as a hint pointing at the one command that creates a profile. */
+/** The store's missing-slot phrasing, reused as a hint pointing at the one
+ *  command that creates a profile: a half-created profile (a daemon home
+ *  without a store slot) reports itself the way missingProfileSlotError in
+ *  env_state.ts does -- never as "no such profile" -- and a never-created name
+ *  gets the plain unknown-profile wording. The repair command is the same
+ *  atomic re-add either way. */
 function noSuchProfileHint(profile: ProfileName): string {
+  if (profileHomeNames().includes(profile)) {
+    return `profile '${profile}' has no store slot (half-created; its daemon home exists) - ` +
+      `re-create it with \`agent profile --add ${profile} --direct|--proxy\``;
+  }
   return `no such profile '${profile}' - create it with ` +
     `\`agent profile --add ${profile} --direct|--proxy\``;
 }

@@ -215,7 +215,11 @@ async function runImport(
     ? ` (profiles: ${outcome.wiredProfiles.join(", ")})`
     : "";
   if (outcome.failures.length > 0) {
-    logger.error(`Settings imported from ${file}${wired}, but some wiring failed (see above).`);
+    // failures carries BOTH kinds: a profile whose commit/wiring failed and a
+    // default-agent wiring failure -- the summary must not claim only "wiring".
+    logger.error(
+      `Settings imported from ${file}${wired}, but some profiles or wiring could not be applied (see above).`,
+    );
     process.exitCode = 1;
   } else {
     logger.success(`Settings imported from ${file}${wired}.`);

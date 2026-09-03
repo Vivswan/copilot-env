@@ -297,6 +297,17 @@ function managedMcpServers(profile: Profile, existing: unknown): Record<string, 
   };
 }
 
+/** `existing` minus OUR managed direct header names (a non-record reads as
+ *  empty) -- the ONE strip both payload branches apply, so a stale managed
+ *  header survives neither a mode switch nor a credential rotation. */
+function foreignCustomHeaders(existing: unknown): Record<string, unknown> {
+  const stripped: Record<string, unknown> = { ...(isRecord(existing) ? existing : {}) };
+  for (const name of Object.keys(directClientHeaders(codexUserAgent(), "x"))) {
+    delete stripped[name];
+  }
+  return stripped;
+}
+
 /** The payload inputs: the SHARED write variant (mode/identity pairing enforced
  *  by ManagedWrite; this module never probes) plus the entry-local fields. */
 export type DesktopPayloadOptions = ManagedWrite & {
@@ -346,10 +357,12 @@ export function desktopConfigPayload(opts: DesktopPayloadOptions): Record<string
   doc["disableNonessentialTelemetry"] = true;
   doc["disableNonessentialServices"] = true;
   if (opts.mode === "direct") {
-    // Ours win on our header names; a user-added extra header survives the merge.
-    const existingHeaders = doc["inferenceCustomHeaders"];
+    // OUR header names are stripped BEFORE the merge (mirroring the proxy
+    // branch): directClientHeaders OMITS the integration id when it is null,
+    // so a credential rotation to a null identity must drop the stale header
+    // rather than inherit it. A user-added extra header survives.
     doc["inferenceCustomHeaders"] = {
-      ...(isRecord(existingHeaders) ? existingHeaders : {}),
+      ...foreignCustomHeaders(doc["inferenceCustomHeaders"]),
       ...directClientHeaders(codexUserAgent(), opts.directIntegrationId),
     };
     // Copilot Direct 404s /v1/models -- discovery must stay off; the list is the picker.
@@ -363,10 +376,7 @@ export function desktopConfigPayload(opts: DesktopPayloadOptions): Record<string
     // Strip only OUR header names from a mode switch; foreign extras survive.
     const existingHeaders = doc["inferenceCustomHeaders"];
     if (isRecord(existingHeaders)) {
-      const stripped = { ...existingHeaders };
-      for (const name of Object.keys(directClientHeaders(codexUserAgent(), "x"))) {
-        delete stripped[name];
-      }
+      const stripped = foreignCustomHeaders(existingHeaders);
       if (Object.keys(stripped).length === 0) delete doc["inferenceCustomHeaders"];
       else doc["inferenceCustomHeaders"] = stripped;
     }

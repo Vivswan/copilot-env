@@ -34,7 +34,7 @@ import {
   type ProfileMode,
   storedCredentialKind,
 } from "../copilot_api/env_state.ts";
-import { ghAuthTokenSpawnSpec } from "../copilot_api/gh_cli.ts";
+import { ghAuthTokenSpawnSpec, ghAuthVerdict } from "../copilot_api/gh_cli.ts";
 import {
   CopilotApiPaths,
   DEFAULT_HOME_STAGING_DIR,
@@ -64,7 +64,13 @@ import {
 import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
 import { persistedInferenceMs } from "../scripts/inference_activity.ts";
 import { hasMarker, LAUNCHERS_MARKER, MARKER, shellTargetFiles } from "../shell/integration.ts";
-import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts";
+import {
+  childEnvWithPath,
+  cliSpawn,
+  type CommandLook,
+  findCommand,
+  resolveCommand,
+} from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { readTextOrNull, readTextResult, type TextReadResult } from "../utils/fs.ts";
 import { type ProjectConfig, readProjectConfig } from "../utils/project_config.ts";
@@ -293,6 +299,11 @@ export interface ShellFileFact {
 export interface ShellFacts {
   files: ShellFileFact[];
   integrationWired: boolean;
+  /** Shell-target DISCOVERY itself failed to run (resolving the profile paths
+   *  shells out to PowerShell on Windows and can throw): `files` is then an
+   *  empty, UNPROVEN census, so the check says "could not check" instead of a
+   *  confident "not wired". Optional so hand-built fixtures stay valid. */
+  targetsUnproven?: true;
   /** The `launchers` config key: the cl/co/cx launchers are `agent env` emissions
    *  gated on it, so the key -- not any rc marker -- is what "wired" means. */
   launchersWired: boolean;
@@ -301,27 +312,38 @@ export interface ShellFacts {
 export interface CliFacts {
   command: string;
   name: string;
-  resolved: string | null;
+  /** The PATH look, failure arm kept (see CommandLook): the census renders a
+   *  "not installed" verdict, so an unproven look must arrive marked. */
+  look: CommandLook;
 }
 
 export interface ToolFacts {
-  node: string | null;
-  npm: string | null;
+  node: CommandLook;
+  npm: CommandLook;
 }
 
 export interface CodexDirectAuthFacts {
   command: string | null;
   authenticated: boolean;
+  /** The gh look never RAN to completion (the command probe for gh failed, or
+   *  `gh auth token` spawned but errored / was timeout-killed): the two fields
+   *  above are then UNPROVEN -- renderers say "could not check", never a
+   *  confident "not found"/"not authenticated" (or `gh auth login` advice).
+   *  Absent means the probe completed and the verdict is real. Optional so
+   *  hand-built fixtures stay valid. */
+  unproven?: true;
 }
 
 /**
  * Result of a `--live` end-to-end prompt against an agent CLI's CONFIGURED home.
- * Skipped when the CLI isn't installed (not a failure); a probe that RAN always
- * names the resolved CLI, and a failure always carries the captured reason + a
- * tail of the real CLI output -- a skipped-yet-ok result is unrepresentable.
+ * Skipped when the CLI isn't installed (not a failure); `lookFailed` marks a
+ * skip off a look that never completed (a could-not-check, not a proven
+ * absence). A probe that RAN always names the resolved CLI, and a failure
+ * always carries the captured reason + a tail of the real CLI output -- a
+ * skipped-yet-ok result is unrepresentable.
  */
 export type LiveProbeFacts =
-  | { kind: "skipped" }
+  | { kind: "skipped"; lookFailed?: true }
   | { kind: "ok"; cli: string }
   | { kind: "failed"; cli: string; detail: string };
 
@@ -414,6 +436,8 @@ export interface HealthFacts {
     slot: ProfileAuthFacts | null;
     storedToken: boolean;
     ghAuthenticated: boolean;
+    /** The gh probe never ran to completion (see AuthFacts.ghAuthUnproven). */
+    ghAuthUnproven?: true;
   };
   codex?: CodexFacts;
   codexHost?: CodexHostFacts;
@@ -445,6 +469,11 @@ export type ProfileAuthFacts = {
 export interface AuthFacts {
   storedToken: boolean;
   ghAuthenticated: boolean;
+  /** The gh probe never ran to completion (CodexDirectAuthFacts.unproven):
+   *  ghAuthenticated false is then UNPROVEN, so the check says "could not
+   *  check", never "gh is unauthenticated" + `gh auth login` advice. Optional
+   *  so hand-built fixtures stay valid. */
+  ghAuthUnproven?: true;
   /** The recorded auth provider (`copilot` | `gh-cli` | `gh-token`), or null. */
   provider: AuthProvider | null;
   /** Named profiles, keyed by validated name. */
@@ -491,7 +520,10 @@ export interface ProbeDeps {
   profileSlot(name: ProfileName): ProfileSlotFacts;
   /** True when the named profile has an isolated daemon home on disk. */
   profileHomeExists(name: ProfileName): boolean;
-  commandResolved(command: string): string | null;
+  /** One look for a command, failure arm kept (see CommandLook): the CLI/tool
+   *  census rows render "not installed" verdicts, so an unproven look must stay
+   *  marked instead of flattening into "absent". */
+  commandLook(command: string): CommandLook;
   agentClis(): readonly { command: string; name: string }[];
   shellTargets(): string[];
   readFileSafe(path: string): string | null;
@@ -555,15 +587,39 @@ async function proxyIdentity(url: string, timeoutMs: number): Promise<boolean | 
   }
 }
 
+/** Fold one finished `gh auth token` spawn into the direct-auth facts (exported
+ *  for tests): ghAuthVerdict's completed exits prove the verdict; its "unproven"
+ *  (a spawn error, the timeout kill -- status null) marks the facts instead of
+ *  flattening into a confident authenticated:false. */
+export function directAuthFromSpawn(
+  command: string,
+  result: { status: number | null; error?: unknown },
+): CodexDirectAuthFacts {
+  const verdict = ghAuthVerdict(result);
+  if (verdict === "unproven") return { command, authenticated: false, unproven: true };
+  return { command, authenticated: verdict };
+}
+
 function codexDirectAuth(): Promise<CodexDirectAuthFacts> {
-  const command = resolveCommand("gh");
-  if (command === null) return Promise.resolve({ command: null, authenticated: false });
+  // findCommand with the failure arm kept: this fact renders auth VERDICTS
+  // ("GitHub CLI not found", "not authenticated"), so a look that never ran must
+  // arrive marked instead of reading as a proven absence.
+  const look = findCommand("gh");
+  if (look.path === null) {
+    return Promise.resolve({
+      command: null,
+      authenticated: false,
+      ...(look.launchFailed ? { unproven: true as const } : {}),
+    });
+  }
+  const command = look.path;
   // Async (non-blocking) so it runs concurrently with the other probes under
   // gatherFacts' Promise.all, instead of freezing the event loop for the whole
   // `gh auth token` call. ghAuthTokenSpawnSpec owns the spawn recipe (resolved path,
   // gh's bin dir on PATH, the shared timeout). stdio:"ignore" keeps the printed
-  // token out of our process memory. A timeout (SIGTERM) or any non-zero exit =>
-  // authenticated:false.
+  // token out of our process memory. A completed non-zero exit => authenticated:
+  // false; a spawn error or the timeout kill (close with a null code) never
+  // completed the probe, so directAuthFromSpawn marks it unproven instead.
   return new Promise((resolve) => {
     const s = ghAuthTokenSpawnSpec(command);
     const child = spawn(s.file, s.args, {
@@ -573,8 +629,8 @@ function codexDirectAuth(): Promise<CodexDirectAuthFacts> {
       shell: s.shell,
       env: s.env,
     });
-    child.on("error", () => resolve({ command, authenticated: false }));
-    child.on("close", (code) => resolve({ command, authenticated: code === 0 }));
+    child.on("error", (e) => resolve(directAuthFromSpawn(command, { status: null, error: e })));
+    child.on("close", (code) => resolve(directAuthFromSpawn(command, { status: code })));
   });
 }
 
@@ -614,7 +670,9 @@ function formatLiveFailure(
  * sanitized -- `--live` tests the user's real, fully-resolved setup -- except
  * `omitEnvVars` (upper-case names), the narrow scrub a NAMED profile needs so a
  * shell export of the DEFAULT wiring cannot override the profile's own and
- * misattribute the answer. Exported for the scrub's own test.
+ * misattribute the answer. Exported for the scrub's own test. `find` is a test
+ * seam; the real look keeps its failure arm (see CommandLook) because the skip
+ * renders a "CLI not installed" verdict.
  */
 export function runLiveCli(
   cli: string,
@@ -622,9 +680,15 @@ export function runLiveCli(
   home: string,
   homeEnvVar: string,
   omitEnvVars: readonly string[] = [],
+  find: (command: string) => CommandLook = findCommand,
 ): Promise<LiveProbeFacts> {
-  const resolved = resolveCommand(cli);
-  if (resolved === null) return Promise.resolve({ kind: "skipped" });
+  const look = find(cli);
+  if (look.path === null) {
+    return Promise.resolve(
+      look.launchFailed ? { kind: "skipped", lookFailed: true } : { kind: "skipped" },
+    );
+  }
+  const resolved = look.path;
   const ghPath = resolveCommand("gh");
   return new Promise((resolve) => {
     const s = cliSpawn(resolved, args);
@@ -717,7 +781,7 @@ export function defaultProbeDeps(): ProbeDeps {
       };
     },
     profileHomeExists,
-    commandResolved: resolveCommand,
+    commandLook: findCommand,
     agentClis: () => AGENT_CLIS,
     shellTargets: shellTargetFiles,
     readFileSafe: readTextOrNull,
@@ -1261,9 +1325,9 @@ export async function gatherFacts(
       jobs.push(
         (async () => {
           const slot = deps.profileSlot(profile);
-          const ghAuthenticated = storedCredentialKind(slot.provider, slot.storedToken) === "gh-cli"
-            ? (await sharedDirectAuth()).authenticated
-            : false;
+          const gh = storedCredentialKind(slot.provider, slot.storedToken) === "gh-cli"
+            ? await sharedDirectAuth()
+            : null;
           facts.profileAuth = {
             name: profile,
             slot: slot.exists
@@ -1274,7 +1338,8 @@ export async function gatherFacts(
               }
               : null,
             storedToken: slot.storedToken,
-            ghAuthenticated,
+            ghAuthenticated: gh?.authenticated ?? false,
+            ...(gh?.unproven ? { ghAuthUnproven: true as const } : {}),
           };
         })(),
       );
@@ -1286,12 +1351,13 @@ export async function gatherFacts(
           // (cached) gh probe -- no extra spawn.
           const provider = deps.authProvider();
           const storedToken = deps.storedTokenPresent();
-          const ghAuthenticated = storedCredentialKind(provider, storedToken) === "gh-cli"
-            ? (await sharedDirectAuth()).authenticated
-            : false;
+          const gh = storedCredentialKind(provider, storedToken) === "gh-cli"
+            ? await sharedDirectAuth()
+            : null;
           facts.auth = {
             storedToken,
-            ghAuthenticated,
+            ghAuthenticated: gh?.authenticated ?? false,
+            ...(gh?.unproven ? { ghAuthUnproven: true as const } : {}),
             provider,
             profiles: deps.authProfiles(),
             pinnedIntegrationId: deps.pinnedIntegrationId(),
@@ -1325,22 +1391,27 @@ export async function gatherFacts(
     jobs.push(
       (async () => {
         // Resolving shell targets shells out to PowerShell on Windows and can
-        // throw; degrade to "no targets" (-> shell reads as not-wired) rather
-        // than crashing the whole diagnostic.
+        // throw; degrade to "no targets" rather than crashing the whole
+        // diagnostic -- but MARKED (targetsUnproven), so the empty census
+        // renders "could not check", never a confident "not wired".
         let targets: string[] = [];
+        let targetsUnproven = false;
         try {
           targets = deps.shellTargets();
         } catch {
-          targets = [];
+          targetsUnproven = true;
         }
         const contents = targets.map((path) => ({ path, content: deps.readFileSafe(path) }));
-        facts.shell = evalShellFiles(contents, new CopilotEnvConfig().launchersEnabled());
+        facts.shell = {
+          ...evalShellFiles(contents, new CopilotEnvConfig().launchersEnabled()),
+          ...(targetsUnproven ? { targetsUnproven: true as const } : {}),
+        };
         facts.clis = deps.agentClis().map((c) => ({
           command: c.command,
           name: c.name,
-          resolved: deps.commandResolved(c.command),
+          look: deps.commandLook(c.command),
         }));
-        facts.tools = { node: deps.commandResolved("node"), npm: deps.commandResolved("npm") };
+        facts.tools = { node: deps.commandLook("node"), npm: deps.commandLook("npm") };
         const home = deps.codexHome();
         const hostHome = deps.hostCodexHome();
         facts.codexHost = {

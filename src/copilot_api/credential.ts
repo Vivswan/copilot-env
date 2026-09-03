@@ -7,7 +7,7 @@
 // `runAuth`) stays in `src/commands/auth.ts`, the thin layer on top of this.
 import { spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
-import { resolveCommand } from "../utils/command.ts";
+import { findCommand } from "../utils/command.ts";
 import { withFileLockSync } from "../utils/file_lock.ts";
 import {
   type AuthProvider,
@@ -17,7 +17,7 @@ import {
   type StoredCredential,
   type TokenProvider,
 } from "./env_state.ts";
-import { ghAuthTokenSpawnSpec } from "./gh_cli.ts";
+import { ghAuthTokenSpawnSpec, ghAuthVerdict } from "./gh_cli.ts";
 import { CopilotApiPaths } from "./paths.ts";
 import type { Profile } from "./profile.ts";
 
@@ -32,11 +32,37 @@ export interface CredentialStatus {
   resolves: boolean;
 }
 
-/** Run `gh auth token` (nvm-safe), returning the trimmed token or null. */
-export function ghAuthToken(): string | null {
-  const ghPath = resolveCommand("gh");
-  if (ghPath === null) return null;
-  const s = ghAuthTokenSpawnSpec(ghPath);
+/** One look for the `gh auth token` credential, failure arm kept: `token` null
+ *  with the `unproven` mark means the look never RAN to completion (the command
+ *  probe for gh, or the `gh auth token` spawn itself, errored or was killed) --
+ *  gh was never actually asked, so a consumer rendering a verdict must say
+ *  "could not check", never "gh is not authenticated" (or advise `gh auth
+ *  login`) off it. An unmarked null is proven: gh is absent, or it RAN and
+ *  produced no token. */
+export interface GhTokenLook {
+  token: string | null;
+  unproven?: true;
+}
+
+/** Pure fold of a finished `gh auth token` capture spawn into a GhTokenLook
+ *  (exported for tests): ghAuthVerdict's three states, with exit 0 reading the
+ *  trimmed token -- empty output on exit 0 is a proven miss (gh RAN). */
+export function ghTokenLookFromSpawn(
+  result: { status: number | null; error?: unknown; stdout?: string | null },
+): GhTokenLook {
+  const verdict = ghAuthVerdict(result);
+  if (verdict === "unproven") return { token: null, unproven: true };
+  if (!verdict) return { token: null };
+  return { token: (result.stdout ?? "").trim() || null };
+}
+
+/** Run `gh auth token` (nvm-safe) with the failure arm kept (see GhTokenLook). */
+export function ghAuthTokenLook(): GhTokenLook {
+  const gh = findCommand("gh");
+  if (gh.path === null) {
+    return gh.launchFailed ? { token: null, unproven: true } : { token: null };
+  }
+  const s = ghAuthTokenSpawnSpec(gh.path);
   const result = spawnSync(s.file, s.args, {
     encoding: "utf8",
     timeout: s.timeout,
@@ -44,8 +70,20 @@ export function ghAuthToken(): string | null {
     shell: s.shell,
     env: s.env,
   });
-  if (result.error || result.status !== 0) return null;
-  return (result.stdout ?? "").trim() || null;
+  return ghTokenLookFromSpawn(result);
+}
+
+/**
+ * Run `gh auth token` (nvm-safe), returning the trimmed token or null. Accepted
+ * flatten: a FAILED look (ghAuthTokenLook's unproven) reads null here, for
+ * resolver consumers whose miss action is non-destructive and provider-driven
+ * (report-and-ask, a skipped import slot, a profile re-acquisition) -- null
+ * never silently falls anywhere. A site that renders a gh AUTH verdict ("not
+ * authenticated", `gh auth login` advice) goes through ghAuthTokenLook and
+ * treats the mark honestly.
+ */
+export function ghAuthToken(): string | null {
+  return ghAuthTokenLook().token;
 }
 
 /**

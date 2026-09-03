@@ -46,12 +46,14 @@ import {
   type CodexFacts,
   type DaemonProbed,
   type DefaultRuntimeTarget,
+  directAuthFromSpawn,
   evalCodex,
   evalShellFiles,
   gatherFacts,
   type HealthFacts,
   type PortState,
   type ProxyFacts,
+  runLiveCli,
   type RuntimeTarget,
   type WatchdogFacts,
 } from "../src/health/probe.ts";
@@ -1365,18 +1367,46 @@ test("shell + launcher wiring: missing warns, present ok", () => {
   const wired = { files: [], integrationWired: true, launchersWired: true };
   const bare = { files: [], integrationWired: false, launchersWired: false };
   expect(checkShellIntegration(wired).status).toBe("ok");
-  expect(checkShellIntegration(bare).status).toBe("warn");
+  const notWired = checkShellIntegration(bare);
+  expect(notWired.status).toBe("warn");
+  expect(notWired.detail).toBe("not wired into any shell rc/profile");
+  // An UNPROVEN target census (discovery never ran) keeps the warn + fix but
+  // never the confident "not wired" claim.
+  const unproven = checkShellIntegration({ ...bare, targetsUnproven: true });
+  expect(unproven.status).toBe("warn");
+  expect(unproven.detail).toBe(
+    "could not check the shell rc/profile files (target discovery failed to run)",
+  );
+  expect(unproven.fix).toBe("agent shell");
+  expect(unproven.value).toMatchObject({ targetsUnproven: true });
   expect(checkLaunchers(wired).status).toBe("ok");
   expect(checkLaunchers(bare).status).toBe("warn");
 });
 
-test("optional CLI + tools: missing warns (not fail), present ok", () => {
-  expect(checkCli({ command: "claude", name: "Claude", resolved: "/bin/claude" }).status).toBe(
-    "ok",
-  );
-  expect(checkCli({ command: "codex", name: "Codex", resolved: null }).status).toBe("warn");
-  expect(checkTool("node", "/usr/bin/node").status).toBe("ok");
-  expect(checkTool("npm", null).status).toBe("warn");
+test("optional CLI + tools: missing warns (not fail), present ok, a FAILED look says could-not-check", () => {
+  expect(checkCli({ command: "claude", name: "Claude", look: { path: "/bin/claude" } }).status)
+    .toBe("ok");
+  const missing = checkCli({ command: "codex", name: "Codex", look: { path: null } });
+  expect(missing.status).toBe("warn");
+  expect(missing.detail).toBe("not installed (optional)");
+  // An unproven look keeps the warn + fix but never claims "not installed".
+  const unproven = checkCli({
+    command: "codex",
+    name: "Codex",
+    look: { path: null, launchFailed: true },
+  });
+  expect(unproven.status).toBe("warn");
+  expect(unproven.detail).toBe("could not check (the command probe failed to run)");
+  expect(unproven.fix).toBe("agent shell --clis");
+  expect(unproven.value).toEqual({ command: "codex", resolved: null, lookFailed: true });
+
+  expect(checkTool("node", { path: "/usr/bin/node" }).status).toBe("ok");
+  expect(checkTool("npm", { path: null }).status).toBe("warn");
+  expect(checkTool("npm", { path: null }).detail).toBe("not installed (optional)");
+  const toolUnproven = checkTool("npm", { path: null, launchFailed: true });
+  expect(toolUnproven.status).toBe("warn");
+  expect(toolUnproven.detail).toBe("could not check (the command probe failed to run)");
+  expect(toolUnproven.value).toEqual({ resolved: null, lookFailed: true });
 });
 
 test("codex: not configured is ok; each broken part warns with a precise message", () => {
@@ -1556,6 +1586,93 @@ test("codex: not configured is ok; each broken part warns with a precise message
   expect(directNoCred.detail).toContain("no credential resolves");
   expect(directNoCred.detail).not.toContain("gh auth:");
   expect(directNoCred.fix).toBe("agent auth");
+});
+
+test("checkCodex/checkClaude direct: an UNPROVEN gh probe says could-not-check, never a confident verdict", () => {
+  const codexDirect = {
+    home: "/c",
+    configExists: true,
+    providerSelected: true,
+    providerMode: "direct",
+    modelProvider: "copilot-env",
+    baseUrl: "https://api.githubcopilot.com",
+    baseUrlMatches: true,
+    envKeyMatches: false,
+    providerWired: true,
+    envFilePresent: false,
+    envKeyInDotenv: false,
+    envKeyInEnviron: false,
+    tokenAvailable: false,
+    otherReason: null,
+    directUsesToken: false,
+    directNeedsNoGh: false,
+    provider: "gh-cli",
+    directAuth: { command: "/bin/gh", authenticated: false, unproven: true },
+  } satisfies CodexFacts;
+  // `gh auth token` spawned but never completed (error / timeout kill).
+  const codexUnproven = checkCodex(codexDirect);
+  expect(codexUnproven.status).toBe("warn");
+  expect(codexUnproven.detail).toContain(
+    "gh auth: could not check gh authentication (`gh auth token` did not run to completion)",
+  );
+  expect(codexUnproven.detail).not.toContain("is not authenticated");
+  expect(codexUnproven.fix).toBe("re-run `agent health` (the gh check did not run to completion)");
+  // The gh LOOKUP itself failed to run: not a proven "GitHub CLI not found".
+  const lookupUnproven = checkCodex({
+    ...codexDirect,
+    directAuth: { command: null, authenticated: false, unproven: true },
+  });
+  expect(lookupUnproven.status).toBe("warn");
+  expect(lookupUnproven.detail).toContain(
+    "gh auth: could not check for the GitHub CLI (the command probe failed to run)",
+  );
+  expect(lookupUnproven.detail).not.toContain("not found");
+  expect(lookupUnproven.fix).toBe(
+    "re-run `agent health` (the gh check did not run to completion)",
+  );
+  // Same shared verdict on the Claude side.
+  const claudeUnproven = checkClaude({
+    home: "/h/.claude",
+    settingsPath: join("/h/.claude", "settings.json"),
+    settingsExists: true,
+    wired: true,
+    helperPath: join("/h/.claude", "copilot-token.sh"),
+    baseUrl: "https://api.githubcopilot.com",
+    baseUrlMatches: false,
+    providerMode: "direct",
+    otherReason: null,
+    directAuth: { command: "/bin/gh", authenticated: false, unproven: true },
+    directUsesToken: false,
+    provider: "gh-cli",
+  });
+  expect(claudeUnproven.status).toBe("warn");
+  expect(claudeUnproven.detail).toContain(
+    "gh auth: could not check gh authentication (`gh auth token` did not run to completion)",
+  );
+  expect(claudeUnproven.detail).not.toContain("is not authenticated");
+  expect(claudeUnproven.fix).toBe("re-run `agent health` (the gh check did not run to completion)");
+});
+
+test("directAuthFromSpawn: completed exits prove the verdict; error/kill stays unproven", () => {
+  expect(directAuthFromSpawn("/bin/gh", { status: 0 })).toEqual({
+    command: "/bin/gh",
+    authenticated: true,
+  });
+  expect(directAuthFromSpawn("/bin/gh", { status: 1 })).toEqual({
+    command: "/bin/gh",
+    authenticated: false,
+  });
+  // The timeout kill closes with a null code: gh was never actually asked.
+  expect(directAuthFromSpawn("/bin/gh", { status: null })).toEqual({
+    command: "/bin/gh",
+    authenticated: false,
+    unproven: true,
+  });
+  expect(directAuthFromSpawn("/bin/gh", { status: 1, error: new Error("spawn EAGAIN") })).toEqual({
+    command: "/bin/gh",
+    authenticated: false,
+    unproven: true,
+  });
 });
 
 test("checkClaude: direct needs gh + managed base URL; proxy/none/other informational", () => {
@@ -1803,6 +1920,36 @@ test("checkAuth: neither stored token nor gh reports warn with the agent auth fi
   expect(res.fix).toBe("agent auth");
 });
 
+test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `gh auth login` advice", () => {
+  const unproven = checkAuth({
+    storedToken: false,
+    ghAuthenticated: false,
+    ghAuthUnproven: true,
+    provider: "gh-cli",
+    profiles: {},
+    pinnedIntegrationId: null,
+  });
+  expect(unproven.status).toBe("warn");
+  expect(unproven.detail).toBe([
+    "provider 'gh-cli' is selected but its credential could not be checked",
+    "could not check gh authentication (`gh auth token` did not run to completion)",
+  ].join("\n"));
+  expect(unproven.fix).toBe("agent auth");
+  expect(unproven.value).toMatchObject({ ghAuthUnproven: true });
+  // The PROVEN miss keeps the landed confident wording + advice.
+  const proven = checkAuth({
+    storedToken: false,
+    ghAuthenticated: false,
+    provider: "gh-cli",
+    profiles: {},
+    pinnedIntegrationId: null,
+  });
+  expect(proven.detail).toBe([
+    "provider 'gh-cli' is selected but no credential resolves",
+    "`gh` is unauthenticated - run `gh auth login`, or `agent auth` to switch provider",
+  ].join("\n"));
+});
+
 // --- live (--live) checks ---------------------------------------------------
 
 test("checkCodexLive/checkClaudeLive: ok responds, fail warns, missing skips", () => {
@@ -1837,6 +1984,36 @@ test("checkCodexLive/checkClaudeLive: ok responds, fail warns, missing skips", (
   expect(claudeFailWithDetail.detail).toContain("401 invalid x-api-key");
   expect(claudeFailWithDetail.detail).not.toContain("did not answer");
   expect(checkClaudeLive({ kind: "skipped" }).status).toBe("ok");
+});
+
+test("live checks: a skip off a FAILED look says could-not-check, never 'not installed'", () => {
+  const codexSkip = checkCodexLive({ kind: "skipped", lookFailed: true });
+  expect(codexSkip.status).toBe("ok");
+  expect(codexSkip.detail).toBe(
+    "skipped (could not check for the codex CLI - the command probe failed to run)",
+  );
+  expect(codexSkip.value).toEqual({ ran: false, ok: false, cli: null, lookFailed: true });
+  const claudeSkip = checkClaudeLive({ kind: "skipped", lookFailed: true });
+  expect(claudeSkip.status).toBe("ok");
+  expect(claudeSkip.detail).toBe(
+    "skipped (could not check for the claude CLI - the command probe failed to run)",
+  );
+  // The proven-absent skip keeps the landed wording, unmarked.
+  const proven = checkCodexLive({ kind: "skipped" });
+  expect(proven.detail).toBe("skipped (codex CLI not installed)");
+  expect(proven.value).toEqual({ ran: false, ok: false, cli: null });
+});
+
+test("runLiveCli: a FAILED CLI look skips MARKED; a proven absence skips unmarked", async () => {
+  expect(
+    await runLiveCli("codex", [], "/tmp", "CODEX_HOME", [], () => ({
+      path: null,
+      launchFailed: true,
+    })),
+  ).toEqual({ kind: "skipped", lookFailed: true });
+  expect(await runLiveCli("codex", [], "/tmp", "CODEX_HOME", [], () => ({ path: null }))).toEqual({
+    kind: "skipped",
+  });
 });
 
 test("evaluateAll(full) includes the live checks only when their facts are present", () => {
@@ -2059,8 +2236,8 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
     },
     shell: { files: [], integrationWired: true, launchersWired: false },
-    clis: [{ command: "claude", name: "Claude", resolved: null }],
-    tools: { node: "/n", npm: "/m" },
+    clis: [{ command: "claude", name: "Claude", look: { path: null } }],
+    tools: { node: { path: "/n" }, npm: { path: "/m" } },
     codex: {
       home: "/c",
       configExists: false,

@@ -167,6 +167,9 @@ function installNodePosix(): void {
 }
 
 function installNodeWindows(): void {
+  // Accepted flatten: a FAILED winget look reads absent here and only ABORTS
+  // (nothing installs off it), and ensureNpm's npm look just completed through
+  // the same probe shell, so the failed-look window is negligible.
   if (!commandExists("winget")) {
     throw new Error(
       "Cannot install Node.js because winget is unavailable. Install Node.js LTS and rerun 'agent shell --clis'.",
@@ -210,6 +213,11 @@ function ensureNpm(options: CliInstall): boolean {
 }
 
 function resolveNpm(): string {
+  // Accepted flatten: every caller runs moments after ensureNpm proved npm
+  // through a completed look, so a failed look here is a just-broken probe
+  // shell, and the miss only THROWS (nothing installs off it) -- the same
+  // direction any npm failure already takes on these call paths (runNpm throws
+  // on a nonzero exit too).
   const resolved = resolveCommand(NPM_COMMAND);
   if (!resolved) throw new Error("npm is required to install agent CLIs.");
   return resolved;

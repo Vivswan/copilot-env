@@ -30,7 +30,8 @@ import {
   AUTH_PROVIDERS,
   type AuthProvider,
   Credential,
-  ghAuthToken,
+  ghAuthTokenLook,
+  type GhTokenLook,
 } from "../copilot_api/credential.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import {
@@ -336,12 +337,21 @@ async function loginWithGhToken(source: GhTokenSource): Promise<string> {
   return token;
 }
 
-/** `gh-cli`: rely on the machine's gh login (store nothing, verify gh works). */
-function loginWithGhCli(): void {
+/** `gh-cli`: rely on the machine's gh login (store nothing, verify gh works).
+ *  `look` is a test seam; exported for its wording tests. */
+export function loginWithGhCli(look: () => GhTokenLook = ghAuthTokenLook): void {
   // Verify gh works BEFORE recording -- otherwise a failed gh check would point
-  // `--get` at a `gh` that can't produce a token.
-  if (ghAuthToken() === null) {
-    throw new Error("gh is not authenticated - run `gh auth login`, then retry `agent auth`");
+  // `--get` at a `gh` that can't produce a token. Either miss throws (the
+  // provider is never recorded); an UNPROVEN look wears its own words, because
+  // "not authenticated" and the `gh auth login` advice are wrong when gh was
+  // never actually asked.
+  const gh = look();
+  if (gh.token === null) {
+    throw new Error(
+      gh.unproven
+        ? "could not check gh authentication (`gh auth token` did not run to completion) - retry `agent auth`"
+        : "gh is not authenticated - run `gh auth login`, then retry `agent auth`",
+    );
   }
   logger.success("  Using the gh CLI login as the Direct credential.");
 }

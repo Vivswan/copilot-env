@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse, stringify } from "smol-toml";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
-import { runAuth } from "../src/commands/auth.ts";
+import { loginWithGhCli, runAuth } from "../src/commands/auth.ts";
+import { ghTokenLookFromSpawn } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { assertProfileSlot, CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths, profileHome } from "../src/copilot_api/paths.ts";
@@ -498,4 +499,28 @@ test("disabled: auth --print-proxy-token runs the same cleanup", async () => {
   >;
   expect(doc.model_catalog_json).toBeUndefined();
   expect(existsSync(catalogFile)).toBe(false);
+});
+
+// --- gh-cli verify gate (failed-probe honesty) --------------------------------
+
+test("ghTokenLookFromSpawn: completed exits prove, a dead spawn stays unproven", () => {
+  // Exit 0 with a token: the one proven-token arm.
+  expect(ghTokenLookFromSpawn({ status: 0, stdout: " tok \n" })).toEqual({ token: "tok" });
+  // gh RAN: empty output on exit 0 and a nonzero exit are both proven misses.
+  expect(ghTokenLookFromSpawn({ status: 0, stdout: "" })).toEqual({ token: null });
+  expect(ghTokenLookFromSpawn({ status: 1, stdout: "" })).toEqual({ token: null });
+  // The spawn never completed (timeout kill / spawn error): proven NOTHING.
+  expect(ghTokenLookFromSpawn({ status: null })).toEqual({ token: null, unproven: true });
+  expect(ghTokenLookFromSpawn({ status: 1, error: new Error("ETIMEDOUT"), stdout: "" }))
+    .toEqual({ token: null, unproven: true });
+});
+
+test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss keeps the gh advice", () => {
+  expect(() => loginWithGhCli(() => ({ token: null, unproven: true }))).toThrow(
+    "could not check gh authentication (`gh auth token` did not run to completion) - retry `agent auth`",
+  );
+  expect(() => loginWithGhCli(() => ({ token: null }))).toThrow(
+    "gh is not authenticated - run `gh auth login`, then retry `agent auth`",
+  );
+  expect(() => loginWithGhCli(() => ({ token: "tok" }))).not.toThrow();
 });

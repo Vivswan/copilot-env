@@ -85,3 +85,15 @@ export function ghAuthTokenSpawnSpec(ghPath: string): {
   const s = cliSpawn(ghPath, ["auth", "token"]);
   return { ...s, timeout: GH_AUTH_TIMEOUT_MS, env: childEnvWithPath([dirname(ghPath)]) };
 }
+
+/** Verdict over a finished `gh auth token` spawn (exported for tests): exit 0
+ *  proves auth, any other completed exit proves its absence, and a spawn that
+ *  never completed (an error, the timeout kill -- status null) proves NOTHING.
+ *  "unproven" keeps the caller from handing out the false "run `gh auth login`"
+ *  advice when gh was never actually asked. */
+export function ghAuthVerdict(
+  result: { status: number | null; error?: unknown },
+): boolean | "unproven" {
+  if (result.error || result.status === null) return "unproven";
+  return result.status === 0;
+}

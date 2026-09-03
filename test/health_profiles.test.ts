@@ -432,6 +432,21 @@ test("checkProfileAuth: a recorded provider whose credential does not resolve wa
   const ghDown = checkProfileAuth(P, ghSlot, { storedToken: false, ghAuthenticated: false });
   expect(ghDown.status).toBe("warn");
   expect(ghDown.detail).toContain("gh auth login");
+
+  // An UNPROVEN gh probe keeps the warn + fix but says could-not-check: gh was
+  // never actually asked, so the confident wording and its advice never render.
+  const ghUnproven = checkProfileAuth(P, ghSlot, {
+    storedToken: false,
+    ghAuthenticated: false,
+    ghAuthUnproven: true,
+  });
+  expect(ghUnproven.status).toBe("warn");
+  expect(ghUnproven.detail).toBe([
+    "provider 'gh-cli' is recorded for profile 'p' but its credential could not be checked",
+    "could not check gh authentication (`gh auth token` did not run to completion)",
+  ].join("\n"));
+  expect(ghUnproven.fix).toBe("agent auth --profile p");
+  expect(ghUnproven.value).toMatchObject({ ghAuthUnproven: true });
 });
 
 // --- per-agent wiring checks, named ---------------------------------------------
@@ -1011,7 +1026,7 @@ test("the default sweep never runs per-profile live probes", async () => {
         codexHome: () => join(home, "no-codex"),
         claudeHome: () => join(home, "no-claude"),
         shellTargets: () => [],
-        commandResolved: () => null,
+        commandLook: () => ({ path: null }),
         readAutoupdate: () => ({
           enabled: false,
           lastCheckMs: 0,
@@ -1030,6 +1045,92 @@ test("the default sweep never runs per-profile live probes", async () => {
     );
     // Exactly the default's two probes -- never one per named profile.
     expect(liveProfiles).toEqual([null, null]);
+  } finally {
+    restoreEnv();
+    removeDir(home);
+  }
+});
+
+test("an UNPROVEN gh probe travels from the codexDirectAuth seam into both auth fact rows", async () => {
+  // The gatherFacts spreads (probe.ts, the auth + profileAuth jobs) are what
+  // carry CodexDirectAuthFacts.unproven onto the facts; dropping either would
+  // silently restore the confident "gh is unauthenticated" render.
+  const unproven = { command: "/bin/gh", authenticated: false, unproven: true as const };
+  const facts = await gatherFacts("auth", {}, {
+    authProvider: () => "gh-cli",
+    storedTokenPresent: () => false,
+    authProfiles: () => ({}),
+    pinnedIntegrationId: () => null,
+    codexDirectAuth: () => Promise.resolve(unproven),
+  });
+  expect(facts.auth).toEqual({
+    storedToken: false,
+    ghAuthenticated: false,
+    ghAuthUnproven: true,
+    provider: "gh-cli",
+    profiles: {},
+    pinnedIntegrationId: null,
+  });
+  const authCheck = evaluateAll("auth", facts).find((r) => r.id === "setup.auth");
+  expect(authCheck?.status).toBe("warn");
+  expect(authCheck?.detail).toBe([
+    "provider 'gh-cli' is selected but its credential could not be checked",
+    "could not check gh authentication (`gh auth token` did not run to completion)",
+  ].join("\n"));
+
+  const narrowed = await gatherFacts("auth", { profile: P }, {
+    profileSlot: () => ({
+      exists: true,
+      provider: "gh-cli",
+      mode: "direct",
+      storedToken: false,
+      integrationIdentity: null,
+    }),
+    codexDirectAuth: () => Promise.resolve(unproven),
+  });
+  expect(narrowed.profileAuth).toEqual({
+    name: P,
+    slot: { provider: "gh-cli", mode: "direct", integrationIdentity: null },
+    storedToken: false,
+    ghAuthenticated: false,
+    ghAuthUnproven: true,
+  });
+  const profileCheck = evaluateAll("auth", narrowed).find((r) => r.id === "setup.auth");
+  expect(profileCheck?.status).toBe("warn");
+  expect(profileCheck?.detail).toBe([
+    "provider 'gh-cli' is recorded for profile 'p' but its credential could not be checked",
+    "could not check gh authentication (`gh auth token` did not run to completion)",
+  ].join("\n"));
+});
+
+test("a shell-target discovery failure marks the census UNPROVEN, never 'not wired'", async () => {
+  const home = isolateProxyHome("copilot-health-shelltargets-");
+  try {
+    const facts = await gatherFacts(
+      "setup",
+      {},
+      offlineDeps({
+        shellTargets: () => {
+          throw new Error("powershell exploded");
+        },
+        commandLook: () => ({ path: null }),
+        codexHome: () => join(home, "no-codex"),
+        claudeHome: () => join(home, "no-claude"),
+        readAutoupdate: () => ({ enabled: false, lastCheckMs: 0, lastResult: "", cooldownDays: 7 }),
+      }),
+    );
+    expect(facts.shell).toEqual({
+      files: [],
+      integrationWired: false,
+      launchersWired: false,
+      targetsUnproven: true,
+    });
+    const shellCheck = evaluateAll("setup", facts).find((r) => r.id === "setup.shell");
+    expect(shellCheck?.status).toBe("warn");
+    expect(shellCheck?.detail).toBe(
+      "could not check the shell rc/profile files (target discovery failed to run)",
+    );
+    expect(shellCheck?.fix).toBe("agent shell");
   } finally {
     restoreEnv();
     removeDir(home);

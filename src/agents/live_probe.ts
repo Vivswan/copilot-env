@@ -17,7 +17,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { settingsPathFor } from "../claude/paths.ts";
-import { ghAuthTokenSpawnSpec } from "../copilot_api/gh_cli.ts";
+import { ghAuthTokenSpawnSpec, ghAuthVerdict } from "../copilot_api/gh_cli.ts";
 import type { Profile } from "../copilot_api/profile.ts";
 import { childEnvWithPath, cliSpawn, type CommandLook, findCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
@@ -155,18 +155,6 @@ export interface DirectProbeDeps {
   retries?: number;
   /** Base backoff ms between retries (default DEFAULT_PROBE_RETRY_DELAY_MS; 0 in tests). */
   retryDelayMs?: number;
-}
-
-/** Verdict over a finished `gh auth token` spawn (exported for tests): exit 0
- *  proves auth, any other completed exit proves its absence, and a spawn that
- *  never completed (an error, the timeout kill -- status null) proves NOTHING.
- *  "unproven" keeps the caller from handing out the false "run `gh auth login`"
- *  advice when gh was never actually asked. */
-export function ghAuthVerdict(
-  result: { status: number | null; error?: unknown },
-): boolean | "unproven" {
-  if (result.error || result.status === null) return "unproven";
-  return result.status === 0;
 }
 
 function defaultGhAuthOk(ghPath: string): boolean | "unproven" {

@@ -13,6 +13,7 @@ import type { Profile, ProfileName } from "../copilot_api/profile.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
 import { lastActivityMs } from "../scripts/idle_watchdog.ts";
 import { assertNever } from "../utils/assert.ts";
+import type { CommandLook } from "../utils/command.ts";
 import { formatDuration, SECONDS_PER_DAY } from "../utils/time.ts";
 import { filterByScope } from "./aggregate.ts";
 import type {
@@ -77,13 +78,26 @@ function credentialResolves(kind: StoredCredential["kind"], ghAuthenticated: boo
  * The gh-auth status shared by Codex and Claude Direct (gh-backed) checks: both
  * mint the bearer via `gh auth token`. Returns whether it's usable, a one-line
  * detail, and the gh-specific fix. Callers wrap `ghFix` in their own fix
- * selection (e.g. a base-URL/provider fix takes precedence).
+ * selection (e.g. a base-URL/provider fix takes precedence). An UNPROVEN probe
+ * (the gh look or the `gh auth token` spawn never ran to completion) keeps the
+ * warn direction but wears could-not-check words -- "not found"/"not
+ * authenticated" and their advice would be false claims about a check that
+ * never happened.
  */
 function describeDirectGhAuth(a: CodexDirectAuthFacts): {
   ok: boolean;
   detail: string;
   ghFix: string;
 } {
+  if (a.unproven) {
+    return {
+      ok: false,
+      detail: a.command === null
+        ? "gh auth: could not check for the GitHub CLI (the command probe failed to run)"
+        : "gh auth: could not check gh authentication (`gh auth token` did not run to completion)",
+      ghFix: "re-run `agent health` (the gh check did not run to completion)",
+    };
+  }
   return {
     ok: a.command !== null && a.authenticated,
     detail: a.command === null
@@ -717,7 +731,7 @@ export function checkProfileConsistency(f: NamedRuntimeTarget): CheckResult {
 export function checkProfileAuth(
   name: ProfileName,
   slot: ProfileAuthFacts | null,
-  resolution: { storedToken: boolean; ghAuthenticated: boolean },
+  resolution: { storedToken: boolean; ghAuthenticated: boolean; ghAuthUnproven?: true },
 ): CheckResult {
   const base = {
     ...meta("setup.auth"),
@@ -728,6 +742,7 @@ export function checkProfileAuth(
       integrationIdentity: slot?.integrationIdentity ?? null,
       storedToken: resolution.storedToken,
       ghAuthenticated: resolution.ghAuthenticated,
+      ...(resolution.ghAuthUnproven ? { ghAuthUnproven: true } : {}),
     },
   };
   // A slot with no recorded mode (or none at all) needs an explicit mode flag on
@@ -749,13 +764,20 @@ export function checkProfileAuth(
   const source = storedCredentialKind(slot.provider, resolution.storedToken);
   const resolves = credentialResolves(source, resolution.ghAuthenticated);
   if (!resolves) {
+    // An unproven gh probe keeps this warn arm (the credential still isn't shown
+    // to work) but must not claim gh IS unauthenticated -- gh was never asked.
+    const unproven = slot.provider === "gh-cli" && resolution.ghAuthUnproven === true;
     return {
       ...base,
       status: "warn",
       detail: [
-        `provider '${slot.provider}' is recorded for profile '${name}' but no credential resolves`,
+        unproven
+          ? `provider 'gh-cli' is recorded for profile '${name}' but its credential could not be checked`
+          : `provider '${slot.provider}' is recorded for profile '${name}' but no credential resolves`,
         slot.provider === "gh-cli"
-          ? "`gh` is unauthenticated - run `gh auth login`, or re-provision the profile"
+          ? unproven
+            ? "could not check gh authentication (`gh auth token` did not run to completion)"
+            : "`gh` is unauthenticated - run `gh auth login`, or re-provision the profile"
           : `the slot's stored token is missing - run \`agent auth --profile ${name}\` to re-provision`,
       ].join("\n"),
       fix: `agent auth --profile ${name}`,
@@ -810,9 +832,24 @@ export function checkShellIntegration(f: ShellFacts): CheckResult {
   const base = {
     ...meta("setup.shell"),
     profile: null,
-    value: { integrationWired: f.integrationWired, files: f.files },
+    value: {
+      integrationWired: f.integrationWired,
+      files: f.files,
+      ...(f.targetsUnproven ? { targetsUnproven: true } : {}),
+    },
   };
-  return f.integrationWired ? { ...base, status: "ok", detail: "wired into a shell rc/profile" } : {
+  if (f.integrationWired) return { ...base, status: "ok", detail: "wired into a shell rc/profile" };
+  // Target discovery never ran: the empty census proves nothing, so keep the
+  // warn + fix but never the confident "not wired" claim.
+  if (f.targetsUnproven) {
+    return {
+      ...base,
+      status: "warn",
+      detail: "could not check the shell rc/profile files (target discovery failed to run)",
+      fix: "agent shell",
+    };
+  }
+  return {
     ...base,
     status: "warn",
     detail: "not wired into any shell rc/profile",
@@ -849,18 +886,41 @@ export function checkCli(c: CliFacts): CheckResult {
     group: "setup" as const,
     profile: null,
     scopes: SETUP,
-    value: { command: c.command, resolved: c.resolved },
+    value: {
+      command: c.command,
+      resolved: c.look.path,
+      ...(c.look.launchFailed ? { lookFailed: true } : {}),
+    },
   };
-  return c.resolved !== null
-    ? { ...base, status: "ok", detail: c.resolved }
-    : { ...base, status: "warn", detail: "not installed (optional)", fix: "agent shell --clis" };
+  if (c.look.path !== null) return { ...base, status: "ok", detail: c.look.path };
+  // A FAILED look is not a proven absence: same warn + fix, honest words.
+  if (c.look.launchFailed) {
+    return {
+      ...base,
+      status: "warn",
+      detail: "could not check (the command probe failed to run)",
+      fix: "agent shell --clis",
+    };
+  }
+  return { ...base, status: "warn", detail: "not installed (optional)", fix: "agent shell --clis" };
 }
 
-export function checkTool(name: "node" | "npm", resolved: string | null): CheckResult {
-  const base = { ...meta(`setup.tool.${name}`), profile: null, value: { resolved } };
-  return resolved !== null
-    ? { ...base, status: "ok", detail: resolved }
-    : { ...base, status: "warn", detail: "not installed (optional)", fix: "agent shell --clis" };
+export function checkTool(name: "node" | "npm", look: CommandLook): CheckResult {
+  const base = {
+    ...meta(`setup.tool.${name}`),
+    profile: null,
+    value: { resolved: look.path, ...(look.launchFailed ? { lookFailed: true } : {}) },
+  };
+  if (look.path !== null) return { ...base, status: "ok", detail: look.path };
+  if (look.launchFailed) {
+    return {
+      ...base,
+      status: "warn",
+      detail: "could not check (the command probe failed to run)",
+      fix: "agent shell --clis",
+    };
+  }
+  return { ...base, status: "warn", detail: "not installed (optional)", fix: "agent shell --clis" };
 }
 
 export function checkAuth(f: AuthFacts): CheckResult {
@@ -888,6 +948,7 @@ export function checkAuth(f: AuthFacts): CheckResult {
     value: {
       storedToken: f.storedToken,
       ghAuthenticated: f.ghAuthenticated,
+      ...(f.ghAuthUnproven ? { ghAuthUnproven: true } : {}),
       provider: f.provider,
       profiles: f.profiles,
       pinnedIntegrationId: f.pinnedIntegrationId,
@@ -923,13 +984,21 @@ export function checkAuth(f: AuthFacts): CheckResult {
       ].join("\n"),
     };
   }
+  // An unproven gh probe keeps this warn arm (nothing was shown to resolve) but
+  // must not claim gh IS unauthenticated -- `gh auth token` never ran to
+  // completion, so the `gh auth login` advice would be handed out unearned.
+  const unproven = f.provider === "gh-cli" && f.ghAuthUnproven === true;
   return {
     ...base,
     status: "warn",
     detail: [
-      `provider '${f.provider}' is selected but no credential resolves`,
+      unproven
+        ? "provider 'gh-cli' is selected but its credential could not be checked"
+        : `provider '${f.provider}' is selected but no credential resolves`,
       f.provider === "gh-cli"
-        ? "`gh` is unauthenticated - run `gh auth login`, or `agent auth` to switch provider"
+        ? unproven
+          ? "could not check gh authentication (`gh auth token` did not run to completion)"
+          : "`gh` is unauthenticated - run `gh auth login`, or `agent auth` to switch provider"
         : "the stored token is missing - run `agent auth` to re-provision",
       ...profilesLine,
       ...identityLine,
@@ -1364,10 +1433,18 @@ function checkAgentLive(
       ran: f.kind !== "skipped",
       ok: f.kind === "ok",
       cli: f.kind === "skipped" ? null : f.cli,
+      ...(f.kind === "skipped" && f.lookFailed ? { lookFailed: true } : {}),
     },
   };
   if (f.kind === "skipped") {
-    return { ...base, status: "ok", detail: `skipped (${agent} CLI not installed)` };
+    // A skip off a FAILED look is a could-not-check, never a proven absence.
+    return {
+      ...base,
+      status: "ok",
+      detail: f.lookFailed
+        ? `skipped (could not check for the ${agent} CLI - the command probe failed to run)`
+        : `skipped (${agent} CLI not installed)`,
+    };
   }
   return f.kind === "ok"
     ? { ...base, status: "ok", detail: `read-only prompt responded via ${f.cli}` }

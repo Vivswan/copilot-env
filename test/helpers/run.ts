@@ -25,6 +25,26 @@ export function importSpecifier(path: string): string {
   return JSON.stringify(pathToFileURL(path).href);
 }
 
+/** The env var a child program's per-test values travel under; see CHILD_VALUES. */
+const CHILD_VALUES_ENV = "COPILOT_ENV_TEST_CHILD_VALUES";
+
+/**
+ * Source text for the values object childValuesEnv() hands a child. The suite writes its
+ * child programs as SOURCE TEXT, and a runtime value (a tmp path, a URL) is never spliced
+ * into that text: it travels as data in one JSON env var, and the program reads it back
+ * through this constant expression (`${CHILD_VALUES}.ready`), so the source is the same
+ * whatever the values. Splicing through JSON.stringify would leave U+2028/U+2029 and
+ * `</script>` unescaped inside code (CodeQL js/bad-code-sanitization).
+ */
+export const CHILD_VALUES = `JSON.parse(Deno.env.get("${CHILD_VALUES_ENV}") ?? "{}")`;
+
+/** The env entry carrying `values` to a child program that reads CHILD_VALUES. Spread it into
+ *  the spawn's `env`: Deno.Command merges it over the parent's, while runSync REPLACES the
+ *  env, so spread process.env first there. */
+export function childValuesEnv(values: Record<string, unknown>): Record<string, string> {
+  return { [CHILD_VALUES_ENV]: JSON.stringify(values) };
+}
+
 /** `deno run` argv (before the entrypoint) for a child under the test permission set. */
 export function denoRunArgs(...flags: string[]): string[] {
   return ["run", "--config", join(ROOT, "deno.json"), "-P=test", ...flags];

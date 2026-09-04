@@ -1,6 +1,6 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runSync } from "./helpers/run.ts";
+import { CHILD_VALUES, childValuesEnv, runSync } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
 
 // The env contract of the suite's one synchronous spawn: `undefined` means the key is really
@@ -106,4 +106,33 @@ test("runSync: an unset survives a failed spawn, and never leaks into the parent
   } finally {
     delete process.env[PROBE];
   }
+});
+
+test("CHILD_VALUES: the env payload round-trips paths, markup, and terminators as data", () => {
+  // The control for the constant-source contract: values that are awkward inside SOURCE
+  // (a script-closing tag, raw line terminators, a quoted backslash Windows path) arrive
+  // intact as DATA, and keys are read back by name.
+  const values = {
+    ready: 'C:\\tmp\\ready "quoted" \\ end',
+    tag: "</script><script>alert(1)</script>",
+    terminators: "a\u2028b\u2029c",
+    n: 42,
+  };
+  const script =
+    `const v = ${CHILD_VALUES}; console.log(JSON.stringify([v.ready, v.tag, v.terminators, v.n]));`;
+  const result = runSync(Deno.execPath(), ["eval", script], {
+    env: { ...process.env, ...childValuesEnv(values) },
+  });
+  expect(result.exitCode).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual([
+    values.ready,
+    values.tag,
+    values.terminators,
+    values.n,
+  ]);
+  // And without the env entry the object is empty, never a crash: an unset key reads undefined.
+  const bare = runSync(Deno.execPath(), ["eval", `console.log(String(${CHILD_VALUES}.ready))`], {
+    env: { ...process.env },
+  });
+  expect(bare.stdout.trim()).toBe("undefined");
 });

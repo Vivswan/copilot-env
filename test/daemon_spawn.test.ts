@@ -34,7 +34,15 @@ import {
   writeDaemonConfig,
   writeResolvedVersionRecord,
 } from "../src/proxy_float.ts";
-import { denoRunArgs, importSpecifier, ROOT, runSync, spawnChild } from "./helpers/run.ts";
+import {
+  CHILD_VALUES,
+  childValuesEnv,
+  denoRunArgs,
+  importSpecifier,
+  ROOT,
+  runSync,
+  spawnChild,
+} from "./helpers/run.ts";
 import { afterEach, beforeEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir, tmpDir } from "./helpers.ts";
 
@@ -707,7 +715,7 @@ test.skipIf(Deno.build.os === "windows")(
         `import { installInferenceObserver } from ${
           importSpecifier(join(ROOT, "src", "scripts", "inference_activity.ts"))
         };\n` +
-        `const release = ${JSON.stringify(release)};\n` +
+        `const release = ${CHILD_VALUES}.release;\n` +
         "installInferenceObserver();\n" +
         "installTerminationHandler();\n" +
         // A second listener, so the parent learns the signal was delivered. It runs AFTER
@@ -731,6 +739,7 @@ test.skipIf(Deno.build.os === "windows")(
     // (node's compat layer echoes the signal it SENT, so a clean exit reads as killed).
     const child = spawnChild(Deno.execPath(), {
       args: [...denoRunArgs(), target],
+      env: childValuesEnv({ release }),
       stdout: "piped",
       stderr: "piped",
     });

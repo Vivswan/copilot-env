@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { consola } from "consola";
 import { pidAlive, terminatePid, type TerminateVerdict } from "../src/copilot_api/process.ts";
 import { killAndAwaitExit, removeDir, tmpDir, until, withUnprovablePidProbe } from "./helpers.ts";
-import { denoRunArgs, spawnChild } from "./helpers/run.ts";
+import { CHILD_VALUES, childValuesEnv, denoRunArgs, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 
 let dir = "";
@@ -36,11 +36,12 @@ async function spawnTermIgnoringChild(): Promise<Deno.ChildProcess> {
   writeFileSync(
     script,
     'Deno.addSignalListener("SIGTERM", () => {});\n' +
-      `Deno.writeTextFileSync(${JSON.stringify(ready)}, "up");\n` +
+      `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "up");\n` +
       "setInterval(() => {}, 60_000);\n",
   );
   const child = spawnChild(Deno.execPath(), {
     args: [...denoRunArgs(), script],
+    env: childValuesEnv({ ready }),
     stdout: "null",
     stderr: "inherit",
   });
@@ -172,11 +173,12 @@ test(
     // Windows), well inside the grace.
     writeFileSync(
       script,
-      `Deno.writeTextFileSync(${JSON.stringify(ready)}, "up");\n` +
+      `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "up");\n` +
         "setInterval(() => {}, 60_000);\n",
     );
     const child = spawnChild(Deno.execPath(), {
       args: [...denoRunArgs(), script],
+      env: childValuesEnv({ ready }),
       stdout: "null",
       stderr: "inherit",
     });
@@ -210,11 +212,12 @@ test(
     const script = join(dir, "compliant.ts");
     writeFileSync(
       script,
-      `Deno.writeTextFileSync(${JSON.stringify(ready)}, "up");\n` +
+      `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "up");\n` +
         "setInterval(() => {}, 60_000);\n",
     );
     const child = spawnChild(Deno.execPath(), {
       args: [...denoRunArgs(), script],
+      env: childValuesEnv({ ready }),
       stdout: "null",
       stderr: "inherit",
     });
@@ -249,11 +252,12 @@ test(
     // nothing can reach the child at all -- its survival proves exactly that.
     writeFileSync(
       script,
-      `Deno.writeTextFileSync(${JSON.stringify(ready)}, "up");\n` +
+      `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "up");\n` +
         "setInterval(() => {}, 60_000);\n",
     );
     const child = spawnChild(Deno.execPath(), {
       args: [...denoRunArgs(), script],
+      env: childValuesEnv({ ready }),
       stdout: "null",
       stderr: "inherit",
     });

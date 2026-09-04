@@ -2,7 +2,14 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
-import { denoRunArgs, importSpecifier, ROOT, spawnChild } from "./helpers/run.ts";
+import {
+  CHILD_VALUES,
+  childValuesEnv,
+  denoRunArgs,
+  importSpecifier,
+  ROOT,
+  spawnChild,
+} from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
 
 // The cross-process lock in CopilotApiConfig.update() must serialize concurrent read-modify-
@@ -12,10 +19,12 @@ import { expect, test } from "./helpers/testing.ts";
 // load-mutate-saves would clobber each other and the total would come up short.
 const CONFIG_MODULE = join(ROOT, "src", "copilot_api", "config.ts");
 
-/** Spawn one worker script as a deno child; resolves to its exit code and stdout text. */
-function spawnWorker(worker: string): Promise<{ code: number; stdout: string }> {
+/** Spawn one worker script as a deno child over the store it reads through CHILD_VALUES;
+ *  resolves to its exit code and stdout text. */
+function spawnWorker(worker: string, store: string): Promise<{ code: number; stdout: string }> {
   const child = spawnChild(Deno.execPath(), {
     args: [...denoRunArgs(), worker],
+    env: childValuesEnv({ store }),
     stdout: "piped",
     stderr: "piped",
   });
@@ -38,7 +47,7 @@ test("update() serializes concurrent writers across processes (no lost updates)"
       worker,
       [
         `import { CopilotApiConfig } from ${importSpecifier(CONFIG_MODULE)};`,
-        `const cfg = new CopilotApiConfig(${JSON.stringify(store)});`,
+        `const cfg = new CopilotApiConfig(${CHILD_VALUES}.store);`,
         `for (let i = 0; i < ${INCREMENTS}; i++) {`,
         "  cfg.update((d) => {",
         "    d.counter = (typeof d.counter === 'number' ? d.counter : 0) + 1;",
@@ -47,7 +56,7 @@ test("update() serializes concurrent writers across processes (no lost updates)"
       ].join("\n"),
     );
 
-    const procs = Array.from({ length: WORKERS }, () => spawnWorker(worker));
+    const procs = Array.from({ length: WORKERS }, () => spawnWorker(worker, store));
     const codes = (await Promise.all(procs)).map((p) => p.code);
     expect(codes.every((c) => c === 0)).toBe(true);
 
@@ -92,12 +101,12 @@ test(
         worker,
         [
           `import { CopilotApiConfig } from ${importSpecifier(CONFIG_MODULE)};`,
-          `const cfg = new CopilotApiConfig(${JSON.stringify(store)});`,
+          `const cfg = new CopilotApiConfig(${CHILD_VALUES}.store);`,
           "console.log(cfg.ensureApiKey() + ' ' + cfg.ensureAdminApiKey());",
         ].join("\n"),
       );
 
-      const procs = Array.from({ length: 6 }, () => spawnWorker(worker));
+      const procs = Array.from({ length: 6 }, () => spawnWorker(worker, store));
       const outs = (await Promise.all(procs)).map((p) => p.stdout.trim());
       // Every worker saw the same api+admin key pair, and it matches what's on disk.
       const unique = new Set(outs);

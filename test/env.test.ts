@@ -6,7 +6,14 @@ import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../src/shell/integration.ts";
-import { importSpecifier, ROOT, runCli, runSync } from "./helpers/run.ts";
+import {
+  CHILD_VALUES,
+  childValuesEnv,
+  importSpecifier,
+  ROOT,
+  runCli,
+  runSync,
+} from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import {
   claudeSettingsJson,
@@ -61,11 +68,12 @@ function isolate(): string {
  * is in the spawn environment -- which in-process runEnv() can't fake.
  */
 function childEnvLines(env: Record<string, string | undefined>, profile?: string): string[] {
-  const argsSrc = JSON.stringify({ "format": "posix", "profile": profile });
   const script = `import{runEnv}from${
     importSpecifier(join(ROOT, "src/commands/env.ts"))
-  };runEnv(${argsSrc});`;
-  const result = runSync(Deno.execPath(), ["eval", script], { env: { ...process.env, ...env } });
+  };runEnv(${CHILD_VALUES});`;
+  const result = runSync(Deno.execPath(), ["eval", script], {
+    env: { ...process.env, ...env, ...childValuesEnv({ "format": "posix", "profile": profile }) },
+  });
   if (result.exitCode !== 0) throw new Error(`child env failed: ${result.stderr}`);
   return result.stdout.split("\n").filter((l) => l.length > 0);
 }

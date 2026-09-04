@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { denoRunArgs, ROOT, runSync } from "./helpers/run.ts";
+import { CHILD_VALUES, childValuesEnv, denoRunArgs, ROOT, runSync } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
 
 // The preload shim wraps the daemon's globalThis.fetch to fake copilot-api's editor
@@ -27,10 +27,10 @@ function runPreloaded(
     const target = join(dir, "target.ts");
     // Exercise each fetch input shape the shim must handle: string | URL | Request.
     const input = inputKind === "url"
-      ? `new URL(${JSON.stringify(url)})`
+      ? `new URL(${CHILD_VALUES}.url)`
       : inputKind === "request"
-      ? `new Request(${JSON.stringify(url)})`
-      : JSON.stringify(url);
+      ? `new Request(${CHILD_VALUES}.url)`
+      : `${CHILD_VALUES}.url`;
     writeFileSync(
       target,
       [
@@ -45,7 +45,9 @@ function runPreloaded(
     );
     const argv = [...denoRunArgs("--preload", SHIM), target];
     if (token !== null) argv.push("--github-token", token);
-    const res = runSync(Deno.execPath(), argv);
+    const res = runSync(Deno.execPath(), argv, {
+      env: { ...process.env, ...childValuesEnv({ url }) },
+    });
     return res.stdout.trim();
   } finally {
     rmSync(dir, { recursive: true, force: true });

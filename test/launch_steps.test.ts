@@ -45,7 +45,14 @@ import {
   daemonLockVerdict,
 } from "../src/scripts/daemon_lock.ts";
 import { releaseFileLock } from "../src/utils/file_lock.ts";
-import { denoRunArgs, importSpecifier, ROOT, spawnChild } from "./helpers/run.ts";
+import {
+  CHILD_VALUES,
+  childValuesEnv,
+  denoRunArgs,
+  importSpecifier,
+  ROOT,
+  spawnChild,
+} from "./helpers/run.ts";
 import { afterEach, describe, expect, test } from "./helpers/testing.ts";
 import {
   defaultHomeDir,
@@ -822,6 +829,8 @@ test("cleanupExistingProxies: a lock THIS process holds is never signalled (self
 // spawned DAEMON-SHAPED (a copilot-api entry basename followed by `start`, the argv
 // signature classifyDaemonPid confirms): an untracked holder is only ever signalled
 // under that host-local corroboration.
+const DAEMON_LOCK_SPECIFIER = importSpecifier(join(ROOT, "src", "scripts", "daemon_lock.ts"));
+
 test.skipIf(process.platform === "win32")(
   "cleanupExistingProxies: a holder that ignores SIGTERM draws the SIGKILL escalation, bound to the lock",
   async () => {
@@ -833,16 +842,15 @@ test.skipIf(process.platform === "win32")(
     // pid-liveness read.
     writeFileSync(
       holderScript,
-      `import { acquireDaemonLockForLife } from ${
-        importSpecifier(join(ROOT, "src", "scripts", "daemon_lock.ts"))
-      };\n` +
-        `if (!acquireDaemonLockForLife(${JSON.stringify(home)})) Deno.exit(1);\n` +
+      `import { acquireDaemonLockForLife } from ${DAEMON_LOCK_SPECIFIER};\n` +
+        `if (!acquireDaemonLockForLife(${CHILD_VALUES}.home)) Deno.exit(1);\n` +
         `Deno.addSignalListener("SIGTERM", () => {});\n` +
-        `Deno.writeTextFileSync(${JSON.stringify(ready)}, "locked");\n` +
+        `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "locked");\n` +
         "setInterval(() => {}, 60_000);\n",
     );
     const child = spawnChild(Deno.execPath(), {
       args: [...denoRunArgs(), holderScript, "start"],
+      env: childValuesEnv({ home, ready }),
       stdout: "null",
       stderr: "inherit",
     });
@@ -874,21 +882,18 @@ test.skipIf(process.platform === "win32")(
     const holderScript = join(home, "copilot-api-holder.ts");
     writeFileSync(
       holderScript,
-      `import { acquireDaemonLockForLife, daemonLockPath } from ${
-        importSpecifier(join(ROOT, "src", "scripts", "daemon_lock.ts"))
-      };\n` +
+      `import { acquireDaemonLockForLife, daemonLockPath } from ${DAEMON_LOCK_SPECIFIER};\n` +
         `import { releaseFileLock } from ${
           importSpecifier(join(ROOT, "src", "utils", "file_lock.ts"))
         };\n` +
-        `if (!acquireDaemonLockForLife(${JSON.stringify(home)})) Deno.exit(1);\n` +
-        `Deno.addSignalListener("SIGTERM", () => releaseFileLock(daemonLockPath(${
-          JSON.stringify(home)
-        })));\n` +
-        `Deno.writeTextFileSync(${JSON.stringify(ready)}, "locked");\n` +
+        `if (!acquireDaemonLockForLife(${CHILD_VALUES}.home)) Deno.exit(1);\n` +
+        `Deno.addSignalListener("SIGTERM", () => releaseFileLock(daemonLockPath(${CHILD_VALUES}.home)));\n` +
+        `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "locked");\n` +
         "setInterval(() => {}, 60_000);\n",
     );
     const child = spawnChild(Deno.execPath(), {
       args: [...denoRunArgs(), holderScript, "start"],
+      env: childValuesEnv({ home, ready }),
       stdout: "null",
       stderr: "inherit",
     });
@@ -1029,20 +1034,17 @@ test.skipIf(process.platform === "win32")(
     const holderScript = join(home, "copilot-api-holder.ts");
     writeFileSync(
       holderScript,
-      `import { acquireDaemonLockForLife } from ${
-        importSpecifier(join(ROOT, "src", "scripts", "daemon_lock.ts"))
-      };\n` +
-        `if (!acquireDaemonLockForLife(${JSON.stringify(home)})) Deno.exit(1);\n` +
+      `import { acquireDaemonLockForLife } from ${DAEMON_LOCK_SPECIFIER};\n` +
+        `if (!acquireDaemonLockForLife(${CHILD_VALUES}.home)) Deno.exit(1);\n` +
         `Deno.addSignalListener("SIGTERM", () => {\n` +
-        `  if (!acquireDaemonLockForLife(${
-          JSON.stringify(workHome)
-        }, { waitMs: 0 })) Deno.exit(1);\n` +
+        `  if (!acquireDaemonLockForLife(${CHILD_VALUES}.workHome, { waitMs: 0 })) Deno.exit(1);\n` +
         `});\n` +
-        `Deno.writeTextFileSync(${JSON.stringify(ready)}, "locked");\n` +
+        `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "locked");\n` +
         "setInterval(() => {}, 60_000);\n",
     );
     const child = spawnChild(Deno.execPath(), {
       args: [...denoRunArgs(), holderScript, "start"],
+      env: childValuesEnv({ home, ready, workHome }),
       stdout: "null",
       stderr: "inherit",
     });
@@ -1700,10 +1702,9 @@ describe("unproven tracked-pid identity scans", () => {
       const child = spawnChild(Deno.execPath(), {
         args: [
           "eval",
-          `Deno.addSignalListener("SIGTERM", () => {}); Deno.writeTextFileSync(${
-            JSON.stringify(ready)
-          }, "r"); setTimeout(() => {}, 60000);`,
+          `Deno.addSignalListener("SIGTERM", () => {}); Deno.writeTextFileSync(${CHILD_VALUES}.ready, "r"); setTimeout(() => {}, 60000);`,
         ],
+        env: childValuesEnv({ ready }),
         stdout: "null",
         stderr: "null",
       });

@@ -13,7 +13,14 @@ import {
   daemonLockVerdict,
 } from "../src/scripts/daemon_lock.ts";
 import { releaseFileLock } from "../src/utils/file_lock.ts";
-import { denoRunArgs, importSpecifier, ROOT, spawnChild } from "./helpers/run.ts";
+import {
+  CHILD_VALUES,
+  childValuesEnv,
+  denoRunArgs,
+  importSpecifier,
+  ROOT,
+  spawnChild,
+} from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import {
   defaultHomeDir,
@@ -146,12 +153,13 @@ test("a live holder blocks acquisition; SIGKILL releases the lock promptly", asy
     `import { acquireDaemonLockForLife } from ${
       importSpecifier(join(ROOT, "src", "scripts", "daemon_lock.ts"))
     };\n` +
-      `if (!acquireDaemonLockForLife(${JSON.stringify(home)})) Deno.exit(1);\n` +
-      `Deno.writeTextFileSync(${JSON.stringify(ready)}, "locked");\n` +
+      `if (!acquireDaemonLockForLife(${CHILD_VALUES}.home)) Deno.exit(1);\n` +
+      `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "locked");\n` +
       "setInterval(() => {}, 60_000);\n", // hold for life (until killed)
   );
   const child = spawnChild(Deno.execPath(), {
     args: [...denoRunArgs(), holder],
+    env: childValuesEnv({ home, ready }),
     stdout: "null",
     stderr: "inherit",
   });
@@ -278,12 +286,13 @@ test(
       `import { acquireDaemonLockForLife } from ${
         importSpecifier(join(ROOT, "src", "scripts", "daemon_lock.ts"))
       };\n` +
-        `if (!acquireDaemonLockForLife(${JSON.stringify(home)})) Deno.exit(1);\n` +
-        `Deno.writeTextFileSync(${JSON.stringify(ready)}, "locked");\n` +
+        `if (!acquireDaemonLockForLife(${CHILD_VALUES}.home)) Deno.exit(1);\n` +
+        `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "locked");\n` +
         "setInterval(() => {}, 60_000);\n",
     );
     const child = spawnChild(Deno.execPath(), {
       args: [...denoRunArgs(), holder, "start"],
+      env: childValuesEnv({ home, ready }),
       stdout: "null",
       stderr: "inherit",
     });
@@ -372,11 +381,12 @@ test.skipIf(process.platform === "win32")(
     writeFileSync(
       bystander,
       'Deno.addSignalListener("SIGTERM", () => {});\n' +
-        `Deno.writeTextFileSync(${JSON.stringify(ready)}, "up");\n` +
+        `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "up");\n` +
         "setInterval(() => {}, 60_000);\n",
     );
     const child = spawnChild(Deno.execPath(), {
       args: [...denoRunArgs(), bystander],
+      env: childValuesEnv({ ready }),
       stdout: "null",
       stderr: "inherit",
     });
@@ -484,11 +494,12 @@ test(
     const bystander = join(dir, "bystander.ts");
     writeFileSync(
       bystander,
-      `Deno.writeTextFileSync(${JSON.stringify(ready)}, "up");\n` +
+      `Deno.writeTextFileSync(${CHILD_VALUES}.ready, "up");\n` +
         "setInterval(() => {}, 60_000);\n",
     );
     const child = spawnChild(Deno.execPath(), {
       args: [...denoRunArgs(), bystander],
+      env: childValuesEnv({ ready }),
       stdout: "null",
       stderr: "inherit",
     });

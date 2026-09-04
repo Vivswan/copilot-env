@@ -8,7 +8,8 @@ import { createStderrLogger } from "../utils/logger.ts";
 import { isProtectedRoot } from "../utils/root.ts";
 import { isUpToDate } from "../utils/semver.ts";
 import { packageVersion } from "../utils/version.ts";
-import { applyUpdate } from "./apply.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { applyUpdate, resolveProvenanceDecision } from "./apply.ts";
 import { isDue } from "./due.ts";
 import { type HeldUpdateLock, withUpdateLock } from "./lock.ts";
 import { AutoupdateState, effectiveUpdateCooldownDays } from "./state.ts";
@@ -82,7 +83,12 @@ async function checkAndApply(
   try {
     // Route applyUpdate's own + child-process output to stderr too, so an
     // autoupdate can never write to stdout (protects `agent env` on every OS).
-    await applyUpdate(current, target, lock, { logger, childStdoutToStderr: true });
+    // No flag here: the stored `verify-provenance` (default: verify) decides.
+    const provenance = resolveProvenanceDecision(
+      undefined,
+      new CopilotEnvConfig().verifyProvenanceEnabled(),
+    );
+    await applyUpdate(current, target, lock, { logger, childStdoutToStderr: true, provenance });
     state.set({ lastCheckMs: nowMs, lastResult: `updated ${target.tag}` });
   } catch (e) {
     state.set({ lastCheckMs: nowMs, lastResult: `error: ${errMessage(e)}` });

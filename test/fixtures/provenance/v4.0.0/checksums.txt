@@ -1,0 +1,5 @@
+34d9583ad40ffe53a331afbef5ea66f2e1f849882c9233f4d6ce3d3b8265ec86  copilot-env-aarch64-apple-darwin
+a823c58efd8c75ff0284379f524169093784ae655755142fac1b484be1c76f5e  copilot-env-aarch64-unknown-linux-gnu
+5ed3f5bef52de8156c9a99fc7a37f8dc167e6b127ca95a8a8dcf159a6168ced8  copilot-env-x86_64-apple-darwin
+332e06f5e19a036dbd5bb1382e19ba29b69e09f3acec2a6237367ae49fea180c  copilot-env-x86_64-pc-windows-msvc.exe
+2fd1dbe31fcf2e386dab0a98b899672aaad0dc31ebe4060586c7fc3d141efe3e  copilot-env-x86_64-unknown-linux-gnu

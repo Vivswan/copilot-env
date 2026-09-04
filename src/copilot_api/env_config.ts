@@ -65,6 +65,8 @@ export interface CopilotEnvConfigData {
   releaseCooldown?: number;
   /** copilot-env update cooldown in whole days. */
   updateCooldown?: number;
+  /** Verify `agent update` downloads against the release's build-provenance attestation. */
+  verifyProvenance?: boolean;
   /** Patched Codex model catalog with Copilot's real context windows (opt-in). */
   codexModelCatalog?: boolean;
   /** Wire the copilot-env MCP server (+ WebSearch deny) into Claude on direct writes. */
@@ -555,6 +557,16 @@ const CONFIG_REGISTRY_LITERAL = [
     defaultLabel: "none (immediate)",
   },
   {
+    cli: "verify-provenance",
+    key: "verifyProvenance",
+    describe:
+      "Verify `agent update` downloads against the release's Sigstore build-provenance attestation (bool)",
+    ...BOOL_DOMAIN,
+    defaultValue: true,
+    applyHint:
+      "Applies to the next `agent update` / autoupdate run; `agent update --no-verify` skips a single run.",
+  },
+  {
     cli: "wire-mcp",
     key: "wireMcp",
     describe:
@@ -766,6 +778,12 @@ export class CopilotEnvConfig {
     return stored === undefined
       ? { value: configDefaultBoolean("wire-mcp"), source: "default" }
       : { value: stored, source: "stored" };
+  }
+
+  /** verify-provenance, stored else default. On the STRICT read on purpose: an
+   *  unreadable preference store fails the update rather than reading as "off". */
+  verifyProvenanceEnabled(): boolean {
+    return this.read().verifyProvenance ?? configDefaultBoolean("verify-provenance");
   }
 
   /**

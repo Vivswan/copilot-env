@@ -31,11 +31,19 @@ powershell -c "irm https://github.com/Vivswan/copilot-env/releases/latest/downlo
 Downloads a single self-contained `agent` binary for your platform into `~/.copilot-env`, then wires your shell. There is no runtime or package manager to install first.
 
 - **Recommended:** install from the latest GitHub release asset, not from the `main` branch. `main` is for development and can be temporarily ahead of the latest released installer flow.
-- **Verified:** the installer checks the binary's SHA256 against the release's `checksums.txt` before it puts it anywhere. Every release asset also carries a build-provenance attestation: `gh attestation verify <file> -R Vivswan/copilot-env`.
+- **Verified:** the installer checks the binary's SHA256 against the release's `checksums.txt` before it puts it anywhere. That proves the download is intact, not who built it (the installer is fetched from the same release, so a first install trusts it on first use). Every release also carries a build-provenance attestation, `attestation.json`, that you can check by hand with the GitHub CLI's closest equivalent of the policy `agent update` enforces: built in this repository (`-R`, by name where `agent update` pins the immutable repository id), on `main` (`--source-ref`), by its release workflow (`--cert-identity`), for the binary AND `checksums.txt`:
+
+  ```bash
+  for f in copilot-env-<target> checksums.txt; do
+    gh attestation verify "$f" -R Vivswan/copilot-env --source-ref refs/heads/main --bundle attestation.json \
+      --cert-identity https://github.com/Vivswan/copilot-env/.github/workflows/release.yml@refs/heads/main
+  done
+  ```
+
 - **Replaceable:** re-run the installer any time to move to the selected release.
 - **Next:** restart your shell, then `agent start`.
 - **Optional:** run `agent shell --clis --launchers` for Claude/Copilot/Codex CLIs and `cl` / `co` / `cx`.
-- **Update later:** `agent update` downloads the newest release's binary, verifies it the same way, and swaps it in place. Your config, credentials, and profiles live outside the install directory and are untouched.
+- **Update later:** `agent update` downloads the newest release's binary, checks its SHA256 against `checksums.txt`, then verifies both against the release's Sigstore build-provenance attestation - it must be signed by this repository's GitHub Actions release workflow, and both files must be among the attested bytes - and only then swaps it in place. That check is on by default; `agent update --no-verify` skips it once and `agent config --set verify-provenance false` turns it off. Your config, credentials, and profiles live outside the install directory and are untouched.
 - **Uninstall:** `agent uninstall` removes everything copilot-env manages (daemons, profiles, agent wiring, shell integration, credentials, data, and the install itself). It does not remove the agent CLIs (`claude` / `copilot` / `codex`).
 - **Specific version:** replace `latest` with an exact release tag, or pass `--version`:
 
@@ -73,7 +81,7 @@ agent models               # list the model ids + names Copilot serves (--proxy 
 agent env                  # print shell directives for the calling shell (CODEX_HOME / proxy ANTHROPIC_BASE_URL exports + the opt-in launcher functions)
 agent mcp                  # MCP wiring status (--serve runs the stdio server; --remove unwires)
 agent cost                 # estimated token spend across all usage DBs (default + profile daemons)
-agent update               # update to the latest release (--check; cooldown via `agent config --set update-cooldown`)
+agent update               # update to the latest release (--check; --no-verify skips the provenance check; cooldown via `agent config --set update-cooldown`)
 agent shell                # wire rc / $PROFILE; --launchers enables cl/co/cx, --clis installs the CLIs, --remove unwires
 agent uninstall            # remove copilot-env entirely (--yes headless, --dry-run preview, --force to delete a source checkout)
 agent codex                # configure Codex; no flag auto-detects the backend, --check reports it
@@ -204,6 +212,7 @@ agent config --del idle-timeout       # revert one to its default
 | `small-model` | `gpt-5-mini` | Small/fast model id the proxy uses. |
 | `strict-port` | `false` | Fail `start` when the default port is busy instead of auto-incrementing. |
 | `update-cooldown` | none | `agent update` cooldown in days. |
+| `verify-provenance` | `true` | Verify `agent update` downloads against the release's Sigstore build-provenance attestation (`agent update --no-verify` skips one run). |
 | `wire-mcp` | `true` | Wire the copilot-env MCP server + WebSearch deny into Claude on direct writes. |
 
 Proxy-side keys (`small-model`, the `responses-*`/`messages-api` flags, `message-websearch-model`, the `alpha-search-*` pair, `claude-auto-model`, `claude-token-multiplier`) are projected into the proxy's own `config.json` at `agent start`, so changing them needs a daemon restart to take effect - except that the MCP `web_search` tool reads `message-websearch-model` fresh on every call.

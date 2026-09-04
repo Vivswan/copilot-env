@@ -31,11 +31,13 @@ powershell -c "irm https://github.com/Vivswan/copilot-env/releases/latest/downlo
 Downloads a single self-contained `agent` binary for your platform into `~/.copilot-env`, then wires your shell. There is no runtime or package manager to install first.
 
 - **Recommended:** install from the latest GitHub release asset, not from the `main` branch. `main` is for development and can be temporarily ahead of the latest released installer flow.
-- **Verified:** the installer checks the binary's SHA256 against the release's `checksums.txt` before it puts it anywhere. That proves the download is intact, not who built it (the installer is fetched from the same release, so a first install trusts it on first use). Every release also carries a build-provenance attestation, `attestation.json`, that you can check by hand with the same policy `agent update` enforces (this repository, signed by its release workflow on `main`), for the binary AND `checksums.txt`:
+- **Verified:** the installer checks the binary's SHA256 against the release's `checksums.txt` before it puts it anywhere. That proves the download is intact, not who built it (the installer is fetched from the same release, so a first install trusts it on first use). Every release also carries a build-provenance attestation, `attestation.json`, that you can check by hand with the GitHub CLI's closest equivalent of the policy `agent update` enforces: built in this repository (`-R`, by name where `agent update` pins the immutable repository id), on `main` (`--source-ref`), by its release workflow (`--cert-identity`), for the binary AND `checksums.txt`:
 
   ```bash
-  gh attestation verify <file> -R Vivswan/copilot-env --bundle attestation.json \
-    --cert-identity https://github.com/Vivswan/copilot-env/.github/workflows/release.yml@refs/heads/main
+  for f in copilot-env-<target> checksums.txt; do
+    gh attestation verify "$f" -R Vivswan/copilot-env --source-ref refs/heads/main --bundle attestation.json \
+      --cert-identity https://github.com/Vivswan/copilot-env/.github/workflows/release.yml@refs/heads/main
+  done
   ```
 
 - **Replaceable:** re-run the installer any time to move to the selected release.

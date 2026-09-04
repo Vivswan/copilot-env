@@ -8,7 +8,7 @@ import { discoverCodexSessionRoots, readCodexSessions } from "./codex_sessions.t
 import {
   type CostEstimate,
   estimateCost,
-  fetchPricing,
+  loadPricing,
   type ModelCost,
   OPENROUTER_MODELS_URL,
   type PricingTier,
@@ -47,6 +47,15 @@ export async function runCost(args: {
   const window = args.days === undefined ? undefined : parseDaysWindow(args.days);
   const sinceMs = window === undefined ? undefined : daysCutoffMs(window);
 
+  // Started before the source readers, awaited where first needed: the network
+  // round-trip overlaps the file parsing. The no-op catch keeps the no-sources
+  // early return from leaving an unhandled rejection; the abort keeps it from waiting.
+  const pricingAbort = new AbortController();
+  const pricingLoad = loadPricing(args.pricingUrl ?? OPENROUTER_MODELS_URL, {
+    signal: pricingAbort.signal,
+  });
+  pricingLoad.catch(() => {});
+
   const dbPaths = discoverUsageDbs();
   const proxyReport = dbPaths.length > 0 ? readUsage(dbPaths, sinceMs) : EMPTY_REPORT;
 
@@ -64,13 +73,27 @@ export async function runCost(args: {
     consola.warn(
       "WARNING: no copilot-api usage databases, Codex session logs, or Claude transcripts found; start the proxy with 'agent start' and make some requests, then re-run 'agent cost'.",
     );
+    pricingAbort.abort();
     return;
   }
 
   // Best-effort pricing: a fetch failure still yields a token-only report.
   let pricing = new Map<string, PricingTier>();
   try {
-    pricing = await fetchPricing(args.pricingUrl ?? OPENROUTER_MODELS_URL);
+    const loaded = await pricingLoad;
+    pricing = loaded.pricing;
+    if (loaded.source === "stale-cache") {
+      consola.warn(
+        `WARNING: could not refresh OpenRouter pricing (${loaded.fetchError}); using the cached price list from ${
+          formatDuration(Date.now() - loaded.fetchedAtMs)
+        } ago.`,
+      );
+    }
+    if (loaded.source === "fetched" && loaded.cacheWriteError !== undefined) {
+      consola.warn(
+        `WARNING: could not cache the OpenRouter price list (${loaded.cacheWriteError}); the next run fetches it again.`,
+      );
+    }
   } catch (e) {
     consola.warn(
       `WARNING: could not fetch OpenRouter pricing (${errMessage(e)}); reporting tokens only.`,

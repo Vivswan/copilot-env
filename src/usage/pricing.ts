@@ -4,14 +4,29 @@
 // model ids onto OpenRouter ids (provider inference + version-aware best match),
 // and price the aggregated token usage. Models OpenRouter cannot price are
 // reported as unpriced and excluded from the total.
+//
+// The price list is PUBLIC data, which is why loadPricing may keep a day-old
+// copy on disk. Nothing else `agent cost` reads (usage, tokens, transcripts) is
+// ever cached by this module.
 
+import { createHash } from "node:crypto";
+import { join } from "node:path";
+import * as v from "valibot";
+import { atomicWriteFile } from "../copilot_api/config.ts";
 import { ONE_M_SUFFIX } from "../copilot_api/models.ts";
-import { isRecord } from "../utils/json.ts";
+import { resolveRootHome } from "../copilot_api/paths.ts";
+import { readTextOrNull } from "../utils/fs.ts";
+import { isRecord, parseJsonRecord } from "../utils/json.ts";
 
 const FETCH_TIMEOUT_MS = 10_000;
 const PER_MILLION = 1_000_000;
+const PRICING_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const PRICING_CACHE_DIR_NAME = "usage-index";
 
 export const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
+
+/** A routable model id: nonempty, no whitespace. */
+const MODEL_ID_RE = /^\S+$/;
 
 /** Per-million-token USD rates; a field is absent when OpenRouter omits it. */
 export interface PricingTier {
@@ -48,26 +63,44 @@ export interface CostEstimate {
   unpriced: string[];
 }
 
-/** Fetch live model pricing keyed by lowercased OpenRouter model id. */
+/** Fetch live model pricing keyed by lowercased OpenRouter model id. Errors are
+ *  fixed text (plus a numeric HTTP status), never the transport's, because a
+ *  custom --pricing-url may carry credentials. `signal` cancels the request. */
 export async function fetchPricing(
   url: string = OPENROUTER_MODELS_URL,
+  fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal,
 ): Promise<Map<string, PricingTier>> {
   if (!url.startsWith("https://")) {
-    throw new Error(`pricing URL must use HTTPS: ${url}`);
+    throw new Error("pricing URL must use HTTPS");
   }
-  const res = await fetch(url, {
-    headers: { Accept: "application/json", "User-Agent": "copilot-env-cost" },
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-  });
+  const timeout = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetchImpl(url, {
+      headers: { Accept: "application/json", "User-Agent": "copilot-env-cost" },
+      signal: signal === undefined ? timeout : AbortSignal.any([timeout, signal]),
+    });
+  } catch {
+    if (timeout.aborted) {
+      throw new Error(`pricing request timed out after ${FETCH_TIMEOUT_MS / 1000}s`);
+    }
+    throw new Error(signal?.aborted ? "pricing request was cancelled" : "pricing request failed");
+  }
   if (!res.ok) {
-    throw new Error(`GET ${url} returned ${res.status} ${res.statusText}`);
+    throw new Error(`pricing request returned HTTP ${res.status}`);
   }
-  const body: unknown = await res.json();
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    throw new Error("pricing response was not valid JSON");
+  }
   const data = isRecord(body) && Array.isArray(body.data) ? body.data : [];
 
   const out = new Map<string, PricingTier>();
   for (const entry of data) {
-    if (!isRecord(entry) || typeof entry.id !== "string") {
+    if (!isRecord(entry) || typeof entry.id !== "string" || !MODEL_ID_RE.test(entry.id)) {
       continue;
     }
     const pricing = isRecord(entry.pricing) ? entry.pricing : {};
@@ -79,6 +112,178 @@ export async function fetchPricing(
     });
   }
   return out;
+}
+
+/** A loaded price list and where it came from. `fetchedAtMs` is when the
+ *  returned list was fetched from OpenRouter (the cache stamp). */
+export type LoadedPricing =
+  | { source: "cache"; pricing: Map<string, PricingTier>; fetchedAtMs: number }
+  | {
+    source: "fetched";
+    pricing: Map<string, PricingTier>;
+    fetchedAtMs: number;
+    /** Set when the list could not be persisted: the next run fetches again. */
+    cacheWriteError?: string;
+  }
+  | {
+    /** The refresh failed; the caller is pricing against an expired copy. */
+    source: "stale-cache";
+    pricing: Map<string, PricingTier>;
+    fetchedAtMs: number;
+    fetchError: string;
+  };
+
+/**
+ * The price list with a day-long on-disk cache: a fresh cache answers without
+ * touching the network, an expired one is refreshed (and the refreshed copy
+ * persisted), and a refresh failure falls back to the expired copy rather than
+ * to a token-only report. Rejects only when there is neither a fetch nor any
+ * cached copy. The cache file is treated as absent whenever it fails
+ * validation or was written for a different URL; a cache stamped in the
+ * future (clock moved back) is expired, never fresh.
+ */
+export async function loadPricing(
+  url: string,
+  opts: {
+    cacheDir?: string;
+    nowMs?: number;
+    ttlMs?: number;
+    fetchImpl?: typeof fetch;
+    /** Cancels an in-flight refresh (a run that turns out to need no prices). */
+    signal?: AbortSignal;
+  } = {},
+): Promise<LoadedPricing> {
+  const nowMs = opts.nowMs ?? Date.now();
+  const ttlMs = opts.ttlMs ?? PRICING_CACHE_TTL_MS;
+  const urlDigest = sha256Hex(url);
+  const cachePath = pricingCachePath(url, opts.cacheDir ?? defaultPricingCacheDir());
+  const cached = readPricingCache(cachePath, urlDigest);
+  if (cached !== null) {
+    const ageMs = nowMs - cached.fetchedAtMs;
+    if (ageMs >= 0 && ageMs < ttlMs) {
+      return { pricing: cached.pricing, source: "cache", fetchedAtMs: cached.fetchedAtMs };
+    }
+  }
+  let pricing: Map<string, PricingTier>;
+  try {
+    pricing = await fetchPricing(url, opts.fetchImpl ?? fetch, opts.signal);
+    // A 200 that does not carry a usable price list is a broken response:
+    // persisting it would silence pricing for a whole TTL.
+    const problem = priceListProblem(pricing);
+    if (problem !== null) throw new Error(`pricing response ${problem}`);
+  } catch (e) {
+    if (cached === null) throw e;
+    return {
+      pricing: cached.pricing,
+      source: "stale-cache",
+      fetchedAtMs: cached.fetchedAtMs,
+      fetchError: errorText(e),
+    };
+  }
+  // The cache only accelerates the next run; a list that was fetched is served
+  // whether or not it could be persisted.
+  try {
+    writePricingCache(cachePath, urlDigest, nowMs, pricing);
+  } catch (e) {
+    return { pricing, source: "fetched", fetchedAtMs: nowMs, cacheWriteError: errorText(e) };
+  }
+  return { pricing, source: "fetched", fetchedAtMs: nowMs };
+}
+
+/** `<cacheDir>/pricing-<key>.json`, keyed by a SHA-256 prefix of the URL so
+ *  every distinct price-list URL gets its own file. */
+export function pricingCachePath(url: string, cacheDir: string): string {
+  return join(cacheDir, `pricing-${sha256Hex(url).slice(0, 16)}.json`);
+}
+
+function sha256Hex(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+function defaultPricingCacheDir(): string {
+  return join(resolveRootHome(), PRICING_CACHE_DIR_NAME);
+}
+
+const RATE_SCHEMA = v.optional(v.pipe(v.number(), v.finite(), v.minValue(0)));
+
+const TIER_SCHEMA = v.strictObject({
+  "input": RATE_SCHEMA,
+  "output": RATE_SCHEMA,
+  "cacheRead": RATE_SCHEMA,
+  "cacheCreation": RATE_SCHEMA,
+});
+
+// THE definition of a usable price list, applied to a fetched response before
+// it is persisted and to a cache record when it is read, so the two can never
+// disagree: lowercased routable ids, every rate finite and nonnegative, and at
+// least one model priced.
+const TIERS_SCHEMA = v.pipe(
+  v.record(
+    v.pipe(v.string(), v.regex(MODEL_ID_RE), v.check((id) => id === id.toLowerCase())),
+    TIER_SCHEMA,
+  ),
+  v.check(
+    (tiers) =>
+      Object.values(tiers).some((tier) => Object.values(tier).some((r) => r !== undefined)),
+    "no priced models",
+  ),
+);
+
+/** Why `pricing` is not a usable price list, or null when it is. */
+function priceListProblem(pricing: ReadonlyMap<string, PricingTier>): string | null {
+  const parsed = v.safeParse(TIERS_SCHEMA, Object.fromEntries(pricing));
+  if (parsed.success) return null;
+  const issue = parsed.issues[0];
+  return issue.path === undefined ? `has ${issue.message}` : "carries an invalid rate";
+}
+
+// The record identifies its URL by digest only: a custom --pricing-url may
+// carry credentials or signed query parameters, and this file holds nothing
+// but the public price list.
+const PRICING_CACHE_SCHEMA = v.strictObject({
+  "url_sha256": v.pipe(v.string(), v.regex(/^[0-9a-f]{64}$/)),
+  "fetched_at_ms": v.pipe(v.number(), v.finite(), v.minValue(0)),
+  "tiers": TIERS_SCHEMA,
+});
+
+function readPricingCache(
+  path: string,
+  urlDigest: string,
+): { pricing: Map<string, PricingTier>; fetchedAtMs: number } | null {
+  const text = readTextOrNull(path);
+  if (text === null) return null;
+  const raw = parseJsonRecord(text);
+  if (raw === null) return null;
+  const parsed = v.safeParse(PRICING_CACHE_SCHEMA, raw);
+  if (!parsed.success || parsed.output.url_sha256 !== urlDigest) return null;
+  const pricing = new Map<string, PricingTier>();
+  for (const [id, tier] of Object.entries(parsed.output.tiers)) {
+    pricing.set(id, {
+      input: tier.input,
+      output: tier.output,
+      cacheRead: tier.cacheRead,
+      cacheCreation: tier.cacheCreation,
+    });
+  }
+  return { pricing, fetchedAtMs: parsed.output.fetched_at_ms };
+}
+
+function writePricingCache(
+  path: string,
+  urlDigest: string,
+  fetchedAtMs: number,
+  pricing: ReadonlyMap<string, PricingTier>,
+): void {
+  const record = {
+    "url_sha256": urlDigest,
+    "fetched_at_ms": fetchedAtMs,
+    "tiers": Object.fromEntries(pricing),
+  };
+  atomicWriteFile(path, `${JSON.stringify(record)}\n`);
 }
 
 /** Bare Anthropic family slugs that map to `claude-<family>` catalog stems. */
@@ -180,13 +385,13 @@ export function estimateCost(
   usageByModel: ReadonlyMap<string, UsageTokens>,
   pricing: Map<string, PricingTier>,
 ): CostEstimate {
-  const catalogIds = new Set(pricing.keys());
+  const lookup = pricingLookupFor(pricing);
   const perModel: Record<string, ModelCost> = {};
   const unpriced: string[] = [];
   let totalUsd = 0;
 
   for (const [model, usage] of usageByModel) {
-    const reference = resolvePricingId(model, catalogIds);
+    const reference = lookup.resolve(model);
     const tier = reference ? pricing.get(reference) : undefined;
     if (!reference || !tier || !tierCoversUsage(tier, usage)) {
       unpriced.push(model);
@@ -214,6 +419,45 @@ export function estimateCost(
 }
 
 // ---------- internals ----------
+
+interface PricingLookup {
+  /** The ids the lookup was built for: resolutions depend only on the key set,
+   *  so a lookup stays valid exactly while the map still has these keys. */
+  catalogIds: Set<string>;
+  resolve(model: string): string | null;
+}
+
+// One lookup per price list, keyed by map identity: `agent cost` prices the
+// same list once per source and once per day per model, and every one of those
+// calls used to rebuild the catalog Set and re-run the prefix scan per model.
+const PRICING_LOOKUPS = new WeakMap<Map<string, PricingTier>, PricingLookup>();
+
+function pricingLookupFor(pricing: Map<string, PricingTier>): PricingLookup {
+  const existing = PRICING_LOOKUPS.get(pricing);
+  if (existing !== undefined && sameKeys(pricing, existing.catalogIds)) return existing;
+  const catalogIds = new Set(pricing.keys());
+  const memo = new Map<string, string | null>();
+  const lookup: PricingLookup = {
+    catalogIds,
+    resolve(model) {
+      const hit = memo.get(model);
+      if (hit !== undefined) return hit;
+      const resolved = resolvePricingId(model, catalogIds);
+      memo.set(model, resolved);
+      return resolved;
+    },
+  };
+  PRICING_LOOKUPS.set(pricing, lookup);
+  return lookup;
+}
+
+function sameKeys(pricing: ReadonlyMap<string, PricingTier>, ids: Set<string>): boolean {
+  if (pricing.size !== ids.size) return false;
+  for (const id of pricing.keys()) {
+    if (!ids.has(id)) return false;
+  }
+  return true;
+}
 
 /** Pricing-lookup form: the canonical spelling minus the -internal/1m markers. */
 function normalizeModelName(model: string): string {
@@ -257,7 +501,12 @@ function chooseBestMatch(matches: string[], requestedSlug: string): string | nul
       slug.length,
     ];
   };
-  return [...matches].sort((a, b) => compareKeys(sortKey(a), sortKey(b)))[0] ?? null;
+  // The id itself breaks any remaining tie, so the pick is a function of the
+  // catalog's key SET alone (never its insertion order): the memoized lookup
+  // in estimateCost relies on exactly that.
+  return [...matches].sort((a, b) =>
+    compareKeys(sortKey(a), sortKey(b)) || (a < b ? -1 : a > b ? 1 : 0)
+  )[0] ?? null;
 }
 
 /** Lexicographic compare of mixed scalar/array sort keys. */
@@ -305,10 +554,10 @@ function tokenCost(tokens: number, ratePerMillion: number | undefined): number {
 
 /** Convert OpenRouter's per-token string price into per-million USD. */
 function perMillion(value: unknown): number | undefined {
-  if (value === undefined || value === null || value === "") {
+  if (typeof value !== "string" && typeof value !== "number") {
     return undefined;
   }
-  const num = Number(value);
+  const num = value === "" ? NaN : Number(value);
   return Number.isFinite(num) ? num * PER_MILLION : undefined;
 }
 

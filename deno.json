@@ -28,6 +28,10 @@
     "@modelcontextprotocol/sdk/": "npm:/@modelcontextprotocol/sdk@^1.30.0/",
     "@modelcontextprotocol/server": "npm:@modelcontextprotocol/server@^2.0.0",
     "@modelcontextprotocol/server/": "npm:/@modelcontextprotocol/server@^2.0.0/",
+    "@sigstore/bundle": "npm:@sigstore/bundle@^5.0.0",
+    "@sigstore/protobuf-specs": "npm:@sigstore/protobuf-specs@^0.5.0",
+    "@sigstore/tuf": "npm:@sigstore/tuf@^5.0.0",
+    "@sigstore/verify": "npm:@sigstore/verify@^4.1.2",
     "@std/crypto": "jsr:@std/crypto@^1.1.0",
     "@std/dotenv": "jsr:@std/dotenv@^0.225.8",
     "@std/expect": "jsr:@std/expect@^1.0.20",
@@ -78,6 +82,7 @@
         "objects.githubusercontent.com",
         "release-assets.githubusercontent.com",
         "registry.npmjs.org",
+        "tuf-repo-cdn.sigstore.dev",
         "openrouter.ai",
         "githubcopilot.com",
         "*.githubcopilot.com"
@@ -136,6 +141,8 @@
     "exclude": [
       "*.md",
       "**/*.md",
+      "test/fixtures/provenance/v4.0.0/attestation.json",
+      "test/fixtures/provenance/v4.0.0/trusted_root.json",
       ".github/agents.md",
       ".github/copilot-instructions.md",
       ".github/.copier-answers.yml"

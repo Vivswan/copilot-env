@@ -2,8 +2,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { crypto } from "@std/crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { applyUpdate, type ApplyUpdateOptions } from "../src/autoupdate/apply.ts";
+import {
+  applyUpdate,
+  type ApplyUpdateOptions,
+  type ProvenanceVerifier,
+  resolveProvenanceDecision,
+} from "../src/autoupdate/apply.ts";
 import { withUpdateLockForTests } from "../src/autoupdate/lock.ts";
+import { ATTESTATION_NAME } from "../src/install/attestation.ts";
 import { expectedDigest, fileSha256, parseChecksums } from "../src/install/checksums.ts";
 import {
   CURRENT_LINK,
@@ -21,7 +27,9 @@ import {
 import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
 
 // The compiled-era update: fetch this platform's binary, verify it against the
-// release manifest, STAGE it into its own version root, PROVISION that root by
+// release manifest and (through an injected verifier -- the real one needs the
+// Sigstore trust root, see test/provenance.test.ts) the release's attestation,
+// STAGE it into its own version root, PROVISION that root by
 // running the new binary's `install --assets-only` inside it, then COMMIT by
 // flipping the `current` link -- prepare-then-commit, so a pre-flip failure
 // leaves the old version fully live. The download source is redirected at a
@@ -34,13 +42,17 @@ let root = "";
 let releaseDir = "";
 let installDir = "";
 
-/** A stand-in release directory: the "binary" for this platform plus the
- *  checksums.txt that vouches for it. */
+/** Stand-in attestation text: the injected verifier receives it verbatim. */
+const FAKE_BUNDLE = '{"fake":"attestation"}';
+
+/** A stand-in release directory: the "binary" for this platform, the
+ *  checksums.txt that vouches for it, and the attestation.json a verifier reads. */
 function writeRelease(contents: string, digestOverride?: string): string {
   const asset = releaseAssetName(hostTarget());
   writeFileSync(join(releaseDir, asset), contents);
   const digest = digestOverride ?? sha256Hex(contents);
   writeFileSync(join(releaseDir, "checksums.txt"), `${digest}  ${asset}\n`);
+  writeFileSync(join(releaseDir, ATTESTATION_NAME), FAKE_BUNDLE);
   return asset;
 }
 
@@ -207,16 +219,173 @@ describe("release targets", () => {
 describe("applyUpdate", () => {
   const target = { tag: "v9.9.9", dateSeconds: 0 };
   const quiet = { warn: () => {}, success: () => {} };
+  /** A verifier that accepts everything: the default here, so the existing cases
+   *  run the full stage order (download -> verify -> attest -> ...) unchanged. */
+  const acceptAll: ProvenanceVerifier = () => Promise.resolve();
 
   /** Run applyUpdate the only way it can be run: under the update lock, whose held
    *  branch mints the HeldLock evidence the signature demands (via the hermetic-path
    *  test seam, so the suite never touches the install root's real lock). */
-  function applyLocked(current: string, opts: ApplyUpdateOptions): Promise<void> {
+  function applyLocked(
+    current: string,
+    opts: Omit<ApplyUpdateOptions, "provenance"> & Partial<Pick<ApplyUpdateOptions, "provenance">>,
+  ): Promise<void> {
     return withUpdateLockForTests(join(root, "update.lock"), Date.now(), (outcome) => {
       if (!outcome.held) throw new Error("test could not take its own update lock");
-      return applyUpdate(current, target, outcome, opts);
+      return applyUpdate(current, target, outcome, {
+        provenance: { kind: "verify", verifier: acceptAll },
+        ...opts,
+      });
     });
   }
+
+  /** A logger that records what it was told. */
+  function recordingLogger() {
+    const warns: string[] = [];
+    const successes: string[] = [];
+    return {
+      warns,
+      successes,
+      logger: { warn: (m: string) => warns.push(m), success: (m: string) => successes.push(m) },
+    };
+  }
+
+  skipWin("hands the verifier the binary AND the manifest digests, then commits", async () => {
+    const asset = writeRelease(RECORDING_BINARY);
+    seedVersion("v9.9.8", "OLD");
+    pointCurrentAt(installDir, "v9.9.8");
+    const calls: Parameters<ProvenanceVerifier>[] = [];
+    const { logger, successes } = recordingLogger();
+
+    await applyLocked("v9.9.8", {
+      root: installDir,
+      logger,
+      childStdoutToStderr: true,
+      provenance: {
+        kind: "verify",
+        verifier: (...args) => {
+          calls.push(args);
+          return Promise.resolve();
+        },
+      },
+    });
+
+    expect(calls).toEqual([[
+      "v9.9.9",
+      FAKE_BUNDLE,
+      [
+        { name: asset, sha256: sha256Hex(RECORDING_BINARY) },
+        { name: "checksums.txt", sha256: sha256Hex(`${sha256Hex(RECORDING_BINARY)}  ${asset}\n`) },
+      ],
+    ]]);
+    expect(readCurrentVersionName(installDir)).toBe("v9.9.9");
+    expect(successes.some((m) => m.startsWith("Build provenance verified"))).toBe(true);
+  });
+
+  test("a verifier verdict aborts BEFORE staging: nothing runs, nothing moves", async () => {
+    writeRelease(RECORDING_BINARY);
+    seedVersion("v9.9.8", "OLD");
+    pointCurrentAt(installDir, "v9.9.8");
+
+    await expect(
+      applyLocked("v9.9.8", {
+        root: installDir,
+        logger: quiet,
+        provenance: {
+          kind: "verify",
+          verifier: () =>
+            Promise.reject(new Error("build provenance verification FAILED for v9.9.9")),
+        },
+      }),
+    ).rejects.toThrow("build provenance verification FAILED for v9.9.9");
+
+    expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
+    expect(existsSync(join(installDir, VERSIONS_DIR, "v9.9.9"))).toBe(false);
+    expect(existsSync(join(installDir, "invocations.log"))).toBe(false);
+    expect(stagingDirs()).toEqual([]);
+  });
+
+  test("a corrupt download is an integrity failure, never a provenance verdict", async () => {
+    // Both wrong: the manifest disowns the binary AND the attestation is missing.
+    // The checksum stage must win, so the message is the actionable SHA256 one
+    // and the opt-outs (which only the fail-closed message carries) stay unsaid.
+    writeRelease(RECORDING_BINARY, "f".repeat(64));
+    rmSync(join(releaseDir, ATTESTATION_NAME));
+    seedVersion("v9.9.8", "OLD");
+    pointCurrentAt(installDir, "v9.9.8");
+
+    const err = await applyLocked("v9.9.8", { root: installDir, logger: quiet })
+      .catch((e: unknown) => e as Error);
+    expect((err as Error).message).toContain("SHA256 verification failed");
+    expect((err as Error).message).not.toContain("--no-verify");
+    expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
+    expect(stagingDirs()).toEqual([]);
+  });
+
+  test("a missing attestation.json fails closed, naming both opt-outs, before any verifier runs", async () => {
+    writeRelease(RECORDING_BINARY);
+    rmSync(join(releaseDir, ATTESTATION_NAME));
+    seedVersion("v9.9.8", "OLD");
+    pointCurrentAt(installDir, "v9.9.8");
+    let verifierCalls = 0;
+
+    const err = await applyLocked("v9.9.8", {
+      root: installDir,
+      logger: quiet,
+      provenance: {
+        kind: "verify",
+        verifier: () => {
+          verifierCalls++;
+          return Promise.resolve();
+        },
+      },
+    }).catch((e: unknown) => e as Error);
+
+    expect((err as Error).message).toContain("cannot verify the build provenance of v9.9.9");
+    expect((err as Error).message).toContain("attestation.json could not be fetched");
+    expect((err as Error).message).toContain("--no-verify");
+    expect((err as Error).message).toContain("agent config --set verify-provenance false");
+    expect(verifierCalls).toBe(0);
+    expect(readCurrentVersionName(installDir)).toBe("v9.9.8");
+    expect(stagingDirs()).toEqual([]);
+  });
+
+  skipWin("--no-verify skips the check out loud and needs no attestation", async () => {
+    writeRelease(RECORDING_BINARY);
+    rmSync(join(releaseDir, ATTESTATION_NAME));
+    seedVersion("v9.9.8", "OLD");
+    pointCurrentAt(installDir, "v9.9.8");
+    const { logger, warns } = recordingLogger();
+
+    await applyLocked("v9.9.8", {
+      root: installDir,
+      logger,
+      childStdoutToStderr: true,
+      provenance: { kind: "skip", via: "--no-verify" },
+    });
+
+    expect(readCurrentVersionName(installDir)).toBe("v9.9.9");
+    expect(warns).toEqual(["Skipping build-provenance verification (--no-verify)."]);
+  });
+
+  skipWin("a stored opt-out is named as such, with the way back", async () => {
+    writeRelease(RECORDING_BINARY);
+    seedVersion("v9.9.8", "OLD");
+    pointCurrentAt(installDir, "v9.9.8");
+    const { logger, warns } = recordingLogger();
+
+    await applyLocked("v9.9.8", {
+      root: installDir,
+      logger,
+      childStdoutToStderr: true,
+      provenance: { kind: "skip", via: "verify-provenance" },
+    });
+
+    expect(readCurrentVersionName(installDir)).toBe("v9.9.9");
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain("verify-provenance is false");
+    expect(warns[0]).toContain("agent config --del verify-provenance");
+  });
 
   skipWin("stages, provisions inside the version root, then commits the flip", async () => {
     writeRelease(RECORDING_BINARY);
@@ -411,6 +580,18 @@ describe("applyUpdate", () => {
     await expect(
       applyLocked("v9.9.8", { root: installDir, logger: quiet }),
     ).rejects.toThrow("checksums.txt has no entry for");
+  });
+});
+
+describe("resolveProvenanceDecision", () => {
+  test("the flag beats the resolved config, and each skip names its opt-out", () => {
+    expect(resolveProvenanceDecision(true, false)).toEqual({ kind: "verify" });
+    expect(resolveProvenanceDecision(false, true)).toEqual({ kind: "skip", via: "--no-verify" });
+    expect(resolveProvenanceDecision(undefined, false)).toEqual({
+      kind: "skip",
+      via: "verify-provenance",
+    });
+    expect(resolveProvenanceDecision(undefined, true)).toEqual({ kind: "verify" });
   });
 });
 

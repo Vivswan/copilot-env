@@ -685,12 +685,23 @@ program
     "--auto-status",
     "Report autoupdate status and exit (enabled, cooldown, last check, last result).",
   )
+  .option(
+    "--verify",
+    "Verify the download against the release's Sigstore build-provenance attestation " +
+      "(the default; the verify-provenance config key persists a choice).",
+  )
+  .option(
+    "--no-verify",
+    "Skip build-provenance verification for this run (the SHA256 check against checksums.txt " +
+      "still applies).",
+  )
   .action((opts: Opts) =>
     runUpdate({
       check: Boolean(opts.check),
       force: Boolean(opts.force),
       auto: opts.auto as boolean | undefined,
       autoStatus: Boolean(opts.autoStatus),
+      verify: opts.verify as boolean | undefined,
     })
   );
 

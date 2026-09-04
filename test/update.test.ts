@@ -28,8 +28,22 @@ const rel = (tag: string, date: string, over: Record<string, unknown> = {}): unk
 // ran the status and dropped --check) is a rejection instead.
 describe("parseUpdateAction", () => {
   test("each single-intent invocation maps to its own arm", () => {
-    expect(parseUpdateAction({})).toEqual({ kind: "apply", force: false });
-    expect(parseUpdateAction({ force: true })).toEqual({ kind: "apply", force: true });
+    expect(parseUpdateAction({})).toEqual({ kind: "apply", force: false, verify: undefined });
+    expect(parseUpdateAction({ force: true })).toEqual({
+      kind: "apply",
+      force: true,
+      verify: undefined,
+    });
+    expect(parseUpdateAction({ verify: false })).toEqual({
+      kind: "apply",
+      force: false,
+      verify: false,
+    });
+    expect(parseUpdateAction({ verify: true, force: true })).toEqual({
+      kind: "apply",
+      force: true,
+      verify: true,
+    });
     expect(parseUpdateAction({ check: true })).toEqual({ kind: "check" });
     expect(parseUpdateAction({ auto: true })).toEqual({ kind: "enable-auto" });
     expect(parseUpdateAction({ auto: false })).toEqual({ kind: "disable-auto" });
@@ -62,6 +76,20 @@ describe("parseUpdateAction", () => {
       ]
     ) {
       expect(() => parseUpdateAction(args)).toThrow("--force only applies to the manual update");
+    }
+  });
+
+  test("--verify/--no-verify live on the apply arm alone", () => {
+    for (
+      const args of [
+        { check: true, verify: false },
+        { auto: true, verify: true },
+        { autoStatus: true, verify: false },
+      ]
+    ) {
+      expect(() => parseUpdateAction(args)).toThrow(
+        "--verify/--no-verify only apply to the manual update",
+      );
     }
   });
 });

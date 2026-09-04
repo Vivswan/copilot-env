@@ -292,6 +292,7 @@ const ROUND_TRIP_RAW: Record<ConfigCli, string> = {
   "small-model": "gpt-5-mini",
   "strict-port": "true",
   "update-cooldown": "7",
+  "verify-provenance": "false",
   "wire-mcp": "false",
 };
 
@@ -341,6 +342,7 @@ test("the registry covers exactly the documented keys, in alphabetical order", (
     "small-model",
     "strict-port",
     "update-cooldown",
+    "verify-provenance",
     "wire-mcp",
   ]);
   // The display order IS alphabetical -- a new key must be inserted in place.

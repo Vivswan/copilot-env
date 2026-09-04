@@ -1,7 +1,11 @@
 // Apply a resolved release with a prepare-then-commit pipeline over the
 // versioned install layout (src/install/installer.ts owns the layout):
 //
-//   1. download + verify into a staging dir inside the install root,
+//   1. download + verify into a staging dir inside the install root: the
+//      SHA256 against checksums.txt first (integrity, cheap, and its failure
+//      message is the actionable one), then the release's Sigstore
+//      build-provenance attestation (origin; src/install/attestation.ts says
+//      why both), unless the caller decided to skip it,
 //   2. STAGE the verified binary into `<top>/versions/vNEW/bin/`,
 //   3. PROVISION: run the NEW binary's `install --assets-only` INSIDE that
 //      version root (aimed with COPILOT_ENV_INSTALL_ROOT), so the release that
@@ -28,8 +32,9 @@
 // "committed a version nobody provisioned" unrepresentable rather than merely
 // untrue today:
 //
-//   download -> Downloaded -> verify -> Verified -> stage -> Staged
-//     -> provision -> Provisioned -> commit -> Committed -> (migrate, GC)
+//   download -> Downloaded -> verify -> Verified -> attest -> Attested
+//     -> stage -> Staged -> provision -> Provisioned -> commit -> Committed
+//     -> (migrate, GC)
 import { spawnSync, type StdioOptions } from "node:child_process";
 import {
   chmodSync,
@@ -43,6 +48,11 @@ import {
 import { join } from "node:path";
 import { consola } from "consola";
 
+import {
+  ATTESTATION_NAME,
+  type AttestedSubject,
+  cannotVerifyMessage,
+} from "../install/attestation.ts";
 import {
   type Checksums,
   expectedDigest,
@@ -84,6 +94,43 @@ interface UpdateLogger {
   success(message: string): void;
 }
 
+/** Verifies a release's attestation.json text against the digests about to be
+ *  installed; rejects with the attestation.ts wording. Injectable for tests. */
+export type ProvenanceVerifier = (
+  tag: string,
+  bundleJson: string,
+  required: readonly AttestedSubject[],
+) => Promise<void>;
+
+/**
+ * The caller's ONE decision about build-provenance verification, resolved at
+ * the boundary (flag > stored config > default, see resolveProvenanceDecision)
+ * and carried into the pipeline, so no stage re-derives it and no caller can
+ * forget it (the option is required). Skipping records WHICH opt-out did it,
+ * because the warning names the way back.
+ */
+export type ProvenanceDecision =
+  | { kind: "verify"; verifier?: ProvenanceVerifier }
+  | { kind: "skip"; via: "--no-verify" | "verify-provenance" };
+
+/** flag (`--verify` / `--no-verify`) > the resolved `verify-provenance` config
+ *  (stored value, else its default: verify). */
+export function resolveProvenanceDecision(
+  flag: boolean | undefined,
+  configEnabled: boolean,
+): ProvenanceDecision {
+  if (flag === true) return { kind: "verify" };
+  if (flag === false) return { kind: "skip", via: "--no-verify" };
+  return configEnabled ? { kind: "verify" } : { kind: "skip", via: "verify-provenance" };
+}
+
+/** The real verifier, loaded on first use: the sigstore stack is well over a
+ *  megabyte of CommonJS and `agent env` runs at every shell start. */
+const defaultVerifier: ProvenanceVerifier = async (tag, bundleJson, required) => {
+  const { verifyReleaseProvenance } = await import("../install/provenance.ts");
+  await verifyReleaseProvenance(tag, bundleJson, required);
+};
+
 // Stage tokens. The brand is a module-private symbol, so no caller outside this
 // file can fabricate one and skip a stage.
 declare const stageBrand: unique symbol;
@@ -95,10 +142,26 @@ interface Downloaded {
   /** Its release-asset name, i.e. the key to look up in the manifest. */
   readonly asset: string;
   readonly checksums: Checksums;
+  /** The downloaded checksums.txt itself: attested alongside the binary. */
+  readonly checksumsPath: string;
+  /** Where the release files came from, for the attestation fetched later. */
+  readonly source: DownloadSource;
+  /** The staging dir the attestation lands in. */
+  readonly dir: string;
 }
 
 interface Verified {
   readonly [stageBrand]: "verified";
+  readonly path: string;
+  readonly asset: string;
+  readonly sha256: string;
+  readonly checksumsSha256: string;
+  readonly source: DownloadSource;
+  readonly dir: string;
+}
+
+interface Attested {
+  readonly [stageBrand]: "attested";
   readonly path: string;
   readonly sha256: string;
 }
@@ -187,6 +250,9 @@ async function download(tag: string, dir: string): Promise<Downloaded> {
     path,
     asset,
     checksums: parseChecksums(readFileSync(manifest, "utf8")),
+    checksumsPath: manifest,
+    source,
+    dir,
   } as Downloaded;
 }
 
@@ -200,18 +266,70 @@ async function verify(downloaded: Downloaded): Promise<Verified> {
       `SHA256 verification failed for ${downloaded.asset}: expected ${expected}, got ${actual}`,
     );
   }
-  return { path: downloaded.path, sha256: actual } as Verified;
+  return {
+    path: downloaded.path,
+    asset: downloaded.asset,
+    sha256: actual,
+    checksumsSha256: await fileSha256(downloaded.checksumsPath),
+    source: downloaded.source,
+    dir: downloaded.dir,
+  } as Verified;
 }
 
 /**
- * Stage 3: place the verified binary into its own version root,
+ * Stage 2b: prove ORIGIN, not just integrity -- the binary AND the manifest it
+ * was checked against must both be subjects of the release's attestation, and
+ * the attestation must be signed by our release workflow. It runs AFTER the
+ * checksum stage on purpose: a corrupt download is reported as the cheap
+ * integrity failure, never as a provenance verdict. Fetching the attestation
+ * belongs here too, so a missing bundle (the fail-closed case) can only be
+ * reported for bytes that already passed the manifest. Skipping is the
+ * caller's recorded decision and is said out loud, naming the way back.
+ */
+async function attest(
+  verified: Verified,
+  tag: string,
+  decision: ProvenanceDecision,
+  logger: UpdateLogger,
+): Promise<Attested> {
+  if (decision.kind === "skip") {
+    logger.warn(
+      decision.via === "--no-verify"
+        ? "Skipping build-provenance verification (--no-verify)."
+        : "Skipping build-provenance verification (verify-provenance is false; " +
+          "`agent config --del verify-provenance` restores it).",
+    );
+    return { path: verified.path, sha256: verified.sha256 } as Attested;
+  }
+  const bundlePath = join(verified.dir, ATTESTATION_NAME);
+  try {
+    await fetchReleaseFile(verified.source, ATTESTATION_NAME, bundlePath);
+  } catch (e) {
+    throw new Error(
+      cannotVerifyMessage(tag, `${ATTESTATION_NAME} could not be fetched (${errMessage(e)})`),
+    );
+  }
+  const verifier = decision.verifier ?? defaultVerifier;
+  await verifier(tag, readFileSync(bundlePath, "utf8"), [
+    { name: verified.asset, sha256: verified.sha256 },
+    { name: CHECKSUMS_NAME, sha256: verified.checksumsSha256 },
+  ]);
+  logger.success(
+    "Build provenance verified: attested by GitHub Actions for Vivswan/copilot-env " +
+      "(release.yml@refs/heads/main).",
+  );
+  return { path: verified.path, sha256: verified.sha256 } as Attested;
+}
+
+/**
+ * Stage 3: place the attested binary into its own version root,
  * `<top>/versions/<versionName>/bin/` -- a rename, since the staging dir lives
  * inside the same filesystem. The OLD version's files are never touched, so
  * there is no running-image problem on any platform: the running binary lives
  * in ITS version dir, and this write happens in a brand-new one (a stale dir
  * from a crashed earlier attempt is removed first; it is never `current`).
  */
-function stage(verified: Verified, top: string, versionName: string): Staged {
+function stage(attested: Attested, top: string, versionName: string): Staged {
   const previous = readCurrentVersionName(top);
   if (previous === versionName) {
     throw new Error(
@@ -224,8 +342,8 @@ function stage(verified: Verified, top: string, versionName: string): Staged {
   const binDir = join(versionRoot, "bin");
   mkdirSync(binDir, { recursive: true });
   const binary = join(binDir, installedBinaryName());
-  if (process.platform !== "win32") chmodSync(verified.path, 0o755);
-  renameSync(verified.path, binary);
+  if (process.platform !== "win32") chmodSync(attested.path, 0o755);
+  renameSync(attested.path, binary);
   return { binary, versionName, versionRoot, previous } as Staged;
 }
 
@@ -328,6 +446,9 @@ export interface ApplyUpdateOptions {
   childStdoutToStderr?: boolean;
   /** The install root to update. Defaults to the live one. */
   root?: string;
+  /** Verify the release's build provenance, or skip it -- decided by the caller
+   *  (see ProvenanceDecision), never defaulted here. */
+  provenance: ProvenanceDecision;
 }
 
 /** `_lock` is the caller's evidence that the update lock is held (only withUpdateLock's
@@ -336,7 +457,7 @@ export async function applyUpdate(
   current: string,
   target: Release,
   _lock: HeldUpdateLock,
-  opts: ApplyUpdateOptions = {},
+  opts: ApplyUpdateOptions,
 ): Promise<void> {
   const logger = opts.logger ?? consola;
   const root = opts.root ?? PROJECT_ROOT;
@@ -354,7 +475,16 @@ export async function applyUpdate(
   let provisioned: Provisioned;
   try {
     provisioned = provision(
-      stage(await verify(await download(target.tag, staging)), top, versionName),
+      stage(
+        await attest(
+          await verify(await download(target.tag, staging)),
+          target.tag,
+          opts.provenance,
+          logger,
+        ),
+        top,
+        versionName,
+      ),
       stdio,
     );
   } catch (error) {

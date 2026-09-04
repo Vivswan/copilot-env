@@ -1,6 +1,10 @@
 // `agent update`: resolves a release, applies it, refreshes deps, and runs migrations.
 import { consola } from "consola";
-import { applyUpdate } from "../autoupdate/apply.ts";
+import {
+  applyUpdate,
+  type ProvenanceDecision,
+  resolveProvenanceDecision,
+} from "../autoupdate/apply.ts";
 import { withUpdateLock } from "../autoupdate/lock.ts";
 import { runPreflight } from "../autoupdate/preflight.ts";
 import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/state.ts";
@@ -17,8 +21,9 @@ import { packageVersion } from "../utils/version.ts";
 //    ../install/resolve-release.ts, shared with the autoupdate preflight so the
 //    release-pick logic has one home. Then
 //  - apply (../autoupdate/apply.ts) downloads that release's binary for this
-//    platform, verifies it against the release checksums.txt, swaps it in, and
-//    lets the new binary lay down its own runtime files and run migrations.
+//    platform, verifies it against the release checksums.txt and (unless opted
+//    out) the release's build-provenance attestation, swaps it in, and lets
+//    the new binary lay down its own runtime files and run migrations.
 
 export interface UpdateArgs {
   check?: boolean;
@@ -29,6 +34,10 @@ export interface UpdateArgs {
   auto?: boolean;
   /** Print autoupdate status and exit. */
   autoStatus?: boolean;
+  /** The --verify/--no-verify toggle (same Commander folding as --auto): true
+   *  forces the build-provenance check on, false skips it for this run, absent
+   *  defers to the stored `verify-provenance` config (default: verify). */
+  verify?: boolean;
 }
 
 /**
@@ -43,7 +52,7 @@ export type UpdateAction =
   | { kind: "auto-status" }
   | { kind: "enable-auto" }
   | { kind: "disable-auto" }
-  | { kind: "apply"; force: boolean };
+  | { kind: "apply"; force: boolean; verify: boolean | undefined };
 
 /**
  * The under-lock re-validate judgment, pure for testing. `targetNow` is
@@ -79,11 +88,16 @@ export function parseUpdateAction(args: UpdateArgs): UpdateAction {
       "--force only applies to the manual update; it does not combine with --check/--auto/--no-auto/--auto-status",
     );
   }
+  if (args.verify !== undefined && reports > 0) {
+    throw new Error(
+      "--verify/--no-verify only apply to the manual update; they do not combine with --check/--auto/--no-auto/--auto-status",
+    );
+  }
   if (args.autoStatus) return { kind: "auto-status" };
   if (args.auto === false) return { kind: "disable-auto" };
   if (args.auto === true) return { kind: "enable-auto" };
   if (args.check) return { kind: "check" };
-  return { kind: "apply", force: Boolean(args.force) };
+  return { kind: "apply", force: Boolean(args.force), verify: args.verify };
 }
 
 export async function runUpdate(args: UpdateArgs): Promise<void> {
@@ -91,7 +105,8 @@ export async function runUpdate(args: UpdateArgs): Promise<void> {
   // The update/autoupdate cooldown is the stored config `update-cooldown` (set via
   // `agent config --set update-cooldown <days>`), else null (immediate). The config key is the
   // single knob -- there is no per-invocation flag.
-  const cooldown = new CopilotEnvConfig().updateCooldownDays();
+  const config = new CopilotEnvConfig();
+  const cooldown = config.updateCooldownDays();
   assertNonNegativeDays(cooldown, "update-cooldown");
 
   switch (action.kind) {
@@ -104,7 +119,13 @@ export async function runUpdate(args: UpdateArgs): Promise<void> {
     case "check":
       return runManualUpdate({ check: true, cooldown, force: false });
     case "apply":
-      return runManualUpdate({ check: false, cooldown, force: action.force });
+      return runManualUpdate({
+        check: false,
+        cooldown,
+        force: action.force,
+        // flag > stored config > default, resolved ONCE here (the boundary).
+        provenance: resolveProvenanceDecision(action.verify, config.verifyProvenanceEnabled()),
+      });
     default:
       assertNever(action);
   }
@@ -135,11 +156,14 @@ async function runEnableAuto(): Promise<void> {
   await runPreflight({ nowMs: Date.now(), force: true, state });
 }
 
-async function runManualUpdate(args: {
-  check: boolean;
-  cooldown: number | null;
-  force: boolean;
-}): Promise<void> {
+async function runManualUpdate(
+  args: { check: true; cooldown: number | null; force: false } | {
+    check: false;
+    cooldown: number | null;
+    force: boolean;
+    provenance: ProvenanceDecision;
+  },
+): Promise<void> {
   // Current checkout version as `vX.Y.Z`, to match the upstream tag format for display.
   const current = `v${packageVersion()}`;
   const target = await resolveTarget(args.cooldown);
@@ -200,6 +224,6 @@ async function runManualUpdate(args: {
       consola.success(`copilot-env is already up to date (${currentNow}).`);
       return;
     }
-    await applyUpdate(currentNow, verdict.target, outcome);
+    await applyUpdate(currentNow, verdict.target, outcome, { provenance: args.provenance });
   });
 }

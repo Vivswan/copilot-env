@@ -3,7 +3,7 @@
 # release.yml calls this workflow between cutting the draft release and the
 # attested publish: publishing waits for every job here, and every asset
 # uploaded here is attested at publish time into the release's single
-# attestation.jsonl.
+# attestation.json.
 #
 # copilot-env's stage: pin the installers to the tag, cross-compile the
 # agent binary for every release target, upload everything to the draft,

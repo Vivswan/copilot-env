@@ -312,8 +312,8 @@ const STATE_SCHEMA = v.object({
   // Recorded artifact ownership (the WebSearch-deny and Claude Desktop paths)
   // lived here before the ownership ledger (ownership.ts). The legacy keys are
   // deliberately NOT named in this schema: the lenient read ignores them and
-  // update() preserves them in the file, so the ledger's reader tolerance can
-  // still see them until the 3.5.6 ownership migration moves them out.
+  // update() preserves them in the file, so the 3.5.6 ownership migration can
+  // still find and move them out.
   claudeModelVerdicts: v.fallback(
     v.record(
       v.string(),

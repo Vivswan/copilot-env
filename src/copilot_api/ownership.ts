@@ -24,9 +24,12 @@
 //   - a junk-degraded record file reads as "owns less", never as a crash. An
 //     UNREADABLE store, by contrast, THROWS (loadStrict): "owns nothing" is a
 //     verdict take-back paths act on, never assumed from a read that failed.
-//   - every mutation serializes on ONE ops lock, so a take-back racing the
-//     legacy adoption cannot resurrect a released claim (advisory, like every
-//     lock in this codebase: bounded wait, then proceed).
+//   - the ledger file is the ONLY source of a claim: the 3.5.6 adoption
+//     (adoptLegacyRecords, the migration's primitive) drops the pre-ledger record
+//     BEFORE it writes the ledger, so a claim released afterwards has no second
+//     copy to resurrect from. Every mutation serializes on ONE ops lock, so a
+//     take-back cannot slip between the adoption's two writes either (advisory,
+//     like every lock in this codebase: bounded wait, then proceed).
 //
 // The per-daemon-home proxy config.json projections (ProxyProjectionState,
 // below) stay OUTSIDE the ledger file on purpose: their record must sit beside
@@ -52,10 +55,10 @@ const LEDGER_KEYS = {
 export type OwnedArtifactKind = keyof typeof LEDGER_KEYS;
 
 // Pre-ledger releases recorded the same ownership under these keys in the
-// shared state store (`.copilot-env-state.json`). The 3.5.6 ownership migration
-// moves them here; until it has run (dev checkouts never run migrations), every
-// read below tolerates them and release() clears them too, so a pre-ledger
-// claim keeps working and can never resurrect after a take-back.
+// shared state store (`.copilot-env-state.json`). ONLY adoptLegacyRecords (the
+// 3.5.6 ownership migration's primitive) reads them: the ledger's own readers
+// answer from the ledger file alone, so an unmigrated record owns nothing here
+// until `agent update` has moved it.
 const LEGACY_STATE_KEYS: Partial<Record<OwnedArtifactKind, string>> = {
   webSearchDeny: "webSearchDenyOwnedPaths",
   claudeDesktop: "claudeDesktopOwnedPaths",
@@ -93,13 +96,12 @@ const LEDGER_SCHEMA = v.object({
  */
 export class OwnershipLedger {
   private readonly store: CopilotApiConfig;
-  /** The shared state store, read/cleared ONLY for the legacy pre-ledger keys. */
+  /** The shared state store, read/cleared ONLY by adoptLegacyRecords. */
   private readonly legacyStore: CopilotApiConfig;
-  /** The cross-store MUTATION lock (`.ops.lock`, distinct from each store's own
-   *  update `.lock`): record/release/adopt each read one store to decide what to
-   *  write into the other, so without one shared scope a release racing the
-   *  adoption could see "not in the ledger yet" while adopt re-writes the claim
-   *  it just cleared from the legacy store -- resurrecting a released claim. */
+  /** The MUTATION lock (`.ops.lock`, distinct from each store's own update
+   *  `.lock`): the adoption reads the legacy store, then writes the ledger, so
+   *  without one shared scope a release landing between those two could clear
+   *  the ledger's copy just before the adoption re-adds the one it read. */
   private readonly opsLock: string;
 
   constructor(paths: CopilotApiPaths = new CopilotApiPaths()) {
@@ -108,28 +110,13 @@ export class OwnershipLedger {
     this.opsLock = `${paths.ownershipFile}.ops.lock`;
   }
 
-  // Both record reads are STRICT (loadStrict): they feed owns()/ownedPaths(),
-  // the predicate every take-back gates on -- an unreadable store must surface,
-  // never read as owns-nothing (which would strip a deny's replacement while
-  // leaving the deny). Junk CONTENT still degrades via the lenient schemas.
-  private ledgerPaths(kind: OwnedArtifactKind): string[] {
-    return v.parse(LEDGER_SCHEMA, this.store.loadStrict())[LEDGER_KEYS[kind]];
-  }
-
-  private legacyPaths(kind: OwnedArtifactKind): string[] {
-    const key = LEGACY_STATE_KEYS[kind];
-    return key === undefined ? [] : ownedPathList(this.legacyStore.loadStrict()[key]);
-  }
-
-  /** Every artifact path recorded for `kind` -- ledger entries plus any legacy
-   *  pre-ledger record still in the state store -- deduped. Under the ops lock (the
-   *  same best-effort bounded scope every mutation takes) so a read does not observe
-   *  the adoption's mid-move half-state (ledger written, legacy not yet cleared, or
-   *  vice versa). */
+  /** Every artifact path the ledger records for `kind`. STRICT (loadStrict): it
+   *  feeds owns(), the predicate every take-back gates on -- an unreadable store
+   *  must surface, never read as owns-nothing (which would strip a deny's
+   *  replacement while leaving the deny). Junk CONTENT still degrades via the
+   *  lenient schema. */
   ownedPaths(kind: OwnedArtifactKind): string[] {
-    return withFileLockSync(this.opsLock, BOUNDED_LOCK_POLICY, () => [
-      ...new Set([...this.ledgerPaths(kind), ...this.legacyPaths(kind)]),
-    ]);
+    return v.parse(LEDGER_SCHEMA, this.store.loadStrict())[LEDGER_KEYS[kind]];
   }
 
   /** Whether WE wrote the `kind` entry at this exact artifact path. */
@@ -151,27 +138,18 @@ export class OwnershipLedger {
     });
   }
 
-  /** Forget ownership for `artifactPath` (an emptied list drops its key, and a
-   *  legacy pre-ledger record of the same path is cleared too). No write fires
-   *  when nothing records the path, so steady-state sweeps stay write-free. */
+  /** Forget ownership for `artifactPath` (an emptied list drops its key). No
+   *  write fires when nothing records the path, so steady-state sweeps stay
+   *  write-free. */
   release(kind: OwnedArtifactKind, artifactPath: string): void {
     withFileLockSync(this.opsLock, BOUNDED_LOCK_POLICY, () => {
+      if (!this.ownedPaths(kind).includes(artifactPath)) return;
       const key = LEDGER_KEYS[kind];
-      if (this.ledgerPaths(kind).includes(artifactPath)) {
-        this.store.update((d) => {
-          const list = ownedPathList(d[key]).filter((p) => p !== artifactPath);
-          if (list.length === 0) delete d[key];
-          else d[key] = list;
-        });
-      }
-      const legacyKey = LEGACY_STATE_KEYS[kind];
-      if (legacyKey !== undefined && this.legacyPaths(kind).includes(artifactPath)) {
-        this.legacyStore.update((d) => {
-          const list = ownedPathList(d[legacyKey]).filter((p) => p !== artifactPath);
-          if (list.length === 0) delete d[legacyKey];
-          else d[legacyKey] = list;
-        });
-      }
+      this.store.update((d) => {
+        const list = ownedPathList(d[key]).filter((p) => p !== artifactPath);
+        if (list.length === 0) delete d[key];
+        else d[key] = list;
+      });
     });
   }
 
@@ -193,18 +171,25 @@ export class OwnershipLedger {
       const moves = present
         .map(([kind, key]) => [kind, ownedPathList(legacy[key])] as const)
         .filter(([, paths]) => paths.length > 0);
-      if (moves.length > 0) {
-        this.store.update((d) => {
-          for (const [kind, paths] of moves) {
-            const key = LEDGER_KEYS[kind];
-            d[key] = [...new Set([...ownedPathList(d[key]), ...paths])];
-          }
-        });
-      }
-      // Ledger first, legacy delete second: a crash between the two leaves both
-      // records (still owned, via either), and the re-run converges.
+      // The ledger must clear update()'s read-side refusals BEFORE the legacy
+      // delete: a malformed ledger refused after the delete would lose the record
+      // (the runner carries on past a failed step). The same refusal, raised
+      // first, leaves the keys in place for the re-run once the file is fixed.
+      if (moves.length > 0) this.store.loadForUpdate();
+      // Legacy delete FIRST, ledger write second: a crash between the two loses
+      // the claim (the module header's safe direction -- an unclaimed entry is
+      // never deleted), whereas the other order would leave a second copy a
+      // re-run could re-adopt AFTER a take-back released the ledger's,
+      // resurrecting it.
       this.legacyStore.update((d) => {
         for (const [, key] of present) delete d[key];
+      });
+      if (moves.length === 0) return;
+      this.store.update((d) => {
+        for (const [kind, paths] of moves) {
+          const key = LEDGER_KEYS[kind];
+          d[key] = [...new Set([...ownedPathList(d[key]), ...paths])];
+        }
       });
     });
   }

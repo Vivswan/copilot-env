@@ -1,7 +1,7 @@
 // The machine-local artifact-ownership ledger and the per-daemon-home projection
 // record (src/copilot_api/ownership.ts): per-kind exact-path round-trips, junk
-// degradation, the legacy pre-ledger tolerance against the shared state store,
-// and the 3.5.6 adoption.
+// degradation, and the 3.5.6 adoption of the pre-ledger state-store records
+// (the ledger's own readers never consult them).
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
@@ -56,7 +56,7 @@ test("ownership round-trips per kind; kinds never bleed into one another", () =>
   expect(new OwnershipLedger(paths).owns("webSearchDeny", "/a/settings.json")).toBe(false);
 });
 
-test("the on-disk contract is pinned: filename, ledger keys, legacy keys", () => {
+test("the on-disk contract is pinned: filename and ledger keys", () => {
   const paths = isolate();
   // These spellings are external contracts (an existing install's records must
   // stay readable): a rename here would orphan every shipped ledger.
@@ -70,18 +70,6 @@ test("the on-disk contract is pinned: filename, ledger keys, legacy keys", () =>
     claudeDesktopPaths: ["/lib/uuid.json"],
     codexCatalogConfigPaths: ["/home/.codex/config.toml"],
   });
-  // The legacy state-store spellings the tolerance and the migration read.
-  writeFileSync(
-    paths.sharedStateFile,
-    `${
-      JSON.stringify({
-        webSearchDenyOwnedPaths: ["/b/settings.json"],
-        claudeDesktopOwnedPaths: ["/lib/old.json"],
-      })
-    }\n`,
-  );
-  expect(ledger.owns("webSearchDeny", "/b/settings.json")).toBe(true);
-  expect(ledger.owns("claudeDesktop", "/lib/old.json")).toBe(true);
 });
 
 test("a release with nothing recorded never materializes the ledger file", () => {
@@ -110,7 +98,7 @@ test("a junk-degraded ledger owns less, never crashes; survivors come back trimm
   expect(ledger.ownedPaths("codexCatalog")).toEqual([]);
 });
 
-test("legacy pre-ledger records in the state store still answer owns(); release clears both", () => {
+test("an unmigrated pre-ledger record in the state store owns nothing; only the migration moves it", () => {
   const paths = isolate();
   // A pre-ledger install: ownership sits under the LEGACY state-store keys.
   writeFileSync(
@@ -124,22 +112,28 @@ test("legacy pre-ledger records in the state store still answer owns(); release 
     }\n`,
   );
   const ledger = new OwnershipLedger();
-  expect(ledger.owns("webSearchDeny", "/a/settings.json")).toBe(true);
-  expect(ledger.owns("claudeDesktop", "/lib/uuid.json")).toBe(true);
+  expect(ledger.owns("webSearchDeny", "/a/settings.json")).toBe(false);
+  expect(ledger.ownedPaths("claudeDesktop")).toEqual([]);
 
-  // The state store's own reader ignores the legacy keys, and its writes
-  // preserve them in the file -- the tolerance window the migration closes.
-  const state = new CopilotEnvState();
-  state.set({ codexCatalogLastAttemptMs: 5 });
+  // A release of the unowned path touches neither store: the state store's
+  // legacy keys survive (the state store's own writes preserve them too) for
+  // the migration to move, and no ledger file materializes.
+  const stateBytes = readFileSync(paths.sharedStateFile, "utf8");
+  ledger.release("webSearchDeny", "/a/settings.json");
+  expect(readFileSync(paths.sharedStateFile, "utf8")).toBe(stateBytes);
+  expect(existsSync(paths.ownershipFile)).toBe(false);
+  new CopilotEnvState().set({ codexCatalogLastAttemptMs: 5 });
   expect(readStateRaw(paths).webSearchDenyOwnedPaths).toEqual(["/a/settings.json"]);
 
-  // A take-back on a pre-ledger claim clears the LEGACY record too, so a deny
-  // the user adds later can never resurrect as ours.
-  ledger.release("webSearchDeny", "/a/settings.json");
-  expect(ledger.owns("webSearchDeny", "/a/settings.json")).toBe(false);
-  expect(readStateRaw(paths).webSearchDenyOwnedPaths).toBeUndefined();
-  expect(readStateRaw(paths).claudeDesktopOwnedPaths).toEqual(["/lib/uuid.json"]);
-  expect(state.read().githubToken).toBe("ghu_keep"); // the real store fields survive
+  // A malformed ledger cannot take the record, so the adoption refuses BEFORE it
+  // deletes the legacy keys (naming the ledger); both files keep their bytes.
+  writeFileSync(paths.ownershipFile, "{ not json");
+  const legacyBytes = readFileSync(paths.sharedStateFile, "utf8");
+  expect(() => ledger.adoptLegacyRecords()).toThrow(
+    `${paths.ownershipFile} is not valid JSON`,
+  );
+  expect(readFileSync(paths.sharedStateFile, "utf8")).toBe(legacyBytes);
+  expect(readFileSync(paths.ownershipFile, "utf8")).toBe("{ not json");
 });
 
 test("adoptLegacyRecords moves both legacy kinds into the ledger and is idempotent", () => {

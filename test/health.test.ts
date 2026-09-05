@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { directHelperCommand, legacyDirectHelperScript } from "../src/claude/config.ts";
 import { directHelperPath, proxyHelperPath, settingsPathFor } from "../src/claude/paths.ts";
+import { type CodexHostDrift, codexHostDriftLine } from "../src/codex/host.ts";
 import { DEFAULT_HOME_STAGING_DIR, PROFILES_DIR_NAME } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import type { TextReadResult } from "../src/utils/fs.ts";
@@ -2164,63 +2165,67 @@ test("checkCodexHost: the codex-host key against the disk, every drift warns wit
     active: true,
     setting: true,
   });
-  // Every disagreement is a warn carrying the wiring pass that resolves it.
-  const missing =
-    `codex-host is on but the per-host CODEX_HOME farm is missing at ${hostHome}; run \`agent codex\` to rebuild it`;
-  const disabled =
-    `codex-host is off but a per-host CODEX_HOME farm is still present at ${hostHome}; run \`agent codex\` to remove it`;
+  // Every disagreement is a warn rendering the shared drift line (its wording is pinned
+  // once, in test/codex_host.test.ts) with the command that resolves it.
+  const line = (drift: CodexHostDrift): string => codexHostDriftLine(drift);
   const drifts: Array<
     { facts: CodexHostFacts; summary: string; withConfig: boolean; fix?: string }
   > = [
-    // On but hand-deleted (nothing on disk).
-    { facts: { ...on, exists: false, wired: false }, summary: missing, withConfig: false },
-    // On but only half-built (dir without config.toml).
-    { facts: { ...on, wired: false }, summary: missing, withConfig: true },
+    // On but hand-deleted (nothing on disk), or only half-built (dir without config.toml).
+    {
+      facts: { ...on, exists: false, wired: false },
+      summary: line({ kind: "missing", hostHome }),
+      withConfig: false,
+    },
+    {
+      facts: { ...on, wired: false },
+      summary: line({ kind: "missing", hostHome }),
+      withConfig: true,
+    },
     // On and wired, but no wiring pass recorded it as the active home yet.
     {
       facts: { ...on, active: false },
-      summary:
-        `codex-host is on but ${hostHome} is not the active CODEX_HOME; run \`agent codex\` to activate it`,
+      summary: line({ kind: "inactive", hostHome }),
       withConfig: true,
     },
     // Unset with a wired farm: the next pass adopts it.
     {
       facts: { ...on, active: false, setting: null },
-      summary:
-        `codex-host is unset but a per-host CODEX_HOME farm exists at ${hostHome}; run \`agent codex\` to adopt it (records codex-host = true)`,
+      summary: line({ kind: "unadopted", hostHome }),
       withConfig: true,
     },
     // A farm the probe cannot read: wiring unproven, so the pass will refuse to decide.
     {
       facts: { ...on, wired: false, probeError: "EACCES: permission denied", setting: null },
-      summary:
-        `the per-host CODEX_HOME farm at ${hostHome} cannot be inspected (EACCES: permission denied); fix that, then run \`agent codex\``,
+      summary: line({ kind: "unreadable", hostHome, detail: "EACCES: permission denied" }),
       withConfig: true,
     },
-    // Off (or unset without a wired config) with a farm still on disk: the next pass removes it.
-    { facts: { ...on, active: false, setting: false }, summary: disabled, withConfig: true },
-    // Off wins over an unreadable probe: the removal needs no proof of wiring, and an
-    // unprobeable DIR (present unproven) is still pending removal.
+    // Off with a farm still on disk (or unprobeable): the next pass removes it.
+    {
+      facts: { ...on, active: false, setting: false },
+      summary: line({ kind: "disabled", hostHome }),
+      withConfig: true,
+    },
     {
       facts: { ...on, wired: false, probeError: "EACCES", setting: false },
-      summary: disabled,
+      summary: line({ kind: "disabled", hostHome }),
       withConfig: true,
     },
     {
       facts: { ...on, exists: false, wired: false, probeError: "EACCES", setting: false },
-      summary: disabled,
+      summary: line({ kind: "disabled", hostHome }),
       withConfig: false,
     },
+    // Unset with a recorded half-built dir: ours, removed next pass.
     {
       facts: { ...on, wired: false, active: true, setting: null },
-      summary: disabled,
+      summary: line({ kind: "disabled", hostHome }),
       withConfig: true,
     },
     // Unset with an unrecorded half-built dir: not proven ours, so the user decides.
     {
       facts: { ...on, wired: false, active: false, setting: null },
-      summary:
-        `an unwired directory sits at the per-host CODEX_HOME farm path ${hostHome} and no wiring pass recorded it; set codex-host true to build the farm there or false to remove it`,
+      summary: line({ kind: "unowned", hostHome }),
       withConfig: true,
       fix: "agent config --set codex-host true|false",
     },

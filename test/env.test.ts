@@ -1,7 +1,7 @@
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
-import { getHostLocalCodexHome } from "../src/codex/host.ts";
+import { codexHostDriftLine, getHostLocalCodexHome } from "../src/codex/host.ts";
 import { launcherFunctionLines, runEnv } from "../src/commands/env.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
@@ -237,12 +237,11 @@ skipWin(
       stdout = envLines();
     });
     // The eval'd stdout carries no directive at all; the warning goes to stderr only
-    // (consola renders the backticked command as inline code, so match around it).
+    // (consola renders the backticked command as inline code, dropping the backticks).
     expect(stdout).toEqual([]);
     expect(stderr).toContain(
-      `codex-host is on but the per-host CODEX_HOME farm is missing at ${hostHome}; run `,
+      codexHostDriftLine({ kind: "missing", hostHome }).replaceAll("`", ""),
     );
-    expect(stderr).toMatch(/run \W*agent codex\W* to rebuild it/);
     // A shell still carrying OUR dead export gets it cleared, whatever the key says.
     process.env.CODEX_HOME = hostHome;
     expect(stderrDuring(() => expect(envLines()).toEqual(["unset CODEX_HOME"]))).toContain(

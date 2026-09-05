@@ -16,6 +16,8 @@ export type PassthroughPref = "auto" | "on" | "off";
 export interface CopilotEnvConfigData {
   /** Managed proxy lifecycle (auto-start on agent open + idle auto-stop). */
   autoStart?: boolean;
+  /** Once-a-day self-update preflight on `agent start` (the release cooldown is `update-cooldown`). */
+  autoUpdate?: boolean;
   /** PAT passthrough default for `agent start`. */
   passthrough?: PassthroughPref;
   /**
@@ -67,6 +69,8 @@ export interface CopilotEnvConfigData {
   updateCooldown?: number;
   /** Verify `agent update` downloads against the release's build-provenance attestation. */
   verifyProvenance?: boolean;
+  /** Per-host CODEX_HOME symlink farm, derived by `agent init`/`agent codex` (Linux/macOS). */
+  codexHost?: boolean;
   /** Patched Codex model catalog with Copilot's real context windows (opt-in). */
   codexModelCatalog?: boolean;
   /** Wire the copilot-env MCP server (+ WebSearch deny) into Claude on direct writes. */
@@ -114,6 +118,8 @@ interface ConfigKeyDefCore<K extends ConfigKey = ConfigKey> {
   /** Parser from the `--set <value>` string to the stored value (throws a clear message
    *  on bad input). Derived from `schema` by the domain builders, never hand-written. */
   parse: (raw: string) => NonNullable<CopilotEnvConfigData[K]>;
+  /** The feature needs POSIX (Linux/macOS): `agent config --set` refuses it on Windows. */
+  posixOnly?: true;
 }
 
 /** How an internal key's rendered `--help` / `--get` default is sourced: a registry-owned
@@ -379,6 +385,16 @@ const CONFIG_REGISTRY_LITERAL = [
     defaultValue: false,
   },
   {
+    cli: "auto-update",
+    key: "autoUpdate",
+    describe:
+      "Self-update once a day on `agent start`, adopting the newest release aged >= update-cooldown (bool)",
+    ...BOOL_DOMAIN,
+    defaultValue: false,
+    applyHint:
+      "Applies at the next `agent start` (checked once a day); `agent update` updates now, `agent update --auto-status` shows the last check.",
+  },
+  {
     cli: "claude-auto-model",
     key: "claudeAutoModel",
     describe:
@@ -395,6 +411,17 @@ const CONFIG_REGISTRY_LITERAL = [
     ...positiveDecimalDomain(MAX_TOKEN_MULTIPLIER),
     defaultLabel: "1.15 (proxy default)",
     proxyProjected: true,
+  },
+  {
+    cli: "codex-host",
+    key: "codexHost",
+    describe:
+      "Per-host CODEX_HOME symlink farm at ~/.codex/hosts/<hostname>, exported by `agent env` (bool; Linux/macOS)",
+    ...BOOL_DOMAIN,
+    defaultValue: false,
+    posixOnly: true,
+    applyHint:
+      "Applies at the next `agent codex`/`agent init` wiring, which builds or removes the farm.",
   },
   {
     cli: "codex-model-catalog",
@@ -622,6 +649,17 @@ export const CONFIG_SCHEMA = v.object(
   Object.fromEntries(CONFIG_REGISTRY.map((def) => [def.key, lenientField(def.schema)])),
 ) as v.GenericSchema<unknown, CopilotEnvConfigData>;
 
+/** The `codex-host` read for a stored value on `platform`: stored else the built-in
+ *  default, and always false on Windows (no farm without POSIX symlinks), whatever a
+ *  bundle imported. Shared by the accessor and the settings-import plan. */
+export function codexHostEnabledFor(
+  stored: boolean | undefined,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (platform === "win32") return false;
+  return stored ?? configDefaultBoolean("codex-host");
+}
+
 /** Look up a registry entry by its CLI (kebab) name. */
 export function configKeyDef(cli: string): ConfigKeyDef | undefined {
   return CONFIG_REGISTRY.find((d) => d.cli === cli.trim());
@@ -739,13 +777,11 @@ export class CopilotEnvConfig {
   }
 
   /** read() with an unreadable store degraded to "no preferences" (built-in
-   *  defaults). ONLY for the gates the in-daemon idle watchdog reads on its
-   *  interval tick (idle_watchdog.ts): a throw there escapes the timer callback
-   *  and kills the serving daemon, and the flatten direction is the safe one --
-   *  the lifecycle disengages / the default window applies. The CLI's auto-start
-   *  gates share these accessors and inherit the same fail-closed direction (the
-   *  opt-in lifecycle stays off), warned by load(); every other preference read
-   *  stays strict. */
+   *  defaults). ONLY for the best-effort background gates: the in-daemon idle
+   *  watchdog's interval tick (idle_watchdog.ts, where a throw would kill the
+   *  serving daemon) and the autoupdate preflight. Their flatten direction is the
+   *  safe one -- the opt-in lifecycle stays off, the default window applies, no
+   *  self-update runs -- warned by load(); every other preference read stays strict. */
   private readDegraded(): CopilotEnvConfigData {
     return v.parse(CONFIG_SCHEMA, this.store.load());
   }
@@ -754,6 +790,17 @@ export class CopilotEnvConfig {
    *  Watchdog-reachable, so the read degrades (see readDegraded). */
   autoStartEnabled(): boolean {
     return this.readDegraded().autoStart ?? configDefaultBoolean("auto-start");
+  }
+
+  /** Whether the once-a-day self-update preflight runs (default off). Preflight-reachable
+   *  (a best-effort background path), so the read degrades like auto-start's. */
+  autoUpdateEnabled(): boolean {
+    return this.readDegraded().autoUpdate ?? configDefaultBoolean("auto-update");
+  }
+
+  /** Whether the per-host CODEX_HOME farm is wanted (stored else default; Windows: false). */
+  codexHostEnabled(platform: NodeJS.Platform = process.platform): boolean {
+    return codexHostEnabledFor(this.read().codexHost, platform);
   }
 
   /** Whether the patched Codex model catalog is enabled (opt-in, default off). */

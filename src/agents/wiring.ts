@@ -9,7 +9,8 @@ import {
   inspectClaudeWiring,
 } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { type CodexWiringStatus, effectiveCodexHome, inspectCodexWiring } from "../codex/config.ts";
+import { type CodexWiringStatus, inspectCodexWiring } from "../codex/config.ts";
+import { effectiveCodexHome } from "../codex/host.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import { profileHomeNames } from "../copilot_api/paths.ts";
 import { copilotApiResolvePort } from "../copilot_api/port.ts";
@@ -19,7 +20,7 @@ import type { AgentProviderMode } from "./provider_mode.ts";
 /**
  * Overrides for tests and callers that already resolved the homes/port. The
  * defaults are the effective ones every caller shares: Codex = the run-state
- * `codexHome` override (set by `agent codex --host`) else `$CODEX_HOME` else
+ * `codexHome` override (the `codex-host` farm derivation) else `$CODEX_HOME` else
  * `~/.codex`; Claude = `$CLAUDE_CONFIG_DIR` else `~/.claude`; port = the
  * resolved default daemon port.
  */

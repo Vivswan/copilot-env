@@ -236,7 +236,6 @@ export async function prepareLaunch(
     }
     case "codex": {
       const plan: LaunchPlan = { command: "codex", args: [], env: {}, scrub: [] };
-      applyManagedEnv(plan, "CODEX_HOME", deps.managedCodexHome());
       const flags = relaxed ? ["--sandbox", "danger-full-access"] : [];
       if (action.profile !== null) {
         const mode = await ensureProfileReady(action.profile, deps);
@@ -253,10 +252,14 @@ export async function prepareLaunch(
               `existing config (${errMessage(e)}).`,
           );
         }
+        // Read AFTER the sync: its write into the farm home may have just made it wired.
+        applyManagedEnv(plan, "CODEX_HOME", deps.managedCodexHome());
         plan.args = ["--profile", action.profile, ...flags, ...action.args];
         return plan;
       }
       if (!(await wireDefaultProvider("codex", "Codex", deps))) return null;
+      // Read AFTER the wiring step: a proxy re-wire may have just built the farm.
+      applyManagedEnv(plan, "CODEX_HOME", deps.managedCodexHome());
       plan.args = [...flags, ...action.args];
       return plan;
     }

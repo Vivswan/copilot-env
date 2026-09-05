@@ -297,7 +297,7 @@ async function reportStartSummary(
         "",
         "  • Launch an agent:  `cl` (Claude) / `cx` (Codex) / `co` (Copilot)",
         "    ...or run `claude` / `codex` directly.",
-        "  • Install those launchers:  `agent shell --launchers`",
+        "  • Enable those launchers:  `agent config --set launchers true`",
         "  • `agent cost` reports proxy usage  ·  `agent stop` stops the proxy.",
       ].join("\n")
       : [

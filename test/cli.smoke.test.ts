@@ -137,13 +137,12 @@ test("cli.ts mcp (bare) prints the wiring status and exits 0", () => {
   expect(existsSync(join(claudeDir, ".claude.json"))).toBe(false);
 });
 
-// Commander folds --verify/--no-verify into ONE optional boolean (like --auto).
-// Proven at the CLI boundary, not by calling the parser directly: each spelling
-// must reach parseUpdateAction as a SET verify flag, which the report-flag
-// rejection makes observable without any network (--check alone would go on to
-// resolve releases). Which VALUE wins when both are given is Commander's
-// negatable-option contract (last one), the same contract --auto/--no-auto
-// already rely on; observing it needs the apply path, so it is not asserted here.
+// Commander folds --verify/--no-verify into ONE optional boolean. Proven at the
+// CLI boundary, not by calling the parser directly: each spelling must reach
+// parseUpdateAction as a SET verify flag, which the report-flag rejection makes
+// observable without any network (--check alone would go on to resolve releases).
+// Which VALUE wins when both are given is Commander's negatable-option contract
+// (last one); observing it needs the apply path, so it is not asserted here.
 test("cli.ts update folds --verify/--no-verify into the verify flag", () => {
   for (
     const args of [
@@ -173,30 +172,38 @@ test("cli.ts mcp --serve --profile '' hard-fails instead of serving the default 
 // flag named), varying needles. Successor of the former per-command env/shell/
 // health/start/update --help tests; commands whose help test carries extra
 // rejection runs (mcp, launch, codex, claude, init, uninstall, install) stay separate.
-// "--auto " keeps its trailing space: bare "--auto" is a substring of --auto-status
-// and --no-auto, so it alone could not miss a dropped --auto flag ("--verify " likewise
-// against --no-verify).
+// "--verify " keeps its trailing space: bare "--verify" is a substring of --no-verify,
+// so it alone could not miss a dropped --verify flag.
 const HELP_SURFACES: { cmd: string; needles: string[] }[] = [
   { cmd: "env", needles: ["--format", "--profile"] },
   {
     cmd: "shell",
-    needles: ["--launchers", "--clis", "--cooldown", "--no-sudo", "--no-prereqs", "--remove"],
+    needles: ["--clis", "--cooldown", "--no-sudo", "--no-prereqs", "--remove"],
   },
   { cmd: "health", needles: ["--scope", "--json"] },
   { cmd: "start", needles: ["--dry-run", "--port", "--record-event", "--check", "--force"] },
   {
     cmd: "update",
-    needles: [
-      "--auto ",
-      "--no-auto",
-      "--auto-status",
-      "--check",
-      "--force",
-      "--verify ",
-      "--no-verify",
-    ],
+    needles: ["--auto-status", "--check", "--force", "--verify ", "--no-verify"],
   },
 ];
+
+// Preferences that moved into `agent config` have no imperative twin left: the
+// autoupdate toggle is the `auto-update` key ("--auto " with its trailing space, as
+// bare "--auto" is a substring of the surviving --auto-status).
+const REMOVED_FLAGS: { cmd: string; flags: string[] }[] = [
+  { cmd: "update", flags: ["--auto ", "--no-auto"] },
+  { cmd: "shell", flags: ["--launchers"] },
+  { cmd: "codex", flags: ["--host", "--delete-host"] },
+];
+
+test("the flags that became config keys are gone from the help screens", () => {
+  for (const { cmd, flags } of REMOVED_FLAGS) {
+    const screen = helpScreen(cmd, "--help");
+    expect(screen.exitCode).toBe(0);
+    for (const flag of flags) expect(screen.output, `${cmd} ${flag}`).not.toContain(flag);
+  }
+});
 
 test("each command's --help exits 0 and surfaces its flags", () => {
   for (const { cmd, needles } of HELP_SURFACES) {
@@ -239,9 +246,9 @@ test("codex exposes and runs check mode", () => {
 
   const helpOut = helpScreen("codex", "--help").output;
   expect(helpOut).toContain("--check");
-  // The per-host farm flags live on `codex` too, not a separate command.
-  expect(helpOut).toContain("--host");
-  expect(helpOut).toContain("--delete-host");
+  // The per-host farm is driven by the `codex-host` config key; no flag builds it.
+  expect(helpOut).not.toContain("--host");
+  expect(helpOut).not.toContain("--delete-host");
   expect(helpOut).toContain("--mobile");
 
   const runCheck = (home: string) =>
@@ -427,16 +434,12 @@ test("the mode conflict is rejected at the boundary on every command that takes 
 
 test("codex/claude reject flag combinations the old routing order silently resolved", () => {
   // `codex --check --direct` used to run the check and drop the mode;
-  // `codex --mobile --host` used to run mobile and drop the farm flag. Each
+  // `codex --mobile --check` used to run mobile and drop the check. Each
   // combination is now a boundary rejection (units in provider_mode.test.ts;
   // this pins the cli.ts wiring end-to-end).
   const cases: Array<{ argv: string[]; message: string }> = [
     { argv: ["codex", "--check", "--direct"], message: "does not combine with --direct/--proxy" },
-    {
-      argv: ["codex", "--check", "--host"],
-      message: "does not combine with --host/--delete-host",
-    },
-    { argv: ["codex", "--mobile", "--host"], message: "--mobile is an interactive pairing flow" },
+    { argv: ["codex", "--mobile", "--check"], message: "--mobile is an interactive pairing flow" },
     { argv: ["claude", "--check", "--proxy"], message: "does not combine with --direct/--proxy" },
   ];
   for (const { argv, message } of cases) {
@@ -444,7 +447,7 @@ test("codex/claude reject flag combinations the old routing order silently resol
     expect(proc.exitCode).toBe(1);
     expect(proc.stderr).toContain(message);
   }
-  // Four cold CLI spawns; generous headroom for loaded Windows CI runners.
+  // Three cold CLI spawns; generous headroom for loaded Windows CI runners.
 }, 90_000);
 
 test("codex --mobile refuses to run (non-TTY, or unsupported platform)", () => {
@@ -462,15 +465,13 @@ test("codex --mobile refuses to run (non-TTY, or unsupported platform)", () => {
   }
 });
 
-test("the launcher / CLI-install flags live on shell, not init", () => {
+test("the CLI-install flag lives on shell, not init", () => {
   const shell = helpScreen("shell", "--help");
   const init = helpScreen("init", "--help");
   expect(shell.exitCode).toBe(0);
   expect(init.exitCode).toBe(0);
-  for (const flag of ["--launchers", "--clis"]) {
-    expect(shell.output).toContain(flag);
-    expect(init.output).not.toContain(flag);
-  }
+  expect(shell.output).toContain("--clis");
+  expect(init.output).not.toContain("--clis");
   // init keeps the agent-config flags; shell does not configure agents. The
   // credential flags moved to `agent auth`, so init no longer carries --gh-token.
   expect(init.output).toContain("--direct");
@@ -500,11 +501,11 @@ test("install --help surfaces the wiring flags; unknown flags are rejected", () 
   }
 
   // Commander's declaration is the argv boundary: a flag from another command
-  // (--launchers lives on `shell`) must be rejected, never absorbed into an install.
-  const unknown = runCli(["install", "--launchers"], { env: isolatedEnv() });
+  // (--clis lives on `shell`) must be rejected, never absorbed into an install.
+  const unknown = runCli(["install", "--clis"], { env: isolatedEnv() });
   expect(unknown.exitCode).toBe(1);
   expect(unknown.stderr).toContain("unknown option");
-  expect(unknown.stderr).toContain("--launchers");
+  expect(unknown.stderr).toContain("--clis");
 }, 30_000);
 
 // In a checkout `install` builds the in-place plan (the checkout's own files are
@@ -914,9 +915,21 @@ test("health --scope claude covers only Claude wiring", () => {
 
 // --- autoupdate management flags --------------------------------------------
 
-test("update --auto-status reports status and exits 0 (offline, read-only)", () => {
-  const proc = runCli(["update", "--auto-status"], { env: { ...process.env, CONSOLA_LEVEL: "5" } });
-  const out = proc.stdout + proc.stderr;
-  expect(proc.exitCode).toBe(0);
-  expect(out).toContain("Autoupdate:");
+test("update --auto-status reports the auto-update key honestly, on and off (offline, read-only)", () => {
+  // The key half of the line is exact per stored value; the last-check half comes from
+  // the install root's own throttle state, which a child cannot be pointed away from.
+  for (const [autoUpdate, word] of [[true, "enabled"], [false, "disabled"]] as const) {
+    const home = mkdtempSync(join(tmpdir(), "copilot-autostatus-"));
+    writeFileSync(
+      join(home, ".copilot-env-config.json"),
+      JSON.stringify({ autoUpdate, updateCooldown: 3 }),
+    );
+    const proc = runCli(["update", "--auto-status"], {
+      env: isolatedEnv({ COPILOT_API_HOME: home }),
+    });
+    expect(proc.exitCode, word).toBe(0);
+    expect(proc.stdout + proc.stderr, word).toContain(
+      `Autoupdate: ${word} (the auto-update config key) | cooldown 3d | last check `,
+    );
+  }
 });

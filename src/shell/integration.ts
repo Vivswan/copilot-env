@@ -6,7 +6,6 @@ import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { consola } from "consola";
 
 import { isEnoent } from "../utils/fs.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 
@@ -79,12 +78,12 @@ function fencedBlock(marker: BlockMarker, body: string[]): string {
 
 /**
  * What ONE `agent shell` file operation does: wire (or refresh) the integration
- * block, or strip owned blocks (all of them, or just the retired launchers
- * blocks). A union so a wire can never carry removal knobs and vice versa.
+ * block, or strip every owned block (retired launchers blocks included). A union
+ * so a wire can never carry removal knobs and vice versa.
  */
 export type ShellIntegrationAction =
   | { kind: "wire"; allHosts: boolean }
-  | { kind: "remove"; allHosts: boolean; launchersOnly: boolean };
+  | { kind: "remove"; allHosts: boolean };
 
 /** A line equals the given marker ignoring a trailing CR (rc/profile files may be CRLF). */
 const lineIs = (line: string, marker: string): boolean => line.replace(/\r$/, "") === marker;
@@ -99,13 +98,11 @@ export function runShellIntegration(action: ShellIntegrationAction): void {
   if (action.kind === "remove") {
     const files = windows ? windowsProfileTarget(action.allHosts).paths : rcFiles(true);
     const restartHint = windows ? "Restart PowerShell." : "Restart your shell.";
-    const removed = action.launchersOnly ? removeLaunchersFrom(files) : removeFrom(files);
-    if (removed) consola.info(restartHint);
+    if (removeFrom(files)) consola.info(restartHint);
     return;
   }
   if (windows) {
     const target = windowsProfileTarget(action.allHosts);
-    migrateLaunchersOptIn(target.paths);
     wireBlocks(target.paths, windowsBlock(join(PROJECT_ROOT, "shell", "agents.ps1")));
     // Only relax execution policy for a "system" target -- a redirected run owns no
     // machine state (the type enforces it).
@@ -113,33 +110,11 @@ export function runShellIntegration(action: ShellIntegrationAction): void {
     consola.info("Restart PowerShell or run: . $PROFILE");
   } else {
     const files = rcFiles(false);
-    migrateLaunchersOptIn(files);
     wireBlocks(files, posixBlock(join(PROJECT_ROOT, "shell", "agents.bashrc")));
     consola.info("Restart your shell or run: source ~/.bashrc (or ~/.zshrc)");
   }
 }
 
-/**
- * A launchers rc block is the pre-`agent launch` opt-in artifact: wiring strips it,
- * so the opt-in it carried must move to the `launchers` config key first, or an
- * upgrading user would silently lose cl/co/cx. BEFORE the strip writes on purpose
- * (a failed write can retry the migration; stripping first would destroy the only
- * record of the opt-in), and only when the preference is UNSET -- a stored value,
- * either way, is the user's own decision and is never overwritten.
- */
-function migrateLaunchersOptIn(files: string[]): void {
-  const hadLaunchers = files.some(
-    (file) => existsSync(file) && hasMarker(readFileSync(file, "utf-8"), LAUNCHERS_MARKER),
-  );
-  if (!hadLaunchers) return;
-  const config = new CopilotEnvConfig();
-  if (config.read().launchers !== undefined) return;
-  config.set({ launchers: true });
-  consola.info(
-    "Carried the launcher opt-in over to the `launchers` config key " +
-      "(cl/co/cx now load via `agent env`).",
-  );
-}
 // --- shared wire/remove core --------------------------------------------------
 
 /**
@@ -366,15 +341,6 @@ function removeFrom(files: string[]): boolean {
     ALL_MARKERS,
     (file) => `Removed shell integration from ${file}`,
     "No copilot-env shell integration found to remove.",
-  );
-}
-
-function removeLaunchersFrom(files: string[]): boolean {
-  return removeBlocksFrom(
-    files,
-    [LAUNCHERS_MARKER],
-    (file) => `Removed copilot-env launchers from ${file}`,
-    "No copilot-env launchers found to remove.",
   );
 }
 

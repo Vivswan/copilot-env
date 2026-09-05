@@ -215,14 +215,14 @@ function verifyLauncherWiring(launcher: string): void {
   if (!envBool("SETUP_LAUNCHERS")) {
     return;
   }
-  // `agent shell --launchers` sets the `launchers` config key; the cl/co/cx
-  // launchers are `agent env` function emissions gated on it -- there is no
-  // launcher rc block anymore, so both halves of that contract are asserted:
-  // the stored key, and the emission the shell wrapper would eval.
+  // The cl/co/cx launchers are `agent env` function emissions gated on the
+  // `launchers` config key -- there is no launcher rc block, so both halves of
+  // that contract are asserted: the stored key, and the emission the shell
+  // wrapper would eval.
   const stored = launcherOutput(launcher, ["config", "--get", "launchers"]);
   if (stored !== "true") {
     console.error(
-      `::error::expected the launchers config key to read true after agent shell --launchers (got ${
+      `::error::expected the launchers config key to read true after agent config --set launchers true (got ${
         stored ?? "a failing read"
       })`,
     );

@@ -1016,7 +1016,7 @@ function printEpilogue(options: InstallOptions): void {
     "  1. Run 'agent init' to set up Codex + Claude (it picks GitHub Copilot Direct or the local proxy), then tells you whether you need 'agent start' (only for the proxy).",
   );
   console.log(
-    "  2. Optionally run 'agent shell --clis --launchers' to install the CLIs plus the cl/co/cx shortcuts.",
+    "  2. Optionally run 'agent shell --clis' to install the CLIs and 'agent config --set launchers true' for the cl/co/cx shortcuts.",
   );
 }
 

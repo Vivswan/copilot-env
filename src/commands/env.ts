@@ -1,7 +1,8 @@
 // `agent env`: prints machine-readable shell directives, evaluated by the calling
 // shell. It may set OR clear two managed vars, each only when relevant:
-//   - CODEX_HOME: set to the active `codex --host` farm when its dir exists;
-//     cleared when the shell still carries OUR (now-deleted) farm path.
+//   - CODEX_HOME: set to the per-host farm while a wiring pass has activated it and
+//     the `codex-host` key is not off; cleared when the shell still carries OUR farm
+//     path but it is no longer the managed home.
 //   - ANTHROPIC_BASE_URL: set when Claude is wired to a LOCAL proxy URL;
 //     cleared when the shell still carries a localhost proxy URL (one WE set)
 //     but Claude is no longer in proxy mode -- otherwise a stale proxy URL would
@@ -16,17 +17,24 @@
 // defines them, and the next `agent` command (whose wrapper evals this output)
 // picks up a toggle without a restart. Defining a function is idempotent, so
 // re-emitting on every command is harmless.
-import { existsSync } from "node:fs";
 import { BASE_URL_ENV, DIRECT_BASE_URL, inspectClaudeWiring } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { isStaleFarmEnvHome } from "../codex/host.ts";
+import {
+  codexHostDriftFrom,
+  codexHostDriftLine,
+  codexHostFarm,
+  isManagedFarmExport,
+} from "../codex/host.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { assertKnownProfile } from "../copilot_api/env_state.ts";
 import { copilotApiResolvePort, parseLoopbackProxyUrl } from "../copilot_api/port.ts";
 import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
-import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { readTextResult } from "../utils/fs.ts";
+import { createStderrLogger } from "../utils/logger.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
+
+// Stderr only: this command's stdout is evaled by the shell wrapper.
+const logger = createStderrLogger();
 
 export interface EnvArgs {
   format?: string;
@@ -55,17 +63,18 @@ function isLocalProxyUrl(url: string): boolean {
   return parseLoopbackProxyUrl(url) !== null;
 }
 
-/**
- * CODEX_HOME's managed value: the active `codex --host` farm when its dir exists;
- * a clear when the shell still carries OUR (now-deleted) farm path; otherwise
- * hands-off (never touch a CODEX_HOME the user pointed elsewhere). Shared by the
- * `agent env` directives and `agent launch`'s child-env composition, so the two
- * can never disagree about what the managed value is.
- */
+/** CODEX_HOME's managed value, the shell-side mirror of effectiveCodexHome: the
+ *  activated farm unless the key is off; a clear of OUR exact farm spelling when it
+ *  is no longer the managed home; a foreign CODEX_HOME is the user's (hands-off). */
 export function managedCodexHome(): ManagedEnvValue {
-  const codexHome = new CopilotEnvRunState().read().codexHome;
-  if (codexHome && existsSync(codexHome)) return { value: codexHome };
-  if (isStaleFarmEnvHome(process.env.CODEX_HOME)) return { unset: true };
+  if (process.platform === "win32") return null;
+  const farm = codexHostFarm();
+  if (new CopilotEnvConfig().codexHostEnabled()) {
+    if (farm.wired && farm.active) return { value: farm.hostHome };
+    const drift = codexHostDriftFrom(true, farm);
+    if (drift !== null) logger.warn(codexHostDriftLine(drift));
+  }
+  if (isManagedFarmExport(process.env.CODEX_HOME)) return { unset: true };
   return null;
 }
 

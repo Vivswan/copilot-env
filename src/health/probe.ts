@@ -23,8 +23,8 @@ import {
 import { BASE_URL_ENV, type ClaudeWiringStatus, inspectClaudeWiring } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { CODEX_ENV_KEY, type CodexWiringStatus, inspectCodexWiring } from "../codex/config.ts";
-import { getHostLocalCodexHome } from "../codex/host.ts";
-import { codexConfigPath, defaultCodexHome } from "../codex/paths.ts";
+import { type CodexHostFarm, codexHostFarm, effectiveCodexHome } from "../codex/host.ts";
+import { codexConfigPath } from "../codex/paths.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
   allProfileNames,
@@ -389,8 +389,14 @@ export interface CodexHostFacts {
   hostHome: string;
   /** That directory exists on disk. */
   exists: boolean;
-  /** state.codexHome currently points at the per-host home (it's the active one). */
+  /** Its real-path config.toml selects the managed provider (codexHostFarm's predicate). */
+  wired: boolean;
+  /** A farm probe failed for a reason other than absence (present/wired unproven). */
+  probeError: string | null;
+  /** Run state records it as the active CODEX_HOME (set only after a successful write). */
   active: boolean;
+  /** The `codex-host` key (stored else default; always false on Windows). */
+  enabled: boolean;
 }
 
 /**
@@ -412,7 +418,7 @@ export interface DefaultHomeMigrationFacts {
  * which is the LIVE `update-cooldown` config (never snapshotted into state) -- so
  * `agent health` matches `agent update --auto-status`.
  */
-export type AutoupdateStatus = AutoupdateData & { cooldownDays: number };
+export type AutoupdateStatus = AutoupdateData & { enabled: boolean; cooldownDays: number };
 
 export interface HealthFacts {
   /** The profile the run was narrowed to (null/absent = the default/whole
@@ -550,7 +556,10 @@ export interface ProbeDeps {
   /** The `integration-id` config pin, or null when unset/`auto`. */
   pinnedIntegrationId(): string | null;
   claudeHome(): string;
-  hostCodexHome(): string;
+  /** The per-host farm on disk (path, present, wired), from its one predicate. */
+  codexHostFarm(): CodexHostFarm;
+  /** The `codex-host` key read (CopilotEnvConfig.codexHostEnabled). */
+  codexHostEnabled(): boolean;
   dirExists(path: string): boolean;
   /** The 3.5.6 default-home move's staging state under the root's profiles dir. */
   defaultHomeMigration(): DefaultHomeMigrationFacts;
@@ -795,9 +804,7 @@ export function defaultProbeDeps(): ProbeDeps {
     sidecar: () => sidecarStatus(resolveRootHome()),
     projectConfig: () => readProjectConfig(),
     proxyCooldownSeconds: () => resolveMinimumReleaseAgeSeconds(),
-    // Effective CODEX_HOME, matching runCodexConfig / env.ts precedence:
-    // per-host state override, then the default resolution.
-    codexHome: () => new CopilotEnvRunState().read().codexHome ?? defaultCodexHome(),
+    codexHome: effectiveCodexHome,
     codexTokenInEnviron: () => Boolean(process.env[CODEX_ENV_KEY]),
     codexDirectAuth,
     storedTokenPresent: () => new CopilotEnvState().read().githubToken !== null,
@@ -821,7 +828,8 @@ export function defaultProbeDeps(): ProbeDeps {
     // Claude's direct mode also authenticates via `gh auth token`, so it reuses
     // the same probe. Effective Claude home matches resolveClaudeHome precedence.
     claudeHome: () => resolveClaudeHome(),
-    hostCodexHome: getHostLocalCodexHome,
+    codexHostFarm,
+    codexHostEnabled: () => new CopilotEnvConfig().codexHostEnabled(),
     dirExists: (path: string) => existsSync(path),
     defaultHomeMigration: () => {
       // The same spelling defaultDaemonHome's precedence rule reads (paths.ts):
@@ -831,6 +839,7 @@ export function defaultProbeDeps(): ProbeDeps {
     },
     readAutoupdate: () => ({
       ...new AutoupdateState().read(),
+      enabled: new CopilotEnvConfig().autoUpdateEnabled(),
       cooldownDays: effectiveUpdateCooldownDays(),
     }),
     nodeModulesPresent: () => existsSync(join(root, "node_modules")),
@@ -1415,13 +1424,15 @@ export async function gatherFacts(
           look: deps.commandLook(c.command),
         }));
         facts.tools = { node: deps.commandLook("node"), npm: deps.commandLook("npm") };
-        const home = deps.codexHome();
-        const hostHome = deps.hostCodexHome();
+        const farm = deps.codexHostFarm();
         facts.codexHost = {
           supported: process.platform !== "win32",
-          hostHome,
-          exists: deps.dirExists(hostHome),
-          active: home === hostHome,
+          hostHome: farm.hostHome,
+          exists: farm.present,
+          wired: farm.wired,
+          probeError: farm.probeError,
+          active: farm.active,
+          enabled: deps.codexHostEnabled(),
         };
         facts.autoupdate = deps.readAutoupdate();
       })(),

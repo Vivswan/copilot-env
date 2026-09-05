@@ -19,11 +19,9 @@ import { consola } from "consola";
 import { parseClaudeAction, parseCodexAction } from "./agents/configure.ts";
 import { recordDefaultModeFromWiring } from "./agents/configure_defaults.ts";
 import { parseModeFlags } from "./agents/provider_mode.ts";
-import { DEFAULT_AUTOUPDATE_COOLDOWN_DAYS } from "./autoupdate/state.ts";
 import { runClaude } from "./claude/config.ts";
 import { refreshClaudeDesktopWiring } from "./agents/profile_wiring.ts";
 import { runCodex } from "./codex/config.ts";
-import { runCodexHost } from "./codex/host.ts";
 import { runCodexMobile } from "./codex/mobile.ts";
 import { runAuth } from "./commands/auth.ts";
 import { runConfig } from "./commands/config.ts";
@@ -575,22 +573,16 @@ program
     "--check",
     "Report the configured provider and exit - no changes, no probe (0 direct, 1 other, 2 proxy/none).",
   )
-  .option("--host", "(Linux/macOS) Build the per-host CODEX_HOME symlink farm and wire its config.")
-  .option("--delete-host", "With --host: remove the per-host CODEX_HOME and stop exporting it.")
   .option("--mobile", "Interactive: pair the Codex desktop app with its phone remote-control flow.")
   .action((opts: Opts) => {
     const action = parseCodexAction({
       check: Boolean(opts.check),
       mode: parseModeFlags(opts),
       mobile: Boolean(opts.mobile),
-      host: Boolean(opts.host),
-      deleteHost: Boolean(opts.deleteHost),
     });
     switch (action.kind) {
       case "mobile":
         return runCodexMobile();
-      case "host":
-        return runCodexHost({ mode: action.mode, delete: action.deleteHost });
       case "check":
         return runCodex(action);
       case "configure":
@@ -676,14 +668,8 @@ program
     "Update even when this is a source checkout; the sync overwrites local files.",
   )
   .option(
-    "--auto",
-    "Enable autoupdate: once a day, adopt the newest release aged >= the configured " +
-      `update-cooldown (default ${DEFAULT_AUTOUPDATE_COOLDOWN_DAYS}) days, and apply once now.`,
-  )
-  .option("--no-auto", "Disable autoupdate.")
-  .option(
     "--auto-status",
-    "Report autoupdate status and exit (enabled, cooldown, last check, last result).",
+    "Report autoupdate status and exit (the auto-update config key, cooldown, last check, last result).",
   )
   .option(
     "--verify",
@@ -699,7 +685,6 @@ program
     runUpdate({
       check: Boolean(opts.check),
       force: Boolean(opts.force),
-      auto: opts.auto as boolean | undefined,
       autoStatus: Boolean(opts.autoStatus),
       verify: opts.verify as boolean | undefined,
     })
@@ -709,8 +694,8 @@ program
   .command("shell")
   .helpGroup("Setup:")
   .description(
-    "Set up the shell environment: wire the copilot-env integration (rc / PowerShell $PROFILE), " +
-      "optionally the cl / co / cx launchers and the optional agent CLIs.",
+    "Set up the shell environment: wire the copilot-env integration (rc / PowerShell $PROFILE) " +
+      "and optionally install the agent CLIs (the cl / co / cx launchers follow the `launchers` config key).",
   )
   .option("--clis", "Also install the optional claude / copilot / codex agent CLIs.")
   .option(
@@ -723,20 +708,11 @@ program
     "With --clis: avoid sudo/system package managers; use only user-local tooling.",
   )
   .option("--no-prereqs", "With --clis: verify prerequisites and CLIs only; install nothing.")
-  .option(
-    "--launchers",
-    "Also enable the opt-in cl / co / cx launchers (sets the `launchers` config key; " +
-      "`agent env` defines the functions).",
-  )
   .option("--all-hosts", "Windows only: target the CurrentUserAllHosts profile.")
-  .option(
-    "--remove",
-    "Unwire the integration (and disable launchers); with --launchers, disable only the launchers.",
-  )
+  .option("--remove", "Unwire the integration (the `launchers` config key is left as it is).")
   .action((opts: Opts) =>
     runShell({
       remove: Boolean(opts.remove),
-      launchers: Boolean(opts.launchers),
       clis: Boolean(opts.clis),
       cooldown: resolveCooldown(opts.cooldown, DEFAULT_CLI_COOLDOWN_DAYS),
       noSudo: opts.sudo === false,

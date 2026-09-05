@@ -48,14 +48,12 @@ if ($needInstall) {
 }
 
 # Opt-in autoupdate preflight: ONLY on `agent start`, run before cli.ts loads so a
-# swapped release is what dispatches. preflight.ts gates on the state file's
-# `enabled` flag and the once-per-day cadence; the file-exists test just keeps the
-# no-spawn fast path for users who never opted in. Non-fatal; output to stderr.
+# swapped release is what dispatches. preflight.ts gates on the `auto-update`
+# config key and the once-per-day cadence. Non-fatal; output to stderr.
 # `-P=cli` scopes net to the CLI's real outbound hosts; fs/run stay broad because
 # permission sets take literal paths and every path we touch is HOME-relative.
 $Sub = if ($args.Count -gt 0) { $args[0] } else { '' }
-$AuState = Join-Path $Snap '.autoupdate\state.json'
-if ($Sub -eq 'start' -and (Test-Path $AuState -PathType Leaf)) {
+if ($Sub -eq 'start') {
     # Non-fatal: write the failure to stderr and continue. Not Write-Error --
     # $ErrorActionPreference is 'Stop', which would re-throw.
     try { & deno run -P=cli (Join-Path $Snap 'src\autoupdate\preflight.ts') | ForEach-Object { [Console]::Error.WriteLine($_) } }

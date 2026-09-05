@@ -147,6 +147,8 @@ interface DepsScript {
   slot?: ProfileSlot;
   claudeUrl?: ManagedEnvValue;
   codexHome?: ManagedEnvValue;
+  /** The managed CODEX_HOME exists only AFTER a wire/sync ran (a pass built the farm). */
+  codexHomeOnceWired?: boolean;
   syncThrows?: boolean;
 }
 
@@ -183,7 +185,14 @@ function scriptedDeps(script: DepsScript = {}): {
       return script.syncThrows ? Promise.reject(new Error("boom")) : Promise.resolve();
     },
     managedClaudeBaseUrl: () => script.claudeUrl ?? null,
-    managedCodexHome: () => script.codexHome ?? null,
+    managedCodexHome: () => {
+      const wired = calls.some((c) => c.startsWith("wire:") || c.startsWith("sync:"));
+      // Throw, not null: an early read followed by a correct one must fail too.
+      if (script.codexHomeOnceWired && !wired) {
+        throw new Error("managedCodexHome read before the wiring step");
+      }
+      return script.codexHome ?? null;
+    },
     notify: (line) => notes.push(line),
   };
   return { deps, calls, notes };
@@ -308,6 +317,7 @@ test("codex default: managed CODEX_HOME applied; proxy mode ensures then re-wire
   const { deps, calls } = scriptedDeps({
     mode: "proxy",
     codexHome: { value: "/fake/codex-farm" },
+    codexHomeOnceWired: true, // the farm the re-wire just built must reach the child env
   });
   const plan = await prepareLaunch(
     { kind: "codex", profile: null, relaxed: true, args: ["exec", "ls"] },
@@ -323,13 +333,18 @@ test("codex default: managed CODEX_HOME applied; proxy mode ensures then re-wire
 });
 
 test("codex --profile: ensure daemon FIRST, then sync; a failed sync warns and launches", async () => {
-  const ok = scriptedDeps({ slot: completeSlot("proxy") });
+  const ok = scriptedDeps({
+    slot: completeSlot("proxy"),
+    codexHome: { value: "/fake/codex-farm" },
+    codexHomeOnceWired: true, // the farm the sync just made wired must reach the child env
+  });
   const plan = await prepareLaunch(
     { kind: "codex", profile: WORK, relaxed: false, args: ["--resume"] },
     ok.deps,
   );
   expect(ok.calls).toEqual(["slot:work", "ensure:work", "sync:work:proxy"]);
   expect(plan?.args).toEqual(["--profile", "work", "--resume"]);
+  expect(plan?.env).toEqual({ CODEX_HOME: "/fake/codex-farm" });
 
   const broken = scriptedDeps({ slot: completeSlot("proxy"), syncThrows: true });
   const degraded = await prepareLaunch(

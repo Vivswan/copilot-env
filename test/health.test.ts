@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { directHelperCommand, legacyDirectHelperScript } from "../src/claude/config.ts";
 import { directHelperPath, proxyHelperPath, settingsPathFor } from "../src/claude/paths.ts";
+import { type CodexHostDrift, codexHostDriftLine } from "../src/codex/host.ts";
 import { DEFAULT_HOME_STAGING_DIR, PROFILES_DIR_NAME } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import type { TextReadResult } from "../src/utils/fs.ts";
@@ -44,6 +45,7 @@ import {
   classifyPortState,
   type ClaudeFacts,
   type CodexFacts,
+  type CodexHostFacts,
   type DaemonProbed,
   type DefaultRuntimeTarget,
   directAuthFromSpawn,
@@ -2136,29 +2138,96 @@ test("evalCodex: OPENAI_API_KEY with spaces after = still counts as present in .
   );
 });
 
-test("checkCodexHost: active ok, active-missing warns, built/unbuilt informational", () => {
-  const host = { supported: true, hostHome: "/h/.codex/hosts/box", exists: true, active: true };
-  const active = checkCodexHost(host);
+test("checkCodexHost: the codex-host key against the disk, every drift warns with `agent codex`", () => {
+  const hostHome = "/h/.codex/hosts/box";
+  const configLine = `config.toml: ${join(hostHome, "config.toml")}`;
+  const on: CodexHostFacts = {
+    supported: true,
+    hostHome,
+    exists: true,
+    wired: true,
+    probeError: null,
+    active: true,
+    enabled: true,
+  };
+  // Key on, farm wired and recorded as the active home: the one healthy on-state.
+  const active = checkCodexHost(on);
   expect(active.status).toBe("ok");
-  expect(active.detail).toContain("active per-host");
-  expect(active.detail).toContain(`config.toml: ${join(host.hostHome, "config.toml")}`);
-  expect(active.value?.configFile).toBe(join(host.hostHome, "config.toml"));
-  const activeMissing = checkCodexHost({ ...host, exists: false });
-  expect(activeMissing.status).toBe("warn");
-  expect(activeMissing.detail).not.toContain("config.toml:");
-  const built = checkCodexHost({ ...host, active: false });
-  expect(built.detail).toContain("built but not active");
-  expect(built.detail).toContain(`config.toml: ${join(host.hostHome, "config.toml")}`);
-  const unbuilt = { ...host, active: false, exists: false };
-  const unbuiltResult = checkCodexHost(unbuilt);
-  expect(unbuiltResult.status).toBe("ok");
-  expect(unbuiltResult.detail).toBe("not built (optional)");
-  expect(unbuiltResult.detail).not.toContain(host.hostHome);
-  expect(unbuiltResult.detail).not.toContain("config.toml:");
-  const unsupported = checkCodexHost({ ...unbuilt, supported: false });
+  expect(active.fix).toBeUndefined();
+  expect(active.detail).toBe(`active per-host CODEX_HOME: ${hostHome}\n${configLine}`);
+  expect(active.value).toEqual({
+    supported: true,
+    hostHome,
+    configFile: join(hostHome, "config.toml"),
+    exists: true,
+    wired: true,
+    probeError: null,
+    active: true,
+    enabled: true,
+  });
+  // Every disagreement is a warn rendering the shared drift line (its wording is pinned
+  // once, in test/codex_host.test.ts) with the command that resolves it.
+  const line = (drift: CodexHostDrift): string => codexHostDriftLine(drift);
+  const drifts: Array<{ facts: CodexHostFacts; summary: string; withConfig: boolean }> = [
+    // On but hand-deleted (nothing on disk), or only half-built (dir without config.toml).
+    {
+      facts: { ...on, exists: false, wired: false },
+      summary: line({ kind: "missing", hostHome }),
+      withConfig: false,
+    },
+    {
+      facts: { ...on, wired: false },
+      summary: line({ kind: "missing", hostHome }),
+      withConfig: true,
+    },
+    // On and wired, but no wiring pass recorded it as the active home yet.
+    {
+      facts: { ...on, active: false },
+      summary: line({ kind: "inactive", hostHome }),
+      withConfig: true,
+    },
+    // Off with OUR wired farm still on disk: the next pass removes it.
+    {
+      facts: { ...on, active: false, enabled: false },
+      summary: line({ kind: "disabled", hostHome }),
+      withConfig: true,
+    },
+  ];
+  for (const { facts, summary, withConfig } of drifts) {
+    const result = checkCodexHost(facts);
+    expect(result.status).toBe("warn");
+    expect(result.fix).toBe("agent codex");
+    expect(result.detail).toBe(withConfig ? `${summary}\n${configLine}` : summary);
+  }
+  // Off with something at the path that is not proven ours NOW (no managed wiring on
+  // disk, recorded or not, probeable or not): no drift, nothing to fix; the derivation
+  // leaves it alone.
+  for (
+    const facts of [
+      { ...on, wired: false, active: false, enabled: false },
+      { ...on, wired: false, probeError: "EACCES", enabled: false },
+      { ...on, exists: false, wired: false, probeError: "EACCES", enabled: false },
+    ]
+  ) {
+    const foreign = checkCodexHost(facts);
+    expect(foreign.status).toBe("ok");
+    expect(foreign.fix).toBeUndefined();
+  }
+  // Not built, not wanted: informational, and the path is not echoed.
+  const unbuilt = checkCodexHost({
+    ...on,
+    exists: false,
+    wired: false,
+    active: false,
+    enabled: false,
+  });
+  expect(unbuilt.status).toBe("ok");
+  expect(unbuilt.fix).toBeUndefined();
+  expect(unbuilt.detail).toBe("not built (optional)");
+  // Windows: no farm is possible, whatever the key says.
+  const unsupported = checkCodexHost({ ...on, supported: false, enabled: false });
+  expect(unsupported.status).toBe("ok");
   expect(unsupported.detail).toBe("not built (unsupported on Windows)");
-  expect(unsupported.detail).not.toContain(host.hostHome);
-  expect(unsupported.detail).not.toContain("config.toml:");
 });
 
 test("checkAutoupdate: full status always shown (disabled too); recorded error warns", () => {
@@ -2216,7 +2285,15 @@ test("evaluateAll(codex) yields only the Codex wiring check", () => {
       directNeedsNoGh: false,
       otherReason: null,
     },
-    codexHost: { supported: false, hostHome: "/h/.codex/hosts/box", exists: false, active: false },
+    codexHost: {
+      supported: false,
+      hostHome: "/h/.codex/hosts/box",
+      exists: false,
+      wired: false,
+      probeError: null,
+      active: false,
+      enabled: false,
+    },
   };
   const ids = evaluateAll("codex", facts).map((r) => r.id);
   expect(ids).toEqual(["setup.codex"]);
@@ -2257,7 +2334,15 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       directNeedsNoGh: false,
       otherReason: null,
     },
-    codexHost: { supported: false, hostHome: "/h/.codex/hosts/box", exists: false, active: false },
+    codexHost: {
+      supported: false,
+      hostHome: "/h/.codex/hosts/box",
+      exists: false,
+      wired: false,
+      probeError: null,
+      active: false,
+      enabled: false,
+    },
     claude: {
       home: "/h/.claude",
       settingsPath: "/h/.claude/settings.json",

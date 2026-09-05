@@ -6,7 +6,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { consola } from "consola";
 import { AGENT_CLIS } from "../src/agents/clis.ts";
 import {
@@ -16,13 +16,7 @@ import {
   runShell,
 } from "../src/commands/setup.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
-import {
-  CI_RC_DIR_ENV,
-  LAUNCHERS_MARKER,
-  LAUNCHERS_MARKER_END,
-  MARKER,
-  windowsProfileTarget,
-} from "../src/shell/integration.ts";
+import { CI_RC_DIR_ENV, MARKER } from "../src/shell/integration.ts";
 import { expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir, tmpDir } from "./helpers.ts";
 
@@ -36,35 +30,22 @@ test("shell: the CLI-install tuning flags require --clis", () => {
 });
 
 test("parseShellAction: remove vs wire arms, with the CLI install inside the wire arm", () => {
-  // Removal: --launchers scopes it to just the launchers block.
-  expect(parseShellAction({ remove: true })).toEqual({
-    kind: "remove",
-    allHosts: false,
-    launchersOnly: false,
-  });
-  expect(parseShellAction({ remove: true, launchers: true, allHosts: true })).toEqual({
+  expect(parseShellAction({ remove: true })).toEqual({ kind: "remove", allHosts: false });
+  expect(parseShellAction({ remove: true, allHosts: true })).toEqual({
     kind: "remove",
     allHosts: true,
-    launchersOnly: true,
   });
   // Wiring: no --clis means no CliSetup at all; --clis folds the install knobs
   // into the arm (verify-only under --no-prereqs).
-  expect(parseShellAction({ launchers: true })).toEqual({
-    kind: "wire",
-    allHosts: false,
-    launchers: true,
-    clis: null,
-  });
+  expect(parseShellAction({})).toEqual({ kind: "wire", allHosts: false, clis: null });
   expect(parseShellAction({ clis: true, cooldown: 7 })).toEqual({
     kind: "wire",
     allHosts: false,
-    launchers: false,
     clis: { mode: "install", cooldown: 7, noSudo: false },
   });
   expect(parseShellAction({ clis: true, noPrereqs: true })).toEqual({
     kind: "wire",
     allHosts: false,
-    launchers: false,
     clis: { mode: "verify-only" },
   });
 });
@@ -92,52 +73,28 @@ test("shell --clis cannot combine with --remove", () => {
   expect(() => runShell({ clis: true, remove: true })).toThrow("cannot be combined with --remove");
 });
 
-// runShell's launcher toggle is the `launchers` config key (the rc writes ride the
-// suite's rc-dir/Documents seams, so this runs for real on every OS): --launchers
-// sets it, every remove flavor clears it, and a plain wire leaves it alone.
-test("runShell toggles the launchers config key; a plain wire leaves it alone", () => {
+// The launchers are the `launchers` config key's alone (the rc writes ride the
+// suite's rc-dir/Documents seams, so this runs for real on every OS): a wire reports
+// the stored state and never writes the key; a remove leaves the key alone too.
+test("runShell reports the launchers key on a wire and never writes it", () => {
   const restore = envSnapshot();
   let dir = isolateProxyHome("copilot-setup-");
+  const lines: string[] = [];
+  const orig = consola.info;
+  consola.info = ((msg: string) => {
+    lines.push(String(msg));
+  }) as typeof consola.info;
   try {
-    runShell({ launchers: true });
-    expect(new CopilotEnvConfig().launchersEnabled()).toBe(true);
-    runShell({}); // a plain re-wire never drops the opt-in
-    expect(new CopilotEnvConfig().launchersEnabled()).toBe(true);
-    runShell({ remove: true, launchers: true }); // launchers-only disable
-    expect(new CopilotEnvConfig().launchersEnabled()).toBe(false);
-    runShell({ launchers: true });
-    runShell({ remove: true }); // the full unwire disables them too
-    expect(new CopilotEnvConfig().launchersEnabled()).toBe(false);
-  } finally {
-    restore();
-    dir = removeDir(dir);
-  }
-});
-
-// The upgrade path, on THIS platform's own wire target (the rc-dir seam on POSIX,
-// the redirected $PROFILE tree on Windows): a legacy launchers rc block carries the
-// old opt-in, so a wire migrates it to the config key -- but a stored preference,
-// either way, is the user's decision and is never overwritten.
-test("a wire migrates a legacy launchers block's opt-in, never over a stored value", () => {
-  const restore = envSnapshot();
-  let dir = isolateProxyHome("copilot-setup-migrate-");
-  try {
-    const target = process.platform === "win32"
-      ? windowsProfileTarget(false).paths[0]
-      : join(process.env[CI_RC_DIR_ENV] ?? "", ".bashrc");
-    if (target === undefined) throw new Error("no wire target resolved");
-    const legacyBlock = `\n${LAUNCHERS_MARKER}\n${LAUNCHERS_MARKER_END}\n`;
-    mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, legacyBlock);
     runShell({});
-    expect(new CopilotEnvConfig().launchersEnabled()).toBe(true);
-    // Explicit false + another legacy block: the wire strips the block but the
-    // stored decision stands.
-    new CopilotEnvConfig().set({ launchers: false });
-    writeFileSync(target, legacyBlock);
+    expect(lines.at(-1)).toContain("Launchers: disabled (the launchers config key)");
+    expect(new CopilotEnvConfig().read().launchers).toBeUndefined();
+    new CopilotEnvConfig().set({ launchers: true });
     runShell({});
-    expect(new CopilotEnvConfig().launchersEnabled()).toBe(false);
+    expect(lines.at(-1)).toContain("Launchers: enabled (the launchers config key)");
+    runShell({ remove: true }); // the unwire is the rc block's; the key is the user's
+    expect(new CopilotEnvConfig().launchersEnabled()).toBe(true);
   } finally {
+    consola.info = orig;
     restore();
     dir = removeDir(dir);
   }

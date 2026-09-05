@@ -13,6 +13,7 @@ import {
   readAgentModes,
 } from "../src/agents/wiring.ts";
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
 import {
   envSnapshot,
@@ -249,24 +250,30 @@ test("unreadable configs read as 'other', never as unconfigured 'none'", () => {
 });
 
 describe("default home resolution", () => {
-  test("codex follows the run-state codexHome override; claude follows $CLAUDE_CONFIG_DIR", () => {
-    // The effective-home precedence every caller shares: a `--host` farm records
-    // the active Codex home in run state, which wins over $CODEX_HOME; Claude's
-    // one knob is $CLAUDE_CONFIG_DIR.
-    const farmHome = join(dir, "farm-codex");
-    writeCodexConfigToml(farmHome, { baseUrl: DIRECT_BASE });
-    process.env.CODEX_HOME = join(dir, "empty-codex"); // must lose to run state
-    writeRunState({ codexHome: farmHome });
+  // The farm (and so its run-state record) is POSIX-only: the `codex-host` key always
+  // reads off on Windows, so the record is never honored there.
+  test.skipIf(process.platform === "win32")(
+    "codex follows the run-state codexHome override; claude follows $CLAUDE_CONFIG_DIR",
+    () => {
+      // The effective-home precedence every caller shares: with the `codex-host` key
+      // on, the run-state record its derivation wrote wins over $CODEX_HOME; Claude's
+      // one knob is $CLAUDE_CONFIG_DIR.
+      const farmHome = join(dir, "farm-codex");
+      writeCodexConfigToml(farmHome, { baseUrl: DIRECT_BASE });
+      process.env.CODEX_HOME = join(dir, "empty-codex"); // must lose to run state
+      new CopilotEnvConfig().set({ codexHost: true });
+      writeRunState({ codexHome: farmHome });
 
-    const claudeHome = join(dir, "claude-env-home");
-    writeClaudeSettings(claudeHome, {
-      apiKeyHelper: directHelperCommand(),
-      baseUrl: DIRECT_BASE,
-    });
-    process.env.CLAUDE_CONFIG_DIR = claudeHome;
+      const claudeHome = join(dir, "claude-env-home");
+      writeClaudeSettings(claudeHome, {
+        apiKeyHelper: directHelperCommand(),
+        baseUrl: DIRECT_BASE,
+      });
+      process.env.CLAUDE_CONFIG_DIR = claudeHome;
 
-    expect(readAgentModes()).toEqual({ codex: "direct", claude: "direct" });
-    expect(defaultSetupNeedsProxy()).toBe(false);
-    expect(proxyUnusedEverywhere()).toBe(true);
-  });
+      expect(readAgentModes()).toEqual({ codex: "direct", claude: "direct" });
+      expect(defaultSetupNeedsProxy()).toBe(false);
+      expect(proxyUnusedEverywhere()).toBe(true);
+    },
+  );
 });

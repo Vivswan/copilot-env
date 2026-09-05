@@ -27,15 +27,13 @@ const NODE_PROBE_COMMAND = process.platform === "win32" ? NPM_COMMAND : "node";
 export const DEFAULT_CLI_COOLDOWN_DAYS = 7;
 
 /**
- * `agent shell`: wire shell integration, optionally the cl/co/cx launchers, and
- * optionally install the agent CLIs -- the merge of the old setup-shell /
- * setup-launchers commands plus the install flags.
+ * `agent shell`: wire shell integration and optionally install the agent CLIs.
+ * The cl/co/cx launchers are the `launchers` config key's (`agent env` emits
+ * them); a wire only reports that state.
  */
 export interface ShellArgs {
-  /** Unwire instead of wire. With `launchers`, disable ONLY the launchers. */
+  /** Unwire instead of wire. */
   remove?: boolean;
-  /** Also enable (or, with `remove`, only disable) the opt-in cl/co/cx launchers. */
-  launchers?: boolean;
   /** Also install the optional Codex/Claude/Copilot CLIs. */
   clis?: boolean;
   /** With `clis`: install npm releases aged >= N days (null = latest). */
@@ -388,21 +386,16 @@ export function installAgentClis(setup: CliSetup): void {
   }
 }
 
-/**
- * What ONE `agent shell` invocation does -- an unwire (whole block or just the
- * launchers) or a wire (optionally with a CLI install) -- parsed ONCE by
- * `parseShellAction` at the CLI boundary. The install knobs live inside the
- * wire arm's CliSetup alone, so a conflicting combination (`--remove --clis`,
- * `--cooldown --no-prereqs`) is rejected here and the handlers never re-check.
- */
+/** What ONE `agent shell` invocation does, parsed ONCE at the CLI boundary: an unwire,
+ *  or a wire optionally carrying a CLI install (the install knobs live in CliSetup alone,
+ *  so `--remove --clis` and `--cooldown --no-prereqs` are rejected here, never re-checked). */
 export type ShellAction =
-  | { kind: "remove"; allHosts: boolean; launchersOnly: boolean }
-  | { kind: "wire"; allHosts: boolean; launchers: boolean; clis: CliSetup | null };
+  | { kind: "remove"; allHosts: boolean }
+  | { kind: "wire"; allHosts: boolean; clis: CliSetup | null };
 
 /** Parse the raw `agent shell` flags into a ShellAction (the CLI boundary). */
 export function parseShellAction(args: ShellArgs): ShellAction {
   const remove = Boolean(args.remove);
-  const launchers = Boolean(args.launchers);
   const clis = Boolean(args.clis);
   const cooldown = args.cooldown ?? null;
   const noSudo = Boolean(args.noSudo);
@@ -414,11 +407,9 @@ export function parseShellAction(args: ShellArgs): ShellAction {
   }
   if (remove) {
     if (clis) throw new Error("--clis installs CLIs and cannot be combined with --remove");
-    // --launchers scopes the removal to just the launchers; otherwise the whole
-    // integration is removed (launchers included).
-    return { kind: "remove", allHosts, launchersOnly: launchers };
+    return { kind: "remove", allHosts };
   }
-  if (!clis) return { kind: "wire", allHosts, launchers, clis: null };
+  if (!clis) return { kind: "wire", allHosts, clis: null };
   if (noSudo && noPrereqs) {
     throw new Error("--no-sudo and --no-prereqs are mutually exclusive");
   }
@@ -431,43 +422,30 @@ export function parseShellAction(args: ShellArgs): ShellAction {
   return {
     kind: "wire",
     allHosts,
-    launchers,
     clis: noPrereqs ? { mode: "verify-only" } : { mode: "install", cooldown, noSudo },
   };
 }
 
 /**
  * `agent shell`: set up the shell environment for the agents. Wires the
- * copilot-env integration block; `--launchers` also enables the cl/co/cx
- * launchers (the `launchers` config key -- `agent env` emits the functions);
- * `--clis` also installs the optional agent CLIs (tuned by --cooldown/--no-sudo/
- * --no-prereqs). `--remove` unwires the integration and disables the launchers;
- * `--remove --launchers` disables ONLY the launchers. `--all-hosts` targets the
+ * copilot-env integration block and reports the launchers state it reconciles
+ * from the `launchers` config key; `--clis` also installs the optional agent CLIs
+ * (tuned by --cooldown/--no-sudo/--no-prereqs). `--remove` unwires the
+ * integration (the key is the user's and stays). `--all-hosts` targets the
  * Windows CurrentUserAllHosts profile.
  */
 export function runShell(args: ShellArgs): void {
   const action = parseShellAction(args);
   if (action.kind === "remove") {
-    // The launchers ride on the config key now; deleting it is the disable. The
-    // rc strip below only clears blocks an older release wrote.
-    new CopilotEnvConfig().del("launchers");
-    if (action.launchersOnly) {
-      consola.success("Launchers disabled (new shells will no longer define cl/co/cx).");
-    }
-    runShellIntegration({
-      kind: "remove",
-      allHosts: action.allHosts,
-      launchersOnly: action.launchersOnly,
-    });
+    runShellIntegration({ kind: "remove", allHosts: action.allHosts });
     return;
   }
   // Opt-in CLI install (add path only) happens before the rc block is wired.
   if (action.clis !== null) installAgentClis(action.clis);
-  if (action.launchers) {
-    new CopilotEnvConfig().set({ launchers: true });
-    consola.success(
-      "Launchers enabled: cl / co / cx (+ clx / cox / cxx) load via `agent env`.",
-    );
-  }
   runShellIntegration({ kind: "wire", allHosts: action.allHosts });
+  consola.info(
+    new CopilotEnvConfig().launchersEnabled()
+      ? "Launchers: enabled (the launchers config key) - cl / co / cx (+ clx / cox / cxx) load via `agent env`."
+      : "Launchers: disabled (the launchers config key) - `agent config --set launchers true` defines cl / co / cx.",
+  );
 }

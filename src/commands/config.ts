@@ -101,27 +101,33 @@ export function parseConfigAction(args: ConfigArgs): ConfigAction {
   return { kind: "get", key: typeof args.get === "string" ? args.get : undefined };
 }
 
-/** `agent config`: get (default/`--get`), set, or delete one preference. */
-export function runConfig(args: ConfigArgs): void {
+/** `agent config`: get (default/`--get`), set, or delete one preference. `platform` is
+ *  the POSIX-only key guard's test seam. */
+export function runConfig(args: ConfigArgs, platform: NodeJS.Platform = process.platform): void {
   const action = parseConfigAction(args);
   switch (action.kind) {
     case "set":
-      runSet(action.key, action.value);
+      runSet(action.key, action.value, platform);
       return;
     case "del":
       runDel(action.key);
       return;
     case "get":
-      runGet(action.key);
+      runGet(action.key, platform);
       return;
     default:
       assertNever(action);
   }
 }
 
-function runSet(cli: string, raw: string): void {
+function runSet(cli: string, raw: string, platform: NodeJS.Platform): void {
   const def = configKeyDef(cli);
   if (def === undefined) throw unknownKeyError(cli);
+  if (def.posixOnly && platform === "win32") {
+    throw new Error(
+      `'${def.cli}' is only supported on Linux and macOS (this is ${platform}); it cannot be set here.`,
+    );
+  }
   let value: boolean | number | string;
   try {
     value = def.parse(raw);
@@ -163,23 +169,36 @@ function runDel(cli: string): void {
   noteHowItApplies(def);
 }
 
-function runGet(get: string | undefined): void {
+function runGet(get: string | undefined, platform: NodeJS.Platform): void {
   const data = new CopilotEnvConfig().read();
+  // A POSIX-only key's stored value (an imported bundle's) is inert on Windows: the
+  // read sites see the built-in default there, so the keyed read answers with it too.
+  const inert = (def: ConfigKeyDef): boolean =>
+    def.posixOnly === true && platform === "win32" && data[def.key] !== undefined;
 
   if (typeof get === "string") {
     // One key -> print just the value on stdout (script-friendly); blank line when unset.
     const def = configKeyDef(get);
     if (def === undefined) throw unknownKeyError(get);
     const value = data[def.key];
+    if (inert(def)) {
+      process.stdout.write(`${configDefaultLabel(def)}\n`);
+      return;
+    }
     process.stdout.write(value === undefined ? "\n" : `${formatValue(value)}\n`);
     return;
   }
 
-  // All keys -> a formatted table (stored value or "(default: <built-in>)").
+  // All keys -> a formatted table (stored value or "(default: <built-in>)"; an inert
+  // stored value is named so nothing is hidden).
   const rows = CONFIG_REGISTRY.map((def) => {
     const value = data[def.key];
     const shown = value === undefined
       ? `(default: ${configDefaultLabel(def)})`
+      : inert(def)
+      ? `(default: ${configDefaultLabel(def)}; stored ${
+        formatValue(value)
+      } is inert on ${platform})`
       : formatValue(value);
     return [def.cli, shown];
   });

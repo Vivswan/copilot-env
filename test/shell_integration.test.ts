@@ -256,46 +256,44 @@ skipWin(
   },
 );
 
-/** The stored launchers preference (the config key `agent shell --launchers` sets),
- *  read from the per-test store run() points COPILOT_API_HOME at. */
+/** The stored `launchers` config key, read from the per-test store run() points
+ *  COPILOT_API_HOME at. */
 function storedLaunchersKey(): boolean | undefined {
   const file = join(home, ".copilot-env-config.json");
   if (!existsSync(file)) return undefined;
   return (JSON.parse(readFileSync(file, "utf-8")) as { launchers?: boolean }).launchers;
 }
 
-skipWin("shell --launchers sets the config key and wires NO launchers block", () => {
-  // The launchers are `agent env` emissions now: --launchers flips the `launchers`
-  // config key; the rc file carries only the integration block.
-  expect(run("--launchers").code).toBe(0);
+skipWin("shell wires NO launchers block and reports the launchers key without writing it", () => {
+  // The launchers are `agent env` emissions gated on the `launchers` config key; the
+  // rc file carries only the integration block, and `--launchers` is no flag.
+  const wired = run();
+  expect(wired.code).toBe(0);
+  expect(wired.out).toContain("Launchers: disabled (the launchers config key)");
   const rc = readFileSync(join(home, ".bashrc"), "utf-8");
   expect(rc).toContain(MARKER);
   expect(rc).not.toContain(LAUNCHERS_MARKER);
   expect(markerLines(rc, MARKER)).toBe(1);
-  expect(storedLaunchersKey()).toBe(true);
-  // A plain re-run leaves the opt-in alone.
-  run();
-  expect(storedLaunchersKey()).toBe(true);
+  expect(storedLaunchersKey()).toBeUndefined();
+  const rejected = run("--launchers");
+  expect(rejected.code).toBe(1);
+  expect(rejected.out).toContain("unknown option");
 });
 
-skipWin("shell --launchers --remove disables only the launchers", () => {
-  expect(run("--launchers").code).toBe(0);
-  expect(run("--launchers", "--remove").code).toBe(0);
-  expect(storedLaunchersKey()).toBeUndefined();
-  // The integration block stays wired.
-  expect(readFileSync(join(home, ".bashrc"), "utf-8")).toContain(MARKER);
-});
-
-skipWin("--remove strips the integration, a legacy launchers block, and the opt-in", () => {
-  run("--launchers");
-  const rcPath = join(home, ".bashrc");
-  writeFileSync(rcPath, readFileSync(rcPath, "utf-8") + legacyLaunchersBlock(false));
-  run("--remove");
-  const rc = readFileSync(rcPath, "utf-8");
-  expect(rc).not.toContain(MARKER);
-  expect(rc).not.toContain(LAUNCHERS_MARKER);
-  expect(storedLaunchersKey()).toBeUndefined();
-});
+skipWin(
+  "--remove strips the integration and a legacy launchers block; the key is the user's",
+  () => {
+    run();
+    writeFileSync(join(home, ".copilot-env-config.json"), JSON.stringify({ launchers: true }));
+    const rcPath = join(home, ".bashrc");
+    writeFileSync(rcPath, readFileSync(rcPath, "utf-8") + legacyLaunchersBlock(false));
+    run("--remove");
+    const rc = readFileSync(rcPath, "utf-8");
+    expect(rc).not.toContain(MARKER);
+    expect(rc).not.toContain(LAUNCHERS_MARKER);
+    expect(storedLaunchersKey()).toBe(true);
+  },
+);
 
 skipWin("re-wiring migrates a stale block to the current shell/ path", () => {
   // Simulate a pre-`shell/`-move block that points at the old root-level agents.bashrc.
@@ -310,14 +308,12 @@ skipWin("re-wiring migrates a stale block to the current shell/ path", () => {
   expect(markerLines(rc, MARKER)).toBe(1); // exactly one block, not duplicated
 });
 
-skipWin("wiring strips old launchers blocks and carries the opt-in to the config key", () => {
-  // A wire over a marker-less rc leaves the opt-in alone (default off) ...
+skipWin("wiring strips old launchers blocks and never touches the config key", () => {
   expect(run().code).toBe(0);
   expect(storedLaunchersKey()).toBeUndefined();
-  // ... while the launchers blocks older releases wrote are cleared on the next
-  // wire (the file they sourced no longer ships) -- fenced and unfenced legacy
-  // flavors alike -- and the opt-in they carried moves to the `launchers` key,
-  // so an upgrading user never loses cl/co/cx.
+  // The launchers blocks older releases wrote are cleared on the next wire (the file
+  // they sourced no longer ships) -- fenced and unfenced legacy flavors alike. The
+  // opt-in they carried is the user's to re-set with the `launchers` key.
   const unfenced = 'AGENTS_LAUNCHERS="/x/agents.launchers.bashrc"\n' +
     '[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"';
   writeFileSync(
@@ -333,7 +329,7 @@ skipWin("wiring strips old launchers blocks and carries the opt-in to the config
   expect(rc).not.toContain("agents.launchers");
   expect(rc).toContain("export KEEP=1");
   expect(rc).toContain("export AFTER=1");
-  expect(storedLaunchersKey()).toBe(true); // the migrated opt-in
+  expect(storedLaunchersKey()).toBeUndefined();
 });
 
 skipWin("a launchers block directly below the main one: ONE wire converges", () => {

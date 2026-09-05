@@ -34,29 +34,28 @@ export type ManagedWrite =
 /**
  * What ONE `agent codex` / `agent claude` invocation does. Each arm carries
  * only its own knobs (`mode` never travels with `check`/`mobile`/`desktop`),
- * so a contradictory combination like `--check --direct` or `--mobile --host`
+ * so a contradictory combination like `--check --direct` or `--mobile --check`
  * is rejected at the boundary parse below instead of resolved by dispatch
  * order. The per-command unions narrow this to the arms each command declares.
  */
 export type AgentConfigAction =
   | { kind: "check" }
   | { kind: "mobile" }
-  | { kind: "host"; deleteHost: boolean; mode: RequestedMode }
   | { kind: "desktop" }
   | { kind: "configure"; mode: RequestedMode };
 
 /** The `agent codex` arms (no `--desktop`; that flag is Claude's). */
 export type CodexCliAction = Exclude<AgentConfigAction, { kind: "desktop" }>;
 
-/** The `agent claude` arms (no `--mobile`/`--host`; those flags are Codex's). */
+/** The `agent claude` arms (no `--mobile`; that flag is Codex's). */
 export type ClaudeCliAction = Extract<
   AgentConfigAction,
   { kind: "check" | "desktop" | "configure" }
 >;
 
-/** The arms the shared skeleton (runAgentConfig) executes itself; `mobile`,
- *  `host`, and `desktop` are dispatched to their own handlers at the CLI
- *  boundary, so they never reach the run* functions at all. */
+/** The arms the shared skeleton (runAgentConfig) executes itself; `mobile` and
+ *  `desktop` are dispatched to their own handlers at the CLI boundary, so they
+ *  never reach the run* functions at all. */
 export type AgentRunAction = Extract<AgentConfigAction, { kind: "check" | "configure" }>;
 
 /** Cross-cutting knobs of one run (never part of the parsed CLI action). */
@@ -83,31 +82,18 @@ export function parseCodexAction(flags: {
   check?: boolean;
   mode: RequestedMode;
   mobile?: boolean;
-  host?: boolean;
-  deleteHost?: boolean;
 }): CodexCliAction {
   if (flags.mobile) {
-    if (flags.check || flags.host || flags.deleteHost || flags.mode !== "auto") {
+    if (flags.check || flags.mode !== "auto") {
       throw new Error(
-        "--mobile is an interactive pairing flow; it does not combine with " +
-          "--check/--direct/--proxy/--host/--delete-host",
+        "--mobile is an interactive pairing flow; it does not combine with --check/--direct/--proxy",
       );
     }
     return { kind: "mobile" };
   }
   if (flags.check) {
-    if (flags.host || flags.deleteHost) {
-      throw new Error(
-        "--check only reports the configured provider; it does not combine with --host/--delete-host",
-      );
-    }
     assertCheckStandsAlone(flags.mode);
     return { kind: "check" };
-  }
-  // --delete-host only makes sense against the farm, so it selects the host arm
-  // on its own; the mode rides along (the farm write wires a config too).
-  if (flags.host || flags.deleteHost) {
-    return { kind: "host", deleteHost: Boolean(flags.deleteHost), mode: flags.mode };
   }
   return { kind: "configure", mode: flags.mode };
 }

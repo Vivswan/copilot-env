@@ -45,33 +45,19 @@ describe("parseUpdateAction", () => {
       verify: true,
     });
     expect(parseUpdateAction({ check: true })).toEqual({ kind: "check" });
-    expect(parseUpdateAction({ auto: true })).toEqual({ kind: "enable-auto" });
-    expect(parseUpdateAction({ auto: false })).toEqual({ kind: "disable-auto" });
     expect(parseUpdateAction({ autoStatus: true })).toEqual({ kind: "auto-status" });
   });
 
-  test("two report/toggle flags together are a rejection, never an if-order pick", () => {
-    // --auto/--no-auto share one Commander option (last one wins), so the message
-    // names them as ONE toggle: listing an argv-unreachable pair would promise a
-    // rejection that can never fire.
-    for (
-      const args of [
-        { autoStatus: true, check: true },
-        { auto: true, check: true },
-        { auto: false, autoStatus: true },
-      ]
-    ) {
-      expect(() => parseUpdateAction(args)).toThrow(
-        "--check, --auto/--no-auto, and --auto-status are mutually exclusive",
-      );
-    }
+  test("two report flags together are a rejection, never an if-order pick", () => {
+    expect(() => parseUpdateAction({ autoStatus: true, check: true })).toThrow(
+      "--check and --auto-status are mutually exclusive",
+    );
   });
 
   test("--force lives on the apply arm alone", () => {
     for (
       const args of [
         { check: true, force: true },
-        { auto: true, force: true },
         { autoStatus: true, force: true },
       ]
     ) {
@@ -83,7 +69,6 @@ describe("parseUpdateAction", () => {
     for (
       const args of [
         { check: true, verify: false },
-        { auto: true, verify: true },
         { autoStatus: true, verify: false },
       ]
     ) {

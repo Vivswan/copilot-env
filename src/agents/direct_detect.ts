@@ -1,5 +1,5 @@
 // The direct-vs-proxy decision for one agent, shared by the Codex and Claude
-// config writers (and `agent codex --host`) so "what does a mode flag plus a
+// config writers so "what does a mode flag plus a
 // provisioned token mean?" is answered exactly once. The live probe that backs
 // the "auto" case lives in ./live_probe.ts; this module only decides when to
 // consult it.

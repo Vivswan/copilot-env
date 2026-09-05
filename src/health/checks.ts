@@ -3,6 +3,7 @@
 import { DIRECT_BASE_URL } from "../claude/config.ts";
 import { directHelperPath } from "../claude/paths.ts";
 import { type CodexOtherReason, codexProviderId } from "../codex/config.ts";
+import { codexHostDriftFrom, codexHostDriftLine } from "../codex/host.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import {
   type AuthProvider,
@@ -873,7 +874,7 @@ export function checkLaunchers(f: ShellFacts): CheckResult {
       ...base,
       status: "warn",
       detail: "not enabled (optional)",
-      fix: "agent shell --launchers",
+      fix: "agent config --set launchers true",
     };
 }
 
@@ -1165,7 +1166,9 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
   return { ...base, status: "ok", detail: detailLines.join("\n") };
 }
 
-/** Report the per-host CODEX_HOME farm (~/.codex/hosts/<hostname>) status. */
+/** Report the per-host CODEX_HOME farm (~/.codex/hosts/<hostname>) against the
+ *  `codex-host` key that derives it: any key-vs-disk drift warns with the wiring
+ *  pass that resolves it (the same verdict `agent codex --check` prints). */
 export function checkCodexHost(f: CodexHostFacts): CheckResult {
   const configFile = codexConfigPath(f.hostHome);
   const detail = (summary: string) => f.exists ? `${summary}\nconfig.toml: ${configFile}` : summary;
@@ -1177,31 +1180,32 @@ export function checkCodexHost(f: CodexHostFacts): CheckResult {
       hostHome: f.hostHome,
       configFile,
       exists: f.exists,
+      wired: f.wired,
+      probeError: f.probeError,
       active: f.active,
+      enabled: f.enabled,
     },
   };
-  // Active per-host home whose directory vanished is a real inconsistency.
-  if (f.active && !f.exists) {
-    return {
-      ...base,
-      status: "warn",
-      detail: detail(`active CODEX_HOME ${f.hostHome} does not exist on disk`),
-      fix: "agent codex --host",
-    };
-  }
-  if (f.active) {
+  const warn = (summary: string): CheckResult => ({
+    ...base,
+    status: "warn",
+    detail: detail(summary),
+    fix: "agent codex",
+  });
+  if (!f.supported) return { ...base, status: "ok", detail: "not built (unsupported on Windows)" };
+  const drift = codexHostDriftFrom(f.enabled, {
+    hostHome: f.hostHome,
+    present: f.exists,
+    wired: f.wired,
+    probeError: f.probeError,
+    active: f.active,
+  });
+  if (drift !== null) return warn(codexHostDriftLine(drift));
+  if (f.enabled) {
     return { ...base, status: "ok", detail: detail(`active per-host CODEX_HOME: ${f.hostHome}`) };
   }
-  if (f.exists) {
-    return {
-      ...base,
-      status: "ok",
-      detail: detail(`built but not active (using another CODEX_HOME): ${f.hostHome}`),
-    };
-  }
-  // Not built. Informational -- it's an optional feature (Linux/macOS only).
-  const why = f.supported ? "not built (optional)" : "not built (unsupported on Windows)";
-  return { ...base, status: "ok", detail: why };
+  // Not built, not wanted. Informational -- it's an optional feature.
+  return { ...base, status: "ok", detail: "not built (optional)" };
 }
 
 /** The one-line reading of a Claude "other" classification, keyed off the
@@ -1404,7 +1408,7 @@ export function checkAutoupdate(f: AutoupdateStatus): CheckResult {
   // fact per line so the report renders them as `-` sub-items.
   const last = f.lastCheckMs > 0 ? new Date(f.lastCheckMs).toISOString() : "never";
   const detail = [
-    `status: ${f.enabled ? "enabled" : "disabled"}`,
+    `status: ${f.enabled ? "enabled" : "disabled"} (the auto-update config key)`,
     `cooldown ${f.cooldownDays}d`,
     `last check ${last}`,
     `last result: ${f.lastResult || "(none)"}`,

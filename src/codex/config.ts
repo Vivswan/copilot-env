@@ -54,6 +54,7 @@ import {
   generateCodexModelCatalog,
   inspectCatalogFile,
   refreshCodexModelCatalogIfStale,
+  UNVERIFIED_SUFFIX,
   withCatalogRefreshDeadline,
 } from "./catalog.ts";
 import {
@@ -790,7 +791,8 @@ export function configureCodexConfig(
       doc.model_catalog_json = catalogFile;
       catalogRef = "written";
       if (previousRef !== catalogFile) {
-        catalogRefLine = `model_catalog_json = "${catalogFile}" set in ${hostConfig}`;
+        catalogRefLine = `model_catalog_json = "${catalogFile}" set in ${hostConfig}` +
+          (verdict === "unverifiable" ? UNVERIFIED_SUFFIX : "");
       }
     } else {
       delete doc.model_catalog_json;
@@ -992,7 +994,10 @@ export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): v
     doc.model_catalog_json = catalogFile;
     saveCodexToml(configPath, doc);
     // The change is on disk: say so BEFORE the ledger bookkeeping, which may fail.
-    logger.log(`  ✓ Codex model_catalog_json = "${catalogFile}" set in ${configPath}`);
+    logger.log(
+      `  ✓ Codex model_catalog_json = "${catalogFile}" set in ${configPath}` +
+        (verdict === "unverifiable" ? UNVERIFIED_SUFFIX : ""),
+    );
     if (catalogBookkeepingAllowed()) new OwnershipLedger().record("codexCatalog", configPath);
   } catch {
     // An unreadable config (non-ENOENT) or a write race: the next

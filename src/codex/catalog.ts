@@ -582,6 +582,11 @@ const probeVerdicts = new Map<string, boolean | null>();
 // budget per `agent auth --get`. Exhausted, verdicts are null (unverifiable).
 let probeBudgetLeftMs = CATALOG_PROBE_TIMEOUT_MS;
 
+/** The suffix a reporting line carries when the installed codex could not judge the
+ *  catalog (no codex on PATH, probe budget spent, or a run that proved nothing). */
+export const UNVERIFIED_SUFFIX =
+  "; schema acceptance by the installed Codex could not be verified (probe unavailable or inconclusive)";
+
 /** Test hook: restore (or shrink) the per-process probe budget and forget the
  *  per-process probe caches (the resolved codex path, the verdicts by content). */
 export function resetCatalogProbeState(budgetMs: number = CATALOG_PROBE_TIMEOUT_MS): void {
@@ -695,7 +700,8 @@ export async function generateCodexModelCatalog(
     if (patched === null) return false;
     // The exact bytes written are the bytes judged (and later re-judged by file).
     const bytes = `${JSON.stringify(patched, null, 2)}\n`;
-    if (judgeCatalog(bytes, deps) === false) {
+    const verdict = judgeCatalog(bytes, deps);
+    if (verdict === false) {
       logger.warn("codex model catalog not written: the installed codex rejects its schema");
       return false;
     }
@@ -703,8 +709,10 @@ export async function generateCodexModelCatalog(
     const file = new CopilotApiPaths().codexModelCatalogFile;
     atomicWriteFile(file, bytes, 0o600);
     // Every file a command writes is named in its output (stderr: `agent auth
-    // --get` runs this too, and its stdout is the token).
-    logger.log(`  ✓ Codex model catalog written → ${file}`);
+    // --get` runs this too, and its stdout is the token); an unverified verdict says so.
+    logger.log(
+      `  ✓ Codex model catalog written → ${file}${verdict === null ? UNVERIFIED_SUFFIX : ""}`,
+    );
     return true;
   } catch (e) {
     logger.warn(`codex model catalog generation failed: ${errMessage(e)}`);

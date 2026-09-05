@@ -20,6 +20,7 @@ import {
   patchModelCatalog,
   refreshCodexModelCatalogIfStale,
   resetCatalogProbeState,
+  UNVERIFIED_SUFFIX,
   withCatalogRefreshDeadline,
 } from "../src/codex/catalog.ts";
 import { DIRECT_AUTH_TIMEOUT_MS } from "../src/codex/config.ts";
@@ -673,6 +674,7 @@ test("generateCodexModelCatalog writes the patched catalog file", async () => {
   const file = new CopilotApiPaths().codexModelCatalogFile;
   // Nothing hidden: the write is named on stderr (stdout may be a token).
   expect(narrated).toContain(`Codex model catalog written → ${file}`);
+  expect(narrated).not.toContain(UNVERIFIED_SUFFIX); // accepted: no caveat
   const written = JSON.parse(readFileSync(file, "utf8"));
   expect(written.models[0].context_window).toBe(1_050_000);
   expect(written.models[0].effective_context_window_percent).toBe(87);
@@ -713,15 +715,27 @@ test("a candidate the installed codex rejects is never written; an unverifiable 
   // The probe judged the patched document, not the raw dump.
   expect(JSON.parse(probed).models[0].context_window).toBe(1_050_000);
 
-  // No codex to ask (null): the JSON-valid candidate is written as before.
-  expect(
-    await generateCodexModelCatalog("direct", {
+  // No codex to ask (null): the JSON-valid candidate is written, and the line says
+  // plainly that its schema acceptance could not be verified (nothing hidden).
+  let narrated = "";
+  const realWrite = process.stderr.write;
+  process.stderr.write = (chunk: string | Uint8Array): boolean => {
+    narrated += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+    return true;
+  };
+  let written = false;
+  try {
+    written = await generateCodexModelCatalog("direct", {
       bundledCatalog: () => BUNDLED,
       fetchCopilotModels: async () => GPT55_ONLY,
       acceptsCatalog: () => null,
-    }),
-  ).toBe(true);
+    });
+  } finally {
+    process.stderr.write = realWrite;
+  }
+  expect(written).toBe(true);
   expect(existsSync(file)).toBe(true);
+  expect(narrated).toContain(`Codex model catalog written → ${file}${UNVERIFIED_SUFFIX}`);
 });
 
 test("a failed regeneration never touches an existing (stale but valid) catalog", async () => {

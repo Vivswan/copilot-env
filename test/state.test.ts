@@ -480,9 +480,9 @@ test("clearCredential clears even a parse-rejected stray token and reports what 
 
 test("legacy ownership keys in the state file survive writes and stay out of read()", () => {
   tmpHome();
-  // Pre-ledger installs recorded artifact ownership under these keys; the
-  // ledger's tolerance still reads them (ownership.test.ts), so the state
-  // store must neither surface them nor destroy them on its own writes.
+  // Pre-ledger installs recorded artifact ownership under these keys; only the
+  // 3.5.6 migration moves them into the ledger (ownership.test.ts), so the
+  // state store must neither surface them nor destroy them on its own writes.
   writeFileSync(
     join(dir, ".copilot-env-state.json"),
     `${JSON.stringify({ webSearchDenyOwnedPaths: ["/a/settings.json"] })}\n`,

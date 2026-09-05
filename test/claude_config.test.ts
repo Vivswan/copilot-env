@@ -31,7 +31,6 @@ import {
 import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
 import { DIRECT_HELPER_NAME, directHelperPath, PROXY_HELPER_NAME } from "../src/claude/paths.ts";
 import { runMcp } from "../src/commands/mcp.ts";
-import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
@@ -763,28 +762,6 @@ test("a malformed permissions value (non-object) is never replaced", () => {
 
   configureClaudeConfig(home, { mode: "direct" });
   expect(readSettings(home).permissions).toBe("everything");
-});
-
-test("a pre-ledger install's legacy deny record still authorizes the take-back", () => {
-  const home = tmpHome();
-  configureClaudeConfig(home, { mode: "direct" });
-  const settingsPath = join(home, "settings.json");
-
-  // Rewind the record to the pre-ledger layout: ownership under the LEGACY
-  // state-store key, no ledger file (an install that never ran the migration).
-  const paths = new CopilotApiPaths();
-  rmSync(paths.ownershipFile, { force: true });
-  new CopilotApiConfig(paths.sharedStateFile).update((d) => {
-    d.webSearchDenyOwnedPaths = [settingsPath];
-  });
-
-  // The proxy write still recognizes the deny as ours, strips it, and clears
-  // the legacy record so it can never claim a future user-added deny.
-  configureClaudeConfig(home, { mode: "proxy" });
-  expect(denyOf(readSettings(home))).toBeUndefined();
-  expect(new OwnershipLedger().owns("webSearchDeny", settingsPath)).toBe(false);
-  const raw = JSON.parse(readFileSync(paths.sharedStateFile, "utf8")) as Record<string, unknown>;
-  expect(raw.webSearchDenyOwnedPaths).toBeUndefined();
 });
 
 test("ownership is keyed to the settings path: a stale marker never strips another home's deny", () => {

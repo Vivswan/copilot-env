@@ -44,7 +44,7 @@ const COST_ARGS = ["-P=cli", "src/cli.ts", "cost", "--json", "--per-day"];
  * statistics). It is the only key dropped before the comparison; when present, the comment
  * says so. Its `index.bytesRead` feeds the "warm bytes read" column.
  */
-export const RUNTIME_KEY = "runtime";
+const RUNTIME_KEY = "runtime";
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 

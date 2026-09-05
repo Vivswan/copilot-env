@@ -58,6 +58,7 @@ jobs:
       # (the Windows runner's disk is slower, so it gets a smaller one). Only these two files:
       # the generator's own tests read the same knob and hold whole trees in memory.
       - name: Usage index on a large tree
+        timeout-minutes: 25
         env:
           COPILOT_ENV_USAGE_FIXTURE_MB: ${{ runner.os == 'Windows' && '100' || '1024' }}
         run: deno test -P=test test/usage_index_perf.test.ts test/usage_golden.test.ts

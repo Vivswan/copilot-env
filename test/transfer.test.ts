@@ -135,15 +135,33 @@ function rawBundle(overrides: Record<string, unknown> = {}): Record<string, unkn
 test("export redacts every token by default; withCredentials includes them", async () => {
   isolate();
   await seedStores();
+  // A stored price-list URL may carry a credential in its query: without the tokens
+  // it travels as the tokens' own redaction marker, never as its value.
+  const secretUrl = "https://pricing.example/models?token=SECRET-PRICING-TOKEN";
+  new CopilotEnvConfig().set({ pricingUrl: secretUrl });
 
   const redacted = buildExportBundle();
   expect(redacted.credential.githubToken).toBe(REDACTED_TOKEN);
   expect(redacted.profiles.work?.githubToken).toBe(REDACTED_TOKEN);
-  expect(JSON.stringify(redacted)).not.toContain("ghp_");
+  expect(redacted.config.pricingUrl).toBe(REDACTED_TOKEN);
+  expect(redacted.config.port).toBe(5050);
+  const redactedText = JSON.stringify(redacted);
+  expect(redactedText).not.toContain("ghp_");
+  expect(redactedText).not.toContain("SECRET-PRICING-TOKEN");
+  expect(redactedText).not.toContain("pricing.example");
+  // The parser admits the marker on this key alone; every other key keeps its own
+  // domain, so a string is fine where the key takes one and junk where it does not.
+  expect(parseSettingsBundle(JSON.parse(redactedText)).config.pricingUrl).toBe(REDACTED_TOKEN);
+  expect(() => parseSettingsBundle(rawBundle({ config: { proxyVersion: REDACTED_TOKEN } })))
+    .not.toThrow();
+  expect(() => parseSettingsBundle(rawBundle({ config: { port: REDACTED_TOKEN } }))).toThrow(
+    /config\.port is invalid/,
+  );
 
   const full = buildExportBundle({ withCredentials: true });
   expect(full.credential.githubToken).toBe("ghp_default");
   expect(full.profiles.work?.githubToken).toBe("ghp_work");
+  expect(full.config.pricingUrl).toBe(secretUrl);
 });
 
 test("export carries the stores + modes and never the machine-local state keys", async () => {
@@ -338,6 +356,43 @@ test("round trip: export -> wipe -> import restores stores and re-derives wiring
     "copilot-env-work",
   );
 });
+
+// The stored pricing-url follows the tokens' import contract, not the prefs': a
+// redacted marker keeps the local value, while a credentials-included bundle that
+// lacks the key deletes it (full-replace) and one that carries it sets it.
+for (
+  const { name, bundleUrl, expected } of [
+    { name: "redacted", bundleUrl: REDACTED_TOKEN, expected: "https://local.example/models" },
+    { name: "absent", bundleUrl: undefined, expected: undefined },
+    {
+      name: "present",
+      bundleUrl: "https://bundle.example/models",
+      expected: "https://bundle.example/models",
+    },
+  ]
+) {
+  test(`importing a bundle whose pricing-url is ${name} over a stored one`, async () => {
+    isolate();
+    new CopilotEnvConfig().set({ pricingUrl: "https://local.example/models", port: 5050 });
+    const bundle = parseSettingsBundle(
+      rawBundle({
+        config: { autoStart: true, ...(bundleUrl === undefined ? {} : { pricingUrl: bundleUrl }) },
+      }),
+    );
+    const plan = planImport(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
+    // The confirmation names the local keys the import rewrites: the redacted one is kept.
+    const prefsLine = plan.writes.find((line) => line.startsWith("preferences (")) ?? "";
+    expect(prefsLine).toContain("port");
+    expect(prefsLine.includes("pricing-url")).toBe(name !== "redacted");
+
+    await applyImportPlan(plan, { catalogDeps: NOOP_CATALOG_DEPS });
+    const after = new CopilotEnvConfig().read();
+    expect(after.pricingUrl).toBe(expected);
+    // Every other preference still follows full-replace.
+    expect(after.autoStart).toBe(true);
+    expect(after.port).toBeUndefined();
+  });
+}
 
 test("a redacted bundle on a fresh machine imports prefs + proxy wiring, but no slot", async () => {
   isolate();
@@ -689,23 +744,47 @@ test("parseSettingsAction: each arm carries only its own knobs", () => {
   });
 });
 
-test("bare --export writes the redacted bundle to stdout", async () => {
-  isolate();
-  await seedStores();
-  let out = "";
+/** `runSettings(args)` with stdout captured; stderr (the narration logger) too. */
+async function runSettingsCaptured(
+  args: Parameters<typeof runSettings>[0],
+): Promise<{ stdout: string; stderr: string }> {
+  let stdout = "";
   const original = process.stdout.write;
   process.stdout.write = (chunk: string | Uint8Array): boolean => {
-    out += String(chunk);
+    stdout += String(chunk);
     return true;
   };
   try {
-    await runSettings({ exportTo: true });
+    const stderr = await captureStderr(() => runSettings(args));
+    return { stdout, stderr };
   } finally {
     process.stdout.write = original;
   }
-  const doc = JSON.parse(out) as { formatVersion: number; credential: Record<string, unknown> };
+}
+
+test("bare --export writes the redacted bundle to stdout; --with-credentials warns and includes the pricing-url", async () => {
+  isolate();
+  await seedStores();
+  new CopilotEnvConfig().set({ pricingUrl: "https://pricing.example/models?token=SECRET-URL" });
+
+  const redacted = await runSettingsCaptured({ exportTo: true });
+  const doc = JSON.parse(redacted.stdout) as {
+    formatVersion: number;
+    credential: Record<string, unknown>;
+    config: Record<string, unknown>;
+  };
   expect(doc.formatVersion).toBe(1);
   expect(doc.credential.githubToken).toBe(REDACTED_TOKEN);
+  expect(doc.config.pricingUrl).toBe(REDACTED_TOKEN);
+  expect(redacted.stdout).not.toContain("SECRET-URL");
+  expect(redacted.stderr).not.toContain("REAL tokens");
+
+  const full = await runSettingsCaptured({ exportTo: true, withCredentials: true });
+  expect(full.stderr).toContain("REAL tokens (and any stored pricing-url)");
+  expect(full.stderr).not.toContain("SECRET-URL");
+  expect(JSON.parse(full.stdout).config.pricingUrl).toBe(
+    "https://pricing.example/models?token=SECRET-URL",
+  );
 });
 
 test("--export --with-credentials ends 0600 even over a pre-existing looser file", async () => {

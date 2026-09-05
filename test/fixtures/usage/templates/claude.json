@@ -1,0 +1,163 @@
+{
+  "lines": {
+    "last-prompt": {
+      "type": "last-prompt",
+      "lastPrompt": "@text",
+      "leafUuid": "@uuid",
+      "sessionId": "@sessionId"
+    },
+    "mode": { "type": "mode", "mode": "default", "sessionId": "@sessionId" },
+    "permission-mode": {
+      "type": "permission-mode",
+      "permissionMode": "default",
+      "sessionId": "@sessionId"
+    },
+    "atis-latch": { "type": "atis-latch", "atis": "off", "sessionId": "@sessionId" },
+    "ai-title": { "type": "ai-title", "aiTitle": "Synthetic session", "sessionId": "@sessionId" },
+    "agent-name": {
+      "type": "agent-name",
+      "agentName": "synthetic-agent",
+      "sessionId": "@sessionId"
+    },
+    "queue-operation": {
+      "type": "queue-operation",
+      "operation": "dequeue",
+      "timestamp": "@ts",
+      "sessionId": "@sessionId"
+    },
+    "file-history-snapshot": {
+      "type": "file-history-snapshot",
+      "messageId": "@uuid",
+      "snapshot": { "messageId": "@uuid", "trackedFileBackups": {}, "timestamp": "@ts" },
+      "isSnapshotUpdate": false
+    },
+    "user/prompt": {
+      "parentUuid": "@parentUuid",
+      "isSidechain": "@isSidechain",
+      "promptId": "@promptId",
+      "type": "user",
+      "message": { "role": "user", "content": "@fill" },
+      "uuid": "@uuid",
+      "timestamp": "@ts",
+      "permissionMode": "default",
+      "origin": { "kind": "user" },
+      "promptSource": "interactive",
+      "queueSkipAttachments": false,
+      "userType": "external",
+      "entrypoint": "cli",
+      "cwd": "@cwd",
+      "sessionId": "@sessionId",
+      "version": "@version",
+      "gitBranch": "@branch",
+      "slug": "@slug"
+    },
+    "user/tool_result": {
+      "parentUuid": "@parentUuid",
+      "isSidechain": "@isSidechain",
+      "promptId": "@promptId",
+      "type": "user",
+      "message": {
+        "role": "user",
+        "content": [
+          {
+            "tool_use_id": "@toolUseId",
+            "type": "tool_result",
+            "content": "@fill",
+            "is_error": false
+          }
+        ]
+      },
+      "uuid": "@uuid",
+      "timestamp": "@ts",
+      "toolUseResult": {
+        "stdout": "",
+        "stderr": "",
+        "interrupted": false,
+        "isImage": false,
+        "noOutputExpected": false
+      },
+      "sourceToolAssistantUUID": "@parentUuid",
+      "session_id": "@sessionId",
+      "userType": "external",
+      "entrypoint": "cli",
+      "cwd": "@cwd",
+      "sessionId": "@sessionId",
+      "version": "@version",
+      "gitBranch": "@branch",
+      "slug": "@slug"
+    },
+    "attachment": {
+      "parentUuid": "@parentUuid",
+      "isSidechain": "@isSidechain",
+      "attachment": "@attachment",
+      "type": "attachment",
+      "uuid": "@uuid",
+      "timestamp": "@ts",
+      "session_id": "@sessionId",
+      "userType": "external",
+      "entrypoint": "cli",
+      "cwd": "@cwd",
+      "sessionId": "@sessionId",
+      "version": "@version",
+      "gitBranch": "@branch",
+      "slug": "@slug"
+    },
+    "assistant": {
+      "parentUuid": "@parentUuid",
+      "isSidechain": "@isSidechain",
+      "message": {
+        "content": "@content",
+        "id": "@messageId",
+        "input_transformations": [],
+        "model": "@model",
+        "role": "assistant",
+        "stop_details": null,
+        "stop_reason": "@stopReason",
+        "stop_sequence": null,
+        "type": "message",
+        "usage": "@usage"
+      },
+      "apiBlockIndex": "@apiBlockIndex",
+      "type": "assistant",
+      "uuid": "@uuid",
+      "timestamp": "@ts",
+      "effort": "high",
+      "session_id": "@sessionId",
+      "userType": "external",
+      "entrypoint": "cli",
+      "cwd": "@cwd",
+      "sessionId": "@sessionId",
+      "version": "@version",
+      "gitBranch": "@branch",
+      "slug": "@slug"
+    },
+    "system/turn_duration": {
+      "parentUuid": "@parentUuid",
+      "isSidechain": "@isSidechain",
+      "type": "system",
+      "subtype": "turn_duration",
+      "durationMs": "@durationMs",
+      "messageCount": 4,
+      "timestamp": "@ts",
+      "uuid": "@uuid",
+      "isMeta": true,
+      "userType": "external",
+      "entrypoint": "cli",
+      "cwd": "@cwd",
+      "sessionId": "@sessionId",
+      "version": "@version",
+      "gitBranch": "@branch"
+    }
+  },
+  "blocks": {
+    "text": { "type": "text", "text": "@fill" },
+    "thinking": { "type": "thinking", "thinking": "@fill", "signature": "@signature" },
+    "tool_use": {
+      "type": "tool_use",
+      "id": "@toolUseId",
+      "name": "@toolName",
+      "input": "@toolInput",
+      "caller": { "type": "direct" }
+    }
+  }
+}

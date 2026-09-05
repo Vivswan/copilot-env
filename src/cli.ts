@@ -40,17 +40,16 @@ import { parseStartAction, runStart } from "./commands/start.ts";
 import { runStop } from "./commands/stop.ts";
 import { runUninstall } from "./commands/uninstall.ts";
 import { runUpdate } from "./commands/update.ts";
-import { configKeysHelp } from "./copilot_api/env_config.ts";
+import { configKeysHelp, OPENROUTER_MODELS_URL } from "./copilot_api/env_config.ts";
 import { AUTH_PROVIDERS, type AuthProvider } from "./copilot_api/env_state.ts";
 import { ghTokenEnvVarsLabel } from "./copilot_api/gh_cli.ts";
 import { runInstall } from "./install/installer.ts";
 import { runMigrations } from "./migrations/index.ts";
 import { runCost } from "./usage/cost.ts";
-import { OPENROUTER_MODELS_URL } from "./usage/pricing.ts";
 import { bold, cyan, gray } from "./utils/ansi.ts";
 import { assertNever } from "./utils/assert.ts";
 import { errMessage } from "./utils/error.ts";
-import { disableConsolaTimestamps } from "./utils/logger.ts";
+import { disableConsolaTimestamps, redirectConsolaToStderr } from "./utils/logger.ts";
 import { packageVersion } from "./utils/version.ts";
 
 // Drop consola's right-aligned wall-clock timestamp from all command output.
@@ -531,8 +530,13 @@ program
   )
   .option(
     "--pricing-url <url>",
-    "OpenRouter models API URL for live pricing.",
-    OPENROUTER_MODELS_URL,
+    "OpenRouter models API URL for the public price list (cached for a day), overriding the " +
+      `pricing-url config key for this run (built-in: ${OPENROUTER_MODELS_URL}); the host must ` +
+      "be one the CLI's network policy permits.",
+  )
+  .option(
+    "--no-index",
+    "Parse every session log instead of reading through the usage index (never opens or writes it).",
   )
   .addHelpText(
     "after",
@@ -552,15 +556,20 @@ program
       "each is robust to a few outlier days). Idle days are never counted in either.",
     ].join("\n"),
   )
-  .action((opts: Opts) =>
-    runCost({
+  .action((opts: Opts) => {
+    // The report (and the --json payload) owns stdout; every consola line of the run,
+    // from any module the readers reach, is narration and rides stderr.
+    redirectConsolaToStderr();
+    return runCost({
       days: opts.days as string | undefined,
       json: Boolean(opts.json),
       perDay: Boolean(opts.perDay),
-      pricingUrl: String(opts.pricingUrl),
+      pricingUrl: opts.pricingUrl === undefined ? undefined : String(opts.pricingUrl),
       sources: Boolean(opts.sources),
-    })
-  );
+      // Commander stores a `--no-<name>` flag as `<name>: false`.
+      noIndex: opts.index === false,
+    });
+  });
 
 program
   .command("codex")

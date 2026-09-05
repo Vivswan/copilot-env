@@ -16,7 +16,6 @@ import { openUsageIndex } from "./index.ts";
 import {
   type CostEstimate,
   estimateCost,
-  type LoadedPricing,
   loadPricing,
   type ModelCost,
   type PricingTier,
@@ -79,10 +78,10 @@ export interface CostArgs {
 
 /** The `--json` `runtime` key: how the run went, never what it found. Consumers
  *  comparing two runs' numbers drop it; `index` sums the IndexStats of every
- *  reconcile this run made; `timing` is wall-clock ms per phase. The price list
- *  loads while the logs are read, so `pricing` is only the time the run then
- *  waited for it: zero when a cached list was already there. `total` runs from
- *  the start of the run to the moment the JSON payload is built. */
+ *  reconcile this run made; `timing` is wall-clock ms per phase. `pricing` is the
+ *  price-list load, made after the logs are read: the network round-trip, or
+ *  the cache read when a fresh list was already there. `total` runs from the
+ *  start of the run to the moment the JSON payload is built. */
 export interface CostRuntime {
   /** False under --no-index and when the index could not be opened. */
   indexed: boolean;
@@ -167,29 +166,16 @@ export async function runCost(args: CostArgs, deps: CostDeps = {}): Promise<void
   const now = deps.now ?? (() => performance.now());
   const startedAt = now();
   const window = args.days === undefined ? undefined : parseDaysWindow(args.days);
-
-  // Started before the source readers, awaited where first needed: the network
-  // round-trip overlaps the file parsing. The no-op catch keeps an exit before
-  // the await from leaving an unhandled rejection.
-  const pricingAbort = new AbortController();
-  const pricingLoad = loadPricing(resolvePricingUrl(args.pricingUrl), {
-    signal: pricingAbort.signal,
+  // Resolved up front: an unreadable preference store rejects the command here,
+  // before any source is read, rather than degrading to a token-only report.
+  const pricingUrl = resolvePricingUrl(args.pricingUrl);
+  await reportCost(args, deps.sessionRoots ?? DEFAULT_SESSION_ROOTS, {
+    window,
+    startedAt,
+    now,
+    pricingUrl,
     fetchImpl: deps.fetchImpl,
   });
-  pricingLoad.catch(() => {});
-  try {
-    await reportCost(args, deps.sessionRoots ?? DEFAULT_SESSION_ROOTS, {
-      window,
-      startedAt,
-      now,
-      pricingLoad,
-    });
-  } finally {
-    // Every exit, the no-sources return and a thrown error alike, cancels a price
-    // list still in flight (a settled load ignores this), so no path leaves the
-    // process waiting out the fetch timeout.
-    pricingAbort.abort();
-  }
 }
 
 interface CostRun {
@@ -197,10 +183,11 @@ interface CostRun {
   window: DaysWindow | undefined;
   startedAt: number;
   now: () => number;
-  pricingLoad: Promise<LoadedPricing>;
+  pricingUrl: string;
+  fetchImpl: typeof fetch | undefined;
 }
 
-/** Read every source, price it, and render; `runCost` owns the pricing load's lifetime. */
+/** Read every source, price it, and render. */
 async function reportCost(
   args: CostArgs,
   roots: SessionRootDiscovery,
@@ -231,13 +218,17 @@ async function reportCost(
     return;
   }
 
-  // Best-effort pricing: a fetch failure still yields a token-only report. The wait
-  // is clocked the moment the load settles, either way, before any warning work.
+  // The price list is loaded only now, after the readers, never beside them: they
+  // are synchronous, so a fetch in flight across them could make no progress until
+  // they returned, and its timeout fired the moment the event loop was free again.
+  // A fresh cache answers without the network, so the order costs it nothing.
+  // Best-effort: a fetch failure still yields a token-only report. The wait is
+  // clocked the moment the load settles, either way, before any warning work.
   let pricing = new Map<string, PricingTier>();
   const pricingWaitStartedAt = now();
   let pricingWaitMs = 0;
   try {
-    const loaded = await run.pricingLoad.finally(() => {
+    const loaded = await loadPricing(run.pricingUrl, { fetchImpl: run.fetchImpl }).finally(() => {
       pricingWaitMs = now() - pricingWaitStartedAt;
     });
     pricing = loaded.pricing;

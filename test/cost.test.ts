@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import {
   emptyIndexStats,
   type IndexStats,
@@ -40,6 +41,7 @@ import {
 import { consola } from "consola";
 import { CopilotEnvConfig, OPENROUTER_MODELS_URL } from "../src/copilot_api/env_config.ts";
 import { openUsageIndex } from "../src/usage/index.ts";
+import { USAGE_INDEX_DB_NAME } from "../src/usage/index.ts";
 import { USAGE_INDEX_DIR_NAME } from "../src/usage/paths.ts";
 import {
   estimateCost,
@@ -481,18 +483,51 @@ function recordingFetch(body: unknown, opts: { fail?: boolean } = {}): {
   return { fetch: fetchImpl, urls };
 }
 
-/** A fetch that never answers until the request is cancelled, and records that it was. */
-function hangingFetch(): { fetch: typeof fetch; aborted: () => boolean } {
-  let aborted = false;
-  const fetchImpl =
-    ((_input: string | URL | Request, init?: RequestInit): Promise<Response> =>
-      new Promise((_, reject) => {
-        init?.signal?.addEventListener("abort", () => {
-          aborted = true;
-          reject(init.signal?.reason);
-        });
-      })) as typeof fetch;
-  return { fetch: fetchImpl, aborted: () => aborted };
+/** The usage index under `home` at one instant: whether a connection still holds it
+ *  open (SQLite keeps the WAL sidecar beside the file until the last connection
+ *  closes) and the session-log paths it has stored. An index not created yet reads
+ *  as closed and empty. */
+interface IndexSnapshot {
+  open: boolean;
+  paths: string[];
+}
+
+function snapshotIndex(home: string): IndexSnapshot {
+  const dbFile = join(home, USAGE_INDEX_DIR_NAME, USAGE_INDEX_DB_NAME);
+  if (!existsSync(dbFile)) return { open: false, paths: [] };
+  const open = existsSync(`${dbFile}-wal`);
+  const db = new DatabaseSync(dbFile, { readOnly: true });
+  try {
+    const rows = db.prepare(`SELECT "path" FROM "files" ORDER BY "path"`).all() as {
+      path: string;
+    }[];
+    return { open, paths: rows.map((r) => r.path) };
+  } finally {
+    db.close();
+  }
+}
+
+/** `fakeFetch(body)` that answers only once the run's usage index has been closed
+ *  with `parsedPath` stored: the readers are what store it, and the index closes
+ *  only after both have returned, fold included, so a request that finds it so was
+ *  made after the whole synchronous parse. Asked earlier, it fails the way a request
+ *  nobody serviced does, and either way it keeps what each request saw. */
+function afterParseFetch(home: string, parsedPath: string, body: unknown): {
+  fetch: typeof fetch;
+  /** The index as each request found it, in request order. */
+  sawAtRequests: () => IndexSnapshot[];
+} {
+  const seen: IndexSnapshot[] = [];
+  const inner = fakeFetch(body);
+  const fetchImpl = ((input: string | URL | Request, init?: RequestInit) => {
+    const snapshot = snapshotIndex(home);
+    seen.push(snapshot);
+    if (snapshot.open || !snapshot.paths.includes(parsedPath)) {
+      return Promise.reject(new TypeError(`request for ${String(input)} made before the parse`));
+    }
+    return inner(input, init);
+  }) as typeof fetch;
+  return { fetch: fetchImpl, sawAtRequests: () => seen };
 }
 
 interface CostHome {
@@ -519,39 +554,6 @@ async function withCostHome(body: (ctx: CostHome) => Promise<void>): Promise<voi
   }
 }
 
-/** Run `body` and return the unhandled rejections it left behind (settled first). */
-async function unhandledRejectionsDuring(body: () => Promise<void>): Promise<unknown[]> {
-  const seen: unknown[] = [];
-  const onUnhandled = (event: PromiseRejectionEvent): void => {
-    seen.push(event.reason);
-    event.preventDefault();
-  };
-  globalThis.addEventListener("unhandledrejection", onUnhandled);
-  try {
-    await body();
-    // A rejection surfaces as unhandled only after the microtasks drain and the
-    // event loop turns once; yield that one turn (no wall-clock wait) before reading.
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  } finally {
-    globalThis.removeEventListener("unhandledrejection", onUnhandled);
-  }
-  return seen;
-}
-
-test("unhandledRejectionsDuring catches a rejection nobody handles (its own negative control)", async () => {
-  const sentinel = new Error("nobody handles this");
-  const seen = await unhandledRejectionsDuring(async () => {
-    Promise.reject(sentinel);
-  });
-  expect(seen).toEqual([sentinel]);
-  // A handled rejection is not reported, so the zero the runCost tests trust is exact.
-  expect(
-    await unhandledRejectionsDuring(async () => {
-      Promise.reject(new Error("handled")).catch(() => {});
-    }),
-  ).toEqual([]);
-});
-
 const NO_SOURCES = { sessionRoots: { codex: () => [] as string[], claude: () => [] as string[] } };
 
 /** Codex roots `codex`, Claude roots `claude`, as runCost's deps. */
@@ -576,60 +578,56 @@ async function jsonRun(args: CostArgs, deps: CostDeps): Promise<{
   return { payload: JSON.parse(out.stdout) as CostJson, stderr: out.stderr };
 }
 
-test("runCost with no sources returns early and cancels the pricing load it started", () =>
+test("runCost with no sources returns early and never asks for the price list", () =>
   withCostHome(async () => {
-    const net = hangingFetch();
-    let out = "";
-    const unhandled = await unhandledRejectionsDuring(async () => {
-      out = await captureAllWrites(() =>
-        runCost({ pricingUrl: PRICE_URL }, { fetchImpl: net.fetch, ...NO_SOURCES })
-      );
-    });
+    const net = recordingFetch(null, { fail: true });
+    const out = await captureAllWrites(() =>
+      runCost({ pricingUrl: PRICE_URL }, { fetchImpl: net.fetch, ...NO_SOURCES })
+    );
     expect(out).toContain("no copilot-api usage databases");
-    expect(net.aborted()).toBe(true);
-    expect(unhandled).toEqual([]);
+    expect(out).not.toContain("could not fetch OpenRouter pricing");
+    expect(net.urls).toEqual([]);
   }));
 
-test("runCost with no sources swallows a pricing load that already failed", () =>
-  withCostHome(async () => {
-    const unhandled = await unhandledRejectionsDuring(async () => {
-      const out = await captureAllWrites(() =>
-        runCost({ pricingUrl: PRICE_URL }, {
-          fetchImpl: fakeFetch(null, { fail: true }),
-          ...NO_SOURCES,
-        })
-      );
-      expect(out).toContain("no copilot-api usage databases");
-      expect(out).not.toContain("could not fetch OpenRouter pricing");
+test("a cold run fetches the price list only after the synchronous parse, so the parse cannot starve the fetch", () =>
+  withCostHome(async ({ home, claudeRoot }) => {
+    // The readers are synchronous, so a request made before they return cannot be
+    // answered until they do; the fake refuses one made that early.
+    const transcript = join(claudeRoot, "-Users-x-proj", "aaa.jsonl");
+    const net = afterParseFetch(home, transcript, PRICED_BODY);
+    // No price cache exists yet, so this run has to go to the network.
+    const { payload, stderr } = await jsonRun({ pricingUrl: PRICE_URL }, {
+      fetchImpl: net.fetch,
+      ...rootsOf([], [claudeRoot]),
     });
-    expect(unhandled).toEqual([]);
+    // Exactly one request, made once the parse was over.
+    expect(net.sawAtRequests()).toEqual([{ open: false, paths: [transcript] }]);
+    expect(stderr).not.toContain("could not fetch OpenRouter pricing");
+    // Priced: 10 in at $15/M + 20 out at $75/M.
+    expect(payload.claudeSessions.totalUsd).toBe(0.0017);
   }));
 
 test("runCost discovers roots before it opens the index, so a failing discovery opens nothing", () =>
   withCostHome(async ({ home, claudeRoot }) => {
-    const net = hangingFetch();
-    const unhandled = await unhandledRejectionsDuring(async () => {
-      await expect(
-        captureAllWrites(() =>
-          runCost({ pricingUrl: PRICE_URL }, {
-            fetchImpl: net.fetch,
-            sessionRoots: {
-              codex: () => {
-                throw new Error("codex homes unreadable");
-              },
-              claude: () => [claudeRoot],
+    const net = recordingFetch(PRICED_BODY);
+    await expect(
+      captureAllWrites(() =>
+        runCost({ pricingUrl: PRICE_URL }, {
+          fetchImpl: net.fetch,
+          sessionRoots: {
+            codex: () => {
+              throw new Error("codex homes unreadable");
             },
-          })
-        ),
-      ).rejects.toThrow("codex homes unreadable");
-    });
-    expect(unhandled).toEqual([]);
-    // The thrown exit still cancels the price list still in flight.
-    expect(net.aborted()).toBe(true);
-    // The index directory is created by opening the index (the hanging fetch wrote
-    // no price cache there), so its absence proves no index was opened. The control:
-    // the same run with a working discovery (and a fetch that writes no cache) does
-    // create it.
+            claude: () => [claudeRoot],
+          },
+        })
+      ),
+    ).rejects.toThrow("codex homes unreadable");
+    // The index directory is created by opening the index (the run never reached
+    // the price list, so no cache landed there either), so its absence proves no
+    // index was opened. The control: the same run with a working discovery (and a
+    // fetch that writes no cache) does create it.
+    expect(net.urls).toEqual([]);
     const indexDir = join(home, USAGE_INDEX_DIR_NAME);
     expect(existsSync(indexDir)).toBe(false);
     await captureAllWrites(() =>
@@ -732,8 +730,8 @@ test("runtime.timing.pricing is the wait for the price list alone, never the war
       const failed = await runtime(fakeFetch(null, { fail: true }));
       expect(failed.timing.pricing).toBe(0);
       expect(failed.timing.total).toBe(warnedMs);
-      // Seed the price cache with one fetched run; a fresh cache then answers before
-      // the reads finish, so the already-settled load reads as exactly 0, no warning.
+      // Seed the price cache with one fetched run; a fresh cache then answers without
+      // the network, so the load reads as exactly 0, no warning.
       await runtime(fakeFetch(PRICED_BODY));
       nowMs = 0;
       const cached = await runtime(fakeFetch(null, { fail: true }));

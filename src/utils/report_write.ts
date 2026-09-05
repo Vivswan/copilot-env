@@ -1,13 +1,19 @@
 // The one write-reporting seam: every file a command creates, rewrites, deletes, moves
-// or links is named on stderr -- "<kind> -> <path>" -- once per process, so nothing a
-// command does to the disk is hidden. Always stderr, written raw (not through consola,
-// whose level a CONSOLA_LEVEL could silence): the machine-readable stdout contracts
-// (`agent env`, `--json`, `auth --get`, the proxy-token key line) survive, and the lines
-// cannot be turned off.
+// or links OUTSIDE copilot-env's own homes is named on stderr -- "<kind> -> <path>" --
+// once per process, so nothing a command does to the user's disk is hidden. Always
+// stderr, written raw (not through consola, whose level a CONSOLA_LEVEL could silence):
+// the machine-readable stdout contracts (`agent env`, `--json`, `auth --get`, the
+// proxy-token key line) survive, and the lines cannot be turned off.
 //
 // Every raw filesystem mutation in src/ goes through the wrappers below (the lint rule
 // in test/lint/no_unreported_fs_writes.ts refuses a raw node:fs write anywhere else,
-// bar the lock protocol's internals in file_lock.ts). Two things are NOT reported:
+// bar the lock protocol's internals in file_lock.ts); the seam then decides what prints.
+// Three things are NOT reported:
+//   - copilot-env's own homes: everything INSIDE the install root (~/.copilot-env:
+//     versions, the current link, shims, caches) and the data home
+//     (~/.local/share/copilot-env: stores, lock sidecars, profile and daemon homes, the
+//     usage index) is internal bookkeeping. Each home's owner registers its root through
+//     hideWritesUnder; the roots THEMSELVES still report when created or removed.
 //   - scratch: a temp dir this process creates AND removes before it exits
 //     (scratchDir/removeScratchDir) -- nothing under it is a file the user keeps;
 //   - the transient side of a recipe: the temp file an atomic write publishes by
@@ -39,7 +45,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, join, sep } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { isEnoentOrNotdir } from "./fs.ts";
 import { sleepSync } from "./time.ts";
 
@@ -56,6 +62,28 @@ export type ScratchDir = string & { readonly [scratchBrand]: true };
 
 /** Temp roots this process owns for its own lifetime; writes under them are not reported. */
 const SCRATCH_ROOTS = new Set<string>();
+
+/** The resolvers of copilot-env's own homes (see the header), registered by each home's
+ *  owner when it loads: the data home by src/copilot_api/paths.ts, the install root by
+ *  src/utils/root.ts. Resolved per report, because a home follows the environment. */
+const INTERNAL_ROOTS: (() => string)[] = [];
+
+/** Register one of copilot-env's own homes: writes INSIDE it print nothing. */
+export function hideWritesUnder(root: () => string): void {
+  INTERNAL_ROOTS.push(root);
+}
+
+/** Whether `path` sits strictly inside one of the registered homes (the home itself is
+ *  a path the user sees come and go, so it is not inside). Compared as resolved paths,
+ *  case-insensitively on Windows. */
+function insideInternalRoot(path: string): boolean {
+  const fold = (p: string): string => {
+    const r = resolve(p);
+    return process.platform === "win32" ? r.toLowerCase() : r;
+  };
+  const target = fold(path);
+  return INTERNAL_ROOTS.some((root) => target.startsWith(fold(root()) + sep));
+}
 
 /** Non-null while reports are deferred to process exit (deferWriteReports). */
 let deferred: string[] | null = null;
@@ -85,7 +113,7 @@ function emit(line: string): void {
  *  through another API (the lock sidecar's create-on-open); everything else uses the
  *  wrappers below, which pick the kind themselves. */
 export function reportWrite(kind: WriteKind, path: string, detail?: string): void {
-  if (underScratch(path)) return;
+  if (underScratch(path) || insideInternalRoot(path)) return;
   const kinds = REPORTED.get(path) ?? new Set<WriteKind>();
   if (kind === "created" || kind === "rewritten") {
     if (kinds.has("created") || kinds.has("rewritten")) return;
@@ -169,17 +197,9 @@ function fingerprintTree(dir: string, rel: string, lines: string[]): boolean {
   return true;
 }
 
-const EVERY_TRANSITION: ReadonlySet<WriteKind> = new Set(["created", "rewritten", "deleted"]);
-
 /** Report what a second look at `path` PROVES changed since `was`: nothing when either
  *  look failed, or when the fingerprint is unchanged. */
-function reportTransition(
-  path: string,
-  was: Look,
-  kinds: ReadonlySet<WriteKind> = EVERY_TRANSITION,
-  detail?: string,
-  deep = false,
-): void {
+function reportTransition(path: string, was: Look, detail?: string, deep = false): void {
   const now = look(path, deep);
   if (was.kind === "unknown" || now.kind === "unknown") return;
   let kind: WriteKind;
@@ -193,55 +213,13 @@ function reportTransition(
   } else {
     return;
   }
-  if (kinds.has(kind)) reportWrite(kind, path, detail);
+  reportWrite(kind, path, detail);
 }
 
 /** The kind a write to `path` performs: creation when it is absent, else a rewrite (a
  *  look that failed reads as present, so the weaker claim is made). */
 function kindOf(was: Look): "created" | "rewritten" {
   return was.kind === "absent" ? "created" : "rewritten";
-}
-
-export interface ReportedPathsOptions {
-  /** The transitions to report (default: created, rewritten and deleted). A read-only
-   *  consumer of a file another process may be appending to names only created/deleted,
-   *  so the other writer's rewrite is never attributed to it. */
-  kinds?: readonly ("created" | "rewritten" | "deleted")[];
-}
-
-/**
- * Run `fn` and name every one of `paths` it provably created, rewrote or removed -- for
- * writes another library makes on our behalf (SQLite's database and WAL sidecars, a
- * `deno cache` run), where the mutation is not ours to wrap. Judged by a look before
- * and after, on every exit path. `fn` must be synchronous: the after-look has to run
- * once the mutation is over, which a promise the helper does not await would defeat, so
- * a thenable result is refused. Known blind spot, accepted: a path created and removed
- * INSIDE fn (absent before and after) reports nothing.
- */
-export function withReportedPaths<T>(
-  paths: readonly string[],
-  fn: () => T,
-  options: ReportedPathsOptions = {},
-): T {
-  const kinds: ReadonlySet<WriteKind> = options.kinds === undefined
-    ? EVERY_TRANSITION
-    : new Set(options.kinds);
-  const before = paths.map((path) => [path, look(path, true)] as const);
-  let result: T;
-  try {
-    result = fn();
-  } finally {
-    for (const [path, was] of before) reportTransition(path, was, kinds, undefined, true);
-  }
-  if (isThenable(result)) {
-    throw new Error("withReportedPaths fn returned a promise; it must be synchronous");
-  }
-  return result;
-}
-
-function isThenable(value: unknown): boolean {
-  return (typeof value === "object" || typeof value === "function") && value !== null &&
-    typeof (value as { then?: unknown }).then === "function";
 }
 
 // --- deferral --------------------------------------------------------------------------
@@ -276,7 +254,7 @@ export function writeFileReported(
   try {
     writeFileSync(path, data, { mode: options?.mode });
   } catch (err) {
-    reportTransition(path, was, EVERY_TRANSITION, "write failed");
+    reportTransition(path, was, "write failed");
     throw err;
   }
   reportWrite(kindOf(was), path, options?.detail);
@@ -287,7 +265,7 @@ export function copyFileReported(from: string, to: string, detail?: string): voi
   try {
     copyFileSync(from, to);
   } catch (err) {
-    reportTransition(to, was, EVERY_TRANSITION, "copy failed");
+    reportTransition(to, was, "copy failed");
     throw err;
   }
   reportWrite(kindOf(was), to, detail);
@@ -335,7 +313,7 @@ export function removeTreeReported(path: string, detail?: string): boolean {
   try {
     rmSync(path, { recursive: true, force: true });
   } catch (err) {
-    reportTransition(path, was, EVERY_TRANSITION, "partly removed", true);
+    reportTransition(path, was, "partly removed", true);
     throw err;
   }
   reportWrite("deleted", path, detail);
@@ -351,7 +329,7 @@ function dropTransient(path: string, was: Look, recursive = false): void {
   try {
     rmSync(path, { recursive, force: true });
   } catch {
-    reportTransition(path, was, EVERY_TRANSITION, "left behind", recursive);
+    reportTransition(path, was, "left behind", recursive);
   }
 }
 
@@ -377,7 +355,7 @@ export function renameReported(from: string, to: string): void {
       cpSync(from, to, { recursive: true, verbatimSymlinks: true });
     } catch (err) {
       // A partial copy is a change.
-      reportTransition(to, was, EVERY_TRANSITION, "copy failed", true);
+      reportTransition(to, was, "copy failed", true);
       throw err;
     }
     try {
@@ -385,7 +363,7 @@ export function renameReported(from: string, to: string): void {
     } catch (err) {
       // The copy landed but the source would not (fully) go: no move happened.
       reportWrite(kindOf(was), to);
-      reportTransition(from, source, EVERY_TRANSITION, "partly removed", true);
+      reportTransition(from, source, "partly removed", true);
       throw err;
     }
   }

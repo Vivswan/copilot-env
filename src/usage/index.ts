@@ -24,12 +24,7 @@ import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import { BOUNDED_LOCK_POLICY, type LockPolicy, withFileLockSync } from "../utils/file_lock.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import {
-  chmodReported,
-  mkdirReported,
-  removeReported,
-  withReportedPaths,
-} from "../utils/report_write.ts";
+import { chmodReported, mkdirReported, removeReported } from "../utils/report_write.ts";
 import {
   type ClaudeContribution,
   type CodexContribution,
@@ -374,13 +369,11 @@ export interface UsageIndex {
 
 class SqliteUsageIndex implements UsageIndex {
   readonly #db: DatabaseSync;
-  readonly #dbPath: string;
   readonly #lockPath: string;
   readonly #lockPolicy: LockPolicy;
 
-  constructor(db: DatabaseSync, dbPath: string, lockPath: string, lockPolicy: LockPolicy) {
+  constructor(db: DatabaseSync, lockPath: string, lockPolicy: LockPolicy) {
     this.#db = db;
-    this.#dbPath = dbPath;
     this.#lockPath = lockPath;
     this.#lockPolicy = lockPolicy;
   }
@@ -439,7 +432,7 @@ class SqliteUsageIndex implements UsageIndex {
     if (writes.length === 0) return 0;
     return withFileLockSync(this.#lockPath, this.#lockPolicy, (outcome) => {
       if (!outcome.held) return null;
-      return withReportedPaths(dbFiles(this.#dbPath), () => this.#write(writes));
+      return this.#write(writes);
     });
   }
 
@@ -591,14 +584,12 @@ class SqliteUsageIndex implements UsageIndex {
   };
 
   close(): void {
-    withReportedPaths(dbFiles(this.#dbPath), () => {
-      try {
-        this.#db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-      } catch {
-        // a failed checkpoint leaves frames for the next open to replay; not an error
-      }
-      this.#db.close();
-    });
+    try {
+      this.#db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    } catch {
+      // a failed checkpoint leaves frames for the next open to replay; not an error
+    }
+    this.#db.close();
   }
 }
 
@@ -631,12 +622,6 @@ type OpenAttempt =
  *  as is. Only an EMPTY database gets our stamps; one with rows but no stamps is
  *  of unknown provenance and is stale like any other mismatch. */
 function tryOpenDb(dbPath: string, fingerprint: string): OpenAttempt {
-  // SQLite creates the database file and its sidecars on our behalf (the WAL switch and
-  // the schema below included); the whole attempt is watched so each is named.
-  return withReportedPaths(dbFiles(dbPath), () => tryOpenDbUnwatched(dbPath, fingerprint));
-}
-
-function tryOpenDbUnwatched(dbPath: string, fingerprint: string): OpenAttempt {
   let db: DatabaseSync;
   try {
     db = new DatabaseSync(dbPath);
@@ -686,13 +671,7 @@ type Relinquish =
 /** Close `db` and say whether its file may be unlinked: only after a WAL round trip
  *  (enter, then leave) proved no other WAL-mode connection holds it, or when the file
  *  is not a database at all. Anything else, a close failure included, fails closed. */
-function relinquishDb(db: DatabaseSync, dbPath: string): Relinquish {
-  // The journal-mode switch and the close can remove the WAL sidecars: watched, so a
-  // removal the rebuild's removeDbFiles then finds already gone is still named.
-  return withReportedPaths(dbFiles(dbPath), () => relinquishDbUnwatched(db));
-}
-
-function relinquishDbUnwatched(db: DatabaseSync): Relinquish {
+function relinquishDb(db: DatabaseSync): Relinquish {
   const journalModeSchema = v.object({ journal_mode: v.picklist(["wal", "delete"]) });
   const switchTo = (mode: "wal" | "delete"): Relinquish | null => {
     const row = v.safeParse(journalModeSchema, db.prepare(`PRAGMA journal_mode = ${mode}`).get());
@@ -721,13 +700,8 @@ function relinquishDbUnwatched(db: DatabaseSync): Relinquish {
   return verdict;
 }
 
-/** The database file and every sidecar SQLite may keep beside it. */
-function dbFiles(dbPath: string): string[] {
-  return DB_FILE_SUFFIXES.map((suffix) => `${dbPath}${suffix}`);
-}
-
 function removeDbFiles(dbPath: string): void {
-  for (const path of dbFiles(dbPath)) removeReported(path);
+  for (const suffix of DB_FILE_SUFFIXES) removeReported(`${dbPath}${suffix}`);
 }
 
 /** Open the usage index, creating or rebuilding it as needed, under the lock the
@@ -754,12 +728,12 @@ export function openUsageIndex(opts: OpenUsageIndexOptions = {}): UsageIndex | n
       return null;
     }
     const first = tryOpenDb(dbPath, fingerprint);
-    if (first.kind === "ok") return new SqliteUsageIndex(first.db, dbPath, lockPath, lockPolicy);
+    if (first.kind === "ok") return new SqliteUsageIndex(first.db, lockPath, lockPolicy);
     if (first.db === null) {
       logger.warn(`could not open the usage index (${first.detail}); running without it.`);
       return null;
     }
-    const relinquished = relinquishDb(first.db, dbPath);
+    const relinquished = relinquishDb(first.db);
     if (relinquished.kind === "in-use") {
       logger.info(`usage index in use by another run (${first.detail}); running without it.`);
       return null;
@@ -776,10 +750,8 @@ export function openUsageIndex(opts: OpenUsageIndexOptions = {}): UsageIndex | n
       return null;
     }
     const second = tryOpenDb(dbPath, fingerprint);
-    if (second.kind === "ok") {
-      return new SqliteUsageIndex(second.db, dbPath, lockPath, lockPolicy);
-    }
-    if (second.db !== null) relinquishDb(second.db, dbPath);
+    if (second.kind === "ok") return new SqliteUsageIndex(second.db, lockPath, lockPolicy);
+    if (second.db !== null) relinquishDb(second.db);
     logger.warn(`could not create the usage index (${second.detail}).`);
     return null;
   });

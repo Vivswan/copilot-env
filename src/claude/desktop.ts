@@ -275,8 +275,6 @@ function entryExists(path: string): boolean {
 
 /** The two kinds of Claude Desktop artifact, as a removal's report names them. */
 const ENTRY = "Claude Desktop entry";
-const HELPER = "Claude Desktop credential helper";
-
 // --- payload ---------------------------------------------------------------------
 
 /** One inferenceModels row (Desktop's documented shape). */
@@ -470,9 +468,9 @@ export function writeDesktopHelperScript(mode: ProfileMode, profile: Profile): s
   const body = desktopHelperBody(mode, profile);
   const path = desktopHelperPath(resolveRootHome(), mode, profile);
   if (readFileOrNull(path) !== body) {
-    atomicWriteFile(path, body, 0o755, HELPER);
+    atomicWriteFile(path, body, 0o755);
   } else if (!helperExecutable(path)) {
-    chmodReported(path, 0o755, `${HELPER} made executable`);
+    chmodReported(path, 0o755);
   }
   return path;
 }
@@ -495,7 +493,7 @@ function helperExecutable(path: string): boolean {
 /** Remove the OTHER mode's helper script for `profile` -- called post-save on a wire. */
 export function retireDesktopHelperScript(mode: ProfileMode, profile: Profile): void {
   const other: ProfileMode = mode === "direct" ? "proxy" : "direct";
-  removeReported(desktopHelperPath(resolveRootHome(), other, profile), HELPER);
+  removeReported(desktopHelperPath(resolveRootHome(), other, profile));
 }
 
 // --- wiring ------------------------------------------------------------------------
@@ -897,8 +895,8 @@ function removeOwned(
 /** Both modes' helper scripts for `profile`, removed when present. */
 function removeHelperScripts(profile: Profile): void {
   const rootHome = resolveRootHome();
-  removeReported(desktopHelperPath(rootHome, "direct", profile), HELPER);
-  removeReported(desktopHelperPath(rootHome, "proxy", profile), HELPER);
+  removeReported(desktopHelperPath(rootHome, "direct", profile));
+  removeReported(desktopHelperPath(rootHome, "proxy", profile));
 }
 
 /** The filename grammar desktopHelperPath produces (either platform's extension). */
@@ -954,7 +952,7 @@ export function removeAllClaudeDesktopWiring(
   removeUnlistedClaudeDesktopClaims(dirOverride, (path) => planned.has(path));
   // Helper scripts live under the root home, which uninstall deletes wholesale right
   // after this step -- still removed here so the step is complete on its own.
-  for (const path of artifacts.helpers) removeReported(path, HELPER);
+  for (const path of artifacts.helpers) removeReported(path);
 }
 
 /** The `claude-desktop false` sweep: every owned claim POSITIVELY attributed to a named
@@ -982,7 +980,7 @@ export function removeUnmanagedClaudeDesktopWiring(opts: { quiet?: boolean } = {
   if (removeOwnedEntries((e) => sweepable(e.path)) === "blocked") return;
   removeUnlistedClaudeDesktopClaims(undefined, sweepable);
   for (const path of presentDesktopHelperScripts(resolveRootHome())) {
-    if (desktopHelperScriptWiring(basename(path))?.profile !== null) removeReported(path, HELPER);
+    if (desktopHelperScriptWiring(basename(path))?.profile !== null) removeReported(path);
   }
   if (!opts.quiet) announceUnmanagedDefault();
 }

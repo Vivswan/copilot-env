@@ -1,28 +1,21 @@
-import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  renameSync,
-  rmSync,
-  statSync,
-  symlinkSync,
-  utimesSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { resolveRootHome } from "../src/copilot_api/paths.ts";
 import {
   atomicWriteFile,
   deferWriteReports,
   flushWriteReports,
+  mkdirReported,
   removeScratchDir,
   type ScratchDir,
   scratchDir,
-  withReportedPaths,
   writeFileReported,
 } from "../src/utils/report_write.ts";
 import { CHILD_VALUES, childValuesEnv, importSpecifier, ROOT, runScript } from "./helpers/run.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateAgentHomes } from "./helpers.ts";
+import { expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+
+const restoreEnv = envSnapshot();
 
 // The seam's contract is per PROCESS (dedup, stderr-only, immune to the consola level),
 // so it is pinned from outside: one child runs every kind and the parent reads what
@@ -31,7 +24,7 @@ import { expect, test } from "./helpers/testing.ts";
 const SEAM = join(ROOT, "src", "utils", "report_write.ts");
 
 test("every kind prints once per process, on stderr only, and a delete re-arms the path", () => {
-  const dir = mkdtempSync(join(tmpdir(), "copilot-report-"));
+  const dir = tempDir("copilot-report-");
   try {
     mkdirSync(join(dir, "occupied"));
     const script = join(dir, "worker.ts");
@@ -105,62 +98,7 @@ test("every kind prints once per process, on stderr only, and a delete re-arms t
       "",
     ]);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("a deep look sees a nested rewrite the root's own metadata would hide", () => {
-  const dir = mkdtempSync(join(tmpdir(), "copilot-report-"));
-  try {
-    const tree = join(dir, "tree");
-    mkdirSync(join(tree, "inner"), { recursive: true });
-    const nested = join(tree, "inner", "data.bin");
-    writeFileSync(nested, "aaaa");
-    // The original's mtime is pinned to the past: an equal-size rewrite landing within
-    // the same mtime tick as the original write is the seam's documented proven-only
-    // miss (same dev/ino/mtime/size, no transition), and the test must not depend on
-    // the platform's tick (rm + write below may also change the inode, but nothing here
-    // relies on that).
-    utimesSync(nested, new Date(0), new Date(0));
-    // A future-dated sibling pins the tree's latest mtime; the rewrite below keeps the
-    // nested file's size, so only its identity/mtime moves.
-    writeFileSync(join(tree, "inner", "pinned"), "");
-    utimesSync(
-      join(tree, "inner", "pinned"),
-      new Date(Date.now() + 86_400_000),
-      new Date(Date.now() + 86_400_000),
-    );
-    utimesSync(join(tree, "inner"), new Date(0), new Date(0));
-    utimesSync(tree, new Date(0), new Date(0));
-    deferWriteReports();
-    withReportedPaths([tree], () => {
-      rmSync(nested);
-      writeFileSync(nested, "bbbb");
-      utimesSync(join(tree, "inner"), new Date(0), new Date(0));
-    });
-    expect(flushWriteReports()).toEqual([`rewritten -> ${tree}`]);
-    // Unchanged tree: nothing.
-    deferWriteReports();
-    withReportedPaths([tree], () => {});
-    expect(flushWriteReports()).toEqual([]);
-    // A topology change with every directory's metadata pinned back: the moved entry is
-    // the same inode under a new relative path, and that alone is a rewrite of the tree
-    // (a fresh tree: the first one's rewrite is already on record for this process).
-    const tree2 = join(dir, "tree2");
-    mkdirSync(join(tree2, "inner"), { recursive: true });
-    writeFileSync(join(tree2, "peer"), "");
-    const pin = (): void => {
-      for (const d of [tree2, join(tree2, "inner")]) utimesSync(d, new Date(0), new Date(0));
-    };
-    pin();
-    deferWriteReports();
-    withReportedPaths([tree2], () => {
-      renameSync(join(tree2, "peer"), join(tree2, "inner", "peer"));
-      pin();
-    });
-    expect(flushWriteReports()).toEqual([`rewritten -> ${tree2}`]);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeDir(dir);
   }
 });
 
@@ -175,53 +113,6 @@ interface ContractCase {
 }
 
 const CONTRACTS: ContractCase[] = [
-  {
-    name: "kinds filter: a rewrite inside fn is not attributed when only created/deleted are asked",
-    setup: (dir) => writeFileSync(join(dir, "wal"), "a"),
-    run: (dir) =>
-      withReportedPaths([join(dir, "wal")], () => writeFileSync(join(dir, "wal"), "ab"), {
-        kinds: ["created", "deleted"],
-      }),
-    lines: () => [],
-  },
-  {
-    name: "kinds default: the same rewrite is named",
-    setup: (dir) => writeFileSync(join(dir, "wal"), "a"),
-    run: (dir) =>
-      withReportedPaths([join(dir, "wal")], () => writeFileSync(join(dir, "wal"), "ab")),
-    lines: (dir) => [`rewritten -> ${join(dir, "wal")}`],
-  },
-  {
-    name: "a thenable result is refused",
-    run: () => {
-      expect(() => withReportedPaths([], () => Promise.resolve())).toThrow("synchronous");
-    },
-    lines: () => [],
-  },
-  {
-    name: "a dangling symlink is present (lstat), so removing it is a deletion",
-    skip: process.platform === "win32",
-    setup: (dir) => symlinkSync(join(dir, "missing-target"), join(dir, "dangling")),
-    run: (dir) => withReportedPaths([join(dir, "dangling")], () => rmSync(join(dir, "dangling"))),
-    lines: (dir) => [`deleted -> ${join(dir, "dangling")}`],
-  },
-  {
-    name: "a tree with an unlistable level cannot be judged: silent",
-    // mode 000 stops a user, never root (the container suite).
-    skip: process.platform === "win32" || process.getuid?.() === 0,
-    setup: (dir) => {
-      mkdirSync(join(dir, "tree", "sealed"), { recursive: true });
-      chmodSync(join(dir, "tree", "sealed"), 0o000);
-    },
-    run: (dir) => {
-      try {
-        withReportedPaths([join(dir, "tree")], () => writeFileSync(join(dir, "tree", "new"), ""));
-      } finally {
-        chmodSync(join(dir, "tree", "sealed"), 0o755);
-      }
-    },
-    lines: () => [],
-  },
   {
     name: "an atomic write whose temp path is occupied by a directory changes nothing: silent",
     setup: (dir) => mkdirSync(join(dir, `target.tmp.${process.pid}`)),
@@ -242,23 +133,23 @@ const CONTRACTS: ContractCase[] = [
   },
 ];
 
-test("the before/after contracts of withReportedPaths and the transient cleanup", () => {
+test("the transient cleanup names only a proven change", () => {
   for (const c of CONTRACTS) {
     if (c.skip) continue;
-    const dir = mkdtempSync(join(tmpdir(), "copilot-report-"));
+    const dir = tempDir("copilot-report-");
     try {
       c.setup?.(dir);
       deferWriteReports();
       c.run(dir);
       expect(flushWriteReports(), c.name).toEqual(c.lines(dir));
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      removeDir(dir);
     }
   }
 });
 
 test("scratch dirs are silent, and deferred reports come out at the flush in order", () => {
-  const dir = mkdtempSync(join(tmpdir(), "copilot-report-"));
+  const dir = tempDir("copilot-report-");
   try {
     deferWriteReports();
     const scratch = scratchDir(join(dir, "scratch-"));
@@ -294,6 +185,32 @@ test("scratch dirs are silent, and deferred reports come out at the flush in ord
     const ours = result.stderr.split("\n").filter((l) => !l.includes("Permissions in the config"));
     expect(ours).toEqual(["before-exit", `created -> ${join(dir, "late.txt")}`, ""]);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeDir(dir);
+  }
+});
+
+test("writes inside copilot-env's own homes print nothing; the same write outside does", () => {
+  const { dir: home, proxyHome } = isolateAgentHomes("copilot-report-scope-");
+  try {
+    const rootHome = resolveRootHome();
+    expect(rootHome).toBe(proxyHome);
+    deferWriteReports();
+    // The home itself is a path the user sees appear: named.
+    mkdirReported(rootHome);
+    // Inside it: a store, a lock sidecar's directory, a profile home -- bookkeeping.
+    writeFileReported(join(rootHome, ".copilot-env-state.json"), "{}");
+    mkdirReported(join(rootHome, "profiles", "work"));
+    // Outside it: the user's Codex config, named.
+    const codexConfig = join(home, ".codex", "config.toml");
+    mkdirReported(join(home, ".codex"));
+    writeFileReported(codexConfig, "");
+    expect(flushWriteReports()).toEqual([
+      `created -> ${rootHome}`,
+      `created -> ${join(home, ".codex")}`,
+      `created -> ${codexConfig}`,
+    ]);
+  } finally {
+    restoreEnv();
+    removeDir(home);
   }
 });

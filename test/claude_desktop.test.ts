@@ -931,18 +931,16 @@ test("sync reconciles from the key: on wires (every write announced), off remove
   const configPath = firstEntryPath(library);
   expect(existsSync(configPath)).toBe(true);
   // One line per path, exactly: the meaning rides on the write's line, never beside it.
-  expect(linesNaming(wired, helper)).toEqual([
-    `created -> ${helper} (Claude Desktop credential helper)`,
-  ]);
+  // The helper script lives inside the data home: written, never named.
+  expect(existsSync(helper)).toBe(true);
+  expect(linesNaming(wired, helper)).toEqual([]);
   expect(linesNaming(wired, metaPath)).toEqual([
     `created -> ${metaPath} (Claude Desktop config-library index)`,
   ]);
+  // The ledger is bookkeeping inside the data home: written, never named.
   const ledgerFile = new CopilotApiPaths().ownershipFile;
-  expect(linesNaming(wired, ledgerFile)).toEqual([
-    `created -> ${ledgerFile}.ops.lock.oslock`,
-    `created -> ${ledgerFile}.lock.oslock`,
-    `created -> ${ledgerFile} (artifact ownership ledger)`,
-  ]);
+  expect(existsSync(ledgerFile)).toBe(true);
+  expect(linesNaming(wired, ledgerFile)).toEqual([]);
   expect(linesNaming(wired, configPath)).toEqual([
     `created -> ${configPath} (Claude Desktop entry "copilot-env" (direct) wired; restart Claude Desktop to pick it up)`,
   ]);
@@ -977,7 +975,7 @@ test("sync reconciles from the key: on wires (every write announced), off remove
   // The meta and ledger rewrites are silent here: both files were announced when this
   // process created them (the seam names a path once).
   expect(removed).toContain(`deleted -> ${firstWork} (Claude Desktop entry)`);
-  expect(removed).toContain(`deleted -> ${workHelper} (Claude Desktop credential helper)`);
+  expect(existsSync(workHelper)).toBe(false); // in the data home: removed, never named
 
   // Off with a MALFORMED profile store: the per-write removal touches nothing (the same
   // guard as the whole-library sweep), and says why. Control: well-formed, it removes.
@@ -1263,9 +1261,8 @@ test.skipIf(process.platform === "win32")(
     rmSync(helper);
     symlinkSync(join(dir, "nowhere"), helper);
     expect(existsSync(helper)).toBe(false);
-    const out = await captureAllWrites(() => removeClaudeDesktopEntry(null));
-    expect(out).toContain(`deleted -> ${helper} (Claude Desktop credential helper)`);
-    expect(() => lstatSync(helper)).toThrow();
+    await captureAllWrites(() => removeClaudeDesktopEntry(null));
+    expect(() => lstatSync(helper)).toThrow(); // the dangling link went (in-home: unnamed)
   },
 );
 
@@ -1283,8 +1280,10 @@ test("reconcileClaudeDesktopWiring: orphans go when the key is on, the profiles'
   const workHelper = desktopHelperPath(resolveRootHome(), "direct", WORK);
   expect(resolveClaudeDesktopTargets()).toEqual({ kind: "resolved", targets: [] });
   const swept = await captureAllWrites(() => reconcileClaudeDesktopWiring());
+  // The library entries are the user's Desktop config: named. The helper scripts live in
+  // the data home: removed, never named.
+  for (const path of [configPath, workPath]) expect(swept).toContain(`deleted -> ${path}`);
   for (const path of [configPath, workPath, helper, workHelper]) {
-    expect(swept).toContain(`deleted -> ${path}`);
     expect(existsSync(path ?? "")).toBe(false);
   }
   expect(metaOf(library).entries).toEqual([]);

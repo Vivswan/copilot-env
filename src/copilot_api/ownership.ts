@@ -57,7 +57,6 @@ const LEDGER_KEYS = {
 /** What the ledger's write line says. Stable across claims on purpose: the seam names
  *  a path once per process, and one command records several artifacts (the artifact's
  *  own line already says which). */
-const LEDGER_DETAIL = "artifact ownership ledger";
 
 /** An ownership kind the ledger records (see the module header for each). */
 export type OwnedArtifactKind = keyof typeof LEDGER_KEYS;
@@ -145,7 +144,7 @@ export class OwnershipLedger {
         const list = ownedPathList(d[key]).filter((p) => p !== artifactPath);
         list.push(artifactPath);
         d[key] = list;
-      }, LEDGER_DETAIL);
+      });
     });
   }
 
@@ -160,7 +159,7 @@ export class OwnershipLedger {
         const list = ownedPathList(d[key]).filter((p) => p !== artifactPath);
         if (list.length === 0) delete d[key];
         else d[key] = list;
-      }, LEDGER_DETAIL);
+      });
     });
   }
 

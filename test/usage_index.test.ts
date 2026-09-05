@@ -39,7 +39,6 @@ import {
   type UsageIndex,
 } from "../src/usage/index.ts";
 import { releaseFileLock, tryAcquireFileLock } from "../src/utils/file_lock.ts";
-import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { captureAllWrites } from "./helpers/output.ts";
 import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 
@@ -251,30 +250,6 @@ function rawIndexBytes(): string {
 }
 
 // --- tests ----------------------------------------------------------------------
-
-test("the index names the database and sidecars SQLite creates, once per process", () => {
-  setup();
-  const a = join(logs, "a.jsonl");
-  writeLines(a, 0, 3, "alpha");
-  deferWriteReports();
-  const index = open();
-  const cold = flushWriteReports();
-  // The WAL switch and the schema create the sidecars beside the database; each is named.
-  for (const suffix of ["", "-wal", "-shm"]) {
-    expect(cold).toContain(`created -> ${dbPath()}${suffix}`);
-  }
-  deferWriteReports();
-  runReconcile(index.reconcile, [walked(a)]);
-  // Warm writes rewrite files this process already announced: nothing new to say.
-  expect(flushWriteReports().filter((line) => line.includes(dbPath()))).toEqual([]);
-  deferWriteReports();
-  index.close();
-  // The closing checkpoint removes the sidecars: a real deletion, named.
-  expect(flushWriteReports()).toEqual([
-    `deleted -> ${dbPath()}-wal`,
-    `deleted -> ${dbPath()}-shm`,
-  ]);
-});
 
 test("round trip: a second run reuses every row and reads no bytes", () => {
   setup();

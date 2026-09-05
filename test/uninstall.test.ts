@@ -11,7 +11,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { consola } from "consola";
 import { parse } from "smol-toml";
 import { configureClaudeConfig, WEBSEARCH_DENY_RULE } from "../src/claude/config.ts";
@@ -665,7 +665,11 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
     ctx.rootHome,
     ctx.installRoot.root,
   ];
-  expect(planned.filter((path) => !deleted.has(path))).toEqual([]);
+  // Inside the data home the removals are bookkeeping (never named); every planned
+  // path outside it, and the home itself, must have been named as deleted.
+  const outside = planned.filter((path) => !path.startsWith(ctx.rootHome + sep));
+  expect(outside.filter((path) => !deleted.has(path))).toEqual([]);
+  expect(outside).toContain(ctx.rootHome);
   // Negative control: the tmp root is a prefix of every named path and appears inside
   // the dry-run text, yet is not itself a named path.
   expect(dryRun.join(" ")).toContain(dir);

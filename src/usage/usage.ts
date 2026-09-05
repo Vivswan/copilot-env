@@ -23,12 +23,7 @@ import { errMessage } from "../utils/error.ts";
 import { entryAbsent, isDir, isEnoentOrNotdir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { dayKeyIn } from "../utils/time.ts";
-import {
-  copyFileReported,
-  removeScratchDir,
-  scratchDir,
-  withReportedPaths,
-} from "../utils/report_write.ts";
+import { copyFileReported, removeScratchDir, scratchDir } from "../utils/report_write.ts";
 import { canonicalModelName } from "./pricing.ts";
 
 /** The four priced token buckets every usage source reduces one event to. */
@@ -348,24 +343,15 @@ function withDbCopy<T>(path: string, query: (db: DatabaseSync) => T): T {
  * describes the real database, not the copy.
  */
 function openSqliteReadOnlyWithWalFallback<T>(path: string, query: (db: DatabaseSync) => T): T {
-  // A read-only open of a WAL database can still create the -shm wal-index beside it:
-  // SQLite's write, on our behalf, so the seam names it. Only created/deleted: the
-  // daemon may append to the live -wal meanwhile, and a read never rewrites anything.
-  return withReportedPaths(
-    SQLITE_SIDECAR_SUFFIXES.map((suffix) => `${path}${suffix}`),
-    () => {
-      try {
-        return withReadOnlyDb(path, query);
-      } catch (first) {
-        try {
-          return withDbCopy(path, query);
-        } catch {
-          throw first;
-        }
-      }
-    },
-    { kinds: ["created", "deleted"] },
-  );
+  try {
+    return withReadOnlyDb(path, query);
+  } catch (first) {
+    try {
+      return withDbCopy(path, query);
+    } catch {
+      throw first;
+    }
+  }
 }
 
 /**

@@ -1101,7 +1101,7 @@ function cleanupCodexCatalogArtifacts(catalogFile: string): void {
   const { deletionSafe } = stripCodexCatalogReferences(catalogFile);
   if (deletionSafe && fs.existsSync(catalogFile)) {
     try {
-      removeReported(catalogFile, "Codex model catalog");
+      removeReported(catalogFile);
     } catch (e) {
       logger.warn(`codex model catalog cleanup failed: ${errMessage(e)}`);
     }

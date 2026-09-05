@@ -16,7 +16,7 @@ import { OwnershipLedger, ProxyProjectionState } from "../src/copilot_api/owners
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, linesNaming } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -105,16 +105,13 @@ test("reads write nothing on a fresh home (no lock sidecar); a mutation takes th
     expect(ledger.ownedPaths("codexCatalog")).toEqual([]);
   })).toEqual([]);
   expect(readdirSync(dirname(paths.ownershipFile)).sort()).toEqual(before);
-  // The control, through the same capture: a mutation takes the ops lock (its sidecar
-  // lands and is reported) and writes the ledger.
+  // The control, on disk: a mutation takes the ops lock (its sidecar lands) and writes
+  // the ledger -- bookkeeping inside the data home, so it prints nothing either.
   const sidecar = `${paths.ownershipFile}.ops.lock.oslock`;
-  const lines = reported(() => ledger.record("claudeDesktop", "/lib/uuid.json"));
-  expect(linesNaming(lines.join("\n"), paths.ownershipFile)).toEqual([
-    `created -> ${sidecar}`,
-    `created -> ${paths.ownershipFile}.lock.oslock`,
-    `created -> ${paths.ownershipFile} (artifact ownership ledger)`,
-  ]);
+  expect(existsSync(sidecar)).toBe(false);
+  expect(reported(() => ledger.record("claudeDesktop", "/lib/uuid.json"))).toEqual([]);
   expect(existsSync(sidecar)).toBe(true);
+  expect(existsSync(paths.ownershipFile)).toBe(true);
 });
 
 test("a junk-degraded ledger owns less, never crashes; survivors come back trimmed", () => {

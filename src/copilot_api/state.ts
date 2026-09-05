@@ -75,9 +75,8 @@ export class CopilotEnvRunState {
     return v.parse(RUN_STATE_SCHEMA, this.store.load());
   }
 
-  /** Merge `patch` into the file; a `null` (or `undefined`) value deletes its key.
-   *  `detail` is what the write's report says about it. */
-  set(patch: StatePatch, detail?: string): void {
+  /** Merge `patch` into the file; a `null` (or `undefined`) value deletes its key. */
+  set(patch: StatePatch): void {
     this.store.update((d) => {
       for (const key of Object.keys(patch) as (keyof StatePatch)[]) {
         const value = patch[key];
@@ -87,7 +86,7 @@ export class CopilotEnvRunState {
           d[key] = value;
         }
       }
-    }, detail);
+    });
   }
 
   /**

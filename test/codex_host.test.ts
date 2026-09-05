@@ -329,7 +329,6 @@ skipWin(
       .map((rel) => join(sharedRoot, rel.slice(2)));
     const named = narratedPaths(narrated);
     for (const p of created) expect(named.has(p), p).toBe(true);
-    expect(named.has(storeFiles().state)).toBe(true);
     // One line per path, exactly. A line is about `p` when its subject (the line minus a
     // trailing parenthetical detail, where a link names its target) IS `p`: not a
     // descendant, not a sidecar sharing the prefix. Any shape of line whose subject is `p`
@@ -340,10 +339,8 @@ skipWin(
     expect(about(join(hostHome, "config.toml"))).toEqual([
       `created -> ${join(hostHome, "config.toml")} (Codex config)`,
     ]);
-    expect(linesNaming(narrated, storeFiles().state)).toEqual([
-      `created -> ${storeFiles().state}.lock.oslock`,
-      `created -> ${storeFiles().state} (active CODEX_HOME recorded)`,
-    ]);
+    // The run-state record is bookkeeping inside the data home: written, never named.
+    expect(linesNaming(narrated, storeFiles().state)).toEqual([]);
     for (const p of named) expect(about(p).length, p).toBe(1);
 
     // Host-local scratch dirs are real directories, never symlinks.

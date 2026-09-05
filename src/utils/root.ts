@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Profile } from "../copilot_api/profile.ts";
+import { hideWritesUnder } from "./report_write.ts";
 
 /**
  * How this copy of copilot-env is running, and the ON-DISK install root that follows.
@@ -412,3 +413,6 @@ export function agentLauncherCommand(subArgs: readonly string[]): {
   }
   return { command: AGENT_LAUNCHER, args: [...subArgs] };
 }
+
+// The install root is copilot-env's own: writes inside it are bookkeeping, never reported.
+hideWritesUnder(() => installStateRoot(PROJECT_ROOT));

@@ -1262,8 +1262,7 @@ test("the disabled sync names the file it deletes and every reference it strips;
   const cleaned = stderrOfSync(() => syncCodexCatalogReference());
   expect(asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json).toBeUndefined();
   expect(cleaned).toContain(`rewritten -> ${outside} (Codex config; model_catalog_json removed)`);
-  expect(cleaned).toContain(`deleted -> ${catalogFile} (Codex model catalog)`);
-  expect(existsSync(catalogFile)).toBe(false);
+  expect(existsSync(catalogFile)).toBe(false); // in the data home: removed, never named
   // A second disabled sync has nothing left to do, and says nothing.
   expect(stderrOfSync(() => syncCodexCatalogReference())).toBe("");
 });

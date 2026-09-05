@@ -20,7 +20,6 @@ import {
   patchModelCatalog,
   refreshCodexModelCatalogIfStale,
   resetCatalogProbeState,
-  UNVERIFIED_SUFFIX,
   withCatalogRefreshDeadline,
 } from "../src/codex/catalog.ts";
 import { DIRECT_AUTH_TIMEOUT_MS } from "../src/codex/config.ts";
@@ -675,9 +674,8 @@ test("generateCodexModelCatalog writes the patched catalog file", async () => {
   }
   expect(ok).toBe(true);
   const file = new CopilotApiPaths().codexModelCatalogFile;
-  // Nothing hidden: the write is named on stderr (stdout may be a token), once, and
-  // accepted means no caveat on it.
-  expect(linesNaming(narrated, file)).toEqual([`created -> ${file} (Codex model catalog)`]);
+  // The catalog lives inside the data home: written, never named (stdout may be a token).
+  expect(linesNaming(narrated, file)).toEqual([]);
   const written = JSON.parse(readFileSync(file, "utf8"));
   expect(written.models[0].context_window).toBe(1_050_000);
   expect(written.models[0].effective_context_window_percent).toBe(87);
@@ -740,7 +738,7 @@ test("a candidate the installed codex rejects is never written; an unverifiable 
   }
   expect(written).toBe(true);
   expect(existsSync(file)).toBe(true);
-  expect(narrated).toContain(`-> ${file} (Codex model catalog${UNVERIFIED_SUFFIX})`);
+  expect(linesNaming(narrated, file)).toEqual([]); // in the data home: unnamed
 });
 
 test("a failed regeneration never touches an existing (stale but valid) catalog", async () => {

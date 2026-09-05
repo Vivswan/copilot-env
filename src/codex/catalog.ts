@@ -707,15 +707,7 @@ export async function generateCodexModelCatalog(
       return false;
     }
     // 0600 like every file the store writes beside it (the home's own policy).
-    const file = new CopilotApiPaths().codexModelCatalogFile;
-    // The write's line (stderr: `agent auth --get` runs this too, and its stdout is the
-    // token) says what the file is; an unverified verdict says so on it.
-    atomicWriteFile(
-      file,
-      bytes,
-      0o600,
-      `Codex model catalog${verdict === null ? UNVERIFIED_SUFFIX : ""}`,
-    );
+    atomicWriteFile(new CopilotApiPaths().codexModelCatalogFile, bytes, 0o600);
     return true;
   } catch (e) {
     logger.warn(`codex model catalog generation failed: ${errMessage(e)}`);

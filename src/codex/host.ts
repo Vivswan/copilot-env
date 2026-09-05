@@ -619,12 +619,9 @@ export async function withCodexHostFarm(
   switch (plan.action) {
     case "build":
     case "verify": {
-      // Cleared here and re-recorded after the write below: the seam names a path once
-      // per process, so this first write's line names the record's role and nothing
-      // about a write that has not happened yet.
-      if (farm.active) {
-        state.set({ codexHome: null }, "active CODEX_HOME record, rewritten around the rebuild");
-      }
+      // Cleared here and re-recorded after the write below, so the record never
+      // outlives a proven farm.
+      if (farm.active) state.set({ codexHome: null });
       try {
         buildCodexSymlinkFarm(farm.hostHome);
       } catch (e: unknown) {
@@ -640,7 +637,7 @@ export async function withCodexHostFarm(
         logger.log(`  ✓ Per-host CODEX_HOME farm verified → ${farm.hostHome}`);
       }
       await write(farm.hostHome);
-      state.set({ codexHome: farm.hostHome }, "active CODEX_HOME recorded");
+      state.set({ codexHome: farm.hostHome });
       return;
     }
     case "remove":
@@ -656,7 +653,7 @@ export async function withCodexHostFarm(
       break;
   }
   if (state.read().codexHome !== undefined) {
-    state.set({ codexHome: null }, "active CODEX_HOME record cleared");
+    state.set({ codexHome: null });
   }
   await write(effectiveCodexHome());
 }

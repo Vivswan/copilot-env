@@ -2,7 +2,6 @@
 // It parses the flags into ONE action, dispatches the check/record-event probes, reports
 // the dry run, and orchestrates the live launch steps; every user-facing summary and
 // next-steps rendering lives here.
-import * as fs from "node:fs";
 import { consola } from "consola";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
@@ -31,6 +30,7 @@ import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
 import { assertNever } from "../utils/assert.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { formatDuration } from "../utils/time.ts";
+import { mkdirReported } from "../utils/report_write.ts";
 import { ensureAuthenticated } from "./auth.ts";
 import { unreadProjectedKeyWarnings } from "./config.ts";
 
@@ -360,7 +360,7 @@ export async function runStart(action: StartAction): Promise<void> {
   await withStartLock(async (lock) => {
     const ctx = launchContext();
     const paths = ctx.paths;
-    fs.mkdirSync(paths.runDir, { recursive: true });
+    mkdirReported(paths.runDir);
     // The float/floor gate runs INSIDE the start lock: it rewrites the shared daemon
     // config and re-warms the float's cache, so two concurrent starts must not run it
     // over each other. Its console narration still reaches the user unchanged.
@@ -374,7 +374,7 @@ export async function runStart(action: StartAction): Promise<void> {
       }
     }
 
-    fs.mkdirSync(paths.home, { recursive: true });
+    mkdirReported(paths.home);
     applyDefaultConfig(ctx.paths, ctx.envConfig);
     for (const warning of unreadProjectedKeyWarnings(ctx.envConfig)) {
       consola.warn(warning);

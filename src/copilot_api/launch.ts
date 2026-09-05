@@ -40,6 +40,7 @@ import {
 } from "./paths.ts";
 import { daemonLockHold, daemonLockHolderPid, daemonLockVerdict } from "../scripts/daemon_lock.ts";
 import { isStandaloneBinary } from "../utils/root.ts";
+import { mkdirReported, writeFileReported } from "../utils/report_write.ts";
 import { ensureSidecar, resolveDenoBin } from "./sidecar.ts";
 import {
   checkProxyPort,
@@ -108,7 +109,7 @@ const HELD_START_LOCK: HeldStartLock = Object.freeze({ held: true } as HeldStart
  *  (released on every exit path, in ONE owner), so an early return cannot leak it. */
 export function withStartLock<T>(fn: (lock: HeldStartLock) => Promise<T>): Promise<T> {
   const lockPath = startLockPath();
-  fs.mkdirSync(dirname(lockPath), { recursive: true });
+  mkdirReported(dirname(lockPath));
   return withFileLock(lockPath, {
     staleMs: Number.POSITIVE_INFINITY,
     waitMs: Number.POSITIVE_INFINITY,
@@ -849,7 +850,7 @@ export function spawnConfiguredDaemon(opts: {
     // Blank the log only HERE, at spawn time: a failure BEFORE launch -- a
     // login error, an identity-probe rejection -- keeps the previous run's log
     // around for diagnosis until a new daemon actually launches.
-    fs.writeFileSync(logFile, "");
+    writeFileReported(logFile, "");
     return launchDaemon({
       port: p,
       logFile,

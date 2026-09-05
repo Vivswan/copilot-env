@@ -60,6 +60,7 @@ import {
 } from "../utils/fs.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { mkdirReported, removeReported, writeFileReported } from "../utils/report_write.ts";
 import {
   agentAuthGetArgs,
   agentLauncherCommand,
@@ -533,14 +534,14 @@ function loadSettings(settingsPath: string): Record<string, unknown> {
 }
 
 function saveSettings(settingsPath: string, doc: Record<string, unknown>): void {
-  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-  fs.writeFileSync(settingsPath, `${JSON.stringify(doc, null, 2)}\n`);
+  mkdirReported(path.dirname(settingsPath));
+  writeFileReported(settingsPath, `${JSON.stringify(doc, null, 2)}\n`);
 }
 
 /** Persist a STRIPPED settings doc: a doc emptied entirely removes the file
  *  itself (never a lone `{}` left behind), anything else is saved. */
 function saveOrRemoveSettings(settingsPath: string, doc: Record<string, unknown>): void {
-  if (Object.keys(doc).length === 0) fs.rmSync(settingsPath, { force: true });
+  if (Object.keys(doc).length === 0) removeReported(settingsPath);
   else saveSettings(settingsPath, doc);
 }
 
@@ -761,7 +762,7 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
     );
   }
   try {
-    fs.mkdirSync(claudeHome, { recursive: true });
+    mkdirReported(claudeHome);
   } catch (e) {
     throw new Error(`could not create Claude config directory ${claudeHome}: ${errMessage(e)}`);
   }
@@ -871,28 +872,18 @@ function checkClaudeConfig(): void {
  * file while keeping the settings key would leave dangling wiring. Used by
  * `agent profile --del`.
  */
-/** Remove a legacy helper file by name. rmSync's `force` tolerates ENOENT but
- *  not ENOTDIR; a helper path under a non-directory home is equally "nothing
- *  there" (the same absence readTextResult reports for the settings file). */
-function removeLegacyHelperFile(path: string): void {
-  try {
-    fs.rmSync(path, { force: true });
-  } catch (e) {
-    if (!isEnoentOrNotdir(e)) throw e;
-  }
-}
 
 export function removeClaudeProfile(claudeHome: string, name: ProfileName): void {
   const settingsPath = settingsPathFor(claudeHome, name);
   const wiring = inspectClaudeWiring(readTextResult(settingsPath), claudeHome, 0, name);
   if (wiring.providerMode === "other") return;
   if (wiring.wired) {
-    fs.rmSync(settingsPath, { force: true });
+    removeReported(settingsPath);
   }
   // Managed or unconfigured: any files at the legacy names are ours (or orphans
   // nothing points at) -- remove them by name (the inline wiring writes none).
-  removeLegacyHelperFile(directHelperPath(claudeHome, name));
-  removeLegacyHelperFile(proxyHelperPath(claudeHome, name));
+  removeReported(directHelperPath(claudeHome, name));
+  removeReported(proxyHelperPath(claudeHome, name));
 }
 
 /** What removeClaudeDefaultWiring left behind, for the caller to sequence on. */
@@ -965,8 +956,8 @@ export function removeClaudeDefaultWiring(claudeHome: string): ClaudeDefaultWiri
     if (saved) commit();
   }
   if (wiring.providerMode !== "other") {
-    removeLegacyHelperFile(directHelperPath(claudeHome));
-    removeLegacyHelperFile(proxyHelperPath(claudeHome));
+    removeReported(directHelperPath(claudeHome));
+    removeReported(proxyHelperPath(claudeHome));
   }
   return { ownedDenyRemains: new OwnershipLedger().owns("webSearchDeny", settingsPath) };
 }

@@ -252,9 +252,10 @@ describe("downloadSidecar", () => {
       "arch": "arm64",
       "runner": (command, args) => {
         runnerCalls.push({ command, "args": [...args] });
-        // The zip must be fully on disk when the extractor runs.
+        // The zip must be fully on disk when the extractor runs, and the extraction
+        // target (`-d`) is where the binary appears before it is moved into place.
         expect(existsSync(args[2] ?? "")).toBe(true);
-        writeFileSync(sidecarBinPath(dir, PIN, "darwin"), "#!fake deno");
+        writeFileSync(join(args[4] ?? "", "deno"), "#!fake deno");
         return { "status": 0, "stderr": "" };
       },
     });

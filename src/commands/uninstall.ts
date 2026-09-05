@@ -4,7 +4,7 @@
 // integration, delete the copilot-api home, and finally the install root
 // itself. Destructive, so it confirms interactively (`--yes` for headless use)
 // and offers `--dry-run`. Idempotent: a second run finds nothing and exits 0.
-import { existsSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { consola } from "consola";
 import { removeClaudeDefaultWiring } from "../claude/config.ts";
@@ -34,6 +34,7 @@ import {
   rootMode,
 } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
+import { removeTreeReported } from "../utils/report_write.ts";
 import { deleteProfileEverywhere } from "./profile.ts";
 
 export interface UninstallArgs {
@@ -97,7 +98,7 @@ function recordedCodexHostFarm(): string | null {
 function removeCodexHostFarm(): void {
   const recorded = recordedCodexHostFarm();
   if (recorded === null) return;
-  rmSync(recorded, { recursive: true, force: true });
+  removeTreeReported(recorded);
   new CopilotEnvRunState().set({ codexHome: null });
 }
 
@@ -136,7 +137,7 @@ interface UninstallContext {
   /** The root is protected (a source checkout) and `--force` was not given. */
   skipRootDelete: boolean;
   deps: UninstallDeps;
-  /** Set by the install-root step when its rmSync could not finish. */
+  /** Set by the install-root step when its removal could not finish. */
   rootRemains: boolean;
 }
 
@@ -300,7 +301,7 @@ const UNINSTALL_STEPS: UninstallStep[] = [
       // Before the home goes: the float's cache is wherever its record points, which a
       // sidecar install can put OUTSIDE the home -- deleting the home alone would strand it.
       removeProxyFloatArtifacts(ctx.rootHome);
-      rmSync(ctx.rootHome, { recursive: true, force: true });
+      removeTreeReported(ctx.rootHome);
       consola.info(`Deleted the copilot-api home: ${ctx.rootHome}`);
     },
   },
@@ -346,7 +347,7 @@ const UNINSTALL_STEPS: UninstallStep[] = [
         // pass -- deletion may still succeed from the current cwd.
       }
       try {
-        rmSync(installRoot, { recursive: true, force: true });
+        removeTreeReported(installRoot);
         consola.info(`Deleted the install directory: ${installRoot}`);
       } catch {
         consola.warn(

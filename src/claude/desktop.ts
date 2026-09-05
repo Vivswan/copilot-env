@@ -30,13 +30,13 @@
 // the profile entries and leaves the default's in place, unmanaged (the user's from then
 // on; only uninstall removes it, since its helper script goes with the install). Every
 // file created, rewritten, or removed is announced.
-import { chmodSync, existsSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { codexUserAgent } from "../codex/config.ts";
 import type { ManagedWrite } from "../agents/configure.ts";
 import { fetchRawModels } from "../copilot_api/catalog.ts";
-import { atomicWriteFile } from "../copilot_api/config.ts";
+import { atomicWriteFile, chmodReported, removeReported } from "../utils/report_write.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { discoverServableClaudeModels } from "../copilot_api/discovery.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -276,8 +276,7 @@ function entryExists(path: string): boolean {
 
 /** Remove `path` when present, announcing the removal; absent means nothing to say. */
 function removeAnnounced(path: string): void {
-  if (!entryExists(path)) return;
-  rmSync(path, { force: true });
+  if (!removeReported(path)) return;
   logger.info(`  Claude Desktop: removed ${path}`);
 }
 
@@ -482,7 +481,7 @@ export function writeDesktopHelperScript(mode: ProfileMode, profile: Profile): s
     atomicWriteFile(path, body, 0o755);
     logger.info(`  Claude Desktop: wrote ${path}`);
   } else if (!helperExecutable(path)) {
-    chmodSync(path, 0o755);
+    chmodReported(path, 0o755);
     logger.info(`  Claude Desktop: made ${path} executable`);
   }
   return path;

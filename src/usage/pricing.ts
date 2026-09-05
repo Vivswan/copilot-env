@@ -12,7 +12,7 @@
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import * as v from "valibot";
-import { atomicWriteFile } from "../copilot_api/config.ts";
+import { atomicWriteFile } from "../utils/report_write.ts";
 import { canonicalPricingUrl, OPENROUTER_MODELS_URL } from "../copilot_api/env_config.ts";
 import { ONE_M_SUFFIX } from "../copilot_api/models.ts";
 import { readTextOrNull } from "../utils/fs.ts";

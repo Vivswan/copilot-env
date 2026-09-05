@@ -18,10 +18,17 @@
 // at a known-good deno, and tests point it anywhere. Per the repo-wide precedence it
 // beats every derived answer.
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, readFileSync, rmSync } from "node:fs";
-import { mkdir, open } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { open } from "node:fs/promises";
+import { basename, isAbsolute, join } from "node:path";
 import { ASSET_ROOT, devDenoExecPath, isStandaloneBinary } from "../utils/root.ts";
+import {
+  chmodReported,
+  mkdirReported,
+  removeScratchDir,
+  renameReported,
+  scratchDir,
+} from "../utils/report_write.ts";
 import { resolveRootHome } from "./paths.ts";
 import { sidecarSha256 } from "./sidecar_pins.ts";
 import { crypto } from "@std/crypto";
@@ -295,8 +302,12 @@ export async function downloadSidecar(
   }
 
   const destDir = join(rootHome, "deno", pin);
-  await mkdir(destDir, { "recursive": true });
-  const zipPath = join(destDir, `deno-${target}.zip.tmp.${process.pid}`);
+  mkdirReported(destDir);
+  // The archive and its extraction stay in scratch beside the destination (one
+  // filesystem, so the final placement is a rename): only a verified, fully
+  // extracted binary ever appears at the sidecar path.
+  const scratch = scratchDir(join(destDir, ".download-"));
+  const zipPath = join(scratch, `deno-${target}.zip`);
   try {
     const [toDisk, toHash] = response.body.tee();
     const [digest] = await Promise.all([
@@ -310,7 +321,7 @@ export async function downloadSidecar(
       );
     }
 
-    const { command, args } = unzipCommand(zipPath, destDir, platform);
+    const { command, args } = unzipCommand(zipPath, scratch, platform);
     const runner = seams.runner ?? defaultUnzipRunner;
     const result = await runner(command, args);
     if (result.status !== 0) {
@@ -322,15 +333,17 @@ export async function downloadSidecar(
     }
 
     const bin = sidecarBinPath(rootHome, pin, platform);
-    if (!existsSync(bin)) {
-      throw new Error(`extraction of ${zipPath} did not produce ${bin}`);
+    const extracted = join(scratch, basename(bin));
+    if (!existsSync(extracted)) {
+      throw new Error(`extraction of ${zipPath} did not produce ${extracted}`);
     }
+    renameReported(extracted, bin);
     if (platform !== "win32") {
-      chmodSync(bin, 0o755);
+      chmodReported(bin, 0o755);
     }
     return parseAbsolutePath(bin);
   } finally {
-    rmSync(zipPath, { "force": true });
+    removeScratchDir(scratch);
   }
 }
 

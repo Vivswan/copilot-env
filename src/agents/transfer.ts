@@ -19,7 +19,7 @@
 //
 // Cross-agent by nature (import re-wires BOTH Codex and Claude), so it lives in
 // src/agents/ beside wiring.ts and profile_wiring.ts.
-import { chmodSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import * as v from "valibot";
 import { claudeJsonPath } from "../claude/mcp_registration.ts";
@@ -61,6 +61,12 @@ import {
 } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
+import {
+  chmodReported,
+  mkdirReported,
+  removeReported,
+  writeFileReported,
+} from "../utils/report_write.ts";
 import { configureDefaultAgents } from "./configure_defaults.ts";
 import { reconcileClaudeDesktopWiring } from "./claude_desktop.ts";
 import { wireBothAgents } from "./profile_wiring.ts";
@@ -874,7 +880,7 @@ function pruneSettingsBackups(dir: string): void {
   }
   for (const name of names.slice(0, Math.max(0, names.length - SETTINGS_BACKUP_KEEP))) {
     try {
-      rmSync(join(dir, name), { force: true });
+      removeReported(join(dir, name));
     } catch {
       // best-effort: a stuck file only delays the next prune
     }
@@ -895,13 +901,13 @@ export function writeSettingsBackup(): string | null {
   const bundle = buildExportBundle({ withCredentials: true });
   if (bundleIsEmpty(bundle)) return null;
   const dir = settingsBackupDir();
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  mkdirReported(dir, 0o700);
   // mkdirSync's mode only applies on creation; a pre-existing looser dir must
   // still end up 0700 (it is about to hold plaintext tokens).
-  if (process.platform !== "win32") chmodSync(dir, 0o700);
+  if (process.platform !== "win32") chmodReported(dir, 0o700);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const path = join(dir, `settings-${stamp}-${String(++backupSeq).padStart(3, "0")}.json`);
-  writeFileSync(path, serializeSettingsBundle(bundle), { mode: 0o600 });
+  writeFileReported(path, serializeSettingsBundle(bundle), { mode: 0o600 });
   pruneSettingsBackups(dir);
   return path;
 }

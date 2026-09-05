@@ -22,6 +22,7 @@ import {
   CURRENT_LINK,
   currentLinkPath,
   flatArtifactPaths,
+  flatBinaryResiduePaths,
   INSTALL_ROOT_ENV,
   type InstallOptions,
   type InstallPlan,
@@ -43,6 +44,7 @@ import {
   wiredShellTargets,
   writeTopLevelShims,
 } from "../src/install/installer.ts";
+import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { installedBinaryName } from "../src/install/targets.ts";
 import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../src/shell/integration.ts";
 import { INSTALL_MANIFEST_FILE, INSTALL_ROOT_MARKERS } from "../src/utils/root.ts";
@@ -371,6 +373,59 @@ describe("the versioned full-install plan", () => {
     expect(readCurrentVersionName(dest)).toBe(VERSION_NAME);
   });
 
+  test("applying a plan names exactly the plan's paths: no live write without a plan entry", () => {
+    // A flat root with every superseded artifact present, a flat binary to relocate,
+    // and an `.old-` aside the pre-versioned Windows updater would have left.
+    writeAssetSource(dest);
+    rmSync(join(dest, "copilot-env.config"));
+    rmSync(join(dest, ".dvmrc"));
+    rmSync(join(dest, "deno.json"));
+    writeFileSync(join(dest, INSTALL_MANIFEST_FILE), "{}");
+    mkdirSync(join(dest, "node_modules"), { recursive: true });
+    const binarySource = writeFakeBinary(join(dest, "bin", installedBinaryName()), "BINARY");
+    writeFileSync(join(dest, "bin", `${installedBinaryName()}.old-1`), "OLD");
+    const plan = versionedPlan(QUIET, binarySource);
+    if (plan.kind !== "versioned" || plan.binary === null) throw new Error("expected a binary");
+    expect(plan.flatBinaryRemovals.sort()).toEqual(
+      [binarySource, join(dest, "bin", `${installedBinaryName()}.old-1`)].sort(),
+    );
+    // Planted AFTER planning: a sweep that recomputed its list at apply time would
+    // remove (and report) it; the plan-driven one must leave it alone.
+    writeFileSync(join(dest, "bun.lock"), "");
+
+    const created = [
+      ...plan.copies.map((c) => c.to),
+      ...plan.shims.map((s) => s.to),
+      plan.manifest.to,
+      plan.binary.to,
+      ...plan.topShims.map((s) => s.to),
+    ];
+    // Every directory the planned files need that does not exist yet, outermost first
+    // per file -- the seam names each one it makes.
+    const dirs: string[] = [];
+    for (const file of created) {
+      const missing: string[] = [];
+      for (let dir = dirname(file); !existsSync(dir) && !dirs.includes(dir); dir = dirname(dir)) {
+        missing.unshift(dir);
+      }
+      dirs.push(...missing);
+    }
+    const expected = [
+      ...dirs.map((d) => `created -> ${d}`),
+      ...created.map((f) => `created -> ${f}`),
+      `linked -> ${currentLinkPath(dest)} (to ${join(VERSIONS_DIR, VERSION_NAME)})`,
+      ...plan.flatRemovals.map((p) => `deleted -> ${p}`),
+      ...plan.flatPrunes.map((p) => `deleted -> ${p}`),
+      ...plan.flatBinaryRemovals.map((p) => `deleted -> ${p}`),
+    ];
+
+    deferWriteReports();
+    applyInstallPlan(plan);
+    const reported = flushWriteReports();
+    expect(reported.sort()).toEqual(expected.sort());
+    expect(existsSync(join(dest, "bun.lock"))).toBe(true);
+  });
+
   skipWin("wires the shell through the INSTALLED binary, aimed at the current link", () => {
     // The installing process may be rooted at the flat top, so only the
     // installed binary (aimed at <top>/current) derives rc paths that survive
@@ -489,9 +544,9 @@ describe("the current link primitives", () => {
     // The identical-text shortcut must not freeze a broken mode: a crash
     // between an earlier write and its chmod would otherwise persist forever.
     writeTopLevelShims(dest);
-    chmodSync(join(dest, "bin", "agent"), 0o644);
+    chmodSync(join(dest, "bin", "agent"), 0o655); // others may run it, the owner may not
     writeTopLevelShims(dest);
-    expect(statSync(join(dest, "bin", "agent")).mode & 0o111).not.toBe(0);
+    expect(statSync(join(dest, "bin", "agent")).mode & 0o100).not.toBe(0);
   });
 
   test("removeVersionDirsExcept keeps exactly the named versions", () => {
@@ -513,7 +568,7 @@ describe("the current link primitives", () => {
     writeFileSync(join(dest, "bin", name), "flat");
     writeFileSync(join(dest, "bin", `${name}.old-123`), "aside");
     writeFileSync(join(dest, "bin", "agent"), "shim");
-    removeFlatBinaryResidue(dest);
+    removeFlatBinaryResidue(flatBinaryResiduePaths(dest));
     expect(existsSync(join(dest, "bin", name))).toBe(false);
     expect(existsSync(join(dest, "bin", `${name}.old-123`))).toBe(false);
     expect(existsSync(join(dest, "bin", "agent"))).toBe(true);

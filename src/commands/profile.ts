@@ -7,7 +7,6 @@
 // from it. The DEFAULT setup stays with `agent init`/`agent claude`/`agent
 // codex`; `agent auth --profile <name>` remains the re-auth path for an existing
 // profile's credential.
-import { rmSync } from "node:fs";
 import { consola } from "consola";
 import { reconcileClaudeDesktopWiring } from "../agents/claude_desktop.ts";
 import { configuringLine, type ManagedWrite } from "../agents/configure.ts";
@@ -37,6 +36,7 @@ import { cyan, gray, green, yellow } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { removeTreeReported } from "../utils/report_write.ts";
 import { acquireCredential, type CredentialAcquisition, parseAcquisition } from "./auth.ts";
 
 // Narration to stderr so `--settings-for`'s stdout stays a clean machine-readable path.
@@ -213,7 +213,7 @@ export async function deleteProfileEverywhere(name: ProfileName): Promise<void> 
   }
   for (const agent of bothAgents()) agent.removeProfile(name);
   new CopilotEnvState().deleteProfile(name);
-  rmSync(profileHome(name), { recursive: true, force: true });
+  removeTreeReported(profileHome(name));
 }
 
 /**

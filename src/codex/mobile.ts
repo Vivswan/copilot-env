@@ -12,6 +12,7 @@ import { parse, stringify } from "smol-toml";
 import { runCaptured } from "../utils/command.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { removeReported, writeFileReported } from "../utils/report_write.ts";
 import { inspectCatalogFile } from "./catalog.ts";
 import { effectiveCodexHome } from "./host.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath } from "./paths.ts";
@@ -415,7 +416,7 @@ export async function runCodexMobile(): Promise<void> {
   const backupPath = `${configPath}.copilot-env-mobile.bak`;
   let backupWritten = false;
   try {
-    fs.writeFileSync(backupPath, original);
+    writeFileReported(backupPath, original);
     backupWritten = true;
     logger.log(`  ✓ Codex config backup written → ${backupPath}`);
   } catch {
@@ -446,7 +447,7 @@ export async function runCodexMobile(): Promise<void> {
     } catch {
       next = rebuildFromOriginal();
     }
-    fs.writeFileSync(configPath, next);
+    writeFileReported(configPath, next);
     logger.log(`  ✓ Codex config written → ${configPath} (model_provider "${provider}" restored)`);
   };
 
@@ -457,7 +458,7 @@ export async function runCodexMobile(): Promise<void> {
       restore();
     } catch {
       try {
-        fs.writeFileSync(configPath, rebuildFromOriginal());
+        writeFileReported(configPath, rebuildFromOriginal());
         logger.log(
           `  ✓ Codex config written → ${configPath} (model_provider "${provider}" restored)`,
         );
@@ -472,7 +473,7 @@ export async function runCodexMobile(): Promise<void> {
 
   try {
     // Drop the managed provider so the app pairs on its default OpenAI provider.
-    fs.writeFileSync(configPath, stripModelProvider(original));
+    writeFileReported(configPath, stripModelProvider(original));
     logger.log(
       `  ✓ Codex config written → ${configPath} (model_provider "${provider}" removed for pairing)`,
     );
@@ -504,7 +505,7 @@ export async function runCodexMobile(): Promise<void> {
     restore();
     if (backupWritten) {
       try {
-        fs.rmSync(backupPath);
+        removeReported(backupPath);
         logger.log(`  ✓ Codex config backup removed → ${backupPath}`);
       } catch {
         logger.warn(`Could not remove the backup at ${backupPath}.`);

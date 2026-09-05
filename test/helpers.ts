@@ -83,7 +83,7 @@ export function tmpDir(prefix: string): string {
  * rmSync -rf a temp dir (no-op on ""); returns "" so callers can `dir = removeDir(dir)`.
  * Windows can hold a handle (antivirus, the indexer, a just-killed child's executable
  * image) briefly past process death, so transient failures retry with backoff -- same
- * philosophy as renameWithRetry (src/copilot_api/config.ts); the final attempt rethrows.
+ * philosophy as renameWithRetry (src/utils/report_write.ts); the final attempt rethrows.
  */
 export function removeDir(dir: string): "" {
   if (!dir) return "";

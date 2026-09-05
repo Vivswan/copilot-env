@@ -1,6 +1,6 @@
 // Cross-platform shell/profile integration writer for the `agent` wrapper block.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { consola } from "consola";
@@ -8,6 +8,7 @@ import { consola } from "consola";
 import { isEnoent } from "../utils/fs.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
+import { mkdirReported, writeFileReported } from "../utils/report_write.ts";
 
 // `agent shell` owns wiring the copilot-env integration into the
 // user's shell startup -- the logic install.sh / install.ps1 used to duplicate.
@@ -308,8 +309,8 @@ function wireBlocks(files: string[], mainBlock: string): void {
     }
     // OneDrive-backed Documents folders are reparse points; Node's recursive mkdir throws
     // EEXIST on an existing reparse point instead of no-op'ing, so skip when it already exists.
-    if (!existsSync(dirname(file))) mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, upserted.content);
+    if (!existsSync(dirname(file))) mkdirReported(dirname(file));
+    writeFileReported(file, upserted.content);
     consola.success(`Wired shell integration into ${file}`);
   }
 }
@@ -326,7 +327,7 @@ function removeBlocksFrom(
     const content = readFileSync(file, "utf-8");
     const stripped = stripBlocks(content, markers);
     if (stripped.content === content) continue; // no owned block present
-    writeFileSync(file, stripped.content);
+    writeFileReported(file, stripped.content);
     warnLeftBehind(file, stripped.leftBehind);
     consola.success(removedMessage(file));
     removedAny = true;

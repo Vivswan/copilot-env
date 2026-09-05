@@ -32,20 +32,13 @@
 // discriminates in-place from the compiled modes.
 import { spawnSync } from "node:child_process";
 import {
-  chmodSync,
-  copyFileSync,
   existsSync,
   lstatSync,
-  mkdirSync,
   readdirSync,
   readFileSync,
   readlinkSync,
   realpathSync,
-  renameSync,
-  rmdirSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
+  statSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -60,6 +53,19 @@ import {
   windowsProfileTarget,
 } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
+import {
+  atomicSymlink,
+  atomicWriteFile,
+  chmodReported,
+  copyFileReported,
+  mkdirReported,
+  removeEmptyDirReported,
+  removeReported,
+  removeTreeReported,
+  RenameRefusedError,
+  symlinkReported,
+  writeFileReported,
+} from "../utils/report_write.ts";
 import {
   ASSET_ROOT,
   CURRENT_LINK,
@@ -120,6 +126,7 @@ export const MATERIALIZED_ASSET_FILES = [
   "src/utils/hostname.ts",
   "src/utils/json.ts",
   "src/utils/pid.ts",
+  "src/utils/report_write.ts",
   "src/utils/time.ts",
 ] as const;
 
@@ -226,17 +233,13 @@ export function pointCurrentAt(top: string, versionName: string): void {
     // the two calls -- microseconds, and repaired by re-running the update or
     // installer (both re-point the link).
     const previous = readCurrentTargetPath(top);
+    removeEmptyDirReported(link);
     try {
-      rmdirSync(link);
-    } catch (error) {
-      if ((error as { code?: string }).code !== "ENOENT") throw error;
-    }
-    try {
-      symlinkSync(versionRootPath(top, versionName), link, "junction");
+      symlinkReported(versionRootPath(top, versionName), link, "junction");
     } catch (error) {
       if (previous !== null) {
         try {
-          symlinkSync(previous, link, "junction");
+          symlinkReported(previous, link, "junction");
         } catch {
           // Double fault: the layout is now LINKLESS -- say so, instead of
           // reporting only the creation failure as if nothing else changed.
@@ -254,14 +257,11 @@ export function pointCurrentAt(top: string, versionName: string): void {
   // replace one. rmdirSync is non-recursive on purpose: an empty stray dir is
   // repaired, a non-empty one is unknown data and fails the flip loudly.
   try {
-    if (!lstatSync(link).isSymbolicLink()) rmdirSync(link);
+    if (!lstatSync(link).isSymbolicLink()) removeEmptyDirReported(link);
   } catch (error) {
     if ((error as { code?: string }).code !== "ENOENT") throw error;
   }
-  const staged = join(top, `.${CURRENT_LINK}-next-${process.pid}-${Date.now().toString(36)}`);
-  rmSync(staged, { force: true });
-  symlinkSync(join(VERSIONS_DIR, versionName), staged);
-  renameSync(staged, link);
+  atomicSymlink(join(VERSIONS_DIR, versionName), link);
 }
 
 /** The current link's raw target path (absolute on Windows, `\\?\` stripped),
@@ -287,26 +287,26 @@ export function readCurrentVersionName(top: string): string | null {
  *  user's PATH points at), else write beside and rename over. The direct-write
  *  fallback covers a rename refused by an open handle on the live file. */
 function writeShimFile(to: string, text: string, executable: boolean): void {
+  let current: string | null;
   try {
-    if (readFileSync(to, "utf-8") === text) {
-      // Text is current; still repair a lost exec bit (a crash between an
-      // earlier write and its chmod would otherwise persist across retries).
-      if (executable) chmodSync(to, 0o755);
-      return;
-    }
+    current = readFileSync(to, "utf-8");
   } catch {
-    // absent or unreadable: write it below
+    current = null; // absent or unreadable: write it below
   }
-  mkdirSync(dirname(to), { recursive: true });
-  const staged = `${to}.next-${process.pid}`;
-  writeFileSync(staged, text);
-  if (executable) chmodSync(staged, 0o755);
+  if (current === text) {
+    // Text is current; still repair a lost exec bit (a crash between an
+    // earlier write and its chmod would otherwise persist across retries).
+    if (executable && (statSync(to).mode & 0o100) === 0) chmodReported(to, 0o755);
+    return;
+  }
   try {
-    renameSync(staged, to);
-  } catch {
-    rmSync(staged, { force: true });
-    writeFileSync(to, text);
-    if (executable) chmodSync(to, 0o755);
+    atomicWriteFile(to, text, executable ? 0o755 : undefined);
+  } catch (error) {
+    // Only a refused publish falls back to the direct write; a failure to stage the
+    // text (disk full, I/O) propagates and never truncates the live shim.
+    if (!(error instanceof RenameRefusedError)) throw error;
+    writeFileReported(to, text);
+    if (executable) chmodReported(to, 0o755);
   }
 }
 
@@ -342,49 +342,78 @@ export function flatArtifactPaths(top: string): string[] {
   return names.map((name) => join(top, name)).filter(directoryEntryExists);
 }
 
-/** Remove the flat artifacts at `top` (best-effort, entry by entry), then prune
- *  the emptied `src` scaffolding the per-file removals leave behind. `keep`
- *  names entries to spare -- the shell payload stays whenever the rc/profile
- *  block still points at it (a stale payload that works beats a swept one a
- *  block still sources). */
+/** The flat `src` scaffolding directories at `top` that `removals` (flatArtifactPaths)
+ *  will leave EMPTY, innermost first -- exactly the ones the sweep then prunes. A
+ *  scaffolding dir holding anything else is not planned and stays. */
+export function flatScaffoldingPaths(top: string, removals: readonly string[]): string[] {
+  const going = new Set(removals);
+  const prunes: string[] = [];
+  for (const dir of [join("src", "copilot_api"), join("src", "utils"), "src"]) {
+    const path = join(top, dir);
+    let entries: string[];
+    try {
+      entries = readdirSync(path);
+    } catch {
+      continue; // absent (or unreadable, which the sweep would also leave alone)
+    }
+    if (entries.every((entry) => going.has(join(path, entry)))) {
+      going.add(path);
+      prunes.push(path);
+    }
+  }
+  return prunes;
+}
+
+/** Remove the flat artifacts `paths` (the plan's enumeration, best-effort entry by
+ *  entry), then prune the emptied scaffolding `prunes` (flatScaffoldingPaths). `keep`
+ *  names entries to spare -- the shell payload stays whenever the rc/profile block
+ *  still points at it (a stale payload that works beats a swept one a block still
+ *  sources). */
 export function removeFlatArtifacts(
-  top: string,
+  paths: readonly string[],
+  prunes: readonly string[],
   keep: ReadonlySet<string> = new Set(),
 ): void {
-  for (const path of flatArtifactPaths(top)) {
+  for (const path of paths) {
     if (keep.has(basename(path))) continue;
     try {
-      rmSync(path, { recursive: true, force: true });
+      removeTreeReported(path);
     } catch {
       // in use (Windows); harmless debris until something releases it
     }
   }
-  for (const dir of [join("src", "copilot_api"), join("src", "utils"), "src"]) {
+  for (const dir of prunes) {
     try {
-      rmdirSync(join(top, dir)); // non-recursive: only ever prunes an EMPTY dir
+      removeEmptyDirReported(dir); // non-recursive: only ever prunes an EMPTY dir
     } catch {
       // not empty or already gone -- either way, leave it
     }
   }
 }
 
-/** Remove the pre-versioned binary leftovers in `<top>/bin`: the flat-layout
+/** The pre-versioned binary leftovers in `<top>/bin`: the flat-layout
  *  `copilot-env(.exe)` (superseded by `versions/<v>/bin/...`) and any
- *  `.old-<ts>` aside files the pre-versioned Windows updater left. Best-effort:
- *  a still-running image refuses deletion and is swept by a later update. */
-export function removeFlatBinaryResidue(top: string): void {
+ *  `.old-<ts>` aside files the pre-versioned Windows updater left. */
+export function flatBinaryResiduePaths(top: string): string[] {
   const binDir = join(top, "bin");
   let entries: string[];
   try {
     entries = readdirSync(binDir);
   } catch {
-    return;
+    return [];
   }
   const liveName = installedBinaryName();
-  for (const entry of entries) {
-    if (entry !== liveName && !entry.startsWith(`${liveName}.old-`)) continue;
+  return entries
+    .filter((entry) => entry === liveName || entry.startsWith(`${liveName}.old-`))
+    .map((entry) => join(binDir, entry));
+}
+
+/** Remove the flat binary residue `paths` (flatBinaryResiduePaths, planned up front).
+ *  Best-effort: a still-running image refuses deletion and is swept by a later update. */
+export function removeFlatBinaryResidue(paths: readonly string[]): void {
+  for (const path of paths) {
     try {
-      rmSync(join(binDir, entry), { force: true });
+      removeReported(path);
     } catch {
       // still the running image (Windows); the next update sweeps it
     }
@@ -405,7 +434,7 @@ export function removeVersionDirsExcept(top: string, keep: ReadonlySet<string>):
   for (const entry of entries) {
     if (keep.has(entry)) continue;
     try {
-      rmSync(join(versionsDirPath(top), entry), { recursive: true, force: true });
+      removeTreeReported(join(versionsDirPath(top), entry));
     } catch {
       // in use; the next update retries
     }
@@ -529,6 +558,11 @@ export type InstallPlan =
     topShims: ShimWrite[];
     /** Pre-versioned artifacts at the top root, swept AFTER the flip. */
     flatRemovals: string[];
+    /** The flat `src` scaffolding those removals empty, pruned after them. */
+    flatPrunes: string[];
+    /** The flat binary and its `.old-` aside files, swept once the top shims dispatch
+     *  through the link. */
+    flatBinaryRemovals: string[];
     /** Shell wiring passes, run through the INSTALLED binary post-flip (this
      *  process may be rooted at the flat top, so its own PROJECT_ROOT-derived
      *  rc paths would not survive the layout change). */
@@ -779,6 +813,8 @@ export function buildInstallPlan(
       { to: join(top, "bin", "agent.ps1"), text: POWERSHELL_CURRENT_SHIM, executable: false },
     ],
     flatRemovals: flatArtifactPaths(top),
+    flatPrunes: flatScaffoldingPaths(top, flatArtifactPaths(top)),
+    flatBinaryRemovals: flatBinaryResiduePaths(top),
     shellWires: shell === null ? [] : [shell],
   };
 }
@@ -788,17 +824,17 @@ export function buildInstallPlan(
  *  path, which is only guaranteed readable through in-process reads. */
 function applyMaterialization(m: Materialization): void {
   for (const copy of m.copies) {
-    mkdirSync(dirname(copy.to), { recursive: true });
-    writeFileSync(copy.to, readFileSync(copy.from));
-    if (copy.executable) chmodSync(copy.to, 0o755);
+    mkdirReported(dirname(copy.to));
+    writeFileReported(copy.to, readFileSync(copy.from));
+    if (copy.executable) chmodReported(copy.to, 0o755);
   }
   for (const shim of m.shims) {
-    mkdirSync(dirname(shim.to), { recursive: true });
-    writeFileSync(shim.to, shim.text);
-    if (shim.executable) chmodSync(shim.to, 0o755);
+    mkdirReported(dirname(shim.to));
+    writeFileReported(shim.to, shim.text);
+    if (shim.executable) chmodReported(shim.to, 0o755);
   }
-  mkdirSync(dirname(m.manifest.to), { recursive: true });
-  writeFileSync(m.manifest.to, m.manifest.text);
+  mkdirReported(dirname(m.manifest.to));
+  writeFileReported(m.manifest.to, m.manifest.text);
 }
 
 /** Run each shell-integration pass through the INSTALLED binary, aimed at
@@ -839,10 +875,7 @@ export function applyInstallPlan(plan: InstallPlan): void {
   if (plan.kind === "installed") {
     applyMaterialization(plan);
     consola.success(`Installed the copilot-env runtime files into ${plan.root}`);
-    for (const path of plan.legacyRemovals) {
-      consola.info(`Removing superseded ${path} ...`);
-      rmSync(path, { recursive: true, force: true });
-    }
+    for (const path of plan.legacyRemovals) removeTreeReported(path);
   }
 
   if (plan.kind === "versioned") {
@@ -854,9 +887,9 @@ export function applyInstallPlan(plan: InstallPlan): void {
     // exactly what every pre-versioned release did on every install.
     applyMaterialization(plan);
     if (plan.binary !== null) {
-      mkdirSync(dirname(plan.binary.to), { recursive: true });
-      copyFileSync(plan.binary.from, plan.binary.to);
-      if (process.platform !== "win32") chmodSync(plan.binary.to, 0o755);
+      mkdirReported(dirname(plan.binary.to));
+      copyFileReported(plan.binary.from, plan.binary.to);
+      if (process.platform !== "win32") chmodReported(plan.binary.to, 0o755);
     }
     pointCurrentAt(plan.top, plan.versionName);
     for (const shim of plan.topShims) {
@@ -870,12 +903,15 @@ export function applyInstallPlan(plan: InstallPlan): void {
     // Shell wiring BEFORE the flat sweep: on a flat->versioned transition the
     // rc block still points at the flat payload, and the rewire must land
     // before that payload disappears -- a failed rewire keeps it in place.
+    // Each removal names itself as it happens (through the reporting seam), so
+    // nothing is announced that the keep set then spares.
     const wiredOk = wireShellsThroughInstalledBinary(plan.top, plan.versionRoot, plan.shellWires);
-    for (const path of plan.flatRemovals) {
-      consola.info(`Removing superseded ${path} ...`);
-    }
-    removeFlatArtifacts(plan.top, wiredOk ? new Set() : new Set(["shell"]));
-    removeFlatBinaryResidue(plan.top);
+    removeFlatArtifacts(
+      plan.flatRemovals,
+      plan.flatPrunes,
+      wiredOk ? new Set() : new Set(["shell"]),
+    );
+    removeFlatBinaryResidue(plan.flatBinaryRemovals);
     return;
   }
 
@@ -977,8 +1013,13 @@ export function adoptVersionedLayout(deps: AdoptVersionedLayoutDeps = {}): void 
       link,
       wiredShellTargets(),
     );
-    removeFlatArtifacts(shape.top, repaired ? new Set() : new Set(["shell"]));
-    removeFlatBinaryResidue(shape.top);
+    const flat = flatArtifactPaths(shape.top);
+    removeFlatArtifacts(
+      flat,
+      flatScaffoldingPaths(shape.top, flat),
+      repaired ? new Set() : new Set(["shell"]),
+    );
+    removeFlatBinaryResidue(flatBinaryResiduePaths(shape.top));
     consola.info("  already on the versioned layout.");
     return;
   }

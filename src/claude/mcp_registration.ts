@@ -12,7 +12,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { consola } from "consola";
-import { atomicWriteFile } from "../copilot_api/config.ts";
+import { atomicWriteFile } from "../utils/report_write.ts";
 import { MCP_SERVER_NAME } from "../mcp/server.ts";
 import { readTextResult } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";

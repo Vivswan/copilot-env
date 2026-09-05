@@ -20,10 +20,10 @@
 // This module is import-safe -- importing it never patches anything, so unit tests can
 // exercise the pure helpers. daemon_runtime_preload.ts is the tiny `--preload` entry
 // that installs the observer (the same split idle_watchdog.ts gets from its preload).
-import { rmSync } from "node:fs";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import type { Profile } from "../copilot_api/profile.ts";
+import { removeReported } from "../utils/report_write.ts";
 import { recordDaemonServer } from "./daemon_shutdown.ts";
 
 /** Persist the in-memory mark into the activity file at most this often (the file is for
@@ -110,7 +110,7 @@ export function persistedInferenceMs(profile: Profile = null): number {
  *  old daemon exiting could clobber its successor's mark). */
 export function clearPersistedInferenceActivity(profile: Profile = null): void {
   try {
-    rmSync(new CopilotApiPaths(profile).activityFile, { force: true });
+    removeReported(new CopilotApiPaths(profile).activityFile);
   } catch {
     // best-effort: a stale mark only staleness-skews the health display
   }

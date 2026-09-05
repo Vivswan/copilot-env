@@ -13,7 +13,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CopilotApiConfig, renameWithRetry } from "../src/copilot_api/config.ts";
+import { CopilotApiConfig } from "../src/copilot_api/config.ts";
+import { renameWithRetry } from "../src/utils/report_write.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 
 let dir = "";

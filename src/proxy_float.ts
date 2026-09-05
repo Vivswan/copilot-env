@@ -49,12 +49,12 @@
 import "./utils/dotenv.ts";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, rmSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createConsola } from "consola";
 import * as v from "valibot";
 import { proxyUnusedEverywhere } from "./agents/wiring.ts";
-import { atomicWriteFile } from "./copilot_api/config.ts";
+import { atomicWriteFile, removeReported, removeTreeReported } from "./utils/report_write.ts";
 import { CopilotEnvConfig } from "./copilot_api/env_config.ts";
 import { resolveRootHome } from "./copilot_api/paths.ts";
 import { allShimPaths } from "./copilot_api/shims.ts";
@@ -644,7 +644,7 @@ function denoCacheVersion(ctx: FloatContext, version: string, cooldownSeconds: n
 function dropSupersededCache(ctx: FloatContext, version: string): void {
   const record = readResolvedVersionRecord(ctx.rootHome);
   if (record === null || record.version === version) return;
-  rmSync(proxyDenoDir(ctx.rootHome), { "recursive": true, "force": true });
+  removeTreeReported(proxyDenoDir(ctx.rootHome));
 }
 
 /** A look at the cache: "resolves"/"missing" are PROVEN readings (deno info ran
@@ -732,12 +732,12 @@ function usableRecord(ctx: FloatContext): ResolvedVersionRecord | null {
  */
 export function removeProxyFloatArtifacts(rootHome: string = resolveRootHome()): void {
   const record = readResolvedVersionRecord(rootHome);
-  if (record !== null) rmSync(record.denoDir, { "recursive": true, "force": true });
-  rmSync(proxyDenoDir(rootHome), { "recursive": true, "force": true });
-  rmSync(join(rootHome, "proxy"), { "recursive": true, "force": true });
+  if (record !== null) removeTreeReported(record.denoDir);
+  removeTreeReported(proxyDenoDir(rootHome));
+  removeTreeReported(join(rootHome, "proxy"));
 
   const npmrc = join(rootHome, ".npmrc");
-  if (readTextOrNull(npmrc)?.includes(NPMRC_MARKER)) rmSync(npmrc, { "force": true });
+  if (readTextOrNull(npmrc)?.includes(NPMRC_MARKER)) removeReported(npmrc);
 }
 
 // --- Float actions -----------------------------------------------------------------

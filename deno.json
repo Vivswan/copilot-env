@@ -114,6 +114,7 @@
       "src/utils/hostname.ts",
       "src/utils/json.ts",
       "src/utils/pid.ts",
+      "src/utils/report_write.ts",
       "src/utils/time.ts",
       "copilot-env.config",
       ".dvmrc",
@@ -134,7 +135,8 @@
   "lint": {
     "plugins": [
       "./test/lint/no_shim_imports.ts",
-      "./test/lint/no_unmanaged_child_spawn.ts"
+      "./test/lint/no_unmanaged_child_spawn.ts",
+      "./test/lint/no_unreported_fs_writes.ts"
     ],
     "rules": {
       "tags": [

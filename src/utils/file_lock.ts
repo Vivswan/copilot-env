@@ -31,12 +31,13 @@
 // age-steal outcome. Callers may inject `nowMs` (the clock used both for the marker written
 // and the age judgment) so a caller with an injected clock, like the autoupdate preflight,
 // stays deterministic under test.
-import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { linkSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as sleepAsync } from "node:timers/promises";
-import { isEnoentOrNotdir, readTextOrNull } from "./fs.ts";
+import { entryAbsent, isEnoentOrNotdir, readTextOrNull } from "./fs.ts";
 import { isRecord } from "./json.ts";
 import { pidAlive } from "./pid.ts";
+import { mkdirReported, reportWrite } from "./report_write.ts";
 import { sleepSync } from "./time.ts";
 
 // --- the shared bounded-wait acquisition policy --------------------------------
@@ -225,17 +226,23 @@ export function tryAcquireFileLock(
   }
 
   try {
-    mkdirSync(dirname(lockPath), { recursive: true });
+    mkdirReported(dirname(lockPath));
   } catch {
     // if we can't even create the dir, the open below fails and the caller proceeds unlocked
   }
 
+  // The sidecar is permanent (see the header), so its creation is the one lock-layer
+  // write the user ever keeps -- reported the first time; the per-acquisition marker
+  // file is the protocol's transient and is not.
+  const sidecar = osLockPath(lockPath);
+  const freshSidecar = entryAbsent(sidecar);
   let file: Deno.FsFile;
   try {
-    file = Deno.openSync(osLockPath(lockPath), { read: true, write: true, create: true });
+    file = Deno.openSync(sidecar, { read: true, write: true, create: true });
   } catch {
     return false; // unreadable/uncreatable -> proceed as unlocked, best-effort
   }
+  if (freshSidecar) reportWrite("created", sidecar);
   let kept = false;
   try {
     if (!file.tryLockSync(true)) return false; // a live current-version holder -> genuinely held

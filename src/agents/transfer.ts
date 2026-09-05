@@ -82,7 +82,8 @@ export const REDACTED_TOKEN = "<redacted>";
 /** One exported settings bundle (the `agent settings --export` JSON document). */
 export interface SettingsBundle {
   formatVersion: typeof SETTINGS_BUNDLE_FORMAT_VERSION;
-  /** Every STORED preference (unset keys are omitted; defaults never travel). */
+  /** Every STORED preference (unset keys are omitted; defaults never travel); a
+   *  credential-bearing one reads REDACTED_TOKEN unless exported `withCredentials`. */
   config: CopilotEnvConfigData;
   /** The default credential slot (token redacted unless `withCredentials`). */
   credential: ProfileCredentialData;
@@ -103,18 +104,37 @@ function copyStoredPref<K extends ConfigKey>(
   if (value !== undefined) to[key] = value;
 }
 
-/** Every stored preference, with unset keys omitted (defaults never travel). */
-function storedPrefs(): CopilotEnvConfigData {
+/** Preferences whose VALUE may carry a credential (a custom price-list URL can hold a
+ *  token in its query or userinfo). A default export replaces each stored one with
+ *  REDACTED_TOKEN exactly like a token, and import treats that marker exactly like a
+ *  redacted token: keep whatever the local store holds. Absence still means "unset"
+ *  (full-replace deletes the local value), as for every other preference. */
+const CREDENTIAL_BEARING_PREFS = ["pricingUrl"] as const satisfies readonly ConfigKey[];
+
+/** Whether the bundle carries the redaction marker for `key` instead of a value. */
+function isRedactedPref(config: CopilotEnvConfigData, key: ConfigKey): boolean {
+  return CREDENTIAL_BEARING_PREFS.some((k) => k === key) && config[key] === REDACTED_TOKEN;
+}
+
+/** Every stored preference, with unset keys omitted (defaults never travel) and the
+ *  credential-bearing ones replaced by REDACTED_TOKEN unless `withCredentials`. */
+function storedPrefs(withCredentials: boolean): CopilotEnvConfigData {
   const data = new CopilotEnvConfig().read();
   const out: CopilotEnvConfigData = {};
   for (const def of CONFIG_REGISTRY) copyStoredPref(data, out, def.key);
+  if (!withCredentials) {
+    for (const key of CREDENTIAL_BEARING_PREFS) {
+      if (out[key] !== undefined) out[key] = REDACTED_TOKEN;
+    }
+  }
   return out;
 }
 
 /**
- * Build the export bundle from the current stores. Tokens are replaced by
- * REDACTED_TOKEN unless `withCredentials` -- redaction is the default so a
- * casually shared bundle never leaks a credential. The machine-local state
+ * Build the export bundle from the current stores. Tokens and the
+ * credential-bearing preferences are replaced by REDACTED_TOKEN unless
+ * `withCredentials` -- redaction is the default so a casually shared bundle never
+ * leaks a credential. The machine-local state
  * fields (`codexCatalog*`) are never included; artifact ownership lives in its
  * own machine-local ledger file, outside both exported stores.
  */
@@ -132,7 +152,7 @@ export function buildExportBundle(options: { withCredentials?: boolean } = {}): 
   }
   return {
     formatVersion: SETTINGS_BUNDLE_FORMAT_VERSION,
-    config: storedPrefs(),
+    config: storedPrefs(withCredentials),
     credential: { githubToken: redact(state.githubToken), authProvider: state.authProvider },
     profiles,
     // Safe read: a wiring-read failure must never abort an export (or an
@@ -266,13 +286,23 @@ function parseConfigSection(raw: unknown): CopilotEnvConfigData {
     CONFIG_REGISTRY.map((def) => def.key),
     "config",
   );
-  const parsed = v.parse(CONFIG_SCHEMA, doc);
+  // The redaction marker is admitted ONLY on the credential-bearing keys, and kept
+  // aside: the store's domain would (rightly) reject it as a value.
+  const redacted: CopilotEnvConfigData = {};
+  const values = { ...doc };
+  for (const key of CREDENTIAL_BEARING_PREFS) {
+    if (values[key] === REDACTED_TOKEN) {
+      redacted[key] = REDACTED_TOKEN;
+      delete values[key];
+    }
+  }
+  const parsed = v.parse(CONFIG_SCHEMA, values);
   for (const def of CONFIG_REGISTRY) {
-    if (doc[def.key] !== undefined && parsed[def.key] === undefined) {
+    if (values[def.key] !== undefined && parsed[def.key] === undefined) {
       throw bundleError(`config.${def.key} is invalid (expected: ${def.describe})`);
     }
   }
-  return parsed;
+  return { ...parsed, ...redacted };
 }
 
 function parseCredentialSection(raw: unknown): ProfileCredentialData {
@@ -522,10 +552,13 @@ function planWrites(
 ): string[] {
   const lines: string[] = [];
   const prefs = new CopilotEnvConfig().read();
-  const storedPrefKeys = CONFIG_REGISTRY.filter((def) => prefs[def.key] !== undefined);
+  // Preferences are full-replace, so every locally stored key is rewritten (or
+  // reset, when absent from the bundle), except one the bundle redacted: that
+  // keeps the local value, like a redacted token.
+  const storedPrefKeys = CONFIG_REGISTRY.filter(
+    (def) => prefs[def.key] !== undefined && !isRedactedPref(bundle.config, def.key),
+  );
   if (storedPrefKeys.length > 0) {
-    // Preferences are full-replace, so every locally stored key is rewritten
-    // (or reset, when absent from the bundle).
     lines.push(`preferences (${storedPrefKeys.map((def) => def.cli).join(", ")})`);
   }
   const local = new CopilotEnvState().read();
@@ -665,10 +698,14 @@ function restorePref<K extends ConfigKey>(
 
 /** Replace the whole preference store with the bundle's `config` section: keys
  *  absent from the bundle revert to their defaults (restore, not merge -- safe
- *  because the strict parse already rejected junk instead of dropping it). */
+ *  because the strict parse already rejected junk instead of dropping it). A
+ *  redacted credential-bearing key is left out of the patch, so the local value
+ *  stays, exactly as a redacted token keeps the local credential. */
 function importPreferences(config: CopilotEnvConfigData): void {
   const patch: ConfigPatch = {};
-  for (const def of CONFIG_REGISTRY) restorePref(patch, config, def.key);
+  for (const def of CONFIG_REGISTRY) {
+    if (!isRedactedPref(config, def.key)) restorePref(patch, config, def.key);
+  }
   new CopilotEnvConfig().set(patch);
 }
 

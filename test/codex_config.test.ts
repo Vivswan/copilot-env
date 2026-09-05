@@ -1169,6 +1169,21 @@ test("a rejected catalog is stripped from every known config even when the activ
 
 // --- nothing hidden: every catalog artifact change is named ----------------------
 
+async function stderrOfAsync(fn: () => Promise<void>): Promise<string> {
+  let out = "";
+  const realWrite = process.stderr.write;
+  process.stderr.write = (chunk: string | Uint8Array): boolean => {
+    out += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+    return true;
+  };
+  try {
+    await fn();
+  } finally {
+    process.stderr.write = realWrite;
+  }
+  return out;
+}
+
 function stderrOfSync(fn: () => void): string {
   let out = "";
   const realWrite = process.stderr.write;
@@ -1236,7 +1251,7 @@ test("the disabled sync names the file it deletes and every reference it strips;
   expect(stderrOfSync(() => syncCodexCatalogReference())).toBe("");
 });
 
-test("a change on disk is reported even when the ownership ledger cannot be written afterwards", () => {
+test("a reference whose ownership cannot be recorded is not added; the disabled sweep stays put too", () => {
   isolate();
   const codexHome = join(dir, ".codex");
   process.env.CODEX_HOME = codexHome;
@@ -1250,9 +1265,12 @@ test("a change on disk is reported even when the ownership ledger cannot be writ
   const ledgerFile = new CopilotApiPaths().ownershipFile;
   rmSync(ledgerFile, { force: true });
   mkdirSync(ledgerFile);
-  const added = stderrOfSync(() => syncCodexCatalogReference({ acceptsCatalog: () => true }));
-  expect(asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json).toBe(catalogFile);
-  expect(added).toContain(`model_catalog_json = "${catalogFile}" set in ${configPath}`);
+  // Unrecordable ownership: no reference is added (a later sweep could not find it).
+  const skipped = stderrOfSync(() => syncCodexCatalogReference({ acceptsCatalog: () => true }));
+  expect(asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json).toBeUndefined();
+  expect(skipped).toContain(
+    `catalog reference not set in ${configPath}: ownership could not be recorded`,
+  );
   // The disabled sweep reads the ledger FIRST (recorded claims extend it), so a
   // broken ledger stops it before any write: nothing changes, and nothing is claimed.
   new CopilotEnvConfig().set({ codexModelCatalog: false });
@@ -1289,7 +1307,7 @@ test("the writer reports its config changes even when the ownership ledger canno
   expect(removed).toContain(`model_catalog_json removed from ${configPath}`);
 });
 
-test("past the refresh deadline the sync still edits the config but skips the ownership ledger", async () => {
+test("past the refresh deadline the sync adds no reference it could not record, and says so", async () => {
   isolate();
   const codexHome = join(dir, ".codex");
   process.env.CODEX_HOME = codexHome;
@@ -1307,13 +1325,19 @@ test("past the refresh deadline the sync still edits the config but skips the ow
     codexCatalogCodexVersion: "1.0.0",
     codexCatalogPatchVersion: CATALOG_PATCH_VERSION,
   });
-  await refreshCodexCatalogAndSync("direct", {
-    nowMs: () => (calls++ < 2 ? t0 : t0 + 60_000),
-    codexVersion: () => "1.0.0",
-    acceptsCatalog: () => true,
-  });
-  expect(asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json).toBe(catalogFile);
+  const late = await stderrOfAsync(() =>
+    refreshCodexCatalogAndSync("direct", {
+      nowMs: () => (calls++ < 2 ? t0 : t0 + 60_000),
+      codexVersion: () => "1.0.0",
+      acceptsCatalog: () => true,
+    })
+  );
+  expect(asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json).toBeUndefined();
   expect(new OwnershipLedger().owns("codexCatalog", configPath)).toBe(false);
+  expect(late).toContain(
+    `catalog reference not set in ${configPath}: ownership could not be recorded; ` +
+      "the next auth refresh retries",
+  );
   // Control: inside the deadline the same sync records the claim.
   writeFileSync(configPath, 'model_provider = "copilot-env"\n');
   await refreshCodexCatalogAndSync("direct", {
@@ -1321,6 +1345,7 @@ test("past the refresh deadline the sync still edits the config but skips the ow
     codexVersion: () => "1.0.0",
     acceptsCatalog: () => true,
   });
+  expect(asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json).toBe(catalogFile);
   expect(new OwnershipLedger().owns("codexCatalog", configPath)).toBe(true);
 });
 

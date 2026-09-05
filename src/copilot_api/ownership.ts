@@ -137,9 +137,12 @@ export class OwnershipLedger {
     return this.ownedPaths(kind).includes(artifactPath);
   }
 
-  /** Record ownership of the `kind` entry at `artifactPath` (atomic,
-   *  idempotent). Call only AFTER the successful artifact write -- the
-   *  crash-direction contract in the module header. */
+  /** Record ownership of the `kind` entry at `artifactPath` (atomic, idempotent).
+   *  Call AFTER the successful artifact write (the module header's crash-direction
+   *  contract); the one exception is a claim reserved BEFORE a best-effort write
+   *  that must never leave an unrecorded artifact behind (the Codex catalog
+   *  reference's auth-time sync) -- a claim on an unwritten path is released by
+   *  the next cleanup sweep. */
   record(kind: OwnedArtifactKind, artifactPath: string): void {
     withFileLockSync(this.opsLock, BOUNDED_LOCK_POLICY, () => {
       this.store.update((d) => {

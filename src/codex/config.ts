@@ -991,17 +991,35 @@ export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): v
     const doc = read.doc;
     if (doc.model_provider !== CODEX_PROVIDER_ID) return;
     if (doc.model_catalog_json !== undefined) return;
+    // The ledger is the inventory a later cleanup sweeps for configs outside the
+    // known homes: a reference it does not know about could outlive the catalog it
+    // points at. So record ownership FIRST, and add nothing when that cannot happen.
+    if (!catalogBookkeepingAllowed() || !recordCatalogOwnership(configPath)) {
+      logger.warn(
+        `codex model catalog reference not set in ${configPath}: ownership could not be ` +
+          "recorded; the next auth refresh retries",
+      );
+      return;
+    }
     doc.model_catalog_json = catalogFile;
     saveCodexToml(configPath, doc);
-    // The change is on disk: say so BEFORE the ledger bookkeeping, which may fail.
     logger.log(
       `  ✓ Codex model_catalog_json = "${catalogFile}" set in ${configPath}` +
         (verdict === "unverifiable" ? UNVERIFIED_SUFFIX : ""),
     );
-    if (catalogBookkeepingAllowed()) new OwnershipLedger().record("codexCatalog", configPath);
   } catch {
     // An unreadable config (non-ENOENT) or a write race: the next
     // `agent codex`/`agent init` wiring writes the key anyway.
+  }
+}
+
+/** Record the ledger claim for `configPath`; false when the ledger cannot be written. */
+function recordCatalogOwnership(configPath: string): boolean {
+  try {
+    new OwnershipLedger().record("codexCatalog", configPath);
+    return true;
+  } catch {
+    return false;
   }
 }
 

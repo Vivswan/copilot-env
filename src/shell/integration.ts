@@ -6,8 +6,6 @@ import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { consola } from "consola";
 
 import { isEnoent } from "../utils/fs.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 
@@ -105,7 +103,6 @@ export function runShellIntegration(action: ShellIntegrationAction): void {
   }
   if (windows) {
     const target = windowsProfileTarget(action.allHosts);
-    migrateLaunchersOptIn(target.paths);
     wireBlocks(target.paths, windowsBlock(join(PROJECT_ROOT, "shell", "agents.ps1")));
     // Only relax execution policy for a "system" target -- a redirected run owns no
     // machine state (the type enforces it).
@@ -113,31 +110,11 @@ export function runShellIntegration(action: ShellIntegrationAction): void {
     consola.info("Restart PowerShell or run: . $PROFILE");
   } else {
     const files = rcFiles(false);
-    migrateLaunchersOptIn(files);
     wireBlocks(files, posixBlock(join(PROJECT_ROOT, "shell", "agents.bashrc")));
     consola.info("Restart your shell or run: source ~/.bashrc (or ~/.zshrc)");
   }
 }
 
-/**
- * A launchers rc block is the pre-`agent launch` opt-in artifact: wiring strips it,
- * so the opt-in it carried must move to the `launchers` config key first, or an
- * upgrading user would silently lose cl/co/cx. BEFORE the strip writes on purpose
- * (a failed write can retry the migration; stripping first would destroy the only
- * record of the opt-in), and only when the preference is UNSET -- a stored value,
- * either way, is the user's own decision and is never overwritten.
- */
-function migrateLaunchersOptIn(files: string[]): void {
-  const hadLaunchers = files.some(
-    (file) => existsSync(file) && hasMarker(readFileSync(file, "utf-8"), LAUNCHERS_MARKER),
-  );
-  if (!hadLaunchers) return;
-  if (!new CopilotEnvConfig().adopt("launchers", true)) return;
-  consola.info(
-    "Carried the launcher opt-in over to the `launchers` config key " +
-      `(cl/co/cx now load via \`agent env\`) -> ${new CopilotApiPaths().envConfigFile}`,
-  );
-}
 // --- shared wire/remove core --------------------------------------------------
 
 /**

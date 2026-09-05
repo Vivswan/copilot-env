@@ -26,7 +26,6 @@ import { claudeJsonPath } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import type { CodexCatalogDeps } from "../codex/catalog.ts";
 import {
-  codexHostDriftLine,
   codexHostFarm,
   effectiveCodexHomeFor,
   planCodexHostFarm,
@@ -35,7 +34,7 @@ import {
 import { codexConfigPath } from "../codex/paths.ts";
 import { Credential, ghAuthToken } from "../copilot_api/credential.ts";
 import {
-  codexHostSettingFor,
+  codexHostEnabledFor,
   CONFIG_REGISTRY,
   CONFIG_SCHEMA,
   configDefaultBoolean,
@@ -508,7 +507,7 @@ export interface ImportPlan {
 /** Named-profile wiring writes its provider tables into the effective home's
  *  config.toml (its writer may clean the home's .env too). It runs after the store
  *  replace, so the home is resolved under the BUNDLE's codex-host value. */
-function profileCodexLine(codexHost: boolean | null): string {
+function profileCodexLine(codexHost: boolean): string {
   return `Codex config: ${
     codexConfigPath(effectiveCodexHomeFor(codexHost))
   } (may also clean its .env)`;
@@ -547,36 +546,26 @@ function planWrites(
     // Codex write first derives the per-host farm from the bundle's codex-host through
     // the SAME decision the apply takes, so name its action and where the write lands.
     const farm = codexHostFarm();
-    const codexHost = codexHostSettingFor(bundle.config.codexHost);
+    const codexHost = codexHostEnabledFor(bundle.config.codexHost);
     const plan = planCodexHostFarm(codexHost, farm);
-    if (plan.action === "refuse") {
-      lines.push(
-        `Codex default wiring will be refused: ${
-          codexHostDriftLine({ kind: "unreadable", hostHome: farm.hostHome, detail: plan.detail })
-        }`,
-      );
-      // The refusal fails only the default write; named-profile wiring still lands.
-      if (wired.length > 0) lines.push(profileCodexLine(codexHost));
-    } else {
-      if (plan.action === "build") lines.push(`Per-host CODEX_HOME farm (built): ${farm.hostHome}`);
-      if (plan.action === "remove") {
-        lines.push(`Per-host CODEX_HOME farm (removed): ${farm.hostHome}`);
-      }
-      const home = plan.action === "build" || plan.action === "verify"
-        ? farm.hostHome
-        : unmanagedCodexHome();
-      // The default write can reach beyond config.toml: direct wiring edits the
-      // home's .env, and the catalog sync may rewrite other known host configs
-      // and the generated model-catalog file. The exact set is dynamic, so one
-      // honest summary line beats an enumeration that would go stale.
-      lines.push(
-        `Codex config: ${codexConfigPath(home)} (wiring may also clean its ` +
-          ".env; the model-catalog sync may rewrite other known host configs and the " +
-          "generated catalog file)",
-      );
+    if (plan.action === "build") lines.push(`Per-host CODEX_HOME farm (built): ${farm.hostHome}`);
+    if (plan.action === "remove") {
+      lines.push(`Per-host CODEX_HOME farm (removed): ${farm.hostHome}`);
     }
+    const home = plan.action === "build" || plan.action === "verify"
+      ? farm.hostHome
+      : unmanagedCodexHome();
+    // The default write can reach beyond config.toml: direct wiring edits the
+    // home's .env, and the catalog sync may rewrite other known host configs
+    // and the generated model-catalog file. The exact set is dynamic, so one
+    // honest summary line beats an enumeration that would go stale.
+    lines.push(
+      `Codex config: ${codexConfigPath(home)} (wiring may also clean its ` +
+        ".env; the model-catalog sync may rewrite other known host configs and the " +
+        "generated catalog file)",
+    );
   } else if (wired.length > 0) {
-    lines.push(profileCodexLine(codexHostSettingFor(bundle.config.codexHost)));
+    lines.push(profileCodexLine(codexHostEnabledFor(bundle.config.codexHost)));
   }
   const claudeHome = resolveClaudeHome();
   if (modes.claude !== null) {

@@ -6,7 +6,7 @@ import {
   unreadProjectedKeyWarnings,
 } from "../src/commands/config.ts";
 import {
-  codexHostSettingFor,
+  codexHostEnabledFor,
   CONFIG_REGISTRY,
   type ConfigCli,
   configDefaultLabel,
@@ -338,31 +338,24 @@ test("auto-update: stored else default, degraded read like auto-start (the prefl
   }
 });
 
-test("codex-host: three-way read, POSIX-only set, and Windows always reads off", () => {
+test("codex-host: stored else default, POSIX-only set, and Windows always reads off", () => {
   tmpHome();
   const cfg = new CopilotEnvConfig();
-  // The one platform normalization the accessor and the settings-import plan share.
-  expect(codexHostSettingFor(undefined, "linux")).toBeNull();
-  expect(codexHostSettingFor(true, "darwin")).toBe(true);
-  expect(codexHostSettingFor(false, "linux")).toBe(false);
-  expect(codexHostSettingFor(true, "win32")).toBe(false);
-  expect(codexHostSettingFor(undefined, "win32")).toBe(false);
-  // Unset is a distinct state (an unset key may adopt an existing farm); enabled() folds
-  // it into the built-in default.
-  expect(cfg.codexHostSetting("linux")).toBeNull();
+  // The one platform rule the accessor and the settings-import plan share.
+  expect(codexHostEnabledFor(undefined, "linux")).toBe(false);
+  expect(codexHostEnabledFor(true, "darwin")).toBe(true);
+  expect(codexHostEnabledFor(true, "win32")).toBe(false);
   expect(cfg.codexHostEnabled("linux")).toBe(false);
   runConfig({ set: ["codex-host", "true"] }, "darwin");
-  expect(cfg.codexHostSetting("linux")).toBe(true);
   expect(cfg.codexHostEnabled("linux")).toBe(true);
   // Windows has no farm: the stored true (e.g. from an imported bundle) reads as off there.
-  expect(cfg.codexHostSetting("win32")).toBe(false);
   expect(cfg.codexHostEnabled("win32")).toBe(false);
   // `--set` on Windows is refused with a platform message, and writes nothing.
   runConfig({ del: "codex-host" });
   expect(() => runConfig({ set: ["codex-host", "true"] }, "win32")).toThrow(
     "'codex-host' is only supported on Linux and macOS (this is win32); it cannot be set here.",
   );
-  expect(cfg.codexHostSetting("linux")).toBeNull();
+  expect(cfg.read().codexHost).toBeUndefined();
   // A plain (not POSIX-only) key is unaffected by the platform.
   runConfig({ set: ["auto-start", "true"] }, "win32");
   expect(cfg.autoStartEnabled()).toBe(true);

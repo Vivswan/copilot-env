@@ -6,11 +6,7 @@ import {
   resolveProvenanceDecision,
 } from "../autoupdate/apply.ts";
 import { withUpdateLock } from "../autoupdate/lock.ts";
-import {
-  adoptLegacyEnabledFlag,
-  AutoupdateState,
-  effectiveUpdateCooldownDays,
-} from "../autoupdate/state.ts";
+import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/state.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { type Release, resolveTarget } from "../install/resolve-release.ts";
 import { assertNever } from "../utils/assert.ts";
@@ -110,9 +106,6 @@ export async function runUpdate(args: UpdateArgs): Promise<void> {
     case "check":
       return runManualUpdate({ check: true, cooldown, force: false });
     case "apply":
-      // The one write site here: self-heal a pre-key install before updating (the
-      // reports stay read-only, see runAutoStatus).
-      adoptLegacyEnabledFlag((line) => consola.info(line), new AutoupdateState(), config);
       return runManualUpdate({
         check: false,
         cooldown,
@@ -126,8 +119,7 @@ export async function runUpdate(args: UpdateArgs): Promise<void> {
 }
 
 function runAutoStatus(config: CopilotEnvConfig): void {
-  const state = new AutoupdateState();
-  const s = state.read();
+  const s = new AutoupdateState().read();
   const cooldown = effectiveUpdateCooldownDays();
   const last = s.lastCheckMs > 0 ? new Date(s.lastCheckMs).toISOString() : "never";
   consola.info(
@@ -136,13 +128,6 @@ function runAutoStatus(config: CopilotEnvConfig): void {
     } (the auto-update config key) | cooldown ${cooldown}d | ` +
       `last check ${last} | last result: ${s.lastResult || "(none)"}`,
   );
-  // A read-only report: a pre-key flag is named, not adopted here.
-  if (state.legacyEnabled().present) {
-    consola.info(
-      `A legacy autoupdate flag is still in ${state.path}; the next \`agent start\` or ` +
-        "`agent update` moves it into the auto-update key.",
-    );
-  }
 }
 
 async function runManualUpdate(

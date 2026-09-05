@@ -649,15 +649,15 @@ export const CONFIG_SCHEMA = v.object(
   Object.fromEntries(CONFIG_REGISTRY.map((def) => [def.key, lenientField(def.schema)])),
 ) as v.GenericSchema<unknown, CopilotEnvConfigData>;
 
-/** The three-way `codex-host` read for a stored value on `platform`: Windows has no farm
- *  (POSIX symlinks), so it always reads false there, whatever a bundle imported. Shared by
- *  the CopilotEnvConfig accessor and the settings-import plan (which reads the bundle). */
-export function codexHostSettingFor(
+/** The `codex-host` read for a stored value on `platform`: stored else the built-in
+ *  default, and always false on Windows (no farm without POSIX symlinks), whatever a
+ *  bundle imported. Shared by the accessor and the settings-import plan. */
+export function codexHostEnabledFor(
   stored: boolean | undefined,
   platform: NodeJS.Platform = process.platform,
-): boolean | null {
+): boolean {
   if (platform === "win32") return false;
-  return stored ?? null;
+  return stored ?? configDefaultBoolean("codex-host");
 }
 
 /** Look up a registry entry by its CLI (kebab) name. */
@@ -798,16 +798,9 @@ export class CopilotEnvConfig {
     return this.readDegraded().autoUpdate ?? configDefaultBoolean("auto-update");
   }
 
-  /** The stored `codex-host` value, null when unset -- the three-way read the farm
-   *  derivation needs (an unset key may still ADOPT an existing farm). Windows has no
-   *  farm (POSIX symlinks), so it always reads false there, whatever a bundle imported. */
-  codexHostSetting(platform: NodeJS.Platform = process.platform): boolean | null {
-    return codexHostSettingFor(this.read().codexHost, platform);
-  }
-
   /** Whether the per-host CODEX_HOME farm is wanted (stored else default; Windows: false). */
   codexHostEnabled(platform: NodeJS.Platform = process.platform): boolean {
-    return this.codexHostSetting(platform) ?? configDefaultBoolean("codex-host");
+    return codexHostEnabledFor(this.read().codexHost, platform);
   }
 
   /** Whether the patched Codex model catalog is enabled (opt-in, default off). */
@@ -937,18 +930,5 @@ export class CopilotEnvConfig {
   /** Delete one key (revert it to its default). */
   del(key: ConfigKey): void {
     this.set({ [key]: undefined });
-  }
-
-  /** Store `value` under `key` only while the key is UNSET, decided inside the one
-   *  locked read-modify-write (a concurrent `agent config --set` can never be
-   *  overwritten). The self-heal adoptions use it. Returns whether it wrote. */
-  adopt<K extends ConfigKey>(key: K, value: NonNullable<CopilotEnvConfigData[K]>): boolean {
-    let wrote = false;
-    this.store.update((d) => {
-      if (d[key] !== undefined) return;
-      d[key] = value;
-      wrote = true;
-    });
-    return wrote;
   }
 }

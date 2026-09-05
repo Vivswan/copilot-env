@@ -15,7 +15,7 @@ import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { applyUpdate, resolveProvenanceDecision } from "./apply.ts";
 import { isDue } from "./due.ts";
 import { type HeldUpdateLock, withUpdateLock } from "./lock.ts";
-import { adoptLegacyEnabledFlag, AutoupdateState, effectiveUpdateCooldownDays } from "./state.ts";
+import { AutoupdateState, effectiveUpdateCooldownDays } from "./state.ts";
 
 const logger = createStderrLogger();
 
@@ -29,9 +29,7 @@ export interface PreflightOptions {
  *  is due. Non-throwing. */
 export async function runPreflight(opts: PreflightOptions): Promise<void> {
   const state = opts.state ?? new AutoupdateState();
-  const config = new CopilotEnvConfig();
-  adoptLegacyEnabledFlag((line) => logger.info(`autoupdate: ${line}`), state, config);
-  if (!config.autoUpdateEnabled()) return;
+  if (!new CopilotEnvConfig().autoUpdateEnabled()) return;
   if (!isDue(state.read().lastCheckMs, opts.nowMs)) return;
 
   await withUpdateLock(opts.nowMs, async (outcome) => {

@@ -201,10 +201,8 @@ skipWin(
   () => {
     isolate();
     const hostHome = wireFarm();
-    // Unset keeps a pre-key install's activated farm exported (adoption pending); an
-    // explicit off stops the export and clears the shell's copy of OUR spelling at once.
-    expect(envLines()).toEqual([`export CODEX_HOME='${hostHome}'`]);
-    new CopilotEnvConfig().set({ codexHost: false });
+    // The key is the switch: unset (= off) exports nothing even for an activated farm,
+    // and clears the shell's copy of OUR spelling at once.
     expect(envLines()).toEqual([]);
     process.env.CODEX_HOME = hostHome;
     expect(envLines()).toEqual(["unset CODEX_HOME"]);

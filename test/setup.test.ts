@@ -6,7 +6,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { consola } from "consola";
 import { AGENT_CLIS } from "../src/agents/clis.ts";
 import {
@@ -16,13 +16,7 @@ import {
   runShell,
 } from "../src/commands/setup.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
-import {
-  CI_RC_DIR_ENV,
-  LAUNCHERS_MARKER,
-  LAUNCHERS_MARKER_END,
-  MARKER,
-  windowsProfileTarget,
-} from "../src/shell/integration.ts";
+import { CI_RC_DIR_ENV, MARKER } from "../src/shell/integration.ts";
 import { expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, removeDir, tmpDir } from "./helpers.ts";
 
@@ -101,35 +95,6 @@ test("runShell reports the launchers key on a wire and never writes it", () => {
     expect(new CopilotEnvConfig().launchersEnabled()).toBe(true);
   } finally {
     consola.info = orig;
-    restore();
-    dir = removeDir(dir);
-  }
-});
-
-// The upgrade path, on THIS platform's own wire target (the rc-dir seam on POSIX,
-// the redirected $PROFILE tree on Windows): a legacy launchers rc block carries the
-// old opt-in, so a wire migrates it to the config key -- but a stored preference,
-// either way, is the user's decision and is never overwritten.
-test("a wire migrates a legacy launchers block's opt-in, never over a stored value", () => {
-  const restore = envSnapshot();
-  let dir = isolateProxyHome("copilot-setup-migrate-");
-  try {
-    const target = process.platform === "win32"
-      ? windowsProfileTarget(false).paths[0]
-      : join(process.env[CI_RC_DIR_ENV] ?? "", ".bashrc");
-    if (target === undefined) throw new Error("no wire target resolved");
-    const legacyBlock = `\n${LAUNCHERS_MARKER}\n${LAUNCHERS_MARKER_END}\n`;
-    mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, legacyBlock);
-    runShell({});
-    expect(new CopilotEnvConfig().launchersEnabled()).toBe(true);
-    // Explicit false + another legacy block: the wire strips the block but the
-    // stored decision stands.
-    new CopilotEnvConfig().set({ launchers: false });
-    writeFileSync(target, legacyBlock);
-    runShell({});
-    expect(new CopilotEnvConfig().launchersEnabled()).toBe(false);
-  } finally {
     restore();
     dir = removeDir(dir);
   }

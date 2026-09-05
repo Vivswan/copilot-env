@@ -248,30 +248,21 @@ test("planCodexHostFarm: the key against the farm facts, per platform", () => {
     active: false,
   });
   const cases: Array<
-    [
-      setting: boolean | null,
-      farm: ReturnType<typeof farm>,
-      plan: ReturnType<typeof planCodexHostFarm>,
-    ]
+    [enabled: boolean, farm: ReturnType<typeof farm>, plan: ReturnType<typeof planCodexHostFarm>]
   > = [
-    [true, farm(false, false), { action: "build", adopt: false }],
-    [true, farm(true, false), { action: "verify", adopt: false }],
-    [true, farm(true, true), { action: "verify", adopt: false }],
-    [true, farm(true, false, "EACCES"), { action: "verify", adopt: false }], // on: build regardless
-    [null, farm(true, true), { action: "verify", adopt: true }], // pre-key farm: adopt
-    [null, farm(false, false), { action: "none" }],
-    [null, farm(true, false), { action: "leave" }], // half-built, unrecorded: not proven ours
-    [null, { ...farm(true, false), active: true }, { action: "remove" }], // recorded half-build
-    [null, farm(true, false, "EACCES"), { action: "refuse", detail: "EACCES" }],
-    [null, farm(false, false, "EACCES"), { action: "refuse", detail: "EACCES" }],
+    [true, farm(false, false), { action: "build" }],
+    [true, farm(true, false), { action: "verify" }],
+    [true, farm(true, true), { action: "verify" }],
+    [true, farm(true, false, "EACCES"), { action: "verify" }], // on: build regardless
     [false, farm(true, true), { action: "remove" }],
+    [false, farm(true, false), { action: "remove" }], // half-built leftover
     [false, farm(false, false, "EACCES"), { action: "remove" }], // off wins over an unprobeable farm
     [false, farm(false, false), { action: "none" }],
   ];
-  for (const [setting, facts, plan] of cases) {
-    expect(planCodexHostFarm(setting, facts, "linux")).toEqual(plan);
+  for (const [enabled, facts, plan] of cases) {
+    expect(planCodexHostFarm(enabled, facts, "linux")).toEqual(plan);
     // Windows never has a farm: every combination is a no-op there.
-    expect(planCodexHostFarm(setting, facts, "win32")).toEqual({ action: "none" });
+    expect(planCodexHostFarm(enabled, facts, "win32")).toEqual({ action: "none" });
   }
 });
 
@@ -753,82 +744,22 @@ skipWin("key off with no farm built only clears a stale record, and says so", as
   expect(quiet).not.toContain("CODEX_HOME");
 });
 
-// --- adoption (pre-key installs, no migration) ---------------------------------
+// --- an unset key is off ------------------------------------------------------
 
-skipWin("an unset key adopts a wired farm: records codex-host = true and keeps it", async () => {
+skipWin("an unset key behaves as off: an existing farm is removed and reported", async () => {
   const { sharedRoot, hostHome } = isolate();
   await build();
-  new CopilotEnvConfig().del("codexHost"); // a pre-key install: farm on disk, no key
-  expect(codexHostDrift()).toEqual({ kind: "unadopted", hostHome });
-  const before = snapshotTree(sharedRoot);
+  new CopilotEnvConfig().del("codexHost"); // e.g. an install that built the farm before the key
+  expect(codexHostDrift()).toEqual({ kind: "disabled", hostHome });
 
   const narrated = await stderrDuring(configureCodex);
-  expect(new CopilotEnvConfig().codexHostSetting()).toBe(true);
-  expect(narrated).toContain(
-    `Recorded codex-host = true (adopted the per-host CODEX_HOME farm ${hostHome}) → ${storeFiles().config}`,
-  );
-  expect(snapshotTree(sharedRoot)).toEqual(before);
-  expect(new CopilotEnvRunState().read().codexHome).toBe(hostHome);
-  expect(codexHostDrift()).toBeNull();
-});
-
-skipWin("an unset key with no farm adopts nothing and builds nothing", async () => {
-  const { sharedRoot, hostHome } = isolate();
-  const narrated = await stderrDuring(configureCodex);
-  expect(new CopilotEnvConfig().codexHostSetting()).toBeNull();
   expect(lexists(hostHome)).toBe(false);
   expect(new CopilotEnvRunState().read().codexHome).toBeUndefined();
-  expect(narrated).not.toContain("Recorded codex-host");
-  expect(narrated).not.toContain("Per-host CODEX_HOME farm");
+  expect(narrated).toContain(`Per-host CODEX_HOME farm removed → ${hostHome}`);
   expect(narrated).toContain(`Codex config written → ${join(sharedRoot, "config.toml")}`);
+  expect(new CopilotEnvConfig().read().codexHost).toBeUndefined(); // never written for the user
   expect(codexHostDrift()).toBeNull();
 });
-
-test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
-  "an unset key with an UNREADABLE farm config refuses to decide: nothing removed, nothing adopted",
-  async () => {
-    const { hostHome } = isolate();
-    await build();
-    new CopilotEnvConfig().del("codexHost");
-    // The dir's search bit off makes the config.toml probe fail with EACCES, not ENOENT.
-    fs.chmodSync(hostHome, 0o000);
-    try {
-      expect(codexHostFarm().probeError).toContain("EACCES");
-      expect(codexHostDrift()?.kind).toBe("unreadable");
-      await expect(configureCodex()).rejects.toThrow(
-        /cannot be inspected \(.*EACCES.*\); fix that/,
-      );
-      expect(new CopilotEnvConfig().codexHostSetting()).toBeNull();
-    } finally {
-      fs.chmodSync(hostHome, 0o700);
-    }
-    expect(isRegularFile(join(hostHome, "config.toml"))).toBe(true); // kept
-    // The read-back after the failed pass still lands on the untouched farm.
-    expect(effectiveCodexHome()).toBe(hostHome);
-  },
-);
-
-skipWin(
-  "an unset key with a half-built farm removes it only when a wiring pass recorded it",
-  async () => {
-    const { hostHome } = isolate();
-    fs.mkdirSync(join(hostHome, "log"), { recursive: true });
-    // Unrecorded: not proven ours, so it is left alone and reported for the user to decide.
-    expect(codexHostDrift()).toEqual({ kind: "unowned", hostHome });
-    const left = await stderrDuring(configureCodex);
-    expect(isRealDir(join(hostHome, "log"))).toBe(true);
-    expect(left).not.toContain("Per-host CODEX_HOME farm");
-    expect(new CopilotEnvConfig().codexHostSetting()).toBeNull();
-
-    // Recorded (a pass activated it; its config.toml vanished later): ours, removed.
-    writeRunState({ codexHome: hostHome });
-    expect(codexHostDrift()).toEqual({ kind: "disabled", hostHome });
-    const removed = await stderrDuring(configureCodex);
-    expect(lexists(hostHome)).toBe(false);
-    expect(removed).toContain(`Per-host CODEX_HOME farm removed → ${hostHome}`);
-    expect(new CopilotEnvRunState().read().codexHome).toBeUndefined();
-  },
-);
 
 // --- drift reports (`agent codex --check`) ------------------------------------
 
@@ -873,12 +804,6 @@ skipWin(
     expect((await check()).at(-1)).toBe(
       `codex-host is off but a per-host CODEX_HOME farm is still present at ${hostHome}; run \`agent codex\` to remove it`,
     );
-
-    // Unset with the wired farm: adoption pending.
-    new CopilotEnvConfig().del("codexHost");
-    expect((await check()).at(-1)).toBe(
-      `codex-host is unset but a per-host CODEX_HOME farm exists at ${hostHome}; run \`agent codex\` to adopt it (records codex-host = true)`,
-    );
   },
 );
 
@@ -901,17 +826,18 @@ skipWin(
     fs.mkdirSync(hostHome, { recursive: true });
     process.env.CODEX_HOME = hostHome;
     expect(effectiveCodexHome()).toBe(sharedRoot);
-    // The run-state record (the derivation's) wins over every env value while its
-    // directory exists; a record for a hand-deleted farm is dead and falls through.
+    // With the key on, the run-state record (the derivation's) wins over every env
+    // value while its directory exists; a record for a hand-deleted farm is dead.
+    new CopilotEnvConfig().set({ codexHost: true });
     writeRunState({ codexHome: join(dir, "recorded") });
     expect(effectiveCodexHome()).toBe(sharedRoot);
     fs.mkdirSync(join(dir, "recorded"));
     expect(effectiveCodexHome()).toBe(join(dir, "recorded"));
-    // An explicit off retires the record at once (unset keeps it: adoption pending).
+    // The key off (or unset) retires the record at once.
     new CopilotEnvConfig().set({ codexHost: false });
     expect(effectiveCodexHome()).toBe(sharedRoot);
     new CopilotEnvConfig().del("codexHost");
-    expect(effectiveCodexHome()).toBe(join(dir, "recorded"));
+    expect(effectiveCodexHome()).toBe(sharedRoot);
   },
 );
 

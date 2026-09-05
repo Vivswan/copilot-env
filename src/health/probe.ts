@@ -395,8 +395,8 @@ export interface CodexHostFacts {
   probeError: string | null;
   /** Run state records it as the active CODEX_HOME (set only after a successful write). */
   active: boolean;
-  /** The `codex-host` key: stored true/false, null when unset (always false on Windows). */
-  setting: boolean | null;
+  /** The `codex-host` key (stored else default; always false on Windows). */
+  enabled: boolean;
 }
 
 /**
@@ -558,8 +558,8 @@ export interface ProbeDeps {
   claudeHome(): string;
   /** The per-host farm on disk (path, present, wired), from its one predicate. */
   codexHostFarm(): CodexHostFarm;
-  /** The three-way `codex-host` key read (CopilotEnvConfig.codexHostSetting). */
-  codexHostSetting(): boolean | null;
+  /** The `codex-host` key read (CopilotEnvConfig.codexHostEnabled). */
+  codexHostEnabled(): boolean;
   dirExists(path: string): boolean;
   /** The 3.5.6 default-home move's staging state under the root's profiles dir. */
   defaultHomeMigration(): DefaultHomeMigrationFacts;
@@ -829,7 +829,7 @@ export function defaultProbeDeps(): ProbeDeps {
     // the same probe. Effective Claude home matches resolveClaudeHome precedence.
     claudeHome: () => resolveClaudeHome(),
     codexHostFarm,
-    codexHostSetting: () => new CopilotEnvConfig().codexHostSetting(),
+    codexHostEnabled: () => new CopilotEnvConfig().codexHostEnabled(),
     dirExists: (path: string) => existsSync(path),
     defaultHomeMigration: () => {
       // The same spelling defaultDaemonHome's precedence rule reads (paths.ts):
@@ -1432,7 +1432,7 @@ export async function gatherFacts(
           wired: farm.wired,
           probeError: farm.probeError,
           active: farm.active,
-          setting: deps.codexHostSetting(),
+          enabled: deps.codexHostEnabled(),
         };
         facts.autoupdate = deps.readAutoupdate();
       })(),

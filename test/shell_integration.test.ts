@@ -308,14 +308,12 @@ skipWin("re-wiring migrates a stale block to the current shell/ path", () => {
   expect(markerLines(rc, MARKER)).toBe(1); // exactly one block, not duplicated
 });
 
-skipWin("wiring strips old launchers blocks and carries the opt-in to the config key", () => {
-  // A wire over a marker-less rc leaves the opt-in alone (default off) ...
+skipWin("wiring strips old launchers blocks and never touches the config key", () => {
   expect(run().code).toBe(0);
   expect(storedLaunchersKey()).toBeUndefined();
-  // ... while the launchers blocks older releases wrote are cleared on the next
-  // wire (the file they sourced no longer ships) -- fenced and unfenced legacy
-  // flavors alike -- and the opt-in they carried moves to the `launchers` key,
-  // so an upgrading user never loses cl/co/cx.
+  // The launchers blocks older releases wrote are cleared on the next wire (the file
+  // they sourced no longer ships) -- fenced and unfenced legacy flavors alike. The
+  // opt-in they carried is the user's to re-set with the `launchers` key.
   const unfenced = 'AGENTS_LAUNCHERS="/x/agents.launchers.bashrc"\n' +
     '[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"';
   writeFileSync(
@@ -331,7 +329,7 @@ skipWin("wiring strips old launchers blocks and carries the opt-in to the config
   expect(rc).not.toContain("agents.launchers");
   expect(rc).toContain("export KEEP=1");
   expect(rc).toContain("export AFTER=1");
-  expect(storedLaunchersKey()).toBe(true); // the migrated opt-in
+  expect(storedLaunchersKey()).toBeUndefined();
 });
 
 skipWin("a launchers block directly below the main one: ONE wire converges", () => {

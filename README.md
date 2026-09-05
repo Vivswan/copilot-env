@@ -215,7 +215,7 @@ Proxy-side keys (`small-model`, the `responses-*`/`messages-api` flags, `message
 
 `codex-model-catalog` applies at the next Codex auth refresh (within ~5 minutes) or `agent codex`/`agent init` wiring; turning it off also removes the generated `codex-model-catalog.json` and the managed `model_catalog_json` reference from the Codex config.
 
-`codex-host` (Linux/macOS) is the per-host `CODEX_HOME` symlink farm switch: `agent init` / `agent codex` build the farm when it is on and remove it when it is off (an unset key adopts a farm that is already wired), `agent env` exports `CODEX_HOME` only while a wiring pass has built and activated the farm and the key is not off, and `agent codex --check` / `agent health` report any drift between the key and the disk. Setting it is refused on Windows.
+`codex-host` (Linux/macOS) is the per-host `CODEX_HOME` symlink farm switch: `agent init` / `agent codex` build the farm when it is on and remove it when it is off, `agent env` exports `CODEX_HOME` only while a wiring pass has built and activated the farm and the key is not off, and `agent codex --check` / `agent health` report any drift between the key and the disk. Setting it is refused on Windows.
 
 ### Authentication
 

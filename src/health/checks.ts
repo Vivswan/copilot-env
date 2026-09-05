@@ -1183,31 +1183,25 @@ export function checkCodexHost(f: CodexHostFacts): CheckResult {
       wired: f.wired,
       probeError: f.probeError,
       active: f.active,
-      setting: f.setting,
+      enabled: f.enabled,
     },
   };
-  const warn = (summary: string, fix = "agent codex"): CheckResult => ({
+  const warn = (summary: string): CheckResult => ({
     ...base,
     status: "warn",
     detail: detail(summary),
-    fix,
+    fix: "agent codex",
   });
   if (!f.supported) return { ...base, status: "ok", detail: "not built (unsupported on Windows)" };
-  const drift = codexHostDriftFrom(f.setting, {
+  const drift = codexHostDriftFrom(f.enabled, {
     hostHome: f.hostHome,
     present: f.exists,
     wired: f.wired,
     probeError: f.probeError,
     active: f.active,
   });
-  if (drift !== null) {
-    // An unrecorded dir is not ours to remove: the fix is the user's explicit choice.
-    return warn(
-      codexHostDriftLine(drift),
-      drift.kind === "unowned" ? "agent config --set codex-host true|false" : undefined,
-    );
-  }
-  if (f.setting === true) {
+  if (drift !== null) return warn(codexHostDriftLine(drift));
+  if (f.enabled) {
     return { ...base, status: "ok", detail: detail(`active per-host CODEX_HOME: ${f.hostHome}`) };
   }
   // Not built, not wanted. Informational -- it's an optional feature.

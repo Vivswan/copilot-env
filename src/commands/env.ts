@@ -69,9 +69,8 @@ function isLocalProxyUrl(url: string): boolean {
 export function managedCodexHome(): ManagedEnvValue {
   if (process.platform === "win32") return null;
   const farm = codexHostFarm();
-  const setting = new CopilotEnvConfig().codexHostSetting();
-  if (setting !== false && farm.wired && farm.active) return { value: farm.hostHome };
-  if (setting === true) {
+  if (new CopilotEnvConfig().codexHostEnabled()) {
+    if (farm.wired && farm.active) return { value: farm.hostHome };
     const drift = codexHostDriftFrom(true, farm);
     if (drift !== null) logger.warn(codexHostDriftLine(drift));
   }

@@ -2148,7 +2148,7 @@ test("checkCodexHost: the codex-host key against the disk, every drift warns wit
     wired: true,
     probeError: null,
     active: true,
-    setting: true,
+    enabled: true,
   };
   // Key on, farm wired and recorded as the active home: the one healthy on-state.
   const active = checkCodexHost(on);
@@ -2163,14 +2163,12 @@ test("checkCodexHost: the codex-host key against the disk, every drift warns wit
     wired: true,
     probeError: null,
     active: true,
-    setting: true,
+    enabled: true,
   });
   // Every disagreement is a warn rendering the shared drift line (its wording is pinned
   // once, in test/codex_host.test.ts) with the command that resolves it.
   const line = (drift: CodexHostDrift): string => codexHostDriftLine(drift);
-  const drifts: Array<
-    { facts: CodexHostFacts; summary: string; withConfig: boolean; fix?: string }
-  > = [
+  const drifts: Array<{ facts: CodexHostFacts; summary: string; withConfig: boolean }> = [
     // On but hand-deleted (nothing on disk), or only half-built (dir without config.toml).
     {
       facts: { ...on, exists: false, wired: false },
@@ -2188,63 +2186,42 @@ test("checkCodexHost: the codex-host key against the disk, every drift warns wit
       summary: line({ kind: "inactive", hostHome }),
       withConfig: true,
     },
-    // Unset with a wired farm: the next pass adopts it.
-    {
-      facts: { ...on, active: false, setting: null },
-      summary: line({ kind: "unadopted", hostHome }),
-      withConfig: true,
-    },
-    // A farm the probe cannot read: wiring unproven, so the pass will refuse to decide.
-    {
-      facts: { ...on, wired: false, probeError: "EACCES: permission denied", setting: null },
-      summary: line({ kind: "unreadable", hostHome, detail: "EACCES: permission denied" }),
-      withConfig: true,
-    },
     // Off with a farm still on disk (or unprobeable): the next pass removes it.
     {
-      facts: { ...on, active: false, setting: false },
+      facts: { ...on, active: false, enabled: false },
       summary: line({ kind: "disabled", hostHome }),
       withConfig: true,
     },
     {
-      facts: { ...on, wired: false, probeError: "EACCES", setting: false },
+      facts: { ...on, wired: false, probeError: "EACCES", enabled: false },
       summary: line({ kind: "disabled", hostHome }),
       withConfig: true,
     },
     {
-      facts: { ...on, exists: false, wired: false, probeError: "EACCES", setting: false },
+      facts: { ...on, exists: false, wired: false, probeError: "EACCES", enabled: false },
       summary: line({ kind: "disabled", hostHome }),
       withConfig: false,
     },
-    // Unset with a recorded half-built dir: ours, removed next pass.
-    {
-      facts: { ...on, wired: false, active: true, setting: null },
-      summary: line({ kind: "disabled", hostHome }),
-      withConfig: true,
-    },
-    // Unset with an unrecorded half-built dir: not proven ours, so the user decides.
-    {
-      facts: { ...on, wired: false, active: false, setting: null },
-      summary: line({ kind: "unowned", hostHome }),
-      withConfig: true,
-      fix: "agent config --set codex-host true|false",
-    },
   ];
-  for (const { facts, summary, withConfig, fix } of drifts) {
+  for (const { facts, summary, withConfig } of drifts) {
     const result = checkCodexHost(facts);
     expect(result.status).toBe("warn");
-    expect(result.fix).toBe(fix ?? "agent codex");
+    expect(result.fix).toBe("agent codex");
     expect(result.detail).toBe(withConfig ? `${summary}\n${configLine}` : summary);
   }
-  // Not built, not wanted (off or unset): informational, and the path is not echoed.
-  for (const setting of [false, null]) {
-    const unbuilt = checkCodexHost({ ...on, exists: false, wired: false, active: false, setting });
-    expect(unbuilt.status).toBe("ok");
-    expect(unbuilt.fix).toBeUndefined();
-    expect(unbuilt.detail).toBe("not built (optional)");
-  }
+  // Not built, not wanted: informational, and the path is not echoed.
+  const unbuilt = checkCodexHost({
+    ...on,
+    exists: false,
+    wired: false,
+    active: false,
+    enabled: false,
+  });
+  expect(unbuilt.status).toBe("ok");
+  expect(unbuilt.fix).toBeUndefined();
+  expect(unbuilt.detail).toBe("not built (optional)");
   // Windows: no farm is possible, whatever the key says.
-  const unsupported = checkCodexHost({ ...on, supported: false, setting: false });
+  const unsupported = checkCodexHost({ ...on, supported: false, enabled: false });
   expect(unsupported.status).toBe("ok");
   expect(unsupported.detail).toBe("not built (unsupported on Windows)");
 });
@@ -2311,7 +2288,7 @@ test("evaluateAll(codex) yields only the Codex wiring check", () => {
       wired: false,
       probeError: null,
       active: false,
-      setting: false,
+      enabled: false,
     },
   };
   const ids = evaluateAll("codex", facts).map((r) => r.id);
@@ -2360,7 +2337,7 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       wired: false,
       probeError: null,
       active: false,
-      setting: false,
+      enabled: false,
     },
     claude: {
       home: "/h/.claude",

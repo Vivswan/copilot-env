@@ -829,24 +829,22 @@ test.skipIf(process.platform === "win32")(
     expect(on).toContain(`Codex config: ${farmConfig}`);
     expect(on).not.toContain(join(homes.codexHome, "config.toml"));
 
-    // A wired farm with the bundle silent: the pass adopts it (nothing built or removed).
+    // A wired farm with the bundle off OR silent (the key's default is off): the farm
+    // goes and the config lands at the default home, even while the shell still exports
+    // the (existing) farm and run state records it.
     mkdirSync(hostHome, { recursive: true });
     writeFileSync(farmConfig, 'model_provider = "copilot-env"\n');
-    const silent = writesOf({});
-    expect(silent).not.toContain("Per-host CODEX_HOME farm");
-    expect(silent).toContain(`Codex config: ${farmConfig}`);
-
-    // The bundle turns it off: the farm goes and the config lands at the default home,
-    // even while the shell still exports the (existing) farm and run state records it.
     process.env.CODEX_HOME = hostHome;
     writeRunState({ codexHome: hostHome });
-    const off = writesOf({ codexHost: false });
-    expect(off).toContain(`Per-host CODEX_HOME farm (removed): ${hostHome}`);
-    expect(off).toContain(`Codex config: ${join(homes.codexHome, "config.toml")}`);
-    expect(off).not.toContain(farmConfig);
+    for (const config of [{ codexHost: false }, {}]) {
+      const off = writesOf(config);
+      expect(off).toContain(`Per-host CODEX_HOME farm (removed): ${hostHome}`);
+      expect(off).toContain(`Codex config: ${join(homes.codexHome, "config.toml")}`);
+      expect(off).not.toContain(farmConfig);
+    }
 
     // Profile-only wiring resolves the home under the BUNDLE's value, not the current
-    // store: locally off (record retired), bundle silent -> the record is live again.
+    // store: locally off (record retired), bundle on -> the record is live again.
     new CopilotEnvConfig().set({ codexHost: false });
     const profileOnly = (config: Record<string, unknown>): string =>
       planImport(
@@ -857,43 +855,12 @@ test.skipIf(process.platform === "win32")(
         })),
         { catalogDeps: NOOP_CATALOG_DEPS },
       ).writes.join("\n");
-    expect(profileOnly({})).toContain(`Codex config: ${farmConfig} (may also clean its .env)`);
-    expect(profileOnly({ codexHost: false })).toContain(
+    expect(profileOnly({ codexHost: true })).toContain(
+      `Codex config: ${farmConfig} (may also clean its .env)`,
+    );
+    expect(profileOnly({})).toContain(
       `Codex config: ${join(homes.codexHome, "config.toml")} (may also clean its .env)`,
     );
-  },
-);
-
-test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
-  "import plans a refused default Codex wiring (unprobeable farm) while profile wiring still lands",
-  () => {
-    const homes = isolate();
-    new Credential().store("gh-token", "ghp_default");
-    const hostHome = getHostLocalCodexHome();
-    mkdirSync(hostHome, { recursive: true });
-    writeFileSync(join(hostHome, "config.toml"), 'model_provider = "copilot-env"\n');
-    chmodSync(hostHome, 0o000);
-    try {
-      const plan = planImport(
-        parseSettingsBundle(rawBundle({
-          credential: { githubToken: "ghp_default", authProvider: "gh-token" },
-          profiles: { work: { githubToken: "ghp_work", authProvider: "gh-token", mode: "proxy" } },
-          modes: { codex: "proxy", claude: "none" },
-        })),
-        { catalogDeps: NOOP_CATALOG_DEPS },
-      );
-      const writes = plan.writes.join("\n");
-      expect(writes).toMatch(
-        /Codex default wiring will be refused: .*cannot be inspected \(.*EACCES/,
-      );
-      expect(writes).not.toContain("Per-host CODEX_HOME farm (");
-      // The profile's provider table still lands at the effective home (no record: ~/.codex).
-      expect(writes).toContain(
-        `Codex config: ${join(homes.codexHome, "config.toml")} (may also clean its .env)`,
-      );
-    } finally {
-      chmodSync(hostHome, 0o700);
-    }
   },
 );
 

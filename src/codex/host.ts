@@ -561,7 +561,10 @@ const SHARED_FILES: readonly { name: string; placeholder: boolean }[] = [
 ];
 
 function buildCodexSymlinkFarm(codexHome: string): void {
-  const sharedRoot = path.dirname(codexFarmHostsDir());
+  // Both halves from the ONE resolved host path (<shared root>/hosts/<host>): a shared
+  // root spelled relative would make every symlink target relative to the link's own
+  // directory, pointing back inside the farm.
+  const sharedRoot = path.dirname(path.dirname(codexHome));
   primeSharedCodexHomeIfMissing(sharedRoot);
   ensureDir(sharedRoot);
   ensureDir(codexHome);

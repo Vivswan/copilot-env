@@ -3,7 +3,7 @@
 // key. PATH is an empty dir so the shared-home prime can never spawn a real codex CLI.
 
 import * as fs from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { recordDefaultModeFromWiring } from "../src/agents/configure_defaults.ts";
 import { proxyHelperCommand } from "../src/claude/config.ts";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
@@ -383,6 +383,24 @@ skipWin(
       active: true,
     });
     expect(codexHostDrift()).toBeNull();
+  },
+);
+
+skipWin(
+  "a relative HOME still builds an absolute farm whose links resolve to the shared root",
+  async () => {
+    const { sharedRoot, hostHome } = isolate();
+    // The same home spelled relative to the cwd: every path the farm records, exports,
+    // or links must come out absolute anyway.
+    process.env.HOME = relative(process.cwd(), dir);
+    expect(getHostLocalCodexHome()).toBe(hostHome);
+    await build();
+    for (const d of SHARED_DIRS) {
+      expect(linkTarget(join(hostHome, d))).toBe(join(sharedRoot, d));
+      expect(fs.realpathSync(join(hostHome, d))).toBe(fs.realpathSync(join(sharedRoot, d)));
+    }
+    for (const f of SHARED_FILES) expect(linkTarget(join(hostHome, f))).toBe(join(sharedRoot, f));
+    expect(new CopilotEnvRunState().read().codexHome).toBe(hostHome);
   },
 );
 

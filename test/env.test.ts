@@ -234,10 +234,11 @@ skipWin(
     const stderr = stderrDuring(() => {
       stdout = envLines();
     });
-    // The eval'd stdout carries no directive at all; the warning goes to stderr only
-    // (consola renders the backticked command as inline code, dropping the backticks).
+    // The eval'd stdout carries no directive at all; the warning goes to stderr only.
+    // consola keeps the backticks on a plain stream and drops them when it renders
+    // inline code, so both sides are compared without them (the whole line otherwise).
     expect(stdout).toEqual([]);
-    expect(stderr).toContain(
+    expect(stderr.replaceAll("`", "")).toContain(
       codexHostDriftLine({ kind: "missing", hostHome }).replaceAll("`", ""),
     );
     // A shell still carrying OUR dead export gets it cleared, whatever the key says.

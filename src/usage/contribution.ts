@@ -49,12 +49,17 @@ export interface CodexParseState {
   model: string;
   /** `session_meta` line timestamp, for the parent-missing fork fallback window. */
   metaTsMs?: number;
-  /** dedupKey of `session_meta.payload.forked_from_id`, when the session is a fork. */
-  forkedFromIdHash?: string;
-  /** How many events were already recorded when the fork was learned. The fork
-   *  rules apply to events from that index on: a token_count that precedes a
-   *  late `session_meta` was seen as an ordinary turn, and still is. */
-  forkKnownAfter?: number;
+  /** Set when the session is a fork: the parent's session id hash, and how many
+   *  events were already recorded when the fork was learned. The fork rules apply
+   *  to events from that index on: a token_count that precedes a late
+   *  `session_meta` was seen as an ordinary turn, and still is. */
+  fork?: CodexFork;
+}
+
+export interface CodexFork {
+  /** dedupKey of `session_meta.payload.forked_from_id`. */
+  parentHash: string;
+  knownAfter: number;
 }
 
 /**

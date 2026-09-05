@@ -212,7 +212,7 @@ export const parseCodexTail: ParseTail<CodexContribution> = (file, fromByte, pri
 /** Fold the contributions (walk order) into one report per provider. Per event:
  *  fork dedup (an info hash seen in this file or the parent is a copied
  *  token_count; parent unscanned: FORK_PREFIX_WINDOW_MS), THEN the window. The
- *  fork rules start at the event the fork was learned before (`forkKnownAfter`);
+ *  fork rules start at the event the fork was learned before (`fork.knownAfter`);
  *  every event's hash enters the file's own set regardless. */
 export function foldCodex(
   records: readonly FileRecord<CodexContribution>[],
@@ -225,14 +225,12 @@ export function foldCodex(
   // session id hash, so a later fork can drop the events it copied from its parent.
   const infoHashesBySession = new Map<string, Set<string>>();
   for (const { contribution: { state, events } } of records) {
-    const { forkedFromIdHash, forkKnownAfter = 0, metaTsMs } = state;
-    const parentHashes = forkedFromIdHash === undefined
-      ? undefined
-      : infoHashesBySession.get(forkedFromIdHash);
+    const { fork, metaTsMs } = state;
+    const parentHashes = fork === undefined ? undefined : infoHashesBySession.get(fork.parentHash);
     const ownHashes = new Set<string>();
     for (let index = 0; index < events.length; index++) {
       const [tsMs, rawProvider, rawModel, infoHash, input, output, cacheRead] = events[index]!;
-      const forked = forkedFromIdHash !== undefined && index >= forkKnownAfter;
+      const forked = fork !== undefined && index >= fork.knownAfter;
       const duplicate = ownHashes.has(infoHash) ||
         (forked &&
           (parentHashes?.has(infoHash) === true ||
@@ -388,8 +386,7 @@ function parseCodexLine(line: string, contribution: CodexContribution): void {
       state.provider = payload.model_provider;
     }
     if (typeof payload.forked_from_id === "string") {
-      state.forkedFromIdHash = dedupKey(payload.forked_from_id);
-      state.forkKnownAfter = events.length;
+      state.fork = { parentHash: dedupKey(payload.forked_from_id), knownAfter: events.length };
     }
     const ts = typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : Number.NaN;
     state.metaTsMs = Number.isFinite(ts) ? ts : undefined;

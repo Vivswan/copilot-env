@@ -1188,16 +1188,39 @@ const CODEX_MUTATIONS: Mutation[] = [
     }),
   },
   {
-    name: "a short fork hash",
-    mutate: (doc) => ({ ...doc, state: { ...(doc.state as object), forkedFromIdHash: "abc" } }),
+    name: "a short fork parent hash",
+    mutate: (doc) => ({
+      ...doc,
+      state: { ...(doc.state as object), fork: { parentHash: "abc", knownAfter: 0 } },
+    }),
+  },
+  {
+    name: "a fork without knownAfter",
+    mutate: (doc) => ({
+      ...doc,
+      state: { ...(doc.state as object), fork: { parentHash: dedupKey("p") } },
+    }),
+  },
+  {
+    name: "an extra fork key",
+    mutate: (doc) => ({
+      ...doc,
+      state: {
+        ...(doc.state as object),
+        fork: { parentHash: dedupKey("p"), knownAfter: 0, extra: 1 },
+      },
+    }),
   },
   {
     name: "a string metaTsMs",
     mutate: (doc) => ({ ...doc, state: { ...(doc.state as object), metaTsMs: "1" } }),
   },
   {
-    name: "a negative forkKnownAfter",
-    mutate: (doc) => ({ ...doc, state: { ...(doc.state as object), forkKnownAfter: -1 } }),
+    name: "a negative fork knownAfter",
+    mutate: (doc) => ({
+      ...doc,
+      state: { ...(doc.state as object), fork: { parentHash: dedupKey("p"), knownAfter: -1 } },
+    }),
   },
   { name: "events as an object", mutate: (doc) => ({ ...doc, events: {} }) },
   {
@@ -1338,8 +1361,7 @@ for (const mutation of CODEX_MUTATIONS) {
         provider: "openai",
         model: "gpt",
         sessionIdHash: dedupKey("s"),
-        forkedFromIdHash: dedupKey("p"),
-        forkKnownAfter: 0,
+        fork: { parentHash: dedupKey("p"), knownAfter: 0 },
         metaTsMs: BASE_TS,
       },
       events: [[BASE_TS, "openai", "gpt", dedupKey(c), 1, 2, 3]],

@@ -19,6 +19,7 @@ import {
 } from "./integration_identity.ts";
 import { copilotApiResolvePort } from "./port.ts";
 import { type Profile, profileLabel } from "./profile.ts";
+import { createStderrLogger } from "../utils/logger.ts";
 
 /** Where the catalog comes from: upstream Copilot (direct) or the running local proxy. */
 export type CatalogSource = "direct" | "proxy";
@@ -49,6 +50,8 @@ export interface FetchRawModelsOptions {
   profile?: Profile;
   /** Injection seam for tests (direct source only: the identity probe and the GET). */
   fetchImpl?: ProbeFetch;
+  /** A deadline over the whole direct fetch, identity probe included (each request keeps its own timeout too). */
+  signal?: AbortSignal;
 }
 
 /** Fetch the raw `/models` body from `source`. */
@@ -82,10 +85,13 @@ export async function fetchRawModels(
   // it (pin > probe; network-free for non-PAT credentials) so `agent models` works for a
   // PAT Direct setup too -- probing DIRECT_MODELS_URL's own host, the one this fetch uses,
   // so the verdict can't be rendered against a different (account-designated) host.
+  // Narrate on stderr: `agent auth --get` runs this fetch and its stdout is the token.
   const integrationId = await resolvePassthroughIntegrationId(token, {
     pinned: new CopilotEnvConfig().pinnedIntegrationId(),
     apiBase: DEFAULT_COPILOT_API_BASE,
     fetchImpl: opts.fetchImpl,
+    signal: opts.signal,
+    narrator: createStderrLogger(),
   });
   const fetchImpl: ProbeFetch = opts.fetchImpl ?? ((input, init) => globalThis.fetch(input, init));
   const res = await fetchImpl(DIRECT_MODELS_URL, {
@@ -93,7 +99,9 @@ export async function fetchRawModels(
       Authorization: `Bearer ${token}`,
       [INTEGRATION_ID_HEADER]: integrationId,
     },
-    signal: AbortSignal.timeout(DIRECT_FETCH_TIMEOUT_MS),
+    signal: opts.signal === undefined
+      ? AbortSignal.timeout(DIRECT_FETCH_TIMEOUT_MS)
+      : AbortSignal.any([opts.signal, AbortSignal.timeout(DIRECT_FETCH_TIMEOUT_MS)]),
   });
   if (!res.ok) {
     throw new Error(`GET ${DIRECT_MODELS_URL} returned ${res.status} ${res.statusText}`);

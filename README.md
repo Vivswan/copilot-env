@@ -216,6 +216,13 @@ Proxy-side keys (`small-model`, the `responses-*`/`messages-api` flags, `message
 
 `codex-model-catalog` applies at the next Codex auth refresh (within ~5 minutes) or `agent codex`/`agent init` wiring; turning it off also removes the generated `codex-model-catalog.json` and the managed `model_catalog_json` reference from the Codex config.
 
+What the generated catalog holds:
+
+- every model the installed `codex` bundles, with every field it ships, plus GitHub Copilot's real context window and prompt cap where Copilot serves the model;
+- the OpenAI-family models Copilot serves on `/responses` that this Codex does not bundle (for example `gpt-5.3-codex`, `gpt-5.6-sol-fast`, or `gpt-6-astra` on an older Codex), added as clones of their closest bundled relative with Copilot's name, limits, and reasoning levels, so they appear in Codex's model picker.
+
+Codex parses that file strictly and treats it as a replacement for its bundled catalog, so a Codex build that requires a field the file lacks fails at startup with `failed to parse model_catalog_json path ...`. copilot-env guards the installed `codex`: before writing or referencing a catalog it asks that binary to parse it, and a catalog it rejects is left out of the config. Other Codex consumers sharing `~/.codex` (an IDE extension's own codex-core, a desktop app) cannot be probed; if one reports that error, run `agent codex` to regenerate from the installed CLI, or `agent config --set codex-model-catalog false` to remove the catalog.
+
 `codex-host` (Linux/macOS) is the per-host `CODEX_HOME` symlink farm switch: `agent init` / `agent codex` build the farm when it is on and remove it when it is off, `agent env` exports `CODEX_HOME` only while a wiring pass has built and activated the farm and the key is not off, and `agent codex --check` / `agent health` report any drift between the key and the disk. Setting it is refused on Windows.
 
 `claude-desktop` applies at the next `agent init`, `agent claude`, or `agent profile` wiring (setting the key writes no Desktop file itself). On, every managed Claude write keeps a matching entry in Claude Desktop's config library, for the default and every profile, while the app is installed; off, the same writes remove the profile entries and their credential-helper scripts, while the default entry stays in place as yours (named once, never rewritten; only `agent uninstall` removes it). Every file created, rewritten, or removed is printed. `agent claude --check` and `agent health` report drift: an entry missing or stale with the key on, or profile entries left behind after turning it off.

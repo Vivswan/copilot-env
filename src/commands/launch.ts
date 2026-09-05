@@ -24,8 +24,7 @@ import type { AgentProviderMode } from "../agents/provider_mode.ts";
 import { readAgentModes } from "../agents/wiring.ts";
 import { BASE_URL_ENV, claudeAdapter, runClaude } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { refreshCodexModelCatalogIfStale } from "../codex/catalog.ts";
-import { runCodex, syncCodexCatalogReference } from "../codex/config.ts";
+import { refreshCodexCatalogAndSync, runCodex } from "../codex/config.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
@@ -302,8 +301,7 @@ async function ensureProxyUp(profile: Profile): Promise<boolean> {
     recordHeartbeat,
     printProxyToken: async (p) => {
       if (p !== null) return;
-      await refreshCodexModelCatalogIfStale("proxy");
-      syncCodexCatalogReference();
+      await refreshCodexCatalogAndSync("proxy");
     },
     notify: (line) => {
       process.stderr.write(`${line}\n`);

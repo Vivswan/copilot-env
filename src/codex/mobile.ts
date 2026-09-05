@@ -12,7 +12,7 @@ import { parse, stringify } from "smol-toml";
 import { runCaptured } from "../utils/command.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { isCatalogFileUsable } from "./catalog.ts";
+import { inspectCatalogFile } from "./catalog.ts";
 import { effectiveCodexHome } from "./host.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath } from "./paths.ts";
 
@@ -419,10 +419,13 @@ export async function runCodexMobile(): Promise<void> {
     logger.warn(`Could not write a backup at ${backupPath}; proceeding from memory.`);
   }
 
-  const usableCatalog = (): string | null =>
+  const usableCatalog = (): string | null => {
     // Re-check at write time: disabling the opt-in catalog mid-pairing deletes the
-    // file, and restoring a dangling reference is a Codex startup error.
-    catalogPath !== null && isCatalogFileUsable(catalogPath) ? catalogPath : null;
+    // file, and a dangling or schema-rejected reference is a Codex startup error.
+    if (catalogPath === null) return null;
+    const verdict = inspectCatalogFile(catalogPath);
+    return verdict === "accepted" || verdict === "unverifiable" ? catalogPath : null;
+  };
   const rebuildFromOriginal = (): string =>
     // Strip+restore so the catalog guard applies (`original` may carry the deleted
     // path verbatim); the pure rewrites cannot throw -- `original` parsed at flow start.

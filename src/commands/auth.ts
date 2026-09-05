@@ -23,8 +23,8 @@ import { readFileSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { consola } from "consola";
-import { type CodexCatalogDeps, refreshCodexModelCatalogIfStale } from "../codex/catalog.ts";
-import { syncCodexCatalogReference } from "../codex/config.ts";
+import type { CodexCatalogDeps } from "../codex/catalog.ts";
+import { refreshCodexCatalogAndSync } from "../codex/config.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import {
   AUTH_PROVIDERS,
@@ -453,15 +453,10 @@ async function runGet(profile: Profile, catalogDeps?: CodexCatalogDeps): Promise
   // the default credential; refreshing it with a named profile's token would let
   // one account's limits overwrite another's.
   if (profile !== null) return;
-  await refreshCodexModelCatalogIfStale("direct", { directToken: token, ...catalogDeps });
-  // Keep the managed config in step with the opt-in catalog preference on EVERY
-  // auth call (one cheap TOML read), not just after a regeneration: enabled, it
-  // self-heals a config whose wiring-time seed failed (e.g. a catalog generated
-  // during mobile pairing -- provider stripped => the add is skipped -- must get
-  // referenced on the next call after pairing restores the provider, without
-  // waiting out the daily refresh throttle); disabled, it removes the catalog
-  // artifacts -- Codex re-runs auth every 300s, so a disable lands within minutes.
-  syncCodexCatalogReference();
+  // The sync half runs on EVERY auth call (one cheap TOML read): enabled, it heals a
+  // config whose seed failed (e.g. during mobile pairing) without waiting out the
+  // throttle; disabled, it removes the artifacts within one 300s auth cycle.
+  await refreshCodexCatalogAndSync("direct", { directToken: token, ...catalogDeps });
 }
 
 /**
@@ -489,8 +484,7 @@ export async function runPrintProxyToken(
   // can 403 upstream, so proxy mode never fetches Copilot directly). The same
   // every-call sync as `--get` follows (see runGet: self-heal when the catalog
   // is enabled, artifact cleanup when disabled).
-  await refreshCodexModelCatalogIfStale("proxy", catalogDeps);
-  syncCodexCatalogReference();
+  await refreshCodexCatalogAndSync("proxy", catalogDeps);
 }
 
 async function runDel(profile: Profile): Promise<void> {

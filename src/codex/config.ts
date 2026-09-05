@@ -46,10 +46,15 @@ import {
   proxyTokenCommand,
 } from "../utils/root.ts";
 import {
+  catalogBookkeepingAllowed,
+  type CatalogFileVerdict,
+  type CatalogSource,
   type CodexCatalogDeps,
   codexUserAgentVersion,
   generateCodexModelCatalog,
-  isCatalogFileUsable,
+  inspectCatalogFile,
+  refreshCodexModelCatalogIfStale,
+  withCatalogRefreshDeadline,
 } from "./catalog.ts";
 import {
   codexHostDrift,
@@ -74,6 +79,10 @@ export const CODEX_ENV_KEY = "OPENAI_API_KEY";
 // (integration_identity.ts owns the literal -- the probe's verdict must be
 // rendered against the host the agents actually bake).
 const DIRECT_BASE_URL = DEFAULT_COPILOT_API_BASE;
+/** The managed direct provider's `auth.timeout_ms`: what one `agent auth --get` (the
+ *  `gh` look, the token print, a due catalog refresh) has before Codex gives up. It sits
+ *  in every install's config, so the refresh budgets bend to it (pinned by test). */
+export const DIRECT_AUTH_TIMEOUT_MS = 30000;
 
 /** The managed provider id for `profile`: the unsuffixed `copilot-env` contract for the
  *  default, `copilot-env-<name>` for a named profile. A named profile is selected via
@@ -179,10 +188,10 @@ function managedDirectProvider(
       "command": command,
       "args": [...args],
       // Generous vs the old `gh` path (5s): the launcher may cold-start deno, and a
-      // due (at most daily) model-catalog refresh adds a bounded /models fetch (5s)
-      // plus a `codex debug models --bundled` dump (8s) after the token prints.
-      // The common warm case returns in well under a second; Codex refreshes lazily.
-      "timeout_ms": 30000,
+      // due (at most daily) model-catalog refresh runs after the token prints
+      // (AUTH_REFRESH_WORST_CASE_MS, src/codex/catalog.ts). Warm calls take well
+      // under a second; Codex refreshes lazily.
+      "timeout_ms": DIRECT_AUTH_TIMEOUT_MS,
       "refresh_interval_ms": 300000,
     },
   };
@@ -694,6 +703,7 @@ function validateProxyOptions(request: { baseUrl: string }): CodexModeRequest {
 export function configureCodexConfig(
   codexHome: string | null | undefined,
   request: CodexWriteRequest,
+  catalogDeps: CodexCatalogDeps = {},
 ): void {
   codexHome = codexHome || defaultCodexHome();
   const profile = request.profile ?? null;
@@ -754,22 +764,27 @@ export function configureCodexConfig(
     doc.sandbox_workspace_write = sandboxWrite;
   }
 
-  // Point Codex at the patched Copilot model catalog (src/codex/catalog.ts) --
-  // ONLY when the feature is opted in (`agent config --set codex-model-catalog
-  // true`) AND the file is USABLE (exists and parses with at least one model):
-  // `model_catalog_json` REPLACES Codex's bundled catalog and a missing, empty,
-  // or unparseable file is a Codex STARTUP error, so a bad reference must be
-  // scrubbed rather than left behind. A failed refresh keeps a good file
-  // (generation never truncates), so a referenced file stays usable. Disabled
-  // means an unconditional delete (even of a user-pinned custom path): the
-  // full managed write owns this key wholesale, and the managed contract when
-  // the feature is off is "no catalog key". (Account-wide, so the DEFAULT
-  // selection's write owns it; named-profile writes leave it alone.) The
-  // ownership-ledger verdict is decided here and committed after the save.
+  // `model_catalog_json` REPLACES Codex's bundled catalog, and a missing, empty,
+  // unparseable, or schema-rejected file is a Codex STARTUP error: reference the
+  // generated catalog only when opted in, usable, and not rejected by the
+  // installed codex (re-judged on every write, so `agent codex` recovers from a
+  // codex upgrade); otherwise scrub the key -- disabled means "no catalog key",
+  // even over a user-pinned path. Account-wide: only the DEFAULT write owns it.
   let catalogRef: "written" | "cleared" | null = null;
   if (profile === null) {
     const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
-    if (new CopilotEnvConfig().codexModelCatalogEnabled() && isCatalogFileUsable(catalogFile)) {
+    const verdict: CatalogFileVerdict | "disabled" =
+      new CopilotEnvConfig().codexModelCatalogEnabled()
+        ? inspectCatalogFile(catalogFile, catalogDeps)
+        : "disabled";
+    if (verdict === "rejected" && !request.quiet) {
+      logger.warn(
+        `  ! the installed codex rejects ${catalogFile}; leaving it out of the config ` +
+          "(regenerate with `agent codex`, or disable with " +
+          "`agent config --set codex-model-catalog false`)",
+      );
+    }
+    if (verdict === "accepted" || verdict === "unverifiable") {
       doc.model_catalog_json = catalogFile;
       catalogRef = "written";
     } else {
@@ -861,12 +876,12 @@ export async function applyCodexConfig(
   // to the default credential -- named-profile writes never touch it.
   if (profile === null) await generateCodexModelCatalog(write.mode, catalogDeps);
 
-  configureCodexConfig(codexHome, request);
+  configureCodexConfig(codexHome, request, catalogDeps);
 
   // When the catalog is disabled the write above only stripped the key in THIS
   // home; the sync also deletes the generated file and clears the throttle
   // state, so a wiring pass finishes the opt-out immediately.
-  if (profile === null) syncCodexCatalogReference();
+  if (profile === null) syncCodexCatalogReference(catalogDeps);
 }
 
 /**
@@ -902,6 +917,12 @@ export function probeDirectIntegrationId(
  * limits the patched catalog would misstate). ADD-only: a present key -- ours or
  * a user-pinned custom catalog path -- is never rewritten here; enforcing OUR
  * path over a custom one is the full managed write's job (configureCodexConfig).
+ * The one subtraction, judged BEFORE the active config is even read: when the
+ * file is unusable (gone, malformed, empty) or the installed codex REJECTS its
+ * schema (a codex upgrade that now requires a field the file predates), our
+ * reference is stripped from every known config, whatever the active config's
+ * state, because that reference is exactly what fails Codex's startup; a
+ * rejected file stays for the next regeneration, and nothing is added meanwhile.
  *
  * DISABLED -- cleanup: strip the reference from every known Codex config, then
  * delete the generated file, then clear the refresh-throttle state. "Every
@@ -923,14 +944,26 @@ export function probeDirectIntegrationId(
  * Codex re-runs auth every 300s, so the retry is near. Steady state is
  * write-free.
  */
-export function syncCodexCatalogReference(): void {
+export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): void {
   try {
     const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
     if (!new CopilotEnvConfig().codexModelCatalogEnabled()) {
       cleanupCodexCatalogArtifacts(catalogFile);
       return;
     }
-    if (!isCatalogFileUsable(catalogFile)) return;
+    // Absent, malformed, or empty, or rejected by the installed codex: any
+    // reference to it is a Codex startup failure, so strip ours everywhere.
+    const verdict = inspectCatalogFile(catalogFile, catalogDeps);
+    if (verdict === "unusable" || verdict === "rejected") {
+      if (stripCodexCatalogReferences(catalogFile).stripped) {
+        logger.warn(
+          `codex model catalog: ${catalogFile} is ${
+            verdict === "unusable" ? "missing or unreadable" : "rejected by the installed codex"
+          }; reference removed (regenerate with \`agent codex\`)`,
+        );
+      }
+      return;
+    }
     const configPath = codexConfigPath(effectiveCodexHome());
     const read = readCodexToml(configPath);
     // Absent (Codex never wired) or unparseable: nothing to heal in place -- the
@@ -941,11 +974,24 @@ export function syncCodexCatalogReference(): void {
     if (doc.model_catalog_json !== undefined) return;
     doc.model_catalog_json = catalogFile;
     saveCodexToml(configPath, doc);
-    new OwnershipLedger().record("codexCatalog", configPath);
+    if (catalogBookkeepingAllowed()) new OwnershipLedger().record("codexCatalog", configPath);
   } catch {
     // An unreadable config (non-ENOENT) or a write race: the next
     // `agent codex`/`agent init` wiring writes the key anyway.
   }
+}
+
+/** The catalog freshness hook every auth-time and launch path runs: the throttled,
+ *  version-aware regeneration from `source`, then the reference sync (self-heal
+ *  when enabled, cleanup when disabled), under ONE refresh deadline. */
+export function refreshCodexCatalogAndSync(
+  source: CatalogSource,
+  deps: CodexCatalogDeps = {},
+): Promise<void> {
+  return withCatalogRefreshDeadline(deps, async () => {
+    await refreshCodexModelCatalogIfStale(source, deps);
+    syncCodexCatalogReference(deps);
+  });
 }
 
 /** Every Codex home that may hold per-home state (config.toml, sessions): the
@@ -1017,36 +1063,7 @@ function resolvesToCatalogFile(value: unknown, catalogFile: string): "yes" | "no
  *  pre-ledger installs recorded nothing, and a user-repointed key is no longer
  *  ours even at a recorded path. */
 function cleanupCodexCatalogArtifacts(catalogFile: string): void {
-  const ledger = new OwnershipLedger();
-  const { configs, complete } = codexCatalogConfigCandidates();
-  const recordedPaths = new Set(ledger.ownedPaths("codexCatalog"));
-  let deletionSafe = complete;
-  for (const configPath of new Set([...configs, ...recordedPaths])) {
-    try {
-      const doc = parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
-      if (doc.model_catalog_json === catalogFile) {
-        delete doc.model_catalog_json;
-        fs.writeFileSync(configPath, stringify(doc));
-        ledger.release("codexCatalog", configPath);
-      } else if (resolvesToCatalogFile(doc.model_catalog_json, catalogFile) !== "no") {
-        // An alternate spelling of OUR path (case variant on Windows, a
-        // symlinked home) -- or a resolve that could not RUN, which leaves the
-        // question open. Either way not provably ours to strip, and deleting the
-        // file would dangle it -- keep the file.
-        deletionSafe = false;
-      } else if (recordedPaths.has(configPath)) {
-        // Recorded, but the config no longer references our file (the user
-        // removed or repointed the key since we wrote it): a stale claim.
-        ledger.release("codexCatalog", configPath);
-      }
-    } catch (e) {
-      // ENOENT (no config there anymore) cannot hold a reference -- a recorded
-      // claim on it is stale; any other failure might hold one, so keep the
-      // file until every readable config proves it unreferenced.
-      if (!isEnoent(e)) deletionSafe = false;
-      else if (recordedPaths.has(configPath)) ledger.release("codexCatalog", configPath);
-    }
-  }
+  const { deletionSafe } = stripCodexCatalogReferences(catalogFile);
   if (deletionSafe && fs.existsSync(catalogFile)) {
     try {
       fs.rmSync(catalogFile, { force: true });
@@ -1058,14 +1075,59 @@ function cleanupCodexCatalogArtifacts(catalogFile: string): void {
   const recorded = state.read();
   if (
     recorded.codexCatalogLastAttemptMs !== 0 || recorded.codexCatalogCodexVersion !== null ||
-    recorded.codexCatalogPatchVersion !== 0
+    recorded.codexCatalogPatchVersion !== 0 || recorded.codexCatalogAccepted !== null
   ) {
     state.set({
       codexCatalogLastAttemptMs: null,
       codexCatalogCodexVersion: null,
       codexCatalogPatchVersion: null,
+      codexCatalogAccepted: null,
     });
   }
+}
+
+/** Strip our `model_catalog_json` reference from every candidate config (the
+ *  sweep cleanupCodexCatalogArtifacts describes), releasing each claim as it
+ *  goes. `stripped` reports whether any config changed; `deletionSafe` is the
+ *  sweep's proof that no readable config still references the file. */
+function stripCodexCatalogReferences(
+  catalogFile: string,
+): { stripped: boolean; deletionSafe: boolean } {
+  const ledger = new OwnershipLedger();
+  const { configs, complete } = codexCatalogConfigCandidates();
+  const recordedPaths = new Set(ledger.ownedPaths("codexCatalog"));
+  let deletionSafe = complete;
+  let stripped = false;
+  for (const configPath of new Set([...configs, ...recordedPaths])) {
+    try {
+      const doc = parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
+      if (doc.model_catalog_json === catalogFile) {
+        delete doc.model_catalog_json;
+        fs.writeFileSync(configPath, stringify(doc));
+        if (catalogBookkeepingAllowed()) ledger.release("codexCatalog", configPath);
+        stripped = true;
+      } else if (resolvesToCatalogFile(doc.model_catalog_json, catalogFile) !== "no") {
+        // An alternate spelling of OUR path (case variant on Windows, a
+        // symlinked home) -- or a resolve that could not RUN, which leaves the
+        // question open. Either way not provably ours to strip, and deleting the
+        // file would dangle it -- keep the file.
+        deletionSafe = false;
+      } else if (recordedPaths.has(configPath)) {
+        // Recorded, but the config no longer references our file (the user
+        // removed or repointed the key since we wrote it): a stale claim.
+        if (catalogBookkeepingAllowed()) ledger.release("codexCatalog", configPath);
+      }
+    } catch (e) {
+      // ENOENT (no config there anymore) cannot hold a reference -- a recorded
+      // claim on it is stale; any other failure might hold one, so keep the
+      // file until every readable config proves it unreferenced.
+      if (!isEnoent(e)) deletionSafe = false;
+      else if (recordedPaths.has(configPath)) {
+        if (catalogBookkeepingAllowed()) ledger.release("codexCatalog", configPath);
+      }
+    }
+  }
+  return { stripped, deletionSafe };
 }
 
 /** The `--check` reading of a Codex "other" classification, keyed off the

@@ -217,16 +217,25 @@ const plugin: Deno.lint.Plugin = {
               context.report({ node, message: MESSAGE });
             }
           },
-          // `export * from "node:fs"` / `export { rmSync } from "node:fs"`: hands the
-          // write API to another module under a name the rule would not see.
+          // `export * from "node:fs"` / `export { rmSync } from "node:fs"`: hands a write
+          // API (or the whole module) to another module under a name the rule would not
+          // see. A read-only re-export is as legal as a read-only import.
           "ExportAllDeclaration"(node) {
             if (FS_MODULES.has(String(node.source.value))) {
               context.report({ node, message: MESSAGE });
             }
           },
           "ExportNamedDeclaration"(node) {
-            if (node.source !== null && FS_MODULES.has(String(node.source.value))) {
-              context.report({ node, message: MESSAGE });
+            if (node.source === null || !FS_MODULES.has(String(node.source.value))) return;
+            for (const specifier of node.specifiers) {
+              // `local` is the name in the SOURCE module (`export { rm as remove }` -> rm).
+              const name = specifier.local.type === "Identifier"
+                ? specifier.local.name
+                : String(specifier.local.value);
+              // `default` and `promises` are the whole write-capable module under a name.
+              if (FS_WRITE_NAMES.has(name) || name === "promises" || name === "default") {
+                context.report({ node: specifier, message: MESSAGE });
+              }
             }
           },
           "MemberExpression"(node) {

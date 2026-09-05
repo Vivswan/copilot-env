@@ -34,6 +34,12 @@ const CASES: readonly (readonly [string, number])[] = [
   ['export * from "node:fs";', 1],
   ['export { rmSync } from "node:fs";', 1],
   ['export { rm as remove } from "node:fs/promises";', 1],
+  ['export { promises } from "node:fs";', 1],
+  ['export { default as fs } from "node:fs";', 1],
+  ['export { default as fsp } from "node:fs/promises";', 1],
+  ['export { readFileSync, rmSync } from "node:fs";', 1],
+  // A read-only re-export is as legal as a read-only import.
+  ['export { readFileSync } from "node:fs";', 0],
   // The Deno namespace, spelled every way.
   ['Deno.writeTextFileSync("x", "y");', 1],
   ['await globalThis.Deno.remove("x");', 1],

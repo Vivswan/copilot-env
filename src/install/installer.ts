@@ -222,8 +222,19 @@ export function classifyInstallRoot(root: string): InstallRootShape {
  * delete; the target's contents are never touched), then create the new one.
  * Junction targets are stored absolute (relative junctions do not exist).
  */
+/** The target `<top>/current` is linked to for `versionName`, in the spelling the platform
+ *  stores: a RELATIVE path on POSIX (the install stays relocatable), an ABSOLUTE one on
+ *  Windows (a junction has no relative form). The plan and the flip both take it from
+ *  here, so what the dry run names and what the seam reports cannot disagree. */
+export function currentLinkTarget(top: string, versionName: string): string {
+  return process.platform === "win32"
+    ? versionRootPath(top, versionName)
+    : join(VERSIONS_DIR, versionName);
+}
+
 export function pointCurrentAt(top: string, versionName: string): void {
   const link = currentLinkPath(top);
+  const target = currentLinkTarget(top, versionName);
   if (process.platform === "win32") {
     // Windows has no atomic replace of a directory entry, so the flip is
     // remove-then-create with a RESTORE on failure: if the new junction cannot
@@ -235,7 +246,7 @@ export function pointCurrentAt(top: string, versionName: string): void {
     const previous = readCurrentTargetPath(top);
     removeEmptyDirReported(link);
     try {
-      symlinkReported(versionRootPath(top, versionName), link, "junction");
+      symlinkReported(target, link, "junction");
     } catch (error) {
       if (previous !== null) {
         try {
@@ -261,7 +272,7 @@ export function pointCurrentAt(top: string, versionName: string): void {
   } catch (error) {
     if ((error as { code?: string }).code !== "ENOENT") throw error;
   }
-  atomicSymlink(join(VERSIONS_DIR, versionName), link);
+  atomicSymlink(target, link);
 }
 
 /** The current link's raw target path (absolute on Windows, `\\?\` stripped),
@@ -564,6 +575,8 @@ export type InstallPlan =
      *  already there, or when no standalone binary is running -- a dev process
      *  aimed at a foreign root has no binary to contribute). */
     binary: { from: string; to: string } | null;
+    /** The commit step: `<top>/current` linked to `target` (currentLinkTarget). */
+    currentLink: { path: string; target: string };
     topShims: ShimWrite[];
     /** Pre-versioned artifacts at the top root, swept AFTER the flip. */
     flatRemovals: string[];
@@ -818,6 +831,7 @@ export function buildInstallPlan(
     versionRoot,
     ...planMaterialization(versionRoot, sourceRoot),
     binary,
+    currentLink: { path: currentLinkPath(top), target: currentLinkTarget(top, versionName) },
     topShims: [
       { to: join(top, "bin", "agent"), text: POSIX_CURRENT_SHIM, executable: true },
       { to: join(top, "bin", "agent.ps1"), text: POWERSHELL_CURRENT_SHIM, executable: false },

@@ -432,7 +432,7 @@ describe("the versioned full-install plan", () => {
     const expected = [
       ...dirs.map((d) => `created -> ${d}`),
       ...created.map((f) => `created -> ${f}`),
-      `linked -> ${currentLinkPath(dest)} (to ${join(VERSIONS_DIR, VERSION_NAME)})`,
+      `linked -> ${plan.currentLink.path} (to ${plan.currentLink.target})`,
       ...plan.flatRemovals.map((p) => `deleted -> ${p}`),
       ...plan.flatPrunes.map((p) => `deleted -> ${p}`),
       ...plan.flatBinaryRemovals.map((p) => `deleted -> ${p}`),

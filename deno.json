@@ -17,6 +17,7 @@
     ".github/workflows/auto-assign.yml",
     ".github/workflows/ci.yml",
     ".github/workflows/deno-audit.yml",
+    ".github/workflows/pr-title.yml",
     ".github/workflows/release.yml",
     ".github/workflows/settings-sync.yml"
   ],

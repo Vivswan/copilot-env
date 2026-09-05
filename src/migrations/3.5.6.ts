@@ -156,18 +156,24 @@ export const v356: Migration = {
       nextHome: DEFAULT_HOME,
       stopDaemons: stopLegacyDaemons,
       codexConfigPaths: () => knownCodexHomes().homes.map((home) => codexConfigPath(home)),
-      // Through the ledger (ledger entries plus the not-yet-adopted legacy
-      // record): this step runs BEFORE the ownership adoption below, and on a
-      // re-run after it, so both layouts must answer.
-      desktopEntryPaths: () => new OwnershipLedger().ownedPaths("claudeDesktop"),
+      // The ledger answers from its own file only, and this step runs BEFORE the
+      // ownership fix-up below, so adopt the pre-ledger record first (post-move,
+      // where the state store is readable; idempotent, so the fix-up's own run
+      // is then a no-op) and both layouts answer.
+      desktopEntryPaths: () => {
+        const ledger = new OwnershipLedger();
+        ledger.adoptLegacyRecords();
+        return ledger.ownedPaths("claudeDesktop");
+      },
     }),
 };
 
 /** Second fix-up of the same step: recorded artifact ownership (the
  *  WebSearch-deny and Claude Desktop paths) moved from the shared state store
- *  into the machine-local ownership ledger. The ledger's readers tolerate the
- *  legacy keys until this has run (a dev checkout never runs migrations), so
- *  the adoption is a tidy-up, not a correctness gate. Registered AFTER the
+ *  into the machine-local ownership ledger. The ledger's readers answer from
+ *  the ledger alone, so a pre-ledger claim is unowned until this has run
+ *  (the home move above already runs the same idempotent adoption for its own
+ *  read, so on that path this is a no-op). Registered AFTER the
  *  home move: the state store it reads lives inside the moved home. */
 export const v356Ownership: Migration = {
   version: "3.5.6",
@@ -178,8 +184,8 @@ export const v356Ownership: Migration = {
 /** Third fix-up of the same step: the default credential moved from the state
  *  store's top-level pair into the reserved `default` profile slot. The store's
  *  read boundary tolerates the legacy pair and every default-slot write lifts
- *  it too (the runner is best-effort), so this is the same tidy-up-not-gate
- *  posture as the ownership adoption. Registered after the home move for the
+ *  it too (the runner is best-effort), so this is a tidy-up, not a
+ *  correctness gate. Registered after the home move for the
  *  same reason (the state store lives inside the moved home) and BEFORE the
  *  versioned-layout adoption: this fix-up is install-layout-independent, and
  *  the adoption's invariant is that it runs last (it relocates the install

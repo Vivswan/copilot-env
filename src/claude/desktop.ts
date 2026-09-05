@@ -1064,7 +1064,7 @@ interface OwnedLibrary {
 
 /** The ledger's Desktop claims that are DIRECT entry files of `dir` (`<id>.json`, one
  *  segment down -- a trailing separator on `dir` or a nested path changes nothing), as one
- *  snapshot (one lock, not one per row). */
+ *  snapshot (one ledger read, not one per row). */
 function claimsUnder(ledger: OwnershipLedger, dir: string): Set<string> {
   return new Set(
     ledger.ownedPaths("claudeDesktop").filter((p) => {

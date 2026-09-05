@@ -1055,7 +1055,7 @@ test("a config-only import of claude-desktop true restores the DEFAULT Desktop e
   const status = claudeDesktopStatus();
   expect(status.kind).toBe("inspected");
   if (status.kind === "inspected") {
-    expect(status.ownedPaths).toHaveLength(1);
+    expect(status.owned).toHaveLength(1);
     expect(status.entries.map((e) => e.verdict.kind)).toEqual(["wired"]);
   }
 });

@@ -410,7 +410,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "claude-desktop",
     key: "claudeDesktop",
     describe:
-      "Wire Claude Desktop's config library (default + every profile) while the app is installed; false removes the copilot-env entries (bool)",
+      "Wire Claude Desktop's config library (default + every profile) while the app is installed; false removes the profile entries and leaves the default's in place, unmanaged (bool)",
     ...BOOL_DOMAIN,
     defaultValue: true,
     applyHint:
@@ -811,8 +811,9 @@ export class CopilotEnvConfig {
   }
 
   /** Whether the Claude Desktop config-library wiring is reconciled ON (default) -- entries
-   *  kept for the default + every profile while the app is installed -- or OFF (every owned
-   *  entry swept). Read by every Desktop reconcile (src/claude/desktop.ts). */
+   *  kept for the default + every profile while the app is installed -- or OFF (the profile
+   *  entries swept, the default's left in place). Read by every Desktop reconcile
+   *  (src/claude/desktop.ts). */
   claudeDesktopEnabled(): boolean {
     return this.read().claudeDesktop ?? configDefaultBoolean("claude-desktop");
   }

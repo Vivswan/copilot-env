@@ -34,7 +34,10 @@ export const MEGABYTE = 1024 * 1024;
 /** The window's end when a caller names none: a fixed instant, never the clock. */
 export const DEFAULT_END = "2026-09-01T00:00:00.000Z";
 export const DEFAULT_DAYS = 40;
-/** Bounds that keep the byte budget and the day table finite and sane: a tebibyte, a century. */
+/** Bounds that keep the byte budget and the day table finite and sane: a tebibyte, a century.
+ *  The floor leaves the Codex budget room for one session (MIN_FILE_BYTES), so a tree always
+ *  carries at least one timestamped line and its span is always defined. */
+export const MIN_MB = 0.01;
 export const MAX_MB = 1024 * 1024;
 export const MAX_DAYS = 36_500;
 
@@ -539,10 +542,18 @@ const KEEP_FILL: Record<string, Json> = { fill: "@fill" };
 type FillKind = "prose" | "opaque";
 
 /**
+ * Code points no filler may carry: node:readline (the pre-index reader) splits
+ * lines on U+2028, U+2029 and U+0085 too, so a line holding one unescaped
+ * would vanish from the goldens recorded with it. Everything else non-ASCII is
+ * welcome.
+ */
+export const LINE_SPLITTING_CODE_POINTS: readonly string[] = ["\u2028", "\u2029", "\u0085"];
+
+/**
  * The filler vocabulary. Non-ASCII stays in escapes so this source file is
  * ASCII; the generated text carries accents, CJK, Arabic, Hebrew, emoji,
  * quotes, backslashes, and control characters the way pasted prose and tool
- * output do.
+ * output do, never a LINE_SPLITTING_CODE_POINTS member (see above).
  */
 const PROSE_TOKENS: readonly string[] = [
   "the",
@@ -584,6 +595,12 @@ const PROSE_TOKENS: readonly string[] = [
 ];
 
 const OPAQUE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+for (const token of [...PROSE_TOKENS, OPAQUE_ALPHABET]) {
+  for (const cp of LINE_SPLITTING_CODE_POINTS) {
+    if (token.includes(cp)) throw new Error("filler alphabet carries a line-splitting code point");
+  }
+}
 
 /** The JSON-escaped UTF-8 length of `text` inside a string literal. */
 function escapedBytes(text: string): number {
@@ -701,6 +718,9 @@ export interface GeneratedTree {
   /** Distinctive strings planted inside prompt text, for the content tests. */
   markers: string[];
   expected: ExpectedUsage;
+  /** The earliest and latest timestamp any line in the tree carries (unix ms, UTC). */
+  firstEventMs: number;
+  lastEventMs: number;
 }
 
 const MARKER_COUNT = 8;
@@ -747,6 +767,8 @@ interface Generator {
   startMs: number;
   dayWeights: Record<UsageSource, Record<string, number>>;
   expected: ExpectedUsage;
+  firstEventMs: number;
+  lastEventMs: number;
 }
 
 interface Usage {
@@ -825,18 +847,27 @@ function writeText(g: Generator, source: UsageSource, file: string, body: string
   return writeBytes(g, source, file, Buffer.from(body, "utf8"));
 }
 
-/** The lines of one file under construction, with a running byte count (LF included). */
+/**
+ * The lines of one file under construction, with a running byte count (LF
+ * included) and, per line, the timestamp it carries (undefined when the
+ * template emits none). The span a tree reports is merged from these
+ * only when a buffer is WRITTEN, so a session built and discarded, a line
+ * popped back, or a timestamp computed but never emitted can never move it.
+ */
 class LineBuffer {
   readonly lines: string[] = [];
+  readonly stamps: (number | undefined)[] = [];
   bytes = 0;
 
-  push(line: string): void {
+  push(line: string, stampMs: number | undefined): void {
     this.lines.push(line);
+    this.stamps.push(stampMs === undefined ? undefined : Math.round(stampMs));
     this.bytes += Buffer.byteLength(line) + 1;
   }
 
   pop(): string | undefined {
     const line = this.lines.pop();
+    this.stamps.pop();
     if (line !== undefined) this.bytes -= Buffer.byteLength(line) + 1;
     return line;
   }
@@ -844,6 +875,26 @@ class LineBuffer {
   body(): string {
     return this.lines.length === 0 ? "" : `${this.lines.join("\n")}\n`;
   }
+
+  /** Fold the timestamps this buffer carries into the tree's span; called when it is written. */
+  noteSpan(g: Generator): void {
+    for (const ms of this.stamps) {
+      if (ms === undefined) continue;
+      g.firstEventMs = Math.min(g.firstEventMs, ms);
+      g.lastEventMs = Math.max(g.lastEventMs, ms);
+    }
+  }
+}
+
+const TEMPLATE_CARRIES_TS = new Map<Json, boolean>();
+
+function templateCarriesTs(template: Json): boolean {
+  let carries = TEMPLATE_CARRIES_TS.get(template);
+  if (carries === undefined) {
+    carries = JSON.stringify(template).includes('"@ts"');
+    TEMPLATE_CARRIES_TS.set(template, carries);
+  }
+  return carries;
 }
 
 interface LineOptions {
@@ -935,6 +986,7 @@ function codexLine(
     sampleQuantile(g.rng, profile.bytesPerLine[type] ?? profile.fileBytes);
   session.buffer.push(
     serializeSized(g.rng, rendered, target, opts.kind ?? "prose", opts.prefix ?? ""),
+    templateCarriesTs(template) ? state.nowMs : undefined,
   );
 }
 
@@ -1154,6 +1206,8 @@ interface CodexSessionOptions {
   spanMs?: number;
   /** Write every token_count at least twice (a re-emitted count the readers must book once). */
   repeatCounts?: boolean;
+  /** Paste this needle into the opening prompt (the fork parent carries "session_meta"). */
+  needle?: string;
 }
 
 /** Build one Codex session; `forkOf` copies the parent's items first, the way a fork persists. */
@@ -1192,18 +1246,22 @@ function codexSession(
   };
   codexSessionMeta(g, session, state, true);
   if (opts.forkOf !== undefined) {
-    // A fork persists the parent's items (its own meta excluded) in one batch at
-    // start: the same items, token counts included, under fresh monotonic
-    // timestamps inside the write window, and its own totals continue from the
-    // copied prefix. The parent's usage stays booked to the parent alone.
-    const copied = opts.forkOf.buffer.lines.slice(1);
+    // A fork persists the parent's rollout ITEMS in one batch at start: the same
+    // items, token counts included, under fresh monotonic timestamps inside the
+    // write window, and its own totals continue from the copied prefix. A
+    // session_meta is not an item (a resumed parent has re-emitted one), so none
+    // is copied, and no nested timestamp from the parent survives. The parent's
+    // usage stays booked to the parent alone.
+    // Parsed once and filtered on the line's own type: a prompt that PASTED the word
+    // "session_meta" is still an item.
+    const copied = opts.forkOf.buffer.lines.map((line) => JSON.parse(line) as JsonObject)
+      .filter((parsed) => parsed.type !== "session_meta");
     let copyMs = state.nowMs;
     const step = FORK_COPY_WINDOW_MS / Math.max(1, copied.length);
-    for (const line of copied) {
+    for (const parsed of copied) {
       copyMs += step * g.rng();
-      const parsed = JSON.parse(line) as JsonObject;
       parsed.timestamp = isoTimestamp(copyMs);
-      session.buffer.push(JSON.stringify(parsed));
+      session.buffer.push(JSON.stringify(parsed), copyMs);
       const payload = parsed.payload;
       if (isJsonObject(payload) && payload.type === "token_count" && isJsonObject(payload.info)) {
         const totals = payload.info.total_token_usage;
@@ -1225,7 +1283,13 @@ function codexSession(
     codexMessage(g, session, state, "user");
     codexLine(g, session, state, "world_state");
     codexLine(g, session, state, "turn_context");
-    codexMessage(g, session, state, "user", promptText(g));
+    codexMessage(
+      g,
+      session,
+      state,
+      "user",
+      opts.needle === undefined ? promptText(g) : `${nextMarker(g)} pasted: ${opts.needle}`,
+    );
   }
   const turns = sampleCount(g.rng, profile.turnsPerSession, opts.spanMs === undefined ? 1 : 2);
   const perTurn = targetBytes / turns;
@@ -1273,6 +1337,7 @@ function writeCodexSession(
   session: CodexSession,
   opts: { torn?: boolean; archived?: boolean } = {},
 ): GeneratedFile {
+  session.buffer.noteSpan(g);
   let body = session.buffer.body();
   if (opts.torn === true) {
     // A crash mid-write leaves the tail unterminated: half a token_count line and
@@ -1317,7 +1382,9 @@ function generateCodex(g: Generator, codexHome: string, budget: number): void {
       writeCodexSession(g, codexHome, session, { torn: true });
       writeCodexSession(g, codexHome, session, { archived: true });
     } else if (scripted === 1) {
-      forkParent = codexSession(g, bytes, start);
+      // The parent a fork will copy: its opening prompt pastes the word "session_meta", so
+      // a copy that filtered items by substring instead of by type would lose it.
+      forkParent = codexSession(g, bytes, start, { needle: '"session_meta"' });
       writeCodexSession(g, codexHome, forkParent);
     } else if (scripted === 2 && forkParent !== undefined) {
       const fork = codexSession(g, bytes, forkParent.metaMs + 10 * 60 * 1000, {
@@ -1329,7 +1396,10 @@ function generateCodex(g: Generator, codexHome: string, budget: number): void {
       // copied prefix apart. The ghost's usage is booked nowhere, since no file
       // carries it as its own, so the bookings its build made are rolled back.
       const before = snapshotCodexExpected(g.expected.codex);
-      const ghost = codexSession(g, Math.min(bytes, 64 * 1024), start);
+      // The ghost is resumed, so its re-emitted session_meta exercises the item filter.
+      const ghost = codexSession(g, Math.min(bytes, 64 * 1024), start, {
+        spanMs: 2 * RESUME_GAP_MS,
+      });
       g.expected.codex = before;
       const fork = codexSession(g, bytes, ghost.metaMs + 30 * 60 * 1000, { forkOf: ghost });
       writeCodexSession(g, codexHome, fork);
@@ -1357,7 +1427,7 @@ interface ClaudeSession {
   slug: string;
   buffer: LineBuffer;
   /** Conversation lines (everything but the file header), what a resume copies. */
-  body: string[];
+  body: LineBuffer;
   /** The final streamed line a truncated original never wrote; the resume carries it. */
   pendingFinal?: PendingLine;
   lastUuid: string;
@@ -1434,9 +1504,10 @@ function claudeLine(
   const target = opts.bytes ??
     sampleQuantile(g.rng, profile.bytesPerLine[type] ?? profile.fileBytes);
   const line = serializeSized(g.rng, rendered, target, opts.kind ?? "prose", opts.prefix ?? "");
-  session.buffer.push(line);
+  const stamp = templateCarriesTs(template) ? state.nowMs : undefined;
+  session.buffer.push(line, stamp);
   if (opts.header !== true) {
-    session.body.push(line);
+    session.body.push(line, stamp);
     session.lastUuid = lineUuid;
   }
   return line;
@@ -1619,7 +1690,7 @@ function claudeSession(
     id: uuid(g.rng),
     slug,
     buffer: new LineBuffer(),
-    body: [],
+    body: new LineBuffer(),
     lastUuid: "",
     startMs,
     endMs: startMs,
@@ -1657,14 +1728,15 @@ function claudeSession(
     // A resume carries the earlier file's conversation over byte for byte (the
     // same message ids and snapshots, which the readers book nothing new for),
     // then the final line the original never got to write, then its own turns.
-    for (const line of opts.resumeOf.body) {
-      session.buffer.push(line);
-      session.body.push(line);
+    const copied = opts.resumeOf.body;
+    for (const [i, line] of copied.lines.entries()) {
+      session.buffer.push(line, copied.stamps[i]);
+      session.body.push(line, copied.stamps[i]);
     }
     const pending = opts.resumeOf.pendingFinal;
     if (pending !== undefined) {
-      session.buffer.push(pending.text);
-      session.body.push(pending.text);
+      session.buffer.push(pending.text, pending.ms);
+      session.body.push(pending.text, pending.ms);
       if (pending.delta.output > 0) {
         expectClaude(g, pending.ms, pending.model, pending.delta, false);
       }
@@ -1710,9 +1782,15 @@ function writeClaudeFile(
   claudeHome: string,
   slug: string,
   relative: string[],
-  body: string,
+  buffer: LineBuffer,
 ): GeneratedFile {
-  return writeText(g, "claude", path.join(claudeHome, "projects", slug, ...relative), body);
+  buffer.noteSpan(g);
+  return writeText(
+    g,
+    "claude",
+    path.join(claudeHome, "projects", slug, ...relative),
+    buffer.body(),
+  );
 }
 
 /** A subagent transcript under `parent`'s directory, at the sampled depth (4 or 6 segments). */
@@ -1734,30 +1812,29 @@ function writeClaudeSubagent(
     claudeHome,
     parent.slug,
     [...dir, `agent-${agentId}.jsonl`],
-    agent.buffer.body(),
+    agent.buffer,
   );
   if (deep) {
     // The workflow journal is a .jsonl the readers must walk and skip harmlessly.
-    const journal = [
+    const journal = new LineBuffer();
+    journal.push(
       JSON.stringify({
         "type": "workflow_started",
         "workflowId": dir[3],
         "timestamp": isoTimestamp(start),
       }),
+      start,
+    );
+    journal.push(
       JSON.stringify({
         "type": "step_completed",
         "workflowId": dir[3],
         "step": 1,
         "timestamp": isoTimestamp(start + 60_000),
       }),
-    ];
-    writeClaudeFile(
-      g,
-      claudeHome,
-      parent.slug,
-      [...dir, "journal.jsonl"],
-      `${journal.join("\n")}\n`,
+      start + 60_000,
     );
+    writeClaudeFile(g, claudeHome, parent.slug, [...dir, "journal.jsonl"], journal);
   }
 }
 
@@ -1775,11 +1852,11 @@ function generateClaude(g: Generator, claudeHome: string, budget: number): void 
     if (scripted === 0) {
       // The original of a resume pair, its last message cut mid-stream.
       const original = claudeSession(g, bytes, start, slug, { truncate: true });
-      writeClaudeFile(g, claudeHome, slug, [`${original.id}.jsonl`], original.buffer.body());
+      writeClaudeFile(g, claudeHome, slug, [`${original.id}.jsonl`], original.buffer);
       lastTopLevel = original;
     } else if (scripted === 1 && lastTopLevel !== undefined) {
       const resumed = claudeSession(g, bytes, start, lastTopLevel.slug, { resumeOf: lastTopLevel });
-      writeClaudeFile(g, claudeHome, resumed.slug, [`${resumed.id}.jsonl`], resumed.buffer.body());
+      writeClaudeFile(g, claudeHome, resumed.slug, [`${resumed.id}.jsonl`], resumed.buffer);
       lastTopLevel = resumed;
     } else if (scripted === 2 && lastTopLevel !== undefined) {
       writeClaudeSubagent(g, claudeHome, lastTopLevel, bytes, start, true);
@@ -1796,12 +1873,12 @@ function generateClaude(g: Generator, claudeHome: string, budget: number): void 
           claudeHome,
           resumed.slug,
           [`${resumed.id}.jsonl`],
-          resumed.buffer.body(),
+          resumed.buffer,
         );
         lastTopLevel = resumed;
       } else {
         const session = claudeSession(g, bytes, start, slug);
-        writeClaudeFile(g, claudeHome, slug, [`${session.id}.jsonl`], session.buffer.body());
+        writeClaudeFile(g, claudeHome, slug, [`${session.id}.jsonl`], session.buffer);
         lastTopLevel = session;
       }
     }
@@ -1827,8 +1904,8 @@ export async function generateUsageTree(opts: GenerateOptions): Promise<Generate
   if (!Number.isInteger(days) || days <= 0 || days > MAX_DAYS) {
     throw new Error(`days must be an integer from 1 to ${MAX_DAYS}, got ${opts.days}`);
   }
-  if (!Number.isFinite(opts.mb) || opts.mb <= 0 || opts.mb > MAX_MB) {
-    throw new Error(`mb must be a number above 0 and at most ${MAX_MB}, got ${opts.mb}`);
+  if (!Number.isFinite(opts.mb) || opts.mb < MIN_MB || opts.mb > MAX_MB) {
+    throw new Error(`mb must be a number from ${MIN_MB} to ${MAX_MB}, got ${opts.mb}`);
   }
   if (!Number.isInteger(opts.seed)) throw new Error(`seed must be an integer, got ${opts.seed}`);
   const end = opts.end ?? DEFAULT_END;
@@ -1852,6 +1929,8 @@ export async function generateUsageTree(opts: GenerateOptions): Promise<Generate
     startMs: endMs - days * MILLISECONDS_PER_DAY,
     dayWeights: { codex: {}, claude: {} },
     expected: { codex: new Map(), claude: usageReport() },
+    firstEventMs: Number.POSITIVE_INFINITY,
+    lastEventMs: Number.NEGATIVE_INFINITY,
   };
   for (const source of USAGE_SOURCES) {
     for (let day = 0; day < days; day++) {
@@ -1873,5 +1952,7 @@ export async function generateUsageTree(opts: GenerateOptions): Promise<Generate
     files: g.files,
     markers: g.markers,
     expected: g.expected,
+    firstEventMs: g.firstEventMs,
+    lastEventMs: g.lastEventMs,
   });
 }

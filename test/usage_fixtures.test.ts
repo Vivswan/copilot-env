@@ -13,6 +13,7 @@ import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
 import { discoverClaudeSessionRoots, readClaudeSessions } from "../src/usage/claude_sessions.ts";
 import { discoverCodexSessionRoots, readCodexSessions } from "../src/usage/codex_sessions.ts";
 import type { UsageReport } from "../src/usage/usage.ts";
+import { localDayKey, MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { tmpDir } from "./helpers.ts";
 import { denoRunArgs, ROOT, runSync } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
@@ -22,6 +23,7 @@ import {
   filenameShape,
   type GeneratedTree,
   generateUsageTree,
+  LINE_SPLITTING_CODE_POINTS,
   loadProfile,
   MEGABYTE,
   modelLabel,
@@ -373,7 +375,7 @@ test("the same seed yields identical bytes and a different seed does not", async
  * Windows, so a platform-dependent byte anywhere in the generator moves it. Any deliberate
  * change to the generator or the committed profile re-pins it.
  */
-const PINNED_CORPUS_DIGEST = "7d086b3f9dd11e14401610e4bfb6ef6ba45a4d27e4dcab3d4911b65ac3bc837f";
+const PINNED_CORPUS_DIGEST = "c690363809f606f6f680264f49d9aba0fac771ee171a38f848d613eea6694a16";
 
 test("a fixed corpus digests to the pinned value, so every OS writes the same bytes", async () => {
   const root = freshRoot();
@@ -397,6 +399,38 @@ test(
     expect(Math.abs(total - FIXTURE_MB * MEGABYTE)).toBeLessThanOrEqual(
       0.1 * FIXTURE_MB * MEGABYTE,
     );
+    // The reported span bounds every timestamp any line carries, tightly at both ends.
+    let earliest = Number.POSITIVE_INFINITY;
+    let latest = Number.NEGATIVE_INFINITY;
+    for (const f of tree.files) {
+      for (const m of textOf(f.path).matchAll(/"timestamp":"([^"]+)"/g)) {
+        const ms = Date.parse(m[1]!);
+        earliest = Math.min(earliest, ms);
+        latest = Math.max(latest, ms);
+      }
+    }
+    expect(tree.firstEventMs).toBe(earliest);
+    expect(tree.lastEventMs).toBe(latest);
+    expect(latest - earliest).toBeGreaterThan(MILLISECONDS_PER_DAY);
+    // Small adversarial trees across seeds: the scripted ghost parent (built, resumed, never
+    // written), the popped truncated line, and the timestamp-free headers must never be an
+    // endpoint. Each tree is checked to hold the parentless fork, so the claim is not idle.
+    for (const seed of [1, 2, 3, 4, 5]) {
+      const small = await generateUsageTree({ root: freshRoot(), mb: 2, seed });
+      const stamps = small.files.flatMap((f) =>
+        [...textOf(f.path).matchAll(/"timestamp":"([^"]+)"/g)].map((m) => Date.parse(m[1]!))
+      );
+      expect(small.firstEventMs).toBe(Math.min(...stamps));
+      expect(small.lastEventMs).toBe(Math.max(...stamps));
+      const metas = small.files.filter((f) => f.source === "codex").map((f) =>
+        JSON.parse(textOf(f.path).split("\n")[0]!) as { payload: Record<string, string> }
+      );
+      const ids = new Set(metas.map((m) => m.payload["id"]));
+      const parentless = metas.some((m) =>
+        m.payload["forked_from_id"] !== undefined && !ids.has(m.payload["forked_from_id"])
+      );
+      expect(parentless).toBe(true);
+    }
     const onDisk = walk(tree.root).filter((f) => !f.includes(".copilot-env"));
     expect(tree.files.map((f) => f.path).sort()).toEqual(onDisk.sort());
     for (const file of tree.files) expect(statSync(file.path).size).toBe(file.bytes);
@@ -508,6 +542,7 @@ test(
     // one fork's parent is on disk and one is not.
     const codexFiles = tree.files.filter((f) => f.source === "codex");
     const sessionIds = new Set<string>();
+    const parsedByFile = new Map<string, Record<string, unknown>[]>();
     const forks: { parent: string; lines: Record<string, unknown>[] }[] = [];
     let multiMeta = 0;
     for (const f of codexFiles) {
@@ -530,6 +565,7 @@ test(
       );
       const first = metas[0]!.payload as Record<string, unknown>;
       sessionIds.add(first.id as string);
+      parsedByFile.set(first.id as string, lines);
       if (typeof first.forked_from_id === "string") {
         forks.push({ parent: first.forked_from_id, lines });
       }
@@ -537,6 +573,26 @@ test(
     expect(forks.length).toBeGreaterThanOrEqual(2);
     expect(forks.some((f) => sessionIds.has(f.parent))).toBe(true);
     expect(forks.some((f) => !sessionIds.has(f.parent))).toBe(true);
+    // With the parent on disk, the copy holds EVERY parent item (all lines but its
+    // session_meta ones), a pasted "session_meta" needle notwithstanding.
+    // The control for the copy filter: at least one on-disk parent carries a NON-meta line with
+    // the pasted word "session_meta" (the scripted fork parent does), so a copy that filtered by
+    // substring rather than by type would come up short below.
+    const parentsWithNeedle = forks.filter((f) => sessionIds.has(f.parent)).filter((f) =>
+      parsedByFile.get(f.parent)!.some((l) =>
+        l.type !== "session_meta" && JSON.stringify(l).includes("session_meta")
+      )
+    );
+    expect(parentsWithNeedle.length).toBeGreaterThan(0);
+    for (const fork of forks.filter((f) => sessionIds.has(f.parent))) {
+      const parentItems = parsedByFile.get(fork.parent)!.filter((l) => l.type !== "session_meta");
+      const metaMs = Date.parse(fork.lines[0]!.timestamp as string);
+      const copied = fork.lines.slice(1).filter((l) =>
+        Date.parse(l.timestamp as string) - metaMs <= 2_000
+      );
+      expect(copied.length).toBe(parentItems.length);
+      expect(copied.map((l) => l.type)).toEqual(parentItems.map((l) => l.type));
+    }
     for (const fork of forks) {
       const metaMs = Date.parse(fork.lines[0]!.timestamp as string);
       let prev = metaMs;
@@ -551,6 +607,8 @@ test(
         // Nothing of the fork's own may sit inside the readers' two-second fallback window:
         // the copies end within 800 ms and the first own line waits past the window.
         expect(ms - metaMs).toBeLessThanOrEqual(800);
+        // Copies are items only: a parent's re-emitted session_meta is never among them.
+        expect(line.type).not.toBe("session_meta");
         expect(ms).toBeGreaterThanOrEqual(prev);
         prev = ms;
         if ((line.payload as Record<string, unknown>).type === "token_count") copiedCounts++;
@@ -611,6 +669,11 @@ test(
     expect(all).toMatch(/[^\t\n -~]/);
     expect(all).toContain('\\"quoted\\"');
     expect(all).toContain("back\\\\slash");
+    // Never the code points node:readline also splits on (the goldens' reader would lose the
+    // line); the control proves the check sees them when present.
+    for (const cp of LINE_SPLITTING_CODE_POINTS) expect(all.includes(cp)).toBe(false);
+    expect(LINE_SPLITTING_CODE_POINTS.every((cp) => `a${cp}b`.includes(cp))).toBe(true);
+    expect(LINE_SPLITTING_CODE_POINTS).toEqual(["\u2028", "\u2029", "\u0085"]);
   },
   60_000,
 );
@@ -739,6 +802,13 @@ test("options are validated up front, and a zone-less end is refused", async () 
   const profile: Profile = loadProfile();
   const root = freshRoot();
   await expect(generateUsageTree({ root, mb: 0, seed: 1, profile })).rejects.toThrow(/mb/);
+  // Below the floor no file would be written and the span would be undefined; at the floor one
+  // session is, and the span is real.
+  await expect(generateUsageTree({ root, mb: 0.001, seed: 1, profile })).rejects.toThrow(/mb/);
+  const floor = await generateUsageTree({ root: freshRoot(), mb: 0.01, seed: 1, profile });
+  expect(floor.files.length).toBeGreaterThan(0);
+  expect(Number.isFinite(floor.firstEventMs) && floor.firstEventMs <= floor.lastEventMs).toBe(true);
+  expect(localDayKey(floor.firstEventMs)).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   await expect(generateUsageTree({ root, mb: Infinity, seed: 1, profile })).rejects.toThrow(/mb/);
   // Finite but astronomically large would still overflow the byte budget or the day table.
   await expect(generateUsageTree({ root, mb: Number.MAX_VALUE, seed: 1, profile })).rejects
@@ -789,6 +859,18 @@ test("the CLI wrapper writes the tree and prints one JSON summary line", () => {
   expect(summary.files).toBeGreaterThan(0);
   expect(summary.bytes).toBeGreaterThan(0.9 * MEGABYTE);
   expect(typeof summary.seconds).toBe("number");
+  expect(summary.mb).toBe(1);
+  expect(summary.seed).toBe(9);
+  // The span is reported as this host's local calendar days, inclusive, and holds every
+  // timestamp in the tree; it comes from the seed, never the clock.
+  const days = walk(root).filter((f) => !f.includes(".copilot-env")).flatMap((f) =>
+    [...textOf(f).matchAll(/"timestamp":"([^"]+)"/g)].map((m) => localDayKey(Date.parse(m[1]!)))
+  ).sort();
+  expect(summary.firstDay).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  expect(summary.lastDay).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  expect(summary.firstDay).toBe(days[0]);
+  expect(summary.lastDay).toBe(days[days.length - 1]);
+  expect((summary.lastDay as string) <= "2026-09-01").toBe(true);
   expect(walk(join(root, ".codex")).length + walk(join(root, ".claude")).length).toBe(
     summary.files,
   );

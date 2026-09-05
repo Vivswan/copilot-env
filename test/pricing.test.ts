@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { canonicalPricingUrl } from "../src/copilot_api/env_config.ts";
 import {
   canonicalModelName,
-  canonicalPricingUrl,
   estimateCost,
   fetchPricing,
   loadPricing,
@@ -723,18 +723,28 @@ test("the flag and the stored key share one URL rule: https only, canonical befo
     await fetchPricing(loud, recording);
     expect(requested).toBe(quiet);
 
-    // Anything but https is refused with fixed text that never echoes the URL.
-    for (const bad of ["http://user:SECRET@pricing.example/models", "pricing.example", "ftp://x"]) {
+    // Anything but https, or an https URL with userinfo (fetch would refuse it), is refused
+    // with the stored key's fixed text, which never echoes the URL.
+    const rejected: [string, string][] = [
+      ["http://user:SECRET@pricing.example/models", "expected an https:// URL"],
+      ["pricing.example", "expected an https:// URL"],
+      ["ftp://x", "expected an https:// URL"],
+      [
+        "https://user:SECRET@pricing.example/models",
+        "expected an https:// URL without user:password@ credentials (put a token in the query instead)",
+      ],
+    ];
+    for (const [bad, expected] of rejected) {
       let message = "";
       try {
         canonicalPricingUrl(bad);
       } catch (e) {
         message = (e as Error).message;
       }
-      expect(message).toBe("pricing URL must use HTTPS");
-      await expect(fetchPricing(bad, net.fetch)).rejects.toThrow(/^pricing URL must use HTTPS$/);
+      expect(message).toBe(expected);
+      await expect(fetchPricing(bad, net.fetch)).rejects.toThrow(message);
       await expect(loadPricing(bad, { cacheDir, nowMs: now, fetchImpl: net.fetch })).rejects
-        .toThrow(/^pricing URL must use HTTPS$/);
+        .toThrow(message);
     }
     expect(net.calls).toBe(2);
   }));

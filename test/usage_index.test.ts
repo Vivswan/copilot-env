@@ -259,7 +259,10 @@ test("round trip: a second run reuses every row and reads no bytes", () => {
   const b = join(logs, "b.jsonl");
   writeLines(a, 0, 3, "alpha");
   writeLines(b, 0, 5, "beta");
+  // A pre-existing wider directory is tightened before SQLite opens the index in it.
+  mkdirSync(indexDir, { mode: 0o755 });
   const index = open();
+  if (process.platform !== "win32") expect(statSync(indexDir).mode & 0o777).toBe(0o700);
   const files = [walked(a), walked(b)];
 
   const first = runReconcile(index.reconcile, files);

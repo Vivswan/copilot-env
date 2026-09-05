@@ -17,7 +17,7 @@
 //   every other failure leaves the file alone. An index that fails to open or
 //   read degrades to whole parses, never to a missing or "unreadable" session.
 import { DatabaseSync, type StatementSync } from "node:sqlite";
-import { closeSync, mkdirSync, openSync, readSync, rmSync } from "node:fs";
+import { chmodSync, closeSync, mkdirSync, openSync, readSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import * as v from "valibot";
 import { errMessage } from "../utils/error.ts";
@@ -706,7 +706,10 @@ export function openUsageIndex(opts: OpenUsageIndexOptions = {}): UsageIndex | n
   const fingerprint = opts.fingerprint ?? DEFAULT_PARSER_FINGERPRINT;
   const lockPolicy = opts.lockPolicy ?? BOUNDED_LOCK_POLICY;
   try {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // mkdirSync's mode only applies on creation; a pre-existing wider dir must still end
+    // up 0700 (the index names every session file, its models and timestamps).
+    if (process.platform !== "win32") chmodSync(dir, 0o700);
   } catch (e) {
     logger.warn(`could not create the usage index directory ${dir} (${errMessage(e)}).`);
     return null;

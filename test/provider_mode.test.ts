@@ -63,15 +63,7 @@ test("parseCodexAction: --mobile combines with nothing", () => {
 test("parseClaudeAction: arms and rejections mirror codex minus the mobile flag", () => {
   expect(parseClaudeAction({ mode: "proxy" })).toEqual({ kind: "configure", mode: "proxy" });
   expect(parseClaudeAction({ mode: "auto", check: true })).toEqual({ kind: "check" });
-  expect(parseClaudeAction({ mode: "auto", desktop: true })).toEqual({ kind: "desktop" });
   expect(() => parseClaudeAction({ mode: "proxy", check: true })).toThrow(
     "--check only reports the configured provider; it does not combine with --direct/--proxy",
-  );
-  // The --desktop wording is the pre-union message, kept byte-identical.
-  expect(() => parseClaudeAction({ mode: "direct", desktop: true })).toThrow(
-    "--desktop cannot be combined with --check/--direct/--proxy.",
-  );
-  expect(() => parseClaudeAction({ mode: "auto", desktop: true, check: true })).toThrow(
-    "--desktop cannot be combined with --check/--direct/--proxy.",
   );
 });

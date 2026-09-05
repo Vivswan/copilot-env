@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { consola } from "consola";
 import { parse } from "smol-toml";
 import { configureClaudeConfig, WEBSEARCH_DENY_RULE } from "../src/claude/config.ts";
+import { desktopHelperPath } from "../src/claude/desktop.ts";
 import { claudeJsonPath, registerClaudeMcpServer } from "../src/claude/mcp_registration.ts";
 import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME, settingsPathFor } from "../src/claude/paths.ts";
 import { configureCodexConfig } from "../src/codex/config.ts";
@@ -15,7 +16,7 @@ import { runUninstall, type UninstallDeps } from "../src/commands/uninstall.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
-import { CopilotApiPaths, profileHome } from "../src/copilot_api/paths.ts";
+import { CopilotApiPaths, profileHome, resolveRootHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { isRecord } from "../src/utils/json.ts";
@@ -511,4 +512,57 @@ test("uninstall removes owned Claude Desktop entries via the injected library di
   };
   expect(meta.entries).toEqual([{ id: "theirs", name: "Mine" }]);
   expect(meta.appliedId).toBeUndefined(); // ours was applied; the reference is dropped
+});
+
+test("uninstall --dry-run names every Claude Desktop path the sweep would delete", async () => {
+  const { codexHome } = tmpHomes();
+  const library = join(dir, "desktop-library");
+  mkdirSync(library, { recursive: true });
+  writeFileSync(join(library, "ours.json"), '{"inferenceGatewayBaseUrl":"x"}\n');
+  writeFileSync(join(library, "theirs.json"), '{"userKey":1}\n');
+  writeFileSync(
+    join(library, "_meta.json"),
+    `${
+      JSON.stringify({
+        entries: [{ id: "ours", name: "copilot-env" }, { id: "theirs", name: "Mine" }],
+      })
+    }\n`,
+  );
+  new OwnershipLedger().record("claudeDesktop", join(library, "ours.json"));
+  const helper = desktopHelperPath(resolveRootHome(), "direct", null);
+  mkdirSync(resolveRootHome(), { recursive: true });
+  writeFileSync(helper, "#!/bin/sh\n");
+
+  const deps = { ...tmpDeps(codexHome), claudeDesktopLibraryDir: library };
+  const written: string[] = [];
+  const savedLevel = consola.level;
+  const origOut = process.stdout.write.bind(process.stdout);
+  const origErr = process.stderr.write.bind(process.stderr);
+  process.stdout.write = (s: string | Uint8Array) => {
+    written.push(String(s));
+    return true;
+  };
+  process.stderr.write = (s: string | Uint8Array) => {
+    written.push(String(s));
+    return true;
+  };
+  try {
+    consola.level = 3;
+    await runUninstall({ dryRun: true }, deps);
+  } finally {
+    process.stdout.write = origOut;
+    process.stderr.write = origErr;
+    consola.level = savedLevel;
+  }
+  const out = written.join("");
+  expect(out).toContain(
+    "Would remove the copilot-env entries from Claude Desktop's config library:",
+  );
+  expect(out).toContain(join(library, "ours.json"));
+  expect(out).toContain(helper);
+  // The foreign sibling is never named: it would never be deleted.
+  expect(out).not.toContain(join(library, "theirs.json"));
+  // A dry run deletes nothing.
+  expect(existsSync(join(library, "ours.json"))).toBe(true);
+  expect(existsSync(helper)).toBe(true);
 });

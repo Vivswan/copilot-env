@@ -62,6 +62,7 @@ import {
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import { configureDefaultAgents } from "./configure_defaults.ts";
+import { reconcileClaudeDesktopWiring } from "./claude_desktop.ts";
 import { wireBothAgents } from "./profile_wiring.ts";
 import {
   AGENT_PROVIDER_MODES,
@@ -788,6 +789,8 @@ export async function applyImportPlan(
     outcome.failures.push(...failures);
   }
   await importProfiles(plan, outcome);
+  // The imported `claude-desktop` preference lands even when no wiring was re-derived.
+  await reconcileClaudeDesktopWiring();
   return outcome;
 }
 

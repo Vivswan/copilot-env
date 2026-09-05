@@ -4,7 +4,6 @@
 // and the settings-bundle import (src/agents/transfer.ts) -- it needs BOTH
 // src/codex/ and src/claude/, so it lives in src/agents/ like wiring.ts.
 import { claudeAdapter } from "../claude/config.ts";
-import { claudeDesktopInstalled, syncClaudeDesktopWiring } from "../claude/desktop.ts";
 import type { CodexCatalogDeps } from "../codex/catalog.ts";
 import { codexAdapter, probeDirectIntegrationId } from "../codex/config.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -14,15 +13,10 @@ import {
   type ProvisionedCredential,
   type StoredCredential,
 } from "../copilot_api/env_state.ts";
-import { Credential } from "../copilot_api/credential.ts";
 import { CODEX_IDENTITY_NAME } from "../copilot_api/integration_identity.ts";
 import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
-import { createStderrLogger } from "../utils/logger.ts";
 import type { AgentAdapter, ManagedWrite } from "./configure.ts";
-import { readAgentModesSafe } from "./wiring.ts";
-
-const logger = createStderrLogger();
 
 /** BOTH agents' adapters, in the wiring order profile operations use (Claude first --
  *  per-agent narration and failure aggregation keep their long-standing order). Built
@@ -128,57 +122,4 @@ function identityCacheKey(
   if (credentialToken === null) return null; // the probe ran credential-free: nothing to key to
   if (snapshot.kind === "gh-cli") return snapshot;
   return snapshot.token === credentialToken ? snapshot : null;
-}
-
-/**
- * `agent claude --desktop`: refresh ONLY the Claude Desktop config-library entries --
- * the default entry mirroring settings.json's CURRENT managed mode (never rewired
- * here; `none`/`other` skips with a hint), then every stored profile slot via the
- * persisted-identity replay (network-free in the common case). Per-entry resilient,
- * like `agent profile --sync`.
- */
-export async function refreshClaudeDesktopWiring(): Promise<void> {
-  if (!claudeDesktopInstalled()) {
-    logger.info("Claude Desktop was not detected on this machine; nothing to wire.");
-    return;
-  }
-  const claudeMode = readAgentModesSafe().claude;
-  if (claudeMode === "direct" || claudeMode === "proxy") {
-    // Per-entry resilient: a rejected default credential/probe must not abort the
-    // profile refreshes below.
-    try {
-      const ghToken = claudeMode === "direct" ? new Credential().resolve() : undefined;
-      // The default slot caches its probed identity like every profile slot, so
-      // this refresh replays it instead of re-probing (network-free in the
-      // common case, exactly like the profile loop below).
-      const write: ManagedWrite = claudeMode === "direct"
-        ? {
-          mode: "direct",
-          directIntegrationId: await resolveAndPersistDirectIdentity(null, ghToken),
-        }
-        : { mode: "proxy" };
-      await syncClaudeDesktopWiring({ ...write, profile: null, directToken: ghToken });
-    } catch (e) {
-      logger.warn(`  Could not refresh the default entry: ${errMessage(e)}`);
-    }
-  } else {
-    logger.info(
-      `  Claude's default wiring is ${claudeMode}; run \`agent claude\` first to manage it. Skipping the default entry.`,
-    );
-  }
-  const state = new CopilotEnvState();
-  for (const name of state.profileNames()) {
-    const slot = state.readProfileSlot(name);
-    // Complete slots only: a partial profile (e.g. de-authed but mode kept) is
-    // repair territory, not a launchable entry to mirror into Desktop.
-    if (slot.kind !== "complete") continue;
-    try {
-      const write: ManagedWrite = slot.mode === "direct"
-        ? { mode: "direct", directIntegrationId: await resolveAndPersistDirectIdentity(name) }
-        : { mode: "proxy" };
-      await syncClaudeDesktopWiring({ ...write, profile: name });
-    } catch (e) {
-      logger.warn(`  Could not refresh ${profileLabel(name)}: ${errMessage(e)}`);
-    }
-  }
 }

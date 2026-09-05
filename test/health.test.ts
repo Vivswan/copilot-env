@@ -5,6 +5,7 @@ import { directHelperCommand, legacyDirectHelperScript } from "../src/claude/con
 import { directHelperPath, proxyHelperPath, settingsPathFor } from "../src/claude/paths.ts";
 import { type CodexHostDrift, codexHostDriftLine } from "../src/codex/host.ts";
 import { DEFAULT_HOME_STAGING_DIR, PROFILES_DIR_NAME } from "../src/copilot_api/paths.ts";
+import type { ClaudeDesktopStatus } from "../src/claude/desktop.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import type { TextReadResult } from "../src/utils/fs.ts";
 import {
@@ -18,6 +19,7 @@ import {
   checkAuth,
   checkAutoupdate,
   checkClaude,
+  checkClaudeDesktop,
   checkClaudeLive,
   checkCli,
   checkCliVersion,
@@ -2356,6 +2358,7 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       directAuth: { command: null, authenticated: false },
       directUsesToken: false,
     },
+    claudeDesktop: { kind: "no-library", enabled: true, installed: false, helperPaths: [] },
     autoupdate: { enabled: false, cooldownDays: 7, lastCheckMs: 0, lastResult: "" },
   };
   const ids = evaluateAll("full", facts).map((r) => r.id);
@@ -2364,6 +2367,7 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
   expect(ids).toContain("proxy.package");
   expect(ids).toContain("setup.codex-host");
   expect(ids).toContain("setup.claude");
+  expect(ids).toContain("setup.claude-desktop");
   expect(ids).toContain("setup.autoupdate");
 });
 
@@ -2387,4 +2391,102 @@ test("checkAuth renders the named-profiles detail line from the swept facts", ()
   expect(res.detail).toContain(
     "named profiles: fast (no auth, proxy), work (gh-token, direct, copilot-developer-cli)",
   );
+});
+
+test("checkClaudeDesktop: a rendered fix is a warn, none is ok; the detail is the rendered lines", () => {
+  // The rendering itself (every arm) is proven over real libraries in claude_desktop.test.ts;
+  // this pins the check's mapping of that rendering onto a health verdict.
+  const inspected = {
+    kind: "inspected" as const,
+    enabled: true,
+    installed: true,
+    helperPaths: [] as string[],
+    libraryDir: "/lib",
+    unlisted: [] as string[],
+    ownedPaths: ["/lib/a.json"],
+    entries: [] as Extract<ClaudeDesktopStatus, { kind: "inspected" }>["entries"],
+    orphans: [] as Extract<ClaudeDesktopStatus, { kind: "inspected" }>["orphans"],
+  };
+  const wired = checkClaudeDesktop({
+    ...inspected,
+    entries: [{ profile: null, mode: "direct", verdict: { kind: "wired", path: "/lib/a.json" } }],
+  });
+  expect(wired.status).toBe("ok");
+  expect(wired.detail).toBe(`"copilot-env" (direct) wired at /lib/a.json`);
+  expect(wired.fix).toBeUndefined();
+  // The `--json` contract: each entry's verdict flattened beside its target.
+  expect(wired.value?.entries).toEqual([
+    { profile: null, mode: "direct", kind: "wired", path: "/lib/a.json" },
+  ]);
+
+  const missing = checkClaudeDesktop({
+    ...inspected,
+    entries: [
+      { profile: null, mode: "direct", verdict: { kind: "wired", path: "/lib/a.json" } },
+      { profile: parseProfileName("work"), mode: "proxy", verdict: { kind: "missing" } },
+    ],
+  });
+  expect(missing.status).toBe("warn");
+  expect(missing.detail).toBe(
+    `"copilot-env" (direct) wired at /lib/a.json\n"copilot-env: work" (proxy) missing`,
+  );
+  expect(missing.fix).toBe("agent profile --add work");
+
+  // Helper scripts left behind with the key off and no library at all: still a leftover.
+  const helperLeft = checkClaudeDesktop({
+    kind: "no-library",
+    enabled: false,
+    installed: false,
+    helperPaths: ["/root/claude-desktop-token.sh"],
+  });
+  expect(helperLeft.status).toBe("warn");
+  expect(helperLeft.detail).toContain("/root/claude-desktop-token.sh");
+  expect(helperLeft.fix).toBe("agent claude");
+
+  // The rest of the `--json` value contract: each arm's own fields ride along whole.
+  const old = parseProfileName("old");
+  const drift = checkClaudeDesktop({
+    ...inspected,
+    orphans: [{ name: "copilot-env: old", path: "/lib/o.json", profile: old }],
+    unlisted: ["/lib/gone.json"],
+  });
+  expect(drift.value).toEqual({
+    kind: "inspected",
+    enabled: true,
+    installed: true,
+    helperPaths: [],
+    libraryDir: "/lib",
+    ownedPaths: ["/lib/a.json"],
+    unlisted: ["/lib/gone.json"],
+    entries: [],
+    orphans: [{ name: "copilot-env: old", path: "/lib/o.json", profile: old }],
+  });
+  const unreadable = checkClaudeDesktop({
+    kind: "unreadable",
+    enabled: true,
+    installed: true,
+    helperPaths: [],
+    metaPath: "/lib/_meta.json",
+  });
+  expect(unreadable.value).toEqual({
+    kind: "unreadable",
+    enabled: true,
+    installed: true,
+    helperPaths: [],
+    metaPath: "/lib/_meta.json",
+  });
+  const unjudged = checkClaudeDesktop({
+    kind: "unjudged",
+    enabled: true,
+    installed: true,
+    helperPaths: [],
+    reason: "settings.json malformed",
+  });
+  expect(unjudged.value).toEqual({
+    kind: "unjudged",
+    enabled: true,
+    installed: true,
+    helperPaths: [],
+    reason: "settings.json malformed",
+  });
 });

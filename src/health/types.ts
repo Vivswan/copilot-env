@@ -107,6 +107,11 @@ export const CHECK_DESCRIPTORS = {
   "setup.codex": { label: "Codex wiring", group: "codex", scopes: CODEX_SCOPES },
   "setup.codex-host": { label: "Per-host CODEX_HOME", group: "codex", scopes: SETUP_SCOPES },
   "setup.claude": { label: "Claude wiring", group: "claude", scopes: CLAUDE_SCOPES },
+  "setup.claude-desktop": {
+    label: "Claude Desktop wiring",
+    group: "claude",
+    scopes: CLAUDE_SCOPES,
+  },
   "setup.autoupdate": { label: "Autoupdate", group: "setup", scopes: SETUP_SCOPES },
   // The live rows keep the full agent scope set (their FACTS are gathered only
   // under --live in the *_LIVE_SCOPES, which is what actually gates them).

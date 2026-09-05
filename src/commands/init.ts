@@ -5,6 +5,7 @@
 // `agent auth` (--provider / --get / --del / --check); shell wiring + CLI install
 // live in `agent shell`.
 
+import { reconcileClaudeDesktopWiring } from "../agents/claude_desktop.ts";
 import type { RequestedMode } from "../agents/provider_mode.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { ensureAuthenticated } from "./auth.ts";
@@ -33,6 +34,10 @@ export async function runInit(args: InitArgs): Promise<void> {
   }
 
   const { codex, claude } = await configureBothAgents(args.mode);
+
+  // The `claude-desktop` reconcile for the named profiles (the default's Desktop entry
+  // rode on the Claude write above): init leaves the whole library in the key's shape.
+  await reconcileClaudeDesktopWiring();
 
   // A token is "in use" for guidance if one is now stored.
   printGuidance(codex, claude, new CopilotEnvState().read().githubToken !== null);

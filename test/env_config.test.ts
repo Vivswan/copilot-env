@@ -274,6 +274,7 @@ const ROUND_TRIP_RAW: Record<ConfigCli, string> = {
   "auto-start": "true",
   "auto-update": "true",
   "claude-auto-model": "claude-haiku-4.5",
+  "claude-desktop": "false",
   "claude-token-multiplier": "1.3",
   "codex-host": "true",
   "codex-model-catalog": "true",
@@ -618,6 +619,19 @@ test("isProxyProjected marks force + opt-in keys, not copilot-env-internal ones"
   expect(isProxyProjected(configKeyDef("codex-model-catalog")!)).toBe(false);
   expect(configKeyDef("codex-model-catalog")?.restartToApply).toBeUndefined();
   expect(configDefaultLabel(configKeyDef("codex-model-catalog")!)).toBe("false");
+});
+
+test("claude-desktop is opt-OUT: unset and deleted read enabled, stored false disables", () => {
+  tmpHome();
+  const cfg = new CopilotEnvConfig();
+  expect(cfg.claudeDesktopEnabled()).toBe(true);
+  // Internal to copilot-env: setting it projects nothing new into the proxy's config.json.
+  const before = projectedProxyConfig();
+  cfg.set({ claudeDesktop: false });
+  expect(cfg.claudeDesktopEnabled()).toBe(false);
+  expect(projectedProxyConfig()).toEqual(before);
+  cfg.del("claudeDesktop");
+  expect(cfg.claudeDesktopEnabled()).toBe(true);
 });
 
 test("registry defaults are single-sourced: labels derive from the owned default value", () => {

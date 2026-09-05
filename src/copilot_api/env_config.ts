@@ -51,6 +51,8 @@ export interface CopilotEnvConfigData {
   alphaSearchModel?: string;
   /** Model override for Claude Code's background security-monitor requests (unset disables). */
   claudeAutoModel?: string;
+  /** Wire Claude Desktop's config library (default + every profile) while the app is installed. */
+  claudeDesktop?: boolean;
   /** Multiplier the proxy applies when estimating Claude token usage. */
   claudeTokenMultiplier?: number;
   /** Default proxy port. */
@@ -403,6 +405,16 @@ const CONFIG_REGISTRY_LITERAL = [
     defaultLabel: "unset (disabled)",
     proxyProjected: true,
     sinceProxyVersion: "1.14.22",
+  },
+  {
+    cli: "claude-desktop",
+    key: "claudeDesktop",
+    describe:
+      "Wire Claude Desktop's config library (default + every profile) while the app is installed; false removes the copilot-env entries (bool)",
+    ...BOOL_DOMAIN,
+    defaultValue: true,
+    applyHint:
+      "Applies at the next `agent init`/`agent claude`/`agent profile` wiring; setting the key writes no Desktop files itself.",
   },
   {
     cli: "claude-token-multiplier",
@@ -796,6 +808,13 @@ export class CopilotEnvConfig {
    *  (a best-effort background path), so the read degrades like auto-start's. */
   autoUpdateEnabled(): boolean {
     return this.readDegraded().autoUpdate ?? configDefaultBoolean("auto-update");
+  }
+
+  /** Whether the Claude Desktop config-library wiring is reconciled ON (default) -- entries
+   *  kept for the default + every profile while the app is installed -- or OFF (every owned
+   *  entry swept). Read by every Desktop reconcile (src/claude/desktop.ts). */
+  claudeDesktopEnabled(): boolean {
+    return this.read().claudeDesktop ?? configDefaultBoolean("claude-desktop");
   }
 
   /** Whether the per-host CODEX_HOME farm is wanted (stored else default; Windows: false). */

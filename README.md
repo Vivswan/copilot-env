@@ -188,6 +188,7 @@ agent config --del idle-timeout       # revert one to its default
 | `auto-start` | `false` | Managed proxy lifecycle: auto-start on agent open + idle auto-stop. |
 | `auto-update` | `false` | Self-update once a day on `agent start`, adopting the newest release aged at least `update-cooldown` days (`agent update --auto-status` shows the last check). |
 | `claude-auto-model` | unset | Model override for Claude Code's background security-monitor requests (unset disables). |
+| `claude-desktop` | `true` | Keep Claude Desktop's config library wired (default + every profile) while the app is installed; `false` removes the copilot-env entries. |
 | `claude-token-multiplier` | `1.15` | Multiplier the proxy applies when estimating Claude token usage. |
 | `codex-host` | `false` | Per-host `CODEX_HOME` symlink farm at `~/.codex/hosts/<hostname>`, exported by `agent env` (Linux/macOS; see below). |
 | `codex-model-catalog` | `false` | Patched Codex model catalog serving Copilot's real context windows (opt-in). |
@@ -216,6 +217,8 @@ Proxy-side keys (`small-model`, the `responses-*`/`messages-api` flags, `message
 `codex-model-catalog` applies at the next Codex auth refresh (within ~5 minutes) or `agent codex`/`agent init` wiring; turning it off also removes the generated `codex-model-catalog.json` and the managed `model_catalog_json` reference from the Codex config.
 
 `codex-host` (Linux/macOS) is the per-host `CODEX_HOME` symlink farm switch: `agent init` / `agent codex` build the farm when it is on and remove it when it is off, `agent env` exports `CODEX_HOME` only while a wiring pass has built and activated the farm and the key is not off, and `agent codex --check` / `agent health` report any drift between the key and the disk. Setting it is refused on Windows.
+
+`claude-desktop` applies at the next `agent init`, `agent claude`, or `agent profile` wiring (setting the key writes no Desktop file itself). On, every managed Claude write keeps a matching entry in Claude Desktop's config library, for the default and every profile, while the app is installed; off, the same writes remove every copilot-env-owned entry and credential-helper script. Every file created, rewritten, or removed is printed. `agent claude --check` and `agent health` report drift: an entry missing or stale with the key on, or entries left behind after turning it off.
 
 ### Authentication
 

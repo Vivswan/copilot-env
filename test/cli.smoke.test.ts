@@ -362,20 +362,47 @@ test("launch --help documents the contract; bad invocations are boundary rejecti
   // Four cold CLI spawns; generous headroom for loaded Windows CI runners.
 }, 90_000);
 
-test("claude --desktop mode conflict: the exact stderr rendering is pinned", () => {
-  // The message is a boundary rejection users script against. The deno runtime may
-  // interleave its own provisioning lines (Download/Warning) on a cold cache, so the
-  // pin is the exact FINAL stderr line -- the rejection is always the last write.
-  // CI=1 pins consola to its basic reporter (it picks fancy vs basic from CI/test
-  // detection at import time, so the fancy " ERROR " form only renders outside CI):
-  // one reporter means ONE exact rendering on developer machines and runners alike,
-  // and it silences our own ANSI styling too (src/utils/ansi.ts gates on CI).
-  const proc = runCli(["claude", "--desktop", "--check"], { env: isolatedEnv({ "CI": "1" }) });
-  expect(proc.exitCode).toBe(1);
-  const lines = proc.stderr.split("\n").filter((l) => l !== "");
-  expect(lines[lines.length - 1]).toBe(
-    "[error] --desktop cannot be combined with --check/--direct/--proxy.",
+test("agent claude reconciles the Desktop library after its write; --check reports drift", () => {
+  const env = isolatedEnv();
+  const dataDir = join(env.COPILOT_API_HOME!, "claude-desktop");
+  const library = join(dataDir, "configLibrary");
+  mkdirSync(library, { recursive: true });
+  env.COPILOT_ENV_CI_CLAUDE_DESKTOP_DIR = dataDir;
+  // An owned entry no profile promises (an orphan), in the child's own ledger.
+  writeFileSync(join(library, "old.json"), '{"inferenceGatewayBaseUrl":"x"}\n');
+  writeFileSync(
+    join(library, "_meta.json"),
+    `${JSON.stringify({ entries: [{ id: "old", name: "copilot-env: old" }] })}\n`,
   );
+  writeFileSync(
+    join(env.COPILOT_API_HOME!, ".copilot-env-ownership.json"),
+    `${JSON.stringify({ claudeDesktopPaths: [join(library, "old.json")] })}\n`,
+  );
+
+  // Before any wiring: --check names the leftover as drift, on the proxy/none exit code.
+  const check = runCli(["claude", "--check"], { env });
+  expect(check.exitCode).toBe(2);
+  expect(check.stdout).toContain("Claude provider mode: none");
+  expect(check.stdout).toContain(`"copilot-env: old" orphaned at ${join(library, "old.json")}`);
+  expect(check.stdout).toContain("fix: agent claude");
+
+  // The configure chain: the default entry lands and the orphan goes, in one run.
+  const wire = runCli(["claude", "--proxy"], { env });
+  expect(wire.exitCode).toBe(0);
+  const meta = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
+    entries: { name: string }[];
+  };
+  expect(meta.entries.map((e) => e.name)).toEqual(["copilot-env"]);
+  expect(existsSync(join(library, "old.json"))).toBe(false);
+  const after = runCli(["claude", "--check"], { env });
+  expect(after.exitCode).toBe(2);
+  expect(after.stdout).toMatch(/Claude Desktop: "copilot-env" \(proxy\) wired at /);
+}, 60_000);
+
+test("claude --desktop is deleted, not aliased: an unknown option, exit 1", () => {
+  const gone = runCli(["claude", "--desktop"], { env: isolatedEnv() });
+  expect(gone.exitCode).toBe(1);
+  expect(gone.stderr).toContain("unknown option '--desktop'");
 });
 
 test("init configures both agents and rejects --direct + --proxy", () => {
@@ -416,14 +443,14 @@ test("profile rejects --direct + --proxy at the CLI boundary with its own wordin
 
 test("the mode conflict is rejected at the boundary on every command that takes the pair", () => {
   // Boundary parse runs before any per-command logic, so even invocations whose
-  // command would error later (non---add profile, --mobile, --desktop) reject
+  // command would error later (non---add profile, --mobile, --check) reject
   // the pair first.
   for (
     const argv of [
       ["models", "--direct", "--proxy"],
       ["profile", "--list", "--direct", "--proxy"],
       ["codex", "--mobile", "--direct", "--proxy"],
-      ["claude", "--desktop", "--direct", "--proxy"],
+      ["claude", "--check", "--direct", "--proxy"],
     ]
   ) {
     const conflict = runCli([...argv], { env: isolatedEnv() });
@@ -896,7 +923,7 @@ test("health --scope codex covers only Codex wiring", () => {
   expect(exitCode).toBe(0);
 }, 15_000);
 
-test("health --scope claude covers only Claude wiring", () => {
+test("health --scope claude covers only Claude wiring (Code + Desktop)", () => {
   const home = mkdtempSync(join(tmpdir(), "copilot-claude-scope-"));
   // Proxy wiring (the proxy is Claude's default; CI has no gh/direct) =>
   // providerMode "proxy", status ok. Legacy helper-path wiring counts only with
@@ -908,8 +935,11 @@ test("health --scope claude covers only Claude wiring", () => {
   });
   const json = JSON.parse(proc.stdout) as HealthJson;
   expect(json.scope).toBe("claude");
-  expect(json.checks.map((c) => c.id)).toEqual(["setup.claude"]);
+  expect(json.checks.map((c) => c.id)).toEqual(["setup.claude", "setup.claude-desktop"]);
   expect(json.checks[0]?.value?.providerMode).toBe("proxy");
+  // The suite floor's Desktop seam points at a dir that never exists: no app, no drift.
+  expect(json.checks[1]?.status).toBe("ok");
+  expect(json.checks[1]?.detail).toContain("not detected");
   expect(json.exitCode).toBe(0);
 }, 15_000);
 

@@ -5,11 +5,10 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { consola } from "consola";
 
-import { isEnoent } from "../utils/fs.ts";
+import { isEnoent, readTextResult } from "../utils/fs.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { mkdirReported, writeFileReported } from "../utils/report_write.ts";
-import { readTextOrNull } from "../utils/fs.ts";
 
 // `agent shell` owns wiring the copilot-env integration into the
 // user's shell startup -- the logic install.sh / install.ps1 used to duplicate.
@@ -345,11 +344,24 @@ function removeFrom(files: string[]): boolean {
 }
 
 /** The rc / PowerShell profile files on this machine that carry an owned block right
- *  now (integration or launchers): what an uninstall plans to strip. Read-only. */
+ *  now (integration or launchers): what an uninstall plans to strip. Read-only. Fail
+ *  closed: a file that exists but cannot be read may hold a block that points at the
+ *  install about to go, so the caller refuses rather than plan around it; only a proven
+ *  absence (ENOENT) is "no block here". */
 export function ownedShellTargets(): string[] {
-  return shellTargetFiles().filter((file) => {
-    const content = readTextOrNull(file);
-    return content !== null && ALL_MARKERS.some((marker) => hasMarker(content, marker));
+  // Every CANDIDATE, not shellTargetFiles(): its existsSync pre-filter follows symlinks
+  // and swallows permission errors, so a dangling rc link or an rc under an unreadable
+  // parent would vanish before readTextResult could call it unreadable.
+  const candidates = process.platform === "win32" ? shellTargetFiles() : rcCandidates();
+  return candidates.filter((file) => {
+    const read = readTextResult(file);
+    if (read.kind === "unreadable") {
+      throw new Error(
+        `cannot read ${file} (${read.error}); refusing to continue while it may still hold ` +
+          "the copilot-env shell block",
+      );
+    }
+    return read.kind === "text" && ALL_MARKERS.some((marker) => hasMarker(read.text, marker));
   });
 }
 
@@ -474,12 +486,16 @@ function absolutePathEnv(name: string): string | null {
 
 // --- POSIX target files -------------------------------------------------------
 
+/** Every POSIX rc file copilot-env may wire, present or not. */
+function rcCandidates(): string[] {
+  const home = absolutePathEnv(CI_RC_DIR_ENV) ?? homedir();
+  return [".bashrc", ".zshrc"].map((f) => join(home, f));
+}
+
 /** Existing ~/.bashrc + ~/.zshrc; for wiring, fall back to one named for $SHELL. */
 export function rcFiles(remove: boolean): string[] {
   const home = absolutePathEnv(CI_RC_DIR_ENV) ?? homedir();
-  const existing = [".bashrc", ".zshrc"]
-    .map((f) => join(home, f))
-    .filter((p) => existsSync(p));
+  const existing = rcCandidates().filter((p) => existsSync(p));
   if (existing.length > 0 || remove) return existing;
   const shell = basename(process.env.SHELL ?? "/bin/bash");
   return [join(home, shell === "zsh" ? ".zshrc" : ".bashrc")];

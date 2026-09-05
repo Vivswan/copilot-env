@@ -3,7 +3,14 @@
 // the real ~/.codex, the host farm, or the shell rc files -- and the install root
 // it deletes is a sandbox directory, never the tree this process runs from.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import { consola } from "consola";
 import { parse } from "smol-toml";
@@ -664,6 +671,49 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   expect(dryRun.join(" ")).toContain(dir);
   expect(named.has(dir)).toBe(false);
 });
+
+test.skipIf(process.platform === "win32")(
+  "a dangling rc symlink refuses the uninstall: an entry is there, its block cannot be read",
+  async () => {
+    const { proxyHome, codexHome } = tmpHomes();
+    new Credential().store("gh-token", "ghp_default");
+    const rcDir = join(dir, "rc");
+    process.env[CI_RC_DIR_ENV] = rcDir;
+    mkdirSync(rcDir, { recursive: true });
+    const rc = join(rcDir, ".zshrc");
+    symlinkSync(join(rcDir, "gone"), rc); // existsSync would follow it and say "absent"
+    const { removeShellIntegration: _real, ...deps } = tmpDeps(codexHome);
+    await expect(runUninstall({ yes: true }, deps)).rejects.toThrow(rc);
+    expect(new Credential().resolve()).toBe("ghp_default");
+    expect(existsSync(proxyHome)).toBe(true);
+    expect(existsSync(deps.installRoot.root)).toBe(true);
+  },
+);
+
+// mode 000 stops a user, never root (the container suite); Windows has no such mode.
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "an unreadable rc file refuses the uninstall before anything is removed",
+  async () => {
+    const { proxyHome, codexHome } = tmpHomes();
+    new Credential().store("gh-token", "ghp_default");
+    const rcDir = join(dir, "rc");
+    process.env[CI_RC_DIR_ENV] = rcDir;
+    mkdirSync(rcDir, { recursive: true });
+    const rc = join(rcDir, ".bashrc");
+    writeFileSync(rc, `${SHELL_MARKER}\nsource ours\n${MARKER_END}\n`);
+    chmodSync(rc, 0o000);
+    const { removeShellIntegration: _real, ...deps } = tmpDeps(codexHome);
+    try {
+      await expect(runUninstall({ yes: true }, deps)).rejects.toThrow(rc);
+      // Refused up front: the credential, the home and the install root all stand.
+      expect(new Credential().resolve()).toBe("ghp_default");
+      expect(existsSync(proxyHome)).toBe(true);
+      expect(existsSync(deps.installRoot.root)).toBe(true);
+    } finally {
+      chmodSync(rc, 0o644);
+    }
+  },
+);
 
 test("uninstall --dry-run names every Claude Desktop path the sweep would delete", async () => {
   const { codexHome } = tmpHomes();

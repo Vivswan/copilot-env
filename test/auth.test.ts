@@ -6,6 +6,11 @@ import { loginWithGhCli, runAuth } from "../src/commands/auth.ts";
 import { ghTokenLookFromSpawn } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { assertProfileSlot, CopilotEnvState } from "../src/copilot_api/env_state.ts";
+import {
+  COPILOT_CLI_INTEGRATION_ID,
+  INTEGRATION_ID_HEADER,
+  setIntegrationProbeFetch,
+} from "../src/copilot_api/integration_identity.ts";
 import { CopilotApiPaths, profileHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { errMessage } from "../src/utils/error.ts";
@@ -141,6 +146,7 @@ test("auth --del clears the stored token and provider", async () => {
     profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogPatchVersion: 0,
+    codexCatalogAccepted: null,
     claudeModelVerdicts: {},
     codexCatalogCodexVersion: null,
   });
@@ -198,6 +204,7 @@ test("auth --provider gh-token stores the env token + provider, and does NOT con
     profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogPatchVersion: 0,
+    codexCatalogAccepted: null,
     claudeModelVerdicts: {},
     codexCatalogCodexVersion: null,
   });
@@ -216,6 +223,7 @@ test("auth --set <token> stores it verbatim (no env, no UI) and records gh-token
     profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogPatchVersion: 0,
+    codexCatalogAccepted: null,
     claudeModelVerdicts: {},
     codexCatalogCodexVersion: null,
   });
@@ -392,12 +400,66 @@ test("auth --get stdout stays EXACTLY the token even when the catalog refresh ru
         nowMs: () => 1_700_000_000_000,
         codexVersion: () => null, // lastAttemptMs 0 => due, so the refresh really runs
         bundledCatalog: () => '{"models":[{"slug":"gpt-5.5","context_window":272000}]}',
-        fetchLimits: async () =>
-          new Map([["gpt-5.5", { maxContextWindowTokens: 1_050_000, maxPromptTokens: 922_000 }]]),
+        fetchCopilotModels: async () =>
+          new Map([["gpt-5.5", {
+            limits: { maxContextWindowTokens: 1_050_000, maxPromptTokens: 922_000 },
+            name: "GPT-5.5",
+            reasoningEfforts: null,
+            parallelToolCalls: null,
+            codexServable: true,
+          }]]),
+        acceptsCatalog: () => true,
       },
     )
   );
   expect(out).toBe("ghu_stored123\n");
+});
+
+test("auth --get with a PAT keeps stdout to the token while the due refresh probes an alternate identity", async () => {
+  isolate();
+  enableCatalog();
+  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "github_pat_x" });
+  // Copilot's /models accepts the PAT only under the CLI identity: the production
+  // fetch probes, settles on it, and narrates the non-default choice.
+  const respond = (init?: RequestInit): Response =>
+    new Headers(init?.headers).get(INTEGRATION_ID_HEADER) === COPILOT_CLI_INTEGRATION_ID
+      ? new Response(
+        JSON.stringify({
+          data: [{
+            id: "gpt-5.5",
+            capabilities: {
+              limits: { max_context_window_tokens: 1_050_000, max_prompt_tokens: 922_000 },
+            },
+          }],
+        }),
+        { status: 200 },
+      )
+      : new Response("PATs not supported", { status: 400 });
+  setIntegrationProbeFetch((_input, init) => Promise.resolve(respond(init)));
+  const realFetch = globalThis.fetch;
+  globalThis.fetch =
+    ((_input: string | URL | Request, init?: RequestInit) =>
+      Promise.resolve(respond(init))) as typeof fetch;
+  let narrated = "";
+  let out = "";
+  try {
+    out = await captureStdout(async () => {
+      narrated = await captureStderr(() =>
+        runAuth({ get: true }, {
+          nowMs: () => 1_700_000_000_000, // lastAttemptMs 0 => due
+          codexVersion: () => "1.0.0",
+          bundledCatalog: () => '{"models":[{"slug":"gpt-5.5","context_window":272000}]}',
+          acceptsCatalog: () => true,
+        })
+      );
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+    setIntegrationProbeFetch(null);
+  }
+  expect(out).toBe("github_pat_x\n");
+  expect(narrated).toContain(`Copilot integration identity: ${COPILOT_CLI_INTEGRATION_ID}`);
+  expect(existsSync(new CopilotApiPaths().codexModelCatalogFile)).toBe(true);
 });
 
 test("auth --get succeeds (exit 0) even when the catalog refresh blows up", async () => {
@@ -413,7 +475,7 @@ test("auth --get succeeds (exit 0) even when the catalog refresh blows up", asyn
         bundledCatalog: () => {
           throw new Error("spawn exploded");
         },
-        fetchLimits: async () => {
+        fetchCopilotModels: async () => {
           throw new Error("network exploded");
         },
       },
@@ -433,7 +495,7 @@ test("auth --print-proxy-token stdout stays EXACTLY the key even when the refres
         nowMs: () => 1_700_000_000_000,
         codexVersion: () => null, // due => the refresh really runs (and fails, harmlessly)
         bundledCatalog: () => null,
-        fetchLimits: async () => {
+        fetchCopilotModels: async () => {
           throw new Error("proxy exploded");
         },
       },

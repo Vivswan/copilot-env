@@ -273,6 +273,40 @@ test("the preload's copied header literal stays in step with the module's (drift
   expect(shim).toContain(`const INTEGRATION_ID_HEADER = "${INTEGRATION_ID_HEADER}"`);
 });
 
+test("fetchRawModels(direct): a caller deadline aborts the identity probe chain itself", async () => {
+  // The Codex catalog refresh runs inside `agent auth --get`'s bounded budget: its
+  // deadline must end the pending REQUESTS (a PAT chains identity probes before the
+  // GET), not just stop awaiting them, or the auth process outlives the budget.
+  const { fetchRawModels } = await import("../src/copilot_api/catalog.ts");
+  // Every request also carries its own 5s timeout, so the proof is the REASON the
+  // pending request saw: the caller's sentinel, not a timeout.
+  const abortReasons: unknown[] = [];
+  const deadline = new AbortController();
+  const sentinel = new Error("caller deadline");
+  // The FIRST pending request trips the caller's deadline itself: deterministic, no timer.
+  const hang = (_input: string | URL | Request, init?: RequestInit): Promise<Response> =>
+    new Promise((_, reject) => {
+      const abort = (): void => {
+        abortReasons.push(init?.signal?.reason);
+        reject(new DOMException("aborted", "AbortError"));
+      };
+      if (init?.signal?.aborted) abort();
+      else init?.signal?.addEventListener("abort", abort);
+      if (!deadline.signal.aborted) deadline.abort(sentinel);
+    });
+  setIntegrationProbeFetch(hang);
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = hang as typeof fetch;
+  try {
+    await expect(fetchRawModels("direct", { directToken: "github_pat_x", signal: deadline.signal }))
+      .rejects.toThrow();
+  } finally {
+    globalThis.fetch = realFetch;
+    setIntegrationProbeFetch(null);
+  }
+  expect(abortReasons).toContain(sentinel);
+});
+
 test("fetchRawModels(direct) probes and fetches ONE host, with the resolved identity", async () => {
   // The real consumer, end to end: a PAT-shaped credential must have its identity probed
   // against the SAME host the catalog request then hits. Probing a discovered account host

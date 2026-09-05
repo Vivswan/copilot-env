@@ -253,6 +253,10 @@ export interface CopilotEnvStateData {
    *  a copilot-env whose patch logic changed regenerates on the next refresh
    *  instead of serving the old patch for up to a day (src/codex/catalog.ts). */
   codexCatalogPatchVersion: number;
+  /** The generated catalog (by content hash) the installed codex (by version)
+   *  last parsed successfully, so the auth-time sync re-asks only when either
+   *  changes (src/codex/catalog.ts); null if never. */
+  codexCatalogAccepted: { sha256: string; codexVersion: string } | null;
   /**
    * Cached model-discovery verdicts, keyed
    * `<credentialDigest>|<integrationId|default>|<modelId>`
@@ -309,6 +313,13 @@ const STATE_SCHEMA = v.object({
     null,
   ),
   codexCatalogPatchVersion: v.fallback(v.pipe(v.number(), v.finite(), v.minValue(0)), 0),
+  codexCatalogAccepted: v.fallback(
+    v.nullable(v.object({
+      sha256: v.pipe(v.string(), v.regex(/^[0-9a-f]{64}$/)),
+      codexVersion: v.pipe(v.string(), v.trim(), v.minLength(1)),
+    })),
+    null,
+  ),
   // Recorded artifact ownership (the WebSearch-deny and Claude Desktop paths)
   // lived here before the ownership ledger (ownership.ts). The legacy keys are
   // deliberately NOT named in this schema: the lenient read ignores them and

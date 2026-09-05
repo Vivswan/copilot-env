@@ -842,7 +842,9 @@ export function profileStoreWellFormed(storeFile: string): boolean {
 /** The per-entry reconcile every managed Claude write runs: key on upserts `profile`'s
  *  entry (when the app is installed); key off removes a profile's entry -- never on a
  *  malformed profile store (the same guard the whole-library sweep in
- *  src/agents/claude_desktop.ts sits behind) -- and leaves the default's in place, named.
+ *  src/agents/claude_desktop.ts sits behind) -- and leaves the default's in place,
+ *  silently: the whole-library reconcile after every default command (init, `agent claude`,
+ *  import) names it, once; the launcher's default repair runs no reconcile and stays quiet.
  *  Best-effort: a Desktop failure warns and never fails the caller. */
 export async function syncClaudeDesktopWiring(opts: DesktopWireOptions): Promise<void> {
   try {
@@ -850,10 +852,7 @@ export async function syncClaudeDesktopWiring(opts: DesktopWireOptions): Promise
       await wireClaudeDesktopEntry(opts);
       return;
     }
-    if (opts.profile === null) {
-      if (!opts.quiet) announceUnmanagedDefault();
-      return;
-    }
+    if (opts.profile === null) return;
     const storeFile = new CopilotApiPaths().sharedStateFile;
     if (!profileStoreWellFormed(storeFile)) {
       logger.warn(
@@ -960,28 +959,38 @@ export function removeAllClaudeDesktopWiring(dirOverride?: string | null): void 
   for (const path of presentDesktopHelperScripts(resolveRootHome())) removeAnnounced(path);
 }
 
-/** The `claude-desktop false` sweep: every owned entry serving a NAMED profile goes, its
- *  helper scripts and the unlisted claims with it; the default's entry and helper stay in
- *  place, unmanaged, and are named (unless `quiet`, the steady-state hot path). */
+/** The `claude-desktop false` sweep: every owned claim serving a NAMED profile goes --
+ *  listed entry or unlisted leftover, attributed by its document alike -- with its helper
+ *  scripts; the default's entry and helper stay in place, unmanaged, and are named (unless
+ *  `quiet`, the steady-state hot path). */
 export function removeUnmanagedClaudeDesktopWiring(opts: { quiet?: boolean } = {}): void {
-  if (removeOwnedEntries((e) => entryProfileAt(e.path) !== null) === "blocked") return;
-  removeUnlistedClaudeDesktopClaims();
+  const sweepable = (path: string) => entryProfileAt(path) !== null;
+  if (removeOwnedEntries((e) => sweepable(e.path)) === "blocked") return;
+  removeUnlistedClaudeDesktopClaims(undefined, sweepable);
   for (const path of presentDesktopHelperScripts(resolveRootHome())) {
     if (desktopHelperScriptWiring(basename(path))?.profile !== null) removeAnnounced(path);
   }
   if (!opts.quiet) announceUnmanagedDefault();
 }
 
-/** Name every owned entry the key-off sweep leaves in place (the default's), so the user
- *  knows it is theirs now and nothing was rewritten. */
+/** Name every owned claim the key-off sweep leaves in place (the default's, listed or not),
+ *  so the user knows it is theirs now and nothing was rewritten. One a failed look could
+ *  not attribute is skipped: the sweep already warned about it. */
 function announceUnmanagedDefault(): void {
   const dir = resolveDesktopLibraryDir();
   const library = dir === null ? null : readOwnedLibrary(dir);
-  for (const e of library?.owned ?? []) {
-    if (entryProfileAt(e.path) !== null) continue;
-    logger.info(
-      `  Claude Desktop: "${e.entry.name}" at ${e.path} left in place, unmanaged (claude-desktop false).`,
-    );
+  if (library === null) return;
+  const claims = [
+    ...library.owned.map((e) => [`"${e.entry.name}" at ${e.path}`, e.path] as const),
+    ...library.unlisted.map((p) => [`${p} (not listed in ${META_FILENAME})`, p] as const),
+  ];
+  for (const [label, path] of claims) {
+    try {
+      if (entryProfileAt(path) !== null) continue;
+    } catch {
+      continue;
+    }
+    logger.info(`  Claude Desktop: ${label} left in place, unmanaged (claude-desktop false).`);
   }
 }
 
@@ -1074,9 +1083,12 @@ function readOwnedLibrary(dir: string): OwnedLibrary | null {
 
 /** Release the ledger claims `_meta.json` no longer lists, deleting their files when
  *  present: the leftovers of a removal that failed after the meta save. `dirOverride` as
- *  in removeAllClaudeDesktopWiring; an unreadable library is left alone (`blocked`). */
+ *  in removeAllClaudeDesktopWiring; an unreadable library is left alone (`blocked`).
+ *  `selects` narrows the sweep (the key-off attribution); a claim it cannot judge -- an
+ *  unreadable document -- is warned about and left alone, file and claim. */
 export function removeUnlistedClaudeDesktopClaims(
   dirOverride?: string | null,
+  selects: (path: string) => boolean = () => true,
 ): "swept" | "blocked" {
   const dir = dirOverride !== undefined ? dirOverride : resolveDesktopLibraryDir();
   if (dir === null) return "swept";
@@ -1084,6 +1096,12 @@ export function removeUnlistedClaudeDesktopClaims(
   if (library === null) return "blocked";
   const ledger = new OwnershipLedger();
   for (const path of library.unlisted) {
+    try {
+      if (!selects(path)) continue;
+    } catch (e) {
+      logger.warn(`  Claude Desktop: ${errMessage(e)}; left alone.`);
+      continue;
+    }
     removeAnnounced(path);
     ledger.release("claudeDesktop", path);
     logger.info(`  Claude Desktop: released ownership of ${path} in ${ledgerPath()}`);
@@ -1154,14 +1172,16 @@ export type DesktopEntryVerdict =
 
 export type DesktopEntryStatus = DesktopTarget & { verdict: DesktopEntryVerdict };
 
-/** An owned entry as the status reports it: the display name (the user's), the uuid path,
- *  and the wiring its document names -- undefined when it names none (see entryProfileAt),
- *  which no target can claim. An orphan is one no current target promises. */
-export interface DesktopOwnedEntry {
-  name: string;
+/** An owned claim as the status reports it: the uuid path and the wiring its document
+ *  names -- undefined when it names none (see entryProfileAt), which no target can claim. */
+export interface DesktopClaim {
   path: string;
   profile: Profile | undefined;
 }
+
+/** A listed owned entry: its claim plus the display name (the user's). An orphan is one
+ *  no current target promises. */
+export type DesktopOwnedEntry = DesktopClaim & { name: string };
 
 /** The promised targets, or why they cannot be known. An unreadable or malformed
  *  settings.json is NOT "the default promises nothing": that reading is what would
@@ -1197,8 +1217,9 @@ export type ClaudeDesktopStatus =
     entries: DesktopEntryStatus[];
     /** Owned entries matching no target; empty when the key is off or the app is absent. */
     orphans: DesktopOwnedEntry[];
-    /** Ledger claims under the library `_meta.json` no longer lists (interrupted removals). */
-    unlisted: string[];
+    /** Ledger claims under the library `_meta.json` no longer lists (interrupted removals),
+     *  attributed like the listed entries. */
+    unlisted: DesktopClaim[];
   });
 
 /** Judge the library against the promised targets WITHOUT writing or reserving anything
@@ -1221,8 +1242,10 @@ export function inspectClaudeDesktopWiring(
   // Attribution (which wiring each owned document serves) is read whatever the key says:
   // the key-off report tells the default's entry, left in place, from the leftovers by it.
   let judged: JudgedDesktopEntry[];
+  let unlisted: DesktopClaim[];
   try {
     judged = library.owned.map((e) => ({ ...e, profile: entryProfileAt(e.path) }));
+    unlisted = library.unlisted.map((path) => ({ path, profile: entryProfileAt(path) }));
   } catch (e) {
     return { ...base, kind: "unjudged", reason: errMessage(e) };
   }
@@ -1233,7 +1256,7 @@ export function inspectClaudeDesktopWiring(
     owned: judged.map((e) => ({ name: e.entry.name, path: e.path, profile: e.profile })),
     entries: [],
     orphans: [],
-    unlisted: library.unlisted,
+    unlisted,
   };
   if (!base.enabled || !base.installed) return status;
   if (resolution.kind === "unresolvable") {
@@ -1383,12 +1406,18 @@ export function renderClaudeDesktopStatus(
     // The default's entry and helper stay by design; leftovers are the profile entries
     // (listed or not) and helper scripts an interrupted sweep can leave.
     const owned = status.kind === "inspected" ? status.owned : [];
-    const unmanaged = owned
-      .filter((e) => e.profile === null)
-      .map((e) => `"${e.name}" present at ${e.path}, unmanaged (claude-desktop false)`);
+    const unlisted = status.kind === "inspected" ? status.unlisted : [];
+    const unmanaged = [
+      ...owned.filter((e) => e.profile === null).map((e) =>
+        `"${e.name}" present at ${e.path}, unmanaged (claude-desktop false)`
+      ),
+      ...unlisted.filter((c) => c.profile === null).map((c) =>
+        `${c.path} present but not listed in ${META_FILENAME}, unmanaged (claude-desktop false)`
+      ),
+    ];
     const left = [
       ...owned.filter((e) => e.profile !== null).map((e) => e.path),
-      ...(status.kind === "inspected" ? status.unlisted : []),
+      ...unlisted.filter((c) => c.profile !== null).map((c) => c.path),
       ...status.helperPaths.filter((p) => desktopHelperScriptWiring(basename(p))?.profile !== null),
     ];
     if (left.length === 0) {
@@ -1437,7 +1466,7 @@ export function renderClaudeDesktopStatus(
         assertNever(e.verdict);
     }
   }
-  for (const path of status.unlisted) {
+  for (const { path } of status.unlisted) {
     lines.push(
       `${path} is still claimed in the ownership ledger but no longer listed in ${META_FILENAME}${
         entryExists(path) ? "" : ", and its file is gone"

@@ -83,7 +83,8 @@ function unjudged(enabled: boolean, reason: string): ClaudeDesktopStatus {
 }
 
 /** The whole-library reconcile after a default write: key off removes the profile entries
- *  and names the default's, left in place (src/claude/desktop.ts has the rule); key on
+ *  and names the default's, left in place -- the ONE place that notice prints (the default
+ *  write's own sync stays silent; src/claude/desktop.ts has the rule); key on
  *  clears orphans and unlisted claims, then upserts every named target (cleanup first,
  *  so an orphan that held the applied slot hands it to the entry replacing it). `quiet`
  *  (the launcher hot path) is cleanup-only: no upsert, so no identity probe and no

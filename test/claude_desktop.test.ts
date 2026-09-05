@@ -889,6 +889,11 @@ async function captureAllWrites(fn: () => Promise<void> | void): Promise<string>
   return out;
 }
 
+/** How many times `needle` occurs in `text` (exact-count assertions on announcements). */
+function count(text: string, needle: string): number {
+  return text.split(needle).length - 1;
+}
+
 /** A direct wire with a fixed catalog (no network, no credential store). */
 function directWire(profile: Profile = null): DesktopWireOptions {
   return {
@@ -936,20 +941,14 @@ test("sync reconciles from the key: on wires (every write announced), off remove
   expect(await captureAllWrites(() => syncClaudeDesktopWiring({ ...directWire(), quiet: true })))
     .toBe("");
 
-  // Off: the default's write leaves ITS entry in place and says so (quiet: silently); a
-  // profile's write removes ITS entry, naming each path -- another profile's entry is
-  // the whole-library reconcile's business, not this write's.
+  // Off: the default's write leaves ITS entry in place, silently (the whole-library
+  // reconcile that follows every default write names it); a profile's write removes ITS
+  // entry, naming each path -- another profile's entry is the reconcile's business too.
   await wireClaudeDesktopEntry(directWire(WORK));
   const workHelper = desktopHelperPath(resolveRootHome(), "direct", WORK);
   const firstWork = entryPathNamed(library, "copilot-env: work");
   new CopilotEnvConfig().set({ claudeDesktop: false });
-  const left = await captureAllWrites(() => syncClaudeDesktopWiring(directWire()));
-  expect(left).toContain(
-    `Claude Desktop: "copilot-env" at ${configPath} left in place, unmanaged (claude-desktop false)`,
-  );
-  expect(left).not.toContain("removed");
-  expect(await captureAllWrites(() => syncClaudeDesktopWiring({ ...directWire(), quiet: true })))
-    .toBe("");
+  expect(await captureAllWrites(() => syncClaudeDesktopWiring(directWire()))).toBe("");
   const removed = await captureAllWrites(() => syncClaudeDesktopWiring(directWire(WORK)));
   expect(existsSync(configPath)).toBe(true);
   expect(existsSync(helper)).toBe(true);
@@ -1298,9 +1297,10 @@ test("reconcileClaudeDesktopWiring: orphans go when the key is on, the profiles'
   const defaultPath = firstEntryPath(library);
   new CopilotEnvConfig().set({ claudeDesktop: false });
   const off = await captureAllWrites(() => reconcileClaudeDesktopWiring());
-  expect(off).toContain(
-    `Claude Desktop: "copilot-env" at ${defaultPath} left in place, unmanaged (claude-desktop false).`,
-  );
+  expect(
+    count(off, `"copilot-env" at ${defaultPath} left in place, unmanaged (claude-desktop false)`),
+  )
+    .toBe(1);
   expect((metaOf(library).entries as { name: string }[]).map((e) => e.name)).toEqual([
     "copilot-env",
   ]);
@@ -1322,11 +1322,14 @@ test("an interrupted removal's unlisted claim is reported, listed for the dry ru
   await wireClaudeDesktopEntry(directWire());
   const configPath = firstEntryPath(library);
   // Simulate the failure window: _meta.json pruned, the config file and its claim left.
-  const meta = metaOf(library);
-  writeFileSync(join(library, "_meta.json"), `${JSON.stringify({ ...meta, entries: [] })}\n`);
+  const prune = () => {
+    const meta = metaOf(library);
+    writeFileSync(join(library, "_meta.json"), `${JSON.stringify({ ...meta, entries: [] })}\n`);
+  };
+  prune();
   const status = inspected(inspectClaudeDesktopWiring([]));
   expect(status.owned).toEqual([]);
-  expect(status.unlisted).toEqual([configPath]);
+  expect(status.unlisted).toEqual([{ path: configPath, profile: null }]);
   const rendered = renderClaudeDesktopStatus(status);
   expect(rendered.lines).toEqual([
     `${configPath} is still claimed in the ownership ledger but no longer listed in _meta.json (an interrupted removal)`,
@@ -1334,19 +1337,59 @@ test("an interrupted removal's unlisted claim is reported, listed for the dry ru
   expect(rendered.fix).toBe("agent claude");
   expect(listClaudeDesktopOwnedArtifacts().entries).toEqual([configPath]);
   // A trailing separator on the injected dir changes nothing about which claims count.
-  expect(inspected(inspectClaudeDesktopWiring([], `${library}/`)).unlisted).toEqual([configPath]);
+  expect(inspected(inspectClaudeDesktopWiring([], `${library}/`)).unlisted).toEqual([
+    { path: configPath, profile: null },
+  ]);
   // The claim of a file already gone is still a leftover, and says so; the dry run lists
   // only files.
+  const doc = readFileSync(configPath, "utf8");
   rmSync(configPath);
   const gone = renderClaudeDesktopStatus(inspectClaudeDesktopWiring([]));
   expect(gone.lines[0]).toContain("and its file is gone");
   expect(listClaudeDesktopOwnedArtifacts().entries).toEqual([]);
-  writeFileSync(configPath, "{}\n");
-  // Key off shows it as a leftover too.
+  writeFileSync(configPath, doc);
+
+  // Key off: an unlisted claim is attributed like a listed entry. The default's file stays
+  // in place (named once, never drift) ...
   new CopilotEnvConfig().set({ claudeDesktop: false });
-  expect(renderClaudeDesktopStatus(inspectClaudeDesktopWiring([])).lines).toContain(configPath);
+  expect(renderClaudeDesktopStatus(inspectClaudeDesktopWiring([]))).toEqual({
+    lines: [
+      `${configPath} present but not listed in _meta.json, unmanaged (claude-desktop false)`,
+      "disabled (claude-desktop false); no copilot-env leftovers present",
+    ],
+    fix: null,
+  });
+  const kept = await captureAllWrites(() => reconcileClaudeDesktopWiring());
+  expect(count(kept, `${configPath} (not listed in _meta.json) left in place, unmanaged`)).toBe(1);
+  expect(existsSync(configPath)).toBe(true);
+  expect(new OwnershipLedger().owns("claudeDesktop", configPath)).toBe(true);
+  // ... a profile's goes, claim and all ...
+  await wireClaudeDesktopEntry(directWire(WORK));
+  const workPath = entryPathNamed(library, "copilot-env: work");
+  prune();
+  const swept = await captureAllWrites(() => reconcileClaudeDesktopWiring());
+  expect(swept).toContain(`Claude Desktop: removed ${workPath}`);
+  expect(swept).toContain(`Claude Desktop: released ownership of ${workPath}`);
+  expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual([configPath]);
+  // ... and one that cannot be read is left alone, claim and all, with a warning (a failed
+  // look is never "not ours") -- per claim: a profile's beside it is still swept.
+  if (!NO_CHMOD_FAULTS) {
+    await wireClaudeDesktopEntry(directWire(WORK));
+    const besidePath = entryPathNamed(library, "copilot-env: work");
+    prune();
+    chmodSync(configPath, 0o000);
+    try {
+      const warned = await captureAllWrites(() => reconcileClaudeDesktopWiring());
+      expect(warned).toContain(`could not read ${configPath}`);
+      expect(warned).not.toContain("left in place");
+      expect(warned).toContain(`Claude Desktop: removed ${besidePath}`);
+    } finally {
+      chmodSync(configPath, 0o600);
+    }
+    expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual([configPath]);
+  }
   new CopilotEnvConfig().del("claudeDesktop");
-  // The reconcile deletes the file and releases the claim, announcing both.
+  // Key on: the reconcile deletes the file and releases the claim, announcing both.
   const out = await captureAllWrites(() => reconcileClaudeDesktopWiring());
   expect(out).toContain(`Claude Desktop: removed ${configPath}`);
   expect(out).toContain(`Claude Desktop: released ownership of ${configPath}`);
@@ -1418,7 +1461,7 @@ test("a renamed owned entry is ours by path: rewired in place, name kept, unmana
   // Key off leaves the default's entry in place under the user's name, and says so.
   new CopilotEnvConfig().set({ claudeDesktop: false });
   const off = await captureAllWrites(() => reconcileClaudeDesktopWiring());
-  expect(off).toContain(`"copilot-env: work" at ${configPath} left in place, unmanaged`);
+  expect(count(off, `"copilot-env: work" at ${configPath} left in place, unmanaged`)).toBe(1);
   expect(existsSync(configPath)).toBe(true);
   expect(renderClaudeDesktopStatus(claudeDesktopStatus()).lines[0]).toBe(
     `"copilot-env: work" present at ${configPath}, unmanaged (claude-desktop false)`,
@@ -1523,6 +1566,11 @@ test("call sites reconcile the whole library: init, profile --sync, the launcher
   await wireClaudeDesktopEntry(directWire(WORK));
   await captureAllWrites(() => runInit({ mode: "proxy" }));
   expect(names()).toEqual(["copilot-env"]);
+  // ... and with the key off, the same command names the default's entry exactly once:
+  // the reconcile owns the notice, the default write itself stays silent.
+  new CopilotEnvConfig().set({ claudeDesktop: false });
+  const off = await captureAllWrites(() => runInit({ mode: "proxy" }));
+  expect(count(off, "left in place, unmanaged")).toBe(1);
 
   // `agent profile --sync` with ZERO complete profiles and the key off: the sweep still
   // runs (nothing depends on a profile write happening), and keeps the default's entry.

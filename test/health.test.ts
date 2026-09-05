@@ -2402,7 +2402,7 @@ test("checkClaudeDesktop: a rendered fix is a warn, none is ok; the detail is th
     installed: true,
     helperPaths: [] as string[],
     libraryDir: "/lib",
-    unlisted: [] as string[],
+    unlisted: [] as Extract<ClaudeDesktopStatus, { kind: "inspected" }>["unlisted"],
     owned: [{ name: "copilot-env", path: "/lib/a.json", profile: null }],
     entries: [] as Extract<ClaudeDesktopStatus, { kind: "inspected" }>["entries"],
     orphans: [] as Extract<ClaudeDesktopStatus, { kind: "inspected" }>["orphans"],
@@ -2450,7 +2450,7 @@ test("checkClaudeDesktop: a rendered fix is a warn, none is ok; the detail is th
   const drift = checkClaudeDesktop({
     ...inspected,
     orphans: [{ name: "copilot-env: old", path: "/lib/o.json", profile: old }],
-    unlisted: ["/lib/gone.json"],
+    unlisted: [{ path: "/lib/gone.json", profile: old }],
   });
   expect(drift.value).toEqual({
     kind: "inspected",
@@ -2459,7 +2459,7 @@ test("checkClaudeDesktop: a rendered fix is a warn, none is ok; the detail is th
     helperPaths: [],
     libraryDir: "/lib",
     owned: [{ name: "copilot-env", path: "/lib/a.json", profile: null }],
-    unlisted: ["/lib/gone.json"],
+    unlisted: [{ path: "/lib/gone.json", profile: old }],
     entries: [],
     orphans: [{ name: "copilot-env: old", path: "/lib/o.json", profile: old }],
   });

@@ -277,9 +277,11 @@ describe("child environment", () => {
   });
 
   test("run rejects a missing executable at the spawn", async () => {
+    // The message, not the class: unix keeps the ENOENT kind (NotFound), but Deno's Windows
+    // spawner rewraps the failure as a generic Error. Both name the executable and the reason.
     await expect(
       run("/nonexistent/cost-metrics-binary", [], { env: childEnv({}), timeoutMs: 15_000 }),
-    ).rejects.toThrow(Deno.errors.NotFound);
+    ).rejects.toThrow(/^Failed to spawn '.*cost-metrics-binary': .*(not found|no such file)/i);
   });
 
   test("run kills a child that outlives its timeout", async () => {

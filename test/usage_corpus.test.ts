@@ -42,7 +42,19 @@ describe("usage corpus scrub", () => {
       "summary": "secret_project",
       "model": "acme-internal-model",
       "customer": "acme-corp",
-      "settings": { "/tmp/a.txt": 1, "has space": 2, "constructor": "x" },
+      // Numbers are content unless DIRECTLY under a known count key: a count key inside an
+      // unknown wrapper, a known non-numeric key, an array under a count key, and a tool
+      // input all carry one here.
+      "account": { "input_tokens": 4111111111111111 },
+      "path": 5551234567,
+      "total_tokens": [1234567890123],
+      // A user-keyed map: a count key inside it is a user's key, not a count.
+      "settings": {
+        "/tmp/a.txt": 1,
+        "has space": 2,
+        "constructor": "x",
+        "input_tokens": 9876543210987,
+      },
       "message": {
         "id": "msg_25950bad28ce4ed1d19ffb13",
         "role": "assistant",
@@ -53,7 +65,7 @@ describe("usage corpus scrub", () => {
             "type": "tool_use",
             "id": "toolu_01abc",
             "name": "Read",
-            "input": { "file_path": "/u/me" },
+            "input": { "file_path": "/u/me", "offset": 31337031 },
           },
         ],
         "stop_reason": "tool_use",
@@ -81,6 +93,11 @@ describe("usage corpus scrub", () => {
         "constructor",
         session,
         "25950bad",
+        "4111111111111111",
+        "5551234567",
+        "1234567890123",
+        "9876543210987",
+        "31337031",
       ]
     ) {
       expect(result.text).not.toContain(secret);
@@ -103,8 +120,13 @@ describe("usage corpus scrub", () => {
     const blocks = field(parsed, "message", "content") as Json[];
     expect(blocks[0]).toEqual({ "type": "text", "text": "SCRUBBED", "citations": null });
     expect(blocks[1]!.name).toBe("Read");
-    expect(blocks[1]!.input).toEqual({ "SCRUBBED_KEY_0": "SCRUBBED" });
+    expect(blocks[1]!.input).toEqual({ "SCRUBBED_KEY_0": "SCRUBBED", "SCRUBBED_KEY_1": 0 });
     expect(field(parsed, "toolUseResult", "SCRUBBED_KEY_2")).toBe(parsed.uuid); // the ref, pseudonymized
+    expect(field(parsed, "toolUseResult", "SCRUBBED_KEY_3")).toBe(0); // the count, a placeholder
+    expect(Object.values(parsed.settings as Json)).toEqual([0, 0, "SCRUBBED", 0]);
+    expect(parsed.path).toBe(0);
+    expect(parsed.total_tokens).toEqual([0]);
+    expect(parsed.SCRUBBED_KEY_1).toEqual({ "SCRUBBED_KEY_0": 0 }); // account, content throughout
     expect(parsed.name).toBe("SCRUBBED");
     expect(parsed.summary).toBe("SCRUBBED");
     expect(parsed.model).toBe("SCRUBBED");
@@ -112,6 +134,7 @@ describe("usage corpus scrub", () => {
       "SCRUBBED_KEY_0",
       "SCRUBBED_KEY_1",
       "SCRUBBED_KEY_2",
+      "SCRUBBED_KEY_3",
     ]);
     expect("customer" in parsed).toBe(false);
     expect(result.usageLines).toBe(1);

@@ -162,6 +162,54 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/floated-smoke.sh
 
+  # The session-log readers parse what the REAL Claude Code and Codex CLIs write
+  # today, so this is the one job that can catch a log-format drift: it installs
+  # the current CLI releases, drives them against a fake inference backend under
+  # a throwaway HOME (scripts/usage_corpus.ts), then asserts `agent cost` still
+  # sees usage from both. Every step after the checkout is guarded on the corpus
+  # script existing, so until that lands the job checks out and does nothing else.
+  session-log-drift:
+    name: session-log format drift smoke (real CLIs, fake backend)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: denoland/setup-deno@v2
+        if: hashFiles('scripts/usage_corpus.ts') != ''
+        with:
+          deno-version-file: .dvmrc
+          cache: true
+
+      - name: Install dependencies
+        if: hashFiles('scripts/usage_corpus.ts') != ''
+        run: deno ci
+
+      - name: Install the current Claude Code and Codex CLI releases
+        if: hashFiles('scripts/usage_corpus.ts') != ''
+        run: npm install -g @anthropic-ai/claude-code @openai/codex
+
+      # The corpus task prints one JSON summary line last and leaves a runnable
+      # HOME at <out>/home. HOME moves for the `agent cost` run so nothing on the
+      # runner leaks in; DENO_DIR is pinned first so the moved HOME does not also
+      # move the dependency cache `deno ci` just filled.
+      - name: Session-log format drift smoke (real CLIs, fake backend)
+        if: hashFiles('scripts/usage_corpus.ts') != ''
+        shell: bash
+        env:
+          OUT: ${{ runner.temp }}/usage-corpus
+        run: |
+          set -euo pipefail
+          summary="$(deno task usage:corpus -- --out "$OUT" | tail -n 1)"
+          echo "corpus summary: $summary"
+          printf '%s\n' "$summary" | jq -e '.usageLines.claude > 0 and .usageLines.codex > 0'
+          DENO_DIR="$(deno info --json | jq -r .denoDir)"
+          export DENO_DIR
+          HOME="$OUT/home" CODEX_HOME="$OUT/home/.codex" CLAUDE_CONFIG_DIR="$OUT/home/.claude" \
+            deno run -P=cli src/cli.ts cost --json --days 7 \
+            | jq -e '([.claudeSessions.usageByModel[].events] | add // 0) > 0
+                     and ([.codexSessions.providers[] | .usageByModel[].events] | add // 0) > 0'
+
   # Each install.sh scenario runs as its OWN isolated job (fresh runner, fresh
   # $HOME) via the reusable installer-sh.yml, which compiles this tree's binary
   # and installs from it. The default bootstrap path runs on both Linux and

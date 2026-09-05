@@ -285,14 +285,15 @@ const UNINSTALL_STEPS: UninstallStep[] = [
   },
   {
     // 7. Stop again, then delete the copilot-api home (proxy config/apiKeys, run
-    //    state, sqlite usage DBs, logs, the stores, github_token, the catalog).
+    //    state, sqlite usage DBs, the usage index and its price-list cache, logs,
+    //    the stores, github_token, the catalog).
     //    The second sweep closes the auto-start race: an agent session could have
     //    relaunched a daemon between step 1 and the wiring removal above; now
     //    that the wiring is gone nothing can start another.
     describe: (ctx) => [
       "Would stop any proxy daemon relaunched in the meantime (second sweep).",
       "Would delete the floated proxy's deno cache and resolved-version record.",
-      `Would delete the copilot-api home: ${ctx.rootHome}`,
+      `Would delete the copilot-api home: ${ctx.rootHome} (including the usage index and the price-list cache).`,
     ],
     run: async (ctx) => {
       await stopAllDaemons(ctx.profiles);

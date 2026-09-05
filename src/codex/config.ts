@@ -40,6 +40,12 @@ import { codexFarmHostsDir } from "../utils/hostname.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import {
+  chmodReported,
+  mkdirReported,
+  removeReported,
+  writeFileReported,
+} from "../utils/report_write.ts";
+import {
   agentAuthGetArgs,
   agentLauncherCommand,
   PROJECT_ROOT,
@@ -667,9 +673,9 @@ function removeEnvKey(envFile: string, key: string): void {
   if (lines.length && lines[lines.length - 1] === "") lines.pop(); // trailing newline
   const kept = lines.filter((line) => !matcher.test(line));
   if (kept.length === lines.length) return; // key absent -- leave the file untouched
-  fs.writeFileSync(envFile, kept.length ? `${kept.join("\n")}\n` : "");
+  writeFileReported(envFile, kept.length ? `${kept.join("\n")}\n` : "");
   try {
-    fs.chmodSync(envFile, 0o600);
+    chmodReported(envFile, 0o600);
   } catch {
     // pass
   }
@@ -716,7 +722,7 @@ export function configureCodexConfig(
     : request;
 
   try {
-    fs.mkdirSync(codexHome, { recursive: true });
+    mkdirReported(codexHome);
   } catch (e) {
     throw new Error(`could not create Codex config directory ${codexHome}: ${errMessage(e)}`);
   }
@@ -1108,7 +1114,7 @@ function cleanupCodexCatalogArtifacts(catalogFile: string): void {
   const { deletionSafe } = stripCodexCatalogReferences(catalogFile);
   if (deletionSafe && fs.existsSync(catalogFile)) {
     try {
-      fs.rmSync(catalogFile, { force: true });
+      removeReported(catalogFile);
       logger.log(`  ✓ Codex model catalog removed → ${catalogFile}`);
     } catch (e) {
       logger.warn(`codex model catalog cleanup failed: ${errMessage(e)}`);
@@ -1146,7 +1152,7 @@ function stripCodexCatalogReferences(
       const doc = parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
       if (doc.model_catalog_json === catalogFile) {
         delete doc.model_catalog_json;
-        fs.writeFileSync(configPath, stringify(doc));
+        writeFileReported(configPath, stringify(doc));
         stripped = true;
         logger.log(`  ✓ Codex model_catalog_json removed from ${configPath}`);
         if (catalogBookkeepingAllowed()) ledger.release("codexCatalog", configPath);

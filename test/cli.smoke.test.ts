@@ -125,6 +125,23 @@ test("cli.ts mcp --help exposes the server flags; --remove rejects serve-only fl
   expect(statusModel.stderr).toContain("apply to --serve");
 });
 
+test("cli.ts config --set/--del name the preference store they write, on stderr", () => {
+  // A previously silent write: the store is saved through the JSON store's atomic write,
+  // which the seam names. Fresh home, so the first write is a creation.
+  const home = mkdtempSync(join(tmpdir(), "copilot-report-"));
+  const env = isolatedEnv({ COPILOT_API_HOME: home, HOME: home, USERPROFILE: home });
+  const store = join(home, ".copilot-env-config.json");
+
+  const set = runCli(["config", "--set", "port", "4199"], { env });
+  expect(set.exitCode).toBe(0);
+  expect(set.stderr).toContain(`created -> ${store}`);
+  expect(set.stdout).not.toContain(" -> ");
+
+  const del = runCli(["config", "--del", "port"], { env });
+  expect(del.exitCode).toBe(0);
+  expect(del.stderr).toContain(`rewritten -> ${store}`);
+});
+
 test("cli.ts mcp (bare) prints the wiring status and exits 0", () => {
   // Hermetic homes: a temp CLAUDE_CONFIG_DIR (no registration) and an isolated
   // copilot-env home, so the status never reads or creates real user state.

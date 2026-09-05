@@ -11,6 +11,7 @@ import * as fs from "node:fs";
 import { parse, stringify } from "smol-toml";
 import { errMessage } from "../utils/error.ts";
 import { isEnoent } from "../utils/fs.ts";
+import { writeFileReported } from "../utils/report_write.ts";
 
 export type CodexTomlRead =
   | { kind: "absent" }
@@ -52,5 +53,5 @@ export function readCodexToml(path: string): CodexTomlRead {
 
 /** Serialize `doc` with smol-toml and write it to `path`. */
 export function saveCodexToml(path: string, doc: Record<string, unknown>): void {
-  fs.writeFileSync(path, stringify(doc));
+  writeFileReported(path, stringify(doc));
 }

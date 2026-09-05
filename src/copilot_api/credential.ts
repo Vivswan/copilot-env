@@ -6,9 +6,9 @@
 // layer. The interactive + command surface (provider prompt, device-flow spawn,
 // `runAuth`) stays in `src/commands/auth.ts`, the thin layer on top of this.
 import { spawnSync } from "node:child_process";
-import { rmSync } from "node:fs";
 import { findCommand } from "../utils/command.ts";
 import { withFileLockSync } from "../utils/file_lock.ts";
+import { removeReported } from "../utils/report_write.ts";
 import {
   type AuthProvider,
   CopilotEnvState,
@@ -193,7 +193,7 @@ export class Credential {
         (outcome) => {
           if (!outcome.held) return; // a live login holds it past the bound: skip the scrub
           try {
-            rmSync(tokenFile, { force: true });
+            removeReported(tokenFile);
           } catch {
             // best-effort
           }

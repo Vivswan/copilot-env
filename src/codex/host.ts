@@ -12,6 +12,15 @@ import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir, isFile } from "../utils/fs.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../utils/hostname.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import {
+  copyFileReported,
+  mkdirReported,
+  removeReported,
+  removeTreeReported,
+  renameReported,
+  symlinkReported,
+  writeFileReported,
+} from "../utils/report_write.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath, defaultCodexHome } from "./paths.ts";
 import { readCodexToml } from "./toml_io.ts";
 
@@ -236,23 +245,13 @@ function ensureDir(p: string): void {
     missing.unshift(cur);
     if (path.dirname(cur) === cur) break;
   }
-  fs.mkdirSync(p, { recursive: true });
+  mkdirReported(p);
   for (const made of missing) report("Directory created", made);
 }
 
 // Rename, falling back to copy+delete when src and dst sit on different devices.
 function moveTree(src: string, dst: string): void {
-  try {
-    fs.renameSync(src, dst);
-  } catch (e: unknown) {
-    const code = (e as NodeJS.ErrnoException | null)?.code;
-    if (code === "EXDEV") {
-      fs.cpSync(src, dst, { recursive: true, verbatimSymlinks: true });
-      fs.rmSync(src, { recursive: true, force: true });
-    } else {
-      throw e;
-    }
-  }
+  renameReported(src, dst);
   report(`Moved ${src}`, dst);
 }
 
@@ -289,16 +288,16 @@ function mergeDirInto(localPath: string, sharedPath: string): void {
         const dstIsSymlink = isSymlinkPath(dst);
         const dstIsDir = isDirPath(dst);
         if (dstIsSymlink || !dstIsDir) {
-          fs.unlinkSync(dst);
+          removeReported(dst);
           report("Removed", dst);
         }
       }
-      fs.symlinkSync(target, dst);
+      symlinkReported(target, dst);
       report(`Symlink to ${target} created`, dst);
     } else if (entry.isDirectory()) {
       copyTree(src, dst);
     } else {
-      fs.copyFileSync(src, dst);
+      copyFileReported(src, dst);
       report(`Copied ${src}`, dst);
     }
   }
@@ -314,13 +313,13 @@ function copyTree(src: string, dst: string): void {
       const target = fs.readlinkSync(from);
       // An existing link here already passed the merge validation (same target).
       const replaced = lexists(to);
-      if (replaced) fs.unlinkSync(to);
-      fs.symlinkSync(target, to);
+      if (replaced) removeReported(to);
+      symlinkReported(target, to);
       report(`Symlink to ${target} ${replaced ? "replaced" : "created"}`, to);
     } else if (entry.isDirectory()) {
       copyTree(from, to);
     } else {
-      fs.copyFileSync(from, to);
+      copyFileReported(from, to);
       report(`Copied ${from}`, to);
     }
   }
@@ -390,7 +389,7 @@ function promoteCodexDirToSharedIfSafe(localPath: string, sharedPath: string): P
 
   // TOCTOU: the merge below races the validation above; accepted, startup-only flow.
   mergeDirInto(localPath, sharedPath);
-  fs.rmSync(localPath, { recursive: true, force: true });
+  removeTreeReported(localPath);
   report("Removed (merged into the shared root)", localPath);
   return "promoted";
 }
@@ -427,10 +426,10 @@ function seedLocalCodexFileIfMissing(localPath: string, sharedPath: string): voi
 
   ensureParentDir(localPath);
   if (isFile(sharedPath)) {
-    fs.copyFileSync(sharedPath, localPath);
+    copyFileReported(sharedPath, localPath);
     report(`Copied ${sharedPath}`, localPath);
   } else {
-    fs.writeFileSync(localPath, "");
+    writeFileReported(localPath, "");
     report("Empty file created", localPath);
   }
 }
@@ -449,7 +448,7 @@ function seedSharedCodexFileIfMissing(
   if (isFile(localPath) && !isSymlinkPath(localPath)) {
     if (!sharedExists) {
       ensureParentDir(sharedPath);
-      fs.copyFileSync(localPath, sharedPath);
+      copyFileReported(localPath, sharedPath);
       report(`Copied ${localPath}`, sharedPath);
       return;
     }
@@ -459,7 +458,7 @@ function seedSharedCodexFileIfMissing(
       fs.statSync(sharedPath).size === 0 &&
       fs.statSync(localPath).size > 0
     ) {
-      fs.copyFileSync(localPath, sharedPath);
+      copyFileReported(localPath, sharedPath);
       report(`Copied ${localPath}`, sharedPath);
     }
     return;
@@ -467,7 +466,7 @@ function seedSharedCodexFileIfMissing(
 
   if (createPlaceholder && !sharedExists) {
     ensureParentDir(sharedPath);
-    fs.writeFileSync(sharedPath, "");
+    writeFileReported(sharedPath, "");
     report("Empty file created", sharedPath);
   }
 }
@@ -487,7 +486,7 @@ function ensureCodexDirSymlink(localPath: string, sharedPath: string): void {
 
   if (!lexists(localPath)) {
     ensureParentDir(localPath);
-    fs.symlinkSync(sharedPath, localPath);
+    symlinkReported(sharedPath, localPath);
     report(`Symlink to ${sharedPath} created`, localPath);
   }
 }
@@ -505,7 +504,7 @@ function ensureCodexFileSymlink(localPath: string, sharedPath: string): void {
       warnExistingCodexPath(localPath);
       return;
     }
-    fs.unlinkSync(localPath);
+    removeReported(localPath);
     report("Removed (identical to the shared copy)", localPath);
   } else if (lexists(localPath)) {
     warnExistingCodexPath(localPath);
@@ -513,7 +512,7 @@ function ensureCodexFileSymlink(localPath: string, sharedPath: string): void {
   }
 
   ensureParentDir(localPath);
-  fs.symlinkSync(sharedPath, localPath);
+  symlinkReported(sharedPath, localPath);
   report(`Symlink to ${sharedPath} created`, localPath);
 }
 
@@ -633,7 +632,7 @@ export async function withCodexHostFarm(
       return;
     }
     case "remove":
-      fs.rmSync(farm.hostHome, { recursive: true, force: true });
+      removeTreeReported(farm.hostHome);
       logger.log(`  ✓ Per-host CODEX_HOME farm removed → ${farm.hostHome}`);
       break;
     case "leave":

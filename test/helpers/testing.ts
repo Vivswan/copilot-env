@@ -67,7 +67,7 @@ export function tempDir(prefix: string): string {
  * reads as an already-removed target, and the walk stops there with the rest of the tree in
  * place. Windows can also hold a handle (antivirus, the indexer, a just-killed child's
  * executable image) briefly past process death. Both retry with backoff -- same philosophy
- * as renameWithRetry (src/copilot_api/config.ts); the final attempt throws.
+ * as renameWithRetry (src/utils/report_write.ts); the final attempt throws.
  */
 export function removeDir(dir: string): "" {
   if (!dir) return "";

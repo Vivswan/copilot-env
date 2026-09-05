@@ -6,7 +6,7 @@
 // plan first, confirms against the plan's own write list, backs the previous
 // settings up, then applies that same plan -- so a bad import is one
 // `--import <backup>` away from undone.
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { consola } from "consola";
 import {
   applyImportPlan,
@@ -27,6 +27,7 @@ import {
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
+import { atomicWriteFile, writeFileReported } from "../utils/report_write.ts";
 import { PROXY_RESTART_HINT, unreadProjectedKeyWarnings } from "./config.ts";
 
 // Narration to stderr so `--export`'s stdout stays a clean machine-readable bundle.
@@ -137,14 +138,12 @@ function runExport(target: string | boolean, withCredentials: boolean): void {
     return;
   }
   if (withCredentials) {
-    // Recreate the file so the 0600 create-mode actually applies: writeFileSync
-    // only sets the mode on creation, and an overwritten 0644 target would hold
-    // the plaintext tokens under its old permissions.
-    rmSync(target, { force: true });
-    writeFileSync(target, text, { mode: 0o600 });
+    // The atomic write publishes a FRESH 0600 inode by rename: a write into an
+    // existing 0644 target would hold the plaintext tokens under its old permissions.
+    atomicWriteFile(target, text, 0o600);
     logger.warn(`${target} contains your REAL tokens - treat it like a password file.`);
   } else {
-    writeFileSync(target, text);
+    writeFileReported(target, text);
   }
   logger.success(`Settings exported to ${target}.`);
 }

@@ -396,22 +396,32 @@ function promoteCodexDirToSharedIfSafe(localPath: string, sharedPath: string): P
 }
 
 function primeSharedCodexHomeIfMissing(sharedRoot: string): void {
-  if (lexists(sharedRoot)) return;
+  // Proven absence only: a look that failed (permissions, a blip) must not start a prime
+  // whose scan below would then name an existing tree as newly created.
+  try {
+    fs.lstatSync(sharedRoot);
+    return;
+  } catch (e) {
+    if (!isEnoentOrNotdir(e)) return;
+  }
   // resolveCommand, not a bare PATH lookup: its nvm fallback also finds an
   // nvm-only codex, and spawning the RESOLVED path below keeps the prime
   // working even though this process never sourced nvm.sh.
   const codexBin = resolveCommand("codex");
   if (codexBin === null) return;
 
-  // Best effort: let Codex create its default shared home before we seed and
-  // symlink into it. Timeout prevents a misconfigured codex from blocking.
-  // spawnSync reports failures (a nonzero exit, ENOENT, the timeout) in its
-  // result rather than throwing, and the result is ignored on purpose: the
-  // prime is a convenience, never a build failure.
+  // Best effort: let Codex create the shared home before we seed and symlink into
+  // it. CODEX_HOME is set to that root explicitly: an inherited value (our own farm
+  // export) would send codex's writes elsewhere, and the scan below covers exactly the
+  // home the spawn was given. Timeout prevents a misconfigured codex from blocking.
+  // spawnSync reports failures (a nonzero exit, ENOENT, the timeout) in its result
+  // rather than throwing, and the result is ignored on purpose: the prime is a
+  // convenience, never a build failure.
   spawnSync(codexBin, ["exec"], {
     input: "hi\n",
     stdio: ["pipe", "ignore", "ignore"],
     timeout: 10_000,
+    env: { ...process.env, CODEX_HOME: sharedRoot },
   });
   // The root was absent, so everything under it now is what the prime made: a write
   // asked for by us, named by us. Judged by lstat: a root that came back as a symlink

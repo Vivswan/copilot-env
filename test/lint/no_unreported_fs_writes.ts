@@ -62,6 +62,7 @@ const FS_WRITE_NAMES = new Set([
   "writev",
   "writevSync",
   "WriteStream",
+  "FileWriteStream",
   "SyncWriteStream",
   "copyFile",
   "copyFileSync",
@@ -208,6 +209,24 @@ const plugin: Deno.lint.Plugin = {
               } else {
                 fsNamespaces.add(specifier.local.name);
               }
+            }
+          },
+          // `await import("node:fs")`: a whole module object the rule cannot follow.
+          "ImportExpression"(node) {
+            if (node.source.type === "Literal" && FS_MODULES.has(String(node.source.value))) {
+              context.report({ node, message: MESSAGE });
+            }
+          },
+          // `export * from "node:fs"` / `export { rmSync } from "node:fs"`: hands the
+          // write API to another module under a name the rule would not see.
+          "ExportAllDeclaration"(node) {
+            if (FS_MODULES.has(String(node.source.value))) {
+              context.report({ node, message: MESSAGE });
+            }
+          },
+          "ExportNamedDeclaration"(node) {
+            if (node.source !== null && FS_MODULES.has(String(node.source.value))) {
+              context.report({ node, message: MESSAGE });
             }
           },
           "MemberExpression"(node) {

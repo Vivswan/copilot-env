@@ -9,6 +9,7 @@ import { isEnoent } from "../utils/fs.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { mkdirReported, writeFileReported } from "../utils/report_write.ts";
+import { readTextOrNull } from "../utils/fs.ts";
 
 // `agent shell` owns wiring the copilot-env integration into the
 // user's shell startup -- the logic install.sh / install.ps1 used to duplicate.
@@ -343,6 +344,23 @@ function removeFrom(files: string[]): boolean {
     (file) => `Removed shell integration from ${file}`,
     "No copilot-env shell integration found to remove.",
   );
+}
+
+/** The rc / PowerShell profile files on this machine that carry an owned block right
+ *  now (integration or launchers): what an uninstall plans to strip. Read-only. */
+export function ownedShellTargets(): string[] {
+  return shellTargetFiles().filter((file) => {
+    const content = readTextOrNull(file);
+    return content !== null && ALL_MARKERS.some((marker) => hasMarker(content, marker));
+  });
+}
+
+/** Strip the owned blocks from exactly `files` (an uninstall plan's ownedShellTargets),
+ *  with the restart hint when anything went. */
+export function removeShellIntegrationFrom(files: readonly string[]): void {
+  if (removeFrom([...files])) {
+    consola.info(process.platform === "win32" ? "Restart PowerShell." : "Restart your shell.");
+  }
 }
 
 // --- block builders (path-quoted; quote helpers re-exported for tests) --------

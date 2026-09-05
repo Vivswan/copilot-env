@@ -809,6 +809,7 @@ export function buildInstallPlan(
   const binary = binarySource !== null && !sameFile
     ? { from: binarySource, to: binaryTarget }
     : null;
+  const flatRemovals = flatArtifactPaths(top);
 
   return {
     kind: "versioned",
@@ -821,8 +822,8 @@ export function buildInstallPlan(
       { to: join(top, "bin", "agent"), text: POSIX_CURRENT_SHIM, executable: true },
       { to: join(top, "bin", "agent.ps1"), text: POWERSHELL_CURRENT_SHIM, executable: false },
     ],
-    flatRemovals: flatArtifactPaths(top),
-    flatPrunes: flatScaffoldingPaths(top, flatArtifactPaths(top)),
+    flatRemovals,
+    flatPrunes: flatScaffoldingPaths(top, flatRemovals),
     flatBinaryRemovals: flatBinaryResiduePaths(top),
     shellWires: shell === null ? [] : [shell],
   };

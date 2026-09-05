@@ -10,40 +10,50 @@ const GUARDED = "src/commands/example.ts";
 const lint = (source: string, file = GUARDED): string[] =>
   Deno.lint.runPlugin(fsWritePlugin, file, source).map((d) => d.message);
 
-test("no-unreported-fs-writes: every way of reaching a write API is rejected", () => {
-  expect(lint('import { writeFileSync } from "node:fs";')).toHaveLength(1);
-  expect(lint('import { rm } from "node:fs/promises";')).toHaveLength(1);
-  // Two banned names in one import: one report each.
-  expect(lint('import { mkdirSync, readFileSync, rmSync } from "node:fs";')).toHaveLength(2);
-  expect(lint('import * as fs from "node:fs"; fs.rmSync("x", { force: true });')).toHaveLength(1);
-  expect(lint('import fs from "node:fs"; fs["renameSync"]("a", "b");')).toHaveLength(1);
-  expect(lint('import * as fs from "node:fs"; const { chmodSync } = fs;')).toHaveLength(1);
-  expect(lint('import { createWriteStream } from "node:fs";')).toHaveLength(1);
-  // Metadata mutators change the entry too.
-  expect(lint('import { utimesSync } from "node:fs";')).toHaveLength(1);
-  expect(lint('Deno.chownSync("x", 1, 1);')).toHaveLength(1);
-  expect(lint('import { promises as fsp } from "node:fs"; await fsp.writeFile("x", "y");'))
-    .toHaveLength(1);
-  expect(lint('import * as fs from "node:fs"; await fs.promises.rm("x");')).toHaveLength(1);
-  expect(lint('import * as fs from "node:fs"; const { writeFile } = fs.promises;')).toHaveLength(1);
-  expect(lint('import * as fs from "node:fs"; const fsp = fs.promises; fsp.rm("x");'))
-    .toHaveLength(1);
-  expect(lint('import fs from "node:fs"; const { promises: fsp } = fs; fsp.rm("x");'))
-    .toHaveLength(1);
-  expect(lint('const deno = Deno; deno.removeSync("x");')).toHaveLength(1);
-  expect(lint('Deno.writeTextFileSync("x", "y");')).toHaveLength(1);
-  expect(lint('await globalThis.Deno.remove("x");')).toHaveLength(1);
-  expect(lint("const { makeTempDirSync } = Deno;")).toHaveLength(1);
-});
+/** [source, expected diagnostics] for one guarded file. */
+const CASES: readonly (readonly [string, number])[] = [
+  // Named imports of a write API, sync and promise spellings alike.
+  ['import { writeFileSync } from "node:fs";', 1],
+  ['import { rm } from "node:fs/promises";', 1],
+  ['import { mkdirSync, readFileSync, rmSync } from "node:fs";', 2],
+  ['import { createWriteStream } from "node:fs";', 1],
+  ['import { FileWriteStream } from "node:fs";', 1],
+  ['import { utimesSync } from "node:fs";', 1],
+  // A whole module object reached any other way.
+  ['import * as fs from "node:fs"; fs.rmSync("x", { force: true });', 1],
+  ['import fs from "node:fs"; fs["renameSync"]("a", "b");', 1],
+  ['import * as fs from "node:fs"; const { chmodSync } = fs;', 1],
+  ['import { promises as fsp } from "node:fs"; await fsp.writeFile("x", "y");', 1],
+  ['import * as fs from "node:fs"; await fs.promises.rm("x");', 1],
+  ['import * as fs from "node:fs"; const { writeFile } = fs.promises;', 1],
+  ['import * as fs from "node:fs"; const fsp = fs.promises; fsp.rm("x");', 1],
+  ['import fs from "node:fs"; const { promises: fsp } = fs; fsp.rm("x");', 1],
+  ['const fs = await import("node:fs");', 1],
+  ['const fsp = await import("node:fs/promises");', 1],
+  // Handing the module on under another module's name.
+  ['export * from "node:fs";', 1],
+  ['export { rmSync } from "node:fs";', 1],
+  ['export { rm as remove } from "node:fs/promises";', 1],
+  // The Deno namespace, spelled every way.
+  ['Deno.writeTextFileSync("x", "y");', 1],
+  ['await globalThis.Deno.remove("x");', 1],
+  ["const { makeTempDirSync } = Deno;", 1],
+  ['const deno = Deno; deno.removeSync("x");', 1],
+  ['Deno.chownSync("x", 1, 1);', 1],
+  // Reads, type imports and unrelated modules are left alone.
+  ['import { existsSync, readFileSync, readdirSync } from "node:fs";', 0],
+  ['import * as fs from "node:fs"; fs.readFileSync("x", "utf8");', 0],
+  ['import type { WriteFileOptions } from "node:fs";', 0],
+  ['Deno.readTextFileSync("x"); Deno.statSync("x");', 0],
+  ['import { writeFileReported } from "../utils/report_write.ts";', 0],
+  ['export { writeFileReported } from "../utils/report_write.ts";', 0],
+  ['const store = new Map(); store.rm("x");', 0],
+];
 
-test("no-unreported-fs-writes: reads, type imports and unrelated modules are left alone", () => {
-  expect(lint('import { existsSync, readFileSync, readdirSync } from "node:fs";')).toEqual([]);
-  expect(lint('import * as fs from "node:fs"; fs.readFileSync("x", "utf8");')).toEqual([]);
-  expect(lint('import type { WriteFileOptions } from "node:fs";')).toEqual([]);
-  expect(lint('Deno.readTextFileSync("x"); Deno.statSync("x");')).toEqual([]);
-  expect(lint('import { writeFileReported } from "../utils/report_write.ts";')).toEqual([]);
-  // Same member name, not a filesystem namespace.
-  expect(lint('const store = new Map(); store.rm("x");')).toEqual([]);
+test("no-unreported-fs-writes: every way of reaching a write API, and nothing else", () => {
+  for (const [source, count] of CASES) {
+    expect(lint(source), source).toHaveLength(count);
+  }
 });
 
 test("no-unreported-fs-writes: scoped to src/, minus the seam, the lock layer and migrations", () => {

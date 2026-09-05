@@ -13,6 +13,11 @@
 //   - the transient side of a recipe: the temp file an atomic write publishes by
 //     rename, the marker file the lock protocol creates and deletes per acquisition.
 //
+// A line is printed only for a mutation that PROVABLY landed: on success, the kind the
+// operation performed; after a failure, only what a before/after look at the path proves
+// changed (absent then present, present then absent, or a different identity, mtime or
+// size) -- never from "the path still exists", which a refused write leaves true.
+//
 // Dedup is per path, with a delete as the epoch boundary: a store saved five times in
 // one run prints once, a create followed by a rewrite of the same path is one fact, and
 // a delete clears the slate so a later re-creation (or re-link, or a second delete after
@@ -21,17 +26,19 @@ import {
   chmodSync,
   copyFileSync,
   cpSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   renameSync,
   rmdirSync,
   rmSync,
-  statSync,
+  type Stats,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
-import { entryAbsent, isEnoentOrNotdir } from "./fs.ts";
+import { isEnoentOrNotdir } from "./fs.ts";
 import { sleepSync } from "./time.ts";
 
 export type WriteKind = "created" | "rewritten" | "deleted" | "moved" | "linked";
@@ -72,11 +79,6 @@ function emit(line: string): void {
   while (written < bytes.length) written += Deno.stderr.writeSync(bytes.subarray(written));
 }
 
-/** After a mutation threw: whatever did land at `path` is a change the user keeps. */
-function reportIfLanded(kind: WriteKind, path: string, detail?: string): void {
-  if (!entryAbsent(path)) reportWrite(kind, path, detail);
-}
-
 /** Announce one mutation of `path`. The primitive for writers whose mutation happens
  *  through another API (the lock sidecar's create-on-open); everything else uses the
  *  wrappers below, which pick the kind themselves. */
@@ -107,47 +109,140 @@ function forgetBelow(path: string): void {
   }
 }
 
-/** One look at a path for withReportedPaths: present (mtime+size), proven absent, or a
- *  look that FAILED (permissions, a transient error) -- which never reads as absent, or
- *  a report would be fabricated from it. */
-type PathStat =
-  | { kind: "present"; mtimeMs: number; size: number }
+// --- the before/after look -----------------------------------------------------------
+
+/** One look at a path: present, with a fingerprint of the identity a change would alter
+ *  (dev, inode, mtime, size); proven absent (lstat's own ENOENT/ENOTDIR -- a dangling
+ *  symlink IS present); or a look that FAILED (permissions, a transient error), which
+ *  never reads as absent or a report would be fabricated from it. A DEEP look at a
+ *  directory fingerprints its whole tree, one line per descendant keyed by its FULL
+ *  relative path (so moving an entry between levels changes the fingerprint even when
+ *  no directory metadata does), and a change anywhere below shows at the root -- the
+ *  shape a tree operation (rm -rf, a cross-device copy, a `deno cache` run) is judged by. */
+type Look =
+  | { kind: "present"; fingerprint: string }
   | { kind: "absent" }
   | { kind: "unknown" };
 
-function pathStat(path: string): PathStat {
+function look(path: string, deep = false): Look {
+  let stat: Stats;
   try {
-    const stat = statSync(path);
-    return { kind: "present", mtimeMs: stat.mtimeMs, size: stat.size };
+    stat = lstatSync(path);
   } catch (e) {
     return isEnoentOrNotdir(e) ? { kind: "absent" } : { kind: "unknown" };
   }
+  const own = entryFingerprint(stat);
+  if (!deep || !stat.isDirectory()) return { kind: "present", fingerprint: own };
+  const lines = [own];
+  return fingerprintTree(path, "", lines)
+    ? { kind: "present", fingerprint: lines.join("\n") }
+    : { kind: "unknown" };
+}
+
+function entryFingerprint(stat: Stats): string {
+  return `${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.size}`;
+}
+
+/** Append `<relative path>=<entry fingerprint>` for every descendant of `dir`, sorted;
+ *  false when a level cannot be listed or an entry vanishes mid-walk (a tree that cannot
+ *  be judged). */
+function fingerprintTree(dir: string, rel: string, lines: string[]): boolean {
+  let names: string[];
+  try {
+    names = readdirSync(dir).sort();
+  } catch {
+    return false;
+  }
+  for (const name of names) {
+    const childRel = rel === "" ? name : `${rel}/${name}`;
+    let stat: Stats;
+    try {
+      stat = lstatSync(join(dir, name));
+    } catch {
+      return false;
+    }
+    lines.push(`${childRel}=${entryFingerprint(stat)}`);
+    if (stat.isDirectory() && !fingerprintTree(join(dir, name), childRel, lines)) return false;
+  }
+  return true;
+}
+
+const EVERY_TRANSITION: ReadonlySet<WriteKind> = new Set(["created", "rewritten", "deleted"]);
+
+/** Report what a second look at `path` PROVES changed since `was`: nothing when either
+ *  look failed, or when the fingerprint is unchanged. */
+function reportTransition(
+  path: string,
+  was: Look,
+  kinds: ReadonlySet<WriteKind> = EVERY_TRANSITION,
+  detail?: string,
+  deep = false,
+): void {
+  const now = look(path, deep);
+  if (was.kind === "unknown" || now.kind === "unknown") return;
+  let kind: WriteKind;
+  if (now.kind === "absent") {
+    if (was.kind === "absent") return;
+    kind = "deleted";
+  } else if (was.kind === "absent") {
+    kind = "created";
+  } else if (was.fingerprint !== now.fingerprint) {
+    kind = "rewritten";
+  } else {
+    return;
+  }
+  if (kinds.has(kind)) reportWrite(kind, path, detail);
+}
+
+/** The kind a write to `path` performs: creation when it is absent, else a rewrite (a
+ *  look that failed reads as present, so the weaker claim is made). */
+function kindOf(was: Look): "created" | "rewritten" {
+  return was.kind === "absent" ? "created" : "rewritten";
+}
+
+export interface ReportedPathsOptions {
+  /** The transitions to report (default: created, rewritten and deleted). A read-only
+   *  consumer of a file another process may be appending to names only created/deleted,
+   *  so the other writer's rewrite is never attributed to it. */
+  kinds?: readonly ("created" | "rewritten" | "deleted")[];
 }
 
 /**
- * Run `fn` and name every one of `paths` it created, rewrote or removed -- for writes
- * another library makes on our behalf (SQLite's database and WAL sidecars), where the
- * mutation is not ours to wrap. Judged by a stat before and after, on every exit path;
- * a look that failed on either side proves nothing, so nothing is said about that path.
+ * Run `fn` and name every one of `paths` it provably created, rewrote or removed -- for
+ * writes another library makes on our behalf (SQLite's database and WAL sidecars, a
+ * `deno cache` run), where the mutation is not ours to wrap. Judged by a look before
+ * and after, on every exit path. `fn` must be synchronous: the after-look has to run
+ * once the mutation is over, which a promise the helper does not await would defeat, so
+ * a thenable result is refused. Known blind spot, accepted: a path created and removed
+ * INSIDE fn (absent before and after) reports nothing.
  */
-export function withReportedPaths<T>(paths: readonly string[], fn: () => T): T {
-  const before = paths.map((path) => [path, pathStat(path)] as const);
+export function withReportedPaths<T>(
+  paths: readonly string[],
+  fn: () => T,
+  options: ReportedPathsOptions = {},
+): T {
+  const kinds: ReadonlySet<WriteKind> = options.kinds === undefined
+    ? EVERY_TRANSITION
+    : new Set(options.kinds);
+  const before = paths.map((path) => [path, look(path, true)] as const);
+  let result: T;
   try {
-    return fn();
+    result = fn();
   } finally {
-    for (const [path, was] of before) {
-      const now = pathStat(path);
-      if (was.kind === "unknown" || now.kind === "unknown") continue;
-      if (now.kind === "absent") {
-        if (was.kind === "present") reportWrite("deleted", path);
-      } else if (was.kind === "absent") {
-        reportWrite("created", path);
-      } else if (was.mtimeMs !== now.mtimeMs || was.size !== now.size) {
-        reportWrite("rewritten", path);
-      }
-    }
+    for (const [path, was] of before) reportTransition(path, was, kinds, undefined, true);
   }
+  if (isThenable(result)) {
+    throw new Error("withReportedPaths fn returned a promise; it must be synchronous");
+  }
+  return result;
 }
+
+function isThenable(value: unknown): boolean {
+  return (typeof value === "object" || typeof value === "function") && value !== null &&
+    typeof (value as { then?: unknown }).then === "function";
+}
+
+// --- deferral --------------------------------------------------------------------------
 
 /** Hold every report until the process exits (or flushWriteReports runs): for a command
  *  that hands the terminal to another program, so the lines land after it returns
@@ -167,48 +262,46 @@ export function flushWriteReports(): string[] {
   return lines;
 }
 
-function kindFor(path: string): "created" | "rewritten" {
-  return entryAbsent(path) ? "created" : "rewritten";
-}
+// --- the wrappers ----------------------------------------------------------------------
 
 export function writeFileReported(
   path: string,
   data: string | Uint8Array,
   options?: { mode?: number },
 ): void {
-  const kind = kindFor(path);
+  const was = look(path);
   try {
     writeFileSync(path, data, options);
   } catch (err) {
-    reportIfLanded(kind, path, "write failed");
+    reportTransition(path, was, EVERY_TRANSITION, "write failed");
     throw err;
   }
-  reportWrite(kind, path);
+  reportWrite(kindOf(was), path);
 }
 
 export function copyFileReported(from: string, to: string): void {
-  const kind = kindFor(to);
+  const was = look(to);
   try {
     copyFileSync(from, to);
   } catch (err) {
-    reportIfLanded(kind, to, "copy failed");
+    reportTransition(to, was, EVERY_TRANSITION, "copy failed");
     throw err;
   }
-  reportWrite(kind, to);
+  reportWrite(kindOf(was), to);
 }
 
 /** mkdir -p, naming every directory it actually creates (missing ancestors too,
  *  outermost first). */
 export function mkdirReported(path: string, mode?: number): void {
   const missing: string[] = [];
-  for (let cur = path; entryAbsent(cur); cur = dirname(cur)) {
+  for (let cur = path; look(cur).kind === "absent"; cur = dirname(cur)) {
     missing.unshift(cur);
     if (dirname(cur) === cur) break;
   }
   try {
     mkdirSync(path, { recursive: true, mode });
   } catch (err) {
-    for (const made of missing) reportIfLanded("created", made);
+    for (const made of missing) reportTransition(made, { kind: "absent" });
     throw err;
   }
   for (const made of missing) reportWrite("created", made);
@@ -225,20 +318,21 @@ export function chmodReported(path: string, mode: number): void {
  *  without `recursive` -- a caller that meant a file must never take a tree. Returns
  *  whether anything was there to remove. */
 export function removeReported(path: string): boolean {
-  if (entryAbsent(path)) return false;
+  if (look(path).kind === "absent") return false;
   rmSync(path, { force: true });
   reportWrite("deleted", path);
   return true;
 }
 
 /** rm -rf; returns whether anything was there to remove. A removal that fails partway
- *  has still changed the tree, which is named as such. */
+ *  is named for what it provably changed (the tree's own entry, when a child went). */
 export function removeTreeReported(path: string): boolean {
-  if (entryAbsent(path)) return false;
+  const was = look(path, true);
+  if (was.kind === "absent") return false;
   try {
     rmSync(path, { recursive: true, force: true });
   } catch (err) {
-    reportIfLanded("rewritten", path, "partly removed");
+    reportTransition(path, was, EVERY_TRANSITION, "partly removed", true);
     throw err;
   }
   reportWrite("deleted", path);
@@ -252,14 +346,16 @@ function dropTransient(path: string, recursive = false): void {
   try {
     rmSync(path, { recursive, force: true });
   } catch {
-    reportWrite("created", path, "left behind");
+    // Named only when it provably exists: the recipe may have failed before it ever
+    // wrote the transient (a refused temp-file open), and cleanup then fails the same way.
+    if (look(path).kind === "present") reportWrite("created", path, "left behind");
   }
 }
 
 /** rmdir (non-recursive: throws on a non-empty directory, like rmdirSync). Absent is a
  *  no-op. */
 export function removeEmptyDirReported(path: string): void {
-  if (entryAbsent(path)) return;
+  if (look(path).kind === "absent") return;
   rmdirSync(path);
   reportWrite("deleted", path);
 }
@@ -268,28 +364,30 @@ export function removeEmptyDirReported(path: string): void {
  *  creation of `to` (the source never existed for the user); a move INTO one is the
  *  deletion of `from`. */
 export function renameReported(from: string, to: string): void {
-  const kind = kindFor(to);
+  const was = look(to, true);
   try {
     renameSync(from, to);
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "EXDEV") throw e;
+    const source = look(from, true);
     try {
       cpSync(from, to, { recursive: true, verbatimSymlinks: true });
     } catch (err) {
-      reportIfLanded(kind, to, "copy failed"); // a partial copy is still a change
+      // A partial copy is a change.
+      reportTransition(to, was, EVERY_TRANSITION, "copy failed", true);
       throw err;
     }
     try {
       rmSync(from, { recursive: true, force: true });
     } catch (err) {
       // The copy landed but the source would not (fully) go: no move happened.
-      reportWrite(kind, to);
-      reportIfLanded("rewritten", from, "partly removed");
+      reportWrite(kindOf(was), to);
+      reportTransition(from, source, EVERY_TRANSITION, "partly removed", true);
       throw err;
     }
   }
   if (underScratch(from)) {
-    reportWrite(kind, to);
+    reportWrite(kindOf(was), to);
     return;
   }
   if (underScratch(to)) {
@@ -349,7 +447,7 @@ export function removeScratchDir(dir: ScratchDir): void {
  */
 export function atomicWriteFile(path: string, text: string, mode?: number): void {
   mkdirReported(dirname(path));
-  const kind = kindFor(path);
+  const was = look(path);
   const tmp = join(dirname(path), `${basename(path)}.tmp.${process.pid}.${Date.now()}`);
   try {
     writeFileSync(tmp, text, mode === undefined ? undefined : { mode });
@@ -367,7 +465,7 @@ export function atomicWriteFile(path: string, text: string, mode?: number): void
     }
     throw err;
   }
-  reportWrite(kind, path);
+  reportWrite(kindOf(was), path);
 }
 
 /** The error codes a rename refused by an open handle on the destination surfaces

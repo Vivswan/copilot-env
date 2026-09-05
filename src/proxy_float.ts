@@ -54,7 +54,7 @@ import { join } from "node:path";
 import { createConsola } from "consola";
 import * as v from "valibot";
 import { proxyUnusedEverywhere } from "./agents/wiring.ts";
-import { atomicWriteFile, removeTreeReported } from "./utils/report_write.ts";
+import { atomicWriteFile, removeTreeReported, withReportedPaths } from "./utils/report_write.ts";
 import { CopilotEnvConfig } from "./copilot_api/env_config.ts";
 import { resolveRootHome } from "./copilot_api/paths.ts";
 import { allShimPaths } from "./copilot_api/shims.ts";
@@ -617,21 +617,25 @@ function denoCacheVersion(ctx: FloatContext, version: string, cooldownSeconds: n
   ];
   const env = denoEnv(proxyDenoDir(ctx.rootHome));
 
-  const proxy = ctx.runner(ctx.denoBin, ["cache", ...pinned, `npm:${PROXY_PKG}@${version}`], {
-    "cwd": ctx.rootHome,
-    "env": env,
-  });
-  if (proxy.status !== 0) {
-    if (proxy.stderr.trim()) logger.warn(proxy.stderr.trimEnd());
-    return proxy.status;
-  }
+  // deno writes the cache dir and the lockfile on our behalf: the dir is named once as
+  // created or rewritten (no walk of the cache), the lockfile by its own transition.
+  return withReportedPaths([proxyDenoDir(ctx.rootHome), proxyLockFile(ctx.rootHome)], () => {
+    const proxy = ctx.runner(ctx.denoBin, ["cache", ...pinned, `npm:${PROXY_PKG}@${version}`], {
+      "cwd": ctx.rootHome,
+      "env": env,
+    });
+    if (proxy.status !== 0) {
+      if (proxy.stderr.trim()) logger.warn(proxy.stderr.trimEnd());
+      return proxy.status;
+    }
 
-  const shims = ctx.runner(ctx.denoBin, ["cache", ...pinned, ...allShimPaths()], {
-    "cwd": ctx.rootHome,
-    "env": env,
+    const shims = ctx.runner(ctx.denoBin, ["cache", ...pinned, ...allShimPaths()], {
+      "cwd": ctx.rootHome,
+      "env": env,
+    });
+    if (shims.status !== 0 && shims.stderr.trim()) logger.warn(shims.stderr.trimEnd());
+    return shims.status;
   });
-  if (shims.status !== 0 && shims.stderr.trim()) logger.warn(shims.stderr.trimEnd());
-  return shims.status;
 }
 
 /**

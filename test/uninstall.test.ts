@@ -4,7 +4,7 @@
 // it deletes is a sandbox directory, never the tree this process runs from.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { consola } from "consola";
 import { parse } from "smol-toml";
 import { configureClaudeConfig, WEBSEARCH_DENY_RULE } from "../src/claude/config.ts";
@@ -33,6 +33,13 @@ import { isRecord } from "../src/utils/json.ts";
 import { INSTALL_MANIFEST_FILE, type RootMode } from "../src/utils/root.ts";
 import { pointCurrentAt } from "../src/install/installer.ts";
 import { writeResolvedVersionRecord } from "../src/proxy_float.ts";
+import {
+  CI_PS_DOCUMENTS_DIR_ENV,
+  CI_RC_DIR_ENV,
+  MARKER as SHELL_MARKER,
+  MARKER_END,
+  shellTargetFiles,
+} from "../src/shell/integration.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { ROOT } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
@@ -561,11 +568,25 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   const elsewhere = join(dir, "float-elsewhere");
   mkdirSync(elsewhere, { recursive: true });
   writeResolvedVersionRecord(proxyHome, "1.10.30", Date.now(), elsewhere, "fp");
-  const deps = { ...tmpDeps(codexHome), claudeDesktopLibraryDir: library };
+  // A wired rc / PowerShell profile on a scratch home, resolved by the REAL shell
+  // resolver (no injected remover): the plan must name the concrete file.
+  const rcDir = join(dir, "rc");
+  process.env[CI_RC_DIR_ENV] = rcDir;
+  process.env[CI_PS_DOCUMENTS_DIR_ENV] = rcDir;
+  const rc = process.platform === "win32"
+    ? shellTargetFiles()[0] as string
+    : join(rcDir, ".bashrc");
+  mkdirSync(dirname(rc), { recursive: true });
+  writeFileSync(rc, `echo mine\n${SHELL_MARKER}\nsource ours\n${MARKER_END}\n`);
+  const { removeShellIntegration: _real, ...deps } = {
+    ...tmpDeps(codexHome),
+    claudeDesktopLibraryDir: library,
+  };
 
   const ctx = resolveUninstallContext({ yes: true }, deps);
   expect(ctx.targets.desktop.helpers.sort()).toEqual([defaultHelper, workHelper].sort());
   expect(ctx.targets.desktop.staleClaims).toEqual([join(library, "gone.json")]);
+  expect(ctx.targets.shellFiles).toEqual([rc]);
   const dryRun = describeUninstall(ctx);
   // Planted AFTER planning: a LISTED owned Desktop entry attributed to the profile the
   // profile step deletes. Neither that step nor the Desktop sweep may take a path the
@@ -577,11 +598,15 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
 
   deferWriteReports();
   await applyUninstall(ctx);
+  const reported = flushWriteReports();
   const deleted = new Set(
-    flushWriteReports()
+    reported
       .filter((line) => line.startsWith("deleted -> "))
       .map((line) => line.slice("deleted -> ".length)),
   );
+  // The block went, the user's own line stayed, and the rewrite was named.
+  expect(readFileSync(rc, "utf8")).toBe("echo mine\n");
+  expect(reported).toContain(`rewritten -> ${rc}`);
 
   expect(existsSync(join(library, "late.json"))).toBe(true);
   expect(existsSync(join(library, "ours.json"))).toBe(false);
@@ -601,6 +626,7 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
     ),
   );
   expect([...deleted].filter((path) => !named.has(path))).toEqual([]);
+  expect(named.has(rc)).toBe(true);
   const planned = [
     ...ctx.targets.desktop.entries,
     ...ctx.targets.desktop.helpers,

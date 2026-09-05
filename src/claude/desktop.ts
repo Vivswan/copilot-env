@@ -1426,26 +1426,40 @@ export function renderClaudeDesktopStatus(
         `${c.path} present but not listed in ${META_FILENAME}, unmanaged (claude-desktop false)`
       ),
     ];
+    // A claim of unknown wiring is one the key-off sweep deliberately keeps (it may be the
+    // default's), so `agent claude` cannot clear it while the key is off: only the key-on
+    // reconcile (which removes it as an orphan) or uninstall does.
+    const claims = [...owned, ...unlisted];
+    const unknown = claims.filter((c) => c.profile === undefined).map((c) => c.path);
     const left = [
-      ...owned.filter((e) => e.profile !== null).map((e) => e.path),
-      ...unlisted.filter((c) => c.profile !== null).map((c) => c.path),
+      ...claims.filter((c) => c.profile !== null && c.profile !== undefined).map((c) => c.path),
       ...status.helperPaths.filter((p) => desktopHelperScriptWiring(basename(p))?.profile !== null),
     ];
-    if (left.length === 0) {
+    if (left.length === 0 && unknown.length === 0) {
       return {
         lines: [...unmanaged, "disabled (claude-desktop false); no copilot-env leftovers present"],
         fix: null,
       };
     }
+    const total = left.length + unknown.length;
+    const fixes = [
+      ...(left.length > 0 ? ["agent claude"] : []),
+      ...(unknown.length > 0
+        ? [
+          "for the entries of unknown wiring: set claude-desktop true and re-run `agent claude` (it removes them as orphans), or `agent uninstall`",
+        ]
+        : []),
+    ];
     return {
       lines: [
         ...unmanaged,
-        `disabled (claude-desktop false), but ${left.length} copilot-env leftover${
-          left.length === 1 ? " remains" : "s remain"
+        `disabled (claude-desktop false), but ${total} copilot-env leftover${
+          total === 1 ? " remains" : "s remain"
         } (files or ownership claims)`,
         ...left,
+        ...unknown.map((p) => `${p} (wiring unknown: it names no copilot-env credential helper)`),
       ],
-      fix: "agent claude",
+      fix: fixes.join("; "),
     };
   }
   if (!status.installed || status.kind === "no-library") {

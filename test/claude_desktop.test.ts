@@ -1386,6 +1386,15 @@ test("an interrupted removal's unlisted claim is reported, listed for the dry ru
   expect(unknown).toContain(`${blankPath} names no copilot-env credential helper`);
   expect(unknown).toContain(`Claude Desktop: removed ${besideBlank}`);
   expect(existsSync(blankPath)).toBe(true);
+  // `--check` names it as a leftover `agent claude` cannot clear with the key off, and
+  // says what does.
+  const unknownRendered = renderClaudeDesktopStatus(inspectClaudeDesktopWiring([]));
+  expect(unknownRendered.lines).toContain(
+    `${blankPath} (wiring unknown: it names no copilot-env credential helper)`,
+  );
+  expect(unknownRendered.fix).toBe(
+    "for the entries of unknown wiring: set claude-desktop true and re-run `agent claude` (it removes them as orphans), or `agent uninstall`",
+  );
   expect(new OwnershipLedger().ownedPaths("claudeDesktop").sort()).toEqual(
     [configPath, blankPath].sort(),
   );

@@ -7,7 +7,11 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { consola } from "consola";
-import { claudeProfileArtifacts, removeClaudeDefaultWiring } from "../claude/config.ts";
+import {
+  claudeDefaultHelperArtifacts,
+  claudeProfileArtifacts,
+  removeClaudeDefaultWiring,
+} from "../claude/config.ts";
 import {
   type ClaudeDesktopOwnedArtifacts,
   listClaudeDesktopOwnedArtifacts,
@@ -133,6 +137,8 @@ export interface UninstallTargets {
   /** Per named profile: the Claude files its teardown removes (settings, legacy
    *  helpers) and its daemon home. */
   profiles: { name: ProfileName; claudeArtifacts: string[]; home: string }[];
+  /** The default wiring's legacy Claude helper files present now. */
+  claudeDefaultHelpers: string[];
 }
 
 /** Everything a step needs, resolved once after the confirmation gate. */
@@ -230,11 +236,15 @@ const UNINSTALL_STEPS: UninstallStep[] = [
     //    replacement, so it only goes once no owned deny remains.
     describe: (ctx) => [
       `Would remove the managed Claude wiring at ${settingsPathFor(ctx.claudeHome)}.`,
+      ...ctx.targets.claudeDefaultHelpers.map((p) => `Would remove the legacy Claude helper ${p}.`),
       "Would remove the copilot-env MCP registration from Claude's global ~/.claude.json " +
       "(kept, with a warning, while an owned WebSearch deny cannot be stripped).",
     ],
     run: (ctx) => {
-      const { ownedDenyRemains } = removeClaudeDefaultWiring(ctx.claudeHome);
+      const { ownedDenyRemains } = removeClaudeDefaultWiring(
+        ctx.claudeHome,
+        ctx.targets.claudeDefaultHelpers,
+      );
       if (ownedDenyRemains) {
         consola.warn(
           `the copilot-env WebSearch deny in ${settingsPathFor(ctx.claudeHome)} could not ` +
@@ -430,6 +440,7 @@ export function resolveUninstallContext(
         claudeArtifacts: claudeProfileArtifacts(claudeHome, name),
         home: profileHome(name),
       })),
+      claudeDefaultHelpers: claudeDefaultHelperArtifacts(claudeHome),
       desktop: listClaudeDesktopOwnedArtifacts(deps.claudeDesktopLibraryDir),
       floatArtifacts: proxyFloatArtifactPaths(rootHome),
       // A test substitute does its own (redirected) work, not this state-recorded rm.

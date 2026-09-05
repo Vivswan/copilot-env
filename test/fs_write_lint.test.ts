@@ -50,6 +50,7 @@ const CASES: readonly (readonly [string, number])[] = [
   ['import { existsSync, readFileSync, readdirSync } from "node:fs";', 0],
   ['import * as fs from "node:fs"; fs.readFileSync("x", "utf8");', 0],
   ['import type { WriteFileOptions } from "node:fs";', 0],
+  ['import { type WriteStream, readFileSync } from "node:fs";', 0],
   ['Deno.readTextFileSync("x"); Deno.statSync("x");', 0],
   ['import { writeFileReported } from "../utils/report_write.ts";', 0],
   ['export { writeFileReported } from "../utils/report_write.ts";', 0],

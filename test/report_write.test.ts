@@ -107,6 +107,12 @@ test("a deep look sees a nested rewrite the root's own metadata would hide", () 
     mkdirSync(join(tree, "inner"), { recursive: true });
     const nested = join(tree, "inner", "data.bin");
     writeFileSync(nested, "aaaa");
+    // The original's mtime is pinned to the past: an equal-size rewrite landing within
+    // the same mtime tick as the original write is the seam's documented proven-only
+    // miss (same dev/ino/mtime/size, no transition), and the test must not depend on
+    // the platform's tick (rm + write below may also change the inode, but nothing here
+    // relies on that).
+    utimesSync(nested, new Date(0), new Date(0));
     // A future-dated sibling pins the tree's latest mtime; the rewrite below keeps the
     // nested file's size, so only its identity/mtime moves.
     writeFileSync(join(tree, "inner", "pinned"), "");

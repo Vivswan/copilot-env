@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import * as v from "valibot";
-import { runCost } from "../../src/usage/cost.ts";
+import { type CostRuntime, runCost } from "../../src/usage/cost.ts";
 import { canonicalModelName } from "../../src/usage/pricing.ts";
 import type { ModelUsage, ReadonlyUsageReport } from "../../src/usage/usage.ts";
 import {
@@ -445,22 +445,47 @@ export function utcPinnable(): boolean {
   }
 }
 
-/** The current implementation's payload over the tree at `root`, run IN PROCESS through
- *  runCost with the readers pointed at the tree by env and the process pinned to UTC
- *  (the caller has checked utcPinnable()). */
-export async function runCurrentCostJson(root: string): Promise<Record<string, unknown>> {
+export interface CurrentCostRun {
+  /** The payload without the runtime key: what a golden compares against. */
+  payload: Record<string, unknown>;
+  runtime: CostRuntime;
+}
+
+export interface CurrentCostOptions {
+  /** `--no-index`: parse every file, never open the index. */
+  noIndex?: boolean;
+  /** The copilot-api home (where the index lives); default the tree's own `.copilot-env`. */
+  copilotApiHome?: string;
+  /** `--days`, when the run should be windowed. */
+  days?: string;
+}
+
+/** The current implementation over the tree at `root`, run IN PROCESS through runCost with
+ *  the readers pointed at the tree by env and the process pinned to UTC (the caller has
+ *  checked utcPinnable()). */
+export async function runCurrentCost(
+  root: string,
+  opts: CurrentCostOptions = {},
+): Promise<CurrentCostRun> {
   const saved = RUN_ENV_KEYS.map((key) => [key, process.env[key]] as const);
   const savedTz = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   const original = console.log;
   const lines: string[] = [];
   try {
     for (const [key, value] of Object.entries(usageTreeEnv(root))) process.env[key] = value;
+    if (opts.copilotApiHome !== undefined) process.env.COPILOT_API_HOME = opts.copilotApiHome;
     delete process.env.COPILOT_ENV_ROOT_HOME;
     process.env.TZ = GOLDEN_TIME_ZONE;
     console.log = (...args: unknown[]) => {
       lines.push(args.map(String).join(" "));
     };
-    await runCost({ json: true, perDay: true, pricingUrl: UNREACHABLE_PRICING_URL });
+    await runCost({
+      json: true,
+      perDay: true,
+      pricingUrl: UNREACHABLE_PRICING_URL,
+      noIndex: opts.noIndex,
+      days: opts.days,
+    });
   } finally {
     console.log = original;
     for (const [key, value] of saved) {
@@ -471,5 +496,7 @@ export async function runCurrentCostJson(root: string): Promise<Record<string, u
     // Restored by name, never deleted: a deleted TZ leaves later assignments ignored.
     process.env.TZ = savedTz;
   }
-  return parseCostPayload(lines.join("\n"), "the current implementation");
+  const stdout = lines.join("\n");
+  const runtime = (JSON.parse(stdout) as { runtime: CostRuntime }).runtime;
+  return { payload: parseCostPayload(stdout, "the current implementation"), runtime };
 }

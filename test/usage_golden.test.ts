@@ -1,11 +1,7 @@
 // The current `agent cost` reproduces the pre-index goldens (test/helpers/usage_goldens.ts)
 // through runCost and through the index cold and warm. In process throughout; no child runs.
 import { join } from "node:path";
-import { readClaudeSessions } from "../src/usage/claude_sessions.ts";
-import { readCodexSessions } from "../src/usage/codex_sessions.ts";
-import type { IndexStats, Reconcile, UsageSource } from "../src/usage/contribution.ts";
-import { buildSourceJson } from "../src/usage/cost.ts";
-import { openUsageIndex } from "../src/usage/index.ts";
+import { buildSourceJson, type CostRuntime } from "../src/usage/cost.ts";
 import { estimateCost, type PricingTier } from "../src/usage/pricing.ts";
 import type { ReadonlyUsageReport } from "../src/usage/usage.ts";
 import { removeDir, tmpDir } from "./helpers.ts";
@@ -19,7 +15,6 @@ import {
   generatorParams,
   GOLDEN_COST_ARGS,
   GOLDEN_MATRIX,
-  GOLDEN_TIME_ZONE,
   type GoldenCase,
   goldenFilesFor,
   type GoldenTree,
@@ -27,15 +22,14 @@ import {
   PRE_INDEX_COMMIT,
   readRecording,
   readText,
-  runCurrentCostJson,
+  runCurrentCost,
   sourceEventCounts,
   treeSha256,
   utcPinnable,
 } from "./helpers/usage_goldens.ts";
 
-/** runCost cuts days in the system zone, so ITS run needs the process pinned to UTC; a
- *  Windows host outside UTC cannot be pinned and skips only that comparison. The readers
- *  take the zone as a parameter, so the index paths run everywhere. */
+/** runCost cuts days in the system zone, so every run needs the process pinned to UTC; a
+ *  Windows host outside UTC cannot be pinned and skips the file. */
 const UTC = utcPinnable();
 
 /** The optional larger extra run: a tree of this size checks the three read paths agree
@@ -137,70 +131,42 @@ function ledgerBlocks(tree: GeneratedTree): Record<string, unknown> {
   );
 }
 
-type StatsBySource = Record<UsageSource, IndexStats>;
+/**
+ * The three read paths of `agent cost` over one tree, each held to `expected`: `--no-index`,
+ * then cold and warm through the index in a fresh copilot-api home of its own. The stats
+ * prove BOTH readers went through the index: every generated file was walked by it (the
+ * summed count equals the tree's), and the warm run reuses exactly the rows the cold run
+ * parsed and reads no bytes (a reader that bypassed it would parse again).
+ */
+async function checkReadPaths(tree: GeneratedTree, golden?: Record<string, unknown>) {
+  const plain = await runCurrentCost(tree.root, { noIndex: true });
+  expect(plain.runtime.indexed).toBe(false);
+  // Without a golden the three paths are held to each other, through the plain one.
+  const expected = golden ?? plain.payload;
+  expect(describeMismatch(plain.payload, expected)).toBeNull();
 
-/** Read the tree through the index at `indexDir`; both readers must go through it, so the
- *  stats come back keyed by source and a reader that bypassed the index leaves a hole. */
-async function readThroughIndex(
-  tree: GeneratedTree,
-  indexDir: string,
-): Promise<{ blocks: Record<string, unknown>; stats: StatsBySource }> {
-  const index = openUsageIndex({ dir: indexDir });
-  if (index === null) throw new Error("the usage index did not open");
-  const stats: Partial<StatsBySource> = {};
-  const observed: Reconcile = (source, walked, whole, tail) => {
-    const result = index.reconcile(source, walked, whole, tail);
-    stats[source] = result.stats;
-    return result;
-  };
-  try {
-    const codex = await readCodexSessions(
-      [join(tree.codexRoot, "sessions"), join(tree.codexRoot, "archived_sessions")],
-      undefined,
-      GOLDEN_TIME_ZONE,
-      observed,
-    );
-    const claude = await readClaudeSessions(
-      [join(tree.claudeRoot, "projects")],
-      undefined,
-      GOLDEN_TIME_ZONE,
-      observed,
-    );
-    if (stats.codex === undefined || stats.claude === undefined) {
-      throw new Error(`a reader bypassed the index (saw ${Object.keys(stats).join(", ")})`);
-    }
-    return {
-      blocks: blocksFromReports(codex, claude),
-      stats: { codex: stats.codex, claude: stats.claude },
-    };
-  } finally {
-    index.close();
-  }
+  const copilotApiHome = join(freshRoot(), "copilot-env");
+  const cold = await runCurrentCost(tree.root, { copilotApiHome });
+  expect(describeMismatch(cold.payload, expected)).toBeNull();
+  const warm = await runCurrentCost(tree.root, { copilotApiHome });
+  expect(describeMismatch(warm.payload, expected)).toBeNull();
+  expectColdThenWarm(cold.runtime, warm.runtime, tree.files.length);
+  return plain.payload;
 }
 
-const SOURCES: readonly UsageSource[] = ["codex", "claude"];
-
-/** Cold then warm over ONE fresh index directory of its own (never the one runCost may
- *  populate), each held to `expected`; per source, the cold run parses every file whole and
- *  fails nothing, and the warm run reuses exactly those rows. */
-async function checkIndexPaths(tree: GeneratedTree, expected: Record<string, unknown>) {
-  const indexDir = join(freshRoot(), "index");
-  const cold = await readThroughIndex(tree, indexDir);
-  expect(describeMismatch(cold.blocks, expected)).toBeNull();
-  const warm = await readThroughIndex(tree, indexDir);
-  expect(describeMismatch(warm.blocks, expected)).toBeNull();
-  for (const source of SOURCES) {
-    const c = cold.stats[source];
-    const w = warm.stats[source];
-    // A fresh index has no row to resume from, so every cold parse is a whole one.
-    expect(c.filesFailed, `${source} cold`).toBe(0);
-    expect(c.filesReused, `${source} cold`).toBe(0);
-    expect(c.filesParsedTail, `${source} cold`).toBe(0);
-    expect(c.filesParsedWhole, `${source} cold`).toBeGreaterThan(0);
-    expect(w.filesFailed, `${source} warm`).toBe(0);
-    expect(w.filesParsedWhole + w.filesParsedTail, `${source} warm`).toBe(0);
-    expect(w.filesReused, `${source} warm`).toBe(c.filesParsedWhole);
-  }
+function expectColdThenWarm(cold: CostRuntime, warm: CostRuntime, files: number): void {
+  expect(cold.indexed).toBe(true);
+  expect(cold.index.filesSeen).toBe(files);
+  expect(cold.index.filesFailed).toBe(0);
+  expect(cold.index.filesReused).toBe(0);
+  expect(cold.index.filesParsedTail).toBe(0);
+  expect(cold.index.filesParsedWhole).toBeGreaterThan(0);
+  expect(warm.indexed).toBe(true);
+  expect(warm.index.filesFailed).toBe(0);
+  expect(warm.index.filesParsedWhole + warm.index.filesParsedTail).toBe(0);
+  expect(warm.index.filesReused).toBe(cold.index.filesParsedWhole);
+  expect(warm.index.filesSeen).toBe(cold.index.filesSeen);
+  expect(warm.index.bytesRead).toBe(0);
 }
 
 for (const entry of GOLDEN_MATRIX) {
@@ -208,24 +174,19 @@ for (const entry of GOLDEN_MATRIX) {
     ? "the pre-index payload plus exactly the planted line-splitting lines"
     : "the pre-index payload";
 
-  test.skipIf(!UTC)(`${entry.name}: runCost reproduces ${claim}`, async () => {
-    const { golden, generated } = await loadGolden(entry);
-    const current = await runCurrentCostJson(generated.tree.root);
-    expect(describeMismatch(current, expectedCurrent(golden, generated))).toBeNull();
-    expect(current).toEqual(expectedCurrent(golden, generated));
-    if (generated.delta !== null) {
-      // The old reader really dropped them: the golden itself does not match.
-      expect(describeMismatch(current, golden)).not.toBeNull();
-      // And the current reader agrees with the generator's own ledger, planted lines included.
-      expect(describeMismatch(sourceBlocks(current), ledgerBlocks(generated.tree))).toBeNull();
-    }
-  }, 120_000);
-
-  test(
-    `${entry.name}: the readers through the index, cold and warm, reproduce ${claim}`,
+  test.skipIf(!UTC)(
+    `${entry.name}: runCost without, cold, and warm index reproduces ${claim}`,
     async () => {
       const { golden, generated } = await loadGolden(entry);
-      await checkIndexPaths(generated.tree, sourceBlocks(expectedCurrent(golden, generated)));
+      const expected = expectedCurrent(golden, generated);
+      const current = await checkReadPaths(generated.tree, expected);
+      expect(current).toEqual(expected);
+      if (generated.delta !== null) {
+        // The old reader really dropped them: the golden itself does not match.
+        expect(describeMismatch(current, golden)).not.toBeNull();
+        // And the current reader agrees with the generator's own ledger, planted lines included.
+        expect(describeMismatch(sourceBlocks(current), ledgerBlocks(generated.tree))).toBeNull();
+      }
     },
     120_000,
   );
@@ -255,8 +216,7 @@ test.skipIf(!UTC || !(EXTRA_MB > COMMITTED_MB))(
       split: false,
     };
     const { tree } = await generateGoldenTree(entry, freshRoot());
-    const current = await runCurrentCostJson(tree.root);
-    await checkIndexPaths(tree, sourceBlocks(current));
+    await checkReadPaths(tree);
   },
   600_000,
 );

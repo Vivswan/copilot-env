@@ -996,8 +996,8 @@ export const CLAUDE_SCENARIOS: readonly ReaderScenario<UsageReport>[] = [
     name: "counts lines carrying U+2028, U+2029, and NEL inside their content",
     build(dir) {
       const root = join(dir, "projects");
-      // The pre-index readline reader split on these separators and dropped the
-      // line; the byte scanner cuts on LF alone.
+      // The pre-index readline reader split on U+2028 and U+2029 and dropped the
+      // line (NEL rides along as a third non-LF separator); the scanner cuts on LF alone.
       writeTranscript(join(root, "-Users-x-proj"), "aaa.jsonl", [
         JSON.stringify({
           type: "assistant",

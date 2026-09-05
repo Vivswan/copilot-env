@@ -252,9 +252,9 @@ test("scanLines rejects needles that cannot be searched byte-exactly", () => {
 });
 
 test("scanLines cuts on LF only: Unicode separators and a lone CR stay inside their line", () => {
-  // node:readline (Deno's polyfill) split on U+2028/U+2029/NEL too, silently
-  // dropping every JSONL line whose content carried one; JSON leaves those
-  // characters unescaped, so they occur in real transcripts.
+  // node:readline (Deno's polyfill) split on U+2028/U+2029 too, silently dropping
+  // every JSONL line whose content carried one; JSON leaves those characters
+  // unescaped, so they occur in real transcripts. NEL and a lone CR ride along.
   const separators = [0x2028, 0x2029, 0x85, 0x0d].map((code) => String.fromCharCode(code));
   const line = `{"type":"assistant","text":"a${separators.join("b")}c"}`;
   const content = `${line}\nTOKEN\n`;

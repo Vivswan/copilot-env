@@ -15,7 +15,7 @@ import {
   parseCostPayload,
   PRE_INDEX_COMMIT,
   type Recording,
-  runCurrentCostJson,
+  runCurrentCost,
   sourceEventCounts,
   stableStringify,
   treeSha256,
@@ -141,7 +141,7 @@ async function recordEntry(
   if (!Object.keys(events).some((s) => s.startsWith("codex:")) || silent.length > 0) {
     throw new Error(`${entry.name}: the old cli read nothing from ${silent.join(", ") || "codex"}`);
   }
-  const current = await runCurrentCostJson(root);
+  const { payload: current } = await runCurrentCost(root, { noIndex: true });
   const mismatch = describeMismatch(current, expectedCurrent(payload, generated));
   if (mismatch !== null) {
     throw new Error(

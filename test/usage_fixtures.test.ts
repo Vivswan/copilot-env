@@ -766,8 +766,8 @@ test(
     expect(all).toMatch(/[^\t\n -~]/);
     expect(all).toContain('\\"quoted\\"');
     expect(all).toContain("back\\\\slash");
-    // Never the code points node:readline also splits on (the goldens' reader would lose the
-    // line); the control proves the check sees them when present.
+    // Never the code points kept out of filler (readline split on the first two, so the
+    // goldens' reader would lose the line); the control proves the check sees them when present.
     for (const cp of LINE_SPLITTING_CODE_POINTS) expect(all.includes(cp)).toBe(false);
     expect(LINE_SPLITTING_CODE_POINTS.every((cp) => `a${cp}b`.includes(cp))).toBe(true);
     expect(LINE_SPLITTING_CODE_POINTS).toEqual(["\u2028", "\u2029", "\u0085"]);

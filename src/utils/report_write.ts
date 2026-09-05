@@ -341,14 +341,14 @@ export function removeTreeReported(path: string): boolean {
 
 /** Discard a transient (a staged temp file or link, a scratch root) after the recipe it
  *  served is over. When the removal fails the transient is a file the user now keeps, so
- *  it is named -- the one moment a transient is reported. */
-function dropTransient(path: string, recursive = false): void {
+ *  it is named -- the one moment a transient is reported -- but only as the transition
+ *  `was` proves: a recipe that failed before it ever wrote the transient (a temp path
+ *  already occupied by a directory) changed nothing, and says nothing. */
+function dropTransient(path: string, was: Look, recursive = false): void {
   try {
     rmSync(path, { recursive, force: true });
   } catch {
-    // Named only when it provably exists: the recipe may have failed before it ever
-    // wrote the transient (a refused temp-file open), and cleanup then fails the same way.
-    if (look(path).kind === "present") reportWrite("created", path, "left behind");
+    reportTransition(path, was, EVERY_TRANSITION, "left behind", recursive);
   }
 }
 
@@ -408,13 +408,14 @@ export function symlinkReported(target: string, path: string, type?: "junction")
  *  over `link`, so a concurrent reader never observes a missing link. The staged link is
  *  dropped when the rename fails. */
 export function atomicSymlink(target: string, link: string): void {
-  const staged = join(dirname(link), `.${basename(link)}-next-${process.pid}-${Date.now()}`);
+  const staged = join(dirname(link), `.${basename(link)}-next-${process.pid}`);
   rmSync(staged, { force: true });
+  const was = look(staged);
   symlinkSync(target, staged);
   try {
     renameSync(staged, link);
   } catch (err) {
-    dropTransient(staged);
+    dropTransient(staged, was);
     throw err;
   }
   reportWrite("linked", link, `to ${target}`);
@@ -433,13 +434,15 @@ export function scratchDir(prefix: string): ScratchDir {
 export function removeScratchDir(dir: ScratchDir): void {
   if (!SCRATCH_ROOTS.has(dir)) throw new Error(`${dir} is not a scratch dir of this process`);
   SCRATCH_ROOTS.delete(dir);
-  dropTransient(dir, true);
+  // Minted by us from nothing: whatever a failed removal leaves is a creation.
+  dropTransient(dir, { kind: "absent" }, true);
 }
 
 /**
- * THE atomic file-write recipe: write to a fresh same-directory temp file
- * (`<name>.tmp.<pid>.<now>`, unique per writer), then renameWithRetry over the
- * target -- a reader never sees a torn file. The temp file is removed on failure.
+ * THE atomic file-write recipe: write to a same-directory temp file (`<name>.tmp.<pid>`:
+ * one writer per process at a time, so the pid alone keeps writers apart), then
+ * renameWithRetry over the target -- a reader never sees a torn file. The temp file is
+ * removed on failure.
  * `mode` (when given) restricts the temp file from creation, so the rename
  * publishes an already-restricted inode. Shared by the JSON store's save
  * (src/copilot_api/config.ts), saveClaudeJson (src/claude/mcp_registration.ts), the
@@ -448,17 +451,22 @@ export function removeScratchDir(dir: ScratchDir): void {
 export function atomicWriteFile(path: string, text: string, mode?: number): void {
   mkdirReported(dirname(path));
   const was = look(path);
-  const tmp = join(dirname(path), `${basename(path)}.tmp.${process.pid}.${Date.now()}`);
+  const tmp = join(dirname(path), `${basename(path)}.tmp.${process.pid}`);
+  // A stale temp (a crashed earlier run under this pid) goes first: `mode` applies only
+  // to a fresh inode, so writing into it would publish its old permissions. Non-recursive,
+  // so a directory at the path still refuses without being touched.
+  rmSync(tmp, { force: true });
+  const tmpWas = look(tmp);
   try {
     writeFileSync(tmp, text, mode === undefined ? undefined : { mode });
   } catch (err) {
-    dropTransient(tmp);
+    dropTransient(tmp, tmpWas);
     throw err;
   }
   try {
     renameWithRetry(tmp, path);
   } catch (err) {
-    dropTransient(tmp);
+    dropTransient(tmp, tmpWas);
     const code = (err as NodeJS.ErrnoException).code;
     if (code !== undefined && RENAME_REFUSED_CODES.has(code)) {
       throw new RenameRefusedError(path, err);

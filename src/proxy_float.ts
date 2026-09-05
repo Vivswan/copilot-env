@@ -618,7 +618,9 @@ function denoCacheVersion(ctx: FloatContext, version: string, cooldownSeconds: n
   const env = denoEnv(proxyDenoDir(ctx.rootHome));
 
   // deno writes the cache dir and the lockfile on our behalf: the dir is named once as
-  // created or rewritten (no walk of the cache), the lockfile by its own transition.
+  // created or rewritten, the lockfile by its own transition. The judgment walks the
+  // cache twice (one lstat per entry, sorted per directory) -- paid only here, on a
+  // cache warm or re-warm, never on a routine start.
   return withReportedPaths([proxyDenoDir(ctx.rootHome), proxyLockFile(ctx.rootHome)], () => {
     const proxy = ctx.runner(ctx.denoBin, ["cache", ...pinned, `npm:${PROXY_PKG}@${version}`], {
       "cwd": ctx.rootHome,

@@ -387,7 +387,7 @@ test("3.5.6 default slot: the top-level pair lifts into profiles.default; a re-r
     "githubToken": "ghp_work",
     "mode": "proxy",
   });
-  // The unified read answers identically after the lift.
+  // The store, which reads the slot shape only, now answers the lifted credential.
   expect(new CopilotEnvState().readCredential(null)).toEqual({
     kind: "stored",
     provider: "copilot",

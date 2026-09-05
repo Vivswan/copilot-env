@@ -105,7 +105,7 @@ test("an unmigrated pre-ledger record in the state store owns nothing; only the 
     paths.sharedStateFile,
     `${
       JSON.stringify({
-        githubToken: "ghu_keep",
+        profiles: { default: { githubToken: "ghu_keep", authProvider: "copilot" } },
         webSearchDenyOwnedPaths: ["/a/settings.json"],
         claudeDesktopOwnedPaths: ["/lib/uuid.json"],
       })

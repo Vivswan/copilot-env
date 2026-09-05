@@ -182,13 +182,14 @@ export const v356Ownership: Migration = {
 };
 
 /** Third fix-up of the same step: the default credential moved from the state
- *  store's top-level pair into the reserved `default` profile slot. The store's
- *  read boundary tolerates the legacy pair and every default-slot write lifts
- *  it too (the runner is best-effort), so this is a tidy-up, not a
- *  correctness gate. Registered after the home move for the
- *  same reason (the state store lives inside the moved home) and BEFORE the
- *  versioned-layout adoption: this fix-up is install-layout-independent, and
- *  the adoption's invariant is that it runs last (it relocates the install
+ *  store's top-level pair into the reserved `default` profile slot. The store
+ *  reads the slot shape ONLY -- an unlifted pair reads as no default credential
+ *  -- and its writes leave the pair in place, so this lift is the one path that
+ *  converts it: a correctness gate, like the ownership adoption above, not a
+ *  tidy-up. Registered after the home move for the same reason as the
+ *  ownership adoption (the state store lives inside the moved home) and BEFORE
+ *  the versioned-layout adoption: this fix-up is install-layout-independent,
+ *  and the adoption's invariant is that it runs last (it relocates the install
  *  everything else fixed up). */
 export const v356DefaultSlot: Migration = {
   version: "3.5.6",
@@ -200,10 +201,10 @@ export const v356DefaultSlot: Migration = {
  *  flat root layout (config.json, .run/, logs, usage DBs at the data home
  *  itself) into `<root>/profiles/default/`, so every daemon home has one
  *  shape. The paths layer tolerates an unmigrated flat root
- *  (defaultDaemonHome prefers profiles/default only once it exists), so this
- *  is the same tidy-up-not-gate posture as its siblings. Registered after the
- *  home move (it relocates files inside the moved home) and BEFORE the
- *  versioned-layout adoption, whose invariant is that it runs last. */
+ *  (defaultDaemonHome prefers profiles/default only once it exists), so unlike
+ *  the two store fix-ups above this one is a tidy-up, not a gate. Registered
+ *  after the home move (it relocates files inside the moved home) and BEFORE
+ *  the versioned-layout adoption, whose invariant is that it runs last. */
 export const v356DefaultHome: Migration = {
   version: "3.5.6",
   description: "move the default daemon home into profiles/default",

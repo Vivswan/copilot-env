@@ -96,8 +96,10 @@ async function checkAndApply(
   }
 }
 
-// Runnable: `deno run -P=cli src/autoupdate/preflight.ts` from the launchers. Never throws out
-// (a failed self-update must not block the user's command).
+// Runnable: `deno run -P=cli src/autoupdate/preflight.ts` from the checkout's launchers; the
+// installed shims reach runPreflight through `agent update --preflight` instead (a compiled
+// binary has no source file to run). Never throws out (a failed self-update must not block
+// the user's command).
 if (import.meta.main) {
   runPreflight({ nowMs: Date.now() }).catch((e) => {
     logger.warn(`autoupdate preflight error: ${errMessage(e)}`);

@@ -285,7 +285,9 @@ export function readCurrentVersionName(top: string): string | null {
 /** Write ONE launcher shim, atomically where the OS allows: skip when the text
  *  already matches (the steady state -- an update then never touches the file a
  *  user's PATH points at), else write beside and rename over. The direct-write
- *  fallback covers a rename refused by an open handle on the live file. */
+ *  fallback covers a rename refused by an open handle on the live file. Every
+ *  write is announced here, once per path: install, update commit, and the
+ *  post-update shim refresh all land through this one writer. */
 function writeShimFile(to: string, text: string, executable: boolean): void {
   try {
     if (readFileSync(to, "utf-8") === text) {
@@ -308,6 +310,7 @@ function writeShimFile(to: string, text: string, executable: boolean): void {
     writeFileSync(to, text);
     if (executable) chmodSync(to, 0o755);
   }
+  consola.info(`Wrote launcher shim ${to}`);
 }
 
 /** Write the stable `<top>/bin/agent(.ps1)` shims that dispatch through the
@@ -413,6 +416,44 @@ export function removeVersionDirsExcept(top: string, keep: ReadonlySet<string>):
 }
 
 // --- Launcher shim texts ---------------------------------------------------------
+//
+// Every installed shim carries the same `agent start` hook as the checkout's
+// bin/agent(.ps1): the opt-in autoupdate preflight, reached as the binary's own
+// `update --preflight` (a compiled binary has no preflight.ts on disk to run).
+// It runs BEFORE the dispatch so a swapped release is what dispatches, on
+// `start` only, non-fatal, and on stderr (stdout is `agent env`'s, which the
+// shell wrapper evals). The gate itself (the auto-update key, the daily
+// cadence) lives inside the preflight, so the shims stay dumb dispatchers.
+
+/** The POSIX shim text around `binary` (an expression the shell expands). */
+function posixShimText(purpose: string, binary: string): string {
+  return `#!/bin/sh
+# copilot-env launcher (installed): ${purpose}
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# Opt-in autoupdate preflight, on \`agent start\` only (what the checkout's bin/agent
+# runs too): gated on the auto-update config key, non-fatal, stderr only.
+if [ "\${1:-}" = "start" ]; then
+    "${binary}" update --preflight >&2 || true
+fi
+exec "${binary}" "$@"
+`;
+}
+
+/** The PowerShell shim text around `binary` (an expression yielding its path). */
+function powershellShimText(purpose: string, binary: string): string {
+  return `# copilot-env launcher (installed): ${purpose}
+$Here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Binary = ${binary}
+# Opt-in autoupdate preflight, on \`agent start\` only (what the checkout's bin/agent.ps1
+# runs too): gated on the auto-update config key, non-fatal, stderr only.
+if ($args.Count -gt 0 -and $args[0] -eq 'start') {
+    try { & $Binary update --preflight | ForEach-Object { [Console]::Error.WriteLine($_) } }
+    catch { [Console]::Error.WriteLine("autoupdate preflight failed: $_") }
+}
+& $Binary @args
+exit $LASTEXITCODE
+`;
+}
 
 /** Per-version bin/agent: a thin dispatcher to the adjacent compiled binary.
  *  Lives INSIDE each version root; the paths persisted into agent configs reach
@@ -420,37 +461,31 @@ export function removeVersionDirsExcept(top: string, keep: ReadonlySet<string>):
  *  live one. The checkout's bin/agent is the dev-mode variant; an install never
  *  overwrites a checkout (in-place mode writes no shims), so the two texts
  *  never compete for the same file. */
-export const POSIX_SHIM = `#!/bin/sh
-# copilot-env launcher (installed): dispatch to the compiled agent binary.
-HERE="$(cd "$(dirname "$0")" && pwd)"
-exec "$HERE/${INSTALLED_BINARY_POSIX}" "$@"
-`;
+export const POSIX_SHIM = posixShimText(
+  "dispatch to the compiled agent binary.",
+  `$HERE/${INSTALLED_BINARY_POSIX}`,
+);
 
 /** Per-version bin/agent.ps1 (Windows twin of POSIX_SHIM). */
-export const POWERSHELL_SHIM =
-  `# copilot-env launcher (installed): dispatch to the compiled agent binary.
-$Here = Split-Path -Parent $MyInvocation.MyCommand.Path
-& (Join-Path $Here '${INSTALLED_BINARY_WINDOWS}') @args
-exit $LASTEXITCODE
-`;
+export const POWERSHELL_SHIM = powershellShimText(
+  "dispatch to the compiled agent binary.",
+  `Join-Path $Here '${INSTALLED_BINARY_WINDOWS}'`,
+);
 
 /** Top-level bin/agent: the stable PATH entry of a versioned install. One
  *  release-independent hop through the `current` link, so an update never has
  *  to touch the file a user's PATH points at. */
-export const POSIX_CURRENT_SHIM = `#!/bin/sh
-# copilot-env launcher (installed): dispatch through the current version link.
-HERE="$(cd "$(dirname "$0")" && pwd)"
-exec "$HERE/../${CURRENT_LINK}/bin/${INSTALLED_BINARY_POSIX}" "$@"
-`;
+export const POSIX_CURRENT_SHIM = posixShimText(
+  "dispatch through the current version link.",
+  `$HERE/../${CURRENT_LINK}/bin/${INSTALLED_BINARY_POSIX}`,
+);
 
 /** Top-level bin/agent.ps1 (Windows twin of POSIX_CURRENT_SHIM; the junction
  *  resolves through every Win32 path API, PowerShell 5.1 included). */
-export const POWERSHELL_CURRENT_SHIM =
-  `# copilot-env launcher (installed): dispatch through the current version link.
-$Here = Split-Path -Parent $MyInvocation.MyCommand.Path
-& (Join-Path (Split-Path -Parent $Here) '${CURRENT_LINK}\\bin\\${INSTALLED_BINARY_WINDOWS}') @args
-exit $LASTEXITCODE
-`;
+export const POWERSHELL_CURRENT_SHIM = powershellShimText(
+  "dispatch through the current version link.",
+  `Join-Path (Split-Path -Parent $Here) '${CURRENT_LINK}\\bin\\${INSTALLED_BINARY_WINDOWS}'`,
+);
 
 export interface InstallOptions {
   noShellIntegration: boolean;

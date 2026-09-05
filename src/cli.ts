@@ -672,6 +672,11 @@ program
     "Report autoupdate status and exit (the auto-update config key, cooldown, last check, last result).",
   )
   .option(
+    "--preflight",
+    "Run the once-a-day autoupdate check the launchers run before `agent start` and exit " +
+      "(gated on the auto-update config key; output on stderr).",
+  )
+  .option(
     "--verify",
     "Verify the download against the release's Sigstore build-provenance attestation " +
       "(the default; the verify-provenance config key persists a choice).",
@@ -686,6 +691,7 @@ program
       check: Boolean(opts.check),
       force: Boolean(opts.force),
       autoStatus: Boolean(opts.autoStatus),
+      preflight: Boolean(opts.preflight),
       verify: opts.verify as boolean | undefined,
     })
   );

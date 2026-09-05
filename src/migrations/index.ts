@@ -23,6 +23,7 @@ import {
   v356Ownership,
   v356VersionedLayout,
 } from "./3.5.6.ts";
+import { v400LauncherShims } from "./4.0.0.ts";
 
 /**
  * One step in the version history, named for the release it migrates AWAY FROM (so a
@@ -57,6 +58,7 @@ const MIGRATIONS: Migration[] = [
   v356DefaultSlot,
   v356DefaultHome,
   v356VersionedLayout,
+  v400LauncherShims,
 ];
 
 // versionLessThan tolerates unparseable input by answering "not less-than", so a

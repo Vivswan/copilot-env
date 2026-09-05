@@ -13,6 +13,7 @@ import {
   v356Ownership,
   v356VersionedLayout,
 } from "../src/migrations/3.5.6.ts";
+import { v400LauncherShims } from "../src/migrations/4.0.0.ts";
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
 import { readResolvedVersionRecord, writeResolvedVersionRecord } from "../src/proxy_float.ts";
 import { acquireDaemonLockForLife, daemonLockPath } from "../src/scripts/daemon_lock.ts";
@@ -59,20 +60,22 @@ test("dueMigrations selects [from, to) in ascending order over the registry", ()
   }
 });
 
-test("the shipped registry holds exactly the FIVE named 3.5.6 fix-ups in order, home move first", () => {
+test("the shipped registry holds exactly the named fix-ups in order, home move first", () => {
   // Adding a step has to be a deliberate edit to the registry, not an accident of
   // a stale import; this pins the full set BY IDENTITY and in order -- a count
   // (or a list of version strings) could stay green while a same-version fix-up
   // was silently dropped in a merge. Order matters within the version: the
   // later fix-ups read the state store the home move relocates, the default
   // daemon-home move relocates files inside that moved home, and the
-  // layout adoption runs LAST (it relocates the install the others fixed up).
+  // layout adoption runs LAST of the 3.5.6 set (it relocates the install the others
+  // fixed up). The 4.0.0 shim refresh converges that layout on the new release.
   expect(dueMigrations("0.0.1", "999.0.0")).toEqual([
     v356,
     v356Ownership,
     v356DefaultSlot,
     v356DefaultHome,
     v356VersionedLayout,
+    v400LauncherShims,
   ]);
 });
 

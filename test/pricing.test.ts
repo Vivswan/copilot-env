@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import {
   canonicalModelName,
+  canonicalPricingUrl,
   estimateCost,
   fetchPricing,
   loadPricing,
@@ -696,6 +697,46 @@ test("loadPricing treats a response with no priced model as a failed refresh", (
     const fresh = await loadPricing(PRICE_URL, { cacheDir, nowMs: later, fetchImpl: mixed.fetch });
     expect(fresh.source).toBe("fetched");
     expect(fresh.pricing.get("anthropic/claude-opus-4.8")?.input).toBe(20);
+  }));
+
+test("the flag and the stored key share one URL rule: https only, canonical before the cache digest", () =>
+  withCacheDir(async (cacheDir) => {
+    const now = 1_700_000_000_000;
+    // Two spellings of one list -> one cache file, one fetch (the second run is a hit).
+    const net = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000015"));
+    const loud = "HTTPS://Pricing.Example/Models?x=1";
+    const quiet = "https://pricing.example/Models?x=1";
+    expect(canonicalPricingUrl(loud)).toBe(quiet);
+    expect(pricingCachePath(loud, cacheDir)).toBe(pricingCachePath(quiet, cacheDir));
+    await loadPricing(loud, { cacheDir, nowMs: now, fetchImpl: net.fetch });
+    expect(readdirSync(cacheDir)).toEqual([basename(pricingCachePath(quiet, cacheDir))]);
+    const hit = await loadPricing(quiet, { cacheDir, nowMs: now + 1, fetchImpl: net.fetch });
+    expect(hit.source).toBe("cache");
+    expect(net.calls).toBe(1);
+
+    // fetchPricing itself accepts the loud spelling and requests the canonical one.
+    let requested = "";
+    const recording = ((input: string | URL | Request) => {
+      requested = String(input);
+      return net.fetch(input);
+    }) as typeof fetch;
+    await fetchPricing(loud, recording);
+    expect(requested).toBe(quiet);
+
+    // Anything but https is refused with fixed text that never echoes the URL.
+    for (const bad of ["http://user:SECRET@pricing.example/models", "pricing.example", "ftp://x"]) {
+      let message = "";
+      try {
+        canonicalPricingUrl(bad);
+      } catch (e) {
+        message = (e as Error).message;
+      }
+      expect(message).toBe("pricing URL must use HTTPS");
+      await expect(fetchPricing(bad, net.fetch)).rejects.toThrow(/^pricing URL must use HTTPS$/);
+      await expect(loadPricing(bad, { cacheDir, nowMs: now, fetchImpl: net.fetch })).rejects
+        .toThrow(/^pricing URL must use HTTPS$/);
+    }
+    expect(net.calls).toBe(2);
   }));
 
 test("loadPricing never echoes the URL in its errors", () =>

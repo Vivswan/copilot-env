@@ -61,6 +61,17 @@ export interface CostEstimate {
   unpriced: string[];
 }
 
+/** THE price-list URL rule, for the `--pricing-url` flag and the stored key alike: an
+ *  absolute https URL in its canonical spelling (`new URL().href`, lowercase scheme and
+ *  host), so one list has one cache file. The rejection is fixed text: the URL may
+ *  carry credentials. */
+export function canonicalPricingUrl(url: string): string {
+  if (!URL.canParse(url) || new URL(url).protocol !== "https:") {
+    throw new Error("pricing URL must use HTTPS");
+  }
+  return new URL(url).href;
+}
+
 /** Fetch live model pricing keyed by lowercased OpenRouter model id. Errors are
  *  fixed text (plus a numeric HTTP status), never the transport's, because a
  *  custom --pricing-url may carry credentials. `signal` cancels the request. */
@@ -69,13 +80,11 @@ export async function fetchPricing(
   fetchImpl: typeof fetch = fetch,
   signal?: AbortSignal,
 ): Promise<Map<string, PricingTier>> {
-  if (!url.startsWith("https://")) {
-    throw new Error("pricing URL must use HTTPS");
-  }
+  const canonical = canonicalPricingUrl(url);
   const timeout = AbortSignal.timeout(FETCH_TIMEOUT_MS);
   let res: Response;
   try {
-    res = await fetchImpl(url, {
+    res = await fetchImpl(canonical, {
       headers: { Accept: "application/json", "User-Agent": "copilot-env-cost" },
       signal: signal === undefined ? timeout : AbortSignal.any([timeout, signal]),
     });
@@ -170,8 +179,9 @@ export async function loadPricing(
 ): Promise<LoadedPricing> {
   const nowMs = opts.nowMs ?? Date.now();
   const ttlMs = opts.ttlMs ?? PRICING_CACHE_TTL_MS;
-  const urlDigest = sha256Hex(url);
-  const cachePath = pricingCachePath(url, opts.cacheDir ?? usageIndexDir());
+  const canonical = canonicalPricingUrl(url);
+  const urlDigest = sha256Hex(canonical);
+  const cachePath = pricingCachePath(canonical, opts.cacheDir ?? usageIndexDir());
   const cached = readPricingCache(cachePath, urlDigest);
   if (cached !== null) {
     const ageMs = nowMs - cached.fetchedAtMs;
@@ -181,7 +191,7 @@ export async function loadPricing(
   }
   let pricing: Map<string, PricingTier>;
   try {
-    pricing = await fetchPricing(url, opts.fetchImpl ?? fetch, opts.signal);
+    pricing = await fetchPricing(canonical, opts.fetchImpl ?? fetch, opts.signal);
     // A 200 that does not carry a usable price list is a broken response:
     // persisting it would silence pricing for a whole TTL.
     const problem = priceListProblem(pricing);
@@ -205,10 +215,10 @@ export async function loadPricing(
   return { pricing, source: "fetched", fetchedAtMs: nowMs };
 }
 
-/** `<cacheDir>/pricing-<key>.json`, keyed by a SHA-256 prefix of the URL so
- *  every distinct price-list URL gets its own file. */
+/** `<cacheDir>/pricing-<key>.json`, keyed by a SHA-256 prefix of the CANONICAL URL, so
+ *  every distinct price list gets one file and two spellings of one list share it. */
 export function pricingCachePath(url: string, cacheDir: string): string {
-  return join(cacheDir, `pricing-${sha256Hex(url).slice(0, 16)}.json`);
+  return join(cacheDir, `pricing-${sha256Hex(canonicalPricingUrl(url)).slice(0, 16)}.json`);
 }
 
 function sha256Hex(text: string): string {

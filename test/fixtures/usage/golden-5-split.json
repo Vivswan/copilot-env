@@ -1,0 +1,141 @@
+{
+  "activeDayPercent": null,
+  "activeDaySpan": 0,
+  "activeDays": 0,
+  "avgCostPerDayUsd": null,
+  "claudeSessions": {
+    "activeDayPercent": 15,
+    "activeDaySpan": 20,
+    "activeDays": 3,
+    "avgCostPerDayUsd": 0,
+    "medianCostPerDayUsd": 0,
+    "perDay": [
+      {
+        "cacheCreation": 12292,
+        "cacheRead": 938303,
+        "costUsd": 0,
+        "day": "2026-08-08",
+        "input": 10,
+        "output": 5988,
+        "requests": 5,
+        "total": 956593
+      },
+      {
+        "cacheCreation": 495396,
+        "cacheRead": 5938155,
+        "costUsd": 0,
+        "day": "2026-08-10",
+        "input": 17878,
+        "output": 20599,
+        "requests": 28,
+        "total": 6472028
+      },
+      {
+        "cacheCreation": 579291,
+        "cacheRead": 5266137,
+        "costUsd": 0,
+        "day": "2026-08-27",
+        "input": 9236,
+        "output": 19930,
+        "requests": 21,
+        "total": 5874594
+      }
+    ],
+    "perModel": {},
+    "roots": 1,
+    "totalUsd": 0,
+    "unpriced": [
+      "claude-fable-5",
+      "claude-fable-5.1",
+      "claude-opus-5"
+    ],
+    "usageByModel": {
+      "claude-fable-5": {
+        "cacheCreation": 604245,
+        "cacheRead": 8185671,
+        "events": 34,
+        "input": 12040,
+        "output": 27733
+      },
+      "claude-fable-5.1": {
+        "cacheCreation": 457488,
+        "cacheRead": 2575731,
+        "events": 13,
+        "input": 13552,
+        "output": 8488
+      },
+      "claude-opus-5": {
+        "cacheCreation": 25246,
+        "cacheRead": 1381193,
+        "events": 7,
+        "input": 1532,
+        "output": 10296
+      }
+    }
+  },
+  "codexSessions": {
+    "providers": {
+      "copilot-env": {
+        "activeDayPercent": 22,
+        "activeDaySpan": 9,
+        "activeDays": 2,
+        "avgCostPerDayUsd": 0,
+        "medianCostPerDayUsd": 0,
+        "perDay": [
+          {
+            "cacheCreation": 0,
+            "cacheRead": 205392,
+            "costUsd": 0,
+            "day": "2026-07-26",
+            "input": 333967,
+            "output": 7270,
+            "requests": 5,
+            "total": 546629
+          },
+          {
+            "cacheCreation": 0,
+            "cacheRead": 1541489,
+            "costUsd": 0,
+            "day": "2026-08-03",
+            "input": 1248286,
+            "output": 14303,
+            "requests": 23,
+            "total": 2804078
+          }
+        ],
+        "perModel": {},
+        "totalUsd": 0,
+        "unpriced": [
+          "gpt-5.5",
+          "gpt-5.6-sol"
+        ],
+        "usageByModel": {
+          "gpt-5.5": {
+            "cacheCreation": 0,
+            "cacheRead": 1541489,
+            "events": 23,
+            "input": 1248286,
+            "output": 14303
+          },
+          "gpt-5.6-sol": {
+            "cacheCreation": 0,
+            "cacheRead": 205392,
+            "events": 5,
+            "input": 333967,
+            "output": 7270
+          }
+        }
+      }
+    },
+    "roots": 1
+  },
+  "dbCount": 0,
+  "medianCostPerDayUsd": null,
+  "note": "approximate numbers gathered from local logs and keyed by canonical model spellings (dashed/dated claude ids fold into the dotted form), priced at public OpenRouter rates (actual billing may differ); top-level keys cover proxied traffic only, while codexSessions/claudeSessions cover each agent's FULL traffic (proxy and Direct), so they overlap the proxy keys when an agent is proxy-wired -- never sum them",
+  "perDay": [],
+  "perModel": {},
+  "sinceMs": null,
+  "totalUsd": 0,
+  "unpriced": [],
+  "usageByModel": {}
+}

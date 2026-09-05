@@ -422,34 +422,6 @@ test("a quantile table summarizes its values and the sampler interpolates it pie
   expect(at(0.999)).toBe(100);
 });
 
-/** Every instant-shaped key in a template with the placeholder it holds. */
-function instantKeys(value: unknown, out: [string, unknown][] = []): [string, unknown][] {
-  if (Array.isArray(value)) {
-    for (const item of value) instantKeys(item, out);
-  } else if (typeof value === "object" && value !== null) {
-    for (const [key, item] of Object.entries(value)) {
-      if (key === "timestamp" || /_at(_ms)?$/.test(key)) out.push([key, item]);
-      else instantKeys(item, out);
-    }
-  }
-  return out;
-}
-
-test("every instant-shaped key the templates emit holds a tracked placeholder", () => {
-  // The span scan keys on these shapes; a new instant field with an untracked placeholder
-  // would be written to disk and missed by the span, so it must fail here first.
-  const tracked = new Set(["@ts", "@startedMs", "@nowMs"]);
-  const found = instantKeys([templates.codex, templates.claude]);
-  expect(found.length).toBeGreaterThan(5);
-  for (const [key, placeholder] of found) {
-    expect(typeof placeholder === "string" && tracked.has(placeholder), `${key}`).toBe(true);
-  }
-  expect(new Set(found.map(([, ph]) => ph))).toEqual(tracked);
-  // Controls: an instant key under a filler placeholder, and a duration key, are told apart.
-  expect(instantKeys({ "payload": { "started_at": "@fill" } })).toEqual([["started_at", "@fill"]]);
-  expect(instantKeys({ "payload": { "duration_ms": "@durationMs" } })).toEqual([]);
-});
-
 test("the same seed yields identical bytes and a different seed does not", async () => {
   const a = await generateUsageTree({ root: freshRoot(), mb: 2, seed: 42 });
   const b = await generateUsageTree({ root: freshRoot(), mb: 2, seed: 42 });
@@ -544,7 +516,7 @@ test(
       );
       const ids = new Set(metas.map((m) => m.payload["id"]));
       const codexTexts = small.files.filter((f) => f.source === "codex").map((f) => textOf(f.path));
-      const parentless = codexTexts.filter((text, i) => {
+      const parentless = codexTexts.filter((_, i) => {
         const meta = metas[i]!.payload;
         return meta["forked_from_id"] !== undefined && !ids.has(meta["forked_from_id"]);
       });

@@ -330,13 +330,12 @@ function walk(
  *  exactly the lines the scanner reads), a trailing CR stripped, an unterminated final
  *  fragment withheld; `.jsonl.zst` decompressed whole. */
 async function* lines(file: string): AsyncGenerator<string> {
-  if (file.endsWith(".zst")) {
-    yield* zstdDecompressSync(readFileSync(file)).toString("utf8").split("\n");
-    return;
-  }
+  const chunks = file.endsWith(".zst")
+    ? [zstdDecompressSync(readFileSync(file)).toString("utf8")]
+    : createReadStream(file, { encoding: "utf8" });
   let rest = "";
-  for await (const chunk of createReadStream(file, { encoding: "utf8" })) {
-    const parts = `${rest}${chunk}`.split("\n");
+  for await (const chunk of chunks) {
+    const parts = `${rest}${String(chunk)}`.split("\n");
     rest = parts.pop() ?? "";
     for (const part of parts) yield part.endsWith("\r") ? part.slice(0, -1) : part;
   }

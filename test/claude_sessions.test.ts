@@ -2,6 +2,7 @@ import {
   appendFileSync,
   mkdirSync,
   mkdtempSync,
+  rmSync,
   statSync,
   symlinkSync,
   utimesSync,
@@ -25,10 +26,17 @@ import {
   writeTranscript,
 } from "./helpers/session_fixtures.ts";
 import { CLAUDE_SCENARIOS, scenarioNamed } from "./helpers/session_scenarios.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
+
+const dirs: string[] = [];
+afterEach(() => {
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 function tempDir(): string {
-  return mkdtempSync(join(tmpdir(), "claude-sessions-"));
+  const dir = mkdtempSync(join(tmpdir(), "claude-sessions-"));
+  dirs.push(dir);
+  return dir;
 }
 
 // The single-read fixtures live in the shared catalog, which the index equivalence
@@ -91,7 +99,7 @@ test("readClaudeSessions walks a root named twice once, whatever the reconcile",
 });
 
 test("discoverClaudeSessionRoots returns existing projects dirs only, deduped", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "claude-sessions-"));
+  const dir = tempDir();
   const home = join(dir, "dot-claude");
   mkdirSync(join(home, "projects"), { recursive: true });
   const missingHome = join(dir, "nope");
@@ -107,7 +115,7 @@ function walkedFile(path: string): WalkedFile {
 }
 
 test("parseClaudeTail resumed from a prefix parse equals one whole parse", () => {
-  const dir = mkdtempSync(join(tmpdir(), "claude-sessions-"));
+  const dir = tempDir();
   const lines = [
     '{"type":"user","message":{"role":"user","content":"hi"}}',
     assistantLine("2026-06-01T10:00:00.000Z", "claude-opus-4-8", "msg_1", usage(10, 3, 300, 40)),
@@ -140,7 +148,7 @@ test("parseClaudeTail resumed from a prefix parse equals one whole parse", () =>
 });
 
 test("walkClaudeSessions reports every transcript with its candidacy verdict, ascending by path", () => {
-  const dir = mkdtempSync(join(tmpdir(), "claude-sessions-"));
+  const dir = tempDir();
   const root = join(dir, "projects");
   const proj = join(root, "-Users-x-proj");
   const stale = writeTranscript(proj, "zzz-old.jsonl", ["x"]);
@@ -161,7 +169,7 @@ test("walkClaudeSessions reports every transcript with its candidacy verdict, as
 test.skipIf(Deno.build.os === "windows")(
   "walkClaudeSessions warns about a transcript it cannot stat and leaves it out",
   async () => {
-    const dir = mkdtempSync(join(tmpdir(), "claude-sessions-"));
+    const dir = tempDir();
     const root = join(dir, "projects");
     const proj = join(root, "-Users-x-proj");
     const kept = writeTranscript(proj, "aaa.jsonl", ["x"]);

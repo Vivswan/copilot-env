@@ -36,14 +36,9 @@ export interface UpdateArgs {
   verify?: boolean;
 }
 
-/**
- * What ONE `agent update` invocation does -- a status report (`--check` /
- * `--auto-status`) or the manual apply -- parsed ONCE by `parseUpdateAction` at
- * the CLI boundary. `--force` lives on the apply arm alone, so `--auto-status
- * --check` (or a report combined with `--force`) is a rejection instead of
- * whichever flag the old if-chain reached first. The autoupdate preference is the
- * `auto-update` config key, not a flag here.
- */
+/** What ONE `agent update` invocation does, parsed ONCE at the CLI boundary: a report
+ *  (`--check` / `--auto-status`) or the apply (the only arm `--force`/`--verify` ride on,
+ *  so a report combined with them is a rejection, not an if-order pick). */
 export type UpdateAction =
   | { kind: "check" }
   | { kind: "auto-status" }

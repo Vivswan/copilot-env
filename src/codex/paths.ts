@@ -16,6 +16,10 @@ export function defaultCodexHome(): string {
   return process.env.CODEX_HOME || path.join(homedir(), ".codex");
 }
 
+/** The managed provider id: the `model_provider` a copilot-env-written config.toml
+ *  selects (both direct and proxy; the mode is read from the table's contents). */
+export const CODEX_PROVIDER_ID = "copilot-env";
+
 /** `config.toml` under `codexHome` -- THE spelling of Codex's config file path,
  *  so every writer and checker produces byte-identical paths. */
 export function codexConfigPath(codexHome: string): string {

@@ -1,9 +1,6 @@
-// The once-per-day autoupdate routine, gated on the `auto-update` config key. Run
-// by the launchers (via the `import.meta.main` guard) before `agent start`. All
-// output goes to stderr (stderr-routed consola) so the `agent env` stdout contract
-// is never at risk; the launchers also skip `env`.
-// Root .env first (as cli.ts does): COPILOT_API_HOME may live only there, and the
-// config store the gate reads resolves under it.
+// The once-per-day autoupdate routine, gated on the `auto-update` config key; the
+// launchers run it before `agent start` only. Stderr-only output (the `agent env`
+// stdout contract). Root .env first, as cli.ts does: COPILOT_API_HOME may live there.
 import "../utils/dotenv.ts";
 import { resolveTarget } from "../install/resolve-release.ts";
 import { errMessage } from "../utils/error.ts";
@@ -23,6 +20,8 @@ export interface PreflightOptions {
   nowMs: number;
   /** Injectable for tests; defaults to the real on-disk state. */
   state?: AutoupdateState;
+  /** Injectable for tests (a hermetic lock path); defaults to THE update lock. */
+  lock?: typeof withUpdateLock;
 }
 
 /** Run the autoupdate check (and apply) if the `auto-update` key is on and a check
@@ -32,7 +31,7 @@ export async function runPreflight(opts: PreflightOptions): Promise<void> {
   if (!new CopilotEnvConfig().autoUpdateEnabled()) return;
   if (!isDue(state.read().lastCheckMs, opts.nowMs)) return;
 
-  await withUpdateLock(opts.nowMs, async (outcome) => {
+  await (opts.lock ?? withUpdateLock)(opts.nowMs, async (outcome) => {
     if (!outcome.held) {
       logger.info(
         "autoupdate: could not take the update lock (another check running?); skipping.",

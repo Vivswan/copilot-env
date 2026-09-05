@@ -2192,22 +2192,26 @@ test("checkCodexHost: the codex-host key against the disk, every drift warns wit
       summary: line({ kind: "disabled", hostHome }),
       withConfig: true,
     },
-    {
-      facts: { ...on, wired: false, probeError: "EACCES", enabled: false },
-      summary: line({ kind: "disabled", hostHome }),
-      withConfig: true,
-    },
-    {
-      facts: { ...on, exists: false, wired: false, probeError: "EACCES", enabled: false },
-      summary: line({ kind: "disabled", hostHome }),
-      withConfig: false,
-    },
   ];
   for (const { facts, summary, withConfig } of drifts) {
     const result = checkCodexHost(facts);
     expect(result.status).toBe("warn");
     expect(result.fix).toBe("agent codex");
     expect(result.detail).toBe(withConfig ? `${summary}\n${configLine}` : summary);
+  }
+  // Off with something at the path that is not proven ours NOW (no managed wiring on
+  // disk, recorded or not, probeable or not): no drift, nothing to fix; the derivation
+  // leaves it alone.
+  for (
+    const facts of [
+      { ...on, wired: false, active: false, enabled: false },
+      { ...on, wired: false, probeError: "EACCES", enabled: false },
+      { ...on, exists: false, wired: false, probeError: "EACCES", enabled: false },
+    ]
+  ) {
+    const foreign = checkCodexHost(facts);
+    expect(foreign.status).toBe("ok");
+    expect(foreign.fix).toBeUndefined();
   }
   // Not built, not wanted: informational, and the path is not echoed.
   const unbuilt = checkCodexHost({

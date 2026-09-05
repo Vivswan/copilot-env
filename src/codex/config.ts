@@ -57,7 +57,7 @@ import {
   effectiveCodexHome,
   withCodexHostFarm,
 } from "./host.ts";
-import { codexConfigPath, defaultCodexHome } from "./paths.ts";
+import { CODEX_PROVIDER_ID, codexConfigPath, defaultCodexHome } from "./paths.ts";
 import { type CodexTomlRead, readCodexToml, saveCodexToml } from "./toml_io.ts";
 
 const logger = createStderrLogger();
@@ -69,7 +69,6 @@ const logger = createStderrLogger();
 // name across the shell exports and the Codex `.env`. (The pre-unification
 // `github-copilot-direct` provider is handled ONLY by the 3.3.3 migration, which
 // rewrites existing configs to `copilot-env`; nothing here knows that legacy name.)
-export const CODEX_PROVIDER_ID = "copilot-env";
 export const CODEX_ENV_KEY = "OPENAI_API_KEY";
 // Direct mode's base_url: the same individual-plan host the identity probe hits
 // (integration_identity.ts owns the literal -- the probe's verdict must be

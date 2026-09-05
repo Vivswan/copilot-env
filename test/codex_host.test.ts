@@ -19,6 +19,7 @@ import {
   withCodexHostFarm,
 } from "../src/codex/host.ts";
 import { runConfig } from "../src/commands/config.ts";
+import { managedCodexHome } from "../src/commands/env.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
@@ -254,9 +255,16 @@ test("planCodexHostFarm: the key against the farm facts, per platform", () => {
     [true, farm(true, false), { action: "verify" }],
     [true, farm(true, true), { action: "verify" }],
     [true, farm(true, false, "EACCES"), { action: "verify" }], // on: build regardless
+    // Off removes only what is proven ours NOW: our managed wiring on disk.
     [false, farm(true, true), { action: "remove" }],
-    [false, farm(true, false), { action: "remove" }], // half-built leftover
-    [false, farm(false, false, "EACCES"), { action: "remove" }], // off wins over an unprobeable farm
+    [false, { ...farm(true, true), active: true }, { action: "remove" }],
+    [false, { ...farm(false, false), active: true }, { action: "none" }], // a dead record: nothing on disk
+    // Anything else at the path is left alone: a foreign dir, a symlink, a half-built
+    // leftover even when recorded, an unprobeable path.
+    [false, farm(true, false), { action: "leave" }],
+    [false, { ...farm(true, false), active: true }, { action: "leave" }],
+    [false, { ...farm(false, false, "EACCES"), active: true }, { action: "leave" }],
+    [false, farm(false, false, "EACCES"), { action: "leave" }],
     [false, farm(false, false), { action: "none" }],
   ];
   for (const [enabled, facts, plan] of cases) {
@@ -295,16 +303,29 @@ onlyWin("Windows: the key cannot be set, reads off, and the derivation is inert"
 
 // --- farm build from scratch -------------------------------------------------
 
+/** The paths named by the `✓ ... → <path>` lines in a narration. */
+function narratedPaths(narrated: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of narrated.matchAll(/✓ [^\n]*? → (\S+)/g)) out.add(m[1] ?? "");
+  return out;
+}
+
 skipWin(
-  "a fresh build lays out the full farm, records CODEX_HOME, and narrates every artifact",
+  "a fresh build lays out the full farm, records CODEX_HOME, and names every path it creates",
   async () => {
     const { sharedRoot, hostHome } = isolate();
     const narrated = await stderrDuring(build);
-    // Nothing hidden: the farm, the run-state record, and the config write each get a line.
+    // Nothing hidden: every entry the build created under the shared root (dirs, seed
+    // files, placeholders, symlinks) is named by a line, and so are the record and the
+    // config write. The snapshot is the filesystem delta from an empty tree.
+    const created = Object.keys(snapshotTree(sharedRoot))
+      .filter((rel) => rel !== ".")
+      .map((rel) => join(sharedRoot, rel.slice(2)));
+    const named = narratedPaths(narrated);
+    for (const p of created) expect(named.has(p), p).toBe(true);
+    expect(named.has(storeFiles().state)).toBe(true);
     expect(narrated).toContain(`Per-host CODEX_HOME farm built → ${hostHome}`);
-    expect(narrated).toContain(`Active CODEX_HOME recorded → ${storeFiles().state}`);
     expect(narrated).toContain(`Codex config written → ${join(hostHome, "config.toml")}`);
-    expect(narrated).not.toContain("Recorded codex-host"); // the key was set, not adopted
 
     // Host-local scratch dirs are real directories, never symlinks.
     for (const d of LOCAL_DIRS) {
@@ -371,8 +392,16 @@ skipWin("building twice changes nothing (idempotent, byte for byte)", async () =
   const narrated = await stderrDuring(configureCodex);
   expect(snapshotTree(sharedRoot)).toEqual(before);
   expect(new CopilotEnvRunState().read().codexHome).toBe(hostHome);
-  // The re-derivation still reports what it touched, as a verification.
+  // The re-derivation reports what it touched (the record is cleared before the rebuild
+  // and re-set after the write) and names no created path, because nothing was created.
   expect(narrated).toContain(`Per-host CODEX_HOME farm verified → ${hostHome}`);
+  expect(narrated).toContain(
+    `Active CODEX_HOME record cleared (rebuilding) → ${storeFiles().state}`,
+  );
+  const underRoot = [...narratedPaths(narrated)].filter(
+    (p) => p.startsWith(`${sharedRoot}/`) && p !== join(hostHome, "config.toml"),
+  );
+  expect(underRoot).toEqual([hostHome]);
 });
 
 // --- shared-home prime (primeSharedCodexHomeIfMissing) -----------------------
@@ -556,17 +585,42 @@ skipWin("a host-local sessions dir merges into the shared root, symlinks preserv
   expect(linkTarget(join(hostHome, "sessions"))).toBe(shared);
 });
 
-skipWin("identical file content on both sides still merges and symlinks", async () => {
-  const { sharedRoot, hostHome } = isolate();
-  fs.mkdirSync(join(sharedRoot, "sessions"), { recursive: true });
-  fs.writeFileSync(join(sharedRoot, "sessions", "top.txt"), "same");
-  fs.mkdirSync(join(hostHome, "sessions"), { recursive: true });
-  fs.writeFileSync(join(hostHome, "sessions", "top.txt"), "same");
+skipWin(
+  "identical file content on both sides still merges and symlinks, naming every merged path",
+  async () => {
+    const { sharedRoot, hostHome } = isolate();
+    fs.mkdirSync(join(sharedRoot, "sessions", "nested"), { recursive: true });
+    fs.writeFileSync(join(sharedRoot, "sessions", "top.txt"), "same");
+    fs.mkdirSync(join(hostHome, "sessions", "nested", "deep"), { recursive: true });
+    fs.writeFileSync(join(hostHome, "sessions", "top.txt"), "same");
+    fs.writeFileSync(join(hostHome, "sessions", "nested", "deep", "a.txt"), "A");
+    const linkDest = join(dir, "session-target");
+    fs.symlinkSync(linkDest, join(hostHome, "sessions", "nested", "ln"));
+    // The shared side already carries the SAME nested link: identical, so the merge
+    // proceeds and replaces it in place instead of failing on the existing entry.
+    fs.symlinkSync(linkDest, join(sharedRoot, "sessions", "nested", "ln"));
 
-  await build();
-  expect(fs.readFileSync(join(sharedRoot, "sessions", "top.txt"), "utf8")).toBe("same");
-  expect(linkTarget(join(hostHome, "sessions"))).toBe(join(sharedRoot, "sessions"));
-});
+    const narrated = await stderrDuring(build);
+    const shared = join(sharedRoot, "sessions");
+    expect(fs.readFileSync(join(shared, "top.txt"), "utf8")).toBe("same");
+    expect(fs.readFileSync(join(shared, "nested", "deep", "a.txt"), "utf8")).toBe("A");
+    expect(linkTarget(join(shared, "nested", "ln"))).toBe(linkDest);
+    expect(linkTarget(join(hostHome, "sessions"))).toBe(shared);
+    // The merge copies descendant by descendant, and names each one (nothing hidden).
+    const named = narratedPaths(narrated);
+    for (
+      const p of [
+        join(shared, "top.txt"),
+        join(shared, "nested", "deep"),
+        join(shared, "nested", "deep", "a.txt"),
+        join(shared, "nested", "ln"),
+        join(hostHome, "sessions"),
+      ]
+    ) {
+      expect(named.has(p), p).toBe(true);
+    }
+  },
+);
 
 skipWin("conflicting file content refuses promotion and leaves the local dir", async () => {
   const { sharedRoot, hostHome } = isolate();
@@ -760,6 +814,78 @@ skipWin("an unset key behaves as off: an existing farm is removed and reported",
   expect(new CopilotEnvConfig().read().codexHost).toBeUndefined(); // never written for the user
   expect(codexHostDrift()).toBeNull();
 });
+
+skipWin(
+  "key off never deletes a path it cannot prove is ours: a foreign dir and a symlink survive",
+  async () => {
+    const { sharedRoot, hostHome } = isolate();
+    new CopilotEnvConfig().set({ codexHost: false });
+    // A foreign Codex home at the farm path (another tool's config, no record of ours).
+    fs.mkdirSync(hostHome, { recursive: true });
+    fs.writeFileSync(join(hostHome, "config.toml"), 'model_provider = "openai"\n');
+    fs.writeFileSync(join(hostHome, "precious.txt"), "keep");
+    expect(codexHostFarm().wired).toBe(false);
+    expect(codexHostDrift()).toBeNull(); // not ours, so no drift to report
+    let narrated = await stderrDuring(configureCodex);
+    expect(fs.readFileSync(join(hostHome, "precious.txt"), "utf8")).toBe("keep");
+    expect(fs.readFileSync(join(hostHome, "config.toml"), "utf8")).toBe(
+      'model_provider = "openai"\n',
+    );
+    expect(narrated).toContain(`Leaving ${hostHome} alone`);
+    expect(narrated).not.toContain("farm removed");
+    // The config write landed at the default home, not in the foreign dir.
+    expect(fs.readFileSync(join(sharedRoot, "config.toml"), "utf8")).toContain(
+      'model_provider = "copilot-env"',
+    );
+
+    // A symlink at the farm path pointing at the user's own home, even one carrying
+    // OUR provider id: wiring reached through a link is never proof the farm is ours.
+    fs.rmSync(hostHome, { recursive: true, force: true });
+    const elsewhere = join(dir, "elsewhere-home");
+    fs.mkdirSync(elsewhere, { recursive: true });
+    fs.writeFileSync(join(elsewhere, "config.toml"), 'model_provider = "copilot-env"\n');
+    fs.symlinkSync(elsewhere, hostHome);
+    expect(codexHostFarm().wired).toBe(false);
+    narrated = await stderrDuring(configureCodex);
+    expect(fs.lstatSync(hostHome).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(join(elsewhere, "config.toml"))).toBe(true);
+    expect(narrated).toContain(`Leaving ${hostHome} alone`);
+    expect(codexHostDrift()).toBeNull();
+
+    // A real dir whose config.toml is itself a symlink into the user's tree: same rule.
+    fs.unlinkSync(hostHome);
+    fs.mkdirSync(hostHome, { recursive: true });
+    fs.symlinkSync(join(elsewhere, "config.toml"), join(hostHome, "config.toml"));
+    expect(codexHostFarm().wired).toBe(false);
+    await stderrDuring(configureCodex);
+    expect(fs.lstatSync(join(hostHome, "config.toml")).isSymbolicLink()).toBe(true);
+    expect(fs.readFileSync(join(elsewhere, "config.toml"), "utf8")).toContain("copilot-env");
+  },
+);
+
+skipWin(
+  "a rebuild whose managed write fails leaves no activation record, so nothing exports the farm",
+  async () => {
+    const { hostHome } = isolate();
+    await build();
+    expect(new CopilotEnvRunState().read().codexHome).toBe(hostHome);
+    expect(managedCodexHome()).toEqual({ value: hostHome });
+    // The farm's config becomes invalid TOML (a hand edit gone wrong): the managed write
+    // refuses to overwrite a file it cannot parse, so the rebuild fails after the farm step.
+    fs.writeFileSync(join(hostHome, "config.toml"), "this = is = not toml\n");
+    expect(codexHostFarm().wired).toBe(false);
+    await expect(configureCodex()).rejects.toThrow();
+    // The record was cleared BEFORE the rebuild and never re-set: the farm is not active ...
+    expect(new CopilotEnvRunState().read().codexHome).toBeUndefined();
+    expect(effectiveCodexHome()).not.toBe(hostHome);
+    // ... so `agent env` exports nothing and names the drift instead.
+    const warned = await stderrDuring(() => {
+      expect(managedCodexHome()).toBeNull();
+      return Promise.resolve();
+    });
+    expect(warned).toContain("farm is missing");
+  },
+);
 
 // --- drift reports (`agent codex --check`) ------------------------------------
 

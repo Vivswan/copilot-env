@@ -12,6 +12,8 @@ import {
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
+import { packageVersion } from "../src/utils/version.ts";
+import { runSync } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, removeDir, tmpDir } from "./helpers.ts";
 
@@ -111,6 +113,43 @@ test("runPreflight honors the auto-update key and ignores a legacy enabled field
     lastCheckMs: now - 60_000,
     lastResult: "up to date",
   });
+  // On and DUE (the positive control): the release check runs against a stubbed GitHub
+  // API whose newest release is the running version, so the due path records its result
+  // without applying anything. Cooldown 0 so the stub's date needs no aging.
+  config.set({ updateCooldown: 0 });
+  writeFileSync(path, JSON.stringify({ lastCheckMs: 1, lastResult: "old" }));
+  const realFetch = globalThis.fetch;
+  const urls: string[] = [];
+  globalThis.fetch = ((input: string | URL | Request) => {
+    urls.push(String(input));
+    return Promise.resolve(
+      new Response(
+        JSON.stringify([{
+          tag_name: `v${packageVersion()}`,
+          published_at: "2026-01-01T00:00:00Z",
+          draft: false,
+          prerelease: false,
+        }]),
+        { status: 200 },
+      ),
+    );
+  }) as typeof fetch;
+  try {
+    // The lock seam keeps the run off the install root's real update lock.
+    await runPreflight({
+      nowMs: now,
+      state: new AutoupdateState(path),
+      lock: (nowMs, fn) => withUpdateLockForTests(join(dir, "update.lock"), nowMs, fn),
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  expect(urls.length).toBe(1);
+  expect(urls[0]).toContain("/repos/Vivswan/copilot-env/releases");
+  expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({
+    lastCheckMs: now,
+    lastResult: "up to date",
+  });
 });
 
 test("effectiveUpdateCooldownDays: the live update-cooldown config, else the 7-day default", () => {
@@ -169,35 +208,69 @@ test("isDue is false under a day, true at/after a day", () => {
 
 // --- the launchers' preflight gate --------------------------------------------
 // The subcommand gate ("only on `agent start`") is shell in the launchers, not TS:
-// bin/agent and bin/agent.ps1 run preflight.ts before cli.ts loads. Pin the gating
-// lines as text so the two sides can't drift apart -- day-to-day commands
-// (env/health/cost/...) must never trigger a self-update, and `agent env` (whose
-// stdout the shell wrapper evals) must never be in scope.
+// bin/agent and bin/agent.ps1 run preflight.ts before cli.ts loads. Each launcher is
+// EXECUTED against a fake `deno` on PATH that records every invocation, so the test
+// observes what the shell actually spawns: day-to-day commands (env/health/...) must
+// never trigger a self-update, and `agent env` (whose stdout the shell wrapper evals)
+// must never be in scope.
 
-test("bin/agent and bin/agent.ps1 gate the autoupdate preflight on the same subcommand", () => {
-  const posix = readFileSync(join(PROJECT_ROOT, "bin", "agent"), "utf8");
-  const ps = readFileSync(join(PROJECT_ROOT, "bin", "agent.ps1"), "utf8");
+const DVMRC_PIN = readFileSync(join(PROJECT_ROOT, ".dvmrc"), "utf8").trim();
 
-  // Each launcher gates on a first-arg comparison, and the preflight invocation
-  // must sit INSIDE that gated block (matched to its closing `fi` / `}`), so
-  // moving the call out from under the gate fails here too. Both sides are pinned
-  // to the same literal ("start"), so one side changing its command word alone --
-  // the drift this test exists to catch -- fails one of the word assertions.
-  // The subcommand is the WHOLE gate: the preference is the `auto-update` config key
-  // the preflight reads itself, so no file-exists conjunct may stand in for it (one
-  // would skip the very first check after the key is set).
-  const posixGate = posix.match(/^if \[ "\$\{1:-\}" = "([a-z-]+)" \]; then$[\s\S]*?^fi$/m);
-  expect(posixGate).not.toBeNull(); // gate block not found at all (deleted/reformatted)
-  expect(posixGate?.[1]).toBe("start");
-  expect(posixGate?.[0]).toContain("src/autoupdate/preflight.ts");
+/** Run `bin/agent <sub>` with a fake deno; returns the fake's invocation log, one line
+ *  per `deno ...` call. */
+function launcherCalls(sub: string): string[] {
+  const home = tmp("home");
+  const bin = join(dir, "fake-bin");
+  const log = join(dir, "deno-calls.log");
+  mkdirSync(bin, { recursive: true });
+  mkdirSync(home, { recursive: true });
+  if (process.platform === "win32") {
+    writeFileSync(
+      join(bin, "deno.cmd"),
+      `@echo off\r\nif "%1"=="--version" (echo deno ${DVMRC_PIN} (stable, release, x86_64-pc-windows-msvc)& exit /b 0)\r\necho %*>> "${log}"\r\nexit /b 0\r\n`,
+    );
+  } else {
+    writeFileSync(
+      join(bin, "deno"),
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "deno ${DVMRC_PIN} (stable, release, x86_64-unknown-linux-gnu)"; exit 0; fi\nprintf '%s\\n' "$*" >> "${log}"\nexit 0\n`,
+      { mode: 0o755 },
+    );
+  }
+  // HOME is a scratch dir so the bootstrap finds no pinned deno under ~/.deno to prefer;
+  // PATH puts the fake first (the system dirs stay for sh/awk/find).
+  const env = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    DENO_INSTALL: undefined,
+    PATH: process.platform === "win32"
+      ? `${bin};${process.env.PATH ?? ""}`
+      : `${bin}:/usr/bin:/bin`,
+  };
+  const result = process.platform === "win32"
+    ? runSync("powershell", [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      join(PROJECT_ROOT, "bin", "agent.ps1"),
+      sub,
+    ], { env })
+    : runSync("sh", [join(PROJECT_ROOT, "bin", "agent"), sub], { env });
+  if (result.exitCode !== 0) throw new Error(`launcher failed: ${result.stderr}`);
+  return existsSync(log)
+    ? readFileSync(log, "utf8").split(/\r?\n/).filter((l) => l.length > 0)
+    : [];
+}
 
-  // $Sub is an intermediate, so pin its assignment too: it must be $args[0].
-  expect(ps).toMatch(/^\$Sub = if \(\$args\.Count -gt 0\) \{ \$args\[0\] \}/m);
-  const psGate = ps.match(/^if \(\$Sub -eq '([a-z-]+)'\) \{$[\s\S]*?^\}$/m);
-  expect(psGate).not.toBeNull(); // gate block not found at all (deleted/reformatted)
-  expect(psGate?.[1]).toBe("start");
-  expect(psGate?.[0]).toContain("src\\autoupdate\\preflight.ts");
-  for (const text of [posix, ps]) expect(text).not.toContain(".autoupdate");
+test("the launcher runs the autoupdate preflight before `agent start` only", () => {
+  const start = launcherCalls("start").filter((l) => !l.includes("install --frozen"));
+  expect(start).toHaveLength(2);
+  expect(start[0]).toMatch(/autoupdate[\\/]preflight\.ts$/);
+  expect(start[1]).toMatch(/src[\\/]cli\.ts start$/);
+  const env = launcherCalls("env").filter((l) => !l.includes("install --frozen"));
+  expect(env).toHaveLength(1);
+  expect(env[0]).toMatch(/src[\\/]cli\.ts env$/);
 });
 
 // --- lock -------------------------------------------------------------------

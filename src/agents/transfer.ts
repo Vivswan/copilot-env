@@ -552,6 +552,9 @@ function planWrites(
     if (plan.action === "remove") {
       lines.push(`Per-host CODEX_HOME farm (removed): ${farm.hostHome}`);
     }
+    if (plan.action === "leave") {
+      lines.push(`Per-host CODEX_HOME farm path (left alone, not proven ours): ${farm.hostHome}`);
+    }
     const home = plan.action === "build" || plan.action === "verify"
       ? farm.hostHome
       : unmanagedCodexHome();

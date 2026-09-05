@@ -13,9 +13,8 @@ import { runCaptured } from "../utils/command.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { isCatalogFileUsable } from "./catalog.ts";
-import { CODEX_PROVIDER_ID } from "./config.ts";
 import { effectiveCodexHome } from "./host.ts";
-import { codexConfigPath } from "./paths.ts";
+import { CODEX_PROVIDER_ID, codexConfigPath } from "./paths.ts";
 
 const logger = createStderrLogger();
 

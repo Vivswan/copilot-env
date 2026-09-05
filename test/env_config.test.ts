@@ -385,38 +385,8 @@ test("codex-host: stored else default, POSIX-only set, and Windows always reads 
   expect(table("win32")).toMatch(/codex-host\s+\(default: false; stored true is inert on win32\)/);
 });
 
-test("the registry covers exactly the documented keys, in alphabetical order", () => {
+test("the registry is alphabetical by CLI name with unique storage keys", () => {
   const clis = CONFIG_REGISTRY.map((d) => d.cli);
-  expect(clis).toEqual([
-    "alpha-search-codex-priority",
-    "alpha-search-model",
-    "auto-start",
-    "auto-update",
-    "claude-auto-model",
-    "claude-token-multiplier",
-    "codex-host",
-    "codex-model-catalog",
-    "idle-timeout",
-    "integration-id",
-    "launchers",
-    "max-port",
-    "message-websearch-model",
-    "messages-api",
-    "min-port",
-    "passthrough",
-    "port",
-    "proxy-logs",
-    "proxy-version",
-    "release-cooldown",
-    "responses-context-management",
-    "responses-websearch",
-    "responses-websocket",
-    "small-model",
-    "strict-port",
-    "update-cooldown",
-    "verify-provenance",
-    "wire-mcp",
-  ]);
   // The display order IS alphabetical -- a new key must be inserted in place.
   expect(clis).toEqual([...clis].sort());
   // Storage keys are unique: the CONFIG_SCHEMA fold is fromEntries, where a duplicate

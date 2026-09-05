@@ -915,9 +915,21 @@ test("health --scope claude covers only Claude wiring", () => {
 
 // --- autoupdate management flags --------------------------------------------
 
-test("update --auto-status reports the auto-update key's state and exits 0 (offline, read-only)", () => {
-  const proc = runCli(["update", "--auto-status"], { env: { ...process.env, CONSOLA_LEVEL: "5" } });
-  const out = proc.stdout + proc.stderr;
-  expect(proc.exitCode).toBe(0);
-  expect(out).toMatch(/Autoupdate: (enabled|disabled) \(the auto-update config key\)/);
+test("update --auto-status reports the auto-update key honestly, on and off (offline, read-only)", () => {
+  // The key half of the line is exact per stored value; the last-check half comes from
+  // the install root's own throttle state, which a child cannot be pointed away from.
+  for (const [autoUpdate, word] of [[true, "enabled"], [false, "disabled"]] as const) {
+    const home = mkdtempSync(join(tmpdir(), "copilot-autostatus-"));
+    writeFileSync(
+      join(home, ".copilot-env-config.json"),
+      JSON.stringify({ autoUpdate, updateCooldown: 3 }),
+    );
+    const proc = runCli(["update", "--auto-status"], {
+      env: isolatedEnv({ COPILOT_API_HOME: home }),
+    });
+    expect(proc.exitCode, word).toBe(0);
+    expect(proc.stdout + proc.stderr, word).toContain(
+      `Autoupdate: ${word} (the auto-update config key) | cooldown 3d | last check `,
+    );
+  }
 });

@@ -12,7 +12,8 @@ import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir, isFile } from "../utils/fs.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../utils/hostname.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { codexConfigPath, defaultCodexHome } from "./paths.ts";
+import { CODEX_PROVIDER_ID, codexConfigPath, defaultCodexHome } from "./paths.ts";
+import { readCodexToml } from "./toml_io.ts";
 
 const logger = createStderrLogger();
 
@@ -29,10 +30,11 @@ export interface CodexHostFarm {
   hostHome: string;
   /** The farm directory exists (a half-built farm counts). */
   present: boolean;
-  /** Its config.toml has content (the build seeds an EMPTY one; empty = api.openai.com). */
+  /** Its config.toml selects OUR managed provider: proof the farm is copilot-env's (the
+   *  build's empty seed, a foreign config, or an unparseable one are all not wired). */
   wired: boolean;
   /** A probe (the dir, or its config.toml) failed for a reason other than absence, so
-   *  `present`/`wired` are unproven (a key that is off still removes such a farm). */
+   *  `present`/`wired` are unproven. */
   probeError: string | null;
   /** Run state records it as the active CODEX_HOME (the post-write commit marker). */
   active: boolean;
@@ -48,23 +50,29 @@ export function codexHostFarm(): CodexHostFarm {
 }
 
 function probeFarm(hostHome: string): Pick<CodexHostFarm, "present" | "wired" | "probeError"> {
+  let viaLink: boolean;
   try {
-    fs.lstatSync(hostHome);
+    viaLink = fs.lstatSync(hostHome).isSymbolicLink();
   } catch (e) {
     return { present: false, wired: false, probeError: isEnoentOrNotdir(e) ? null : errMessage(e) };
   }
   try {
-    const st = fs.statSync(codexConfigPath(hostHome));
-    return { present: true, wired: st.isFile() && st.size > 0, probeError: null };
+    // Wiring reached THROUGH a symlink (the home or its config.toml) is someone else's
+    // tree, never proof the farm is ours.
+    const configPath = codexConfigPath(hostHome);
+    if (viaLink || (lexists(configPath) && isSymlinkPath(configPath))) {
+      return { present: true, wired: false, probeError: null };
+    }
+    const read = readCodexToml(configPath);
+    const wired = read.kind === "ok" && read.doc.model_provider === CODEX_PROVIDER_ID;
+    return { present: true, wired, probeError: null };
   } catch (e) {
     return { present: true, wired: false, probeError: isEnoentOrNotdir(e) ? null : errMessage(e) };
   }
 }
 
-// True when the inherited CODEX_HOME is OUR farm export: never a user's choice, so
-// the record (not the shell) decides whether the farm is the home, and `agent env`
-// may clear it. Exact string equality on purpose (no path normalization): a
-// trailing-slash spelling is not ours and stays hands-off.
+// The inherited CODEX_HOME is OUR farm export (never a user's choice, so `agent env`
+// may clear it). Exact spelling on purpose: a trailing-slash variant is not ours.
 export function isManagedFarmExport(envHome: string | undefined): boolean {
   return Boolean(envHome && envHome === getHostLocalCodexHome());
 }
@@ -98,8 +106,16 @@ export function unmanagedCodexHome(): string {
 }
 
 /** What ONE wiring pass does to the farm: the single decision the derivation
- *  (withCodexHostFarm) and the settings-import plan share. */
-export type CodexHostFarmPlan = { action: "build" | "verify" | "remove" | "none" };
+ *  (withCodexHostFarm) and the settings-import plan share. `leave` = something sits
+ *  at the farm path that is not proven ours (no record, no managed wiring). */
+export type CodexHostFarmPlan = { action: "build" | "verify" | "remove" | "leave" | "none" };
+
+/** Proof that what is on disk NOW is copilot-env's: our managed wiring in its
+ *  config.toml. The activation record alone proves only that we built something there
+ *  once; the user may have replaced it since, so it never authorizes a delete. */
+export function isOurFarm(farm: CodexHostFarm): boolean {
+  return farm.wired;
+}
 
 export function planCodexHostFarm(
   enabled: boolean,
@@ -108,9 +124,10 @@ export function planCodexHostFarm(
 ): CodexHostFarmPlan {
   if (platform === "win32") return { action: "none" };
   if (enabled) return { action: farm.present ? "verify" : "build" };
-  // Off removes what is there, even unprobeable (rmSync reports a real failure
-  // itself); a proven-absent path has nothing to remove.
-  return farm.present || farm.probeError !== null ? { action: "remove" } : { action: "none" };
+  if (!farm.present && farm.probeError === null) return { action: "none" };
+  // Never delete what we cannot prove is ours right now: a foreign dir, a symlink, a
+  // half-built leftover, an unprobeable path.
+  return isOurFarm(farm) ? { action: "remove" } : { action: "leave" };
 }
 
 /** The key read behind the effective-home rule only: this runs on every read path
@@ -138,11 +155,7 @@ export function codexHostDrift(
 /** The pure decision behind codexHostDrift, over already-gathered facts (health
  *  probes them through its own seams). */
 export function codexHostDriftFrom(enabled: boolean, farm: CodexHostFarm): CodexHostDrift | null {
-  if (!enabled) {
-    return farm.present || farm.probeError !== null
-      ? { kind: "disabled", hostHome: farm.hostHome }
-      : null;
-  }
+  if (!enabled) return isOurFarm(farm) ? { kind: "disabled", hostHome: farm.hostHome } : null;
   if (!farm.wired) return { kind: "missing", hostHome: farm.hostHome };
   return farm.active ? null : { kind: "inactive", hostHome: farm.hostHome };
 }
@@ -207,6 +220,25 @@ function isDirPath(p: string): boolean {
 }
 
 // --- fs operations that throw on failure --------------------------------------
+// Every mutation below names the path it changed (nothing hidden): one line per
+// created dir, copied/created file, symlink, move, or removal.
+
+function report(action: string, p: string): void {
+  logger.log(`  ✓ ${action} → ${p}`);
+}
+
+/** mkdir -p that names every directory it actually creates (missing ancestors too); an
+ *  entry that exists but is not a directory throws, as mkdir would. */
+function ensureDir(p: string): void {
+  if (isDirPath(p) && !isSymlinkPath(p)) return;
+  const missing: string[] = [];
+  for (let cur = p; !lexists(cur); cur = path.dirname(cur)) {
+    missing.unshift(cur);
+    if (path.dirname(cur) === cur) break;
+  }
+  fs.mkdirSync(p, { recursive: true });
+  for (const made of missing) report("Directory created", made);
+}
 
 // Rename, falling back to copy+delete when src and dst sit on different devices.
 function moveTree(src: string, dst: string): void {
@@ -221,6 +253,7 @@ function moveTree(src: string, dst: string): void {
       throw e;
     }
   }
+  report(`Moved ${src}`, dst);
 }
 
 // Every path under root, one level at a time, without descending into symlinked
@@ -257,19 +290,44 @@ function mergeDirInto(localPath: string, sharedPath: string): void {
         const dstIsDir = isDirPath(dst);
         if (dstIsSymlink || !dstIsDir) {
           fs.unlinkSync(dst);
+          report("Removed", dst);
         }
       }
       fs.symlinkSync(target, dst);
+      report(`Symlink to ${target} created`, dst);
     } else if (entry.isDirectory()) {
-      fs.cpSync(src, dst, { recursive: true, force: true, dereference: false });
+      copyTree(src, dst);
     } else {
       fs.copyFileSync(src, dst);
+      report(`Copied ${src}`, dst);
+    }
+  }
+}
+
+/** Recursive copy that names every entry it writes (symlinks copied as links). */
+function copyTree(src: string, dst: string): void {
+  ensureDir(dst);
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const from = path.join(src, entry.name);
+    const to = path.join(dst, entry.name);
+    if (entry.isSymbolicLink()) {
+      const target = fs.readlinkSync(from);
+      // An existing link here already passed the merge validation (same target).
+      const replaced = lexists(to);
+      if (replaced) fs.unlinkSync(to);
+      fs.symlinkSync(target, to);
+      report(`Symlink to ${target} ${replaced ? "replaced" : "created"}`, to);
+    } else if (entry.isDirectory()) {
+      copyTree(from, to);
+    } else {
+      fs.copyFileSync(from, to);
+      report(`Copied ${from}`, to);
     }
   }
 }
 
 function ensureParentDir(p: string): void {
-  fs.mkdirSync(path.dirname(p), { recursive: true });
+  ensureDir(path.dirname(p));
 }
 
 // === CODEX_HOME symlink farm (seeding) ===
@@ -333,6 +391,7 @@ function promoteCodexDirToSharedIfSafe(localPath: string, sharedPath: string): P
   // TOCTOU: the merge below races the validation above; accepted, startup-only flow.
   mergeDirInto(localPath, sharedPath);
   fs.rmSync(localPath, { recursive: true, force: true });
+  report("Removed (merged into the shared root)", localPath);
   return "promoted";
 }
 
@@ -369,8 +428,10 @@ function seedLocalCodexFileIfMissing(localPath: string, sharedPath: string): voi
   ensureParentDir(localPath);
   if (isFile(sharedPath)) {
     fs.copyFileSync(sharedPath, localPath);
+    report(`Copied ${sharedPath}`, localPath);
   } else {
     fs.writeFileSync(localPath, "");
+    report("Empty file created", localPath);
   }
 }
 
@@ -389,6 +450,7 @@ function seedSharedCodexFileIfMissing(
     if (!sharedExists) {
       ensureParentDir(sharedPath);
       fs.copyFileSync(localPath, sharedPath);
+      report(`Copied ${localPath}`, sharedPath);
       return;
     }
 
@@ -398,6 +460,7 @@ function seedSharedCodexFileIfMissing(
       fs.statSync(localPath).size > 0
     ) {
       fs.copyFileSync(localPath, sharedPath);
+      report(`Copied ${localPath}`, sharedPath);
     }
     return;
   }
@@ -405,6 +468,7 @@ function seedSharedCodexFileIfMissing(
   if (createPlaceholder && !sharedExists) {
     ensureParentDir(sharedPath);
     fs.writeFileSync(sharedPath, "");
+    report("Empty file created", sharedPath);
   }
 }
 
@@ -424,6 +488,7 @@ function ensureCodexDirSymlink(localPath: string, sharedPath: string): void {
   if (!lexists(localPath)) {
     ensureParentDir(localPath);
     fs.symlinkSync(sharedPath, localPath);
+    report(`Symlink to ${sharedPath} created`, localPath);
   }
 }
 
@@ -441,6 +506,7 @@ function ensureCodexFileSymlink(localPath: string, sharedPath: string): void {
       return;
     }
     fs.unlinkSync(localPath);
+    report("Removed (identical to the shared copy)", localPath);
   } else if (lexists(localPath)) {
     warnExistingCodexPath(localPath);
     return;
@@ -448,6 +514,7 @@ function ensureCodexFileSymlink(localPath: string, sharedPath: string): void {
 
   ensureParentDir(localPath);
   fs.symlinkSync(sharedPath, localPath);
+  report(`Symlink to ${sharedPath} created`, localPath);
 }
 
 // --- the farm layout, as data ------------------------------------------------
@@ -496,11 +563,11 @@ const SHARED_FILES: readonly { name: string; placeholder: boolean }[] = [
 function buildCodexSymlinkFarm(codexHome: string): void {
   const sharedRoot = path.dirname(codexFarmHostsDir());
   primeSharedCodexHomeIfMissing(sharedRoot);
-  fs.mkdirSync(sharedRoot, { recursive: true });
-  fs.mkdirSync(codexHome, { recursive: true });
+  ensureDir(sharedRoot);
+  ensureDir(codexHome);
 
   for (const name of HOST_LOCAL_DIRS) {
-    fs.mkdirSync(path.join(codexHome, name), { recursive: true });
+    ensureDir(path.join(codexHome, name));
   }
 
   for (const name of HOST_LOCAL_SEED_FILES) {
@@ -508,7 +575,7 @@ function buildCodexSymlinkFarm(codexHome: string): void {
   }
 
   for (const name of SHARED_DIRS) {
-    fs.mkdirSync(path.join(sharedRoot, name), { recursive: true });
+    ensureDir(path.join(sharedRoot, name));
     ensureCodexDirSymlink(path.join(codexHome, name), path.join(sharedRoot, name));
   }
 
@@ -522,12 +589,9 @@ function buildCodexSymlinkFarm(codexHome: string): void {
   }
 }
 
-/**
- * Run ONE default Codex config write with the farm derived from the `codex-host`
- * key around it (planCodexHostFarm decides): build/verify, write, THEN record (a
- * failed write never activates a half-wired farm); or remove and clear the record,
- * then write at the default home. Every artifact touched gets a stderr line.
- */
+/** Run ONE default Codex config write with the farm derived from the `codex-host`
+ *  key around it (planCodexHostFarm decides). The activation record lands only AFTER a
+ *  successful write, and is cleared BEFORE a rebuild, so it never outlives a proven farm. */
 export async function withCodexHostFarm(
   write: (codexHome: string) => Promise<void>,
 ): Promise<void> {
@@ -541,6 +605,10 @@ export async function withCodexHostFarm(
   switch (plan.action) {
     case "build":
     case "verify": {
+      if (farm.active) {
+        state.set({ codexHome: null });
+        logger.log(`  ✓ Active CODEX_HOME record cleared (rebuilding) → ${paths.stateFile}`);
+      }
       try {
         buildCodexSymlinkFarm(farm.hostHome);
       } catch (e: unknown) {
@@ -564,6 +632,12 @@ export async function withCodexHostFarm(
     case "remove":
       fs.rmSync(farm.hostHome, { recursive: true, force: true });
       logger.log(`  ✓ Per-host CODEX_HOME farm removed → ${farm.hostHome}`);
+      break;
+    case "leave":
+      logger.warn(
+        `Leaving ${farm.hostHome} alone: it sits at the per-host CODEX_HOME farm path but ` +
+          "copilot-env cannot prove it built it (no activation record, no managed config.toml).",
+      );
       break;
     case "none":
       break;

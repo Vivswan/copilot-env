@@ -1,5 +1,6 @@
 // `agent cost`: fetches pricing, reads usage DBs, and prints spend estimates.
 import { consola } from "consola";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { errMessage } from "../utils/error.ts";
 import { type Align, printTable } from "../utils/table.ts";
 import { formatDuration, MILLISECONDS_PER_DAY, startOfLocalDay } from "../utils/time.ts";
@@ -18,7 +19,6 @@ import {
   type LoadedPricing,
   loadPricing,
   type ModelCost,
-  OPENROUTER_MODELS_URL,
   type PricingTier,
   roundUsd,
 } from "./pricing.ts";
@@ -68,6 +68,7 @@ export interface CostArgs {
   days?: string;
   json?: boolean;
   perDay?: boolean;
+  /** The per-run `--pricing-url`; unset defers to the `pricing-url` config key. */
   pricingUrl?: string;
   sources?: boolean;
   /** Parse every session log; the usage index is neither opened nor written. */
@@ -149,6 +150,15 @@ export class ReconcileMeter {
   }
 }
 
+/** THE price-list URL resolution: the per-run flag, else the stored `pricing-url`
+ *  preference, else the registry's built-in (the accessor folds the last two). */
+export function resolvePricingUrl(
+  flag: string | undefined,
+  config: CopilotEnvConfig = new CopilotEnvConfig(),
+): string {
+  return flag ?? config.pricingUrl();
+}
+
 /** `cost`: aggregate per-host SQLite + Codex session usage and estimate spend. */
 export async function runCost(args: CostArgs, deps: CostDeps = {}): Promise<void> {
   const startedAt = performance.now();
@@ -158,7 +168,7 @@ export async function runCost(args: CostArgs, deps: CostDeps = {}): Promise<void
   // round-trip overlaps the file parsing. The no-op catch keeps an exit before
   // the await from leaving an unhandled rejection.
   const pricingAbort = new AbortController();
-  const pricingLoad = loadPricing(args.pricingUrl ?? OPENROUTER_MODELS_URL, {
+  const pricingLoad = loadPricing(resolvePricingUrl(args.pricingUrl), {
     signal: pricingAbort.signal,
     fetchImpl: deps.fetchImpl,
   });

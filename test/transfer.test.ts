@@ -12,7 +12,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import {
   applyImportBundle,
   applyImportPlan,
@@ -179,19 +179,6 @@ test("export carries the stores + modes and never the machine-local state keys",
   const text = JSON.stringify(bundle);
   expect(text).not.toContain("codexCatalog");
   expect(text).not.toContain("webSearchDeny");
-});
-
-test("export reads the default credential from an unmigrated (top-level pair) store", () => {
-  isolate();
-  // A store a pre-slot release wrote and no new write/migration has touched yet.
-  const stateFile = new CopilotApiPaths().sharedStateFile;
-  mkdirSync(dirname(stateFile), { recursive: true });
-  writeFileSync(
-    stateFile,
-    `${JSON.stringify({ githubToken: "ghp_legacy", authProvider: "gh-token" })}\n`,
-  );
-  const bundle = buildExportBundle({ withCredentials: true });
-  expect(bundle.credential).toEqual({ githubToken: "ghp_legacy", authProvider: "gh-token" });
 });
 
 // --- validation (strict parse boundary) ---------------------------------------

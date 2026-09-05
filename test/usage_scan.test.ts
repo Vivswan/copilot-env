@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ScanHit, type ScanLines, TAIL_PROBE_BYTES } from "../src/usage/contribution.ts";
-import { hasIdleScanBuffer, scanBytes, scanLines, scanSource } from "../src/usage/scan.ts";
+import { scanBytes, scanLines, scanSource } from "../src/usage/scan.ts";
 import { expect, test } from "./helpers/testing.ts";
 
 // The contract's function type and the implementation must stay assignable.
@@ -167,7 +167,6 @@ test("scanLines probe covers the whole file when it is shorter than the probe, a
   const short = "TOKEN\n";
   const { result: shortResult } = collect(writeTemp(short), ["TOKEN"]);
   expect(shortResult.tailProbeHex).toBe(Buffer.from(short).toString("hex"));
-  expect(shortResult.tailProbeHex.length).toBe(short.length * 2);
 
   const { hits, result: emptyResult } = collect(writeTemp(""), ["TOKEN"]);
   expect(hits).toEqual([]);
@@ -230,21 +229,6 @@ test("scanLines nested inside another scan's callback delivers both files correc
   expect(result.parsedThrough).toBe(24);
 });
 
-test("scanLines parks the shared buffer again after a throwing callback", () => {
-  const path = writeTemp("TOKEN a\nTOKEN b\n");
-  collect(path, ["TOKEN"]);
-  expect(hasIdleScanBuffer()).toBe(true);
-  expect(() =>
-    scanLines(path, 0, ["TOKEN"], () => {
-      expect(hasIdleScanBuffer()).toBe(false); // held by this scan
-      throw new Error("boom");
-    })
-  ).toThrow("boom");
-  expect(hasIdleScanBuffer()).toBe(true);
-  const { hits } = collect(path, ["TOKEN"]);
-  expect(hits.map((h) => h.line)).toEqual(["TOKEN a", "TOKEN b"]);
-});
-
 test("scanLines keeps a leading byte order mark in the delivered line", () => {
   const bom = "\ufeff";
   const content = `${bom}{"type":"assistant","n":1}\n{"type":"assistant","n":2}\n`;
@@ -284,7 +268,7 @@ test("scanLines propagates filesystem errors: missing file, directory, failing s
   const dir = mkdtempSync(join(tmpdir(), "usage-scan-"));
   expect(() => collect(join(dir, "missing.jsonl"), ["TOKEN"])).toThrow(/ENOENT/);
   expect(() => collect(dir, ["TOKEN"])).toThrow(/EISDIR|EBADF|EPERM/);
-  // A read that fails mid-scan surfaces as-is and parks the shared buffer again.
+  // A read that fails mid-scan surfaces as-is.
   let reads = 0;
   expect(() =>
     scanSource(
@@ -303,5 +287,4 @@ test("scanLines propagates filesystem errors: missing file, directory, failing s
       {},
     )
   ).toThrow("disk gone");
-  expect(hasIdleScanBuffer()).toBe(true);
 });

@@ -1,4 +1,5 @@
 import {
+  appendFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -18,13 +19,11 @@ import {
 } from "../src/usage/contribution.ts";
 import {
   activeDayCoverage,
-  addIndexStats,
   buildSourceJson,
   computeDayMetrics,
   type CostRuntime,
   daysCutoffMs,
   describeDaysWindow,
-  describeIndexRun,
   formatBytesCompact,
   median,
   parseDaysWindow,
@@ -527,9 +526,9 @@ async function unhandledRejectionsDuring(body: () => Promise<void>): Promise<unk
   globalThis.addEventListener("unhandledrejection", onUnhandled);
   try {
     await body();
-    // A rejection surfaces as unhandled only after the microtasks drain and a
-    // macrotask turn passes; wait one out before reading the count.
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // A rejection surfaces as unhandled only after the microtasks drain and the
+    // event loop turns once; yield that one turn (no wall-clock wait) before reading.
+    await new Promise((resolve) => setTimeout(resolve, 0));
   } finally {
     globalThis.removeEventListener("unhandledrejection", onUnhandled);
   }
@@ -608,8 +607,18 @@ test("runCost discovers roots before it opens the index, so a failing discovery 
     // The thrown exit still cancels the price list still in flight.
     expect(net.aborted()).toBe(true);
     // The index directory is created by opening the index (the hanging fetch wrote
-    // no price cache there), so its absence proves no index was left open.
-    expect(existsSync(join(home, USAGE_INDEX_DIR_NAME))).toBe(false);
+    // no price cache there), so its absence proves no index was opened. The control:
+    // the same run with a working discovery (and a fetch that writes no cache) does
+    // create it.
+    const indexDir = join(home, USAGE_INDEX_DIR_NAME);
+    expect(existsSync(indexDir)).toBe(false);
+    await captureAllWrites(() =>
+      runCost({ pricingUrl: PRICE_URL }, {
+        fetchImpl: fakeFetch(null, { fail: true }),
+        ...rootsOf([], [claudeRoot]),
+      })
+    );
+    expect(existsSync(indexDir)).toBe(true);
   }));
 
 test("runCost warns when it prices against a stale cached list", () =>
@@ -726,44 +735,54 @@ test("runCost --json carries the reserved runtime key with exactly its three par
     expect(plain.index.filesParsedWhole).toBe(1);
   }));
 
-/** One Codex rollout under `dir`, so the Codex side has a row to lose. */
-function codexRootWithOneRollout(dir: string): string {
+function codexRootWithTwoRollouts(dir: string): string {
   const root = join(dir, "sessions");
-  writeRollout(root, "2026-06-01", "aaa", [
-    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
-    turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
-    tokenCount("2026-06-01T10:00:05.000Z", codexUsage(10, 0, 1), codexUsage(10, 0, 1)),
-  ]);
+  for (const id of ["aaa", "bbb"]) {
+    writeRollout(root, "2026-06-01", id, [
+      sessionMeta("2026-06-01T10:00:00.000Z", id, { provider: "copilot-env" }),
+      turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
+      tokenCount("2026-06-01T10:00:05.000Z", codexUsage(10, 0, 1), codexUsage(10, 0, 1)),
+    ]);
+  }
   return root;
 }
 
 // Each source in turn: seed its rows, then hand the run NO roots for it while the
 // other source keeps the run past the no-sources return. The old `roots.length > 0`
-// guards would skip the reconcile and leave the rows; the count says they went.
+// guards would skip the reconcile and leave the rows; the count says they all went.
 for (const vanished of ["codex", "claude"] as const) {
   test(`runCost reconciles ${vanished} with no roots left, so its rows go with the root`, () =>
     withCostHome(async ({ claudeRoot }) => {
-      const codexRoot = codexRootWithOneRollout(join(claudeRoot, ".."));
+      const codexRoot = codexRootWithTwoRollouts(join(claudeRoot, ".."));
+      writeTranscript(join(claudeRoot, "-Users-y-proj"), "bbb.jsonl", [
+        assistantLine("2026-06-01T11:00:00.000Z", "claude-opus-4-8", "msg_2", claudeUsage(1, 2)),
+      ]);
       const seeded = await runtimeOf({}, { codex: [codexRoot], claude: [claudeRoot] });
-      expect(seeded.index.filesParsedWhole).toBe(2);
+      expect(seeded.index.filesParsedWhole).toBe(4);
 
       const after = await runtimeOf({}, {
         codex: vanished === "codex" ? [] : [codexRoot],
         claude: vanished === "claude" ? [] : [claudeRoot],
       });
-      expect(after.index.filesDeleted).toBe(1);
-      expect(after.index.filesReused).toBe(1);
-      expect(after.index.filesSeen).toBe(1);
+      expect(after.index.filesDeleted).toBe(2);
+      expect(after.index.filesReused).toBe(2);
+      expect(after.index.filesSeen).toBe(2);
     }));
 }
 
 test("runCost's human report ends with one index line only when the index was used", () =>
   withCostHome(async ({ claudeRoot }) => {
     const deps = { fetchImpl: fakeFetch(PRICED_BODY), ...rootsOf([], [claudeRoot]) };
-    const size = statSync(join(claudeRoot, "-Users-x-proj", "aaa.jsonl")).size;
+    // Pad the transcript to exactly 1200 bytes with a user line: the byte count
+    // crosses into the kB unit, so the line proves the count is formatted, not echoed.
+    const file = join(claudeRoot, "-Users-x-proj", "aaa.jsonl");
+    const filler = (text: string) =>
+      `${JSON.stringify({ type: "user", message: { role: "user", content: text } })}\n`;
+    appendFileSync(file, filler("x".repeat(1200 - statSync(file).size - filler("").length)));
+    expect(statSync(file).size).toBe(1200);
     const cold = await captureChannels(() => runCost({ pricingUrl: PRICE_URL }, deps));
     expect(cold.all.trimEnd().split("\n").at(-1)).toBe(
-      `usage index: 0 files reused, 0 tail-parsed, 1 whole-parsed, ${size} B read`,
+      "usage index: 0 files reused, 0 tail-parsed, 1 whole-parsed, 1.2 kB read",
     );
     // The line is a note about the run, so it rides stderr and never the report.
     expect(cold.stderr).toContain("usage index:");
@@ -778,43 +797,12 @@ test("runCost's human report ends with one index line only when the index was us
     expect(plain).not.toContain("usage index:");
   }));
 
-test("describeIndexRun and formatBytesCompact spell the index line", () => {
-  const stats: IndexStats = {
-    ...emptyIndexStats(),
-    filesReused: 120,
-    filesParsedTail: 3,
-    filesParsedWhole: 2,
-    bytesRead: 1_234_567,
-  };
-  expect(describeIndexRun(stats)).toBe(
-    "usage index: 120 files reused, 3 tail-parsed, 2 whole-parsed, 1.2 MB read",
-  );
+test("formatBytesCompact picks decimal units with one decimal from kB up", () => {
   expect(formatBytesCompact(0)).toBe("0 B");
   expect(formatBytesCompact(999)).toBe("999 B");
   expect(formatBytesCompact(1_000)).toBe("1.0 kB");
+  expect(formatBytesCompact(1_234_567)).toBe("1.2 MB");
   expect(formatBytesCompact(2_500_000_000)).toBe("2.5 GB");
-});
-
-test("addIndexStats sums every field", () => {
-  const into = { ...emptyIndexStats(), filesSeen: 1, bytesRead: 10 };
-  addIndexStats(into, {
-    filesSeen: 2,
-    filesReused: 3,
-    filesParsedWhole: 4,
-    filesParsedTail: 5,
-    filesFailed: 6,
-    filesDeleted: 7,
-    bytesRead: 8,
-  });
-  expect(into).toEqual({
-    filesSeen: 3,
-    filesReused: 3,
-    filesParsedWhole: 4,
-    filesParsedTail: 5,
-    filesFailed: 6,
-    filesDeleted: 7,
-    bytesRead: 18,
-  });
 });
 
 test("ReconcileMeter bills a reader's synchronous fold, never a microtask queued behind it", async () => {
@@ -846,20 +834,55 @@ test("ReconcileMeter bills a reader's synchronous fold, never a microtask queued
   expect(parseTimed.stats.filesSeen).toBe(0);
 });
 
+test("ReconcileMeter sums every IndexStats field over both readers' reconciles", async () => {
+  // Every field distinct and non-zero, so a field that stopped accumulating shows.
+  const perCall: IndexStats = {
+    filesSeen: 1,
+    filesReused: 2,
+    filesParsedWhole: 3,
+    filesParsedTail: 4,
+    filesFailed: 5,
+    filesDeleted: 6,
+    bytesRead: 7,
+  };
+  const meter = new ReconcileMeter(() => ({ records: [], stats: { ...perCall } }));
+  const noParse = () => {
+    throw new Error("no candidates to parse");
+  };
+  const reader = (reconcile: Reconcile): Promise<void> => {
+    reconcile("codex", [], noParse, noParse);
+    return Promise.resolve();
+  };
+  await meter.read(reader);
+  await meter.read(reader);
+  expect(meter.stats).toEqual({
+    filesSeen: 2,
+    filesReused: 4,
+    filesParsedWhole: 6,
+    filesParsedTail: 8,
+    filesFailed: 10,
+    filesDeleted: 12,
+    bytesRead: 14,
+  });
+});
+
 // ---------- the pricing-url preference ----------
 
 const STORED_URL = "https://stored.example/with-secret-token/models";
 const FLAG_URL = "https://flag.example/models";
 
-test("resolvePricingUrl: the flag beats the stored key, which beats the built-in", () =>
-  withCostHome(async () => {
-    const config = new CopilotEnvConfig();
+test("resolvePricingUrl: the flag beats the stored key, which beats the built-in", () => {
+  const dir = mkdtempSync(join(tmpdir(), "cost-config-"));
+  try {
+    const config = new CopilotEnvConfig(join(dir, "config.json"));
     expect(resolvePricingUrl(undefined, config)).toBe(OPENROUTER_MODELS_URL);
     config.set({ pricingUrl: STORED_URL });
     expect(resolvePricingUrl(undefined, config)).toBe(STORED_URL);
     expect(resolvePricingUrl(FLAG_URL, config)).toBe(FLAG_URL);
-    await Promise.resolve();
-  }));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("runCost fetches the stored pricing-url, and --pricing-url overrides it for one run", () =>
   withCostHome(async ({ claudeRoot }) => {

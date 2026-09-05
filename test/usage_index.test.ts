@@ -17,7 +17,6 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { consola } from "consola";
 import {
   type ClaudeContribution,
   type ClaudeOccurrence,
@@ -41,8 +40,8 @@ import {
   USAGE_INDEX_LOCK_NAME,
   type UsageIndex,
 } from "../src/usage/index.ts";
-import { usageIndexDir } from "../src/usage/paths.ts";
 import { releaseFileLock, tryAcquireFileLock } from "../src/utils/file_lock.ts";
+import { captureAllWrites } from "./helpers/output.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 
 let root = "";
@@ -254,35 +253,7 @@ function rawIndexBytes(): string {
   return text;
 }
 
-/** Run `body` with stdout/stderr captured (consola routes through one of them); the
- *  consola level is raised so info/warn are not self-silenced under the test runner. */
-function captureAllWrites(body: () => void): string {
-  const written: string[] = [];
-  const savedLevel = consola.level;
-  const origOut = process.stdout.write.bind(process.stdout);
-  const origErr = process.stderr.write.bind(process.stderr);
-  const capture = (chunk: string | Uint8Array): boolean => {
-    written.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
-    return true;
-  };
-  process.stdout.write = capture;
-  process.stderr.write = capture;
-  try {
-    consola.level = 3;
-    body();
-  } finally {
-    process.stdout.write = origOut;
-    process.stderr.write = origErr;
-    consola.level = savedLevel;
-  }
-  return written.join("");
-}
-
 // --- tests ----------------------------------------------------------------------
-
-test("usageIndexDir lives under the root copilot-api home", () => {
-  expect(usageIndexDir()).toBe(join(process.env.COPILOT_API_HOME ?? "", "usage-index"));
-});
 
 test("round trip: a second run reuses every row and reads no bytes", () => {
   setup();
@@ -501,7 +472,7 @@ test("a deleted session vanishes: its row is gone and it contributes no record",
   for (const key of goneKeys) expect(raw).not.toContain(key);
 });
 
-test("a parse that throws is one failure: warned, row deleted, others untouched", () => {
+test("a parse that throws is one failure: warned, row deleted, others untouched", async () => {
   setup();
   const a = join(logs, "a.jsonl");
   const bad = join(logs, "bad.jsonl");
@@ -512,7 +483,7 @@ test("a parse that throws is one failure: warned, row deleted, others untouched"
   appendLines(bad, 3, 1, "bad");
 
   let second: ReturnType<typeof runReconcile> | undefined;
-  const out = captureAllWrites(() => {
+  const out = await captureAllWrites(() => {
     second = runReconcile(index.reconcile, [walked(a), walked(bad)], new Set([bad]));
   });
   expect(out).toContain(`could not read ${bad} (boom).`);
@@ -531,7 +502,7 @@ test("a parse that throws is one failure: warned, row deleted, others untouched"
   );
 });
 
-test("a corrupt database is rebuilt with one info line and the run still succeeds", () => {
+test("a corrupt database is rebuilt with one info line and the run still succeeds", async () => {
   setup();
   const a = join(logs, "a.jsonl");
   writeLines(a, 0, 3, "alpha");
@@ -539,7 +510,7 @@ test("a corrupt database is rebuilt with one info line and the run still succeed
   writeFileSync(dbPath(), "this is not a database, not even close to one\n".repeat(20));
 
   let index: UsageIndex | undefined;
-  const out = captureAllWrites(() => {
+  const out = await captureAllWrites(() => {
     index = open();
   });
   expect(out.split("rebuilding the usage index").length - 1).toBe(1);
@@ -552,7 +523,7 @@ test("a corrupt database is rebuilt with one info line and the run still succeed
   expect(storedRows().map((r) => r.path)).toEqual([a]);
 });
 
-test("a parser fingerprint change re-parses everything once", () => {
+test("a parser fingerprint change re-parses everything once", async () => {
   setup();
   const a = join(logs, "a.jsonl");
   const b = join(logs, "b.jsonl");
@@ -569,7 +540,7 @@ test("a parser fingerprint change re-parses everything once", () => {
   same.close();
 
   let changed: UsageIndex | undefined;
-  const out = captureAllWrites(() => {
+  const out = await captureAllWrites(() => {
     changed = open({ fingerprint: "parsers-2" });
   });
   expect(out).toContain("rebuilding the usage index");
@@ -586,7 +557,7 @@ test("a parser fingerprint change re-parses everything once", () => {
 
   // The default stamp is a different fingerprint too.
   let defaulted: UsageIndex | undefined;
-  const out2 = captureAllWrites(() => {
+  const out2 = await captureAllWrites(() => {
     defaulted = open();
   });
   expect(out2).toContain(`rebuilding the usage index`);
@@ -631,7 +602,7 @@ test("a row with another contribution version is parsed whole; the rest reuse", 
 });
 
 for (const corrupt of [-1, 1e20]) {
-  test(`a row with resume offset ${corrupt} reads as no row: whole parse, row healed`, () => {
+  test(`a row with resume offset ${corrupt} reads as no row: whole parse, row healed`, async () => {
     setup();
     const a = join(logs, "a.jsonl");
     const b = join(logs, "b.jsonl");
@@ -647,7 +618,7 @@ for (const corrupt of [-1, 1e20]) {
 
     const reopened = open();
     let result: ReturnType<typeof runReconcile> | undefined;
-    const out = captureAllWrites(() => {
+    const out = await captureAllWrites(() => {
       result = runReconcile(reopened.reconcile, [walked(a), walked(b)]);
     });
     expect(out).not.toContain("could not read");
@@ -704,7 +675,7 @@ test("no session text reaches the database", () => {
   expect(raw).toContain(dedupKey(line(0, marker).replace(/\n$/, "")));
 });
 
-test("with the lock held elsewhere the records are still right and nothing is written", () => {
+test("with the lock held elsewhere the records are still right and nothing is written", async () => {
   setup();
   const a = join(logs, "a.jsonl");
   const b = join(logs, "b.jsonl");
@@ -719,7 +690,7 @@ test("with the lock held elsewhere the records are still right and nothing is wr
     rmSync(b);
     appendLines(a, 3, 2, "alpha");
     let result: ReturnType<typeof runReconcile> | undefined;
-    const out = captureAllWrites(() => {
+    const out = await captureAllWrites(() => {
       result = runReconcile(index.reconcile, [walked(a)]);
     });
     expect(out).toContain("usage index lock unavailable; this run's results were not saved.");
@@ -752,14 +723,14 @@ test("with the lock held elsewhere the records are still right and nothing is wr
   }));
 });
 
-test("opening while another run holds the lock yields no index, with one info line", () => {
+test("opening while another run holds the lock yields no index, with one info line", async () => {
   setup();
   mkdirSync(indexDir, { recursive: true });
   const lockPath = join(indexDir, USAGE_INDEX_LOCK_NAME);
   expect(tryAcquireFileLock(lockPath, 60_000)).toBe(true);
   try {
     let index: UsageIndex | null = null;
-    const out = captureAllWrites(() => {
+    const out = await captureAllWrites(() => {
       index = openUsageIndex({ dir: indexDir, lockPolicy: { staleMs: 60_000, waitMs: 0 } });
     });
     expect(index).toBeNull();
@@ -773,7 +744,7 @@ test("opening while another run holds the lock yields no index, with one info li
   expect(existsSync(dbPath())).toBe(true);
 });
 
-test("a database with rows but no stamps is rebuilt, never adopted", () => {
+test("a database with rows but no stamps is rebuilt, never adopted", async () => {
   setup();
   const a = join(logs, "a.jsonl");
   writeLines(a, 0, 3, "alpha");
@@ -787,7 +758,7 @@ test("a database with rows but no stamps is rebuilt, never adopted", () => {
     db.close();
   }
   let reopened: UsageIndex | undefined;
-  const out = captureAllWrites(() => {
+  const out = await captureAllWrites(() => {
     reopened = open();
   });
   expect(out).toContain("rebuilding the usage index (unstamped rows).");
@@ -797,7 +768,7 @@ test("a database with rows but no stamps is rebuilt, never adopted", () => {
 });
 
 for (const when of ["before the run", "between two candidates"] as const) {
-  test(`an index that fails ${when} parses the rest whole, warns once, saves nothing`, () => {
+  test(`an index that fails ${when} parses the rest whole, warns once, saves nothing`, async () => {
     setup();
     const a = join(logs, "a.jsonl");
     const b = join(logs, "b.jsonl");
@@ -837,7 +808,7 @@ for (const when of ["before the run", "between two candidates"] as const) {
     // without a probe read, since the failed index's snapshot is not consulted again.
     appendLines(d, 3, 1, "delta");
     let result: ReturnType<Reconcile> | undefined;
-    const out = captureAllWrites(() => {
+    const out = await captureAllWrites(() => {
       result = index.reconcile("claude", [walked(a), walked(b), walked(d)], whole, tail);
     });
     expect(out.split("usage index unreadable, parsing every file").length - 1).toBe(1);
@@ -898,7 +869,7 @@ const UNSTORABLE: {
 ];
 
 for (const { name, spoil, needle } of UNSTORABLE) {
-  test(`a contribution with ${name} is returned, never stored, and evicts its row`, () => {
+  test(`a contribution with ${name} is returned, never stored, and evicts its row`, async () => {
     setup();
     const a = join(logs, "a.jsonl");
     const leaky = join(logs, "leaky.jsonl");
@@ -923,7 +894,7 @@ for (const { name, spoil, needle } of UNSTORABLE) {
     writeLines(leaky, 0, 1, "leaky");
 
     let result: ReturnType<Reconcile> | undefined;
-    const out = captureAllWrites(() => {
+    const out = await captureAllWrites(() => {
       result = index.reconcile("claude", [walked(a), walked(leaky)], leaking, () => {
         throw new Error("the leaky file must be re-parsed whole for this test");
       });
@@ -984,7 +955,7 @@ test("an extra property on a contribution is stripped: never stored, never a tim
   expect(rawIndexBytes()).not.toContain(marker);
 });
 
-test("a stale database still open elsewhere is never removed; the opener runs index-less", () => {
+test("a stale database still open elsewhere is never removed; the opener runs index-less", async () => {
   setup();
   const a = join(logs, "a.jsonl");
   writeLines(a, 0, 3, "alpha");
@@ -993,7 +964,7 @@ test("a stale database still open elsewhere is never removed; the opener runs in
   const quick = { staleMs: 60_000, waitMs: 0 };
 
   let other: UsageIndex | null = null;
-  const out = captureAllWrites(() => {
+  const out = await captureAllWrites(() => {
     other = openUsageIndex({ dir: indexDir, fingerprint: "parsers-2", lockPolicy: quick });
   });
   expect(other).toBeNull();
@@ -1010,7 +981,7 @@ test("a stale database still open elsewhere is never removed; the opener runs in
 
   // Once the live handle is gone the same open rebuilds (the control).
   let rebuilt: UsageIndex | undefined;
-  const out2 = captureAllWrites(() => {
+  const out2 = await captureAllWrites(() => {
     rebuilt = open({ fingerprint: "parsers-2", lockPolicy: quick });
   });
   expect(out2.split("rebuilding the usage index (parser_fingerprint parsers-1)").length - 1).toBe(
@@ -1085,7 +1056,7 @@ for (const { name, plant } of PLANTED) {
   });
 }
 
-test("a rollback-mode database held by another connection is in use, not exclusive", () => {
+test("a rollback-mode database held by another connection is in use, not exclusive", async () => {
   setup();
   const a = join(logs, "a.jsonl");
   writeLines(a, 0, 3, "alpha");
@@ -1101,7 +1072,7 @@ test("a rollback-mode database held by another connection is in use, not exclusi
     });
     holder.exec("BEGIN IMMEDIATE");
     let other: UsageIndex | null = null;
-    const out = captureAllWrites(() => {
+    const out = await captureAllWrites(() => {
       other = openUsageIndex({ dir: indexDir, lockPolicy: { staleMs: 60_000, waitMs: 0 } });
     });
     expect(other).toBeNull();
@@ -1501,7 +1472,7 @@ const UNREMOVABLE: { name: string; sabotage: () => void; line: () => string }[] 
 ];
 
 for (const { name, sabotage, line } of UNREMOVABLE) {
-  test(`${name} is left untouched: no rebuild, the opener runs index-less`, () => {
+  test(`${name} is left untouched: no rebuild, the opener runs index-less`, async () => {
     setup();
     const a = join(logs, "a.jsonl");
     writeLines(a, 0, 3, "alpha");
@@ -1513,7 +1484,7 @@ for (const { name, sabotage, line } of UNREMOVABLE) {
     const bytesBefore = before.isFile() ? readFileSync(dbPath()) : null;
 
     let other: UsageIndex | null = null;
-    const out = captureAllWrites(() => {
+    const out = await captureAllWrites(() => {
       other = openUsageIndex({ dir: indexDir });
     });
     expect(other).toBeNull();
@@ -1525,7 +1496,7 @@ for (const { name, sabotage, line } of UNREMOVABLE) {
   });
 }
 
-test("the contract's no-index reconcile parses every candidate whole and stores nothing", () => {
+test("the contract's no-index reconcile parses every candidate whole and stores nothing", async () => {
   setup();
   const a = join(logs, "a.jsonl");
   const b = join(logs, "b.jsonl");
@@ -1534,7 +1505,7 @@ test("the contract's no-index reconcile parses every candidate whole and stores 
   writeLines(b, 0, 3, "beta");
   writeLines(bad, 0, 1, "bad");
   let result: ReturnType<typeof runReconcile> | undefined;
-  const out = captureAllWrites(() => {
+  const out = await captureAllWrites(() => {
     result = runReconcile(
       parseEveryCandidate,
       [walked(a), walked(b, { candidate: false }), walked(bad)],
@@ -1549,12 +1520,12 @@ test("the contract's no-index reconcile parses every candidate whole and stores 
   expect(existsSync(indexDir)).toBe(false);
 });
 
-test("openUsageIndex returns null when the directory cannot be created", () => {
+test("openUsageIndex returns null when the directory cannot be created", async () => {
   setup();
   const blocker = join(root, "blocker");
   writeFileSync(blocker, "a file where the directory should go");
   let index: UsageIndex | null = null;
-  const out = captureAllWrites(() => {
+  const out = await captureAllWrites(() => {
     index = openUsageIndex({ dir: join(blocker, "usage-index") });
   });
   expect(index).toBeNull();

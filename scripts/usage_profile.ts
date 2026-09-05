@@ -12,7 +12,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { createInterface } from "node:readline";
 import { zstdDecompressSync } from "node:zlib";
 import { resolveClaudeHome } from "../src/claude/paths.ts";
 import { knownCodexHomes } from "../src/codex/config.ts";
@@ -326,17 +325,20 @@ function walk(
   }
 }
 
-/** The lines of one log file, `.jsonl.zst` decompressed the way the readers do. */
+/** The complete (LF-terminated) lines of one log file, cut the way the readers do: on LF
+ *  alone (node:readline also split on U+2028/U+2029 inside JSON strings and under-counted
+ *  exactly the lines the scanner reads), a trailing CR stripped, an unterminated final
+ *  fragment withheld; `.jsonl.zst` decompressed whole. */
 async function* lines(file: string): AsyncGenerator<string> {
   if (file.endsWith(".zst")) {
     yield* zstdDecompressSync(readFileSync(file)).toString("utf8").split("\n");
     return;
   }
-  const rl = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
-  try {
-    yield* rl;
-  } finally {
-    rl.close();
+  let rest = "";
+  for await (const chunk of createReadStream(file, { encoding: "utf8" })) {
+    const parts = `${rest}${chunk}`.split("\n");
+    rest = parts.pop() ?? "";
+    for (const part of parts) yield part.endsWith("\r") ? part.slice(0, -1) : part;
   }
 }
 

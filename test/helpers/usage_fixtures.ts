@@ -525,8 +525,9 @@ type FillKind = "prose" | "opaque";
 
 /**
  * Code points no filler may carry: node:readline (the pre-index reader) splits lines on
- * U+2028, U+2029 and U+0085 too, so a line holding one unescaped would vanish from the
- * goldens recorded with it. Everything else non-ASCII is welcome.
+ * U+2028 and U+2029, so a line holding one unescaped would vanish from the goldens recorded
+ * with it; U+0085 (NEL) is kept out only for uniformity, readline does not split on it.
+ * Everything else non-ASCII is welcome.
  */
 export const LINE_SPLITTING_CODE_POINTS: readonly string[] = ["\u2028", "\u2029", "\u0085"];
 

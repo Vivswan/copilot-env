@@ -181,36 +181,68 @@ agent config --set auto-start true    # set one
 agent config --del idle-timeout       # revert one to its default
 ```
 
+**Proxy daemon**
+
 | Key | Default | Effect |
 | --- | --- | --- |
-| `alpha-search-codex-priority` | `true` | Prefer Codex for the proxy's `/alpha/search` endpoint (Codex search). |
-| `alpha-search-model` | `gpt-5-mini` | Native-Responses model for `/alpha/search` (Codex search) when the requested model is Messages-backed and cannot run the search itself. |
 | `auto-start` | `false` | Managed proxy lifecycle: auto-start on agent open + idle auto-stop. |
-| `auto-update` | `false` | Self-update once a day on `agent start`, adopting the newest release aged at least `update-cooldown` days (`agent update --auto-status` shows the last check). |
-| `claude-auto-model` | unset | Model override for Claude Code's background security-monitor requests (unset disables). |
-| `claude-desktop` | `true` | Keep Claude Desktop's config library wired (default + every profile) while the app is installed; `false` removes the profile entries and leaves the default entry in place, unmanaged. |
-| `claude-token-multiplier` | `1.15` | Multiplier the proxy applies when estimating Claude token usage. |
-| `codex-host` | `false` | Per-host `CODEX_HOME` symlink farm at `~/.codex/hosts/<hostname>`, exported by `agent env` (Linux/macOS; see below). |
-| `codex-model-catalog` | `false` | Patched Codex model catalog serving Copilot's real context windows (opt-in). |
 | `idle-timeout` | `3600` | Idle auto-stop window in seconds (`0` disables). |
-| `integration-id` | `auto` (probe per credential) | Pin the Copilot client identity (`Copilot-Integration-Id`), or `auto` to probe per credential. |
-| `launchers` | `false` | Define the `cl` / `co` / `cx` (+ `clx` / `cox` / `cxx`) launcher functions via `agent env`. |
 | `min-port` / `max-port` | `1024` / `65535` | Allowed proxy port range. |
-| `message-websearch-model` | per surface | Web-search model id: the proxy's Messages-API path (default `gpt-5-mini`) and the MCP `web_search` tool (default `gpt-5.6-sol`). |
-| `messages-api` | `true` | Proxy Messages-API (Anthropic-shaped) endpoint. |
-| `passthrough` | `auto` | PAT passthrough: `auto` / `on` / `off` (see below). |
 | `port` | `4141` | Default proxy port (then next free unless `strict-port`). |
 | `proxy-logs` | `true` | Proxy request logging under `<home>/logs` (`false` discards the writes). |
 | `proxy-version` | latest (floated) | Pin the floated proxy to a version/tag. |
 | `release-cooldown` | `604800` (7 days) | Proxy float supply-chain cooldown in seconds. |
+| `strict-port` | `false` | Fail `start` when the default port is busy instead of auto-incrementing. |
+
+**Proxy features**
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `alpha-search-codex-priority` | `true` | Prefer Codex for the proxy's `/alpha/search` endpoint (Codex search). |
+| `alpha-search-model` | `gpt-5-mini` | Native-Responses model for `/alpha/search` (Codex search) when the requested model is Messages-backed and cannot run the search itself. |
+| `claude-auto-model` | unset | Model override for Claude Code's background security-monitor requests (unset disables). |
+| `claude-token-multiplier` | `1.15` | Multiplier the proxy applies when estimating Claude token usage. |
+| `message-websearch-model` | per surface | Web-search model id: the proxy's Messages-API path (default `gpt-5-mini`) and the MCP `web_search` tool (default `gpt-5.6-sol`). |
+| `messages-api` | `true` | Proxy Messages-API (Anthropic-shaped) endpoint. |
 | `responses-context-management` | `false` | Proxy Responses-API server-side context management. |
 | `responses-websearch` | `true` | Proxy Responses-API web search. |
 | `responses-websocket` | `true` | Proxy Responses-API transport: WebSocket vs HTTP/SSE. |
 | `small-model` | `gpt-5-mini` | Small/fast model id the proxy uses. |
-| `strict-port` | `false` | Fail `start` when the default port is busy instead of auto-incrementing. |
+
+**Credential**
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `integration-id` | `auto` (probe per credential) | Pin the Copilot client identity (`Copilot-Integration-Id`), or `auto` to probe per credential. |
+| `passthrough` | `auto` | PAT passthrough: `auto` / `on` / `off` (see below). |
+
+**Codex**
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `codex-host` | `false` | Per-host `CODEX_HOME` symlink farm at `~/.codex/hosts/<hostname>`, exported by `agent env` (Linux/macOS; see below). |
+| `codex-model-catalog` | `false` | Patched Codex model catalog serving Copilot's real context windows (opt-in). |
+
+**Claude**
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `claude-desktop` | `true` | Keep Claude Desktop's config library wired (default + every profile) while the app is installed; `false` removes the profile entries and leaves the default entry in place, unmanaged. |
+| `wire-mcp` | `true` | Wire the copilot-env MCP server + WebSearch deny into Claude on direct writes. |
+
+**Shell**
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `launchers` | `false` | Define the `cl` / `co` / `cx` (+ `clx` / `cox` / `cxx`) launcher functions via `agent env`. |
+
+**Updates**
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `auto-update` | `false` | Self-update once a day on `agent start`, adopting the newest release aged at least `update-cooldown` days (`agent update --auto-status` shows the last check). |
 | `update-cooldown` | none | `agent update` cooldown in days. |
 | `verify-provenance` | `true` | Verify `agent update` downloads against the release's Sigstore build-provenance attestation (`agent update --no-verify` skips one run). |
-| `wire-mcp` | `true` | Wire the copilot-env MCP server + WebSearch deny into Claude on direct writes. |
 
 Proxy-side keys (`small-model`, the `responses-*`/`messages-api` flags, `message-websearch-model`, the `alpha-search-*` pair, `claude-auto-model`, `claude-token-multiplier`) are projected into the proxy's own `config.json` at `agent start`, so changing them needs a daemon restart to take effect - except that the MCP `web_search` tool reads `message-websearch-model` fresh on every call.
 

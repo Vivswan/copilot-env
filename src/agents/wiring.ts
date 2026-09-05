@@ -31,7 +31,7 @@ export interface AgentWiringOptions {
 }
 
 /** Both DEFAULT selections' full wiring statuses, read from the effective homes. */
-function readAgentWirings(opts: AgentWiringOptions): {
+export function readAgentWirings(opts: AgentWiringOptions = {}): {
   codex: CodexWiringStatus;
   claude: ClaudeWiringStatus;
 } {

@@ -22,7 +22,7 @@ import { recordDefaultModeFromWiring } from "../agents/configure_defaults.ts";
 import { resolveAndPersistDirectIdentity, wireBothAgents } from "../agents/profile_wiring.ts";
 import type { AgentProviderMode } from "../agents/provider_mode.ts";
 import { readAgentModes } from "../agents/wiring.ts";
-import { BASE_URL_ENV, configureClaudeConfig, runClaude } from "../claude/config.ts";
+import { BASE_URL_ENV, claudeAdapter, runClaude } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { refreshCodexModelCatalogIfStale } from "../codex/catalog.ts";
 import { runCodex, syncCodexCatalogReference } from "../codex/config.ts";
@@ -312,8 +312,8 @@ async function ensureProxyUp(profile: Profile): Promise<boolean> {
   return (await resolveProxyToken({ assumeYes: false, profile }, deps)) === 0;
 }
 
-/** The production dependency set (see LaunchDeps). */
-function commandDeps(): LaunchDeps {
+/** The production dependency set (see LaunchDeps). Exported for its tests. */
+export function commandDeps(): LaunchDeps {
   return {
     agentMode: (agent) => readAgentModes()[agent],
     ensureProxy: ensureProxyUp,
@@ -329,12 +329,13 @@ function commandDeps(): LaunchDeps {
     },
     profileSlot: (name) => new CopilotEnvState().readProfileSlot(name),
     writeClaudeProfileSettings: async (name, mode) => {
-      const claudeHome = resolveClaudeHome();
       const write: ManagedWrite = mode === "direct"
         ? { mode, directIntegrationId: await resolveAndPersistDirectIdentity(name) }
         : { mode };
-      configureClaudeConfig(claudeHome, { ...write, quiet: true, profile: name });
-      return settingsPathFor(claudeHome, name);
+      // Through the adapter, so the profile's Desktop entry follows the
+      // `claude-desktop` key on every launch, exactly like `--settings-for`.
+      await claudeAdapter().configureProfile(name, write, { quiet: true });
+      return settingsPathFor(resolveClaudeHome(), name);
     },
     syncProfileWiring: (name, mode) => wireBothAgents(name, mode, true),
     managedClaudeBaseUrl,

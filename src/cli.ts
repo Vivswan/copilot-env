@@ -20,7 +20,8 @@ import { parseClaudeAction, parseCodexAction } from "./agents/configure.ts";
 import { recordDefaultModeFromWiring } from "./agents/configure_defaults.ts";
 import { parseModeFlags } from "./agents/provider_mode.ts";
 import { runClaude } from "./claude/config.ts";
-import { refreshClaudeDesktopWiring } from "./agents/profile_wiring.ts";
+import { reconcileClaudeDesktopWiring } from "./agents/claude_desktop.ts";
+import { printClaudeDesktopCheck } from "./commands/claude.ts";
 import { runCodex } from "./codex/config.ts";
 import { runCodexMobile } from "./codex/mobile.ts";
 import { runAuth } from "./commands/auth.ts";
@@ -606,24 +607,23 @@ program
     "--check",
     "Report the configured provider and exit - no changes, no probe (0 direct, 1 other, 2 proxy/none).",
   )
-  .option(
-    "--desktop",
-    "Refresh only the Claude Desktop config-library wiring (default + profiles); no settings.json changes.",
-  )
   .action((opts: Opts) => {
     const action = parseClaudeAction({
       check: Boolean(opts.check),
       mode: parseModeFlags(opts),
-      desktop: Boolean(opts.desktop),
     });
     switch (action.kind) {
-      case "desktop":
-        return refreshClaudeDesktopWiring();
       case "check":
-        return runClaude(action);
+        // The Desktop status rides on the report (drift named); the exit code stays
+        // the provider-mode contract.
+        return runClaude(action).then(() => printClaudeDesktopCheck());
       case "configure":
-        // Same re-derivation as `agent codex`: one default wiring changed.
-        return runClaude(action).then(() => recordDefaultModeFromWiring());
+        // Same re-derivation as `agent codex`: one default wiring changed. Then the
+        // `claude-desktop` reconcile for the named profiles (the default's Desktop
+        // entry already rode on the write itself).
+        return runClaude(action)
+          .then(() => recordDefaultModeFromWiring())
+          .then(() => reconcileClaudeDesktopWiring());
       default:
         return assertNever(action);
     }

@@ -1,6 +1,7 @@
 // Pure evaluators: HealthFacts -> CheckResult[]. No I/O -- every input is a fact
 // gathered by probe.ts, so each check is independently unit-testable.
 import { DIRECT_BASE_URL } from "../claude/config.ts";
+import { type ClaudeDesktopStatus, renderClaudeDesktopStatus } from "../claude/desktop.ts";
 import { directHelperPath } from "../claude/paths.ts";
 import { type CodexOtherReason, codexProviderId } from "../codex/config.ts";
 import { codexHostDriftFrom, codexHostDriftLine } from "../codex/host.ts";
@@ -1391,6 +1392,38 @@ export function checkClaude(f: ClaudeFacts, profile: Profile = null): CheckResul
   };
 }
 
+/** The Claude Desktop library against the `claude-desktop` key: a rendered fix (drift) is a
+ *  warn, anything else informational. The drift rule lives in renderClaudeDesktopStatus,
+ *  shared with `agent claude --check`. */
+export function checkClaudeDesktop(f: ClaudeDesktopStatus): CheckResult {
+  const { lines, fix } = renderClaudeDesktopStatus(f);
+  const base = {
+    ...meta("setup.claude-desktop"),
+    profile: null,
+    value: {
+      kind: f.kind,
+      enabled: f.enabled,
+      installed: f.installed,
+      helperPaths: f.helperPaths,
+      ...(f.kind === "unreadable" ? { metaPath: f.metaPath } : {}),
+      ...(f.kind === "unjudged" ? { reason: f.reason } : {}),
+      ...(f.kind === "inspected"
+        ? {
+          libraryDir: f.libraryDir,
+          ownedPaths: f.ownedPaths,
+          unlisted: f.unlisted,
+          entries: f.entries.map((e) => ({ profile: e.profile, mode: e.mode, ...e.verdict })),
+          orphans: f.orphans,
+        }
+        : {}),
+    },
+  };
+  const detail = lines.join("\n");
+  return fix === null
+    ? { ...base, status: "ok", detail }
+    : { ...base, status: "warn", detail, fix };
+}
+
 /** Report opt-in autoupdate status (mirrors `agent update --auto-status`). */
 export function checkAutoupdate(f: AutoupdateStatus): CheckResult {
   const base = {
@@ -1519,6 +1552,7 @@ export function evaluateAll(scope: HealthScope, facts: HealthFacts): CheckResult
   if (facts.codexLive) out.push(checkCodexLive(facts.codexLive, runProfile));
   if (facts.codexHost) out.push(checkCodexHost(facts.codexHost));
   if (facts.claude) out.push(checkClaude(facts.claude, runProfile));
+  if (facts.claudeDesktop) out.push(checkClaudeDesktop(facts.claudeDesktop));
   if (facts.claudeLive) out.push(checkClaudeLive(facts.claudeLive, runProfile));
   if (facts.autoupdate) out.push(checkAutoupdate(facts.autoupdate));
   // Keep only the checks that participate in `scope` (single source of the rule,

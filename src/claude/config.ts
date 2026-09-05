@@ -1002,7 +1002,8 @@ export function claudeAdapter(): AgentAdapter {
     async configureDefault(write, ghToken) {
       configureClaudeConfig(resolveClaudeHome(), write);
       // Claude Desktop's chat surface reads its own config library, not settings.json;
-      // every default rewire refreshes it too (best-effort), baking the SAME write.
+      // every default rewire reconciles its entry from the `claude-desktop` key
+      // (best-effort), baking the SAME write.
       await syncClaudeDesktopWiring({ ...write, profile: null, directToken: ghToken });
     },
     async configureProfile(name, write, options) {

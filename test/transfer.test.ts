@@ -34,6 +34,12 @@ import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { setIntegrationProbeFetch } from "../src/copilot_api/integration_identity.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
+import { claudeDesktopStatus, reconcileClaudeDesktopWiring } from "../src/agents/claude_desktop.ts";
+import {
+  CLAUDE_DESKTOP_DIR_ENV,
+  desktopLibraryDirUnder,
+  wireClaudeDesktopEntry,
+} from "../src/claude/desktop.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { afterEach, beforeEach, expect, test } from "./helpers/testing.ts";
@@ -966,4 +972,90 @@ test("the backup pile is pruned to the newest 5", async () => {
   expect(names.length).toBe(SETTINGS_BACKUP_KEEP);
   expect(firstBackup).not.toBe("");
   expect(names).not.toContain(firstBackup);
+});
+
+test("a config-only import of claude-desktop false sweeps a PROMISED Desktop entry", async () => {
+  const homes = isolate();
+  const dataDir = join(homes.dir, "claude-desktop");
+  mkdirSync(join(dataDir, "configLibrary"), { recursive: true });
+  process.env[CLAUDE_DESKTOP_DIR_ENV] = dataDir;
+  const library = desktopLibraryDirUnder(dataDir);
+  // A complete proxy profile with its Desktop entry wired: a currently promised entry.
+  new CopilotEnvState().commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
+    mode: "proxy",
+  });
+  await wireClaudeDesktopEntry({
+    profile: WORK,
+    mode: "proxy",
+    fetchImpl: () => Promise.reject(new Error("offline")),
+  });
+  const entryPath = () => {
+    const meta = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
+      entries: { id: string; name: string }[];
+    };
+    const entry = meta.entries.find((e) => e.name === "copilot-env: work");
+    return entry === undefined ? null : join(library, `${entry.id}.json`);
+  };
+  const wired = entryPath();
+  expect(wired).not.toBeNull();
+  // Control: with the key still on, a whole-library reconcile keeps the promised entry
+  // (its upsert re-runs proxy model discovery, so the fetch is stubbed offline).
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = () => Promise.reject(new Error("offline"));
+  try {
+    await captureStderr(() => reconcileClaudeDesktopWiring());
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  expect(entryPath()).toBe(wired);
+
+  // The import carries only the preference (no profiles, no modes): the imported false
+  // must be what removes the entry, so the reconcile has to run AFTER the prefs land.
+  const bundle = parseSettingsBundle(rawBundle({ config: { claudeDesktop: false } }));
+  await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
+  expect(new CopilotEnvConfig().claudeDesktopEnabled()).toBe(false);
+  expect(entryPath()).toBeNull();
+  expect(existsSync(wired ?? "")).toBe(false);
+  expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual([]);
+});
+
+test("a config-only import of claude-desktop true restores the DEFAULT Desktop entry", async () => {
+  const homes = isolate();
+  const dataDir = join(homes.dir, "claude-desktop");
+  mkdirSync(join(dataDir, "configLibrary"), { recursive: true });
+  process.env[CLAUDE_DESKTOP_DIR_ENV] = dataDir;
+  const library = desktopLibraryDirUnder(dataDir);
+  const names = () =>
+    existsSync(join(library, "_meta.json"))
+      ? (JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
+        entries: { name: string }[];
+      }).entries.map((e) => e.name)
+      : [];
+  // A managed proxy default (settings.json) written while the key was off: no entry.
+  new CopilotEnvConfig().set({ claudeDesktop: false });
+  await runClaude({ kind: "configure", mode: "proxy" });
+  expect(names()).toEqual([]);
+
+  // The import carries only the preference: no adapter write runs, so the reconcile
+  // itself must upsert the default entry (fetch stubbed: proxy discovery is offline).
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = () => Promise.reject(new Error("offline"));
+  try {
+    const bundle = parseSettingsBundle(rawBundle({ config: { claudeDesktop: true } }));
+    await captureStderr(async () => {
+      await applyImportBundle(bundle, { catalogDeps: NOOP_CATALOG_DEPS });
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  expect(new CopilotEnvConfig().claudeDesktopEnabled()).toBe(true);
+  expect(names()).toEqual(["copilot-env"]);
+  // Restored means owned and judged wired, not merely listed.
+  const status = claudeDesktopStatus();
+  expect(status.kind).toBe("inspected");
+  if (status.kind === "inspected") {
+    expect(status.ownedPaths).toHaveLength(1);
+    expect(status.entries.map((e) => e.verdict.kind)).toEqual(["wired"]);
+  }
 });

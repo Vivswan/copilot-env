@@ -8,7 +8,10 @@ import { existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { consola } from "consola";
 import { removeClaudeDefaultWiring } from "../claude/config.ts";
-import { removeAllClaudeDesktopWiring } from "../claude/desktop.ts";
+import {
+  listClaudeDesktopOwnedArtifacts,
+  removeAllClaudeDesktopWiring,
+} from "../claude/desktop.ts";
 import { removeClaudeMcpRegistration } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { knownCodexHomes, removeCodexDefaultWiring, removeCodexProfile } from "../codex/config.ts";
@@ -238,9 +241,28 @@ const UNINSTALL_STEPS: UninstallStep[] = [
     // 4b. Claude Desktop's config library: the entries copilot-env created or
     //     adopted (ownership-recorded), plus the generated credential-helper
     //     scripts. Owned entries only -- a user's own configs stay untouched.
-    describe: () => [
-      "Would remove the copilot-env entries from Claude Desktop's config library.",
-    ],
+    //     The dry run names every path the sweep would delete.
+    describe: (ctx) => {
+      const { entries, helpers, blocked } = listClaudeDesktopOwnedArtifacts(
+        ctx.deps.claudeDesktopLibraryDir,
+      );
+      const paths = [...entries, ...helpers];
+      if (blocked) {
+        return [
+          "Would leave Claude Desktop's config library alone (its _meta.json could not be read); " +
+          "would keep the credential-helper scripts a live entry may still reference.",
+        ];
+      }
+      if (paths.length === 0) {
+        return [
+          "Would remove the copilot-env entries from Claude Desktop's config library (none found).",
+        ];
+      }
+      return [
+        "Would remove the copilot-env entries from Claude Desktop's config library:",
+        ...paths.map((p) => `  ${p}`),
+      ];
+    },
     run: (ctx) => {
       try {
         removeAllClaudeDesktopWiring(ctx.deps.claudeDesktopLibraryDir);

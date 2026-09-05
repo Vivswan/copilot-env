@@ -7,7 +7,11 @@ import { join } from "node:path";
 import { parse } from "smol-toml";
 import { resolveAndPersistDirectIdentity } from "../src/agents/profile_wiring.ts";
 import { configureClaudeConfig, inspectClaudeWiring } from "../src/claude/config.ts";
-import { CLAUDE_DESKTOP_DIR_ENV, desktopLibraryDirUnder } from "../src/claude/desktop.ts";
+import {
+  CLAUDE_DESKTOP_DIR_ENV,
+  desktopHelperPath,
+  desktopLibraryDirUnder,
+} from "../src/claude/desktop.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
 import { codexProviderId, configureCodexConfig } from "../src/codex/config.ts";
 import {
@@ -19,9 +23,15 @@ import {
 import { runStart } from "../src/commands/start.ts";
 import { parseStopAction, runStop } from "../src/commands/stop.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState, partialSlotGap } from "../src/copilot_api/env_state.ts";
 import { setIntegrationProbeFetch } from "../src/copilot_api/integration_identity.ts";
-import { CopilotApiPaths, profileHome, profileHomeNames } from "../src/copilot_api/paths.ts";
+import {
+  CopilotApiPaths,
+  profileHome,
+  profileHomeNames,
+  resolveRootHome,
+} from "../src/copilot_api/paths.ts";
 import {
   copilotApiFallbackPort,
   copilotApiResolvePort,
@@ -867,4 +877,43 @@ test("profile add/del keeps the Claude Desktop entry in lockstep when Desktop is
   };
   expect(after.entries).toEqual([]);
   expect(existsSync(join(library, `${entry?.id}.json`))).toBe(false);
+});
+
+test("claude-desktop false: profile add wires no Desktop entry and --sync removes a stale one", async () => {
+  tmpProxyHome();
+  const dataDir = join(dir, "claude-desktop");
+  mkdirSync(dataDir, { recursive: true });
+  process.env[CLAUDE_DESKTOP_DIR_ENV] = dataDir;
+  const library = desktopLibraryDirUnder(dataDir);
+  const entryNames = (): string[] => {
+    if (!existsSync(join(library, "_meta.json"))) return [];
+    const meta = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
+      entries: { name: string }[];
+    };
+    return meta.entries.map((e) => e.name);
+  };
+
+  // Key on (default): the add wires the entry, as before.
+  await runProfile({ add: "work", mode: "proxy", set: "ghp_worktoken" });
+  expect(entryNames()).toEqual(["copilot-env: work"]);
+  const helper = desktopHelperPath(resolveRootHome(), "proxy", WORK);
+  expect(existsSync(helper)).toBe(true);
+
+  // Key off: the launcher-style --settings-for (the Claude adapter's profile write, the
+  // same path `cl --profile` takes) sweeps the entry -- no --sync or re-add needed.
+  new CopilotEnvConfig().set({ claudeDesktop: false });
+  await captureAllWrites(() => runProfile({ settingsFor: "work", mode: "auto" }));
+  expect(entryNames()).toEqual([]);
+  expect(existsSync(helper)).toBe(false);
+  // --sync (both agents) is a reconcile point too: idempotent on the swept library.
+  await runProfile({ sync: true, mode: "auto" });
+  expect(entryNames()).toEqual([]);
+
+  // Still off: a re-add creates nothing; back on: the next sync wires it again.
+  await runProfile({ add: "work", mode: "auto" });
+  expect(entryNames()).toEqual([]);
+  new CopilotEnvConfig().del("claudeDesktop");
+  await runProfile({ sync: true, mode: "auto" });
+  expect(entryNames()).toEqual(["copilot-env: work"]);
+  expect(existsSync(helper)).toBe(true);
 });

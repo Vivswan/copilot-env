@@ -9,6 +9,7 @@
 // profile's credential.
 import { rmSync } from "node:fs";
 import { consola } from "consola";
+import { reconcileClaudeDesktopWiring } from "../agents/claude_desktop.ts";
 import { configuringLine, type ManagedWrite } from "../agents/configure.ts";
 import {
   bothAgents,
@@ -16,7 +17,7 @@ import {
   wireBothAgents,
 } from "../agents/profile_wiring.ts";
 import { providerModeExitCode, type RequestedMode } from "../agents/provider_mode.ts";
-import { configureClaudeConfig } from "../claude/config.ts";
+import { claudeAdapter } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { ghAuthToken } from "../copilot_api/credential.ts";
 import { type ProxyStatus, proxyStatus, stopTrackedProxy } from "../copilot_api/daemon.ts";
@@ -337,24 +338,19 @@ function runCheck(name: ProfileName): void {
   }
 }
 
-/**
- * `--settings-for <name>`: re-sync the profile's Claude settings file against the
- * live proxy port (the COMPLETE store slot drives it -- a partial profile is not
- * launchable, so it errors like `--check` instead of syncing half a setup) and
- * print its ABSOLUTE PATH on stdout -- the machine contract `cl --profile <name>`
- * evals into `claude --settings <path>`.
- */
+/** `--settings-for <name>`: re-sync the profile's Claude wiring (the COMPLETE slot drives
+ *  it; a partial one errors like `--check`) through the adapter, so its Desktop entry
+ *  follows the key, and print the settings path `cl --profile` evals into `--settings`. */
 async function runSettingsFor(name: ProfileName): Promise<void> {
   const slot = new CopilotEnvState().readProfileSlot(name);
   if (slot.kind === "partial") {
     throw new Error(partialSlotGap(name, slot));
   }
-  const claudeHome = resolveClaudeHome();
   const write: ManagedWrite = slot.mode === "direct"
     ? { mode: "direct", directIntegrationId: await resolveAndPersistDirectIdentity(name) }
     : { mode: "proxy" };
-  configureClaudeConfig(claudeHome, { ...write, quiet: true, profile: name });
-  process.stdout.write(`${settingsPathFor(claudeHome, name)}\n`);
+  await claudeAdapter().configureProfile(name, write, { quiet: true });
+  process.stdout.write(`${settingsPathFor(resolveClaudeHome(), name)}\n`);
 }
 
 /** `--sync`: refresh EVERY complete profile's wiring (both agents) against the
@@ -378,6 +374,9 @@ async function runSync(): Promise<void> {
       logger.warn(`could not sync ${profileLabel(name)}: ${errMessage(e)}`);
     }
   }
+  // Cleanup-only (quiet): the profile writes above landed their own entries, and the
+  // launcher hot path never probes or discovers; zero complete profiles still sweep.
+  await reconcileClaudeDesktopWiring({ quiet: true });
   logger.log(`  ✓ Synced ${synced} profile${synced === 1 ? "" : "s"}.`);
   if (failed > 0) process.exitCode = 1;
 }

@@ -15,12 +15,14 @@ import {
   PROBE_TIMEOUT_MS,
 } from "../agents/live_probe.ts";
 import { defaultSetupNeedsProxy } from "../agents/wiring.ts";
+import { claudeDesktopStatus } from "../agents/claude_desktop.ts";
 import {
   type AutoupdateData,
   AutoupdateState,
   effectiveUpdateCooldownDays,
 } from "../autoupdate/state.ts";
 import { BASE_URL_ENV, type ClaudeWiringStatus, inspectClaudeWiring } from "../claude/config.ts";
+import type { ClaudeDesktopStatus } from "../claude/desktop.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import { CODEX_ENV_KEY, type CodexWiringStatus, inspectCodexWiring } from "../codex/config.ts";
 import { type CodexHostFarm, codexHostFarm, effectiveCodexHome } from "../codex/host.ts";
@@ -448,6 +450,9 @@ export interface HealthFacts {
   codex?: CodexFacts;
   codexHost?: CodexHostFacts;
   claude?: ClaudeFacts;
+  /** The Claude Desktop config-library wiring judged against the `claude-desktop`
+   *  key's promised entries (root-wide, so never gathered on a narrowed run). */
+  claudeDesktop?: ClaudeDesktopStatus;
   codexLive?: LiveProbeFacts;
   claudeLive?: LiveProbeFacts;
   autoupdate?: AutoupdateStatus;
@@ -560,6 +565,8 @@ export interface ProbeDeps {
   codexHostFarm(): CodexHostFarm;
   /** The `codex-host` key read (CopilotEnvConfig.codexHostEnabled). */
   codexHostEnabled(): boolean;
+  /** The Claude Desktop wiring status (read-only; see claudeDesktopStatus). */
+  claudeDesktop(): ClaudeDesktopStatus;
   dirExists(path: string): boolean;
   /** The 3.5.6 default-home move's staging state under the root's profiles dir. */
   defaultHomeMigration(): DefaultHomeMigrationFacts;
@@ -830,6 +837,7 @@ export function defaultProbeDeps(): ProbeDeps {
     claudeHome: () => resolveClaudeHome(),
     codexHostFarm,
     codexHostEnabled: () => new CopilotEnvConfig().codexHostEnabled(),
+    claudeDesktop: claudeDesktopStatus,
     dirExists: (path: string) => existsSync(path),
     defaultHomeMigration: () => {
       // The same spelling defaultDaemonHome's precedence rule reads (paths.ts):
@@ -1319,6 +1327,9 @@ export async function gatherFacts(
           provider: runCredential().provider,
           ...(profile === null ? {} : { expectedMode: runCredential().mode }),
         };
+        // The Desktop library spans the default AND every profile, so it is judged
+        // once, on the whole-environment run only.
+        if (profile === null) facts.claudeDesktop = deps.claudeDesktop();
       })(),
     );
   }

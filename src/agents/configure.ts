@@ -33,29 +33,28 @@ export type ManagedWrite =
 
 /**
  * What ONE `agent codex` / `agent claude` invocation does. Each arm carries
- * only its own knobs (`mode` never travels with `check`/`mobile`/`desktop`),
- * so a contradictory combination like `--check --direct` or `--mobile --check`
- * is rejected at the boundary parse below instead of resolved by dispatch
- * order. The per-command unions narrow this to the arms each command declares.
+ * only its own knobs (`mode` never travels with `check`/`mobile`), so a
+ * contradictory combination like `--check --direct` or `--mobile --check` is
+ * rejected at the boundary parse below instead of resolved by dispatch order.
+ * The per-command unions narrow this to the arms each command declares.
  */
 export type AgentConfigAction =
   | { kind: "check" }
   | { kind: "mobile" }
-  | { kind: "desktop" }
   | { kind: "configure"; mode: RequestedMode };
 
-/** The `agent codex` arms (no `--desktop`; that flag is Claude's). */
-export type CodexCliAction = Exclude<AgentConfigAction, { kind: "desktop" }>;
-
-/** The `agent claude` arms (no `--mobile`; that flag is Codex's). */
-export type ClaudeCliAction = Extract<
+/** The `agent codex` arms (the Codex-only `--mobile` flag lives here). */
+export type CodexCliAction = Extract<
   AgentConfigAction,
-  { kind: "check" | "desktop" | "configure" }
+  { kind: "check" | "mobile" | "configure" }
 >;
 
-/** The arms the shared skeleton (runAgentConfig) executes itself; `mobile` and
- *  `desktop` are dispatched to their own handlers at the CLI boundary, so they
- *  never reach the run* functions at all. */
+/** The `agent claude` arms (no `--mobile`; that flag is Codex's). */
+export type ClaudeCliAction = Extract<AgentConfigAction, { kind: "check" | "configure" }>;
+
+/** The arms the shared skeleton (runAgentConfig) executes itself; `mobile` is
+ *  dispatched to its own handler at the CLI boundary, so it never reaches the
+ *  run* functions at all. */
 export type AgentRunAction = Extract<AgentConfigAction, { kind: "check" | "configure" }>;
 
 /** Cross-cutting knobs of one run (never part of the parsed CLI action). */
@@ -102,14 +101,7 @@ export function parseCodexAction(flags: {
 export function parseClaudeAction(flags: {
   check?: boolean;
   mode: RequestedMode;
-  desktop?: boolean;
 }): ClaudeCliAction {
-  if (flags.desktop) {
-    if (flags.check || flags.mode !== "auto") {
-      throw new Error("--desktop cannot be combined with --check/--direct/--proxy.");
-    }
-    return { kind: "desktop" };
-  }
   if (flags.check) {
     assertCheckStandsAlone(flags.mode);
     return { kind: "check" };

@@ -12,14 +12,15 @@ name: Cost metrics
 
 on:
   pull_request:
+    # The cost command's wiring in src/cli.ts is deliberately not a trigger (it does not move
+    # the scan); deno.json and deno.lock are, because dependency or permission changes do.
     paths:
-      - "src/**"
-      - "deno.json"
-      - "deno.lock"
-      - ".dvmrc"
+      - "src/usage/**"
+      - "scripts/usage_fixtures.ts"
       - "test/helpers/usage_fixtures.ts"
       - "test/fixtures/usage/**"
-      - "scripts/usage_fixtures.ts"
+      - "deno.json"
+      - "deno.lock"
       - ".github/scripts/cost-metrics.ts"
       - ".github/workflows/cost-metrics.yml"
 

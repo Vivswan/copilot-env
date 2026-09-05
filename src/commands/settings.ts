@@ -15,6 +15,7 @@ import {
   type ImportOutcome,
   parseSettingsBundle,
   planImport,
+  rollbackCommand,
   serializeSettingsBundle,
   writeSettingsBackup,
 } from "../agents/transfer.ts";
@@ -24,9 +25,9 @@ import {
   type CopilotEnvConfigData,
   isProxyProjected,
 } from "../copilot_api/env_config.ts";
+import { profileLabel } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import { atomicWriteFile, writeFileReported } from "../utils/report_write.ts";
 import { PROXY_RESTART_HINT, unreadProjectedKeyWarnings } from "./config.ts";
 
@@ -89,14 +90,6 @@ export function parseSettingsAction(args: SettingsArgs): SettingsAction {
   return { kind: "export", target: args.exportTo, withCredentials: Boolean(args.withCredentials) };
 }
 
-/** The rollback invocation, path quoted for THIS machine's shell. */
-function rollbackCommand(backupPath: string): string {
-  const quoted = process.platform === "win32"
-    ? quotePowerShell(backupPath)
-    : quotePosix(backupPath);
-  return `agent settings --import ${quoted}`;
-}
-
 // Rollback restores the STORES; it does not delete profiles an import created
 // (import never deletes profiles), so the hint says exactly that.
 const ROLLBACK_SCOPE_NOTE =
@@ -140,12 +133,15 @@ function runExport(target: string | boolean, withCredentials: boolean): void {
   if (withCredentials) {
     // The atomic write publishes a FRESH 0600 inode by rename: a write into an
     // existing 0644 target would hold the plaintext tokens under its old permissions.
-    atomicWriteFile(target, text, 0o600);
-    logger.warn(`${target} contains your REAL tokens - treat it like a password file.`);
+    atomicWriteFile(
+      target,
+      text,
+      0o600,
+      "settings bundle with your REAL tokens - treat it like a password file",
+    );
   } else {
-    writeFileReported(target, text);
+    writeFileReported(target, text, { detail: "settings bundle, tokens redacted" });
   }
-  logger.success(`Settings exported to ${target}.`);
 }
 
 async function confirmImport(writeLines: string[], file: string): Promise<boolean> {
@@ -225,12 +221,18 @@ async function runImport(
   } else {
     logger.success(`Settings imported from ${file}${wired}.`);
   }
+  // The profile writes' own lines name the shared Codex config once per process, so the
+  // launch hint for each imported profile is said here (the same line `agent profile` prints).
+  for (const name of outcome.wiredProfiles) {
+    logger.log(`  Launch ${profileLabel(name)}:  cl --profile ${name}  /  cx --profile ${name}`);
+  }
   const [restartHint, ...projectionWarnings] = importRestartHints(bundle.config, preImportPrefs);
   if (restartHint !== undefined) logger.info(restartHint);
   for (const warning of projectionWarnings) logger.warn(warning);
+  // The backup's own write line named the file and the rollback command; the scope of a
+  // rollback is the one thing left to say.
   if (backupPath !== null) {
-    logger.log(`  Previous settings backed up to ${backupPath}`);
-    logger.log(`  Roll back with:  ${rollbackCommand(backupPath)}  ${ROLLBACK_SCOPE_NOTE}`);
+    logger.log(`  Roll back by importing the backup named above ${ROLLBACK_SCOPE_NOTE}.`);
   }
 }
 

@@ -61,6 +61,7 @@ import {
 } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
+import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
 import {
   chmodReported,
   mkdirReported,
@@ -849,6 +850,14 @@ export async function applyImportBundle(
 
 // --- pre-import backups -------------------------------------------------------
 
+/** The rollback invocation, path quoted for THIS machine's shell. */
+export function rollbackCommand(backupPath: string): string {
+  const quoted = process.platform === "win32"
+    ? quotePowerShell(backupPath)
+    : quotePosix(backupPath);
+  return `agent settings --import ${quoted}`;
+}
+
 /** Directory (under the ROOT home) holding the pre-import settings backups. */
 export const SETTINGS_BACKUP_DIR_NAME = "settings-backups";
 
@@ -907,7 +916,10 @@ export function writeSettingsBackup(): string | null {
   if (process.platform !== "win32") chmodReported(dir, 0o700);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const path = join(dir, `settings-${stamp}-${String(++backupSeq).padStart(3, "0")}.json`);
-  writeFileReported(path, serializeSettingsBundle(bundle), { mode: 0o600 });
+  writeFileReported(path, serializeSettingsBundle(bundle), {
+    mode: 0o600,
+    detail: `pre-import settings backup; roll back with: ${rollbackCommand(path)}`,
+  });
   pruneSettingsBackups(dir);
   return path;
 }

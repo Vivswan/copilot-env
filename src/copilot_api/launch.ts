@@ -850,7 +850,7 @@ export function spawnConfiguredDaemon(opts: {
     // Blank the log only HERE, at spawn time: a failure BEFORE launch -- a
     // login error, an identity-probe rejection -- keeps the previous run's log
     // around for diagnosis until a new daemon actually launches.
-    writeFileReported(logFile, "");
+    writeFileReported(logFile, "", { detail: "proxy log, blanked for this launch" });
     return launchDaemon({
       port: p,
       logFile,
@@ -960,9 +960,9 @@ export async function awaitReadiness(opts: {
   }
 
   state.set({ pid, port });
-  consola.info(`Started the proxy (PID ${pid}) on port ${port}, detached. Logs: ${logFile}`);
+  consola.info(`Started the proxy (PID ${pid}) on port ${port}, detached.`);
 
-  consola.start(`Waiting for the proxy to start (tailing ${logFile}) ...`);
+  consola.start("Waiting for the proxy to start (tailing its log) ...");
 
   const maxWait = 120;
   let ready = false;

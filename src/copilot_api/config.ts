@@ -173,13 +173,14 @@ export class CopilotApiConfig {
     return dataOrDegrade(this.path, read);
   }
 
-  /** Atomically write ``data`` to disk with mode 0600. */
-  save(data: Record<string, unknown>): void {
+  /** Atomically write ``data`` to disk with mode 0600; `detail` is what the write's
+   *  report says about it. */
+  save(data: Record<string, unknown>, detail?: string): void {
     const sorted = sortKeys(data);
     // Created 0600 from the start, so a secret it may hold (the GitHub token, the
     // proxy admin key) is never briefly readable at the default umask -- the
     // rename publishes an already-restricted inode.
-    atomicWriteFile(this.path, `${JSON.stringify(sorted, null, 2)}\n`, 0o600);
+    atomicWriteFile(this.path, `${JSON.stringify(sorted, null, 2)}\n`, 0o600, detail);
     try {
       chmodReported(this.path, 0o600);
     } catch {
@@ -218,13 +219,16 @@ export class CopilotApiConfig {
 
   /** Load (loadForUpdate, with its refusals), apply ``mutate`` in place, save, and return
    *  the result. Serialized across processes by a best-effort `<file>.lock` so concurrent
-   *  read-modify-writes don't lost-update. */
-  update(mutate: (d: Record<string, unknown>) => void): Record<string, unknown> {
+   *  read-modify-writes don't lost-update. `detail` is what the write's report says. */
+  update(
+    mutate: (d: Record<string, unknown>) => void,
+    detail?: string,
+  ): Record<string, unknown> {
     const lockPath = `${this.path}.lock`;
     return withFileLockSync(lockPath, BOUNDED_LOCK_POLICY, () => {
       const data = this.loadForUpdate();
       mutate(data);
-      this.save(data);
+      this.save(data, detail);
       return data;
     });
   }

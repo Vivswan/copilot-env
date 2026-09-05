@@ -281,10 +281,10 @@ test("a direct Claude profile writes settings-<name>.json + a --profile helper, 
   });
 
   // Pre-existing default settings must stay byte-identical.
-  configureClaudeConfig(home, { mode: "direct", quiet: true });
+  configureClaudeConfig(home, { mode: "direct" });
   const defaultBefore = readFileSync(settingsPathFor(home), "utf8");
 
-  configureClaudeConfig(home, { mode: "direct", quiet: true, profile: WORK });
+  configureClaudeConfig(home, { mode: "direct", profile: WORK });
 
   expect(readFileSync(settingsPathFor(home), "utf8")).toBe(defaultBefore);
   const doc = JSON.parse(readFileSync(settingsPathFor(home, WORK), "utf8")) as Record<
@@ -312,7 +312,7 @@ test("a direct Claude profile without its own credential is refused", () => {
   tmpProxyHome();
   const home = tmpClaudeHome();
   new Credential().store("gh-token", "ghp_default"); // default cred must NOT satisfy it
-  expect(() => configureClaudeConfig(home, { mode: "direct", quiet: true, profile: WORK })).toThrow(
+  expect(() => configureClaudeConfig(home, { mode: "direct", profile: WORK })).toThrow(
     /no credential of its own/,
   );
   expect(existsSync(settingsPathFor(home, WORK))).toBe(false);
@@ -321,7 +321,7 @@ test("a direct Claude profile without its own credential is refused", () => {
 test("a proxy Claude profile bakes ITS reserved port and blanks the direct-only env keys", () => {
   tmpProxyHome();
   const home = tmpClaudeHome();
-  configureClaudeConfig(home, { mode: "proxy", quiet: true, profile: FAST });
+  configureClaudeConfig(home, { mode: "proxy", profile: FAST });
   const doc = JSON.parse(readFileSync(settingsPathFor(home, FAST), "utf8")) as Record<
     string,
     unknown
@@ -340,12 +340,12 @@ test("a proxy Claude profile bakes ITS reserved port and blanks the direct-only 
 test("a foreign settings-<name>.json is never taken over", () => {
   tmpProxyHome();
   const home = tmpClaudeHome();
-  configureClaudeConfig(home, { mode: "proxy", quiet: true }); // creates the home
+  configureClaudeConfig(home, { mode: "proxy" }); // creates the home
   writeFileSync(
     settingsPathFor(home, WORK),
     JSON.stringify({ apiKeyHelper: "/somewhere/else.sh" }),
   );
-  expect(() => configureClaudeConfig(home, { mode: "proxy", quiet: true, profile: WORK })).toThrow(
+  expect(() => configureClaudeConfig(home, { mode: "proxy", profile: WORK })).toThrow(
     /refusing to overwrite/,
   );
   // A custom base URL ALONE (no apiKeyHelper) is also foreign wiring.
@@ -353,7 +353,7 @@ test("a foreign settings-<name>.json is never taken over", () => {
     settingsPathFor(home, ALT),
     JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://my-gateway.example" } }),
   );
-  expect(() => configureClaudeConfig(home, { mode: "proxy", quiet: true, profile: ALT })).toThrow(
+  expect(() => configureClaudeConfig(home, { mode: "proxy", profile: ALT })).toThrow(
     /refusing to overwrite/,
   );
 });
@@ -373,11 +373,11 @@ test("a Codex profile writes [profiles.<name>] + its provider table, leaving the
     mode: "direct",
   });
 
-  configureCodexConfig(codexHome, { mode: "direct", quiet: true });
+  configureCodexConfig(codexHome, { mode: "direct" });
   const before = readToml(join(codexHome, "config.toml"));
   expect(before.model_provider).toBe("copilot-env");
 
-  configureCodexConfig(codexHome, { mode: "direct", quiet: true, profile: WORK });
+  configureCodexConfig(codexHome, { mode: "direct", profile: WORK });
   const doc = readToml(join(codexHome, "config.toml"));
   expect(doc.model_provider).toBe("copilot-env"); // untouched
   const profiles = doc.profiles as Record<string, Record<string, unknown>>;
@@ -397,7 +397,6 @@ test("a Codex profile write on a FRESH config leaves no dangling default model_p
   const codexHome = tmpCodexHome();
   configureCodexConfig(codexHome, {
     mode: "proxy",
-    quiet: true,
     profile: FAST,
     baseUrl: `http://127.0.0.1:${copilotApiResolvePort(FAST)}/v1`,
   });
@@ -415,7 +414,7 @@ test("a Codex profile write on an EMPTY config file also leaves no dangling mode
   const codexHome = tmpCodexHome();
   mkdirSync(codexHome, { recursive: true });
   writeFileSync(join(codexHome, "config.toml"), "   \n");
-  configureCodexConfig(codexHome, { mode: "direct", quiet: true, profile: FAST });
+  configureCodexConfig(codexHome, { mode: "direct", profile: FAST });
   const doc = readToml(join(codexHome, "config.toml"));
   expect(doc.model_provider).toBeUndefined();
   // The write LANDED: the whitespace-only file parses as empty, and the profile
@@ -439,7 +438,6 @@ test("profile --sync refreshes wiring from the STORE mode and never touches mode
   // (the --mobile pairing state) to prove sync never touches it.
   configureCodexConfig(codexHome, {
     mode: "proxy",
-    quiet: true,
     profile: FAST,
     baseUrl: "http://127.0.0.1:1/v1",
   });

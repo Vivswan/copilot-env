@@ -14,7 +14,7 @@ import { loadPricing } from "../src/usage/pricing.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { ROOT, runCli, runSync } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
-import { writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
+import { linesNaming, writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
 
 // A throwaway COPILOT_API_HOME so the runtime probe sees no tracked pid/port. We pin the
 // default proxy port to 4199 via config (isolated from any real proxy on 4141 on this host).
@@ -135,12 +135,15 @@ test("cli.ts config --set/--del name the preference store they write, on stderr"
 
   const set = runCli(["config", "--set", "port", "4199"], { env });
   expect(set.exitCode).toBe(0);
-  expect(set.stderr).toContain(`created -> ${store}`);
+  expect(linesNaming(set.stderr, store)).toEqual([
+    `created -> ${store}.lock.oslock`,
+    `created -> ${store}`,
+  ]);
   expect(set.stdout).not.toContain(" -> ");
 
   const del = runCli(["config", "--del", "port"], { env });
   expect(del.exitCode).toBe(0);
-  expect(del.stderr).toContain(`rewritten -> ${store}`);
+  expect(linesNaming(del.stderr, store)).toEqual([`rewritten -> ${store}`]);
 });
 
 test("cli.ts mcp (bare) prints the wiring status and exits 0", () => {

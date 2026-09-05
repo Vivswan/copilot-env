@@ -52,6 +52,6 @@ export function readCodexToml(path: string): CodexTomlRead {
 }
 
 /** Serialize `doc` with smol-toml and write it to `path`. */
-export function saveCodexToml(path: string, doc: Record<string, unknown>): void {
-  writeFileReported(path, stringify(doc));
+export function saveCodexToml(path: string, doc: Record<string, unknown>, detail?: string): void {
+  writeFileReported(path, stringify(doc), { detail });
 }

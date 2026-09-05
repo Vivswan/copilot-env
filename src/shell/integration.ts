@@ -311,15 +311,14 @@ function wireBlocks(files: string[], mainBlock: string): void {
     // OneDrive-backed Documents folders are reparse points; Node's recursive mkdir throws
     // EEXIST on an existing reparse point instead of no-op'ing, so skip when it already exists.
     if (!existsSync(dirname(file))) mkdirReported(dirname(file));
-    writeFileReported(file, upserted.content);
-    consola.success(`Wired shell integration into ${file}`);
+    writeFileReported(file, upserted.content, { detail: "shell integration wired" });
   }
 }
 
 function removeBlocksFrom(
   files: string[],
   markers: readonly BlockMarker[],
-  removedMessage: (file: string) => string,
+  removedDetail: string,
   missingMessage: string,
 ): boolean {
   let removedAny = false;
@@ -328,9 +327,8 @@ function removeBlocksFrom(
     const content = readFileSync(file, "utf-8");
     const stripped = stripBlocks(content, markers);
     if (stripped.content === content) continue; // no owned block present
-    writeFileReported(file, stripped.content);
+    writeFileReported(file, stripped.content, { detail: removedDetail });
     warnLeftBehind(file, stripped.leftBehind);
-    consola.success(removedMessage(file));
     removedAny = true;
   }
   if (!removedAny) consola.info(missingMessage);
@@ -341,7 +339,7 @@ function removeFrom(files: string[]): boolean {
   return removeBlocksFrom(
     files,
     ALL_MARKERS,
-    (file) => `Removed shell integration from ${file}`,
+    "shell integration removed",
     "No copilot-env shell integration found to remove.",
   );
 }

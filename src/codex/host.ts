@@ -5,7 +5,6 @@ import * as fs from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
@@ -230,31 +229,8 @@ function isDirPath(p: string): boolean {
 }
 
 // --- fs operations that throw on failure --------------------------------------
-// Every mutation below names the path it changed (nothing hidden): one line per
-// created dir, copied/created file, symlink, move, or removal.
-
-function report(action: string, p: string): void {
-  logger.log(`  ✓ ${action} → ${p}`);
-}
-
-/** mkdir -p that names every directory it actually creates (missing ancestors too); an
- *  entry that exists but is not a directory throws, as mkdir would. */
-function ensureDir(p: string): void {
-  if (isDirPath(p) && !isSymlinkPath(p)) return;
-  const missing: string[] = [];
-  for (let cur = p; !lexists(cur); cur = path.dirname(cur)) {
-    missing.unshift(cur);
-    if (path.dirname(cur) === cur) break;
-  }
-  mkdirReported(p);
-  for (const made of missing) report("Directory created", made);
-}
-
-// Rename, falling back to copy+delete when src and dst sit on different devices.
-function moveTree(src: string, dst: string): void {
-  renameReported(src, dst);
-  report(`Moved ${src}`, dst);
-}
+// Every mutation below goes through the reporting seam, which names the path it
+// changed (nothing hidden); what the farm did to it rides as the line's detail.
 
 // Every path under root, one level at a time, without descending into symlinked
 // directories (each level lists dirs before files).
@@ -288,46 +264,38 @@ function mergeDirInto(localPath: string, sharedPath: string): void {
       if (lexists(dst)) {
         const dstIsSymlink = isSymlinkPath(dst);
         const dstIsDir = isDirPath(dst);
-        if (dstIsSymlink || !dstIsDir) {
-          removeReported(dst);
-          report("Removed", dst);
-        }
+        if (dstIsSymlink || !dstIsDir) removeReported(dst, "replaced by a link");
       }
       symlinkReported(target, dst);
-      report(`Symlink to ${target} created`, dst);
     } else if (entry.isDirectory()) {
       copyTree(src, dst);
     } else {
-      copyFileReported(src, dst);
-      report(`Copied ${src}`, dst);
+      copyFileReported(src, dst, `copied from ${src}`);
     }
   }
 }
 
 /** Recursive copy that names every entry it writes (symlinks copied as links). */
 function copyTree(src: string, dst: string): void {
-  ensureDir(dst);
+  mkdirReported(dst);
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
     const from = path.join(src, entry.name);
     const to = path.join(dst, entry.name);
     if (entry.isSymbolicLink()) {
       const target = fs.readlinkSync(from);
       // An existing link here already passed the merge validation (same target).
-      const replaced = lexists(to);
-      if (replaced) removeReported(to);
+      removeReported(to, "replaced by a link");
       symlinkReported(target, to);
-      report(`Symlink to ${target} ${replaced ? "replaced" : "created"}`, to);
     } else if (entry.isDirectory()) {
       copyTree(from, to);
     } else {
-      copyFileReported(from, to);
-      report(`Copied ${from}`, to);
+      copyFileReported(from, to, `copied from ${from}`);
     }
   }
 }
 
 function ensureParentDir(p: string): void {
-  ensureDir(path.dirname(p));
+  mkdirReported(path.dirname(p));
 }
 
 // === CODEX_HOME symlink farm (seeding) ===
@@ -346,7 +314,7 @@ type PromoteResult = "promoted" | "refused";
 function promoteCodexDirToSharedIfSafe(localPath: string, sharedPath: string): PromoteResult {
   if (!lexists(sharedPath)) {
     ensureParentDir(sharedPath);
-    moveTree(localPath, sharedPath);
+    renameReported(localPath, sharedPath);
     return "promoted";
   }
 
@@ -390,8 +358,7 @@ function promoteCodexDirToSharedIfSafe(localPath: string, sharedPath: string): P
 
   // TOCTOU: the merge below races the validation above; accepted, startup-only flow.
   mergeDirInto(localPath, sharedPath);
-  removeTreeReported(localPath);
-  report("Removed (merged into the shared root)", localPath);
+  removeTreeReported(localPath, "merged into the shared root");
   return "promoted";
 }
 
@@ -449,7 +416,12 @@ function reportTreeCreated(dir: string): void {
   for (const sub of dirs) reportTreeCreated(sub);
 }
 
-function seedLocalCodexFileIfMissing(localPath: string, sharedPath: string): void {
+function seedLocalCodexFileIfMissing(
+  localPath: string,
+  sharedPath: string,
+  createPlaceholder: boolean,
+  role: string,
+): void {
   if (lexists(localPath)) {
     if (isSymlinkPath(localPath)) {
       logger.warn(
@@ -459,13 +431,12 @@ function seedLocalCodexFileIfMissing(localPath: string, sharedPath: string): voi
     return;
   }
 
-  ensureParentDir(localPath);
   if (isFile(sharedPath)) {
-    copyFileReported(sharedPath, localPath);
-    report(`Copied ${sharedPath}`, localPath);
-  } else {
-    writeFileReported(localPath, "");
-    report("Empty file created", localPath);
+    ensureParentDir(localPath);
+    copyFileReported(sharedPath, localPath, `${role}, seeded from ${sharedPath}`);
+  } else if (createPlaceholder) {
+    ensureParentDir(localPath);
+    writeFileReported(localPath, "", { detail: `${role}, empty` });
   }
 }
 
@@ -483,8 +454,7 @@ function seedSharedCodexFileIfMissing(
   if (isFile(localPath) && !isSymlinkPath(localPath)) {
     if (!sharedExists) {
       ensureParentDir(sharedPath);
-      copyFileReported(localPath, sharedPath);
-      report(`Copied ${localPath}`, sharedPath);
+      copyFileReported(localPath, sharedPath, `copied from ${localPath}`);
       return;
     }
 
@@ -493,16 +463,14 @@ function seedSharedCodexFileIfMissing(
       fs.statSync(sharedPath).size === 0 &&
       fs.statSync(localPath).size > 0
     ) {
-      copyFileReported(localPath, sharedPath);
-      report(`Copied ${localPath}`, sharedPath);
+      copyFileReported(localPath, sharedPath, `copied from ${localPath}`);
     }
     return;
   }
 
   if (createPlaceholder && !sharedExists) {
     ensureParentDir(sharedPath);
-    writeFileReported(sharedPath, "");
-    report("Empty file created", sharedPath);
+    writeFileReported(sharedPath, "", { detail: "empty seed" });
   }
 }
 
@@ -522,7 +490,6 @@ function ensureCodexDirSymlink(localPath: string, sharedPath: string): void {
   if (!lexists(localPath)) {
     ensureParentDir(localPath);
     symlinkReported(sharedPath, localPath);
-    report(`Symlink to ${sharedPath} created`, localPath);
   }
 }
 
@@ -539,8 +506,7 @@ function ensureCodexFileSymlink(localPath: string, sharedPath: string): void {
       warnExistingCodexPath(localPath);
       return;
     }
-    removeReported(localPath);
-    report("Removed (identical to the shared copy)", localPath);
+    removeReported(localPath, "identical to the shared copy");
   } else if (lexists(localPath)) {
     warnExistingCodexPath(localPath);
     return;
@@ -548,7 +514,6 @@ function ensureCodexFileSymlink(localPath: string, sharedPath: string): void {
 
   ensureParentDir(localPath);
   symlinkReported(sharedPath, localPath);
-  report(`Symlink to ${sharedPath} created`, localPath);
 }
 
 // --- the farm layout, as data ------------------------------------------------
@@ -562,9 +527,17 @@ const HOST_LOCAL_DIRS = [
   "tmp", // Host-local transient working files.
 ];
 
-// Host-local files seeded once from the shared root (or empty), then owned by
-// the host: config.toml in particular diverges per host and is never promoted.
-const HOST_LOCAL_SEED_FILES = [".personality_migration", "config.toml", "history.jsonl"];
+// Host-local files seeded once from the shared root (or empty, with `placeholder`),
+// then owned by the host; `role` is what the seed's write line calls the file. The
+// default config write that follows every build rewrites config.toml, silently when the
+// seed already named it (the seam names a path once per process), so the seed's line
+// calls it what it is; it gets no empty placeholder, so a fresh farm's config.toml is
+// named by that config write instead.
+const HOST_LOCAL_SEED_FILES = [
+  { name: ".personality_migration", placeholder: true, role: "host-local seed" },
+  { name: "config.toml", placeholder: false, role: "Codex config" },
+  { name: "history.jsonl", placeholder: true, role: "host-local seed" },
+];
 
 // Shared directories: a real directory at the shared root, symlinked from the
 // host home (host-local content is promoted into the shared copy when safe).
@@ -600,19 +573,24 @@ function buildCodexSymlinkFarm(codexHome: string): void {
   // directory, pointing back inside the farm.
   const sharedRoot = path.dirname(path.dirname(codexHome));
   primeSharedCodexHomeIfMissing(sharedRoot);
-  ensureDir(sharedRoot);
-  ensureDir(codexHome);
+  mkdirReported(sharedRoot);
+  mkdirReported(codexHome, undefined, "per-host CODEX_HOME farm");
 
   for (const name of HOST_LOCAL_DIRS) {
-    ensureDir(path.join(codexHome, name));
+    mkdirReported(path.join(codexHome, name));
   }
 
-  for (const name of HOST_LOCAL_SEED_FILES) {
-    seedLocalCodexFileIfMissing(path.join(codexHome, name), path.join(sharedRoot, name));
+  for (const { name, placeholder, role } of HOST_LOCAL_SEED_FILES) {
+    seedLocalCodexFileIfMissing(
+      path.join(codexHome, name),
+      path.join(sharedRoot, name),
+      placeholder,
+      role,
+    );
   }
 
   for (const name of SHARED_DIRS) {
-    ensureDir(path.join(sharedRoot, name));
+    mkdirReported(path.join(sharedRoot, name));
     ensureCodexDirSymlink(path.join(codexHome, name), path.join(sharedRoot, name));
   }
 
@@ -638,13 +616,14 @@ export async function withCodexHostFarm(
   // ONE key read drives the whole pass, so a concurrent `agent config` cannot split it.
   const plan = planCodexHostFarm(new CopilotEnvConfig().codexHostEnabled(), farm);
   const state = new CopilotEnvRunState();
-  const paths = new CopilotApiPaths();
   switch (plan.action) {
     case "build":
     case "verify": {
+      // Cleared here and re-recorded after the write below: the seam names a path once
+      // per process, so this first write's line names the record's role and nothing
+      // about a write that has not happened yet.
       if (farm.active) {
-        state.set({ codexHome: null });
-        logger.log(`  ✓ Active CODEX_HOME record cleared (rebuilding) → ${paths.stateFile}`);
+        state.set({ codexHome: null }, "active CODEX_HOME record, rewritten around the rebuild");
       }
       try {
         buildCodexSymlinkFarm(farm.hostHome);
@@ -656,19 +635,16 @@ export async function withCodexHostFarm(
           { cause: e },
         );
       }
-      logger.log(
-        `  ✓ Per-host CODEX_HOME farm ${
-          plan.action === "verify" ? "verified" : "built"
-        } → ${farm.hostHome}`,
-      );
+      // A build names the home it created; a verify created nothing, so it says so.
+      if (plan.action === "verify") {
+        logger.log(`  ✓ Per-host CODEX_HOME farm verified → ${farm.hostHome}`);
+      }
       await write(farm.hostHome);
-      state.set({ codexHome: farm.hostHome });
-      logger.log(`  ✓ Active CODEX_HOME recorded → ${paths.stateFile}`);
+      state.set({ codexHome: farm.hostHome }, "active CODEX_HOME recorded");
       return;
     }
     case "remove":
-      removeTreeReported(farm.hostHome);
-      logger.log(`  ✓ Per-host CODEX_HOME farm removed → ${farm.hostHome}`);
+      removeTreeReported(farm.hostHome, "per-host CODEX_HOME farm");
       break;
     case "leave":
       logger.warn(
@@ -680,8 +656,7 @@ export async function withCodexHostFarm(
       break;
   }
   if (state.read().codexHome !== undefined) {
-    state.set({ codexHome: null });
-    logger.log(`  ✓ Active CODEX_HOME record cleared → ${paths.stateFile}`);
+    state.set({ codexHome: null }, "active CODEX_HOME record cleared");
   }
   await write(effectiveCodexHome());
 }

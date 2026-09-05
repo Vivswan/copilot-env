@@ -28,9 +28,10 @@ import { GH_AUTH_TIMEOUT_MS } from "../src/copilot_api/gh_cli.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
+import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome, linesNaming, removeDir } from "./helpers.ts";
 
 const restoreEnv = envSnapshot([
   "PATH",
@@ -661,6 +662,7 @@ test("generateCodexModelCatalog writes the patched catalog file", async () => {
     return true;
   };
   let ok = false;
+  deferWriteReports();
   try {
     ok = await generateCodexModelCatalog("direct", {
       bundledCatalog: () => BUNDLED,
@@ -669,12 +671,13 @@ test("generateCodexModelCatalog writes the patched catalog file", async () => {
     });
   } finally {
     process.stderr.write = realWrite;
+    narrated += flushWriteReports().join("\n");
   }
   expect(ok).toBe(true);
   const file = new CopilotApiPaths().codexModelCatalogFile;
-  // Nothing hidden: the write is named on stderr (stdout may be a token).
-  expect(narrated).toContain(`Codex model catalog written → ${file}`);
-  expect(narrated).not.toContain(UNVERIFIED_SUFFIX); // accepted: no caveat
+  // Nothing hidden: the write is named on stderr (stdout may be a token), once, and
+  // accepted means no caveat on it.
+  expect(linesNaming(narrated, file)).toEqual([`created -> ${file} (Codex model catalog)`]);
   const written = JSON.parse(readFileSync(file, "utf8"));
   expect(written.models[0].context_window).toBe(1_050_000);
   expect(written.models[0].effective_context_window_percent).toBe(87);
@@ -724,6 +727,7 @@ test("a candidate the installed codex rejects is never written; an unverifiable 
     return true;
   };
   let written = false;
+  deferWriteReports();
   try {
     written = await generateCodexModelCatalog("direct", {
       bundledCatalog: () => BUNDLED,
@@ -732,10 +736,11 @@ test("a candidate the installed codex rejects is never written; an unverifiable 
     });
   } finally {
     process.stderr.write = realWrite;
+    narrated += flushWriteReports().join("\n");
   }
   expect(written).toBe(true);
   expect(existsSync(file)).toBe(true);
-  expect(narrated).toContain(`Codex model catalog written → ${file}${UNVERIFIED_SUFFIX}`);
+  expect(narrated).toContain(`-> ${file} (Codex model catalog${UNVERIFIED_SUFFIX})`);
 });
 
 test("a failed regeneration never touches an existing (stale but valid) catalog", async () => {

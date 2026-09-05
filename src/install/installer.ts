@@ -889,7 +889,7 @@ function wireShellsThroughInstalledBinary(
 export function applyInstallPlan(plan: InstallPlan): void {
   if (plan.kind === "installed") {
     applyMaterialization(plan);
-    consola.success(`Installed the copilot-env runtime files into ${plan.root}`);
+    consola.success("Installed the copilot-env runtime files.");
     for (const path of plan.legacyRemovals) removeTreeReported(path);
   }
 
@@ -910,11 +910,7 @@ export function applyInstallPlan(plan: InstallPlan): void {
     for (const shim of plan.topShims) {
       writeShimFile(shim.to, shim.text, shim.executable);
     }
-    consola.success(
-      `Installed copilot-env ${plan.versionName} into ${plan.versionRoot} (live via ${
-        currentLinkPath(plan.top)
-      })`,
-    );
+    consola.success(`Installed copilot-env ${plan.versionName} (live via the current link).`);
     // Shell wiring BEFORE the flat sweep: on a flat->versioned transition the
     // rc block still points at the flat payload, and the rewire must land
     // before that payload disappears -- a failed rewire keeps it in place.
@@ -1050,7 +1046,7 @@ export function adoptVersionedLayout(deps: AdoptVersionedLayoutDeps = {}): void 
   // Rewire exactly the shell targets that are wired today (their block points
   // at the flat payload the sweep removes); never wire a target that was not.
   applyInstallPlan({ ...plan, shellWires: wiredShellTargets() });
-  consola.info(`  moved the install to ${plan.versionRoot} (live via the current link).`);
+  consola.info("  moved the install to the versioned layout (live via the current link).");
 }
 
 /** What to tell the user once a real install finishes. Skipped for

@@ -57,6 +57,8 @@ export interface CopilotEnvConfigData {
   claudeTokenMultiplier?: number;
   /** Default proxy port. */
   port?: number;
+  /** OpenRouter models API URL `agent cost` prices at (`--pricing-url` overrides per run). */
+  pricingUrl?: string;
   /** Lower bound of the allowed proxy port range (default 1024). */
   minPort?: number;
   /** Upper bound of the allowed proxy port range (default 65535). */
@@ -357,6 +359,54 @@ const INTEGRATION_ID_DOMAIN: ConfigDomain<string> = domain(
   (raw) => raw,
 );
 
+/** The public OpenRouter price list `agent cost` prices at: the `pricing-url` built-in.
+ *  Owned here rather than in src/usage/pricing.ts because this module sits in the daemon
+ *  shims' import closure and the usage layer must not (test/installer_pinning.test.ts). */
+export const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
+
+/** THE price-list URL rule, for the `--pricing-url` flag and the stored `pricing-url` key
+ *  alike: an absolute https URL with no userinfo (fetch refuses a URL carrying
+ *  `user:password@`, so such a value could only fail at run time; a token belongs in the
+ *  query). Returns the rejection, else null. Both rejections are FIXED strings that never
+ *  echo the value, because a custom price-list URL may carry credentials. */
+function pricingUrlRejection(raw: string): string | null {
+  if (!URL.canParse(raw) || new URL(raw).protocol !== "https:") {
+    return "expected an https:// URL";
+  }
+  const url = new URL(raw);
+  if (url.username !== "" || url.password !== "") {
+    return "expected an https:// URL without user:password@ credentials (put a token in the query instead)";
+  }
+  return null;
+}
+
+/** The price-list URL in its canonical spelling (`new URL().href`: lowercase scheme and
+ *  host), so the fetch's own https check and the digest that keys the price cache see one
+ *  form; throws the fixed rejection otherwise. */
+export function canonicalPricingUrl(raw: string): string {
+  const rejection = pricingUrlRejection(raw);
+  if (rejection !== null) throw new Error(rejection);
+  return new URL(raw).href;
+}
+
+/** The `pricing-url` value domain: the one rule above on the schema, so `--set` and a
+ *  stored value obey it alike. */
+const HTTPS_URL_DOMAIN: ConfigDomain<string> = domain(
+  v.pipe(
+    v.string(),
+    v.trim(),
+    v.rawTransform(({ dataset, addIssue, NEVER }) => {
+      const rejection = pricingUrlRejection(dataset.value);
+      if (rejection !== null) {
+        addIssue({ message: rejection });
+        return NEVER;
+      }
+      return new URL(dataset.value).href;
+    }),
+  ),
+  (raw) => raw,
+);
+
 /** The single source of truth for config keys, ordered ALPHABETICALLY by CLI name (the
  *  `--get` / `--help` display order; a test pins it, so insert new keys in place). */
 const CONFIG_REGISTRY_LITERAL = [
@@ -527,6 +577,15 @@ const CONFIG_REGISTRY_LITERAL = [
     restartToApply: true,
   },
   {
+    cli: "pricing-url",
+    key: "pricingUrl",
+    describe:
+      "OpenRouter models API URL `agent cost` prices at (`--pricing-url` overrides per run)",
+    ...HTTPS_URL_DOMAIN,
+    defaultValue: OPENROUTER_MODELS_URL,
+    applyHint: "Applies to the next `agent cost` run.",
+  },
+  {
     cli: "proxy-logs",
     key: "proxyLogs",
     describe: "Proxy request logging under <home>/logs (false discards the writes)",
@@ -685,6 +744,16 @@ export function configDefaultNumber(cli: ConfigCli): number {
   const value = def?.defaultValue ?? def?.proxyDefault;
   if (typeof value !== "number") {
     throw new Error(`config key '${cli}' has no numeric built-in default`);
+  }
+  return value;
+}
+
+/** The registry's built-in string default for `cli` (same contract as configDefaultNumber). */
+export function configDefaultString(cli: ConfigCli): string {
+  const def = configKeyDef(cli);
+  const value = def?.defaultValue ?? def?.proxyDefault;
+  if (typeof value !== "string") {
+    throw new Error(`config key '${cli}' has no string built-in default`);
   }
   return value;
 }
@@ -906,6 +975,13 @@ export class CopilotEnvConfig {
    */
   idleTimeoutSeconds(): number {
     return this.readDegraded().idleTimeout ?? configDefaultNumber("idle-timeout");
+  }
+
+  /** The price-list URL `agent cost` fetches: stored, else the registry built-in. The
+   *  per-run `--pricing-url` layer above this stays at the read site (resolvePricingUrl in
+   *  src/usage/cost.ts), per the flag > stored > default precedence. */
+  pricingUrl(): string {
+    return this.read().pricingUrl ?? configDefaultString("pricing-url");
   }
 
   /**

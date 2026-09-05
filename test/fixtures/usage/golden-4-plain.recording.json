@@ -1,0 +1,20 @@
+{
+  "args": [
+    "cost",
+    "--json",
+    "--per-day",
+    "--pricing-url",
+    "https://127.0.0.1:1/unreachable"
+  ],
+  "generator": {
+    "adversarial": false,
+    "days": 40,
+    "end": "2026-09-01T00:00:00.000Z",
+    "mb": 20,
+    "seed": 4
+  },
+  "oldCommit": "48384eaa9352b90c5d9f80894add828937d042e2",
+  "split": false,
+  "timeZone": "UTC",
+  "treeSha256": "a1e8ca2ea80f66bbd1c4906682c3913cdec3fdb70e54c7d697d7031e6fc57615"
+}

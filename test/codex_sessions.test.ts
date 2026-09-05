@@ -1,307 +1,83 @@
-import { mkdirSync, mkdtempSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { zstdCompressSync } from "node:zlib";
-import { discoverCodexSessionRoots, readCodexSessions } from "../src/usage/codex_sessions.ts";
-import { localDayKey } from "../src/utils/time.ts";
-import { expect, test } from "./helpers/testing.ts";
+import {
+  discoverCodexSessionRoots,
+  foldCodex,
+  parseCodexTail,
+  parseCodexWhole,
+  readCodexSessions,
+  walkCodexSessions,
+} from "../src/usage/codex_sessions.ts";
+import {
+  dedupKey,
+  emptyIndexStats,
+  type Reconcile,
+  type WalkedFile,
+} from "../src/usage/contribution.ts";
+import { errMessage } from "../src/utils/error.ts";
+import { dayKeyIn } from "../src/utils/time.ts";
+import { captureAllWrites } from "./helpers/output.ts";
+import {
+  codexUsage as usage,
+  rolloutLine,
+  sessionMeta,
+  tokenCount,
+  turnContext,
+  writeRollout,
+} from "./helpers/session_fixtures.ts";
+import { CODEX_SCENARIOS, scenarioNamed } from "./helpers/session_scenarios.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
 
-/** A Codex TokenUsage object: input INCLUDES cached; output includes reasoning. */
-function usage(input: number, cached: number, output: number): Record<string, number> {
-  return {
-    input_tokens: input,
-    cached_input_tokens: cached,
-    output_tokens: output,
-    reasoning_output_tokens: 0,
-    total_tokens: input + output,
-  };
+const dirs: string[] = [];
+afterEach(() => {
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+function tempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  dirs.push(dir);
+  return dir;
 }
 
-function rolloutLine(timestamp: string, type: string, payload: unknown): string {
-  return JSON.stringify({ timestamp, type, payload });
-}
-
-function sessionMeta(
-  timestamp: string,
-  id: string,
-  opts: { provider?: string; forkedFrom?: string } = {},
-): string {
-  return rolloutLine(timestamp, "session_meta", {
-    id,
-    session_id: id,
-    timestamp,
-    cwd: "/tmp",
-    ...(opts.provider !== undefined ? { model_provider: opts.provider } : {}),
-    ...(opts.forkedFrom !== undefined ? { forked_from_id: opts.forkedFrom } : {}),
-  });
-}
-
-function turnContext(timestamp: string, model: string): string {
-  return rolloutLine(timestamp, "turn_context", { turn_id: "t", model, cwd: "/tmp" });
-}
-
-function tokenCount(
-  timestamp: string,
-  total: Record<string, number>,
-  last: Record<string, number>,
-): string {
-  return rolloutLine(timestamp, "event_msg", {
-    type: "token_count",
-    info: { total_token_usage: total, last_token_usage: last, model_context_window: 1000 },
-    rate_limits: null,
-  });
-}
-
-/** Write one rollout file into `dir` with the canonical filename for `localDate`. */
-function writeRollout(dir: string, localDate: string, id: string, lines: string[]): string {
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, `rollout-${localDate}T01-00-00-${id}.jsonl`);
-  writeFileSync(path, `${lines.join("\n")}\n`);
-  return path;
-}
-
-test("readCodexSessions attributes turns to the model in effect and splits cached input", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
-  const root = join(dir, "sessions");
-  writeRollout(root, "2026-06-01", "aaa", [
-    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
-    turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
-    // input 100 includes 40 cached -> input 60 / cacheRead 40.
-    tokenCount("2026-06-01T10:00:05.000Z", usage(100, 40, 20), usage(100, 40, 20)),
-    // Model switch mid-session, a full day later: distinct local days in any
-    // runner timezone (a fall-back transition could stretch a day to 25h, but
-    // these June dates avoid one).
-    turnContext("2026-06-02T10:00:01.000Z", "gpt-5.6-mini"),
-    tokenCount("2026-06-02T10:00:05.000Z", usage(300, 40, 50), usage(200, 0, 30)),
-  ]);
-
-  const byProvider = await readCodexSessions([root]);
-  const report = byProvider.get("copilot-env");
-  expect([...byProvider.keys()]).toEqual(["copilot-env"]);
-  expect(report?.byModel.get("gpt-5.6")).toEqual({
-    input: 60,
-    output: 20,
-    cacheRead: 40,
-    cacheCreation: 0,
-    events: 1,
-  });
-  expect(report?.byModel.get("gpt-5.6-mini")).toEqual({
-    input: 200,
-    output: 30,
-    cacheRead: 0,
-    cacheCreation: 0,
-    events: 1,
-  });
-  // Days come from the per-line timestamps (local calendar days), not the
-  // file's date path.
-  expect([...(report?.perDay.keys() ?? [])].sort()).toEqual([
-    localDayKey(Date.parse("2026-06-01T10:00:05.000Z")),
-    localDayKey(Date.parse("2026-06-02T10:00:05.000Z")),
-  ]);
-  expect(report?.perDay.size).toBe(2);
-});
-
-test("readCodexSessions buckets by the user's local day, not the UTC day", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
-  const root = join(dir, "sessions");
-  writeRollout(root, "2026-06-02", "aaa", [
-    sessionMeta("2026-06-02T01:00:00.000Z", "aaa", { provider: "copilot-env" }),
-    turnContext("2026-06-02T01:00:01.000Z", "gpt-5.6"),
-    // 2026-06-02T01:00Z is 2026-06-01 21:00 in New York (UTC-4 in June).
-    tokenCount("2026-06-02T01:00:05.000Z", usage(10, 0, 1), usage(10, 0, 1)),
-  ]);
-
-  // The zone is NAMED rather than pinned through process.env.TZ, so this runs on Windows
-  // too (deno honors the TZ env var on unix only). Asserting the SAME event in two zones
-  // is what keeps the teeth on every runner: a reader that ignored the zone -- or sliced
-  // by UTC -- would have to return one key for both, and these two differ.
-  const newYork = await readCodexSessions([root], undefined, "America/New_York");
-  expect([...(newYork.get("copilot-env")?.perDay.keys() ?? [])]).toEqual(["2026-06-01"]);
-  const utc = await readCodexSessions([root], undefined, "UTC");
-  expect([...(utc.get("copilot-env")?.perDay.keys() ?? [])]).toEqual(["2026-06-02"]);
-});
-
-test("readCodexSessions keys rows by the canonical model spelling", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
-  const root = join(dir, "sessions");
-  writeRollout(root, "2026-06-01", "aaa", [
-    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
-    // Dashed claude id via turn_context folds into the dotted canonical row.
-    turnContext("2026-06-01T10:00:01.000Z", "claude-opus-4-8"),
-    tokenCount("2026-06-01T10:00:05.000Z", usage(10, 0, 2), usage(10, 0, 2)),
-    // A thread_settings_applied model switch canonicalizes the same way.
-    rolloutLine("2026-06-01T10:01:00.000Z", "event_msg", {
-      type: "thread_settings_applied",
-      thread_settings: { model: "claude-haiku-4-5-20251001" },
-    }),
-    tokenCount("2026-06-01T10:01:05.000Z", usage(30, 0, 7), usage(20, 0, 5)),
-  ]);
-
-  const byProvider = await readCodexSessions([root]);
-  const report = byProvider.get("copilot-env");
-  expect(report?.byModel.get("claude-opus-4.8")?.events).toBe(1);
-  expect(report?.byModel.get("claude-haiku-4.5")?.events).toBe(1);
-  expect(report?.byModel.size).toBe(2);
-});
-
-test("readCodexSessions groups sessions by model_provider (absent = default)", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
-  const root = join(dir, "sessions");
-  writeRollout(root, "2026-06-01", "aaa", [
-    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
-    turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
-    tokenCount("2026-06-01T10:00:05.000Z", usage(10, 0, 1), usage(10, 0, 1)),
-  ]);
-  writeRollout(root, "2026-06-01", "bbb", [
-    sessionMeta("2026-06-01T11:00:00.000Z", "bbb"),
-    turnContext("2026-06-01T11:00:01.000Z", "gpt-5.6"),
-    tokenCount("2026-06-01T11:00:05.000Z", usage(20, 0, 2), usage(20, 0, 2)),
-  ]);
-
-  const byProvider = await readCodexSessions([root]);
-  expect([...byProvider.keys()].sort()).toEqual(["copilot-env", "default"]);
-  expect(byProvider.get("copilot-env")?.byModel.get("gpt-5.6")?.input).toBe(10);
-  expect(byProvider.get("default")?.byModel.get("gpt-5.6")?.input).toBe(20);
-});
-
-test("readCodexSessions does not double count a fork's copied prefix (parent scanned)", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
-  const root = join(dir, "sessions");
-  const parentCounts = [
-    tokenCount("2026-06-01T10:00:05.000Z", usage(100, 0, 10), usage(100, 0, 10)),
-    tokenCount("2026-06-01T10:00:15.000Z", usage(250, 90, 25), usage(150, 90, 15)),
-  ];
-  writeRollout(root, "2026-06-01", "aaa", [
-    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
-    turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
-    ...parentCounts,
-  ]);
-  // The fork batch-writes copies of the parent's items (fresh line timestamps,
-  // identical payloads), then continues cumulatively with its own turn.
-  writeRollout(root, "2026-06-01", "bbb", [
-    sessionMeta("2026-06-01T12:00:00.000Z", "bbb", {
-      provider: "copilot-env",
-      forkedFrom: "aaa",
-    }),
-    turnContext("2026-06-01T12:00:00.000Z", "gpt-5.6"),
-    tokenCount("2026-06-01T12:00:00.000Z", usage(100, 0, 10), usage(100, 0, 10)),
-    tokenCount("2026-06-01T12:00:00.000Z", usage(250, 90, 25), usage(150, 90, 15)),
-    turnContext("2026-06-01T12:00:00.100Z", "gpt-5.6"),
-    tokenCount("2026-06-01T12:00:09.000Z", usage(450, 290, 45), usage(200, 200, 20)),
-  ]);
-
-  const byProvider = await readCodexSessions([root]);
-  const m = byProvider.get("copilot-env")?.byModel.get("gpt-5.6");
-  // Parent's two turns once each, plus the fork's own turn: never the copies.
-  expect(m).toEqual({
-    input: 100 + 60 + 0,
-    output: 10 + 15 + 20,
-    cacheRead: 0 + 90 + 200,
-    cacheCreation: 0,
-    events: 3,
-  });
-});
-
-test("readCodexSessions falls back to the batch-write window when the parent is missing", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
-  const root = join(dir, "sessions");
-  writeRollout(root, "2026-06-01", "bbb", [
-    sessionMeta("2026-06-01T12:00:00.000Z", "bbb", {
-      provider: "copilot-env",
-      forkedFrom: "gone",
-    }),
-    turnContext("2026-06-01T12:00:00.000Z", "gpt-5.6"),
-    // Copied prefix: written within the batch window right after session_meta.
-    tokenCount("2026-06-01T12:00:00.000Z", usage(100, 0, 10), usage(100, 0, 10)),
-    tokenCount("2026-06-01T12:00:00.050Z", usage(250, 90, 25), usage(150, 90, 15)),
-    // The fork's own turn lands well outside the window.
-    tokenCount("2026-06-01T12:00:09.000Z", usage(450, 290, 45), usage(200, 200, 20)),
-  ]);
-
-  const byProvider = await readCodexSessions([root]);
-  const m = byProvider.get("copilot-env")?.byModel.get("gpt-5.6");
-  expect(m).toEqual({ input: 0, output: 20, cacheRead: 200, cacheCreation: 0, events: 1 });
-});
-
-test("readCodexSessions applies the sinceMs cutoff per event and skips old files by name", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
-  const root = join(dir, "sessions");
-  // Old file: skipped by its filename date + old mtime (never read).
-  const oldFile = writeRollout(root, "2026-01-01", "old", [
-    "this would fail to parse if it were read",
-  ]);
-  const oldMs = Date.parse("2026-01-01T02:00:00Z") / 1000;
-  utimesSync(oldFile, oldMs, oldMs);
-  // Resumed session: the filename carries the ORIGINAL start date, but recent
-  // events were appended (fresh mtime), so it must still be read.
-  writeRollout(root, "2026-01-02", "res", [
-    sessionMeta("2026-01-02T10:00:00.000Z", "res", { provider: "copilot-env" }),
-    turnContext("2026-01-02T10:00:01.000Z", "gpt-5.6"),
-    tokenCount("2026-01-02T10:00:05.000Z", usage(999, 0, 99), usage(999, 0, 99)),
-    tokenCount("2026-06-03T09:00:05.000Z", usage(1049, 0, 104), usage(50, 0, 5)),
-  ]);
-  writeRollout(root, "2026-06-01", "aaa", [
-    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
-    turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
-    tokenCount("2026-06-01T10:00:05.000Z", usage(100, 0, 10), usage(100, 0, 10)),
-    tokenCount("2026-06-03T10:00:05.000Z", usage(300, 0, 30), usage(200, 0, 20)),
-  ]);
-
-  const sinceMs = Date.parse("2026-06-02T00:00:00Z");
-  const byProvider = await readCodexSessions([root], sinceMs);
-  const m = byProvider.get("copilot-env")?.byModel.get("gpt-5.6");
-  // aaa's second event plus the resumed session's recent event; nothing older.
-  expect(m).toEqual({ input: 250, output: 25, cacheRead: 0, cacheCreation: 0, events: 2 });
-});
-
-test("readCodexSessions skips null-info counts, torn lines, and unnamed models default to unknown", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
-  const root = join(dir, "sessions");
-  writeRollout(root, "2026-06-01", "aaa", [
-    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
-    // No turn_context yet: the first count lands on the unknown bucket.
-    tokenCount("2026-06-01T10:00:05.000Z", usage(10, 0, 1), usage(10, 0, 1)),
-    // Rate-limit-only event: no info, never counted.
-    rolloutLine("2026-06-01T10:00:06.000Z", "event_msg", { type: "token_count", info: null }),
-    '{"timestamp":"2026-06-01T10:00:07.000Z","type":"event_msg","payload":{"type":"token_count"',
-  ]);
-
-  const byProvider = await readCodexSessions([root]);
-  const report = byProvider.get("copilot-env");
-  expect(report?.byModel.get("unknown")?.events).toBe(1);
-  expect([...(report?.byModel.keys() ?? [])]).toEqual(["unknown"]);
-});
-
-test("readCodexSessions counts a session once when it exists both live and archived", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
-  const live = join(dir, "sessions");
-  const archived = join(dir, "archived_sessions");
-  mkdirSync(archived, { recursive: true });
-  const lines = [
-    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
-    turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
-    tokenCount("2026-06-01T10:00:05.000Z", usage(100, 0, 10), usage(100, 0, 10)),
-  ];
-  writeRollout(live, "2026-06-01", "aaa", lines);
-  // The archived twin (same basename, compressed) must not double count.
-  writeFileSync(
-    join(archived, "rollout-2026-06-01T01-00-00-aaa.jsonl.zst"),
-    zstdCompressSync(Buffer.from(`${lines.join("\n")}\n`)),
+// The reader fixtures live in the shared catalog, which the index equivalence tests
+// read three ways with the same checks; one default-reconcile read here covers the
+// reader's own entry point.
+test("readCodexSessions reads a catalog scenario without a reconcile", async () => {
+  const scenario = scenarioNamed(
+    CODEX_SCENARIOS,
+    "attributes turns to the model in effect and splits cached input",
   );
+  const { roots, sinceMs, timeZone } = scenario.build(tempDir());
+  scenario.check(await readCodexSessions(roots, sinceMs, timeZone));
+});
 
-  const byProvider = await readCodexSessions([live, archived]);
-  expect(byProvider.get("copilot-env")?.byModel.get("gpt-5.6")).toEqual({
-    input: 100,
-    output: 10,
+test("readCodexSessions counts an unterminated final line once its LF lands", async () => {
+  const scenario = scenarioNamed(CODEX_SCENARIOS, "does not count an unterminated final line");
+  const { roots, files } = scenario.build(tempDir());
+  scenario.check(await readCodexSessions(roots));
+  appendFileSync(files![0]!, "\n");
+  expect((await readCodexSessions(roots)).get("copilot-env")?.byModel.get("gpt-5.6")).toEqual({
+    input: 30,
+    output: 3,
     cacheRead: 0,
     cacheCreation: 0,
-    events: 1,
+    events: 2,
   });
 });
 
-test("readCodexSessions reads zstd-compressed archived rollouts", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
-  const root = join(dir, "archived_sessions");
+test("readCodexSessions warns about a corrupt archive and still counts the valid ones", async () => {
+  const root = join(tempDir(), "archived_sessions");
   mkdirSync(root, { recursive: true });
   const lines = [
     sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
@@ -312,11 +88,16 @@ test("readCodexSessions reads zstd-compressed archived rollouts", async () => {
     join(root, "rollout-2026-06-01T01-00-00-aaa.jsonl.zst"),
     zstdCompressSync(Buffer.from(`${lines.join("\n")}\n`)),
   );
+  const corrupt = join(root, "rollout-2026-06-01T02-00-00-bbb.jsonl.zst");
+  writeFileSync(corrupt, "not zstd at all");
 
-  const byProvider = await readCodexSessions([root]);
-  // The whole row: decompression that mangled counts (not just the input column)
-  // must fail here, and events pins that the archive was read exactly once.
-  expect(byProvider.get("copilot-env")?.byModel.get("gpt-5.6")).toEqual({
+  let byProvider: Awaited<ReturnType<typeof readCodexSessions>> | undefined;
+  const output = await captureAllWrites(async () => {
+    byProvider = await readCodexSessions([root]);
+  });
+  expect(output).toContain(`could not read ${corrupt} (`);
+  expect([...(byProvider?.keys() ?? [])]).toEqual(["copilot-env"]);
+  expect(byProvider?.get("copilot-env")?.byModel.get("gpt-5.6")).toEqual({
     input: 100,
     output: 10,
     cacheRead: 0,
@@ -325,8 +106,45 @@ test("readCodexSessions reads zstd-compressed archived rollouts", async () => {
   });
 });
 
+test("walkCodexSessions under a NaN cutoff keeps every file a candidate", () => {
+  // A NaN cutoff fails every comparison, so no file is skipped by its date.
+  const { roots } = scenarioNamed(CODEX_SCENARIOS, "under a NaN cutoff counts nothing, as before")
+    .build(tempDir());
+  expect(walkCodexSessions(roots, Number.NaN).map((f) => f.candidate)).toEqual([true]);
+});
+
+const reversingReconcile: Reconcile = (_source, walked, parseWhole) => {
+  const records = walked
+    .filter((f) => f.candidate)
+    .map((f) => ({ path: f.path, contribution: parseWhole(f).contribution }));
+  return { records: records.reverse(), stats: emptyIndexStats() };
+};
+
+test("readCodexSessions folds in walk order whatever order the reconcile returns", async () => {
+  // The parent's hashes exist only if the parent was folded FIRST.
+  const scenario = scenarioNamed(
+    CODEX_SCENARIOS,
+    "identifies a fork's copy outside the batch window only through the parent's hashes",
+  );
+  const { roots } = scenario.build(tempDir());
+  const viaReconcile = await readCodexSessions(roots, undefined, undefined, reversingReconcile);
+  scenario.check(viaReconcile);
+  expect(viaReconcile).toEqual(await readCodexSessions(roots));
+});
+
+test("readCodexSessions walks a root named twice once, whatever the reconcile", async () => {
+  const { roots } = scenarioNamed(CODEX_SCENARIOS, "counts a root named twice once").build(
+    tempDir(),
+  );
+  expect(walkCodexSessions(roots, undefined).length).toBe(1);
+  // The baseline is the root named ONCE; both duplicated-root reads must equal it.
+  const once = await readCodexSessions([roots[0]!]);
+  expect(await readCodexSessions(roots)).toEqual(once);
+  expect(await readCodexSessions(roots, undefined, undefined, reversingReconcile)).toEqual(once);
+});
+
 test("discoverCodexSessionRoots dedupes farm symlinks by realpath", () => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const dir = tempDir();
   const shared = join(dir, "dot-codex");
   mkdirSync(join(shared, "sessions"), { recursive: true });
   mkdirSync(join(shared, "archived_sessions"), { recursive: true });
@@ -338,4 +156,141 @@ test("discoverCodexSessionRoots dedupes farm symlinks by realpath", () => {
 
   const roots = discoverCodexSessionRoots([shared, farmHome]);
   expect(roots.sort()).toEqual([join(shared, "archived_sessions"), join(shared, "sessions")]);
+});
+
+/** The walk record for one file on disk, as a candidate. */
+function walkedFile(path: string): WalkedFile {
+  const { size, mtimeMs } = statSync(path);
+  return { path, size, mtimeMs, candidate: true, resumable: !path.endsWith(".zst") };
+}
+
+test("parseCodexTail resumed from a prefix parse equals one whole parse", () => {
+  const dir = tempDir();
+  const lines = [
+    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env", forkedFrom: "p" }),
+    turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
+    tokenCount("2026-06-01T10:00:05.000Z", usage(100, 40, 20), usage(100, 40, 20)),
+    turnContext("2026-06-01T10:00:06.000Z", "claude-haiku-4-5-20251001"),
+    tokenCount("2026-06-01T10:00:09.000Z", usage(300, 40, 50), usage(200, 0, 30)),
+    tokenCount("2026-06-01T10:00:19.000Z", usage(500, 40, 70), usage(200, 0, 20)),
+  ];
+  const wholePath = writeRollout(join(dir, "whole"), "2026-06-01", "aaa", lines);
+  const whole = parseCodexWhole(walkedFile(wholePath));
+  expect(whole.contribution.events.length).toBe(3);
+  // The contribution keeps the RAW ids (state and per event); the fold canonicalizes.
+  expect(whole.contribution.state.model).toBe("claude-haiku-4-5-20251001");
+  expect(whole.contribution.events.map((e) => e[2])).toEqual([
+    "gpt-5.6",
+    "claude-haiku-4-5-20251001",
+    "claude-haiku-4-5-20251001",
+  ]);
+
+  // The same file written in two steps: parse the prefix, append, resume.
+  const grownPath = writeRollout(join(dir, "grown"), "2026-06-01", "aaa", lines.slice(0, 3));
+  const prefix = parseCodexWhole(walkedFile(grownPath));
+  const priorSnapshot = JSON.stringify(prefix.contribution);
+  appendFileSync(grownPath, `${lines.slice(3).join("\n")}\n`);
+  const tail = parseCodexTail(walkedFile(grownPath), prefix.parsedThrough, prefix.contribution);
+  expect(tail.contribution).toEqual(whole.contribution);
+  expect(tail.parsedThrough).toBe(whole.parsedThrough);
+  expect(tail.tailProbeHex).toBe(whole.tailProbeHex);
+  // The prior the index handed over is untouched.
+  expect(JSON.stringify(prefix.contribution)).toBe(priorSnapshot);
+});
+
+test("walkCodexSessions reports every rollout with its candidacy verdict, in fold order", () => {
+  const dir = tempDir();
+  const live = join(dir, "sessions");
+  const archived = join(dir, "archived_sessions");
+  mkdirSync(archived, { recursive: true });
+  const stale = writeRollout(live, "2026-01-01", "old", ["x"]);
+  const oldMs = Date.parse("2026-01-01T02:00:00Z") / 1000;
+  utimesSync(stale, oldMs, oldMs);
+  const kept = writeRollout(live, "2026-06-01", "aaa", ["x"]);
+  const twin = join(archived, "rollout-2026-06-01T01-00-00-aaa.jsonl.zst");
+  writeFileSync(twin, zstdCompressSync(Buffer.from("x\n")));
+  const archivedOnly = join(archived, "rollout-2026-06-01T02-00-00-bbb.jsonl.zst");
+  writeFileSync(archivedOnly, zstdCompressSync(Buffer.from("x\n")));
+  writeFileSync(join(live, "notes.txt"), "not a rollout");
+
+  const walked = walkCodexSessions([live, archived], Date.parse("2026-06-01T00:00:00Z"));
+  expect(walked.map((f) => basename(f.path))).toEqual(
+    [stale, kept, twin, archivedOnly].map((p) => basename(p)),
+  );
+  expect(walked.map((f) => [f.candidate, f.resumable])).toEqual([
+    [false, true], // stale by name and mtime
+    [true, true], // the live copy wins
+    [false, false], // its compressed twin is demoted
+    [true, false], // an archive without a live twin is parsed
+  ]);
+  const kept0 = walked[1]!;
+  expect(kept0.size).toBe(statSync(kept).size);
+  expect(kept0.mtimeMs).toBe(statSync(kept).mtimeMs);
+});
+
+// File symlinks need a privilege on Windows that CI runners do not always hold.
+test.skipIf(Deno.build.os === "windows")(
+  "walkCodexSessions warns about a rollout it cannot stat and leaves it out",
+  async () => {
+    const dir = tempDir();
+    const root = join(dir, "sessions");
+    const kept = writeRollout(root, "2026-06-01", "aaa", ["x"]);
+    const dangling = join(root, "rollout-2026-06-01T02-00-00-bbb.jsonl");
+    symlinkSync(join(dir, "gone.jsonl"), dangling, "file");
+
+    let statError = "";
+    try {
+      statSync(dangling);
+    } catch (e) {
+      statError = errMessage(e);
+    }
+
+    let walked: WalkedFile[] = [];
+    const output = await captureAllWrites(async () => {
+      walked = walkCodexSessions([root], undefined);
+    });
+    expect(walked.map((f) => f.path)).toEqual([kept]);
+    expect(output).toContain(`could not read ${dangling} (${statError}).`);
+  },
+);
+
+test("parseCodexWhole honours session_meta until an id is known, then ignores later ones", () => {
+  const dir = tempDir();
+  const path = writeRollout(join(dir, "s"), "2026-06-01", "aaa", [
+    // No id: the gate stays open, so the NEXT meta line still applies.
+    rolloutLine("2026-06-01T10:00:00.000Z", "session_meta", { "model_provider": "first" }),
+    tokenCount("2026-06-01T10:00:01.000Z", usage(1, 0, 1), usage(1, 0, 1)),
+    sessionMeta("2026-06-01T10:00:02.000Z", "aaa", { provider: "second", forkedFrom: "p" }),
+    tokenCount("2026-06-01T10:00:03.000Z", usage(3, 0, 3), usage(2, 0, 2)),
+    // Id known: a third meta changes nothing.
+    sessionMeta("2026-06-01T10:00:04.000Z", "zzz", { provider: "third" }),
+    tokenCount("2026-06-01T10:00:05.000Z", usage(6, 0, 6), usage(3, 0, 3)),
+  ]);
+  const { contribution } = parseCodexWhole(walkedFile(path));
+  const { state, events } = contribution;
+  expect(events.map((e) => e[1])).toEqual(["first", "second", "second"]);
+  expect(state.provider).toBe("second");
+  expect(state.sessionIdHash).toBe(dedupKey("aaa"));
+  expect(state.fork).toEqual({ parentHash: dedupKey("p"), knownAfter: 1 });
+  expect(state.metaTsMs).toBe(Date.parse("2026-06-01T10:00:02.000Z"));
+
+  // The fold applies the fork rules from the event the fork was learned before: the
+  // first count (before the meta) was an ordinary turn, the second (1 s after the
+  // meta, parent unscanned) is the copied prefix, the third (3 s after) is a turn.
+  const folded = foldCodex([{ path, contribution }], undefined, dayKeyIn("UTC"));
+  expect([...folded.keys()]).toEqual(["first", "second"]);
+  expect(folded.get("first")?.byModel.get("unknown")).toEqual({
+    input: 1,
+    output: 1,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 1,
+  });
+  expect(folded.get("second")?.byModel.get("unknown")).toEqual({
+    input: 3,
+    output: 3,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 1,
+  });
 });

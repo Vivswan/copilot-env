@@ -17,17 +17,12 @@
 // that line and bucket by the line timestamp's LOCAL calendar day, grouped by the
 // session's `model_provider`. This covers Direct-wired Codex, which bypasses
 // the proxy and therefore never reaches the proxy's SQLite usage tables.
+//
+// Split as walk -> pure per-file parse (a CodexContribution, dedup and window
+// NOT applied) -> fold, so a per-file index can cache the parse.
 
-import {
-  createReadStream,
-  type Dirent,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  statSync,
-} from "node:fs";
+import { type Dirent, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
-import { createInterface } from "node:readline";
 import { zstdDecompressSync } from "node:zlib";
 import { consola } from "consola";
 import { knownCodexHomes } from "../codex/config.ts";
@@ -35,7 +30,22 @@ import { errMessage } from "../utils/error.ts";
 import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { type DayKey, dayKeyIn, MILLISECONDS_PER_DAY } from "../utils/time.ts";
-import { canonicalModelName } from "./pricing.ts";
+import {
+  type CodexContribution,
+  type CodexEvent,
+  CONTRIBUTION_VERSION,
+  dedupKey,
+  type FileRecord,
+  inWalkOrder,
+  type ParsedFile,
+  parseEveryCandidate,
+  type ParseTail,
+  type ParseWhole,
+  type Reconcile,
+  type WalkedFile,
+} from "./contribution.ts";
+import { canonicalModelNames } from "./pricing.ts";
+import { scanBytes, scanLines } from "./scan.ts";
 import {
   record,
   sanitizeTokenCount,
@@ -47,6 +57,14 @@ import {
 const SESSION_SUBDIRS = ["sessions", "archived_sessions"];
 const ROLLOUT_FILE = /^rollout-(\d{4})-(\d{2})-(\d{2})T.*\.jsonl(\.zst)?$/;
 const MAX_WALK_DEPTH = 4; // sessions/YYYY/MM/DD/<file>
+
+/** The line kinds the parser reads; every other line is never decoded. */
+const CODEX_NEEDLES: readonly string[] = [
+  '"session_meta"',
+  '"turn_context"',
+  '"token_count"',
+  '"thread_settings_applied"',
+];
 
 /** Label for sessions whose meta omits `model_provider` (Codex's built-in). */
 const DEFAULT_PROVIDER = "default";
@@ -101,46 +119,150 @@ export function discoverCodexSessionRoots(homes: string[] = knownCodexHomes().ho
  * a warning rather than aborting the whole report. `timeZone` names the zone the
  * per-day split is cut in (default: the system's own); it exists so the slicing is
  * assertable without pinning the process `TZ`, which deno honors on unix only.
+ * `reconcile` (the usage index) may supply the per-file contributions; without
+ * it every candidate is parsed whole.
  */
 export async function readCodexSessions(
   roots: string[],
   sinceMs?: number,
   timeZone?: string,
+  reconcile?: Reconcile,
 ): Promise<Map<string, UsageReport>> {
   // Resolved FIRST, before any directory walk or file read: an unknown zone must fail here,
-  // not once per line inside the per-file catch below, which would report it as an
+  // not once per file inside the parse catch, which would report it as an
   // unreadable rollout and return a report silently missing its per-day split.
   const dayKey = dayKeyIn(timeZone);
-  const files: string[] = [];
+  const walked = walkCodexSessions(roots, sinceMs);
+  const { records } = (reconcile ?? parseEveryCandidate)(
+    "codex",
+    walked,
+    parseCodexWhole,
+    parseCodexTail,
+  );
+  return foldCodex(inWalkOrder(walked, records), sinceMs, dayKey);
+}
+
+/** Every rollout under `roots`, ascending by basename (the start timestamp, so a
+ *  fork's parent precedes the fork). A candidate may hold in-window events and won
+ *  the same-session dedup (the plain `.jsonl` over its `.jsonl.zst` twin). */
+export function walkCodexSessions(roots: string[], sinceMs: number | undefined): WalkedFile[] {
+  const collected: WalkedFile[] = [];
   for (const root of roots) {
-    collectRolloutFiles(root, 1, sinceMs, files);
+    collectRolloutFiles(root, 1, sinceMs, collected);
   }
-  // Ascending start order (the filename embeds the start timestamp), so a
-  // fork's parent is always parsed before the fork itself. The rollout
-  // filename embeds the session uuid, so the same session showing up twice
-  // (e.g. a live copy plus a compressed archived one) dedupes by basename,
-  // plain `.jsonl` preferred over `.jsonl.zst`.
-  files.sort((a, b) => path.basename(a).localeCompare(path.basename(b)));
-  const byBasename = new Map<string, string>();
+  // Roots may overlap (the same directory named twice); a path is walked once.
+  const seen = new Set<string>();
+  const files = collected.filter((f) => {
+    if (seen.has(f.path)) {
+      return false;
+    }
+    seen.add(f.path);
+    return true;
+  });
+  files.sort((a, b) => path.basename(a.path).localeCompare(path.basename(b.path)));
+  const bySession = new Map<string, WalkedFile>();
   for (const file of files) {
-    const key = path.basename(file).replace(/\.zst$/, "");
-    const prev = byBasename.get(key);
-    if (prev === undefined || (prev.endsWith(".zst") && !file.endsWith(".zst"))) {
-      byBasename.set(key, file);
+    if (!file.candidate) {
+      continue;
+    }
+    const key = path.basename(file.path).replace(/\.zst$/, "");
+    const prev = bySession.get(key);
+    if (prev === undefined) {
+      bySession.set(key, file);
+    } else if (!prev.resumable && file.resumable) {
+      prev.candidate = false;
+      bySession.set(key, file);
+    } else {
+      file.candidate = false;
     }
   }
-  const uniqueFiles = [...byBasename.values()];
+  return files;
+}
 
+/** Parse a rollout from its first byte. A `.jsonl.zst` archive is decompressed
+ *  whole and cut with the same complete-lines rule; it cannot be resumed, so it
+ *  reports the compressed size as `parsedThrough` and no probe. */
+export const parseCodexWhole: ParseWhole<CodexContribution> = (file) => {
+  if (!file.resumable) {
+    const compressed = readFileSync(file.path);
+    const contribution = emptyCodexContribution();
+    scanBytes(withoutBom(zstdDecompressSync(compressed)), CODEX_NEEDLES, (hit) => {
+      parseCodexLine(hit.line, contribution);
+    });
+    return {
+      contribution,
+      parsedThrough: compressed.length,
+      tailProbeHex: "",
+      bytesRead: compressed.length,
+    };
+  }
+  return parseCodexFrom(file, 0, emptyCodexContribution());
+};
+
+/** Resume a rollout at `fromByte`, continuing `prior`'s parser state; `prior`
+ *  itself is never mutated (the index still holds it). */
+export const parseCodexTail: ParseTail<CodexContribution> = (file, fromByte, prior) => {
+  return parseCodexFrom(file, fromByte, {
+    v: prior.v,
+    state: { ...prior.state },
+    events: [...prior.events],
+  });
+};
+
+/** Fold the contributions (walk order) into one report per provider. Per event:
+ *  fork dedup (an info hash seen in this file or the parent is a copied
+ *  token_count; parent unscanned: FORK_PREFIX_WINDOW_MS), THEN the window. The
+ *  fork rules start at the event the fork was learned before (`fork.knownAfter`);
+ *  every event's hash enters the file's own set regardless. */
+export function foldCodex(
+  records: readonly FileRecord<CodexContribution>[],
+  sinceMs: number | undefined,
+  dayKey: DayKey,
+): Map<string, UsageReport> {
   const providers = new Map<string, UsageReport>();
+  const canonical = canonicalModelNames();
   // Every token_count `info` seen per session (counted or not), keyed by the
-  // session id, so a later fork can drop the events it copied from its parent.
+  // session id hash, so a later fork can drop the events it copied from its parent.
   const infoHashesBySession = new Map<string, Set<string>>();
-
-  for (const file of uniqueFiles) {
-    try {
-      await parseRolloutFile(file, sinceMs, providers, infoHashesBySession, dayKey);
-    } catch (e) {
-      consola.warn(`could not read ${file} (${errMessage(e)}).`);
+  for (const { contribution: { state, events } } of records) {
+    const { fork, metaTsMs } = state;
+    const parentHashes = fork === undefined ? undefined : infoHashesBySession.get(fork.parentHash);
+    const ownHashes = new Set<string>();
+    for (let index = 0; index < events.length; index++) {
+      const [tsMs, rawProvider, rawModel, infoHash, input, output, cacheRead] = events[index]!;
+      const forked = fork !== undefined && index >= fork.knownAfter;
+      const duplicate = ownHashes.has(infoHash) ||
+        (forked &&
+          (parentHashes?.has(infoHash) === true ||
+            (parentHashes === undefined &&
+              metaTsMs !== undefined &&
+              tsMs !== null &&
+              tsMs - metaTsMs <= FORK_PREFIX_WINDOW_MS)));
+      ownHashes.add(infoHash);
+      if (duplicate) {
+        continue;
+      }
+      if (sinceMs !== undefined && !(tsMs !== null && tsMs >= sinceMs)) {
+        continue; // outside the window (or no timestamp under a cutoff)
+      }
+      let report = providers.get(rawProvider);
+      if (report === undefined) {
+        report = usageReport();
+        providers.set(rawProvider, report);
+      }
+      // Bucket by the user's LOCAL calendar day, not the UTC day the rollout
+      // timestamp spells; a line with no parseable timestamp still counts
+      // toward the totals.
+      record(report, tsMs === null ? null : dayKey(tsMs), canonical(rawModel), {
+        input,
+        output,
+        cacheRead,
+        cacheCreation: 0,
+        events: 1,
+      });
+    }
+    if (state.sessionIdHash !== undefined && ownHashes.size > 0) {
+      infoHashesBySession.set(state.sessionIdHash, ownHashes);
     }
   }
   return providers;
@@ -148,12 +270,13 @@ export async function readCodexSessions(
 
 // ---------- internals ----------
 
-/** Recursively collect rollout files, skipping ones started long before the cutoff. */
+/** Recursively collect rollout files, deciding candidacy by the start date in
+ *  the filename and the mtime. */
 function collectRolloutFiles(
   dir: string,
   depth: number,
   sinceMs: number | undefined,
-  out: string[],
+  out: WalkedFile[],
 ): void {
   let entries: Dirent[];
   try {
@@ -174,41 +297,51 @@ function collectRolloutFiles(
     if (m === null) {
       continue;
     }
+    let size: number;
+    let mtimeMs: number;
+    try {
+      ({ size, mtimeMs } = statSync(full));
+    } catch (e) {
+      consola.warn(`could not read ${full} (${errMessage(e)}).`);
+      continue;
+    }
+    let candidate = true;
     if (sinceMs !== undefined) {
       // A resumed session appends new events to its ORIGINAL rollout, so an
       // old start date alone cannot exclude a file -- only an old start date
-      // AND no writes since the cutoff can. A failed stat falls through to
-      // the parse (which warns if the file is truly unreadable).
+      // AND no writes since the cutoff can.
       const startedMs = Date.parse(`${m[1]}-${m[2]}-${m[3]}T00:00:00Z`);
       if (Number.isFinite(startedMs) && startedMs + FILENAME_CUTOFF_SLACK_MS < sinceMs) {
-        let mtimeMs: number | undefined;
-        try {
-          mtimeMs = statSync(full).mtimeMs;
-        } catch {
-          mtimeMs = undefined;
-        }
-        if (mtimeMs !== undefined && mtimeMs < sinceMs) {
-          continue;
-        }
+        candidate = !(mtimeMs < sinceMs);
       }
     }
-    out.push(full);
+    out.push({ path: full, size, mtimeMs, candidate, resumable: m[4] === undefined });
   }
 }
 
-/** Yield the lines of a rollout file, transparently decompressing `.jsonl.zst`. */
-async function* rolloutLines(file: string): AsyncGenerator<string> {
-  if (file.endsWith(".zst")) {
-    const raw = zstdDecompressSync(readFileSync(file));
-    yield* new TextDecoder().decode(raw).split("\n");
-    return;
-  }
-  const rl = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
-  try {
-    yield* rl;
-  } finally {
-    rl.close();
-  }
+/** The archive path has always dropped a leading UTF-8 BOM (its whole-text
+ *  decoder did); the file path never did, and the scanner keeps it that way. */
+function withoutBom(bytes: Uint8Array): Uint8Array {
+  return bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf ? bytes.subarray(3) : bytes;
+}
+
+function emptyCodexContribution(): CodexContribution {
+  return {
+    v: CONTRIBUTION_VERSION,
+    state: { provider: DEFAULT_PROVIDER, model: UNKNOWN_MODEL },
+    events: [],
+  };
+}
+
+function parseCodexFrom(
+  file: WalkedFile,
+  fromByte: number,
+  contribution: CodexContribution,
+): ParsedFile<CodexContribution> {
+  const scan = scanLines(file.path, fromByte, CODEX_NEEDLES, (hit) => {
+    parseCodexLine(hit.line, contribution);
+  });
+  return { contribution, ...scan };
 }
 
 /** Map one `last_token_usage` object onto the proxy report's token buckets. */
@@ -227,131 +360,75 @@ function tokenBuckets(last: Record<string, unknown>): TokenBuckets {
   };
 }
 
-/**
- * Parse one rollout file, folding its token_count events into `providers`.
- *
- * Fork handling: a forked session persists COPIES of its parent's rollout
- * items (token_count events included) at the head of the new file, and its
- * cumulative totals then continue from the copied prefix -- so counting every
- * event would double count the parent. Identical `info` implies identical
- * cumulative totals implies zero new usage, so an event is counted only when
- * its exact info JSON was seen neither earlier in this file (also absorbs
- * re-emitted counts on resume) nor anywhere in the parent session. When the
- * parent was not scanned (deleted, or outside the cutoff), fall back to
- * dropping token_counts inside the batch-write window right after the
- * session_meta line.
- */
-async function parseRolloutFile(
-  file: string,
-  sinceMs: number | undefined,
-  providers: Map<string, UsageReport>,
-  infoHashesBySession: Map<string, Set<string>>,
-  dayKey: DayKey,
-): Promise<void> {
-  let provider = DEFAULT_PROVIDER;
-  let model = UNKNOWN_MODEL;
-  let sessionId: string | undefined;
-  let metaTsMs: number | undefined;
-  let parentHashes: Set<string> | undefined;
-  let forked = false;
-  const ownHashes = new Set<string>();
+/** Fold one needle-bearing line into `state` / `events`. A needle may sit inside
+ *  another line's content, so the type checks stay. */
+function parseCodexLine(line: string, contribution: CodexContribution): void {
+  const { state, events } = contribution;
+  const isMeta = line.includes('"session_meta"');
+  const isTurnContext = line.includes('"turn_context"');
+  const isTokenCount = line.includes('"token_count"');
+  const isSettings = line.includes('"thread_settings_applied"');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return; // torn or corrupt line
+  }
+  if (!isRecord(parsed) || !isRecord(parsed.payload)) {
+    return;
+  }
+  const payload = parsed.payload;
 
-  for await (const line of rolloutLines(file)) {
-    // Cheap substring gates before JSON.parse; most lines are response items.
-    const isMeta = line.includes('"session_meta"');
-    const isTurnContext = line.includes('"turn_context"');
-    const isTokenCount = line.includes('"token_count"');
-    const isSettings = line.includes('"thread_settings_applied"');
-    if (!isMeta && !isTurnContext && !isTokenCount && !isSettings) {
-      continue;
+  if (isMeta && parsed.type === "session_meta" && state.sessionIdHash === undefined) {
+    const id = payload.id ?? payload.session_id;
+    state.sessionIdHash = typeof id === "string" ? dedupKey(id) : undefined;
+    if (typeof payload.model_provider === "string" && payload.model_provider !== "") {
+      state.provider = payload.model_provider;
     }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue; // torn or corrupt line
+    if (typeof payload.forked_from_id === "string") {
+      state.fork = { parentHash: dedupKey(payload.forked_from_id), knownAfter: events.length };
     }
-    if (!isRecord(parsed) || !isRecord(parsed.payload)) {
-      continue;
-    }
-    const payload = parsed.payload;
-
-    if (isMeta && parsed.type === "session_meta" && sessionId === undefined) {
-      const id = payload.id ?? payload.session_id;
-      sessionId = typeof id === "string" ? id : undefined;
-      if (typeof payload.model_provider === "string" && payload.model_provider !== "") {
-        provider = payload.model_provider;
-      }
-      if (typeof payload.forked_from_id === "string") {
-        forked = true;
-        parentHashes = infoHashesBySession.get(payload.forked_from_id);
-      }
-      const ts = typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : Number.NaN;
-      metaTsMs = Number.isFinite(ts) ? ts : undefined;
-      continue;
-    }
-
-    if (isTurnContext && parsed.type === "turn_context") {
-      if (typeof payload.model === "string" && payload.model !== "") {
-        model = canonicalModelName(payload.model);
-      }
-      continue;
-    }
-
-    if (parsed.type !== "event_msg") {
-      continue;
-    }
-
-    if (isSettings && payload.type === "thread_settings_applied") {
-      const settings = payload.thread_settings;
-      if (isRecord(settings) && typeof settings.model === "string" && settings.model !== "") {
-        model = canonicalModelName(settings.model);
-      }
-      continue;
-    }
-
-    if (!isTokenCount || payload.type !== "token_count" || !isRecord(payload.info)) {
-      continue;
-    }
-    const last = payload.info.last_token_usage;
-    if (!isRecord(last)) {
-      continue;
-    }
-
-    const hash = JSON.stringify(payload.info);
-    const tsMs = typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : Number.NaN;
-    const duplicate = ownHashes.has(hash) ||
-      parentHashes?.has(hash) === true ||
-      (forked &&
-        parentHashes === undefined &&
-        metaTsMs !== undefined &&
-        Number.isFinite(tsMs) &&
-        tsMs - metaTsMs <= FORK_PREFIX_WINDOW_MS);
-    ownHashes.add(hash);
-    if (duplicate) {
-      continue;
-    }
-    if (sinceMs !== undefined && !(tsMs >= sinceMs)) {
-      continue; // outside the window (or unparseable timestamp under a cutoff)
-    }
-
-    let report = providers.get(provider);
-    if (report === undefined) {
-      report = usageReport();
-      providers.set(provider, report);
-    }
-    // Bucket by the user's LOCAL calendar day (localDayKey), not the UTC day
-    // the rollout timestamp spells; a line with no parseable timestamp still
-    // counts toward the totals.
-    record(
-      report,
-      Number.isFinite(tsMs) ? dayKey(tsMs) : null,
-      model,
-      { ...tokenBuckets(last), events: 1 },
-    );
+    const ts = typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : Number.NaN;
+    state.metaTsMs = Number.isFinite(ts) ? ts : undefined;
+    return;
   }
 
-  if (sessionId !== undefined && ownHashes.size > 0) {
-    infoHashesBySession.set(sessionId, ownHashes);
+  if (isTurnContext && parsed.type === "turn_context") {
+    if (typeof payload.model === "string" && payload.model !== "") {
+      state.model = payload.model;
+    }
+    return;
   }
+
+  if (parsed.type !== "event_msg") {
+    return;
+  }
+
+  if (isSettings && payload.type === "thread_settings_applied") {
+    const settings = payload.thread_settings;
+    if (isRecord(settings) && typeof settings.model === "string" && settings.model !== "") {
+      state.model = settings.model;
+    }
+    return;
+  }
+
+  if (!isTokenCount || payload.type !== "token_count" || !isRecord(payload.info)) {
+    return;
+  }
+  const last = payload.info.last_token_usage;
+  if (!isRecord(last)) {
+    return;
+  }
+  const tsMs = typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : Number.NaN;
+  const buckets = tokenBuckets(last);
+  const event: CodexEvent = [
+    Number.isFinite(tsMs) ? tsMs : null,
+    state.provider,
+    state.model,
+    dedupKey(JSON.stringify(payload.info)),
+    buckets.input,
+    buckets.output,
+    buckets.cacheRead,
+  ];
+  events.push(event);
 }

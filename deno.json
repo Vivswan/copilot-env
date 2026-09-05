@@ -44,6 +44,7 @@
   },
   "tasks": {
     "test": "deno test -P=test test/",
+    "bench": "deno bench -P=test bench/",
     "typecheck": "deno check src/ test/ scripts/ .github/scripts/",
     "lint": "deno lint && deno fmt --check",
     "lint:sh": "bash scripts/lint-sh.sh",
@@ -52,7 +53,11 @@
     "check": "deno lint --fix && deno fmt",
     "compile": "deno run --allow-read --allow-write --allow-run=deno scripts/compile.ts",
     "install": "deno run --allow-env --allow-read --allow-write --allow-sys=homedir --allow-run=deno,bash,powershell scripts/install_local.ts",
-    "test:docker": "deno run --allow-read --allow-env --allow-run=docker,podman scripts/test_docker.ts"
+    "test:docker": "deno run --allow-read --allow-env --allow-run=docker,podman scripts/test_docker.ts",
+    "usage:profile": "deno run --allow-read --allow-write --allow-env --allow-sys=homedir,hostname scripts/usage_profile.ts",
+    "usage:fixtures": "deno run -P=test scripts/usage_fixtures.ts",
+    "usage:goldens": "deno run -P=test scripts/usage_goldens.ts",
+    "usage:corpus": "deno run -P=cli scripts/usage_corpus.ts"
   },
   "permissions": {
     "test": {

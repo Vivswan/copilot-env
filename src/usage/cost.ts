@@ -1,16 +1,24 @@
 // `agent cost`: fetches pricing, reads usage DBs, and prints spend estimates.
 import { consola } from "consola";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { errMessage } from "../utils/error.ts";
 import { type Align, printTable } from "../utils/table.ts";
 import { formatDuration, MILLISECONDS_PER_DAY, startOfLocalDay } from "../utils/time.ts";
 import { discoverClaudeSessionRoots, readClaudeSessions } from "./claude_sessions.ts";
 import { discoverCodexSessionRoots, readCodexSessions } from "./codex_sessions.ts";
 import {
+  emptyIndexStats,
+  type IndexStats,
+  parseEveryCandidate,
+  type Reconcile,
+} from "./contribution.ts";
+import { openUsageIndex } from "./index.ts";
+import {
   type CostEstimate,
   estimateCost,
-  fetchPricing,
+  type LoadedPricing,
+  loadPricing,
   type ModelCost,
-  OPENROUTER_MODELS_URL,
   type PricingTier,
   roundUsd,
 } from "./pricing.ts";
@@ -36,29 +44,185 @@ const SOURCES_NOTE =
 
 const EMPTY_REPORT: ReadonlyUsageReport = usageReport();
 
-/** `cost`: aggregate per-host SQLite + Codex session usage and estimate spend. */
-export async function runCost(args: {
+/** Where the session logs are: one resolver per source, supplied together or not
+ *  at all, so a test cannot redirect one source and still sweep the other's real home. */
+export interface SessionRootDiscovery {
+  codex(): string[];
+  claude(): string[];
+}
+
+const DEFAULT_SESSION_ROOTS: SessionRootDiscovery = {
+  codex: () => discoverCodexSessionRoots(),
+  claude: () => discoverClaudeSessionRoots(),
+};
+
+/** The run's environment seams; production takes every default. Tests inject a
+ *  fetch and their own session roots, because the default discovery sweeps the
+ *  real Codex and Claude homes. */
+export interface CostDeps {
+  fetchImpl?: typeof fetch;
+  sessionRoots?: SessionRootDiscovery;
+  /** The clock every `runtime.timing` figure is read from, in ms (default `performance.now`). */
+  now?: () => number;
+}
+
+export interface CostArgs {
   days?: string;
   json?: boolean;
   perDay?: boolean;
+  /** The per-run `--pricing-url`; unset defers to the `pricing-url` config key. */
   pricingUrl?: string;
   sources?: boolean;
-}): Promise<void> {
-  const window = args.days === undefined ? undefined : parseDaysWindow(args.days);
-  const sinceMs = window === undefined ? undefined : daysCutoffMs(window);
+  /** Parse every session log; the usage index is neither opened nor written. */
+  noIndex?: boolean;
+}
 
+/** The `--json` `runtime` key: how the run went, never what it found. Consumers
+ *  comparing two runs' numbers drop it; `index` sums the IndexStats of every
+ *  reconcile this run made; `timing` is wall-clock ms per phase. The price list
+ *  loads while the logs are read, so `pricing` is only the time the run then
+ *  waited for it: zero when a cached list was already there. `total` runs from
+ *  the start of the run to the moment the JSON payload is built. */
+export interface CostRuntime {
+  /** False under --no-index and when the index could not be opened. */
+  indexed: boolean;
+  index: IndexStats;
+  timing: { walk: number; parse: number; fold: number; pricing: number; total: number };
+}
+
+/** Everything `runtime` reports except `total`, which only the payload's builder
+ *  can stamp (it is the last thing measured); `startedAt` is the run's clock origin. */
+interface MeasuredRun {
+  indexed: boolean;
+  index: IndexStats;
+  timing: Omit<CostRuntime["timing"], "total">;
+  startedAt: number;
+  now: () => number;
+}
+
+/** Add every field of `more` into `into` (all seven are additive counts). */
+export function addIndexStats(into: IndexStats, more: IndexStats): void {
+  into.filesSeen += more.filesSeen;
+  into.filesReused += more.filesReused;
+  into.filesParsedWhole += more.filesParsedWhole;
+  into.filesParsedTail += more.filesParsedTail;
+  into.filesFailed += more.filesFailed;
+  into.filesDeleted += more.filesDeleted;
+  into.bytesRead += more.bytesRead;
+}
+
+/**
+ * One run's view of what its reconciles did: the IndexStats of every call
+ * summed, and each reader call split into walk / parse / fold by the wall clock
+ * at the reconcile's entry and exit (a reader walks, reconciles, and folds in
+ * sequence, and always calls the reconcile exactly once).
+ */
+export class ReconcileMeter {
+  readonly stats: IndexStats = emptyIndexStats();
+  readonly timing = { walk: 0, parse: 0, fold: 0 };
+  readonly reconcile: Reconcile;
+  readonly #now: () => number;
+  #enteredAt = 0;
+  #exitedAt = 0;
+
+  /** `now` is the clock, in ms; tests hand in a fake one. */
+  constructor(inner: Reconcile, now: () => number = () => performance.now()) {
+    this.#now = now;
+    this.reconcile = (source, walked, parseWhole, parseTail) => {
+      this.#enteredAt = this.#now();
+      const result = inner(source, walked, parseWhole, parseTail);
+      this.#exitedAt = this.#now();
+      this.timing.parse += this.#exitedAt - this.#enteredAt;
+      addIndexStats(this.stats, result.stats);
+      return result;
+    };
+  }
+
+  /** Run one reader through this meter's reconcile. The readers' bodies are
+   *  synchronous, so the clock is read when the reader RETURNS its promise;
+   *  awaiting first would bill whatever else the microtask queue held to `fold`. */
+  async read<T>(reader: (reconcile: Reconcile) => Promise<T>): Promise<T> {
+    const startedAt = this.#now();
+    this.#enteredAt = startedAt;
+    this.#exitedAt = startedAt;
+    const pending = reader(this.reconcile);
+    const returnedAt = this.#now();
+    this.timing.walk += this.#enteredAt - startedAt;
+    this.timing.fold += returnedAt - this.#exitedAt;
+    return await pending;
+  }
+}
+
+/** THE price-list URL resolution: the per-run flag, else the stored `pricing-url`
+ *  preference, else the registry's built-in (the accessor folds the last two). */
+export function resolvePricingUrl(
+  flag: string | undefined,
+  config: CopilotEnvConfig = new CopilotEnvConfig(),
+): string {
+  return flag ?? config.pricingUrl();
+}
+
+/** `cost`: aggregate per-host SQLite + Codex session usage and estimate spend. */
+export async function runCost(args: CostArgs, deps: CostDeps = {}): Promise<void> {
+  const now = deps.now ?? (() => performance.now());
+  const startedAt = now();
+  const window = args.days === undefined ? undefined : parseDaysWindow(args.days);
+
+  // Started before the source readers, awaited where first needed: the network
+  // round-trip overlaps the file parsing. The no-op catch keeps an exit before
+  // the await from leaving an unhandled rejection.
+  const pricingAbort = new AbortController();
+  const pricingLoad = loadPricing(resolvePricingUrl(args.pricingUrl), {
+    signal: pricingAbort.signal,
+    fetchImpl: deps.fetchImpl,
+  });
+  pricingLoad.catch(() => {});
+  try {
+    await reportCost(args, deps.sessionRoots ?? DEFAULT_SESSION_ROOTS, {
+      window,
+      startedAt,
+      now,
+      pricingLoad,
+    });
+  } finally {
+    // Every exit, the no-sources return and a thrown error alike, cancels a price
+    // list still in flight (a settled load ignores this), so no path leaves the
+    // process waiting out the fetch timeout.
+    pricingAbort.abort();
+  }
+}
+
+interface CostRun {
+  /** The `--days` window; its cutoff instant is derived from it where the readers need one. */
+  window: DaysWindow | undefined;
+  startedAt: number;
+  now: () => number;
+  pricingLoad: Promise<LoadedPricing>;
+}
+
+/** Read every source, price it, and render; `runCost` owns the pricing load's lifetime. */
+async function reportCost(
+  args: CostArgs,
+  roots: SessionRootDiscovery,
+  run: CostRun,
+): Promise<void> {
+  const { window, startedAt, now } = run;
+  const sinceMs = window === undefined ? undefined : daysCutoffMs(window);
   const dbPaths = discoverUsageDbs();
   const proxyReport = dbPaths.length > 0 ? readUsage(dbPaths, sinceMs) : EMPTY_REPORT;
 
-  const sessionRoots = discoverCodexSessionRoots();
-  const codexByProvider = sessionRoots.length > 0
-    ? await readCodexSessions(sessionRoots, sinceMs)
-    : new Map<string, UsageReport>();
-
-  const claudeRoots = discoverClaudeSessionRoots();
-  const claudeReport = claudeRoots.length > 0
-    ? await readClaudeSessions(claudeRoots, sinceMs)
-    : EMPTY_REPORT;
+  // Roots are discovered before the index opens, so nothing but the reads sits
+  // between open and close.
+  const sessionRoots = roots.codex();
+  const claudeRoots = roots.claude();
+  const logs = await readSessionLogs(
+    sessionRoots,
+    claudeRoots,
+    sinceMs,
+    args.noIndex === true,
+    now,
+  );
+  const { codexByProvider, claudeReport } = logs;
 
   if (dbPaths.length === 0 && codexByProvider.size === 0 && claudeReport.byModel.size === 0) {
     consola.warn(
@@ -67,15 +231,46 @@ export async function runCost(args: {
     return;
   }
 
-  // Best-effort pricing: a fetch failure still yields a token-only report.
+  // Best-effort pricing: a fetch failure still yields a token-only report. The wait
+  // is clocked the moment the load settles, either way, before any warning work.
   let pricing = new Map<string, PricingTier>();
+  const pricingWaitStartedAt = now();
+  let pricingWaitMs = 0;
   try {
-    pricing = await fetchPricing(args.pricingUrl ?? OPENROUTER_MODELS_URL);
+    const loaded = await run.pricingLoad.finally(() => {
+      pricingWaitMs = now() - pricingWaitStartedAt;
+    });
+    pricing = loaded.pricing;
+    if (loaded.source === "stale-cache") {
+      consola.warn(
+        `WARNING: could not refresh OpenRouter pricing (${loaded.fetchError}); using the cached price list from ${
+          formatDuration(Date.now() - loaded.fetchedAtMs)
+        } ago.`,
+      );
+    }
+    if (loaded.source === "fetched" && loaded.cacheWriteError !== undefined) {
+      consola.warn(
+        `WARNING: could not cache the OpenRouter price list (${loaded.cacheWriteError}); the next run fetches it again.`,
+      );
+    }
   } catch (e) {
     consola.warn(
       `WARNING: could not fetch OpenRouter pricing (${errMessage(e)}); reporting tokens only.`,
     );
   }
+
+  const measured: MeasuredRun = {
+    indexed: logs.indexed,
+    index: logs.meter.stats,
+    timing: {
+      walk: Math.round(logs.meter.timing.walk),
+      parse: Math.round(logs.meter.timing.parse),
+      fold: Math.round(logs.meter.timing.fold),
+      pricing: Math.round(pricingWaitMs),
+    },
+    startedAt,
+    now,
+  };
 
   // ModelUsage is a structural superset of UsageTokens, so the read-only
   // estimateCost reads report.byModel directly -- no per-model copy needed.
@@ -114,6 +309,7 @@ export async function runCost(args: {
           Boolean(args.perDay),
           codexSessions,
           claudeSessions,
+          measured,
         ),
         null,
         2,
@@ -141,6 +337,60 @@ export async function runCost(args: {
 
   console.log(SOURCES_NOTE);
   console.log("");
+  if (logs.indexed) {
+    process.stderr.write(`${describeIndexRun(logs.meter.stats)}\n`);
+  }
+}
+
+interface SessionLogs {
+  codexByProvider: Map<string, UsageReport>;
+  claudeReport: UsageReport;
+  /** False under --no-index and when the index could not be opened. */
+  indexed: boolean;
+  meter: ReconcileMeter;
+}
+
+/**
+ * Read both session-log sources through the usage index (or index-less), with
+ * the index closed on every path out. Both readers run even when a source has
+ * no roots: the reconcile is what deletes the rows of a session root that no
+ * longer exists, and only that source's walk (an empty one included) reaches it.
+ */
+async function readSessionLogs(
+  codexRoots: string[],
+  claudeRoots: string[],
+  sinceMs: number | undefined,
+  noIndex: boolean,
+  now: () => number,
+): Promise<SessionLogs> {
+  const index = noIndex ? null : openUsageIndex();
+  try {
+    const meter = new ReconcileMeter(index?.reconcile ?? parseEveryCandidate, now);
+    const codexByProvider = await meter.read((reconcile) =>
+      readCodexSessions(codexRoots, sinceMs, undefined, reconcile)
+    );
+    const claudeReport = await meter.read((reconcile) =>
+      readClaudeSessions(claudeRoots, sinceMs, undefined, reconcile)
+    );
+    return { codexByProvider, claudeReport, indexed: index !== null, meter };
+  } finally {
+    index?.close();
+  }
+}
+
+/** The one human-output line about the index: what it spared and what it read. */
+export function describeIndexRun(stats: IndexStats): string {
+  return `usage index: ${stats.filesReused} files reused, ${stats.filesParsedTail} tail-parsed, ${stats.filesParsedWhole} whole-parsed, ${
+    formatBytesCompact(stats.bytesRead)
+  } read`;
+}
+
+/** Decimal units, one decimal place from kB up. */
+export function formatBytesCompact(bytes: number): string {
+  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+  if (bytes >= 1_000_000) return `${(bytes / 1_000_000).toFixed(1)} MB`;
+  if (bytes >= 1_000) return `${(bytes / 1_000).toFixed(1)} kB`;
+  return `${bytes} B`;
 }
 
 /** Shared per-call context for the two report layouts. */
@@ -890,10 +1140,20 @@ export function buildSourceJson(
   };
 }
 
+/** The measured run with `total` stamped now. */
+function completeRuntime(measured: MeasuredRun): CostRuntime {
+  return {
+    indexed: measured.indexed,
+    index: measured.index,
+    timing: { ...measured.timing, total: Math.round(measured.now() - measured.startedAt) },
+  };
+}
+
 /**
  * Build the `--json` payload. The top-level keys keep their historical
  * proxy-report shape; the Codex session source is the added `codexSessions`
- * key so existing consumers are unaffected.
+ * key so existing consumers are unaffected, and `runtime` is the one reserved
+ * key that describes the run rather than the usage.
  */
 function buildCostJson(
   report: ReadonlyUsageReport,
@@ -904,7 +1164,10 @@ function buildCostJson(
   perDay: boolean,
   codexSessions: { roots: number; providers: Record<string, Record<string, unknown>> },
   claudeSessions: Record<string, unknown>,
+  measured: MeasuredRun,
 ): Record<string, unknown> {
+  // Property order is evaluation order: `runtime` is the LAST property, so its
+  // `total` covers the construction of everything else in the payload.
   return {
     dbCount,
     sinceMs: sinceMs ?? null,
@@ -913,5 +1176,6 @@ function buildCostJson(
     claudeSessions,
     note:
       "approximate numbers gathered from local logs and keyed by canonical model spellings (dashed/dated claude ids fold into the dotted form), priced at public OpenRouter rates (actual billing may differ); top-level keys cover proxied traffic only, while codexSessions/claudeSessions cover each agent's FULL traffic (proxy and Direct), so they overlap the proxy keys when an agent is proxy-wired -- never sum them",
+    runtime: completeRuntime(measured),
   };
 }

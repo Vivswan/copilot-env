@@ -206,6 +206,19 @@ test("the registry parsers accept valid input and reject bad input with a clear 
   ) {
     expect(() => configKeyDef("pricing-url")?.parse(bad)).toThrow(/^expected an https:\/\/ URL$/);
   }
+  // Userinfo is rejected up front: fetch refuses such a URL, so storing it could only fail at
+  // run time. The rejection names the alternative without echoing the value.
+  for (
+    const bad of [
+      "https://user:secret@pricing.example/models",
+      "https://token@pricing.example/",
+      "https://:secret@pricing.example/",
+    ]
+  ) {
+    expect(() => configKeyDef("pricing-url")?.parse(bad)).toThrow(
+      /^expected an https:\/\/ URL without user:password@ credentials \(put a token in the query instead\)$/,
+    );
+  }
   expect(configKeyDef("nope")).toBeUndefined();
 });
 

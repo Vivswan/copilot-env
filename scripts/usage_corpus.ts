@@ -1067,7 +1067,8 @@ const KNOWN_KEYS = new Set([
   "wire_api",
   "workspace_roots",
 ]);
-/** Keys whose whole value is tool or user data: inside, only these structural keys survive. */
+/** Keys whose whole value is tool or user data (or a user-keyed map, `settings`): inside,
+ *  only these structural keys survive. */
 const CONTAINER_KEYS = new Set([
   "input",
   "output",
@@ -1075,6 +1076,7 @@ const CONTAINER_KEYS = new Set([
   "arguments",
   "result",
   "toolUseResult",
+  "settings",
 ]);
 const CONTAINER_STRUCT_KEYS = new Set([
   "type",
@@ -1224,6 +1226,50 @@ const ENUM_VALUES: Record<string, ReadonlySet<string>> = {
   subtype: new Set(["success", "error", "init", "compact_boundary"]),
   name: new Set(TOOL_NAMES),
 };
+/** Keys whose NUMBER survives outside a container: the token buckets the readers price, the
+ *  clocks and durations, and the structural counts and offsets. Any other number (an account
+ *  or phone number typed into a prompt, a figure inside tool output) is content. */
+const NUMERIC_KEYS = new Set([
+  "addedLines",
+  "apiBlockIndex",
+  "cache_creation_input_tokens",
+  "cache_read_input_tokens",
+  "cache_write_input_tokens",
+  "cached_input_tokens",
+  "completed_at",
+  "completed_at_ms",
+  "context_window",
+  "create_time",
+  "duration",
+  "duration_ms",
+  "end_byte_offset",
+  "end_ordinal_exclusive",
+  "ephemeral_1h_input_tokens",
+  "ephemeral_5m_input_tokens",
+  "exit_code",
+  "forked_from_ordinal_exclusive",
+  "input_tokens",
+  "iterations",
+  "model_context_window",
+  "nanos",
+  "ordinal",
+  "output_tokens",
+  "reasoning_output_tokens",
+  "reasoning_tokens",
+  "secs",
+  "skillCount",
+  "started_at",
+  "started_at_ms",
+  "thinking_tokens",
+  "time_to_first_token_ms",
+  "total_tokens",
+  "web_fetch_requests",
+  "web_search_requests",
+]);
+/** The number every other number becomes. */
+const NUMBER_PLACEHOLDER = 0;
+/** The key of a value with no owning key: the root record, an array element. */
+const NO_KEY = "";
 /** `version` / `cli_version` hold a release number, a shape rather than a vocabulary. */
 const VERSION_KEYS = new Set(["version", "cli_version"]);
 const VERSION_RE = /^\d+\.\d+\.\d+([.-][A-Za-z0-9.]+)?$/;
@@ -1288,7 +1334,9 @@ interface ScrubState {
 }
 
 /** Fail-closed: a string survives only as a pseudonymized id, a timestamp, a version, or one
- *  of its key's closed enum values; a key only when known (in a container: structural). */
+ *  of its key's closed enum values; a number only DIRECTLY under a NUMERIC_KEYS key outside a
+ *  container (an array element has no owning key); a key only when known (in a container:
+ *  structural), and the value under an unknown key is content, container rules inside. */
 function scrubValue(
   key: string,
   value: unknown,
@@ -1311,7 +1359,14 @@ function scrubValue(
     state.scrubbed++;
     return PLACEHOLDER;
   }
-  if (Array.isArray(value)) return value.map((item) => scrubValue(key, item, ids, state, nested));
+  if (typeof value === "number") {
+    if (!nested && NUMERIC_KEYS.has(key)) return value;
+    state.scrubbed++;
+    return NUMBER_PLACEHOLDER;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => scrubValue(NO_KEY, item, ids, state, nested));
+  }
   if (isRecord(value)) {
     const out: Record<string, unknown> = {};
     let ordinal = 0;
@@ -1322,7 +1377,7 @@ function scrubValue(
         state.scrubbed++;
         do outKey = `${PLACEHOLDER}_KEY_${ordinal++}`; while (outKey in value || outKey in out);
       }
-      out[outKey] = scrubValue(k, v, ids, state, nested);
+      out[outKey] = scrubValue(k, v, ids, state, nested || !keep);
     }
     return out;
   }
@@ -1333,7 +1388,7 @@ export interface ScrubbedText {
   text: string;
   lines: number;
   usageLines: number;
-  scrubbedStrings: number;
+  scrubbedValues: number;
   /** Distinct `YYYY-MM-DDTHH:MM` minutes the records' own timestamps fall in. */
   minutes: number;
 }
@@ -1376,13 +1431,13 @@ export function scrubJsonl(
     ) {
       minutes.add(parsed.timestamp.slice(0, "YYYY-MM-DDTHH:MM".length));
     }
-    return JSON.stringify(scrubValue("", parsed, ids, state, false));
+    return JSON.stringify(scrubValue(NO_KEY, parsed, ids, state, false));
   });
   return {
     text: out.join("\n"),
     lines: count,
     usageLines,
-    scrubbedStrings: state.scrubbed,
+    scrubbedValues: state.scrubbed,
     minutes: minutes.size,
   };
 }
@@ -1449,7 +1504,7 @@ interface SourceSummary {
   files: number;
   lines: number;
   usageLines: number;
-  scrubbedStrings: number;
+  scrubbedValues: number;
   /** Files whose timestamps fall in two or more distinct minutes. */
   sessionsSpanningMinutes: number;
 }
@@ -1469,7 +1524,7 @@ function copyScrubbed(
     files: files.length,
     lines: 0,
     usageLines: 0,
-    scrubbedStrings: 0,
+    scrubbedValues: 0,
     sessionsSpanningMinutes: 0,
   };
   for (const file of files) {
@@ -1482,7 +1537,7 @@ function copyScrubbed(
     writeFile(dest, result.text);
     summary.lines += result.lines;
     summary.usageLines += result.usageLines;
-    summary.scrubbedStrings += result.scrubbedStrings;
+    summary.scrubbedValues += result.scrubbedValues;
     if (result.minutes >= 2) summary.sessionsSpanningMinutes++;
   }
   return summary;

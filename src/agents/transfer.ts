@@ -105,7 +105,7 @@ function copyStoredPref<K extends ConfigKey>(
 }
 
 /** Preferences whose VALUE may carry a credential (a custom price-list URL can hold a
- *  token in its query or userinfo). A default export replaces each stored one with
+ *  token in its query). A default export replaces each stored one with
  *  REDACTED_TOKEN exactly like a token, and import treats that marker exactly like a
  *  redacted token: keep whatever the local store holds. Absence still means "unset"
  *  (full-replace deletes the local value), as for every other preference. */

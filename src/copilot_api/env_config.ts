@@ -364,10 +364,12 @@ const INTEGRATION_ID_DOMAIN: ConfigDomain<string> = domain(
  *  shims' import closure and the usage layer must not (test/installer_pinning.test.ts). */
 export const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 
-/** The `pricing-url` value domain: an absolute https URL, stored in its canonical spelling
- *  (`new URL().href`: lowercase scheme and host) so the fetch's own https check and the
- *  digest that keys the price cache see one form. The rejection is a FIXED string that
- *  never echoes the value, because a custom price-list URL may carry credentials. */
+/** The `pricing-url` value domain: an absolute https URL with no userinfo (fetch refuses a
+ *  URL carrying `user:password@`, so such a value could only fail at run time; a token
+ *  belongs in the query), stored in its canonical spelling (`new URL().href`: lowercase
+ *  scheme and host) so the fetch's own https check and the digest that keys the price cache
+ *  see one form. Both rejections are FIXED strings that never echo the value, because a
+ *  custom price-list URL may carry credentials. */
 const HTTPS_URL_DOMAIN: ConfigDomain<string> = domain(
   v.pipe(
     v.string(),
@@ -375,6 +377,11 @@ const HTTPS_URL_DOMAIN: ConfigDomain<string> = domain(
     v.check(
       (raw) => URL.canParse(raw) && new URL(raw).protocol === "https:",
       "expected an https:// URL",
+    ),
+    // The pipe keeps running after a failed check, so this one must not throw on a non-URL.
+    v.check(
+      (raw) => !URL.canParse(raw) || (new URL(raw).username === "" && new URL(raw).password === ""),
+      "expected an https:// URL without user:password@ credentials (put a token in the query instead)",
     ),
     v.transform((raw) => new URL(raw).href),
   ),

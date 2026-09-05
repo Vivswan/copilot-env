@@ -8,9 +8,9 @@ import {
   type DesktopTargetResolution,
   inspectClaudeDesktopWiring,
   profileStoreWellFormed,
-  removeAllClaudeDesktopWiring,
   removeClaudeDesktopOrphan,
   removeUnlistedClaudeDesktopClaims,
+  removeUnmanagedClaudeDesktopWiring,
   syncClaudeDesktopWiring,
 } from "../claude/desktop.ts";
 import { Credential } from "../copilot_api/credential.ts";
@@ -82,8 +82,9 @@ function unjudged(enabled: boolean, reason: string): ClaudeDesktopStatus {
   };
 }
 
-/** The whole-library reconcile after a default write: key off sweeps everything owned; key
- *  on clears orphans and unlisted claims, then upserts every named target (cleanup first,
+/** The whole-library reconcile after a default write: key off removes the profile entries
+ *  and names the default's, left in place (src/claude/desktop.ts has the rule); key on
+ *  clears orphans and unlisted claims, then upserts every named target (cleanup first,
  *  so an orphan that held the applied slot hands it to the entry replacing it). `quiet`
  *  (the launcher hot path) is cleanup-only: no upsert, so no identity probe and no
  *  discovery. */
@@ -97,7 +98,7 @@ export async function reconcileClaudeDesktopWiring(opts: { quiet?: boolean } = {
       return;
     }
     if (!new CopilotEnvConfig().claudeDesktopEnabled()) {
-      removeAllClaudeDesktopWiring();
+      removeUnmanagedClaudeDesktopWiring({ quiet: opts.quiet });
       return;
     }
     if (!claudeDesktopInstalled()) return;

@@ -2403,7 +2403,7 @@ test("checkClaudeDesktop: a rendered fix is a warn, none is ok; the detail is th
     helperPaths: [] as string[],
     libraryDir: "/lib",
     unlisted: [] as string[],
-    ownedPaths: ["/lib/a.json"],
+    owned: [{ name: "copilot-env", path: "/lib/a.json", profile: null }],
     entries: [] as Extract<ClaudeDesktopStatus, { kind: "inspected" }>["entries"],
     orphans: [] as Extract<ClaudeDesktopStatus, { kind: "inspected" }>["orphans"],
   };
@@ -2432,15 +2432,17 @@ test("checkClaudeDesktop: a rendered fix is a warn, none is ok; the detail is th
   );
   expect(missing.fix).toBe("agent profile --add work");
 
-  // Helper scripts left behind with the key off and no library at all: still a leftover.
+  // A profile's helper script left behind with the key off and no library at all: still a
+  // leftover (the default's helper stays with its entry, so it is not one).
   const helperLeft = checkClaudeDesktop({
     kind: "no-library",
     enabled: false,
     installed: false,
-    helperPaths: ["/root/claude-desktop-token.sh"],
+    helperPaths: ["/root/claude-desktop-token.sh", "/root/claude-desktop-token-work.sh"],
   });
   expect(helperLeft.status).toBe("warn");
-  expect(helperLeft.detail).toContain("/root/claude-desktop-token.sh");
+  expect(helperLeft.detail).toContain("/root/claude-desktop-token-work.sh");
+  expect(helperLeft.detail).toContain("1 copilot-env leftover remains");
   expect(helperLeft.fix).toBe("agent claude");
 
   // The rest of the `--json` value contract: each arm's own fields ride along whole.
@@ -2456,7 +2458,7 @@ test("checkClaudeDesktop: a rendered fix is a warn, none is ok; the detail is th
     installed: true,
     helperPaths: [],
     libraryDir: "/lib",
-    ownedPaths: ["/lib/a.json"],
+    owned: [{ name: "copilot-env", path: "/lib/a.json", profile: null }],
     unlisted: ["/lib/gone.json"],
     entries: [],
     orphans: [{ name: "copilot-env: old", path: "/lib/o.json", profile: old }],

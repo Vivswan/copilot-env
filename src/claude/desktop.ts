@@ -26,8 +26,10 @@
 // use discovery and always track the catalog.
 //
 // Whether Desktop is wired at all is STATE (the `claude-desktop` key, default on), not an
-// action: every managed Claude write reconciles its entry from the key, and `false`
-// sweeps every owned entry. Every file created, rewritten, or removed is announced.
+// action: every managed Claude write reconciles its entry from the key. `false` removes
+// the profile entries and leaves the default's in place, unmanaged (the user's from then
+// on; only uninstall removes it, since its helper script goes with the install). Every
+// file created, rewritten, or removed is announced.
 import { chmodSync, existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
@@ -705,7 +707,12 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
       break;
     }
   }
-  if (entry === undefined && meta.entries.some((e) => e.name === name)) {
+  // A FOREIGN row already carrying the seed name: never clobber, never twin it. An owned
+  // row under that name is the user's rename of another wiring's entry, no obstacle.
+  const foreignNamesake = meta.entries.some(
+    (e) => e.name === name && !ledger.owns("claudeDesktop", configPathOf(e.id)),
+  );
+  if (entry === undefined && foreignNamesake) {
     logger.warn(
       `  Claude Desktop: a config entry named "${name}" already exists and is not ours; leaving it alone.`,
     );
@@ -833,13 +840,18 @@ export function profileStoreWellFormed(storeFile: string): boolean {
 }
 
 /** The per-entry reconcile every managed Claude write runs: key on upserts `profile`'s
- *  entry (when the app is installed), key off removes it -- never on a malformed profile
- *  store (the same guard the whole-library sweep in src/agents/claude_desktop.ts sits
- *  behind). Best-effort: a Desktop failure warns and never fails the caller. */
+ *  entry (when the app is installed); key off removes a profile's entry -- never on a
+ *  malformed profile store (the same guard the whole-library sweep in
+ *  src/agents/claude_desktop.ts sits behind) -- and leaves the default's in place, named.
+ *  Best-effort: a Desktop failure warns and never fails the caller. */
 export async function syncClaudeDesktopWiring(opts: DesktopWireOptions): Promise<void> {
   try {
     if (new CopilotEnvConfig().claudeDesktopEnabled()) {
       await wireClaudeDesktopEntry(opts);
+      return;
+    }
+    if (opts.profile === null) {
+      if (!opts.quiet) announceUnmanagedDefault();
       return;
     }
     const storeFile = new CopilotApiPaths().sharedStateFile;
@@ -869,7 +881,7 @@ export function removeClaudeDesktopEntry(profile: Profile): void {
 
 /** Remove one orphan by its path, plus its profile's helper scripts when its document
  *  named one. Best-effort. */
-export function removeClaudeDesktopOrphan(orphan: DesktopOrphan): void {
+export function removeClaudeDesktopOrphan(orphan: DesktopOwnedEntry): void {
   removeOwned(
     `the orphaned Claude Desktop entry at ${orphan.path}`,
     (e) => e.path === orphan.path,
@@ -937,7 +949,7 @@ export function presentDesktopHelperScripts(rootHome: string): string[] {
     .map((n) => join(rootHome, n));
 }
 
-/** The `claude-desktop false` / uninstall sweep: every owned entry plus every generated
+/** The uninstall sweep: every owned entry (the default's included) plus every generated
  *  helper script. `dirOverride` is the injected library dir (homedir() is not
  *  env-redirectable on Windows); null means "treat Desktop as absent". */
 export function removeAllClaudeDesktopWiring(dirOverride?: string | null): void {
@@ -946,6 +958,31 @@ export function removeAllClaudeDesktopWiring(dirOverride?: string | null): void 
   // Helper scripts live under the root home, which uninstall deletes wholesale right
   // after this step -- still removed here so the step is complete on its own.
   for (const path of presentDesktopHelperScripts(resolveRootHome())) removeAnnounced(path);
+}
+
+/** The `claude-desktop false` sweep: every owned entry serving a NAMED profile goes, its
+ *  helper scripts and the unlisted claims with it; the default's entry and helper stay in
+ *  place, unmanaged, and are named (unless `quiet`, the steady-state hot path). */
+export function removeUnmanagedClaudeDesktopWiring(opts: { quiet?: boolean } = {}): void {
+  if (removeOwnedEntries((e) => entryProfileAt(e.path) !== null) === "blocked") return;
+  removeUnlistedClaudeDesktopClaims();
+  for (const path of presentDesktopHelperScripts(resolveRootHome())) {
+    if (desktopHelperScriptWiring(basename(path))?.profile !== null) removeAnnounced(path);
+  }
+  if (!opts.quiet) announceUnmanagedDefault();
+}
+
+/** Name every owned entry the key-off sweep leaves in place (the default's), so the user
+ *  knows it is theirs now and nothing was rewritten. */
+function announceUnmanagedDefault(): void {
+  const dir = resolveDesktopLibraryDir();
+  const library = dir === null ? null : readOwnedLibrary(dir);
+  for (const e of library?.owned ?? []) {
+    if (entryProfileAt(e.path) !== null) continue;
+    logger.info(
+      `  Claude Desktop: "${e.entry.name}" at ${e.path} left in place, unmanaged (claude-desktop false).`,
+    );
+  }
 }
 
 /** What removeAllClaudeDesktopWiring WOULD delete now (the uninstall dry run): owned config
@@ -1117,10 +1154,10 @@ export type DesktopEntryVerdict =
 
 export type DesktopEntryStatus = DesktopTarget & { verdict: DesktopEntryVerdict };
 
-/** An owned entry no current target promises (the reconcile removes it, whatever its
- *  display name). `profile` is the wiring its document names; undefined when it names
- *  none (see entryProfileAt). */
-export interface DesktopOrphan {
+/** An owned entry as the status reports it: the display name (the user's), the uuid path,
+ *  and the wiring its document names -- undefined when it names none (see entryProfileAt),
+ *  which no target can claim. An orphan is one no current target promises. */
+export interface DesktopOwnedEntry {
   name: string;
   path: string;
   profile: Profile | undefined;
@@ -1154,12 +1191,12 @@ export type ClaudeDesktopStatus =
   | (DesktopStatusBase & {
     kind: "inspected";
     libraryDir: string;
-    /** Every owned entry's config path the library lists, whatever the key says. */
-    ownedPaths: string[];
+    /** Every owned entry the library lists, whatever the key says. */
+    owned: DesktopOwnedEntry[];
     /** One verdict per target; empty when the key is off or the app is absent. */
     entries: DesktopEntryStatus[];
     /** Owned entries matching no target; empty when the key is off or the app is absent. */
-    orphans: DesktopOrphan[];
+    orphans: DesktopOwnedEntry[];
     /** Ledger claims under the library `_meta.json` no longer lists (interrupted removals). */
     unlisted: string[];
   });
@@ -1181,11 +1218,19 @@ export function inspectClaudeDesktopWiring(
   if (dir === null) return { ...base, kind: "no-library" };
   const library = readOwnedLibrary(dir);
   if (library === null) return { ...base, kind: "unreadable", metaPath: join(dir, META_FILENAME) };
+  // Attribution (which wiring each owned document serves) is read whatever the key says:
+  // the key-off report tells the default's entry, left in place, from the leftovers by it.
+  let judged: JudgedDesktopEntry[];
+  try {
+    judged = library.owned.map((e) => ({ ...e, profile: entryProfileAt(e.path) }));
+  } catch (e) {
+    return { ...base, kind: "unjudged", reason: errMessage(e) };
+  }
   const status: ClaudeDesktopStatus = {
     ...base,
     kind: "inspected",
     libraryDir: dir,
-    ownedPaths: library.owned.map((e) => e.path),
+    owned: judged.map((e) => ({ name: e.entry.name, path: e.path, profile: e.profile })),
     entries: [],
     orphans: [],
     unlisted: library.unlisted,
@@ -1194,21 +1239,13 @@ export function inspectClaudeDesktopWiring(
   if (resolution.kind === "unresolvable") {
     return { ...base, kind: "unjudged", reason: resolution.reason };
   }
-  let judged: JudgedDesktopEntry[];
-  try {
-    judged = library.owned.map((e) => ({ ...e, profile: entryProfileAt(e.path) }));
-  } catch (e) {
-    return { ...base, kind: "unjudged", reason: errMessage(e) };
-  }
   const rootHome = resolveRootHome();
   status.entries = resolution.targets.map((t) => ({
     ...t,
     verdict: entryVerdict(judged, t, rootHome),
   }));
   const wanted = new Set(resolution.targets.map((t) => t.profile));
-  status.orphans = judged
-    .filter((e) => e.profile === undefined || !wanted.has(e.profile))
-    .map((e) => ({ name: e.entry.name, path: e.path, profile: e.profile }));
+  status.orphans = status.owned.filter((e) => e.profile === undefined || !wanted.has(e.profile));
   return status;
 }
 
@@ -1343,20 +1380,26 @@ export function renderClaudeDesktopStatus(
     };
   }
   if (!status.enabled) {
-    // Leftovers are entries (listed or not) AND helper scripts: an interrupted sweep can
-    // leave any of them.
+    // The default's entry and helper stay by design; leftovers are the profile entries
+    // (listed or not) and helper scripts an interrupted sweep can leave.
+    const owned = status.kind === "inspected" ? status.owned : [];
+    const unmanaged = owned
+      .filter((e) => e.profile === null)
+      .map((e) => `"${e.name}" present at ${e.path}, unmanaged (claude-desktop false)`);
     const left = [
-      ...(status.kind === "inspected" ? [...status.ownedPaths, ...status.unlisted] : []),
-      ...status.helperPaths,
+      ...owned.filter((e) => e.profile !== null).map((e) => e.path),
+      ...(status.kind === "inspected" ? status.unlisted : []),
+      ...status.helperPaths.filter((p) => desktopHelperScriptWiring(basename(p))?.profile !== null),
     ];
     if (left.length === 0) {
       return {
-        lines: ["disabled (claude-desktop false); no copilot-env leftovers present"],
+        lines: [...unmanaged, "disabled (claude-desktop false); no copilot-env leftovers present"],
         fix: null,
       };
     }
     return {
       lines: [
+        ...unmanaged,
         `disabled (claude-desktop false), but ${left.length} copilot-env leftover${
           left.length === 1 ? " remains" : "s remain"
         } (files or ownership claims)`,

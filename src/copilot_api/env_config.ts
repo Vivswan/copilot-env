@@ -410,7 +410,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "claude-desktop",
     key: "claudeDesktop",
     describe:
-      "Wire Claude Desktop's config library (default + every profile) while the app is installed; false removes the copilot-env entries (bool)",
+      "Wire Claude Desktop's config library (default + every profile) while the app is installed; false removes the profile entries and leaves the default's in place, unmanaged (bool)",
     ...BOOL_DOMAIN,
     defaultValue: true,
     applyHint:

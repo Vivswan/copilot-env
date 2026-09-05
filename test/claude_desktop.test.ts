@@ -1371,6 +1371,26 @@ test("an interrupted removal's unlisted claim is reported, listed for the dry ru
   expect(swept).toContain(`Claude Desktop: removed ${workPath}`);
   expect(swept).toContain(`Claude Desktop: released ownership of ${workPath}`);
   expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual([configPath]);
+  // ... one whose document names no wiring of ours is left alone too, claim and all, with
+  // a warning (it may be the default's: fail closed), a profile's beside it still swept ...
+  await wireClaudeDesktopEntry(directWire(WORK));
+  const blankPath = entryPathNamed(library, "copilot-env: work");
+  writeFileSync(blankPath, "{}\n");
+  // The blank one names no wiring now, so the profile's wire mints a sibling beside it.
+  await wireClaudeDesktopEntry(directWire(WORK));
+  const besideBlank = (metaOf(library).entries as { id: string }[])
+    .map((e) => join(library, `${e.id}.json`))
+    .find((p) => p !== blankPath && p !== configPath)!;
+  prune();
+  const unknown = await captureAllWrites(() => reconcileClaudeDesktopWiring());
+  expect(unknown).toContain(`${blankPath} names no copilot-env credential helper`);
+  expect(unknown).toContain(`Claude Desktop: removed ${besideBlank}`);
+  expect(existsSync(blankPath)).toBe(true);
+  expect(new OwnershipLedger().ownedPaths("claudeDesktop").sort()).toEqual(
+    [configPath, blankPath].sort(),
+  );
+  rmSync(blankPath);
+  new OwnershipLedger().release("claudeDesktop", blankPath);
   // ... and one that cannot be read is left alone, claim and all, with a warning (a failed
   // look is never "not ours") -- per claim: a profile's beside it is still swept.
   if (!NO_CHMOD_FAULTS) {
@@ -1443,6 +1463,10 @@ test("a renamed owned entry is ours by path: rewired in place, name kept, unmana
     name: "Mine now",
   }]);
   expect(inspected(inspectClaudeDesktopWiring([target])).entries[0]?.verdict.kind).toBe("wired");
+  // `--check` and health label it by the name the app shows, not the seed name.
+  expect(renderClaudeDesktopStatus(inspectClaudeDesktopWiring([target])).lines).toEqual([
+    `"Mine now" (direct) wired at ${configPath}`,
+  ]);
   // Renamed to ANOTHER wiring's seed name, it is still the default's and no obstacle to
   // that wiring: the profile gets its own entry (the picker twin is the user's doing).
   const twin = metaOf(library);

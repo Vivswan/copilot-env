@@ -707,8 +707,9 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
       break;
     }
   }
-  // A FOREIGN row already carrying the seed name: never clobber, never twin it. An owned
-  // row under that name is the user's rename of another wiring's entry, no obstacle.
+  // A FOREIGN row carrying the seed name at a DIFFERENT gateway (a same-gateway one was
+  // adopted above): never clobber, never twin it. An owned row under that name is the
+  // user's rename of another wiring's entry, no obstacle.
   const foreignNamesake = meta.entries.some(
     (e) => e.name === name && !ledger.owns("claudeDesktop", configPathOf(e.id)),
   );
@@ -959,12 +960,28 @@ export function removeAllClaudeDesktopWiring(dirOverride?: string | null): void 
   for (const path of presentDesktopHelperScripts(resolveRootHome())) removeAnnounced(path);
 }
 
-/** The `claude-desktop false` sweep: every owned claim serving a NAMED profile goes --
- *  listed entry or unlisted leftover, attributed by its document alike -- with its helper
- *  scripts; the default's entry and helper stay in place, unmanaged, and are named (unless
- *  `quiet`, the steady-state hot path). */
+/** The `claude-desktop false` sweep: every owned claim POSITIVELY attributed to a named
+ *  profile goes -- listed entry or unlisted leftover, judged by its document alike -- with
+ *  its helper scripts; the default's entry and helper stay in place, unmanaged, and are
+ *  named (unless `quiet`, the steady-state hot path). Fail closed: a claim that cannot be
+ *  attributed (document missing, damaged, naming no helper of ours, or unreadable) is
+ *  warned about and left, file and claim -- it may be the default's. */
 export function removeUnmanagedClaudeDesktopWiring(opts: { quiet?: boolean } = {}): void {
-  const sweepable = (path: string) => entryProfileAt(path) !== null;
+  const sweepable = (path: string): boolean => {
+    let profile: Profile | undefined;
+    try {
+      profile = entryProfileAt(path);
+    } catch (e) {
+      logger.warn(`  Claude Desktop: ${errMessage(e)}; left alone.`);
+      return false;
+    }
+    if (profile === undefined) {
+      logger.warn(
+        `  Claude Desktop: ${path} names no copilot-env credential helper, so its wiring is unknown; left alone.`,
+      );
+    }
+    return profile !== undefined && profile !== null;
+  };
   if (removeOwnedEntries((e) => sweepable(e.path)) === "blocked") return;
   removeUnlistedClaudeDesktopClaims(undefined, sweepable);
   for (const path of presentDesktopHelperScripts(resolveRootHome())) {
@@ -973,9 +990,9 @@ export function removeUnmanagedClaudeDesktopWiring(opts: { quiet?: boolean } = {
   if (!opts.quiet) announceUnmanagedDefault();
 }
 
-/** Name every owned claim the key-off sweep leaves in place (the default's, listed or not),
- *  so the user knows it is theirs now and nothing was rewritten. One a failed look could
- *  not attribute is skipped: the sweep already warned about it. */
+/** Name every owned claim the key-off sweep leaves in place as the default's (listed or
+ *  not), so the user knows it is theirs now and nothing was rewritten. One that could not
+ *  be attributed is skipped: the sweep already warned about it. */
 function announceUnmanagedDefault(): void {
   const dir = resolveDesktopLibraryDir();
   const library = dir === null ? null : readOwnedLibrary(dir);
@@ -1084,8 +1101,7 @@ function readOwnedLibrary(dir: string): OwnedLibrary | null {
 /** Release the ledger claims `_meta.json` no longer lists, deleting their files when
  *  present: the leftovers of a removal that failed after the meta save. `dirOverride` as
  *  in removeAllClaudeDesktopWiring; an unreadable library is left alone (`blocked`).
- *  `selects` narrows the sweep (the key-off attribution); a claim it cannot judge -- an
- *  unreadable document -- is warned about and left alone, file and claim. */
+ *  `selects` narrows the sweep (the key-off attribution). */
 export function removeUnlistedClaudeDesktopClaims(
   dirOverride?: string | null,
   selects: (path: string) => boolean = () => true,
@@ -1096,12 +1112,7 @@ export function removeUnlistedClaudeDesktopClaims(
   if (library === null) return "blocked";
   const ledger = new OwnershipLedger();
   for (const path of library.unlisted) {
-    try {
-      if (!selects(path)) continue;
-    } catch (e) {
-      logger.warn(`  Claude Desktop: ${errMessage(e)}; left alone.`);
-      continue;
-    }
+    if (!selects(path)) continue;
     removeAnnounced(path);
     ledger.release("claudeDesktop", path);
     logger.info(`  Claude Desktop: released ownership of ${path} in ${ledgerPath()}`);
@@ -1448,8 +1459,12 @@ export function renderClaudeDesktopStatus(
   }
   const lines: string[] = [];
   const fixes = new Set<string>();
+  // An entry is labelled by the display name it carries in the app (the user's, possibly
+  // renamed); a missing one by the name a wire would seed.
+  const nameAt = (path: string) => status.owned.find((o) => o.path === path)?.name;
   for (const e of status.entries) {
-    const who = `"${desktopEntryName(e.profile)}" (${e.mode})`;
+    const shown = "path" in e.verdict ? nameAt(e.verdict.path) : undefined;
+    const who = `"${shown ?? desktopEntryName(e.profile)}" (${e.mode})`;
     switch (e.verdict.kind) {
       case "wired":
         lines.push(`${who} wired at ${e.verdict.path}`);

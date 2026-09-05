@@ -8,12 +8,14 @@ import {
 import {
   codexHostEnabledFor,
   CONFIG_REGISTRY,
+  CONFIG_SECTIONS,
   type ConfigCli,
   configDefaultLabel,
   configDefaultNumber,
   type ConfigKey,
   type ConfigKeyDef,
   configKeyDef,
+  configKeysHelp,
   CopilotEnvConfig,
   isProxyProjected,
   optInProxyConfigPaths,
@@ -390,10 +392,34 @@ test("the registry is alphabetical by CLI name with unique storage keys", () => 
   const clis = CONFIG_REGISTRY.map((d) => d.cli);
   // The display order IS alphabetical -- a new key must be inserted in place.
   expect(clis).toEqual([...clis].sort());
+  // CLI names are unique: configKeyDef() is a find(), so a duplicate would silently
+  // resolve to the first entry.
+  expect(new Set(clis).size).toBe(clis.length);
   // Storage keys are unique: the CONFIG_SCHEMA fold is fromEntries, where a duplicate
   // would silently overwrite the earlier entry's read schema.
   const keys = CONFIG_REGISTRY.map((d) => d.key);
   expect(new Set(keys).size).toBe(keys.length);
+});
+
+test("`agent config --help` lists the keys under their sections, in section then registry order", () => {
+  // One block per section: a `<Section>:` heading line, then one two-space-indented row per
+  // key. Parsing the output back into blocks pins association and order, not just presence.
+  const blocks = configKeysHelp().split("\n\n").map((block) => {
+    const [heading, ...rows] = block.split("\n");
+    return {
+      heading,
+      keys: rows.map((row) => row.match(/^ {2}(\S+) {2}/)?.[1]),
+    };
+  });
+  // A duplicated section name would render its block twice AND duplicate the derived
+  // expectation below, so the union's uniqueness is pinned on its own.
+  expect(new Set(CONFIG_SECTIONS).size).toBe(CONFIG_SECTIONS.length);
+  expect(blocks.map((b) => b.heading)).toEqual(CONFIG_SECTIONS.map((s) => `${s}:`));
+  expect(blocks.map((b) => b.keys)).toEqual(
+    CONFIG_SECTIONS.map((s) => CONFIG_REGISTRY.filter((d) => d.section === s).map((d) => d.cli)),
+  );
+  // A section with no keys would render as a bare heading: a dead name in the union.
+  for (const b of blocks) expect(b.keys.length).toBeGreaterThan(0);
 });
 
 test("projectedProxyConfig() force-projects the opinionated keys and opt-in keys only when set", () => {
@@ -539,6 +565,7 @@ test("the union rejects sinceProxyVersion on internal (non-projected) entries", 
   const bad: ConfigKeyDef = {
     cli: "bogus",
     key: "autoStart",
+    section: "Proxy daemon",
     describe: "bogus",
     schema: v.boolean(),
     parse: () => true,
@@ -556,6 +583,7 @@ test("the entry type forces a schema matching the key's own value type", () => {
   const missing: ConfigKeyDef = {
     cli: "bogus",
     key: "autoStart",
+    section: "Proxy daemon",
     describe: "bogus",
     parse: () => true,
     defaultValue: false,
@@ -568,6 +596,7 @@ test("the entry type forces a schema matching the key's own value type", () => {
   const mismatched: ConfigKeyDef = {
     cli: "bogus",
     key: "autoStart",
+    section: "Proxy daemon",
     describe: "bogus",
     schema: v.number(),
     parse: () => true,
@@ -588,6 +617,7 @@ test("the registry's storage keys are pinned total over CopilotEnvConfigData", (
     cli: "bogus",
     // @ts-expect-error - 'bogus' is not a key of CopilotEnvConfigData
     key: "bogus",
+    section: "Proxy daemon",
     describe: "bogus",
     schema: v.boolean(),
     parse: () => true,

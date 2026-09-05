@@ -106,8 +106,26 @@ export type ConfigValue = boolean | number | string;
  *  (e.g. `["contextManagement", "responses"]`). */
 export type ProxyConfigPath = readonly [string, ...string[]];
 
-/** Fields every config key carries: its CLI name (kebab), storage key (camel), help text,
- *  and its value domain (see ConfigDomain). The generic ties `schema`/`parse` to the KEY'S
+/** The `--help` sections, in display order. Grouped by what a key drives: the daemon
+ *  process itself, the features projected into its config.json, the credential's handling,
+ *  one agent's wiring, the shell, or copilot-env's own updates. */
+export const CONFIG_SECTIONS = [
+  "Proxy daemon",
+  "Proxy features",
+  "Credential",
+  "Codex",
+  "Claude",
+  "Shell",
+  "Updates",
+] as const;
+
+export type ConfigSection = (typeof CONFIG_SECTIONS)[number];
+
+/** The section holding exactly the keys projected into the proxy's config.json. */
+const PROJECTED_SECTION = "Proxy features" satisfies ConfigSection;
+
+/** Fields every config key carries: its CLI name (kebab), storage key (camel), help section,
+ *  help text, and its value domain (see ConfigDomain). The generic ties `schema`/`parse` to the KEY'S
  *  OWN field type in CopilotEnvConfigData, so an entry without a schema -- or with a schema
  *  whose output cannot be its key's value -- is a compile error, and a registry key can never
  *  be write-only again (accepted by `--set`, stripped by the folded read schema). */
@@ -165,6 +183,9 @@ type ApplySpec =
 
 /** Shared by the two projected shapes below. */
 interface ProjectedKeyFields {
+  /** Every projected key is listed under the one section that means "restart the daemon
+   *  to apply"; the internal shape excludes it, so the grouping rule is a compile check. */
+  section: typeof PROJECTED_SECTION;
   /** Where in the proxy config.json a projected value lands: a non-empty key path into the
    *  document (default: `[key]`, i.e. the storage key at the top level). Set it when the
    *  proxy renamed or nested its key while our storage key stays put (a rename there would
@@ -183,6 +204,8 @@ type InternalConfigKeyDef<K extends ConfigKey = ConfigKey> =
   & DefaultSpec
   & ApplySpec
   & {
+    /** Which `--help` section lists the key: any but the projected keys' own. */
+    section: Exclude<ConfigSection, typeof PROJECTED_SECTION>;
     proxyDefault?: undefined;
     proxyProjected?: undefined;
     proxyPath?: undefined;
@@ -224,7 +247,8 @@ type OptInProjectedConfigKeyDef<K extends ConfigKey = ConfigKey> =
 
 /** One config key. The registry literal's `as const satisfies` rejects exactly these shapes
  *  at compile time: `proxyDefault` combined with `proxyProjected`; `proxyPath` or
- *  `sinceProxyVersion` on a non-projected entry; an internal entry with both or neither of
+ *  `sinceProxyVersion` on a non-projected entry; a projected entry outside the "Proxy
+ *  features" section or a non-projected entry inside it; an internal entry with both or neither of
  *  `defaultValue` / `defaultLabel`; a force-projected entry with either (`proxyDefault` is
  *  its source) and an opt-in entry with `defaultValue` (its `defaultLabel` is required
  *  instead); `defaultSuffix` without `defaultValue`; and `restartToApply` combined with
@@ -358,11 +382,13 @@ const INTEGRATION_ID_DOMAIN: ConfigDomain<string> = domain(
 );
 
 /** The single source of truth for config keys, ordered ALPHABETICALLY by CLI name (the
- *  `--get` / `--help` display order; a test pins it, so insert new keys in place). */
+ *  `--get` display order, and the order within each `--help` section; a test pins it, so
+ *  insert new keys in place). */
 const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "alpha-search-codex-priority",
     key: "alphaSearchCodexPriority",
+    section: "Proxy features",
     describe: "Prefer Codex for the proxy's /alpha/search endpoint (Codex search) (bool)",
     ...BOOL_DOMAIN,
     defaultLabel: "true (proxy default)",
@@ -372,6 +398,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "alpha-search-model",
     key: "alphaSearchModel",
+    section: "Proxy features",
     describe:
       "Native-Responses model for /alpha/search (Codex search) when the requested model is Messages-backed and cannot run the search itself",
     ...NON_EMPTY_DOMAIN,
@@ -382,6 +409,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "auto-start",
     key: "autoStart",
+    section: "Proxy daemon",
     describe: "Managed proxy lifecycle: auto-start on agent open + idle auto-stop (bool)",
     ...BOOL_DOMAIN,
     defaultValue: false,
@@ -389,6 +417,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "auto-update",
     key: "autoUpdate",
+    section: "Updates",
     describe:
       "Self-update once a day on `agent start`, adopting the newest release aged >= update-cooldown (bool)",
     ...BOOL_DOMAIN,
@@ -399,6 +428,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "claude-auto-model",
     key: "claudeAutoModel",
+    section: "Proxy features",
     describe:
       "Model override for Claude Code's background security-monitor requests (leave unset to disable)",
     ...NON_EMPTY_DOMAIN,
@@ -409,6 +439,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "claude-desktop",
     key: "claudeDesktop",
+    section: "Claude",
     describe:
       "Wire Claude Desktop's config library (default + every profile) while the app is installed; false removes the profile entries and leaves the default's in place, unmanaged (bool)",
     ...BOOL_DOMAIN,
@@ -419,6 +450,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "claude-token-multiplier",
     key: "claudeTokenMultiplier",
+    section: "Proxy features",
     describe: "Multiplier the proxy applies when estimating Claude token usage",
     ...positiveDecimalDomain(MAX_TOKEN_MULTIPLIER),
     defaultLabel: "1.15 (proxy default)",
@@ -427,6 +459,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "codex-host",
     key: "codexHost",
+    section: "Codex",
     describe:
       "Per-host CODEX_HOME symlink farm at ~/.codex/hosts/<hostname>, exported by `agent env` (bool; Linux/macOS)",
     ...BOOL_DOMAIN,
@@ -438,6 +471,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "codex-model-catalog",
     key: "codexModelCatalog",
+    section: "Codex",
     describe: "Patched Codex model catalog with Copilot's real context windows (bool)",
     ...BOOL_DOMAIN,
     defaultValue: false,
@@ -447,6 +481,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "idle-timeout",
     key: "idleTimeout",
+    section: "Proxy daemon",
     describe: "Idle auto-stop window in seconds (0 disables)",
     ...wholeNumberDomain(0, MAX_SECONDS),
     defaultValue: 3600,
@@ -455,6 +490,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "integration-id",
     key: "integrationId",
+    section: "Credential",
     describe:
       "Pin the Copilot client identity (Copilot-Integration-Id), or `auto` to probe per credential",
     ...INTEGRATION_ID_DOMAIN,
@@ -466,6 +502,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "launchers",
     key: "launchers",
+    section: "Shell",
     describe:
       "Define the cl / co / cx (+ clx / cox / cxx) launcher functions via `agent env` (bool)",
     ...BOOL_DOMAIN,
@@ -476,6 +513,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "max-port",
     key: "maxPort",
+    section: "Proxy daemon",
     describe: "Upper bound of the allowed proxy port range (1-65535)",
     ...wholeNumberDomain(1, 65535),
     defaultValue: 65535,
@@ -484,6 +522,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "message-websearch-model",
     key: "messageApiWebSearchModel",
+    section: "Proxy features",
     describe: "Model id for web search: the proxy's Messages-API path and the MCP web_search tool",
     ...NON_EMPTY_DOMAIN,
     // Composite: the proxy half is the proxy's OWN default; the mcp half is
@@ -497,6 +536,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "messages-api",
     key: "useMessagesApi",
+    section: "Proxy features",
     describe: "Proxy Messages-API (Anthropic-shaped) endpoint (bool)",
     ...BOOL_DOMAIN,
     proxyDefault: true,
@@ -504,6 +544,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "min-port",
     key: "minPort",
+    section: "Proxy daemon",
     describe: "Lower bound of the allowed proxy port range (1-65535)",
     ...wholeNumberDomain(1, 65535),
     defaultValue: 1024,
@@ -512,6 +553,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "passthrough",
     key: "passthrough",
+    section: "Credential",
     describe: "PAT passthrough default: auto | on | off",
     ...PASSTHROUGH_DOMAIN,
     defaultValue: "auto",
@@ -520,6 +562,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "port",
     key: "port",
+    section: "Proxy daemon",
     describe: "Default proxy port (1-65535)",
     ...wholeNumberDomain(1, 65535),
     defaultValue: 4141,
@@ -529,6 +572,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "proxy-logs",
     key: "proxyLogs",
+    section: "Proxy daemon",
     describe: "Proxy request logging under <home>/logs (false discards the writes)",
     ...BOOL_DOMAIN,
     defaultValue: true,
@@ -537,6 +581,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "proxy-version",
     key: "proxyVersion",
+    section: "Proxy daemon",
     describe: "Pin the floated proxy to a version/tag",
     ...NON_EMPTY_DOMAIN,
     defaultLabel: "latest (floated)",
@@ -544,6 +589,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "release-cooldown",
     key: "releaseCooldown",
+    section: "Proxy daemon",
     describe: "Proxy float supply-chain cooldown in seconds",
     ...wholeNumberDomain(0, MAX_SECONDS),
     defaultLabel: "7 days (built-in)",
@@ -553,6 +599,7 @@ const CONFIG_REGISTRY_LITERAL = [
     // Storage key kept from the proxy's pre-1.14 flat key (renaming it would need a store
     // migration); the projection lands at the nested key the proxy reads today.
     key: "useResponsesApiContextManagement",
+    section: "Proxy features",
     describe: "Proxy Responses-API server-side context management (bool)",
     ...BOOL_DOMAIN,
     defaultLabel: "false (proxy default)",
@@ -562,6 +609,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "responses-websearch",
     key: "useResponsesApiWebSearch",
+    section: "Proxy features",
     describe: "Proxy Responses-API web search (bool)",
     ...BOOL_DOMAIN,
     proxyDefault: true,
@@ -569,6 +617,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "responses-websocket",
     key: "useResponsesApiWebSocket",
+    section: "Proxy features",
     describe: "Proxy Responses-API transport: WebSocket (true) vs HTTP/SSE (false)",
     ...BOOL_DOMAIN,
     proxyDefault: true,
@@ -576,6 +625,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "small-model",
     key: "smallModel",
+    section: "Proxy features",
     describe: "Small/fast model id the proxy uses",
     ...NON_EMPTY_DOMAIN,
     proxyDefault: "gpt-5-mini",
@@ -583,6 +633,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "strict-port",
     key: "strictPort",
+    section: "Proxy daemon",
     describe: "Fail start when the default port is busy instead of auto-incrementing (bool)",
     ...BOOL_DOMAIN,
     defaultValue: false,
@@ -591,6 +642,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "update-cooldown",
     key: "updateCooldown",
+    section: "Updates",
     describe: "copilot-env update cooldown in days",
     ...wholeNumberDomain(0, MAX_DAYS),
     defaultLabel: "none (immediate)",
@@ -598,6 +650,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "verify-provenance",
     key: "verifyProvenance",
+    section: "Updates",
     describe:
       "Verify `agent update` downloads against the release's Sigstore build-provenance attestation (bool)",
     ...BOOL_DOMAIN,
@@ -608,6 +661,7 @@ const CONFIG_REGISTRY_LITERAL = [
   {
     cli: "wire-mcp",
     key: "wireMcp",
+    section: "Claude",
     describe:
       "Wire the copilot-env MCP server (web_search) and the WebSearch deny into Claude on direct writes (bool)",
     ...BOOL_DOMAIN,
@@ -757,15 +811,20 @@ export function projectedProxyConfig(
   return out;
 }
 
-/** A help block listing every config key with its built-in default, then its description. */
+/** A help block listing every config key under its section (CONFIG_SECTIONS order, registry
+ *  order within a section) with its built-in default, then its description. Column widths
+ *  are shared across sections so the keys line up as one list. */
 export function configKeysHelp(): string {
   const cliWidth = CONFIG_REGISTRY.reduce((m, d) => Math.max(m, d.cli.length), 0);
-  const defaults = CONFIG_REGISTRY.map((d) => `default: ${configDefaultLabel(d)}`);
-  const defWidth = defaults.reduce((m, s) => Math.max(m, s.length), 0);
-  const rows = CONFIG_REGISTRY.map(
-    (d, i) => `  ${d.cli.padEnd(cliWidth)}  ${defaults[i]?.padEnd(defWidth)}  ${d.describe}`,
-  );
-  return `Keys:\n${rows.join("\n")}`;
+  const defaultOf = (d: ConfigKeyDef) => `default: ${configDefaultLabel(d)}`;
+  const defWidth = CONFIG_REGISTRY.reduce((m, d) => Math.max(m, defaultOf(d).length), 0);
+  const row = (d: ConfigKeyDef) =>
+    `  ${d.cli.padEnd(cliWidth)}  ${defaultOf(d).padEnd(defWidth)}  ${d.describe}`;
+  const blocks = CONFIG_SECTIONS.map((section) => {
+    const rows = CONFIG_REGISTRY.filter((d) => d.section === section).map(row);
+    return `${section}:\n${rows.join("\n")}`;
+  });
+  return blocks.join("\n\n");
 }
 
 /**

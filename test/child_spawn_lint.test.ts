@@ -49,8 +49,10 @@ test("no-unmanaged-child-spawn: scoped to the test tree, and never to the helper
   expect(lint(raw, abs("./example.test.ts"))).toHaveLength(1);
   expect(lint(raw, abs("./helpers/mcp.ts"))).toHaveLength(1);
   expect(lint(raw, abs("./helpers/run.ts"))).toEqual([]); // owns the sanctioned construction
+  expect(lint(raw, abs("./helpers/testing.ts"))).toEqual([]); // the module-load cache lookup
 
   expect(lint(raw, "test/helpers/run.ts")).toEqual([]);
+  expect(lint(raw, "test/helpers/testing.ts")).toEqual([]);
   // Runtime code and standalone scripts own their own process lifecycles.
   expect(lint(raw, "src/copilot_api/process.ts")).toEqual([]);
   expect(lint(raw, "scripts/test_docker.ts")).toEqual([]);

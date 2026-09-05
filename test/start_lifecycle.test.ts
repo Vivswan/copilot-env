@@ -16,14 +16,13 @@ import { daemonLockHolderPid } from "../src/scripts/daemon_lock.ts";
 import { probeFileLock } from "../src/utils/file_lock.ts";
 import { packageVersion } from "../src/utils/version.ts";
 import { ROOT } from "./helpers/run.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
+import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import {
   defaultHomeDir,
   envSnapshot,
   isolateProxyHome,
   killAndAwaitExit,
   launchFakeDaemon,
-  removeDir,
   resetExitCode,
   stageRefusedStop,
   until,

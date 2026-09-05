@@ -14,14 +14,8 @@ import {
 import { CopilotApiPaths, profileHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { errMessage } from "../src/utils/error.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
-import {
-  envSnapshot,
-  isolateAgentHomes,
-  removeDir,
-  resetExitCode,
-  stageRefusedStop,
-} from "./helpers.ts";
+import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateAgentHomes, resetExitCode, stageRefusedStop } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";

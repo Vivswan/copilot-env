@@ -1,8 +1,7 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CHILD_VALUES, childValuesEnv, denoRunArgs, ROOT, runSync } from "./helpers/run.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { expect, tempDir, test } from "./helpers/testing.ts";
 
 // The preload shim wraps the daemon's globalThis.fetch to fake copilot-api's editor
 // token exchange for a PAT. It reads the token from `--github-token` in argv and only
@@ -22,7 +21,7 @@ function runPreloaded(
   token: string | null,
   inputKind: "string" | "url" | "request" = "string",
 ): string {
-  const dir = mkdtempSync(join(tmpdir(), "copilot-preload-"));
+  const dir = tempDir("copilot-preload-");
   try {
     const target = join(dir, "target.ts");
     // Exercise each fetch input shape the shim must handle: string | URL | Request.

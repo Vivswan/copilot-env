@@ -1,14 +1,11 @@
 import {
   appendFileSync,
   mkdirSync,
-  mkdtempSync,
-  rmSync,
   statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { zstdCompressSync } from "node:zlib";
 import {
@@ -37,18 +34,7 @@ import {
   writeRollout,
 } from "./helpers/session_fixtures.ts";
 import { CODEX_SCENARIOS, scenarioNamed } from "./helpers/session_scenarios.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
-
-const dirs: string[] = [];
-afterEach(() => {
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
-
-function tempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
-  dirs.push(dir);
-  return dir;
-}
+import { expect, tempDir, test } from "./helpers/testing.ts";
 
 // The reader fixtures live in the shared catalog, which the index equivalence tests
 // read three ways with the same checks; one default-reconcile read here covers the
@@ -58,13 +44,13 @@ test("readCodexSessions reads a catalog scenario without a reconcile", async () 
     CODEX_SCENARIOS,
     "attributes turns to the model in effect and splits cached input",
   );
-  const { roots, sinceMs, timeZone } = scenario.build(tempDir());
+  const { roots, sinceMs, timeZone } = scenario.build(tempDir("codex-sessions-"));
   scenario.check(await readCodexSessions(roots, sinceMs, timeZone));
 });
 
 test("readCodexSessions counts an unterminated final line once its LF lands", async () => {
   const scenario = scenarioNamed(CODEX_SCENARIOS, "does not count an unterminated final line");
-  const { roots, files } = scenario.build(tempDir());
+  const { roots, files } = scenario.build(tempDir("codex-sessions-"));
   scenario.check(await readCodexSessions(roots));
   appendFileSync(files![0]!, "\n");
   expect((await readCodexSessions(roots)).get("copilot-env")?.byModel.get("gpt-5.6")).toEqual({
@@ -77,7 +63,7 @@ test("readCodexSessions counts an unterminated final line once its LF lands", as
 });
 
 test("readCodexSessions warns about a corrupt archive and still counts the valid ones", async () => {
-  const root = join(tempDir(), "archived_sessions");
+  const root = join(tempDir("codex-sessions-"), "archived_sessions");
   mkdirSync(root, { recursive: true });
   const lines = [
     sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
@@ -109,7 +95,7 @@ test("readCodexSessions warns about a corrupt archive and still counts the valid
 test("walkCodexSessions under a NaN cutoff keeps every file a candidate", () => {
   // A NaN cutoff fails every comparison, so no file is skipped by its date.
   const { roots } = scenarioNamed(CODEX_SCENARIOS, "under a NaN cutoff counts nothing, as before")
-    .build(tempDir());
+    .build(tempDir("codex-sessions-"));
   expect(walkCodexSessions(roots, Number.NaN).map((f) => f.candidate)).toEqual([true]);
 });
 
@@ -126,7 +112,7 @@ test("readCodexSessions folds in walk order whatever order the reconcile returns
     CODEX_SCENARIOS,
     "identifies a fork's copy outside the batch window only through the parent's hashes",
   );
-  const { roots } = scenario.build(tempDir());
+  const { roots } = scenario.build(tempDir("codex-sessions-"));
   const viaReconcile = await readCodexSessions(roots, undefined, undefined, reversingReconcile);
   scenario.check(viaReconcile);
   expect(viaReconcile).toEqual(await readCodexSessions(roots));
@@ -134,7 +120,7 @@ test("readCodexSessions folds in walk order whatever order the reconcile returns
 
 test("readCodexSessions walks a root named twice once, whatever the reconcile", async () => {
   const { roots } = scenarioNamed(CODEX_SCENARIOS, "counts a root named twice once").build(
-    tempDir(),
+    tempDir("codex-sessions-"),
   );
   expect(walkCodexSessions(roots, undefined).length).toBe(1);
   // The baseline is the root named ONCE; both duplicated-root reads must equal it.
@@ -144,7 +130,7 @@ test("readCodexSessions walks a root named twice once, whatever the reconcile", 
 });
 
 test("discoverCodexSessionRoots dedupes farm symlinks by realpath", () => {
-  const dir = tempDir();
+  const dir = tempDir("codex-sessions-");
   const shared = join(dir, "dot-codex");
   mkdirSync(join(shared, "sessions"), { recursive: true });
   mkdirSync(join(shared, "archived_sessions"), { recursive: true });
@@ -165,7 +151,7 @@ function walkedFile(path: string): WalkedFile {
 }
 
 test("parseCodexTail resumed from a prefix parse equals one whole parse", () => {
-  const dir = tempDir();
+  const dir = tempDir("codex-sessions-");
   const lines = [
     sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env", forkedFrom: "p" }),
     turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
@@ -199,7 +185,7 @@ test("parseCodexTail resumed from a prefix parse equals one whole parse", () => 
 });
 
 test("walkCodexSessions reports every rollout with its candidacy verdict, in fold order", () => {
-  const dir = tempDir();
+  const dir = tempDir("codex-sessions-");
   const live = join(dir, "sessions");
   const archived = join(dir, "archived_sessions");
   mkdirSync(archived, { recursive: true });
@@ -232,7 +218,7 @@ test("walkCodexSessions reports every rollout with its candidacy verdict, in fol
 test.skipIf(Deno.build.os === "windows")(
   "walkCodexSessions warns about a rollout it cannot stat and leaves it out",
   async () => {
-    const dir = tempDir();
+    const dir = tempDir("codex-sessions-");
     const root = join(dir, "sessions");
     const kept = writeRollout(root, "2026-06-01", "aaa", ["x"]);
     const dangling = join(root, "rollout-2026-06-01T02-00-00-bbb.jsonl");
@@ -255,7 +241,7 @@ test.skipIf(Deno.build.os === "windows")(
 );
 
 test("parseCodexWhole honours session_meta until an id is known, then ignores later ones", () => {
-  const dir = tempDir();
+  const dir = tempDir("codex-sessions-");
   const path = writeRollout(join(dir, "s"), "2026-06-01", "aaa", [
     // No id: the gate stays open, so the NEXT meta line still applies.
     rolloutLine("2026-06-01T10:00:00.000Z", "session_meta", { "model_provider": "first" }),

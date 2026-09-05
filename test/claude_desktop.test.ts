@@ -64,9 +64,9 @@ import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { resolveRootHome } from "../src/copilot_api/paths.ts";
 import { agentLauncherCommand } from "../src/utils/root.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { expect, removeDir, test } from "./helpers/testing.ts";
 import { afterEach } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes, removeDir, resetExitCode } from "./helpers.ts";
+import { envSnapshot, isolateAgentHomes, resetExitCode } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 const WORK = parseProfileName("work");

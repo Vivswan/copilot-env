@@ -1,5 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -16,7 +15,7 @@ import {
   usageReport,
 } from "../src/usage/usage.ts";
 import { localDayKey } from "../src/utils/time.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
+import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 
 // Day keys are LOCAL calendar days now, so expectations derive from the same
 // helper the reader uses; timestamps meant to share a day are written at the
@@ -394,7 +393,7 @@ test("mergeUsageReports sums models, unions days, and keeps day-less usage in th
 });
 
 test("readUsage drops an unattributable DB row instead of reporting a phantom model", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  dir = tempDir("copilot-usage-");
   const path = join(dir, "copilot-api.sqlite");
   // No column constraints: the reader must survive a corrupt file, not just the daemon's.
   const db = new DatabaseSync(path);
@@ -445,7 +444,7 @@ function seedUsageDb(path: string): void {
 }
 
 test("readUsage sums tokens per model and counts distinct active days", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  dir = tempDir("copilot-usage-");
   const path = join(dir, "copilot-api.sqlite");
   seedUsageDb(path);
 
@@ -463,7 +462,7 @@ test("readUsage sums tokens per model and counts distinct active days", () => {
 });
 
 test("readUsage exposes a per-day, per-model breakdown that reconciles with byModel", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  dir = tempDir("copilot-usage-");
   const path = join(dir, "copilot-api.sqlite");
   seedUsageDb(path);
 
@@ -489,7 +488,7 @@ test("readUsage exposes a per-day, per-model breakdown that reconciles with byMo
 });
 
 test("readUsage folds divergent spellings of one model into the canonical row", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  dir = tempDir("copilot-usage-");
   const path = join(dir, "copilot-api.sqlite");
   const db = new DatabaseSync(path);
   db.exec(`CREATE TABLE token_usage_events (
@@ -523,7 +522,7 @@ test("readUsage folds divergent spellings of one model into the canonical row", 
 });
 
 test("readUsage sums tokens by model and unions active days across two DBs", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  dir = tempDir("copilot-usage-");
   const pathA = join(dir, "a.sqlite");
   const pathB = join(dir, "b.sqlite");
   seedUsageDb(pathA);
@@ -564,7 +563,7 @@ test("readUsage sums tokens by model and unions active days across two DBs", () 
 });
 
 test("readUsage sinceMs filters older rows from token totals and active days", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  dir = tempDir("copilot-usage-");
   const path = join(dir, "copilot-api.sqlite");
   seedUsageDb(path);
 
@@ -580,7 +579,7 @@ test("readUsage sinceMs filters older rows from token totals and active days", (
 });
 
 test("readUsage buckets by the user's local day, not the UTC day", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  dir = tempDir("copilot-usage-");
   const path = join(dir, "copilot-api.sqlite");
   const db = new DatabaseSync(path);
   db.exec(`CREATE TABLE token_usage_events (
@@ -624,7 +623,7 @@ test("a null created_at_ms row counts in byModel but is dropped from perDay", ()
   // The daemon writes created_at_ms on every row, so this is defensive: the
   // schema belongs to a floating third-party package. A row without it can't
   // be placed on a local day, but its tokens must still reach the totals.
-  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  dir = tempDir("copilot-usage-");
   const path = join(dir, "copilot-api.sqlite");
   const db = new DatabaseSync(path);
   db.exec(`CREATE TABLE token_usage_events (
@@ -656,7 +655,7 @@ test("a null created_at_ms row counts in byModel but is dropped from perDay", ()
 });
 
 test("readUsage skips a missing DB and still reports the readable ones", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  dir = tempDir("copilot-usage-");
   const good = join(dir, "good.sqlite");
   const missing = join(dir, "does-not-exist.sqlite");
   seedUsageDb(good);
@@ -668,7 +667,7 @@ test("readUsage skips a missing DB and still reports the readable ones", () => {
 });
 
 test("readUsage skips a corrupt DB file without throwing", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  dir = tempDir("copilot-usage-");
   const good = join(dir, "good.sqlite");
   const corrupt = join(dir, "corrupt.sqlite");
   seedUsageDb(good);
@@ -684,7 +683,7 @@ test("readUsage skips a corrupt DB file without throwing", () => {
 });
 
 test("readUsage on an all-corrupt set returns an empty report, no throw", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  dir = tempDir("copilot-usage-");
   const corrupt = join(dir, "corrupt.sqlite");
   writeFileSync(corrupt, "garbage");
 
@@ -695,7 +694,7 @@ test("readUsage on an all-corrupt set returns an empty report, no throw", () => 
 });
 
 test("discoverUsageDbs finds the legacy file plus per-host DBs", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  dir = tempDir("copilot-usage-");
   const legacy = join(dir, "copilot-api.sqlite");
   writeFileSync(legacy, "");
 
@@ -712,7 +711,7 @@ test("discoverUsageDbs finds the legacy file plus per-host DBs", () => {
 });
 
 test("discoverUsageDbs also sweeps named profile daemon homes", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  dir = tempDir("copilot-usage-");
 
   const defaultHost = join(dir, ".run", "host-a");
   mkdirSync(defaultHost, { recursive: true });
@@ -736,7 +735,7 @@ test("discoverUsageDbs also sweeps named profile daemon homes", () => {
 });
 
 test("discoverUsageDbs sweeps the DEFAULT profile's home; a stray invalid dir stays out", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  dir = tempDir("copilot-usage-");
 
   // The migrated shape: the default daemon's DBs live under profiles/default (a name
   // isValidProfileName REJECTS as reserved, so the sweep must admit it explicitly),
@@ -766,7 +765,7 @@ test("discoverUsageDbs sweeps the DEFAULT profile's home; a stray invalid dir st
 });
 
 test("discoverUsageDbs excludes a stray .run file and a host dir missing the sqlite", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  dir = tempDir("copilot-usage-");
 
   // A stray plain file sitting directly under .run/ (not a host directory).
   const runDir = join(dir, ".run");
@@ -805,7 +804,7 @@ const skipUnreadableDir = process.platform === "win32" || process.getuid?.() ===
 test.skipIf(skipUnreadableDir)(
   "an UNREADABLE .run dir raises instead of reporting no databases",
   () => {
-    dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+    dir = tempDir("copilot-usage-");
     const legacy = join(dir, "copilot-api.sqlite");
     writeFileSync(legacy, "");
     const runDir = join(dir, ".run");
@@ -830,7 +829,7 @@ test.skipIf(skipUnreadableDir)(
 test.skipIf(skipUnreadableDir)(
   "an UNREADABLE profiles dir raises instead of reporting no profiles",
   () => {
-    dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+    dir = tempDir("copilot-usage-");
     const legacy = join(dir, "copilot-api.sqlite");
     writeFileSync(legacy, "");
     const profilesDir = join(dir, "profiles");
@@ -855,7 +854,7 @@ test("both scans still read ABSENT dirs as empty, never as a failure (the contro
   // permission dependency): absence is the PROVEN "nothing here" and must keep
   // flowing through silently -- a fresh home has neither .run nor profiles/, and
   // `agent cost` must not raise on it.
-  dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  dir = tempDir("copilot-usage-");
   const legacy = join(dir, "copilot-api.sqlite");
   writeFileSync(legacy, "");
 

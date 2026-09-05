@@ -1,5 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CopilotApiConfig } from "../src/copilot_api/config.ts";
 import {
@@ -10,7 +9,7 @@ import {
   ROOT,
   spawnChild,
 } from "./helpers/run.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { expect, tempDir, test } from "./helpers/testing.ts";
 
 // The cross-process lock in CopilotApiConfig.update() must serialize concurrent read-modify-
 // writes to the SAME store file so none are lost. Prove it by racing several real
@@ -35,7 +34,7 @@ function spawnWorker(worker: string, store: string): Promise<{ code: number; std
 }
 
 test("update() serializes concurrent writers across processes (no lost updates)", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "copilot-lock-"));
+  const dir = tempDir("copilot-lock-");
   try {
     const store = join(dir, "counter.json");
     writeFileSync(store, JSON.stringify({ counter: 0 }));
@@ -68,7 +67,7 @@ test("update() serializes concurrent writers across processes (no lost updates)"
 }, 30_000);
 
 test("update() reclaims a stale lock (dead holder pid) quickly instead of hanging", () => {
-  const dir = mkdtempSync(join(tmpdir(), "copilot-lock-"));
+  const dir = tempDir("copilot-lock-");
   try {
     const store = join(dir, "s.json");
     writeFileSync(store, JSON.stringify({ v: 0 }));
@@ -91,7 +90,7 @@ test("update() reclaims a stale lock (dead holder pid) quickly instead of hangin
 test(
   "concurrent ensureApiKey callers converge on ONE key (no dropped/overwritten key)",
   async () => {
-    const dir = mkdtempSync(join(tmpdir(), "copilot-lock-"));
+    const dir = tempDir("copilot-lock-");
     try {
       const store = join(dir, "config.json");
       const worker = join(dir, "keyworker.ts");

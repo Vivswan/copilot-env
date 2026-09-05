@@ -1,14 +1,11 @@
 import {
   appendFileSync,
   mkdirSync,
-  mkdtempSync,
-  rmSync,
   statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   discoverClaudeSessionRoots,
@@ -26,18 +23,7 @@ import {
   writeTranscript,
 } from "./helpers/session_fixtures.ts";
 import { CLAUDE_SCENARIOS, scenarioNamed } from "./helpers/session_scenarios.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
-
-const dirs: string[] = [];
-afterEach(() => {
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
-});
-
-function tempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "claude-sessions-"));
-  dirs.push(dir);
-  return dir;
-}
+import { expect, tempDir, test } from "./helpers/testing.ts";
 
 // The reader fixtures live in the shared catalog, which the index equivalence tests
 // read three ways with the same checks; one default-reconcile read here covers the
@@ -47,13 +33,13 @@ test("readClaudeSessions reads a catalog scenario without a reconcile", async ()
     CLAUDE_SCENARIOS,
     "maps the four usage buckets and buckets by local day",
   );
-  const { roots, sinceMs, timeZone } = scenario.build(tempDir());
+  const { roots, sinceMs, timeZone } = scenario.build(tempDir("claude-sessions-"));
   scenario.check(await readClaudeSessions(roots, sinceMs, timeZone));
 });
 
 test("readClaudeSessions counts an unterminated final line once its LF lands", async () => {
   const scenario = scenarioNamed(CLAUDE_SCENARIOS, "does not count an unterminated final line");
-  const { roots, files } = scenario.build(tempDir());
+  const { roots, files } = scenario.build(tempDir("claude-sessions-"));
   scenario.check(await readClaudeSessions(roots));
   appendFileSync(files![0]!, "\n");
   expect((await readClaudeSessions(roots)).byModel.get("claude-opus-4.8")).toEqual({
@@ -68,7 +54,7 @@ test("readClaudeSessions counts an unterminated final line once its LF lands", a
 test("walkClaudeSessions under a NaN cutoff keeps every file a candidate", () => {
   // A NaN cutoff fails every comparison, so no file is skipped by its mtime.
   const { roots } = scenarioNamed(CLAUDE_SCENARIOS, "under a NaN cutoff counts nothing, as before")
-    .build(tempDir());
+    .build(tempDir("claude-sessions-"));
   expect(walkClaudeSessions(roots, Number.NaN).map((f) => f.candidate)).toEqual([true]);
 });
 
@@ -84,7 +70,7 @@ test("readClaudeSessions folds ascending by path whatever order the reconcile re
     CLAUDE_SCENARIOS,
     "books the same id on two days across two files on the first path's day",
   );
-  const { roots } = scenario.build(tempDir());
+  const { roots } = scenario.build(tempDir("claude-sessions-"));
   const viaReconcile = await readClaudeSessions(roots, undefined, undefined, reversingReconcile);
   scenario.check(viaReconcile);
   expect(viaReconcile).toEqual(await readClaudeSessions(roots));
@@ -92,7 +78,7 @@ test("readClaudeSessions folds ascending by path whatever order the reconcile re
 
 test("readClaudeSessions walks a root named twice once, whatever the reconcile", async () => {
   const { roots } = scenarioNamed(CLAUDE_SCENARIOS, "counts a root named twice once").build(
-    tempDir(),
+    tempDir("claude-sessions-"),
   );
   expect(walkClaudeSessions(roots, undefined).length).toBe(1);
   // The baseline is the root named ONCE; both duplicated-root reads must equal it.
@@ -102,7 +88,7 @@ test("readClaudeSessions walks a root named twice once, whatever the reconcile",
 });
 
 test("discoverClaudeSessionRoots returns existing projects dirs only, deduped", async () => {
-  const dir = tempDir();
+  const dir = tempDir("claude-sessions-");
   const home = join(dir, "dot-claude");
   mkdirSync(join(home, "projects"), { recursive: true });
   const missingHome = join(dir, "nope");
@@ -118,7 +104,7 @@ function walkedFile(path: string): WalkedFile {
 }
 
 test("parseClaudeTail resumed from a prefix parse equals one whole parse", () => {
-  const dir = tempDir();
+  const dir = tempDir("claude-sessions-");
   const lines = [
     '{"type":"user","message":{"role":"user","content":"hi"}}',
     assistantLine("2026-06-01T10:00:00.000Z", "claude-opus-4-8", "msg_1", usage(10, 3, 300, 40)),
@@ -151,7 +137,7 @@ test("parseClaudeTail resumed from a prefix parse equals one whole parse", () =>
 });
 
 test("walkClaudeSessions reports every transcript with its candidacy verdict, ascending by path", () => {
-  const dir = tempDir();
+  const dir = tempDir("claude-sessions-");
   const root = join(dir, "projects");
   const proj = join(root, "-Users-x-proj");
   const stale = writeTranscript(proj, "zzz-old.jsonl", ["x"]);
@@ -172,7 +158,7 @@ test("walkClaudeSessions reports every transcript with its candidacy verdict, as
 test.skipIf(Deno.build.os === "windows")(
   "walkClaudeSessions warns about a transcript it cannot stat and leaves it out",
   async () => {
-    const dir = tempDir();
+    const dir = tempDir("claude-sessions-");
     const root = join(dir, "projects");
     const proj = join(root, "-Users-x-proj");
     const kept = writeTranscript(proj, "aaa.jsonl", ["x"]);

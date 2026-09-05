@@ -5,8 +5,7 @@
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { readTextOrNull, readTextResult } from "../src/utils/fs.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
-import { removeDir, tmpDir } from "./helpers.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 
 let dir = "";
 afterEach(() => {
@@ -14,7 +13,7 @@ afterEach(() => {
 });
 
 test("readTextResult keeps text, absent, and unreadable apart", () => {
-  dir = tmpDir("copilot-fs-");
+  dir = tempDir("copilot-fs-");
   const file = join(dir, "a.txt");
   writeFileSync(file, "hello");
   expect(readTextResult(file)).toEqual({ kind: "text", text: "hello" });
@@ -34,7 +33,7 @@ test("readTextResult keeps text, absent, and unreadable apart", () => {
 });
 
 test("readTextOrNull collapses every non-text outcome to null", () => {
-  dir = tmpDir("copilot-fs-");
+  dir = tempDir("copilot-fs-");
   const file = join(dir, "a.txt");
   writeFileSync(file, "hello");
   expect(readTextOrNull(file)).toBe("hello");
@@ -48,7 +47,7 @@ test.skipIf(process.platform === "win32")(
   "a dangling symlink is unreadable, never absent (the entry itself exists)",
   () => {
     // POSIX only: creating symlinks on Windows needs elevation/dev-mode.
-    dir = tmpDir("copilot-fs-");
+    dir = tempDir("copilot-fs-");
     const link = join(dir, "settings.json");
     symlinkSync(join(dir, "gone.json"), link);
     // readFileSync follows the link and reports ENOENT, but lstat shows an

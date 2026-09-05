@@ -23,8 +23,8 @@ import { readCodexToml, saveCodexToml } from "../src/codex/toml_io.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes, removeDir, tmpDir } from "./helpers.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateAgentHomes } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -37,12 +37,12 @@ afterEach(() => {
 // --- readCodexToml variants -----------------------------------------------------
 
 test("readCodexToml: a missing file reads as absent", () => {
-  dir = tmpDir("codex-toml-io-");
+  dir = tempDir("codex-toml-io-");
   expect(readCodexToml(join(dir, "config.toml"))).toEqual({ kind: "absent" });
 });
 
 test("readCodexToml: valid TOML reads as ok with the parsed document", () => {
-  dir = tmpDir("codex-toml-io-");
+  dir = tempDir("codex-toml-io-");
   const path = join(dir, "config.toml");
   writeFileSync(path, ['model_provider = "copilot-env"', "", "[t]", 'k = "v"', ""].join("\n"));
   const read = readCodexToml(path);
@@ -53,7 +53,7 @@ test("readCodexToml: valid TOML reads as ok with the parsed document", () => {
 });
 
 test("readCodexToml: a file that exists but is not TOML reads as unparseable", () => {
-  dir = tmpDir("codex-toml-io-");
+  dir = tempDir("codex-toml-io-");
   const path = join(dir, "config.toml");
   writeFileSync(path, 'command = "unbalanced\n');
   const read = readCodexToml(path);
@@ -65,7 +65,7 @@ test("readCodexToml: a file that exists but is not TOML reads as unparseable", (
 test("readCodexToml: an empty or whitespace-only file reads as absent", () => {
   // The seed-a-default site (loadOrCreateConfig) has always treated an empty
   // file like a missing one; the shared reader keeps that mapping.
-  dir = tmpDir("codex-toml-io-");
+  dir = tempDir("codex-toml-io-");
   const path = join(dir, "config.toml");
   writeFileSync(path, "");
   expect(readCodexToml(path)).toEqual({ kind: "absent" });
@@ -76,7 +76,7 @@ test("readCodexToml: an empty or whitespace-only file reads as absent", () => {
 test("readCodexToml: blank-LOOKING content the parser rejects reads as unparseable, not absent", () => {
   // A BOM, NBSP, or lone CR is trim()-blank but smol-toml rejects it; classifying
   // it "absent" would let write paths clobber a file that exists and did not parse.
-  dir = tmpDir("codex-toml-io-");
+  dir = tempDir("codex-toml-io-");
   const path = join(dir, "config.toml");
   for (const content of ["\ufeff", "\u00a0", "\r", " \r "]) {
     writeFileSync(path, content);
@@ -87,14 +87,14 @@ test("readCodexToml: blank-LOOKING content the parser rejects reads as unparseab
 test("readCodexToml: a comment-only file reads as ok with an empty document, not absent", () => {
   // Non-blank but key-less content is real user text: it must NOT trigger the
   // absent path (which would seed the default template over it at site 1).
-  dir = tmpDir("codex-toml-io-");
+  dir = tempDir("codex-toml-io-");
   const path = join(dir, "config.toml");
   writeFileSync(path, "# my notes\n# more notes\n");
   expect(readCodexToml(path)).toEqual({ kind: "ok", doc: {} });
 });
 
 test("readCodexToml: a non-ENOENT filesystem error throws raw instead of reading as absent", () => {
-  dir = tmpDir("codex-toml-io-");
+  dir = tempDir("codex-toml-io-");
   const asDir = join(dir, "config.toml");
   mkdirSync(asDir); // reading a directory raises EISDIR, never ENOENT
   let thrown: unknown;
@@ -110,7 +110,7 @@ test("readCodexToml: a non-ENOENT filesystem error throws raw instead of reading
 });
 
 test("saveCodexToml: round-trips through readCodexToml and writes smol-toml's exact bytes", () => {
-  dir = tmpDir("codex-toml-io-");
+  dir = tempDir("codex-toml-io-");
   const path = join(dir, "config.toml");
   const doc = {
     "model_provider": "copilot-env",
@@ -125,7 +125,7 @@ test("saveCodexToml: round-trips through readCodexToml and writes smol-toml's ex
 test("saveCodexToml: a write error propagates to the caller", () => {
   // Same contract as the old inline fs.writeFileSync: each call site's own
   // error handling (throw, or an outer swallow) stays in charge.
-  dir = tmpDir("codex-toml-io-");
+  dir = tempDir("codex-toml-io-");
   const asDir = join(dir, "config.toml");
   mkdirSync(asDir);
   expect(() => saveCodexToml(asDir, { "k": "v" })).toThrow();

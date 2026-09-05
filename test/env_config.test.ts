@@ -28,8 +28,8 @@ import { DEFAULT_WEB_SEARCH_MODEL } from "../src/copilot_api/web_search.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { DEFAULT_RELEASE_COOLDOWN_SECONDS } from "../src/proxy_float.ts";
 import { SECONDS_PER_DAY } from "../src/utils/time.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
+import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers.ts";
 
 // CopilotEnvConfig reads/writes the SHARED prefs store under COPILOT_API_HOME, so isolate
 // each test in a temp home.

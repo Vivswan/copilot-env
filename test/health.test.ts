@@ -1,5 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { directHelperCommand, legacyDirectHelperScript } from "../src/claude/config.ts";
 import { directHelperPath, proxyHelperPath, settingsPathFor } from "../src/claude/paths.ts";
@@ -62,7 +61,7 @@ import {
   type WatchdogFacts,
 } from "../src/health/probe.ts";
 import type { CheckId, CheckResult, CheckStatus, HealthScope } from "../src/health/types.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { expect, tempDir, test } from "./helpers/testing.ts";
 import { envSnapshot, writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
 
 // --- fixtures ---------------------------------------------------------------
@@ -936,7 +935,7 @@ test("gatherFacts never probes identity for a both-direct default target (proxyE
   // Both agents wired Direct + something listening on the default port: nothing routes
   // there, so the identity probe must not even fire -- which makes the misroute warning
   // structurally unreachable for this state, not merely suppressed.
-  const root = mkdtempSync(join(tmpdir(), "copilot-health-bothdirect-"));
+  const root = tempDir("copilot-health-bothdirect-");
   const restoreEnv = envSnapshot();
   process.env.COPILOT_API_HOME = join(root, "api-home"); // isolated: no profile homes
   try {
@@ -984,7 +983,7 @@ test("a mixed default Claude config (direct helper, proxy base URL) expects the 
   // "not required (both direct)" with the daemon down and Claude broken; the
   // base-URL fact must bring back the full runtime treatment: proxyExpected
   // true, the daemon-down FAIL (with the start fix), and the identity probe.
-  const root = mkdtempSync(join(tmpdir(), "copilot-health-mixed-"));
+  const root = tempDir("copilot-health-mixed-");
   const restoreEnv = envSnapshot();
   process.env.COPILOT_API_HOME = join(root, "api-home"); // isolated: no profile homes
   try {
@@ -1131,7 +1130,7 @@ test("an unreadable codex config reaches health as other/read-error, never as no
 test("gatherFacts still probes identity when an agent routes through the proxy", async () => {
   // Codex wired to the local proxy: requests genuinely route to the port, so the
   // identity probe fires and a foreign responder still earns the misroute warning.
-  const root = mkdtempSync(join(tmpdir(), "copilot-health-proxywired-"));
+  const root = tempDir("copilot-health-proxywired-");
   const restoreEnv = envSnapshot();
   process.env.COPILOT_API_HOME = join(root, "api-home");
   try {
@@ -1207,7 +1206,7 @@ test("gatherFacts derives proxy.floatSkips from the float's own predicate", asyn
   // never a looser both-direct read -- health and the float must agree. The
   // predicate's own edge cases (profile homes, proxy wiring) live in
   // agents_wiring.test.ts; this pins the fact-gathering seam.
-  const root = mkdtempSync(join(tmpdir(), "copilot-health-float-"));
+  const root = tempDir("copilot-health-float-");
   const restoreEnv = envSnapshot();
   process.env.COPILOT_API_HOME = join(root, "api-home"); // isolated: no profile homes
   delete process.env.COPILOT_API_VERSION; // an inherited pin would force the float
@@ -1267,7 +1266,7 @@ test("a target's pid and port pair from ONE state snapshot (fallback never re-re
 test("gatherFacts is read-only: no files appear in a fresh isolated home", async () => {
   // Health observes, never writes: it must not create the copilot-api home, a
   // run dir, or a port reservation (reserveProfilePort is a write-path API).
-  const root = mkdtempSync(join(tmpdir(), "copilot-health-readonly-"));
+  const root = tempDir("copilot-health-readonly-");
   const restoreEnv = envSnapshot();
   const home = join(root, "api-home"); // never created -- gatherFacts must not mkdir it
   process.env.COPILOT_API_HOME = home;
@@ -1301,7 +1300,7 @@ test("an interrupted default-home migration warns, naming the staging dir and th
   // flat root (the system keeps working), so the verdict is warn -- an unfinished
   // migration, never a breakage -- and the fix is the exact re-run that completes
   // the move.
-  const root = mkdtempSync(join(tmpdir(), "copilot-health-staging-"));
+  const root = tempDir("copilot-health-staging-");
   const restoreEnv = envSnapshot();
   const home = join(root, "api-home");
   process.env.COPILOT_API_HOME = home;

@@ -1,9 +1,8 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DAEMON_GH_TOKEN_ENV } from "../src/copilot_api/process.ts";
 import { denoRunArgs, ROOT, runSync } from "./helpers/run.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { expect, tempDir, test } from "./helpers/testing.ts";
 
 // The shim reads the GitHub token from DAEMON_GH_TOKEN_ENV and splices it into
 // process.argv as `--github-token <token>`, keeping it off the launch command line. It must
@@ -13,7 +12,7 @@ const SHIM = join(ROOT, "src", "scripts", "token_argv_preload.ts");
 const ENV_KEY = DAEMON_GH_TOKEN_ENV;
 
 function runPreloaded(token: string | undefined): { argv: string[]; envHadKey: boolean } {
-  const dir = mkdtempSync(join(tmpdir(), "copilot-tokenargv-"));
+  const dir = tempDir("copilot-tokenargv-");
   try {
     const target = join(dir, "target.ts");
     writeFileSync(
@@ -62,7 +61,7 @@ test("with no env var set, argv is unchanged and no flag is added", () => {
 
 test("does not double-add when --github-token is already present in argv", () => {
   // If a caller passed the flag directly (e.g. an old launch), the shim must not duplicate it.
-  const dir = mkdtempSync(join(tmpdir(), "copilot-tokenargv-"));
+  const dir = tempDir("copilot-tokenargv-");
   try {
     const target = join(dir, "target.ts");
     writeFileSync(target, "console.log(JSON.stringify(process.argv.slice(2)));");

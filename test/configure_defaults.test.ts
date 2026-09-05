@@ -10,11 +10,10 @@ import { recordDefaultModeFromWiring } from "../src/agents/configure_defaults.ts
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { runCli } from "./helpers/run.ts";
-import { afterEach, beforeEach, expect, test } from "./helpers/testing.ts";
+import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testing.ts";
 import {
   envSnapshot,
   isolateProxyHome,
-  removeDir,
   writeClaudeSettings,
   writeCodexConfigToml,
 } from "./helpers.ts";

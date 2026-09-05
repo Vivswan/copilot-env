@@ -12,8 +12,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pidAlive, pidLiveness } from "../src/utils/pid.ts";
 import { denoRunArgs, importSpecifier, ROOT, runSync } from "./helpers/run.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
-import { removeDir, tmpDir } from "./helpers.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 
 // A pid no real process holds (far above any OS pid ceiling we run on).
 const DEAD_PID = 2_147_483_646;
@@ -45,7 +44,7 @@ test.skipIf(process.platform === "win32")(
 test(
   "pidLiveness: a probe the permission set cannot run is 'unproven', never dead (real NotCapable)",
   () => {
-    dir = tmpDir("copilot-env-pid-");
+    dir = tempDir("copilot-env-pid-");
     const script = join(dir, "probe.ts");
     writeFileSync(
       script,

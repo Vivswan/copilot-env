@@ -24,11 +24,10 @@ import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../src/utils/hostname.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
+import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import {
   envSnapshot,
   isolateAgentHomes,
-  removeDir,
   resetExitCode,
   writeClaudeSettings,
   writeCodexConfigToml,

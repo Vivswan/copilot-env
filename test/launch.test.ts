@@ -6,17 +6,8 @@
 // isolated COPILOT_API_HOME. The parse/plan/picker units run everywhere; most
 // e2e spawns are POSIX (sh fakes), and a Windows-only e2e drives the verbatim
 // .ps1-shim dispatch (verbatimCliSpawn) with a %VAR% literalness control.
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentProviderMode } from "../src/agents/provider_mode.ts";
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
@@ -31,7 +22,7 @@ import type { ProfileMode, ProfileSlot, TokenProvider } from "../src/copilot_api
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { runCli, spawnChild } from "./helpers/run.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
+import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 import { writeClaudeSettings, writeCodexConfigToml, writeRunState } from "./helpers.ts";
 
 const WORK = parseProfileName("work");
@@ -44,7 +35,7 @@ afterEach(() => {
   roots = [];
 });
 function e2eRoot(): string {
-  const root = mkdtempSync(join(tmpdir(), "copilot-launch-"));
+  const root = tempDir("copilot-launch-");
   roots.push(root);
   return root;
 }

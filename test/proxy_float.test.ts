@@ -36,10 +36,10 @@ import { DAEMON_SHIM_FILES } from "../src/copilot_api/shims.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import type { ProjectConfig } from "../src/utils/project_config.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
-import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
+import { afterEach, beforeEach, describe, expect, removeDir, test } from "./helpers/testing.ts";
 import { PROXY_CACHE_FIXTURE } from "../scripts/warm-proxy-cache.ts";
 import { ROOT, runSync } from "./helpers/run.ts";
-import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers.ts";
 
 // The float resolves the proxy into a Deno npm cache under the root home and
 // records the resolution in resolved-version.json -- the freshness oracle

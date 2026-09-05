@@ -8,8 +8,8 @@ import {
   withFileLockSync,
 } from "../src/utils/file_lock.ts";
 import { ROOT } from "./helpers/run.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
-import { removeDir, tmpDir, withUnprovablePidProbe } from "./helpers.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { withUnprovablePidProbe } from "./helpers.ts";
 
 // Direct tests of the shared lock's parameterization (staleMs, injected nowMs, marker
 // format) and of the steal path's restore contract. The multi-process mutual-exclusion
@@ -22,7 +22,7 @@ afterEach(() => {
   dir = removeDir(dir);
 });
 function tmp(name: string): string {
-  dir = tmpDir("copilot-env-file-lock-");
+  dir = tempDir("copilot-env-file-lock-");
   return join(dir, name);
 }
 

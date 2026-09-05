@@ -14,11 +14,10 @@ import {
 } from "../src/agents/wiring.ts";
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
-import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
+import { afterEach, beforeEach, describe, expect, removeDir, test } from "./helpers/testing.ts";
 import {
   envSnapshot,
   isolateProxyHome,
-  removeDir,
   writeClaudeSettings,
   writeCodexConfigToml,
   writeRunState,

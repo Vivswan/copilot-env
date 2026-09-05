@@ -16,10 +16,18 @@ import {
   sidecarBinPath,
   unzipCommand,
 } from "../src/copilot_api/sidecar.ts";
-import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  removeDir,
+  tempDir,
+  test,
+} from "./helpers/testing.ts";
 import { sidecarSha256 } from "../src/copilot_api/sidecar_pins.ts";
 import { ROOT } from "./helpers/run.ts";
-import { envSnapshot, removeDir, tmpDir } from "./helpers.ts";
+import { envSnapshot } from "./helpers.ts";
 
 const PIN = "2.9.5";
 // sha256("hello"), the classic test vector -- the fake download below serves "hello".
@@ -29,7 +37,7 @@ let dir = "";
 const restoreEnv = envSnapshot([SIDECAR_DENO_ENV]);
 
 beforeEach(() => {
-  dir = tmpDir("copilot-sidecar-");
+  dir = tempDir("copilot-sidecar-");
   delete process.env[SIDECAR_DENO_ENV];
 });
 

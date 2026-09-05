@@ -15,15 +15,8 @@ import {
   runCli,
   runSync,
 } from "./helpers/run.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
-import {
-  claudeSettingsJson,
-  envSnapshot,
-  removeDir,
-  tmpDir,
-  writeClaudeSettings,
-  writeRunState,
-} from "./helpers.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { claudeSettingsJson, envSnapshot, writeClaudeSettings, writeRunState } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -69,7 +62,7 @@ function envLines(profile?: string): string[] {
 }
 
 function isolate(): string {
-  dir = tmpDir("copilot-env-cmd-");
+  dir = tempDir("copilot-env-cmd-");
   process.env.HOME = dir;
   process.env.COPILOT_API_HOME = join(dir, "gw"); // empty state => no host CODEX_HOME
   // Unique need: `agent env` emits/clears CODEX_HOME and ANTHROPIC_BASE_URL exports based
@@ -367,7 +360,7 @@ test("env --profile with an unknown name hard-fails naming the known profiles", 
 });
 
 test("cli env --profile unknown exits 1 with an EMPTY stdout (the eval contract)", () => {
-  dir = tmpDir("copilot-env-cmd-");
+  dir = tempDir("copilot-env-cmd-");
   const proc = runCli(["env", "--profile", "nope"], {
     env: { ...process.env, ...childBaseEnv(), CONSOLA_LEVEL: "5" },
   });

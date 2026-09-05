@@ -14,26 +14,141 @@
 // interrupted at all, since spawnSync blocks the thread the deadline timer runs on
 // (RunOptions.timeoutMs covers that case).
 import { AsyncLocalStorage } from "node:async_hooks";
-import { mkdtempSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { it } from "@std/testing/bdd";
 import { CLAUDE_DESKTOP_DIR_ENV } from "../../src/claude/desktop.ts";
 import { CI_NO_LIVE_LOOKUPS_ENV } from "../../src/codex/catalog.ts";
 import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../../src/shell/integration.ts";
+import { sleepSync } from "../../src/utils/time.ts";
 
 export { expect } from "@std/expect";
 export { afterEach, beforeEach, describe } from "@std/testing/bdd";
 
+// --- the temp root -----------------------------------------------------------------
+//
+// Every temp path a test module makes lives under ONE root, removed when the module's
+// isolate unloads (a failed run unloads too): `deno test` runs each test file in its own
+// isolate, so this module is evaluated, and the root minted and removed, once per test
+// file. A fixture a test never removes, or abandons on its failing path, goes with the root
+// instead of staying in the OS tmpdir forever. Nothing under test/ reaches mkdtemp,
+// makeTempDir, or os.tmpdir itself (test/lint/no_unmanaged_temp_dir.ts): tempDir below is
+// the one way to a temp directory.
+//
+// A child process that loads this module (a script under test, a nested `deno test`) mints
+// a root of its own -- INSIDE the root of the isolate that spawned it, which test/helpers/run.ts
+// names in TEST_ROOT_ENV on every child. A child killed before its own unload (the abort
+// teardown of a timed-out test) therefore leaves nothing the parent's removal misses. The
+// variable travels to children only, never into this process's environment: the isolates
+// share that, and the next one would nest under a root already gone.
+export const TEST_ROOT_ENV = "COPILOT_ENV_TEST_ROOT";
+/** This isolate's root; the spawn helpers hand it to children under TEST_ROOT_ENV. */
+export const ISOLATE_ROOT = mkdtempSync(
+  join(process.env[TEST_ROOT_ENV] ?? tmpdir(), "copilot-env-suite-"),
+);
+
+/** A fresh directory `<prefix><random>` under the isolate's root, so a failure still reads
+ *  the same as before. Removed with the root; a test may removeDir it earlier. The prefix
+ *  must name a direct child of the root: an empty one or one climbing out would land the
+ *  directory beside the root, outside everything that removes it. */
+export function tempDir(prefix: string): string {
+  const target = join(ISOLATE_ROOT, prefix);
+  if (dirname(target) !== ISOLATE_ROOT) {
+    throw new Error(`tempDir prefix must name a direct child of the root: ${prefix}`);
+  }
+  return mkdtempSync(target);
+}
+
+/**
+ * rmSync -rf a temp dir (no-op on ""); returns "" so callers can `dir = removeDir(dir)`.
+ * Success is the path being GONE (lstat says ENOENT), not rmSync returning: with `force`, an
+ * entry that a live child renames away mid-walk (deno writes its caches through temp files)
+ * reads as an already-removed target, and the walk stops there with the rest of the tree in
+ * place. Windows can also hold a handle (antivirus, the indexer, a just-killed child's
+ * executable image) briefly past process death. Both retry with backoff -- same philosophy
+ * as renameWithRetry (src/copilot_api/config.ts); the final attempt throws.
+ */
+export function removeDir(dir: string): "" {
+  if (!dir) return "";
+  const maxRetries = 9;
+  for (let i = 0;; i++) {
+    let failure: Error | undefined;
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      // ENOTEMPTY: a delete-pending file inside surfaces as not-empty on the dir itself.
+      const transient = code === "EPERM" || code === "EBUSY" || code === "ENOTEMPTY";
+      if (!transient) throw err;
+      failure = err as Error;
+    }
+    if (isGone(dir)) return "";
+    if (i >= maxRetries) throw failure ?? new Error(`${dir} still exists after removal`);
+    sleepSync(300);
+  }
+}
+
+/** Whether `path` provably does not exist: ENOENT, and nothing else. A lookup that fails
+ *  for any other reason (an unreadable parent, say) is an error, never an absence. */
+function isGone(path: string): boolean {
+  try {
+    lstatSync(path);
+    return false;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw err;
+  }
+}
+
+// A root that survives fails the run (an uncaught error here is a test failure): it is
+// exactly the leak this file exists to prevent, so it is never a green run's footnote.
+globalThis.addEventListener("unload", () => {
+  removeDir(ISOLATE_ROOT);
+});
+
+// The module cache every spawned deno child reads. A child running under a fixture HOME
+// derives a FRESH cache from that HOME when nothing pins one, and fills it with a download
+// (that was 8-14 MB per fixture). So the children get this process's own cache, pinned once
+// per process: the isolates share one process environment, which is what lets the pin
+// outlive the isolate that set it. A cache the environment already pins (the denoland image,
+// a CI step) is what deno info reports, so the pin canonicalizes it -- an empty value reads
+// as unset to deno, and a relative one would resolve against each child's own cwd. The spawn
+// helpers (test/helpers/run.ts) put the same value on every child whose caller's env lacks an
+// absolute one, so a replacement env cannot drop it either.
+const inheritedDenoDir = process.env.DENO_DIR ?? "";
+export const PINNED_DENO_DIR = isAbsolute(inheritedDenoDir) ? inheritedDenoDir : hostDenoDir();
+process.env.DENO_DIR = PINNED_DENO_DIR;
+
+/** Where this deno resolves its cache -- asked, not derived, because the default is
+ *  platform-specific and deno's to define. */
+function hostDenoDir(): string {
+  // The one child made outside test/helpers/run.ts: it runs at module load, before any test
+  // body exists to be abandoned, so abort teardown has nothing to register.
+  const info = new Deno.Command(Deno.execPath(), {
+    args: ["info", "--json"],
+    stdout: "piped",
+    stderr: "piped",
+  }).outputSync();
+  const decoder = new TextDecoder();
+  if (!info.success) throw new Error(`deno info failed: ${decoder.decode(info.stderr)}`);
+  const { denoDir } = JSON.parse(decoder.decode(info.stdout)) as { denoDir?: unknown };
+  if (typeof denoDir !== "string" || denoDir === "") {
+    throw new Error("deno info reported no denoDir");
+  }
+  return denoDir;
+}
+
 // --- the suite-wide agent-state sandbox ---------------------------------------
 //
-// Every env var that steers a real agent-state path is repointed into one per-run temp dir
-// here, so a test that sets up no harness of its own still cannot touch the developer's
-// `~/.codex`, `~/.claude`, `~/.claude.json`, copilot-api home, or shell rc files.
+// Every env var that steers a real agent-state path is repointed into one dir under the
+// isolate's root here, so a test that sets up no harness of its own still cannot touch the
+// developer's `~/.codex`, `~/.claude`, `~/.claude.json`, copilot-api home, or shell rc files.
 //
 // HOME stays REAL: each path above has its own override, which is what makes it redirectable
 // without HOME.
-const SANDBOX_HOME = mkdtempSync(join(tmpdir(), "copilot-env-suite-"));
+const SANDBOX_HOME = join(ISOLATE_ROOT, "sandbox");
+mkdirSync(SANDBOX_HOME);
 process.env.COPILOT_API_HOME = join(SANDBOX_HOME, "copilot-api");
 process.env.CLAUDE_CONFIG_DIR = join(SANDBOX_HOME, ".claude");
 process.env.CODEX_HOME = join(SANDBOX_HOME, ".codex");
@@ -54,9 +169,6 @@ process.env[CLAUDE_DESKTOP_DIR_ENV] = join(SANDBOX_HOME, "claude-desktop");
 // developer's network or codex install. Not NODE_ENV=test: consola reads that as
 // a test run and silences the info output the logger tests assert on.
 process.env[CI_NO_LIVE_LOOKUPS_ENV] = "1";
-globalThis.addEventListener("unload", () => {
-  rmSync(SANDBOX_HOME, { recursive: true, force: true });
-});
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 

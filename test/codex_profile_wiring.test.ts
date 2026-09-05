@@ -12,8 +12,8 @@ import { configureCodexConfig, inspectCodexWiring } from "../src/codex/config.ts
 import { openaiBaseUrl } from "../src/copilot_api/port.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { PROJECT_ROOT, proxyTokenCommand } from "../src/utils/root.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes, removeDir } from "./helpers.ts";
+import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateAgentHomes } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";

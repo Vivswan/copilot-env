@@ -7,8 +7,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { TrustedRoot } from "@sigstore/protobuf-specs";
 import { fileSha256 } from "../src/install/checksums.ts";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync } from "node:fs";
 import {
   assertSubjectsAttested,
   ATTESTATION_NAME,
@@ -22,7 +21,7 @@ import {
   verificationFailedMessage,
 } from "../src/install/attestation.ts";
 import { tufCachePath, verifyReleaseProvenance } from "../src/install/provenance.ts";
-import { describe, expect, test } from "./helpers/testing.ts";
+import { describe, expect, tempDir, test } from "./helpers/testing.ts";
 
 const FIXTURES = join(import.meta.dirname!, "fixtures", "provenance", "v4.0.0");
 const BUNDLE = readFileSync(join(FIXTURES, ATTESTATION_NAME), "utf8");
@@ -151,7 +150,7 @@ describe("verifyReleaseProvenance", () => {
     // No trustedRoot and an empty cache: reaching for the trust root would need
     // the network the test permission set denies, and would surface as the
     // "cannot verify" message instead (the control below proves that path).
-    const cachePath = mkdtempSync(join(tmpdir(), "copilot-tuf-"));
+    const cachePath = tempDir("copilot-tuf-");
     try {
       for (const text of ["not json", "{}", JSON.stringify({ mediaType: "x" })]) {
         const err = await verifyReleaseProvenance(TAG, text, [], { cachePath })
@@ -165,7 +164,7 @@ describe("verifyReleaseProvenance", () => {
   });
 
   test("control: a valid bundle with no reachable trust root is the fail-closed message", async () => {
-    const cachePath = mkdtempSync(join(tmpdir(), "copilot-tuf-"));
+    const cachePath = tempDir("copilot-tuf-");
     try {
       const err = await verifyReleaseProvenance(TAG, BUNDLE, [await checksumsSubject()], {
         cachePath,

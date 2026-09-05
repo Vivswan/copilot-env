@@ -9,8 +9,7 @@ import { TAIL_PROBE_BYTES } from "../src/usage/contribution.ts";
 import type { CostRuntime } from "../src/usage/cost.ts";
 import { USAGE_INDEX_DB_NAME } from "../src/usage/index.ts";
 import { USAGE_INDEX_DIR_NAME } from "../src/usage/paths.ts";
-import { removeDir, tmpDir } from "./helpers.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { expect, tempDir, test } from "./helpers/testing.ts";
 import { generateUsageTree } from "./helpers/usage_fixtures.ts";
 import { runCurrentCost, utcPinnable } from "./helpers/usage_goldens.ts";
 
@@ -29,17 +28,6 @@ function fixtureMb(raw: string | undefined): number {
 /** A cold run this short is dominated by fixed costs, so only a longer one carries a ratio. */
 const RATIO_FLOOR_MS = 200;
 const WARM_FRACTION = 1 / 5;
-
-const roots: string[] = [];
-globalThis.addEventListener("unload", () => {
-  for (const root of roots) removeDir(root);
-});
-
-function freshRoot(): string {
-  const root = tmpDir("usage-index-perf-");
-  roots.push(root);
-  return root;
-}
 
 /** Every byte SQLite left on disk for the index, as latin1 text: the database itself (it
  *  must be there and be one) and whichever sidecars exist. */
@@ -73,9 +61,9 @@ function log(label: string, runtime: CostRuntime): void {
 test.skipIf(!utcPinnable())(
   `a ${MB} MiB tree: warm reads nothing, an append reads its bytes, a delete leaves the index`,
   async () => {
-    const root = freshRoot();
+    const root = tempDir("usage-index-perf-");
     const tree = await generateUsageTree({ root, mb: MB, seed: 1 });
-    const copilotApiHome = join(freshRoot(), "copilot-env");
+    const copilotApiHome = join(tempDir("usage-index-perf-"), "copilot-env");
 
     const cold = await runCurrentCost(root, { copilotApiHome });
     log("cold", cold.runtime);

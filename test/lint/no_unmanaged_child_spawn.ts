@@ -11,32 +11,15 @@
 // entry points would miss `import * as cp`. Type imports are erased, so they stay legal.
 //
 // Registered in deno.json, unit-tested in test/child_spawn_lint.test.ts.
-import { fileURLToPath } from "node:url";
+import { memberName, testTreePath } from "./test_tree.ts";
 
-/** The helper that owns the one sanctioned construction, relative to the test tree. */
-const HELPER = "helpers/run.ts";
+/** The files that own a sanctioned construction, relative to the test tree: run.ts, the
+ *  process boundary, and testing.ts, whose one child (the cache lookup) runs at module load,
+ *  before any test body exists to be abandoned. */
+const OWNERS: ReadonlySet<string> = new Set(["helpers/run.ts", "helpers/testing.ts"]);
 
 /** The module the ban covers wholesale; run.ts takes its `spawnSync` from here. */
 const CHILD_PROCESS_MODULE = "node:child_process";
-
-function normalize(path: string): string {
-  return path.replaceAll("\\", "/");
-}
-
-/** The test tree's own path, derived from THIS file (test/lint/) so the scope tracks the
- *  directory itself rather than any ancestor that happens to be named "test".
- *  fileURLToPath, not URL.pathname: the latter yields "/C:/..." on Windows and would match
- *  nothing, silently disabling the rule across the whole tree. */
-const TEST_DIR = normalize(fileURLToPath(new URL("../", import.meta.url)));
-
-/** `filename` relative to the test tree, or null when it is outside it. Both the absolute
- *  paths `deno lint` passes and the repo-relative ones runPlugin takes are read. */
-function testTreePath(filename: string): string | null {
-  const path = normalize(filename);
-  if (path.startsWith(TEST_DIR)) return path.slice(TEST_DIR.length);
-  if (path.startsWith("test/")) return path.slice("test/".length);
-  return null;
-}
 
 const MESSAGE =
   "build child processes with spawnChild (test/helpers/run.ts), which registers the child " +
@@ -51,24 +34,13 @@ function isDenoNamespace(node: Deno.lint.Node): boolean {
     node.property.type === "Identifier" && node.property.name === "Deno";
 }
 
-/** The member name a MemberExpression reads, for both `a.b` and `a["b"]`. */
-function memberName(node: Deno.lint.MemberExpression): string | null {
-  if (!node.computed && node.property.type === "Identifier") return node.property.name;
-  if (
-    node.computed && node.property.type === "Literal" && typeof node.property.value === "string"
-  ) {
-    return node.property.value;
-  }
-  return null;
-}
-
 const plugin: Deno.lint.Plugin = {
   name: "copilot-env-test",
   rules: {
     "no-unmanaged-child-spawn": {
       create(context) {
         const relative = testTreePath(context.filename);
-        if (relative === null || relative === HELPER) return {};
+        if (relative === null || OWNERS.has(relative)) return {};
         return {
           // `Deno.Command`, `Deno["Command"]`, `globalThis.Deno.Command`.
           "MemberExpression"(node) {

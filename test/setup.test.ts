@@ -17,8 +17,8 @@ import {
 } from "../src/commands/setup.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CI_RC_DIR_ENV, MARKER } from "../src/shell/integration.ts";
-import { expect, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, removeDir, tmpDir } from "./helpers.ts";
+import { expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers.ts";
 
 // runShell's flag validation throws BEFORE any install or rc wiring, so these
 // need no filesystem/network isolation.
@@ -132,7 +132,7 @@ function stageCliInstallFixture(opts: {
   /** Commands pre-placed on PATH, so installCli reads them as already installed. */
   preinstalled?: readonly string[];
 }): CliInstallFixture {
-  const dir = tmpDir("copilot-setup-clis-");
+  const dir = tempDir("copilot-setup-clis-");
   const pathBin = join(dir, "path-bin");
   const prefix = join(dir, "npm-prefix");
   const globalBin = join(prefix, "bin");

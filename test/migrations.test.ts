@@ -19,8 +19,8 @@ import { acquireDaemonLockForLife, daemonLockPath } from "../src/scripts/daemon_
 import { releaseFileLock, tryAcquireFileLock } from "../src/utils/file_lock.ts";
 import type { SemverString } from "../src/utils/semver.ts";
 import { denoRunArgs, importSpecifier, ROOT, spawnChild } from "./helpers/run.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, removeDir, tmpDir, writeRunState } from "./helpers.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateProxyHome, writeRunState } from "./helpers.ts";
 
 // Pure selection logic for which migrations run across a version range, with a synthetic
 // registry so the real migrations' side effects are never triggered here. Migrations are
@@ -139,7 +139,7 @@ interface MoveFixture {
 /** A legacy home with a marker file, plus a codex config and a Desktop entry whose
  *  managed values point into it. */
 function moveFixture(): MoveFixture {
-  dir = tmpDir("copilot-migrate-");
+  dir = tempDir("copilot-migrate-");
   delete process.env.COPILOT_API_HOME; // the unpinned path is the one under test
   const legacy = join(dir, "copilot-api");
   const next = join(dir, "copilot-env");
@@ -231,7 +231,7 @@ test("3.5.6 move: a stopDaemons refusal aborts the move -- the legacy home is un
 test(
   "3.5.6 move: the REAL stopLegacyDaemons guard aborts on a refused stop (subprocess)",
   async () => {
-    dir = tmpDir("copilot-migrate-guard-");
+    dir = tempDir("copilot-migrate-guard-");
     const home = join(dir, "home");
     // LEGACY_HOME is frozen from homedir() at module load, so the real guard is only
     // reachable in a subprocess whose HOME points at the sandbox BEFORE the import.

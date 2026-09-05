@@ -1,7 +1,6 @@
 import {
   chmodSync,
   lstatSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   readlinkSync,
@@ -11,10 +10,9 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CopilotApiConfig, renameWithRetry } from "../src/copilot_api/config.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
+import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 
 let dir = "";
 
@@ -26,7 +24,7 @@ afterEach(() => {
 });
 
 test("save sorts keys recursively, writes a trailing newline, and round-trips", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+  dir = tempDir("copilot-config-");
   const path = join(dir, "config.json");
   const cfg = new CopilotApiConfig(path);
   cfg.save({ zebra: 1, alpha: { y: 2, x: 1 } });
@@ -45,13 +43,13 @@ test("save sorts keys recursively, writes a trailing newline, and round-trips", 
 });
 
 test("load returns {} for a missing or empty file", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+  dir = tempDir("copilot-config-");
   const cfg = new CopilotApiConfig(join(dir, "does-not-exist.json"));
   expect(cfg.load()).toEqual({});
 });
 
 test("update preserves unknown keys while mutating the targeted one", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+  dir = tempDir("copilot-config-");
   const cfg = new CopilotApiConfig(join(dir, "config.json"));
   cfg.save({ existing: "keep", smallModel: "gpt-5.5" });
 
@@ -65,7 +63,7 @@ test("update preserves unknown keys while mutating the targeted one", () => {
 });
 
 test("ensureApiKey generates a 64-hex key once and is stable across calls", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+  dir = tempDir("copilot-config-");
   const cfg = new CopilotApiConfig(join(dir, "config.json"));
 
   const first = cfg.ensureApiKey();
@@ -76,7 +74,7 @@ test("ensureApiKey generates a 64-hex key once and is stable across calls", () =
 });
 
 test("save leaves no *.tmp.* sibling behind after a successful write", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+  dir = tempDir("copilot-config-");
   const path = join(dir, "config.json");
   const cfg = new CopilotApiConfig(path);
 
@@ -90,7 +88,7 @@ test("save leaves no *.tmp.* sibling behind after a successful write", () => {
 });
 
 test("ensureAdminApiKey is stable across calls and differs from ensureApiKey", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+  dir = tempDir("copilot-config-");
   const cfg = new CopilotApiConfig(join(dir, "config.json"));
 
   const admin = cfg.ensureAdminApiKey();
@@ -109,7 +107,7 @@ test("ensureAdminApiKey is stable across calls and differs from ensureApiKey", (
 });
 
 test("load returns {} for an empty/whitespace file", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+  dir = tempDir("copilot-config-");
   const path = join(dir, "config.json");
   const cfg = new CopilotApiConfig(path);
 
@@ -123,7 +121,7 @@ test("load returns {} for an empty/whitespace file", () => {
 });
 
 test("load returns {} for a garbage-JSON file", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+  dir = tempDir("copilot-config-");
   const path = join(dir, "config.json");
   const cfg = new CopilotApiConfig(path);
 
@@ -136,7 +134,7 @@ test("load returns {} for a garbage-JSON file", () => {
 });
 
 test("save sorts keys inside array elements while preserving array order", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+  dir = tempDir("copilot-config-");
   const path = join(dir, "config.json");
   const cfg = new CopilotApiConfig(path);
 
@@ -166,7 +164,7 @@ test("save sorts keys inside array elements while preserving array order", () =>
 });
 
 test("renameWithRetry retries transient EBUSY/EPERM then succeeds", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+  dir = tempDir("copilot-config-");
   const from = join(dir, "src");
   const to = join(dir, "dst");
 
@@ -221,7 +219,7 @@ test("renameWithRetry surfaces a non-transient error immediately", () => {
 test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   "update REFUSES an unreadable store instead of WIPING it",
   () => {
-    dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+    dir = tempDir("copilot-config-");
     const path = join(dir, "config.json");
     const cfg = new CopilotApiConfig(path);
     cfg.save({ auth: { apiKeys: ["secret-key"], adminApiKey: "admin-secret" } });
@@ -252,7 +250,7 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 test("update still writes normally when the store IS readable (the control)", () => {
   // The control for the row above: the refusal must not cost the ordinary path.
   // Same shape, same keys -- the only difference is that the store is readable.
-  dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+  dir = tempDir("copilot-config-");
   const path = join(dir, "config.json");
   const cfg = new CopilotApiConfig(path);
   cfg.save({ existing: "keep", smallModel: "gpt-5.5" });
@@ -267,7 +265,7 @@ test("update still writes normally when the store IS readable (the control)", ()
 test("a genuinely absent store still reads as an empty document, not unreadable", () => {
   // The other control: absence is a PROVEN answer and must keep flowing through
   // update() as `{}` -- otherwise first-run key generation would refuse.
-  dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+  dir = tempDir("copilot-config-");
   const cfg = new CopilotApiConfig(join(dir, "config.json"));
   cfg.update((d) => {
     d.created = true;
@@ -282,7 +280,7 @@ test("a genuinely absent store still reads as an empty document, not unreadable"
 test.skipIf(process.platform === "win32")(
   "a dangling symlink at the store path is unreadable, never a writable empty doc",
   () => {
-    dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+    dir = tempDir("copilot-config-");
     const path = join(dir, "config.json");
     const target = join(dir, "missing-target.json");
     symlinkSync(target, path);
@@ -312,7 +310,7 @@ test.skipIf(process.platform === "win32")(
 test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   "an unreadable store: loadStrict THROWS while load still degrades to {}",
   () => {
-    dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+    dir = tempDir("copilot-config-");
     const path = join(dir, "config.json");
     const cfg = new CopilotApiConfig(path);
     cfg.save({ auth: { apiKeys: ["secret-key"] } });
@@ -346,7 +344,7 @@ test("update REFUSES a store that is present but not valid JSON, preserving its 
   // discard -- so the cases differ only in what corrupted the root.
   const cases = ['{ "auth": { "apiKeys": ["secret-key"] }, half-written', '[42, "secret-key"]'];
   for (const content of cases) {
-    dir = mkdtempSync(join(tmpdir(), "copilot-config-"));
+    dir = tempDir("copilot-config-");
     const path = join(dir, "config.json");
     const cfg = new CopilotApiConfig(path);
     writeFileSync(path, content);

@@ -2,8 +2,7 @@
 // file (the `test` task only collects test/**/*.test.ts names), so importing it
 // never registers tests. Plain functions only -- each test file keeps its own
 // afterEach and calls these from it.
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { ProfileName } from "../src/copilot_api/profile.ts";
@@ -14,8 +13,8 @@ import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { acquireDaemonLockForLife, daemonLockPath } from "../src/scripts/daemon_lock.ts";
 import { releaseFileLock } from "../src/utils/file_lock.ts";
 import { pidAlive } from "../src/utils/pid.ts";
-import { sleepSync } from "../src/utils/time.ts";
 import { denoRunArgs, ROOT, spawnChild } from "./helpers/run.ts";
+import { removeDir, tempDir } from "./helpers/testing.ts";
 
 // --- env snapshot / restore ---------------------------------------------------
 
@@ -74,34 +73,6 @@ export function resetExitCode(): void {
 
 // --- temp homes -----------------------------------------------------------------
 
-/** A fresh temp directory under the OS tmpdir (no env vars touched). */
-export function tmpDir(prefix: string): string {
-  return mkdtempSync(join(tmpdir(), prefix));
-}
-
-/**
- * rmSync -rf a temp dir (no-op on ""); returns "" so callers can `dir = removeDir(dir)`.
- * Windows can hold a handle (antivirus, the indexer, a just-killed child's executable
- * image) briefly past process death, so transient failures retry with backoff -- same
- * philosophy as renameWithRetry (src/copilot_api/config.ts); the final attempt rethrows.
- */
-export function removeDir(dir: string): "" {
-  if (!dir) return "";
-  const maxRetries = 9;
-  for (let i = 0;; i++) {
-    try {
-      rmSync(dir, { recursive: true, force: true });
-      return "";
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      // ENOTEMPTY: a delete-pending file inside surfaces as not-empty on the dir itself.
-      const transient = code === "EPERM" || code === "EBUSY" || code === "ENOTEMPTY";
-      if (i >= maxRetries || !transient) throw err;
-      sleepSync(300);
-    }
-  }
-}
-
 function clearInheritedEnv(): void {
   for (const key of CREDENTIAL_ENV_KEYS) delete process.env[key];
   delete process.env.COPILOT_ENV_ROOT_HOME;
@@ -113,7 +84,7 @@ function clearInheritedEnv(): void {
  * caller owns cleanup via removeDir.
  */
 export function isolateProxyHome(prefix: string): string {
-  const dir = tmpDir(prefix);
+  const dir = tempDir(prefix);
   process.env.COPILOT_API_HOME = dir;
   clearInheritedEnv();
   return dir;
@@ -144,7 +115,7 @@ export interface AgentHomes {
  * caller owns cleanup via removeDir(homes.dir).
  */
 export function isolateAgentHomes(prefix: string, opts: { mkdirs?: boolean } = {}): AgentHomes {
-  const dir = tmpDir(prefix);
+  const dir = tempDir(prefix);
   const homes: AgentHomes = {
     dir,
     proxyHome: join(dir, "proxy-home"),

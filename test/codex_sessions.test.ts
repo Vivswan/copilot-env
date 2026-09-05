@@ -1,8 +1,31 @@
-import { mkdirSync, mkdtempSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { zstdCompressSync } from "node:zlib";
-import { discoverCodexSessionRoots, readCodexSessions } from "../src/usage/codex_sessions.ts";
+import { consola } from "consola";
+import {
+  discoverCodexSessionRoots,
+  parseCodexTail,
+  parseCodexWhole,
+  readCodexSessions,
+  walkCodexSessions,
+} from "../src/usage/codex_sessions.ts";
+import {
+  dedupKey,
+  emptyIndexStats,
+  parseEveryCandidate,
+  type Reconcile,
+  type WalkedFile,
+} from "../src/usage/contribution.ts";
+import { errMessage } from "../src/utils/error.ts";
 import { localDayKey } from "../src/utils/time.ts";
 import { expect, test } from "./helpers/testing.ts";
 
@@ -338,4 +361,421 @@ test("discoverCodexSessionRoots dedupes farm symlinks by realpath", () => {
 
   const roots = discoverCodexSessionRoots([shared, farmHome]);
   expect(roots.sort()).toEqual([join(shared, "archived_sessions"), join(shared, "sessions")]);
+});
+
+/** The walk record for one file on disk, as a candidate. */
+function walkedFile(path: string): WalkedFile {
+  const { size, mtimeMs } = statSync(path);
+  return { path, size, mtimeMs, candidate: true, resumable: !path.endsWith(".zst") };
+}
+
+test("parseCodexTail resumed from a prefix parse equals one whole parse", () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const lines = [
+    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env", forkedFrom: "p" }),
+    turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
+    tokenCount("2026-06-01T10:00:05.000Z", usage(100, 40, 20), usage(100, 40, 20)),
+    turnContext("2026-06-01T10:00:06.000Z", "claude-haiku-4-5-20251001"),
+    tokenCount("2026-06-01T10:00:09.000Z", usage(300, 40, 50), usage(200, 0, 30)),
+    tokenCount("2026-06-01T10:00:19.000Z", usage(500, 40, 70), usage(200, 0, 20)),
+  ];
+  const wholePath = writeRollout(join(dir, "whole"), "2026-06-01", "aaa", lines);
+  const whole = parseCodexWhole(walkedFile(wholePath));
+  expect(whole.contribution.events.length).toBe(3);
+  // The contribution keeps the RAW ids (state and per event); the fold canonicalizes.
+  expect(whole.contribution.state.model).toBe("claude-haiku-4-5-20251001");
+  expect(whole.contribution.events.map((e) => e[2])).toEqual([
+    "gpt-5.6",
+    "claude-haiku-4-5-20251001",
+    "claude-haiku-4-5-20251001",
+  ]);
+
+  // The same file written in two steps: parse the prefix, append, resume.
+  const grownPath = writeRollout(join(dir, "grown"), "2026-06-01", "aaa", lines.slice(0, 3));
+  const prefix = parseCodexWhole(walkedFile(grownPath));
+  const priorSnapshot = JSON.stringify(prefix.contribution);
+  appendFileSync(grownPath, `${lines.slice(3).join("\n")}\n`);
+  const tail = parseCodexTail(walkedFile(grownPath), prefix.parsedThrough, prefix.contribution);
+  expect(tail.contribution).toEqual(whole.contribution);
+  expect(tail.parsedThrough).toBe(whole.parsedThrough);
+  expect(tail.tailProbeHex).toBe(whole.tailProbeHex);
+  // The prior the index handed over is untouched.
+  expect(JSON.stringify(prefix.contribution)).toBe(priorSnapshot);
+});
+
+test("readCodexSessions counts an unterminated final line only once its LF lands", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const root = join(dir, "sessions");
+  const file = writeRollout(root, "2026-06-01", "aaa", [
+    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
+    turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
+    tokenCount("2026-06-01T10:00:05.000Z", usage(10, 0, 1), usage(10, 0, 1)),
+  ]);
+  // A writer mid-line: the fragment is complete JSON but has no terminator yet.
+  appendFileSync(file, tokenCount("2026-06-01T10:00:09.000Z", usage(30, 0, 3), usage(20, 0, 2)));
+  const partial = await readCodexSessions([root]);
+  expect(partial.get("copilot-env")?.byModel.get("gpt-5.6")?.events).toBe(1);
+
+  appendFileSync(file, "\n");
+  const complete = await readCodexSessions([root]);
+  expect(complete.get("copilot-env")?.byModel.get("gpt-5.6")).toEqual({
+    input: 30,
+    output: 3,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 2,
+  });
+});
+
+test("readCodexSessions ignores a needle that sits inside another line's content", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const root = join(dir, "sessions");
+  writeRollout(root, "2026-06-01", "aaa", [
+    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
+    turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
+    // A response item whose payload carries every needle as nested values,
+    // token counts included: not an event_msg, so nothing may count.
+    rolloutLine("2026-06-01T10:00:02.000Z", "response_item", {
+      type: "custom_tool_call",
+      name: "token_count",
+      input: { type: "session_meta", "turn_context": "turn_context" },
+      "thread_settings_applied": { info: { "last_token_usage": usage(999, 0, 999) } },
+    }),
+    tokenCount("2026-06-01T10:00:05.000Z", usage(10, 0, 1), usage(10, 0, 1)),
+  ]);
+
+  const byProvider = await readCodexSessions([root]);
+  expect(byProvider.get("copilot-env")?.byModel.get("gpt-5.6")).toEqual({
+    input: 10,
+    output: 1,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 1,
+  });
+});
+
+test("readCodexSessions dedups a fork against its parent BEFORE the window filter", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const root = join(dir, "sessions");
+  const parentTurn = tokenCount("2026-06-01T10:00:05.000Z", usage(100, 0, 10), usage(100, 0, 10));
+  // Parent: its only turn is OUTSIDE the window (the file itself is fresh, so it is read).
+  writeRollout(root, "2026-06-01", "aaa", [
+    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
+    turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
+    parentTurn,
+  ]);
+  // Fork: the copied parent turn carries a fresh, IN-window line timestamp
+  // and lands well after the batch-write window, so only the parent's hash
+  // set can identify it as a copy.
+  writeRollout(root, "2026-06-03", "bbb", [
+    sessionMeta("2026-06-03T12:00:00.000Z", "bbb", { provider: "copilot-env", forkedFrom: "aaa" }),
+    turnContext("2026-06-03T12:00:00.000Z", "gpt-5.6"),
+    tokenCount("2026-06-03T12:00:09.000Z", usage(100, 0, 10), usage(100, 0, 10)),
+    tokenCount("2026-06-03T12:00:19.000Z", usage(300, 0, 30), usage(200, 0, 20)),
+  ]);
+
+  const sinceMs = Date.parse("2026-06-02T00:00:00Z");
+  const byProvider = await readCodexSessions([root], sinceMs);
+  // Only the fork's own turn: the copied one was suppressed by a parent event
+  // that itself never counted.
+  expect(byProvider.get("copilot-env")?.byModel.get("gpt-5.6")).toEqual({
+    input: 200,
+    output: 20,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 1,
+  });
+});
+
+test("walkCodexSessions reports every rollout with its candidacy verdict, in fold order", () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const live = join(dir, "sessions");
+  const archived = join(dir, "archived_sessions");
+  mkdirSync(archived, { recursive: true });
+  const stale = writeRollout(live, "2026-01-01", "old", ["x"]);
+  const oldMs = Date.parse("2026-01-01T02:00:00Z") / 1000;
+  utimesSync(stale, oldMs, oldMs);
+  const kept = writeRollout(live, "2026-06-01", "aaa", ["x"]);
+  const twin = join(archived, "rollout-2026-06-01T01-00-00-aaa.jsonl.zst");
+  writeFileSync(twin, zstdCompressSync(Buffer.from("x\n")));
+  const archivedOnly = join(archived, "rollout-2026-06-01T02-00-00-bbb.jsonl.zst");
+  writeFileSync(archivedOnly, zstdCompressSync(Buffer.from("x\n")));
+  writeFileSync(join(live, "notes.txt"), "not a rollout");
+
+  const walked = walkCodexSessions([live, archived], Date.parse("2026-06-01T00:00:00Z"));
+  expect(walked.map((f) => basename(f.path))).toEqual(
+    [stale, kept, twin, archivedOnly].map((p) => basename(p)),
+  );
+  expect(walked.map((f) => [f.candidate, f.resumable])).toEqual([
+    [false, true], // stale by name and mtime
+    [true, true], // the live copy wins
+    [false, false], // its compressed twin is demoted
+    [true, false], // an archive without a live twin is parsed
+  ]);
+  const kept0 = walked[1]!;
+  expect(kept0.size).toBe(statSync(kept).size);
+  expect(kept0.mtimeMs).toBe(statSync(kept).mtimeMs);
+});
+
+/** Run `body` with stdout/stderr captured (consola routes through one of them); the
+ *  consola level is raised so warnings are not self-silenced under the test runner. */
+async function captureAllWrites(body: () => Promise<void>): Promise<string> {
+  const written: string[] = [];
+  const savedLevel = consola.level;
+  const origOut = process.stdout.write.bind(process.stdout);
+  const origErr = process.stderr.write.bind(process.stderr);
+  const capture = (chunk: string | Uint8Array): boolean => {
+    written.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    return true;
+  };
+  process.stdout.write = capture;
+  process.stderr.write = capture;
+  try {
+    consola.level = 3;
+    await body();
+  } finally {
+    process.stdout.write = origOut;
+    process.stderr.write = origErr;
+    consola.level = savedLevel;
+  }
+  return written.join("");
+}
+
+// File symlinks need a privilege on Windows that CI runners do not always hold.
+test.skipIf(Deno.build.os === "windows")(
+  "walkCodexSessions warns about a rollout it cannot stat and leaves it out",
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+    const root = join(dir, "sessions");
+    const kept = writeRollout(root, "2026-06-01", "aaa", ["x"]);
+    const dangling = join(root, "rollout-2026-06-01T02-00-00-bbb.jsonl");
+    symlinkSync(join(dir, "gone.jsonl"), dangling, "file");
+
+    let statError = "";
+    try {
+      statSync(dangling);
+    } catch (e) {
+      statError = errMessage(e);
+    }
+
+    let walked: WalkedFile[] = [];
+    const output = await captureAllWrites(async () => {
+      walked = walkCodexSessions([root], undefined);
+    });
+    expect(walked.map((f) => f.path)).toEqual([kept]);
+    expect(output).toContain(`could not read ${dangling} (${statError}).`);
+  },
+);
+
+test("readCodexSessions counts a token_count re-emitted within one file once", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const root = join(dir, "sessions");
+  const turn = tokenCount("2026-06-01T10:00:05.000Z", usage(100, 0, 10), usage(100, 0, 10));
+  writeRollout(root, "2026-06-01", "aaa", [
+    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
+    turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
+    turn,
+    // A resume re-emits the last count with a fresh line timestamp: same info.
+    turn.replace("2026-06-01T10:00:05.000Z", "2026-06-01T11:00:05.000Z"),
+    tokenCount("2026-06-01T11:00:09.000Z", usage(300, 0, 30), usage(200, 0, 20)),
+  ]);
+
+  const byProvider = await readCodexSessions([root]);
+  expect(byProvider.get("copilot-env")?.byModel.get("gpt-5.6")).toEqual({
+    input: 300,
+    output: 30,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 2,
+  });
+});
+
+test("readCodexSessions keeps a fork's own early turn when its parent WAS scanned", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const root = join(dir, "sessions");
+  writeRollout(root, "2026-06-01", "aaa", [
+    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
+    turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
+    tokenCount("2026-06-01T10:00:05.000Z", usage(100, 0, 10), usage(100, 0, 10)),
+  ]);
+  writeRollout(root, "2026-06-01", "bbb", [
+    sessionMeta("2026-06-01T12:00:00.000Z", "bbb", { provider: "copilot-env", forkedFrom: "aaa" }),
+    turnContext("2026-06-01T12:00:00.000Z", "gpt-5.6"),
+    // The copied prefix: identical info, dropped through the parent's hashes.
+    tokenCount("2026-06-01T12:00:00.000Z", usage(100, 0, 10), usage(100, 0, 10)),
+    // A NEW turn inside the batch window: with the parent scanned, the
+    // timestamp fallback must stay off and this counts.
+    tokenCount("2026-06-01T12:00:01.000Z", usage(150, 0, 15), usage(50, 0, 5)),
+  ]);
+
+  const byProvider = await readCodexSessions([root]);
+  expect(byProvider.get("copilot-env")?.byModel.get("gpt-5.6")).toEqual({
+    input: 150,
+    output: 15,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 2,
+  });
+});
+
+test("readCodexSessions treats a parent without any counts as unscanned for the fallback", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const root = join(dir, "sessions");
+  writeRollout(root, "2026-06-01", "aaa", [
+    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
+    turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
+  ]);
+  writeRollout(root, "2026-06-01", "bbb", [
+    sessionMeta("2026-06-01T12:00:00.000Z", "bbb", { provider: "copilot-env", forkedFrom: "aaa" }),
+    turnContext("2026-06-01T12:00:00.000Z", "gpt-5.6"),
+    // No parent hash set was registered (nothing to register), so the
+    // batch-window fallback applies: inside the window drops, outside counts.
+    tokenCount("2026-06-01T12:00:01.000Z", usage(100, 0, 10), usage(100, 0, 10)),
+    tokenCount("2026-06-01T12:00:05.000Z", usage(300, 0, 30), usage(200, 0, 20)),
+  ]);
+
+  const byProvider = await readCodexSessions([root]);
+  expect(byProvider.get("copilot-env")?.byModel.get("gpt-5.6")).toEqual({
+    input: 200,
+    output: 20,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 1,
+  });
+});
+
+test("readCodexSessions under a NaN cutoff walks every file and counts nothing, as before", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const root = join(dir, "sessions");
+  const old = writeRollout(root, "2026-01-01", "old", [
+    sessionMeta("2026-01-01T10:00:00.000Z", "old", { provider: "copilot-env" }),
+    turnContext("2026-01-01T10:00:01.000Z", "gpt-5.6"),
+    tokenCount("2026-01-01T10:00:05.000Z", usage(10, 0, 1), usage(10, 0, 1)),
+  ]);
+  const oldMs = Date.parse("2026-01-01T02:00:00Z") / 1000;
+  utimesSync(old, oldMs, oldMs);
+
+  // A NaN cutoff fails every comparison: no file is skipped, no event passes.
+  expect(walkCodexSessions([root], Number.NaN).map((f) => f.candidate)).toEqual([true]);
+  const byProvider = await readCodexSessions([root], Number.NaN);
+  expect(byProvider.size).toBe(0);
+});
+
+/** A reconcile that parses every candidate whole and hands the records back REVERSED. */
+const reversingReconcile: Reconcile = (_source, walked, parseWhole) => {
+  const records = walked
+    .filter((f) => f.candidate)
+    .map((f) => ({ path: f.path, contribution: parseWhole(f).contribution }));
+  return { records: records.reverse(), stats: emptyIndexStats() };
+};
+
+test("readCodexSessions folds in walk order whatever order the reconcile returns", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const root = join(dir, "sessions");
+  writeRollout(root, "2026-06-01", "aaa", [
+    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
+    turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
+    tokenCount("2026-06-01T10:00:05.000Z", usage(100, 0, 10), usage(100, 0, 10)),
+  ]);
+  // The copy lands outside the batch window, so only the parent's hashes (which
+  // exist only if the parent was folded FIRST) can identify it.
+  writeRollout(root, "2026-06-01", "bbb", [
+    sessionMeta("2026-06-01T12:00:00.000Z", "bbb", { provider: "copilot-env", forkedFrom: "aaa" }),
+    turnContext("2026-06-01T12:00:00.000Z", "gpt-5.6"),
+    tokenCount("2026-06-01T12:00:09.000Z", usage(100, 0, 10), usage(100, 0, 10)),
+  ]);
+
+  const direct = await readCodexSessions([root]);
+  const viaReconcile = await readCodexSessions([root], undefined, undefined, reversingReconcile);
+  expect(viaReconcile.get("copilot-env")?.byModel.get("gpt-5.6")?.events).toBe(1);
+  expect(viaReconcile).toEqual(direct);
+});
+
+test("readCodexSessions counts a root named twice once, with and without a reconcile", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const root = join(dir, "sessions");
+  writeRollout(root, "2026-06-01", "aaa", [
+    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
+    turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
+    tokenCount("2026-06-01T10:00:05.000Z", usage(100, 0, 10), usage(100, 0, 10)),
+  ]);
+
+  expect(walkCodexSessions([root, root], undefined).length).toBe(1);
+  const once = await readCodexSessions([root]);
+  expect(once.get("copilot-env")?.byModel.get("gpt-5.6")?.events).toBe(1);
+  expect(await readCodexSessions([root, root])).toEqual(once);
+  expect(await readCodexSessions([root, root], undefined, undefined, reversingReconcile)).toEqual(
+    once,
+  );
+});
+
+test("parseEveryCandidate parses candidates only, and a failing one is warned about and counted", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const root = join(dir, "archived_sessions");
+  mkdirSync(root, { recursive: true });
+  const good = join(root, "rollout-2026-06-01T01-00-00-aaa.jsonl.zst");
+  writeFileSync(good, zstdCompressSync(Buffer.from("x\n")));
+  const corrupt = join(root, "rollout-2026-06-01T02-00-00-bbb.jsonl.zst");
+  writeFileSync(corrupt, "not zstd at all");
+  const walked = walkCodexSessions([root], undefined);
+  walked.push({ ...walked[0]!, path: join(root, "never-parsed.jsonl"), candidate: false });
+
+  let result: ReturnType<Reconcile> | undefined;
+  const output = await captureAllWrites(async () => {
+    result = parseEveryCandidate("codex", walked, parseCodexWhole, parseCodexTail);
+  });
+  expect(result?.records.map((r) => r.path)).toEqual([good]);
+  expect(result?.stats).toEqual({
+    ...emptyIndexStats(),
+    filesSeen: 3,
+    filesParsedWhole: 1,
+    filesFailed: 1,
+    bytesRead: statSync(good).size,
+  });
+  expect(output).toContain(`could not read ${corrupt} (`);
+});
+
+test("readCodexSessions reads a zstd archive that starts with a byte order mark, as before", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const root = join(dir, "archived_sessions");
+  mkdirSync(root, { recursive: true });
+  const lines = [
+    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
+    turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
+    tokenCount("2026-06-01T10:00:05.000Z", usage(100, 0, 10), usage(100, 0, 10)),
+  ];
+  const text = Buffer.from(`\ufeff${lines.join("\n")}\n`);
+  writeFileSync(join(root, "rollout-2026-06-01T01-00-00-aaa.jsonl.zst"), zstdCompressSync(text));
+  // The uncompressed reader never stripped it: its first line stays unparseable
+  // and the session lands on the default provider. Both behaviours are the old ones.
+  const live = join(dir, "sessions");
+  mkdirSync(live, { recursive: true });
+  writeFileSync(join(live, "rollout-2026-06-01T01-00-00-bbb.jsonl"), text);
+
+  const archived = await readCodexSessions([root]);
+  expect([...archived.keys()]).toEqual(["copilot-env"]);
+  expect(archived.get("copilot-env")?.byModel.get("gpt-5.6")?.events).toBe(1);
+  const plain = await readCodexSessions([live]);
+  expect([...plain.keys()]).toEqual(["default"]);
+  expect(plain.get("default")?.byModel.get("gpt-5.6")?.events).toBe(1);
+});
+
+test("parseCodexWhole honours session_meta until an id is known, then ignores later ones", () => {
+  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const path = writeRollout(join(dir, "s"), "2026-06-01", "aaa", [
+    // No id: the gate stays open, so the NEXT meta line still applies.
+    rolloutLine("2026-06-01T10:00:00.000Z", "session_meta", { "model_provider": "first" }),
+    tokenCount("2026-06-01T10:00:01.000Z", usage(1, 0, 1), usage(1, 0, 1)),
+    sessionMeta("2026-06-01T10:00:02.000Z", "aaa", { provider: "second", forkedFrom: "p" }),
+    tokenCount("2026-06-01T10:00:03.000Z", usage(2, 0, 2), usage(1, 0, 1)),
+    // Id known: a third meta changes nothing.
+    sessionMeta("2026-06-01T10:00:04.000Z", "zzz", { provider: "third" }),
+    tokenCount("2026-06-01T10:00:05.000Z", usage(3, 0, 3), usage(1, 0, 1)),
+  ]);
+  const { contribution: { state, events } } = parseCodexWhole(walkedFile(path));
+  expect(events.map((e) => e[1])).toEqual(["first", "second", "second"]);
+  expect(state.provider).toBe("second");
+  expect(state.sessionIdHash).toBe(dedupKey("aaa"));
+  expect(state.forkedFromIdHash).toBe(dedupKey("p"));
+  expect(state.metaTsMs).toBe(Date.parse("2026-06-01T10:00:02.000Z"));
 });

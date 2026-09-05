@@ -271,8 +271,7 @@ test("parseCodexWhole honours session_meta until an id is known, then ignores la
   expect(events.map((e) => e[1])).toEqual(["first", "second", "second"]);
   expect(state.provider).toBe("second");
   expect(state.sessionIdHash).toBe(dedupKey("aaa"));
-  expect(state.forkedFromIdHash).toBe(dedupKey("p"));
-  expect(state.forkKnownAfter).toBe(1);
+  expect(state.fork).toEqual({ parentHash: dedupKey("p"), knownAfter: 1 });
   expect(state.metaTsMs).toBe(Date.parse("2026-06-01T10:00:02.000Z"));
 
   // The fold applies the fork rules from the event the fork was learned before: the

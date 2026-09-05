@@ -49,7 +49,7 @@ import { runCost } from "./usage/cost.ts";
 import { bold, cyan, gray } from "./utils/ansi.ts";
 import { assertNever } from "./utils/assert.ts";
 import { errMessage } from "./utils/error.ts";
-import { disableConsolaTimestamps } from "./utils/logger.ts";
+import { disableConsolaTimestamps, redirectConsolaToStderr } from "./utils/logger.ts";
 import { packageVersion } from "./utils/version.ts";
 
 // Drop consola's right-aligned wall-clock timestamp from all command output.
@@ -556,8 +556,11 @@ program
       "each is robust to a few outlier days). Idle days are never counted in either.",
     ].join("\n"),
   )
-  .action((opts: Opts) =>
-    runCost({
+  .action((opts: Opts) => {
+    // The report (and the --json payload) owns stdout; every consola line of the run,
+    // from any module the readers reach, is narration and rides stderr.
+    redirectConsolaToStderr();
+    return runCost({
       days: opts.days as string | undefined,
       json: Boolean(opts.json),
       perDay: Boolean(opts.perDay),
@@ -565,8 +568,8 @@ program
       sources: Boolean(opts.sources),
       // Commander stores a `--no-<name>` flag as `<name>: false`.
       noIndex: opts.index === false,
-    })
-  );
+    });
+  });
 
 program
   .command("codex")

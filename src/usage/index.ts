@@ -127,13 +127,13 @@ const CODEX_EVENT_ITEMS = [
   FINITE_SCHEMA,
   FINITE_SCHEMA,
 ] as const;
+const CODEX_FORK_ENTRIES = { parentHash: HASH_SCHEMA, knownAfter: COUNT_SCHEMA } as const;
 const CODEX_STATE_ENTRIES = {
   sessionIdHash: v.optional(HASH_SCHEMA),
   provider: v.string(),
   model: v.string(),
   metaTsMs: v.optional(FINITE_SCHEMA),
-  forkedFromIdHash: v.optional(HASH_SCHEMA),
-  forkKnownAfter: v.optional(COUNT_SCHEMA),
+  fork: v.optional(v.object(CODEX_FORK_ENTRIES)),
 } as const;
 const CLAUDE_OCCURRENCE_ITEMS = [
   v.nullable(HASH_SCHEMA),
@@ -186,6 +186,7 @@ function hasOnlyDeclaredKeys(
 
 const CODEX_KEYS: ReadonlySet<string> = new Set(["v", "state", "events"]);
 const CODEX_STATE_KEYS: ReadonlySet<string> = new Set(Object.keys(CODEX_STATE_ENTRIES));
+const CODEX_FORK_KEYS: ReadonlySet<string> = new Set(Object.keys(CODEX_FORK_ENTRIES));
 const CLAUDE_KEYS: ReadonlySet<string> = new Set(["v", "occurrences"]);
 const TUPLE_LENGTH = 7;
 
@@ -196,9 +197,12 @@ function readStoredCodex(doc: unknown): CodexContribution | null {
   if (!hasOnlyDeclaredKeys(state, CODEX_STATE_KEYS)) return null;
   if (typeof state.provider !== "string" || typeof state.model !== "string") return null;
   if (state.sessionIdHash !== undefined && !isHash(state.sessionIdHash)) return null;
-  if (state.forkedFromIdHash !== undefined && !isHash(state.forkedFromIdHash)) return null;
   if (state.metaTsMs !== undefined && !isFinite(state.metaTsMs)) return null;
-  if (state.forkKnownAfter !== undefined && !isCount(state.forkKnownAfter)) return null;
+  if (state.fork !== undefined) {
+    const fork = state.fork;
+    if (!hasOnlyDeclaredKeys(fork, CODEX_FORK_KEYS)) return null;
+    if (!isHash(fork.parentHash) || !isCount(fork.knownAfter)) return null;
+  }
   const events = doc.events;
   if (!Array.isArray(events)) return null;
   for (const event of events) {

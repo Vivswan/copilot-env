@@ -61,7 +61,7 @@ import {
 const SYNTHETIC_MODEL = "<synthetic>";
 
 /** The line kind the parser reads; every other line is never decoded. */
-export const CLAUDE_NEEDLES: readonly string[] = ['"type":"assistant"'];
+const CLAUDE_NEEDLES: readonly string[] = ['"type":"assistant"'];
 
 /** Headroom over the observed layout:
  *  projects/<slug>/<session>/subagents/workflows/<wf>/agent-<id>.jsonl */

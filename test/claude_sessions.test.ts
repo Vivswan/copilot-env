@@ -39,14 +39,17 @@ function tempDir(): string {
   return dir;
 }
 
-// The single-read fixtures live in the shared catalog, which the index equivalence
-// tests read three ways with the same checks.
-for (const scenario of CLAUDE_SCENARIOS) {
-  test(`readClaudeSessions ${scenario.name}`, async () => {
-    const { roots, sinceMs, timeZone } = scenario.build(tempDir());
-    scenario.check(await readClaudeSessions(roots, sinceMs, timeZone));
-  });
-}
+// The reader fixtures live in the shared catalog, which the index equivalence tests
+// read three ways with the same checks; one default-reconcile read here covers the
+// reader's own entry point.
+test("readClaudeSessions reads a catalog scenario without a reconcile", async () => {
+  const scenario = scenarioNamed(
+    CLAUDE_SCENARIOS,
+    "maps the four usage buckets and buckets by local day",
+  );
+  const { roots, sinceMs, timeZone } = scenario.build(tempDir());
+  scenario.check(await readClaudeSessions(roots, sinceMs, timeZone));
+});
 
 test("readClaudeSessions counts an unterminated final line once its LF lands", async () => {
   const scenario = scenarioNamed(CLAUDE_SCENARIOS, "does not count an unterminated final line");

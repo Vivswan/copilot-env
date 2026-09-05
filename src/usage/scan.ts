@@ -7,7 +7,7 @@ import { type ScanHit, type ScanResult, TAIL_PROBE_BYTES } from "./contribution.
 
 /** Chunk size for the shared read buffer. Single rollouts of several hundred
  *  MB exist, so a file is never read into one string. */
-export const DEFAULT_SCAN_BUFFER_BYTES = 64 * 1024 * 1024;
+const DEFAULT_SCAN_BUFFER_BYTES = 64 * 1024 * 1024;
 
 const CR = 0x0d;
 

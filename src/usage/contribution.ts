@@ -1,8 +1,9 @@
 // The shared contracts of the usage index: what one session file CONTRIBUTES
 // to a cost report, and the shapes the scanner, the readers, and the index
-// exchange. Everything here is pure types plus one hash helper, so every
-// module (and every test) imports the same names and nothing here pulls in
-// SQLite, the scanner, or a reader.
+// exchange. Everything here is types plus a few small helpers (the hash, the
+// walk-order re-sequencing, the no-index reconcile), so every module (and
+// every test) imports the same names and nothing here pulls in SQLite, the
+// scanner, or a reader.
 //
 // Why contributions and not results: the index must never cache a report. It
 // stores, per file, exactly the facts a fresh fold needs to reproduce today's
@@ -11,6 +12,8 @@
 // hashed), no paths inside the contribution itself. The report is folded fresh
 // on every run from the contributions of the files that exist right now.
 import { createHash } from "node:crypto";
+import { consola } from "consola";
+import { errMessage } from "../utils/error.ts";
 
 /** The two session-log sources the index tracks. */
 export type UsageSource = "codex" | "claude";
@@ -239,6 +242,24 @@ export interface FileRecord<C extends Contribution> {
   contribution: C;
 }
 
+/** `records` re-sequenced into `walked` order (records for unwalked paths are
+ *  dropped). The fold order is the reader's guarantee, so a reader applies this
+ *  to whatever a Reconcile hands back rather than trusting its ordering. */
+export function inWalkOrder<C extends Contribution>(
+  walked: readonly WalkedFile[],
+  records: readonly FileRecord<C>[],
+): FileRecord<C>[] {
+  const byPath = new Map(records.map((r) => [r.path, r]));
+  const ordered: FileRecord<C>[] = [];
+  for (const file of walked) {
+    const found = byPath.get(file.path);
+    if (found !== undefined) {
+      ordered.push(found);
+    }
+  }
+  return ordered;
+}
+
 export interface ReconcileResult<C extends Contribution> {
   /** Records for every CANDIDATE file that exists right now and parsed, in
    *  `walked` order. */
@@ -270,3 +291,26 @@ export type Reconcile = <S extends UsageSource>(
   parseWhole: ParseWhole<ContributionOf<S>>,
   parseTail: ParseTail<ContributionOf<S>>,
 ) => ReconcileResult<ContributionOf<S>>;
+
+/** The no-index Reconcile: every candidate parsed whole, nothing stored; a failed
+ *  parse is warned about and skipped (a throw reports no bytes). */
+export const parseEveryCandidate: Reconcile = (_source, walked, parseWhole) => {
+  const stats = emptyIndexStats();
+  stats.filesSeen = walked.length;
+  const records: FileRecord<ContributionOf<typeof _source>>[] = [];
+  for (const file of walked) {
+    if (!file.candidate) {
+      continue;
+    }
+    try {
+      const parsed = parseWhole(file);
+      stats.filesParsedWhole++;
+      stats.bytesRead += parsed.bytesRead;
+      records.push({ path: file.path, contribution: parsed.contribution });
+    } catch (e) {
+      stats.filesFailed++;
+      consola.warn(`could not read ${file.path} (${errMessage(e)}).`);
+    }
+  }
+  return { records, stats };
+};

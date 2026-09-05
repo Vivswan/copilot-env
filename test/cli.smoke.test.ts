@@ -1068,10 +1068,9 @@ test("cli.ts cost prices at the stored pricing-url when the flag is omitted and 
   expect(totalUsdOf("--pricing-url", flagUrl)).toBe(0.0027);
 });
 
-// The shipped CLI reaches fixed hosts only (deno.json's `cli` permission set, embedded in the
-// compiled binary), so a pricing-url elsewhere is refused by the runtime. Only a child under
-// that same set can observe it; the test tree runs unpinned. Fixed text names the policy and
-// the key, never the URL.
+// The shipped CLI reaches fixed hosts only (deno.json's `cli` permission set), so a pricing-url
+// elsewhere is refused by the runtime; only a child under that set can observe it (the test
+// tree runs unpinned). Fixed text names the policy and the key, never the URL.
 test("cli.ts cost under the CLI permission set: a pricing-url on a host outside the policy warns and prices nothing", () => {
   const env = isolatedEnv();
   const projects = join(env.CLAUDE_CONFIG_DIR ?? "", "projects", "-Users-x-proj");

@@ -1,7 +1,6 @@
-// The metrics job's one smoke: the base-vs-head decision over two payloads. Payloads that
-// agree once the run-only `runtime` key is dropped report a match; a payload whose cost
-// differs reports DIFFERS with the differing run's diff, once a base re-run has confirmed
-// the base itself did not move.
+// The metrics job's one smoke, the base-vs-head decision: payloads equal once the run-only
+// `runtime` key is dropped and keys are sorted at every level report a match; a changed
+// cost reports DIFFERS with its diff, once a base re-run confirmed the base did not move.
 import { classifyPayloads, comparable } from "../.github/scripts/cost-metrics.ts";
 import { expect, test } from "./helpers/testing.ts";
 
@@ -14,7 +13,17 @@ const BASE = {
   },
   runtime: { indexed: false, index: { bytesRead: 9_001 } },
 };
-const HEAD_WARM = { ...BASE, runtime: { indexed: true, index: { bytesRead: 0 } } };
+// The same values as BASE with every object's keys in the opposite insertion order at
+// every level, and another runtime: only recursive key sorting makes the two texts equal.
+const HEAD_WARM = {
+  runtime: { index: { bytesRead: 0 }, indexed: true },
+  claudeSessions: {
+    usageByModel: { "claude-opus-4.8": { input: 10 } },
+    totalUsd: 1.5,
+    activeDays: 2,
+  },
+  dbCount: 0,
+};
 const HEAD_CHANGED = {
   ...BASE,
   claudeSessions: { ...BASE.claudeSessions, totalUsd: 1.6 },
@@ -22,6 +31,9 @@ const HEAD_CHANGED = {
 
 test("two payloads match once runtime is dropped; a changed cost differs with its diff", async () => {
   const base = comparable(BASE);
+  expect(JSON.stringify(HEAD_WARM)).not.toBe(
+    JSON.stringify({ ...BASE, runtime: HEAD_WARM.runtime }),
+  );
   const noRecheck = () => Promise.reject(new Error("recheck must not run"));
   const noDiff = () => Promise.reject(new Error("diff must not run"));
 

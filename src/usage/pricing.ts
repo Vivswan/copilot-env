@@ -93,10 +93,9 @@ export async function fetchPricing(
       signal: signal === undefined ? timeout : AbortSignal.any([timeout, signal]),
     });
   } catch (e) {
-    // A cancel or timeout is what the caller asked for and ranks first. Otherwise: the
-    // shipped CLI may reach only fixed hosts (deno.json's cli permission set), and a
-    // pricing URL on another host is refused by the runtime before any request leaves;
-    // that must read as the policy it is, never as a network failure.
+    // A cancel or timeout ranks first. Then a host outside the CLI's pinned permission set
+    // (deno.json `cli`): the runtime refuses it before any request leaves, and that must
+    // read as the policy it is, never as a network failure.
     const aborted = abortError(timeout, signal);
     if (aborted !== null) throw aborted;
     if (e instanceof Deno.errors.NotCapable) throw new Error(HOST_NOT_PERMITTED);

@@ -1959,10 +1959,9 @@ export async function generateUsageTree(opts: GenerateOptions): Promise<Generate
   if (!ZONED_INSTANT.test(end) || !Number.isFinite(endMs)) {
     throw new Error(`end must be an RFC 3339 instant with a zone (Z or offset), got ${opts.end}`);
   }
-  // Only an absent or EMPTY real directory: old logs beside the new ones would reach the
-  // readers while `expected` and the summary describe the new files alone, and a symlink
-  // would put the tree somewhere else. Only ENOENT means absent; any other error propagates.
-  // Normalized first: `link/` or `link/.` would make lstat follow the link.
+  // Only an absent or EMPTY real directory (normalized first: `link/` would make lstat follow
+  // the link): old logs beside the new ones would reach the readers while the ledger describes
+  // the new files alone, and a symlink would put the tree elsewhere. Only ENOENT means absent.
   const root = path.resolve(opts.root);
   let claim: "absent" | "empty" | "occupied";
   try {

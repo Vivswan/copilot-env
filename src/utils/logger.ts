@@ -21,6 +21,20 @@ export function redirectConsolaToStderr(): void {
   consola.options.stdout = process.stderr;
 }
 
+/** Run `fn` with the shared global `consola` routed to stderr, restoring the previous
+ *  routing after: for a scope whose narration must not land on the command's stdout
+ *  (the self-update preflight inside `agent start`, where library code such as the
+ *  installer's shim writer logs through the global consola). */
+export async function withConsolaOnStderr<T>(fn: () => Promise<T>): Promise<T> {
+  const previous = consola.options.stdout;
+  consola.options.stdout = process.stderr;
+  try {
+    return await fn();
+  } finally {
+    consola.options.stdout = previous;
+  }
+}
+
 /** A consola that writes to stderr (keeping stdout machine-readable), no timestamp. */
 export function createStderrLogger(): ConsolaInstance {
   return createConsola({

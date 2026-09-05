@@ -1,7 +1,7 @@
-// The once-per-day autoupdate routine, gated on the `auto-update` config key; the
-// launchers run it before `agent start` only. Stderr-only output (the `agent env`
-// stdout contract). Root .env first, as cli.ts does: COPILOT_API_HOME may live there.
-import "../utils/dotenv.ts";
+// The once-per-day autoupdate routine, gated on the `auto-update` config key. `agent start`
+// (src/commands/start.ts) runs it as the last step of a live launch, so an installed binary
+// self-updates through the one command path (a source checkout runs the check and skips the
+// apply). Stderr-only output: `start`'s stdout and exit code are never touched here.
 import { resolveTarget } from "../install/resolve-release.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -25,7 +25,10 @@ export interface PreflightOptions {
 }
 
 /** Run the autoupdate check (and apply) if the `auto-update` key is on and a check
- *  is due. Non-throwing. */
+ *  is due. A failed check or update is recorded and logged, never thrown; the caller
+ *  keeps an error boundary for the I/O around the gate itself (config, state, lock). An
+ *  applied update flips the install's live version, which later starts run; the calling
+ *  process keeps running the image it loaded. */
 export async function runPreflight(opts: PreflightOptions): Promise<void> {
   const state = opts.state ?? new AutoupdateState();
   if (!new CopilotEnvConfig().autoUpdateEnabled()) return;
@@ -38,6 +41,10 @@ export async function runPreflight(opts: PreflightOptions): Promise<void> {
       );
       return;
     }
+    // Re-read under the lock: a concurrent run may have completed the check (and the
+    // apply) between the unlocked read above and this acquire, and its record is ours
+    // too -- rechecking here is what keeps two starts from applying the same release twice.
+    if (!isDue(state.read().lastCheckMs, opts.nowMs)) return;
     await checkAndApply(state, effectiveUpdateCooldownDays(), opts.nowMs, outcome);
   });
 }
@@ -90,16 +97,9 @@ async function checkAndApply(
     );
     await applyUpdate(current, target, lock, { logger, childStdoutToStderr: true, provenance });
     state.set({ lastCheckMs: nowMs, lastResult: `updated ${target.tag}` });
+    logger.info(`copilot-env updated to ${target.tag}; active on the next \`agent start\``);
   } catch (e) {
     state.set({ lastCheckMs: nowMs, lastResult: `error: ${errMessage(e)}` });
     logger.warn(`autoupdate: update failed (continuing): ${errMessage(e)}`);
   }
-}
-
-// Runnable: `deno run -P=cli src/autoupdate/preflight.ts` from the launchers. Never throws out
-// (a failed self-update must not block the user's command).
-if (import.meta.main) {
-  runPreflight({ nowMs: Date.now() }).catch((e) => {
-    logger.warn(`autoupdate preflight error: ${errMessage(e)}`);
-  });
 }

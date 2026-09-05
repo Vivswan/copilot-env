@@ -4,6 +4,7 @@
 // next-steps rendering lives here.
 import * as fs from "node:fs";
 import { consola } from "consola";
+import { type PreflightOptions, runPreflight } from "../autoupdate/preflight.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -15,6 +16,7 @@ import {
   ensureProxyFloor,
   entryProxyVersion,
   type FloorCheckedEntry,
+  type HeldStartLock,
   planCleanup,
   resolveLaunchCredential,
   resolveStartPort,
@@ -29,6 +31,8 @@ import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { PROXY_PACKAGE_NAME } from "../copilot_api/version.ts";
 import { idleTimeoutMs } from "../scripts/idle_watchdog.ts";
 import { assertNever } from "../utils/assert.ts";
+import { errMessage } from "../utils/error.ts";
+import { createStderrLogger, withConsolaOnStderr } from "../utils/logger.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { formatDuration } from "../utils/time.ts";
 import { ensureAuthenticated } from "./auth.ts";
@@ -323,8 +327,43 @@ async function reportCheckProbe(profile: Profile): Promise<void> {
   process.exitCode = status.up ? 0 : 1;
 }
 
+/** The self-update preflight a live `start` ends with (src/autoupdate/preflight.ts). The
+ *  parameter exists so a test can hand runPreflight hermetic state and lock paths. */
+export type PreflightRunner = (opts: PreflightOptions) => Promise<void>;
+
+/**
+ * The opt-in self-update, the LAST step of every live `start`: after the launch outcome
+ * (spawned, left running, or failed) and still INSIDE the start lock. The preflight alone
+ * decides (the auto-update key, the daily cadence, its own update lock, the release
+ * cooldown, the source-checkout skip) and may flip the install's live version -- which
+ * a later start runs. Both orderings are the point: PROJECT_ROOT names the `current` link
+ * (src/utils/root.ts), so a daemon spawned after a flip loads the new release's preloads
+ * under the spawning binary's launch logic. Spawning first keeps this turn's daemon on one
+ * consistent release; holding the start lock through the flip means no other start spawns
+ * while `current` is mid-flip (it waits -- withStartLock waits unbounded, with a notice --
+ * so once a day a second start may wait out one release download). A waiter that had
+ * already loaded the OLD binary then spawns through the NEW `current`: that one-launch skew
+ * is accepted with the link-named root. Best-effort by contract: a failed check or update
+ * is a stderr warning, never a failed `start`, and
+ * nothing it prints lands on stdout or touches the exit code -- the shared consola is
+ * routed to stderr for exactly this scope, so library narration reached from the update
+ * (the installer's shim writes) cannot leak.
+ */
+async function selfUpdatePreflight(preflight: PreflightRunner): Promise<void> {
+  await withConsolaOnStderr(async () => {
+    try {
+      await preflight({ nowMs: Date.now() });
+    } catch (e) {
+      createStderrLogger().warn(`autoupdate preflight error: ${errMessage(e)}`);
+    }
+  });
+}
+
 /** `start`: launch copilot-api detached, wait for readiness, sync aliases. */
-export async function runStart(action: StartAction): Promise<void> {
+export async function runStart(
+  action: StartAction,
+  preflight: PreflightRunner = runPreflight,
+): Promise<void> {
   const profile = action.profile;
   if (action.kind === "check") {
     await reportCheckProbe(profile);
@@ -358,57 +397,75 @@ export async function runStart(action: StartAction): Promise<void> {
   // Every human-facing follow-up command must address THIS daemon.
   const profileFlag = daemonPolicy(profile).flagSuffix;
   await withStartLock(async (lock) => {
-    const ctx = launchContext();
-    const paths = ctx.paths;
-    fs.mkdirSync(paths.runDir, { recursive: true });
-    // The float/floor gate runs INSIDE the start lock: it rewrites the shared daemon
-    // config and re-warms the float's cache, so two concurrent starts must not run it
-    // over each other. Its console narration still reaches the user unchanged.
-    const entry = await ensureProxyFloor(lock);
-
-    if (isIdempotentNoOp(action, ctx.envConfig)) {
-      const status = await proxyStatus(profile);
-      if (status.up) {
-        reportStartNoOp(ctx.state, status.port, profileFlag);
-        return;
-      }
+    try {
+      await launchUnderLock(lock, action, profile, profileFlag, launchContext);
+    } finally {
+      // After the outcome, before the start lock releases, on every exit path: a failed
+      // launch still gets its daily check, and its error passes through.
+      await selfUpdatePreflight(preflight);
     }
-
-    fs.mkdirSync(paths.home, { recursive: true });
-    applyDefaultConfig(ctx.paths, ctx.envConfig);
-    for (const warning of unreadProjectedKeyWarnings(ctx.envConfig)) {
-      consola.warn(warning);
-    }
-    await cleanupExistingProxies(lock, profile, ctx.state);
-
-    const port = await resolveStartPort(action.port, true, profile, true, ctx.envConfig);
-    const credential = await resolveLaunchCredential(profile, ctx.envConfig, {
-      interactiveLogin: ensureAuthenticated,
-    });
-    const spawned = spawnConfiguredDaemon({
-      port,
-      logFile: ctx.logFile,
-      profile,
-      paths,
-      credential,
-      entry,
-      config: ctx.envConfig,
-    });
-    const live = await awaitReadiness({
-      pid: spawned.pid,
-      port,
-      logFile: ctx.logFile,
-      profile,
-      pinnedPort: action.port,
-      state: ctx.state,
-      relaunch: spawned.relaunch,
-      config: ctx.envConfig,
-    });
-
-    if (spawned.idleWatchdog) {
-      reportManagedLifecycle(ctx.state);
-    }
-    await syncAliasesAfterStart(ctx.config, live.port);
-    await reportStartSummary(profile, live, paths, ctx.logFile, entry);
   });
+}
+
+/** The live launch under the start lock: the float/floor gate, the managed no-op, the
+ *  cleanup, the spawn, readiness, and the report. */
+async function launchUnderLock(
+  lock: HeldStartLock,
+  action: { force: boolean; port?: number },
+  profile: Profile,
+  profileFlag: string,
+  launchContext: () => LaunchContext,
+): Promise<void> {
+  const ctx = launchContext();
+  const paths = ctx.paths;
+  fs.mkdirSync(paths.runDir, { recursive: true });
+  // The float/floor gate runs INSIDE the start lock: it rewrites the shared daemon
+  // config and re-warms the float's cache, so two concurrent starts must not run it
+  // over each other. Its console narration still reaches the user unchanged.
+  const entry = await ensureProxyFloor(lock);
+
+  if (isIdempotentNoOp(action, ctx.envConfig)) {
+    const status = await proxyStatus(profile);
+    if (status.up) {
+      reportStartNoOp(ctx.state, status.port, profileFlag);
+      return;
+    }
+  }
+
+  fs.mkdirSync(paths.home, { recursive: true });
+  applyDefaultConfig(ctx.paths, ctx.envConfig);
+  for (const warning of unreadProjectedKeyWarnings(ctx.envConfig)) {
+    consola.warn(warning);
+  }
+  await cleanupExistingProxies(lock, profile, ctx.state);
+
+  const port = await resolveStartPort(action.port, true, profile, true, ctx.envConfig);
+  const credential = await resolveLaunchCredential(profile, ctx.envConfig, {
+    interactiveLogin: ensureAuthenticated,
+  });
+  const spawned = spawnConfiguredDaemon({
+    port,
+    logFile: ctx.logFile,
+    profile,
+    paths,
+    credential,
+    entry,
+    config: ctx.envConfig,
+  });
+  const live = await awaitReadiness({
+    pid: spawned.pid,
+    port,
+    logFile: ctx.logFile,
+    profile,
+    pinnedPort: action.port,
+    state: ctx.state,
+    relaunch: spawned.relaunch,
+    config: ctx.envConfig,
+  });
+
+  if (spawned.idleWatchdog) {
+    reportManagedLifecycle(ctx.state);
+  }
+  await syncAliasesAfterStart(ctx.config, live.port);
+  await reportStartSummary(profile, live, paths, ctx.logFile, entry);
 }

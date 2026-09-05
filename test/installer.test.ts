@@ -102,6 +102,26 @@ function versionedPlan(
 /** The version-dir name every full plan in this suite targets. */
 const VERSION_NAME = versionDirName(packageVersion());
 
+/** Capture BOTH process write streams (consola routes by level) while running `fn`. */
+function captureAllWrites(fn: () => void): string {
+  const stdout = process.stdout.write.bind(process.stdout);
+  const stderr = process.stderr.write.bind(process.stderr);
+  let out = "";
+  const capture = (chunk: string | Uint8Array): boolean => {
+    out += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    return true;
+  };
+  process.stdout.write = capture;
+  process.stderr.write = capture;
+  try {
+    fn();
+  } finally {
+    process.stdout.write = stdout;
+    process.stderr.write = stderr;
+  }
+  return out;
+}
+
 /** A stand-in compiled binary next to nothing in particular. */
 function writeFakeBinary(path: string, content = "#!/bin/sh\nexit 0\n"): string {
   mkdirSync(dirname(path), { recursive: true });
@@ -747,22 +767,33 @@ describe("adoptVersionedLayout (the 3.5.6 migration core)", () => {
 
     // A crashed earlier run: the flip landed, but the top shims were never
     // rewritten, flat debris reappeared, and the flat binary residue survived.
-    // The retry must converge all of it, not just re-sweep.
+    // The retry must converge all of it, not just re-sweep -- and name each
+    // shim it rewrites (nothing written silently); a converged re-run names none.
     writeFileSync(join(dest, INSTALL_MANIFEST_FILE), "{}");
     writeFileSync(join(dest, "bin", "agent"), "stale adjacent-dispatch shim");
+    writeFileSync(join(dest, "bin", "agent.ps1"), "stale adjacent-dispatch shim");
     writeFakeBinary(join(dest, "bin", installedBinaryName()), "FLAT-RESIDUE");
-    adoptVersionedLayout({
-      mode: { kind: "compiled", root: join(dest, CURRENT_LINK) },
-      sourceRoot: source,
-      binarySource: null,
-    });
+    const repair = () =>
+      adoptVersionedLayout({
+        mode: { kind: "compiled", root: join(dest, CURRENT_LINK) },
+        sourceRoot: source,
+        binarySource: null,
+      });
+    const output = captureAllWrites(repair);
 
     expect(existsSync(join(dest, INSTALL_MANIFEST_FILE))).toBe(false);
     expect(readFileSync(join(dest, "bin", "agent"), "utf8")).toBe(POSIX_CURRENT_SHIM);
+    expect(readFileSync(join(dest, "bin", "agent.ps1"), "utf8")).toBe(POWERSHELL_CURRENT_SHIM);
     if (process.platform !== "win32") {
       expect(existsSync(join(dest, "bin", installedBinaryName()))).toBe(false);
     }
     expect(readCurrentVersionName(dest)).toBe(VERSION_NAME);
+    for (const shim of ["agent", "agent.ps1"]) {
+      // Newline-anchored: the POSIX path is a prefix of the .ps1 line.
+      const line = `Wrote launcher shim ${join(dest, "bin", shim)}\n`;
+      expect(output.split(line).length - 1, line).toBe(1);
+    }
+    expect(captureAllWrites(repair)).not.toContain("Wrote launcher shim");
   });
 
   test("a dangling current link HALTS the repair instead of deleting the fallback", () => {

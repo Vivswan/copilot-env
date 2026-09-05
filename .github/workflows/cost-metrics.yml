@@ -1,0 +1,74 @@
+# Repo-owned. BEFORE/AFTER `agent cost` numbers on PRs that touch the usage path
+# (.github/scripts/cost-metrics.ts): one sticky PR comment, a failed job when the
+# head's cost JSON differs from the base's. Its own workflow rather than a
+# checks.yml job because jobs inside the all-green caller run with `contents: read`
+# and cannot write a PR comment.
+#
+# Two steps on purpose: the measurement runs the PR's own code (the fixtures script,
+# the cost CLI), so its process environment never carries the comment token; only
+# the comment step, which spawns nothing but gh, gets it.
+
+name: Cost metrics
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "deno.json"
+      - "deno.lock"
+      - ".dvmrc"
+      - "test/helpers/usage_fixtures.ts"
+      - "test/fixtures/usage/**"
+      - "scripts/usage_fixtures.ts"
+      - ".github/scripts/cost-metrics.ts"
+      - ".github/workflows/cost-metrics.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# One measurement per PR at a time; a superseded push's numbers are stale anyway.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  DENO_NO_UPDATE_CHECK: "1"
+
+jobs:
+  metrics:
+    name: base vs head
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # No persisted token: the measurement step runs the PR's own code, which could read
+      # it back out of .git/config. Full history so the base commit is already local.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version-file: .dvmrc
+          cache: true
+
+      - name: Install dependencies
+        run: deno ci
+
+      - name: Measure base vs head
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          deno run --allow-read --allow-write --allow-env --allow-run=git,deno
+          .github/scripts/cost-metrics.ts measure --out "$RUNNER_TEMP/cost-metrics"
+
+      - name: Upsert the PR comment and apply the verdict
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: >-
+          deno run --allow-read --allow-env --allow-run=gh
+          .github/scripts/cost-metrics.ts comment --in "$RUNNER_TEMP/cost-metrics"

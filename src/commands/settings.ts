@@ -129,7 +129,9 @@ function runExport(target: string | boolean, withCredentials: boolean): void {
   const text = serializeSettingsBundle(buildExportBundle({ withCredentials }));
   if (typeof target !== "string") {
     if (withCredentials) {
-      logger.warn("This bundle contains your REAL tokens - treat the output like a password.");
+      logger.warn(
+        "This bundle contains your REAL tokens (and any stored pricing-url) - treat the output like a password.",
+      );
     }
     process.stdout.write(text);
     return;

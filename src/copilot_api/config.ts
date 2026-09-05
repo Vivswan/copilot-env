@@ -186,35 +186,42 @@ export class CopilotApiConfig {
     }
   }
 
-  /** Load, apply ``mutate`` in place, save, and return the result. Serialized across processes
-   *  by a best-effort `<file>.lock` so concurrent read-modify-writes don't lost-update.
-   *  REFUSES on a store that could not be read OR parsed: this is a read-modify-WRITE, so
-   *  treating either as an empty document would persist the emptiness and wipe every key the
-   *  file holds. Same direction as codex/toml_io.ts's "refusing to overwrite it" -- an
-   *  unreadable or unparsed document is never clobbered, it is reported. */
+  /** The document a read-modify-write starts from (`{}` for an absent or empty file).
+   *  REFUSES on a store that could not be read OR parsed: treating either as an empty
+   *  document would persist the emptiness and wipe every key the file holds. Same
+   *  direction as codex/toml_io.ts's "refusing to overwrite it" -- an unreadable or
+   *  unparsed document is never clobbered, it is reported. Public so a caller about
+   *  to destroy its SOURCE can clear these read-side refusals for the destination first. */
+  loadForUpdate(): Record<string, unknown> {
+    const read = this.read();
+    if (read.kind === "unreadable") {
+      throw new Error(
+        `Could not read ${this.path}; refusing to overwrite it (writing now would discard everything it holds).`,
+      );
+    }
+    if (read.kind === "unparseable") {
+      // The same refusal as the unreadable arm, decided separately: a corrupt-but-
+      // readable file is NOT a reset candidate here, because (a) for config.json the
+      // daemon's torn-write window read() retries over can outlast the retries, so
+      // "unparseable" may still be a half-written LIVE store, and (b) for our own
+      // atomic stores it is outside corruption (a hand edit) whose salvageable
+      // content a reset would silently discard. The reset stays an explicit user
+      // act: fix or delete the file.
+      throw new Error(
+        `${this.path} is not valid JSON (${read.error}); refusing to overwrite it ` +
+          `(a rewrite would discard whatever it still holds - fix or delete the file to reset it).`,
+      );
+    }
+    return read.data;
+  }
+
+  /** Load (loadForUpdate, with its refusals), apply ``mutate`` in place, save, and return
+   *  the result. Serialized across processes by a best-effort `<file>.lock` so concurrent
+   *  read-modify-writes don't lost-update. */
   update(mutate: (d: Record<string, unknown>) => void): Record<string, unknown> {
     const lockPath = `${this.path}.lock`;
     return withFileLockSync(lockPath, BOUNDED_LOCK_POLICY, () => {
-      const read = this.read();
-      if (read.kind === "unreadable") {
-        throw new Error(
-          `Could not read ${this.path}; refusing to overwrite it (writing now would discard everything it holds).`,
-        );
-      }
-      if (read.kind === "unparseable") {
-        // The same refusal as the unreadable arm, decided separately: a corrupt-but-
-        // readable file is NOT a reset candidate here, because (a) for config.json the
-        // daemon's torn-write window read() retries over can outlast the retries, so
-        // "unparseable" may still be a half-written LIVE store, and (b) for our own
-        // atomic stores it is outside corruption (a hand edit) whose salvageable
-        // content a reset would silently discard. The reset stays an explicit user
-        // act: fix or delete the file.
-        throw new Error(
-          `${this.path} is not valid JSON (${read.error}); refusing to overwrite it ` +
-            `(a rewrite would discard whatever it still holds - fix or delete the file to reset it).`,
-        );
-      }
-      const data = read.data;
+      const data = this.loadForUpdate();
       mutate(data);
       this.save(data);
       return data;

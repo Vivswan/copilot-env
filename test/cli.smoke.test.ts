@@ -9,7 +9,10 @@ import {
   MARKER as SHELL_MARKER,
 } from "../src/shell/integration.ts";
 import { getSanitizedHostname } from "../src/utils/hostname.ts";
-import { runCli } from "./helpers/run.ts";
+import { USAGE_INDEX_DIR_NAME } from "../src/usage/paths.ts";
+import { loadPricing } from "../src/usage/pricing.ts";
+import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
+import { ROOT, runCli, runSync } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
 import { writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
 
@@ -962,4 +965,165 @@ test("update --auto-status reports the auto-update key honestly, on and off (off
       `Autoupdate: ${word} (the auto-update config key) | cooldown 3d | last check `,
     );
   }
+});
+
+// `--no-index` is a Commander negated flag (stored as `index: false`); only a real
+// parse proves the mapping onto runCost's `noIndex`. The pricing URL points at a
+// closed local port so the run prices nothing and never leaves the machine.
+test("cli.ts cost --no-index parses every log; without it the usage index is used", () => {
+  const env = isolatedEnv();
+  const projects = join(env.CLAUDE_CONFIG_DIR ?? "", "projects", "-Users-x-proj");
+  mkdirSync(projects, { recursive: true });
+  writeFileSync(
+    join(projects, "aaa.jsonl"),
+    `${
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-06-01T10:00:00.000Z",
+        message: {
+          id: "msg_1",
+          model: "claude-opus-4-8",
+          role: "assistant",
+          usage: { "input_tokens": 10, "output_tokens": 20 },
+        },
+      })
+    }\n`,
+  );
+  const runtimeOf = (...flags: string[]) => {
+    const proc = runCli(
+      ["cost", "--json", "--pricing-url", "https://127.0.0.1:9/models", ...flags],
+      { env },
+    );
+    expect(proc.exitCode).toBe(0);
+    return JSON.parse(proc.stdout).runtime as { indexed: boolean };
+  };
+  expect(runtimeOf().indexed).toBe(true);
+  expect(runtimeOf("--no-index").indexed).toBe(false);
+  // Commander wraps option text to the terminal width, so the clause is matched unwrapped.
+  const help = helpScreen("cost", "--help").output.replace(/\s+/g, " ");
+  expect(help).toContain("--no-index");
+  expect(help).toContain("the host must be one the CLI's network policy permits");
+});
+
+// `--pricing-url` has no Commander default on purpose: an omitted flag must fall through
+// to the stored `pricing-url` key, and a given flag must reach the run. Only the price
+// CACHE tells the two URLs apart from outside (warnings never name a URL): each URL's
+// stale cache carries a different rate, so the total says which one priced the run.
+test("cli.ts cost prices at the stored pricing-url when the flag is omitted and at the flag's URL when given", async () => {
+  const env = isolatedEnv();
+  const projects = join(env.CLAUDE_CONFIG_DIR ?? "", "projects", "-Users-x-proj");
+  mkdirSync(projects, { recursive: true });
+  writeFileSync(
+    join(projects, "aaa.jsonl"),
+    `${
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-06-01T10:00:00.000Z",
+        message: {
+          id: "msg_1",
+          model: "claude-opus-4-8",
+          role: "assistant",
+          usage: { "input_tokens": 10, "output_tokens": 20 },
+        },
+      })
+    }\n`,
+  );
+  const storedUrl = "https://127.0.0.1:9/stored/models";
+  const flagUrl = "https://127.0.0.1:9/flag/models";
+  const home = env.COPILOT_API_HOME ?? "";
+  writeFileSync(
+    join(home, ".copilot-env-config.json"),
+    JSON.stringify({ port: 4199, pricingUrl: storedUrl }),
+  );
+  // Two days old: expired, so the run refreshes (fails at 127.0.0.1:9) and falls back
+  // to the cached copy; the two URLs carry different prompt rates.
+  const priced = (prompt: string): typeof fetch =>
+    (() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            data: [{
+              id: "anthropic/claude-opus-4.8",
+              pricing: { prompt, completion: "0.000075" },
+            }],
+          }),
+          { status: 200 },
+        ),
+      )) as typeof fetch;
+  const seed = {
+    cacheDir: join(home, USAGE_INDEX_DIR_NAME),
+    nowMs: Date.now() - 2 * MILLISECONDS_PER_DAY,
+  };
+  await loadPricing(storedUrl, { ...seed, fetchImpl: priced("0.000015") });
+  await loadPricing(flagUrl, { ...seed, fetchImpl: priced("0.000115") });
+
+  const totalUsdOf = (...flags: string[]): number => {
+    const proc = runCli(["cost", "--json", "--no-index", ...flags], { env });
+    expect(proc.exitCode).toBe(0);
+    return JSON.parse(proc.stdout).claudeSessions.totalUsd;
+  };
+  // 10 in at $15/M + 20 out at $75/M from the stored URL's cache ...
+  expect(totalUsdOf()).toBe(0.0017);
+  // ... and 10 in at $115/M + the same output from the flag's.
+  expect(totalUsdOf("--pricing-url", flagUrl)).toBe(0.0027);
+});
+
+// The shipped CLI reaches fixed hosts only (deno.json's `cli` permission set), so a pricing-url
+// elsewhere is refused by the runtime; only a child under that set can observe it (the test
+// tree runs unpinned). Fixed text names the policy and the key, never the URL.
+test("cli.ts cost under the CLI permission set: a pricing-url on a host outside the policy warns and prices nothing", () => {
+  const env = isolatedEnv();
+  const projects = join(env.CLAUDE_CONFIG_DIR ?? "", "projects", "-Users-x-proj");
+  mkdirSync(projects, { recursive: true });
+  writeFileSync(
+    join(projects, "aaa.jsonl"),
+    `${
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-06-01T10:00:00.000Z",
+        message: {
+          id: "msg_1",
+          model: "claude-opus-4-8",
+          role: "assistant",
+          usage: { "input_tokens": 10, "output_tokens": 20 },
+        },
+      })
+    }\n`,
+  );
+  const storedUrl = "https://stored.example/with-secret-token/models";
+  writeFileSync(
+    join(env.COPILOT_API_HOME ?? "", ".copilot-env-config.json"),
+    JSON.stringify({ port: 4199, pricingUrl: storedUrl }),
+  );
+  const cliPermissions = (JSON.parse(readFileSync(join(ROOT, "deno.json"), "utf8")) as {
+    permissions: { cli: { net: string[] } };
+  }).permissions.cli.net;
+  expect(cliPermissions).toContain("openrouter.ai");
+  expect(cliPermissions).not.toContain("stored.example");
+
+  const proc = runSync(
+    Deno.execPath(),
+    [
+      "run",
+      "--config",
+      join(ROOT, "deno.json"),
+      "-P=cli",
+      join(ROOT, "src", "cli.ts"),
+      "cost",
+      "--json",
+      "--no-index",
+    ],
+    { env },
+  );
+  expect(proc.exitCode).toBe(0);
+  expect(proc.stderr).toContain(
+    "could not fetch OpenRouter pricing (the pricing-url host is not permitted by the CLI's " +
+      "network policy (only the hosts the CLI may reach, openrouter.ai among them); change the " +
+      "pricing-url config key or --pricing-url); reporting tokens only.",
+  );
+  expect(proc.stderr).not.toContain("stored.example");
+  expect(proc.stderr).not.toContain("with-secret-token");
+  const payload = JSON.parse(proc.stdout);
+  expect(payload.claudeSessions.totalUsd).toBe(0);
+  expect(payload.claudeSessions.unpriced).toEqual(["claude-opus-4.8"]);
 });

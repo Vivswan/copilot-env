@@ -1,0 +1,332 @@
+{
+  "lines": {
+    "session_meta": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "session_meta",
+      "payload": {
+        "session_id": "@sessionId",
+        "id": "@sessionId",
+        "timestamp": "@ts",
+        "cwd": "@cwd",
+        "originator": "codex_cli_rs",
+        "cli_version": "0.99.0",
+        "source": "cli",
+        "thread_source": "cli",
+        "model_provider": "@provider",
+        "base_instructions": {
+          "text": "@fill",
+          "provenance": { "kind": "default" }
+        },
+        "dynamic_tools": [],
+        "memory_mode": "default",
+        "history_mode": "persist",
+        "context_window": { "window_id": "@turnId" },
+        "git": "@git"
+      }
+    },
+    "event_msg/task_started": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "event_msg",
+      "payload": {
+        "type": "task_started",
+        "turn_id": "@turnId",
+        "started_at": "@nowMs",
+        "model_context_window": "@contextWindow",
+        "collaboration_mode_kind": "default"
+      }
+    },
+    "response_item/message/developer": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "response_item",
+      "payload": {
+        "type": "message",
+        "id": "@id",
+        "role": "developer",
+        "content": "@content",
+        "internal_chat_message_metadata_passthrough": { "turn_id": "@turnId" }
+      }
+    },
+    "response_item/message/user": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "response_item",
+      "payload": {
+        "type": "message",
+        "id": "@id",
+        "role": "user",
+        "content": "@content",
+        "internal_chat_message_metadata_passthrough": { "turn_id": "@turnId" }
+      }
+    },
+    "response_item/message/assistant": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "response_item",
+      "payload": {
+        "type": "message",
+        "id": "@id",
+        "role": "assistant",
+        "content": "@content",
+        "phase": "final_answer",
+        "internal_chat_message_metadata_passthrough": { "turn_id": "@turnId" }
+      }
+    },
+    "world_state": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "world_state",
+      "payload": {
+        "full": true,
+        "state": {
+          "agents_md": { "paths": [] },
+          "apps_instructions": false,
+          "collaboration_mode": { "mode": "default", "settings": {} },
+          "context_window_guidance": "@fill",
+          "environments": { "active": [] },
+          "environments_instructions": false,
+          "git_attribution": false,
+          "host_skills": { "skills": [] },
+          "managed_developer_instructions": { "text": "" },
+          "model": "@model",
+          "multi_agent_mode": { "enabled": true },
+          "multi_agent_usage_hint": "",
+          "orchestrator_skills": { "skills": [] },
+          "permissions": { "approval_policy": "on-request" },
+          "persistent_mode": { "enabled": false },
+          "personality": { "kind": "default" }
+        }
+      }
+    },
+    "turn_context": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "turn_context",
+      "payload": {
+        "turn_id": "@turnId",
+        "root_turn_id": "@turnId",
+        "cwd": "@cwd",
+        "workspace_roots": ["@cwd"],
+        "current_date": "@date",
+        "timezone": "UTC",
+        "approval_policy": "on-request",
+        "approvals_reviewer": "user",
+        "sandbox_policy": { "type": "workspace-write" },
+        "permission_profile": {
+          "type": "workspace-write",
+          "file_system": { "writable_roots": ["@cwd"] },
+          "network": "restricted"
+        },
+        "active_permission_profile": {
+          "type": "workspace-write",
+          "file_system": { "writable_roots": ["@cwd"] },
+          "network": "restricted"
+        },
+        "model": "@model",
+        "comp_hash": "@compHash",
+        "personality": "default",
+        "collaboration_mode": { "mode": "default", "settings": {} },
+        "multi_agent_version": "v2",
+        "realtime_active": false,
+        "effort": "high",
+        "summary": "auto"
+      }
+    },
+    "event_msg/thread_settings_applied": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "event_msg",
+      "payload": {
+        "type": "thread_settings_applied",
+        "thread_id": "@sessionId",
+        "thread_settings": "@threadSettings"
+      }
+    },
+    "event_msg/user_message": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "event_msg",
+      "payload": {
+        "type": "user_message",
+        "client_id": "@callId",
+        "message": "@fill",
+        "images": [],
+        "local_images": [],
+        "audio": [],
+        "local_audio": [],
+        "text_elements": []
+      }
+    },
+    "event_msg/item_completed": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "event_msg",
+      "payload": {
+        "type": "item_completed",
+        "thread_id": "@sessionId",
+        "turn_id": "@turnId",
+        "item": "@item",
+        "started_at_ms": "@startedMs",
+        "completed_at_ms": "@nowMs"
+      }
+    },
+    "response_item/reasoning": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "response_item",
+      "payload": {
+        "type": "reasoning",
+        "id": "@id",
+        "summary": [],
+        "encrypted_content": "@fill",
+        "internal_chat_message_metadata_passthrough": { "turn_id": "@turnId" }
+      }
+    },
+    "event_msg/agent_reasoning": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "event_msg",
+      "payload": { "type": "agent_reasoning", "text": "@fill" }
+    },
+    "response_item/custom_tool_call": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "response_item",
+      "payload": {
+        "type": "custom_tool_call",
+        "id": "@id",
+        "status": "completed",
+        "call_id": "@callId",
+        "name": "shell",
+        "input": "@fill",
+        "internal_chat_message_metadata_passthrough": { "turn_id": "@turnId" }
+      }
+    },
+    "response_item/custom_tool_call_output": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "response_item",
+      "payload": {
+        "type": "custom_tool_call_output",
+        "id": "@id",
+        "call_id": "@callId",
+        "output": [{ "type": "input_text", "text": "@fill" }],
+        "internal_chat_message_metadata_passthrough": { "turn_id": "@turnId" }
+      }
+    },
+    "response_item/function_call": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "response_item",
+      "payload": {
+        "type": "function_call",
+        "id": "@id",
+        "name": "shell",
+        "arguments": "@fill",
+        "call_id": "@callId",
+        "internal_chat_message_metadata_passthrough": { "turn_id": "@turnId" }
+      }
+    },
+    "response_item/function_call_output": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "response_item",
+      "payload": {
+        "type": "function_call_output",
+        "id": "@id",
+        "call_id": "@callId",
+        "output": "@fill",
+        "internal_chat_message_metadata_passthrough": { "turn_id": "@turnId" }
+      }
+    },
+    "event_msg/mcp_tool_call_end": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "event_msg",
+      "payload": {
+        "type": "mcp_tool_call_end",
+        "call_id": "@callId",
+        "invocation": {
+          "server": "copilot-env",
+          "tool": "web_search",
+          "arguments": { "query": "@fill" }
+        },
+        "read_only_hint": true,
+        "duration": { "secs": 2, "nanos": 350000000 },
+        "result": {
+          "Ok": {
+            "content": [{ "type": "text", "text": "" }],
+            "structured_content": null,
+            "is_error": false
+          }
+        }
+      }
+    },
+    "event_msg/agent_message": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "event_msg",
+      "payload": {
+        "type": "agent_message",
+        "message": "@fill",
+        "phase": "final_answer",
+        "memory_citation": null
+      }
+    },
+    "event_msg/token_count": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "event_msg",
+      "payload": {
+        "type": "token_count",
+        "info": "@info",
+        "rate_limits": {
+          "limit_id": "codex",
+          "limit_name": null,
+          "primary": null,
+          "secondary": null,
+          "credits": null,
+          "individual_limit": null,
+          "spend_control_reached": null,
+          "plan_type": null,
+          "rate_limit_reached_type": null
+        }
+      }
+    },
+    "token_usage_record": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "token_usage_record",
+      "payload": {
+        "thread_id": "@sessionId",
+        "turn_id": "@turnId",
+        "session_id": "@sessionId",
+        "root_turn_id": "@turnId",
+        "response_id": "@responseId",
+        "usage": "@usage",
+        "turn_token_usage": "@turnUsage",
+        "thread_token_usage": "@threadUsage"
+      }
+    },
+    "event_msg/task_complete": {
+      "timestamp": "@ts",
+      "ordinal": "@ordinal",
+      "type": "event_msg",
+      "payload": {
+        "type": "task_complete",
+        "turn_id": "@turnId",
+        "last_agent_message": "@fill",
+        "started_at": "@startedMs",
+        "completed_at": "@nowMs",
+        "duration_ms": "@durationMs",
+        "time_to_first_token_ms": 1200
+      }
+    }
+  },
+  "blocks": {
+    "input_text": { "type": "input_text", "text": "@fill" },
+    "output_text": { "type": "output_text", "text": "@fill" }
+  }
+}

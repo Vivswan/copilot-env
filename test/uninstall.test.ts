@@ -403,7 +403,9 @@ test("uninstall --dry-run changes nothing and narrates every step", async () => 
   expect(narration).toContain("Would stop the default proxy daemon");
   expect(narration).toContain("Would remove the copilot-env MCP registration");
   expect(narration).toContain("Would stop any proxy daemon relaunched in the meantime");
-  expect(narration).toContain(`Would delete the copilot-api home: ${proxyHome}`);
+  expect(narration).toContain(
+    `Would delete the copilot-api home: ${proxyHome} (including the usage index and the price-list cache).`,
+  );
   expect(narration).toContain(`Would delete the install directory: ${deps.installRoot.root}`);
 
   expect(existsSync(deps.installRoot.root)).toBe(true);

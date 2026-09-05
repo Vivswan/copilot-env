@@ -1,6 +1,7 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
+import { getHostLocalCodexHome } from "../src/codex/host.ts";
 import { launcherFunctionLines, runEnv } from "../src/commands/env.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
@@ -27,10 +28,30 @@ import {
 const restoreEnv = envSnapshot();
 let dir = "";
 
+// The per-host farm needs POSIX symlinks; on Windows the `codex-host` key always
+// reads off, so the CODEX_HOME export tests run on Linux/macOS only.
+const skipWin = test.skipIf(process.platform === "win32");
+
 afterEach(() => {
   restoreEnv();
   dir = removeDir(dir);
 });
+
+/** Everything `run` writes to stderr (the one place `agent env` may talk). */
+function stderrDuring(run: () => void): string {
+  const original = process.stderr.write;
+  let captured = "";
+  process.stderr.write = ((chunk: string | Uint8Array): boolean => {
+    captured += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    run();
+  } finally {
+    process.stderr.write = original;
+  }
+  return captured;
+}
 
 /** Run runEnv(posix) capturing its stdout lines. */
 function envLines(profile?: string): string[] {
@@ -162,6 +183,89 @@ test("env does not unset a CODEX_HOME the user pointed elsewhere", () => {
   const lines = envLines();
   expect(lines.some((l) => l.includes("CODEX_HOME"))).toBe(false);
 });
+
+// --- CODEX_HOME: the `codex-host` key against the farm on disk -------------------
+
+/** An activated per-host farm under the isolated HOME: the dir, its config.toml, and
+ *  the run-state record a wiring pass leaves after a successful write. */
+function wireFarm(): string {
+  const hostHome = getHostLocalCodexHome();
+  mkdirSync(hostHome, { recursive: true });
+  writeFileSync(join(hostHome, "config.toml"), 'model_provider = "copilot-env"\n');
+  writeRunState({ codexHome: hostHome });
+  return hostHome;
+}
+
+skipWin(
+  "env exports CODEX_HOME only while codex-host is on AND a wiring pass activated the farm",
+  () => {
+    isolate();
+    const hostHome = wireFarm();
+    // Unset keeps a pre-key install's activated farm exported (adoption pending); an
+    // explicit off stops the export and clears the shell's copy of OUR spelling at once.
+    expect(envLines()).toEqual([`export CODEX_HOME='${hostHome}'`]);
+    new CopilotEnvConfig().set({ codexHost: false });
+    expect(envLines()).toEqual([]);
+    process.env.CODEX_HOME = hostHome;
+    expect(envLines()).toEqual(["unset CODEX_HOME"]);
+    delete process.env.CODEX_HOME;
+    new CopilotEnvConfig().set({ codexHost: true });
+    expect(envLines()).toEqual([`export CODEX_HOME='${hostHome}'`]);
+    // Wired but not recorded (no managed write succeeded there yet): not exported, and
+    // the warning says so.
+    writeRunState({ codexHome: null });
+    expect(stderrDuring(() => expect(envLines()).toEqual([]))).toContain(
+      `${hostHome} is not the active CODEX_HOME`,
+    );
+    writeRunState({ codexHome: hostHome });
+    // A half-built farm (an EMPTY seeded config.toml, or none) is not a home Codex can use.
+    writeFileSync(join(hostHome, "config.toml"), "");
+    expect(stderrDuring(() => expect(envLines()).toEqual([]))).toContain("farm is missing");
+    rmSync(join(hostHome, "config.toml"));
+    expect(stderrDuring(() => expect(envLines()).toEqual([]))).toContain("farm is missing");
+  },
+);
+
+skipWin(
+  "env with codex-host on but no farm: clean stdout, one stderr warning naming `agent codex`",
+  () => {
+    isolate();
+    const hostHome = getHostLocalCodexHome();
+    new CopilotEnvConfig().set({ codexHost: true });
+    let stdout: string[] = ["unset"];
+    const stderr = stderrDuring(() => {
+      stdout = envLines();
+    });
+    // The eval'd stdout carries no directive at all; the warning goes to stderr only
+    // (consola renders the backticked command as inline code, so match around it).
+    expect(stdout).toEqual([]);
+    expect(stderr).toContain(
+      `codex-host is on but the per-host CODEX_HOME farm is missing at ${hostHome}; run `,
+    );
+    expect(stderr).toMatch(/run \W*agent codex\W* to rebuild it/);
+    // A shell still carrying OUR dead export gets it cleared, whatever the key says.
+    process.env.CODEX_HOME = hostHome;
+    expect(stderrDuring(() => expect(envLines()).toEqual(["unset CODEX_HOME"]))).toContain(
+      "farm is missing",
+    );
+    new CopilotEnvConfig().set({ codexHost: false });
+    expect(stderrDuring(() => expect(envLines()).toEqual(["unset CODEX_HOME"]))).toBe("");
+  },
+);
+
+skipWin(
+  "cli env with codex-host on but no farm exits 0 with an EMPTY stdout (the eval contract)",
+  () => {
+    isolate();
+    new CopilotEnvConfig().set({ codexHost: true });
+    const proc = runCli(["env"], {
+      env: { ...process.env, ...childBaseEnv(), CONSOLA_LEVEL: "5" },
+    });
+    expect(proc.exitCode).toBe(0);
+    expect(proc.stdout).toBe("");
+    expect(proc.stderr).toContain("codex-host is on but the per-host CODEX_HOME farm is missing");
+  },
+);
 
 // The exact launcher emissions, pinned per platform flavor: the wrappers eval these
 // lines verbatim (agents.ps1 line by line, inside a function -- hence global:), so the

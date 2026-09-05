@@ -23,7 +23,6 @@ import { DEFAULT_AUTOUPDATE_COOLDOWN_DAYS } from "./autoupdate/state.ts";
 import { runClaude } from "./claude/config.ts";
 import { refreshClaudeDesktopWiring } from "./agents/profile_wiring.ts";
 import { runCodex } from "./codex/config.ts";
-import { runCodexHost } from "./codex/host.ts";
 import { runCodexMobile } from "./codex/mobile.ts";
 import { runAuth } from "./commands/auth.ts";
 import { runConfig } from "./commands/config.ts";
@@ -575,22 +574,16 @@ program
     "--check",
     "Report the configured provider and exit - no changes, no probe (0 direct, 1 other, 2 proxy/none).",
   )
-  .option("--host", "(Linux/macOS) Build the per-host CODEX_HOME symlink farm and wire its config.")
-  .option("--delete-host", "With --host: remove the per-host CODEX_HOME and stop exporting it.")
   .option("--mobile", "Interactive: pair the Codex desktop app with its phone remote-control flow.")
   .action((opts: Opts) => {
     const action = parseCodexAction({
       check: Boolean(opts.check),
       mode: parseModeFlags(opts),
       mobile: Boolean(opts.mobile),
-      host: Boolean(opts.host),
-      deleteHost: Boolean(opts.deleteHost),
     });
     switch (action.kind) {
       case "mobile":
         return runCodexMobile();
-      case "host":
-        return runCodexHost({ mode: action.mode, delete: action.deleteHost });
       case "check":
         return runCodex(action);
       case "configure":

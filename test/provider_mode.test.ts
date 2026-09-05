@@ -5,7 +5,7 @@ import { expect, test } from "./helpers/testing.ts";
 // The CLI boundary (src/cli.ts) parses --direct/--proxy ONCE into the
 // RequestedMode union via parseModeFlags; the contradictory pair is rejected
 // right there, so the internal arg shapes (InitArgs, ModelsArgs, ProfileArgs,
-// CodexConfigArgs, ClaudeConfigArgs, CodexHostArgs) cannot represent it at all.
+// CodexConfigArgs, ClaudeConfigArgs) cannot represent it at all.
 // The end-to-end `agent init --direct --proxy` rejection is pinned in
 // cli.smoke.test.ts; this pins the parse itself.
 
@@ -28,35 +28,21 @@ test("parseModeFlags: a command can keep its own rejection wording (profile)", (
 // The `agent codex`/`agent claude` flag bags parse ONCE into per-command action
 // unions (src/agents/configure.ts), so a combination the old if-chain resolved
 // by routing order (`--check --direct` ran the check and dropped the mode,
-// `--mobile --host` ran mobile) is a rejection instead.
+// `--mobile --check` ran mobile) is a rejection instead.
 
 test("parseCodexAction: each single-intent invocation maps to its own arm", () => {
   expect(parseCodexAction({ mode: "auto" })).toEqual({ kind: "configure", mode: "auto" });
   expect(parseCodexAction({ mode: "direct" })).toEqual({ kind: "configure", mode: "direct" });
   expect(parseCodexAction({ mode: "auto", check: true })).toEqual({ kind: "check" });
   expect(parseCodexAction({ mode: "auto", mobile: true })).toEqual({ kind: "mobile" });
-  // The farm write takes a mode, and --delete-host selects the host arm alone.
-  expect(parseCodexAction({ mode: "proxy", host: true })).toEqual({
-    kind: "host",
-    deleteHost: false,
-    mode: "proxy",
-  });
-  expect(parseCodexAction({ mode: "auto", deleteHost: true })).toEqual({
-    kind: "host",
-    deleteHost: true,
-    mode: "auto",
-  });
 });
 
 test("parseCodexAction: --check combinations are rejections, not routing-order picks", () => {
   expect(() => parseCodexAction({ mode: "direct", check: true })).toThrow(
     "--check only reports the configured provider; it does not combine with --direct/--proxy",
   );
-  expect(() => parseCodexAction({ mode: "auto", check: true, host: true })).toThrow(
-    "--check only reports the configured provider; it does not combine with --host/--delete-host",
-  );
-  expect(() => parseCodexAction({ mode: "auto", check: true, deleteHost: true })).toThrow(
-    "does not combine with --host/--delete-host",
+  expect(() => parseCodexAction({ mode: "proxy", check: true })).toThrow(
+    "does not combine with --direct/--proxy",
   );
 });
 
@@ -64,19 +50,17 @@ test("parseCodexAction: --mobile combines with nothing", () => {
   for (
     const flags of [
       { mode: "direct" as const, mobile: true },
+      { mode: "proxy" as const, mobile: true },
       { mode: "auto" as const, mobile: true, check: true },
-      { mode: "auto" as const, mobile: true, host: true },
-      { mode: "auto" as const, mobile: true, deleteHost: true },
     ]
   ) {
     expect(() => parseCodexAction(flags)).toThrow(
-      "--mobile is an interactive pairing flow; it does not combine with " +
-        "--check/--direct/--proxy/--host/--delete-host",
+      "--mobile is an interactive pairing flow; it does not combine with --check/--direct/--proxy",
     );
   }
 });
 
-test("parseClaudeAction: arms and rejections mirror codex minus the host/mobile flags", () => {
+test("parseClaudeAction: arms and rejections mirror codex minus the mobile flag", () => {
   expect(parseClaudeAction({ mode: "proxy" })).toEqual({ kind: "configure", mode: "proxy" });
   expect(parseClaudeAction({ mode: "auto", check: true })).toEqual({ kind: "check" });
   expect(parseClaudeAction({ mode: "auto", desktop: true })).toEqual({ kind: "desktop" });

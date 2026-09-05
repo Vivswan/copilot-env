@@ -87,8 +87,8 @@ function recordedCodexHostFarm(): string | null {
 }
 
 /** Tear down the host's CODEX_HOME symlink farm (POSIX only). Ownership AND the
- *  path come from run state -- `agent codex --host` persisted the farm dir it
- *  built there -- so an untracked ~/.codex/hosts/<hostname> someone else created
+ *  path come from run state -- the `codex-host` derivation persisted the farm dir
+ *  it built there -- so an untracked ~/.codex/hosts/<hostname> someone else created
  *  is never swept, and a farm built under a different HOME is still the one
  *  removed. Absent state reads back as undefined (state.ts schema). */
 function removeCodexHostFarm(): void {

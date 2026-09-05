@@ -67,6 +67,8 @@ export interface CopilotEnvConfigData {
   updateCooldown?: number;
   /** Verify `agent update` downloads against the release's build-provenance attestation. */
   verifyProvenance?: boolean;
+  /** Per-host CODEX_HOME symlink farm, derived by `agent init`/`agent codex` (Linux/macOS). */
+  codexHost?: boolean;
   /** Patched Codex model catalog with Copilot's real context windows (opt-in). */
   codexModelCatalog?: boolean;
   /** Wire the copilot-env MCP server (+ WebSearch deny) into Claude on direct writes. */
@@ -114,6 +116,8 @@ interface ConfigKeyDefCore<K extends ConfigKey = ConfigKey> {
   /** Parser from the `--set <value>` string to the stored value (throws a clear message
    *  on bad input). Derived from `schema` by the domain builders, never hand-written. */
   parse: (raw: string) => NonNullable<CopilotEnvConfigData[K]>;
+  /** The feature needs POSIX (Linux/macOS): `agent config --set` refuses it on Windows. */
+  posixOnly?: true;
 }
 
 /** How an internal key's rendered `--help` / `--get` default is sourced: a registry-owned
@@ -397,6 +401,17 @@ const CONFIG_REGISTRY_LITERAL = [
     proxyProjected: true,
   },
   {
+    cli: "codex-host",
+    key: "codexHost",
+    describe:
+      "Per-host CODEX_HOME symlink farm at ~/.codex/hosts/<hostname>, exported by `agent env` (bool; Linux/macOS)",
+    ...BOOL_DOMAIN,
+    defaultValue: false,
+    posixOnly: true,
+    applyHint:
+      "Applies at the next `agent codex`/`agent init` wiring, which builds or removes the farm.",
+  },
+  {
     cli: "codex-model-catalog",
     key: "codexModelCatalog",
     describe: "Patched Codex model catalog with Copilot's real context windows (bool)",
@@ -622,6 +637,17 @@ export const CONFIG_SCHEMA = v.object(
   Object.fromEntries(CONFIG_REGISTRY.map((def) => [def.key, lenientField(def.schema)])),
 ) as v.GenericSchema<unknown, CopilotEnvConfigData>;
 
+/** The three-way `codex-host` read for a stored value on `platform`: Windows has no farm
+ *  (POSIX symlinks), so it always reads false there, whatever a bundle imported. Shared by
+ *  the CopilotEnvConfig accessor and the settings-import plan (which reads the bundle). */
+export function codexHostSettingFor(
+  stored: boolean | undefined,
+  platform: NodeJS.Platform = process.platform,
+): boolean | null {
+  if (platform === "win32") return false;
+  return stored ?? null;
+}
+
 /** Look up a registry entry by its CLI (kebab) name. */
 export function configKeyDef(cli: string): ConfigKeyDef | undefined {
   return CONFIG_REGISTRY.find((d) => d.cli === cli.trim());
@@ -754,6 +780,18 @@ export class CopilotEnvConfig {
    *  Watchdog-reachable, so the read degrades (see readDegraded). */
   autoStartEnabled(): boolean {
     return this.readDegraded().autoStart ?? configDefaultBoolean("auto-start");
+  }
+
+  /** The stored `codex-host` value, null when unset -- the three-way read the farm
+   *  derivation needs (an unset key may still ADOPT an existing farm). Windows has no
+   *  farm (POSIX symlinks), so it always reads false there, whatever a bundle imported. */
+  codexHostSetting(platform: NodeJS.Platform = process.platform): boolean | null {
+    return codexHostSettingFor(this.read().codexHost, platform);
+  }
+
+  /** Whether the per-host CODEX_HOME farm is wanted (stored else default; Windows: false). */
+  codexHostEnabled(platform: NodeJS.Platform = process.platform): boolean {
+    return this.codexHostSetting(platform) ?? configDefaultBoolean("codex-host");
   }
 
   /** Whether the patched Codex model catalog is enabled (opt-in, default off). */

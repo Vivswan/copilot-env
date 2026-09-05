@@ -6,6 +6,7 @@ import {
   unreadProjectedKeyWarnings,
 } from "../src/commands/config.ts";
 import {
+  codexHostSettingFor,
   CONFIG_REGISTRY,
   type ConfigCli,
   configDefaultLabel,
@@ -273,6 +274,7 @@ const ROUND_TRIP_RAW: Record<ConfigCli, string> = {
   "auto-start": "true",
   "claude-auto-model": "claude-haiku-4.5",
   "claude-token-multiplier": "1.3",
+  "codex-host": "true",
   "codex-model-catalog": "true",
   "idle-timeout": "120",
   "integration-id": "copilot-developer-cli",
@@ -299,7 +301,8 @@ const ROUND_TRIP_RAW: Record<ConfigCli, string> = {
 test("every registry key round-trips: a CLI-set value survives read() and reaches the projection", () => {
   tmpHome();
   for (const def of CONFIG_REGISTRY) {
-    runConfig({ set: [def.cli, ROUND_TRIP_RAW[def.cli as ConfigCli]] });
+    // Set as on Linux: the POSIX-only keys refuse `--set` on Windows (own test below).
+    runConfig({ set: [def.cli, ROUND_TRIP_RAW[def.cli as ConfigCli]] }, "linux");
   }
   const data = new CopilotEnvConfig().read();
   const projected = projectedProxyConfig();
@@ -315,6 +318,60 @@ test("every registry key round-trips: a CLI-set value survives read() and reache
   }
 });
 
+test("codex-host: three-way read, POSIX-only set, and Windows always reads off", () => {
+  tmpHome();
+  const cfg = new CopilotEnvConfig();
+  // The one platform normalization the accessor and the settings-import plan share.
+  expect(codexHostSettingFor(undefined, "linux")).toBeNull();
+  expect(codexHostSettingFor(true, "darwin")).toBe(true);
+  expect(codexHostSettingFor(false, "linux")).toBe(false);
+  expect(codexHostSettingFor(true, "win32")).toBe(false);
+  expect(codexHostSettingFor(undefined, "win32")).toBe(false);
+  // Unset is a distinct state (an unset key may adopt an existing farm); enabled() folds
+  // it into the built-in default.
+  expect(cfg.codexHostSetting("linux")).toBeNull();
+  expect(cfg.codexHostEnabled("linux")).toBe(false);
+  runConfig({ set: ["codex-host", "true"] }, "darwin");
+  expect(cfg.codexHostSetting("linux")).toBe(true);
+  expect(cfg.codexHostEnabled("linux")).toBe(true);
+  // Windows has no farm: the stored true (e.g. from an imported bundle) reads as off there.
+  expect(cfg.codexHostSetting("win32")).toBe(false);
+  expect(cfg.codexHostEnabled("win32")).toBe(false);
+  // `--set` on Windows is refused with a platform message, and writes nothing.
+  runConfig({ del: "codex-host" });
+  expect(() => runConfig({ set: ["codex-host", "true"] }, "win32")).toThrow(
+    "'codex-host' is only supported on Linux and macOS (this is win32); it cannot be set here.",
+  );
+  expect(cfg.codexHostSetting("linux")).toBeNull();
+  // A plain (not POSIX-only) key is unaffected by the platform.
+  runConfig({ set: ["auto-start", "true"] }, "win32");
+  expect(cfg.autoStartEnabled()).toBe(true);
+  // A stored true (an imported bundle) is INERT on Windows: the keyed read answers with
+  // the built-in default and the table names the inert value instead of hiding it.
+  cfg.set({ codexHost: true });
+  const stdoutOf = (run: () => void): string => {
+    const written: string[] = [];
+    const orig = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (s: string | Uint8Array) => {
+      written.push(String(s));
+      return true;
+    };
+    try {
+      run();
+    } finally {
+      process.stdout.write = orig;
+    }
+    return written.join("");
+  };
+  expect(stdoutOf(() => runConfig({ get: "codex-host" }, "linux"))).toBe("true\n");
+  expect(stdoutOf(() => runConfig({ get: "codex-host" }, "win32"))).toBe("false\n");
+  // The table goes through consola (stdout too).
+  const table = (platform: NodeJS.Platform): string =>
+    stdoutOf(() => runConfig({ get: true }, platform));
+  expect(table("linux")).toMatch(/codex-host\s+true\n/);
+  expect(table("win32")).toMatch(/codex-host\s+\(default: false; stored true is inert on win32\)/);
+});
+
 test("the registry covers exactly the documented keys, in alphabetical order", () => {
   const clis = CONFIG_REGISTRY.map((d) => d.cli);
   expect(clis).toEqual([
@@ -323,6 +380,7 @@ test("the registry covers exactly the documented keys, in alphabetical order", (
     "auto-start",
     "claude-auto-model",
     "claude-token-multiplier",
+    "codex-host",
     "codex-model-catalog",
     "idle-timeout",
     "integration-id",

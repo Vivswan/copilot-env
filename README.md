@@ -8,7 +8,7 @@ TypeScript port of the original Python `copilot-api` helper. Runs on **Linux, ma
 
 - **Lifecycle**: `start` / `stop` the local proxy with one command - or opt in to the managed lifecycle (`auto-start`) that starts the proxy when an agent needs it and stops it after an idle window.
 - **Zero setup**: the CLI ships as one self-contained binary - no runtime and no package manager to install first. The proxy and what it needs to run are fetched on first use, never installed globally.
-- **Codex + Claude wiring**: point both CLIs at the local proxy or GitHub Copilot Direct automatically; write `~/.codex` / `~/.claude` config; build a per-host `CODEX_HOME` farm (Linux/macOS).
+- **Codex + Claude wiring**: point both CLIs at the local proxy or GitHub Copilot Direct automatically; write `~/.codex` / `~/.claude` config; derive the opt-in per-host `CODEX_HOME` farm from the `codex-host` config key (Linux/macOS).
 - **One credential per setup**: `agent auth` manages the GitHub Copilot token (device flow, `gh` CLI, or a stored PAT) as the single source of truth for the default setup - and one slot per named profile; PATs work through an automatic passthrough shim.
 - **Named profiles**: `agent profile` bundles ONE credential + ONE mode (direct or proxy) into both agents, so several sessions run at once - direct beside proxy, or a second GitHub account - each proxy profile with its own daemon on its own port. Launch with `cl --profile <name>` / `cx --profile <name>`.
 - **Typed preferences**: `agent config` gets/sets every knob - lifecycle, ports, proxy feature flags, model ids - with one precedence rule everywhere.
@@ -87,7 +87,7 @@ agent uninstall            # remove copilot-env entirely (--yes headless, --dry-
 agent codex                # configure Codex; no flag auto-detects the backend, --check reports it
 agent codex --direct       # force GitHub Copilot Direct (no auto-detect probe)
 agent codex --check        # print provider mode; exits 0 direct, 2 proxy, 1 other
-agent codex --host         # per-host CODEX_HOME symlink farm (Linux/macOS); --delete-host to remove
+agent config --set codex-host true   # per-host CODEX_HOME symlink farm (Linux/macOS); the next `agent init` / `agent codex` builds it, `false` removes it
 agent codex --mobile       # pair the Codex desktop app with the phone remote-control flow (interactive)
 agent claude               # configure Claude; no flag auto-detects the backend, --check reports it
 agent claude --direct      # force GitHub Copilot Direct for Claude (no auto-detect probe)
@@ -194,6 +194,7 @@ agent config --del idle-timeout       # revert one to its default
 | `auto-start` | `false` | Managed proxy lifecycle: auto-start on agent open + idle auto-stop. |
 | `claude-auto-model` | unset | Model override for Claude Code's background security-monitor requests (unset disables). |
 | `claude-token-multiplier` | `1.15` | Multiplier the proxy applies when estimating Claude token usage. |
+| `codex-host` | `false` | Per-host `CODEX_HOME` symlink farm at `~/.codex/hosts/<hostname>`, exported by `agent env` (Linux/macOS; see below). |
 | `codex-model-catalog` | `false` | Patched Codex model catalog serving Copilot's real context windows (opt-in). |
 | `idle-timeout` | `3600` | Idle auto-stop window in seconds (`0` disables). |
 | `integration-id` | `auto` (probe per credential) | Pin the Copilot client identity (`Copilot-Integration-Id`), or `auto` to probe per credential. |
@@ -218,6 +219,8 @@ agent config --del idle-timeout       # revert one to its default
 Proxy-side keys (`small-model`, the `responses-*`/`messages-api` flags, `message-websearch-model`, the `alpha-search-*` pair, `claude-auto-model`, `claude-token-multiplier`) are projected into the proxy's own `config.json` at `agent start`, so changing them needs a daemon restart to take effect - except that the MCP `web_search` tool reads `message-websearch-model` fresh on every call.
 
 `codex-model-catalog` applies at the next Codex auth refresh (within ~5 minutes) or `agent codex`/`agent init` wiring; turning it off also removes the generated `codex-model-catalog.json` and the managed `model_catalog_json` reference from the Codex config.
+
+`codex-host` (Linux/macOS) is the per-host `CODEX_HOME` symlink farm switch: `agent init` / `agent codex` build the farm when it is on and remove it when it is off (an unset key adopts a farm that is already wired), `agent env` exports `CODEX_HOME` only while a wiring pass has built and activated the farm and the key is not off, and `agent codex --check` / `agent health` report any drift between the key and the disk. Setting it is refused on Windows.
 
 ### Authentication
 

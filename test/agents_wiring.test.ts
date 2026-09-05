@@ -250,9 +250,9 @@ test("unreadable configs read as 'other', never as unconfigured 'none'", () => {
 
 describe("default home resolution", () => {
   test("codex follows the run-state codexHome override; claude follows $CLAUDE_CONFIG_DIR", () => {
-    // The effective-home precedence every caller shares: a `--host` farm records
-    // the active Codex home in run state, which wins over $CODEX_HOME; Claude's
-    // one knob is $CLAUDE_CONFIG_DIR.
+    // The effective-home precedence every caller shares: the `codex-host`
+    // derivation records the active Codex home in run state, which wins over
+    // $CODEX_HOME; Claude's one knob is $CLAUDE_CONFIG_DIR.
     const farmHome = join(dir, "farm-codex");
     writeCodexConfigToml(farmHome, { baseUrl: DIRECT_BASE });
     process.env.CODEX_HOME = join(dir, "empty-codex"); // must lose to run state

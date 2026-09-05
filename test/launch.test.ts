@@ -183,7 +183,10 @@ function scriptedDeps(script: DepsScript = {}): {
       return script.syncThrows ? Promise.reject(new Error("boom")) : Promise.resolve();
     },
     managedClaudeBaseUrl: () => script.claudeUrl ?? null,
-    managedCodexHome: () => script.codexHome ?? null,
+    managedCodexHome: () => {
+      calls.push("codexHome");
+      return script.codexHome ?? null;
+    },
     notify: (line) => notes.push(line),
   };
   return { deps, calls, notes };
@@ -313,7 +316,8 @@ test("codex default: managed CODEX_HOME applied; proxy mode ensures then re-wire
     { kind: "codex", profile: null, relaxed: true, args: ["exec", "ls"] },
     deps,
   );
-  expect(calls).toEqual(["mode:codex", "ensure:(default)", "wire:codex"]);
+  // CODEX_HOME is read AFTER the re-wire: a proxy pass may have just built the farm.
+  expect(calls).toEqual(["mode:codex", "ensure:(default)", "wire:codex", "codexHome"]);
   expect(plan).toEqual({
     command: "codex",
     args: ["--sandbox", "danger-full-access", "exec", "ls"],
@@ -328,7 +332,8 @@ test("codex --profile: ensure daemon FIRST, then sync; a failed sync warns and l
     { kind: "codex", profile: WORK, relaxed: false, args: ["--resume"] },
     ok.deps,
   );
-  expect(ok.calls).toEqual(["slot:work", "ensure:work", "sync:work:proxy"]);
+  // CODEX_HOME is read AFTER the sync: its write may have just made the farm wired.
+  expect(ok.calls).toEqual(["slot:work", "ensure:work", "sync:work:proxy", "codexHome"]);
   expect(plan?.args).toEqual(["--profile", "work", "--resume"]);
 
   const broken = scriptedDeps({ slot: completeSlot("proxy"), syncThrows: true });

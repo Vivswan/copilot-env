@@ -27,6 +27,7 @@ import { runClaude } from "../src/claude/config.ts";
 import { settingsPathFor } from "../src/claude/paths.ts";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import { runCodex } from "../src/codex/config.ts";
+import { getHostLocalCodexHome } from "../src/codex/host.ts";
 import { importRestartHints, parseSettingsAction, runSettings } from "../src/commands/settings.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
@@ -42,6 +43,7 @@ import {
   isolateAgentHomes,
   removeDir,
   resetExitCode,
+  writeRunState,
 } from "./helpers.ts";
 
 const WIN = process.platform === "win32";
@@ -802,6 +804,98 @@ test("the MCP registration write line reflects the POST-import wire-mcp value", 
   const unlisted = planImport(parseSettingsBundle(directBundle({ wireMcp: false })));
   expect(unlisted.writes.join("\n")).not.toContain("MCP registration");
 });
+
+test.skipIf(process.platform === "win32")(
+  "import names the post-import Codex home and the farm action the bundle's codex-host implies",
+  () => {
+    const homes = isolate();
+    new Credential().store("gh-token", "ghp_default");
+    const proxyBundle = (config: Record<string, unknown>): Record<string, unknown> =>
+      rawBundle({
+        config,
+        credential: { githubToken: "ghp_default", authProvider: "gh-token" },
+        modes: { codex: "proxy", claude: "none" },
+      });
+    const writesOf = (config: Record<string, unknown>): string =>
+      planImport(parseSettingsBundle(proxyBundle(config)), { catalogDeps: NOOP_CATALOG_DEPS })
+        .writes.join("\n");
+    const hostHome = getHostLocalCodexHome();
+    const farmConfig = join(hostHome, "config.toml");
+
+    // The bundle turns the farm on where none exists: the apply builds it and the
+    // config lands there, not at the current effective home.
+    const on = writesOf({ codexHost: true });
+    expect(on).toContain(`Per-host CODEX_HOME farm (built): ${hostHome}`);
+    expect(on).toContain(`Codex config: ${farmConfig}`);
+    expect(on).not.toContain(join(homes.codexHome, "config.toml"));
+
+    // A wired farm with the bundle silent: the pass adopts it (nothing built or removed).
+    mkdirSync(hostHome, { recursive: true });
+    writeFileSync(farmConfig, 'model_provider = "copilot-env"\n');
+    const silent = writesOf({});
+    expect(silent).not.toContain("Per-host CODEX_HOME farm");
+    expect(silent).toContain(`Codex config: ${farmConfig}`);
+
+    // The bundle turns it off: the farm goes and the config lands at the default home,
+    // even while the shell still exports the (existing) farm and run state records it.
+    process.env.CODEX_HOME = hostHome;
+    writeRunState({ codexHome: hostHome });
+    const off = writesOf({ codexHost: false });
+    expect(off).toContain(`Per-host CODEX_HOME farm (removed): ${hostHome}`);
+    expect(off).toContain(`Codex config: ${join(homes.codexHome, "config.toml")}`);
+    expect(off).not.toContain(farmConfig);
+
+    // Profile-only wiring resolves the home under the BUNDLE's value, not the current
+    // store: locally off (record retired), bundle silent -> the record is live again.
+    new CopilotEnvConfig().set({ codexHost: false });
+    const profileOnly = (config: Record<string, unknown>): string =>
+      planImport(
+        parseSettingsBundle(rawBundle({
+          config,
+          credential: { githubToken: "ghp_default", authProvider: "gh-token" },
+          profiles: { work: { githubToken: "ghp_work", authProvider: "gh-token", mode: "proxy" } },
+        })),
+        { catalogDeps: NOOP_CATALOG_DEPS },
+      ).writes.join("\n");
+    expect(profileOnly({})).toContain(`Codex config: ${farmConfig} (may also clean its .env)`);
+    expect(profileOnly({ codexHost: false })).toContain(
+      `Codex config: ${join(homes.codexHome, "config.toml")} (may also clean its .env)`,
+    );
+  },
+);
+
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "import plans a refused default Codex wiring (unprobeable farm) while profile wiring still lands",
+  () => {
+    const homes = isolate();
+    new Credential().store("gh-token", "ghp_default");
+    const hostHome = getHostLocalCodexHome();
+    mkdirSync(hostHome, { recursive: true });
+    writeFileSync(join(hostHome, "config.toml"), 'model_provider = "copilot-env"\n');
+    chmodSync(hostHome, 0o000);
+    try {
+      const plan = planImport(
+        parseSettingsBundle(rawBundle({
+          credential: { githubToken: "ghp_default", authProvider: "gh-token" },
+          profiles: { work: { githubToken: "ghp_work", authProvider: "gh-token", mode: "proxy" } },
+          modes: { codex: "proxy", claude: "none" },
+        })),
+        { catalogDeps: NOOP_CATALOG_DEPS },
+      );
+      const writes = plan.writes.join("\n");
+      expect(writes).toMatch(
+        /Codex default wiring will be refused: .*cannot be inspected \(.*EACCES/,
+      );
+      expect(writes).not.toContain("Per-host CODEX_HOME farm (");
+      // The profile's provider table still lands at the effective home (no record: ~/.codex).
+      expect(writes).toContain(
+        `Codex config: ${join(homes.codexHome, "config.toml")} (may also clean its .env)`,
+      );
+    } finally {
+      chmodSync(hostHome, 0o700);
+    }
+  },
+);
 
 test("import surfaces the proxy restart hint when a projected key is set OR reset", () => {
   isolate();

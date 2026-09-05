@@ -1,64 +1,207 @@
-// Per-host Codex home manager: builds the per-host CODEX_HOME symlink farm (Linux/macOS).
+// Per-host Codex home manager: the per-host CODEX_HOME symlink farm (Linux/macOS),
+// DERIVED from the `codex-host` config key by every default Codex wiring pass.
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
-import { recordDefaultModeFromWiring } from "../agents/configure_defaults.ts";
-import { resolveDirectMode } from "../agents/direct_detect.ts";
-import type { ManagedWrite } from "../agents/configure.ts";
-import type { RequestedMode } from "../agents/provider_mode.ts";
-import { Credential } from "../copilot_api/credential.ts";
+import { configDefaultBoolean, CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
-import { isFile } from "../utils/fs.ts";
+import { isEnoentOrNotdir, isFile } from "../utils/fs.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../utils/hostname.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import { applyCodexConfig, detectCodexDirect, probeDirectIntegrationId } from "./config.ts";
+import { codexConfigPath, defaultCodexHome } from "./paths.ts";
 
 const logger = createStderrLogger();
 
-export interface CodexHostArgs {
-  delete?: boolean;
-  /** `--direct`/`--proxy`, parsed once at the CLI boundary (auto = neither). */
-  mode: RequestedMode;
-}
-
-// The per-host CODEX_HOME (<farm root>/<hostname>). On Linux/macOS it builds and
-// inspects the shared-state symlink farm. Exported so `agent health` can report
-// the per-host directory without rebuilding the path.
+// The per-host CODEX_HOME (<farm root>/<hostname>), resolved absolute at its one
+// source: it is recorded, exported into shells, and removed by this path, so a
+// relative HOME must never make it cwd-dependent.
 export function getHostLocalCodexHome(): string {
-  return path.join(codexFarmHostsDir(), getSanitizedHostname());
+  return path.resolve(codexFarmHostsDir(), getSanitizedHostname());
 }
 
-// True when the inherited CODEX_HOME names the host-local farm home and that
-// home no longer exists. Exact string equality on purpose (no path
-// normalization): only the spelling we export ourselves is ours to clear, so a
-// trailing-slash spelling stays hands-off. Shared by managedCodexHome's
-// stale-env clear (src/commands/env.ts) and the --delete-host read-back
-// override below, so the two can never drift.
-export function isStaleFarmEnvHome(envHome: string | undefined): boolean {
-  return Boolean(envHome && envHome === getHostLocalCodexHome() && !fs.existsSync(envHome));
+/** The per-host farm's state: what is on disk, and whether a wiring pass activated
+ *  it (recorded it in run state AFTER its config write succeeded). */
+export interface CodexHostFarm {
+  hostHome: string;
+  /** The farm directory exists (a half-built farm counts). */
+  present: boolean;
+  /** Its config.toml has content (the build seeds an EMPTY one; empty = api.openai.com). */
+  wired: boolean;
+  /** A probe (the dir, or its config.toml) failed for a reason other than absence, so
+   *  `present`/`wired` are unproven: an unset key then refuses to remove the farm. */
+  probeError: string | null;
+  /** Run state records it as the active CODEX_HOME (the post-write commit marker). */
+  active: boolean;
+}
+
+export function codexHostFarm(): CodexHostFarm {
+  const hostHome = getHostLocalCodexHome();
+  return {
+    hostHome,
+    ...probeFarm(hostHome),
+    active: new CopilotEnvRunState().read().codexHome === hostHome,
+  };
+}
+
+function probeFarm(hostHome: string): Pick<CodexHostFarm, "present" | "wired" | "probeError"> {
+  try {
+    fs.lstatSync(hostHome);
+  } catch (e) {
+    return { present: false, wired: false, probeError: isEnoentOrNotdir(e) ? null : errMessage(e) };
+  }
+  try {
+    const st = fs.statSync(codexConfigPath(hostHome));
+    return { present: true, wired: st.isFile() && st.size > 0, probeError: null };
+  } catch (e) {
+    return { present: true, wired: false, probeError: isEnoentOrNotdir(e) ? null : errMessage(e) };
+  }
+}
+
+// True when the inherited CODEX_HOME is OUR farm export: never a user's choice, so
+// the record (not the shell) decides whether the farm is the home, and `agent env`
+// may clear it. Exact string equality on purpose (no path normalization): a
+// trailing-slash spelling is not ours and stays hands-off.
+export function isManagedFarmExport(envHome: string | undefined): boolean {
+  return Boolean(envHome && envHome === getHostLocalCodexHome());
 }
 
 /**
- * Guard a feature that needs POSIX symlinks (Linux or macOS). Returns false on
- * Windows after printing a friendly note and setting a non-zero exit code --
- * callers should `return` when it returns false rather than continue. (No raw
- * throw: an unsupported platform is an expected user condition, not a crash, so
- * it shouldn't dump a stack trace.)
+ * The Codex home every default-selection read and write uses: the recorded farm
+ * while its directory exists, else `$CODEX_HOME`, else `~/.codex`. A dead record
+ * and OUR dead farm export are skipped: a write through either would resurrect
+ * the removed farm as a plain dir.
  */
-function assertUnix(feature: string, hint?: string): boolean {
-  if (process.platform === "win32") {
-    logger.info(
-      `${feature} is only supported on Linux and macOS (this is ${process.platform}).${
-        hint ? ` ${hint}` : ""
-      }`,
-    );
-    process.exitCode = 1;
-    return false;
+export function effectiveCodexHome(): string {
+  return effectiveCodexHomeFor(settingOrUnset());
+}
+
+/** effectiveCodexHome under a given key value: the settings-import plan resolves the
+ *  POST-import home with the bundle's value before the store is replaced. */
+export function effectiveCodexHomeFor(setting: boolean | null): string {
+  const recorded = new CopilotEnvRunState().read().codexHome;
+  // An explicit off retires the record at once (the next pass removes the farm);
+  // unset keeps a pre-key install's farm live until a pass adopts it.
+  if (recorded !== undefined && fs.existsSync(recorded) && setting !== false) return recorded;
+  return unmanagedCodexHome();
+}
+
+/** The Codex home when no farm record applies: `$CODEX_HOME` unless it is OUR farm
+ *  export (POSIX only; Windows never has a farm), else `~/.codex`. */
+export function unmanagedCodexHome(): string {
+  if (process.platform !== "win32" && isManagedFarmExport(process.env.CODEX_HOME)) {
+    return path.join(homedir(), ".codex");
   }
-  return true;
+  return defaultCodexHome();
+}
+
+/**
+ * What ONE wiring pass does to the farm for `setting` (the three-way key read): the
+ * single decision the derivation (withCodexHostFarm) and the settings-import plan
+ * share, so the plan can never announce an action the apply skips.
+ */
+export type CodexHostFarmPlan =
+  | { action: "build" | "verify"; adopt: boolean }
+  | { action: "remove" }
+  | { action: "refuse"; detail: string }
+  /** An unwired, unrecorded dir at the farm path under an unset key: not proven ours. */
+  | { action: "leave" }
+  | { action: "none" };
+
+export function planCodexHostFarm(
+  setting: boolean | null,
+  farm: CodexHostFarm,
+  platform: NodeJS.Platform = process.platform,
+): CodexHostFarmPlan {
+  if (platform === "win32") return { action: "none" };
+  // Unproven wiring must not authorize a removal (an unadoptable farm).
+  if (setting === null && farm.probeError !== null) {
+    return { action: "refuse", detail: farm.probeError };
+  }
+  const adopt = setting === null && farm.wired;
+  const enabled = setting ?? (adopt || configDefaultBoolean("codex-host"));
+  if (enabled) return { action: farm.present ? "verify" : "build", adopt };
+  // An explicit off removes what is there, even unprobeable (rmSync reports a real
+  // failure itself); a proven-absent path has nothing to remove.
+  if (setting === false) {
+    return farm.present || farm.probeError !== null ? { action: "remove" } : { action: "none" };
+  }
+  // Unset: only a half-built farm a wiring pass recorded (proven ours) is removed;
+  // an unrecorded dir is left for the user to decide with an explicit key.
+  if (!farm.present) return { action: "none" };
+  return farm.active ? { action: "remove" } : { action: "leave" };
+}
+
+/** The key read behind the effective-home rule only: an unreadable store is not a
+ *  proven off, so the record stays honored (every other read site stays strict). */
+function settingOrUnset(): boolean | null {
+  try {
+    return new CopilotEnvConfig().codexHostSetting();
+  } catch {
+    return null;
+  }
+}
+
+/** The farm's disagreement with the `codex-host` key (each kind's line below says
+ *  what the next wiring pass does about it), or null when they agree. */
+export type CodexHostDrift =
+  | { kind: "missing" | "inactive" | "unadopted" | "disabled" | "unowned"; hostHome: string }
+  | { kind: "unreadable"; hostHome: string; detail: string };
+
+export function codexHostDrift(
+  config: CopilotEnvConfig = new CopilotEnvConfig(),
+): CodexHostDrift | null {
+  // No farm can exist on Windows, so a farm-shaped path there (a shared home) is not ours.
+  if (process.platform === "win32") return null;
+  return codexHostDriftFrom(config.codexHostSetting(), codexHostFarm());
+}
+
+/** The pure decision behind codexHostDrift, over already-gathered facts (health
+ *  probes them through its own seams). `setting` is the three-way key read. */
+export function codexHostDriftFrom(
+  setting: boolean | null,
+  farm: CodexHostFarm,
+): CodexHostDrift | null {
+  // Off: the next wiring pass removes what is there (or what it could not probe).
+  if (setting === false) {
+    return farm.present || farm.probeError !== null
+      ? { kind: "disabled", hostHome: farm.hostHome }
+      : null;
+  }
+  if (farm.probeError !== null) {
+    return { kind: "unreadable", hostHome: farm.hostHome, detail: farm.probeError };
+  }
+  if (setting === true) {
+    if (!farm.wired) return { kind: "missing", hostHome: farm.hostHome };
+    return farm.active ? null : { kind: "inactive", hostHome: farm.hostHome };
+  }
+  if (farm.wired) return { kind: "unadopted", hostHome: farm.hostHome };
+  if (!farm.present) return null;
+  // Unset with a half-built dir: removed by the next pass only when a pass recorded it.
+  return farm.active
+    ? { kind: "disabled", hostHome: farm.hostHome }
+    : { kind: "unowned", hostHome: farm.hostHome };
+}
+
+/** The one-line report of a drift, shared by `agent codex --check` and `agent health`. */
+export function codexHostDriftLine(drift: CodexHostDrift): string {
+  switch (drift.kind) {
+    case "missing":
+      return `codex-host is on but the per-host CODEX_HOME farm is missing at ${drift.hostHome}; run \`agent codex\` to rebuild it`;
+    case "inactive":
+      return `codex-host is on but ${drift.hostHome} is not the active CODEX_HOME; run \`agent codex\` to activate it`;
+    case "unadopted":
+      return `codex-host is unset but a per-host CODEX_HOME farm exists at ${drift.hostHome}; run \`agent codex\` to adopt it (records codex-host = true)`;
+    case "disabled":
+      return `codex-host is off but a per-host CODEX_HOME farm is still present at ${drift.hostHome}; run \`agent codex\` to remove it`;
+    case "unowned":
+      return `an unwired directory sits at the per-host CODEX_HOME farm path ${drift.hostHome} and no wiring pass recorded it; set codex-host true to build the farm there or false to remove it`;
+    case "unreadable":
+      return `the per-host CODEX_HOME farm at ${drift.hostHome} cannot be inspected (${drift.detail}); fix that, then run \`agent codex\``;
+  }
 }
 
 // --- small fs probes ---------------------------------------------------------
@@ -425,77 +568,67 @@ function buildCodexSymlinkFarm(codexHome: string): void {
 }
 
 /**
- * `agent codex --host`: build the per-host CODEX_HOME symlink farm (Linux/macOS)
- * at `~/.codex/hosts/<hostname>`, then write its config and persist the CODEX_HOME
- * to state so `env` exports it. The provider mode is `--direct` / `--proxy` forced,
- * or with no mode flag auto-detected (direct when a live Copilot Direct probe
- * succeeds, else proxy). With `--delete-host`, remove that per-host dir and clear
- * the state instead. No stdout.
+ * Run ONE default Codex config write with the farm derived from the `codex-host`
+ * key around it (planCodexHostFarm decides): build/verify, write, THEN record (a
+ * failed write never activates a half-wired farm); or remove and clear the record,
+ * then write at the default home. Every artifact touched gets a stderr line.
  */
-export async function runCodexHost(args: CodexHostArgs): Promise<void> {
-  if (!assertUnix("The CODEX_HOME symlink farm (host_codex)")) return;
-  // Resolve to an absolute path: it gets persisted to state and re-exported into
-  // future shells, so a cwd-relative value would later resolve against the wrong
-  // directory.
-  const codexHome = path.resolve(getHostLocalCodexHome());
+export async function withCodexHostFarm(
+  write: (codexHome: string) => Promise<void>,
+): Promise<void> {
+  // Windows has no farm (POSIX symlinks): nothing to derive, nothing recorded.
+  if (process.platform === "win32") return write(effectiveCodexHome());
+  const config = new CopilotEnvConfig();
+  const farm = codexHostFarm();
+  // ONE key read drives the whole pass, so a concurrent `agent config` cannot split it.
+  const plan = planCodexHostFarm(config.codexHostSetting(), farm);
   const state = new CopilotEnvRunState();
-
-  if (args.delete) {
-    fs.rmSync(codexHome, { recursive: true, force: true });
-    logger.info(`Removed per-host CODEX_HOME: ${codexHome}`);
+  const paths = new CopilotApiPaths();
+  switch (plan.action) {
+    case "refuse":
+      throw new Error(
+        codexHostDriftLine({ kind: "unreadable", hostHome: farm.hostHome, detail: plan.detail }) +
+          " or set codex-host explicitly (agent config --set codex-host true|false).",
+      );
+    case "build":
+    case "verify": {
+      if (plan.adopt) {
+        config.set({ codexHost: true });
+        logger.log(
+          `  ✓ Recorded codex-host = true (adopted the per-host CODEX_HOME farm ${farm.hostHome}) → ${paths.envConfigFile}`,
+        );
+      }
+      try {
+        buildCodexSymlinkFarm(farm.hostHome);
+      } catch (e: unknown) {
+        // The one terminal handler for farm filesystem failures; the cause message
+        // names the failing operation and path.
+        throw new Error(
+          `Failed to build the CODEX_HOME symlink farm at ${farm.hostHome}: ${errMessage(e)}`,
+          { cause: e },
+        );
+      }
+      logger.log(
+        `  ✓ Per-host CODEX_HOME farm ${
+          plan.action === "verify" ? "verified" : "built"
+        } → ${farm.hostHome}`,
+      );
+      await write(farm.hostHome);
+      state.set({ codexHome: farm.hostHome });
+      logger.log(`  ✓ Active CODEX_HOME recorded → ${paths.stateFile}`);
+      return;
+    }
+    case "remove":
+      fs.rmSync(farm.hostHome, { recursive: true, force: true });
+      logger.log(`  ✓ Per-host CODEX_HOME farm removed → ${farm.hostHome}`);
+      break;
+    case "leave":
+    case "none":
+      break;
+  }
+  if (state.read().codexHome !== undefined) {
     state.set({ codexHome: null });
-    // Re-derive the recorded default mode from the POST-delete truth. The
-    // inherited CODEX_HOME may still name the farm just removed (only the next
-    // `agent env` clears it), so a default read-back through it would see the
-    // deleted dir. The override applies managedCodexHome's stale-env clear
-    // predicate (isStaleFarmEnvHome, shared), so the record always matches the
-    // home the next shell effectively uses (a spelling the clear leaves alone
-    // stays the truth).
-    recordDefaultModeFromWiring(
-      isStaleFarmEnvHome(process.env.CODEX_HOME)
-        ? { codexHome: path.join(homedir(), ".codex") }
-        : {},
-    );
-    return;
+    logger.log(`  ✓ Active CODEX_HOME record cleared → ${paths.stateFile}`);
   }
-
-  logger.info("Preparing CODEX_HOME (building symlink farm)...");
-  try {
-    buildCodexSymlinkFarm(codexHome);
-  } catch (e: unknown) {
-    // The one terminal handler for farm filesystem failures; the cause message
-    // names the failing operation and path.
-    throw new Error(
-      `Failed to build the CODEX_HOME symlink farm at ${codexHome}: ${errMessage(e)}`,
-      {
-        cause: e,
-      },
-    );
-  }
-  const ghToken = new Credential().resolve();
-  const direct = resolveDirectMode(args.mode, ghToken, detectCodexDirect);
-  logger.info(
-    `Configuring the per-host Codex home for ${
-      direct ? "GitHub Copilot Direct" : "the local copilot-api proxy"
-    } ...`,
-  );
-  // Direct resolves the client identity HERE (reusing the just-resolved
-  // credential, so gh-cli is not shelled out to a second time) and passes it
-  // down inside the shared write; a dead direct credential fails the wiring
-  // instead of writing a config that 400s.
-  const write: ManagedWrite = direct
-    ? { mode: "direct", directIntegrationId: await probeDirectIntegrationId(null, ghToken) }
-    : { mode: "proxy" };
-  await applyCodexConfig(
-    codexHome,
-    write,
-    // Reuse the credential for the catalog seed's direct fetch too.
-    ghToken === null ? undefined : { directToken: ghToken },
-  );
-  // Persist the active CODEX_HOME (opt-in: only set because a codex command ran).
-  state.set({ codexHome });
-  // The default Codex selection just moved to the farm home; with the state
-  // recorded, the default read-back resolves to the config written above, so
-  // re-derive the recorded default mode (a failed wire never reaches here).
-  recordDefaultModeFromWiring();
+  await write(effectiveCodexHome());
 }

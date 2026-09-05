@@ -33,7 +33,6 @@ import {
   wiringPortFor,
 } from "../copilot_api/port.ts";
 import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
-import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoent, isEnoentOrNotdir, readTextResult, type TextReadResult } from "../utils/fs.ts";
@@ -52,6 +51,12 @@ import {
   generateCodexModelCatalog,
   isCatalogFileUsable,
 } from "./catalog.ts";
+import {
+  codexHostDrift,
+  codexHostDriftLine,
+  effectiveCodexHome,
+  withCodexHostFarm,
+} from "./host.ts";
 import { codexConfigPath, defaultCodexHome } from "./paths.ts";
 import { type CodexTomlRead, readCodexToml, saveCodexToml } from "./toml_io.ts";
 
@@ -835,7 +840,7 @@ export function configureCodexConfig(
  * (null = the default selection); throws with the cause when the write cannot
  * proceed. The caller persists CODEX_HOME to state, and -- for direct -- has
  * already resolved the client identity carried in the write (this function never
- * probes). Shared by the codexAdapter and codex_host's `runCodexHost`.
+ * probes). The codexAdapter's default-selection write.
  */
 export async function applyCodexConfig(
   codexHome: string,
@@ -880,10 +885,6 @@ export function probeDirectIntegrationId(
   return resolveDirectIntegrationId(resolved, codexUserAgent(), {
     pinned: new CopilotEnvConfig().pinnedIntegrationId(),
   });
-}
-
-export function effectiveCodexHome(): string {
-  return new CopilotEnvRunState().read().codexHome ?? defaultCodexHome();
 }
 
 /**
@@ -1113,6 +1114,8 @@ function checkCodexConfig(): void {
     console.log(`Codex provider mode: ${status.providerMode} (${providerModeDetail(status)})`);
     console.log(`CODEX_HOME: ${codexHome}`);
     console.log(`config.toml: ${configPath}`);
+    const drift = codexHostDrift();
+    if (drift !== null) console.log(codexHostDriftLine(drift));
     process.exitCode = providerModeExitCode(status.providerMode);
   } catch (e) {
     logger.error(`Codex provider check failed: ${errMessage(e)}`);
@@ -1238,7 +1241,8 @@ export function codexAdapter(catalogDeps?: CodexCatalogDeps): AgentAdapter {
       // Reuse the already-resolved credential for the catalog seed's direct fetch,
       // so the gh-cli provider isn't shelled out to a second time.
       const seedDeps = catalogDeps ?? (ghToken === null ? undefined : { directToken: ghToken });
-      await applyCodexConfig(effectiveCodexHome(), write, seedDeps, null);
+      // The farm derivation decides the home the write lands in (and records it after).
+      await withCodexHostFarm((codexHome) => applyCodexConfig(codexHome, write, seedDeps, null));
     },
     configureProfile(name, write, options) {
       const request: CodexWriteRequest = write.mode === "proxy"
@@ -1258,13 +1262,12 @@ export function codexAdapter(catalogDeps?: CodexCatalogDeps): AgentAdapter {
 }
 
 /**
- * `agent codex`: configure Codex at the active CODEX_HOME -- the one a `--host`
- * farm set in state, else `$CODEX_HOME`, else the default `~/.codex`. The parsed
+ * `agent codex`: configure Codex at the effective CODEX_HOME (effectiveCodexHome),
+ * after deriving the per-host farm from the `codex-host` key. The parsed
  * action union carries the intent whole: a `check` action reports the configured
- * mode (exit 0 direct / 2 proxy|none / 1 other) without a probe, and a
- * `configure` action carries the requested mode (`--direct`/`--proxy` forced,
- * "auto" = live read-only probe, else the proxy). Does NOT touch
- * `state.codexHome` (only `--host` sets/clears that).
+ * mode (exit 0 direct / 2 proxy|none / 1 other) plus any farm drift without a
+ * probe, and a `configure` action carries the requested mode (`--direct`/`--proxy`
+ * forced, "auto" = live read-only probe, else the proxy).
  *
  * A GitHub token provisioned via `agent auth` (in the shared store) is used as the
  * Direct credential automatically; on "auto", its presence selects Direct

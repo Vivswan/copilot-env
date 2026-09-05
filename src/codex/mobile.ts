@@ -13,7 +13,8 @@ import { runCaptured } from "../utils/command.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { isCatalogFileUsable } from "./catalog.ts";
-import { CODEX_PROVIDER_ID, effectiveCodexHome } from "./config.ts";
+import { CODEX_PROVIDER_ID } from "./config.ts";
+import { effectiveCodexHome } from "./host.ts";
 import { codexConfigPath } from "./paths.ts";
 
 const logger = createStderrLogger();
@@ -340,7 +341,7 @@ export class CodexAppController {
  */
 export async function runCodexMobile(): Promise<void> {
   // The Codex desktop app exists on macOS and Windows only (no Linux app). Gate
-  // other platforms BEFORE touching any config (mirrors host.ts's assertUnix).
+  // other platforms BEFORE touching any config.
   if (process.platform !== "darwin" && process.platform !== "win32") {
     logger.info(
       `The ${APP_NAME} desktop app isn't available on ${process.platform} - \`codex --mobile\` is macOS/Windows only.`,

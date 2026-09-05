@@ -44,6 +44,7 @@ import {
   classifyPortState,
   type ClaudeFacts,
   type CodexFacts,
+  type CodexHostFacts,
   type DaemonProbed,
   type DefaultRuntimeTarget,
   directAuthFromSpawn,
@@ -2136,29 +2137,111 @@ test("evalCodex: OPENAI_API_KEY with spaces after = still counts as present in .
   );
 });
 
-test("checkCodexHost: active ok, active-missing warns, built/unbuilt informational", () => {
-  const host = { supported: true, hostHome: "/h/.codex/hosts/box", exists: true, active: true };
-  const active = checkCodexHost(host);
+test("checkCodexHost: the codex-host key against the disk, every drift warns with `agent codex`", () => {
+  const hostHome = "/h/.codex/hosts/box";
+  const configLine = `config.toml: ${join(hostHome, "config.toml")}`;
+  const on: CodexHostFacts = {
+    supported: true,
+    hostHome,
+    exists: true,
+    wired: true,
+    probeError: null,
+    active: true,
+    setting: true,
+  };
+  // Key on, farm wired and recorded as the active home: the one healthy on-state.
+  const active = checkCodexHost(on);
   expect(active.status).toBe("ok");
-  expect(active.detail).toContain("active per-host");
-  expect(active.detail).toContain(`config.toml: ${join(host.hostHome, "config.toml")}`);
-  expect(active.value?.configFile).toBe(join(host.hostHome, "config.toml"));
-  const activeMissing = checkCodexHost({ ...host, exists: false });
-  expect(activeMissing.status).toBe("warn");
-  expect(activeMissing.detail).not.toContain("config.toml:");
-  const built = checkCodexHost({ ...host, active: false });
-  expect(built.detail).toContain("built but not active");
-  expect(built.detail).toContain(`config.toml: ${join(host.hostHome, "config.toml")}`);
-  const unbuilt = { ...host, active: false, exists: false };
-  const unbuiltResult = checkCodexHost(unbuilt);
-  expect(unbuiltResult.status).toBe("ok");
-  expect(unbuiltResult.detail).toBe("not built (optional)");
-  expect(unbuiltResult.detail).not.toContain(host.hostHome);
-  expect(unbuiltResult.detail).not.toContain("config.toml:");
-  const unsupported = checkCodexHost({ ...unbuilt, supported: false });
+  expect(active.fix).toBeUndefined();
+  expect(active.detail).toBe(`active per-host CODEX_HOME: ${hostHome}\n${configLine}`);
+  expect(active.value).toEqual({
+    supported: true,
+    hostHome,
+    configFile: join(hostHome, "config.toml"),
+    exists: true,
+    wired: true,
+    probeError: null,
+    active: true,
+    setting: true,
+  });
+  // Every disagreement is a warn carrying the wiring pass that resolves it.
+  const missing =
+    `codex-host is on but the per-host CODEX_HOME farm is missing at ${hostHome}; run \`agent codex\` to rebuild it`;
+  const disabled =
+    `codex-host is off but a per-host CODEX_HOME farm is still present at ${hostHome}; run \`agent codex\` to remove it`;
+  const drifts: Array<
+    { facts: CodexHostFacts; summary: string; withConfig: boolean; fix?: string }
+  > = [
+    // On but hand-deleted (nothing on disk).
+    { facts: { ...on, exists: false, wired: false }, summary: missing, withConfig: false },
+    // On but only half-built (dir without config.toml).
+    { facts: { ...on, wired: false }, summary: missing, withConfig: true },
+    // On and wired, but no wiring pass recorded it as the active home yet.
+    {
+      facts: { ...on, active: false },
+      summary:
+        `codex-host is on but ${hostHome} is not the active CODEX_HOME; run \`agent codex\` to activate it`,
+      withConfig: true,
+    },
+    // Unset with a wired farm: the next pass adopts it.
+    {
+      facts: { ...on, active: false, setting: null },
+      summary:
+        `codex-host is unset but a per-host CODEX_HOME farm exists at ${hostHome}; run \`agent codex\` to adopt it (records codex-host = true)`,
+      withConfig: true,
+    },
+    // A farm the probe cannot read: wiring unproven, so the pass will refuse to decide.
+    {
+      facts: { ...on, wired: false, probeError: "EACCES: permission denied", setting: null },
+      summary:
+        `the per-host CODEX_HOME farm at ${hostHome} cannot be inspected (EACCES: permission denied); fix that, then run \`agent codex\``,
+      withConfig: true,
+    },
+    // Off (or unset without a wired config) with a farm still on disk: the next pass removes it.
+    { facts: { ...on, active: false, setting: false }, summary: disabled, withConfig: true },
+    // Off wins over an unreadable probe: the removal needs no proof of wiring, and an
+    // unprobeable DIR (present unproven) is still pending removal.
+    {
+      facts: { ...on, wired: false, probeError: "EACCES", setting: false },
+      summary: disabled,
+      withConfig: true,
+    },
+    {
+      facts: { ...on, exists: false, wired: false, probeError: "EACCES", setting: false },
+      summary: disabled,
+      withConfig: false,
+    },
+    {
+      facts: { ...on, wired: false, active: true, setting: null },
+      summary: disabled,
+      withConfig: true,
+    },
+    // Unset with an unrecorded half-built dir: not proven ours, so the user decides.
+    {
+      facts: { ...on, wired: false, active: false, setting: null },
+      summary:
+        `an unwired directory sits at the per-host CODEX_HOME farm path ${hostHome} and no wiring pass recorded it; set codex-host true to build the farm there or false to remove it`,
+      withConfig: true,
+      fix: "agent config --set codex-host true|false",
+    },
+  ];
+  for (const { facts, summary, withConfig, fix } of drifts) {
+    const result = checkCodexHost(facts);
+    expect(result.status).toBe("warn");
+    expect(result.fix).toBe(fix ?? "agent codex");
+    expect(result.detail).toBe(withConfig ? `${summary}\n${configLine}` : summary);
+  }
+  // Not built, not wanted (off or unset): informational, and the path is not echoed.
+  for (const setting of [false, null]) {
+    const unbuilt = checkCodexHost({ ...on, exists: false, wired: false, active: false, setting });
+    expect(unbuilt.status).toBe("ok");
+    expect(unbuilt.fix).toBeUndefined();
+    expect(unbuilt.detail).toBe("not built (optional)");
+  }
+  // Windows: no farm is possible, whatever the key says.
+  const unsupported = checkCodexHost({ ...on, supported: false, setting: false });
+  expect(unsupported.status).toBe("ok");
   expect(unsupported.detail).toBe("not built (unsupported on Windows)");
-  expect(unsupported.detail).not.toContain(host.hostHome);
-  expect(unsupported.detail).not.toContain("config.toml:");
 });
 
 test("checkAutoupdate: full status always shown (disabled too); recorded error warns", () => {
@@ -2216,7 +2299,15 @@ test("evaluateAll(codex) yields only the Codex wiring check", () => {
       directNeedsNoGh: false,
       otherReason: null,
     },
-    codexHost: { supported: false, hostHome: "/h/.codex/hosts/box", exists: false, active: false },
+    codexHost: {
+      supported: false,
+      hostHome: "/h/.codex/hosts/box",
+      exists: false,
+      wired: false,
+      probeError: null,
+      active: false,
+      setting: false,
+    },
   };
   const ids = evaluateAll("codex", facts).map((r) => r.id);
   expect(ids).toEqual(["setup.codex"]);
@@ -2257,7 +2348,15 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       directNeedsNoGh: false,
       otherReason: null,
     },
-    codexHost: { supported: false, hostHome: "/h/.codex/hosts/box", exists: false, active: false },
+    codexHost: {
+      supported: false,
+      hostHome: "/h/.codex/hosts/box",
+      exists: false,
+      wired: false,
+      probeError: null,
+      active: false,
+      setting: false,
+    },
     claude: {
       home: "/h/.claude",
       settingsPath: "/h/.claude/settings.json",

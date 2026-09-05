@@ -239,9 +239,9 @@ test("codex exposes and runs check mode", () => {
 
   const helpOut = helpScreen("codex", "--help").output;
   expect(helpOut).toContain("--check");
-  // The per-host farm flags live on `codex` too, not a separate command.
-  expect(helpOut).toContain("--host");
-  expect(helpOut).toContain("--delete-host");
+  // The per-host farm is driven by the `codex-host` config key; no flag builds it.
+  expect(helpOut).not.toContain("--host");
+  expect(helpOut).not.toContain("--delete-host");
   expect(helpOut).toContain("--mobile");
 
   const runCheck = (home: string) =>
@@ -427,16 +427,12 @@ test("the mode conflict is rejected at the boundary on every command that takes 
 
 test("codex/claude reject flag combinations the old routing order silently resolved", () => {
   // `codex --check --direct` used to run the check and drop the mode;
-  // `codex --mobile --host` used to run mobile and drop the farm flag. Each
+  // `codex --mobile --check` used to run mobile and drop the check. Each
   // combination is now a boundary rejection (units in provider_mode.test.ts;
   // this pins the cli.ts wiring end-to-end).
   const cases: Array<{ argv: string[]; message: string }> = [
     { argv: ["codex", "--check", "--direct"], message: "does not combine with --direct/--proxy" },
-    {
-      argv: ["codex", "--check", "--host"],
-      message: "does not combine with --host/--delete-host",
-    },
-    { argv: ["codex", "--mobile", "--host"], message: "--mobile is an interactive pairing flow" },
+    { argv: ["codex", "--mobile", "--check"], message: "--mobile is an interactive pairing flow" },
     { argv: ["claude", "--check", "--proxy"], message: "does not combine with --direct/--proxy" },
   ];
   for (const { argv, message } of cases) {
@@ -444,7 +440,7 @@ test("codex/claude reject flag combinations the old routing order silently resol
     expect(proc.exitCode).toBe(1);
     expect(proc.stderr).toContain(message);
   }
-  // Four cold CLI spawns; generous headroom for loaded Windows CI runners.
+  // Three cold CLI spawns; generous headroom for loaded Windows CI runners.
 }, 90_000);
 
 test("codex --mobile refuses to run (non-TTY, or unsupported platform)", () => {

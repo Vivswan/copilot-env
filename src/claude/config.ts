@@ -1005,9 +1005,9 @@ export function claudeAdapter(): AgentAdapter {
       });
       await syncClaudeDesktopWiring({ ...write, profile: name, quiet: options.quiet });
     },
-    removeProfile(name) {
+    removeProfile(name, options) {
       removeClaudeProfile(resolveClaudeHome(), name);
-      removeClaudeDesktopEntry(name);
+      if (!options?.keepDesktopEntry) removeClaudeDesktopEntry(name);
     },
   };
 }

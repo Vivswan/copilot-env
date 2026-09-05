@@ -18,6 +18,7 @@ import {
   removeReported,
   removeTreeReported,
   renameReported,
+  reportWrite,
   symlinkReported,
   writeFileReported,
 } from "../utils/report_write.ts";
@@ -412,6 +413,30 @@ function primeSharedCodexHomeIfMissing(sharedRoot: string): void {
     stdio: ["pipe", "ignore", "ignore"],
     timeout: 10_000,
   });
+  // The root was absent, so everything under it now is what the prime made: a write
+  // asked for by us, named by us. Judged by lstat: a root that came back as a symlink
+  // is named as the one entry it is, never walked into.
+  if (!lexists(sharedRoot)) return;
+  reportWrite("created", sharedRoot);
+  if (isDirPath(sharedRoot) && !isSymlinkPath(sharedRoot)) reportTreeCreated(sharedRoot);
+}
+
+/** Name every entry under `dir` (a real directory) as created, dirs before files, one
+ *  level at a time; a level that cannot be listed leaves only its own entries unnamed. */
+function reportTreeCreated(dir: string): void {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  const dirs: string[] = [];
+  for (const entry of entries) {
+    const made = path.join(dir, entry.name);
+    reportWrite("created", made);
+    if (!entry.isSymbolicLink() && entry.isDirectory()) dirs.push(made);
+  }
+  for (const sub of dirs) reportTreeCreated(sub);
 }
 
 function seedLocalCodexFileIfMissing(localPath: string, sharedPath: string): void {

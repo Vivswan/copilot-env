@@ -19,6 +19,9 @@ test("no-unreported-fs-writes: every way of reaching a write API is rejected", (
   expect(lint('import fs from "node:fs"; fs["renameSync"]("a", "b");')).toHaveLength(1);
   expect(lint('import * as fs from "node:fs"; const { chmodSync } = fs;')).toHaveLength(1);
   expect(lint('import { createWriteStream } from "node:fs";')).toHaveLength(1);
+  // Metadata mutators change the entry too.
+  expect(lint('import { utimesSync } from "node:fs";')).toHaveLength(1);
+  expect(lint('Deno.chownSync("x", 1, 1);')).toHaveLength(1);
   expect(lint('import { promises as fsp } from "node:fs"; await fsp.writeFile("x", "y");'))
     .toHaveLength(1);
   expect(lint('import * as fs from "node:fs"; await fs.promises.rm("x");')).toHaveLength(1);

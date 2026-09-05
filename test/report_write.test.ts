@@ -100,6 +100,26 @@ test("scratch dirs are silent, and deferred reports come out at the flush in ord
     expect(flushWriteReports()).toEqual([`created -> ${kept}`]);
     // Flushed once: a second flush has nothing left.
     expect(flushWriteReports()).toEqual([]);
+
+    // Deferred and never flushed by hand (the launch path): the lines reach stderr at
+    // process exit, after everything else the process printed.
+    const script = join(dir, "deferred.ts");
+    writeFileSync(
+      script,
+      [
+        `import { join } from "node:path";`,
+        `import { deferWriteReports, writeFileReported } from ${importSpecifier(SEAM)};`,
+        `deferWriteReports();`,
+        `writeFileReported(join(${CHILD_VALUES}.dir, "late.txt"), "");`,
+        `console.error("before-exit");`,
+      ].join("\n"),
+    );
+    const result = runScript(script, [], {
+      env: { ...process.env, ...childValuesEnv({ dir }), CONSOLA_LEVEL: "0" },
+    });
+    expect(result.exitCode).toBe(0);
+    const ours = result.stderr.split("\n").filter((l) => !l.includes("Permissions in the config"));
+    expect(ours).toEqual(["before-exit", `created -> ${join(dir, "late.txt")}`, ""]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

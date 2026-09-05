@@ -20,7 +20,7 @@ import {
 } from "../copilot_api/paths.ts";
 import { isValidProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
-import { isDir, isEnoentOrNotdir } from "../utils/fs.ts";
+import { entryAbsent, isDir, isEnoentOrNotdir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { dayKeyIn } from "../utils/time.ts";
 import {
@@ -324,8 +324,11 @@ function withDbCopy<T>(path: string, query: (db: DatabaseSync) => T): T {
     for (const suffix of SQLITE_SIDECAR_SUFFIXES) {
       try {
         copyFileReported(`${path}${suffix}`, `${copy}${suffix}`);
-      } catch {
-        // absent sidecar: the daemon checkpointed, so the main file is complete
+      } catch (e) {
+        // A PROVEN-absent sidecar means the daemon checkpointed, so the main file is
+        // complete; a sidecar that is there but would not copy must not be dropped
+        // (the read would silently omit its rows).
+        if (!entryAbsent(`${path}${suffix}`)) throw e;
       }
     }
     return withReadOnlyDb(copy, query);

@@ -1,8 +1,9 @@
 // Generate a synthetic usage tree from the committed profile: a CLI over
 // test/helpers/usage_fixtures.ts's generateUsageTree. Prints one JSON line
-// summarizing the run; `firstDay` and `lastDay` are the LOCAL calendar days
-// (this host's zone, as `agent cost --days` counts them) the tree's events span,
-// inclusive, so a consumer can size its window to hold the whole tree. Invoked as
+// summarizing the run; `firstDay` and `lastDay` are the UTC calendar days (the
+// synthetic user's zone) the tree's events span, inclusive, so a consumer can
+// size its `agent cost --days` window to hold the whole tree; a host west of UTC
+// should allow one extra day. Invoked as
 //   deno run -P=test scripts/usage_fixtures.ts --out DIR --mb N --seed N [--days 40]
 //     [--end ISO] [--no-adversarial]
 // Tests size their own trees through COPILOT_ENV_USAGE_FIXTURE_MB; this CLI
@@ -109,8 +110,8 @@ async function main(): Promise<void> {
     bytes,
     mb: args.mb,
     seed: args.seed,
-    firstDay: localDayKey(tree.firstEventMs),
-    lastDay: localDayKey(tree.lastEventMs),
+    firstDay: localDayKey(tree.firstEventMs, "UTC"),
+    lastDay: localDayKey(tree.lastEventMs, "UTC"),
     seconds: Math.round((performance.now() - startedAt) / 10) / 100,
   }));
 }

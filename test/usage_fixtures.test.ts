@@ -700,10 +700,13 @@ test("the readers return exactly the usage the generator planted (the drift cana
     );
   expect(zeroDay(tree.expected.claude)).toBe(false);
   expect(zeroDay(got.claude)).toBe(false);
-  // Claude: the roll-up is exact. The per-day split of a resumed message's streaming delta
-  // follows the readers' file order, which readdir does not fix across OSes, so the days
-  // are compared exactly on the resume-free tree below.
+  // Claude: roll-up AND per-day split exact, resumes included. The ledger books each line's
+  // positive delta on that line's own day in generation order; the reader folds files in
+  // ascending path order with a running per-id max, and a resume's copies are byte-identical
+  // to the original (same timestamps, same snapshots), so whichever file it meets first books
+  // the same deltas on the same days and the other adds nothing.
   expect(byModel(got.claude)).toEqual(byModel(tree.expected.claude));
+  expect(perDay(got.claude)).toEqual(perDay(tree.expected.claude));
   expect(got.claude.perDay.size).toBeGreaterThan(1);
 
   const plainRead = await readBack(await plainTree());
@@ -861,15 +864,21 @@ test("the CLI wrapper writes the tree and prints one JSON summary line", () => {
   expect(typeof summary.seconds).toBe("number");
   expect(summary.mb).toBe(1);
   expect(summary.seed).toBe(9);
-  // The span is reported as this host's local calendar days, inclusive, and holds every
-  // timestamp in the tree; it comes from the seed, never the clock.
+  // The span is reported as UTC calendar days, inclusive, and holds every timestamp in the
+  // tree; it comes from the seed, never the clock, so it is the same on every host.
   const days = walk(root).filter((f) => !f.includes(".copilot-env")).flatMap((f) =>
-    [...textOf(f).matchAll(/"timestamp":"([^"]+)"/g)].map((m) => localDayKey(Date.parse(m[1]!)))
+    [...textOf(f).matchAll(/"timestamp":"([^"]+)"/g)].map((m) =>
+      localDayKey(Date.parse(m[1]!), "UTC")
+    )
   ).sort();
   expect(summary.firstDay).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   expect(summary.lastDay).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   expect(summary.firstDay).toBe(days[0]);
   expect(summary.lastDay).toBe(days[days.length - 1]);
+  // The consumer contract: these keys, at least.
+  for (const key of ["files", "bytes", "mb", "seed", "firstDay", "lastDay"]) {
+    expect(Object.hasOwn(summary, key)).toBe(true);
+  }
   expect((summary.lastDay as string) <= "2026-09-01").toBe(true);
   expect(walk(join(root, ".codex")).length + walk(join(root, ".claude")).length).toBe(
     summary.files,

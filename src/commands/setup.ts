@@ -386,13 +386,9 @@ export function installAgentClis(setup: CliSetup): void {
   }
 }
 
-/**
- * What ONE `agent shell` invocation does -- an unwire or a wire (optionally with
- * a CLI install) -- parsed ONCE by `parseShellAction` at the CLI boundary. The
- * install knobs live inside the wire arm's CliSetup alone, so a conflicting
- * combination (`--remove --clis`, `--cooldown --no-prereqs`) is rejected here and
- * the handlers never re-check.
- */
+/** What ONE `agent shell` invocation does, parsed ONCE at the CLI boundary: an unwire,
+ *  or a wire optionally carrying a CLI install (the install knobs live in CliSetup alone,
+ *  so `--remove --clis` and `--cooldown --no-prereqs` are rejected here, never re-checked). */
 export type ShellAction =
   | { kind: "remove"; allHosts: boolean }
   | { kind: "wire"; allHosts: boolean; clis: CliSetup | null };

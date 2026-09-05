@@ -1,7 +1,6 @@
-// Autoupdate THROTTLE state, persisted to `<install>/.autoupdate/state.json`: the
-// last check and its result. The preference itself is the `auto-update` config key
-// (CopilotEnvConfig), never this file: a pre-key `enabled` field is never read and
-// is dropped (printed) by the next write.
+// Autoupdate THROTTLE state (`<install>/.autoupdate/state.json`): the last check and
+// its result. The preference is the `auto-update` config key, never this file; a
+// pre-key `enabled` field is never read and the next write drops it (printed).
 //
 // Thin typed wrapper over CopilotApiConfig (the project's atomic JSON store:
 // sorted keys, 0600, atomic rename, Windows retry) -- mirroring CopilotEnvRunState,

@@ -389,7 +389,7 @@ export interface CodexHostFacts {
   hostHome: string;
   /** That directory exists on disk. */
   exists: boolean;
-  /** Its config.toml has content (codexHostFarm's predicate: an empty seed is not wired). */
+  /** Its real-path config.toml selects the managed provider (codexHostFarm's predicate). */
   wired: boolean;
   /** A farm probe failed for a reason other than absence (present/wired unproven). */
   probeError: string | null;

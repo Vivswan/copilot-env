@@ -2186,7 +2186,7 @@ test("checkCodexHost: the codex-host key against the disk, every drift warns wit
       summary: line({ kind: "inactive", hostHome }),
       withConfig: true,
     },
-    // Off with a farm still on disk (or unprobeable): the next pass removes it.
+    // Off with OUR wired farm still on disk: the next pass removes it.
     {
       facts: { ...on, active: false, enabled: false },
       summary: line({ kind: "disabled", hostHome }),

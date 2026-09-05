@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { isDue } from "../src/autoupdate/due.ts";
 import { withUpdateLockForTests } from "../src/autoupdate/lock.ts";
@@ -125,10 +134,10 @@ test("runPreflight honors the auto-update key and ignores a legacy enabled field
     return Promise.resolve(
       new Response(
         JSON.stringify([{
-          tag_name: `v${packageVersion()}`,
-          published_at: "2026-01-01T00:00:00Z",
-          draft: false,
-          prerelease: false,
+          "tag_name": `v${packageVersion()}`,
+          "published_at": "2026-01-01T00:00:00Z",
+          "draft": false,
+          "prerelease": false,
         }]),
         { status: 200 },
       ),
@@ -207,68 +216,89 @@ test("isDue is false under a day, true at/after a day", () => {
 });
 
 // --- the launchers' preflight gate --------------------------------------------
-// The subcommand gate ("only on `agent start`") is shell in the launchers, not TS:
-// bin/agent and bin/agent.ps1 run preflight.ts before cli.ts loads. Each launcher is
-// EXECUTED against a fake `deno` on PATH that records every invocation, so the test
-// observes what the shell actually spawns: day-to-day commands (env/health/...) must
-// never trigger a self-update, and `agent env` (whose stdout the shell wrapper evals)
-// must never be in scope.
+// The gate ("only on `agent start`") is shell in bin/agent(.ps1), so each launcher is
+// EXECUTED from a staged copy of the checkout against a fake `deno` that records every
+// spawn: `env` (whose stdout the wrapper evals) must never reach the preflight.
 
-const DVMRC_PIN = readFileSync(join(PROJECT_ROOT, ".dvmrc"), "utf8").trim();
-
-/** Run `bin/agent <sub>` with a fake deno; returns the fake's invocation log, one line
- *  per `deno ...` call. */
+/** Run the launcher for `sub` from a fresh fake checkout (its own temp dir, removed
+ *  after); returns the fake deno's invocation log, one line per spawn. */
 function launcherCalls(sub: string): string[] {
-  const home = tmp("home");
-  const bin = join(dir, "fake-bin");
-  const log = join(dir, "deno-calls.log");
-  mkdirSync(bin, { recursive: true });
-  mkdirSync(home, { recursive: true });
-  if (process.platform === "win32") {
-    writeFileSync(
-      join(bin, "deno.cmd"),
-      `@echo off\r\nif "%1"=="--version" (echo deno ${DVMRC_PIN} (stable, release, x86_64-pc-windows-msvc)& exit /b 0)\r\necho %*>> "${log}"\r\nexit /b 0\r\n`,
-    );
-  } else {
-    writeFileSync(
-      join(bin, "deno"),
-      `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "deno ${DVMRC_PIN} (stable, release, x86_64-unknown-linux-gnu)"; exit 0; fi\nprintf '%s\\n' "$*" >> "${log}"\nexit 0\n`,
-      { mode: 0o755 },
-    );
+  const root = tmpDir("copilot-env-launcher-");
+  try {
+    // The staged checkout: the launcher, its bootstrap, the pin, the lockfile, and a
+    // node_modules NEWER than the lockfile so the launcher installs nothing.
+    const checkout = join(root, "checkout");
+    mkdirSync(join(checkout, "bin"), { recursive: true });
+    mkdirSync(join(checkout, "scripts"), { recursive: true });
+    for (
+      const rel of [
+        "bin/agent",
+        "bin/agent.ps1",
+        "scripts/ensure-deno.sh",
+        "scripts/ensure-deno.ps1",
+        ".dvmrc",
+        "deno.lock",
+      ]
+    ) {
+      copyFileSync(join(PROJECT_ROOT, rel), join(checkout, rel));
+    }
+    chmodSync(join(checkout, "bin", "agent"), 0o755);
+    mkdirSync(join(checkout, "node_modules"));
+    const pin = readFileSync(join(checkout, ".dvmrc"), "utf8").trim();
+    const home = join(root, "home");
+    const bin = join(root, "fake-bin");
+    const log = join(root, "deno-calls.log");
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    if (process.platform === "win32") {
+      writeFileSync(
+        join(bin, "deno.cmd"),
+        `@echo off\r\nif "%1"=="--version" (echo deno ${pin} (stable, release, x86_64-pc-windows-msvc)& exit /b 0)\r\necho %*>> "${log}"\r\nexit /b 0\r\n`,
+      );
+    } else {
+      writeFileSync(
+        join(bin, "deno"),
+        `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "deno ${pin} (stable, release, x86_64-unknown-linux-gnu)"; exit 0; fi\nprintf '%s\\n' "$*" >> "${log}"\nexit 0\n`,
+        { mode: 0o755 },
+      );
+    }
+    // HOME is scratch so the bootstrap finds no pinned deno under ~/.deno to prefer;
+    // PATH puts the fake first (the system dirs stay for sh/awk/find).
+    const env = {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      DENO_INSTALL: undefined,
+      PATH: process.platform === "win32"
+        ? `${bin};${process.env.PATH ?? ""}`
+        : `${bin}:/usr/bin:/bin`,
+    };
+    const result = process.platform === "win32"
+      ? runSync("powershell", [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        join(checkout, "bin", "agent.ps1"),
+        sub,
+      ], { env })
+      : runSync("sh", [join(checkout, "bin", "agent"), sub], { env });
+    if (result.exitCode !== 0) throw new Error(`launcher failed: ${result.stderr}`);
+    return existsSync(log)
+      ? readFileSync(log, "utf8").split(/\r?\n/).filter((l) => l.length > 0)
+      : [];
+  } finally {
+    removeDir(root);
   }
-  // HOME is a scratch dir so the bootstrap finds no pinned deno under ~/.deno to prefer;
-  // PATH puts the fake first (the system dirs stay for sh/awk/find).
-  const env = {
-    ...process.env,
-    HOME: home,
-    USERPROFILE: home,
-    DENO_INSTALL: undefined,
-    PATH: process.platform === "win32"
-      ? `${bin};${process.env.PATH ?? ""}`
-      : `${bin}:/usr/bin:/bin`,
-  };
-  const result = process.platform === "win32"
-    ? runSync("powershell", [
-      "-NoProfile",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-File",
-      join(PROJECT_ROOT, "bin", "agent.ps1"),
-      sub,
-    ], { env })
-    : runSync("sh", [join(PROJECT_ROOT, "bin", "agent"), sub], { env });
-  if (result.exitCode !== 0) throw new Error(`launcher failed: ${result.stderr}`);
-  return existsSync(log)
-    ? readFileSync(log, "utf8").split(/\r?\n/).filter((l) => l.length > 0)
-    : [];
 }
 
 test("the launcher runs the autoupdate preflight before `agent start` only", () => {
-  const start = launcherCalls("start").filter((l) => !l.includes("install --frozen"));
+  // Deps are staged fresh, so the launcher spawns nothing but the preflight and the CLI.
+  const start = launcherCalls("start");
   expect(start).toHaveLength(2);
   expect(start[0]).toMatch(/autoupdate[\\/]preflight\.ts$/);
   expect(start[1]).toMatch(/src[\\/]cli\.ts start$/);
-  const env = launcherCalls("env").filter((l) => !l.includes("install --frozen"));
+  const env = launcherCalls("env");
   expect(env).toHaveLength(1);
   expect(env[0]).toMatch(/src[\\/]cli\.ts env$/);
 });

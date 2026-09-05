@@ -1,7 +1,6 @@
-// The per-host CODEX_HOME farm (src/codex/host.ts), driven through the production
-// path: `agent codex` (runCodex, proxy-forced so nothing probes the network)
-// derives the farm from the `codex-host` key and writes the config. PATH points
-// at an empty dir so the shared-home prime can never spawn a real codex CLI.
+// The per-host CODEX_HOME farm (src/codex/host.ts) through the production path: `agent
+// codex` (proxy-forced, so nothing probes the network) derives it from the `codex-host`
+// key. PATH is an empty dir so the shared-home prime can never spawn a real codex CLI.
 
 import * as fs from "node:fs";
 import { join } from "node:path";
@@ -306,7 +305,7 @@ onlyWin("Windows: the key cannot be set, reads off, and the derivation is inert"
 /** The paths named by the `✓ ... → <path>` lines in a narration. */
 function narratedPaths(narrated: string): Set<string> {
   const out = new Set<string>();
-  for (const m of narrated.matchAll(/✓ [^\n]*? → (\S+)/g)) out.add(m[1] ?? "");
+  for (const m of narrated.matchAll(/✓ [^\n]*? → (.+)$/gm)) out.add((m[1] ?? "").trimEnd());
   return out;
 }
 

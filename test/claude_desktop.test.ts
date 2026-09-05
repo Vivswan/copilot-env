@@ -941,6 +941,29 @@ test("sync reconciles from the key: on wires (every write announced), off remove
   expect(removed).toContain(`Claude Desktop: released ownership of ${configPath} in `);
   expect(removed).toContain(`Claude Desktop: removed ${helper}`);
 
+  // Off with a MALFORMED profile store: the per-write removal touches nothing (the same
+  // guard as the whole-library sweep), and says why. Control: well-formed, it removes.
+  await wireClaudeDesktopEntry(directWire(WORK));
+  const workPath = join(library, `${(metaOf(library).entries as { id: string }[])[0]?.id}.json`);
+  const storeFile = new CopilotApiPaths().sharedStateFile;
+  const workHelper = desktopHelperPath(resolveRootHome(), "direct", WORK);
+  const snapshot = () => ({
+    meta: readFileSync(metaPath, "utf8"),
+    config: readFileSync(workPath, "utf8"),
+    helper: readFileSync(workHelper, "utf8"),
+    owned: new OwnershipLedger().ownedPaths("claudeDesktop"),
+  });
+  const before = snapshot();
+  writeFileSync(storeFile, "{ not json");
+  const guarded = await captureAllWrites(() => syncClaudeDesktopWiring(directWire(WORK)));
+  expect(guarded).toContain(
+    `the profile store ${storeFile} is malformed; leaving the config library alone`,
+  );
+  expect(snapshot()).toEqual(before);
+  writeFileSync(storeFile, "{}\n");
+  await syncClaudeDesktopWiring(directWire(WORK));
+  expect(existsSync(workPath)).toBe(false);
+
   // Off never creates: a library that does not exist stays that way.
   rmSync(library, { recursive: true, force: true });
   await syncClaudeDesktopWiring(directWire(WORK));
@@ -1391,6 +1414,23 @@ test.skipIf(NO_CHMOD_FAULTS)(
     try {
       const status = claudeDesktopStatus();
       expect(status.kind).toBe("unjudged");
+      // The preference actually read travels with the failed look (health publishes it).
+      expect(status.enabled).toBe(true);
+      new CopilotEnvConfig().set({ claudeDesktop: false });
+      expect(claudeDesktopStatus()).toMatchObject({ kind: "unjudged", enabled: false });
+      // The preference store itself unreadable: the registry default, and the reason says so.
+      const prefsFile = new CopilotApiPaths().envConfigFile;
+      chmodSync(prefsFile, 0o000);
+      try {
+        const noPrefs = claudeDesktopStatus();
+        expect(noPrefs).toMatchObject({ kind: "unjudged", enabled: true });
+        if (noPrefs.kind === "unjudged") {
+          expect(noPrefs.reason).toContain("the claude-desktop preference could not be read");
+        }
+      } finally {
+        chmodSync(prefsFile, 0o600);
+      }
+      new CopilotEnvConfig().del("claudeDesktop");
       const { lines, fix } = renderClaudeDesktopStatus(status);
       expect(lines[0]).toContain("the Desktop wiring could not be checked");
       expect(lines[0]).toContain(ledgerFile);

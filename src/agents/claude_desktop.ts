@@ -7,18 +7,18 @@ import {
   type DesktopTarget,
   type DesktopTargetResolution,
   inspectClaudeDesktopWiring,
+  profileStoreWellFormed,
   removeAllClaudeDesktopWiring,
   removeClaudeDesktopEntry,
   removeUnlistedClaudeDesktopClaims,
   syncClaudeDesktopWiring,
 } from "../claude/desktop.ts";
-import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { Credential } from "../copilot_api/credential.ts";
+import { configDefaultBoolean, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { profileLabel } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
-import { readTextResult } from "../utils/fs.ts";
-import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import type { ManagedWrite } from "./configure.ts";
 import { resolveAndPersistDirectIdentity } from "./profile_wiring.ts";
@@ -53,41 +53,33 @@ export function resolveClaudeDesktopTargets(): DesktopTargetResolution {
   return { kind: "resolved", targets };
 }
 
-/** Whether the profile store file is JSON with an object root and an object-of-objects
- *  `profiles` map (or is absent). The lenient store reader degrades any of those faults to
- *  "no profiles", which would make every named entry an orphan to delete. */
-function profileStoreWellFormed(storeFile: string): boolean {
-  const read = readTextResult(storeFile);
-  if (read.kind === "absent") return true;
-  if (read.kind === "unreadable") throw new Error(`could not read ${storeFile}: ${read.error}`);
-  if (read.text.trim() === "") return true; // the canonical reader's empty store
-  let doc: unknown;
-  try {
-    doc = JSON.parse(read.text);
-  } catch {
-    return false;
-  }
-  if (!isRecord(doc)) return false;
-  const profiles = doc["profiles"];
-  return profiles === undefined ||
-    (isRecord(profiles) && Object.values(profiles).every(isRecord));
-}
-
 /** The Desktop wiring judged against the promised targets (read-only). A failed look
  *  anywhere (an unreadable ledger, root home, or store) is an `unjudged` status, never a
  *  throw: `agent claude --check` and health report it and keep their own verdicts. */
 export function claudeDesktopStatus(): ClaudeDesktopStatus {
+  // The preference is read on its own first, so a later failed look still reports the
+  // value actually configured (health publishes it), never an assumed one.
+  let enabled = configDefaultBoolean("claude-desktop");
+  try {
+    enabled = new CopilotEnvConfig().claudeDesktopEnabled();
+  } catch (e) {
+    return unjudged(enabled, `the claude-desktop preference could not be read (${errMessage(e)})`);
+  }
   try {
     return inspectClaudeDesktopWiring(resolveClaudeDesktopTargets());
   } catch (e) {
-    return {
-      kind: "unjudged",
-      enabled: true,
-      installed: claudeDesktopInstalled(),
-      helperPaths: [],
-      reason: `the Desktop wiring could not be checked (${errMessage(e)})`,
-    };
+    return unjudged(enabled, `the Desktop wiring could not be checked (${errMessage(e)})`);
   }
+}
+
+function unjudged(enabled: boolean, reason: string): ClaudeDesktopStatus {
+  return {
+    kind: "unjudged",
+    enabled,
+    installed: claudeDesktopInstalled(),
+    helperPaths: [],
+    reason,
+  };
 }
 
 /** The whole-library reconcile after a default write: key off sweeps everything owned; key
@@ -107,9 +99,9 @@ export async function reconcileClaudeDesktopWiring(opts: { quiet?: boolean } = {
       return;
     }
     if (!claudeDesktopInstalled()) return;
-    for (const target of opts.quiet ? [] : resolution.targets) {
-      if (target.profile !== null) await syncNamedTarget(target.profile, target.mode);
-    }
+    // Every promised target, the default included: a key flipped back to true by a
+    // config-only import has no adapter write to ride on, so true is symmetric with false.
+    for (const target of opts.quiet ? [] : resolution.targets) await syncTarget(target);
     const status = inspectClaudeDesktopWiring(resolution);
     if (status.kind === "unreadable") {
       logger.warn(
@@ -133,17 +125,19 @@ export async function reconcileClaudeDesktopWiring(opts: { quiet?: boolean } = {
   }
 }
 
-/** One named target's upsert, resilient like `agent profile --sync`. */
-async function syncNamedTarget(
-  name: NonNullable<DesktopTarget["profile"]>,
-  mode: DesktopTarget["mode"],
-): Promise<void> {
+/** One target's upsert, resilient like `agent profile --sync`. The default resolves its
+ *  credential for the catalog fetch; a named profile's wire resolves its own. */
+async function syncTarget({ profile, mode }: DesktopTarget): Promise<void> {
   try {
+    const ghToken = profile === null && mode === "direct" ? new Credential().resolve() : undefined;
     const write: ManagedWrite = mode === "direct"
-      ? { mode: "direct", directIntegrationId: await resolveAndPersistDirectIdentity(name) }
+      ? {
+        mode: "direct",
+        directIntegrationId: await resolveAndPersistDirectIdentity(profile, ghToken),
+      }
       : { mode: "proxy" };
-    await syncClaudeDesktopWiring({ ...write, profile: name });
+    await syncClaudeDesktopWiring({ ...write, profile, directToken: ghToken });
   } catch (e) {
-    logger.warn(`  Could not refresh ${profileLabel(name)}'s Desktop entry: ${errMessage(e)}`);
+    logger.warn(`  Could not refresh ${profileLabel(profile)}'s Desktop entry: ${errMessage(e)}`);
   }
 }

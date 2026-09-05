@@ -807,14 +807,45 @@ function recordedModelRows(existing: Record<string, unknown>): DesktopModelSpec[
   return parsed;
 }
 
+/** Whether the profile store file is absent, empty, or JSON with an object root and an
+ *  object-of-objects `profiles` map. The lenient store reader degrades any other shape to
+ *  "no profiles", which would make every named entry an orphan to delete: every removal
+ *  decision checks this first and touches nothing when it fails. */
+export function profileStoreWellFormed(storeFile: string): boolean {
+  const read = readTextResult(storeFile);
+  if (read.kind === "absent") return true;
+  if (read.kind === "unreadable") throw new Error(`could not read ${storeFile}: ${read.error}`);
+  if (read.text.trim() === "") return true; // the canonical reader's empty store
+  let doc: unknown;
+  try {
+    doc = JSON.parse(read.text);
+  } catch {
+    return false;
+  }
+  if (!isRecord(doc)) return false;
+  const profiles = doc["profiles"];
+  return profiles === undefined ||
+    (isRecord(profiles) && Object.values(profiles).every(isRecord));
+}
+
 /** The per-entry reconcile every managed Claude write runs: key on upserts `profile`'s
- *  entry (when the app is installed), key off removes it. Only THIS entry: the whole-library
- *  sweep needs the resolved target set (src/agents/claude_desktop.ts). Best-effort: a
- *  Desktop failure warns and never fails the caller (the agents' own writes stand). */
+ *  entry (when the app is installed), key off removes it -- never on a malformed profile
+ *  store (the same guard the whole-library sweep in src/agents/claude_desktop.ts sits
+ *  behind). Best-effort: a Desktop failure warns and never fails the caller. */
 export async function syncClaudeDesktopWiring(opts: DesktopWireOptions): Promise<void> {
   try {
-    if (new CopilotEnvConfig().claudeDesktopEnabled()) await wireClaudeDesktopEntry(opts);
-    else removeClaudeDesktopEntry(opts.profile);
+    if (new CopilotEnvConfig().claudeDesktopEnabled()) {
+      await wireClaudeDesktopEntry(opts);
+      return;
+    }
+    const storeFile = new CopilotApiPaths().sharedStateFile;
+    if (!profileStoreWellFormed(storeFile)) {
+      logger.warn(
+        `  Claude Desktop: the profile store ${storeFile} is malformed; leaving the config library alone.`,
+      );
+      return;
+    }
+    removeClaudeDesktopEntry(opts.profile);
   } catch (e) {
     logger.warn(
       `  Could not wire Claude Desktop for ${profileLabel(opts.profile)}: ${errMessage(e)}`,

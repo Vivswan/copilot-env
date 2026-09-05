@@ -198,15 +198,13 @@ interface StoredRow {
   path: string;
   record: string;
   tailProbe: string;
-  lastTsMs: number | null;
 }
 
 function storedRows(): StoredRow[] {
   const db = new DatabaseSync(dbPath(), { readOnly: true });
   try {
     return db.prepare(
-      `SELECT "path", "record", "tail_probe" AS tailProbe, "last_ts_ms" AS lastTsMs
-         FROM "files" ORDER BY "path"`,
+      `SELECT "path", "record", "tail_probe" AS tailProbe FROM "files" ORDER BY "path"`,
     ).all() as unknown as StoredRow[];
   } finally {
     db.close();
@@ -598,7 +596,9 @@ test("a row with another contribution version is parsed whole; the rest reuse", 
     expect(result.records[i]).toEqual({ path, contribution: expectedContribution(path) });
   }
   reopened.close();
-  expect(storedRows().map((r) => (JSON.parse(r.record) as { v: number }).v)).toEqual([1, 1, 1]);
+  expect(storedRows().map((r) => (JSON.parse(r.record) as { v: number }).v)).toEqual(
+    [CONTRIBUTION_VERSION, CONTRIBUTION_VERSION, CONTRIBUTION_VERSION],
+  );
 });
 
 for (const corrupt of [-1, 1e20]) {
@@ -922,7 +922,7 @@ for (const { name, spoil, needle } of UNSTORABLE) {
   });
 }
 
-test("an extra property on a contribution is stripped: never stored, never a timestamp", () => {
+test("an extra property on a contribution is stripped, never stored", () => {
   setup();
   const a = join(logs, "a.jsonl");
   writeLines(a, 0, 3, "alpha");
@@ -932,7 +932,7 @@ test("an extra property on a contribution is stripped: never stored, never a tim
   const decorated: ParseWhole<ClaudeContribution> = (file) => {
     const parsed = parsers.whole(file);
     // A Claude contribution wearing a Codex-shaped `events` list: the shape a
-    // careless spread could produce. The timestamps must come from `occurrences`.
+    // careless spread could produce.
     const contribution: ClaudeContribution & { events: unknown } = {
       ...parsed.contribution,
       events: [[marker, marker, marker, marker, 1, 2, 3]],
@@ -944,13 +944,9 @@ test("an extra property on a contribution is stripped: never stored, never a tim
   expect(result.stats).toEqual(
     fullStats({ filesSeen: 1, filesParsedWhole: 1, bytesRead: statSync(a).size }),
   );
-  expect(index.candidatesNewerThan(0)).toEqual([
-    { path: a, source: "claude", lastTsMs: BASE_TS + 2_000 },
-  ]);
   index.close();
   const rows = storedRows();
   expect(rows.map((r) => r.path)).toEqual([a]);
-  expect(rows[0]?.lastTsMs).toBe(BASE_TS + 2_000);
   expect(JSON.parse(rows[0]?.record ?? "")).toEqual(expectedContribution(a));
   expect(rawIndexBytes()).not.toContain(marker);
 });
@@ -1090,39 +1086,6 @@ test("a rollback-mode database held by another connection is in use, not exclusi
   expect(again.records).toEqual(seeded.records);
 });
 
-test("candidatesNewerThan filters by the latest event and keeps undated rows", () => {
-  setup();
-  const a = join(logs, "a.jsonl");
-  const b = join(logs, "b.jsonl");
-  const undated = join(logs, "undated.jsonl");
-  writeLines(a, 0, 3, "alpha");
-  writeLines(b, 10, 3, "beta");
-  writeFileSync(undated, "no timestamp here\n");
-  const index = open();
-  runReconcile(index.reconcile, [walked(a), walked(b), walked(undated)]);
-  const since = BASE_TS + 5_000;
-  expect(index.candidatesNewerThan(since).map((s) => s.path).sort()).toEqual([b, undated].sort());
-  expect(index.candidatesNewerThan(BASE_TS).map((s) => s.path).sort()).toEqual(
-    [a, b, undated].sort(),
-  );
-  const summaryB = index.candidatesNewerThan(since).find((s) => s.path === b);
-  expect(summaryB).toEqual({ path: b, source: "claude", lastTsMs: BASE_TS + 12_000 });
-  index.close();
-  expect(storedRows().find((r) => r.path === undated)?.lastTsMs).toBeNull();
-
-  // A summary row that does not parse is an unreadable index, not an empty window;
-  // the same query answers again once the row is whole.
-  const reopened = open();
-  for (const corrupt of ["not a timestamp", -Infinity]) {
-    rewriteColumn(b, "last_ts_ms", corrupt);
-    expect(() => reopened.candidatesNewerThan(since)).toThrow();
-  }
-  rewriteColumn(b, "last_ts_ms", BASE_TS + 12_000);
-  expect(reopened.candidatesNewerThan(since).map((s) => s.path).sort()).toEqual(
-    [b, undated].sort(),
-  );
-});
-
 test("rows are scoped per source: a claude walk never deletes codex rows", () => {
   setup();
   const c = join(logs, "rollout.jsonl");
@@ -1231,6 +1194,10 @@ const CODEX_MUTATIONS: Mutation[] = [
   {
     name: "a string metaTsMs",
     mutate: (doc) => ({ ...doc, state: { ...(doc.state as object), metaTsMs: "1" } }),
+  },
+  {
+    name: "a negative forkKnownAfter",
+    mutate: (doc) => ({ ...doc, state: { ...(doc.state as object), forkKnownAfter: -1 } }),
   },
   { name: "events as an object", mutate: (doc) => ({ ...doc, events: {} }) },
   {
@@ -1372,6 +1339,7 @@ for (const mutation of CODEX_MUTATIONS) {
         model: "gpt",
         sessionIdHash: dedupKey("s"),
         forkedFromIdHash: dedupKey("p"),
+        forkKnownAfter: 0,
         metaTsMs: BASE_TS,
       },
       events: [[BASE_TS, "openai", "gpt", dedupKey(c), 1, 2, 3]],

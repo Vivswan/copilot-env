@@ -21,7 +21,7 @@ export type UsageSource = "codex" | "claude";
 /** Bump when a parser's OUTPUT for the same bytes changes (a new field, a fixed
  *  bug in what counts): a stored contribution with another version is parsed
  *  whole again. Never bump for a pure speedup. */
-export const CONTRIBUTION_VERSION = 1;
+export const CONTRIBUTION_VERSION = 2;
 
 /** A dedup key: 32 hex chars (128 bits) of SHA-256. Equality is all the dedup
  *  needs, 128 bits keeps accidental collisions out of any realistic corpus
@@ -51,6 +51,10 @@ export interface CodexParseState {
   metaTsMs?: number;
   /** dedupKey of `session_meta.payload.forked_from_id`, when the session is a fork. */
   forkedFromIdHash?: string;
+  /** How many events were already recorded when the fork was learned. The fork
+   *  rules apply to events from that index on: a token_count that precedes a
+   *  late `session_meta` was seen as an ordinary turn, and still is. */
+  forkKnownAfter?: number;
 }
 
 /**

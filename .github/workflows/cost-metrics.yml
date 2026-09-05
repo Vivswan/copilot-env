@@ -13,7 +13,10 @@ name: Cost metrics
 on:
   pull_request:
     paths:
-      - "src/usage/**"
+      - "src/**"
+      - "deno.json"
+      - "deno.lock"
+      - ".dvmrc"
       - "test/helpers/usage_fixtures.ts"
       - "test/fixtures/usage/**"
       - "scripts/usage_fixtures.ts"

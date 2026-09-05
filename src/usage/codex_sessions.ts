@@ -59,7 +59,7 @@ const ROLLOUT_FILE = /^rollout-(\d{4})-(\d{2})-(\d{2})T.*\.jsonl(\.zst)?$/;
 const MAX_WALK_DEPTH = 4; // sessions/YYYY/MM/DD/<file>
 
 /** The line kinds the parser reads; every other line is never decoded. */
-export const CODEX_NEEDLES: readonly string[] = [
+const CODEX_NEEDLES: readonly string[] = [
   '"session_meta"',
   '"turn_context"',
   '"token_count"',
@@ -211,7 +211,9 @@ export const parseCodexTail: ParseTail<CodexContribution> = (file, fromByte, pri
 
 /** Fold the contributions (walk order) into one report per provider. Per event:
  *  fork dedup (an info hash seen in this file or the parent is a copied
- *  token_count; parent unscanned: FORK_PREFIX_WINDOW_MS), THEN the window. */
+ *  token_count; parent unscanned: FORK_PREFIX_WINDOW_MS), THEN the window. The
+ *  fork rules start at the event the fork was learned before (`forkKnownAfter`);
+ *  every event's hash enters the file's own set regardless. */
 export function foldCodex(
   records: readonly FileRecord<CodexContribution>[],
   sinceMs: number | undefined,
@@ -223,19 +225,21 @@ export function foldCodex(
   // session id hash, so a later fork can drop the events it copied from its parent.
   const infoHashesBySession = new Map<string, Set<string>>();
   for (const { contribution: { state, events } } of records) {
-    const forked = state.forkedFromIdHash !== undefined;
-    const parentHashes = state.forkedFromIdHash === undefined
+    const { forkedFromIdHash, forkKnownAfter = 0, metaTsMs } = state;
+    const parentHashes = forkedFromIdHash === undefined
       ? undefined
-      : infoHashesBySession.get(state.forkedFromIdHash);
+      : infoHashesBySession.get(forkedFromIdHash);
     const ownHashes = new Set<string>();
-    for (const [tsMs, rawProvider, rawModel, infoHash, input, output, cacheRead] of events) {
+    for (let index = 0; index < events.length; index++) {
+      const [tsMs, rawProvider, rawModel, infoHash, input, output, cacheRead] = events[index]!;
+      const forked = forkedFromIdHash !== undefined && index >= forkKnownAfter;
       const duplicate = ownHashes.has(infoHash) ||
-        parentHashes?.has(infoHash) === true ||
         (forked &&
-          parentHashes === undefined &&
-          state.metaTsMs !== undefined &&
-          tsMs !== null &&
-          tsMs - state.metaTsMs <= FORK_PREFIX_WINDOW_MS);
+          (parentHashes?.has(infoHash) === true ||
+            (parentHashes === undefined &&
+              metaTsMs !== undefined &&
+              tsMs !== null &&
+              tsMs - metaTsMs <= FORK_PREFIX_WINDOW_MS)));
       ownHashes.add(infoHash);
       if (duplicate) {
         continue;
@@ -385,6 +389,7 @@ function parseCodexLine(line: string, contribution: CodexContribution): void {
     }
     if (typeof payload.forked_from_id === "string") {
       state.forkedFromIdHash = dedupKey(payload.forked_from_id);
+      state.forkKnownAfter = events.length;
     }
     const ts = typeof parsed.timestamp === "string" ? Date.parse(parsed.timestamp) : Number.NaN;
     state.metaTsMs = Number.isFinite(ts) ? ts : undefined;

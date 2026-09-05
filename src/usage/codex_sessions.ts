@@ -44,7 +44,7 @@ import {
   type Reconcile,
   type WalkedFile,
 } from "./contribution.ts";
-import { canonicalModelName } from "./pricing.ts";
+import { canonicalModelNames } from "./pricing.ts";
 import { scanBytes, scanLines } from "./scan.ts";
 import {
   record,
@@ -218,6 +218,7 @@ export function foldCodex(
   dayKey: DayKey,
 ): Map<string, UsageReport> {
   const providers = new Map<string, UsageReport>();
+  const canonical = canonicalModelNames();
   // Every token_count `info` seen per session (counted or not), keyed by the
   // session id hash, so a later fork can drop the events it copied from its parent.
   const infoHashesBySession = new Map<string, Set<string>>();
@@ -250,7 +251,7 @@ export function foldCodex(
       // Bucket by the user's LOCAL calendar day, not the UTC day the rollout
       // timestamp spells; a line with no parseable timestamp still counts
       // toward the totals.
-      record(report, tsMs === null ? null : dayKey(tsMs), canonicalModelName(rawModel), {
+      record(report, tsMs === null ? null : dayKey(tsMs), canonical(rawModel), {
         input,
         output,
         cacheRead,

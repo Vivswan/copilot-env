@@ -802,11 +802,13 @@ for (const when of ["before the run", "between two candidates"] as const) {
     const a = join(logs, "a.jsonl");
     const b = join(logs, "b.jsonl");
     const c = join(logs, "c.jsonl");
+    const d = join(logs, "d.jsonl");
     writeLines(a, 0, 3, "alpha");
     writeLines(b, 0, 3, "beta");
     writeLines(c, 0, 3, "gamma");
+    writeLines(d, 0, 3, "delta");
     const index = open();
-    runReconcile(index.reconcile, [walked(a), walked(b), walked(c)]);
+    runReconcile(index.reconcile, [walked(a), walked(b), walked(c), walked(d)]);
     rmSync(c);
 
     if (when === "before the run") hideFilesTable(true);
@@ -831,42 +833,48 @@ for (const when of ["before the run", "between two candidates"] as const) {
       return parsed;
     };
     appendLines(a, 3, 1, "alpha");
+    // d has grown too, but it is reached only AFTER the failure: it must parse whole
+    // without a probe read, since the failed index's snapshot is not consulted again.
+    appendLines(d, 3, 1, "delta");
     let result: ReturnType<Reconcile> | undefined;
     const out = captureAllWrites(() => {
-      result = index.reconcile("claude", [walked(a), walked(b)], whole, tail);
+      result = index.reconcile("claude", [walked(a), walked(b), walked(d)], whole, tail);
     });
     expect(out.split("usage index unreadable, parsing every file").length - 1).toBe(1);
     expect(out).not.toContain("could not read");
-    expect(result?.records.map((r) => r.path)).toEqual([a, b]);
+    expect(result?.records.map((r) => r.path)).toEqual([a, b, d]);
     expect(result?.records[0]?.contribution).toEqual(expectedContribution(a));
     expect(result?.records[1]?.contribution).toEqual(expectedContribution(b));
-    // Before: nothing is known, both parse whole. Between: a still resumed from its
-    // row (a tail parse), then the failure made b a whole parse.
+    expect(result?.records[2]?.contribution).toEqual(expectedContribution(d));
+    // Before: nothing is known, all parse whole. Between: a still resumed from its
+    // row (a tail parse), then the failure made b and d whole parses.
     const expectedTail = when === "before the run" ? 0 : 1;
     expect(result?.stats).toEqual(fullStats({
-      filesSeen: 2,
-      filesParsedWhole: 2 - expectedTail,
+      filesSeen: 3,
+      filesParsedWhole: 3 - expectedTail,
       filesParsedTail: expectedTail,
       bytesRead: (expectedTail === 1
         ? TAIL_PROBE_BYTES + Buffer.byteLength(line(3, "alpha"))
         : statSync(a).size) +
-        statSync(b).size,
+        statSync(b).size + statSync(d).size,
     }));
     index.close();
     // Nothing was saved although the table was back: a's row still describes the
     // 3-line file and the deleted c's row is still there.
     const rows = storedRows();
-    expect(rows.map((r) => r.path)).toEqual([a, b, c]);
+    expect(rows.map((r) => r.path)).toEqual([a, b, c, d]);
     expect((JSON.parse(rows[0]?.record ?? "") as ClaudeContribution).occurrences.length).toBe(3);
-    // The next run, index healthy, catches up from those rows.
+    // The next run, index healthy, catches up from those rows: a and d resume from
+    // their 3-line rows, b reuses, the deleted c goes.
     const reopened = open();
-    const next = runReconcile(reopened.reconcile, [walked(a), walked(b)]);
+    const next = runReconcile(reopened.reconcile, [walked(a), walked(b), walked(d)]);
     expect(next.stats).toEqual(fullStats({
-      filesSeen: 2,
+      filesSeen: 3,
       filesReused: 1,
-      filesParsedTail: 1,
+      filesParsedTail: 2,
       filesDeleted: 1,
-      bytesRead: TAIL_PROBE_BYTES + Buffer.byteLength(line(3, "alpha")),
+      bytesRead: 2 * TAIL_PROBE_BYTES + Buffer.byteLength(line(3, "alpha")) +
+        Buffer.byteLength(line(3, "delta")),
     }));
   });
 }
@@ -1211,6 +1219,260 @@ test("a codex row with an inherited-name property in its state is not reused", (
   reopened.close();
   expect(JSON.parse(storedRows()[0]?.record ?? "")).toEqual(doc);
   expect(rawIndexBytes()).not.toContain(marker);
+});
+
+// The stored-row reader is hand-written for speed; these hold it to exactly what the
+// write side admits. Every mutation of a valid row must read as "no row" (a whole
+// parse); the identity re-serialization is the control that still reuses.
+/** A corruption of a stored record: of the parsed document (re-serialized), or of the
+ *  raw text, for values JSON.stringify cannot produce (`1e999` parses to Infinity). */
+type Mutation =
+  | { name: string; mutate(doc: Record<string, unknown>): unknown; raw?: undefined }
+  | { name: string; raw(record: string): string; mutate?: undefined };
+
+/** The last count of the last tuple (`...,3]]`) as an out-of-range literal. */
+const INFINITE_LAST_COUNT = (record: string): string => record.replace(/\d+\]\]/, "1e999]]");
+
+const CODEX_MUTATIONS: Mutation[] = [
+  { name: "identity (control)", mutate: (doc) => doc },
+  { name: "an extra top-level key", mutate: (doc) => ({ ...doc, extra: 1 }) },
+  { name: "another version", mutate: (doc) => ({ ...doc, v: CONTRIBUTION_VERSION + 1 }) },
+  { name: "a missing state", mutate: ({ state: _state, ...rest }) => rest },
+  {
+    name: "an extra state key",
+    mutate: (doc) => ({ ...doc, state: { ...(doc.state as object), extra: 1 } }),
+  },
+  {
+    name: "a numeric provider",
+    mutate: (doc) => ({ ...doc, state: { ...(doc.state as object), provider: 1 } }),
+  },
+  {
+    name: "an uppercase session hash",
+    mutate: (doc) => ({
+      ...doc,
+      state: { ...(doc.state as object), sessionIdHash: dedupKey("x").toUpperCase() },
+    }),
+  },
+  {
+    name: "a short fork hash",
+    mutate: (doc) => ({ ...doc, state: { ...(doc.state as object), forkedFromIdHash: "abc" } }),
+  },
+  {
+    name: "a string metaTsMs",
+    mutate: (doc) => ({ ...doc, state: { ...(doc.state as object), metaTsMs: "1" } }),
+  },
+  { name: "events as an object", mutate: (doc) => ({ ...doc, events: {} }) },
+  {
+    name: "a six-item event",
+    mutate: (doc) => ({ ...doc, events: [(doc.events as unknown[][])[0]!.slice(0, 6)] }),
+  },
+  {
+    name: "an eight-item event",
+    mutate: (doc) => ({ ...doc, events: [[...(doc.events as unknown[][])[0]!, 0]] }),
+  },
+  {
+    name: "a string timestamp",
+    mutate: (doc) => ({ ...doc, events: [replaceAt((doc.events as unknown[][])[0]!, 0, "1")] }),
+  },
+  {
+    name: "a null provider",
+    mutate: (doc) => ({ ...doc, events: [replaceAt((doc.events as unknown[][])[0]!, 1, null)] }),
+  },
+  {
+    name: "a non-hex info hash",
+    mutate: (doc) => ({
+      ...doc,
+      events: [replaceAt((doc.events as unknown[][])[0]!, 3, "g".repeat(32))],
+    }),
+  },
+  {
+    name: "a string count",
+    mutate: (doc) => ({ ...doc, events: [replaceAt((doc.events as unknown[][])[0]!, 4, "1")] }),
+  },
+  {
+    name: "a null count",
+    mutate: (doc) => ({ ...doc, events: [replaceAt((doc.events as unknown[][])[0]!, 6, null)] }),
+  },
+  { name: "an infinite count in the raw record", raw: INFINITE_LAST_COUNT },
+  {
+    name: "an infinite metaTsMs in the raw record",
+    raw: (record) => record.replace(`"metaTsMs":${BASE_TS}`, '"metaTsMs":1e999'),
+  },
+];
+
+const CLAUDE_MUTATIONS: Mutation[] = [
+  { name: "identity (control)", mutate: (doc) => doc },
+  { name: "an extra top-level key", mutate: (doc) => ({ ...doc, extra: 1 }) },
+  { name: "another version", mutate: (doc) => ({ ...doc, v: CONTRIBUTION_VERSION + 1 }) },
+  { name: "occurrences as an object", mutate: (doc) => ({ ...doc, occurrences: {} }) },
+  {
+    name: "a six-item occurrence",
+    mutate: (doc) => ({ ...doc, occurrences: [(doc.occurrences as unknown[][])[0]!.slice(0, 6)] }),
+  },
+  {
+    name: "a non-hash id",
+    mutate: (doc) => ({
+      ...doc,
+      occurrences: [replaceAt((doc.occurrences as unknown[][])[0]!, 0, "msg_1")],
+    }),
+  },
+  {
+    name: "a string timestamp",
+    mutate: (doc) => ({
+      ...doc,
+      occurrences: [replaceAt((doc.occurrences as unknown[][])[0]!, 1, "1")],
+    }),
+  },
+  {
+    name: "a numeric model",
+    mutate: (doc) => ({
+      ...doc,
+      occurrences: [replaceAt((doc.occurrences as unknown[][])[0]!, 2, 5)],
+    }),
+  },
+  {
+    name: "a null count",
+    mutate: (doc) => ({
+      ...doc,
+      occurrences: [replaceAt((doc.occurrences as unknown[][])[0]!, 3, null)],
+    }),
+  },
+  {
+    name: "a boolean count",
+    mutate: (doc) => ({
+      ...doc,
+      occurrences: [replaceAt((doc.occurrences as unknown[][])[0]!, 6, true)],
+    }),
+  },
+  { name: "an infinite count in the raw record", raw: INFINITE_LAST_COUNT },
+];
+
+function replaceAt(tuple: unknown[], at: number, value: unknown): unknown[] {
+  const copy = [...tuple];
+  copy[at] = value;
+  return copy;
+}
+
+/** `record` with `mutation` applied; a raw mutation must actually change the text. */
+function mutated(record: string, mutation: Mutation): string {
+  if (mutation.raw !== undefined) {
+    const out = mutation.raw(record);
+    expect(out).not.toBe(record);
+    return out;
+  }
+  return JSON.stringify(mutation.mutate(JSON.parse(record) as Record<string, unknown>));
+}
+
+for (const mutation of CLAUDE_MUTATIONS) {
+  const { name } = mutation;
+  const reused = name.includes("control");
+  test(`a stored claude row with ${name} is ${reused ? "reused" : "parsed whole"}`, () => {
+    setup();
+    const a = join(logs, "a.jsonl");
+    writeLines(a, 0, 2, "alpha");
+    const index = open();
+    runReconcile(index.reconcile, [walked(a)]);
+    index.close();
+    rewriteRecord(a, mutated(storedRows()[0]?.record ?? "", mutation));
+
+    const reopened = open();
+    const result = runReconcile(reopened.reconcile, [walked(a)]);
+    expect(result.stats).toEqual(fullStats(
+      reused
+        ? { filesSeen: 1, filesReused: 1 }
+        : { filesSeen: 1, filesParsedWhole: 1, bytesRead: statSync(a).size },
+    ));
+    expect(result.records[0]?.contribution).toEqual(expectedContribution(a));
+    reopened.close();
+  });
+}
+
+for (const mutation of CODEX_MUTATIONS) {
+  const { name } = mutation;
+  const reused = name.includes("control");
+  test(`a stored codex row with ${name} is ${reused ? "reused" : "parsed whole"}`, () => {
+    setup();
+    const c = join(logs, "rollout.jsonl");
+    writeLines(c, 0, 2, "codex");
+    const contribution: CodexContribution = {
+      v: CONTRIBUTION_VERSION,
+      state: {
+        provider: "openai",
+        model: "gpt",
+        sessionIdHash: dedupKey("s"),
+        forkedFromIdHash: dedupKey("p"),
+        metaTsMs: BASE_TS,
+      },
+      events: [[BASE_TS, "openai", "gpt", dedupKey(c), 1, 2, 3]],
+    };
+    const wholeCalls: string[] = [];
+    const codexWhole: ParseWhole<CodexContribution> = (file) => {
+      wholeCalls.push(file.path);
+      return { contribution, parsedThrough: file.size, tailProbeHex: "", bytesRead: file.size };
+    };
+    const noTail = (): never => {
+      throw new Error("no tail");
+    };
+    const index = open();
+    index.reconcile("codex", [walked(c)], codexWhole, noTail);
+    index.close();
+    rewriteRecord(c, mutated(storedRows()[0]?.record ?? "", mutation));
+
+    const reopened = open();
+    const result = reopened.reconcile("codex", [walked(c)], codexWhole, noTail);
+    expect(result.stats).toEqual(fullStats(
+      reused
+        ? { filesSeen: 1, filesReused: 1 }
+        : { filesSeen: 1, filesParsedWhole: 1, bytesRead: statSync(c).size },
+    ));
+    expect(wholeCalls).toEqual(reused ? [c] : [c, c]);
+    expect(result.records[0]?.contribution).toEqual(contribution);
+    reopened.close();
+  });
+}
+
+test("a row another run rewrote between the identity read and the record read is not trusted", () => {
+  setup();
+  const a = join(logs, "a.jsonl");
+  const b = join(logs, "b.jsonl");
+  writeLines(a, 0, 3, "alpha");
+  writeLines(b, 0, 3, "beta");
+  const first = open();
+  runReconcile(first.reconcile, [walked(a), walked(b)]);
+  first.close();
+
+  // This run's walk sees b BEFORE another run appends to it and commits the grown
+  // row. The reconcile reads every row's identity up front, then parses a (grown, so
+  // its tail parser runs); that parser stands in for the concurrent run.
+  const appendedA = appendLines(a, 3, 1, "alpha");
+  const files = [walked(a), walked(b)];
+  let appendedB = 0;
+  const calls: ParserCalls = { whole: [], tail: [] };
+  const parsers = fakeParsers(calls);
+  const racingTail: ParseTail<ClaudeContribution> = (file, fromByte, prior) => {
+    appendedB = appendLines(b, 3, 1, "beta");
+    const other = open();
+    runReconcile(other.reconcile, [walked(b)]);
+    other.close();
+    return parsers.tail(file, fromByte, prior);
+  };
+
+  const index = open();
+  const result = index.reconcile("claude", files, parsers.whole, racingTail);
+  // b's stale walk entry matches the identity this run snapshotted, but the row behind
+  // it now describes four lines: trusting it would hand the fold a contribution for a
+  // file the walk described as three. The record fetch sees the changed identity and
+  // the file parses whole instead.
+  expect(calls.whole).toEqual([b]);
+  expect(result.stats).toEqual(fullStats({
+    filesSeen: 2,
+    filesParsedTail: 1,
+    filesParsedWhole: 1,
+    bytesRead: TAIL_PROBE_BYTES + appendedA + statSync(b).size,
+  }));
+  expect(appendedB).toBeGreaterThan(0);
+  expect(result.records[1]).toEqual({ path: b, contribution: expectedContribution(b) });
+  index.close();
 });
 
 /** Files that fail to open as OUR database without proving they are nobody's. */

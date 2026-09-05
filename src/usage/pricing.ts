@@ -337,6 +337,21 @@ export function canonicalModelName(model: string): string {
   return internal ? `${n}-internal` : n;
 }
 
+/** canonicalModelName memoized per distinct raw id, for a fold that meets the same
+ *  handful of ids hundreds of thousands of times. One memo per fold keeps the map's
+ *  life bounded by the run, whatever ids a log happens to contain. */
+export function canonicalModelNames(): (model: string) => string {
+  const memo = new Map<string, string>();
+  return (model) => {
+    let canonical = memo.get(model);
+    if (canonical === undefined) {
+      canonical = canonicalModelName(model);
+      memo.set(model, canonical);
+    }
+    return canonical;
+  };
+}
+
 /** Map an internal model id onto an OpenRouter id, or null if none matches. */
 export function resolvePricingId(model: string, catalogIds: Set<string>): string | null {
   const normalized = normalizeModelName(model);

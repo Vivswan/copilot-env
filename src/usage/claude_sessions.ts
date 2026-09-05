@@ -47,7 +47,7 @@ import {
   type Reconcile,
   type WalkedFile,
 } from "./contribution.ts";
-import { canonicalModelName } from "./pricing.ts";
+import { canonicalModelNames } from "./pricing.ts";
 import { scanLines } from "./scan.ts";
 import {
   record,
@@ -167,16 +167,22 @@ export function foldClaude(
 ): UsageReport {
   const report = usageReport();
   const seenMessages = new Map<string, TokenBuckets>();
+  // Transcripts log Anthropic's dashed, date-snapshotted ids; key rows by the
+  // canonical spelling so they merge with the proxy's Copilot ids.
+  const canonical = canonicalModelNames();
   for (const { contribution } of records) {
-    for (const [idHash, tsMs, rawModel, ...counts] of contribution.occurrences) {
+    for (const occurrence of contribution.occurrences) {
+      const [idHash, tsMs, rawModel] = occurrence;
       if (sinceMs !== undefined && !(tsMs !== null && tsMs >= sinceMs)) {
         continue; // outside the window (or no timestamp under a cutoff)
       }
-      // Transcripts log Anthropic's dashed, date-snapshotted ids; key rows by
-      // the canonical spelling so they merge with the proxy's Copilot ids.
-      const model = canonicalModelName(rawModel);
-      const [input, output, cacheRead, cacheCreation] = counts;
-      const snapshot: TokenBuckets = { input, output, cacheRead, cacheCreation };
+      const model = canonical(rawModel);
+      const snapshot: TokenBuckets = {
+        input: occurrence[3],
+        output: occurrence[4],
+        cacheRead: occurrence[5],
+        cacheCreation: occurrence[6],
+      };
       // A repeated id books only the positive per-bucket delta over what was
       // already counted (streaming snapshots grow toward the final count;
       // resume/fork copies repeat it exactly, delta zero). Id-less lines (not

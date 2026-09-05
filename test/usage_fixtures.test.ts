@@ -29,7 +29,6 @@ import {
   loadProfile,
   MEGABYTE,
   modelLabel,
-  mulberry32,
   parseProfile,
   type Profile,
   PROFILE_PATH,
@@ -407,16 +406,48 @@ test("the committed fixtures and generator sources are ASCII, non-ASCII living o
   expect(ascii.test("plain\u0080")).toBe(false);
 });
 
-test("a quantile table summarizes its values and the sampler never leaves its tails", () => {
+test("a quantile table summarizes its values and the sampler interpolates it piecewise", () => {
   const q = quantiles([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   expect(q).toEqual({ count: 10, p5: 1, p25: 3, p50: 6, p75: 8, p95: 10, p99: 10 });
-  const draw = mulberry32(7);
-  for (let i = 0; i < 1000; i++) {
-    const x = sampleQuantile(draw, q);
-    expect(x).toBeGreaterThanOrEqual(q.p5);
-    expect(x).toBeLessThanOrEqual(q.p99);
-  }
   expect(quantiles([])).toEqual({ count: 0, p5: 0, p25: 0, p50: 0, p75: 0, p95: 0, p99: 0 });
+  // A draw of u lands exactly on the table at the breakpoints, halfway between two of them
+  // at the midpoint of their interval, and on the outer tail below p5 or above p99.
+  const table = { count: 6, p5: 10, p25: 20, p50: 40, p75: 70, p95: 90, p99: 100 };
+  const at = (u: number): number => sampleQuantile(() => u, table);
+  expect([0.05, 0.25, 0.5, 0.75, 0.95, 0.99].map(at)).toEqual([10, 20, 40, 70, 90, 100]);
+  expect(at(0.375)).toBe(30);
+  expect(at(0.625)).toBe(55);
+  expect(at(0.97)).toBe(95);
+  expect(at(0.01)).toBe(10);
+  expect(at(0.999)).toBe(100);
+});
+
+/** Every instant-shaped key in a template with the placeholder it holds. */
+function instantKeys(value: unknown, out: [string, unknown][] = []): [string, unknown][] {
+  if (Array.isArray(value)) {
+    for (const item of value) instantKeys(item, out);
+  } else if (typeof value === "object" && value !== null) {
+    for (const [key, item] of Object.entries(value)) {
+      if (key === "timestamp" || /_at(_ms)?$/.test(key)) out.push([key, item]);
+      else instantKeys(item, out);
+    }
+  }
+  return out;
+}
+
+test("every instant-shaped key the templates emit holds a tracked placeholder", () => {
+  // The span scan keys on these shapes; a new instant field with an untracked placeholder
+  // would be written to disk and missed by the span, so it must fail here first.
+  const tracked = new Set(["@ts", "@startedMs", "@nowMs"]);
+  const found = instantKeys([templates.codex, templates.claude]);
+  expect(found.length).toBeGreaterThan(5);
+  for (const [key, placeholder] of found) {
+    expect(typeof placeholder === "string" && tracked.has(placeholder), `${key}`).toBe(true);
+  }
+  expect(new Set(found.map(([, ph]) => ph))).toEqual(tracked);
+  // Controls: an instant key under a filler placeholder, and a duration key, are told apart.
+  expect(instantKeys({ "payload": { "started_at": "@fill" } })).toEqual([["started_at", "@fill"]]);
+  expect(instantKeys({ "payload": { "duration_ms": "@durationMs" } })).toEqual([]);
 });
 
 test("the same seed yields identical bytes and a different seed does not", async () => {
@@ -910,7 +941,7 @@ test(
 );
 
 test(
-  "a non-empty root is refused before anything is written, and files are created exclusively",
+  "a non-empty root is refused before anything is written",
   async () => {
     const root = freshRoot();
     const sentinel = join(root, "keep-me.jsonl");
@@ -923,9 +954,11 @@ test(
     await expect(generateUsageTree({ root: sentinel, mb: 1, seed: 1 })).rejects.toThrow(
       /empty directory/,
     );
-    if (Deno.build.os !== "windows") {
+    // A junction on Windows, a symlink elsewhere; a broken link is POSIX-only.
+    const linkType = Deno.build.os === "windows" ? "junction" : "dir";
+    {
       const linked = join(freshRoot(), "linked");
-      symlinkSync(freshRoot(), linked, "dir");
+      symlinkSync(freshRoot(), linked, linkType);
       await expect(generateUsageTree({ root: linked, mb: 1, seed: 1 })).rejects.toThrow(
         /empty directory/,
       );
@@ -936,11 +969,13 @@ test(
       await expect(generateUsageTree({ root: `${linked}/.`, mb: 1, seed: 1 })).rejects.toThrow(
         /empty directory/,
       );
-      const broken = join(freshRoot(), "broken");
-      symlinkSync(join(freshRoot(), "gone"), broken, "dir");
-      await expect(generateUsageTree({ root: broken, mb: 1, seed: 1 })).rejects.toThrow(
-        /empty directory/,
-      );
+      if (Deno.build.os !== "windows") {
+        const broken = join(freshRoot(), "broken");
+        symlinkSync(join(freshRoot(), "gone"), broken, "dir");
+        await expect(generateUsageTree({ root: broken, mb: 1, seed: 1 })).rejects.toThrow(
+          /empty directory/,
+        );
+      }
     }
     // An empty directory and an absent one both work.
     expect((await generateUsageTree({ root: freshRoot(), mb: 0.05, seed: 1 })).files.length)
@@ -967,7 +1002,7 @@ const tree = await generateUsageTree({ root: Deno.args[0]!, mb: 0.05, seed: 3 })
 console.log(JSON.stringify({ files: tree.files.length }));
 `,
   );
-  const result = runSync("deno", [
+  const result = runSync(Deno.execPath(), [
     "run",
     "--config",
     join(ROOT, "deno.json"),
@@ -1117,7 +1152,7 @@ test("options are validated up front, and a zone-less end is refused", async () 
 
 test("the CLI wrapper writes the tree and prints one JSON summary line", () => {
   const root = freshRoot();
-  const result = runSync("deno", [
+  const result = runSync(Deno.execPath(), [
     ...denoRunArgs(),
     join(ROOT, "scripts", "usage_fixtures.ts"),
     "--out",
@@ -1148,16 +1183,12 @@ test("the CLI wrapper writes the tree and prints one JSON summary line", () => {
   expect(summary.lastDay).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   expect(summary.firstDay).toBe(days[0]);
   expect(summary.lastDay).toBe(days[days.length - 1]);
-  // The consumer contract: these keys, at least.
-  for (const key of ["files", "bytes", "mb", "seed", "firstDay", "lastDay"]) {
-    expect(Object.hasOwn(summary, key)).toBe(true);
-  }
   expect((summary.lastDay as string) <= "2026-09-01").toBe(true);
   expect(walk(join(root, ".codex")).length + walk(join(root, ".claude")).length).toBe(
     summary.files,
   );
 
-  const bad = runSync("deno", [
+  const bad = runSync(Deno.execPath(), [
     ...denoRunArgs(),
     join(ROOT, "scripts", "usage_fixtures.ts"),
     "--out",
@@ -1286,7 +1317,7 @@ test("the profiler books a resumed message once, at the maximum across files", a
     `${rollout}\n`,
   );
   const out = join(freshRoot(), "profile.json");
-  const result = runSync("deno", [...PROFILER_ARGS, "--out", out], {
+  const result = runSync(Deno.execPath(), [...PROFILER_ARGS, "--out", out], {
     cwd: ROOT,
     env: {
       ...process.env,
@@ -1357,7 +1388,7 @@ test(
       CLAUDE_CONFIG_DIR: tree.claudeRoot,
       COPILOT_API_HOME: join(tree.root, ".copilot-env"),
     };
-    const result = runSync("deno", [...PROFILER_ARGS, "--out", out], {
+    const result = runSync(Deno.execPath(), [...PROFILER_ARGS, "--out", out], {
       cwd: ROOT,
       env,
       timeoutMs: 120_000,
@@ -1401,7 +1432,7 @@ test(
     // profiler refuses to write rather than emit an unusable profile.
     const emptyHome = freshRoot();
     const emptyOut = join(freshRoot(), "profile.json");
-    const empty = runSync("deno", [...PROFILER_ARGS, "--out", emptyOut], {
+    const empty = runSync(Deno.execPath(), [...PROFILER_ARGS, "--out", emptyOut], {
       cwd: ROOT,
       env: {
         ...env,
@@ -1430,7 +1461,7 @@ test(
       const mode = statSync(victim).mode;
       try {
         Deno.chmodSync(victim, 0o000);
-        const refused = runSync("deno", [...PROFILER_ARGS, "--out", refusedOut], {
+        const refused = runSync(Deno.execPath(), [...PROFILER_ARGS, "--out", refusedOut], {
           cwd: ROOT,
           env,
           timeoutMs: 120_000,

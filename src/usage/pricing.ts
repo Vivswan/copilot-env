@@ -103,15 +103,23 @@ export async function fetchPricing(
     if (!isRecord(entry) || typeof entry.id !== "string" || !MODEL_ID_RE.test(entry.id)) {
       continue;
     }
-    const pricing = isRecord(entry.pricing) ? entry.pricing : {};
-    out.set(entry.id.toLowerCase(), {
-      input: perMillion(pricing.prompt),
-      output: perMillion(pricing.completion),
-      cacheRead: perMillion(pricing.input_cache_read),
-      cacheCreation: perMillion(pricing.input_cache_write),
-    });
+    const tier = tierOf(isRecord(entry.pricing) ? entry.pricing : {});
+    if (tier !== null) out.set(entry.id.toLowerCase(), tier);
   }
   return out;
+}
+
+/** An entry's tier, or null when a supplied rate is not a price (OpenRouter's
+ *  router pseudo-models list `-1`): that model stays unpriced instead of
+ *  spoiling the whole list. */
+function tierOf(pricing: Record<string, unknown>): PricingTier | null {
+  const tier: PricingTier = {
+    input: perMillion(pricing.prompt),
+    output: perMillion(pricing.completion),
+    cacheRead: perMillion(pricing.input_cache_read),
+    cacheCreation: perMillion(pricing.input_cache_write),
+  };
+  return v.is(TIER_SCHEMA, tier) ? tier : null;
 }
 
 /** A loaded price list and where it came from. `fetchedAtMs` is when the
@@ -219,8 +227,7 @@ const TIER_SCHEMA = v.strictObject({
 
 // THE definition of a usable price list, applied to a fetched response before
 // it is persisted and to a cache record when it is read, so the two can never
-// disagree: lowercased routable ids, every rate finite and nonnegative, and at
-// least one model priced.
+// disagree; tierOf holds each fetched entry to TIER_SCHEMA on its own.
 const TIERS_SCHEMA = v.pipe(
   v.record(
     v.pipe(v.string(), v.regex(MODEL_ID_RE), v.check((id) => id === id.toLowerCase())),
@@ -552,13 +559,17 @@ function tokenCost(tokens: number, ratePerMillion: number | undefined): number {
   return (tokens / PER_MILLION) * ratePerMillion;
 }
 
-/** Convert OpenRouter's per-token string price into per-million USD. */
+/** Convert OpenRouter's per-token price into per-million USD. Absent (undefined)
+ *  when the field is omitted, blank, or not a string/number; otherwise the
+ *  parsed number as-is, so a non-price (`-1`, `abc`) reaches tierOf's check. */
 function perMillion(value: unknown): number | undefined {
   if (typeof value !== "string" && typeof value !== "number") {
     return undefined;
   }
-  const num = value === "" ? NaN : Number(value);
-  return Number.isFinite(num) ? num * PER_MILLION : undefined;
+  if (typeof value === "string" && value.trim() === "") {
+    return undefined;
+  }
+  return Number(value) * PER_MILLION;
 }
 
 /** The ONE precision every SERIALIZED USD amount uses: 4 decimal places. Applied

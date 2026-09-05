@@ -493,14 +493,16 @@ test("loadPricing keeps one cache file per url", () =>
     expect(down.calls).toBe(0);
   }));
 
-test("fetchPricing reads only string or number rates; other JSON types are absent", () =>
+test("fetchPricing reads only string or number rates; other types and blank strings are absent", () =>
   withCacheDir(async (cacheDir) => {
     const net = fakeFetch({
       data: [
         { id: "a/bool", pricing: { prompt: true, completion: "0.000002" } },
         { id: "a/array", pricing: { prompt: [], completion: {} } },
         { id: "a/number", pricing: { prompt: 0.000001, completion: "0.000002" } },
-        { id: "a/blank", pricing: { prompt: "", completion: "abc" } },
+        { id: "a/blank", pricing: { prompt: "", completion: "   " } },
+        { id: "a/padded", pricing: { prompt: " 0.000001 ", completion: "0.000002" } },
+        { id: "a/garbage", pricing: { prompt: "abc", completion: "0.000002" } },
       ],
     });
     const loaded = await loadPricing(PRICE_URL, { cacheDir, nowMs: 1, fetchImpl: net.fetch });
@@ -510,8 +512,12 @@ test("fetchPricing reads only string or number rates; other JSON types are absen
     expect(loaded.pricing.get("a/array")).toEqual({ input: undefined, output: undefined });
     // Negative control: a numeric string and a plain number both price.
     expect(loaded.pricing.get("a/number")).toEqual({ input: 1, output: 2 });
-    // Blank and malformed strings stay absent, as before.
+    // Empty and whitespace-only strings are absent (Number("   ") is 0, which
+    // would have priced the bucket as free); a padded number still prices.
     expect(loaded.pricing.get("a/blank")).toEqual({ input: undefined, output: undefined });
+    expect(loaded.pricing.get("a/padded")).toEqual({ input: 1, output: 2 });
+    // A string that is neither blank nor a number is not a price: the model is dropped.
+    expect(loaded.pricing.has("a/garbage")).toBe(false);
   }));
 
 test("loadPricing round-trips a tier with absent rates", () =>
@@ -591,54 +597,94 @@ test("loadPricing serves a fetched list even when the cache cannot be written", 
     expect(ok).toEqual({ source: "fetched", pricing: ok.pricing, fetchedAtMs: 1 });
   }));
 
-test("loadPricing treats a nonempty response without usable prices as a failed refresh", () =>
+// Modelled on the live catalog, where the router pseudo-models (`openrouter/auto`
+// and friends) carry `-1` sentinel rates beside hundreds of priced models.
+test("loadPricing drops the entries that are not prices and keeps the rest of the catalog", () =>
+  withCacheDir(async (cacheDir) => {
+    const now = 1_700_000_000_000;
+    const net = fakeFetch({
+      data: [
+        {
+          id: "anthropic/claude-opus-4.8",
+          pricing: { prompt: "0.000015", completion: "0.000075" },
+        },
+        { id: "openai/gpt-5.5", pricing: { prompt: "0.000002", completion: "0.000008" } },
+        { id: "Google/Gemini-3-Pro", pricing: { prompt: "0.000001", completion: "0.000004" } },
+        { id: "openrouter/auto", pricing: { prompt: "-1", completion: "-1" } },
+        { id: "openrouter/fusion", pricing: { prompt: "0.000001", completion: "-1" } },
+        { id: "vendor/infinite", pricing: { prompt: "Infinity", completion: "0.000001" } },
+        { id: "vendor/nan", pricing: { prompt: 0.000001, completion: "NaN" } },
+        { id: "vendor/negative-number", pricing: { prompt: -0.000001, completion: "0.000001" } },
+        { id: "vendor/space d", pricing: { prompt: "0.000001", completion: "0.000001" } },
+        { id: "", pricing: { prompt: "0.000001", completion: "0.000001" } },
+      ],
+    });
+
+    const loaded = await loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: net.fetch });
+
+    expect(loaded.source).toBe("fetched");
+    expect([...loaded.pricing.keys()].sort()).toEqual([
+      "anthropic/claude-opus-4.8",
+      "google/gemini-3-pro",
+      "openai/gpt-5.5",
+    ]);
+    expect(loaded.pricing.get("openai/gpt-5.5")).toEqual({
+      input: 2,
+      output: 8,
+      cacheRead: undefined,
+      cacheCreation: undefined,
+    });
+    // A dropped entry is simply unpriced when usage names it.
+    const usage = new Map<string, UsageTokens>([
+      ["openrouter/auto", { input: 1000, output: 0, cacheRead: 0, cacheCreation: 0 }],
+      ["gpt-5.5", { input: 1_000_000, output: 0, cacheRead: 0, cacheCreation: 0 }],
+    ]);
+    const cost = estimateCost(usage, loaded.pricing);
+    expect(cost.unpriced).toEqual(["openrouter/auto"]);
+    expect(cost.totalUsd).toBe(2);
+    // The persisted list is the filtered one and is a valid cache on re-read.
+    const record = JSON.parse(readFileSync(pricingCachePath(PRICE_URL, cacheDir), "utf8"));
+    expect(Object.keys(record.tiers).sort()).toEqual([...loaded.pricing.keys()].sort());
+    const down = fakeFetch(null, { fail: true });
+    const hit = await loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: down.fetch });
+    expect(hit.source).toBe("cache");
+    expect(hit.pricing).toEqual(loaded.pricing);
+    expect(down.calls).toBe(0);
+  }));
+
+test("loadPricing treats a response with no priced model as a failed refresh", () =>
   withCacheDir(async (cacheDir) => {
     const now = 1_700_000_000_000;
     const seed = fakeFetch(openRouterBody("anthropic/claude-opus-4.8", "0.000015"));
     await loadPricing(PRICE_URL, { cacheDir, nowMs: now, fetchImpl: seed.fetch });
     const later = now + 2 * DAY_MS;
 
-    // A negative rate is not a price, however many other models the body lists.
-    const negative = fakeFetch({
-      data: [
-        { id: "anthropic/claude-opus-4.8", pricing: { prompt: "0.00002" } },
-        { id: "openai/gpt-5.5", pricing: { prompt: "-0.000001" } },
-      ],
-    });
-    const kept = await loadPricing(PRICE_URL, {
-      cacheDir,
-      nowMs: later,
-      fetchImpl: negative.fetch,
-    });
-    expect(kept).toMatchObject({
-      source: "stale-cache",
-      fetchedAtMs: now,
-      fetchError: "pricing response carries an invalid rate",
-    });
-    expect(kept.pricing.get("anthropic/claude-opus-4.8")?.input).toBe(15);
-    expect(kept.pricing.has("openai/gpt-5.5")).toBe(false);
-
-    // Models with no rates at all price nothing, and an unroutable id (empty or
-    // with whitespace) is not a model: also not a price list.
+    // Router entries only, models with no rates at all, and unroutable ids
+    // (empty or with whitespace): nothing here is a priced model.
     const unpriced = fakeFetch({
       data: [
+        { id: "openrouter/auto", pricing: { prompt: "-1", completion: "-1" } },
+        { id: "openai/gpt-5.5", pricing: { prompt: "-0.000001" } },
         { id: "a/b" },
         { id: "c/d", pricing: {} },
         { id: "", pricing: { prompt: "0.001" } },
         { id: "a b", pricing: { prompt: "0.001" } },
       ],
     });
-    const still = await loadPricing(PRICE_URL, {
+    const kept = await loadPricing(PRICE_URL, {
       cacheDir,
       nowMs: later,
       fetchImpl: unpriced.fetch,
     });
-    expect(still).toMatchObject({
+    expect(kept).toMatchObject({
       source: "stale-cache",
+      fetchedAtMs: now,
       fetchError: "pricing response has no priced models",
     });
+    expect(kept.pricing.get("anthropic/claude-opus-4.8")?.input).toBe(15);
+    expect(kept.pricing.has("openai/gpt-5.5")).toBe(false);
 
-    // The stale file is untouched by either failed refresh.
+    // The stale file is untouched by the failed refresh.
     const record = JSON.parse(readFileSync(pricingCachePath(PRICE_URL, cacheDir), "utf8"));
     expect(record.fetched_at_ms).toBe(now);
     expect(Object.keys(record.tiers)).toEqual(["anthropic/claude-opus-4.8"]);

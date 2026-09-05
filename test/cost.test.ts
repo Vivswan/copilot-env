@@ -1,18 +1,51 @@
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  emptyIndexStats,
+  type IndexStats,
+  parseEveryCandidate,
+  type Reconcile,
+} from "../src/usage/contribution.ts";
 import {
   activeDayCoverage,
+  addIndexStats,
   buildSourceJson,
   computeDayMetrics,
+  type CostRuntime,
   daysCutoffMs,
   describeDaysWindow,
+  describeIndexRun,
+  formatBytesCompact,
   median,
   parseDaysWindow,
   perDayRows,
+  ReconcileMeter,
+  runCost,
+  type SessionRootDiscovery,
   sumDayTotals,
   UNDATED_DAY_LABEL,
 } from "../src/usage/cost.ts";
-import { estimateCost, type ModelCost, type PricingTier } from "../src/usage/pricing.ts";
+import { USAGE_INDEX_DIR_NAME } from "../src/usage/paths.ts";
+import {
+  estimateCost,
+  loadPricing,
+  type ModelCost,
+  type PricingTier,
+} from "../src/usage/pricing.ts";
 import { type ModelUsage, record, type UsageReport, usageReport } from "../src/usage/usage.ts";
 import { localDayKey, MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
+import { captureAllWrites, captureChannels } from "./helpers/output.ts";
+import {
+  assistantLine,
+  claudeUsage,
+  codexUsage,
+  sessionMeta,
+  tokenCount,
+  turnContext,
+  writeRollout,
+  writeTranscript,
+} from "./helpers/session_fixtures.ts";
 import { expect, test, TZ_PINNABLE } from "./helpers/testing.ts";
 
 function usage(partial: Partial<ModelUsage>): ModelUsage {
@@ -390,4 +423,360 @@ test("describeDaysWindow phrases each window kind for the report header", () => 
   expect(describeDaysWindow({ kind: "exact", days: 0.5 })).toBe("last 12h");
   // A span formatDuration would round to "0s" is phrased by its day count instead.
   expect(describeDaysWindow({ kind: "exact", days: 0.000001 })).toBe("last 0.000001 days");
+});
+
+// ---------- runCost ----------
+
+const PRICE_URL = "https://pricing.example/models";
+
+const PRICED_BODY = {
+  data: [{
+    id: "anthropic/claude-opus-4.8",
+    pricing: { prompt: "0.000015", completion: "0.000075" },
+  }],
+};
+
+/** A fetch answering `body` once per call; `fail` rejects the way the transport does. */
+function fakeFetch(body: unknown, opts: { fail?: boolean } = {}): typeof fetch {
+  return ((input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    if (init?.signal?.aborted) return Promise.reject(init.signal.reason);
+    if (opts.fail) {
+      return Promise.reject(new TypeError(`error sending request for url (${String(input)})`));
+    }
+    return Promise.resolve(
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+  }) as typeof fetch;
+}
+
+/** A fetch that never answers until the request is cancelled, and records that it was. */
+function hangingFetch(): { fetch: typeof fetch; aborted: () => boolean } {
+  let aborted = false;
+  const fetchImpl =
+    ((_input: string | URL | Request, init?: RequestInit): Promise<Response> =>
+      new Promise((_, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          aborted = true;
+          reject(init.signal?.reason);
+        });
+      })) as typeof fetch;
+  return { fetch: fetchImpl, aborted: () => aborted };
+}
+
+interface CostHome {
+  /** The run's COPILOT_API_HOME: usage DBs, the index, and the price cache live under it. */
+  home: string;
+  /** One Claude projects root holding a single priced turn. */
+  claudeRoot: string;
+}
+
+/** Run `body` with COPILOT_API_HOME pointed at a fresh temp home, restored afterwards. */
+async function withCostHome(body: (ctx: CostHome) => Promise<void>): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), "cost-run-"));
+  const savedHome = process.env.COPILOT_API_HOME;
+  process.env.COPILOT_API_HOME = join(dir, "copilot-api");
+  try {
+    const claudeRoot = join(dir, "projects");
+    writeTranscript(join(claudeRoot, "-Users-x-proj"), "aaa.jsonl", [
+      assistantLine("2026-06-01T10:00:00.000Z", "claude-opus-4-8", "msg_1", claudeUsage(10, 20)),
+    ]);
+    await body({ home: process.env.COPILOT_API_HOME, claudeRoot });
+  } finally {
+    process.env.COPILOT_API_HOME = savedHome;
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+/** Run `body` and return the unhandled rejections it left behind (settled first). */
+async function unhandledRejectionsDuring(body: () => Promise<void>): Promise<unknown[]> {
+  const seen: unknown[] = [];
+  const onUnhandled = (event: PromiseRejectionEvent): void => {
+    seen.push(event.reason);
+    event.preventDefault();
+  };
+  globalThis.addEventListener("unhandledrejection", onUnhandled);
+  try {
+    await body();
+    // A rejection surfaces as unhandled only after the microtasks drain and a
+    // macrotask turn passes; wait one out before reading the count.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  } finally {
+    globalThis.removeEventListener("unhandledrejection", onUnhandled);
+  }
+  return seen;
+}
+
+test("unhandledRejectionsDuring catches a rejection nobody handles (its own negative control)", async () => {
+  const sentinel = new Error("nobody handles this");
+  const seen = await unhandledRejectionsDuring(async () => {
+    Promise.reject(sentinel);
+  });
+  expect(seen).toEqual([sentinel]);
+  // A handled rejection is not reported, so the zero the runCost tests trust is exact.
+  expect(
+    await unhandledRejectionsDuring(async () => {
+      Promise.reject(new Error("handled")).catch(() => {});
+    }),
+  ).toEqual([]);
+});
+
+const NO_SOURCES = { sessionRoots: { codex: () => [] as string[], claude: () => [] as string[] } };
+
+/** Codex roots `codex`, Claude roots `claude`, as runCost's deps. */
+function rootsOf(codex: string[], claude: string[]): { sessionRoots: SessionRootDiscovery } {
+  return { sessionRoots: { codex: () => codex, claude: () => claude } };
+}
+
+test("runCost with no sources returns early and cancels the pricing load it started", () =>
+  withCostHome(async () => {
+    const net = hangingFetch();
+    let out = "";
+    const unhandled = await unhandledRejectionsDuring(async () => {
+      out = await captureAllWrites(() =>
+        runCost({ pricingUrl: PRICE_URL }, { fetchImpl: net.fetch, ...NO_SOURCES })
+      );
+    });
+    expect(out).toContain("no copilot-api usage databases");
+    expect(net.aborted()).toBe(true);
+    expect(unhandled).toEqual([]);
+  }));
+
+test("runCost with no sources swallows a pricing load that already failed", () =>
+  withCostHome(async () => {
+    const unhandled = await unhandledRejectionsDuring(async () => {
+      const out = await captureAllWrites(() =>
+        runCost({ pricingUrl: PRICE_URL }, {
+          fetchImpl: fakeFetch(null, { fail: true }),
+          ...NO_SOURCES,
+        })
+      );
+      expect(out).toContain("no copilot-api usage databases");
+      expect(out).not.toContain("could not fetch OpenRouter pricing");
+    });
+    expect(unhandled).toEqual([]);
+  }));
+
+test("runCost discovers roots before it opens the index, so a failing discovery opens nothing", () =>
+  withCostHome(async ({ home, claudeRoot }) => {
+    const net = hangingFetch();
+    const unhandled = await unhandledRejectionsDuring(async () => {
+      await expect(
+        captureAllWrites(() =>
+          runCost({ pricingUrl: PRICE_URL }, {
+            fetchImpl: net.fetch,
+            sessionRoots: {
+              codex: () => {
+                throw new Error("codex homes unreadable");
+              },
+              claude: () => [claudeRoot],
+            },
+          })
+        ),
+      ).rejects.toThrow("codex homes unreadable");
+    });
+    expect(unhandled).toEqual([]);
+    // The thrown exit still cancels the price list still in flight.
+    expect(net.aborted()).toBe(true);
+    // The index directory is created by opening the index (the hanging fetch wrote
+    // no price cache there), so its absence proves no index was left open.
+    expect(existsSync(join(home, USAGE_INDEX_DIR_NAME))).toBe(false);
+  }));
+
+test("runCost warns when it prices against a stale cached list", () =>
+  withCostHome(async ({ home, claudeRoot }) => {
+    // Seed a cache stamped two days ago, then take the network away.
+    await loadPricing(PRICE_URL, {
+      cacheDir: join(home, USAGE_INDEX_DIR_NAME),
+      nowMs: Date.now() - 2 * MILLISECONDS_PER_DAY,
+      fetchImpl: fakeFetch(PRICED_BODY),
+    });
+    const out = await captureAllWrites(() =>
+      runCost({ pricingUrl: PRICE_URL, json: true }, {
+        fetchImpl: fakeFetch(null, { fail: true }),
+        ...rootsOf([], [claudeRoot]),
+      })
+    );
+    expect(out).toContain("WARNING: could not refresh OpenRouter pricing (pricing request failed)");
+    expect(out).toContain("using the cached price list from");
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    // The stale list still priced the turn: 10 in at $15/M + 20 out at $75/M.
+    expect(payload.claudeSessions.totalUsd).toBe(0.0017);
+  }));
+
+test("runCost warns when the fetched price list cannot be cached", () =>
+  withCostHome(async ({ home, claudeRoot }) => {
+    // A regular file where the cache directory belongs: the write fails, the
+    // report is still priced. --no-index keeps the index from claiming the path.
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, USAGE_INDEX_DIR_NAME), "not a directory");
+    const out = await captureAllWrites(() =>
+      runCost({ pricingUrl: PRICE_URL, json: true, noIndex: true }, {
+        fetchImpl: fakeFetch(PRICED_BODY),
+        ...rootsOf([], [claudeRoot]),
+      })
+    );
+    expect(out).toContain("WARNING: could not cache the OpenRouter price list (");
+    expect(out).toContain("the next run fetches it again.");
+    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    expect(payload.claudeSessions.totalUsd).toBe(0.0017);
+    expect(payload.runtime.indexed).toBe(false);
+  }));
+
+/** The `runtime` key of one `--json` run over the given roots. */
+async function runtimeOf(
+  args: { noIndex?: boolean },
+  roots: { codex: string[]; claude: string[] },
+): Promise<CostRuntime> {
+  const out = await captureAllWrites(() =>
+    runCost({ pricingUrl: PRICE_URL, json: true, ...args }, {
+      fetchImpl: fakeFetch(PRICED_BODY),
+      ...rootsOf(roots.codex, roots.claude),
+    })
+  );
+  return JSON.parse(out.slice(out.indexOf("{"))).runtime;
+}
+
+test("runCost --json carries the reserved runtime key with exactly its three parts", () =>
+  withCostHome(async ({ claudeRoot }) => {
+    const deps = { codex: [], claude: [claudeRoot] };
+    const cold = await runtimeOf({}, deps);
+    expect(Object.keys(cold)).toEqual(["indexed", "index", "timing"]);
+    expect(Object.keys(cold.index)).toEqual(Object.keys(emptyIndexStats()));
+    expect(Object.keys(cold.timing)).toEqual(["walk", "parse", "fold", "pricing", "total"]);
+    for (const ms of Object.values(cold.timing)) {
+      expect(Number.isInteger(ms) && ms >= 0).toBe(true);
+    }
+    expect(cold.indexed).toBe(true);
+    expect(cold.index.filesParsedWhole).toBe(1);
+
+    const warm = await runtimeOf({}, deps);
+    expect(warm.index.filesReused).toBe(1);
+    expect(warm.index.bytesRead).toBe(0);
+
+    const plain = await runtimeOf({ noIndex: true }, deps);
+    expect(plain.indexed).toBe(false);
+    expect(plain.index.filesParsedWhole).toBe(1);
+  }));
+
+/** One Codex rollout under `dir`, so the Codex side has a row to lose. */
+function codexRootWithOneRollout(dir: string): string {
+  const root = join(dir, "sessions");
+  writeRollout(root, "2026-06-01", "aaa", [
+    sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env" }),
+    turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
+    tokenCount("2026-06-01T10:00:05.000Z", codexUsage(10, 0, 1), codexUsage(10, 0, 1)),
+  ]);
+  return root;
+}
+
+// Each source in turn: seed its rows, then hand the run NO roots for it while the
+// other source keeps the run past the no-sources return. The old `roots.length > 0`
+// guards would skip the reconcile and leave the rows; the count says they went.
+for (const vanished of ["codex", "claude"] as const) {
+  test(`runCost reconciles ${vanished} with no roots left, so its rows go with the root`, () =>
+    withCostHome(async ({ claudeRoot }) => {
+      const codexRoot = codexRootWithOneRollout(join(claudeRoot, ".."));
+      const seeded = await runtimeOf({}, { codex: [codexRoot], claude: [claudeRoot] });
+      expect(seeded.index.filesParsedWhole).toBe(2);
+
+      const after = await runtimeOf({}, {
+        codex: vanished === "codex" ? [] : [codexRoot],
+        claude: vanished === "claude" ? [] : [claudeRoot],
+      });
+      expect(after.index.filesDeleted).toBe(1);
+      expect(after.index.filesReused).toBe(1);
+      expect(after.index.filesSeen).toBe(1);
+    }));
+}
+
+test("runCost's human report ends with one index line only when the index was used", () =>
+  withCostHome(async ({ claudeRoot }) => {
+    const deps = { fetchImpl: fakeFetch(PRICED_BODY), ...rootsOf([], [claudeRoot]) };
+    const size = statSync(join(claudeRoot, "-Users-x-proj", "aaa.jsonl")).size;
+    const cold = await captureChannels(() => runCost({ pricingUrl: PRICE_URL }, deps));
+    expect(cold.all.trimEnd().split("\n").at(-1)).toBe(
+      `usage index: 0 files reused, 0 tail-parsed, 1 whole-parsed, ${size} B read`,
+    );
+    // The line is a note about the run, so it rides stderr and never the report.
+    expect(cold.stderr).toContain("usage index:");
+    expect(cold.stdout).not.toContain("usage index:");
+    const warm = await captureChannels(() => runCost({ pricingUrl: PRICE_URL }, deps));
+    expect(warm.stderr.trimEnd().split("\n").at(-1)).toBe(
+      "usage index: 1 files reused, 0 tail-parsed, 0 whole-parsed, 0 B read",
+    );
+    const plain = await captureAllWrites(() =>
+      runCost({ pricingUrl: PRICE_URL, noIndex: true }, deps)
+    );
+    expect(plain).not.toContain("usage index:");
+  }));
+
+test("describeIndexRun and formatBytesCompact spell the index line", () => {
+  const stats: IndexStats = {
+    ...emptyIndexStats(),
+    filesReused: 120,
+    filesParsedTail: 3,
+    filesParsedWhole: 2,
+    bytesRead: 1_234_567,
+  };
+  expect(describeIndexRun(stats)).toBe(
+    "usage index: 120 files reused, 3 tail-parsed, 2 whole-parsed, 1.2 MB read",
+  );
+  expect(formatBytesCompact(0)).toBe("0 B");
+  expect(formatBytesCompact(999)).toBe("999 B");
+  expect(formatBytesCompact(1_000)).toBe("1.0 kB");
+  expect(formatBytesCompact(2_500_000_000)).toBe("2.5 GB");
+});
+
+test("addIndexStats sums every field", () => {
+  const into = { ...emptyIndexStats(), filesSeen: 1, bytesRead: 10 };
+  addIndexStats(into, {
+    filesSeen: 2,
+    filesReused: 3,
+    filesParsedWhole: 4,
+    filesParsedTail: 5,
+    filesFailed: 6,
+    filesDeleted: 7,
+    bytesRead: 8,
+  });
+  expect(into).toEqual({
+    filesSeen: 3,
+    filesReused: 3,
+    filesParsedWhole: 4,
+    filesParsedTail: 5,
+    filesFailed: 6,
+    filesDeleted: 7,
+    bytesRead: 18,
+  });
+});
+
+test("ReconcileMeter bills a reader's synchronous fold, never a microtask queued behind it", async () => {
+  // A fake clock the reader and a bystander advance by hand: walk 5, parse 7, fold 11,
+  // then 40 more from a microtask queued before the read.
+  let nowMs = 1_000;
+  const noParse = () => {
+    throw new Error("no candidates to parse");
+  };
+  const reader = (reconcile: Reconcile): Promise<string> => {
+    nowMs += 5;
+    reconcile("claude", [], noParse, noParse);
+    nowMs += 11;
+    return Promise.resolve("folded");
+  };
+  const parseTimed = new ReconcileMeter((source, walked, parseWhole, parseTail) => {
+    nowMs += 7;
+    return parseEveryCandidate(source, walked, parseWhole, parseTail);
+  }, () => nowMs);
+  // Queued BEFORE the read: it runs when the meter first yields, and would land in
+  // `fold` if the clock were read after the await instead of at the return.
+  queueMicrotask(() => {
+    nowMs += 40;
+  });
+
+  expect(await parseTimed.read(reader)).toBe("folded");
+  expect(parseTimed.timing).toEqual({ walk: 5, parse: 7, fold: 11 });
+  expect(nowMs).toBe(1_063);
+  expect(parseTimed.stats.filesSeen).toBe(0);
 });

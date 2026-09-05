@@ -14,14 +14,13 @@ import { join } from "node:path";
 import * as v from "valibot";
 import { atomicWriteFile } from "../copilot_api/config.ts";
 import { ONE_M_SUFFIX } from "../copilot_api/models.ts";
-import { resolveRootHome } from "../copilot_api/paths.ts";
 import { readTextOrNull } from "../utils/fs.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
+import { usageIndexDir } from "./paths.ts";
 
 const FETCH_TIMEOUT_MS = 10_000;
 const PER_MILLION = 1_000_000;
 const PRICING_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const PRICING_CACHE_DIR_NAME = "usage-index";
 
 export const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 
@@ -82,10 +81,7 @@ export async function fetchPricing(
       signal: signal === undefined ? timeout : AbortSignal.any([timeout, signal]),
     });
   } catch {
-    if (timeout.aborted) {
-      throw new Error(`pricing request timed out after ${FETCH_TIMEOUT_MS / 1000}s`);
-    }
-    throw new Error(signal?.aborted ? "pricing request was cancelled" : "pricing request failed");
+    throw abortError(timeout, signal) ?? new Error("pricing request failed");
   }
   if (!res.ok) {
     throw new Error(`pricing request returned HTTP ${res.status}`);
@@ -94,7 +90,9 @@ export async function fetchPricing(
   try {
     body = await res.json();
   } catch {
-    throw new Error("pricing response was not valid JSON");
+    // The timeout or a cancel can fire while the body is still streaming; that
+    // rejects here too and is not a malformed response.
+    throw abortError(timeout, signal) ?? new Error("pricing response was not valid JSON");
   }
   const data = isRecord(body) && Array.isArray(body.data) ? body.data : [];
 
@@ -107,6 +105,16 @@ export async function fetchPricing(
     if (tier !== null) out.set(entry.id.toLowerCase(), tier);
   }
   return out;
+}
+
+/** The error for a request our own timeout or the caller's signal cut short, or
+ *  null when neither fired (the failure is the transport's or the body's). */
+function abortError(timeout: AbortSignal, signal: AbortSignal | undefined): Error | null {
+  if (timeout.aborted) {
+    return new Error(`pricing request timed out after ${FETCH_TIMEOUT_MS / 1000}s`);
+  }
+  if (signal?.aborted) return new Error("pricing request was cancelled");
+  return null;
 }
 
 /** An entry's tier, or null when a supplied rate is not a price (OpenRouter's
@@ -164,7 +172,7 @@ export async function loadPricing(
   const nowMs = opts.nowMs ?? Date.now();
   const ttlMs = opts.ttlMs ?? PRICING_CACHE_TTL_MS;
   const urlDigest = sha256Hex(url);
-  const cachePath = pricingCachePath(url, opts.cacheDir ?? defaultPricingCacheDir());
+  const cachePath = pricingCachePath(url, opts.cacheDir ?? usageIndexDir());
   const cached = readPricingCache(cachePath, urlDigest);
   if (cached !== null) {
     const ageMs = nowMs - cached.fetchedAtMs;
@@ -210,10 +218,6 @@ function sha256Hex(text: string): string {
 
 function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
-}
-
-function defaultPricingCacheDir(): string {
-  return join(resolveRootHome(), PRICING_CACHE_DIR_NAME);
 }
 
 const RATE_SCHEMA = v.optional(v.pipe(v.number(), v.finite(), v.minValue(0)));

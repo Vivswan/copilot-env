@@ -10,7 +10,6 @@ import {
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { zstdCompressSync } from "node:zlib";
-import { consola } from "consola";
 import {
   discoverCodexSessionRoots,
   parseCodexTail,
@@ -27,61 +26,16 @@ import {
 } from "../src/usage/contribution.ts";
 import { errMessage } from "../src/utils/error.ts";
 import { localDayKey } from "../src/utils/time.ts";
+import { captureAllWrites } from "./helpers/output.ts";
+import {
+  codexUsage as usage,
+  rolloutLine,
+  sessionMeta,
+  tokenCount,
+  turnContext,
+  writeRollout,
+} from "./helpers/session_fixtures.ts";
 import { expect, test } from "./helpers/testing.ts";
-
-/** A Codex TokenUsage object: input INCLUDES cached; output includes reasoning. */
-function usage(input: number, cached: number, output: number): Record<string, number> {
-  return {
-    input_tokens: input,
-    cached_input_tokens: cached,
-    output_tokens: output,
-    reasoning_output_tokens: 0,
-    total_tokens: input + output,
-  };
-}
-
-function rolloutLine(timestamp: string, type: string, payload: unknown): string {
-  return JSON.stringify({ timestamp, type, payload });
-}
-
-function sessionMeta(
-  timestamp: string,
-  id: string,
-  opts: { provider?: string; forkedFrom?: string } = {},
-): string {
-  return rolloutLine(timestamp, "session_meta", {
-    id,
-    session_id: id,
-    timestamp,
-    cwd: "/tmp",
-    ...(opts.provider !== undefined ? { model_provider: opts.provider } : {}),
-    ...(opts.forkedFrom !== undefined ? { forked_from_id: opts.forkedFrom } : {}),
-  });
-}
-
-function turnContext(timestamp: string, model: string): string {
-  return rolloutLine(timestamp, "turn_context", { turn_id: "t", model, cwd: "/tmp" });
-}
-
-function tokenCount(
-  timestamp: string,
-  total: Record<string, number>,
-  last: Record<string, number>,
-): string {
-  return rolloutLine(timestamp, "event_msg", {
-    type: "token_count",
-    info: { total_token_usage: total, last_token_usage: last, model_context_window: 1000 },
-    rate_limits: null,
-  });
-}
-
-/** Write one rollout file into `dir` with the canonical filename for `localDate`. */
-function writeRollout(dir: string, localDate: string, id: string, lines: string[]): string {
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, `rollout-${localDate}T01-00-00-${id}.jsonl`);
-  writeFileSync(path, `${lines.join("\n")}\n`);
-  return path;
-}
 
 test("readCodexSessions attributes turns to the model in effect and splits cached input", async () => {
   const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
@@ -516,30 +470,6 @@ test("walkCodexSessions reports every rollout with its candidacy verdict, in fol
   expect(kept0.size).toBe(statSync(kept).size);
   expect(kept0.mtimeMs).toBe(statSync(kept).mtimeMs);
 });
-
-/** Run `body` with stdout/stderr captured (consola routes through one of them); the
- *  consola level is raised so warnings are not self-silenced under the test runner. */
-async function captureAllWrites(body: () => Promise<void>): Promise<string> {
-  const written: string[] = [];
-  const savedLevel = consola.level;
-  const origOut = process.stdout.write.bind(process.stdout);
-  const origErr = process.stderr.write.bind(process.stderr);
-  const capture = (chunk: string | Uint8Array): boolean => {
-    written.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
-    return true;
-  };
-  process.stdout.write = capture;
-  process.stderr.write = capture;
-  try {
-    consola.level = 3;
-    await body();
-  } finally {
-    process.stdout.write = origOut;
-    process.stderr.write = origErr;
-    consola.level = savedLevel;
-  }
-  return written.join("");
-}
 
 // File symlinks need a privilege on Windows that CI runners do not always hold.
 test.skipIf(Deno.build.os === "windows")(

@@ -9,7 +9,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { consola } from "consola";
 import {
   discoverClaudeSessionRoots,
   parseClaudeTail,
@@ -20,44 +19,13 @@ import {
 import { emptyIndexStats, type Reconcile, type WalkedFile } from "../src/usage/contribution.ts";
 import { errMessage } from "../src/utils/error.ts";
 import { localDayKey } from "../src/utils/time.ts";
+import { captureAllWrites } from "./helpers/output.ts";
+import {
+  assistantLine,
+  claudeUsage as usage,
+  writeTranscript,
+} from "./helpers/session_fixtures.ts";
 import { expect, test } from "./helpers/testing.ts";
-
-/** One assistant transcript line; Claude's input_tokens EXCLUDES the cache buckets. */
-function assistantLine(
-  timestamp: string,
-  model: string,
-  id: string | undefined,
-  usage: Record<string, unknown>,
-): string {
-  return JSON.stringify({
-    type: "assistant",
-    timestamp,
-    uuid: "u",
-    sessionId: "s",
-    message: { ...(id === undefined ? {} : { id }), model, role: "assistant", usage },
-  });
-}
-
-function usage(
-  input: number,
-  output: number,
-  cacheRead = 0,
-  cacheCreation = 0,
-): Record<string, unknown> {
-  return {
-    input_tokens: input,
-    output_tokens: output,
-    cache_read_input_tokens: cacheRead,
-    cache_creation_input_tokens: cacheCreation,
-  };
-}
-
-function writeTranscript(dir: string, name: string, lines: string[]): string {
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, name);
-  writeFileSync(path, `${lines.join("\n")}\n`);
-  return path;
-}
 
 test("readClaudeSessions maps the four usage buckets and buckets by local day", async () => {
   const dir = mkdtempSync(join(tmpdir(), "claude-sessions-"));
@@ -364,30 +332,6 @@ test("walkClaudeSessions reports every transcript with its candidacy verdict, as
   expect(walked.every((f) => f.resumable)).toBe(true);
   expect(walked[0]!.size).toBe(statSync(fresh).size);
 });
-
-/** Run `body` with stdout/stderr captured (consola routes through one of them); the
- *  consola level is raised so warnings are not self-silenced under the test runner. */
-async function captureAllWrites(body: () => Promise<void>): Promise<string> {
-  const written: string[] = [];
-  const savedLevel = consola.level;
-  const origOut = process.stdout.write.bind(process.stdout);
-  const origErr = process.stderr.write.bind(process.stderr);
-  const capture = (chunk: string | Uint8Array): boolean => {
-    written.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
-    return true;
-  };
-  process.stdout.write = capture;
-  process.stderr.write = capture;
-  try {
-    consola.level = 3;
-    await body();
-  } finally {
-    process.stdout.write = origOut;
-    process.stderr.write = origErr;
-    consola.level = savedLevel;
-  }
-  return written.join("");
-}
 
 // File symlinks need a privilege on Windows that CI runners do not always hold.
 test.skipIf(Deno.build.os === "windows")(

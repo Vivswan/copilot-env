@@ -40,8 +40,8 @@ import {
   USAGE_INDEX_DB_NAME,
   USAGE_INDEX_LOCK_NAME,
   type UsageIndex,
-  usageIndexDir,
 } from "../src/usage/index.ts";
+import { usageIndexDir } from "../src/usage/paths.ts";
 import { releaseFileLock, tryAcquireFileLock } from "../src/utils/file_lock.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 

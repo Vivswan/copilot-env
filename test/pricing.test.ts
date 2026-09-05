@@ -5,6 +5,7 @@ import { basename, join } from "node:path";
 import {
   canonicalModelName,
   estimateCost,
+  fetchPricing,
   loadPricing,
   pricingCachePath,
   type PricingTier,
@@ -827,4 +828,24 @@ test("estimateCost prices the same list identically across calls and sees a chan
   // A rate change under an unchanged id is priced from the map, never a remembered tier.
   pricing.set("anthropic/claude-opus-4.9", { input: 30, output: 90 });
   expect(estimateCost(usage, pricing).perModel["opus"]?.inputCostUsd).toBe(30);
+});
+
+test("fetchPricing reports a cancel that lands while the body streams as cancelled, not bad JSON", async () => {
+  // The response arrives, then the caller cancels while the body is still
+  // streaming: the read rejects inside res.json(), which is not a malformed list.
+  const controller = new AbortController();
+  const streamingFetch = ((_input: string | URL | Request, init?: RequestInit) => {
+    const body = new ReadableStream<Uint8Array>({
+      start(stream) {
+        stream.enqueue(new TextEncoder().encode('{"data": ['));
+        init?.signal?.addEventListener("abort", () => stream.error(init.signal?.reason));
+      },
+    });
+    return Promise.resolve(new Response(body, { status: 200 }));
+  }) as typeof fetch;
+
+  const pending = fetchPricing(PRICE_URL, streamingFetch, controller.signal);
+  await Promise.resolve();
+  controller.abort();
+  await expect(pending).rejects.toThrow("pricing request was cancelled");
 });

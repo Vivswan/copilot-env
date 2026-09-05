@@ -1,14 +1,6 @@
-// Measure the DISTRIBUTIONS of this machine's Codex and Claude session logs and
-// write them as a usage profile (test/fixtures/usage/profile.json by default).
-// Read-only over the real logs; the output holds quantile tables, shares, and
-// schema words (line types, model ids, filename shapes) and never a line of
-// text, an id, or a path. Invoked as `deno task usage:profile [-- --out FILE]`.
-//
-// The generator (test/helpers/usage_fixtures.ts) samples every value it writes
-// from this profile, so what is measured here is exactly what a synthetic tree
-// can reproduce: file and line sizes per line type, the usage-line share, token
-// buckets per model, session cadence, gaps, streaming repeats, forks and
-// resumes, directory depth, filename shapes, and midnight crossings.
+// Measure this machine's Codex and Claude session logs, read-only, into the DISTRIBUTIONS the
+// generator (test/helpers/usage_fixtures.ts) samples from: quantile tables, shares and schema
+// words only, never text, ids or paths. Invoked as `deno task usage:profile [-- --out FILE]`.
 import { Buffer } from "node:buffer";
 import {
   createReadStream,

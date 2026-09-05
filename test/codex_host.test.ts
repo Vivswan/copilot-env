@@ -302,10 +302,12 @@ onlyWin("Windows: the key cannot be set, reads off, and the derivation is inert"
 
 // --- farm build from scratch -------------------------------------------------
 
-/** The paths named by the `✓ ... → <path>` lines in a narration. */
+/** The paths named by the check-mark "action -> path" lines in a narration. */
 function narratedPaths(narrated: string): Set<string> {
   const out = new Set<string>();
-  for (const m of narrated.matchAll(/✓ [^\n]*? → (.+)$/gm)) out.add((m[1] ?? "").trimEnd());
+  for (const m of narrated.matchAll(/\u2713 [^\n]*? \u2192 (.+)$/gm)) {
+    out.add((m[1] ?? "").trimEnd());
+  }
   return out;
 }
 

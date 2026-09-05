@@ -19,6 +19,7 @@ import {
   effectiveUpdateCooldownDays,
 } from "../src/autoupdate/state.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import { commandExists } from "../src/utils/command.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { packageVersion } from "../src/utils/version.ts";
@@ -227,7 +228,8 @@ function launcherCalls(sub: string): string[] {
   try {
     // The staged checkout: the launcher, its bootstrap, the pin, the lockfile, and a
     // node_modules NEWER than the lockfile so the launcher installs nothing.
-    const checkout = join(root, "checkout");
+    // A space in the path: the launcher must quote it, and the log must still parse.
+    const checkout = join(root, "check out");
     mkdirSync(join(checkout, "bin"), { recursive: true });
     mkdirSync(join(checkout, "scripts"), { recursive: true });
     for (
@@ -253,7 +255,7 @@ function launcherCalls(sub: string): string[] {
     if (process.platform === "win32") {
       writeFileSync(
         join(bin, "deno.cmd"),
-        `@echo off\r\nif "%1"=="--version" (echo deno ${pin} (stable, release, x86_64-pc-windows-msvc)& exit /b 0)\r\necho %*>> "${log}"\r\nexit /b 0\r\n`,
+        `@echo off\r\nif "%1"=="--version" (echo deno ${pin}& exit /b 0)\r\necho %*>> "${log}"\r\nexit /b 0\r\n`,
       );
     } else {
       writeFileSync(
@@ -284,24 +286,30 @@ function launcherCalls(sub: string): string[] {
       ], { env })
       : runSync("sh", [join(checkout, "bin", "agent"), sub], { env });
     if (result.exitCode !== 0) throw new Error(`launcher failed: ${result.stderr}`);
+    // cmd's %* keeps the quotes a spaced path needs; strip them so both sides compare alike.
     return existsSync(log)
-      ? readFileSync(log, "utf8").split(/\r?\n/).filter((l) => l.length > 0)
+      ? readFileSync(log, "utf8").split(/\r?\n/).filter((l) => l.length > 0).map((l) =>
+        l.replaceAll('"', "")
+      )
       : [];
   } finally {
     removeDir(root);
   }
 }
 
-test("the launcher runs the autoupdate preflight before `agent start` only", () => {
-  // Deps are staged fresh, so the launcher spawns nothing but the preflight and the CLI.
-  const start = launcherCalls("start");
-  expect(start).toHaveLength(2);
-  expect(start[0]).toMatch(/autoupdate[\\/]preflight\.ts$/);
-  expect(start[1]).toMatch(/src[\\/]cli\.ts start$/);
-  const env = launcherCalls("env");
-  expect(env).toHaveLength(1);
-  expect(env[0]).toMatch(/src[\\/]cli\.ts env$/);
-});
+test.skipIf(process.platform === "win32" && !commandExists("powershell"))(
+  "the launcher runs the autoupdate preflight before `agent start` only",
+  () => {
+    // Deps are staged fresh, so the launcher spawns nothing but the preflight and the CLI.
+    const start = launcherCalls("start");
+    expect(start).toHaveLength(2);
+    expect(start[0]).toMatch(/autoupdate[\\/]preflight\.ts$/);
+    expect(start[1]).toMatch(/src[\\/]cli\.ts start$/);
+    const env = launcherCalls("env");
+    expect(env).toHaveLength(1);
+    expect(env[0]).toMatch(/src[\\/]cli\.ts env$/);
+  },
+);
 
 // --- lock -------------------------------------------------------------------
 // All through the TEST-ONLY path seam (withUpdateLockForTests): production

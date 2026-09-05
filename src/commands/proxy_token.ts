@@ -21,6 +21,8 @@
 // pipeline narrates freely to ITS stdout, and running it in-process would put that
 // narration on OUR stdout. A child with stdout suppressed (managed branch) or
 // redirected to our stderr (interactive branch) preserves the purity structurally.
+// Both branches forward the child's stderr: that is where it names every file it
+// writes, and a start that touches the disk unseen would be the one hidden write.
 // The managed branch also ignores the child's stdin (the `</dev/null` shape): with
 // no stored credential `agent start` would otherwise render an auth prompt whose
 // output is suppressed here -- an invisible hang.
@@ -46,9 +48,9 @@ export interface ProxyTokenAction {
 }
 
 /** How the launched `agent start` child's output is handled: `suppressed` (the managed
- *  auto-start -- all three stdio ignored) or `visible` (the interactive confirm -- stdin
- *  and stderr inherited, the child's stdout redirected to OUR stderr so start progress
- *  shows while our stdout stays clean for the key). */
+ *  auto-start -- stdin and stdout ignored, stderr forwarded to ours) or `visible` (the
+ *  interactive confirm -- stdin and stderr inherited, the child's stdout redirected to
+ *  OUR stderr so start progress shows while our stdout stays clean for the key). */
 export type LaunchOutput = "suppressed" | "visible";
 
 /**
@@ -87,7 +89,7 @@ export function launchProxy(profile: Profile, output: LaunchOutput): void {
   spawnSync(command, args, {
     // `2` = our stderr fd: the visible child's start progress must show WITHOUT
     // touching our stdout (the .sh twin's `>&2`).
-    stdio: output === "suppressed" ? ["ignore", "ignore", "ignore"] : ["inherit", 2, "inherit"],
+    stdio: output === "suppressed" ? ["ignore", "ignore", "inherit"] : ["inherit", 2, "inherit"],
     windowsHide: true,
   });
 }
@@ -167,7 +169,8 @@ export async function resolveProxyToken(
   if (!(await deps.proxyUp(profile))) {
     if (deps.autoStartEnabled()) {
       deps.launchProxy(profile, "suppressed");
-      // Remember we tried with output hidden, to surface a hard failure below.
+      // Remember we tried with the child's stdout (its narration) hidden, to point at a
+      // hard failure below.
       suppressedStart = true;
     } else if (!action.assumeYes) {
       if (

@@ -41,6 +41,7 @@ import {
 } from "../copilot_api/profile.ts";
 import { childEnvWithPath, findCommand, verbatimCliSpawn } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
+import { deferWriteReports, flushWriteReports } from "../utils/report_write.ts";
 import { managedClaudeBaseUrl, managedCodexHome, type ManagedEnvValue } from "./env.ts";
 import {
   launchProxy,
@@ -400,26 +401,36 @@ export async function runLaunch(
   action: LaunchAction,
   deps: LaunchDeps = commandDeps(),
 ): Promise<void> {
-  const cliLook = findCommand(action.kind);
-  if (cliLook.path === null) {
-    if (cliLook.launchFailed) {
-      // A failed look must not read "not installed": the probe shell never ran,
-      // which proves nothing about the CLI. The launch below is the honest test --
-      // its own spawn error names the real problem if there is one.
-      process.stderr.write(
-        `could not check whether '${action.kind}' is installed (the command probe failed to run); launching anyway\n`,
-      );
-    } else {
-      // The rc launchers' wording, verbatim -- the fix is the same command.
-      throw new Error(
-        `'${action.kind}' is not installed. Run 'agent shell --clis' to install the agent CLIs.`,
-      );
+  // The pre-launch wiring writes are named AFTER the agent hands the terminal back
+  // (deferred, flushed on every return and throw), not into a screen the agent is
+  // about to clear. A signal that kills this process while the agent runs loses them:
+  // the alternative, a signal listener, would keep the launcher alive past a signal
+  // aimed at it alone for as long as the agent ignores the same signal.
+  deferWriteReports();
+  try {
+    const cliLook = findCommand(action.kind);
+    if (cliLook.path === null) {
+      if (cliLook.launchFailed) {
+        // A failed look must not read "not installed": the probe shell never ran,
+        // which proves nothing about the CLI. The launch below is the honest test --
+        // its own spawn error names the real problem if there is one.
+        process.stderr.write(
+          `could not check whether '${action.kind}' is installed (the command probe failed to run); launching anyway\n`,
+        );
+      } else {
+        // The rc launchers' wording, verbatim -- the fix is the same command.
+        throw new Error(
+          `'${action.kind}' is not installed. Run 'agent shell --clis' to install the agent CLIs.`,
+        );
+      }
     }
+    const plan = await prepareLaunch(action, deps);
+    if (plan === null) {
+      process.exitCode = 1;
+      return;
+    }
+    process.exitCode = spawnAgentCli(plan);
+  } finally {
+    flushWriteReports();
   }
-  const plan = await prepareLaunch(action, deps);
-  if (plan === null) {
-    process.exitCode = 1;
-    return;
-  }
-  process.exitCode = spawnAgentCli(plan);
 }

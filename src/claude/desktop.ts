@@ -951,12 +951,19 @@ export function presentDesktopHelperScripts(rootHome: string): string[] {
 /** The uninstall sweep: every owned entry (the default's included) plus every generated
  *  helper script. `dirOverride` is the injected library dir (homedir() is not
  *  env-redirectable on Windows); null means "treat Desktop as absent". */
-export function removeAllClaudeDesktopWiring(dirOverride?: string | null): void {
-  if (removeOwnedEntries(() => true, dirOverride) === "blocked") return;
-  removeUnlistedClaudeDesktopClaims(dirOverride);
+export function removeAllClaudeDesktopWiring(
+  dirOverride?: string | null,
+  artifacts: ClaudeDesktopOwnedArtifacts = listClaudeDesktopOwnedArtifacts(dirOverride),
+): void {
+  // `artifacts` is the resolved plan (uninstall renders the same object as its dry
+  // run): exactly those paths go, so a claim that appeared after planning stays.
+  if (artifacts.blocked) return;
+  const planned = new Set([...artifacts.entries, ...artifacts.staleClaims]);
+  if (removeOwnedEntries((owned) => planned.has(owned.path), dirOverride) === "blocked") return;
+  removeUnlistedClaudeDesktopClaims(dirOverride, (path) => planned.has(path));
   // Helper scripts live under the root home, which uninstall deletes wholesale right
   // after this step -- still removed here so the step is complete on its own.
-  for (const path of presentDesktopHelperScripts(resolveRootHome())) removeAnnounced(path);
+  for (const path of artifacts.helpers) removeAnnounced(path);
 }
 
 /** The `claude-desktop false` sweep: every owned claim POSITIVELY attributed to a named
@@ -1010,22 +1017,35 @@ function announceUnmanagedDefault(): void {
   }
 }
 
-/** What removeAllClaudeDesktopWiring WOULD delete now (the uninstall dry run): owned config
- *  files present plus generated helper scripts. Read-only; `blocked` mirrors the sweep (a
- *  not-understood _meta.json leaves the library alone). */
+/** The Desktop artifacts copilot-env owns right now, what removeAllClaudeDesktopWiring
+ *  removes (and the uninstall dry run names): `entries` are the owned config files
+ *  present (listed and unlisted claims alike), `staleClaims` the owned paths whose file
+ *  is already gone (their _meta.json row and ledger claim still go), `helpers` the
+ *  generated helper scripts. `blocked` mirrors the sweep: a not-understood _meta.json
+ *  leaves the library alone. Read-only. */
+export interface ClaudeDesktopOwnedArtifacts {
+  entries: string[];
+  staleClaims: string[];
+  helpers: string[];
+  blocked: boolean;
+}
+
 export function listClaudeDesktopOwnedArtifacts(
   dirOverride?: string | null,
-): { entries: string[]; helpers: string[]; blocked: boolean } {
+): ClaudeDesktopOwnedArtifacts {
   const helpers = presentDesktopHelperScripts(resolveRootHome());
   const dir = dirOverride !== undefined ? dirOverride : resolveDesktopLibraryDir();
-  if (dir === null) return { entries: [], helpers, blocked: false };
+  if (dir === null) return { entries: [], staleClaims: [], helpers, blocked: false };
   const library = readOwnedLibrary(dir);
-  if (library === null) return { entries: [], helpers, blocked: true };
-  return {
-    entries: [...library.owned.map((e) => e.path), ...library.unlisted].filter(entryExists),
-    helpers,
-    blocked: false,
-  };
+  if (library === null) return { entries: [], staleClaims: [], helpers, blocked: true };
+  // One look per path: a file appearing or vanishing between two looks would land
+  // in neither list or both.
+  const entries: string[] = [];
+  const staleClaims: string[] = [];
+  for (const path of [...library.owned.map((e) => e.path), ...library.unlisted]) {
+    (entryExists(path) ? entries : staleClaims).push(path);
+  }
+  return { entries, staleClaims, helpers, blocked: false };
 }
 
 /** An owned entry as the library lists it: its meta row plus its config path. */

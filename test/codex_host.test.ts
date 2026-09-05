@@ -24,6 +24,7 @@ import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../src/utils/hostname.ts";
+import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import {
   envSnapshot,
@@ -432,18 +433,25 @@ skipWin(
     const marker = join(dir, "codex-invocations.log");
     fs.mkdirSync(bin, { recursive: true });
     // Exit nonzero on purpose: the prime is best-effort and must not fail the build.
+    // It creates the shared root with one file, the way a real codex would.
     fs.writeFileSync(
       join(bin, "codex"),
-      `#!/bin/sh\nPATH=/usr/bin:/bin\nprintf '%s\\n' "$*" >> "${marker}"\ncat > /dev/null\nexit 3\n`,
+      `#!/bin/sh\nPATH=/usr/bin:/bin\nprintf '%s\\n' "$*" >> "${marker}"\ncat > /dev/null\n` +
+        `mkdir -p "${sharedRoot}"\nprintf '{}' > "${sharedRoot}/primed.json"\nexit 3\n`,
       { mode: 0o755 },
     );
     // The fake bin dir FIRST, but with the system dirs kept: resolveCommand
     // resolves through `sh`, which must itself stay spawnable.
     process.env.PATH = `${bin}:/usr/bin:/bin`;
 
+    deferWriteReports();
     await build();
+    const reported = flushWriteReports();
     expect(fs.readFileSync(marker, "utf8")).toBe("exec\n");
     expect(isRealDir(sharedRoot)).toBe(true);
+    // The paths codex made on our request are named as ours.
+    expect(reported).toContain(`created -> ${sharedRoot}`);
+    expect(reported).toContain(`created -> ${join(sharedRoot, "primed.json")}`);
   },
 );
 

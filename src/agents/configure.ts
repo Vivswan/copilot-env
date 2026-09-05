@@ -133,6 +133,10 @@ export type ManagedAgentId = "codex" | "claude";
  * once by the caller (runAgentConfig via resolveDirectIdentity for the default,
  * wireBothAgents via the persisted-slot cache for a profile) and passed down.
  */
+export interface RemoveProfileOptions {
+  keepDesktopEntry?: boolean;
+}
+
 export interface AgentAdapter {
   /** The stable agent key (request maps and adapter lists are keyed on it). */
   readonly id: ManagedAgentId;
@@ -161,7 +165,9 @@ export interface AgentAdapter {
     options: AgentProfileWriteOptions,
   ): void | Promise<void>;
   /** Remove a named profile's managed artifacts from the agent's effective home. */
-  removeProfile(name: ProfileName): void;
+  /** Remove the profile's wiring. `keepDesktopEntry`: leave its Claude Desktop entry and
+   *  helper scripts to a caller whose own plan removes them (uninstall). */
+  removeProfile(name: ProfileName, options?: RemoveProfileOptions): void;
 }
 
 /**

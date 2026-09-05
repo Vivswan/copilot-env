@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -15,6 +15,7 @@ import {
   usageReport,
 } from "../src/usage/usage.ts";
 import { localDayKey } from "../src/utils/time.ts";
+import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 
 // Day keys are LOCAL calendar days now, so expectations derive from the same
@@ -421,6 +422,36 @@ test("readUsage drops an unattributable DB row instead of reporting a phantom mo
   // The dropped row contributed nothing to the totals or the per-day split.
   expect(report.byModel.get("gpt-5.5")?.input).toBe(100);
   expect(report.perDay.get(day("2026-06-01T00:00:00Z"))?.size).toBe(2);
+});
+
+// The daemon keeps its DB in WAL mode. A database left with its -wal but no -shm (the
+// shape a killed daemon or a copied home leaves) makes the reader's read-only open
+// create the -shm wal-index beside it: SQLite's write, on our behalf, so it is named.
+test("readUsage names the -shm sidecar a live read-only open creates", () => {
+  dir = tempDir("copilot-usage-");
+  const source = join(dir, "source.sqlite");
+  const writer = new DatabaseSync(source);
+  writer.exec("PRAGMA journal_mode=WAL");
+  writer.exec(`CREATE TABLE token_usage_events (
+    model TEXT NOT NULL, input_tokens INTEGER, output_tokens INTEGER,
+    cache_read_input_tokens INTEGER, cache_creation_input_tokens INTEGER,
+    created_at_ms INTEGER, created_at_utc TEXT
+  )`);
+  const t = "2026-06-01T00:00:00Z";
+  writer.prepare("INSERT INTO token_usage_events VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run("gpt-5.5", 100, 50, 0, 0, ms(t), t);
+  // The row sits in the -wal while the writer is open: copy db + wal (no shm) aside.
+  const path = join(dir, "copilot-api.sqlite");
+  copyFileSync(source, path);
+  copyFileSync(`${source}-wal`, `${path}-wal`);
+  writer.close();
+  expect(existsSync(`${path}-shm`)).toBe(false);
+
+  deferWriteReports();
+  const report = readUsage([path]);
+  const reported = flushWriteReports();
+  expect(report.byModel.get("gpt-5.5")?.input).toBe(100); // the WAL was read live
+  expect(reported).toEqual([`created -> ${path}-shm`]);
 });
 
 function seedUsageDb(path: string): void {

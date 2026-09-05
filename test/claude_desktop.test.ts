@@ -1732,7 +1732,12 @@ test("the sweep and its dry-run listing take every generated helper script and n
   removeAllClaudeDesktopWiring();
   expect(ours.filter(existsSync)).toEqual([]);
   expect(foreign.filter(existsSync)).toEqual(foreign);
-  expect(listClaudeDesktopOwnedArtifacts()).toEqual({ entries: [], helpers: [], blocked: false });
+  expect(listClaudeDesktopOwnedArtifacts()).toEqual({
+    entries: [],
+    staleClaims: [],
+    helpers: [],
+    blocked: false,
+  });
 
   await wireClaudeDesktopEntry(directWire());
   const ownedPath = firstEntryPath(library);
@@ -1743,13 +1748,16 @@ test("the sweep and its dry-run listing take every generated helper script and n
   writeFileSync(join(library, "_meta.json"), `${JSON.stringify(meta)}\n`);
   expect(listClaudeDesktopOwnedArtifacts()).toEqual({
     entries: [ownedPath],
+    staleClaims: [],
     helpers: [desktopHelperPath(rootHome, "direct", null)],
     blocked: false,
   });
 
-  // A listed owned entry whose file is already gone is nothing to delete.
+  // A listed owned entry whose file is already gone is nothing to delete, but its row
+  // and claim are still ours to release: a stale claim.
   rmSync(ownedPath);
   expect(listClaudeDesktopOwnedArtifacts().entries).toEqual([]);
+  expect(listClaudeDesktopOwnedArtifacts().staleClaims).toEqual([ownedPath]);
   writeFileSync(ownedPath, "{}\n");
   // Desktop absent (injected null dir): no entries, the helper scripts still listed.
   expect(listClaudeDesktopOwnedArtifacts(null).entries).toEqual([]);

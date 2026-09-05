@@ -8,11 +8,21 @@ import { join } from "node:path";
 import { consola } from "consola";
 import { parse } from "smol-toml";
 import { configureClaudeConfig, WEBSEARCH_DENY_RULE } from "../src/claude/config.ts";
-import { desktopHelperPath } from "../src/claude/desktop.ts";
+import {
+  CLAUDE_DESKTOP_DIR_ENV,
+  desktopHelperPath,
+  desktopLibraryDirUnder,
+} from "../src/claude/desktop.ts";
 import { claudeJsonPath, registerClaudeMcpServer } from "../src/claude/mcp_registration.ts";
 import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME, settingsPathFor } from "../src/claude/paths.ts";
 import { configureCodexConfig } from "../src/codex/config.ts";
-import { runUninstall, type UninstallDeps } from "../src/commands/uninstall.ts";
+import {
+  applyUninstall,
+  describeUninstall,
+  resolveUninstallContext,
+  runUninstall,
+  type UninstallDeps,
+} from "../src/commands/uninstall.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
@@ -22,6 +32,8 @@ import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { isRecord } from "../src/utils/json.ts";
 import { INSTALL_MANIFEST_FILE, type RootMode } from "../src/utils/root.ts";
 import { pointCurrentAt } from "../src/install/installer.ts";
+import { writeResolvedVersionRecord } from "../src/proxy_float.ts";
+import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { ROOT } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode, stageRefusedStop } from "./helpers.ts";
@@ -508,6 +520,101 @@ test("uninstall removes owned Claude Desktop entries via the injected library di
   };
   expect(meta.entries).toEqual([{ id: "theirs", name: "Mine" }]);
   expect(meta.appliedId).toBeUndefined(); // ours was applied; the reference is dropped
+});
+
+test("uninstall's dry run and live run render ONE resolved plan", async () => {
+  const { proxyHome, claudeHome, codexHome } = tmpHomes();
+  mkdirSync(claudeHome, { recursive: true });
+  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true });
+  // A named profile with a daemon home, so the profile step has a tree to delete.
+  new CopilotEnvState().commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
+    mode: "direct",
+  });
+  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true, profile: WORK });
+  mkdirSync(profileHome(WORK), { recursive: true });
+  // The AMBIENT Desktop library (the env seam) is the injected one, so a profile
+  // teardown that rescanned the library would find what is planted below.
+  const desktopData = join(dir, "desktop");
+  process.env[CLAUDE_DESKTOP_DIR_ENV] = desktopData;
+  const library = desktopLibraryDirUnder(desktopData);
+  mkdirSync(library, { recursive: true });
+  const rootHome = resolveRootHome();
+  mkdirSync(rootHome, { recursive: true });
+  const defaultHelper = desktopHelperPath(rootHome, "direct", null);
+  const workHelper = desktopHelperPath(rootHome, "direct", WORK);
+  writeFileSync(defaultHelper, "#!/bin/sh\n");
+  writeFileSync(workHelper, "#!/bin/sh\n");
+  const entryFor = (helper: string): string =>
+    `${JSON.stringify({ inferenceGatewayBaseUrl: "x", inferenceCredentialHelper: helper })}\n`;
+  const metaRows = [{ id: "ours", name: "copilot-env" }, {
+    id: "gone",
+    name: "copilot-env (work)",
+  }];
+  writeFileSync(join(library, "ours.json"), entryFor(defaultHelper));
+  writeFileSync(join(library, "_meta.json"), `${JSON.stringify({ entries: metaRows })}\n`);
+  const ledger = new OwnershipLedger();
+  ledger.record("claudeDesktop", join(library, "ours.json"));
+  // A stale claim: an owned row whose file is already gone.
+  ledger.record("claudeDesktop", join(library, "gone.json"));
+  // A float cache recorded OUTSIDE the root home: only the plan can name it.
+  const elsewhere = join(dir, "float-elsewhere");
+  mkdirSync(elsewhere, { recursive: true });
+  writeResolvedVersionRecord(proxyHome, "1.10.30", Date.now(), elsewhere, "fp");
+  const deps = { ...tmpDeps(codexHome), claudeDesktopLibraryDir: library };
+
+  const ctx = resolveUninstallContext({ yes: true }, deps);
+  expect(ctx.targets.desktop.helpers.sort()).toEqual([defaultHelper, workHelper].sort());
+  expect(ctx.targets.desktop.staleClaims).toEqual([join(library, "gone.json")]);
+  const dryRun = describeUninstall(ctx);
+  // Planted AFTER planning: a LISTED owned Desktop entry attributed to the profile the
+  // profile step deletes. Neither that step nor the Desktop sweep may take a path the
+  // dry run never named.
+  writeFileSync(join(library, "late.json"), entryFor(workHelper));
+  metaRows.push({ id: "late", name: "copilot-env (work, late)" });
+  writeFileSync(join(library, "_meta.json"), `${JSON.stringify({ entries: metaRows })}\n`);
+  ledger.record("claudeDesktop", join(library, "late.json"));
+
+  deferWriteReports();
+  await applyUninstall(ctx);
+  const deleted = new Set(
+    flushWriteReports()
+      .filter((line) => line.startsWith("deleted -> "))
+      .map((line) => line.slice("deleted -> ".length)),
+  );
+
+  expect(existsSync(join(library, "late.json"))).toBe(true);
+  expect(existsSync(join(library, "ours.json"))).toBe(false);
+  expect(existsSync(elsewhere)).toBe(false);
+  // The live row and the stale claim's row went; the late row stayed (the ledger itself
+  // lives in the root home the uninstall deleted, so the rows are the observable).
+  const meta = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
+    entries: { id: string }[];
+  };
+  expect(meta.entries.map((row) => row.id)).toEqual(["late"]);
+
+  // Exact parity, both ways. The dry run names paths as whole tokens; a token is a path
+  // only when it IS one, so an ancestor of a named path is never counted as named.
+  const named = new Set(
+    dryRun.join(" ").split(/\s+/).map((t) => t.replace(/[.,:;)]+$/, "")).filter((t) =>
+      t.startsWith(dir)
+    ),
+  );
+  expect([...deleted].filter((path) => !named.has(path))).toEqual([]);
+  const planned = [
+    ...ctx.targets.desktop.entries,
+    ...ctx.targets.desktop.helpers,
+    ...ctx.targets.floatArtifacts,
+    profileHome(WORK),
+    settingsPathFor(claudeHome, WORK),
+    ctx.rootHome,
+    ctx.installRoot.root,
+  ];
+  expect(planned.filter((path) => !deleted.has(path))).toEqual([]);
+  // Negative control: the tmp root is a prefix of every named path and appears inside
+  // the dry-run text, yet is not itself a named path.
+  expect(dryRun.join(" ")).toContain(dir);
+  expect(named.has(dir)).toBe(false);
 });
 
 test("uninstall --dry-run names every Claude Desktop path the sweep would delete", async () => {

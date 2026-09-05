@@ -54,7 +54,7 @@ import { join } from "node:path";
 import { createConsola } from "consola";
 import * as v from "valibot";
 import { proxyUnusedEverywhere } from "./agents/wiring.ts";
-import { atomicWriteFile, removeReported, removeTreeReported } from "./utils/report_write.ts";
+import { atomicWriteFile, removeTreeReported } from "./utils/report_write.ts";
 import { CopilotEnvConfig } from "./copilot_api/env_config.ts";
 import { resolveRootHome } from "./copilot_api/paths.ts";
 import { allShimPaths } from "./copilot_api/shims.ts";
@@ -67,7 +67,7 @@ import {
 import { pickAgedVersion } from "./utils/aged_version.ts";
 import { assertNever } from "./utils/assert.ts";
 import { errMessage } from "./utils/error.ts";
-import { readTextOrNull, readTextResult } from "./utils/fs.ts";
+import { entryAbsent, readTextOrNull, readTextResult } from "./utils/fs.ts";
 import { parseJsonRecord } from "./utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
 import { ASSET_ROOT } from "./utils/root.ts";
@@ -730,14 +730,26 @@ function usableRecord(ctx: FloatContext): ResolvedVersionRecord | null {
  * marker. An .npmrc without it is the user's; the float refused to write it, so the
  * uninstall refuses to delete it.
  */
-export function removeProxyFloatArtifacts(rootHome: string = resolveRootHome()): void {
-  const record = readResolvedVersionRecord(rootHome);
-  if (record !== null) removeTreeReported(record.denoDir);
-  removeTreeReported(proxyDenoDir(rootHome));
-  removeTreeReported(join(rootHome, "proxy"));
+export function removeProxyFloatArtifacts(
+  rootHome: string = resolveRootHome(),
+  paths: readonly string[] = proxyFloatArtifactPaths(rootHome),
+): void {
+  for (const path of paths) removeTreeReported(path);
+}
 
+/** Every path removeProxyFloatArtifacts would remove from `rootHome` right now: the
+ *  uninstall plan resolves this once and renders it both as the dry run and the live
+ *  removal. */
+export function proxyFloatArtifactPaths(rootHome: string): string[] {
+  const record = readResolvedVersionRecord(rootHome);
   const npmrc = join(rootHome, ".npmrc");
-  if (readTextOrNull(npmrc)?.includes(NPMRC_MARKER)) removeReported(npmrc);
+  const candidates = [
+    ...(record === null ? [] : [record.denoDir]),
+    proxyDenoDir(rootHome),
+    join(rootHome, "proxy"),
+    ...(readTextOrNull(npmrc)?.includes(NPMRC_MARKER) ? [npmrc] : []),
+  ];
+  return [...new Set(candidates)].filter((path) => !entryAbsent(path));
 }
 
 // --- Float actions -----------------------------------------------------------------

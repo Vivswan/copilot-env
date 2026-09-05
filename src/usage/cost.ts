@@ -62,6 +62,8 @@ const DEFAULT_SESSION_ROOTS: SessionRootDiscovery = {
 export interface CostDeps {
   fetchImpl?: typeof fetch;
   sessionRoots?: SessionRootDiscovery;
+  /** The clock every `runtime.timing` figure is read from, in ms (default `performance.now`). */
+  now?: () => number;
 }
 
 export interface CostArgs {
@@ -95,6 +97,7 @@ interface MeasuredRun {
   index: IndexStats;
   timing: Omit<CostRuntime["timing"], "total">;
   startedAt: number;
+  now: () => number;
 }
 
 /** Add every field of `more` into `into` (all seven are additive counts). */
@@ -161,7 +164,8 @@ export function resolvePricingUrl(
 
 /** `cost`: aggregate per-host SQLite + Codex session usage and estimate spend. */
 export async function runCost(args: CostArgs, deps: CostDeps = {}): Promise<void> {
-  const startedAt = performance.now();
+  const now = deps.now ?? (() => performance.now());
+  const startedAt = now();
   const window = args.days === undefined ? undefined : parseDaysWindow(args.days);
 
   // Started before the source readers, awaited where first needed: the network
@@ -177,6 +181,7 @@ export async function runCost(args: CostArgs, deps: CostDeps = {}): Promise<void
     await reportCost(args, deps.sessionRoots ?? DEFAULT_SESSION_ROOTS, {
       window,
       startedAt,
+      now,
       pricingLoad,
     });
   } finally {
@@ -191,6 +196,7 @@ interface CostRun {
   /** The `--days` window; its cutoff instant is derived from it where the readers need one. */
   window: DaysWindow | undefined;
   startedAt: number;
+  now: () => number;
   pricingLoad: Promise<LoadedPricing>;
 }
 
@@ -200,7 +206,7 @@ async function reportCost(
   roots: SessionRootDiscovery,
   run: CostRun,
 ): Promise<void> {
-  const { window, startedAt } = run;
+  const { window, startedAt, now } = run;
   const sinceMs = window === undefined ? undefined : daysCutoffMs(window);
   const dbPaths = discoverUsageDbs();
   const proxyReport = dbPaths.length > 0 ? readUsage(dbPaths, sinceMs) : EMPTY_REPORT;
@@ -209,7 +215,13 @@ async function reportCost(
   // between open and close.
   const sessionRoots = roots.codex();
   const claudeRoots = roots.claude();
-  const logs = await readSessionLogs(sessionRoots, claudeRoots, sinceMs, args.noIndex === true);
+  const logs = await readSessionLogs(
+    sessionRoots,
+    claudeRoots,
+    sinceMs,
+    args.noIndex === true,
+    now,
+  );
   const { codexByProvider, claudeReport } = logs;
 
   if (dbPaths.length === 0 && codexByProvider.size === 0 && claudeReport.byModel.size === 0) {
@@ -219,11 +231,15 @@ async function reportCost(
     return;
   }
 
-  // Best-effort pricing: a fetch failure still yields a token-only report.
+  // Best-effort pricing: a fetch failure still yields a token-only report. The wait
+  // is clocked the moment the load settles, either way, before any warning work.
   let pricing = new Map<string, PricingTier>();
-  const pricingWaitStartedAt = performance.now();
+  const pricingWaitStartedAt = now();
+  let pricingWaitMs = 0;
   try {
-    const loaded = await run.pricingLoad;
+    const loaded = await run.pricingLoad.finally(() => {
+      pricingWaitMs = now() - pricingWaitStartedAt;
+    });
     pricing = loaded.pricing;
     if (loaded.source === "stale-cache") {
       consola.warn(
@@ -250,9 +266,10 @@ async function reportCost(
       walk: Math.round(logs.meter.timing.walk),
       parse: Math.round(logs.meter.timing.parse),
       fold: Math.round(logs.meter.timing.fold),
-      pricing: Math.round(performance.now() - pricingWaitStartedAt),
+      pricing: Math.round(pricingWaitMs),
     },
     startedAt,
+    now,
   };
 
   // ModelUsage is a structural superset of UsageTokens, so the read-only
@@ -344,10 +361,11 @@ async function readSessionLogs(
   claudeRoots: string[],
   sinceMs: number | undefined,
   noIndex: boolean,
+  now: () => number,
 ): Promise<SessionLogs> {
   const index = noIndex ? null : openUsageIndex();
   try {
-    const meter = new ReconcileMeter(index?.reconcile ?? parseEveryCandidate);
+    const meter = new ReconcileMeter(index?.reconcile ?? parseEveryCandidate, now);
     const codexByProvider = await meter.read((reconcile) =>
       readCodexSessions(codexRoots, sinceMs, undefined, reconcile)
     );
@@ -1127,7 +1145,7 @@ function completeRuntime(measured: MeasuredRun): CostRuntime {
   return {
     indexed: measured.indexed,
     index: measured.index,
-    timing: { ...measured.timing, total: Math.round(performance.now() - measured.startedAt) },
+    timing: { ...measured.timing, total: Math.round(measured.now() - measured.startedAt) },
   };
 }
 

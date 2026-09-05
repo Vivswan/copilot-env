@@ -36,6 +36,7 @@ import {
   sumDayTotals,
   UNDATED_DAY_LABEL,
 } from "../src/usage/cost.ts";
+import { consola } from "consola";
 import { CopilotEnvConfig, OPENROUTER_MODELS_URL } from "../src/copilot_api/env_config.ts";
 import { USAGE_INDEX_DIR_NAME } from "../src/usage/paths.ts";
 import {
@@ -664,6 +665,44 @@ async function runtimeOf(
   );
   return JSON.parse(out.slice(out.indexOf("{"))).runtime;
 }
+
+test("runtime.timing.pricing is the wait for the price list alone, never the warning work", () =>
+  withCostHome(async ({ claudeRoot }) => {
+    // A ticking fake clock: every warning printed advances it, so a pricing figure
+    // clocked after the warnings would carry those ticks.
+    let nowMs = 0;
+    const warnedMs = 5_000;
+    const originalWarn = consola.warn;
+    consola.warn = ((...args: unknown[]) => {
+      nowMs += warnedMs;
+      return originalWarn.apply(consola, args as Parameters<typeof consola.warn>);
+    }) as typeof consola.warn;
+    try {
+      const runtime = async (fetchImpl: typeof fetch): Promise<CostRuntime> => {
+        const out = await captureAllWrites(() =>
+          runCost({ pricingUrl: PRICE_URL, json: true, noIndex: true }, {
+            fetchImpl,
+            ...rootsOf([], [claudeRoot]),
+            now: () => nowMs,
+          })
+        );
+        return JSON.parse(out.slice(out.indexOf("{"))).runtime;
+      };
+      // Rejected load: the warning prints, the clock jumps, pricing stays at the wait.
+      const failed = await runtime(fakeFetch(null, { fail: true }));
+      expect(failed.timing.pricing).toBe(0);
+      expect(failed.timing.total).toBe(warnedMs);
+      // Seed the price cache with one fetched run; a fresh cache then answers before
+      // the reads finish, so the already-settled load reads as exactly 0, no warning.
+      await runtime(fakeFetch(PRICED_BODY));
+      nowMs = 0;
+      const cached = await runtime(fakeFetch(null, { fail: true }));
+      expect(cached.timing.pricing).toBe(0);
+      expect(cached.timing.total).toBe(0);
+    } finally {
+      consola.warn = originalWarn;
+    }
+  }));
 
 test("runCost --json carries the reserved runtime key with exactly its three parts", () =>
   withCostHome(async ({ claudeRoot }) => {

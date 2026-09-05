@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,6 +7,7 @@ import {
   removeScratchDir,
   type ScratchDir,
   scratchDir,
+  withReportedPaths,
   writeFileReported,
 } from "../src/utils/report_write.ts";
 import { CHILD_VALUES, childValuesEnv, importSpecifier, ROOT, runScript } from "./helpers/run.ts";
@@ -21,6 +22,7 @@ const SEAM = join(ROOT, "src", "utils", "report_write.ts");
 test("every kind prints once per process, on stderr only, and a delete re-arms the path", () => {
   const dir = mkdtempSync(join(tmpdir(), "copilot-report-"));
   try {
+    mkdirSync(join(dir, "occupied"));
     const script = join(dir, "worker.ts");
     writeFileSync(
       script,
@@ -45,6 +47,9 @@ test("every kind prints once per process, on stderr only, and a delete re-arms t
         // A directory target: on Windows only a junction needs no privilege, and a
         // junction is removed like a directory.
         `const target = join(dir, "target"); mkdirReported(target);`,
+        // A write refused by the OS (the path is a directory) changed nothing: no line. The
+        // directory is one the seam never saw, so dedup cannot be what keeps it quiet.
+        `try { writeFileReported(join(dir, "occupied"), "x"); } catch { /* EISDIR / EPERM */ }`,
         `const type = process.platform === "win32" ? "junction" : undefined;`,
         `const unlink = process.platform === "win32" ? removeEmptyDirReported : removeReported;`,
         `const link = join(dir, "link");`,
@@ -79,6 +84,55 @@ test("every kind prints once per process, on stderr only, and a delete re-arms t
       `linked -> ${link} (to ${target})`,
       "",
     ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a deep look sees a nested rewrite the root's own metadata would hide", () => {
+  const dir = mkdtempSync(join(tmpdir(), "copilot-report-"));
+  try {
+    const tree = join(dir, "tree");
+    mkdirSync(join(tree, "inner"), { recursive: true });
+    const nested = join(tree, "inner", "data.bin");
+    writeFileSync(nested, "aaaa");
+    // A future-dated sibling pins the tree's latest mtime; the rewrite below keeps the
+    // nested file's size, so only its identity/mtime moves.
+    writeFileSync(join(tree, "inner", "pinned"), "");
+    utimesSync(
+      join(tree, "inner", "pinned"),
+      new Date(Date.now() + 86_400_000),
+      new Date(Date.now() + 86_400_000),
+    );
+    utimesSync(join(tree, "inner"), new Date(0), new Date(0));
+    utimesSync(tree, new Date(0), new Date(0));
+    deferWriteReports();
+    withReportedPaths([tree], () => {
+      rmSync(nested);
+      writeFileSync(nested, "bbbb");
+      utimesSync(join(tree, "inner"), new Date(0), new Date(0));
+    });
+    expect(flushWriteReports()).toEqual([`rewritten -> ${tree}`]);
+    // Unchanged tree: nothing.
+    deferWriteReports();
+    withReportedPaths([tree], () => {});
+    expect(flushWriteReports()).toEqual([]);
+    // A topology change with every directory's metadata pinned back: the moved entry is
+    // the same inode under a new relative path, and that alone is a rewrite of the tree
+    // (a fresh tree: the first one's rewrite is already on record for this process).
+    const tree2 = join(dir, "tree2");
+    mkdirSync(join(tree2, "inner"), { recursive: true });
+    writeFileSync(join(tree2, "peer"), "");
+    const pin = (): void => {
+      for (const d of [tree2, join(tree2, "inner")]) utimesSync(d, new Date(0), new Date(0));
+    };
+    pin();
+    deferWriteReports();
+    withReportedPaths([tree2], () => {
+      renameSync(join(tree2, "peer"), join(tree2, "inner", "peer"));
+      pin();
+    });
+    expect(flushWriteReports()).toEqual([`rewritten -> ${tree2}`]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

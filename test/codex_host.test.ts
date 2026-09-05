@@ -434,22 +434,26 @@ skipWin(
     const marker = join(dir, "codex-invocations.log");
     fs.mkdirSync(bin, { recursive: true });
     // Exit nonzero on purpose: the prime is best-effort and must not fail the build.
-    // It creates the shared root with one file, the way a real codex would.
+    // It writes into the CODEX_HOME it is given, the way a real codex would.
     fs.writeFileSync(
       join(bin, "codex"),
       `#!/bin/sh\nPATH=/usr/bin:/bin\nprintf '%s\\n' "$*" >> "${marker}"\ncat > /dev/null\n` +
-        `mkdir -p "${sharedRoot}"\nprintf '{}' > "${sharedRoot}/primed.json"\nexit 3\n`,
+        `mkdir -p "$CODEX_HOME"\nprintf '{}' > "$CODEX_HOME/primed.json"\nexit 3\n`,
       { mode: 0o755 },
     );
     // The fake bin dir FIRST, but with the system dirs kept: resolveCommand
     // resolves through `sh`, which must itself stay spawnable.
     process.env.PATH = `${bin}:/usr/bin:/bin`;
+    // An inherited CODEX_HOME must not divert the prime: the spawn gets the shared root.
+    const decoy = join(dir, "decoy-codex-home");
+    process.env.CODEX_HOME = decoy;
 
     deferWriteReports();
     await build();
     const reported = flushWriteReports();
     expect(fs.readFileSync(marker, "utf8")).toBe("exec\n");
     expect(isRealDir(sharedRoot)).toBe(true);
+    expect(lexists(decoy)).toBe(false);
     // The paths codex made on our request are named as ours.
     expect(reported).toContain(`created -> ${sharedRoot}`);
     expect(reported).toContain(`created -> ${join(sharedRoot, "primed.json")}`);

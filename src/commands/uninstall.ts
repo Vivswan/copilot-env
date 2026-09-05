@@ -25,7 +25,7 @@ import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import { profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { proxyFloatArtifactPaths, removeProxyFloatArtifacts } from "../proxy_float.ts";
-import { runShellIntegration } from "../shell/integration.ts";
+import { ownedShellTargets, removeShellIntegrationFrom } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
 import {
   installStateRoot,
@@ -70,16 +70,6 @@ export interface UninstallDeps {
    * directory the test process is running from.
    */
   installRoot?: RootMode;
-}
-
-/** The full shell unwire: rc / PowerShell profile blocks (integration + launchers).
- *  windowsProfileTarget covers ONE profile filename per call, so Windows removes
- *  both the per-host and the CurrentUserAllHosts profiles with two calls. */
-function removeShellIntegrationEverywhere(): void {
-  runShellIntegration({ kind: "remove", allHosts: false });
-  if (process.platform === "win32") {
-    runShellIntegration({ kind: "remove", allHosts: true });
-  }
 }
 
 /** The run-state-recorded CODEX_HOME farm dir an uninstall would remove, or null
@@ -137,6 +127,9 @@ export interface UninstallTargets {
   /** The run-state-recorded CODEX_HOME farm dir, or null (Windows, none recorded, or a
    *  test substitute injected for the removal). */
   codexHostFarm: string | null;
+  /** The rc / PowerShell profile files carrying an owned block (empty when a test
+   *  substitute is injected for the removal). */
+  shellFiles: string[];
 }
 
 /** Everything a step needs, resolved once after the confirmation gate. */
@@ -303,9 +296,19 @@ const UNINSTALL_STEPS: UninstallStep[] = [
     run: () => new Credential().clear(),
   },
   {
-    // 6. Shell integration + launchers.
-    describe: () => ["Would remove the shell integration (rc / PowerShell profile blocks)."],
-    run: (ctx) => (ctx.deps.removeShellIntegration ?? removeShellIntegrationEverywhere)(),
+    // 6. Shell integration + launchers: the owned block in each planned rc / profile file.
+    describe: (ctx) =>
+      ctx.targets.shellFiles.length === 0
+        ? [
+          "Would remove the shell integration block from the rc / PowerShell profile files (none found).",
+        ]
+        : ctx.targets.shellFiles.map((file) =>
+          `Would remove the shell integration block from ${file}.`
+        ),
+    run: (ctx) => {
+      if (ctx.deps.removeShellIntegration !== undefined) ctx.deps.removeShellIntegration();
+      else removeShellIntegrationFrom(ctx.targets.shellFiles);
+    },
   },
   {
     // 7. Stop again, then delete the copilot-api home (proxy config/apiKeys, run
@@ -422,6 +425,7 @@ export function resolveUninstallContext(
       floatArtifacts: proxyFloatArtifactPaths(rootHome),
       // A test substitute does its own (redirected) work, not this state-recorded rm.
       codexHostFarm: deps.removeCodexHostFarm === undefined ? recordedCodexHostFarm() : null,
+      shellFiles: deps.removeShellIntegration === undefined ? ownedShellTargets() : [],
     },
     installRoot,
     skipRootDelete: isProtectedRoot(installRoot) && !args.force,

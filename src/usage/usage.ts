@@ -349,18 +349,23 @@ function withDbCopy<T>(path: string, query: (db: DatabaseSync) => T): T {
  */
 function openSqliteReadOnlyWithWalFallback<T>(path: string, query: (db: DatabaseSync) => T): T {
   // A read-only open of a WAL database can still create the -shm wal-index beside it:
-  // SQLite's write, on our behalf, so the seam names it.
-  return withReportedPaths(SQLITE_SIDECAR_SUFFIXES.map((suffix) => `${path}${suffix}`), () => {
-    try {
-      return withReadOnlyDb(path, query);
-    } catch (first) {
+  // SQLite's write, on our behalf, so the seam names it. Only created/deleted: the
+  // daemon may append to the live -wal meanwhile, and a read never rewrites anything.
+  return withReportedPaths(
+    SQLITE_SIDECAR_SUFFIXES.map((suffix) => `${path}${suffix}`),
+    () => {
       try {
-        return withDbCopy(path, query);
-      } catch {
-        throw first;
+        return withReadOnlyDb(path, query);
+      } catch (first) {
+        try {
+          return withDbCopy(path, query);
+        } catch {
+          throw first;
+        }
       }
-    }
-  });
+    },
+    { kinds: ["created", "deleted"] },
+  );
 }
 
 /**

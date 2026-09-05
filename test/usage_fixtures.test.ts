@@ -12,18 +12,21 @@ import { join, relative } from "node:path";
 import { zstdCompressSync, zstdDecompressSync } from "node:zlib";
 import { discoverClaudeSessionRoots, readClaudeSessions } from "../src/usage/claude_sessions.ts";
 import { discoverCodexSessionRoots, readCodexSessions } from "../src/usage/codex_sessions.ts";
-import type { UsageReport } from "../src/usage/usage.ts";
+import { canonicalModelName } from "../src/usage/pricing.ts";
+import type { ReadonlyUsageReport } from "../src/usage/usage.ts";
 import { localDayKey, MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { tmpDir } from "./helpers.ts";
-import { denoRunArgs, ROOT, runSync } from "./helpers/run.ts";
+import { denoRunArgs, importSpecifier, ROOT, runSync } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
 import {
   claudeLineType,
   codexLineType,
+  type ExpectedReport,
   filenameShape,
   type GeneratedTree,
   generateUsageTree,
   LINE_SPLITTING_CODE_POINTS,
+  lineStamps,
   loadProfile,
   MEGABYTE,
   modelLabel,
@@ -33,10 +36,11 @@ import {
   PROFILE_PATH,
   quantiles,
   sampleQuantile,
+  spanOf,
   templates,
 } from "./helpers/usage_fixtures.ts";
 
-/** Tree size for the shared fixtures; CI may raise it through the env knob. */
+/** Tree size for the shared fixtures: 5 MiB by default; CI may raise it through the env knob. */
 const FIXTURE_MB = Number(process.env.COPILOT_ENV_USAGE_FIXTURE_MB ?? "5");
 const SEED = 20260904;
 
@@ -91,8 +95,78 @@ function snapshot(tree: GeneratedTree): Map<string, Buffer> {
 }
 
 interface ReadBack {
-  codex: Map<string, UsageReport>;
-  claude: UsageReport;
+  codex: Map<string, ReadonlyUsageReport>;
+  claude: ReadonlyUsageReport;
+}
+
+/** The ledger with its raw model ids folded onto the readers' canonical spelling. */
+function canonical(report: ExpectedReport): ExpectedReport {
+  const fold = (row: Map<string, ModelUsageLike>): Map<string, ModelUsageLike> => {
+    const out = new Map<string, ModelUsageLike>();
+    for (const [model, u] of row) {
+      const key = canonicalModelName(model);
+      const prev = out.get(key);
+      out.set(
+        key,
+        prev === undefined ? { ...u } : {
+          input: prev.input + u.input,
+          output: prev.output + u.output,
+          cacheRead: prev.cacheRead + u.cacheRead,
+          cacheCreation: prev.cacheCreation + u.cacheCreation,
+          events: prev.events + u.events,
+        },
+      );
+    }
+    return out;
+  };
+  return {
+    byModel: fold(report.byModel),
+    perDay: new Map([...report.perDay].map(([day, row]) => [day, fold(row)])),
+  };
+}
+type ModelUsageLike = ExpectedReport["byModel"] extends Map<string, infer U> ? U : never;
+
+/** Min and max of a list too long to spread into Math.min/Math.max. */
+function bounds(values: number[]): { min: number; max: number } {
+  let min = Number.POSITIVE_INFINITY;
+  let max = Number.NEGATIVE_INFINITY;
+  for (const v of values) {
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
+  return { min, max };
+}
+
+/** Only the string `timestamp` fields: what a span that ignored nested instants would see. */
+function outerStampsOf(text: string): number[] {
+  return [...text.matchAll(/"timestamp":"([^"]+)"/g)].map((m) => Date.parse(m[1]!));
+}
+
+/** Every instant a file's lines carry: string `timestamp` fields at any depth and the nested
+ *  numeric `*_at` / `*_at_ms` fields; a torn tail contributes nothing. */
+function stampsOf(text: string): number[] {
+  const out: number[] = [];
+  const walk = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (typeof value !== "object" || value === null) return;
+    for (const [key, item] of Object.entries(value)) {
+      if (key === "timestamp" && typeof item === "string") out.push(Date.parse(item));
+      else if (/_at(_ms)?$/.test(key) && typeof item === "number") out.push(item);
+      else walk(item);
+    }
+  };
+  for (const line of text.split("\n")) {
+    if (line === "") continue;
+    try {
+      walk(JSON.parse(line));
+    } catch {
+      continue;
+    }
+  }
+  return out;
 }
 
 /** The readers' view of a tree, days cut in UTC to match the generator's ledger. */
@@ -108,11 +182,11 @@ async function readBack(tree: GeneratedTree): Promise<ReadBack> {
 }
 
 /** A report's roll-up as a plain sorted object, so a mismatch prints legibly. */
-function byModel(report: UsageReport): Record<string, unknown> {
+function byModel(report: ReadonlyUsageReport): Record<string, unknown> {
   return Object.fromEntries([...report.byModel].sort(([a], [b]) => a.localeCompare(b)));
 }
 
-function perDay(report: UsageReport): Record<string, Record<string, unknown>> {
+function perDay(report: ReadonlyUsageReport): Record<string, Record<string, unknown>> {
   return Object.fromEntries(
     [...report.perDay].sort(([a], [b]) => a.localeCompare(b)).map(([day, models]) => [
       day,
@@ -363,11 +437,44 @@ test("the same seed yields identical bytes and a different seed does not", async
   expect([...sa.keys()]).toEqual([...sb.keys()]);
   for (const [path, bytes] of sa) expect(bytes.equals(sb.get(path)!)).toBe(true);
   expect(a.markers).toEqual(b.markers);
-  expect(byModel(a.expected.claude)).toEqual(byModel(b.expected.claude));
+  expect(byModel(canonical(a.expected.claude))).toEqual(byModel(canonical(b.expected.claude)));
   const sc = snapshot(c);
   expect([...sc.keys()]).not.toEqual([...sa.keys()]);
   expect(c.markers).not.toEqual(a.markers);
 }, 60_000);
+
+test("a line's stamps cover every instant its template emits, and the span folds them all", () => {
+  const ctx = { ts: "2026-08-01T10:00:00.000Z", startedMs: 1_000, nowMs: 2_000 };
+  const codex = templates.codex.lines;
+  const outer = Date.parse(ctx.ts);
+  expect(lineStamps(codex["event_msg/item_completed"]!, ctx)).toEqual({
+    outer,
+    nested: [1_000, 2_000],
+  });
+  expect(lineStamps(codex["event_msg/task_complete"]!, ctx)).toEqual({
+    outer,
+    nested: [1_000, 2_000],
+  });
+  expect(lineStamps(codex["event_msg/task_started"]!, ctx)).toEqual({ outer, nested: [2_000] });
+  expect(lineStamps(codex["session_meta"]!, ctx)).toEqual({ outer, nested: [] });
+  // A header template without a timestamp carries no instant at all.
+  expect(lineStamps(templates.claude.lines["mode"]!, ctx)).toEqual({ nested: [] });
+  // Every codex template carries an outer timestamp; exactly these carry nested instants.
+  const nested = Object.entries(codex).filter(([, t]) => lineStamps(t, ctx).nested.length > 0)
+    .map(([name]) => name).sort();
+  expect(nested).toEqual([
+    "event_msg/item_completed",
+    "event_msg/task_complete",
+    "event_msg/task_started",
+  ]);
+  for (const t of Object.values(codex)) expect(lineStamps(t, ctx).outer).toBe(outer);
+  // Nested instants outside the outer ones set the span; an outer-only fold would say 10..10.
+  expect(spanOf([{ outer: 10, nested: [5, 20] }, { nested: [30] }])).toEqual({
+    first: 5,
+    last: 30,
+  });
+  expect(spanOf([{ outer: 10, nested: [] }])).toEqual({ first: 10, last: 10 });
+});
 
 /**
  * SHA-256 over a fixed small corpus (seed 7, 1 MiB, 5 days): sorted root-relative paths with
@@ -400,36 +507,41 @@ test(
       0.1 * FIXTURE_MB * MEGABYTE,
     );
     // The reported span bounds every timestamp any line carries, tightly at both ends.
-    let earliest = Number.POSITIVE_INFINITY;
-    let latest = Number.NEGATIVE_INFINITY;
-    for (const f of tree.files) {
-      for (const m of textOf(f.path).matchAll(/"timestamp":"([^"]+)"/g)) {
-        const ms = Date.parse(m[1]!);
-        earliest = Math.min(earliest, ms);
-        latest = Math.max(latest, ms);
-      }
-    }
-    expect(tree.firstEventMs).toBe(earliest);
-    expect(tree.lastEventMs).toBe(latest);
+    // Every instant, the nested numeric ones included: a fork copy keeps its parent's
+    // started_at / completed_at values, which can lie outside every outer timestamp.
+    const all = tree.files.flatMap((f) => stampsOf(textOf(f.path)));
+    expect(tree.firstEventMs).toBe(bounds(all).min);
+    expect(tree.lastEventMs).toBe(bounds(all).max);
+    const outer = tree.files.flatMap((f) =>
+      [...textOf(f.path).matchAll(/"timestamp":"([^"]+)"/g)].map((m) => Date.parse(m[1]!))
+    );
+    expect(all.length).toBeGreaterThan(outer.length);
+    const { min: earliest, max: latest } = bounds(all);
     expect(latest - earliest).toBeGreaterThan(MILLISECONDS_PER_DAY);
     // Small adversarial trees across seeds: the scripted ghost parent (built, resumed, never
     // written), the popped truncated line, and the timestamp-free headers must never be an
     // endpoint. Each tree is checked to hold the parentless fork, so the claim is not idle.
     for (const seed of [1, 2, 3, 4, 5]) {
       const small = await generateUsageTree({ root: freshRoot(), mb: 2, seed });
-      const stamps = small.files.flatMap((f) =>
-        [...textOf(f.path).matchAll(/"timestamp":"([^"]+)"/g)].map((m) => Date.parse(m[1]!))
-      );
-      expect(small.firstEventMs).toBe(Math.min(...stamps));
-      expect(small.lastEventMs).toBe(Math.max(...stamps));
+      const stamps = small.files.flatMap((f) => stampsOf(textOf(f.path)));
+      expect(small.firstEventMs).toBe(bounds(stamps).min);
+      expect(small.lastEventMs).toBe(bounds(stamps).max);
       const metas = small.files.filter((f) => f.source === "codex").map((f) =>
         JSON.parse(textOf(f.path).split("\n")[0]!) as { payload: Record<string, string> }
       );
       const ids = new Set(metas.map((m) => m.payload["id"]));
-      const parentless = metas.some((m) =>
-        m.payload["forked_from_id"] !== undefined && !ids.has(m.payload["forked_from_id"])
-      );
-      expect(parentless).toBe(true);
+      const codexTexts = small.files.filter((f) => f.source === "codex").map((f) => textOf(f.path));
+      const parentless = codexTexts.filter((text, i) => {
+        const meta = metas[i]!.payload;
+        return meta["forked_from_id"] !== undefined && !ids.has(meta["forked_from_id"]);
+      });
+      expect(parentless.length).toBeGreaterThan(0);
+      // The ghost parent was resumed two hours after it started, so the fork's copied items carry
+      // nested completed_at instants well past the fork's own outer timestamps: an outer-only span
+      // would be wrong for this file.
+      for (const text of parentless) {
+        expect(bounds(stampsOf(text)).max).toBeGreaterThan(bounds(outerStampsOf(text)).max);
+      }
     }
     const onDisk = walk(tree.root).filter((f) => !f.includes(".copilot-env"));
     expect(tree.files.map((f) => f.path).sort()).toEqual(onDisk.sort());
@@ -689,12 +801,12 @@ test("the readers return exactly the usage the generator planted (the drift cana
   expect([...got.codex.keys()].sort()).toEqual([...tree.expected.codex.keys()].sort());
   for (const [provider, expected] of tree.expected.codex) {
     const report = got.codex.get(provider)!;
-    expect(byModel(report)).toEqual(byModel(expected));
-    expect(perDay(report)).toEqual(perDay(expected));
+    expect(byModel(report)).toEqual(byModel(canonical(expected)));
+    expect(perDay(report)).toEqual(perDay(canonical(expected)));
   }
   expect([...got.codex.values()].some((r) => r.perDay.size > 1)).toBe(true);
   // No day carries an all-zero row on either side: an exact streaming repeat touches no day.
-  const zeroDay = (report: UsageReport): boolean =>
+  const zeroDay = (report: ReadonlyUsageReport): boolean =>
     [...report.perDay.values()].some((models) =>
       [...models.values()].some((u) => u.input + u.output + u.cacheRead + u.cacheCreation === 0)
     );
@@ -705,18 +817,18 @@ test("the readers return exactly the usage the generator planted (the drift cana
   // ascending path order with a running per-id max, and a resume's copies are byte-identical
   // to the original (same timestamps, same snapshots), so whichever file it meets first books
   // the same deltas on the same days and the other adds nothing.
-  expect(byModel(got.claude)).toEqual(byModel(tree.expected.claude));
-  expect(perDay(got.claude)).toEqual(perDay(tree.expected.claude));
+  expect(byModel(got.claude)).toEqual(byModel(canonical(tree.expected.claude)));
+  expect(perDay(got.claude)).toEqual(perDay(canonical(tree.expected.claude)));
   expect(got.claude.perDay.size).toBeGreaterThan(1);
 
   const plainRead = await readBack(await plainTree());
   const plainExpected = (await plainTree()).expected;
   expect([...plainRead.codex.keys()].sort()).toEqual([...plainExpected.codex.keys()].sort());
   for (const [provider, expected] of plainExpected.codex) {
-    expect(perDay(plainRead.codex.get(provider)!)).toEqual(perDay(expected));
+    expect(perDay(plainRead.codex.get(provider)!)).toEqual(perDay(canonical(expected)));
   }
-  expect(byModel(plainRead.claude)).toEqual(byModel(plainExpected.claude));
-  expect(perDay(plainRead.claude)).toEqual(perDay(plainExpected.claude));
+  expect(byModel(plainRead.claude)).toEqual(byModel(canonical(plainExpected.claude)));
+  expect(perDay(plainRead.claude)).toEqual(perDay(canonical(plainExpected.claude)));
 }, 90_000);
 
 test("the exact-usage oracle bites: a raised snapshot or an extra count is detected", async () => {
@@ -726,9 +838,9 @@ test("the exact-usage oracle bites: a raised snapshot or an extra count is detec
   // or the comparison the previous test rests on would be decorative.
   const tree = await generateUsageTree({ root: freshRoot(), mb: 2, seed: 11, adversarial: false });
   const before = await readBack(tree);
-  expect(byModel(before.claude)).toEqual(byModel(tree.expected.claude));
+  expect(byModel(before.claude)).toEqual(byModel(canonical(tree.expected.claude)));
   for (const [provider, expected] of tree.expected.codex) {
-    expect(byModel(before.codex.get(provider)!)).toEqual(byModel(expected));
+    expect(byModel(before.codex.get(provider)!)).toEqual(byModel(canonical(expected)));
   }
 
   const claudeFile = tree.files.find((f) =>
@@ -750,9 +862,30 @@ test("the exact-usage oracle bites: a raised snapshot or an extra count is detec
   writeFileSync(codexFile.path, `${[...codexLines, JSON.stringify(extra)].join("\n")}\n`);
 
   const after = await readBack(tree);
-  expect(byModel(after.claude)).not.toEqual(byModel(tree.expected.claude));
+  expect(byModel(after.claude)).not.toEqual(byModel(canonical(tree.expected.claude)));
+  // A timestamp-only tamper: move one assistant line a day later. The roll-up cannot see it;
+  // the per-day comparison must.
+  const shifted = await generateUsageTree({
+    root: freshRoot(),
+    mb: 2,
+    seed: 11,
+    adversarial: false,
+  });
+  const target = shifted.files.find((f) =>
+    f.source === "claude" && textOf(f.path).includes('"type":"assistant"')
+  )!;
+  const rows = readFileSync(target.path, "utf8").split("\n").filter((l) => l !== "");
+  const at = rows.findIndex((l) => l.includes('"type":"assistant"'));
+  const moved = JSON.parse(rows[at]!) as { timestamp: string };
+  moved.timestamp = new Date(Date.parse(moved.timestamp) + MILLISECONDS_PER_DAY).toISOString();
+  rows[at] = JSON.stringify(moved);
+  writeFileSync(target.path, `${rows.join("\n")}\n`);
+  const day = await readBack(shifted);
+  expect(byModel(day.claude)).toEqual(byModel(canonical(shifted.expected.claude)));
+  expect(perDay(day.claude)).not.toEqual(perDay(canonical(shifted.expected.claude)));
   const codexMoved = [...tree.expected.codex].some(([provider, expected]) =>
-    JSON.stringify(byModel(after.codex.get(provider)!)) !== JSON.stringify(byModel(expected))
+    JSON.stringify(byModel(after.codex.get(provider)!)) !==
+      JSON.stringify(byModel(canonical(expected)))
   );
   expect(codexMoved).toBe(true);
 }, 60_000);
@@ -800,6 +933,173 @@ test(
   },
   60_000,
 );
+
+test(
+  "a non-empty root is refused before anything is written, and files are created exclusively",
+  async () => {
+    const root = freshRoot();
+    const sentinel = join(root, "keep-me.jsonl");
+    writeFileSync(sentinel, "not ours\n");
+    await expect(generateUsageTree({ root, mb: 1, seed: 1 })).rejects.toThrow(/empty directory/);
+    expect(walk(root)).toEqual([sentinel]);
+    expect(readFileSync(sentinel, "utf8")).toBe("not ours\n");
+    // A file where a directory is expected is not an empty directory either, nor a symlink (even
+    // to an empty directory: the tree would land elsewhere), nor a broken symlink.
+    await expect(generateUsageTree({ root: sentinel, mb: 1, seed: 1 })).rejects.toThrow(
+      /empty directory/,
+    );
+    if (Deno.build.os !== "windows") {
+      const linked = join(freshRoot(), "linked");
+      symlinkSync(freshRoot(), linked, "dir");
+      await expect(generateUsageTree({ root: linked, mb: 1, seed: 1 })).rejects.toThrow(
+        /empty directory/,
+      );
+      // A trailing slash or dot would make a naive lstat follow the link; the root is normalized.
+      await expect(generateUsageTree({ root: `${linked}/`, mb: 1, seed: 1 })).rejects.toThrow(
+        /empty directory/,
+      );
+      await expect(generateUsageTree({ root: `${linked}/.`, mb: 1, seed: 1 })).rejects.toThrow(
+        /empty directory/,
+      );
+      const broken = join(freshRoot(), "broken");
+      symlinkSync(join(freshRoot(), "gone"), broken, "dir");
+      await expect(generateUsageTree({ root: broken, mb: 1, seed: 1 })).rejects.toThrow(
+        /empty directory/,
+      );
+    }
+    // An empty directory and an absent one both work.
+    expect((await generateUsageTree({ root: freshRoot(), mb: 0.05, seed: 1 })).files.length)
+      .toBeGreaterThan(0);
+    const absent = join(freshRoot(), "nested", "absent");
+    expect((await generateUsageTree({ root: absent, mb: 0.05, seed: 1 })).files.length)
+      .toBeGreaterThan(0);
+  },
+  60_000,
+);
+
+test("the library generates with only read and write permission: no env, sys, or net", () => {
+  // The source grep above is a hint; this is the proof. Reads are allowed for the fixtures and
+  // the root only, so a transitive import touching the home directory, the environment or any
+  // other file at load or at run would be a permission error here.
+  const root = join(freshRoot(), "tree");
+  const script = join(freshRoot(), "generate.ts");
+  writeFileSync(
+    script,
+    `import { generateUsageTree } from ${
+      importSpecifier(join(ROOT, "test", "helpers", "usage_fixtures.ts"))
+    };
+const tree = await generateUsageTree({ root: Deno.args[0]!, mb: 0.05, seed: 3 });
+console.log(JSON.stringify({ files: tree.files.length }));
+`,
+  );
+  const result = runSync("deno", [
+    "run",
+    "--config",
+    join(ROOT, "deno.json"),
+    `--allow-read=${join(ROOT, "test", "fixtures", "usage")},${root}`,
+    `--allow-write=${root}`,
+    "--deny-env",
+    "--deny-sys",
+    "--deny-net",
+    "--deny-run",
+    script,
+    root,
+  ], { cwd: ROOT, timeoutMs: 60_000 });
+  expect(result.stderr).not.toContain("NotCapable");
+  expect(result.exitCode).toBe(0);
+  expect((JSON.parse(result.stdout.trim()) as { files: number }).files).toBeGreaterThan(0);
+}, 90_000);
+
+test("a cutoff keeps the days after it exact while a fork and a resume straddle it", async () => {
+  const tree = await sharedTree();
+  const unlimited = await readBack(tree);
+  type Parsed = Record<string, unknown>;
+  const parsedLines = (text: string): Parsed[] =>
+    text.split("\n").filter((l) => l !== "").flatMap((l) => {
+      try {
+        return [JSON.parse(l) as Parsed];
+      } catch {
+        return [];
+      }
+    });
+  const ts = (l: Parsed): number => Date.parse(l.timestamp as string);
+
+  // Cutoff 1: the instant a fork whose parent is on disk began. The parent's lines lie
+  // before it, the fork's copies and own lines at or after it.
+  const codexFiles = tree.files.filter((f) => f.source === "codex" && !f.path.endsWith(".zst"))
+    .map((f) => parsedLines(textOf(f.path)));
+  const byId = new Map(
+    codexFiles.map((lines) => [(lines[0]!.payload as Parsed).id as string, lines]),
+  );
+  const fork = codexFiles.find((lines) => {
+    const parent = (lines[0]!.payload as Parsed)["forked_from_id"];
+    return typeof parent === "string" && byId.has(parent);
+  })!;
+  const parent = byId.get((fork[0]!.payload as Parsed)["forked_from_id"] as string)!;
+  const forkCutoff = ts(fork[0]!);
+  expect(parent.some((l) => ts(l) < forkCutoff)).toBe(true);
+  expect(fork.every((l) => ts(l) >= forkCutoff)).toBe(true);
+
+  // Cutoff 2: one past the last line of a resumed Claude original. The resume file repeats
+  // the original's ids (copies, at the original's old timestamps) and adds its own lines after.
+  const claudeFiles = tree.files.filter((f) => f.source === "claude").map((f) =>
+    parsedLines(textOf(f.path)).filter((l) => l.type === "assistant")
+  ).filter((lines) => lines.length > 0);
+  const idsOf = (lines: Parsed[]): Set<string> =>
+    new Set(lines.map((l) => (l.message as Parsed).id as string));
+  let pair: [Parsed[], Parsed[]] | undefined;
+  for (const a of claudeFiles) {
+    for (const b of claudeFiles) {
+      if (a === b) continue;
+      const shared = [...idsOf(a)].some((id) => idsOf(b).has(id));
+      if (shared && bounds(a.map(ts)).max < bounds(b.map(ts)).max) pair = [a, b];
+    }
+  }
+  expect(pair).toBeDefined();
+  const [original, resume] = pair!;
+  const resumeCutoff = bounds(original.map(ts)).max + 1;
+  expect(resume.some((l) => ts(l) >= resumeCutoff)).toBe(true);
+  expect(resume.some((l) => ts(l) < resumeCutoff)).toBe(true);
+
+  let codexDaysCompared = 0;
+  let claudeDaysCompared = 0;
+  for (const cutoffMs of [forkCutoff, resumeCutoff]) {
+    const cutoffDay = localDayKey(cutoffMs, "UTC");
+    const codex = await readCodexSessions(
+      discoverCodexSessionRoots([tree.codexRoot]),
+      cutoffMs,
+      "UTC",
+    );
+    const claude = await readClaudeSessions(
+      discoverClaudeSessionRoots([tree.claudeRoot]),
+      cutoffMs,
+      "UTC",
+    );
+    const after = (report: ReadonlyUsageReport): Record<string, unknown> =>
+      Object.fromEntries(Object.entries(perDay(report)).filter(([day]) => day > cutoffDay));
+    for (const report of [...codex.values(), claude]) {
+      for (const day of report.perDay.keys()) expect(day >= cutoffDay).toBe(true);
+    }
+    // Days strictly after the cutoff day are untouched by the window: the fork copied from a
+    // pre-cutoff parent and the resume of a pre-cutoff message dedupe exactly as without it.
+    const withAfter = (reports: Map<string, ReadonlyUsageReport>): string[] =>
+      [...reports].filter(([, r]) => Object.keys(after(r)).length > 0).map(([p]) => p).sort();
+    expect(withAfter(codex)).toEqual(withAfter(unlimited.codex));
+    for (const [provider, report] of codex) {
+      expect(after(report)).toEqual(after(unlimited.codex.get(provider)!));
+      codexDaysCompared += Object.keys(after(report)).length;
+    }
+    expect(after(claude)).toEqual(after(unlimited.claude));
+    claudeDaysCompared += Object.keys(after(claude)).length;
+    // And something WAS dropped: the window is real.
+    const total = (r: ReadonlyUsageReport): number =>
+      [...r.byModel.values()].reduce((n, u) => n + u.events, 0);
+    expect(total(claude)).toBeLessThan(total(unlimited.claude));
+  }
+  // The post-cutoff equality compared real rows for both sources across the two cutoffs.
+  expect(codexDaysCompared).toBeGreaterThan(0);
+  expect(claudeDaysCompared).toBeGreaterThan(0);
+}, 120_000);
 
 test("options are validated up front, and a zone-less end is refused", async () => {
   const profile: Profile = loadProfile();
@@ -867,9 +1167,7 @@ test("the CLI wrapper writes the tree and prints one JSON summary line", () => {
   // The span is reported as UTC calendar days, inclusive, and holds every timestamp in the
   // tree; it comes from the seed, never the clock, so it is the same on every host.
   const days = walk(root).filter((f) => !f.includes(".copilot-env")).flatMap((f) =>
-    [...textOf(f).matchAll(/"timestamp":"([^"]+)"/g)].map((m) =>
-      localDayKey(Date.parse(m[1]!), "UTC")
-    )
+    stampsOf(textOf(f)).map((ms) => localDayKey(ms, "UTC"))
   ).sort();
   expect(summary.firstDay).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   expect(summary.lastDay).toMatch(/^\d{4}-\d{2}-\d{2}$/);

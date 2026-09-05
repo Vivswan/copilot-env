@@ -1,28 +1,13 @@
-// Synthetic Codex rollout and Claude transcript trees for the usage readers.
-//
-// Two halves share this module. The PROFILE is a set of distributions (quantile
-// tables and shares) measured over a real machine's session logs by
-// scripts/usage_profile.ts; it carries numbers and schema words only, never
-// text, ids, or paths. The GENERATOR samples every size, count, gap, and token
-// figure from that profile and renders lines from the scrubbed key-set
-// templates under test/fixtures/usage/templates/, so a generated tree has the
-// real files' shape (key sets, line ordering, byte sizes, streaming repeats,
-// forks, resumes, archives, a torn tail) while containing nothing from anyone's
-// actual sessions. It also returns the usage it planted as reader-shaped
-// reports, so a test can hold the readers to an exact expected answer.
-//
-// Determinism is a contract: the same seed yields the same bytes on every OS.
-// All randomness flows from one mulberry32 stream, no clock or environment is
-// read, and the synthetic user's local zone is UTC so path dates and timestamps
-// agree without consulting the host zone.
+// Synthetic Codex rollout and Claude transcript trees for the usage readers: a PROFILE measured
+// from real logs (numbers and schema words only) and a GENERATOR sampling it into real-shaped
+// files, deterministic per seed on every OS (one PRNG, no clock, no environment, UTC), with a ledger.
 import { Buffer } from "node:buffer";
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { zstdCompressSync } from "node:zlib";
 import * as v from "valibot";
-import { canonicalModelName } from "../../src/usage/pricing.ts";
-import { record, type UsageReport, usageReport } from "../../src/usage/usage.ts";
+import type { ModelUsage, ReadonlyUsageReport } from "../../src/usage/usage.ts";
 import { isRecord } from "../../src/utils/json.ts";
 import { MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
 
@@ -54,10 +39,9 @@ export const OTHER_LINE_TYPE = "other";
 export const TORN_LINE_TYPE = "torn";
 
 /**
- * The Codex line types the profile may name: the writer's schema words as
- * observed on real rollouts. A CLOSED set, so a type word that carried
- * anything else (a value, a name) is folded into OTHER_LINE_TYPE before it can
- * reach a committed file. Extend it deliberately when the writer adds a type.
+ * The Codex line types a profile may name, as observed on real rollouts: a CLOSED set, so a
+ * type word carrying anything else folds to OTHER_LINE_TYPE before it can reach a committed
+ * file. Extend deliberately when the writer adds a type.
  */
 export const CODEX_LINE_TYPES: ReadonlySet<string> = new Set([
   "compacted",
@@ -307,10 +291,9 @@ const QUANTILE_POINTS: readonly (readonly [number, keyof Omit<Quantiles, "count"
 ];
 
 /**
- * One draw from the distribution a quantile table summarizes: piecewise-linear
- * inverse CDF through the six points, flat below p5 and above p99 (tails the
- * table cannot describe are clamped, never extrapolated). Linear arithmetic
- * only, so every host computes the same double.
+ * One draw from the distribution a quantile table summarizes: piecewise-linear inverse CDF
+ * through the six points, clamped (never extrapolated) below p5 and above p99. Linear
+ * arithmetic only, so every host computes the same double.
  */
 export function sampleQuantile(rng: Rng, q: Quantiles): number {
   const u = rng();
@@ -449,10 +432,9 @@ export function modelLabel(model: unknown): string {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
- * The shape of a log filename, from a CLOSED set: the writers' known patterns
- * with ids and digits normalized away, and `other.jsonl` for anything else.
- * A name outside the set never reaches the profile, so a private basename
- * cannot leak through it.
+ * The shape of a log filename, from a CLOSED set: the writers' known patterns with ids and
+ * digits normalized away, `other.jsonl` for anything else, so a private basename never
+ * reaches the profile.
  */
 export function filenameShape(name: string): string {
   const rollout = /^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-(.+)\.jsonl(\.zst)?$/.exec(name);
@@ -542,18 +524,16 @@ const KEEP_FILL: Record<string, Json> = { fill: "@fill" };
 type FillKind = "prose" | "opaque";
 
 /**
- * Code points no filler may carry: node:readline (the pre-index reader) splits
- * lines on U+2028, U+2029 and U+0085 too, so a line holding one unescaped
- * would vanish from the goldens recorded with it. Everything else non-ASCII is
- * welcome.
+ * Code points no filler may carry: node:readline (the pre-index reader) splits lines on
+ * U+2028, U+2029 and U+0085 too, so a line holding one unescaped would vanish from the
+ * goldens recorded with it. Everything else non-ASCII is welcome.
  */
 export const LINE_SPLITTING_CODE_POINTS: readonly string[] = ["\u2028", "\u2029", "\u0085"];
 
 /**
- * The filler vocabulary. Non-ASCII stays in escapes so this source file is
- * ASCII; the generated text carries accents, CJK, Arabic, Hebrew, emoji,
- * quotes, backslashes, and control characters the way pasted prose and tool
- * output do, never a LINE_SPLITTING_CODE_POINTS member (see above).
+ * The filler vocabulary, in escapes so this file stays ASCII: accents, CJK, Arabic, Hebrew,
+ * emoji, quotes, backslashes and control characters the way pasted prose and tool output
+ * carry them, never a LINE_SPLITTING_CODE_POINTS member.
  */
 const PROSE_TOKENS: readonly string[] = [
   "the",
@@ -636,10 +616,9 @@ function filler(rng: Rng, bytes: number, kind: FillKind): string {
 // ---------- line rendering ----------
 
 /**
- * Serialize `line` (rendered except for `@fill`) padded so it is `targetBytes`
- * long before its LF, or unpadded when it already exceeds the target. `prefix`
- * leads the filled text (a planted marker, a pasted needle). Two
- * serializations per line; the second is the one written.
+ * Serialize `line` (rendered except for `@fill`) padded to `targetBytes` before its LF, or
+ * unpadded when already longer; `prefix` (a marker, a pasted needle) leads the filled text.
+ * Two serializations per line; the second is written.
  */
 function serializeSized(
   rng: Rng,
@@ -699,15 +678,59 @@ export interface GeneratedFile {
 }
 
 /**
- * The usage the tree carries, in the readers' own report shape with days cut
- * in UTC: what readCodexSessions (per model_provider) and readClaudeSessions
- * must return over it when asked for the "UTC" zone. Every planted count is
- * booked exactly once, so forks, resumes, repeats, archives, and the torn tail
- * contribute nothing beyond their originals.
+ * The usage the tree carries, per model_provider for Codex and one report for Claude, days
+ * cut in UTC and models keyed by the RAW id the lines spell (canonicalize to compare with a
+ * reader). Every planted count is booked once: copies of any kind add nothing.
  */
+export interface ExpectedReport {
+  byModel: Map<string, ModelUsage>;
+  perDay: Map<string, Map<string, ModelUsage>>;
+}
+
 export interface ExpectedUsage {
-  codex: Map<string, UsageReport>;
-  claude: UsageReport;
+  codex: Map<string, ExpectedReport>;
+  claude: ExpectedReport;
+}
+
+/** A structural check that the ledger's shape is a reader report's read-only face. */
+const _ledgerIsReport: (r: ExpectedReport) => ReadonlyUsageReport = (r) => r;
+
+function emptyReport(): ExpectedReport {
+  return { byModel: new Map(), perDay: new Map() };
+}
+
+function addBuckets(into: Map<string, ModelUsage>, model: string, u: ModelUsage): void {
+  const prev = into.get(model);
+  into.set(
+    model,
+    prev === undefined ? { ...u } : {
+      input: prev.input + u.input,
+      output: prev.output + u.output,
+      cacheRead: prev.cacheRead + u.cacheRead,
+      cacheCreation: prev.cacheCreation + u.cacheCreation,
+      events: prev.events + u.events,
+    },
+  );
+}
+
+/** Book one increment into the roll-up and the day's row, the way the readers' fold does. */
+function book(report: ExpectedReport, day: string, model: string, u: ModelUsage): void {
+  addBuckets(report.byModel, model, u);
+  let row = report.perDay.get(day);
+  if (row === undefined) {
+    row = new Map();
+    report.perDay.set(day, row);
+  }
+  addBuckets(row, model, u);
+}
+
+function copyReport(report: ExpectedReport): ExpectedReport {
+  return {
+    byModel: new Map([...report.byModel].map(([m, u]) => [m, { ...u }])),
+    perDay: new Map(
+      [...report.perDay].map(([d, row]) => [d, new Map([...row].map(([m, u]) => [m, { ...u }]))]),
+    ),
+  };
 }
 
 export interface GeneratedTree {
@@ -836,7 +859,8 @@ function writeBytes(
   body: Uint8Array,
 ): GeneratedFile {
   mkdirSync(path.dirname(file), { recursive: true });
-  writeFileSync(file, body);
+  // Exclusive: the root was empty when generation began, so an existing file is a bug.
+  writeFileSync(file, body, { flag: "wx" });
   const entry = { path: file, source, bytes: body.byteLength };
   g.files.push(entry);
   g.written += entry.bytes;
@@ -847,21 +871,42 @@ function writeText(g: Generator, source: UsageSource, file: string, body: string
   return writeBytes(g, source, file, Buffer.from(body, "utf8"));
 }
 
+/** Every instant one line carries: its top-level `timestamp` and the nested numeric ones
+ *  (`started_at`, `completed_at_ms`, ...), which a fork copy keeps from the parent. */
+export interface LineStamps {
+  outer?: number;
+  nested: number[];
+}
+
+/** The earliest and latest instant a set of stamps carries, nested ones included. */
+export function spanOf(stamps: Iterable<LineStamps>): { first: number; last: number } {
+  let first = Number.POSITIVE_INFINITY;
+  let last = Number.NEGATIVE_INFINITY;
+  for (const { outer, nested } of stamps) {
+    for (const ms of outer === undefined ? nested : [outer, ...nested]) {
+      first = Math.min(first, ms);
+      last = Math.max(last, ms);
+    }
+  }
+  return { first, last };
+}
+
 /**
- * The lines of one file under construction, with a running byte count (LF
- * included) and, per line, the timestamp it carries (undefined when the
- * template emits none). The span a tree reports is merged from these
- * only when a buffer is WRITTEN, so a session built and discarded, a line
- * popped back, or a timestamp computed but never emitted can never move it.
+ * The lines of one file under construction, with a running byte count (LF included) and
+ * each line's stamps. The span a tree reports is merged from these only when a buffer is
+ * WRITTEN, so a discarded session, a popped line, or an unemitted instant never moves it.
  */
 class LineBuffer {
   readonly lines: string[] = [];
-  readonly stamps: (number | undefined)[] = [];
+  readonly stamps: LineStamps[] = [];
   bytes = 0;
 
-  push(line: string, stampMs: number | undefined): void {
+  push(line: string, stamps: LineStamps): void {
     this.lines.push(line);
-    this.stamps.push(stampMs === undefined ? undefined : Math.round(stampMs));
+    this.stamps.push({
+      outer: stamps.outer === undefined ? undefined : Math.round(stamps.outer),
+      nested: stamps.nested.map((ms) => Math.round(ms)),
+    });
     this.bytes += Buffer.byteLength(line) + 1;
   }
 
@@ -876,25 +921,38 @@ class LineBuffer {
     return this.lines.length === 0 ? "" : `${this.lines.join("\n")}\n`;
   }
 
-  /** Fold the timestamps this buffer carries into the tree's span; called when it is written. */
+  /** Fold the instants this buffer carries into the tree's span; called when it is written. */
   noteSpan(g: Generator): void {
-    for (const ms of this.stamps) {
-      if (ms === undefined) continue;
-      g.firstEventMs = Math.min(g.firstEventMs, ms);
-      g.lastEventMs = Math.max(g.lastEventMs, ms);
-    }
+    const { first, last } = spanOf(this.stamps);
+    g.firstEventMs = Math.min(g.firstEventMs, first);
+    g.lastEventMs = Math.max(g.lastEventMs, last);
   }
 }
 
-const TEMPLATE_CARRIES_TS = new Map<Json, boolean>();
+/** The instant placeholders a template emits: `@ts` (the outer timestamp) and the nested
+ *  numeric ones. Nothing else in a template is an instant (durations are not). */
+const INSTANT_PLACEHOLDERS = ["ts", "startedMs", "nowMs"] as const;
+type InstantPlaceholder = (typeof INSTANT_PLACEHOLDERS)[number];
+const TEMPLATE_INSTANTS = new Map<Json, InstantPlaceholder[]>();
 
-function templateCarriesTs(template: Json): boolean {
-  let carries = TEMPLATE_CARRIES_TS.get(template);
-  if (carries === undefined) {
-    carries = JSON.stringify(template).includes('"@ts"');
-    TEMPLATE_CARRIES_TS.set(template, carries);
+function templateInstants(template: Json): InstantPlaceholder[] {
+  let found = TEMPLATE_INSTANTS.get(template);
+  if (found === undefined) {
+    const text = JSON.stringify(template);
+    found = INSTANT_PLACEHOLDERS.filter((name) => text.includes(`"@${name}"`));
+    TEMPLATE_INSTANTS.set(template, found);
   }
-  return carries;
+  return found;
+}
+
+/** The stamps a rendered line carries, from its template's instant placeholders and `ctx`. */
+export function lineStamps(template: Json, ctx: Record<string, Json>): LineStamps {
+  const instants = templateInstants(template);
+  const nested: number[] = [];
+  for (const name of instants) {
+    if (name !== "ts") nested.push(ctx[name] as number);
+  }
+  return { outer: instants.includes("ts") ? (Date.parse(ctx.ts as string)) : undefined, nested };
 }
 
 interface LineOptions {
@@ -986,7 +1044,7 @@ function codexLine(
     sampleQuantile(g.rng, profile.bytesPerLine[type] ?? profile.fileBytes);
   session.buffer.push(
     serializeSized(g.rng, rendered, target, opts.kind ?? "prose", opts.prefix ?? ""),
-    templateCarriesTs(template) ? state.nowMs : undefined,
+    lineStamps(template, ctx),
   );
 }
 
@@ -1051,10 +1109,10 @@ function expectCodex(
 ): void {
   let report = g.expected.codex.get(session.provider);
   if (report === undefined) {
-    report = usageReport();
+    report = emptyReport();
     g.expected.codex.set(session.provider, report);
   }
-  record(report, utcDay(ms), canonicalModelName(model), {
+  book(report, utcDay(ms), model, {
     input: last.input - last.cacheRead,
     output: last.output,
     cacheRead: last.cacheRead,
@@ -1160,10 +1218,9 @@ function codexRoundTrip(
 }
 
 /**
- * One turn. A turn before the last stops at its sampled event count or its share of the
- * session's bytes; the LAST turn runs until the session reaches its sampled file size, so
- * file sizes follow the measured distribution while line sizes follow theirs (the event
- * count per file then emerges from the two, as it does in the real logs).
+ * One turn. A turn before the last stops at its sampled event count or byte share; the LAST
+ * turn runs until the session reaches its sampled file size, so file and line sizes both
+ * follow the profile and the event count per file emerges, as in the real logs.
  */
 function codexTurn(
   g: Generator,
@@ -1246,22 +1303,20 @@ function codexSession(
   };
   codexSessionMeta(g, session, state, true);
   if (opts.forkOf !== undefined) {
-    // A fork persists the parent's rollout ITEMS in one batch at start: the same
-    // items, token counts included, under fresh monotonic timestamps inside the
-    // write window, and its own totals continue from the copied prefix. A
-    // session_meta is not an item (a resumed parent has re-emitted one), so none
-    // is copied, and no nested timestamp from the parent survives. The parent's
-    // usage stays booked to the parent alone.
-    // Parsed once and filtered on the line's own type: a prompt that PASTED the word
-    // "session_meta" is still an item.
-    const copied = opts.forkOf.buffer.lines.map((line) => JSON.parse(line) as JsonObject)
-      .filter((parsed) => parsed.type !== "session_meta");
+    // A fork persists the parent's rollout ITEMS (never a session_meta; filtered on the parsed
+    // type, so a prompt that pasted the word is still an item) in one batch under fresh outer
+    // timestamps; nested instants stay the parent's. Its totals continue from the prefix.
+    const parent = opts.forkOf.buffer;
+    const copied = parent.lines.map((line, i) => ({
+      parsed: JSON.parse(line) as JsonObject,
+      nested: parent.stamps[i]!.nested,
+    })).filter(({ parsed }) => parsed.type !== "session_meta");
     let copyMs = state.nowMs;
     const step = FORK_COPY_WINDOW_MS / Math.max(1, copied.length);
-    for (const parsed of copied) {
+    for (const { parsed, nested } of copied) {
       copyMs += step * g.rng();
       parsed.timestamp = isoTimestamp(copyMs);
-      session.buffer.push(JSON.stringify(parsed), copyMs);
+      session.buffer.push(JSON.stringify(parsed), { outer: copyMs, nested });
       const payload = parsed.payload;
       if (isJsonObject(payload) && payload.type === "token_count" && isJsonObject(payload.info)) {
         const totals = payload.info.total_token_usage;
@@ -1355,12 +1410,8 @@ function writeCodexSession(
 }
 
 /** A deep copy of the Codex expected reports, so a session can be built and then disowned. */
-function snapshotCodexExpected(expected: Map<string, UsageReport>): Map<string, UsageReport> {
-  const copy = new Map<string, UsageReport>();
-  for (const [provider, report] of expected) {
-    copy.set(provider, usageReport(report.byModel, report.perDay));
-  }
-  return copy;
+function snapshotCodexExpected(expected: Map<string, ExpectedReport>): Map<string, ExpectedReport> {
+  return new Map([...expected].map(([provider, report]) => [provider, copyReport(report)]));
 }
 
 function generateCodex(g: Generator, codexHome: string, budget: number): void {
@@ -1504,10 +1555,10 @@ function claudeLine(
   const target = opts.bytes ??
     sampleQuantile(g.rng, profile.bytesPerLine[type] ?? profile.fileBytes);
   const line = serializeSized(g.rng, rendered, target, opts.kind ?? "prose", opts.prefix ?? "");
-  const stamp = templateCarriesTs(template) ? state.nowMs : undefined;
-  session.buffer.push(line, stamp);
+  const stamps = lineStamps(template, ctx);
+  session.buffer.push(line, stamps);
   if (opts.header !== true) {
-    session.body.push(line, stamp);
+    session.body.push(line, stamps);
     session.lastUuid = lineUuid;
   }
   return line;
@@ -1534,7 +1585,7 @@ function claudeUsageJson(u: Usage, output: number): Json {
 
 /** Book one Claude line's delta the way readClaudeSessions prices it (cache write is cacheCreation). */
 function expectClaude(g: Generator, ms: number, model: string, delta: Usage, first: boolean): void {
-  record(g.expected.claude, utcDay(ms), canonicalModelName(model), {
+  book(g.expected.claude, utcDay(ms), model, {
     input: delta.input,
     output: delta.output,
     cacheRead: delta.cacheRead,
@@ -1544,12 +1595,9 @@ function expectClaude(g: Generator, ms: number, model: string, delta: Usage, fir
 }
 
 /**
- * One assistant message: `repeats` lines sharing the id, one content block
- * each, the usage snapshot growing toward the final count or repeating it.
- * The readers book the first line's snapshot and each later positive delta on
- * that line's day, which is what gets recorded as expected. With `truncate`,
- * the last streamed line is held back in `pendingFinal` instead of written, as
- * a crash mid-stream would leave it; the resume that writes it books its delta.
+ * One assistant message: `repeats` lines sharing the id, the snapshot growing toward the
+ * final count or repeating it; the ledger books the first snapshot and each positive delta
+ * on its line's day. With `truncate` the last line is held in `pendingFinal` for a resume.
  */
 function claudeMessage(
   g: Generator,
@@ -1730,13 +1778,13 @@ function claudeSession(
     // then the final line the original never got to write, then its own turns.
     const copied = opts.resumeOf.body;
     for (const [i, line] of copied.lines.entries()) {
-      session.buffer.push(line, copied.stamps[i]);
-      session.body.push(line, copied.stamps[i]);
+      session.buffer.push(line, copied.stamps[i]!);
+      session.body.push(line, copied.stamps[i]!);
     }
     const pending = opts.resumeOf.pendingFinal;
     if (pending !== undefined) {
-      session.buffer.push(pending.text, pending.ms);
-      session.body.push(pending.text, pending.ms);
+      session.buffer.push(pending.text, { outer: pending.ms, nested: [] });
+      session.body.push(pending.text, { outer: pending.ms, nested: [] });
       if (pending.delta.output > 0) {
         expectClaude(g, pending.ms, pending.model, pending.delta, false);
       }
@@ -1823,7 +1871,7 @@ function writeClaudeSubagent(
         "workflowId": dir[3],
         "timestamp": isoTimestamp(start),
       }),
-      start,
+      { outer: start, nested: [] },
     );
     journal.push(
       JSON.stringify({
@@ -1832,7 +1880,7 @@ function writeClaudeSubagent(
         "step": 1,
         "timestamp": isoTimestamp(start + 60_000),
       }),
-      start + 60_000,
+      { outer: start + 60_000, nested: [] },
     );
     writeClaudeFile(g, claudeHome, parent.slug, [...dir, "journal.jsonl"], journal);
   }
@@ -1892,11 +1940,9 @@ function generateClaude(g: Generator, claudeHome: string, budget: number): void 
 const ZONED_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
 
 /**
- * Generate a synthetic `.codex/sessions` + `.claude/projects` pair under
- * `root`, about `mb` mebibytes in total, split between the sources by the
- * profile's byte shares. Point the readers at it with HOME=<root>,
- * CODEX_HOME=<root>/.codex, CLAUDE_CONFIG_DIR=<root>/.claude,
- * COPILOT_API_HOME=<root>/.copilot-env.
+ * Generate `.codex/sessions` + `.claude/projects` under `root` (absent or an empty directory),
+ * about `mb` MiB split by the profile's byte shares. Point the readers at it with HOME=<root>
+ * CODEX_HOME=<root>/.codex CLAUDE_CONFIG_DIR=<root>/.claude COPILOT_API_HOME=<root>/.copilot-env.
  */
 export async function generateUsageTree(opts: GenerateOptions): Promise<GeneratedTree> {
   const profile = opts.profile ?? loadProfile();
@@ -1913,6 +1959,20 @@ export async function generateUsageTree(opts: GenerateOptions): Promise<Generate
   if (!ZONED_INSTANT.test(end) || !Number.isFinite(endMs)) {
     throw new Error(`end must be an RFC 3339 instant with a zone (Z or offset), got ${opts.end}`);
   }
+  // Only an absent or EMPTY real directory: old logs beside the new ones would reach the
+  // readers while `expected` and the summary describe the new files alone, and a symlink
+  // would put the tree somewhere else. Only ENOENT means absent; any other error propagates.
+  // Normalized first: `link/` or `link/.` would make lstat follow the link.
+  const root = path.resolve(opts.root);
+  let claim: "absent" | "empty" | "occupied";
+  try {
+    const stat = lstatSync(root);
+    claim = stat.isDirectory() && readdirSync(root).length === 0 ? "empty" : "occupied";
+  } catch (e) {
+    if (!(isRecord(e) && e.code === "ENOENT")) throw e;
+    claim = "absent";
+  }
+  if (claim === "occupied") throw new Error("root must be an absent or empty directory");
   const rng = mulberry32(opts.seed);
   const g: Generator = {
     rng,
@@ -1928,7 +1988,7 @@ export async function generateUsageTree(opts: GenerateOptions): Promise<Generate
     written: 0,
     startMs: endMs - days * MILLISECONDS_PER_DAY,
     dayWeights: { codex: {}, claude: {} },
-    expected: { codex: new Map(), claude: usageReport() },
+    expected: { codex: new Map(), claude: emptyReport() },
     firstEventMs: Number.POSITIVE_INFINITY,
     lastEventMs: Number.NEGATIVE_INFINITY,
   };
@@ -1940,13 +2000,13 @@ export async function generateUsageTree(opts: GenerateOptions): Promise<Generate
   const total = opts.mb * MEGABYTE;
   const shareSum = profile.codex.bytesShare + profile.claude.bytesShare;
   const codexBudget = shareSum > 0 ? total * (profile.codex.bytesShare / shareSum) : total / 2;
-  const codexRoot = path.join(opts.root, ".codex");
-  const claudeRoot = path.join(opts.root, ".claude");
+  const codexRoot = path.join(root, ".codex");
+  const claudeRoot = path.join(root, ".claude");
   generateCodex(g, codexRoot, codexBudget);
   generateClaude(g, claudeRoot, total);
-  mkdirSync(path.join(opts.root, ".copilot-env"), { recursive: true });
+  mkdirSync(path.join(root, ".copilot-env"), { recursive: true });
   return await Promise.resolve({
-    root: opts.root,
+    root,
     codexRoot,
     claudeRoot,
     files: g.files,

@@ -2,6 +2,7 @@ import {
   appendFileSync,
   mkdirSync,
   mkdtempSync,
+  rmSync,
   statSync,
   symlinkSync,
   utimesSync,
@@ -34,10 +35,17 @@ import {
   writeRollout,
 } from "./helpers/session_fixtures.ts";
 import { CODEX_SCENARIOS, scenarioNamed } from "./helpers/session_scenarios.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { afterEach, expect, test } from "./helpers/testing.ts";
+
+const dirs: string[] = [];
+afterEach(() => {
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
 
 function tempDir(): string {
-  return mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  dirs.push(dir);
+  return dir;
 }
 
 // The single-read fixtures live in the shared catalog, which the index equivalence
@@ -131,7 +139,7 @@ test("readCodexSessions walks a root named twice once, whatever the reconcile", 
 });
 
 test("discoverCodexSessionRoots dedupes farm symlinks by realpath", () => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const dir = tempDir();
   const shared = join(dir, "dot-codex");
   mkdirSync(join(shared, "sessions"), { recursive: true });
   mkdirSync(join(shared, "archived_sessions"), { recursive: true });
@@ -152,7 +160,7 @@ function walkedFile(path: string): WalkedFile {
 }
 
 test("parseCodexTail resumed from a prefix parse equals one whole parse", () => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const dir = tempDir();
   const lines = [
     sessionMeta("2026-06-01T10:00:00.000Z", "aaa", { provider: "copilot-env", forkedFrom: "p" }),
     turnContext("2026-06-01T10:00:01.000Z", "gpt-5.6"),
@@ -186,7 +194,7 @@ test("parseCodexTail resumed from a prefix parse equals one whole parse", () => 
 });
 
 test("walkCodexSessions reports every rollout with its candidacy verdict, in fold order", () => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const dir = tempDir();
   const live = join(dir, "sessions");
   const archived = join(dir, "archived_sessions");
   mkdirSync(archived, { recursive: true });
@@ -219,7 +227,7 @@ test("walkCodexSessions reports every rollout with its candidacy verdict, in fol
 test.skipIf(Deno.build.os === "windows")(
   "walkCodexSessions warns about a rollout it cannot stat and leaves it out",
   async () => {
-    const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+    const dir = tempDir();
     const root = join(dir, "sessions");
     const kept = writeRollout(root, "2026-06-01", "aaa", ["x"]);
     const dangling = join(root, "rollout-2026-06-01T02-00-00-bbb.jsonl");
@@ -242,7 +250,7 @@ test.skipIf(Deno.build.os === "windows")(
 );
 
 test("parseCodexWhole honours session_meta until an id is known, then ignores later ones", () => {
-  const dir = mkdtempSync(join(tmpdir(), "codex-sessions-"));
+  const dir = tempDir();
   const path = writeRollout(join(dir, "s"), "2026-06-01", "aaa", [
     // No id: the gate stays open, so the NEXT meta line still applies.
     rolloutLine("2026-06-01T10:00:00.000Z", "session_meta", { "model_provider": "first" }),

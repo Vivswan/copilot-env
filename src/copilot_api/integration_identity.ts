@@ -20,7 +20,7 @@
 // agent configs), at `agent start` (passthrough: handed to the daemon's preload via
 // DAEMON_INTEGRATION_ID_ENV), and in `agent health`. Candidate order puts each mode's
 // long-standing default FIRST, so a credential the default accepts stays byte-identical.
-import { consola } from "consola";
+import { consola, type ConsolaInstance } from "consola";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import type { AuthProvider } from "./env_state.ts";
@@ -187,6 +187,8 @@ export interface IdentityProbeResult {
 export interface IdentityProbeDeps {
   fetchImpl?: ProbeFetch;
   timeoutMs?: number;
+  /** A caller deadline over the WHOLE probe chain, combined with each request's own timeout. */
+  signal?: AbortSignal;
   /**
    * Probe candidates against THIS base instead of discovering the account's host.
    * The verdict must reflect where the result is actually used: direct mode bakes
@@ -194,6 +196,12 @@ export interface IdentityProbeDeps {
    * passthrough omits it so the probe hits the same host the daemon resolves.
    */
   apiBase?: string;
+}
+
+/** The per-request signal: its own timeout, joined with the caller's deadline when given. */
+function requestSignal(timeoutMs: number, deadline: AbortSignal | undefined): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return deadline === undefined ? timeout : AbortSignal.any([deadline, timeout]);
 }
 
 /** One-line, length-bounded rejection detail (error bodies can be huge). */
@@ -215,6 +223,7 @@ async function accountApiBase(
   token: string,
   fetchImpl: ProbeFetch,
   timeoutMs: number,
+  signal: AbortSignal | undefined,
 ): Promise<{ apiBase: string; inconclusive: boolean }> {
   try {
     const res = await fetchImpl(COPILOT_USER_URL, {
@@ -222,7 +231,7 @@ async function accountApiBase(
         Authorization: `token ${token}`,
         "User-Agent": PROBE_USER_AGENT,
       },
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: requestSignal(timeoutMs, signal),
     });
     if (!res.ok) {
       // A transient status leaves the real host unknown; a definitive one (401, a bad
@@ -273,7 +282,7 @@ export async function probeIntegrationIdentity(
   // account-host lookup entirely; otherwise discover it (passthrough, matching the daemon).
   const { apiBase, inconclusive: baseInconclusive } = deps.apiBase
     ? { apiBase: deps.apiBase, inconclusive: false }
-    : await accountApiBase(token, fetchImpl, timeoutMs);
+    : await accountApiBase(token, fetchImpl, timeoutMs, deps.signal);
   const outcomes: IdentityProbeOutcome[] = [];
   // A transient host-discovery failure means the fallback host may not be where this
   // credential is served, so an all-reject on it is NOT a definitive verdict.
@@ -282,7 +291,7 @@ export async function probeIntegrationIdentity(
     try {
       const res = await fetchImpl(`${apiBase}/models`, {
         headers: { Authorization: `Bearer ${token}`, ...candidate.headers },
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: requestSignal(timeoutMs, deps.signal),
       });
       if (res.ok) {
         outcomes.push({ name: candidate.name, detail: "ok" });
@@ -319,8 +328,9 @@ export async function probeIntegrationIdentityCached(
   deps: IdentityProbeDeps = {},
 ): Promise<IdentityProbeResult> {
   // Injected I/O (tests) bypasses the cache: the memo is keyed on inputs only, so two
-  // stubs sharing a (token, candidates) pair would otherwise collide.
-  if (deps.fetchImpl !== undefined || deps.timeoutMs !== undefined) {
+  // stubs sharing a (token, candidates) pair would otherwise collide. So does a caller
+  // deadline: an aborted probe must not be memoized as this process's verdict.
+  if (deps.fetchImpl !== undefined || deps.timeoutMs !== undefined || deps.signal !== undefined) {
     return probeIntegrationIdentity(token, candidates, deps);
   }
   const key = JSON.stringify([token, candidates, deps.apiBase ?? null]);
@@ -353,6 +363,9 @@ export function identityRejectionHints(): string[] {
 export interface ResolveIdentityOptions extends IdentityProbeDeps {
   /** The `integration-id` config pin, or null to probe. */
   pinned?: string | null;
+  /** Where a non-default identity is narrated (default: consola's stdout). Callers
+   *  whose stdout is a contract (`agent auth --get`) pass a stderr logger. */
+  narrator?: Pick<ConsolaInstance, "info">;
 }
 
 /**
@@ -436,13 +449,18 @@ async function acceptedIdentity(
 }
 
 /** Narrate a non-default choice once, so `agent start`/`init` explain a surprising id. */
-function narrateIdentity(chosen: string, defaultName: string, pinned: boolean): void {
+function narrateIdentity(
+  chosen: string,
+  defaultName: string,
+  pinned: boolean,
+  narrator: Pick<ConsolaInstance, "info"> = consola,
+): void {
   if (pinned) {
-    consola.info(
+    narrator.info(
       `Copilot integration identity: ${chosen} (pinned via \`agent config integration-id\`).`,
     );
   } else if (chosen !== defaultName) {
-    consola.info(
+    narrator.info(
       `Copilot integration identity: ${chosen} (the default ${defaultName} rejected this credential).`,
     );
   }
@@ -459,9 +477,9 @@ export async function resolveDirectIntegrationId(
   userAgent: string,
   opts: ResolveIdentityOptions = {},
 ): Promise<string | null> {
-  const { pinned = null, ...deps } = opts;
+  const { pinned = null, narrator, ...deps } = opts;
   if (pinned !== null) {
-    narrateIdentity(pinned, CODEX_IDENTITY_NAME, true);
+    narrateIdentity(pinned, CODEX_IDENTITY_NAME, true, narrator);
     return pinned;
   }
   // Only PATs are rejected by the default identity, so only they justify a probe;
@@ -475,7 +493,7 @@ export async function resolveDirectIntegrationId(
     ...deps,
     apiBase: deps.apiBase ?? DEFAULT_COPILOT_API_BASE,
   });
-  narrateIdentity(identity.name, CODEX_IDENTITY_NAME, false);
+  narrateIdentity(identity.name, CODEX_IDENTITY_NAME, false, narrator);
   return bakedIntegrationId(identity);
 }
 
@@ -488,15 +506,15 @@ export async function resolvePassthroughIntegrationId(
   token: string,
   opts: ResolveIdentityOptions = {},
 ): Promise<string> {
-  const { pinned = null, ...deps } = opts;
+  const { pinned = null, narrator, ...deps } = opts;
   if (pinned !== null) {
-    narrateIdentity(pinned, VSCODE_CHAT_INTEGRATION_ID, true);
+    narrateIdentity(pinned, VSCODE_CHAT_INTEGRATION_ID, true, narrator);
     return pinned;
   }
   // Only PATs are rejected under the daemon's default vscode-chat identity; every other
   // passthrough bearer (gho_/device) is accepted, so skip the probe and its network round.
   if (!isPatShapedToken(token)) return VSCODE_CHAT_INTEGRATION_ID;
   const identity = await acceptedIdentity(token, PASSTHROUGH_IDENTITY_CANDIDATES, deps);
-  narrateIdentity(identity.name, VSCODE_CHAT_INTEGRATION_ID, false);
+  narrateIdentity(identity.name, VSCODE_CHAT_INTEGRATION_ID, false, narrator);
   return bakedIntegrationId(identity) ?? VSCODE_CHAT_INTEGRATION_ID;
 }

@@ -24,8 +24,7 @@ import type { AgentProviderMode } from "../agents/provider_mode.ts";
 import { readAgentModes } from "../agents/wiring.ts";
 import { BASE_URL_ENV, claudeAdapter, runClaude } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { refreshCodexModelCatalogIfStale } from "../codex/catalog.ts";
-import { runCodex, syncCodexCatalogReference } from "../codex/config.ts";
+import { refreshCodexCatalogAndSync, runCodex } from "../codex/config.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {
@@ -125,6 +124,9 @@ export interface LaunchDeps {
   ensureProxy(profile: Profile): Promise<boolean>;
   /** Re-sync the agent's DEFAULT wiring to the proxy (`agent <name> --proxy`). */
   wireProxyDefault(agent: "claude" | "codex"): Promise<void>;
+  /** Bring the opt-in Codex model catalog up to date for a DIRECT default launch
+   *  (the proxy launch does this inside ensureProxy's token step). */
+  refreshCodexCatalog(): Promise<void>;
   /** The named profile's store slot -- the source of truth for its mode/credential. */
   profileSlot(name: ProfileName): ProfileSlot;
   /** Re-sync the profile's Claude settings file against the live port and return
@@ -172,16 +174,16 @@ async function ensureProfileReady(
  * Sync the default selection's provider before launch, mirroring the rc
  * launchers' _copilot_wire_provider: proxy/none ensures the proxy THEN re-syncs
  * the wiring (a cold start may have moved the port); "other" is not ours to
- * touch, so just say so; direct needs nothing. False = abort the launch.
+ * touch, so just say so; direct needs nothing. Returns the mode, or null to abort.
  */
 async function wireDefaultProvider(
   agent: "claude" | "codex",
   display: string,
   deps: LaunchDeps,
-): Promise<boolean> {
+): Promise<AgentProviderMode | null> {
   const mode = deps.agentMode(agent);
   if (mode === "proxy" || mode === "none") {
-    if (!(await deps.ensureProxy(null))) return false;
+    if (!(await deps.ensureProxy(null))) return null;
     await deps.wireProxyDefault(agent);
   } else if (mode === "other") {
     deps.notify(
@@ -189,7 +191,7 @@ async function wireDefaultProvider(
         "(not managed by copilot-env); launching it as-is.",
     );
   }
-  return true;
+  return mode;
 }
 
 /**
@@ -228,7 +230,7 @@ export async function prepareLaunch(
         plan.args = ["--settings", settings, ...flags, ...action.args];
         return plan;
       }
-      if (!(await wireDefaultProvider("claude", "Claude", deps))) return null;
+      if ((await wireDefaultProvider("claude", "Claude", deps)) === null) return null;
       // Read AFTER the wiring step so a fresh proxy port is what gets exported.
       applyManagedEnv(plan, BASE_URL_ENV, deps.managedClaudeBaseUrl(null));
       plan.args = [...flags, ...action.args];
@@ -257,9 +259,14 @@ export async function prepareLaunch(
         plan.args = ["--profile", action.profile, ...flags, ...action.args];
         return plan;
       }
-      if (!(await wireDefaultProvider("codex", "Codex", deps))) return null;
+      const mode = await wireDefaultProvider("codex", "Codex", deps);
+      if (mode === null) return null;
       // Read AFTER the wiring step: a proxy re-wire may have just built the farm.
       applyManagedEnv(plan, "CODEX_HOME", deps.managedCodexHome());
+      // Codex parses `model_catalog_json` at startup, BEFORE it reaches the auth
+      // refresh that would regenerate a catalog an upgraded codex rejects -- so a
+      // direct launch refreshes (version-change aware, daily otherwise) here first.
+      if (mode === "direct") await deps.refreshCodexCatalog();
       plan.args = [...flags, ...action.args];
       return plan;
     }
@@ -302,8 +309,7 @@ async function ensureProxyUp(profile: Profile): Promise<boolean> {
     recordHeartbeat,
     printProxyToken: async (p) => {
       if (p !== null) return;
-      await refreshCodexModelCatalogIfStale("proxy");
-      syncCodexCatalogReference();
+      await refreshCodexCatalogAndSync("proxy");
     },
     notify: (line) => {
       process.stderr.write(`${line}\n`);
@@ -327,6 +333,7 @@ export function commandDeps(): LaunchDeps {
       // reach this dep).
       recordDefaultModeFromWiring();
     },
+    refreshCodexCatalog: () => refreshCodexCatalogAndSync("direct"),
     profileSlot: (name) => new CopilotEnvState().readProfileSlot(name),
     writeClaudeProfileSettings: async (name, mode) => {
       const write: ManagedWrite = mode === "direct"

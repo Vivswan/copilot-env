@@ -172,6 +172,10 @@ function scriptedDeps(script: DepsScript = {}): {
       calls.push(`wire:${agent}`);
       return Promise.resolve();
     },
+    refreshCodexCatalog: () => {
+      calls.push("catalog:refresh");
+      return Promise.resolve();
+    },
     profileSlot: (name) => {
       calls.push(`slot:${name}`);
       return script.slot ?? partialSlot();
@@ -644,4 +648,25 @@ skipWin("e2e: copilot gets the managed flag set and no provider wiring", () => {
     "ARGS=--autopilot --enable-reasoning-summaries --experimental --allow-all hello",
   );
   expect(res.exitCode).toBe(0);
+});
+
+test("codex direct default launch refreshes the model catalog BEFORE Codex starts; proxy leaves it to the token step", async () => {
+  const codexDefault: LaunchAction = { kind: "codex", profile: null, relaxed: false, args: [] };
+  const direct = scriptedDeps({ mode: "direct" });
+  expect(await prepareLaunch(codexDefault, direct.deps)).not.toBeNull();
+  expect(direct.calls).toEqual(["mode:codex", "catalog:refresh"]);
+  const proxy = scriptedDeps({ mode: "proxy" });
+  expect(await prepareLaunch(codexDefault, proxy.deps)).not.toBeNull();
+  expect(proxy.calls).toEqual(["mode:codex", "ensure:(default)", "wire:codex"]);
+  // A named-profile launch is the profile's own wiring; the account-wide catalog
+  // belongs to the default selection.
+  const named = scriptedDeps({ mode: "direct", slot: completeSlot("direct") });
+  const action: LaunchAction = {
+    kind: "codex",
+    profile: WORK,
+    relaxed: false,
+    args: [],
+  };
+  expect(await prepareLaunch(action, named.deps)).not.toBeNull();
+  expect(named.calls).not.toContain("catalog:refresh");
 });

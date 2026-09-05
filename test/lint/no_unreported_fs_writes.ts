@@ -198,6 +198,7 @@ const plugin: Deno.lint.Plugin = {
             if (!FS_MODULES.has(String(node.source.value)) || node.importKind === "type") return;
             for (const specifier of node.specifiers) {
               if (specifier.type === "ImportSpecifier") {
+                if (specifier.importKind === "type") continue; // erased: no runtime binding
                 const imported = specifier.imported.type === "Identifier"
                   ? specifier.imported.name
                   : String(specifier.imported.value);

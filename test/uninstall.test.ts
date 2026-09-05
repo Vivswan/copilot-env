@@ -18,6 +18,7 @@ import {
   DIRECT_HELPER_NAME,
   directHelperPath,
   PROXY_HELPER_NAME,
+  proxyHelperPath,
   settingsPathFor,
 } from "../src/claude/paths.ts";
 import { configureCodexConfig } from "../src/codex/config.ts";
@@ -545,9 +546,12 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   });
   configureClaudeConfig(claudeHome, { mode: "direct", quiet: true, profile: WORK });
   mkdirSync(profileHome(WORK), { recursive: true });
-  // A legacy helper (pre-inline install): the teardown removes it, so the plan names it.
+  // Legacy helpers (pre-inline install), the default's and the profile's: the teardown
+  // removes them, so the plan names them.
   const legacyHelper = directHelperPath(claudeHome, WORK);
   writeFileSync(legacyHelper, "#!/bin/sh\nexec legacy\n");
+  const defaultLegacyHelper = directHelperPath(claudeHome);
+  writeFileSync(defaultLegacyHelper, "#!/bin/sh\nexec legacy\n");
   // The AMBIENT Desktop library (the env seam) is the injected one, so a profile
   // teardown that rescanned the library would find what is planted below.
   const desktopData = join(dir, "desktop");
@@ -595,6 +599,7 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   expect(ctx.targets.desktop.helpers.sort()).toEqual([defaultHelper, workHelper].sort());
   expect(ctx.targets.desktop.staleClaims).toEqual([join(library, "gone.json")]);
   expect(ctx.targets.shellFiles).toEqual([rc]);
+  expect(ctx.targets.claudeDefaultHelpers).toEqual([defaultLegacyHelper]);
   expect(ctx.targets.profiles).toEqual([{
     name: WORK,
     claudeArtifacts: [settingsPathFor(claudeHome, WORK), legacyHelper],
@@ -606,6 +611,9 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   // dry run never named.
   writeFileSync(join(library, "late.json"), entryFor(workHelper));
   metaRows.push({ id: "late", name: "copilot-env (work, late)" });
+  // And a default legacy helper that appears after planning: absent from the plan, kept.
+  const lateHelper = proxyHelperPath(claudeHome);
+  writeFileSync(lateHelper, "#!/bin/sh\nexec late\n");
   writeFileSync(join(library, "_meta.json"), `${JSON.stringify({ entries: metaRows })}\n`);
   ledger.record("claudeDesktop", join(library, "late.json"));
 
@@ -622,6 +630,8 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   expect(reported).toContain(`rewritten -> ${rc}`);
 
   expect(existsSync(join(library, "late.json"))).toBe(true);
+  expect(existsSync(lateHelper)).toBe(true);
+  expect(existsSync(defaultLegacyHelper)).toBe(false);
   expect(existsSync(join(library, "ours.json"))).toBe(false);
   expect(existsSync(elsewhere)).toBe(false);
   // The live row and the stale claim's row went; the late row stayed (the ledger itself
@@ -645,6 +655,7 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
     ...ctx.targets.desktop.helpers,
     ...ctx.targets.floatArtifacts,
     ...ctx.targets.profiles.flatMap((p) => [...p.claudeArtifacts, p.home]),
+    ...ctx.targets.claudeDefaultHelpers,
     ctx.rootHome,
     ctx.installRoot.root,
   ];

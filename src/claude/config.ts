@@ -907,6 +907,17 @@ export interface ClaudeDefaultWiringRemoval {
   ownedDenyRemains: boolean;
 }
 
+/** The legacy helper files removeClaudeDefaultWiring would remove right now (present
+ *  ones only; none when the settings file is a foreign body, which may point AT one).
+ *  Read-only; an uninstall plan resolves this once and renders it both ways. */
+export function claudeDefaultHelperArtifacts(claudeHome: string): string[] {
+  const wiring = inspectClaudeWiring(readTextResult(settingsPathFor(claudeHome)), claudeHome, 0);
+  if (wiring.providerMode === "other") return [];
+  return [directHelperPath(claudeHome), proxyHelperPath(claudeHome)].filter(
+    (path) => !entryAbsent(path),
+  );
+}
+
 /**
  * Remove the DEFAULT profile's managed Claude artifacts: the managed settings.json
  * keys (apiKeyHelper + the managed env vars + OUR WebSearch deny entry, when the
@@ -932,7 +943,10 @@ export interface ClaudeDefaultWiringRemoval {
  * permissions entries) survives; an emptied env object is dropped, and a doc
  * emptied entirely removes settings.json itself. Used by `agent uninstall`.
  */
-export function removeClaudeDefaultWiring(claudeHome: string): ClaudeDefaultWiringRemoval {
+export function removeClaudeDefaultWiring(
+  claudeHome: string,
+  helpers: readonly string[] = claudeDefaultHelperArtifacts(claudeHome),
+): ClaudeDefaultWiringRemoval {
   const settingsPath = settingsPathFor(claudeHome);
   const wiring = inspectClaudeWiring(readTextResult(settingsPath), claudeHome, 0);
   const parseable = wiring.otherReason !== "malformed" && wiring.otherReason !== "read-error";
@@ -967,10 +981,7 @@ export function removeClaudeDefaultWiring(claudeHome: string): ClaudeDefaultWiri
     }
     if (saved) commit();
   }
-  if (wiring.providerMode !== "other") {
-    removeReported(directHelperPath(claudeHome));
-    removeReported(proxyHelperPath(claudeHome));
-  }
+  for (const path of helpers) removeReported(path);
   return { ownedDenyRemains: new OwnershipLedger().owns("webSearchDeny", settingsPath) };
 }
 

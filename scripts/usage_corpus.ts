@@ -1270,6 +1270,9 @@ const NUMERIC_KEYS = new Set([
 const NUMBER_PLACEHOLDER = 0;
 /** The key of a value with no owning key: the root record, an array element. */
 const NO_KEY = "";
+/** Keys whose ISO timestamp survives outside a container: the line clock the readers bucket
+ *  by, and the turn clocks. A timestamp-shaped string under any other key is content. */
+const TIMESTAMP_KEYS = new Set(["timestamp", "started_at", "completed_at"]);
 /** `version` / `cli_version` hold a release number, a shape rather than a vocabulary. */
 const VERSION_KEYS = new Set(["version", "cli_version"]);
 const VERSION_RE = /^\d+\.\d+\.\d+([.-][A-Za-z0-9.]+)?$/;
@@ -1333,8 +1336,8 @@ interface ScrubState {
   scrubbed: number;
 }
 
-/** Fail-closed: a string survives only as a pseudonymized id, a timestamp, a version, or one
- *  of its key's closed enum values; a number only DIRECTLY under a NUMERIC_KEYS key outside a
+/** Fail-closed: a string survives only as a pseudonymized id, a timestamp or version under one
+ *  of its keys, or one of its key's closed enum values; a number only DIRECTLY under a NUMERIC_KEYS key outside a
  *  container (an array element has no owning key); a key only when known (in a container:
  *  structural), and the value under an unknown key is content, container rules inside. */
 function scrubValue(
@@ -1350,7 +1353,7 @@ function scrubValue(
     if (value === "") return value;
     const pseudonym = ids.pseudonym(value);
     if (pseudonym !== null) return pseudonym;
-    if (!nested && ISO_TIMESTAMP_RE.test(value)) return value;
+    if (!nested && TIMESTAMP_KEYS.has(key) && ISO_TIMESTAMP_RE.test(value)) return value;
     if (!nested && VERSION_KEYS.has(key) && VERSION_RE.test(value)) return value;
     const enumKey = inContainer
       ? key === "type" || key === "name"

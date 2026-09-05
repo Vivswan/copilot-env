@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import * as v from "valibot";
 import { atomicWriteFile } from "../copilot_api/config.ts";
-import { OPENROUTER_MODELS_URL } from "../copilot_api/env_config.ts";
+import { canonicalPricingUrl, OPENROUTER_MODELS_URL } from "../copilot_api/env_config.ts";
 import { ONE_M_SUFFIX } from "../copilot_api/models.ts";
 import { readTextOrNull } from "../utils/fs.ts";
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
@@ -64,17 +64,6 @@ export interface CostEstimate {
 /** Fixed text, no URL: the price-list host is outside the CLI's network policy. */
 const HOST_NOT_PERMITTED =
   "the pricing-url host is not permitted by the CLI's network policy (only the hosts the CLI may reach, openrouter.ai among them); change the pricing-url config key or --pricing-url";
-
-/** THE price-list URL rule, for the `--pricing-url` flag and the stored key alike: an
- *  absolute https URL in its canonical spelling (`new URL().href`, lowercase scheme and
- *  host), so one list has one cache file. The rejection is fixed text: the URL may
- *  carry credentials. */
-export function canonicalPricingUrl(url: string): string {
-  if (!URL.canParse(url) || new URL(url).protocol !== "https:") {
-    throw new Error("pricing URL must use HTTPS");
-  }
-  return new URL(url).href;
-}
 
 /** Fetch live model pricing keyed by lowercased OpenRouter model id. Errors are
  *  fixed text (plus a numeric HTTP status), never the transport's, because a

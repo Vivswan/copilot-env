@@ -11,11 +11,13 @@ import {
   type ConfigCli,
   configDefaultLabel,
   configDefaultNumber,
+  configDefaultString,
   type ConfigKey,
   type ConfigKeyDef,
   configKeyDef,
   CopilotEnvConfig,
   isProxyProjected,
+  OPENROUTER_MODELS_URL,
   optInProxyConfigPaths,
   projectedProxyConfig,
   type ProjectedProxyEntry,
@@ -72,6 +74,7 @@ test("each typed key round-trips and del() reverts it to undefined (default)", (
     claudeAutoModel: "claude-haiku-4.5",
     claudeTokenMultiplier: 1.15,
     port: 4242,
+    pricingUrl: "https://pricing.example/models",
     minPort: 2000,
     maxPort: 60000,
     strictPort: true,
@@ -97,6 +100,7 @@ test("each typed key round-trips and del() reverts it to undefined (default)", (
     claudeAutoModel: "claude-haiku-4.5",
     claudeTokenMultiplier: 1.15,
     port: 4242,
+    pricingUrl: "https://pricing.example/models",
     minPort: 2000,
     maxPort: 60000,
     strictPort: true,
@@ -109,6 +113,7 @@ test("each typed key round-trips and del() reverts it to undefined (default)", (
   expect(cfg.autoStartEnabled()).toBe(true);
   expect(cfg.codexModelCatalogEnabled()).toBe(true);
   expect(cfg.wireMcpEnabled()).toBe(false);
+  expect(cfg.pricingUrl()).toBe("https://pricing.example/models");
 
   cfg.del("autoStart");
   expect(cfg.read().autoStart).toBeUndefined();
@@ -124,6 +129,10 @@ test("each typed key round-trips and del() reverts it to undefined (default)", (
   cfg.del("wireMcp");
   expect(cfg.read().wireMcp).toBeUndefined();
   expect(cfg.wireMcpEnabled()).toBe(true);
+
+  cfg.del("pricingUrl");
+  expect(cfg.read().pricingUrl).toBeUndefined();
+  expect(cfg.pricingUrl()).toBe(OPENROUTER_MODELS_URL);
 });
 
 test("the read schema is lenient: ill-typed / out-of-range stored values fall back to default", () => {
@@ -156,6 +165,13 @@ test("the registry parsers accept valid input and reject bad input with a clear 
   expect(configKeyDef("claude-token-multiplier")?.parse("1.15")).toBe(1.15);
   expect(configKeyDef("claude-token-multiplier")?.parse("2")).toBe(2);
   expect(configKeyDef("claude-token-multiplier")?.parse(" 1.5 ")).toBe(1.5);
+  expect(configKeyDef("pricing-url")?.parse(" https://pricing.example/models?x=1 ")).toBe(
+    "https://pricing.example/models?x=1",
+  );
+  // Canonical spelling: the fetch's https check and the cache digest see one form.
+  expect(configKeyDef("pricing-url")?.parse("HTTPS://Pricing.Example/Models")).toBe(
+    "https://pricing.example/Models",
+  );
 
   expect(() => configKeyDef("auto-start")?.parse("maybe")).toThrow();
   expect(() => configKeyDef("passthrough")?.parse("sometimes")).toThrow();
@@ -185,6 +201,12 @@ test("the registry parsers accept valid input and reject bad input with a clear 
   expect(() => configKeyDef("claude-token-multiplier")?.parse("9".repeat(400))).toThrow(
     /at most 1000, got Infinity/,
   );
+  // Only https parses; the rejection is fixed text (a price-list URL may carry credentials).
+  for (
+    const bad of ["http://user:secret@pricing.example/models", "pricing.example", "", "ftp://x"]
+  ) {
+    expect(() => configKeyDef("pricing-url")?.parse(bad)).toThrow(/^expected an https:\/\/ URL$/);
+  }
   expect(configKeyDef("nope")).toBeUndefined();
 });
 
@@ -248,6 +270,28 @@ test("integration-id is header-safe end to end: --set rejects without echoing, s
   expect(new CopilotEnvConfig().pinnedIntegrationId()).toBeNull();
 });
 
+test("pricing-url: --set rejects a non-https URL without echoing it; stored junk reads as the default", () => {
+  tmpHome();
+  let message = "";
+  try {
+    runConfig({ set: ["pricing-url", "http://user:secret@pricing.example/models"] });
+  } catch (e) {
+    message = (e as Error).message;
+  }
+  expect(message).toContain("invalid value for 'pricing-url'");
+  expect(message).toContain("https://");
+  expect(message).not.toContain("secret");
+  expect(new CopilotEnvConfig().read().pricingUrl).toBeUndefined();
+
+  runConfig({ set: ["pricing-url", "https://pricing.example/models"] });
+  expect(new CopilotEnvConfig().pricingUrl()).toBe("https://pricing.example/models");
+
+  // A hand-mangled STORED value degrades to unset: the built-in URL, never a bad fetch.
+  new CopilotEnvConfig().set({ pricingUrl: "not a url" });
+  expect(new CopilotEnvConfig().read().pricingUrl).toBeUndefined();
+  expect(new CopilotEnvConfig().pricingUrl()).toBe(OPENROUTER_MODELS_URL);
+});
+
 test("runConfig --get <key> prints just the value to stdout (script-friendly)", () => {
   tmpHome();
   new CopilotEnvConfig().set({ smallModel: "gpt-5-mini" });
@@ -287,6 +331,7 @@ const ROUND_TRIP_RAW: Record<ConfigCli, string> = {
   "min-port": "2000",
   "passthrough": "on",
   "port": "4242",
+  "pricing-url": "https://pricing.example/models",
   "proxy-logs": "false",
   "proxy-version": "1.2.3",
   "release-cooldown": "86400",
@@ -660,6 +705,9 @@ test("registry defaults are single-sourced: labels derive from the owned default
 
   // Rendered labels keep their exact wording (external contract of `--help` / `--get`).
   expect(configDefaultLabel(configKeyDef("port")!)).toBe("4141 (then next free)");
+  expect(configDefaultLabel(configKeyDef("pricing-url")!)).toBe(OPENROUTER_MODELS_URL);
+  expect(configDefaultString("pricing-url")).toBe(OPENROUTER_MODELS_URL);
+  expect(() => configDefaultString("port")).toThrow(/no string built-in default/);
   expect(configDefaultLabel(configKeyDef("integration-id")!)).toBe("auto (probe per credential)");
   expect(configDefaultLabel(configKeyDef("small-model")!)).toBe("gpt-5-mini");
   expect(configDefaultLabel(configKeyDef("alpha-search-codex-priority")!)).toBe(

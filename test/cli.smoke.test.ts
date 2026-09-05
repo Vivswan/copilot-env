@@ -9,6 +9,9 @@ import {
   MARKER as SHELL_MARKER,
 } from "../src/shell/integration.ts";
 import { getSanitizedHostname } from "../src/utils/hostname.ts";
+import { USAGE_INDEX_DIR_NAME } from "../src/usage/paths.ts";
+import { loadPricing } from "../src/usage/pricing.ts";
+import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { runCli } from "./helpers/run.ts";
 import { expect, test } from "./helpers/testing.ts";
 import { writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
@@ -997,4 +1000,61 @@ test("cli.ts cost --no-index parses every log; without it the usage index is use
   expect(runtimeOf().indexed).toBe(true);
   expect(runtimeOf("--no-index").indexed).toBe(false);
   expect(helpScreen("cost", "--help").output).toContain("--no-index");
+});
+
+// `--pricing-url` has no Commander default on purpose: an omitted flag must fall through to
+// the stored `pricing-url` key. Only the price CACHE tells the two URLs apart from outside
+// (warnings never name a URL): a stale cache seeded for the stored URL prices the run when
+// the stored URL is used and cannot when the flag points elsewhere.
+test("cli.ts cost prices at the stored pricing-url when the flag is omitted, and the flag overrides it", async () => {
+  const env = isolatedEnv();
+  const projects = join(env.CLAUDE_CONFIG_DIR ?? "", "projects", "-Users-x-proj");
+  mkdirSync(projects, { recursive: true });
+  writeFileSync(
+    join(projects, "aaa.jsonl"),
+    `${
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-06-01T10:00:00.000Z",
+        message: {
+          id: "msg_1",
+          model: "claude-opus-4-8",
+          role: "assistant",
+          usage: { "input_tokens": 10, "output_tokens": 20 },
+        },
+      })
+    }\n`,
+  );
+  const storedUrl = "https://127.0.0.1:9/stored/models";
+  const flagUrl = "https://127.0.0.1:9/flag/models";
+  const priced = ((): Promise<Response> =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          data: [{
+            id: "anthropic/claude-opus-4.8",
+            pricing: { prompt: "0.000015", completion: "0.000075" },
+          }],
+        }),
+        { status: 200 },
+      ),
+    )) as typeof fetch;
+  // Two days old: expired, so the run refreshes (fails at 127.0.0.1:9) and falls back to it.
+  await loadPricing(storedUrl, {
+    cacheDir: join(env.COPILOT_API_HOME ?? "", USAGE_INDEX_DIR_NAME),
+    nowMs: Date.now() - 2 * MILLISECONDS_PER_DAY,
+    fetchImpl: priced,
+  });
+  expect(runCli(["config", "--set", "pricing-url", storedUrl], { env }).exitCode).toBe(0);
+
+  const totalUsdOf = (...flags: string[]) => {
+    const proc = runCli(["cost", "--json", "--no-index", ...flags], { env });
+    expect(proc.exitCode).toBe(0);
+    expect(proc.stderr).not.toContain("127.0.0.1");
+    return JSON.parse(proc.stdout).claudeSessions.totalUsd as number;
+  };
+  // 10 in at $15/M + 20 out at $75/M, from the stored URL's cache.
+  expect(totalUsdOf()).toBe(0.0017);
+  // The flag's URL has no cache and cannot be fetched: tokens only.
+  expect(totalUsdOf("--pricing-url", flagUrl)).toBe(0);
 });

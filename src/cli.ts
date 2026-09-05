@@ -40,13 +40,12 @@ import { parseStartAction, runStart } from "./commands/start.ts";
 import { runStop } from "./commands/stop.ts";
 import { runUninstall } from "./commands/uninstall.ts";
 import { runUpdate } from "./commands/update.ts";
-import { configKeysHelp } from "./copilot_api/env_config.ts";
+import { configKeysHelp, OPENROUTER_MODELS_URL } from "./copilot_api/env_config.ts";
 import { AUTH_PROVIDERS, type AuthProvider } from "./copilot_api/env_state.ts";
 import { ghTokenEnvVarsLabel } from "./copilot_api/gh_cli.ts";
 import { runInstall } from "./install/installer.ts";
 import { runMigrations } from "./migrations/index.ts";
 import { runCost } from "./usage/cost.ts";
-import { OPENROUTER_MODELS_URL } from "./usage/pricing.ts";
 import { bold, cyan, gray } from "./utils/ansi.ts";
 import { assertNever } from "./utils/assert.ts";
 import { errMessage } from "./utils/error.ts";
@@ -531,8 +530,8 @@ program
   )
   .option(
     "--pricing-url <url>",
-    "OpenRouter models API URL for the public price list (cached for a day).",
-    OPENROUTER_MODELS_URL,
+    "OpenRouter models API URL for the public price list (cached for a day), overriding the " +
+      `pricing-url config key for this run (built-in: ${OPENROUTER_MODELS_URL}).`,
   )
   .option(
     "--no-index",
@@ -561,7 +560,7 @@ program
       days: opts.days as string | undefined,
       json: Boolean(opts.json),
       perDay: Boolean(opts.perDay),
-      pricingUrl: String(opts.pricingUrl),
+      pricingUrl: opts.pricingUrl === undefined ? undefined : String(opts.pricingUrl),
       sources: Boolean(opts.sources),
       // Commander stores a `--no-<name>` flag as `<name>: false`.
       noIndex: opts.index === false,

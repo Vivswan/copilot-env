@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -21,16 +30,19 @@ import {
   parseDaysWindow,
   perDayRows,
   ReconcileMeter,
+  resolvePricingUrl,
   runCost,
   type SessionRootDiscovery,
   sumDayTotals,
   UNDATED_DAY_LABEL,
 } from "../src/usage/cost.ts";
+import { CopilotEnvConfig, OPENROUTER_MODELS_URL } from "../src/copilot_api/env_config.ts";
 import { USAGE_INDEX_DIR_NAME } from "../src/usage/paths.ts";
 import {
   estimateCost,
   loadPricing,
   type ModelCost,
+  pricingCachePath,
   type PricingTier,
 } from "../src/usage/pricing.ts";
 import { type ModelUsage, record, type UsageReport, usageReport } from "../src/usage/usage.ts";
@@ -452,6 +464,20 @@ function fakeFetch(body: unknown, opts: { fail?: boolean } = {}): typeof fetch {
   }) as typeof fetch;
 }
 
+/** `fakeFetch` that also records every URL it was asked for. */
+function recordingFetch(body: unknown, opts: { fail?: boolean } = {}): {
+  fetch: typeof fetch;
+  urls: string[];
+} {
+  const urls: string[] = [];
+  const inner = fakeFetch(body, opts);
+  const fetchImpl = ((input: string | URL | Request, init?: RequestInit) => {
+    urls.push(String(input));
+    return inner(input, init);
+  }) as typeof fetch;
+  return { fetch: fetchImpl, urls };
+}
+
 /** A fetch that never answers until the request is cancelled, and records that it was. */
 function hangingFetch(): { fetch: typeof fetch; aborted: () => boolean } {
   let aborted = false;
@@ -780,3 +806,67 @@ test("ReconcileMeter bills a reader's synchronous fold, never a microtask queued
   expect(nowMs).toBe(1_063);
   expect(parseTimed.stats.filesSeen).toBe(0);
 });
+
+// ---------- the pricing-url preference ----------
+
+const STORED_URL = "https://stored.example/with-secret-token/models";
+const FLAG_URL = "https://flag.example/models";
+
+test("resolvePricingUrl: the flag beats the stored key, which beats the built-in", () =>
+  withCostHome(async () => {
+    const config = new CopilotEnvConfig();
+    expect(resolvePricingUrl(undefined, config)).toBe(OPENROUTER_MODELS_URL);
+    config.set({ pricingUrl: STORED_URL });
+    expect(resolvePricingUrl(undefined, config)).toBe(STORED_URL);
+    expect(resolvePricingUrl(FLAG_URL, config)).toBe(FLAG_URL);
+    await Promise.resolve();
+  }));
+
+test("runCost fetches the stored pricing-url, and --pricing-url overrides it for one run", () =>
+  withCostHome(async ({ claudeRoot }) => {
+    new CopilotEnvConfig().set({ pricingUrl: STORED_URL });
+    const stored = recordingFetch(PRICED_BODY);
+    await captureAllWrites(() =>
+      runCost({ json: true }, { fetchImpl: stored.fetch, ...rootsOf([], [claudeRoot]) })
+    );
+    expect(stored.urls).toEqual([STORED_URL]);
+
+    const flagged = recordingFetch(PRICED_BODY);
+    await captureAllWrites(() =>
+      runCost({ json: true, pricingUrl: FLAG_URL }, {
+        fetchImpl: flagged.fetch,
+        ...rootsOf([], [claudeRoot]),
+      })
+    );
+    expect(flagged.urls).toEqual([FLAG_URL]);
+  }));
+
+test("a stored pricing-url never reaches a warning or the price cache on disk", () =>
+  withCostHome(async ({ home, claudeRoot }) => {
+    new CopilotEnvConfig().set({ pricingUrl: STORED_URL });
+    const cacheDir = join(home, USAGE_INDEX_DIR_NAME);
+
+    // A failed fetch: the warning names the failure, never the URL.
+    const failed = await captureAllWrites(() =>
+      runCost({ json: true, noIndex: true }, {
+        fetchImpl: fakeFetch(null, { fail: true }),
+        ...rootsOf([], [claudeRoot]),
+      })
+    );
+    expect(failed).toContain("could not fetch OpenRouter pricing (pricing request failed)");
+    expect(failed).not.toContain("stored.example");
+    expect(failed).not.toContain("with-secret-token");
+
+    // A successful fetch: the cache file is keyed by the URL's digest and holds only it.
+    await captureAllWrites(() =>
+      runCost({ json: true, noIndex: true }, {
+        fetchImpl: fakeFetch(PRICED_BODY),
+        ...rootsOf([], [claudeRoot]),
+      })
+    );
+    const cacheFile = pricingCachePath(STORED_URL, cacheDir);
+    expect(readdirSync(cacheDir)).toEqual([cacheFile.slice(cacheDir.length + 1)]);
+    const cached = readFileSync(cacheFile, "utf8");
+    expect(cached).not.toContain("stored.example");
+    expect(cached).not.toContain("with-secret-token");
+  }));

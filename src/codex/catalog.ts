@@ -708,11 +708,13 @@ export async function generateCodexModelCatalog(
     }
     // 0600 like every file the store writes beside it (the home's own policy).
     const file = new CopilotApiPaths().codexModelCatalogFile;
-    atomicWriteFile(file, bytes, 0o600);
-    // Every file a command writes is named in its output (stderr: `agent auth
-    // --get` runs this too, and its stdout is the token); an unverified verdict says so.
-    logger.log(
-      `  ✓ Codex model catalog written → ${file}${verdict === null ? UNVERIFIED_SUFFIX : ""}`,
+    // The write's line (stderr: `agent auth --get` runs this too, and its stdout is the
+    // token) says what the file is; an unverified verdict says so on it.
+    atomicWriteFile(
+      file,
+      bytes,
+      0o600,
+      `Codex model catalog${verdict === null ? UNVERIFIED_SUFFIX : ""}`,
     );
     return true;
   } catch (e) {

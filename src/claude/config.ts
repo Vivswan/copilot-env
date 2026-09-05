@@ -534,9 +534,9 @@ function loadSettings(settingsPath: string): Record<string, unknown> {
   return doc;
 }
 
-function saveSettings(settingsPath: string, doc: Record<string, unknown>): void {
+function saveSettings(settingsPath: string, doc: Record<string, unknown>, detail?: string): void {
   mkdirReported(path.dirname(settingsPath));
-  writeFileReported(settingsPath, `${JSON.stringify(doc, null, 2)}\n`);
+  writeFileReported(settingsPath, `${JSON.stringify(doc, null, 2)}\n`, { detail });
 }
 
 /** Persist a STRIPPED settings doc: a doc emptied entirely removes the file
@@ -739,14 +739,11 @@ export function syncDefaultWebSearchWiring(claudeHome = resolveClaudeHome()): vo
  *  the mode/identity pairing is enforced at the type) plus this writer's common
  *  knobs -- the Claude twin of CodexWriteRequest. */
 export type ClaudeWriteRequest = ManagedWrite & {
-  /** Suppress the "config written" info line (used by the temp-config probe). */
-  quiet?: boolean;
   /** Wire a NAMED profile's settings-<name>.json instead of the default settings.json. */
   profile?: Profile;
 };
 
 export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRequest): void {
-  const quiet = request.quiet ?? false;
   const profile = request.profile ?? null;
   // Cheap credential-presence gate (no `gh` spawn -- runClaude already did the full
   // resolve and fail-fasts on it; this backstops direct API callers like
@@ -795,11 +792,8 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
     const commit = profile === null && claudeHome === resolveClaudeHome()
       ? applyWebSearchPair(doc, "direct", settingsPath)
       : NO_COMMIT;
-    saveSettings(settingsPath, doc);
+    saveSettings(settingsPath, doc, "Claude config, direct: GitHub Copilot");
     commit();
-    if (!quiet) {
-      logger.log(`  ✓ Claude config written → ${settingsPath} (direct: GitHub Copilot)`);
-    }
     return;
   }
 
@@ -817,11 +811,8 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
   const commit = profile === null && claudeHome === resolveClaudeHome()
     ? applyWebSearchPair(doc, "proxy", settingsPath)
     : NO_COMMIT;
-  saveSettings(settingsPath, doc);
+  saveSettings(settingsPath, doc, `Claude config, proxy mode via port ${port}`);
   commit();
-  if (!quiet) {
-    logger.log(`  ✓ Claude config written → ${settingsPath} (proxy mode → port ${port})`);
-  }
 }
 
 // --- the `--check` provider report ------------------------------------------
@@ -994,7 +985,7 @@ export function detectClaudeDirect(deps?: DirectProbeDeps): boolean {
   return probeDirectWorks(
     CLAUDE_PROBE,
     (tmpHome) => {
-      configureClaudeConfig(tmpHome, { mode: "direct", quiet: true });
+      configureClaudeConfig(tmpHome, { mode: "direct" });
     },
     deps,
   );
@@ -1021,11 +1012,7 @@ export function claudeAdapter(): AgentAdapter {
       await syncClaudeDesktopWiring({ ...write, profile: null, directToken: ghToken });
     },
     async configureProfile(name, write, options) {
-      configureClaudeConfig(resolveClaudeHome(), {
-        ...write,
-        quiet: options.quiet,
-        profile: name,
-      });
+      configureClaudeConfig(resolveClaudeHome(), { ...write, profile: name });
       await syncClaudeDesktopWiring({ ...write, profile: name, quiet: options.quiet });
     },
     removeProfile(name, options) {

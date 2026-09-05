@@ -326,3 +326,9 @@ export function stageRefusedStop(home: string, profile?: ProfileName): RefusedSt
     },
   };
 }
+
+/** Every stderr line that mentions `path`, in order. "One line per written path" means this
+ *  equals exactly the seam's one line: a narrative line beside it would show up here. */
+export function linesNaming(text: string, path: string): string[] {
+  return text.split("\n").filter((line) => line.includes(path));
+}

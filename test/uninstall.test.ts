@@ -139,7 +139,7 @@ test("uninstall removes everything managed and preserves user config", async () 
   // Default wiring: Claude direct + Codex proxy, each with a user key alongside.
   mkdirSync(claudeHome, { recursive: true });
   writeFileSync(settingsPathFor(claudeHome), JSON.stringify({ model: "opus" }));
-  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true });
+  configureClaudeConfig(claudeHome, { mode: "direct" });
   // Legacy helper files from a pre-inline install (the current writer creates none):
   // uninstall must still remove them by name.
   writeFileSync(join(claudeHome, DIRECT_HELPER_NAME), "#!/bin/sh\nexec legacy\n");
@@ -153,7 +153,6 @@ test("uninstall removes everything managed and preserves user config", async () 
   );
   configureCodexConfig(codexHome, {
     mode: "proxy",
-    quiet: true,
     baseUrl: "http://127.0.0.1:4199/v1",
   });
 
@@ -163,8 +162,8 @@ test("uninstall removes everything managed and preserves user config", async () 
     credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
     mode: "direct",
   });
-  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true, profile: WORK });
-  configureCodexConfig(codexHome, { mode: "direct", quiet: true, profile: WORK });
+  configureClaudeConfig(claudeHome, { mode: "direct", profile: WORK });
+  configureCodexConfig(codexHome, { mode: "direct", profile: WORK });
   mkdirSync(profileHome(WORK), { recursive: true });
 
   // A second Codex home (e.g. a farm home from when it was the effective one)
@@ -172,10 +171,9 @@ test("uninstall removes everything managed and preserves user config", async () 
   const codexHome2 = join(dir, ".codex-farm");
   configureCodexConfig(codexHome2, {
     mode: "proxy",
-    quiet: true,
     baseUrl: "http://127.0.0.1:4199/v1",
   });
-  configureCodexConfig(codexHome2, { mode: "direct", quiet: true, profile: WORK });
+  configureCodexConfig(codexHome2, { mode: "direct", profile: WORK });
 
   const deps = tmpDeps(codexHome);
   deps.codexHomes = [codexHome, codexHome2];
@@ -309,7 +307,7 @@ test("uninstall leaves foreign Claude/Codex wiring untouched", async () => {
 
 test("uninstall on a foreign-edited config strips OUR deny, then removes the registration", async () => {
   const { claudeHome, codexHome } = tmpHomes();
-  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true }); // deny + registration + ownership
+  configureClaudeConfig(claudeHome, { mode: "direct" }); // deny + registration + ownership
   const settingsPath = settingsPathFor(claudeHome);
   const doc = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
   doc.apiKeyHelper = "/usr/local/bin/my-helper"; // foreign edit: wiring classifies "other"
@@ -348,7 +346,7 @@ test("uninstall never touches a user's own deny on a foreign config (registratio
 
 test("uninstall keeps the MCP registration while an owned deny cannot be stripped", async () => {
   const { claudeHome, codexHome } = tmpHomes();
-  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true }); // deny + registration + ownership
+  configureClaudeConfig(claudeHome, { mode: "direct" }); // deny + registration + ownership
   const settingsPath = settingsPathFor(claudeHome);
   writeFileSync(settingsPath, "{ not json"); // the owned deny is now unverifiable
 
@@ -373,7 +371,7 @@ test("uninstall is idempotent: a second run finds nothing and exits 0", async ()
 test("uninstall without --yes on a non-TTY refuses and deletes nothing", async () => {
   const { proxyHome, claudeHome, codexHome } = tmpHomes();
   mkdirSync(claudeHome, { recursive: true });
-  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true });
+  configureClaudeConfig(claudeHome, { mode: "direct" });
   new Credential().store("gh-token", "ghp_default");
 
   // the test runner's stdin is not a TTY, so the guard fires before the prompt.
@@ -385,12 +383,11 @@ test("uninstall without --yes on a non-TTY refuses and deletes nothing", async (
 test("uninstall --dry-run changes nothing and narrates every step", async () => {
   const { proxyHome, claudeHome, codexHome } = tmpHomes();
   mkdirSync(claudeHome, { recursive: true });
-  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true });
+  configureClaudeConfig(claudeHome, { mode: "direct" });
   // A legacy helper file (pre-inline install): dry-run must leave even that alone.
   writeFileSync(join(claudeHome, DIRECT_HELPER_NAME), "#!/bin/sh\nexec legacy\n");
   configureCodexConfig(codexHome, {
     mode: "proxy",
-    quiet: true,
     baseUrl: "http://127.0.0.1:4199/v1",
   });
   new Credential().store("gh-token", "ghp_default");
@@ -538,13 +535,13 @@ test("uninstall removes owned Claude Desktop entries via the injected library di
 test("uninstall's dry run and live run render ONE resolved plan", async () => {
   const { proxyHome, claudeHome, codexHome } = tmpHomes();
   mkdirSync(claudeHome, { recursive: true });
-  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true });
+  configureClaudeConfig(claudeHome, { mode: "direct" });
   // A named profile with a daemon home, so the profile step has a tree to delete.
   new CopilotEnvState().commitProfile(WORK, {
     credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
     mode: "direct",
   });
-  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true, profile: WORK });
+  configureClaudeConfig(claudeHome, { mode: "direct", profile: WORK });
   mkdirSync(profileHome(WORK), { recursive: true });
   // Legacy helpers (pre-inline install), the default's and the profile's: the teardown
   // removes them, so the plan names them.
@@ -623,11 +620,13 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   const deleted = new Set(
     reported
       .filter((line) => line.startsWith("deleted -> "))
-      .map((line) => line.slice("deleted -> ".length)),
+      .map((line) => line.slice("deleted -> ".length).replace(/ \(.*\)$/, "")),
   );
-  // The block went, the user's own line stayed, and the rewrite was named.
+  // The block went, the user's own line stayed, and the rewrite was named, once.
   expect(readFileSync(rc, "utf8")).toBe("echo mine\n");
-  expect(reported).toContain(`rewritten -> ${rc}`);
+  expect(reported.filter((line) => line.includes(rc))).toEqual([
+    `rewritten -> ${rc} (shell integration removed)`,
+  ]);
 
   expect(existsSync(join(library, "late.json"))).toBe(true);
   expect(existsSync(lateHelper)).toBe(true);

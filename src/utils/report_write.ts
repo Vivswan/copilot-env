@@ -18,7 +18,9 @@
 // changed (absent then present, present then absent, or a different identity, mtime or
 // size) -- never from "the path still exists", which a refused write leaves true.
 //
-// Dedup is per path, with a delete as the epoch boundary: a store saved five times in
+// One line per path: a writer that has something to say about a write (which config it
+// is, why the entry went) says it in the line's `detail` instead of a second line naming
+// the same path. Dedup is per path, with a delete as the epoch boundary: a store saved five times in
 // one run prints once, a create followed by a rewrite of the same path is one fact, and
 // a delete clears the slate so a later re-creation (or re-link, or a second delete after
 // it) is announced again.
@@ -258,6 +260,7 @@ export function deferWriteReports(): void {
 export function flushWriteReports(): string[] {
   const lines = deferred ?? [];
   deferred = null;
+  process.off("exit", flushWriteReports);
   for (const line of lines) emit(line);
   return lines;
 }
@@ -267,19 +270,19 @@ export function flushWriteReports(): string[] {
 export function writeFileReported(
   path: string,
   data: string | Uint8Array,
-  options?: { mode?: number },
+  options?: { mode?: number; detail?: string },
 ): void {
   const was = look(path);
   try {
-    writeFileSync(path, data, options);
+    writeFileSync(path, data, { mode: options?.mode });
   } catch (err) {
     reportTransition(path, was, EVERY_TRANSITION, "write failed");
     throw err;
   }
-  reportWrite(kindOf(was), path);
+  reportWrite(kindOf(was), path, options?.detail);
 }
 
-export function copyFileReported(from: string, to: string): void {
+export function copyFileReported(from: string, to: string, detail?: string): void {
   const was = look(to);
   try {
     copyFileSync(from, to);
@@ -287,12 +290,12 @@ export function copyFileReported(from: string, to: string): void {
     reportTransition(to, was, EVERY_TRANSITION, "copy failed");
     throw err;
   }
-  reportWrite(kindOf(was), to);
+  reportWrite(kindOf(was), to, detail);
 }
 
 /** mkdir -p, naming every directory it actually creates (missing ancestors too,
- *  outermost first). */
-export function mkdirReported(path: string, mode?: number): void {
+ *  outermost first); `detail` rides on the directory asked for, not its ancestors. */
+export function mkdirReported(path: string, mode?: number, detail?: string): void {
   const missing: string[] = [];
   for (let cur = path; look(cur).kind === "absent"; cur = dirname(cur)) {
     missing.unshift(cur);
@@ -304,29 +307,29 @@ export function mkdirReported(path: string, mode?: number): void {
     for (const made of missing) reportTransition(made, { kind: "absent" });
     throw err;
   }
-  for (const made of missing) reportWrite("created", made);
+  for (const made of missing) reportWrite("created", made, made === path ? detail : undefined);
 }
 
 /** A mode change is a rewrite of the entry; deduped away when this process already
  *  announced writing the path. */
-export function chmodReported(path: string, mode: number): void {
+export function chmodReported(path: string, mode: number, detail?: string): void {
   chmodSync(path, mode);
-  reportWrite("rewritten", path);
+  reportWrite("rewritten", path, detail);
 }
 
 /** Remove ONE entry (a file, a symlink); a directory at the path throws, as rmSync does
  *  without `recursive` -- a caller that meant a file must never take a tree. Returns
  *  whether anything was there to remove. */
-export function removeReported(path: string): boolean {
+export function removeReported(path: string, detail?: string): boolean {
   if (look(path).kind === "absent") return false;
   rmSync(path, { force: true });
-  reportWrite("deleted", path);
+  reportWrite("deleted", path, detail);
   return true;
 }
 
 /** rm -rf; returns whether anything was there to remove. A removal that fails partway
  *  is named for what it provably changed (the tree's own entry, when a child went). */
-export function removeTreeReported(path: string): boolean {
+export function removeTreeReported(path: string, detail?: string): boolean {
   const was = look(path, true);
   if (was.kind === "absent") return false;
   try {
@@ -335,7 +338,7 @@ export function removeTreeReported(path: string): boolean {
     reportTransition(path, was, EVERY_TRANSITION, "partly removed", true);
     throw err;
   }
-  reportWrite("deleted", path);
+  reportWrite("deleted", path, detail);
   return true;
 }
 
@@ -448,7 +451,12 @@ export function removeScratchDir(dir: ScratchDir): void {
  * (src/copilot_api/config.ts), saveClaudeJson (src/claude/mcp_registration.ts), the
  * proxy float's records and the installer's launcher shims.
  */
-export function atomicWriteFile(path: string, text: string, mode?: number): void {
+export function atomicWriteFile(
+  path: string,
+  text: string,
+  mode?: number,
+  detail?: string,
+): void {
   mkdirReported(dirname(path));
   const was = look(path);
   const tmp = join(dirname(path), `${basename(path)}.tmp.${process.pid}`);
@@ -473,7 +481,7 @@ export function atomicWriteFile(path: string, text: string, mode?: number): void
     }
     throw err;
   }
-  reportWrite(kindOf(was), path);
+  reportWrite(kindOf(was), path, detail);
 }
 
 /** The error codes a rename refused by an open handle on the destination surfaces

@@ -344,8 +344,7 @@ const UNINSTALL_STEPS: UninstallStep[] = [
       // Before the home goes: the float's cache is wherever its record points, which a
       // sidecar install can put OUTSIDE the home -- deleting the home alone would strand it.
       removeProxyFloatArtifacts(ctx.rootHome, ctx.targets.floatArtifacts);
-      removeTreeReported(ctx.rootHome);
-      consola.info(`Deleted the copilot-api home: ${ctx.rootHome}`);
+      removeTreeReported(ctx.rootHome, "the copilot-api home");
     },
   },
   {
@@ -390,8 +389,7 @@ const UNINSTALL_STEPS: UninstallStep[] = [
         // pass -- deletion may still succeed from the current cwd.
       }
       try {
-        removeTreeReported(installRoot);
-        consola.info(`Deleted the install directory: ${installRoot}`);
+        removeTreeReported(installRoot, "the install directory");
       } catch {
         consola.warn(
           `Could not fully delete ${installRoot} (files may be in use). ` +

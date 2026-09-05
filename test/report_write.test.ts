@@ -66,6 +66,11 @@ test("every kind prints once per process, on stderr only, and a delete re-arms t
         `const link = join(dir, "link");`,
         `symlinkReported(target, link, type);`, // linked
         `symlinkReported(target, link + "2", type); unlink(link); symlinkReported(target, link, type);`,
+        // A writer's meaning rides as the line's detail; mkdir's lands on the leaf only.
+        `const d = join(dir, "d.txt");`,
+        `writeFileReported(d, "", { detail: "why it was written" });`,
+        `mkdirReported(join(dir, "n", "leaf"), undefined, "leaf only");`,
+        `removeReported(d, "why it went");`,
         `console.log("stdout-untouched");`,
       ].join("\n"),
     );
@@ -93,6 +98,10 @@ test("every kind prints once per process, on stderr only, and a delete re-arms t
       `linked -> ${link}2 (to ${target})`,
       `deleted -> ${link}`,
       `linked -> ${link} (to ${target})`,
+      `created -> ${join(dir, "d.txt")} (why it was written)`,
+      `created -> ${join(dir, "n")}`,
+      `created -> ${join(dir, "n", "leaf")} (leaf only)`,
+      `deleted -> ${join(dir, "d.txt")} (why it went)`,
       "",
     ]);
   } finally {

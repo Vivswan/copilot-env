@@ -32,7 +32,7 @@ import {
   openaiBaseUrl,
   wiringPortFor,
 } from "../copilot_api/port.ts";
-import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
+import { type Profile, type ProfileName } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoent, isEnoentOrNotdir, readTextResult, type TextReadResult } from "../utils/fs.ts";
@@ -117,7 +117,7 @@ type CodexModeRequest =
 /** The mode-independent knobs of a Codex config write. */
 interface CodexWriteCommon {
   codexExecVersion?: string | null;
-  /** Suppress the "config written" info line (used by the temp-config probe). */
+  /** Suppress the catalog-verdict warning (the direct probe's throwaway write). */
   quiet?: boolean;
   /** Wire a NAMED profile's tables instead of the default selection. */
   profile?: Profile;
@@ -797,16 +797,14 @@ export function configureCodexConfig(
       doc.model_catalog_json = catalogFile;
       catalogRef = "written";
       if (previousRef !== catalogFile) {
-        catalogRefLine = `model_catalog_json = "${catalogFile}" set in ${hostConfig}` +
+        catalogRefLine = `model_catalog_json = "${catalogFile}" set` +
           (verdict === "unverifiable" ? UNVERIFIED_SUFFIX : "");
       }
     } else {
       delete doc.model_catalog_json;
       catalogRef = "cleared";
       if (previousRef !== undefined) {
-        catalogRefLine = `model_catalog_json removed from ${hostConfig} (was "${
-          String(previousRef)
-        }")`;
+        catalogRefLine = `model_catalog_json removed, was "${String(previousRef)}"`;
       }
     }
   }
@@ -836,23 +834,11 @@ export function configureCodexConfig(
   }
 
   const knownHome = knownCodexHomes().homes.includes(codexHome);
-  saveCodexToml(hostConfig, doc);
-  // The change is on disk: report it NOW, before the fallible ledger bookkeeping.
-  if (!request.quiet) {
-    logger.log(
-      `  ✓ Codex config written → ${hostConfig}` +
-        `${
-          profile === null
-            ? ""
-            : ` (${profileLabel(profile)}; launch with \`codex --profile ${profile}\`)`
-        }`,
-    );
-  }
-  // A changed reference is reported even by quiet writes (`agent profile --sync` is
-  // quiet and real); only the direct probe's quiet, throwaway home stays silent.
-  if (catalogRefLine !== null && (!request.quiet || knownHome)) {
-    logger.log(`  ✓ Codex ${catalogRefLine}`);
-  }
+  // The write's own line carries what the write means (which config, and a changed
+  // catalog reference); it lands before the fallible ledger bookkeeping. Every
+  // profile shares this one file and the seam names a path once per process, so the
+  // detail says nothing profile-specific (`agent profile` prints the launch hint).
+  saveCodexToml(hostConfig, doc, ["Codex config", catalogRefLine].filter(Boolean).join("; "));
   // Ownership lands only AFTER the successful save (the ledger's crash-direction
   // contract), and only for a KNOWN Codex home -- the set the cleanup sweep
   // visits -- so detectCodexDirect's throwaway probe home never enters the
@@ -1008,9 +994,10 @@ export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): v
       return;
     }
     doc.model_catalog_json = catalogFile;
-    saveCodexToml(configPath, doc);
-    logger.log(
-      `  ✓ Codex model_catalog_json = "${catalogFile}" set in ${configPath}` +
+    saveCodexToml(
+      configPath,
+      doc,
+      `Codex config; model_catalog_json = "${catalogFile}" set` +
         (verdict === "unverifiable" ? UNVERIFIED_SUFFIX : ""),
     );
   } catch {
@@ -1114,8 +1101,7 @@ function cleanupCodexCatalogArtifacts(catalogFile: string): void {
   const { deletionSafe } = stripCodexCatalogReferences(catalogFile);
   if (deletionSafe && fs.existsSync(catalogFile)) {
     try {
-      removeReported(catalogFile);
-      logger.log(`  ✓ Codex model catalog removed → ${catalogFile}`);
+      removeReported(catalogFile, "Codex model catalog");
     } catch (e) {
       logger.warn(`codex model catalog cleanup failed: ${errMessage(e)}`);
     }
@@ -1152,9 +1138,10 @@ function stripCodexCatalogReferences(
       const doc = parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
       if (doc.model_catalog_json === catalogFile) {
         delete doc.model_catalog_json;
-        writeFileReported(configPath, stringify(doc));
+        writeFileReported(configPath, stringify(doc), {
+          detail: "Codex config; model_catalog_json removed",
+        });
         stripped = true;
-        logger.log(`  ✓ Codex model_catalog_json removed from ${configPath}`);
         if (catalogBookkeepingAllowed()) ledger.release("codexCatalog", configPath);
       } else if (resolvesToCatalogFile(doc.model_catalog_json, catalogFile) !== "no") {
         // An alternate spelling of OUR path (case variant on Windows, a

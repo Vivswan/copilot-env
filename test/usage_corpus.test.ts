@@ -34,8 +34,9 @@ describe("usage corpus scrub", () => {
       "version": "2.1.258",
       // Content of every length and shape under known keys.
       "cwd": "/Users/viv/secret-project",
-      "gitBranch": "main",
-      "lastPrompt": "sk-ant-1",
+      "gitBranch": "sk-ant-1",
+      // Timestamp-shaped content: only a timestamp KEY keeps an ISO string.
+      "lastPrompt": "1984-03-21T09:45:00.4111111111111111Z",
       "text": "aGVsbG8gd29ybGQ=",
       // Identifier-shaped secrets under enum keys, and an unknown identifier-shaped key.
       "name": "Alice",
@@ -85,6 +86,7 @@ describe("usage corpus scrub", () => {
         "secret",
         "sk-ant",
         "aGVsbG8",
+        "1984-03-21",
         "Alice",
         "acme",
         "/u/me",
@@ -106,6 +108,7 @@ describe("usage corpus scrub", () => {
     // Positive control: what the readers key on is still there, ids as consistent pseudonyms.
     expect(parsed.type).toBe("assistant");
     expect(parsed.timestamp).toBe("2026-09-04T23:53:34.386Z");
+    expect(parsed.lastPrompt).toBe("SCRUBBED");
     expect(parsed.version).toBe("2.1.258");
     expect(parsed.uuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
     expect(parsed.sessionId).toBe(parsed.uuid);

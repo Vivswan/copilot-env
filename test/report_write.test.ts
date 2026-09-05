@@ -1,7 +1,18 @@
-import { mkdirSync, mkdtempSync, renameSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  atomicWriteFile,
   deferWriteReports,
   flushWriteReports,
   removeScratchDir,
@@ -135,6 +146,99 @@ test("a deep look sees a nested rewrite the root's own metadata would hide", () 
     expect(flushWriteReports()).toEqual([`rewritten -> ${tree2}`]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** One contract case: set up under `dir`, run under deferred reporting, and the exact
+ *  lines it must produce (paths relative to `dir`). */
+interface ContractCase {
+  name: string;
+  skip?: boolean;
+  setup?: (dir: string) => void;
+  run: (dir: string) => void;
+  lines: (dir: string) => string[];
+}
+
+const CONTRACTS: ContractCase[] = [
+  {
+    name: "kinds filter: a rewrite inside fn is not attributed when only created/deleted are asked",
+    setup: (dir) => writeFileSync(join(dir, "wal"), "a"),
+    run: (dir) =>
+      withReportedPaths([join(dir, "wal")], () => writeFileSync(join(dir, "wal"), "ab"), {
+        kinds: ["created", "deleted"],
+      }),
+    lines: () => [],
+  },
+  {
+    name: "kinds default: the same rewrite is named",
+    setup: (dir) => writeFileSync(join(dir, "wal"), "a"),
+    run: (dir) =>
+      withReportedPaths([join(dir, "wal")], () => writeFileSync(join(dir, "wal"), "ab")),
+    lines: (dir) => [`rewritten -> ${join(dir, "wal")}`],
+  },
+  {
+    name: "a thenable result is refused",
+    run: () => {
+      expect(() => withReportedPaths([], () => Promise.resolve())).toThrow("synchronous");
+    },
+    lines: () => [],
+  },
+  {
+    name: "a dangling symlink is present (lstat), so removing it is a deletion",
+    skip: process.platform === "win32",
+    setup: (dir) => symlinkSync(join(dir, "missing-target"), join(dir, "dangling")),
+    run: (dir) => withReportedPaths([join(dir, "dangling")], () => rmSync(join(dir, "dangling"))),
+    lines: (dir) => [`deleted -> ${join(dir, "dangling")}`],
+  },
+  {
+    name: "a tree with an unlistable level cannot be judged: silent",
+    // mode 000 stops a user, never root (the container suite).
+    skip: process.platform === "win32" || process.getuid?.() === 0,
+    setup: (dir) => {
+      mkdirSync(join(dir, "tree", "sealed"), { recursive: true });
+      chmodSync(join(dir, "tree", "sealed"), 0o000);
+    },
+    run: (dir) => {
+      try {
+        withReportedPaths([join(dir, "tree")], () => writeFileSync(join(dir, "tree", "new"), ""));
+      } finally {
+        chmodSync(join(dir, "tree", "sealed"), 0o755);
+      }
+    },
+    lines: () => [],
+  },
+  {
+    name: "an atomic write whose temp path is occupied by a directory changes nothing: silent",
+    setup: (dir) => mkdirSync(join(dir, `target.tmp.${process.pid}`)),
+    run: (dir) => {
+      expect(() => atomicWriteFile(join(dir, "target"), "x")).toThrow();
+    },
+    lines: () => [],
+  },
+  {
+    name: "a stale permissive temp under this pid never publishes its old mode",
+    skip: process.platform === "win32",
+    setup: (dir) => writeFileSync(join(dir, `secret.tmp.${process.pid}`), "old", { mode: 0o644 }),
+    run: (dir) => {
+      atomicWriteFile(join(dir, "secret"), "new", 0o600);
+      expect(statSync(join(dir, "secret")).mode & 0o777).toBe(0o600);
+    },
+    lines: (dir) => [`created -> ${join(dir, "secret")}`],
+  },
+];
+
+test("the before/after contracts of withReportedPaths and the transient cleanup", () => {
+  for (const c of CONTRACTS) {
+    if (c.skip) continue;
+    const dir = mkdtempSync(join(tmpdir(), "copilot-report-"));
+    try {
+      c.setup?.(dir);
+      deferWriteReports();
+      c.run(dir);
+      expect(flushWriteReports(), c.name).toEqual(c.lines(dir));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
 });
 

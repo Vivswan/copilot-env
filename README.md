@@ -13,7 +13,7 @@ TypeScript port of the original Python `copilot-api` helper. Runs on **Linux, ma
 - **Named profiles**: `agent profile` bundles ONE credential + ONE mode (direct or proxy) into both agents, so several sessions run at once - direct beside proxy, or a second GitHub account - each proxy profile with its own daemon on its own port. Launch with `cl --profile <name>` / `cx --profile <name>`.
 - **Typed preferences**: `agent config` gets/sets every knob - lifecycle, ports, proxy feature flags, model ids - with one precedence rule everywhere.
 - **Web search for Claude Code on Direct**: the builtin WebSearch does not work against Copilot's Anthropic endpoint, so direct wiring registers the copilot-env MCP server (`agent mcp --serve`), whose `web_search` tool searches through Copilot's Responses API instead.
-- **Cost reporting**: estimated spend from per-host usage DBs via live OpenRouter pricing.
+- **Cost reporting**: estimated spend from the proxy's per-host usage DBs plus the Codex and Claude session logs, pre-indexed per file so a warm run is fast, priced via live OpenRouter rates.
 - **Controlled floating**: the proxy floats to the newest cooldown-aged release within configured bounds; every other dependency is pinned via `deno.lock`.
 
 ## Install
@@ -80,7 +80,7 @@ agent health               # full environment diagnosis (--scope full|runtime|pr
 agent models               # list the model ids + names Copilot serves (--proxy / --direct / --json; no flag auto-picks)
 agent env                  # print shell directives for the calling shell (CODEX_HOME / proxy ANTHROPIC_BASE_URL exports + the opt-in launcher functions)
 agent mcp                  # MCP wiring status (--serve runs the stdio server; --remove unwires)
-agent cost                 # estimated token spend across all usage DBs (default + profile daemons)
+agent cost                 # estimated token spend across the proxy usage DBs + Codex/Claude session logs (--days N, --json, --per-day, --sources; --no-index parses every log instead of using the usage index)
 agent update               # update to the latest release (--check; --auto-status; --no-verify skips the provenance check; `agent config --set auto-update true` self-updates daily, cooldown via `update-cooldown`)
 agent shell                # wire rc / $PROFILE; --clis installs the CLIs, --remove unwires (cl/co/cx follow the `launchers` config key)
 agent uninstall            # remove copilot-env entirely (--yes headless, --dry-run preview, --force to delete a source checkout)
@@ -170,6 +170,15 @@ The server is client-agnostic. Register it in Codex, Cursor, or any other MCP cl
 It resolves the `agent auth` credential; without one it falls back to `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN`, so a bare clone works: `GH_TOKEN=... bin/agent mcp --serve`. The registered server uses the default credential; a named profile that needs its own registers a second entry with `--profile <name>`.
 
 The repo also doubles as a Claude Code plugin and a skills collection: the plugin (`.claude-plugin/`) bundles the MCP server inline in its manifest, and `npx skills add Vivswan/copilot-env` installs the companion [`web-search` skill](./skills/web-search). The plugin's bundled registration runs `bin/agent`, a POSIX script - on Windows, wire through `agent init` or register `bin\agent.ps1` by hand instead.
+
+### Cost reporting
+
+`agent cost` prices the proxy's usage DBs plus the Codex and Claude session logs at public OpenRouter rates. Re-parsing every log on each run is slow, so the readers keep a usage index:
+
+- **What it stores:** per-file facts only - the file's path, size, mtime, how far it was parsed, and its contribution (token counts, timestamps, model names, hashed dedup keys).
+- **What it never stores:** message text or any other content from a session. It is a pre-index, not a cache of results: every run folds the report fresh from the files that exist right now, so a deleted session drops out of the next report.
+- **Where:** `<copilot-api home>/usage-index/index.sqlite` (`~/.local/share/copilot-env/usage-index/index.sqlite` by default). The same directory holds the one thing that IS cached: the public OpenRouter price list (`pricing-*.json`, 24-hour TTL). Usage is never cached, only pre-indexed. `agent uninstall` removes both.
+- **`agent cost --no-index`** parses every file from scratch; use it to verify the index.
 
 ### Configuration
 
@@ -269,6 +278,7 @@ bash scripts/setup-env.sh   # one-shot env/worktree init (deno install --frozen)
 ```bash
 deno task typecheck   # deno check src/ test/ scripts/ .github/scripts/
 deno task test        # test/**/*.test.ts
+deno task bench       # deno bench -P=test bench/ (the agent cost scan/fold benchmarks)
 deno task test:docker # the same suite in a container (hermetic HOME)
 deno task lint        # deno lint + deno fmt --check
 deno task check       # deno lint --fix + deno fmt

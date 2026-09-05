@@ -24,7 +24,7 @@ import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { consola } from "consola";
 import { type CodexCatalogDeps, refreshCodexModelCatalogIfStale } from "../codex/catalog.ts";
-import { syncCodexCatalogReference } from "../codex/config.ts";
+import { syncCodexCatalogReference, syncCodexServiceTier } from "../codex/config.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import {
   AUTH_PROVIDERS,
@@ -452,6 +452,9 @@ async function runGet(profile: Profile, catalogDeps?: CodexCatalogDeps): Promise
   // DEFAULT profile only: the account-wide catalog (and its throttle) belongs to
   // the default credential; refreshing it with a named profile's token would let
   // one account's limits overwrite another's.
+  // The Direct `service_tier` pin heals for whichever selection Codex is running
+  // under (see syncCodexServiceTier) -- BEFORE the default-only catalog work.
+  syncCodexServiceTier(profile);
   if (profile !== null) return;
   await refreshCodexModelCatalogIfStale("direct", { directToken: token, ...catalogDeps });
   // Keep the managed config in step with the opt-in catalog preference on EVERY

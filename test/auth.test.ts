@@ -2,6 +2,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { join } from "node:path";
 import { parse, stringify } from "smol-toml";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
+import { configureCodexConfig, DIRECT_SERVICE_TIER } from "../src/codex/config.ts";
 import { loginWithGhCli, runAuth } from "../src/commands/auth.ts";
 import { ghTokenLookFromSpawn } from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
@@ -398,6 +399,77 @@ test("auth --get stdout stays EXACTLY the token even when the catalog refresh ru
     )
   );
   expect(out).toBe("ghu_stored123\n");
+});
+
+test("auth --get heals a Direct config's rejected service_tier before Codex's next start", async () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  process.env.CODEX_HOME = codexHome;
+  mkdirSync(codexHome, { recursive: true });
+  configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0", quiet: true });
+  const configPath = join(codexHome, "config.toml");
+  const doc = parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+  doc.service_tier = "priority"; // the TUI's fast-mode toggle, or a pre-fix config
+  writeFileSync(configPath, stringify(doc));
+  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
+  let narrated = "";
+  const out = await captureStdout(async () => {
+    narrated = await captureStderr(() => runAuth({ get: true }, NOOP_CATALOG_DEPS));
+  });
+  // stdout is still exactly the token (the shell wrapper evals it); the heal goes to stderr.
+  expect(out).toBe("ghu_stored123\n");
+  expect(narrated).toContain(
+    `service_tier = "${DIRECT_SERVICE_TIER}" pinned in ${configPath} (was "priority"`,
+  );
+  expect((parse(readFileSync(configPath, "utf8")) as Record<string, unknown>).service_tier).toBe(
+    DIRECT_SERVICE_TIER,
+  );
+});
+
+test("auth --get --profile heals a named Direct profile's tier in its own table", async () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  process.env.CODEX_HOME = codexHome;
+  mkdirSync(codexHome, { recursive: true });
+  const work = parseProfileName("work");
+  configureCodexConfig(codexHome, {
+    mode: "direct",
+    codexExecVersion: "0.144.0",
+    profile: work,
+    quiet: true,
+  });
+  const configPath = join(codexHome, "config.toml");
+  const doc = parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+  doc.service_tier = "priority";
+  const profiles = doc.profiles as Record<string, Record<string, unknown>>;
+  profiles.work = { ...profiles.work, "service_tier": "priority" };
+  writeFileSync(configPath, stringify(doc));
+  state().commitProfile(work, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghu_work123" },
+    mode: "direct",
+  });
+  const out = await captureStdout(() => runAuth({ get: true, profile: "work" }, NOOP_CATALOG_DEPS));
+  expect(out).toBe("ghu_work123\n");
+  const healed = parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+  // Profile-local pin; the top-level tier belongs to the default selection.
+  expect(healed.service_tier).toBe("priority");
+  const healedWork = (healed.profiles as Record<string, Record<string, unknown>>).work ?? {};
+  expect(healedWork.service_tier).toBe(DIRECT_SERVICE_TIER);
+});
+
+test("auth --get survives a Codex config it cannot read: token on stdout, exit 0, warning on stderr", async () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  process.env.CODEX_HOME = codexHome;
+  mkdirSync(join(codexHome, "config.toml"), { recursive: true }); // a directory: EISDIR on read
+  state().setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_stored123" });
+  let narrated = "";
+  const out = await captureStdout(async () => {
+    narrated = await captureStderr(() => runAuth({ get: true }, NOOP_CATALOG_DEPS));
+  });
+  expect(out).toBe("ghu_stored123\n");
+  expect(process.exitCode).toBe(0);
+  expect(narrated).toContain("codex service_tier sync failed");
 });
 
 test("auth --get succeeds (exit 0) even when the catalog refresh blows up", async () => {

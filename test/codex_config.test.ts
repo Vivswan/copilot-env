@@ -15,15 +15,20 @@ import {
   configureCodexConfig,
   detectCodexDirect,
   DIRECT_ENV_KEY,
+  DIRECT_SERVICE_TIER,
   FALLBACK_CODEX_UA_VERSION,
   inspectCodexWiring,
+  removeCodexDefaultWiring,
+  removeCodexProfile,
   runCodex,
   syncCodexCatalogReference,
+  syncCodexServiceTier,
 } from "../src/codex/config.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
+import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { agentLauncherCommand, PROJECT_ROOT, proxyTokenCommand } from "../src/utils/root.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, removeDir } from "./helpers.ts";
@@ -987,4 +992,306 @@ test("a rewrite upgrades legacy script wiring to the subcommand shape", () => {
   const provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
   expect(asRecord(provider.auth).command).toBe(proxyTokenCommand().command);
   expect(asRecord(provider.auth).args).toEqual(proxyTokenCommand().args);
+});
+
+// --- the Direct service_tier pin -----------------------------------------------
+
+const WORK = parseProfileName("work");
+
+function tomlAt(path: string): Record<string, unknown> {
+  return asRecord(parse(readFileSync(path, "utf8")));
+}
+
+test("a Direct write pins service_tier to a tier Copilot accepts and reports the change", () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  const configPath = join(codexHome, "config.toml");
+  mkdirSync(codexHome, { recursive: true });
+  // The writer narrates on stderr (createStderrLogger), so capture that stream.
+  let narrated = "";
+  const realWrite = process.stderr.write;
+  process.stderr.write = (chunk: string | Uint8Array): boolean => {
+    narrated += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+    return true;
+  };
+  try {
+    // Absent: Codex 0.153+ would send the model's default tier (priority) -> pinned.
+    configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0" });
+    expect(tomlAt(configPath).service_tier).toBe(DIRECT_SERVICE_TIER);
+    // Rejected: the TUI's fast-mode toggle writes `priority` -> pinned, with the old value named.
+    writeFileSync(configPath, stringify({ ...tomlAt(configPath), "service_tier": "priority" }));
+    configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0" });
+    expect(tomlAt(configPath).service_tier).toBe(DIRECT_SERVICE_TIER);
+    // Accepted: `flex` is the user's choice and survives, with nothing reported.
+    writeFileSync(configPath, stringify({ ...tomlAt(configPath), "service_tier": "flex" }));
+    configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0" });
+    expect(tomlAt(configPath).service_tier).toBe("flex");
+  } finally {
+    process.stderr.write = realWrite;
+  }
+  const tierLines = narrated.split("\n").filter((l) => l.includes("service_tier"));
+  expect(tierLines.length).toBe(2);
+  expect(tierLines[0]).toContain(`service_tier = "${DIRECT_SERVICE_TIER}" pinned in ${configPath}`);
+  expect(tierLines[0]).toContain("model's default tier");
+  expect(tierLines[1]).toContain('was "priority"');
+});
+
+test("a QUIET write still reports a tier change on a real home, and never for the probe's throwaway home", () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  process.env.CODEX_HOME = codexHome; // a known home, as `agent profile --sync` writes
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(join(codexHome, "config.toml"), 'service_tier = "priority"\n');
+  const stderrOf = (fn: () => void): string => {
+    let out = "";
+    const realWrite = process.stderr.write;
+    process.stderr.write = (chunk: string | Uint8Array): boolean => {
+      out += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+      return true;
+    };
+    try {
+      fn();
+    } finally {
+      process.stderr.write = realWrite;
+    }
+    return out;
+  };
+  const quietReal = stderrOf(() =>
+    configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0", quiet: true })
+  );
+  expect(quietReal).not.toContain("Codex config written");
+  expect(quietReal).toContain(`service_tier = "${DIRECT_SERVICE_TIER}" pinned in`);
+  expect(quietReal).toContain('was "priority"');
+  // The live-probe home is outside knownCodexHomes AND quiet: its pin is inert and
+  // unreported. The same unknown home written NON-quietly narrates like any write.
+  const probeHome = join(dir, "probe-home");
+  mkdirSync(probeHome);
+  writeFileSync(join(probeHome, "config.toml"), 'service_tier = "priority"\n');
+  const quietProbe = stderrOf(() =>
+    configureCodexConfig(probeHome, { mode: "direct", codexExecVersion: "0.144.0", quiet: true })
+  );
+  expect(quietProbe).not.toContain("service_tier");
+  expect(tomlAt(join(probeHome, "config.toml")).service_tier).toBe(DIRECT_SERVICE_TIER);
+  writeFileSync(join(probeHome, "config.toml"), 'service_tier = "priority"\n');
+  const loudUnknown = stderrOf(() =>
+    configureCodexConfig(probeHome, { mode: "direct", codexExecVersion: "0.144.0" })
+  );
+  expect(loudUnknown).toContain("Codex config written");
+  expect(loudUnknown).toContain('was "priority"');
+});
+
+test("a proxy write leaves service_tier alone (the proxy strips it before forwarding)", () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  const configPath = join(codexHome, "config.toml");
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(configPath, 'service_tier = "priority"\n');
+  configureCodexConfig(codexHome, {
+    mode: "proxy",
+    baseUrl: "http://127.0.0.1:4141/v1",
+    codexExecVersion: "0.144.0",
+  });
+  expect(tomlAt(configPath).service_tier).toBe("priority");
+  // And never adds one.
+  writeFileSync(configPath, "");
+  configureCodexConfig(codexHome, {
+    mode: "proxy",
+    baseUrl: "http://127.0.0.1:4141/v1",
+    codexExecVersion: "0.144.0",
+  });
+  expect(tomlAt(configPath).service_tier).toBeUndefined();
+});
+
+test("a named Direct profile pins its OWN tier and never rewrites a foreign default selection's", () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  const configPath = join(codexHome, "config.toml");
+  mkdirSync(codexHome, { recursive: true });
+  const writeWork = () =>
+    configureCodexConfig(codexHome, {
+      mode: "direct",
+      codexExecVersion: "0.144.0",
+      profile: WORK,
+      quiet: true,
+    });
+  const workTable = () => asRecord(asRecord(tomlAt(configPath).profiles).work);
+  // Codex reads the profile's own tier, else the top-level one. Every combination:
+  // the top-level line (a foreign OpenAI selection's) is never rewritten, and the
+  // profile gets a local pin exactly when its effective tier would be rejected.
+  const D = DIRECT_SERVICE_TIER;
+  const cases: [
+    top: string | undefined,
+    local: string | undefined,
+    expected: string | undefined,
+  ][] = [
+    ["priority", undefined, D],
+    [undefined, undefined, D],
+    [undefined, "priority", D],
+    ["flex", undefined, undefined],
+    ["flex", "priority", D],
+    ["priority", "flex", "flex"],
+    ["default", "default", "default"],
+    // Unrecognized values are the user's: never rewritten, locally or inherited.
+    ["priority", "fast", "fast"],
+    ["fast", undefined, undefined],
+  ];
+  for (const [top, local, expected] of cases) {
+    writeFileSync(
+      configPath,
+      stringify({
+        "model_provider": "openai",
+        ...(top === undefined ? {} : { "service_tier": top }),
+        "profiles": {
+          "work": { "model": "gpt-5.5", ...(local === undefined ? {} : { "service_tier": local }) },
+        },
+      }),
+    );
+    writeWork();
+    const doc = tomlAt(configPath);
+    expect([
+      top,
+      local,
+      doc.service_tier,
+      doc.model_provider,
+      workTable().service_tier,
+      workTable().model,
+    ])
+      .toEqual([top, local, top, "openai", expected, "gpt-5.5"]);
+  }
+  // Removing the profile takes its table -- and the local pin -- with it; the
+  // foreign default's line was never ours and stays.
+  writeFileSync(configPath, stringify({ "model_provider": "openai", "service_tier": "priority" }));
+  writeWork();
+  expect(workTable().service_tier).toBe(DIRECT_SERVICE_TIER);
+  removeCodexProfile(codexHome, WORK);
+  expect(tomlAt(configPath).service_tier).toBe("priority");
+  expect(tomlAt(configPath).profiles).toBeUndefined();
+});
+
+test("removing the default wiring keeps the inert tier pin (it may be the user's own line)", () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  const configPath = join(codexHome, "config.toml");
+  mkdirSync(codexHome, { recursive: true });
+  // The user pinned "default" themselves; the Direct write keeps it (accepted) and
+  // cannot tell it from its own pin afterwards -- so removal must not delete it.
+  writeFileSync(configPath, 'service_tier = "default"\n');
+  configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0", quiet: true });
+  removeCodexDefaultWiring(codexHome);
+  const doc = tomlAt(configPath);
+  expect(doc.service_tier).toBe("default");
+  expect(doc.model_provider).toBeUndefined();
+  expect(doc.web_search).toBeUndefined();
+});
+
+test("syncCodexServiceTier heals a Direct config on our provider and leaves every other config alone", () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  process.env.CODEX_HOME = codexHome;
+  const configPath = join(codexHome, "config.toml");
+  mkdirSync(codexHome, { recursive: true });
+  // A pre-fix Direct config (no pin), then a fast-mode `priority`: both healed.
+  configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0", quiet: true });
+  for (const start of [undefined, "priority"]) {
+    const doc = tomlAt(configPath);
+    if (start === undefined) delete doc.service_tier;
+    else doc.service_tier = start;
+    writeFileSync(configPath, stringify(doc));
+    syncCodexServiceTier();
+    expect(tomlAt(configPath).service_tier).toBe(DIRECT_SERVICE_TIER);
+  }
+  // Accepted: untouched byte for byte.
+  const flex = stringify({ ...tomlAt(configPath), "service_tier": "flex" });
+  writeFileSync(configPath, flex);
+  syncCodexServiceTier();
+  expect(readFileSync(configPath, "utf8")).toBe(flex);
+  // Proxy mode on our provider: untouched (the proxy strips the field).
+  configureCodexConfig(codexHome, {
+    mode: "proxy",
+    baseUrl: "http://127.0.0.1:4141/v1",
+    codexExecVersion: "0.144.0",
+    quiet: true,
+  });
+  const proxy = stringify({ ...tomlAt(configPath), "service_tier": "priority" });
+  writeFileSync(configPath, proxy);
+  syncCodexServiceTier();
+  expect(readFileSync(configPath, "utf8")).toBe(proxy);
+  // A foreign selection beside an inactive Direct table of ours (the selector, not
+  // the table's presence, decides), an unparseable config, an absent one: untouched.
+  configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0", quiet: true });
+  const foreign = stringify({
+    ...tomlAt(configPath),
+    "model_provider": "openai",
+    "service_tier": "priority",
+  });
+  writeFileSync(configPath, foreign);
+  syncCodexServiceTier();
+  expect(readFileSync(configPath, "utf8")).toBe(foreign);
+  writeFileSync(configPath, "not = [toml");
+  expect(() => syncCodexServiceTier()).not.toThrow();
+  expect(readFileSync(configPath, "utf8")).toBe("not = [toml");
+  rmSync(configPath);
+  expect(() => syncCodexServiceTier()).not.toThrow();
+  expect(existsSync(configPath)).toBe(false);
+});
+
+test("syncCodexServiceTier for a named profile pins profile-locally and leaves a foreign default alone", () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  process.env.CODEX_HOME = codexHome;
+  const configPath = join(codexHome, "config.toml");
+  mkdirSync(codexHome, { recursive: true });
+  configureCodexConfig(codexHome, {
+    mode: "direct",
+    codexExecVersion: "0.144.0",
+    profile: WORK,
+    quiet: true,
+  });
+  const doc = tomlAt(configPath);
+  doc.model_provider = "openai";
+  doc.service_tier = "priority";
+  delete asRecord(asRecord(doc.profiles).work).service_tier;
+  writeFileSync(configPath, stringify(doc));
+  syncCodexServiceTier(WORK);
+  const healed = tomlAt(configPath);
+  expect(healed.service_tier).toBe("priority");
+  expect(asRecord(asRecord(healed.profiles).work).service_tier).toBe(DIRECT_SERVICE_TIER);
+  // The default-selection sync does not act for a foreign default.
+  syncCodexServiceTier();
+  expect(tomlAt(configPath).service_tier).toBe("priority");
+});
+
+test("agent codex --check names a rejected or unpinned service_tier on a Direct config", async () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  process.env.CODEX_HOME = codexHome;
+  const configPath = join(codexHome, "config.toml");
+  mkdirSync(codexHome, { recursive: true });
+  configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0", quiet: true });
+  // The verdict is informational: every case keeps the provider-mode exit code (0).
+  const checkLine = async (): Promise<string | undefined> => {
+    const lines: string[] = [];
+    const realLog = console.log;
+    console.log = (...args: unknown[]) => lines.push(args.map(String).join(" "));
+    process.exitCode = 99;
+    try {
+      await runCodex({ kind: "check" }, NOOP_CATALOG_DEPS);
+    } finally {
+      console.log = realLog;
+    }
+    expect(process.exitCode).toBe(0);
+    return lines.find((l) => l.startsWith("service_tier:"));
+  };
+  expect(await checkLine()).toBe('service_tier: "default" (accepted by Copilot Direct)');
+  writeFileSync(configPath, stringify({ ...tomlAt(configPath), "service_tier": "priority" }));
+  expect(await checkLine()).toContain('service_tier: "priority" (Copilot Direct rejects it');
+  const doc = tomlAt(configPath);
+  delete doc.service_tier;
+  writeFileSync(configPath, stringify(doc));
+  expect(await checkLine()).toContain("service_tier: not pinned");
+  // An unrecognized value is reported as such and left alone by a rewrite.
+  writeFileSync(configPath, stringify({ ...doc, "service_tier": "fast" }));
+  expect(await checkLine()).toContain('service_tier: "fast" (unrecognized; left alone');
+  configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0", quiet: true });
+  expect(tomlAt(configPath).service_tier).toBe("fast");
 });

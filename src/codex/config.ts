@@ -71,6 +71,51 @@ export const CODEX_ENV_KEY = "OPENAI_API_KEY";
 // rendered against the host the agents actually bake).
 const DIRECT_BASE_URL = DEFAULT_COPILOT_API_BASE;
 
+/** The `service_tier` the managed Direct config pins: under fast mode, Codex 0.153.x
+ *  otherwise sends the model's default tier (`priority`), which Copilot Direct
+ *  rejects; `default` and `flex` are accepted (verified live). */
+export const DIRECT_SERVICE_TIER = "default";
+const REJECTED_SERVICE_TIER = "priority";
+const COPILOT_ACCEPTED_SERVICE_TIERS: ReadonlySet<string> = new Set([DIRECT_SERVICE_TIER, "flex"]);
+
+/** A reported config change: the tier Codex would have sent, null when none was set. */
+type ServiceTierChange = { previous: string | null };
+
+/** Only a MISSING tier or the known-rejected `priority` is rewritten; any other
+ *  value (accepted or unrecognized) is the user's and stays untouched. */
+function needsServiceTierPin(tier: unknown): boolean {
+  return tier === undefined || tier === REJECTED_SERVICE_TIER;
+}
+
+/** Pin the top-level `service_tier` (the default selection). Returns the change for
+ *  the caller to report (a config edit is never silent), else null. */
+function pinDirectServiceTier(table: Record<string, unknown>): ServiceTierChange | null {
+  if (!needsServiceTierPin(table.service_tier)) return null;
+  const previous = table.service_tier === undefined ? null : REJECTED_SERVICE_TIER;
+  table.service_tier = DIRECT_SERVICE_TIER;
+  return { previous };
+}
+
+/** The named-profile form: Codex reads `[profiles.<name>].service_tier`, else the
+ *  top-level key. A profile-LOCAL pin lands only when that effective tier needs one,
+ *  so a foreign default selection's own line is never rewritten. */
+function pinProfileServiceTier(
+  profileTable: Record<string, unknown>,
+  doc: Record<string, unknown>,
+): ServiceTierChange | null {
+  const effective = profileTable.service_tier ?? doc.service_tier;
+  if (!needsServiceTierPin(effective)) return null;
+  profileTable.service_tier = DIRECT_SERVICE_TIER;
+  return { previous: effective === undefined ? null : REJECTED_SERVICE_TIER };
+}
+
+function serviceTierChangeLine(change: ServiceTierChange, configPath: string): string {
+  const reason = change.previous === null
+    ? "Codex would otherwise send the model's default tier, which Copilot Direct rejects"
+    : `was "${change.previous}", which Copilot Direct rejects`;
+  return `service_tier = "${DIRECT_SERVICE_TIER}" pinned in ${configPath} (${reason})`;
+}
+
 /** The managed provider id for `profile`: the unsuffixed `copilot-env` contract for the
  *  default, `copilot-env-<name>` for a named profile. A named profile is selected via
  *  Codex's NATIVE `[profiles.<name>]` table (`codex --profile <name>`), whose
@@ -683,7 +728,9 @@ function validateProxyOptions(request: { baseUrl: string }): CodexModeRequest {
  * top-level managed keys (web_search, catalog reference). NAMED profile
  * (`request.profile`): writes ONLY `[model_providers.copilot-env-<name>]` plus the native
  * `[profiles.<name>]` selector -- the top-level default selection is never touched, so
- * `codex --profile <name>` and plain `codex` coexist. Throws when the write cannot
+ * `codex --profile <name>` and plain `codex` coexist. A DIRECT write also pins
+ * `service_tier` (DIRECT_SERVICE_TIER): top-level for the default, profile-local for a
+ * named profile. Throws when the write cannot
  * proceed (unusable proxy options, an uncreatable config directory, an unparseable
  * existing config). Exported for unit testing.
  */
@@ -727,9 +774,16 @@ export function configureCodexConfig(
   // same table; other providers, the [analytics]/[feedback] sections, and any
   // unknown top-level keys are left untouched. The top-level managed keys are the
   // DEFAULT selection's alone -- a named-profile write leaves them be.
+  // Direct also pins `service_tier` (top-level for the default, profile-local for
+  // a named profile); proxy mode needs nothing, the proxy strips the field.
+  const tierChanges: ServiceTierChange[] = [];
   if (profile === null) {
     doc.model_provider = CODEX_PROVIDER_ID;
     doc.web_search = "live";
+    if (modeRequest.mode === "direct") {
+      const pinned = pinDirectServiceTier(doc);
+      if (pinned !== null) tierChanges.push(pinned);
+    }
   } else if (!configHadContent) {
     // A named-profile write that had to seed a fresh config must not leave the
     // template's default `model_provider` pointing at a `copilot-env` table this
@@ -794,7 +848,15 @@ export function configureCodexConfig(
     // user keys in the same [profiles.<name>] table (model pins etc.) survive.
     const profilesTable = isRecord(doc.profiles) ? doc.profiles : {};
     const existingProfile = isRecord(profilesTable[profile]) ? profilesTable[profile] : {};
-    profilesTable[profile] = { ...existingProfile, "model_provider": providerId };
+    const profileTable: Record<string, unknown> = {
+      ...existingProfile,
+      "model_provider": providerId,
+    };
+    if (modeRequest.mode === "direct") {
+      const pinned = pinProfileServiceTier(profileTable, doc);
+      if (pinned !== null) tierChanges.push(pinned);
+    }
+    profilesTable[profile] = profileTable;
     doc.profiles = profilesTable;
   }
 
@@ -806,7 +868,8 @@ export function configureCodexConfig(
   // Recording on every enabled write also ADOPTS a pre-ledger install's
   // reference the next time it rewires; the cleared branch drops any claim on
   // this config, ours or stale.
-  if (catalogRef !== null && knownCodexHomes().homes.includes(codexHome)) {
+  const knownHome = knownCodexHomes().homes.includes(codexHome);
+  if (catalogRef !== null && knownHome) {
     if (catalogRef === "written") new OwnershipLedger().record("codexCatalog", hostConfig);
     else new OwnershipLedger().release("codexCatalog", hostConfig);
   }
@@ -819,6 +882,13 @@ export function configureCodexConfig(
             : ` (${profileLabel(profile)}; launch with \`codex --profile ${profile}\`)`
         }`,
     );
+  }
+  // A changed user value is reported even by quiet writes (`agent profile --sync`
+  // is quiet and real); only the direct probe's quiet, throwaway home stays silent.
+  if (!request.quiet || knownHome) {
+    for (const change of tierChanges) {
+      logger.log(`  ✓ Codex ${serviceTierChangeLine(change, hostConfig)}`);
+    }
   }
 
   // Scrub only the copilot-env-OWNED legacy key: a `COPILOT_ENV_GH_TOKEN` baked by a
@@ -1104,19 +1174,65 @@ function checkCodexConfig(): void {
   try {
     const codexHome = effectiveCodexHome();
     const configPath = codexConfigPath(codexHome);
-    const status = inspectCodexWiring(
-      readTextResult(configPath),
-      null,
-      Number(copilotApiResolvePort()),
-      false,
-    );
+    const read = readTextResult(configPath);
+    const status = inspectCodexWiring(read, null, Number(copilotApiResolvePort()), false);
     console.log(`Codex provider mode: ${status.providerMode} (${providerModeDetail(status)})`);
     console.log(`CODEX_HOME: ${codexHome}`);
     console.log(`config.toml: ${configPath}`);
+    // "direct" was classified from this very text, so it parses.
+    if (status.providerMode === "direct" && read.kind === "text") {
+      console.log(
+        `service_tier: ${serviceTierDetail(parse(read.text) as Record<string, unknown>)}`,
+      );
+    }
     process.exitCode = providerModeExitCode(status.providerMode);
   } catch (e) {
     logger.error(`Codex provider check failed: ${errMessage(e)}`);
     process.exitCode = 1;
+  }
+}
+
+/** The `--check` reading of a Direct config's `service_tier`. */
+function serviceTierDetail(doc: Record<string, unknown>): string {
+  const tier = doc.service_tier;
+  if (tier === undefined) {
+    return `not pinned (Codex may send the model's default tier, which Copilot Direct rejects; ` +
+      `run \`agent codex\` to pin "${DIRECT_SERVICE_TIER}")`;
+  }
+  if (tier === REJECTED_SERVICE_TIER) {
+    return `"${tier}" (Copilot Direct rejects it; run \`agent codex\` to pin "${DIRECT_SERVICE_TIER}")`;
+  }
+  if (typeof tier === "string" && COPILOT_ACCEPTED_SERVICE_TIERS.has(tier)) {
+    return `"${tier}" (accepted by Copilot Direct)`;
+  }
+  return `"${String(tier)}" (unrecognized; left alone -- Copilot Direct accepts ` +
+    `${[...COPILOT_ACCEPTED_SERVICE_TIERS].map((t) => `"${t}"`).join(" and ")})`;
+}
+
+/** Auth-time self-heal of the Direct `service_tier` pin for `profile`'s selection
+ *  (ours, Direct). Codex loads config before it reaches `agent auth --get`, so this
+ *  repairs the NEXT session (`agent codex` repairs now); narrated on stderr, never throws. */
+export function syncCodexServiceTier(profile: Profile = null): void {
+  try {
+    const configPath = codexConfigPath(effectiveCodexHome());
+    const read = readCodexToml(configPath);
+    if (read.kind !== "ok") return;
+    const doc = read.doc;
+    const providerId = codexProviderId(profile);
+    const profilesTable = isRecord(doc.profiles) ? doc.profiles : {};
+    const selector = profile === null ? doc : profilesTable[profile];
+    if (!isRecord(selector) || selector.model_provider !== providerId) return;
+    const providers = isRecord(doc.model_providers) ? doc.model_providers : {};
+    const table = providers[providerId];
+    if (!isRecord(table) || table.base_url !== DIRECT_BASE_URL) return;
+    const change = profile === null
+      ? pinDirectServiceTier(doc)
+      : pinProfileServiceTier(selector, doc);
+    if (change === null) return;
+    saveCodexToml(configPath, doc);
+    logger.warn(`codex ${serviceTierChangeLine(change, configPath)}`);
+  } catch (e) {
+    logger.warn(`codex service_tier sync failed: ${errMessage(e)}`);
   }
 }
 
@@ -1200,6 +1316,8 @@ export function removeCodexDefaultWiring(codexHome: string): void {
       delete doc.web_search;
       changed = true;
     }
+    // A pinned `service_tier = "default"` stays: the writer keeps a pre-existing
+    // accepted value, so the line may be the user's, and "default" is inert.
     if (changed) saveCodexToml(configPath, doc);
     // Post-save (never claim-drop before the artifact write actually landed).
     if (catalogWasReferenced) new OwnershipLedger().release("codexCatalog", configPath);

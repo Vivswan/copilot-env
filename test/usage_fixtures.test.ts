@@ -26,7 +26,6 @@ import {
   type GeneratedTree,
   generateUsageTree,
   LINE_SPLITTING_CODE_POINTS,
-  lineStamps,
   loadProfile,
   MEGABYTE,
   modelLabel,
@@ -36,7 +35,6 @@ import {
   PROFILE_PATH,
   quantiles,
   sampleQuantile,
-  spanOf,
   templates,
 } from "./helpers/usage_fixtures.ts";
 
@@ -392,11 +390,7 @@ test("filenameShape maps every basename into a closed set, so a private name can
   expect(filenameShape("customer-acme.jsonl")).toBe("other.jsonl");
 });
 
-test("the generator reads nothing from the environment or the real home", () => {
-  const source = readFileSync(join(ROOT, "test", "helpers", "usage_fixtures.ts"), "utf8");
-  for (const forbidden of ["homedir", "Deno.env", "process.env", "Date.now", "Math.random"]) {
-    expect(source).not.toContain(forbidden);
-  }
+test("the committed fixtures and generator sources are ASCII, non-ASCII living only in escapes", () => {
   const fixtures = [
     join(ROOT, "test", "fixtures", "usage", "templates", "codex.json"),
     join(ROOT, "test", "fixtures", "usage", "templates", "claude.json"),
@@ -405,18 +399,15 @@ test("the generator reads nothing from the environment or the real home", () => 
     join(ROOT, "scripts", "usage_fixtures.ts"),
     join(ROOT, "scripts", "usage_profile.ts"),
   ];
-  // Committed files stay ASCII; the non-ASCII filler is written at runtime from escapes.
-  for (const file of fixtures) expect(readFileSync(file, "latin1")).toMatch(/^[\t\n -~]*$/);
+  // Committed files stay ASCII; the non-ASCII filler is written at runtime from escapes. The
+  // control shows the pattern rejects the first byte outside ASCII.
+  const ascii = /^[\t\n -~]*$/;
+  for (const file of fixtures) expect(readFileSync(file, "latin1")).toMatch(ascii);
+  expect(ascii.test("plain\n")).toBe(true);
+  expect(ascii.test("plain\u0080")).toBe(false);
 });
 
-test("mulberry32 and the quantile sampler are pinned, so every OS draws the same stream", () => {
-  const rng = mulberry32(1);
-  // The first three draws of seed 1; a platform whose integer ops differed would move these.
-  expect([rng(), rng(), rng()].map((x) => Math.round(x * 1e9))).toEqual([
-    627073941,
-    2735721,
-    527447040,
-  ]);
+test("a quantile table summarizes its values and the sampler never leaves its tails", () => {
   const q = quantiles([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   expect(q).toEqual({ count: 10, p5: 1, p25: 3, p50: 6, p75: 8, p95: 10, p99: 10 });
   const draw = mulberry32(7);
@@ -443,38 +434,29 @@ test("the same seed yields identical bytes and a different seed does not", async
   expect(c.markers).not.toEqual(a.markers);
 }, 60_000);
 
-test("a line's stamps cover every instant its template emits, and the span folds them all", () => {
-  const ctx = { ts: "2026-08-01T10:00:00.000Z", startedMs: 1_000, nowMs: 2_000 };
-  const codex = templates.codex.lines;
-  const outer = Date.parse(ctx.ts);
-  expect(lineStamps(codex["event_msg/item_completed"]!, ctx)).toEqual({
-    outer,
-    nested: [1_000, 2_000],
-  });
-  expect(lineStamps(codex["event_msg/task_complete"]!, ctx)).toEqual({
-    outer,
-    nested: [1_000, 2_000],
-  });
-  expect(lineStamps(codex["event_msg/task_started"]!, ctx)).toEqual({ outer, nested: [2_000] });
-  expect(lineStamps(codex["session_meta"]!, ctx)).toEqual({ outer, nested: [] });
-  // A header template without a timestamp carries no instant at all.
-  expect(lineStamps(templates.claude.lines["mode"]!, ctx)).toEqual({ nested: [] });
-  // Every codex template carries an outer timestamp; exactly these carry nested instants.
-  const nested = Object.entries(codex).filter(([, t]) => lineStamps(t, ctx).nested.length > 0)
-    .map(([name]) => name).sort();
-  expect(nested).toEqual([
-    "event_msg/item_completed",
-    "event_msg/task_complete",
-    "event_msg/task_started",
-  ]);
-  for (const t of Object.values(codex)) expect(lineStamps(t, ctx).outer).toBe(outer);
-  // Nested instants outside the outer ones set the span; an outer-only fold would say 10..10.
-  expect(spanOf([{ outer: 10, nested: [5, 20] }, { nested: [30] }])).toEqual({
-    first: 5,
-    last: 30,
-  });
-  expect(spanOf([{ outer: 10, nested: [] }])).toEqual({ first: 10, last: 10 });
-});
+test(
+  "the span counts nested instants: a copied completed_at can end it, a started_at can begin it",
+  async () => {
+    // A fork copy keeps its (ghost, resumed) parent's nested completed_at, which can END the
+    // tree; a session's first item_completed started_at_ms can BEGIN it a second before any
+    // outer timestamp. Outer-only tracking would report a shorter span for these seeds.
+    const cases: { seed: number; end: "first" | "last" }[] = [
+      { seed: 44, end: "last" },
+      { seed: 48, end: "first" },
+    ];
+    for (const { seed, end } of cases) {
+      const tree = await generateUsageTree({ root: freshRoot(), mb: 2, seed });
+      const texts = tree.files.map((f) => textOf(f.path));
+      const full = bounds(texts.flatMap(stampsOf));
+      const outer = bounds(texts.flatMap(outerStampsOf));
+      expect(tree.firstEventMs).toBe(full.min);
+      expect(tree.lastEventMs).toBe(full.max);
+      if (end === "last") expect(tree.lastEventMs).toBeGreaterThan(outer.max);
+      else expect(tree.firstEventMs).toBeLessThan(outer.min);
+    }
+  },
+  60_000,
+);
 
 /**
  * SHA-256 over a fixed small corpus (seed 7, 1 MiB, 5 days): sorted root-relative paths with
@@ -890,21 +872,11 @@ test("the exact-usage oracle bites: a raised snapshot or an extra count is detec
   expect(codexMoved).toBe(true);
 }, 60_000);
 
-test("a non-adversarial tree has no torn tail, archive, fork, or needle", async () => {
-  const tree = await plainTree();
-  for (const file of tree.files) {
-    const text = textOf(file.path);
-    expect(text.endsWith("\n")).toBe(true);
-    expect(file.path.endsWith(".zst")).toBe(false);
-    expect(text).not.toContain("pasted:");
-    expect(text).not.toContain('"forked_from_id"');
-  }
-}, 60_000);
-
 test(
-  "a plain tree never repeats ids across files, even when the profile says it should",
+  "a plain tree carries none of the adversarial shapes, even when the profile says it should",
   async () => {
-    // forkShare 1 would resume or fork every session; adversarial:false must still win.
+    // forkShare 1 would resume or fork every session; adversarial:false must still win. The
+    // adversarial shared tree is the positive control for each absence asserted here.
     const base = loadProfile();
     const flat = { count: 1, p5: 2, p25: 2, p50: 2, p75: 2, p95: 2, p99: 2 };
     const profile: Profile = {
@@ -922,6 +894,9 @@ test(
     const seen = new Set<string>();
     for (const f of tree.files) {
       const text = textOf(f.path);
+      expect(text.endsWith("\n")).toBe(true);
+      expect(f.path.endsWith(".zst")).toBe(false);
+      expect(text).not.toContain("pasted:");
       expect(text).not.toContain('"forked_from_id"');
       // Streaming repeats an id within one file; only a repeat ACROSS files is a resume.
       for (const id of new Set(text.match(/"id":"msg_[0-9a-f]+"/g) ?? [])) {
@@ -978,9 +953,9 @@ test(
 );
 
 test("the library generates with only read and write permission: no env, sys, or net", () => {
-  // The source grep above is a hint; this is the proof. Reads are allowed for the fixtures and
-  // the root only, so a transitive import touching the home directory, the environment or any
-  // other file at load or at run would be a permission error here.
+  // Reads are allowed for the fixtures and the root only, so a transitive import touching the
+  // home directory, the environment or any other file at load or at run would be a permission
+  // error here.
   const root = join(freshRoot(), "tree");
   const script = join(freshRoot(), "generate.ts");
   writeFileSync(

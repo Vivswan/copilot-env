@@ -13,7 +13,9 @@ export interface CapturedOutput {
 
 /** Run `body` with stdout and stderr captured per channel; the consola level is
  *  raised so warnings are not self-silenced under the test runner. */
-export async function captureChannels(body: () => Promise<void>): Promise<CapturedOutput> {
+export async function captureChannels(
+  body: () => void | Promise<void>,
+): Promise<CapturedOutput> {
   const out: string[] = [];
   const err: string[] = [];
   const all: string[] = [];
@@ -51,6 +53,6 @@ export async function captureChannels(body: () => Promise<void>): Promise<Captur
 }
 
 /** Both channels of `body`'s output as one string, in write order. */
-export async function captureAllWrites(body: () => Promise<void>): Promise<string> {
+export async function captureAllWrites(body: () => void | Promise<void>): Promise<string> {
   return (await captureChannels(body)).all;
 }

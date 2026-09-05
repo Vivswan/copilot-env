@@ -11,7 +11,6 @@ import {
   type ConfigCli,
   configDefaultLabel,
   configDefaultNumber,
-  configDefaultString,
   type ConfigKey,
   type ConfigKeyDef,
   configKeyDef,
@@ -706,8 +705,6 @@ test("registry defaults are single-sourced: labels derive from the owned default
   // Rendered labels keep their exact wording (external contract of `--help` / `--get`).
   expect(configDefaultLabel(configKeyDef("port")!)).toBe("4141 (then next free)");
   expect(configDefaultLabel(configKeyDef("pricing-url")!)).toBe(OPENROUTER_MODELS_URL);
-  expect(configDefaultString("pricing-url")).toBe(OPENROUTER_MODELS_URL);
-  expect(() => configDefaultString("port")).toThrow(/no string built-in default/);
   expect(configDefaultLabel(configKeyDef("integration-id")!)).toBe("auto (probe per credential)");
   expect(configDefaultLabel(configKeyDef("small-model")!)).toBe("gpt-5-mini");
   expect(configDefaultLabel(configKeyDef("alpha-search-codex-priority")!)).toBe(

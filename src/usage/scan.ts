@@ -76,11 +76,6 @@ export function scanBytes(
 // run). The slot is empty while a scan holds it, so a nested scan gets its own.
 let idleBuffer: Buffer | undefined;
 
-/** Whether the shared buffer is parked (no default-sized scan holds it). */
-export function hasIdleScanBuffer(): boolean {
-  return idleBuffer !== undefined;
-}
-
 function takeBuffer(bufferBytes: number | undefined): Buffer {
   if (bufferBytes !== undefined) {
     if (!(Number.isInteger(bufferBytes) && bufferBytes > 0)) {

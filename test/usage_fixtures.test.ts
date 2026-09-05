@@ -1,7 +1,6 @@
-// The generator's one smoke: the same seed writes the same bytes on every OS (the pinned
-// digest), and the readers return exactly the usage an adversarial tree's ledger says it
-// planted, per provider, per canonical model, per UTC day. The oracle is proven to bite:
-// a raised snapshot, an extra count, and a moved timestamp each break the comparison.
+// The generator's one smoke: one seed writes the pinned bytes on every OS, and the readers
+// return exactly what an adversarial tree's ledger planted (per provider, canonical model,
+// UTC day); a raised snapshot, an extra count, and a moved timestamp each break that match.
 import { createHash } from "node:crypto";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { relative } from "node:path";

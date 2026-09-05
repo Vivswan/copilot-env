@@ -99,16 +99,26 @@ export async function reconcileClaudeDesktopWiring(opts: { quiet?: boolean } = {
       return;
     }
     if (!claudeDesktopInstalled()) return;
-    // Every promised target, the default included: a key flipped back to true by a
-    // config-only import has no adapter write to ride on, so true is symmetric with false.
-    for (const target of opts.quiet ? [] : resolution.targets) await syncTarget(target);
-    const status = inspectClaudeDesktopWiring(resolution);
-    if (status.kind === "unreadable") {
+    const before = inspectClaudeDesktopWiring(resolution);
+    if (before.kind === "unreadable") {
       logger.warn(
-        `  Claude Desktop: ${status.metaPath} has an unexpected shape; leaving the config library alone.`,
+        `  Claude Desktop: ${before.metaPath} has an unexpected shape; leaving the config library alone.`,
       );
       return;
     }
+    if (before.kind !== "inspected") return;
+    // Every promised target, the default included (a key flipped back to true by a
+    // config-only import has no adapter write to ride on) -- except a default already
+    // judged wired: init / `agent claude` synced it a moment ago, and re-discovering
+    // its models would be a network call for a byte-identical no-op.
+    const defaultWired = before.entries.some(
+      (e) => e.profile === null && e.verdict.kind === "wired",
+    );
+    for (const target of opts.quiet ? [] : resolution.targets) {
+      if (target.profile === null && defaultWired) continue;
+      await syncTarget(target);
+    }
+    const status = inspectClaudeDesktopWiring(resolution);
     if (status.kind !== "inspected") return;
     for (const orphan of status.orphans) {
       if (orphan.profile === undefined) {

@@ -50,6 +50,7 @@ import {
 } from "../src/agents/claude_desktop.ts";
 import { printClaudeDesktopCheck } from "../src/commands/claude.ts";
 import { runInit } from "../src/commands/init.ts";
+import { runClaude } from "../src/claude/config.ts";
 import { commandDeps } from "../src/commands/launch.ts";
 import { runProfile } from "../src/commands/profile.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
@@ -1526,6 +1527,35 @@ test("call sites reconcile the whole library: init, profile --sync, the launcher
     await commandDeps().writeClaudeProfileSettings(WORK, "proxy");
   });
   expect(names()).toEqual(["copilot-env: work"]);
+});
+
+test("the reconcile re-discovers the default entry only when it is missing or stale", async () => {
+  const { library } = isolateWithDesktop();
+  const names = () => (metaOf(library).entries as { name: string }[]).map((e) => e.name);
+  // A managed proxy default: the adapter write wires the entry (offline: no model rows).
+  const realFetch = globalThis.fetch;
+  let modelFetches = 0;
+  globalThis.fetch = () => {
+    modelFetches++;
+    return Promise.reject(new Error("offline"));
+  };
+  try {
+    await captureAllWrites(() => runClaude({ kind: "configure", mode: "proxy" }));
+    expect(names()).toEqual(["copilot-env"]);
+    // Already wired: the reconcile (what init / `agent claude` run next) fetches nothing.
+    modelFetches = 0;
+    await captureAllWrites(() => reconcileClaudeDesktopWiring());
+    expect(modelFetches).toBe(0);
+    expect(names()).toEqual(["copilot-env"]);
+    // Missing (the config-only import path): the reconcile discovers and restores it.
+    removeClaudeDesktopEntry(null);
+    expect(names()).toEqual([]);
+    await captureAllWrites(() => reconcileClaudeDesktopWiring());
+    expect(modelFetches).toBeGreaterThan(0);
+    expect(names()).toEqual(["copilot-env"]);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 test("the sweep and its dry-run listing take every generated helper script and no neighbour", async () => {

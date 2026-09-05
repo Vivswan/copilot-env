@@ -13,6 +13,7 @@ import { basename, join } from "node:path";
 import { zstdCompressSync } from "node:zlib";
 import {
   discoverCodexSessionRoots,
+  foldCodex,
   parseCodexTail,
   parseCodexWhole,
   readCodexSessions,
@@ -25,6 +26,7 @@ import {
   type WalkedFile,
 } from "../src/usage/contribution.ts";
 import { errMessage } from "../src/utils/error.ts";
+import { dayKeyIn } from "../src/utils/time.ts";
 import { captureAllWrites } from "./helpers/output.ts";
 import {
   codexUsage as usage,
@@ -48,14 +50,17 @@ function tempDir(): string {
   return dir;
 }
 
-// The single-read fixtures live in the shared catalog, which the index equivalence
-// tests read three ways with the same checks.
-for (const scenario of CODEX_SCENARIOS) {
-  test(`readCodexSessions ${scenario.name}`, async () => {
-    const { roots, sinceMs, timeZone } = scenario.build(tempDir());
-    scenario.check(await readCodexSessions(roots, sinceMs, timeZone));
-  });
-}
+// The reader fixtures live in the shared catalog, which the index equivalence tests
+// read three ways with the same checks; one default-reconcile read here covers the
+// reader's own entry point.
+test("readCodexSessions reads a catalog scenario without a reconcile", async () => {
+  const scenario = scenarioNamed(
+    CODEX_SCENARIOS,
+    "attributes turns to the model in effect and splits cached input",
+  );
+  const { roots, sinceMs, timeZone } = scenario.build(tempDir());
+  scenario.check(await readCodexSessions(roots, sinceMs, timeZone));
+});
 
 test("readCodexSessions counts an unterminated final line once its LF lands", async () => {
   const scenario = scenarioNamed(CODEX_SCENARIOS, "does not count an unterminated final line");
@@ -256,15 +261,37 @@ test("parseCodexWhole honours session_meta until an id is known, then ignores la
     rolloutLine("2026-06-01T10:00:00.000Z", "session_meta", { "model_provider": "first" }),
     tokenCount("2026-06-01T10:00:01.000Z", usage(1, 0, 1), usage(1, 0, 1)),
     sessionMeta("2026-06-01T10:00:02.000Z", "aaa", { provider: "second", forkedFrom: "p" }),
-    tokenCount("2026-06-01T10:00:03.000Z", usage(2, 0, 2), usage(1, 0, 1)),
+    tokenCount("2026-06-01T10:00:03.000Z", usage(3, 0, 3), usage(2, 0, 2)),
     // Id known: a third meta changes nothing.
     sessionMeta("2026-06-01T10:00:04.000Z", "zzz", { provider: "third" }),
-    tokenCount("2026-06-01T10:00:05.000Z", usage(3, 0, 3), usage(1, 0, 1)),
+    tokenCount("2026-06-01T10:00:05.000Z", usage(6, 0, 6), usage(3, 0, 3)),
   ]);
-  const { contribution: { state, events } } = parseCodexWhole(walkedFile(path));
+  const { contribution } = parseCodexWhole(walkedFile(path));
+  const { state, events } = contribution;
   expect(events.map((e) => e[1])).toEqual(["first", "second", "second"]);
   expect(state.provider).toBe("second");
   expect(state.sessionIdHash).toBe(dedupKey("aaa"));
   expect(state.forkedFromIdHash).toBe(dedupKey("p"));
+  expect(state.forkKnownAfter).toBe(1);
   expect(state.metaTsMs).toBe(Date.parse("2026-06-01T10:00:02.000Z"));
+
+  // The fold applies the fork rules from the event the fork was learned before: the
+  // first count (before the meta) was an ordinary turn, the second (1 s after the
+  // meta, parent unscanned) is the copied prefix, the third (3 s after) is a turn.
+  const folded = foldCodex([{ path, contribution }], undefined, dayKeyIn("UTC"));
+  expect([...folded.keys()]).toEqual(["first", "second"]);
+  expect(folded.get("first")?.byModel.get("unknown")).toEqual({
+    input: 1,
+    output: 1,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 1,
+  });
+  expect(folded.get("second")?.byModel.get("unknown")).toEqual({
+    input: 3,
+    output: 3,
+    cacheRead: 0,
+    cacheCreation: 0,
+    events: 1,
+  });
 });

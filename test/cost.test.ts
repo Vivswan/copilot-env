@@ -21,6 +21,8 @@ import {
   activeDayCoverage,
   buildSourceJson,
   computeDayMetrics,
+  type CostArgs,
+  type CostDeps,
   type CostRuntime,
   daysCutoffMs,
   describeDaysWindow,
@@ -37,6 +39,7 @@ import {
 } from "../src/usage/cost.ts";
 import { consola } from "consola";
 import { CopilotEnvConfig, OPENROUTER_MODELS_URL } from "../src/copilot_api/env_config.ts";
+import { openUsageIndex } from "../src/usage/index.ts";
 import { USAGE_INDEX_DIR_NAME } from "../src/usage/paths.ts";
 import {
   estimateCost,
@@ -556,6 +559,23 @@ function rootsOf(codex: string[], claude: string[]): { sessionRoots: SessionRoot
   return { sessionRoots: { codex: () => codex, claude: () => claude } };
 }
 
+/** The parts of the `--json` payload these tests read. */
+interface CostJson {
+  runtime: CostRuntime;
+  claudeSessions: { totalUsd: number };
+}
+
+/** One `--json` run: the payload parsed from the WHOLE of stdout (a stray line there
+ *  breaks every consumer, so it fails here rather than being skipped past), plus
+ *  what rode stderr. */
+async function jsonRun(args: CostArgs, deps: CostDeps): Promise<{
+  payload: CostJson;
+  stderr: string;
+}> {
+  const out = await captureChannels(() => runCost({ ...args, json: true }, deps));
+  return { payload: JSON.parse(out.stdout) as CostJson, stderr: out.stderr };
+}
+
 test("runCost with no sources returns early and cancels the pricing load it started", () =>
   withCostHome(async () => {
     const net = hangingFetch();
@@ -629,15 +649,14 @@ test("runCost warns when it prices against a stale cached list", () =>
       nowMs: Date.now() - 2 * MILLISECONDS_PER_DAY,
       fetchImpl: fakeFetch(PRICED_BODY),
     });
-    const out = await captureAllWrites(() =>
-      runCost({ pricingUrl: PRICE_URL, json: true }, {
-        fetchImpl: fakeFetch(null, { fail: true }),
-        ...rootsOf([], [claudeRoot]),
-      })
+    const { payload, stderr } = await jsonRun({ pricingUrl: PRICE_URL }, {
+      fetchImpl: fakeFetch(null, { fail: true }),
+      ...rootsOf([], [claudeRoot]),
+    });
+    expect(stderr).toContain(
+      "WARNING: could not refresh OpenRouter pricing (pricing request failed)",
     );
-    expect(out).toContain("WARNING: could not refresh OpenRouter pricing (pricing request failed)");
-    expect(out).toContain("using the cached price list from");
-    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    expect(stderr).toContain("using the cached price list from");
     // The stale list still priced the turn: 10 in at $15/M + 20 out at $75/M.
     expect(payload.claudeSessions.totalUsd).toBe(0.0017);
   }));
@@ -648,15 +667,12 @@ test("runCost warns when the fetched price list cannot be cached", () =>
     // report is still priced. --no-index keeps the index from claiming the path.
     mkdirSync(home, { recursive: true });
     writeFileSync(join(home, USAGE_INDEX_DIR_NAME), "not a directory");
-    const out = await captureAllWrites(() =>
-      runCost({ pricingUrl: PRICE_URL, json: true, noIndex: true }, {
-        fetchImpl: fakeFetch(PRICED_BODY),
-        ...rootsOf([], [claudeRoot]),
-      })
-    );
-    expect(out).toContain("WARNING: could not cache the OpenRouter price list (");
-    expect(out).toContain("the next run fetches it again.");
-    const payload = JSON.parse(out.slice(out.indexOf("{")));
+    const { payload, stderr } = await jsonRun({ pricingUrl: PRICE_URL, noIndex: true }, {
+      fetchImpl: fakeFetch(PRICED_BODY),
+      ...rootsOf([], [claudeRoot]),
+    });
+    expect(stderr).toContain("WARNING: could not cache the OpenRouter price list (");
+    expect(stderr).toContain("the next run fetches it again.");
     expect(payload.claudeSessions.totalUsd).toBe(0.0017);
     expect(payload.runtime.indexed).toBe(false);
   }));
@@ -666,14 +682,31 @@ async function runtimeOf(
   args: { noIndex?: boolean },
   roots: { codex: string[]; claude: string[] },
 ): Promise<CostRuntime> {
-  const out = await captureAllWrites(() =>
-    runCost({ pricingUrl: PRICE_URL, json: true, ...args }, {
-      fetchImpl: fakeFetch(PRICED_BODY),
-      ...rootsOf(roots.codex, roots.claude),
-    })
-  );
-  return JSON.parse(out.slice(out.indexOf("{"))).runtime;
+  const { payload } = await jsonRun({ pricingUrl: PRICE_URL, ...args }, {
+    fetchImpl: fakeFetch(PRICED_BODY),
+    ...rootsOf(roots.codex, roots.claude),
+  });
+  return payload.runtime;
 }
+
+test("runCost --json keeps stdout pure JSON while the index narrates a rebuild on stderr", () =>
+  withCostHome(async ({ home, claudeRoot }) => {
+    // An index stamped by another parser: opening it says so, at a level consola would
+    // route to stdout by default, right in front of the payload a consumer parses whole.
+    const stale = openUsageIndex({
+      dir: join(home, USAGE_INDEX_DIR_NAME),
+      fingerprint: "another-parser",
+    });
+    expect(stale).not.toBeNull();
+    stale!.close();
+    const { payload, stderr } = await jsonRun({ pricingUrl: PRICE_URL }, {
+      fetchImpl: fakeFetch(PRICED_BODY),
+      ...rootsOf([], [claudeRoot]),
+    });
+    expect(stderr).toContain("rebuilding the usage index (parser_fingerprint another-parser).");
+    expect(payload.runtime.indexed).toBe(true);
+    expect(payload.runtime.index.filesParsedWhole).toBe(1);
+  }));
 
 test("runtime.timing.pricing is the wait for the price list alone, never the warning work", () =>
   withCostHome(async ({ claudeRoot }) => {
@@ -688,14 +721,12 @@ test("runtime.timing.pricing is the wait for the price list alone, never the war
     }) as typeof consola.warn;
     try {
       const runtime = async (fetchImpl: typeof fetch): Promise<CostRuntime> => {
-        const out = await captureAllWrites(() =>
-          runCost({ pricingUrl: PRICE_URL, json: true, noIndex: true }, {
-            fetchImpl,
-            ...rootsOf([], [claudeRoot]),
-            now: () => nowMs,
-          })
-        );
-        return JSON.parse(out.slice(out.indexOf("{"))).runtime;
+        const { payload } = await jsonRun({ pricingUrl: PRICE_URL, noIndex: true }, {
+          fetchImpl,
+          ...rootsOf([], [claudeRoot]),
+          now: () => nowMs,
+        });
+        return payload.runtime;
       };
       // Rejected load: the warning prints, the clock jumps, pricing stays at the wait.
       const failed = await runtime(fakeFetch(null, { fail: true }));

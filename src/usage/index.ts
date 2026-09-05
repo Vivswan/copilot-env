@@ -19,11 +19,11 @@
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { closeSync, mkdirSync, openSync, readSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { consola } from "consola";
 import * as v from "valibot";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import { BOUNDED_LOCK_POLICY, type LockPolicy, withFileLockSync } from "../utils/file_lock.ts";
+import { createStderrLogger } from "../utils/logger.ts";
 import {
   type ClaudeContribution,
   type CodexContribution,
@@ -45,6 +45,10 @@ import {
 } from "./contribution.ts";
 import { usageIndexDir } from "./paths.ts";
 
+// Every line this module says rides stderr: `cost --json` owns stdout, and its consumers
+// parse the whole of it.
+const logger = createStderrLogger();
+
 /** The database file inside the index directory (paths.ts); its `-wal`/`-shm`
  *  sidecars sit beside it. */
 export const USAGE_INDEX_DB_NAME = "index.sqlite";
@@ -54,7 +58,7 @@ export const USAGE_INDEX_LOCK_NAME = "index.lock";
 /** Bump when the TABLE layout changes (a column, a type, a meta key): a database
  *  stamped with another version is deleted and rebuilt. Contribution-shape changes
  *  are `CONTRIBUTION_VERSION`'s business and re-parse per row instead. */
-export const USAGE_INDEX_SCHEMA_VERSION = 1;
+export const USAGE_INDEX_SCHEMA_VERSION = 2;
 
 /** The parser stamp recorded in `meta` when the caller supplies none: the
  *  contribution version, so a bump of it alone rebuilds the whole index at once
@@ -87,8 +91,6 @@ CREATE TABLE IF NOT EXISTS "files" (
   "mtime_ms" REAL NOT NULL,
   "parsed_through" INTEGER NOT NULL,
   "tail_probe" TEXT NOT NULL,
-  "first_ts_ms" INTEGER,
-  "last_ts_ms" INTEGER,
   "record" TEXT NOT NULL
 );
 `;
@@ -111,6 +113,8 @@ export interface OpenUsageIndexOptions {
  *  and turn a stored row into a re-parse (or evict a clean one). */
 const FINITE_SCHEMA = v.pipe(v.number(), v.finite());
 const TS_SCHEMA = v.nullable(FINITE_SCHEMA);
+/** A non-negative safe integer: an event count. */
+const COUNT_SCHEMA = v.pipe(v.number(), v.safeInteger(), v.minValue(0));
 /** Every id field must be a dedupKey: exactly its hex length, lowercase. A parser
  *  regression that leaks a raw id fails this and the row is not stored. */
 const HASH_SCHEMA = v.pipe(v.string(), v.regex(new RegExp(`^[0-9a-f]{${dedupKey("").length}}$`)));
@@ -129,6 +133,7 @@ const CODEX_STATE_ENTRIES = {
   model: v.string(),
   metaTsMs: v.optional(FINITE_SCHEMA),
   forkedFromIdHash: v.optional(HASH_SCHEMA),
+  forkKnownAfter: v.optional(COUNT_SCHEMA),
 } as const;
 const CLAUDE_OCCURRENCE_ITEMS = [
   v.nullable(HASH_SCHEMA),
@@ -193,6 +198,7 @@ function readStoredCodex(doc: unknown): CodexContribution | null {
   if (state.sessionIdHash !== undefined && !isHash(state.sessionIdHash)) return null;
   if (state.forkedFromIdHash !== undefined && !isHash(state.forkedFromIdHash)) return null;
   if (state.metaTsMs !== undefined && !isFinite(state.metaTsMs)) return null;
+  if (state.forkKnownAfter !== undefined && !isCount(state.forkKnownAfter)) return null;
   const events = doc.events;
   if (!Array.isArray(events)) return null;
   for (const event of events) {
@@ -240,40 +246,14 @@ function parseStoredContribution(source: UsageSource, text: string): Contributio
   return source === "codex" ? readStoredCodex(doc) : readStoredClaude(doc);
 }
 
-/** What a contribution becomes on disk: the schema's projection of it as JSON, plus
- *  the event timestamps that projection carries. A parser that hands over extra
- *  properties cannot smuggle them onto disk (or into the timestamp columns), and
- *  one that leaks a raw id or a non-finite count stores nothing: null. */
-function storableContribution(
-  source: UsageSource,
-  contribution: Contribution,
-): { record: string; timestamps: readonly (number | null)[] } | null {
-  if (source === "codex") {
-    const parsed = v.safeParse(STORABLE_CODEX_SCHEMA, contribution);
-    if (!parsed.success) return null;
-    return {
-      record: JSON.stringify(parsed.output),
-      timestamps: parsed.output.events.map((event) => event[0]),
-    };
-  }
-  const parsed = v.safeParse(STORABLE_CLAUDE_SCHEMA, contribution);
-  if (!parsed.success) return null;
-  return {
-    record: JSON.stringify(parsed.output),
-    timestamps: parsed.output.occurrences.map((occurrence) => occurrence[1]),
-  };
-}
-
-/** The [earliest, latest] of the timestamps, or nulls when none is set. */
-function timestampSpan(timestamps: readonly (number | null)[]): [number | null, number | null] {
-  let first: number | null = null;
-  let last: number | null = null;
-  for (const ts of timestamps) {
-    if (ts === null) continue;
-    if (first === null || ts < first) first = ts;
-    if (last === null || ts > last) last = ts;
-  }
-  return [first, last];
+/** What a contribution becomes on disk: the schema's projection of it as JSON. A
+ *  parser that hands over extra properties cannot smuggle them onto disk, and one
+ *  that leaks a raw id or a non-finite count stores nothing: null. */
+function storableContribution(source: UsageSource, contribution: Contribution): string | null {
+  const parsed = source === "codex"
+    ? v.safeParse(STORABLE_CODEX_SCHEMA, contribution)
+    : v.safeParse(STORABLE_CLAUDE_SCHEMA, contribution);
+  return parsed.success ? JSON.stringify(parsed.output) : null;
 }
 
 // ---------- the row, parsed at the boundary ----------
@@ -289,7 +269,8 @@ interface KnownFile {
   tailProbeKey: string;
 }
 
-function isByteCount(value: unknown): value is number {
+/** A non-negative safe integer: a byte count, an event count. */
+function isCount(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
@@ -298,8 +279,8 @@ function readKnownFile(raw: unknown): { path: string; known: KnownFile } | null 
   if (!isRecord(raw)) return null;
   const { path, size, mtimeMs, parsedThrough, tailProbeKey } = raw;
   if (
-    typeof path !== "string" || !isByteCount(size) || !isFinite(mtimeMs) ||
-    !isByteCount(parsedThrough) || !isHash(tailProbeKey)
+    typeof path !== "string" || !isCount(size) || !isFinite(mtimeMs) ||
+    !isCount(parsedThrough) || !isHash(tailProbeKey)
   ) {
     return null;
   }
@@ -342,8 +323,6 @@ type PendingWrite =
     mtimeMs: number;
     parsedThrough: number;
     tailProbeKey: string;
-    firstTsMs: number | null;
-    lastTsMs: number | null;
     record: string;
   }
   | { kind: "delete"; path: string; unwalked: boolean };
@@ -356,9 +335,8 @@ function upsertFor(
   file: WalkedFile,
   parsed: ParsedFile<Contribution>,
 ): PendingWrite | null {
-  const storable = storableContribution(source, parsed.contribution);
-  if (storable === null) return null;
-  const [firstTsMs, lastTsMs] = timestampSpan(storable.timestamps);
+  const record = storableContribution(source, parsed.contribution);
+  if (record === null) return null;
   return {
     kind: "upsert",
     source,
@@ -367,24 +345,9 @@ function upsertFor(
     mtimeMs: file.mtimeMs,
     parsedThrough: parsed.parsedThrough,
     tailProbeKey: dedupKey(parsed.tailProbeHex),
-    firstTsMs,
-    lastTsMs,
-    record: storable.record,
+    record,
   };
 }
-
-/** A row summary for callers that want to skip loading blobs by recency. */
-export interface IndexedFileSummary {
-  path: string;
-  source: UsageSource;
-  lastTsMs: number | null;
-}
-
-const SUMMARY_SCHEMA = v.object({
-  path: v.string(),
-  source: v.picklist(["codex", "claude"]),
-  lastTsMs: TS_SCHEMA,
-});
 
 /**
  * An open index. Everything is synchronous (node:sqlite is), and one instance
@@ -395,16 +358,6 @@ const SUMMARY_SCHEMA = v.object({
 export interface UsageIndex {
   /** The contract's Reconcile (see contribution.ts for the decision order). */
   readonly reconcile: Reconcile;
-  /**
-   * Rows whose latest event is at or after `sinceMs`, plus rows with no timestamp
-   * at all (their window position is unknown, so a caller must still load them).
-   * A hook for a later optimization that skips blobs; `reconcile` does not use it.
-   * Codex caveat before using it: a fork's parent may be older than the window and
-   * its event hashes still suppress the fork's copies (contribution.ts, the
-   * `events` doc), so skipping Codex rows by recency alone changes the fold.
-   * Throws when a row does not parse: the index is then unreadable, not empty.
-   */
-  candidatesNewerThan(sinceMs: number): IndexedFileSummary[];
   /** Fold the WAL back into the main file, truncate it (best effort), and close. */
   close(): void;
 }
@@ -476,9 +429,8 @@ class SqliteUsageIndex implements UsageIndex {
       if (!outcome.held) return null;
       const upsert = this.#db.prepare(
         `INSERT OR REPLACE INTO "files"
-           ("path", "source", "size", "mtime_ms", "parsed_through", "tail_probe",
-            "first_ts_ms", "last_ts_ms", "record")
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           ("path", "source", "size", "mtime_ms", "parsed_through", "tail_probe", "record")
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       );
       const remove = this.#db.prepare(`DELETE FROM "files" WHERE "path" = ?`);
       let removed = 0;
@@ -497,8 +449,6 @@ class SqliteUsageIndex implements UsageIndex {
             write.mtimeMs,
             write.parsedThrough,
             write.tailProbeKey,
-            write.firstTsMs,
-            write.lastTsMs,
             write.record,
           );
         }
@@ -535,7 +485,7 @@ class SqliteUsageIndex implements UsageIndex {
         return read();
       } catch (e) {
         indexFailure = errMessage(e);
-        consola.warn(`usage index unreadable, parsing every file (${indexFailure}).`);
+        logger.warn(`usage index unreadable, parsing every file (${indexFailure}).`);
         return fallback;
       }
     };
@@ -597,14 +547,14 @@ class SqliteUsageIndex implements UsageIndex {
         records.push({ path: file.path, contribution: parsed.contribution });
         const upsert = upsertFor(source, file, parsed);
         if (upsert === null) {
-          consola.warn(`not indexing ${file.path}: its contribution is not storable.`);
+          logger.warn(`not indexing ${file.path}: its contribution is not storable.`);
           writes.push({ kind: "delete", path: file.path, unwalked: false });
         } else {
           writes.push(upsert);
         }
       } catch (e) {
         stats.filesFailed++;
-        consola.warn(`could not read ${file.path} (${errMessage(e)}).`);
+        logger.warn(`could not read ${file.path} (${errMessage(e)}).`);
         writes.push({ kind: "delete", path: file.path, unwalked: false });
       }
     }
@@ -613,26 +563,15 @@ class SqliteUsageIndex implements UsageIndex {
     try {
       const removed = this.#commit(writes);
       if (removed === null) {
-        consola.info("usage index lock unavailable; this run's results were not saved.");
+        logger.info("usage index lock unavailable; this run's results were not saved.");
       } else {
         stats.filesDeleted = removed;
       }
     } catch (e) {
-      consola.warn(`could not update the usage index (${errMessage(e)}).`);
+      logger.warn(`could not update the usage index (${errMessage(e)}).`);
     }
     return { records, stats };
   };
-
-  candidatesNewerThan(sinceMs: number): IndexedFileSummary[] {
-    // Every row is validated BEFORE the window is applied: a malformed value that
-    // SQL would sort below the window must throw, not read as "outside it".
-    const rows = this.#db.prepare(
-      `SELECT "path", "source", "last_ts_ms" AS lastTsMs FROM "files"`,
-    ).all();
-    return v.parse(v.array(SUMMARY_SCHEMA), rows).filter(
-      (row) => row.lastTsMs === null || row.lastTsMs >= sinceMs,
-    );
-  }
 
   close(): void {
     try {
@@ -765,42 +704,42 @@ export function openUsageIndex(opts: OpenUsageIndexOptions = {}): UsageIndex | n
   try {
     mkdirSync(dir, { recursive: true });
   } catch (e) {
-    consola.warn(`could not create the usage index directory ${dir} (${errMessage(e)}).`);
+    logger.warn(`could not create the usage index directory ${dir} (${errMessage(e)}).`);
     return null;
   }
   const dbPath = join(dir, USAGE_INDEX_DB_NAME);
   const lockPath = join(dir, USAGE_INDEX_LOCK_NAME);
   return withFileLockSync(lockPath, lockPolicy, (outcome) => {
     if (!outcome.held) {
-      consola.info("usage index lock unavailable; running without it.");
+      logger.info("usage index lock unavailable; running without it.");
       return null;
     }
     const first = tryOpenDb(dbPath, fingerprint);
     if (first.kind === "ok") return new SqliteUsageIndex(first.db, lockPath, lockPolicy);
     if (first.db === null) {
-      consola.warn(`could not open the usage index (${first.detail}); running without it.`);
+      logger.warn(`could not open the usage index (${first.detail}); running without it.`);
       return null;
     }
     const relinquished = relinquishDb(first.db);
     if (relinquished.kind === "in-use") {
-      consola.info(`usage index in use by another run (${first.detail}); running without it.`);
+      logger.info(`usage index in use by another run (${first.detail}); running without it.`);
       return null;
     }
     if (relinquished.kind === "failed") {
-      consola.warn(`usage index unavailable (${relinquished.detail}); running without it.`);
+      logger.warn(`usage index unavailable (${relinquished.detail}); running without it.`);
       return null;
     }
-    consola.info(`rebuilding the usage index (${first.detail}).`);
+    logger.info(`rebuilding the usage index (${first.detail}).`);
     try {
       removeDbFiles(dbPath);
     } catch (e) {
-      consola.warn(`could not remove the stale usage index (${errMessage(e)}).`);
+      logger.warn(`could not remove the stale usage index (${errMessage(e)}).`);
       return null;
     }
     const second = tryOpenDb(dbPath, fingerprint);
     if (second.kind === "ok") return new SqliteUsageIndex(second.db, lockPath, lockPolicy);
     if (second.db !== null) relinquishDb(second.db);
-    consola.warn(`could not create the usage index (${second.detail}).`);
+    logger.warn(`could not create the usage index (${second.detail}).`);
     return null;
   });
 }

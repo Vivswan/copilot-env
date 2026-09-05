@@ -36,35 +36,22 @@ test("shell: the CLI-install tuning flags require --clis", () => {
 });
 
 test("parseShellAction: remove vs wire arms, with the CLI install inside the wire arm", () => {
-  // Removal: --launchers scopes it to just the launchers block.
-  expect(parseShellAction({ remove: true })).toEqual({
-    kind: "remove",
-    allHosts: false,
-    launchersOnly: false,
-  });
-  expect(parseShellAction({ remove: true, launchers: true, allHosts: true })).toEqual({
+  expect(parseShellAction({ remove: true })).toEqual({ kind: "remove", allHosts: false });
+  expect(parseShellAction({ remove: true, allHosts: true })).toEqual({
     kind: "remove",
     allHosts: true,
-    launchersOnly: true,
   });
   // Wiring: no --clis means no CliSetup at all; --clis folds the install knobs
   // into the arm (verify-only under --no-prereqs).
-  expect(parseShellAction({ launchers: true })).toEqual({
-    kind: "wire",
-    allHosts: false,
-    launchers: true,
-    clis: null,
-  });
+  expect(parseShellAction({})).toEqual({ kind: "wire", allHosts: false, clis: null });
   expect(parseShellAction({ clis: true, cooldown: 7 })).toEqual({
     kind: "wire",
     allHosts: false,
-    launchers: false,
     clis: { mode: "install", cooldown: 7, noSudo: false },
   });
   expect(parseShellAction({ clis: true, noPrereqs: true })).toEqual({
     kind: "wire",
     allHosts: false,
-    launchers: false,
     clis: { mode: "verify-only" },
   });
 });
@@ -92,23 +79,28 @@ test("shell --clis cannot combine with --remove", () => {
   expect(() => runShell({ clis: true, remove: true })).toThrow("cannot be combined with --remove");
 });
 
-// runShell's launcher toggle is the `launchers` config key (the rc writes ride the
-// suite's rc-dir/Documents seams, so this runs for real on every OS): --launchers
-// sets it, every remove flavor clears it, and a plain wire leaves it alone.
-test("runShell toggles the launchers config key; a plain wire leaves it alone", () => {
+// The launchers are the `launchers` config key's alone (the rc writes ride the
+// suite's rc-dir/Documents seams, so this runs for real on every OS): a wire reports
+// the stored state and never writes the key; a remove leaves the key alone too.
+test("runShell reports the launchers key on a wire and never writes it", () => {
   const restore = envSnapshot();
   let dir = isolateProxyHome("copilot-setup-");
+  const lines: string[] = [];
+  const orig = consola.info;
+  consola.info = ((msg: string) => {
+    lines.push(String(msg));
+  }) as typeof consola.info;
   try {
-    runShell({ launchers: true });
+    runShell({});
+    expect(lines.at(-1)).toContain("Launchers: disabled (the launchers config key)");
+    expect(new CopilotEnvConfig().read().launchers).toBeUndefined();
+    new CopilotEnvConfig().set({ launchers: true });
+    runShell({});
+    expect(lines.at(-1)).toContain("Launchers: enabled (the launchers config key)");
+    runShell({ remove: true }); // the unwire is the rc block's; the key is the user's
     expect(new CopilotEnvConfig().launchersEnabled()).toBe(true);
-    runShell({}); // a plain re-wire never drops the opt-in
-    expect(new CopilotEnvConfig().launchersEnabled()).toBe(true);
-    runShell({ remove: true, launchers: true }); // launchers-only disable
-    expect(new CopilotEnvConfig().launchersEnabled()).toBe(false);
-    runShell({ launchers: true });
-    runShell({ remove: true }); // the full unwire disables them too
-    expect(new CopilotEnvConfig().launchersEnabled()).toBe(false);
   } finally {
+    consola.info = orig;
     restore();
     dir = removeDir(dir);
   }

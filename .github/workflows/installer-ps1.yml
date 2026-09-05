@@ -26,7 +26,7 @@ on:
         type: boolean
         default: false
       setup-launchers:
-        description: true runs `agent shell --launchers` after install.
+        description: true enables the launchers (`agent config --set launchers true`) after install.
         type: boolean
         default: false
       expect-wiring:
@@ -90,11 +90,11 @@ jobs:
         run: |
           & "$env:USERPROFILE\.copilot-env\bin\agent.ps1" shell --clis --cooldown
 
-      - name: Run agent shell --launchers
+      - name: Enable the launchers (the launchers config key)
         if: ${{ inputs.setup-launchers }}
         shell: pwsh
         run: |
-          & "$env:USERPROFILE\.copilot-env\bin\agent.ps1" shell --launchers
+          & "$env:USERPROFILE\.copilot-env\bin\agent.ps1" config --set launchers true
 
       - name: Verify install.ps1 outcome
         run: deno run -P=cli .github/scripts/installer-smoke.ts verify-outcome

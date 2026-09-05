@@ -178,7 +178,7 @@ const HELP_SURFACES: { cmd: string; needles: string[] }[] = [
   { cmd: "env", needles: ["--format", "--profile"] },
   {
     cmd: "shell",
-    needles: ["--launchers", "--clis", "--cooldown", "--no-sudo", "--no-prereqs", "--remove"],
+    needles: ["--clis", "--cooldown", "--no-sudo", "--no-prereqs", "--remove"],
   },
   { cmd: "health", needles: ["--scope", "--json"] },
   { cmd: "start", needles: ["--dry-run", "--port", "--record-event", "--check", "--force"] },
@@ -193,6 +193,8 @@ const HELP_SURFACES: { cmd: string; needles: string[] }[] = [
 // bare "--auto" is a substring of the surviving --auto-status).
 const REMOVED_FLAGS: { cmd: string; flags: string[] }[] = [
   { cmd: "update", flags: ["--auto ", "--no-auto"] },
+  { cmd: "shell", flags: ["--launchers"] },
+  { cmd: "codex", flags: ["--host", "--delete-host"] },
 ];
 
 test("the flags that became config keys are gone from the help screens", () => {
@@ -463,15 +465,13 @@ test("codex --mobile refuses to run (non-TTY, or unsupported platform)", () => {
   }
 });
 
-test("the launcher / CLI-install flags live on shell, not init", () => {
+test("the CLI-install flag lives on shell, not init", () => {
   const shell = helpScreen("shell", "--help");
   const init = helpScreen("init", "--help");
   expect(shell.exitCode).toBe(0);
   expect(init.exitCode).toBe(0);
-  for (const flag of ["--launchers", "--clis"]) {
-    expect(shell.output).toContain(flag);
-    expect(init.output).not.toContain(flag);
-  }
+  expect(shell.output).toContain("--clis");
+  expect(init.output).not.toContain("--clis");
   // init keeps the agent-config flags; shell does not configure agents. The
   // credential flags moved to `agent auth`, so init no longer carries --gh-token.
   expect(init.output).toContain("--direct");
@@ -501,11 +501,11 @@ test("install --help surfaces the wiring flags; unknown flags are rejected", () 
   }
 
   // Commander's declaration is the argv boundary: a flag from another command
-  // (--launchers lives on `shell`) must be rejected, never absorbed into an install.
-  const unknown = runCli(["install", "--launchers"], { env: isolatedEnv() });
+  // (--clis lives on `shell`) must be rejected, never absorbed into an install.
+  const unknown = runCli(["install", "--clis"], { env: isolatedEnv() });
   expect(unknown.exitCode).toBe(1);
   expect(unknown.stderr).toContain("unknown option");
-  expect(unknown.stderr).toContain("--launchers");
+  expect(unknown.stderr).toContain("--clis");
 }, 30_000);
 
 // In a checkout `install` builds the in-place plan (the checkout's own files are

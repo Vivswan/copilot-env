@@ -694,8 +694,8 @@ program
   .command("shell")
   .helpGroup("Setup:")
   .description(
-    "Set up the shell environment: wire the copilot-env integration (rc / PowerShell $PROFILE), " +
-      "optionally the cl / co / cx launchers and the optional agent CLIs.",
+    "Set up the shell environment: wire the copilot-env integration (rc / PowerShell $PROFILE) " +
+      "and optionally install the agent CLIs (the cl / co / cx launchers follow the `launchers` config key).",
   )
   .option("--clis", "Also install the optional claude / copilot / codex agent CLIs.")
   .option(
@@ -708,20 +708,11 @@ program
     "With --clis: avoid sudo/system package managers; use only user-local tooling.",
   )
   .option("--no-prereqs", "With --clis: verify prerequisites and CLIs only; install nothing.")
-  .option(
-    "--launchers",
-    "Also enable the opt-in cl / co / cx launchers (sets the `launchers` config key; " +
-      "`agent env` defines the functions).",
-  )
   .option("--all-hosts", "Windows only: target the CurrentUserAllHosts profile.")
-  .option(
-    "--remove",
-    "Unwire the integration (and disable launchers); with --launchers, disable only the launchers.",
-  )
+  .option("--remove", "Unwire the integration (the `launchers` config key is left as it is).")
   .action((opts: Opts) =>
     runShell({
       remove: Boolean(opts.remove),
-      launchers: Boolean(opts.launchers),
       clis: Boolean(opts.clis),
       cooldown: resolveCooldown(opts.cooldown, DEFAULT_CLI_COOLDOWN_DAYS),
       noSudo: opts.sudo === false,

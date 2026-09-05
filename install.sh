@@ -6,7 +6,7 @@
 # checksums.txt, install it as <install-dir>/bin/copilot-env, then hand off to
 # the binary's own `install` subcommand (it materializes the runtime assets,
 # the bin/agent launcher shims, and the shell integration). Optional CLIs and
-# launchers are managed after install with `agent shell --clis --launchers`.
+# launchers are managed after install (`agent shell --clis`, `agent config --set launchers true`).
 
 set -eu
 
@@ -35,7 +35,8 @@ binary for this platform from the selected GitHub release, verifying its
 SHA256, and wiring shell integration by default. Optional agent CLIs and
 launchers are configured after install:
 
-  agent shell --clis [--cooldown[=DAYS]] [--no-sudo] [--no-prereqs] [--launchers]
+  agent shell --clis [--cooldown[=DAYS]] [--no-sudo] [--no-prereqs]
+  agent config --set launchers true
 
 Options:
   --dir DIR              Install target (default ~/.copilot-env). Takes

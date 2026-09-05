@@ -42,7 +42,7 @@ Downloads a single self-contained `agent` binary for your platform into `~/.copi
 
 - **Replaceable:** re-run the installer any time to move to the selected release.
 - **Next:** restart your shell, then `agent start`.
-- **Optional:** run `agent shell --clis --launchers` for Claude/Copilot/Codex CLIs and `cl` / `co` / `cx`.
+- **Optional:** run `agent shell --clis` for the Claude/Copilot/Codex CLIs and `agent config --set launchers true` for `cl` / `co` / `cx`.
 - **Update later:** `agent update` downloads the newest release's binary, checks its SHA256 against `checksums.txt`, then verifies both against the release's Sigstore build-provenance attestation - it must be signed by this repository's GitHub Actions release workflow, and both files must be among the attested bytes - and only then swaps it in place. That check is on by default; `agent update --no-verify` skips it once and `agent config --set verify-provenance false` turns it off. Your config, credentials, and profiles live outside the install directory and are untouched.
 - **Uninstall:** `agent uninstall` removes everything copilot-env manages (daemons, profiles, agent wiring, shell integration, credentials, data, and the install itself). It does not remove the agent CLIs (`claude` / `copilot` / `codex`).
 - **Specific version:** replace `latest` with an exact release tag, or pass `--version`:
@@ -82,7 +82,7 @@ agent env                  # print shell directives for the calling shell (CODEX
 agent mcp                  # MCP wiring status (--serve runs the stdio server; --remove unwires)
 agent cost                 # estimated token spend across all usage DBs (default + profile daemons)
 agent update               # update to the latest release (--check; --auto-status; --no-verify skips the provenance check; `agent config --set auto-update true` self-updates daily, cooldown via `update-cooldown`)
-agent shell                # wire rc / $PROFILE; --launchers enables cl/co/cx, --clis installs the CLIs, --remove unwires
+agent shell                # wire rc / $PROFILE; --clis installs the CLIs, --remove unwires (cl/co/cx follow the `launchers` config key)
 agent uninstall            # remove copilot-env entirely (--yes headless, --dry-run preview, --force to delete a source checkout)
 agent codex                # configure Codex; no flag auto-detects the backend, --check reports it
 agent codex --direct       # force GitHub Copilot Direct (no auto-detect probe)
@@ -112,17 +112,11 @@ The `cl` / `co` / `cx` launchers are opt-in shell functions over `agent launch`:
 
 Each has a more-permissive variant that adds the agent's most-relaxed flag (`agent launch ... --relaxed`): `clx` (`--dangerously-skip-permissions`), `cox` (`--allow-all`), `cxx` (`--sandbox danger-full-access`).
 
-Enable them while installing optional CLIs:
+They follow the `launchers` config key (`agent env` defines the functions in each new shell; `agent shell` reports the state it wired):
 
 ```bash
-agent shell --clis --launchers
-```
-
-Or toggle only the launchers (the `launchers` config key; `agent env` defines the functions in each new shell):
-
-```bash
-agent shell --launchers
-agent shell --launchers --remove
+agent config --set launchers true
+agent config --set launchers false
 ```
 
 `agent launch <claude|codex|copilot> [--profile <name>] [--relaxed] -- <args...>` works directly too, without the shell functions.

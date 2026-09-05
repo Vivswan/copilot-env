@@ -874,7 +874,7 @@ export function checkLaunchers(f: ShellFacts): CheckResult {
       ...base,
       status: "warn",
       detail: "not enabled (optional)",
-      fix: "agent shell --launchers",
+      fix: "agent config --set launchers true",
     };
 }
 

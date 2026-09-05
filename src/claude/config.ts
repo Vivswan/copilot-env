@@ -53,6 +53,7 @@ import { type Profile, profileLabel, type ProfileName } from "../copilot_api/pro
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import {
+  entryAbsent,
   isEnoentOrNotdir,
   readTextOrNull,
   readTextResult,
@@ -873,17 +874,28 @@ function checkClaudeConfig(): void {
  * `agent profile --del`.
  */
 
-export function removeClaudeProfile(claudeHome: string, name: ProfileName): void {
+/** The files removeClaudeProfile would remove for `name` right now: the settings file
+ *  when its wiring is ours, and any file at the legacy helper names (ours, or orphans
+ *  nothing points at -- the inline wiring writes none). Empty when the settings file
+ *  is a foreign body: it may point AT a legacy-named file, so nothing there is ours.
+ *  Read-only; an uninstall plan resolves this once and renders it both ways. */
+export function claudeProfileArtifacts(claudeHome: string, name: ProfileName): string[] {
   const settingsPath = settingsPathFor(claudeHome, name);
   const wiring = inspectClaudeWiring(readTextResult(settingsPath), claudeHome, 0, name);
-  if (wiring.providerMode === "other") return;
-  if (wiring.wired) {
-    removeReported(settingsPath);
-  }
-  // Managed or unconfigured: any files at the legacy names are ours (or orphans
-  // nothing points at) -- remove them by name (the inline wiring writes none).
-  removeReported(directHelperPath(claudeHome, name));
-  removeReported(proxyHelperPath(claudeHome, name));
+  if (wiring.providerMode === "other") return [];
+  return [
+    ...(wiring.wired ? [settingsPath] : []),
+    directHelperPath(claudeHome, name),
+    proxyHelperPath(claudeHome, name),
+  ].filter((path) => !entryAbsent(path));
+}
+
+export function removeClaudeProfile(
+  claudeHome: string,
+  name: ProfileName,
+  artifacts: readonly string[] = claudeProfileArtifacts(claudeHome, name),
+): void {
+  for (const path of artifacts) removeReported(path);
 }
 
 /** What removeClaudeDefaultWiring left behind, for the caller to sequence on. */
@@ -1006,7 +1018,7 @@ export function claudeAdapter(): AgentAdapter {
       await syncClaudeDesktopWiring({ ...write, profile: name, quiet: options.quiet });
     },
     removeProfile(name, options) {
-      removeClaudeProfile(resolveClaudeHome(), name);
+      removeClaudeProfile(resolveClaudeHome(), name, options?.claudeArtifacts);
       if (!options?.keepDesktopEntry) removeClaudeDesktopEntry(name);
     },
   };

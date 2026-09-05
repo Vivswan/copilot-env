@@ -7,7 +7,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { consola } from "consola";
-import { removeClaudeDefaultWiring } from "../claude/config.ts";
+import { claudeProfileArtifacts, removeClaudeDefaultWiring } from "../claude/config.ts";
 import {
   type ClaudeDesktopOwnedArtifacts,
   listClaudeDesktopOwnedArtifacts,
@@ -130,6 +130,9 @@ export interface UninstallTargets {
   /** The rc / PowerShell profile files carrying an owned block (empty when a test
    *  substitute is injected for the removal). */
   shellFiles: string[];
+  /** Per named profile: the Claude files its teardown removes (settings, legacy
+   *  helpers) and its daemon home. */
+  profiles: { name: ProfileName; claudeArtifacts: string[]; home: string }[];
 }
 
 /** Everything a step needs, resolved once after the confirmation gate. */
@@ -176,15 +179,14 @@ const UNINSTALL_STEPS: UninstallStep[] = [
     //    The profile's Claude Desktop entry is NOT taken here: the Desktop step below
     //    removes exactly the planned artifacts, which include it.
     describe: (ctx) =>
-      ctx.profiles.map(
-        (name) =>
-          `Would delete ${profileLabel(name)}: its credential, ${
-            settingsPathFor(ctx.claudeHome, name)
-          }, its Codex profile tables, and ${profileHome(name)}.`,
+      ctx.targets.profiles.map(
+        ({ name, claudeArtifacts, home }) =>
+          `Would delete ${profileLabel(name)}: its credential, its Codex profile tables, ` +
+          `${[...claudeArtifacts, home].join(", ")}.`,
       ),
     run: async (ctx) => {
-      for (const name of ctx.profiles) {
-        await deleteProfileEverywhere(name, { keepDesktopEntry: true });
+      for (const { name, claudeArtifacts } of ctx.targets.profiles) {
+        await deleteProfileEverywhere(name, { keepDesktopEntry: true, claudeArtifacts });
         consola.info(`Deleted ${profileLabel(name)}.`);
       }
     },
@@ -414,13 +416,20 @@ export function resolveUninstallContext(
     ? { kind: "compiled", root: installStateRoot(mode.root) }
     : mode;
   const rootHome = resolveRootHome();
+  const claudeHome = resolveClaudeHome();
+  const profiles = allProfileNames();
   return {
-    profiles: allProfileNames(),
+    profiles,
     codexHomes,
     codexSweepComplete,
-    claudeHome: resolveClaudeHome(),
+    claudeHome,
     rootHome,
     targets: {
+      profiles: profiles.map((name) => ({
+        name,
+        claudeArtifacts: claudeProfileArtifacts(claudeHome, name),
+        home: profileHome(name),
+      })),
       desktop: listClaudeDesktopOwnedArtifacts(deps.claudeDesktopLibraryDir),
       floatArtifacts: proxyFloatArtifactPaths(rootHome),
       // A test substitute does its own (redirected) work, not this state-recorded rm.

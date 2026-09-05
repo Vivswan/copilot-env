@@ -14,7 +14,12 @@ import {
   desktopLibraryDirUnder,
 } from "../src/claude/desktop.ts";
 import { claudeJsonPath, registerClaudeMcpServer } from "../src/claude/mcp_registration.ts";
-import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME, settingsPathFor } from "../src/claude/paths.ts";
+import {
+  DIRECT_HELPER_NAME,
+  directHelperPath,
+  PROXY_HELPER_NAME,
+  settingsPathFor,
+} from "../src/claude/paths.ts";
 import { configureCodexConfig } from "../src/codex/config.ts";
 import {
   applyUninstall,
@@ -546,6 +551,9 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   });
   configureClaudeConfig(claudeHome, { mode: "direct", quiet: true, profile: WORK });
   mkdirSync(profileHome(WORK), { recursive: true });
+  // A legacy helper (pre-inline install): the teardown removes it, so the plan names it.
+  const legacyHelper = directHelperPath(claudeHome, WORK);
+  writeFileSync(legacyHelper, "#!/bin/sh\nexec legacy\n");
   // The AMBIENT Desktop library (the env seam) is the injected one, so a profile
   // teardown that rescanned the library would find what is planted below.
   const desktopData = join(dir, "desktop");
@@ -593,6 +601,11 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   expect(ctx.targets.desktop.helpers.sort()).toEqual([defaultHelper, workHelper].sort());
   expect(ctx.targets.desktop.staleClaims).toEqual([join(library, "gone.json")]);
   expect(ctx.targets.shellFiles).toEqual([rc]);
+  expect(ctx.targets.profiles).toEqual([{
+    name: WORK,
+    claudeArtifacts: [settingsPathFor(claudeHome, WORK), legacyHelper],
+    home: profileHome(WORK),
+  }]);
   const dryRun = describeUninstall(ctx);
   // Planted AFTER planning: a LISTED owned Desktop entry attributed to the profile the
   // profile step deletes. Neither that step nor the Desktop sweep may take a path the
@@ -637,8 +650,7 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
     ...ctx.targets.desktop.entries,
     ...ctx.targets.desktop.helpers,
     ...ctx.targets.floatArtifacts,
-    profileHome(WORK),
-    settingsPathFor(claudeHome, WORK),
+    ...ctx.targets.profiles.flatMap((p) => [...p.claudeArtifacts, p.home]),
     ctx.rootHome,
     ctx.installRoot.root,
   ];

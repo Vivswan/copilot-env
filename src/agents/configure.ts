@@ -135,6 +135,9 @@ export type ManagedAgentId = "codex" | "claude";
  */
 export interface RemoveProfileOptions {
   keepDesktopEntry?: boolean;
+  /** The Claude files to remove, resolved up front by the caller's plan
+   *  (claudeProfileArtifacts); absent = resolve now. */
+  claudeArtifacts?: readonly string[];
 }
 
 export interface AgentAdapter {

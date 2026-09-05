@@ -711,12 +711,18 @@ export function activeDayCoverage(
 }
 
 /**
- * Format a token count with a one-decimal K/M suffix ("1.2K", "1.0M").
+ * Format a token count with a one-decimal K/M/B/T suffix ("1.2K", "1.0M", "45.9B").
  * Distinct from commands/models.ts's formatTokens, which renders catalog
  * context-window sizes as bare "200k"/"1M" -- different semantics, so a
  * different name.
  */
-function formatTokensCompact(n: number): string {
+export function formatTokensCompact(n: number): string {
+  if (n >= 1_000_000_000_000) {
+    return `${(n / 1_000_000_000_000).toFixed(1)}T`;
+  }
+  if (n >= 1_000_000_000) {
+    return `${(n / 1_000_000_000).toFixed(1)}B`;
+  }
   if (n >= 1_000_000) {
     return `${(n / 1_000_000).toFixed(1)}M`;
   }

@@ -28,6 +28,7 @@ import {
   daysCutoffMs,
   describeDaysWindow,
   formatBytesCompact,
+  formatTokensCompact,
   median,
   parseDaysWindow,
   perDayRows,
@@ -832,6 +833,17 @@ test("formatBytesCompact picks decimal units with one decimal from kB up", () =>
   expect(formatBytesCompact(1_000)).toBe("1.0 kB");
   expect(formatBytesCompact(1_234_567)).toBe("1.2 MB");
   expect(formatBytesCompact(2_500_000_000)).toBe("2.5 GB");
+});
+
+test("formatTokensCompact steps K, M, B, T at each thousand with one decimal", () => {
+  expect(formatTokensCompact(999)).toBe("999");
+  expect(formatTokensCompact(999_949)).toBe("999.9K");
+  expect(formatTokensCompact(1_000_000)).toBe("1.0M");
+  expect(formatTokensCompact(999_949_999)).toBe("999.9M");
+  expect(formatTokensCompact(1_000_000_000)).toBe("1.0B");
+  expect(formatTokensCompact(45_894_700_000)).toBe("45.9B");
+  expect(formatTokensCompact(1_000_000_000_000)).toBe("1.0T");
+  expect(formatTokensCompact(1_234_000_000_000)).toBe("1.2T");
 });
 
 test("ReconcileMeter bills a reader's synchronous fold, never a microtask queued behind it", async () => {

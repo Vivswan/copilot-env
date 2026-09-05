@@ -218,7 +218,7 @@ describe("release targets", () => {
 
 describe("applyUpdate", () => {
   const target = { tag: "v9.9.9", dateSeconds: 0 };
-  const quiet = { warn: () => {}, success: () => {} };
+  const quiet = { info: () => {}, warn: () => {}, success: () => {} };
   /** A verifier that accepts everything: the default here, so the existing cases
    *  run the full stage order (download -> verify -> attest -> ...) unchanged. */
   const acceptAll: ProvenanceVerifier = () => Promise.resolve();
@@ -241,12 +241,18 @@ describe("applyUpdate", () => {
 
   /** A logger that records what it was told. */
   function recordingLogger() {
+    const infos: string[] = [];
     const warns: string[] = [];
     const successes: string[] = [];
     return {
+      infos,
       warns,
       successes,
-      logger: { warn: (m: string) => warns.push(m), success: (m: string) => successes.push(m) },
+      logger: {
+        info: (m: string) => infos.push(m),
+        warn: (m: string) => warns.push(m),
+        success: (m: string) => successes.push(m),
+      },
     };
   }
 
@@ -391,10 +397,11 @@ describe("applyUpdate", () => {
     writeRelease(RECORDING_BINARY);
     seedVersion("v9.9.8", "OLD");
     pointCurrentAt(installDir, "v9.9.8");
+    const { logger, infos } = recordingLogger();
 
     await applyLocked("v9.9.8", {
       root: installDir,
-      logger: quiet,
+      logger,
       childStdoutToStderr: true,
     });
 
@@ -417,6 +424,11 @@ describe("applyUpdate", () => {
       readFileSync(join(installDir, CURRENT_LINK, "bin", installedBinaryName()), "utf8"),
     ).toBe(RECORDING_BINARY);
     expect(readFileSync(join(installDir, "bin", "agent"), "utf8")).toBe(POSIX_CURRENT_SHIM);
+    // The shim writes are announced on the UPDATE's logger (stderr-only from the
+    // preflight), never on the global stdout consola.
+    expect(infos).toEqual(
+      ["agent", "agent.ps1"].map((shim) => `Wrote launcher shim ${join(installDir, "bin", shim)}`),
+    );
 
     // Both handoffs ran the NEW binary, each aimed at the right root: the
     // provision INSIDE its version root (pre-flip), the migrations at the

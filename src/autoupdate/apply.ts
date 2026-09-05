@@ -90,6 +90,7 @@ const DOWNLOAD_BASE_ENV = "COPILOT_ENV_DOWNLOAD_BASE";
 
 /** Minimal sink so the preflight can route progress to a stderr-only logger. */
 interface UpdateLogger {
+  info(message: string): void;
   warn(message: string): void;
   success(message: string): void;
 }
@@ -403,7 +404,7 @@ function commit(provisioned: Provisioned, top: string, logger: UpdateLogger): Co
   let shimsRefreshed = true;
   if (!isCheckoutShapedRoot(top)) {
     try {
-      writeTopLevelShims(top);
+      writeTopLevelShims(top, logger);
     } catch (error) {
       shimsRefreshed = false;
       logger.warn(`Could not refresh the launcher shims: ${errMessage(error)}`);
@@ -440,8 +441,8 @@ export interface ApplyUpdateOptions {
   logger?: UpdateLogger;
   /**
    * Send the child processes' stdout to stderr (so migration output can't
-   * pollute stdout). The preflight sets this to protect the `agent env` stdout
-   * contract on platforms where the launcher can't redirect streams.
+   * pollute stdout). The preflight sets this: like its own logger, an
+   * autoupdate inside `agent start` is stderr-only end to end.
    */
   childStdoutToStderr?: boolean;
   /** The install root to update. Defaults to the live one. */

@@ -1,13 +1,4 @@
-import {
-  chmodSync,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  statSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isDue } from "../src/autoupdate/due.ts";
 import { withUpdateLockForTests } from "../src/autoupdate/lock.ts";
@@ -19,11 +10,8 @@ import {
   effectiveUpdateCooldownDays,
 } from "../src/autoupdate/state.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
-import { commandExists } from "../src/utils/command.ts";
-import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { packageVersion } from "../src/utils/version.ts";
-import { runSync } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, removeDir, tmpDir } from "./helpers.ts";
 
@@ -160,6 +148,28 @@ test("runPreflight honors the auto-update key and ignores a legacy enabled field
     lastCheckMs: now,
     lastResult: "up to date",
   });
+  // Due at the unlocked read, but a concurrent run completes its check between that read
+  // and the lock acquire (staged by the lock seam): the under-lock recheck sees the fresh
+  // record and neither fetches nor overwrites it.
+  writeFileSync(path, JSON.stringify({ lastCheckMs: 1, lastResult: "old" }));
+  const concurrent = { lastCheckMs: now - 1, lastResult: "updated v9.9.9" };
+  globalThis.fetch = (() => {
+    throw new Error("the under-lock recheck must not reach the network");
+  }) as typeof fetch;
+  try {
+    await runPreflight({
+      nowMs: now,
+      state: new AutoupdateState(path),
+      lock: (nowMs, fn) =>
+        withUpdateLockForTests(join(dir, "update.lock"), nowMs, (outcome) => {
+          writeFileSync(path, JSON.stringify(concurrent));
+          return fn(outcome);
+        }),
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual(concurrent);
 });
 
 test("effectiveUpdateCooldownDays: the live update-cooldown config, else the 7-day default", () => {
@@ -215,101 +225,6 @@ test("isDue is false under a day, true at/after a day", () => {
   expect(isDue(0, now)).toBe(true); // never checked
   expect(isDue(now + MILLISECONDS_PER_DAY, now)).toBe(true); // future timestamp can't wedge it
 });
-
-// --- the launchers' preflight gate --------------------------------------------
-// The gate ("only on `agent start`") is shell in bin/agent(.ps1), so each launcher is
-// EXECUTED from a staged copy of the checkout against a fake `deno` that records every
-// spawn: `env` (whose stdout the wrapper evals) must never reach the preflight.
-
-/** Run the launcher for `sub` from a fresh fake checkout (its own temp dir, removed
- *  after); returns the fake deno's invocation log, one line per spawn. */
-function launcherCalls(sub: string): string[] {
-  const root = tmpDir("copilot-env-launcher-");
-  try {
-    // The staged checkout: the launcher, its bootstrap, the pin, the lockfile, and a
-    // node_modules NEWER than the lockfile so the launcher installs nothing.
-    // A space in the path: the launcher must quote it, and the log must still parse.
-    const checkout = join(root, "check out");
-    mkdirSync(join(checkout, "bin"), { recursive: true });
-    mkdirSync(join(checkout, "scripts"), { recursive: true });
-    for (
-      const rel of [
-        "bin/agent",
-        "bin/agent.ps1",
-        "scripts/ensure-deno.sh",
-        "scripts/ensure-deno.ps1",
-        ".dvmrc",
-        "deno.lock",
-      ]
-    ) {
-      copyFileSync(join(PROJECT_ROOT, rel), join(checkout, rel));
-    }
-    chmodSync(join(checkout, "bin", "agent"), 0o755);
-    mkdirSync(join(checkout, "node_modules"));
-    const pin = readFileSync(join(checkout, ".dvmrc"), "utf8").trim();
-    const home = join(root, "home");
-    const bin = join(root, "fake-bin");
-    const log = join(root, "deno-calls.log");
-    mkdirSync(bin, { recursive: true });
-    mkdirSync(home, { recursive: true });
-    if (process.platform === "win32") {
-      writeFileSync(
-        join(bin, "deno.cmd"),
-        `@echo off\r\nif "%1"=="--version" (echo deno ${pin}& exit /b 0)\r\necho %*>> "${log}"\r\nexit /b 0\r\n`,
-      );
-    } else {
-      writeFileSync(
-        join(bin, "deno"),
-        `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "deno ${pin} (stable, release, x86_64-unknown-linux-gnu)"; exit 0; fi\nprintf '%s\\n' "$*" >> "${log}"\nexit 0\n`,
-        { mode: 0o755 },
-      );
-    }
-    // HOME is scratch so the bootstrap finds no pinned deno under ~/.deno to prefer;
-    // PATH puts the fake first (the system dirs stay for sh/awk/find).
-    const env = {
-      ...process.env,
-      HOME: home,
-      USERPROFILE: home,
-      DENO_INSTALL: undefined,
-      PATH: process.platform === "win32"
-        ? `${bin};${process.env.PATH ?? ""}`
-        : `${bin}:/usr/bin:/bin`,
-    };
-    const result = process.platform === "win32"
-      ? runSync("powershell", [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        join(checkout, "bin", "agent.ps1"),
-        sub,
-      ], { env })
-      : runSync("sh", [join(checkout, "bin", "agent"), sub], { env });
-    if (result.exitCode !== 0) throw new Error(`launcher failed: ${result.stderr}`);
-    // cmd's %* keeps the quotes a spaced path needs; strip them so both sides compare alike.
-    return existsSync(log)
-      ? readFileSync(log, "utf8").split(/\r?\n/).filter((l) => l.length > 0).map((l) =>
-        l.replaceAll('"', "")
-      )
-      : [];
-  } finally {
-    removeDir(root);
-  }
-}
-
-test.skipIf(process.platform === "win32" && !commandExists("powershell"))(
-  "the launcher runs the autoupdate preflight before `agent start` only",
-  () => {
-    // Deps are staged fresh, so the launcher spawns nothing but the preflight and the CLI.
-    const start = launcherCalls("start");
-    expect(start).toHaveLength(2);
-    expect(start[0]).toMatch(/autoupdate[\\/]preflight\.ts$/);
-    expect(start[1]).toMatch(/src[\\/]cli\.ts start$/);
-    const env = launcherCalls("env");
-    expect(env).toHaveLength(1);
-    expect(env[0]).toMatch(/src[\\/]cli\.ts env$/);
-  },
-);
 
 // --- lock -------------------------------------------------------------------
 // All through the TEST-ONLY path seam (withUpdateLockForTests): production

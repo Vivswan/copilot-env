@@ -285,8 +285,11 @@ export function readCurrentVersionName(top: string): string | null {
 /** Write ONE launcher shim, atomically where the OS allows: skip when the text
  *  already matches (the steady state -- an update then never touches the file a
  *  user's PATH points at), else write beside and rename over. The direct-write
- *  fallback covers a rename refused by an open handle on the live file. */
-function writeShimFile(to: string, text: string, executable: boolean): void {
+ *  fallback covers a rename refused by an open handle on the live file. Every
+ *  write is announced here, once per path: install, update commit, and the
+ *  layout repair all land through this one writer -- on the caller's logger, so an
+ *  update running inside the autoupdate preflight stays stderr-only. */
+function writeShimFile(to: string, text: string, executable: boolean, logger: ShimLogger): void {
   try {
     if (readFileSync(to, "utf-8") === text) {
       // Text is current; still repair a lost exec bit (a crash between an
@@ -308,15 +311,21 @@ function writeShimFile(to: string, text: string, executable: boolean): void {
     writeFileSync(to, text);
     if (executable) chmodSync(to, 0o755);
   }
+  logger.info(`Wrote launcher shim ${to}`);
+}
+
+/** Where a shim write is announced (the global consola, or an update's stderr logger). */
+export interface ShimLogger {
+  info(message: string): void;
 }
 
 /** Write the stable `<top>/bin/agent(.ps1)` shims that dispatch through the
  *  `current` link. Idempotent and cheap in the steady state (identical text is
  *  never rewritten), so every install and update commit can refresh them --
  *  which is also what heals a crash that flipped `current` but got no further. */
-export function writeTopLevelShims(top: string): void {
-  writeShimFile(join(top, "bin", "agent"), POSIX_CURRENT_SHIM, true);
-  writeShimFile(join(top, "bin", "agent.ps1"), POWERSHELL_CURRENT_SHIM, false);
+export function writeTopLevelShims(top: string, logger: ShimLogger = consola): void {
+  writeShimFile(join(top, "bin", "agent"), POSIX_CURRENT_SHIM, true, logger);
+  writeShimFile(join(top, "bin", "agent.ps1"), POWERSHELL_CURRENT_SHIM, false, logger);
 }
 
 /** Markers + .git: the shape of a LIVE source checkout (see CHECKOUT_MARKERS).
@@ -860,7 +869,7 @@ export function applyInstallPlan(plan: InstallPlan): void {
     }
     pointCurrentAt(plan.top, plan.versionName);
     for (const shim of plan.topShims) {
-      writeShimFile(shim.to, shim.text, shim.executable);
+      writeShimFile(shim.to, shim.text, shim.executable, consola);
     }
     consola.success(
       `Installed copilot-env ${plan.versionName} into ${plan.versionRoot} (live via ${

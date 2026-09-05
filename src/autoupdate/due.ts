@@ -1,7 +1,6 @@
 // Pure scheduling helper for the autoupdate preflight (no I/O; `nowMs` injected so
-// it's directly unit-testable). The subcommand gate ("only on `agent start`") lives
-// in the launchers themselves -- bin/agent and bin/agent.ps1 -- which run the
-// preflight before cli.ts loads; test/autoupdate.test.ts pins those lines.
+// it's directly unit-testable). The command gate (a live `agent start` launch only,
+// never a probe or a dry run) lives in src/commands/start.ts.
 import { MILLISECONDS_PER_DAY } from "../utils/time.ts";
 
 /**

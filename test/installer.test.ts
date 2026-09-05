@@ -102,6 +102,26 @@ function versionedPlan(
 /** The version-dir name every full plan in this suite targets. */
 const VERSION_NAME = versionDirName(packageVersion());
 
+/** Capture BOTH process write streams (consola routes by level) while running `fn`. */
+function captureAllWrites(fn: () => void): string {
+  const stdout = process.stdout.write.bind(process.stdout);
+  const stderr = process.stderr.write.bind(process.stderr);
+  let out = "";
+  const capture = (chunk: string | Uint8Array): boolean => {
+    out += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    return true;
+  };
+  process.stdout.write = capture;
+  process.stderr.write = capture;
+  try {
+    fn();
+  } finally {
+    process.stdout.write = stdout;
+    process.stderr.write = stderr;
+  }
+  return out;
+}
+
 /** A stand-in compiled binary next to nothing in particular. */
 function writeFakeBinary(path: string, content = "#!/bin/sh\nexit 0\n"): string {
   mkdirSync(dirname(path), { recursive: true });
@@ -747,22 +767,33 @@ describe("adoptVersionedLayout (the 3.5.6 migration core)", () => {
 
     // A crashed earlier run: the flip landed, but the top shims were never
     // rewritten, flat debris reappeared, and the flat binary residue survived.
-    // The retry must converge all of it, not just re-sweep.
+    // The retry must converge all of it, not just re-sweep. This is also the
+    // path the 4.0.0 migration runs to refresh the top shims, so each rewritten
+    // shim path must be named in the output -- and a converged re-run names none.
     writeFileSync(join(dest, INSTALL_MANIFEST_FILE), "{}");
     writeFileSync(join(dest, "bin", "agent"), "stale adjacent-dispatch shim");
+    writeFileSync(join(dest, "bin", "agent.ps1"), "stale adjacent-dispatch shim");
     writeFakeBinary(join(dest, "bin", installedBinaryName()), "FLAT-RESIDUE");
-    adoptVersionedLayout({
-      mode: { kind: "compiled", root: join(dest, CURRENT_LINK) },
-      sourceRoot: source,
-      binarySource: null,
-    });
+    const repair = () =>
+      adoptVersionedLayout({
+        mode: { kind: "compiled", root: join(dest, CURRENT_LINK) },
+        sourceRoot: source,
+        binarySource: null,
+      });
+    const output = captureAllWrites(repair);
 
     expect(existsSync(join(dest, INSTALL_MANIFEST_FILE))).toBe(false);
     expect(readFileSync(join(dest, "bin", "agent"), "utf8")).toBe(POSIX_CURRENT_SHIM);
+    expect(readFileSync(join(dest, "bin", "agent.ps1"), "utf8")).toBe(POWERSHELL_CURRENT_SHIM);
     if (process.platform !== "win32") {
       expect(existsSync(join(dest, "bin", installedBinaryName()))).toBe(false);
     }
     expect(readCurrentVersionName(dest)).toBe(VERSION_NAME);
+    for (const shim of ["agent", "agent.ps1"]) {
+      const line = `Wrote launcher shim ${join(dest, "bin", shim)}\n`;
+      expect(output.split(line).length - 1, line).toBe(1);
+    }
+    expect(captureAllWrites(repair)).not.toContain("Wrote launcher shim");
   });
 
   test("a dangling current link HALTS the repair instead of deleting the fallback", () => {
@@ -873,14 +904,31 @@ describe("wiredShellTargets", () => {
 });
 
 describe("launcher shims", () => {
+  // Every installed shim runs the autoupdate preflight the checkout's bin/agent(.ps1)
+  // runs, as the binary's own `update --preflight`, before the dispatch and on `start`
+  // only, with its output on stderr (stdout is `agent env`'s).
+  function expectPreflightHook(posix: string, powershell: string, binary: string): void {
+    const posixHook =
+      `if [ "\${1:-}" = "start" ]; then\n    "${binary}" update --preflight >&2 || true\nfi\n`;
+    expect(posix).toContain(posixHook);
+    expect(posix.indexOf(posixHook)).toBeLessThan(posix.indexOf(`exec "${binary}" "$@"`));
+    const powershellHook = "if ($args.Count -gt 0 -and $args[0] -eq 'start') {\n" +
+      "    try { & $Binary update --preflight | ForEach-Object { [Console]::Error.WriteLine($_) } }\n" +
+      '    catch { [Console]::Error.WriteLine("autoupdate preflight failed: $_") }\n' +
+      "}\n";
+    expect(powershell).toContain(powershellHook);
+    expect(powershell.indexOf(powershellHook)).toBeLessThan(powershell.indexOf("& $Binary @args"));
+  }
+
   test("per-version shims dispatch to the compiled binary next to them", () => {
     // The per-version shims are what `<top>/current/bin/agent` resolves to, so
     // their dispatch target is a contract with the layout (the binary sits
     // beside them inside the version root).
     expect(POSIX_SHIM).toContain('exec "$HERE/copilot-env" "$@"');
     expect(POSIX_SHIM.startsWith("#!/bin/sh\n")).toBe(true);
-    expect(POWERSHELL_SHIM).toContain("copilot-env.exe");
+    expect(POWERSHELL_SHIM).toContain("$Binary = Join-Path $Here 'copilot-env.exe'");
     expect(POWERSHELL_SHIM).toContain("exit $LASTEXITCODE");
+    expectPreflightHook(POSIX_SHIM, POWERSHELL_SHIM, "$HERE/copilot-env");
   });
 
   test("top-level shims dispatch through the current link", () => {
@@ -888,8 +936,15 @@ describe("launcher shims", () => {
     // rewrite the file a user's PATH (or a persisted config) points at.
     expect(POSIX_CURRENT_SHIM).toContain('exec "$HERE/../current/bin/copilot-env" "$@"');
     expect(POSIX_CURRENT_SHIM.startsWith("#!/bin/sh\n")).toBe(true);
-    expect(POWERSHELL_CURRENT_SHIM).toContain("current\\bin\\copilot-env.exe");
+    expect(POWERSHELL_CURRENT_SHIM).toContain(
+      "$Binary = Join-Path (Split-Path -Parent $Here) 'current\\bin\\copilot-env.exe'",
+    );
     expect(POWERSHELL_CURRENT_SHIM).toContain("exit $LASTEXITCODE");
+    expectPreflightHook(
+      POSIX_CURRENT_SHIM,
+      POWERSHELL_CURRENT_SHIM,
+      "$HERE/../current/bin/copilot-env",
+    );
   });
 });
 

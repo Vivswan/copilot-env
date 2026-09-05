@@ -6,6 +6,7 @@ import {
   resolveProvenanceDecision,
 } from "../autoupdate/apply.ts";
 import { withUpdateLock } from "../autoupdate/lock.ts";
+import { runPreflight } from "../autoupdate/preflight.ts";
 import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/state.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { type Release, resolveTarget } from "../install/resolve-release.ts";
@@ -29,6 +30,8 @@ export interface UpdateArgs {
   force?: boolean;
   /** Print autoupdate status and exit. */
   autoStatus?: boolean;
+  /** Run the launchers' once-a-day autoupdate preflight and exit. */
+  preflight?: boolean;
   /** The --verify/--no-verify toggle: Commander folds the pair into ONE option (last
    *  one wins), so it arrives as one optional boolean -- true
    *  forces the build-provenance check on, false skips it for this run, absent
@@ -37,11 +40,13 @@ export interface UpdateArgs {
 }
 
 /** What ONE `agent update` invocation does, parsed ONCE at the CLI boundary: a report
- *  (`--check` / `--auto-status`) or the apply (the only arm `--force`/`--verify` ride on,
- *  so a report combined with them is a rejection, not an if-order pick). */
+ *  (`--check` / `--auto-status`), the launchers' preflight (`--preflight`), or the apply
+ *  (the only arm `--force`/`--verify` ride on, so another arm combined with them is a
+ *  rejection, not an if-order pick). */
 export type UpdateAction =
   | { kind: "check" }
   | { kind: "auto-status" }
+  | { kind: "preflight" }
   | { kind: "apply"; force: boolean; verify: boolean | undefined };
 
 /**
@@ -69,25 +74,36 @@ export function recheckVerdict(currentNow: string, targetNow: Release | null): R
 
 /** Parse the raw `agent update` flags into an UpdateAction (the CLI boundary). */
 export function parseUpdateAction(args: UpdateArgs): UpdateAction {
-  const reports = [args.check, args.autoStatus].filter(Boolean).length;
-  if (reports > 1) throw new Error("--check and --auto-status are mutually exclusive");
+  const reports = [args.check, args.autoStatus, args.preflight].filter(Boolean).length;
+  if (reports > 1) {
+    throw new Error("--check, --auto-status and --preflight are mutually exclusive");
+  }
   if (args.force && reports > 0) {
     throw new Error(
-      "--force only applies to the manual update; it does not combine with --check/--auto-status",
+      "--force only applies to the manual update; it does not combine with --check/--auto-status/--preflight",
     );
   }
   if (args.verify !== undefined && reports > 0) {
     throw new Error(
-      "--verify/--no-verify only apply to the manual update; they do not combine with --check/--auto-status",
+      "--verify/--no-verify only apply to the manual update; they do not combine with --check/--auto-status/--preflight",
     );
   }
   if (args.autoStatus) return { kind: "auto-status" };
+  if (args.preflight) return { kind: "preflight" };
   if (args.check) return { kind: "check" };
   return { kind: "apply", force: Boolean(args.force), verify: args.verify };
 }
 
 export async function runUpdate(args: UpdateArgs): Promise<void> {
   const action = parseUpdateAction(args);
+  if (action.kind === "preflight") {
+    // The launchers' hook (bin/agent and the installed shims, on `agent start` only): a
+    // compiled binary has no preflight.ts on disk to run, so it is reached here. Gated
+    // inside on the auto-update key and the daily cadence; stderr-only; never throws --
+    // so it runs BEFORE the strict config read below, which the checkout's direct
+    // preflight.ts run never goes through either.
+    return runPreflight({ nowMs: Date.now() });
+  }
   // The update/autoupdate cooldown is the stored config `update-cooldown` (set via
   // `agent config --set update-cooldown <days>`), else null (immediate). The config key is the
   // single knob -- there is no per-invocation flag.

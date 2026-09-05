@@ -13,6 +13,8 @@ import { isDue } from "../src/autoupdate/due.ts";
 import { withUpdateLockForTests } from "../src/autoupdate/lock.ts";
 import { autoupdateDir, autoupdateStateFile } from "../src/autoupdate/paths.ts";
 import { runPreflight } from "../src/autoupdate/preflight.ts";
+import { POSIX_SHIM } from "../src/install/installer.ts";
+import { INSTALLED_BINARY_POSIX } from "../src/install/targets.ts";
 import {
   AutoupdateState,
   DEFAULT_AUTOUPDATE_COOLDOWN_DAYS,
@@ -23,7 +25,7 @@ import { commandExists } from "../src/utils/command.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { packageVersion } from "../src/utils/version.ts";
-import { runSync } from "./helpers/run.ts";
+import { denoRunArgs, runSync } from "./helpers/run.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
 import { envSnapshot, removeDir, tmpDir } from "./helpers.ts";
 
@@ -308,6 +310,58 @@ test.skipIf(process.platform === "win32" && !commandExists("powershell"))(
     const env = launcherCalls("env");
     expect(env).toHaveLength(1);
     expect(env[0]).toMatch(/src[\\/]cli\.ts env$/);
+  },
+);
+
+// The INSTALLED shims carry the same gate, reached as the binary's own `update
+// --preflight` (a compiled binary has no preflight.ts on disk to run). The POSIX
+// per-version shim is executed against a fake `copilot-env` that records its argv and,
+// for the preflight call, runs the real CLI with an isolated home (auto-update unset,
+// so the preflight returns without a release check) and records ITS exit status too:
+// the shim's `|| true` would swallow a rejected flag, so the log is where acceptance
+// is proven. Nothing may reach stdout. (The PowerShell twin would need a real .exe to
+// stand in for; installer.test.ts pins its text.)
+function installedShimRun(sub: string): { calls: string[]; stdout: string } {
+  const root = tmpDir("copilot-env-installed-shim-");
+  try {
+    const bin = join(root, "bin");
+    const home = join(root, "home");
+    mkdirSync(bin, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(bin, "agent"), POSIX_SHIM, { mode: 0o755 });
+    const log = join(root, "calls.log");
+    const cli = [Deno.execPath(), ...denoRunArgs(), join(PROJECT_ROOT, "src", "cli.ts")]
+      .map((part) => `"${part}"`).join(" ");
+    writeFileSync(
+      join(bin, INSTALLED_BINARY_POSIX),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> "${log}"\n` +
+        `if [ "$1 $2" = "update --preflight" ]; then\n` +
+        `    ${cli} "$@"; status=$?; printf 'preflight exit %s\\n' "$status" >> "${log}"; exit "$status"\n` +
+        `fi\nexit 0\n`,
+      { mode: 0o755 },
+    );
+    const result = runSync("sh", [join(bin, "agent"), sub], {
+      env: { ...process.env, COPILOT_API_HOME: home },
+    });
+    if (result.exitCode !== 0) throw new Error(`shim failed: ${result.stderr}`);
+    return {
+      calls: existsSync(log)
+        ? readFileSync(log, "utf8").split("\n").filter((l) => l.length > 0)
+        : [],
+      stdout: result.stdout,
+    };
+  } finally {
+    removeDir(root);
+  }
+}
+
+test.skipIf(process.platform === "win32")(
+  "the installed shim runs the binary's `update --preflight` before `agent start` only",
+  () => {
+    const start = installedShimRun("start");
+    expect(start.calls).toEqual(["update --preflight", "preflight exit 0", "start"]);
+    expect(start.stdout).toBe("");
+    expect(installedShimRun("env").calls).toEqual(["env"]);
   },
 );
 

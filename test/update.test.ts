@@ -46,12 +46,21 @@ describe("parseUpdateAction", () => {
     });
     expect(parseUpdateAction({ check: true })).toEqual({ kind: "check" });
     expect(parseUpdateAction({ autoStatus: true })).toEqual({ kind: "auto-status" });
+    expect(parseUpdateAction({ preflight: true })).toEqual({ kind: "preflight" });
   });
 
   test("two report flags together are a rejection, never an if-order pick", () => {
-    expect(() => parseUpdateAction({ autoStatus: true, check: true })).toThrow(
-      "--check and --auto-status are mutually exclusive",
-    );
+    for (
+      const args of [
+        { autoStatus: true, check: true },
+        { preflight: true, check: true },
+        { preflight: true, autoStatus: true },
+      ]
+    ) {
+      expect(() => parseUpdateAction(args)).toThrow(
+        "--check, --auto-status and --preflight are mutually exclusive",
+      );
+    }
   });
 
   test("--force lives on the apply arm alone", () => {
@@ -59,6 +68,7 @@ describe("parseUpdateAction", () => {
       const args of [
         { check: true, force: true },
         { autoStatus: true, force: true },
+        { preflight: true, force: true },
       ]
     ) {
       expect(() => parseUpdateAction(args)).toThrow("--force only applies to the manual update");
@@ -70,6 +80,7 @@ describe("parseUpdateAction", () => {
       const args of [
         { check: true, verify: false },
         { autoStatus: true, verify: false },
+        { preflight: true, verify: false },
       ]
     ) {
       expect(() => parseUpdateAction(args)).toThrow(

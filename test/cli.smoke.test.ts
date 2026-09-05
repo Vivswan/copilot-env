@@ -963,3 +963,38 @@ test("update --auto-status reports the auto-update key honestly, on and off (off
     );
   }
 });
+
+// `--no-index` is a Commander negated flag (stored as `index: false`); only a real
+// parse proves the mapping onto runCost's `noIndex`. The pricing URL points at a
+// closed local port so the run prices nothing and never leaves the machine.
+test("cli.ts cost --no-index parses every log; without it the usage index is used", () => {
+  const env = isolatedEnv();
+  const projects = join(env.CLAUDE_CONFIG_DIR ?? "", "projects", "-Users-x-proj");
+  mkdirSync(projects, { recursive: true });
+  writeFileSync(
+    join(projects, "aaa.jsonl"),
+    `${
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-06-01T10:00:00.000Z",
+        message: {
+          id: "msg_1",
+          model: "claude-opus-4-8",
+          role: "assistant",
+          usage: { "input_tokens": 10, "output_tokens": 20 },
+        },
+      })
+    }\n`,
+  );
+  const runtimeOf = (...flags: string[]) => {
+    const proc = runCli(
+      ["cost", "--json", "--pricing-url", "https://127.0.0.1:9/models", ...flags],
+      { env },
+    );
+    expect(proc.exitCode).toBe(0);
+    return JSON.parse(proc.stdout).runtime as { indexed: boolean };
+  };
+  expect(runtimeOf().indexed).toBe(true);
+  expect(runtimeOf("--no-index").indexed).toBe(false);
+  expect(helpScreen("cost", "--help").output).toContain("--no-index");
+});

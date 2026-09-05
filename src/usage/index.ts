@@ -21,7 +21,6 @@ import { closeSync, mkdirSync, openSync, readSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { consola } from "consola";
 import * as v from "valibot";
-import { resolveRootHome } from "../copilot_api/paths.ts";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import { BOUNDED_LOCK_POLICY, type LockPolicy, withFileLockSync } from "../utils/file_lock.ts";
@@ -42,10 +41,10 @@ import {
   type UsageSource,
   type WalkedFile,
 } from "./contribution.ts";
+import { usageIndexDir } from "./paths.ts";
 
-/** The index directory under the root copilot-api home. */
-export const USAGE_INDEX_DIR_NAME = "usage-index";
-/** The database file inside it; its `-wal`/`-shm` sidecars sit beside it. */
+/** The database file inside the index directory (paths.ts); its `-wal`/`-shm`
+ *  sidecars sit beside it. */
 export const USAGE_INDEX_DB_NAME = "index.sqlite";
 /** The advisory lock every open and every write of the index takes. */
 export const USAGE_INDEX_LOCK_NAME = "index.lock";
@@ -91,10 +90,6 @@ CREATE TABLE IF NOT EXISTS "files" (
   "record" TEXT NOT NULL
 );
 `;
-
-export function usageIndexDir(): string {
-  return join(resolveRootHome(), USAGE_INDEX_DIR_NAME);
-}
 
 export interface OpenUsageIndexOptions {
   /** The index directory (default `usageIndexDir()`). */

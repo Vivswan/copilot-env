@@ -13,7 +13,7 @@ TypeScript port of the original Python `copilot-api` helper. Runs on **Linux, ma
 - **Named profiles**: `agent profile` bundles ONE credential + ONE mode (direct or proxy) into both agents, so several sessions run at once - direct beside proxy, or a second GitHub account - each proxy profile with its own daemon on its own port. Launch with `cl --profile <name>` / `cx --profile <name>`.
 - **Typed preferences**: `agent config` gets/sets every knob - lifecycle, ports, proxy feature flags, model ids - with one precedence rule everywhere.
 - **Web search for Claude Code on Direct**: the builtin WebSearch does not work against Copilot's Anthropic endpoint, so direct wiring registers the copilot-env MCP server (`agent mcp --serve`), whose `web_search` tool searches through Copilot's Responses API instead.
-- **Cost reporting**: estimated spend from the proxy's per-host usage DBs plus the Codex and Claude session logs, pre-indexed per file so a warm run is fast, priced via live OpenRouter rates.
+- **Cost reporting**: estimated spend from the proxy's per-host usage DBs plus the Codex and Claude session logs, pre-indexed per file so a warm run is fast, priced at cached public OpenRouter rates.
 - **Controlled floating**: the proxy floats to the newest cooldown-aged release within configured bounds; every other dependency is pinned via `deno.lock`.
 
 ## Install

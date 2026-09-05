@@ -531,8 +531,12 @@ program
   )
   .option(
     "--pricing-url <url>",
-    "OpenRouter models API URL for live pricing.",
+    "OpenRouter models API URL for the public price list (cached for a day).",
     OPENROUTER_MODELS_URL,
+  )
+  .option(
+    "--no-index",
+    "Parse every session log instead of reading through the usage index (never opens or writes it).",
   )
   .addHelpText(
     "after",
@@ -559,6 +563,8 @@ program
       perDay: Boolean(opts.perDay),
       pricingUrl: String(opts.pricingUrl),
       sources: Boolean(opts.sources),
+      // Commander stores a `--no-<name>` flag as `<name>: false`.
+      noIndex: opts.index === false,
     })
   );
 

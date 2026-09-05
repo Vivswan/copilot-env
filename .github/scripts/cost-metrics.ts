@@ -42,7 +42,7 @@ const COST_ARGS = ["-P=cli", "src/cli.ts", "cost", "--json", "--per-day"];
 /**
  * The one top-level JSON key that describes the run rather than the cost (timings, index
  * statistics). It is the only key dropped before the comparison; when present, the comment
- * says so. Its `index.bytesRead` feeds the "warm bytes read" column.
+ * says so. Its `index.bytesRead` feeds the "warm bytes read" row.
  */
 const RUNTIME_KEY = "runtime";
 
@@ -85,6 +85,8 @@ interface CommentOptions {
 interface Checkout {
   label: string;
   dir: string;
+  /** Whether this checkout's `cost` knows NO_INDEX_FLAG (a base may predate the index). */
+  noIndex: boolean;
 }
 
 interface Measurement {
@@ -94,9 +96,13 @@ interface Measurement {
   text: string;
 }
 
-interface Timing {
-  label: string;
-  ms: number;
+/** One side's numbers for a window; undefined where the checkout could not produce one. */
+export interface SideMetrics {
+  coldMs: number;
+  warmMs: number;
+  noIndexMs: number | undefined;
+  /** The warm run's `runtime.index.bytesRead`, when its payload carried it. */
+  bytesRead: number | undefined;
 }
 
 /** The generator's summary line, validated: only these fields ever reach the comment. */
@@ -123,11 +129,10 @@ type Outcome =
   | { kind: "transient"; labels: [string, ...string[]] }
   | { kind: "differs"; labels: [string, ...string[]]; diff: string };
 
-interface WindowResult {
+export interface WindowResult {
   window: string;
-  base: Timing;
-  head: Timing[];
-  bytesRead: number | undefined;
+  base: SideMetrics;
+  head: SideMetrics;
   outcome: Outcome;
   /** Whether any run's payload carried RUNTIME_KEY (dropped before the comparison). */
   runtimeKeyPresent: boolean;
@@ -521,12 +526,11 @@ function treeDigest(root: string): string {
 }
 
 /** Whether the checkout's `cost` command knows NO_INDEX_FLAG; a failing --help is an error. */
-async function supportsNoIndex(checkout: Checkout, env: Record<string, string>): Promise<boolean> {
-  const help = await mustRun(
-    "deno",
-    [...denoRun(checkout.dir), "-P=cli", "src/cli.ts", "cost", "--help"],
-    { cwd: checkout.dir, env },
-  );
+async function supportsNoIndex(dir: string, env: Record<string, string>): Promise<boolean> {
+  const help = await mustRun("deno", [...denoRun(dir), "-P=cli", "src/cli.ts", "cost", "--help"], {
+    cwd: dir,
+    env,
+  });
   return help.stdout.includes(NO_INDEX_FLAG);
 }
 
@@ -769,7 +773,6 @@ async function unifiedDiff(scratch: string, baseText: string, headText: string):
 interface Bench {
   base: Checkout;
   head: Checkout;
-  noIndex: boolean;
   treeHome: string;
   cache: string;
   scratch: string;
@@ -810,6 +813,45 @@ export async function classifyPayloads(
   );
 }
 
+/** One side's timed runs of a window: cold, warm, and --no-index when the flag is known. */
+interface SideRuns {
+  cold: Measurement;
+  warm: Measurement;
+  noIndex: Measurement | undefined;
+}
+
+/**
+ * One home for the whole sequence: cold builds whatever the checkout caches, warm reads it,
+ * and --no-index runs with the same caches but the index bypassed, so its number isolates
+ * the index rather than a cold pricing cache.
+ */
+async function measureSide(bench: Bench, checkout: Checkout, window: Window): Promise<SideRuns> {
+  const env = treeEnv(bench.treeHome, bench.freshHome(checkout.label), bench.cache);
+  const cold = await measure(checkout, window.args, env);
+  const warm = await measure(checkout, window.args, env);
+  const noIndex = checkout.noIndex
+    ? await measure(checkout, [...window.args, NO_INDEX_FLAG], env)
+    : undefined;
+  return { cold, warm, noIndex };
+}
+
+function sideRunList(runs: SideRuns): { label: string; run: Measurement }[] {
+  return [
+    { label: "cold", run: runs.cold },
+    { label: "warm", run: runs.warm },
+    ...(runs.noIndex === undefined ? [] : [{ label: NO_INDEX_FLAG, run: runs.noIndex }]),
+  ];
+}
+
+function sideMetrics(runs: SideRuns): SideMetrics {
+  return {
+    coldMs: runs.cold.ms,
+    warmMs: runs.warm.ms,
+    noIndexMs: runs.noIndex?.ms,
+    bytesRead: bytesRead(runs.warm.json),
+  };
+}
+
 async function measureWindow(bench: Bench, window: Window): Promise<WindowResult> {
   const env = (home: string): Record<string, string> => treeEnv(bench.treeHome, home, bench.cache);
   const { base, head } = bench;
@@ -822,41 +864,30 @@ async function measureWindow(bench: Bench, window: Window): Promise<WindowResult
   await measure(head, window.args, env(bench.freshHome("prime-head")));
 
   console.log(`${window.label}: measuring`);
-  const baseRun = await measure(base, window.args, env(bench.freshHome("base")));
-  assertWindowHasUsage(window.label, baseRun.json);
-  // One head home for the whole sequence: cold builds whatever the head caches, warm reads
-  // it, and --no-index runs with the same caches but the index bypassed, so its number
-  // isolates the index rather than a cold pricing cache.
-  const headHome = bench.freshHome("head");
-  const headRuns = [
-    { label: "head cold", run: await measure(head, window.args, env(headHome)) },
-    { label: "head warm", run: await measure(head, window.args, env(headHome)) },
-  ];
-  if (bench.noIndex) {
-    headRuns.push({
-      label: `head ${NO_INDEX_FLAG}`,
-      run: await measure(head, [...window.args, NO_INDEX_FLAG], env(headHome)),
-    });
-  }
+  const baseRuns = await measureSide(bench, base, window);
+  assertWindowHasUsage(window.label, baseRuns.cold.json);
+  const headRuns = await measureSide(bench, head, window);
   let recheckRun: Measurement | undefined;
   const { outcome } = await classifyPayloads(
-    baseRun.text,
-    headRuns.map(({ label, run }) => ({ label, text: run.text })),
+    baseRuns.cold.text,
+    sideRunList(headRuns).map(({ label, run }) => ({ label: `head ${label}`, text: run.text })),
     async () => {
       console.log(`${window.label}: a head payload differs, re-running base`);
       recheckRun = await measure(base, window.args, env(bench.freshHome("base-recheck")));
       return recheckRun.text;
     },
-    (headText) => unifiedDiff(bench.scratch, baseRun.text, headText),
+    (headText) => unifiedDiff(bench.scratch, baseRuns.cold.text, headText),
   );
 
-  const warm = headRuns.find(({ label }) => label === "head warm");
-  const allRuns = [baseRun, ...headRuns.map(({ run }) => run), ...(recheckRun ? [recheckRun] : [])];
+  const allRuns = [
+    ...sideRunList(baseRuns).map(({ run }) => run),
+    ...sideRunList(headRuns).map(({ run }) => run),
+    ...(recheckRun ? [recheckRun] : []),
+  ];
   return {
     window: window.label,
-    base: { label: "base cold", ms: baseRun.ms },
-    head: headRuns.map(({ label, run }) => ({ label, ms: run.ms })),
-    bytesRead: warm === undefined ? undefined : bytesRead(warm.run.json),
+    base: sideMetrics(baseRuns),
+    head: sideMetrics(headRuns),
     outcome,
     runtimeKeyPresent: allRuns.some(({ json }) => RUNTIME_KEY in json),
   };
@@ -873,6 +904,53 @@ function verdictCell(outcome: Outcome): string {
   }
 }
 
+/**
+ * The diff cell of one measure row: head minus base with the unit, then the percent of base,
+ * each with its own sign (a percent that rounds to zero is `+0.0%`). No percent when the base
+ * is 0, and an empty cell when either side has no value.
+ */
+export function deltaCell(
+  head: number | undefined,
+  base: number | undefined,
+  unit: string,
+): string {
+  if (head === undefined || base === undefined) return "";
+  const delta = head - base;
+  const signed = (value: number, digits: number): string =>
+    `${value < 0 ? "-" : "+"}${Math.abs(value).toFixed(digits)}`;
+  if (base === 0) return `${signed(delta, 0)}${unit}`;
+  const percent = Number((delta / base * 100).toFixed(1));
+  return `${signed(delta, 0)}${unit} (${signed(percent, 1)}%)`;
+}
+
+/** The measure rows, one per line: label, the side's value, and its unit. */
+const MEASURE_ROWS: readonly [string, (side: SideMetrics) => number | undefined, string][] = [
+  ["cold", (side) => side.coldMs, " ms"],
+  ["warm", (side) => side.warmMs, " ms"],
+  [NO_INDEX_FLAG, (side) => side.noIndexMs, " ms"],
+  ["warm bytes read", (side) => side.bytesRead, ""],
+];
+
+/** One window's caption and markdown table: a row per measure, base | head | diff. */
+export function renderWindowTable(result: WindowResult): string[] {
+  const value = (v: number | undefined, unit: string): string =>
+    v === undefined ? "n/a" : `${v}${unit}`;
+  const rows = MEASURE_ROWS.map(([label, pick, unit]) => [
+    label,
+    value(pick(result.base), unit),
+    value(pick(result.head), unit),
+    deltaCell(pick(result.head), pick(result.base), unit),
+  ]);
+  rows.push(["JSON vs base", "", "", verdictCell(result.outcome)]);
+  return [
+    `**${result.window}**`,
+    "",
+    "| measure | base | head | diff |",
+    "| --- | --- | --- | --- |",
+    ...rows.map((row) => `| ${row.join(" | ")} |`),
+  ];
+}
+
 function renderComment(
   results: readonly WindowResult[],
   opts: MeasureOptions,
@@ -880,25 +958,7 @@ function renderComment(
   measuredSha: string,
   tree: TreeSummary,
 ): string {
-  const first = results[0];
-  if (first === undefined) throw new Error("no windows measured");
-  const hasBytesColumn = results.some((result) => result.bytesRead !== undefined);
-  const headers = ["window", first.base.label, ...first.head.map((cell) => cell.label)];
-  if (hasBytesColumn) headers.push("warm bytes read");
-  headers.push("JSON vs base");
-  const rows = results.map((result) => {
-    const cells = [result.window, `${result.base.ms} ms`, ...result.head.map((c) => `${c.ms} ms`)];
-    if (hasBytesColumn) {
-      cells.push(result.bytesRead === undefined ? "n/a" : String(result.bytesRead));
-    }
-    cells.push(verdictCell(result.outcome));
-    return cells;
-  });
-  const table = [
-    `| ${headers.join(" | ")} |`,
-    `| ${headers.map(() => "---").join(" | ")} |`,
-    ...rows.map((row) => `| ${row.join(" | ")} |`),
-  ];
+  if (results.length === 0) throw new Error("no windows measured");
   const anyDiffers = results.some((result) => result.outcome.kind === "differs");
   const headLabel = opts.headSha !== undefined && shortSha(opts.headSha) !== shortSha(measuredSha)
     ? `${shortSha(measuredSha)} (merge of PR head ${shortSha(opts.headSha)})`
@@ -909,13 +969,13 @@ function renderComment(
     "",
     "`agent cost --json --per-day` over one synthetic tree, base and head back to back on one runner.",
     "",
-    ...table,
-    "",
+    ...results.flatMap((result) => [...renderWindowTable(result), ""]),
     `- base \`${shortSha(baseSha)}\`, head \`${headLabel}\``,
     `- tree: ${opts.mb} MB requested, seed ${opts.seed}; ${tree.files} files, ${tree.bytes} bytes, ` +
     `days ${tree.firstDay}..${tree.lastDay}`,
-    "- cold: first run in a fresh copilot-env home; warm: second run in the same home. Both " +
-    "checkouts were primed untimed first, so the numbers compare the scans, not the disk.",
+    "- cold: first run in a fresh copilot-env home; warm: second run in the same home; " +
+    `${NO_INDEX_FLAG}: a third run there with the index bypassed. Both checkouts were primed ` +
+    "untimed first, so the numbers compare the scans, not the disk.",
   ];
   if (results.some((result) => result.runtimeKeyPresent)) {
     lines.push(`- compared with the \`${RUNTIME_KEY}\` key dropped`);
@@ -974,21 +1034,20 @@ async function runMeasure(opts: MeasureOptions): Promise<void> {
       what: "remove scratch",
       run: () => rmSync(scratch, { recursive: true, force: true }),
     });
-    const base: Checkout = { label: "base", dir: join(scratch, "base") };
-    const head: Checkout = { label: "head", dir: REPO_ROOT };
+    const baseDir = join(scratch, "base");
     const treeHome = join(scratch, "home");
     let homes = 0;
     const freshHome = (name: string): string => join(scratch, "homes", `${++homes}-${name}`);
 
-    console.log(`base ${shortSha(baseSha)} -> worktree ${base.dir}`);
-    await git(["worktree", "add", "--detach", base.dir, baseSha]);
+    console.log(`base ${shortSha(baseSha)} -> worktree ${baseDir}`);
+    await git(["worktree", "add", "--detach", baseDir, baseSha]);
     teardown.unshift({
       what: "worktree remove",
       run: async () => {
-        await git(["worktree", "remove", "--force", base.dir]);
+        await git(["worktree", "remove", "--force", baseDir]);
       },
     });
-    await mustRun("deno", ["ci"], { cwd: base.dir, env: setupEnv() });
+    await mustRun("deno", ["ci"], { cwd: baseDir, env: setupEnv() });
 
     console.log(`generating a ${opts.mb} MB tree (seed ${opts.seed}) into ${treeHome}`);
     const tree = await generateTree(opts, treeHome);
@@ -999,10 +1058,10 @@ async function runMeasure(opts: MeasureOptions): Promise<void> {
     sealTree(treeHome);
     const digest = treeDigest(treeHome);
 
+    const probeEnv = treeEnv(treeHome, freshHome("probe"), cache);
     const bench: Bench = {
-      base,
-      head,
-      noIndex: await supportsNoIndex(head, treeEnv(treeHome, freshHome("probe"), cache)),
+      base: { label: "base", dir: baseDir, noIndex: await supportsNoIndex(baseDir, probeEnv) },
+      head: { label: "head", dir: REPO_ROOT, noIndex: await supportsNoIndex(REPO_ROOT, probeEnv) },
       treeHome,
       cache,
       scratch,

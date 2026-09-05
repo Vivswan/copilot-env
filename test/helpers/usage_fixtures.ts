@@ -873,13 +873,13 @@ function writeText(g: Generator, source: UsageSource, file: string, body: string
 
 /** Every instant one line carries: its top-level `timestamp` and the nested numeric ones
  *  (`started_at`, `completed_at_ms`, ...), which a fork copy keeps from the parent. */
-export interface LineStamps {
+interface LineStamps {
   outer?: number;
   nested: number[];
 }
 
 /** The earliest and latest instant a set of stamps carries, nested ones included. */
-export function spanOf(stamps: Iterable<LineStamps>): { first: number; last: number } {
+function spanOf(stamps: Iterable<LineStamps>): { first: number; last: number } {
   let first = Number.POSITIVE_INFINITY;
   let last = Number.NEGATIVE_INFINITY;
   for (const { outer, nested } of stamps) {
@@ -946,7 +946,7 @@ function templateInstants(template: Json): InstantPlaceholder[] {
 }
 
 /** The stamps a rendered line carries, from its template's instant placeholders and `ctx`. */
-export function lineStamps(template: Json, ctx: Record<string, Json>): LineStamps {
+function lineStamps(template: Json, ctx: Record<string, Json>): LineStamps {
   const instants = templateInstants(template);
   const nested: number[] = [];
   for (const name of instants) {

@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.0.1](https://github.com/Vivswan/copilot-env/compare/v4.0.0...v4.0.1) (2026-09-05)
+
+
+### Features
+
+* drive the Claude Desktop wiring from the claude-desktop config key ([#133](https://github.com/Vivswan/copilot-env/issues/133)) ([4763df6](https://github.com/Vivswan/copilot-env/commit/4763df6f16f4dda491f5fefc8b3472a11aa42719))
+* drive the per-host CODEX_HOME farm, autoupdate and launchers from config keys ([#135](https://github.com/Vivswan/copilot-env/issues/135)) ([80ec378](https://github.com/Vivswan/copilot-env/commit/80ec3789f3728d2da1c978e114418fac1645771c))
+* verify release provenance in agent update ([#130](https://github.com/Vivswan/copilot-env/issues/130)) ([3e3040f](https://github.com/Vivswan/copilot-env/commit/3e3040f06933f78095b0448933629f0d24a007c2))
+
+
+### Bug Fixes
+
+* drop the release-as pin left by the 4.0.0 release ([48384ea](https://github.com/Vivswan/copilot-env/commit/48384eaa9352b90c5d9f80894add828937d042e2))
+* identify Claude Desktop entries by uuid path and leave the default in place when claude-desktop is off ([#138](https://github.com/Vivswan/copilot-env/issues/138)) ([74cb360](https://github.com/Vivswan/copilot-env/commit/74cb3608e9b7474fe80235dd0e2fd635057c74bc))
+
 ## [4.0.0](https://github.com/Vivswan/copilot-env/compare/v3.5.6...v4.0.0) (2026-09-04)
 
 

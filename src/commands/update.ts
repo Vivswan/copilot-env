@@ -6,8 +6,11 @@ import {
   resolveProvenanceDecision,
 } from "../autoupdate/apply.ts";
 import { withUpdateLock } from "../autoupdate/lock.ts";
-import { runPreflight } from "../autoupdate/preflight.ts";
-import { AutoupdateState, effectiveUpdateCooldownDays } from "../autoupdate/state.ts";
+import {
+  adoptLegacyEnabledFlag,
+  AutoupdateState,
+  effectiveUpdateCooldownDays,
+} from "../autoupdate/state.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { type Release, resolveTarget } from "../install/resolve-release.ts";
 import { assertNever } from "../utils/assert.ts";
@@ -28,13 +31,10 @@ import { packageVersion } from "../utils/version.ts";
 export interface UpdateArgs {
   check?: boolean;
   force?: boolean;
-  /** The --auto/--no-auto toggle: Commander folds the pair into ONE option (last
-   *  one wins), so it arrives as one optional boolean -- true enables autoupdate
-   *  (and applies once immediately), false disables it, absent means neither. */
-  auto?: boolean;
   /** Print autoupdate status and exit. */
   autoStatus?: boolean;
-  /** The --verify/--no-verify toggle (same Commander folding as --auto): true
+  /** The --verify/--no-verify toggle: Commander folds the pair into ONE option (last
+   *  one wins), so it arrives as one optional boolean -- true
    *  forces the build-provenance check on, false skips it for this run, absent
    *  defers to the stored `verify-provenance` config (default: verify). */
   verify?: boolean;
@@ -42,16 +42,15 @@ export interface UpdateArgs {
 
 /**
  * What ONE `agent update` invocation does -- a status report (`--check` /
- * `--auto-status`), an autoupdate toggle, or the manual apply -- parsed ONCE by
- * `parseUpdateAction` at the CLI boundary. `--force` lives on the apply arm
- * alone, so `--auto-status --check` (or a report combined with `--force`) is a
- * rejection instead of whichever flag the old if-chain reached first.
+ * `--auto-status`) or the manual apply -- parsed ONCE by `parseUpdateAction` at
+ * the CLI boundary. `--force` lives on the apply arm alone, so `--auto-status
+ * --check` (or a report combined with `--force`) is a rejection instead of
+ * whichever flag the old if-chain reached first. The autoupdate preference is the
+ * `auto-update` config key, not a flag here.
  */
 export type UpdateAction =
   | { kind: "check" }
   | { kind: "auto-status" }
-  | { kind: "enable-auto" }
-  | { kind: "disable-auto" }
   | { kind: "apply"; force: boolean; verify: boolean | undefined };
 
 /**
@@ -79,23 +78,19 @@ export function recheckVerdict(currentNow: string, targetNow: Release | null): R
 
 /** Parse the raw `agent update` flags into an UpdateAction (the CLI boundary). */
 export function parseUpdateAction(args: UpdateArgs): UpdateAction {
-  const reports = [args.check, args.auto !== undefined, args.autoStatus].filter(Boolean).length;
-  if (reports > 1) {
-    throw new Error("--check, --auto/--no-auto, and --auto-status are mutually exclusive");
-  }
+  const reports = [args.check, args.autoStatus].filter(Boolean).length;
+  if (reports > 1) throw new Error("--check and --auto-status are mutually exclusive");
   if (args.force && reports > 0) {
     throw new Error(
-      "--force only applies to the manual update; it does not combine with --check/--auto/--no-auto/--auto-status",
+      "--force only applies to the manual update; it does not combine with --check/--auto-status",
     );
   }
   if (args.verify !== undefined && reports > 0) {
     throw new Error(
-      "--verify/--no-verify only apply to the manual update; they do not combine with --check/--auto/--no-auto/--auto-status",
+      "--verify/--no-verify only apply to the manual update; they do not combine with --check/--auto-status",
     );
   }
   if (args.autoStatus) return { kind: "auto-status" };
-  if (args.auto === false) return { kind: "disable-auto" };
-  if (args.auto === true) return { kind: "enable-auto" };
   if (args.check) return { kind: "check" };
   return { kind: "apply", force: Boolean(args.force), verify: args.verify };
 }
@@ -111,14 +106,13 @@ export async function runUpdate(args: UpdateArgs): Promise<void> {
 
   switch (action.kind) {
     case "auto-status":
-      return runAutoStatus();
-    case "disable-auto":
-      return runDisableAuto();
-    case "enable-auto":
-      return runEnableAuto();
+      return runAutoStatus(config);
     case "check":
       return runManualUpdate({ check: true, cooldown, force: false });
     case "apply":
+      // The one write site here: self-heal a pre-key install before updating (the
+      // reports stay read-only, see runAutoStatus).
+      adoptLegacyEnabledFlag((line) => consola.info(line), new AutoupdateState(), config);
       return runManualUpdate({
         check: false,
         cooldown,
@@ -131,29 +125,24 @@ export async function runUpdate(args: UpdateArgs): Promise<void> {
   }
 }
 
-function runAutoStatus(): void {
-  const s = new AutoupdateState().read();
+function runAutoStatus(config: CopilotEnvConfig): void {
+  const state = new AutoupdateState();
+  const s = state.read();
   const cooldown = effectiveUpdateCooldownDays();
   const last = s.lastCheckMs > 0 ? new Date(s.lastCheckMs).toISOString() : "never";
   consola.info(
-    `Autoupdate: ${s.enabled ? "enabled" : "disabled"} | cooldown ${cooldown}d | ` +
+    `Autoupdate: ${
+      config.autoUpdateEnabled() ? "enabled" : "disabled"
+    } (the auto-update config key) | cooldown ${cooldown}d | ` +
       `last check ${last} | last result: ${s.lastResult || "(none)"}`,
   );
-}
-
-function runDisableAuto(): void {
-  new AutoupdateState().set({ enabled: false });
-  consola.success("Autoupdate disabled.");
-}
-
-async function runEnableAuto(): Promise<void> {
-  const cooldownDays = effectiveUpdateCooldownDays();
-  const state = new AutoupdateState();
-  state.set({ enabled: true });
-  consola.success(`Autoupdate enabled (cooldown ${cooldownDays}d). Checking now ...`);
-  // Enable + apply now: run the daily routine once immediately, forcing past the
-  // once-per-day gate. Failures are recorded in state and never throw out.
-  await runPreflight({ nowMs: Date.now(), force: true, state });
+  // A read-only report: a pre-key flag is named, not adopted here.
+  if (state.legacyEnabled().present) {
+    consola.info(
+      `A legacy autoupdate flag is still in ${state.path}; the next \`agent start\` or ` +
+        "`agent update` moves it into the auto-update key.",
+    );
+  }
 }
 
 async function runManualUpdate(

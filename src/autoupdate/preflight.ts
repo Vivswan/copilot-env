@@ -1,7 +1,10 @@
-// The once-per-day autoupdate routine. Run by the launchers (via the
-// `import.meta.main` guard) before a normal command, and once immediately by
-// `agent update --auto`. All output goes to stderr (stderr-routed consola) so the
-// `agent env` stdout contract is never at risk; the launchers also skip `env`.
+// The once-per-day autoupdate routine, gated on the `auto-update` config key. Run
+// by the launchers (via the `import.meta.main` guard) before `agent start`. All
+// output goes to stderr (stderr-routed consola) so the `agent env` stdout contract
+// is never at risk; the launchers also skip `env`.
+// Root .env first (as cli.ts does): COPILOT_API_HOME may live only there, and the
+// config store the gate reads resolves under it.
+import "../utils/dotenv.ts";
 import { resolveTarget } from "../install/resolve-release.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
@@ -12,24 +15,24 @@ import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { applyUpdate, resolveProvenanceDecision } from "./apply.ts";
 import { isDue } from "./due.ts";
 import { type HeldUpdateLock, withUpdateLock } from "./lock.ts";
-import { AutoupdateState, effectiveUpdateCooldownDays } from "./state.ts";
+import { adoptLegacyEnabledFlag, AutoupdateState, effectiveUpdateCooldownDays } from "./state.ts";
 
 const logger = createStderrLogger();
 
 export interface PreflightOptions {
   nowMs: number;
-  /** Bypass the once-per-day gate (used by `agent update --auto`). */
-  force?: boolean;
   /** Injectable for tests; defaults to the real on-disk state. */
   state?: AutoupdateState;
 }
 
-/** Run the autoupdate check (and apply) if enabled and due. Non-throwing. */
+/** Run the autoupdate check (and apply) if the `auto-update` key is on and a check
+ *  is due. Non-throwing. */
 export async function runPreflight(opts: PreflightOptions): Promise<void> {
   const state = opts.state ?? new AutoupdateState();
-  const data = state.read();
-  if (!data.enabled) return;
-  if (!opts.force && !isDue(data.lastCheckMs, opts.nowMs)) return;
+  const config = new CopilotEnvConfig();
+  adoptLegacyEnabledFlag((line) => logger.info(`autoupdate: ${line}`), state, config);
+  if (!config.autoUpdateEnabled()) return;
+  if (!isDue(state.read().lastCheckMs, opts.nowMs)) return;
 
   await withUpdateLock(opts.nowMs, async (outcome) => {
     if (!outcome.held) {

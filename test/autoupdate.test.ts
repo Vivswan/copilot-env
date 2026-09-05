@@ -3,11 +3,15 @@ import { join } from "node:path";
 import { isDue } from "../src/autoupdate/due.ts";
 import { withUpdateLockForTests } from "../src/autoupdate/lock.ts";
 import { autoupdateDir, autoupdateStateFile } from "../src/autoupdate/paths.ts";
+import { runPreflight } from "../src/autoupdate/preflight.ts";
 import {
+  adoptLegacyEnabledFlag,
   AutoupdateState,
   DEFAULT_AUTOUPDATE_COOLDOWN_DAYS,
   effectiveUpdateCooldownDays,
 } from "../src/autoupdate/state.ts";
+import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
+import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { afterEach, expect, test } from "./helpers/testing.ts";
@@ -29,7 +33,7 @@ function tmp(name: string): string {
 test("autoupdate state lives at the TOP of a versioned root, never through the link", () => {
   // The state is machine state: written through `<top>/current` it would land
   // inside a version dir, and the next update's GC (or just the flip) would
-  // silently drop the opt-in.
+  // silently drop the check record (and re-check the next day).
   const top = tmpDir("copilot-env-autoupdate-paths-");
   try {
     expect(autoupdateDir(top)).toBe(join(top, ".autoupdate")); // flat: in place
@@ -47,18 +51,17 @@ test("autoupdate state lives at the TOP of a versioned root, never through the l
 
 // --- AutoupdateState --------------------------------------------------------
 
-test("AutoupdateState defaults to disabled when absent", () => {
+test("AutoupdateState defaults to never-checked when absent", () => {
   const s = new AutoupdateState(tmp("state.json")).read();
-  expect(s).toEqual({ enabled: false, lastCheckMs: 0, lastResult: "" });
+  expect(s).toEqual({ lastCheckMs: 0, lastResult: "" });
 });
 
-test("AutoupdateState round-trips enable/result and preserves unknown keys", () => {
+test("AutoupdateState round-trips the check record and preserves unknown keys", () => {
   const path = tmp("state.json");
   writeFileSync(path, JSON.stringify({ keep: "me" }));
   const state = new AutoupdateState(path);
-  state.set({ enabled: true, lastCheckMs: 1234, lastResult: "updated v1.2.3" });
+  state.set({ lastCheckMs: 1234, lastResult: "updated v1.2.3" });
   expect(new AutoupdateState(path).read()).toEqual({
-    enabled: true,
     lastCheckMs: 1234,
     lastResult: "updated v1.2.3",
   });
@@ -66,29 +69,117 @@ test("AutoupdateState round-trips enable/result and preserves unknown keys", () 
   expect(JSON.parse(readFileSync(path, "utf-8")).keep).toBe("me");
 });
 
-test("AutoupdateState disable flips enabled without clobbering the last result", () => {
-  const path = tmp("state.json");
-  const state = new AutoupdateState(path);
-  state.set({ enabled: true, lastResult: "up to date" });
-  state.set({ enabled: false });
-  expect(new AutoupdateState(path).read()).toMatchObject({
-    enabled: false,
-    lastResult: "up to date",
-  });
-});
-
 test("AutoupdateState coerces ill-typed fields back to safe defaults", () => {
   const path = tmp("state.json");
   // `cooldownDays` is a legacy key (pre-live-cooldown releases snapshotted it);
-  // the lenient schema simply ignores it.
+  // the lenient schema simply ignores it, and `enabled` is only the legacy read's.
   writeFileSync(
     path,
     JSON.stringify({ enabled: "yes", cooldownDays: 14, lastCheckMs: "soon", lastResult: 42 }),
   );
-  expect(new AutoupdateState(path).read()).toEqual({
-    enabled: false, // only `true` enables
+  const state = new AutoupdateState(path);
+  expect(state.read()).toEqual({
     lastCheckMs: 0, // non-number -> 0
     lastResult: "", // non-string -> ""
+  });
+  // A junk `enabled` is still a leftover field to drop, just never an opt-in.
+  expect(state.legacyEnabled()).toEqual({ present: true, on: false });
+});
+
+// --- the pre-key `enabled` flag (self-heal, no migration file) ------------------
+// `agent update` and the preflight both run this; the config store rides the isolated
+// COPILOT_API_HOME.
+
+function isolatedConfig(): { config: CopilotEnvConfig; file: string } {
+  process.env.COPILOT_API_HOME = dir;
+  return { config: new CopilotEnvConfig(), file: new CopilotApiPaths().envConfigFile };
+}
+
+/** Run the adoption, collecting the lines it reports (one per write, in order). */
+function adopt(state: AutoupdateState, config: CopilotEnvConfig): string[] {
+  const lines: string[] = [];
+  adoptLegacyEnabledFlag((line) => lines.push(line), state, config);
+  return lines;
+}
+
+test("adoptLegacyEnabledFlag: a legacy true moves into an UNSET auto-update key, then leaves the file", () => {
+  const path = tmp("state.json");
+  const { config, file } = isolatedConfig();
+  writeFileSync(path, JSON.stringify({ enabled: true, lastCheckMs: 5, lastResult: "up to date" }));
+  const state = new AutoupdateState(path);
+  expect(adopt(state, config)).toEqual([
+    `Recorded auto-update = true (adopted the legacy autoupdate flag from ${path}) -> ${file}`,
+    `Dropped the legacy autoupdate flag -> ${path}`,
+  ]);
+  expect(config.read().autoUpdate).toBe(true);
+  // The throttle state survives; the preference is gone from the file for good.
+  expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({
+    lastCheckMs: 5,
+    lastResult: "up to date",
+  });
+  expect(state.legacyEnabled()).toEqual({ present: false });
+  // Idempotent: a second run has nothing left to do.
+  expect(adopt(state, config)).toEqual([]);
+});
+
+test("adoptLegacyEnabledFlag: a stored key is the user's decision; a legacy false or junk records nothing", () => {
+  const path = tmp("state.json");
+  const { config } = isolatedConfig();
+  // Stored false + legacy true: the key stands, the stale flag still goes.
+  config.set({ autoUpdate: false });
+  writeFileSync(path, JSON.stringify({ enabled: true }));
+  expect(adopt(new AutoupdateState(path), config)).toEqual([
+    `Dropped the legacy autoupdate flag -> ${path}`,
+  ]);
+  expect(config.read().autoUpdate).toBe(false);
+  // Unset key + legacy false (or junk): the default already says off, so only the drop happens.
+  config.del("autoUpdate");
+  for (const legacy of [false, "yes"]) {
+    writeFileSync(path, JSON.stringify({ enabled: legacy }));
+    expect(adopt(new AutoupdateState(path), config)).toEqual([
+      `Dropped the legacy autoupdate flag -> ${path}`,
+    ]);
+    expect(config.read().autoUpdate).toBeUndefined();
+    expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({});
+  }
+  // No file at all: nothing to adopt, nothing written.
+  expect(adopt(new AutoupdateState(join(dir, "none.json")), config)).toEqual([]);
+  expect(existsSync(join(dir, "none.json"))).toBe(false);
+});
+
+// The preflight's gate is the key: off -> nothing, even when a check is due; on but
+// not due -> nothing. (An on-and-due run would resolve releases over the network, so
+// it is not driven here.) Both runs also adopt a legacy flag they find.
+test("runPreflight honors the auto-update key and adopts a legacy flag on the way", async () => {
+  const path = tmp("state.json");
+  const { config } = isolatedConfig();
+  const now = Date.parse("2026-06-10T00:00:00.000Z");
+  // Off (default), a check long due: untouched.
+  writeFileSync(path, JSON.stringify({ lastCheckMs: 1, lastResult: "up to date" }));
+  await runPreflight({ nowMs: now, state: new AutoupdateState(path) });
+  expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({
+    lastCheckMs: 1,
+    lastResult: "up to date",
+  });
+  // On, checked a minute ago: not due, untouched.
+  config.set({ autoUpdate: true });
+  writeFileSync(path, JSON.stringify({ lastCheckMs: now - 60_000, lastResult: "up to date" }));
+  await runPreflight({ nowMs: now, state: new AutoupdateState(path) });
+  expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({
+    lastCheckMs: now - 60_000,
+    lastResult: "up to date",
+  });
+  // A legacy flag under an unset key is adopted first (then the not-due gate holds).
+  config.del("autoUpdate");
+  writeFileSync(
+    path,
+    JSON.stringify({ enabled: true, lastCheckMs: now - 60_000, lastResult: "x" }),
+  );
+  await runPreflight({ nowMs: now, state: new AutoupdateState(path) });
+  expect(config.read().autoUpdate).toBe(true);
+  expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({
+    lastCheckMs: now - 60_000,
+    lastResult: "x",
   });
 });
 
@@ -102,7 +193,7 @@ test("effectiveUpdateCooldownDays: the live update-cooldown config, else the 7-d
 
 test("AutoupdateState writes a 0600 file (POSIX)", () => {
   const path = tmp("state.json");
-  new AutoupdateState(path).set({ enabled: true });
+  new AutoupdateState(path).set({ lastResult: "up to date" });
   if (process.platform !== "win32") {
     expect(statSync(path).mode & 0o777).toBe(0o600);
   }
@@ -135,17 +226,21 @@ test("bin/agent and bin/agent.ps1 gate the autoupdate preflight on the same subc
   // moving the call out from under the gate fails here too. Both sides are pinned
   // to the same literal ("start"), so one side changing its command word alone --
   // the drift this test exists to catch -- fails one of the word assertions.
-  const posixGate = posix.match(/^if \[ "\$\{1:-\}" = "([a-z-]+)" \][\s\S]*?^fi$/m);
+  // The subcommand is the WHOLE gate: the preference is the `auto-update` config key
+  // the preflight reads itself, so no file-exists conjunct may stand in for it (one
+  // would skip the very first check after the key is set).
+  const posixGate = posix.match(/^if \[ "\$\{1:-\}" = "([a-z-]+)" \]; then$[\s\S]*?^fi$/m);
   expect(posixGate).not.toBeNull(); // gate block not found at all (deleted/reformatted)
   expect(posixGate?.[1]).toBe("start");
   expect(posixGate?.[0]).toContain("src/autoupdate/preflight.ts");
 
   // $Sub is an intermediate, so pin its assignment too: it must be $args[0].
   expect(ps).toMatch(/^\$Sub = if \(\$args\.Count -gt 0\) \{ \$args\[0\] \}/m);
-  const psGate = ps.match(/^if \(\$Sub -eq '([a-z-]+)'[\s\S]*?^\}$/m);
+  const psGate = ps.match(/^if \(\$Sub -eq '([a-z-]+)'\) \{$[\s\S]*?^\}$/m);
   expect(psGate).not.toBeNull(); // gate block not found at all (deleted/reformatted)
   expect(psGate?.[1]).toBe("start");
   expect(psGate?.[0]).toContain("src\\autoupdate\\preflight.ts");
+  for (const text of [posix, ps]) expect(text).not.toContain(".autoupdate");
 });
 
 // --- lock -------------------------------------------------------------------

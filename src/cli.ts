@@ -19,7 +19,6 @@ import { consola } from "consola";
 import { parseClaudeAction, parseCodexAction } from "./agents/configure.ts";
 import { recordDefaultModeFromWiring } from "./agents/configure_defaults.ts";
 import { parseModeFlags } from "./agents/provider_mode.ts";
-import { DEFAULT_AUTOUPDATE_COOLDOWN_DAYS } from "./autoupdate/state.ts";
 import { runClaude } from "./claude/config.ts";
 import { refreshClaudeDesktopWiring } from "./agents/profile_wiring.ts";
 import { runCodex } from "./codex/config.ts";
@@ -669,14 +668,8 @@ program
     "Update even when this is a source checkout; the sync overwrites local files.",
   )
   .option(
-    "--auto",
-    "Enable autoupdate: once a day, adopt the newest release aged >= the configured " +
-      `update-cooldown (default ${DEFAULT_AUTOUPDATE_COOLDOWN_DAYS}) days, and apply once now.`,
-  )
-  .option("--no-auto", "Disable autoupdate.")
-  .option(
     "--auto-status",
-    "Report autoupdate status and exit (enabled, cooldown, last check, last result).",
+    "Report autoupdate status and exit (the auto-update config key, cooldown, last check, last result).",
   )
   .option(
     "--verify",
@@ -692,7 +685,6 @@ program
     runUpdate({
       check: Boolean(opts.check),
       force: Boolean(opts.force),
-      auto: opts.auto as boolean | undefined,
       autoStatus: Boolean(opts.autoStatus),
       verify: opts.verify as boolean | undefined,
     })

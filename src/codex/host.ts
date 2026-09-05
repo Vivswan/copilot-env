@@ -592,8 +592,7 @@ export async function withCodexHostFarm(
       );
     case "build":
     case "verify": {
-      if (plan.adopt) {
-        config.set({ codexHost: true });
+      if (plan.adopt && config.adopt("codexHost", true)) {
         logger.log(
           `  ✓ Recorded codex-host = true (adopted the per-host CODEX_HOME farm ${farm.hostHome}) → ${paths.envConfigFile}`,
         );

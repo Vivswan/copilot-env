@@ -81,7 +81,7 @@ agent models               # list the model ids + names Copilot serves (--proxy 
 agent env                  # print shell directives for the calling shell (CODEX_HOME / proxy ANTHROPIC_BASE_URL exports + the opt-in launcher functions)
 agent mcp                  # MCP wiring status (--serve runs the stdio server; --remove unwires)
 agent cost                 # estimated token spend across all usage DBs (default + profile daemons)
-agent update               # update to the latest release (--check; --no-verify skips the provenance check; cooldown via `agent config --set update-cooldown`)
+agent update               # update to the latest release (--check; --auto-status; --no-verify skips the provenance check; `agent config --set auto-update true` self-updates daily, cooldown via `update-cooldown`)
 agent shell                # wire rc / $PROFILE; --launchers enables cl/co/cx, --clis installs the CLIs, --remove unwires
 agent uninstall            # remove copilot-env entirely (--yes headless, --dry-run preview, --force to delete a source checkout)
 agent codex                # configure Codex; no flag auto-detects the backend, --check reports it
@@ -192,6 +192,7 @@ agent config --del idle-timeout       # revert one to its default
 | `alpha-search-codex-priority` | `true` | Prefer Codex for the proxy's `/alpha/search` endpoint (Codex search). |
 | `alpha-search-model` | `gpt-5-mini` | Native-Responses model for `/alpha/search` (Codex search) when the requested model is Messages-backed and cannot run the search itself. |
 | `auto-start` | `false` | Managed proxy lifecycle: auto-start on agent open + idle auto-stop. |
+| `auto-update` | `false` | Self-update once a day on `agent start`, adopting the newest release aged at least `update-cooldown` days (`agent update --auto-status` shows the last check). |
 | `claude-auto-model` | unset | Model override for Claude Code's background security-monitor requests (unset disables). |
 | `claude-token-multiplier` | `1.15` | Multiplier the proxy applies when estimating Claude token usage. |
 | `codex-host` | `false` | Per-host `CODEX_HOME` symlink farm at `~/.codex/hosts/<hostname>`, exported by `agent env` (Linux/macOS; see below). |

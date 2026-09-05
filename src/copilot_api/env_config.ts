@@ -16,6 +16,8 @@ export type PassthroughPref = "auto" | "on" | "off";
 export interface CopilotEnvConfigData {
   /** Managed proxy lifecycle (auto-start on agent open + idle auto-stop). */
   autoStart?: boolean;
+  /** Once-a-day self-update preflight on `agent start` (the release cooldown is `update-cooldown`). */
+  autoUpdate?: boolean;
   /** PAT passthrough default for `agent start`. */
   passthrough?: PassthroughPref;
   /**
@@ -381,6 +383,16 @@ const CONFIG_REGISTRY_LITERAL = [
     describe: "Managed proxy lifecycle: auto-start on agent open + idle auto-stop (bool)",
     ...BOOL_DOMAIN,
     defaultValue: false,
+  },
+  {
+    cli: "auto-update",
+    key: "autoUpdate",
+    describe:
+      "Self-update once a day on `agent start`, adopting the newest release aged >= update-cooldown (bool)",
+    ...BOOL_DOMAIN,
+    defaultValue: false,
+    applyHint:
+      "Applies at the next `agent start` (checked once a day); `agent update` updates now, `agent update --auto-status` shows the last check.",
   },
   {
     cli: "claude-auto-model",
@@ -765,13 +777,11 @@ export class CopilotEnvConfig {
   }
 
   /** read() with an unreadable store degraded to "no preferences" (built-in
-   *  defaults). ONLY for the gates the in-daemon idle watchdog reads on its
-   *  interval tick (idle_watchdog.ts): a throw there escapes the timer callback
-   *  and kills the serving daemon, and the flatten direction is the safe one --
-   *  the lifecycle disengages / the default window applies. The CLI's auto-start
-   *  gates share these accessors and inherit the same fail-closed direction (the
-   *  opt-in lifecycle stays off), warned by load(); every other preference read
-   *  stays strict. */
+   *  defaults). ONLY for the best-effort background gates: the in-daemon idle
+   *  watchdog's interval tick (idle_watchdog.ts, where a throw would kill the
+   *  serving daemon) and the autoupdate preflight. Their flatten direction is the
+   *  safe one -- the opt-in lifecycle stays off, the default window applies, no
+   *  self-update runs -- warned by load(); every other preference read stays strict. */
   private readDegraded(): CopilotEnvConfigData {
     return v.parse(CONFIG_SCHEMA, this.store.load());
   }
@@ -780,6 +790,12 @@ export class CopilotEnvConfig {
    *  Watchdog-reachable, so the read degrades (see readDegraded). */
   autoStartEnabled(): boolean {
     return this.readDegraded().autoStart ?? configDefaultBoolean("auto-start");
+  }
+
+  /** Whether the once-a-day self-update preflight runs (default off). Preflight-reachable
+   *  (a best-effort background path), so the read degrades like auto-start's. */
+  autoUpdateEnabled(): boolean {
+    return this.readDegraded().autoUpdate ?? configDefaultBoolean("auto-update");
   }
 
   /** The stored `codex-host` value, null when unset -- the three-way read the farm
@@ -921,5 +937,18 @@ export class CopilotEnvConfig {
   /** Delete one key (revert it to its default). */
   del(key: ConfigKey): void {
     this.set({ [key]: undefined });
+  }
+
+  /** Store `value` under `key` only while the key is UNSET, decided inside the one
+   *  locked read-modify-write (a concurrent `agent config --set` can never be
+   *  overwritten). The self-heal adoptions use it. Returns whether it wrote. */
+  adopt<K extends ConfigKey>(key: K, value: NonNullable<CopilotEnvConfigData[K]>): boolean {
+    let wrote = false;
+    this.store.update((d) => {
+      if (d[key] !== undefined) return;
+      d[key] = value;
+      wrote = true;
+    });
+    return wrote;
   }
 }

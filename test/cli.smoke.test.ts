@@ -137,13 +137,12 @@ test("cli.ts mcp (bare) prints the wiring status and exits 0", () => {
   expect(existsSync(join(claudeDir, ".claude.json"))).toBe(false);
 });
 
-// Commander folds --verify/--no-verify into ONE optional boolean (like --auto).
-// Proven at the CLI boundary, not by calling the parser directly: each spelling
-// must reach parseUpdateAction as a SET verify flag, which the report-flag
-// rejection makes observable without any network (--check alone would go on to
-// resolve releases). Which VALUE wins when both are given is Commander's
-// negatable-option contract (last one), the same contract --auto/--no-auto
-// already rely on; observing it needs the apply path, so it is not asserted here.
+// Commander folds --verify/--no-verify into ONE optional boolean. Proven at the
+// CLI boundary, not by calling the parser directly: each spelling must reach
+// parseUpdateAction as a SET verify flag, which the report-flag rejection makes
+// observable without any network (--check alone would go on to resolve releases).
+// Which VALUE wins when both are given is Commander's negatable-option contract
+// (last one); observing it needs the apply path, so it is not asserted here.
 test("cli.ts update folds --verify/--no-verify into the verify flag", () => {
   for (
     const args of [
@@ -173,9 +172,8 @@ test("cli.ts mcp --serve --profile '' hard-fails instead of serving the default 
 // flag named), varying needles. Successor of the former per-command env/shell/
 // health/start/update --help tests; commands whose help test carries extra
 // rejection runs (mcp, launch, codex, claude, init, uninstall, install) stay separate.
-// "--auto " keeps its trailing space: bare "--auto" is a substring of --auto-status
-// and --no-auto, so it alone could not miss a dropped --auto flag ("--verify " likewise
-// against --no-verify).
+// "--verify " keeps its trailing space: bare "--verify" is a substring of --no-verify,
+// so it alone could not miss a dropped --verify flag.
 const HELP_SURFACES: { cmd: string; needles: string[] }[] = [
   { cmd: "env", needles: ["--format", "--profile"] },
   {
@@ -186,17 +184,24 @@ const HELP_SURFACES: { cmd: string; needles: string[] }[] = [
   { cmd: "start", needles: ["--dry-run", "--port", "--record-event", "--check", "--force"] },
   {
     cmd: "update",
-    needles: [
-      "--auto ",
-      "--no-auto",
-      "--auto-status",
-      "--check",
-      "--force",
-      "--verify ",
-      "--no-verify",
-    ],
+    needles: ["--auto-status", "--check", "--force", "--verify ", "--no-verify"],
   },
 ];
+
+// Preferences that moved into `agent config` have no imperative twin left: the
+// autoupdate toggle is the `auto-update` key ("--auto " with its trailing space, as
+// bare "--auto" is a substring of the surviving --auto-status).
+const REMOVED_FLAGS: { cmd: string; flags: string[] }[] = [
+  { cmd: "update", flags: ["--auto ", "--no-auto"] },
+];
+
+test("the flags that became config keys are gone from the help screens", () => {
+  for (const { cmd, flags } of REMOVED_FLAGS) {
+    const screen = helpScreen(cmd, "--help");
+    expect(screen.exitCode).toBe(0);
+    for (const flag of flags) expect(screen.output, `${cmd} ${flag}`).not.toContain(flag);
+  }
+});
 
 test("each command's --help exits 0 and surfaces its flags", () => {
   for (const { cmd, needles } of HELP_SURFACES) {
@@ -910,9 +915,9 @@ test("health --scope claude covers only Claude wiring", () => {
 
 // --- autoupdate management flags --------------------------------------------
 
-test("update --auto-status reports status and exits 0 (offline, read-only)", () => {
+test("update --auto-status reports the auto-update key's state and exits 0 (offline, read-only)", () => {
   const proc = runCli(["update", "--auto-status"], { env: { ...process.env, CONSOLA_LEVEL: "5" } });
   const out = proc.stdout + proc.stderr;
   expect(proc.exitCode).toBe(0);
-  expect(out).toContain("Autoupdate:");
+  expect(out).toMatch(/Autoupdate: (enabled|disabled) \(the auto-update config key\)/);
 });

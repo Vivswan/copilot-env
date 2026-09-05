@@ -1,4 +1,6 @@
-// Opt-in autoupdate state, persisted to `<install>/.autoupdate/state.json`.
+// Autoupdate THROTTLE state, persisted to `<install>/.autoupdate/state.json`: the
+// last check and its result. The preference itself is the `auto-update` config key
+// (CopilotEnvConfig), never this file.
 //
 // Thin typed wrapper over CopilotApiConfig (the project's atomic JSON store:
 // sorted keys, 0600, atomic rename, Windows retry) -- mirroring CopilotEnvRunState,
@@ -6,6 +8,7 @@
 import * as v from "valibot";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { CopilotApiPaths } from "../copilot_api/paths.ts";
 import { autoupdateStateFile } from "./paths.ts";
 
 /** Default release cooldown for autoupdate: adopt releases at least this old. */
@@ -21,8 +24,6 @@ export function effectiveUpdateCooldownDays(): number {
 }
 
 export interface AutoupdateData {
-  /** Whether the once-per-day self-update preflight is active. */
-  enabled: boolean;
   /** Epoch ms of the last completed check (0 if never). */
   lastCheckMs: number;
   /** Human summary of the last check, e.g. "updated v1.2.3" / "up to date". */
@@ -34,23 +35,31 @@ type AutoupdatePatch = { [K in keyof AutoupdateData]?: AutoupdateData[K] | null 
 // Lenient read schema: absent or ill-typed fields fall back to safe defaults rather
 // than throwing. `lastCheckMs` must be finite (rejects NaN/Infinity).
 const AUTOUPDATE_SCHEMA = v.object({
-  enabled: v.fallback(v.boolean(), false),
   lastCheckMs: v.fallback(v.pipe(v.number(), v.finite(), v.minValue(0)), 0),
   lastResult: v.fallback(v.string(), ""),
 });
 
 export class AutoupdateState {
   private readonly store: CopilotApiConfig;
+  readonly path: string;
 
   constructor(path?: string) {
-    this.store = new CopilotApiConfig(path ?? autoupdateStateFile());
+    this.path = path ?? autoupdateStateFile();
+    this.store = new CopilotApiConfig(this.path);
+  }
+
+  /** The pre-key `enabled` field, if this file still carries one: present with any
+   *  value (a junk value is still a leftover to drop), on only when exactly `true`. */
+  legacyEnabled(): { present: false } | { present: true; on: boolean } {
+    const doc = this.store.load();
+    if (!(LEGACY_ENABLED_KEY in doc)) return { present: false };
+    return { present: true, on: doc[LEGACY_ENABLED_KEY] === true };
   }
 
   /** Current state; absent or ill-typed fields fall back to safe defaults. The
-   *  plain load() flatten (unreadable reads as "never checked, disabled") is
-   *  ACCEPTED, decided rather than inherited: this state only paces the
-   *  best-effort preflight, its flatten direction is "do nothing" (enabled
-   *  degrades to false), and its writes go through update(), which refuses. */
+   *  plain load() flatten (unreadable reads as "never checked") is ACCEPTED,
+   *  decided rather than inherited: this state only paces the best-effort
+   *  preflight, and its writes go through update(), which refuses. */
   read(): AutoupdateData {
     return v.parse(AUTOUPDATE_SCHEMA, this.store.load());
   }
@@ -68,4 +77,35 @@ export class AutoupdateState {
       }
     });
   }
+
+  /** Drop the pre-key `enabled` flag from the file. */
+  dropLegacyEnabled(): void {
+    this.store.update((d) => {
+      delete d[LEGACY_ENABLED_KEY];
+    });
+  }
+}
+
+/** The state-file key that carried the preference before the `auto-update` config key. */
+const LEGACY_ENABLED_KEY = "enabled";
+
+/** Self-heal for pre-key installs (the manual update and the preflight run it): a
+ *  legacy `enabled: true` in state.json moves into an UNSET `auto-update` key, then
+ *  the field leaves the file. `report` fires right after each write. */
+export function adoptLegacyEnabledFlag(
+  report: (line: string) => void,
+  state: AutoupdateState = new AutoupdateState(),
+  config: CopilotEnvConfig = new CopilotEnvConfig(),
+): void {
+  const legacy = state.legacyEnabled();
+  if (!legacy.present) return;
+  if (legacy.on && config.adopt("autoUpdate", true)) {
+    report(
+      `Recorded auto-update = true (adopted the legacy autoupdate flag from ${state.path}) -> ${
+        new CopilotApiPaths().envConfigFile
+      }`,
+    );
+  }
+  state.dropLegacyEnabled();
+  report(`Dropped the legacy autoupdate flag -> ${state.path}`);
 }

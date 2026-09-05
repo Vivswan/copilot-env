@@ -418,7 +418,7 @@ export interface DefaultHomeMigrationFacts {
  * which is the LIVE `update-cooldown` config (never snapshotted into state) -- so
  * `agent health` matches `agent update --auto-status`.
  */
-export type AutoupdateStatus = AutoupdateData & { cooldownDays: number };
+export type AutoupdateStatus = AutoupdateData & { enabled: boolean; cooldownDays: number };
 
 export interface HealthFacts {
   /** The profile the run was narrowed to (null/absent = the default/whole
@@ -839,6 +839,7 @@ export function defaultProbeDeps(): ProbeDeps {
     },
     readAutoupdate: () => ({
       ...new AutoupdateState().read(),
+      enabled: new CopilotEnvConfig().autoUpdateEnabled(),
       cooldownDays: effectiveUpdateCooldownDays(),
     }),
     nodeModulesPresent: () => existsSync(join(root, "node_modules")),

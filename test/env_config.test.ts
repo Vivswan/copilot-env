@@ -272,6 +272,7 @@ const ROUND_TRIP_RAW: Record<ConfigCli, string> = {
   "alpha-search-codex-priority": "false",
   "alpha-search-model": "gpt-5",
   "auto-start": "true",
+  "auto-update": "true",
   "claude-auto-model": "claude-haiku-4.5",
   "claude-token-multiplier": "1.3",
   "codex-host": "true",
@@ -315,6 +316,25 @@ test("every registry key round-trips: a CLI-set value survives read() and reache
     if (isProxyProjected(def)) {
       expect(projectedValue(projected, def.proxyPath ?? [def.key])).toBe(expected);
     }
+  }
+});
+
+test("auto-update: stored else default, degraded read like auto-start (the preflight is best-effort)", () => {
+  tmpHome();
+  const cfg = new CopilotEnvConfig();
+  expect(cfg.autoUpdateEnabled()).toBe(false); // unset -> the built-in default
+  runConfig({ set: ["auto-update", "on"] });
+  expect(cfg.autoUpdateEnabled()).toBe(true);
+  runConfig({ del: "auto-update" });
+  expect(cfg.autoUpdateEnabled()).toBe(false);
+  // An unreadable store degrades to "off" (the preflight must never act on an unproven on).
+  chmodSync(new CopilotApiPaths().envConfigFile, 0o000);
+  try {
+    if (process.platform !== "win32" && process.getuid?.() !== 0) {
+      expect(cfg.autoUpdateEnabled()).toBe(false);
+    }
+  } finally {
+    chmodSync(new CopilotApiPaths().envConfigFile, 0o600);
   }
 });
 
@@ -378,6 +398,7 @@ test("the registry covers exactly the documented keys, in alphabetical order", (
     "alpha-search-codex-priority",
     "alpha-search-model",
     "auto-start",
+    "auto-update",
     "claude-auto-model",
     "claude-token-multiplier",
     "codex-host",

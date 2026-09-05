@@ -1414,7 +1414,7 @@ export function checkAutoupdate(f: AutoupdateStatus): CheckResult {
   // fact per line so the report renders them as `-` sub-items.
   const last = f.lastCheckMs > 0 ? new Date(f.lastCheckMs).toISOString() : "never";
   const detail = [
-    `status: ${f.enabled ? "enabled" : "disabled"}`,
+    `status: ${f.enabled ? "enabled" : "disabled"} (the auto-update config key)`,
     `cooldown ${f.cooldownDays}d`,
     `last check ${last}`,
     `last result: ${f.lastResult || "(none)"}`,

@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "@std/testing/bdd";
 import { CLAUDE_DESKTOP_DIR_ENV } from "../../src/claude/desktop.ts";
+import { CI_NO_LIVE_LOOKUPS_ENV } from "../../src/codex/catalog.ts";
 import { CI_PS_DOCUMENTS_DIR_ENV, CI_RC_DIR_ENV } from "../../src/shell/integration.ts";
 
 export { expect } from "@std/expect";
@@ -48,6 +49,11 @@ process.env[CI_PS_DOCUMENTS_DIR_ENV] = join(SANDBOX_HOME, "Documents");
 // existence, so the whole suite sees "no Claude Desktop" (and stays off the real
 // library) unless a test opts in by mkdir'ing it.
 process.env[CLAUDE_DESKTOP_DIR_ENV] = join(SANDBOX_HOME, "claude-desktop");
+// The live-lookup seam (the installed codex's version, the npm codex-version
+// query, the catalog probe): under the suite they read "unavailable" so no test depends on the
+// developer's network or codex install. Not NODE_ENV=test: consola reads that as
+// a test run and silences the info output the logger tests assert on.
+process.env[CI_NO_LIVE_LOOKUPS_ENV] = "1";
 globalThis.addEventListener("unload", () => {
   rmSync(SANDBOX_HOME, { recursive: true, force: true });
 });

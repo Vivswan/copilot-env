@@ -15,7 +15,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   CLAUDE_DESKTOP_DIR_ENV,
   claudeDesktopInstalled,
@@ -489,7 +489,7 @@ test("a blocked removal (malformed _meta.json) keeps the helper scripts", async 
   expect(existsSync(helper)).toBe(true);
 });
 
-test("adopt-and-replace: same-gateway foreign entry is taken over in place and renamed", async () => {
+test("adopt-and-replace: same-gateway foreign entry is taken over in place, name kept", async () => {
   const { library } = isolateWithDesktop();
   mkdirSync(library, { recursive: true });
   const handMadeHelper = join(resolveClaudeHome(), "copilot-token.sh");
@@ -519,7 +519,7 @@ test("adopt-and-replace: same-gateway foreign entry is taken over in place and r
   });
   const meta = metaOf(library);
   const entries = meta.entries as { id: string; name: string }[];
-  expect(entries).toEqual([{ id: "hand-1", name: "copilot-env" }]); // same uuid, renamed
+  expect(entries).toEqual([{ id: "hand-1", name: "Default" }]); // same uuid, the user's name
   expect(meta.appliedId).toBe("hand-1"); // stays applied naturally
   const doc = readJson(join(library, "hand-1.json"));
   expect(doc["userKey"]).toBe("keep"); // surgical merge
@@ -681,6 +681,10 @@ test.skipIf(process.platform === "win32")(
     await expect(wireClaudeDesktopEntry(opts)).rejects.toThrow("could not read");
     expect(lstatSync(configPath).isSymbolicLink()).toBe(true);
     expect(existsSync(target)).toBe(false);
+    // The same failed look leaves the status unjudged: nothing is swept as an orphan.
+    const status = inspectClaudeDesktopWiring([{ profile: null, mode: "direct" }]);
+    expect(status.kind).toBe("unjudged");
+    if (status.kind === "unjudged") expect(status.reason).toContain("could not read");
   },
 );
 
@@ -1318,7 +1322,7 @@ test("an interrupted removal's unlisted claim is reported, listed for the dry ru
   expect(inspected(inspectClaudeDesktopWiring([])).unlisted).toEqual([]);
 });
 
-test("duplicate owned entries under one managed name are drift a rewire cannot repair", async () => {
+test("duplicate owned entries serving one wiring are drift a rewire cannot repair", async () => {
   const { library } = isolateWithDesktop();
   await wireClaudeDesktopEntry(directWire());
   const configPath = firstEntryPath(library);
@@ -1332,31 +1336,43 @@ test("duplicate owned entries under one managed name are drift a rewire cannot r
   const verdict = status.entries[0]?.verdict;
   expect(verdict?.kind).toBe("stale");
   if (verdict?.kind === "stale") {
-    expect(verdict.reason).toBe("2 owned entries carry this name");
+    expect(verdict.reason).toBe("2 owned entries serve this wiring");
     expect(verdict.fix).toContain("duplicate");
   }
   expect(status.orphans).toEqual([]);
   expect(renderClaudeDesktopStatus(status).fix).toContain("delete the duplicate");
 });
 
-test("a hand-renamed owned entry is reported and left alone by the reconcile", async () => {
+test("a renamed owned entry is ours by path: rewired in place, name kept, swept on key off", async () => {
   const { library } = isolateWithDesktop();
   await wireClaudeDesktopEntry(directWire());
   const configPath = firstEntryPath(library);
   const meta = metaOf(library);
   (meta.entries as { name: string }[])[0]!.name = "Mine now";
   writeFileSync(join(library, "_meta.json"), `${JSON.stringify(meta)}\n`);
-  const status = inspected(inspectClaudeDesktopWiring([{ profile: null, mode: "direct" }]));
-  // The promised default is missing (its name is gone) and the renamed file is ours by
-  // path: reported, never removed.
-  expect(status.entries[0]?.verdict).toEqual({ kind: "missing" });
-  expect(status.orphans).toEqual([{ name: "Mine now", path: configPath, profile: undefined }]);
-  const rendered = renderClaudeDesktopStatus(status);
-  expect(rendered.lines[1]).toContain("was renamed in Claude Desktop; left alone");
-  expect(rendered.fix).toBe("agent claude");
-  const out = await captureAllWrites(() => reconcileClaudeDesktopWiring());
-  expect(out).toContain("left alone");
-  expect(existsSync(configPath)).toBe(true);
+  const target: DesktopTarget = { profile: null, mode: "direct" };
+  // Still the default's entry: judged against its target, never an orphan.
+  expect(inspected(inspectClaudeDesktopWiring([target])).entries[0]?.verdict).toEqual({
+    kind: "wired",
+    path: configPath,
+  });
+  expect(inspected(inspectClaudeDesktopWiring([target])).orphans).toEqual([]);
+  // Drift is healed IN PLACE (same uuid), and the user's name stays.
+  rmSync(desktopHelperPath(resolveRootHome(), "direct", null));
+  expect(inspected(inspectClaudeDesktopWiring([target])).entries[0]?.verdict.kind).toBe("stale");
+  const out = await captureAllWrites(() => wireClaudeDesktopEntry(directWire()));
+  expect(out).toContain(`Claude Desktop: wired "Mine now" (direct) at ${configPath}`);
+  expect(metaOf(library).entries).toEqual([{
+    id: basename(configPath, ".json"),
+    name: "Mine now",
+  }]);
+  expect(inspected(inspectClaudeDesktopWiring([target])).entries[0]?.verdict.kind).toBe("wired");
+  // Key off sweeps it like any owned entry, announced.
+  new CopilotEnvConfig().set({ claudeDesktop: false });
+  const swept = await captureAllWrites(() => reconcileClaudeDesktopWiring());
+  expect(swept).toContain(`Claude Desktop: removed ${configPath}`);
+  expect(existsSync(configPath)).toBe(false);
+  expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual([]);
 });
 
 /** Every Desktop artifact's existence, for "nothing changed" comparisons. */

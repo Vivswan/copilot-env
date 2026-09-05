@@ -14,6 +14,11 @@
 // with the record-after-save ordering of the WebSearch deny: a failed save must never
 // leave a claim on an entry we did not actually write.
 //
+// Identity is by uuid path, never by display name: an owned path is ours whatever the app
+// shows it as (the name is the user's; a wire only ever seeds a fresh entry's), and the
+// wiring an owned entry serves is read from its own document -- the credential helper it
+// points at names the profile (entryProfileAt).
+//
 // Model discovery: Desktop fetches `<inferenceGatewayBaseUrl>/v1/models`, hardcoded.
 // Copilot Direct serves /models and 404s the v1 path, so direct entries carry an explicit
 // inferenceModels list derived from live discovery (offline wires keep prior rows); the local
@@ -25,7 +30,7 @@
 // sweeps every owned entry. Every file created, rewritten, or removed is announced.
 import { chmodSync, existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { codexUserAgent } from "../codex/config.ts";
 import type { ManagedWrite } from "../agents/configure.ts";
 import { fetchRawModels } from "../copilot_api/catalog.ts";
@@ -629,10 +634,10 @@ async function wiringModels(
  * Upsert the copilot-env entry for `profile` into the Desktop config library. Throws on
  * real write failures (syncClaudeDesktopWiring is the best-effort face). Resolution
  * order for the target entry:
- *   ours (ownership-recorded path + our name) -> adoptable (foreign entry whose gateway
- *   base URL already matches the target: taken over in place under its uuid, renamed,
- *   and the hand-made helper it referenced retired) -> foreign entry carrying our name
- *   (warn, never clobber) -> a fresh uuid.
+ *   ours (ownership-recorded path whose document names `profile`) -> adoptable (foreign
+ *   entry whose gateway base URL already matches the target: taken over in place under
+ *   its uuid and name, the hand-made helper it referenced retired) -> foreign entry
+ *   carrying our name (warn, never clobber) -> a fresh uuid.
  * `appliedId` is only ever SET when the library had none -- an applied user config is
  * never displaced (an adopted applied entry stays applied naturally: its id is stable).
  * Ownership is committed AFTER both saves (record-after-save, like the WebSearch deny).
@@ -660,16 +665,16 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   const configPathOf = (id: string) => join(dir, `${id}.json`);
 
   let entry = meta.entries.find(
-    (e) => e.name === name && ledger.owns("claudeDesktop", configPathOf(e.id)),
+    (e) =>
+      ledger.owns("claudeDesktop", configPathOf(e.id)) &&
+      entryProfileAt(configPathOf(e.id)) === opts.profile,
   );
   const commits: (() => void)[] = [];
   if (entry === undefined) {
     // Adoption scan: a foreign entry already wired at the same gateway is the user's
-    // hand-made equivalent of what we are about to write -- take it over in place.
-    // Never when ANOTHER entry already carries our name (renaming the candidate
-    // would mint a duplicate picker name).
-    const nameTaken = meta.entries.some((e) => e.name === name);
-    for (const candidate of nameTaken ? [] : meta.entries) {
+    // hand-made equivalent of what we are about to write -- take it over in place,
+    // under the name the user gave it.
+    for (const candidate of meta.entries) {
       const path = configPathOf(candidate.id);
       if (ledger.owns("claudeDesktop", path)) continue;
       const raw = readFileOrNull(path);
@@ -682,7 +687,6 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
       }
       if (!isRecord(doc) || !sameBaseUrl(doc["inferenceGatewayBaseUrl"], baseUrl)) continue;
       entry = candidate;
-      candidate.name = name;
       const handMade = legacyHandMadeHelperPath();
       if (
         doc["inferenceCredentialHelper"] === handMade &&
@@ -722,7 +726,7 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
       const parsed: unknown = JSON.parse(existingRaw);
       if (isRecord(parsed)) existing = parsed;
     } catch {
-      // Ours (created/adopted above) with corrupt content: we own it, overwrite.
+      // Unparseable content under our path (an in-app edit racing us): rebuild it.
     }
   }
 
@@ -768,7 +772,7 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   // launcher hot path) stays silent only on a byte-identical no-op.
   if (!opts.quiet || configWritten) {
     logger.success(
-      `  Claude Desktop: wired "${name}" (${opts.mode}) at ${configPath}; restart Claude Desktop to pick it up.`,
+      `  Claude Desktop: wired "${entry.name}" (${opts.mode}) at ${configPath}; restart Claude Desktop to pick it up.`,
     );
   }
   if (meta.appliedId === null) meta.appliedId = entry.id;
@@ -853,21 +857,38 @@ export async function syncClaudeDesktopWiring(opts: DesktopWireOptions): Promise
   }
 }
 
-/** Remove the owned entry for `profile` (config file + meta row + helper scripts); a
- *  foreign entry -- even one carrying our name -- is never touched. Best-effort. */
+/** Remove the owned entries serving `profile` (config file + meta row + helper scripts);
+ *  a foreign entry -- even one carrying our name -- is never touched. Best-effort. */
 export function removeClaudeDesktopEntry(profile: Profile): void {
+  removeOwned(
+    `the Claude Desktop entry for ${profileLabel(profile)}`,
+    (e) => entryProfileAt(e.path) === profile,
+    profile,
+  );
+}
+
+/** Remove one orphan by its path, plus its profile's helper scripts when its document
+ *  named one. Best-effort. */
+export function removeClaudeDesktopOrphan(orphan: DesktopOrphan): void {
+  removeOwned(
+    `the orphaned Claude Desktop entry at ${orphan.path}`,
+    (e) => e.path === orphan.path,
+    orphan.profile,
+  );
+}
+
+function removeOwned(
+  what: string,
+  selects: (owned: OwnedDesktopEntry) => boolean,
+  helpersOf: Profile | undefined,
+): void {
   try {
-    const swept = removeOwnedEntries((entry, owned) =>
-      owned && entry.name === desktopEntryName(profile)
-    );
     // A blocked sweep (malformed _meta.json) may leave a live entry pointing at
     // these scripts: only delete them when the library was actually processed.
-    if (swept === "blocked") return;
-    removeHelperScripts(profile);
+    if (removeOwnedEntries(selects) === "blocked") return;
+    if (helpersOf !== undefined) removeHelperScripts(helpersOf);
   } catch (e) {
-    logger.warn(
-      `  Could not remove the Claude Desktop entry for ${profileLabel(profile)}: ${errMessage(e)}`,
-    );
+    logger.warn(`  Could not remove ${what}: ${errMessage(e)}`);
   }
 }
 
@@ -920,7 +941,7 @@ export function presentDesktopHelperScripts(rootHome: string): string[] {
  *  helper script. `dirOverride` is the injected library dir (homedir() is not
  *  env-redirectable on Windows); null means "treat Desktop as absent". */
 export function removeAllClaudeDesktopWiring(dirOverride?: string | null): void {
-  if (removeOwnedEntries((_entry, owned) => owned, dirOverride) === "blocked") return;
+  if (removeOwnedEntries(() => true, dirOverride) === "blocked") return;
   removeUnlistedClaudeDesktopClaims(dirOverride);
   // Helper scripts live under the root home, which uninstall deletes wholesale right
   // after this step -- still removed here so the step is complete on its own.
@@ -949,6 +970,24 @@ export function listClaudeDesktopOwnedArtifacts(
 interface OwnedDesktopEntry {
   entry: DesktopMetaEntry;
   path: string;
+}
+
+/** The profile the entry document at `path` serves (its credential helper's filename), or
+ *  undefined when it names none (absent or damaged: no target can claim it, so it is an
+ *  orphan). An UNREADABLE document throws: a failed look is never "not ours". */
+function entryProfileAt(path: string): Profile | undefined {
+  const raw = readFileOrNull(path);
+  if (raw === null) return undefined;
+  let doc: unknown;
+  try {
+    doc = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  const helper = isRecord(doc) ? doc["inferenceCredentialHelper"] : undefined;
+  return typeof helper === "string"
+    ? desktopHelperScriptWiring(basename(helper))?.profile
+    : undefined;
 }
 
 /** The library read once: its parsed meta, the owned entries it lists, and the ledger
@@ -1015,12 +1054,12 @@ export function removeUnlistedClaudeDesktopClaims(
   return "swept";
 }
 
-/** Shared removal core: drop every meta entry `selects` picks (given its ownership) and
- *  its appliedId reference. Ordering is meta FIRST, config files second, ownership
- *  un-record last: a failure mid-way can leave an orphaned (invisible) config file, but
- *  never a picker row whose config is gone. */
+/** Shared removal core: drop every OWNED meta entry `selects` picks and its appliedId
+ *  reference (a foreign row is never a candidate). Ordering is meta FIRST, config files
+ *  second, ownership un-record last: a failure mid-way can leave an orphaned (invisible)
+ *  config file, but never a picker row whose config is gone. */
 function removeOwnedEntries(
-  selects: (entry: DesktopMetaEntry, owned: boolean) => boolean,
+  selects: (owned: OwnedDesktopEntry) => boolean,
   dirOverride?: string | null,
 ): "swept" | "blocked" {
   const dir = dirOverride !== undefined ? dirOverride : resolveDesktopLibraryDir();
@@ -1041,7 +1080,7 @@ function removeOwnedEntries(
   const kept: DesktopMetaEntry[] = [];
   for (const entry of meta.entries) {
     const configPath = join(dir, `${entry.id}.json`);
-    if (selects(entry, claims.has(configPath))) {
+    if (claims.has(configPath) && selects({ entry, path: configPath })) {
       removedPaths.push(configPath);
       if (meta.appliedId === entry.id) meta.appliedId = null;
     } else {
@@ -1068,19 +1107,6 @@ export interface DesktopTarget {
   mode: ProfileMode;
 }
 
-/** The profile an entry NAME encodes (the inverse of desktopEntryName), or undefined
- *  for a name that is not ours. */
-export function desktopEntryProfile(name: string): Profile | undefined {
-  if (name === desktopEntryName(null)) return null;
-  const prefix = `${desktopEntryName(null)}: `;
-  if (!name.startsWith(prefix)) return undefined;
-  try {
-    return parseProfileName(name.slice(prefix.length));
-  } catch {
-    return undefined;
-  }
-}
-
 /** How one expected entry compares with the library: present and matching its target,
  *  absent, or present but not what the target needs (`reason` names the mismatch). */
 export type DesktopEntryVerdict =
@@ -1091,9 +1117,9 @@ export type DesktopEntryVerdict =
 
 export type DesktopEntryStatus = DesktopTarget & { verdict: DesktopEntryVerdict };
 
-/** An owned entry no current wiring promises. `profile` is the wiring its name encodes
- *  (the reconcile removes it); undefined means the user renamed it in the app, and ours
- *  by path or not, a hand-renamed entry is left alone. */
+/** An owned entry no current target promises (the reconcile removes it, whatever its
+ *  display name). `profile` is the wiring its document names; undefined when it names
+ *  none (see entryProfileAt). */
 export interface DesktopOrphan {
   name: string;
   path: string;
@@ -1121,8 +1147,9 @@ interface DesktopStatusBase {
 export type ClaudeDesktopStatus =
   | (DesktopStatusBase & { kind: "no-library" })
   | (DesktopStatusBase & { kind: "unreadable"; metaPath: string })
-  /** The promised targets could not be known (Claude's own settings.json could not be
-   *  read or parsed), so no entry is judged and none may be swept as an orphan. */
+  /** A failed look: the promised targets could not be known (Claude's own settings.json
+   *  could not be read or parsed) or an owned document could not be read, so no entry is
+   *  judged and none may be swept as an orphan. */
   | (DesktopStatusBase & { kind: "unjudged"; reason: string })
   | (DesktopStatusBase & {
     kind: "inspected";
@@ -1167,15 +1194,21 @@ export function inspectClaudeDesktopWiring(
   if (resolution.kind === "unresolvable") {
     return { ...base, kind: "unjudged", reason: resolution.reason };
   }
+  let judged: JudgedDesktopEntry[];
+  try {
+    judged = library.owned.map((e) => ({ ...e, profile: entryProfileAt(e.path) }));
+  } catch (e) {
+    return { ...base, kind: "unjudged", reason: errMessage(e) };
+  }
   const rootHome = resolveRootHome();
   status.entries = resolution.targets.map((t) => ({
     ...t,
-    verdict: entryVerdict(library.owned, t, rootHome),
+    verdict: entryVerdict(judged, t, rootHome),
   }));
-  const names = new Set(resolution.targets.map((t) => desktopEntryName(t.profile)));
-  status.orphans = library.owned
-    .filter((e) => !names.has(e.entry.name))
-    .map((e) => ({ name: e.entry.name, path: e.path, profile: desktopEntryProfile(e.entry.name) }));
+  const wanted = new Set(resolution.targets.map((t) => t.profile));
+  status.orphans = judged
+    .filter((e) => e.profile === undefined || !wanted.has(e.profile))
+    .map((e) => ({ name: e.entry.name, path: e.path, profile: e.profile }));
   return status;
 }
 
@@ -1188,12 +1221,14 @@ export function desktopStatusBase(dirOverride?: string | null): DesktopStatusBas
   };
 }
 
+type JudgedDesktopEntry = OwnedDesktopEntry & { profile: ReturnType<typeof entryProfileAt> };
+
 function entryVerdict(
-  owned: OwnedDesktopEntry[],
+  owned: JudgedDesktopEntry[],
   target: DesktopTarget,
   rootHome: string,
 ): DesktopEntryVerdict {
-  const matches = owned.filter((e) => e.entry.name === desktopEntryName(target.profile));
+  const matches = owned.filter((e) => e.profile === target.profile);
   const found = matches[0];
   if (found === undefined) return { kind: "missing" };
   const path = found.path;
@@ -1203,7 +1238,7 @@ function entryVerdict(
     return {
       kind: "stale",
       path,
-      reason: `${matches.length} owned entries carry this name`,
+      reason: `${matches.length} owned entries serve this wiring`,
       fix:
         "delete the duplicate copilot-env entries in Claude Desktop's config picker, then re-run `agent claude`",
     };
@@ -1368,12 +1403,6 @@ export function renderClaudeDesktopStatus(
     fixes.add("agent claude");
   }
   for (const o of status.orphans) {
-    if (o.profile === undefined) {
-      lines.push(
-        `"${o.name}" at ${o.path} is ours but was renamed in Claude Desktop; left alone (rename it back, or delete it in the app)`,
-      );
-      continue;
-    }
     lines.push(`"${o.name}" orphaned at ${o.path} (no current wiring promises it)`);
     fixes.add("agent claude");
   }

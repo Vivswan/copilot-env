@@ -9,7 +9,7 @@ import {
   inspectClaudeDesktopWiring,
   profileStoreWellFormed,
   removeAllClaudeDesktopWiring,
-  removeClaudeDesktopEntry,
+  removeClaudeDesktopOrphan,
   removeUnlistedClaudeDesktopClaims,
   syncClaudeDesktopWiring,
 } from "../claude/desktop.ts";
@@ -83,8 +83,10 @@ function unjudged(enabled: boolean, reason: string): ClaudeDesktopStatus {
 }
 
 /** The whole-library reconcile after a default write: key off sweeps everything owned; key
- *  on upserts every named target, then clears orphans and unlisted claims. `quiet` (the
- *  launcher hot path) is cleanup-only: no upsert, so no identity probe and no discovery. */
+ *  on clears orphans and unlisted claims, then upserts every named target (cleanup first,
+ *  so an orphan that held the applied slot hands it to the entry replacing it). `quiet`
+ *  (the launcher hot path) is cleanup-only: no upsert, so no identity probe and no
+ *  discovery. */
 export async function reconcileClaudeDesktopWiring(opts: { quiet?: boolean } = {}): Promise<void> {
   try {
     // Resolved targets gate EVERY cleanup, the key-off sweep included: a store that
@@ -99,37 +101,31 @@ export async function reconcileClaudeDesktopWiring(opts: { quiet?: boolean } = {
       return;
     }
     if (!claudeDesktopInstalled()) return;
-    const before = inspectClaudeDesktopWiring(resolution);
-    if (before.kind === "unreadable") {
+    const status = inspectClaudeDesktopWiring(resolution);
+    if (status.kind === "unreadable") {
       logger.warn(
-        `  Claude Desktop: ${before.metaPath} has an unexpected shape; leaving the config library alone.`,
+        `  Claude Desktop: ${status.metaPath} has an unexpected shape; leaving the config library alone.`,
       );
       return;
     }
-    if (before.kind !== "inspected") return;
+    if (status.kind === "unjudged") {
+      logger.warn(`  Claude Desktop: ${status.reason}; leaving the config library alone.`);
+      return;
+    }
+    if (status.kind !== "inspected") return;
+    for (const orphan of status.orphans) removeClaudeDesktopOrphan(orphan);
+    if (status.unlisted.length > 0) removeUnlistedClaudeDesktopClaims();
     // Every promised target, the default included (a key flipped back to true by a
     // config-only import has no adapter write to ride on) -- except a default already
     // judged wired: init / `agent claude` synced it a moment ago, and re-discovering
     // its models would be a network call for a byte-identical no-op.
-    const defaultWired = before.entries.some(
+    const defaultWired = status.entries.some(
       (e) => e.profile === null && e.verdict.kind === "wired",
     );
     for (const target of opts.quiet ? [] : resolution.targets) {
       if (target.profile === null && defaultWired) continue;
       await syncTarget(target);
     }
-    const status = inspectClaudeDesktopWiring(resolution);
-    if (status.kind !== "inspected") return;
-    for (const orphan of status.orphans) {
-      if (orphan.profile === undefined) {
-        logger.info(
-          `  Claude Desktop: "${orphan.name}" at ${orphan.path} is ours but was renamed in the app; left alone.`,
-        );
-        continue;
-      }
-      removeClaudeDesktopEntry(orphan.profile);
-    }
-    if (status.unlisted.length > 0) removeUnlistedClaudeDesktopClaims();
   } catch (e) {
     logger.warn(`  Could not reconcile the Claude Desktop wiring: ${errMessage(e)}`);
   }

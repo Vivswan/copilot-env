@@ -13,8 +13,8 @@ import { MILLISECONDS_PER_DAY } from "../../src/utils/time.ts";
 
 export const FIXTURES_DIR = fileURLToPath(new URL("../fixtures/usage/", import.meta.url));
 export const PROFILE_PATH = path.join(FIXTURES_DIR, "profile.json");
-export const TEMPLATES_DIR = path.join(FIXTURES_DIR, "templates");
-export const MEGABYTE = 1024 * 1024;
+const TEMPLATES_DIR = path.join(FIXTURES_DIR, "templates");
+const MEGABYTE = 1024 * 1024;
 
 /** The window's end when a caller names none: a fixed instant, never the clock. */
 export const DEFAULT_END = "2026-09-01T00:00:00.000Z";
@@ -27,7 +27,7 @@ export const MAX_MB = 1024 * 1024;
 export const MAX_DAYS = 36_500;
 
 export type UsageSource = "codex" | "claude";
-export const USAGE_SOURCES: readonly UsageSource[] = ["codex", "claude"];
+const USAGE_SOURCES: readonly UsageSource[] = ["codex", "claude"];
 
 /** Milliseconds a gap must reach before a session counts as resumed. */
 export const RESUME_GAP_MS = 60 * 60 * 1000;
@@ -43,7 +43,7 @@ export const TORN_LINE_TYPE = "torn";
  * type word carrying anything else folds to OTHER_LINE_TYPE before it can reach a committed
  * file. Extend deliberately when the writer adds a type.
  */
-export const CODEX_LINE_TYPES: ReadonlySet<string> = new Set([
+const CODEX_LINE_TYPES: ReadonlySet<string> = new Set([
   "compacted",
   "event_msg/agent_message",
   "event_msg/agent_reasoning",
@@ -80,7 +80,7 @@ export const CODEX_LINE_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /** The Claude line types the profile may name (see CODEX_LINE_TYPES). */
-export const CLAUDE_LINE_TYPES: ReadonlySet<string> = new Set([
+const CLAUDE_LINE_TYPES: ReadonlySet<string> = new Set([
   "agent-name",
   "ai-title",
   "assistant",
@@ -114,7 +114,7 @@ export const CLAUDE_LINE_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /** Vendor model ids are dotted, dashed identifiers; anything else folds to OTHER_MODEL. */
-export const OTHER_MODEL = "other";
+const OTHER_MODEL = "other";
 const MODEL_ID = /^[a-z0-9][a-z0-9._:/-]{0,63}$/i;
 
 // ---------- profile schema ----------
@@ -122,7 +122,7 @@ const MODEL_ID = /^[a-z0-9][a-z0-9._:/-]{0,63}$/i;
 const nonNegative = v.pipe(v.number(), v.minValue(0));
 const share = v.pipe(v.number(), v.minValue(0), v.maxValue(1));
 
-export const QuantilesSchema = v.pipe(
+const QuantilesSchema = v.pipe(
   v.strictObject({
     count: v.pipe(v.number(), v.integer(), v.minValue(0)),
     p5: nonNegative,
@@ -137,11 +137,11 @@ export const QuantilesSchema = v.pipe(
     "quantiles must be non-decreasing from p5 to p99",
   ),
 );
-export type Quantiles = v.InferOutput<typeof QuantilesSchema>;
+type Quantiles = v.InferOutput<typeof QuantilesSchema>;
 
 const ShareTableSchema = v.record(v.string(), share);
 
-export const ModelProfileSchema = v.strictObject({
+const ModelProfileSchema = v.strictObject({
   share,
   input: QuantilesSchema,
   output: QuantilesSchema,
@@ -210,10 +210,10 @@ function sourceProfileSchema(lineTypes: ReadonlySet<string>) {
 }
 
 /** The Codex instance stands for the shape; both sources parse to the same type. */
-export const SourceProfileSchema = sourceProfileSchema(CODEX_LINE_TYPES);
+const SourceProfileSchema = sourceProfileSchema(CODEX_LINE_TYPES);
 export type SourceProfile = v.InferOutput<typeof SourceProfileSchema>;
 
-export const ProfileSchema = v.strictObject({
+const ProfileSchema = v.strictObject({
   version: v.literal(1),
   codex: SourceProfileSchema,
   claude: sourceProfileSchema(CLAUDE_LINE_TYPES),
@@ -259,7 +259,7 @@ function parseJsonQuietly(text: string, what: string): unknown {
   }
 }
 
-export function loadProfile(file: string = PROFILE_PATH): Profile {
+function loadProfile(file: string = PROFILE_PATH): Profile {
   return parseProfile(parseJsonQuietly(readFileSync(file, "utf8"), "usage profile"));
 }
 
@@ -295,7 +295,7 @@ const QUANTILE_POINTS: readonly (readonly [number, keyof Omit<Quantiles, "count"
  * through the six points, clamped (never extrapolated) below p5 and above p99. Linear
  * arithmetic only, so every host computes the same double.
  */
-export function sampleQuantile(rng: Rng, q: Quantiles): number {
+function sampleQuantile(rng: Rng, q: Quantiles): number {
   const u = rng();
   let prev = QUANTILE_POINTS[0]!;
   if (u <= prev[0]) return q[prev[1]];
@@ -311,7 +311,7 @@ export function sampleQuantile(rng: Rng, q: Quantiles): number {
 }
 
 /** sampleQuantile rounded to a whole number, never below `min`. */
-export function sampleCount(rng: Rng, q: Quantiles, min = 0): number {
+function sampleCount(rng: Rng, q: Quantiles, min = 0): number {
   return Math.max(min, Math.round(sampleQuantile(rng, q)));
 }
 
@@ -452,19 +452,19 @@ export function filenameShape(name: string): string {
 // ---------- templates ----------
 
 export type Json = string | number | boolean | null | Json[] | { [key: string]: Json };
-export type JsonObject = { [key: string]: Json };
+type JsonObject = { [key: string]: Json };
 
 function isJsonObject(value: Json | undefined): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export interface SourceTemplates {
+interface SourceTemplates {
   /** Whole-line templates keyed by line type (codexLineType / claudeLineType labels). */
   lines: Record<string, Json>;
   /** Content-block templates spliced into `@content` arrays. */
   blocks: Record<string, Json>;
 }
-export type Templates = Record<UsageSource, SourceTemplates>;
+type Templates = Record<UsageSource, SourceTemplates>;
 
 const SourceTemplatesSchema = v.strictObject({
   lines: v.record(v.string(), v.unknown()),
@@ -472,7 +472,7 @@ const SourceTemplatesSchema = v.strictObject({
 });
 
 /** Load `<dir>/<source>.json` for both sources; the fixture set is committed and ASCII. */
-export function loadTemplates(dir: string = TEMPLATES_DIR): Templates {
+function loadTemplates(dir: string = TEMPLATES_DIR): Templates {
   const files = readdirSync(dir).filter((name) => name.endsWith(".json")).sort();
   const out: Partial<Templates> = {};
   for (const source of USAGE_SOURCES) {
@@ -660,7 +660,7 @@ function utcParts(ms: number): { date: string; time: string; y: string; m: strin
 
 // ---------- the generator ----------
 
-export interface GenerateOptions {
+interface GenerateOptions {
   root: string;
   mb: number;
   seed: number;
@@ -672,7 +672,7 @@ export interface GenerateOptions {
   end?: string;
 }
 
-export interface GeneratedFile {
+interface GeneratedFile {
   path: string;
   source: UsageSource;
   bytes: number;
@@ -688,7 +688,7 @@ export interface ExpectedReport {
   perDay: Map<string, Map<string, ModelUsage>>;
 }
 
-export interface ExpectedUsage {
+interface ExpectedUsage {
   codex: Map<string, ExpectedReport>;
   claude: ExpectedReport;
 }

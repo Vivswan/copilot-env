@@ -27,10 +27,10 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 /** Marks the one comment this script owns on a PR; the upsert finds it by this. */
-export const COMMENT_MARKER = "<!-- cost-metrics -->";
+const COMMENT_MARKER = "<!-- cost-metrics -->";
 
 /** The only author whose marker comments the upsert may touch. */
-export const COMMENT_AUTHOR = "github-actions[bot]";
+const COMMENT_AUTHOR = "github-actions[bot]";
 
 /** The measurement's hand-off to the comment step, inside the --out/--in directory. */
 const COMMENT_FILE = "comment.md";
@@ -50,11 +50,11 @@ const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const NO_INDEX_FLAG = "--no-index";
 /** Bounds on the RENDERED diff section of the comment (heading, fence and note included). */
-export const DIFF_SECTION_LINES = 60;
-export const DIFF_SECTION_BYTES = 16 * 1024;
+const DIFF_SECTION_LINES = 60;
+const DIFF_SECTION_BYTES = 16 * 1024;
 /** Bounds on the RENDERED failure summary (marker, heading, fence and note included). */
-export const FAILURE_SUMMARY_LINES = 200;
-export const FAILURE_SUMMARY_BYTES = 8 * 1024;
+const FAILURE_SUMMARY_LINES = 200;
+const FAILURE_SUMMARY_BYTES = 8 * 1024;
 const DEFAULT_TREE_MB = 1024;
 const DEFAULT_SEED = 1;
 const DEFAULT_FIXTURES_SCRIPT = "scripts/usage_fixtures.ts";
@@ -100,7 +100,7 @@ interface Timing {
 }
 
 /** The generator's summary line, validated: only these fields ever reach the comment. */
-export interface TreeSummary {
+interface TreeSummary {
   files: number;
   bytes: number;
   /** Inclusive local-day keys (YYYY-MM-DD) of the tree's first and last day. */
@@ -109,7 +109,7 @@ export interface TreeSummary {
 }
 
 /** One table row: the `--days` window and its label. */
-export interface Window {
+interface Window {
   label: string;
   args: readonly string[];
 }
@@ -118,7 +118,7 @@ export interface Window {
  * How a window's head payloads relate to the base's; `differs` alone fails the job. The
  * labels are the differing runs, first one first; the diff is that first run against the base.
  */
-export type Outcome =
+type Outcome =
   | { kind: "match" }
   | { kind: "transient"; labels: [string, ...string[]] }
   | { kind: "differs"; labels: [string, ...string[]]; diff: string };
@@ -383,7 +383,7 @@ const LOCAL_DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /** The local-midnight timestamp of an inclusive local-day key; a day that does not exist
  *  (2026-02-30) is rejected rather than rolled over into the next month. */
-export function localMidnightMs(day: string, what: string): number {
+function localMidnightMs(day: string, what: string): number {
   const match = LOCAL_DAY.exec(day);
   const [, y, m, d] = match ?? [];
   const date = new Date(Number(y), Number(m) - 1, Number(d));
@@ -403,7 +403,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
 }
 
 /** The generator's last stdout line as a validated TreeSummary; anything else is an error. */
-export function parseTreeSummary(line: string): TreeSummary {
+function parseTreeSummary(line: string): TreeSummary {
   const what = "fixtures summary";
   const parsed = record(line === "" ? undefined : JSON.parse(line));
   if (parsed === undefined) throw new Error(`${what}: the last output line is not a JSON object`);
@@ -454,7 +454,7 @@ async function generateTree(opts: MeasureOptions, treeHome: string): Promise<Tre
  * days ending today, so N = (today - firstDay in days) + 1 reaches back to firstDay; the extra
  * day is slack for a run crossing midnight.
  */
-export function wholeTreeWindow(summary: TreeSummary, todayMs: number): Window {
+function wholeTreeWindow(summary: TreeSummary, todayMs: number): Window {
   const first = localMidnightMs(summary.firstDay, "fixtures summary firstDay");
   const last = localMidnightMs(summary.lastDay, "fixtures summary lastDay");
   if (first > todayMs) throw new Error(`the tree starts in the future (${summary.firstDay})`);
@@ -585,7 +585,7 @@ function totalUsd(section: unknown): number {
  * A base payload with no session usage inside the window, or none of it priced, would make
  * every match vacuous: the first leaves nothing to compare, the second compares only zeros.
  */
-export function assertWindowHasUsage(window: string, json: Record<string, unknown>): void {
+function assertWindowHasUsage(window: string, json: Record<string, unknown>): void {
   const sources = [
     json.claudeSessions,
     ...Object.values(record(record(json.codexSessions)?.providers) ?? {}),
@@ -633,7 +633,7 @@ function lineCount(text: string): number {
  * was dropped is part of the budget, so the result never exceeds either bound. A budget of
  * zero lines or bytes yields the empty string.
  */
-export function boundExcerpt(text: string, maxLines: number, maxBytes: number): string {
+function boundExcerpt(text: string, maxLines: number, maxBytes: number): string {
   if (maxLines <= 0 || maxBytes <= 0) return "";
   const lines = text.replace(/\n$/, "").split("\n");
   const kept = lines.length > maxLines ? lines.slice(0, Math.max(0, maxLines - 1)) : lines;
@@ -689,7 +689,7 @@ const BLOCK_MIN_LINES = 3;
  * A fenced block of `text` whose RENDERED form fits `maxLines` lines and `maxBytes` bytes.
  * A budget too small for even an empty block is a caller bug and throws.
  */
-export function boundedBlock(
+function boundedBlock(
   text: string,
   info: string,
   maxLines: number,
@@ -715,7 +715,7 @@ export function boundedBlock(
 }
 
 /** The step-summary body for a failed measurement, within FAILURE_SUMMARY_LINES/BYTES. */
-export function failureSummary(message: string): string {
+function failureSummary(message: string): string {
   const header = `${COMMENT_MARKER}\n## Cost metrics: measurement failed\n\n`;
   const block = boundedBlock(
     message,
@@ -735,7 +735,7 @@ function oneLine(text: string, maxBytes: number): string {
 }
 
 /** The comment's diff section for one window, within DIFF_SECTION_LINES/BYTES. */
-export function diffSection(window: string, label: string, diff: string): string {
+function diffSection(window: string, label: string, diff: string): string {
   const heading = oneLine(`### ${window}: ${label} vs base (excerpt)`, DIFF_HEADING_BYTES);
   const header = `\n${heading}\n\n`;
   const block = boundedBlock(
@@ -1054,7 +1054,7 @@ function ghApi(args: readonly string[]): Promise<RunResult> {
  * The ids of the comments this script owns, oldest first: authored by COMMENT_AUTHOR and
  * STARTING with the marker. A human quoting the marker mid-comment is never touched.
  */
-export function ownedCommentIds(comments: unknown): number[] {
+function ownedCommentIds(comments: unknown): number[] {
   if (!Array.isArray(comments)) throw new Error("the comment listing is not an array");
   const ids: number[] = [];
   for (const entry of comments) {

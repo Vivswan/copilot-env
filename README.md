@@ -86,7 +86,7 @@ agent shell                # wire rc / $PROFILE; --clis installs the CLIs, --rem
 agent uninstall            # remove copilot-env entirely (--yes headless, --dry-run preview, --force to delete a source checkout)
 agent codex                # configure Codex; no flag auto-detects the backend, --check reports it
 agent codex --direct       # force GitHub Copilot Direct (no auto-detect probe)
-agent codex --check        # print provider mode; exits 0 direct, 2 proxy, 1 other
+agent codex --check        # print provider mode (+ a Direct config's service_tier line); exits 0 direct, 2 proxy, 1 other
 agent config --set codex-host true   # per-host CODEX_HOME symlink farm (Linux/macOS); the next `agent init` / `agent codex` builds it, `false` removes it
 agent codex --mobile       # pair the Codex desktop app with the phone remote-control flow (interactive)
 agent claude               # configure Claude; no flag auto-detects the backend, --check reports it

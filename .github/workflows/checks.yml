@@ -108,6 +108,34 @@ jobs:
       - name: Run the suite in a container
         run: deno task test:docker
 
+  # Codex parses the generated model catalog strictly, so a field a new Codex requires
+  # is a startup error: generate against the CURRENT CLI release (its own dump plus a
+  # fixture Copilot body, no token) and make it parse the result and reject a broken one.
+  codex-catalog-drift:
+    name: Codex model catalog schema drift (current Codex CLI)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version-file: .dvmrc
+          cache: true
+
+      - name: Install dependencies
+        run: deno ci
+
+      - name: Install the current Codex CLI release
+        run: npm install -g @openai/codex
+
+      - name: Generate from the installed Codex's dump and prove it accepts the result (and rejects a broken one)
+        env:
+          COPILOT_ENV_LIVE_CODEX: "1"
+        run: deno test -P=test test/codex_catalog_live.test.ts
+
   # The ONLY job that runs the REAL proxy. Every other lifecycle run points
   # COPILOT_API_ENTRY at test/copilot-api-fake.mjs, so nothing else exercises
   # the float against the live registry, or the daemon's production permission

@@ -700,7 +700,11 @@ export async function generateCodexModelCatalog(
       return false;
     }
     // 0600 like every file the store writes beside it (the home's own policy).
-    atomicWriteFile(new CopilotApiPaths().codexModelCatalogFile, bytes, 0o600);
+    const file = new CopilotApiPaths().codexModelCatalogFile;
+    atomicWriteFile(file, bytes, 0o600);
+    // Every file a command writes is named in its output (stderr: `agent auth
+    // --get` runs this too, and its stdout is the token).
+    logger.log(`  ✓ Codex model catalog written → ${file}`);
     return true;
   } catch (e) {
     logger.warn(`codex model catalog generation failed: ${errMessage(e)}`);

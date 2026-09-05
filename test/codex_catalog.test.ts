@@ -653,13 +653,26 @@ const GPT55_ONLY = modelsOf([["gpt-5.5", copilotModel(GPT55_LIMITS)]]);
 
 test("generateCodexModelCatalog writes the patched catalog file", async () => {
   isolate();
-  const ok = await generateCodexModelCatalog("direct", {
-    bundledCatalog: () => BUNDLED,
-    fetchCopilotModels: async () => GPT55_ONLY,
-    acceptsCatalog: () => true,
-  });
+  let narrated = "";
+  const realWrite = process.stderr.write;
+  process.stderr.write = (chunk: string | Uint8Array): boolean => {
+    narrated += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+    return true;
+  };
+  let ok = false;
+  try {
+    ok = await generateCodexModelCatalog("direct", {
+      bundledCatalog: () => BUNDLED,
+      fetchCopilotModels: async () => GPT55_ONLY,
+      acceptsCatalog: () => true,
+    });
+  } finally {
+    process.stderr.write = realWrite;
+  }
   expect(ok).toBe(true);
   const file = new CopilotApiPaths().codexModelCatalogFile;
+  // Nothing hidden: the write is named on stderr (stdout may be a token).
+  expect(narrated).toContain(`Codex model catalog written → ${file}`);
   const written = JSON.parse(readFileSync(file, "utf8"));
   expect(written.models[0].context_window).toBe(1_050_000);
   expect(written.models[0].effective_context_window_percent).toBe(87);

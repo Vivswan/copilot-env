@@ -1167,6 +1167,128 @@ test("a rejected catalog is stripped from every known config even when the activ
   expect(activeDoc.model_provider).toBe("openai");
 });
 
+// --- nothing hidden: every catalog artifact change is named ----------------------
+
+function stderrOfSync(fn: () => void): string {
+  let out = "";
+  const realWrite = process.stderr.write;
+  process.stderr.write = (chunk: string | Uint8Array): boolean => {
+    out += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
+    return true;
+  };
+  try {
+    fn();
+  } finally {
+    process.stderr.write = realWrite;
+  }
+  return out;
+}
+
+test("the writer names the model_catalog_json change it makes, and stays quiet when nothing changes", () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  process.env.CODEX_HOME = codexHome;
+  const configPath = join(codexHome, "config.toml");
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  enableCatalog();
+  writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
+  const write = () =>
+    configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0" }, {
+      acceptsCatalog: () => true,
+    });
+  // Added: named. Re-written unchanged: not named again.
+  expect(stderrOfSync(write)).toContain(
+    `model_catalog_json = "${catalogFile}" set in ${configPath}`,
+  );
+  expect(stderrOfSync(write)).not.toContain("model_catalog_json");
+  // Disabled: the removal is named with the old value.
+  new CopilotEnvConfig().set({ codexModelCatalog: false });
+  const removed = stderrOfSync(() =>
+    configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0" })
+  );
+  expect(removed).toContain(`model_catalog_json removed from ${configPath} (was "${catalogFile}")`);
+  // Disabled and already absent: nothing to name.
+  expect(
+    stderrOfSync(() =>
+      configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0" })
+    ),
+  ).not.toContain("model_catalog_json");
+});
+
+test("the disabled sync names the file it deletes and every reference it strips; the enabled sync names the add", () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  process.env.CODEX_HOME = codexHome;
+  const configPath = join(codexHome, "config.toml");
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  mkdirSync(codexHome, { recursive: true });
+  enableCatalog();
+  writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
+  writeFileSync(configPath, 'model_provider = "copilot-env"\n');
+  const added = stderrOfSync(() => syncCodexCatalogReference({ acceptsCatalog: () => true }));
+  expect(added).toContain(`model_catalog_json = "${catalogFile}" set in ${configPath}`);
+  new CopilotEnvConfig().set({ codexModelCatalog: false });
+  const cleaned = stderrOfSync(() => syncCodexCatalogReference());
+  expect(cleaned).toContain(`model_catalog_json removed from ${configPath}`);
+  expect(cleaned).toContain(`Codex model catalog removed → ${catalogFile}`);
+  expect(existsSync(catalogFile)).toBe(false);
+  // A second disabled sync has nothing left to do, and says nothing.
+  expect(stderrOfSync(() => syncCodexCatalogReference())).toBe("");
+});
+
+test("a change on disk is reported even when the ownership ledger cannot be written afterwards", () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  process.env.CODEX_HOME = codexHome;
+  const configPath = join(codexHome, "config.toml");
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  mkdirSync(codexHome, { recursive: true });
+  enableCatalog();
+  writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
+  writeFileSync(configPath, 'model_provider = "copilot-env"\n');
+  // The ledger's file is a directory: every record/release throws.
+  const ledgerFile = new CopilotApiPaths().ownershipFile;
+  rmSync(ledgerFile, { force: true });
+  mkdirSync(ledgerFile);
+  const added = stderrOfSync(() => syncCodexCatalogReference({ acceptsCatalog: () => true }));
+  expect(asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json).toBe(catalogFile);
+  expect(added).toContain(`model_catalog_json = "${catalogFile}" set in ${configPath}`);
+  // The disabled sweep reads the ledger FIRST (recorded claims extend it), so a
+  // broken ledger stops it before any write: nothing changes, and nothing is claimed.
+  new CopilotEnvConfig().set({ codexModelCatalog: false });
+  const before = readFileSync(configPath, "utf8");
+  const cleaned = stderrOfSync(() => syncCodexCatalogReference());
+  expect(readFileSync(configPath, "utf8")).toBe(before);
+  expect(cleaned).not.toContain("removed");
+});
+
+test("the writer reports its config changes even when the ownership ledger cannot be written", () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  process.env.CODEX_HOME = codexHome;
+  const configPath = join(codexHome, "config.toml");
+  const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+  enableCatalog();
+  writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
+  const ledgerFile = new CopilotApiPaths().ownershipFile;
+  rmSync(ledgerFile, { force: true });
+  mkdirSync(ledgerFile);
+  const write = () =>
+    configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0" }, {
+      acceptsCatalog: () => true,
+    });
+  // The ledger throws AFTER the save: the write and its lines land, then the throw.
+  const narratedUntilThrow = (): string => stderrOfSync(() => expect(write).toThrow());
+  const set = narratedUntilThrow();
+  expect(asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json).toBe(catalogFile);
+  expect(set).toContain(`Codex config written → ${configPath}`);
+  expect(set).toContain(`model_catalog_json = "${catalogFile}" set in ${configPath}`);
+  new CopilotEnvConfig().set({ codexModelCatalog: false });
+  const removed = narratedUntilThrow();
+  expect(asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json).toBeUndefined();
+  expect(removed).toContain(`model_catalog_json removed from ${configPath}`);
+});
+
 test("past the refresh deadline the sync still edits the config but skips the ownership ledger", async () => {
   isolate();
   const codexHome = join(dir, ".codex");
@@ -1200,4 +1322,45 @@ test("past the refresh deadline the sync still edits the config but skips the ow
     acceptsCatalog: () => true,
   });
   expect(new OwnershipLedger().owns("codexCatalog", configPath)).toBe(true);
+});
+
+test("agent codex --check reports a Direct config's service_tier line and never rewrites it", async () => {
+  isolate();
+  const codexHome = join(dir, ".codex");
+  process.env.CODEX_HOME = codexHome;
+  const configPath = join(codexHome, "config.toml");
+  mkdirSync(codexHome, { recursive: true });
+  configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0", quiet: true });
+  const checkLine = async (): Promise<string | undefined> => {
+    const lines: string[] = [];
+    const realLog = console.log;
+    console.log = (...args: unknown[]) => lines.push(args.map(String).join(" "));
+    process.exitCode = 99;
+    try {
+      await runCodex({ kind: "check" }, NOOP_CATALOG_DEPS);
+    } finally {
+      console.log = realLog;
+    }
+    expect(process.exitCode).toBe(0); // informational: the provider-mode exit code stays
+    return lines.find((l) => l.startsWith("service_tier:"));
+  };
+  const withTier = (tier: string | undefined): void => {
+    const doc = asRecord(parse(readFileSync(configPath, "utf8")));
+    if (tier === undefined) delete doc.service_tier;
+    else doc.service_tier = tier;
+    writeFileSync(configPath, stringify(doc));
+  };
+  const cases: [tier: string | undefined, expected: string][] = [
+    [undefined, "service_tier: not pinned"],
+    ["priority", 'service_tier: "priority" (Copilot Direct rejects it'],
+    ["flex", 'service_tier: "flex" (accepted by Copilot Direct)'],
+    ["fast", 'service_tier: "fast" (unrecognized; left alone)'],
+  ];
+  for (const [tier, expected] of cases) {
+    withTier(tier);
+    expect(await checkLine()).toContain(expected);
+    // A rewrite leaves the user's line exactly as it was.
+    configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0", quiet: true });
+    expect(asRecord(parse(readFileSync(configPath, "utf8"))).service_tier).toBe(tier);
+  }
 });

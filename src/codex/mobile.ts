@@ -413,8 +413,11 @@ export async function runCodexMobile(): Promise<void> {
   // Durable backup so a hard kill (SIGINT/SIGTERM) mid-pairing leaves a recovery
   // file rather than a Codex with no provider. Removed on a clean finish.
   const backupPath = `${configPath}.copilot-env-mobile.bak`;
+  let backupWritten = false;
   try {
     fs.writeFileSync(backupPath, original);
+    backupWritten = true;
+    logger.log(`  ✓ Codex config backup written → ${backupPath}`);
   } catch {
     logger.warn(`Could not write a backup at ${backupPath}; proceeding from memory.`);
   }
@@ -444,6 +447,7 @@ export async function runCodexMobile(): Promise<void> {
       next = rebuildFromOriginal();
     }
     fs.writeFileSync(configPath, next);
+    logger.log(`  ✓ Codex config written → ${configPath} (model_provider "${provider}" restored)`);
   };
 
   // `finally` does not run on a signal, so restore synchronously on SIGINT/SIGTERM
@@ -454,6 +458,9 @@ export async function runCodexMobile(): Promise<void> {
     } catch {
       try {
         fs.writeFileSync(configPath, rebuildFromOriginal());
+        logger.log(
+          `  ✓ Codex config written → ${configPath} (model_provider "${provider}" restored)`,
+        );
       } catch {
         // give up -- the backup file is the last resort
       }
@@ -466,7 +473,9 @@ export async function runCodexMobile(): Promise<void> {
   try {
     // Drop the managed provider so the app pairs on its default OpenAI provider.
     fs.writeFileSync(configPath, stripModelProvider(original));
-    logger.success(`Temporarily removed model_provider (was "${provider}").`);
+    logger.log(
+      `  ✓ Codex config written → ${configPath} (model_provider "${provider}" removed for pairing)`,
+    );
 
     await app.open();
     logger.box(
@@ -493,11 +502,13 @@ export async function runCodexMobile(): Promise<void> {
     process.off("SIGTERM", onSignal);
     // Always put the managed provider back, even if the user aborts the prompt.
     restore();
-    logger.success(`Restored model_provider = "${provider}".`);
-    try {
-      fs.rmSync(backupPath, { force: true });
-    } catch {
-      // best-effort cleanup of the backup
+    if (backupWritten) {
+      try {
+        fs.rmSync(backupPath);
+        logger.log(`  ✓ Codex config backup removed → ${backupPath}`);
+      } catch {
+        logger.warn(`Could not remove the backup at ${backupPath}.`);
+      }
     }
   }
 

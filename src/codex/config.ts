@@ -771,8 +771,10 @@ export function configureCodexConfig(
   // codex upgrade); otherwise scrub the key -- disabled means "no catalog key",
   // even over a user-pinned path. Account-wide: only the DEFAULT write owns it.
   let catalogRef: "written" | "cleared" | null = null;
+  let catalogRefLine: string | null = null;
   if (profile === null) {
     const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
+    const previousRef = doc.model_catalog_json;
     const verdict: CatalogFileVerdict | "disabled" =
       new CopilotEnvConfig().codexModelCatalogEnabled()
         ? inspectCatalogFile(catalogFile, catalogDeps)
@@ -787,9 +789,17 @@ export function configureCodexConfig(
     if (verdict === "accepted" || verdict === "unverifiable") {
       doc.model_catalog_json = catalogFile;
       catalogRef = "written";
+      if (previousRef !== catalogFile) {
+        catalogRefLine = `model_catalog_json = "${catalogFile}" set in ${hostConfig}`;
+      }
     } else {
       delete doc.model_catalog_json;
       catalogRef = "cleared";
+      if (previousRef !== undefined) {
+        catalogRefLine = `model_catalog_json removed from ${hostConfig} (was "${
+          String(previousRef)
+        }")`;
+      }
     }
   }
 
@@ -817,18 +827,9 @@ export function configureCodexConfig(
     doc.profiles = profilesTable;
   }
 
+  const knownHome = knownCodexHomes().homes.includes(codexHome);
   saveCodexToml(hostConfig, doc);
-  // Ownership lands only AFTER the successful save (the ledger's crash-direction
-  // contract), and only for a KNOWN Codex home -- the set the cleanup sweep
-  // visits -- so detectCodexDirect's throwaway probe home never enters the
-  // ledger (the Claude pair's real-home gate, in Codex's many-homes shape).
-  // Recording on every enabled write also ADOPTS a pre-ledger install's
-  // reference the next time it rewires; the cleared branch drops any claim on
-  // this config, ours or stale.
-  if (catalogRef !== null && knownCodexHomes().homes.includes(codexHome)) {
-    if (catalogRef === "written") new OwnershipLedger().record("codexCatalog", hostConfig);
-    else new OwnershipLedger().release("codexCatalog", hostConfig);
-  }
+  // The change is on disk: report it NOW, before the fallible ledger bookkeeping.
   if (!request.quiet) {
     logger.log(
       `  ✓ Codex config written → ${hostConfig}` +
@@ -838,6 +839,22 @@ export function configureCodexConfig(
             : ` (${profileLabel(profile)}; launch with \`codex --profile ${profile}\`)`
         }`,
     );
+  }
+  // A changed reference is reported even by quiet writes (`agent profile --sync` is
+  // quiet and real); only the direct probe's quiet, throwaway home stays silent.
+  if (catalogRefLine !== null && (!request.quiet || knownHome)) {
+    logger.log(`  ✓ Codex ${catalogRefLine}`);
+  }
+  // Ownership lands only AFTER the successful save (the ledger's crash-direction
+  // contract), and only for a KNOWN Codex home -- the set the cleanup sweep
+  // visits -- so detectCodexDirect's throwaway probe home never enters the
+  // ledger (the Claude pair's real-home gate, in Codex's many-homes shape).
+  // Recording on every enabled write also ADOPTS a pre-ledger install's
+  // reference the next time it rewires; the cleared branch drops any claim on
+  // this config, ours or stale.
+  if (catalogRef !== null && knownHome) {
+    if (catalogRef === "written") new OwnershipLedger().record("codexCatalog", hostConfig);
+    else new OwnershipLedger().release("codexCatalog", hostConfig);
   }
 
   // Scrub only the copilot-env-OWNED legacy key: a `COPILOT_ENV_GH_TOKEN` baked by a
@@ -974,6 +991,8 @@ export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): v
     if (doc.model_catalog_json !== undefined) return;
     doc.model_catalog_json = catalogFile;
     saveCodexToml(configPath, doc);
+    // The change is on disk: say so BEFORE the ledger bookkeeping, which may fail.
+    logger.log(`  ✓ Codex model_catalog_json = "${catalogFile}" set in ${configPath}`);
     if (catalogBookkeepingAllowed()) new OwnershipLedger().record("codexCatalog", configPath);
   } catch {
     // An unreadable config (non-ENOENT) or a write race: the next
@@ -981,9 +1000,9 @@ export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): v
   }
 }
 
-/** The catalog freshness hook every auth-time and launch path runs: the throttled,
- *  version-aware regeneration from `source`, then the reference sync (self-heal
- *  when enabled, cleanup when disabled), under ONE refresh deadline. */
+/** The one catalog freshness hook every auth-time and launch path runs: the throttled,
+ *  version-aware regeneration from `source`, then the reference sync (self-heal when
+ *  enabled, cleanup when disabled), under ONE refresh deadline so the paths cannot drift. */
 export function refreshCodexCatalogAndSync(
   source: CatalogSource,
   deps: CodexCatalogDeps = {},
@@ -1067,6 +1086,7 @@ function cleanupCodexCatalogArtifacts(catalogFile: string): void {
   if (deletionSafe && fs.existsSync(catalogFile)) {
     try {
       fs.rmSync(catalogFile, { force: true });
+      logger.log(`  ✓ Codex model catalog removed → ${catalogFile}`);
     } catch (e) {
       logger.warn(`codex model catalog cleanup failed: ${errMessage(e)}`);
     }
@@ -1104,8 +1124,9 @@ function stripCodexCatalogReferences(
       if (doc.model_catalog_json === catalogFile) {
         delete doc.model_catalog_json;
         fs.writeFileSync(configPath, stringify(doc));
-        if (catalogBookkeepingAllowed()) ledger.release("codexCatalog", configPath);
         stripped = true;
+        logger.log(`  ✓ Codex model_catalog_json removed from ${configPath}`);
+        if (catalogBookkeepingAllowed()) ledger.release("codexCatalog", configPath);
       } else if (resolvesToCatalogFile(doc.model_catalog_json, catalogFile) !== "no") {
         // An alternate spelling of OUR path (case variant on Windows, a
         // symlinked home) -- or a resolve that could not RUN, which leaves the
@@ -1166,22 +1187,45 @@ function checkCodexConfig(): void {
   try {
     const codexHome = effectiveCodexHome();
     const configPath = codexConfigPath(codexHome);
-    const status = inspectCodexWiring(
-      readTextResult(configPath),
-      null,
-      Number(copilotApiResolvePort()),
-      false,
-    );
+    const read = readTextResult(configPath);
+    const status = inspectCodexWiring(read, null, Number(copilotApiResolvePort()), false);
     console.log(`Codex provider mode: ${status.providerMode} (${providerModeDetail(status)})`);
     console.log(`CODEX_HOME: ${codexHome}`);
     console.log(`config.toml: ${configPath}`);
     const drift = codexHostDrift();
     if (drift !== null) console.log(codexHostDriftLine(drift));
+    // "direct" was classified from this very text, so it parses.
+    if (status.providerMode === "direct" && read.kind === "text") {
+      console.log(
+        `service_tier: ${serviceTierDetail(parse(read.text) as Record<string, unknown>)}`,
+      );
+    }
     process.exitCode = providerModeExitCode(status.providerMode);
   } catch (e) {
     logger.error(`Codex provider check failed: ${errMessage(e)}`);
     process.exitCode = 1;
   }
+}
+
+// Copilot Direct's answer to Codex's `service_tier`: `default` and `flex` are accepted,
+// `priority` (Codex's fast-mode default) is rejected ("service_tier is not supported").
+const COPILOT_ACCEPTED_SERVICE_TIERS: ReadonlySet<string> = new Set(["default", "flex"]);
+const COPILOT_REJECTED_SERVICE_TIER = "priority";
+
+/** The `--check` reading of a Direct config's `service_tier` line. The line is the
+ *  user's knob and is never rewritten; with the opt-in catalog on, its stripped tier
+ *  advertisements make Codex send no tier at all, whatever the line says. */
+function serviceTierDetail(doc: Record<string, unknown>): string {
+  const tier = doc.service_tier;
+  if (tier === undefined) return "not pinned";
+  if (tier === COPILOT_REJECTED_SERVICE_TIER) {
+    return `"${tier}" (Copilot Direct rejects it; the opt-in codex-model-catalog stops Codex from ` +
+      `sending any tier, else set service_tier = "default" or "flex" in config.toml)`;
+  }
+  if (typeof tier === "string" && COPILOT_ACCEPTED_SERVICE_TIERS.has(tier)) {
+    return `"${tier}" (accepted by Copilot Direct)`;
+  }
+  return `"${String(tier)}" (unrecognized; left alone)`;
 }
 
 /**

@@ -126,7 +126,10 @@ export async function runMigrations(
       await m.run();
       consola.success(`Migration ${m.version} complete.`);
     } catch (e) {
-      consola.warn(`Migration ${m.version} did not complete (non-fatal): ${errMessage(e)}`);
+      consola.warn(
+        `Migration ${m.version} did not complete (non-fatal): ${errMessage(e)}. ` +
+          `Re-run it with \`agent migrate ${stripV(from)} ${stripV(to)}\` once fixed.`,
+      );
     }
   }
 }

@@ -35,6 +35,15 @@ import { chmodReported, removeReported, writeFileReported } from "../utils/repor
 import { isRecord, parseJsonRecord } from "../utils/json.ts";
 import type { Migration } from "./index.ts";
 
+/** A step's outcome is honest about its files: each file converts independently (one
+ *  bad file never stops the others), but any file that could not be converted makes
+ *  the whole step fail, so the runner warns and names the re-run instead of reporting
+ *  a clean pass over wiring that is still broken. */
+function failIfAny(failed: readonly string[]): void {
+  if (failed.length === 0) return;
+  throw new Error(`${failed.length} file(s) were not converted: ${failed.join(", ")}`);
+}
+
 // --- the shell rc block ----------------------------------------------------------
 
 /** The ordered [assignment, guard] line pair every 3.5.6-or-older release (and the
@@ -110,17 +119,21 @@ export function fenceUnfencedBlocks(content: string): string {
  *  versioned-layout adoption re-wires the shell through the current writer -- that
  *  writer owns only the marker line of an unfenced block and would strand its body. */
 export function fenceShellBlocks(): void {
+  const failed: string[] = [];
   for (const file of shellTargetFiles()) {
-    const read = readTextResult(file);
-    if (read.kind === "absent") continue;
-    if (read.kind === "unreadable") {
-      consola.warn(`  could not read ${file} (${read.error}); its block was not checked.`);
-      continue;
+    try {
+      const read = readTextResult(file);
+      if (read.kind === "absent") continue;
+      if (read.kind === "unreadable") throw new Error(read.error);
+      const fenced = fenceUnfencedBlocks(read.text);
+      if (fenced === read.text) continue;
+      writeFileReported(file, fenced, { detail: "copilot-env shell block fenced" });
+    } catch (e) {
+      consola.warn(`  could not fence ${file}: ${errMessage(e)}`);
+      failed.push(file);
     }
-    const fenced = fenceUnfencedBlocks(read.text);
-    if (fenced === read.text) continue;
-    writeFileReported(file, fenced, { detail: "copilot-env shell block fenced" });
   }
+  failIfAny(failed);
 }
 
 /** The rc/profile blocks 3.5.6 wrote carry no end fence; fenced in place (the body is
@@ -243,6 +256,7 @@ export function rewriteCodexWiring(): void {
       "  could not enumerate every ~/.codex/hosts home; a config there may keep the old wiring.",
     );
   }
+  const failed: string[] = [];
   for (const home of homes) {
     const configPath = codexConfigPath(home);
     try {
@@ -252,14 +266,17 @@ export function rewriteCodexWiring(): void {
       }
     } catch (e) {
       consola.warn(`  could not rewrite ${configPath}: ${errMessage(e)}`);
+      failed.push(configPath);
     }
     const envFile = join(home, ".env");
     try {
       removeEnvKey(envFile, LEGACY_DIRECT_ENV_KEY);
     } catch (e) {
       consola.warn(`  could not rewrite ${envFile}: ${errMessage(e)}`);
+      failed.push(envFile);
     }
   }
+  failIfAny(failed);
 }
 
 export const v400CodexWiring: Migration = {
@@ -372,11 +389,7 @@ export function rewriteLegacyClaudeHelper(claudeHome: string, profile: Profile):
   writeFileReported(settingsPath, `${JSON.stringify(doc, null, 2)}\n`, {
     detail: "apiKeyHelper inlined",
   });
-  try {
-    removeReported(helper, "retired copilot-env helper file");
-  } catch (e) {
-    consola.warn(`  could not remove ${helper}: ${errMessage(e)}`);
-  }
+  removeReported(helper, "retired copilot-env helper file");
   return true;
 }
 
@@ -384,15 +397,17 @@ export function rewriteLegacyClaudeHelper(claudeHome: string, profile: Profile):
  *  Shared by the 4.0.0 step below and its 3.5.6 registration. */
 export function rewriteClaudeWiring(): void {
   const claudeHome = resolveClaudeHome();
+  const failed: string[] = [];
   for (const profile of claudeSettingsProfiles(claudeHome)) {
+    const settingsPath = settingsPathFor(claudeHome, profile);
     try {
       rewriteLegacyClaudeHelper(claudeHome, profile);
     } catch (e) {
-      consola.warn(
-        `  could not rewrite ${settingsPathFor(claudeHome, profile)}: ${errMessage(e)}`,
-      );
+      consola.warn(`  could not rewrite ${settingsPath}: ${errMessage(e)}`);
+      failed.push(settingsPath);
     }
   }
+  failIfAny(failed);
 }
 
 /** Claude's apiKeyHelper moves from the helper FILE 3.5.6 wrote to the current inline

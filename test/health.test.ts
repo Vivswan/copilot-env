@@ -2021,6 +2021,19 @@ test("evalCodex: provider wired only when default + managed auth + host:port all
   });
   expect(evalCodex("/c", stalePort, env, 4141, false).providerWired).toBe(false);
   expect(evalCodex("/c", foreignAuth, env, 4141, false).providerWired).toBe(false);
+  // The pre-4.0.0 default proxy shape (`env_key` instead of the managed auth block), with
+  // the token present: proxy by base_url, but never managed wiring -- the 4.0.0
+  // migration rewrites it, and `agent health` sends an unconverted one to `agent codex`.
+  const legacyEnvKey = codexConfigToml({
+    baseUrl: "http://localhost:4141/v1",
+    envKey: "OPENAI_API_KEY",
+  });
+  expect(evalCodex("/c", legacyEnvKey, env, 4141, false)).toMatchObject({
+    providerMode: "proxy",
+    envKeyMatches: false,
+    providerWired: false,
+    tokenAvailable: true,
+  });
   // No token in .env, but present in the environment => still available.
   expect(evalCodex("/c", good, "FOO=1\n", 4141, true)).toMatchObject({
     envKeyInDotenv: false,

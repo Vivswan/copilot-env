@@ -23,6 +23,7 @@ import {
   dropLegacyAutoupdateFlag,
   fenceUnfencedBlocks,
   removeEnvKey,
+  rewriteClaudeWiring,
   rewriteLegacyClaudeHelper,
   rewriteLegacyCodexTables,
   v400AutoupdateFlag,
@@ -222,6 +223,35 @@ test("rewriteLegacyCodexTables moves the 3.5.6 tables to the managed auth block"
   expect(providers.other).toEqual({ "base_url": "http://other/v1", "env_key": "OTHER_KEY" });
   // Converged: a second pass changes nothing.
   expect(rewriteLegacyCodexTables(doc)).toBe(false);
+});
+
+test("a file that cannot be converted fails the step; the other files still convert", () => {
+  dir = tempDir("copilot-mig-claude-fail-");
+  process.env.CLAUDE_CONFIG_DIR = dir;
+  const ext = process.platform === "win32" ? "cmd" : "sh";
+  // The default profile: a released helper body, convertible.
+  const direct = join(dir, `copilot-token.${ext}`);
+  writeFileSync(
+    direct,
+    process.platform === "win32"
+      ? '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\r\\bin\\agent.ps1" auth --get\r\n'
+      : "#!/bin/sh\nexec '/r/bin/agent' 'auth' '--get'\n",
+  );
+  writeFileSync(join(dir, "settings.json"), JSON.stringify({ apiKeyHelper: direct }));
+  // The work profile: its helper path is a DIRECTORY, so the body read fails (not absent).
+  const workHelper = join(dir, `copilot-token-work.${ext}`);
+  mkdirSync(workHelper);
+  writeFileSync(join(dir, "settings-work.json"), JSON.stringify({ apiKeyHelper: workHelper }));
+
+  expect(() => rewriteClaudeWiring()).toThrow(join(dir, "settings-work.json"));
+  // The step's outcome is the failure, but the convertible file was still converted.
+  expect(JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).apiKeyHelper).toBe(
+    directHelperCommand(),
+  );
+  expect(existsSync(direct)).toBe(false);
+  expect(JSON.parse(readFileSync(join(dir, "settings-work.json"), "utf8")).apiKeyHelper).toBe(
+    workHelper,
+  );
 });
 
 test("removeEnvKey drops every assignment of the key and nothing else", () => {

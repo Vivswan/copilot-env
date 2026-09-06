@@ -440,7 +440,7 @@ test("codex-host: stored else default, POSIX-only set, and Windows always reads 
   expect(stdoutOf(() => runConfig({ get: "codex-host" }, "win32"))).toBe("false\n");
   // The table is stdout too, and the command hands the renderer the same platform.
   expect(stdoutOf(() => runConfig({ get: true }, "win32"))).toBe(
-    `${configTable(cfg.read(), "win32")}\n`,
+    `${configTable(cfg.read(), "win32", process.stdout.columns)}\n`,
   );
 });
 
@@ -457,11 +457,14 @@ test("the registry is alphabetical by CLI name with unique storage keys", () => 
   expect(new Set(keys).size).toBe(keys.length);
 });
 
-test("configTable() groups the keys under their sections, in section then registry order, with value, default, description", () => {
-  // One block per section: a `<Section>:` heading line, then one two-space-indented row per
-  // key. Parsing the output back into blocks pins association and order, not just presence.
-  const rendered = configTable({ autoStart: true, codexHost: true }, "win32");
-  const blocks = rendered.split("\n\n").map((block) => {
+test("configTable() leads with a header line, then groups the keys under their sections in section then registry order, with value, default, description", () => {
+  // A header block naming the columns, then one block per section: a `<Section>:` heading
+  // line and one two-space-indented row per key. Parsing the output back into blocks pins
+  // association and order, not just presence.
+  const rendered = configTable({ autoStart: true, codexHost: true }, "win32", undefined);
+  const [header = "", ...sectionBlocks] = rendered.split("\n\n");
+  expect(header.replace(/\s+/g, " ").trim()).toBe("key value default description");
+  const blocks = sectionBlocks.map((block) => {
     const [heading, ...rows] = block.split("\n");
     return {
       heading,
@@ -477,22 +480,56 @@ test("configTable() groups the keys under their sections, in section then regist
   );
   // A section with no keys would render as a bare heading: a dead name in the union.
   for (const b of blocks) expect(b.keys.length).toBeGreaterThan(0);
-  // Column widths are shared across sections: the default column starts at one offset on
-  // every row, so the keys read as one list rather than one table per section.
-  const keyRows = rendered.split("\n").filter((l) => l.startsWith("  "));
-  expect(new Set(keyRows.map((l) => l.indexOf("  default: "))).size).toBe(1);
+  // Column widths are shared across sections AND with the header: every description starts
+  // at the offset the header's `description` does, so the keys read as one list rather than
+  // one table per section.
+  const lines = rendered.split("\n");
+  const rowOf = (cli: string): string => {
+    const row = lines.find((l) => l.startsWith(`  ${cli} `));
+    if (row === undefined) throw new Error(`no row for '${cli}'`);
+    return row;
+  };
+  const describeColumn = header.indexOf("description");
+  for (const def of CONFIG_REGISTRY) {
+    expect(rowOf(def.cli).indexOf(def.describe)).toBe(describeColumn);
+  }
   // The value column: a stored value, `-` when unset, and a stored-but-inert value named
-  // with its note (nothing hidden); the default and description follow on the same row.
-  const rowOf = (cli: string): string | undefined =>
-    rendered.split("\n").find((l) => l.startsWith(`  ${cli} `))?.replace(/\s+/g, " ").trim();
+  // with its note (nothing hidden); the bare default and description follow on the same row.
   const expectRow = (cli: string, value: string): void => {
     const def = configKeyDef(cli);
     if (def === undefined) throw new Error(`no config key '${cli}'`);
-    expect(rowOf(cli)).toBe(`${cli} ${value} default: ${configDefaultLabel(def)} ${def.describe}`);
+    expect(rowOf(cli).replace(/\s+/g, " ").trim()).toBe(
+      `${cli} ${value} ${configDefaultLabel(def)} ${def.describe}`,
+    );
   };
   expectRow("auto-start", "true");
   expectRow("port", "-");
   expectRow("codex-host", "true (inert on win32)");
+});
+
+test("configTable() wraps a description on spaces to the width, continuing at the description column", () => {
+  const unwrapped = configTable({}, "linux", undefined).split("\n");
+  const longest = CONFIG_REGISTRY.reduce((a, b) => a.describe.length > b.describe.length ? a : b);
+  const row = unwrapped.find((l) => l.startsWith(`  ${longest.cli} `));
+  if (row === undefined) throw new Error(`no row for '${longest.cli}'`);
+  const column = row.indexOf(longest.describe);
+  // A width with room for about half the description: the row must break at least once,
+  // on a space, never mid-word, and the pieces read back as the whole description.
+  const width = column + Math.ceil(longest.describe.length / 2);
+  const wrapped = configTable({}, "linux", width).split("\n");
+  const at = wrapped.findIndex((l) => l.startsWith(`  ${longest.cli} `));
+  const first = wrapped[at] ?? "";
+  expect(row.startsWith(`${first} `)).toBe(true);
+  const continuation: string[] = [];
+  for (const l of wrapped.slice(at + 1)) {
+    if (!l.startsWith(" ".repeat(column)) || l[column] === " ") break;
+    continuation.push(l.slice(column));
+  }
+  expect(continuation.length).toBeGreaterThan(0);
+  for (const l of [first, ...continuation.map((c) => " ".repeat(column) + c)]) {
+    expect(l.length).toBeLessThanOrEqual(width);
+  }
+  expect([first.slice(column), ...continuation].join(" ")).toBe(longest.describe);
 });
 
 test("projectedProxyConfig() force-projects the opinionated keys and opt-in keys only when set", () => {

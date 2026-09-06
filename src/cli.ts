@@ -392,7 +392,8 @@ program
   // values are the store's now (a function, not a string baked at startup).
   .addHelpText(
     "after",
-    () => `\n${configTable(new CopilotEnvConfig().read(), process.platform)}`,
+    () =>
+      `\n${configTable(new CopilotEnvConfig().read(), process.platform, process.stdout.columns)}`,
   )
   .action((opts: Opts) =>
     runConfig({

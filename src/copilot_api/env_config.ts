@@ -440,7 +440,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "alpha-search-codex-priority",
     key: "alphaSearchCodexPriority",
     section: "Proxy features",
-    describe: "Prefer Codex for the proxy's /alpha/search endpoint (Codex search) (bool)",
+    describe: "Prefer Codex for the proxy's /alpha/search (Codex search) (bool)",
     ...BOOL_DOMAIN,
     defaultLabel: "true (proxy default)",
     proxyProjected: true,
@@ -450,8 +450,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "alpha-search-model",
     key: "alphaSearchModel",
     section: "Proxy features",
-    describe:
-      "Native-Responses model for /alpha/search (Codex search) when the requested model is Messages-backed and cannot run the search itself",
+    describe: "Responses model /alpha/search uses for a Messages-backed request",
     ...NON_EMPTY_DOMAIN,
     defaultLabel: "gpt-5-mini (proxy default)",
     proxyProjected: true,
@@ -461,7 +460,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "auto-start",
     key: "autoStart",
     section: "Proxy daemon",
-    describe: "Managed proxy lifecycle: auto-start on agent open + idle auto-stop (bool)",
+    describe: "Auto-start the proxy on agent open and auto-stop it when idle (bool)",
     ...BOOL_DOMAIN,
     defaultValue: false,
   },
@@ -469,8 +468,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "auto-update",
     key: "autoUpdate",
     section: "Updates",
-    describe:
-      "Self-update once a day on `agent start`, adopting the newest release aged >= update-cooldown (bool)",
+    describe: "Daily self-update on `agent start`, honoring update-cooldown (bool)",
     ...BOOL_DOMAIN,
     defaultValue: false,
     applyHint:
@@ -480,8 +478,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "claude-auto-model",
     key: "claudeAutoModel",
     section: "Proxy features",
-    describe:
-      "Model override for Claude Code's background security-monitor requests (leave unset to disable)",
+    describe: "Model for Claude Code's background security-monitor requests",
     ...NON_EMPTY_DOMAIN,
     defaultLabel: "unset (disabled)",
     proxyProjected: true,
@@ -491,8 +488,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "claude-desktop",
     key: "claudeDesktop",
     section: "Claude",
-    describe:
-      "Wire Claude Desktop's config library (default + every profile) while the app is installed; false removes the profile entries and leaves the default's in place, unmanaged (bool)",
+    describe: "Wire Claude Desktop's config library; false unwires profiles only (bool)",
     ...BOOL_DOMAIN,
     defaultValue: true,
     applyHint:
@@ -511,8 +507,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "codex-host",
     key: "codexHost",
     section: "Codex",
-    describe:
-      "Per-host CODEX_HOME symlink farm at ~/.codex/hosts/<hostname>, exported by `agent env` (bool; Linux/macOS)",
+    describe: "Per-host CODEX_HOME at ~/.codex/hosts/<hostname> (bool; Linux/macOS)",
     ...BOOL_DOMAIN,
     defaultValue: false,
     posixOnly: true,
@@ -542,8 +537,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "integration-id",
     key: "integrationId",
     section: "Credential",
-    describe:
-      "Pin the Copilot client identity (Copilot-Integration-Id), or `auto` to probe per credential",
+    describe: "Pin the Copilot client identity (Copilot-Integration-Id)",
     ...INTEGRATION_ID_DOMAIN,
     defaultValue: "auto",
     defaultSuffix: " (probe per credential)",
@@ -554,8 +548,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "launchers",
     key: "launchers",
     section: "Shell",
-    describe:
-      "Define the cl / co / cx (+ clx / cox / cxx) launcher functions via `agent env` (bool)",
+    describe: "Shell launchers cl / co / cx (+ clx / cox / cxx) in `agent env` (bool)",
     ...BOOL_DOMAIN,
     defaultValue: false,
     applyHint: "New shells pick a change up; the current one picks up an ENABLE on the next " +
@@ -574,7 +567,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "message-websearch-model",
     key: "messageApiWebSearchModel",
     section: "Proxy features",
-    describe: "Model id for web search: the proxy's Messages-API path and the MCP web_search tool",
+    describe: "Web-search model: proxy Messages-API path and MCP web_search tool",
     ...NON_EMPTY_DOMAIN,
     // The proxy's OWN default, which DEFAULT_WEB_SEARCH_MODEL in web_search.ts matches (that
     // module imports this one, so it cannot be referenced here); a registry test pins the two.
@@ -623,8 +616,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "pricing-url",
     key: "pricingUrl",
     section: "Cost",
-    describe:
-      "OpenRouter models API URL `agent cost` prices at (`--pricing-url` overrides per run)",
+    describe: "OpenRouter models API URL `agent cost` prices at",
     ...HTTPS_URL_DOMAIN,
     defaultValue: OPENROUTER_MODELS_URL,
     applyHint: "Applies to the next `agent cost` run.",
@@ -694,7 +686,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "strict-port",
     key: "strictPort",
     section: "Proxy daemon",
-    describe: "Fail start when the default port is busy instead of auto-incrementing (bool)",
+    describe: "Fail start on a busy port instead of auto-incrementing (bool)",
     ...BOOL_DOMAIN,
     defaultValue: false,
     restartToApply: true,
@@ -711,8 +703,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "verify-provenance",
     key: "verifyProvenance",
     section: "Updates",
-    describe:
-      "Verify `agent update` downloads against the release's Sigstore build-provenance attestation (bool)",
+    describe: "Verify `agent update` downloads against Sigstore provenance (bool)",
     ...BOOL_DOMAIN,
     defaultValue: true,
     applyHint:
@@ -722,8 +713,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "wire-mcp",
     key: "wireMcp",
     section: "Claude",
-    describe:
-      "Wire the copilot-env MCP server (web_search) and the WebSearch deny into Claude on direct writes (bool)",
+    describe: "Wire the copilot-env MCP server + WebSearch deny on direct writes (bool)",
     ...BOOL_DOMAIN,
     defaultValue: true,
     applyHint: "Applies at the next `agent claude`/`agent init` direct wiring.",
@@ -890,39 +880,80 @@ export function isStoredValueInert(
   return def.posixOnly === true && platform === "win32" && data[def.key] !== undefined;
 }
 
-/** The ONE table `agent config` and `agent config --help` both print: every key under its
- *  section (CONFIG_SECTIONS order, registry order within a section) with its current value
- *  (`-` when unset; an inert stored value is shown WITH its inert note), its built-in
- *  default, then its description. Column widths are shared across sections so the keys
- *  line up as one list. Padded by hand rather than via utils/table.ts: this module is in
- *  the preload shims' import closure, and a CLI rendering helper does not belong there. */
-export function configTable(data: CopilotEnvConfigData, platform: NodeJS.Platform): string {
+/** Fewest columns the description column keeps before configTable() stops wrapping: below
+ *  this the wrapped text would be a narrow ribbon, so the terminal's own breaking is better. */
+const MIN_DESCRIPTION_COLUMNS = 30;
+
+/** Break `text` into lines of at most `columns` characters on spaces only; a single word
+ *  longer than `columns` stands on its own line rather than breaking mid-word. */
+function wrapOnSpaces(text: string, columns: number): string[] {
+  const lines: string[] = [];
+  let current = "";
+  for (const word of text.split(" ")) {
+    if (current === "") current = word;
+    else if (current.length + 1 + word.length <= columns) current += ` ${word}`;
+    else {
+      lines.push(current);
+      current = word;
+    }
+  }
+  lines.push(current);
+  return lines;
+}
+
+/** The ONE table `agent config` and `agent config --help` both print: a header line naming
+ *  the columns, then every key under its section (CONFIG_SECTIONS order, registry order
+ *  within a section) with its current value (`-` when unset; an inert stored value is shown
+ *  WITH its inert note), its built-in default, then its description. Column widths are
+ *  shared across sections so the keys line up as one list. `width` is the terminal's column
+ *  count (undefined when stdout is not a TTY): the description column wraps on spaces to fit
+ *  it, continuation lines indented to the column; with no width, or too few columns left for
+ *  the description, nothing wraps. Padded by hand rather than via utils/table.ts: this module
+ *  is in the preload shims' import closure, and a CLI rendering helper does not belong there. */
+export function configTable(
+  data: CopilotEnvConfigData,
+  platform: NodeJS.Platform,
+  width: number | undefined,
+): string {
   const valueOf = (def: ConfigKeyDef): string => {
     const value = data[def.key];
     if (value === undefined) return "-";
     const shown = formatConfigValue(value);
     return isStoredValueInert(def, data, platform) ? `${shown} (inert on ${platform})` : shown;
   };
+  const header = { key: "key", value: "value", defaultLabel: "default", describe: "description" };
+  type Cells = typeof header;
   const rows = CONFIG_REGISTRY.map((def) => ({
     def,
-    value: valueOf(def),
-    defaultLabel: `default: ${configDefaultLabel(def)}`,
+    cells: {
+      key: def.cli,
+      value: valueOf(def),
+      defaultLabel: configDefaultLabel(def),
+      describe: def.describe,
+    },
   }));
-  type Row = (typeof rows)[number];
-  const widthOf = (column: (row: Row) => string): number =>
-    Math.max(...rows.map((row) => column(row).length));
-  const cliWidth = widthOf((row) => row.def.cli);
-  const valueWidth = widthOf((row) => row.value);
-  const defaultWidth = widthOf((row) => row.defaultLabel);
-  const line = (row: Row): string =>
-    `  ${row.def.cli.padEnd(cliWidth)}  ${row.value.padEnd(valueWidth)}  ${
-      row.defaultLabel.padEnd(defaultWidth)
-    }  ${row.def.describe}`;
+  const widthOf = (column: keyof Cells): number =>
+    Math.max(...[header, ...rows.map((row) => row.cells)].map((cells) => cells[column].length));
+  const keyWidth = widthOf("key");
+  const valueWidth = widthOf("value");
+  const defaultWidth = widthOf("defaultLabel");
+  const describeColumn = 2 + keyWidth + 2 + valueWidth + 2 + defaultWidth + 2;
+  const wrapAt = width !== undefined && width - describeColumn >= MIN_DESCRIPTION_COLUMNS
+    ? width - describeColumn
+    : undefined;
+  const line = (cells: Cells): string => {
+    const describe = wrapAt === undefined
+      ? cells.describe
+      : wrapOnSpaces(cells.describe, wrapAt).join(`\n${" ".repeat(describeColumn)}`);
+    return `  ${cells.key.padEnd(keyWidth)}  ${cells.value.padEnd(valueWidth)}  ${
+      cells.defaultLabel.padEnd(defaultWidth)
+    }  ${describe}`;
+  };
   const blocks = CONFIG_SECTIONS.map((section) => {
-    const lines = rows.filter((row) => row.def.section === section).map(line);
+    const lines = rows.filter((row) => row.def.section === section).map((row) => line(row.cells));
     return `${section}:\n${lines.join("\n")}`;
   });
-  return blocks.join("\n\n");
+  return [line(header), ...blocks].join("\n\n");
 }
 
 /**

@@ -146,7 +146,7 @@ test("cli.ts config --help renders the store's CURRENT values: the same table ba
   const help = runCli(["config", "--help"], { env });
   expect(table.exitCode).toBe(0);
   expect(help.exitCode).toBe(0);
-  expect(table.stdout).toMatch(/^ {2}strict-port\s+true\s+default: false /m);
+  expect(table.stdout).toMatch(/^ {2}strict-port\s+true\s+false {2}/m);
   expect(help.stdout.slice(-table.stdout.length)).toBe(table.stdout);
 });
 

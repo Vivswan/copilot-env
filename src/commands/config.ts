@@ -189,5 +189,5 @@ function runGet(get: string | undefined, platform: NodeJS.Platform): void {
   // All keys -> the same grouped table `agent config --help` prints, with current values.
   // Straight to stdout, not consola: consola reformats the backticks in the descriptions,
   // and the two outputs must match byte for byte.
-  process.stdout.write(`${configTable(data, platform)}\n`);
+  process.stdout.write(`${configTable(data, platform, process.stdout.columns)}\n`);
 }

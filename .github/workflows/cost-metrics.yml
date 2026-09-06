@@ -4,9 +4,11 @@
 # checks.yml job because jobs inside the all-green caller run with `contents: read`
 # and cannot write a PR comment.
 #
-# Two steps on purpose: the measurement runs the PR's own code (the fixtures script,
-# the cost CLI), so its process environment never carries the comment token; only
-# the comment step, which spawns nothing but gh, gets it.
+# Three steps on purpose: the measurement runs the PR's own code (the fixtures script,
+# the cost CLI), so its process environment never carries a token; the sticky-comment
+# action step is the only one handed the token, and it posts the body file the
+# measurement wrote (published as its `comment` output); the verdict step then fails the
+# job on a differing JSON.
 
 name: Cost metrics
 
@@ -58,6 +60,7 @@ jobs:
         run: deno ci
 
       - name: Measure base vs head
+        id: measure
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -65,11 +68,17 @@ jobs:
           deno run --allow-read --allow-write --allow-env --allow-run=git,deno
           .github/scripts/cost-metrics.ts measure --out "$RUNNER_TEMP/cost-metrics"
 
-      - name: Upsert the PR comment and apply the verdict
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+      # A fork's or Dependabot's PR runs with a read-only token that cannot post, so the
+      # step is skipped there: the verdict below is the gate and the body is already in the
+      # log and the step summary. Any other failure to post fails the job.
+      - name: Post the sticky PR comment
+        if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
+        uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
+        with:
+          header: cost-metrics
+          path: ${{ steps.measure.outputs.comment }}
+
+      - name: Apply the verdict
         run: >-
-          deno run --allow-read --allow-env --allow-run=gh
-          .github/scripts/cost-metrics.ts comment --in "$RUNNER_TEMP/cost-metrics"
+          deno run --allow-read
+          .github/scripts/cost-metrics.ts verdict --in "$RUNNER_TEMP/cost-metrics"

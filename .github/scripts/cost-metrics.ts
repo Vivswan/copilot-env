@@ -2,11 +2,13 @@
 // one sticky PR comment; the head's JSON must match the base's or the job fails.
 //
 // `measure` runs head-controlled code (fixtures script, cost CLI) with an explicit child
-// environment and no token; `comment` holds the token and spawns only gh (cost-metrics.yml).
+// environment and no token, and leaves the rendered comment and the verdict in --out; the
+// workflow (cost-metrics.yml) posts the comment file, published as the step's `comment`
+// output, through the sticky-comment action, then `verdict` turns the recorded verdict into
+// the job's exit status. No step of this script ever holds a token.
 //   deno run --allow-read --allow-write --allow-env --allow-run=git,deno \
 //     .github/scripts/cost-metrics.ts measure --out <dir> [--base <ref>] [--mb <n>]
-//   deno run --allow-read --allow-env --allow-run=gh \
-//     .github/scripts/cost-metrics.ts comment --in <dir> [--pr <n>] [--dry-run]
+//   deno run --allow-read .github/scripts/cost-metrics.ts verdict --in <dir>
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
@@ -26,15 +28,15 @@ import { join, relative, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-/** Marks the one comment this script owns on a PR; the upsert finds it by this. */
+/** Marks the comment body as this script's; the workflow's sticky-comment header keys it. */
 const COMMENT_MARKER = "<!-- cost-metrics -->";
 
-/** The only author whose marker comments the upsert may touch. */
-const COMMENT_AUTHOR = "github-actions[bot]";
-
-/** The measurement's hand-off to the comment step, inside the --out/--in directory. */
+/** The measurement's hand-off inside the --out/--in directory: the comment body (its path
+ *  published as the COMMENT_OUTPUT step output for the sticky-comment action) and the
+ *  verdict the `verdict` step reads back. */
 const COMMENT_FILE = "comment.md";
 const VERDICT_FILE = "verdict";
+const COMMENT_OUTPUT = "comment";
 
 /** The cost invocation under measurement (after `deno run --config`); the window adds to it. */
 const COST_ARGS = ["-P=cli", "src/cli.ts", "cost", "--json", "--per-day"];
@@ -76,10 +78,8 @@ interface MeasureOptions {
   fixturesScript: string;
 }
 
-interface CommentOptions {
+interface VerdictOptions {
   in: string;
-  pr: number;
-  dryRun: boolean;
 }
 
 interface Checkout {
@@ -143,31 +143,22 @@ function usage(): never {
     [
       "usage: cost-metrics.ts measure --out <dir> [--base <ref>] [--head-sha <sha>] [--mb <n>]",
       "                               [--seed <n>] [--fixtures <path>]",
-      "       cost-metrics.ts comment --in <dir> [--pr <n>] [--dry-run]",
+      "       cost-metrics.ts verdict --in <dir>",
     ].join("\n"),
   );
   process.exit(2);
 }
 
-interface Flags {
-  values: Map<string, string>;
-  switches: Set<string>;
-}
+/** `--name value` pairs; every flag takes a value. */
+type Flags = Map<string, string>;
 
-function parseFlags(argv: readonly string[], switches: readonly string[]): Flags {
-  const flags: Flags = { values: new Map(), switches: new Set() };
-  for (let i = 0; i < argv.length; i++) {
+function parseFlags(argv: readonly string[]): Flags {
+  const flags: Flags = new Map();
+  for (let i = 0; i < argv.length; i += 2) {
     const arg = argv[i];
-    if (arg === undefined || !arg.startsWith("--")) usage();
-    const name = arg.slice(2);
-    if (switches.includes(name)) {
-      flags.switches.add(name);
-      continue;
-    }
     const value = argv[i + 1];
-    if (value === undefined) usage();
-    flags.values.set(name, value);
-    i++;
+    if (arg === undefined || !arg.startsWith("--") || value === undefined) usage();
+    flags.set(arg.slice(2), value);
   }
   return flags;
 }
@@ -182,15 +173,15 @@ function nonNegativeInt(raw: string, what: string): number {
 
 /** `--name` first, then the environment variable, then the default. */
 function setting(flags: Flags, name: string, envName: string): string | undefined {
-  const flag = flags.values.get(name);
+  const flag = flags.get(name);
   if (flag !== undefined) return flag;
   const env = process.env[envName];
   return env === undefined || env === "" ? undefined : env;
 }
 
 function parseMeasureOptions(argv: readonly string[]): MeasureOptions {
-  const flags = parseFlags(argv, []);
-  const out = flags.values.get("out");
+  const flags = parseFlags(argv);
+  const out = flags.get("out");
   const base = setting(flags, "base", "BASE_SHA");
   if (out === undefined) usage();
   if (base === undefined) throw new Error("the base commit is required: --base <ref> or BASE_SHA");
@@ -204,22 +195,17 @@ function parseMeasureOptions(argv: readonly string[]): MeasureOptions {
     base,
     headSha,
     mb: mb === undefined ? DEFAULT_TREE_MB : nonNegativeInt(mb, "the tree size (MB)"),
-    seed: nonNegativeInt(flags.values.get("seed") ?? String(DEFAULT_SEED), "--seed"),
+    seed: nonNegativeInt(flags.get("seed") ?? String(DEFAULT_SEED), "--seed"),
     fixturesScript: setting(flags, "fixtures", "COST_METRICS_FIXTURES_SCRIPT") ??
       DEFAULT_FIXTURES_SCRIPT,
   };
 }
 
-function parseCommentOptions(argv: readonly string[]): CommentOptions {
-  const flags = parseFlags(argv, ["dry-run"]);
-  const dir = flags.values.get("in");
+function parseVerdictOptions(argv: readonly string[]): VerdictOptions {
+  const flags = parseFlags(argv);
+  const dir = flags.get("in");
   if (dir === undefined) usage();
-  const pr = setting(flags, "pr", "PR_NUMBER");
-  return {
-    in: resolve(dir),
-    pr: pr === undefined ? 0 : nonNegativeInt(pr, "the PR number"),
-    dryRun: flags.switches.has("dry-run"),
-  };
+  return { in: resolve(dir) };
 }
 
 export interface RunResult {
@@ -1001,6 +987,14 @@ function appendStepSummary(text: string): void {
   if (summaryFile !== undefined && summaryFile !== "") appendFileSync(summaryFile, text);
 }
 
+/** `name=value` as this step's output, when running under Actions. */
+function setStepOutput(name: string, value: string): void {
+  const outputFile = process.env.GITHUB_OUTPUT;
+  if (outputFile !== undefined && outputFile !== "") {
+    appendFileSync(outputFile, `${name}=${value}\n`);
+  }
+}
+
 interface Teardown {
   what: string;
   run: () => Promise<void> | void;
@@ -1078,9 +1072,11 @@ async function runMeasure(opts: MeasureOptions): Promise<void> {
       : "match";
     console.log(body);
     mkdirSync(opts.out, { recursive: true });
-    writeFileSync(join(opts.out, COMMENT_FILE), body);
+    const commentFile = join(opts.out, COMMENT_FILE);
+    writeFileSync(commentFile, body);
     writeFileSync(join(opts.out, VERDICT_FILE), `${verdict}\n`);
     appendStepSummary(body);
+    setStepOutput(COMMENT_OUTPUT, commentFile);
     console.log(`verdict: ${verdict} (written to ${opts.out})`);
   } catch (error: unknown) {
     primary = error;
@@ -1099,98 +1095,15 @@ async function runMeasure(opts: MeasureOptions): Promise<void> {
   if (failures.length > 0) throw new Error(`cleanup failed:\n${failures.join("\n")}`);
 }
 
-/** `gh api`; the comment step is the only process whose environment carries the token. */
-function ghApi(args: readonly string[]): Promise<RunResult> {
-  const env = childEnv({});
-  for (const name of ["HOME", "GH_TOKEN", "GH_REPO", "GH_HOST"]) {
-    const value = process.env[name];
-    if (value !== undefined) env[name] = value;
-  }
-  return mustRun("gh", ["api", ...args], { env });
-}
-
-/**
- * The ids of the comments this script owns, oldest first: authored by COMMENT_AUTHOR and
- * STARTING with the marker. A human quoting the marker mid-comment is never touched.
- */
-function ownedCommentIds(comments: unknown): number[] {
-  if (!Array.isArray(comments)) throw new Error("the comment listing is not an array");
-  const ids: number[] = [];
-  for (const entry of comments) {
-    const comment = record(entry);
-    const login = record(comment?.user)?.login;
-    const body = comment?.body;
-    if (login !== COMMENT_AUTHOR || typeof body !== "string" || !body.startsWith(COMMENT_MARKER)) {
-      continue;
-    }
-    if (typeof comment?.id !== "number") throw new Error("a comment in the listing has no id");
-    ids.push(comment.id);
-  }
-  return ids;
-}
-
-/** PATCH the first owned comment and delete any other, else POST: exactly one comment. */
-async function upsertComment(pr: number, bodyFile: string): Promise<void> {
-  // --slurp: every page as one array of arrays, so the selection happens here, not in jq.
-  const listed = await ghApi([
-    "--paginate",
-    "--slurp",
-    `repos/{owner}/{repo}/issues/${pr}/comments`,
-  ]);
-  const pages: unknown = JSON.parse(listed.stdout);
-  if (!Array.isArray(pages)) throw new Error("gh api --slurp did not return an array of pages");
-  const [existing, ...duplicates] = ownedCommentIds(pages.flat(1));
-  // `-F body=@<file>`: gh reads the body from the file, so it never rides on the argv.
-  const bodyField = ["-F", `body=@${bodyFile}`];
-  if (existing === undefined) {
-    await ghApi(["--method", "POST", `repos/{owner}/{repo}/issues/${pr}/comments`, ...bodyField]);
-    console.log(`created the comment on PR #${pr}`);
-    return;
-  }
-  await ghApi([
-    "--method",
-    "PATCH",
-    `repos/{owner}/{repo}/issues/comments/${existing}`,
-    ...bodyField,
-  ]);
-  console.log(`updated comment ${existing} on PR #${pr}`);
-  for (const id of duplicates) {
-    await ghApi(["--method", "DELETE", `repos/{owner}/{repo}/issues/comments/${id}`]);
-    console.log(`deleted duplicate comment ${id}`);
-  }
-}
-
-/**
- * Post the comment; a 403 (a fork PR's read-only token) is a warning because the verdict is
- * the gate and the body is already in the log and the step summary. Anything else is an error.
- */
-async function deliverComment(pr: number, bodyFile: string): Promise<void> {
-  try {
-    await upsertComment(pr, bodyFile);
-  } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!/HTTP 403/.test(message)) throw error;
-    console.log(`::warning::could not post the PR comment (token lacks write): ${message}`);
-  }
-}
-
 function readVerdict(dir: string): Verdict {
   const raw = readFileSync(join(dir, VERDICT_FILE), "utf8").trim();
   if (raw === "match" || raw === "differs") return raw;
   throw new Error(`${join(dir, VERDICT_FILE)}: unknown verdict ${JSON.stringify(raw)}`);
 }
 
-async function runComment(opts: CommentOptions): Promise<number> {
-  const bodyFile = join(opts.in, COMMENT_FILE);
+/** The recorded verdict as the job's exit status: `differs` fails the job. */
+function runVerdict(opts: VerdictOptions): number {
   const verdict = readVerdict(opts.in);
-  if (opts.dryRun) {
-    console.log(readFileSync(bodyFile, "utf8"));
-    console.log("dry run: comment not posted");
-  } else if (opts.pr > 0) {
-    await deliverComment(opts.pr, bodyFile);
-  } else {
-    console.log("no PR number: comment not posted");
-  }
   if (verdict === "differs") console.error("cost JSON differs from the base commit");
   return verdict === "differs" ? 1 : 0;
 }
@@ -1201,8 +1114,8 @@ async function main(argv: readonly string[]): Promise<number> {
     case "measure":
       await runMeasure(parseMeasureOptions(rest));
       return 0;
-    case "comment":
-      return await runComment(parseCommentOptions(rest));
+    case "verdict":
+      return runVerdict(parseVerdictOptions(rest));
     default:
       usage();
   }

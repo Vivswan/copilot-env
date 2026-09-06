@@ -19,7 +19,8 @@ import {
   removeClaudeMcpRegistration,
 } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { knownCodexHomes, removeCodexDefaultWiring, removeCodexProfile } from "../codex/config.ts";
+import { removeCodexDefaultWiring, removeCodexProfile } from "../codex/config.ts";
+import { knownCodexHomes } from "../codex/host.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";

@@ -3,16 +3,18 @@
 // comes from settings.json (src/agents/wiring.ts), the profiles' from the store.
 import {
   claudeDesktopInstalled,
-  type ClaudeDesktopStatus,
-  type DesktopTarget,
-  type DesktopTargetResolution,
-  inspectClaudeDesktopWiring,
   profileStoreWellFormed,
   removeClaudeDesktopOrphan,
   removeUnlistedClaudeDesktopClaims,
   removeUnmanagedClaudeDesktopWiring,
   syncClaudeDesktopWiring,
 } from "../claude/desktop.ts";
+import {
+  type ClaudeDesktopStatus,
+  type DesktopTarget,
+  type DesktopTargetResolution,
+  inspectClaudeDesktopWiring,
+} from "../claude/desktop_status.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { configDefaultBoolean, CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";

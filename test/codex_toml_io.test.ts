@@ -1,6 +1,6 @@
 // Unit tests for src/codex/toml_io.ts (the shared Codex config.toml reader/writer)
-// plus one test per call-site POLICY in src/codex/config.ts, proving each site
-// still maps the shared read variants onto its pre-refactor behavior.
+// plus one test per call-site POLICY in src/codex/config.ts and catalog_reference.ts,
+// proving each site still maps the shared read variants onto its pre-refactor behavior.
 
 import {
   chmodSync,
@@ -13,11 +13,11 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { stringify } from "smol-toml";
+import { syncCodexCatalogReference } from "../src/codex/catalog_reference.ts";
 import {
   configureCodexConfig,
   removeCodexDefaultWiring,
   removeCodexProfile,
-  syncCodexCatalogReference,
 } from "../src/codex/config.ts";
 import { readCodexToml, saveCodexToml } from "../src/codex/toml_io.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
@@ -131,7 +131,7 @@ test("saveCodexToml: a write error propagates to the caller", () => {
   expect(() => saveCodexToml(asDir, { "k": "v" })).toThrow();
 });
 
-// --- call-site policies in src/codex/config.ts ------------------------------------
+// --- call-site policies in src/codex/config.ts + catalog_reference.ts ---------------
 
 // Real user content plus one TOML syntax error (an unbalanced quote from a hand edit).
 const UNPARSEABLE = ["[mcp_servers.mine]", 'command = "my-server', ""].join("\n");

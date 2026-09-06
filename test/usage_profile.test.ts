@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { ROOT, runScript } from "./helpers/run.ts";
 import { codexUsage, sessionMeta, tokenCount, turnContext } from "./helpers/session_fixtures.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
-import { parseProfile } from "./helpers/usage_fixtures.ts";
+import { parseProfile } from "./helpers/usage_profile_contract.ts";
 import { usageTreeEnv } from "./helpers/usage_goldens.ts";
 
 let root = "";

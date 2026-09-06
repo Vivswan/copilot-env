@@ -11,14 +11,16 @@ import { join } from "node:path";
 import { parse, stringify } from "smol-toml";
 import { CATALOG_PATCH_VERSION, NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import {
+  refreshCodexCatalogAndSync,
+  syncCodexCatalogReference,
+} from "../src/codex/catalog_reference.ts";
+import {
   codexUserAgent,
   configureCodexConfig,
   detectCodexDirect,
   FALLBACK_CODEX_UA_VERSION,
   inspectCodexWiring,
-  refreshCodexCatalogAndSync,
   runCodex,
-  syncCodexCatalogReference,
 } from "../src/codex/config.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";

@@ -11,7 +11,7 @@ import { homedir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { consola } from "consola";
 import { saveJsonIfChanged } from "../claude/desktop.ts";
-import { knownCodexHomes } from "../codex/config.ts";
+import { knownCodexHomes } from "../codex/host.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import { readCodexToml, saveCodexToml } from "../codex/toml_io.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";

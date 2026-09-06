@@ -9,6 +9,7 @@ import { CopilotEnvRunState } from "../copilot_api/state.ts";
 import { resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoentOrNotdir, isFile } from "../utils/fs.ts";
+import { isRecord } from "../utils/json.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../utils/hostname.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import {
@@ -656,4 +657,33 @@ export async function withCodexHostFarm(
     state.set({ codexHome: null });
   }
   await write(effectiveCodexHome());
+}
+
+/** Every Codex home that may hold per-home state (config.toml, sessions): the
+ *  active home (run state / CODEX_HOME env), the default ~/.codex, and each
+ *  per-host symlink-farm home, enumerated through the farm layout's owner
+ *  (codexFarmHostsDir in src/utils/hostname.ts). `complete` is false when the
+ *  farm directory exists but cannot be enumerated -- unseen homes may still
+ *  hold state. */
+export function knownCodexHomes(): { homes: string[]; complete: boolean } {
+  const homes = new Set<string>([effectiveCodexHome()]);
+  // The default home resolves via homedir() (the effectiveCodexHome contract);
+  // the farm root via its creator's contract (codexFarmHostsDir on homeDir,
+  // process.env.HOME first). They usually agree, but can differ (e.g. HOME set
+  // on Windows), so sweep BOTH -- the Set dedupes the common case.
+  homes.add(path.join(homedir(), ".codex"));
+  const hostsDir = codexFarmHostsDir();
+  homes.add(path.dirname(hostsDir));
+  let complete = true;
+  try {
+    for (const entry of fs.readdirSync(hostsDir, { withFileTypes: true })) {
+      if (entry.isDirectory()) homes.add(path.join(hostsDir, entry.name));
+    }
+  } catch (e) {
+    // No farm directory (ENOENT/ENOTDIR): the two base homes cover everything.
+    // Any OTHER failure (EACCES, I/O) hides farm homes that may hold state,
+    // so the sweep is incomplete.
+    if (isRecord(e) && !isEnoentOrNotdir(e)) complete = false;
+  }
+  return { homes: [...homes], complete };
 }

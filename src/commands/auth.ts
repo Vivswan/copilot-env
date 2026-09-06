@@ -24,7 +24,7 @@ import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { consola } from "consola";
 import type { CodexCatalogDeps } from "../codex/catalog.ts";
-import { refreshCodexCatalogAndSync } from "../codex/config.ts";
+import { refreshCodexCatalogAndSync } from "../codex/catalog_reference.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import {
   AUTH_PROVIDERS,

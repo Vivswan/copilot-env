@@ -648,9 +648,19 @@ async function handle(req, res, log, hooks) {
   });
 }
 
+/** One answered inference request, as `onRequest` sees it.
+ *  @typedef {object} InferenceFakeRequest
+ *  @property {string} path
+ *  @property {string} model
+ *  @property {boolean} stream
+ *  @property {string | null} tool
+ *  @property {{input: number, cacheRead: number, cacheCreation: number, output: number}} usage */
+
 /** `beforeReply` is awaited before an inference route replies (timing only); `onRequest` is called
  *  once per answered inference request.
- *  @typedef {{beforeReply?: (path: string) => Promise<void>, onRequest?: (request: {path: string, model: string, stream: boolean, tool: string | null, usage: {input: number, cacheRead: number, cacheCreation: number, output: number}}) => void}} InferenceFakeHooks */
+ *  @typedef {object} InferenceFakeHooks
+ *  @property {(path: string) => Promise<void>} [beforeReply]
+ *  @property {(request: InferenceFakeRequest) => void} [onRequest] */
 
 /** Start the fake on 127.0.0.1:`port` (0 = any free port); resolves once listening.
  *  @param {number} port @param {(line: string) => void} [log] @param {InferenceFakeHooks} [hooks]

@@ -14,8 +14,6 @@ import { openaiBaseUrl, proxyLoopbackOrigin } from "../src/copilot_api/port.ts";
 import { parseProfileName, type Profile, type ProfileName } from "../src/copilot_api/profile.ts";
 import { exitCodeFor, worstStatus } from "../src/health/aggregate.ts";
 import {
-  checkClaude,
-  checkCodex,
   checkProfileAuth,
   checkProfileConsistency,
   checkRuntimeIdentity,
@@ -24,19 +22,17 @@ import {
   checkRuntimePort,
   evaluateAll,
 } from "../src/health/checks.ts";
+import { checkClaude, checkCodex } from "../src/health/checks_agents.ts";
 import {
   classifyPortState,
   type ClaudeFacts,
-  claudeLiveOmitEnv,
   type DaemonProbed,
-  gatherFacts,
   type NamedRuntimeTarget,
-  type ProbeDeps,
   type ProfileSlotFacts,
-  runLiveCli,
   type RuntimeTarget,
   type WatchdogFacts,
-} from "../src/health/probe.ts";
+} from "../src/health/facts.ts";
+import { claudeLiveOmitEnv, gatherFacts, type ProbeDeps, runLiveCli } from "../src/health/probe.ts";
 import { describe, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome, writeRunState } from "./helpers.ts";
 

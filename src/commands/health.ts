@@ -11,7 +11,8 @@ import { assertKnownProfile, type ProfileMode } from "../copilot_api/env_state.t
 import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { buildHealthJson, exitCodeFor, isHealthScope } from "../health/aggregate.ts";
 import { evaluateAll } from "../health/checks.ts";
-import { gatherFacts, type HealthFacts } from "../health/probe.ts";
+import type { HealthFacts } from "../health/facts.ts";
+import { gatherFacts } from "../health/probe.ts";
 import { renderReport } from "../health/report.ts";
 import { HEALTH_SCOPES } from "../health/types.ts";
 

@@ -28,21 +28,23 @@ import {
   desktopLibraryDirUnder,
   desktopModelLabel,
   desktopModelsFromPicks,
-  type DesktopTarget,
   type DesktopWireOptions,
-  inspectClaudeDesktopWiring,
   listClaudeDesktopOwnedArtifacts,
   parseDesktopMeta,
   removeAllClaudeDesktopWiring,
   removeClaudeDesktopEntry,
   removeUnmanagedClaudeDesktopWiring,
-  renderClaudeDesktopStatus,
   resolveDesktopLibraryDir,
   retireDesktopHelperScript,
   syncClaudeDesktopWiring,
   wireClaudeDesktopEntry,
   writeDesktopHelperScript,
 } from "../src/claude/desktop.ts";
+import {
+  type DesktopTarget,
+  inspectClaudeDesktopWiring,
+  renderClaudeDesktopStatus,
+} from "../src/claude/desktop_status.ts";
 import { resolveClaudeHome } from "../src/claude/paths.ts";
 import {
   claudeDesktopStatus,

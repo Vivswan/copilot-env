@@ -137,6 +137,19 @@ test("cli.ts config --set writes only inside the data home, so it names no file"
   expect(set.stdout).not.toContain(" -> ");
 });
 
+test("cli.ts config --help renders the store's CURRENT values: the same table bare config prints", () => {
+  // A value stored in this isolated home shows up in `config --help`, and the help's table
+  // is byte for byte what bare `config` prints.
+  const env = isolatedEnv();
+  expect(runCli(["config", "--set", "strict-port", "true"], { env }).exitCode).toBe(0);
+  const table = runCli(["config"], { env });
+  const help = runCli(["config", "--help"], { env });
+  expect(table.exitCode).toBe(0);
+  expect(help.exitCode).toBe(0);
+  expect(table.stdout).toMatch(/^ {2}strict-port\s+true\s+default: false /m);
+  expect(help.stdout.slice(-table.stdout.length)).toBe(table.stdout);
+});
+
 test("cli.ts mcp (bare) prints the wiring status and exits 0", () => {
   // Hermetic homes: a temp CLAUDE_CONFIG_DIR (no registration) and an isolated
   // copilot-env home, so the status never reads or creates real user state.

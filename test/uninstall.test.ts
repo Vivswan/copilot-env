@@ -554,6 +554,11 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   // removes them, so the plan names them.
   const legacyHelper = directHelperPath(claudeHome, WORK);
   writeFileSync(legacyHelper, "#!/bin/sh\nexec legacy\n");
+  // A legacy baked token in the Codex .env: the teardown rewrites the file, so the plan
+  // names it (beside the user's own key, which survives).
+  mkdirSync(codexHome, { recursive: true });
+  const codexEnv = join(codexHome, ".env");
+  writeFileSync(codexEnv, "COPILOT_ENV_GH_TOKEN=ghp_x\nOPENAI_API_KEY=user-key\n");
   const defaultLegacyHelper = directHelperPath(claudeHome);
   writeFileSync(defaultLegacyHelper, "#!/bin/sh\nexec legacy\n");
   // The AMBIENT Desktop library (the env seam) is the injected one, so a profile
@@ -603,6 +608,9 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   expect(ctx.targets.desktop.helpers.sort()).toEqual([defaultHelper, workHelper].sort());
   expect(ctx.targets.desktop.staleClaims).toEqual([join(library, "gone.json")]);
   expect(ctx.targets.shellFiles).toEqual([rc]);
+  expect(ctx.targets.codexEnvTokenFiles.get(codexHome)).toBe(codexEnv);
+  const metaPath = join(library, "_meta.json");
+  expect(ctx.targets.desktop.metaRewrite).toBe(metaPath);
   expect(ctx.targets.claudeDefaultHelpers).toEqual([defaultLegacyHelper]);
   expect(ctx.targets.profiles).toEqual([{
     name: WORK,
@@ -634,6 +642,16 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   expect(reported.filter((line) => line.includes(rc))).toEqual([
     `rewritten -> ${rc} (shell integration removed)`,
   ]);
+  // The two other outside-home REWRITES the sweep performs are named live too, and the
+  // dry run named both paths (asserted with the deletions below).
+  expect(readFileSync(codexEnv, "utf8")).toBe("OPENAI_API_KEY=user-key\n");
+  const rewritten = new Set(
+    reported
+      .filter((line) => line.startsWith("rewritten -> "))
+      .map((line) => line.slice("rewritten -> ".length).replace(/ \(.*\)$/, "")),
+  );
+  expect(rewritten.has(codexEnv)).toBe(true);
+  expect(rewritten.has(metaPath)).toBe(true);
 
   expect(existsSync(join(library, "late.json"))).toBe(true);
   expect(existsSync(lateHelper)).toBe(true);
@@ -655,6 +673,7 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
     ),
   );
   expect([...deleted].filter((path) => !named.has(path))).toEqual([]);
+  expect([...rewritten].filter((path) => !named.has(path))).toEqual([]);
   expect(named.has(rc)).toBe(true);
   const planned = [
     ...ctx.targets.desktop.entries,

@@ -19,7 +19,12 @@ import {
 } from "../claude/desktop.ts";
 import { removeClaudeMcpRegistration } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { knownCodexHomes, removeCodexDefaultWiring, removeCodexProfile } from "../codex/config.ts";
+import {
+  codexEnvTokenFile,
+  knownCodexHomes,
+  removeCodexDefaultWiring,
+  removeCodexProfile,
+} from "../codex/config.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
@@ -139,6 +144,8 @@ export interface UninstallTargets {
   profiles: { name: ProfileName; claudeArtifacts: string[]; home: string }[];
   /** The default wiring's legacy Claude helper files present now. */
   claudeDefaultHelpers: string[];
+  /** Per known Codex home: the `.env` holding the legacy baked token, or null. */
+  codexEnvTokenFiles: Map<string, string | null>;
 }
 
 /** Everything a step needs, resolved once after the confirmation gate. */
@@ -204,16 +211,20 @@ const UNINSTALL_STEPS: UninstallStep[] = [
     //    profile wired while a farm home was active left its tables there too --
     //    step 2 only stripped the currently-effective home. Then the farm itself.
     describe: (ctx) => {
-      const lines = ctx.codexHomes.map(
-        (home) => `Would remove the copilot-env wiring from ${codexConfigPath(home)}.`,
-      );
+      const lines = ctx.codexHomes.flatMap((home) => {
+        const envFile = ctx.targets.codexEnvTokenFiles.get(home) ?? null;
+        return [
+          `Would remove the copilot-env wiring from ${codexConfigPath(home)}.`,
+          ...(envFile === null ? [] : [`Would rewrite ${envFile} (COPILOT_ENV_GH_TOKEN removed).`]),
+        ];
+      });
       const farm = ctx.targets.codexHostFarm;
       if (farm !== null) lines.push(`Would delete the CODEX_HOME host farm: ${farm}`);
       return lines;
     },
     run: (ctx) => {
       for (const home of ctx.codexHomes) {
-        removeCodexDefaultWiring(home);
+        removeCodexDefaultWiring(home, ctx.targets.codexEnvTokenFiles.get(home) ?? null);
         for (const name of ctx.profiles) removeCodexProfile(home, name);
       }
       if (ctx.deps.removeCodexHostFarm !== undefined) ctx.deps.removeCodexHostFarm();
@@ -280,6 +291,8 @@ const UNINSTALL_STEPS: UninstallStep[] = [
       const stale = staleClaims.map(
         (p) => `Would release the stale Claude Desktop claim on ${p} (file already gone).`,
       );
+      const meta = ctx.targets.desktop.metaRewrite;
+      if (meta !== null) stale.push(`Would rewrite ${meta} (copilot-env rows removed).`);
       if (paths.length === 0) {
         return [
           "Would remove the copilot-env entries from Claude Desktop's config library (none found).",
@@ -439,6 +452,7 @@ export function resolveUninstallContext(
         home: profileHome(name),
       })),
       claudeDefaultHelpers: claudeDefaultHelperArtifacts(claudeHome),
+      codexEnvTokenFiles: new Map(codexHomes.map((home) => [home, codexEnvTokenFile(home)])),
       desktop: listClaudeDesktopOwnedArtifacts(deps.claudeDesktopLibraryDir),
       floatArtifacts: proxyFloatArtifactPaths(rootHome),
       // A test substitute does its own (redirected) work, not this state-recorded rm.

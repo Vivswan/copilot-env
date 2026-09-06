@@ -133,11 +133,11 @@ function runExport(target: string | boolean, withCredentials: boolean): void {
   if (withCredentials) {
     // The atomic write publishes a FRESH 0600 inode by rename: a write into an
     // existing 0644 target would hold the plaintext tokens under its old permissions.
-    atomicWriteFile(
-      target,
-      text,
-      0o600,
-      "settings bundle with your REAL tokens - treat it like a password file",
+    atomicWriteFile(target, text, 0o600, "settings bundle with your REAL tokens");
+    // Its own line, not the write report's detail: a target inside copilot-env's own
+    // homes gets no write line, and the warning must reach the user regardless.
+    logger.warn(
+      `${target} contains your REAL tokens (and any stored pricing-url) - treat it like a password file.`,
     );
   } else {
     writeFileReported(target, text, { detail: "settings bundle, tokens redacted" });

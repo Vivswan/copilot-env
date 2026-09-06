@@ -661,24 +661,39 @@ function readConfigForRemoval(configPath: string): Record<string, unknown> | nul
 // key isn't present, so it never creates or rewrites a file needlessly. Used to
 // scrub the baked direct token (COPILOT_ENV_GH_TOKEN) when reverting to gh-direct.
 function removeEnvKey(envFile: string, key: string): void {
-  let existing: string;
-  try {
-    existing = fs.readFileSync(envFile, "utf8");
-  } catch (e) {
-    if (isEnoent(e)) return; // nothing to scrub
-    throw e;
-  }
-  const matcher = new RegExp(`^\\s*(?:export\\s+)?${key}\\s*=`);
-  const lines = existing.split(/\r?\n/);
-  if (lines.length && lines[lines.length - 1] === "") lines.pop(); // trailing newline
-  const kept = lines.filter((line) => !matcher.test(line));
-  if (kept.length === lines.length) return; // key absent -- leave the file untouched
+  const scrub = envKeyScrub(envFile, key);
+  if (scrub === null) return;
+  const { kept } = scrub;
   writeFileReported(envFile, kept.length ? `${kept.join("\n")}\n` : "");
   try {
     chmodReported(envFile, 0o600);
   } catch {
     // pass
   }
+}
+
+/** What removing `key` from `envFile` would leave, or null when there is nothing to do
+ *  (file absent, or key not present). Read-only: the uninstall plan asks this once. */
+function envKeyScrub(envFile: string, key: string): { kept: string[] } | null {
+  let existing: string;
+  try {
+    existing = fs.readFileSync(envFile, "utf8");
+  } catch (e) {
+    if (isEnoent(e)) return null; // nothing to scrub
+    throw e;
+  }
+  const matcher = new RegExp(`^\\s*(?:export\\s+)?${key}\\s*=`);
+  const lines = existing.split(/\r?\n/);
+  if (lines.length && lines[lines.length - 1] === "") lines.pop(); // trailing newline
+  const kept = lines.filter((line) => !matcher.test(line));
+  return kept.length === lines.length ? null : { kept };
+}
+
+/** The `<codexHome>/.env` file removeCodexDefaultWiring would rewrite (it holds the legacy
+ *  baked `COPILOT_ENV_GH_TOKEN`), or null. Read-only; the uninstall plan names it. */
+export function codexEnvTokenFile(codexHome: string): string | null {
+  const envFile = path.join(codexHome, ".env");
+  return envKeyScrub(envFile, DIRECT_ENV_KEY) === null ? null : envFile;
 }
 
 /** Parse step for the proxy variant: reject an empty or malformed base URL before
@@ -1287,7 +1302,10 @@ export function removeCodexProfile(codexHome: string, name: ProfileName): void {
  * configureCodexConfig). No-op when the config is absent; a present-but-unparseable
  * file throws (never blind-write). Used by `agent uninstall`.
  */
-export function removeCodexDefaultWiring(codexHome: string): void {
+export function removeCodexDefaultWiring(
+  codexHome: string,
+  envTokenFile: string | null = codexEnvTokenFile(codexHome),
+): void {
   const configPath = codexConfigPath(codexHome);
   const doc = readConfigForRemoval(configPath);
   if (doc !== null) {
@@ -1328,7 +1346,8 @@ export function removeCodexDefaultWiring(codexHome: string): void {
     // Post-save (never claim-drop before the artifact write actually landed).
     if (catalogWasReferenced) new OwnershipLedger().release("codexCatalog", configPath);
   }
-  removeEnvKey(path.join(codexHome, ".env"), DIRECT_ENV_KEY);
+  // Exactly the file the plan named (uninstall resolves it once), else the live look.
+  if (envTokenFile !== null) removeEnvKey(envTokenFile, DIRECT_ENV_KEY);
 }
 
 /**

@@ -40,7 +40,7 @@ import {
   desktopLibraryDirUnder,
   wireClaudeDesktopEntry,
 } from "../src/claude/desktop.ts";
-import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
+import { CopilotApiPaths, resolveRootHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testing.ts";
 import {
@@ -771,6 +771,20 @@ test("bare --export writes the redacted bundle to stdout; --with-credentials war
   expect(JSON.parse(full.stdout).config.pricingUrl).toBe(
     "https://pricing.example/models?token=SECRET-URL",
   );
+});
+
+test("--export --with-credentials warns about the tokens even for a target inside our homes", async () => {
+  isolate();
+  await seedStores();
+  // Inside the data home the write itself is silent bookkeeping; the warning is not a
+  // write report and must still reach the user.
+  const target = join(resolveRootHome(), "export.json");
+  const { stderr } = await runSettingsCaptured({ exportTo: target, withCredentials: true });
+  expect(stderr).not.toContain(" -> ");
+  expect(stderr).toContain(
+    `${target} contains your REAL tokens (and any stored pricing-url) - treat it like a password file.`,
+  );
+  expect(JSON.parse(readFileSync(target, "utf8")).credential.githubToken).toBe("ghp_default");
 });
 
 test("--export --with-credentials ends 0600 even over a pre-existing looser file", async () => {

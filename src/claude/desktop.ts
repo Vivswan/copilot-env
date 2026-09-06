@@ -1016,6 +1016,10 @@ export interface ClaudeDesktopOwnedArtifacts {
   entries: string[];
   staleClaims: string[];
   helpers: string[];
+  /** The library's `_meta.json`, when removing the listed owned rows will rewrite it
+   *  (null: nothing listed is ours, the index is untouched). Outside our homes, so the
+   *  dry run names the rewrite like the live sweep does. */
+  metaRewrite: string | null;
   blocked: boolean;
 }
 
@@ -1024,9 +1028,10 @@ export function listClaudeDesktopOwnedArtifacts(
 ): ClaudeDesktopOwnedArtifacts {
   const helpers = presentDesktopHelperScripts(resolveRootHome());
   const dir = dirOverride !== undefined ? dirOverride : resolveDesktopLibraryDir();
-  if (dir === null) return { entries: [], staleClaims: [], helpers, blocked: false };
+  const none = { entries: [], staleClaims: [], helpers, metaRewrite: null };
+  if (dir === null) return { ...none, blocked: false };
   const library = readOwnedLibrary(dir);
-  if (library === null) return { entries: [], staleClaims: [], helpers, blocked: true };
+  if (library === null) return { ...none, blocked: true };
   // One look per path: a file appearing or vanishing between two looks would land
   // in neither list or both.
   const entries: string[] = [];
@@ -1034,7 +1039,13 @@ export function listClaudeDesktopOwnedArtifacts(
   for (const path of [...library.owned.map((e) => e.path), ...library.unlisted]) {
     (entryExists(path) ? entries : staleClaims).push(path);
   }
-  return { entries, staleClaims, helpers, blocked: false };
+  return {
+    entries,
+    staleClaims,
+    helpers,
+    metaRewrite: library.owned.length > 0 ? join(dir, META_FILENAME) : null,
+    blocked: false,
+  };
 }
 
 /** An owned entry as the library lists it: its meta row plus its config path. */

@@ -1751,6 +1751,7 @@ test("the sweep and its dry-run listing take every generated helper script and n
     entries: [],
     staleClaims: [],
     helpers: [],
+    metaRewrite: null,
     blocked: false,
   });
 
@@ -1765,6 +1766,7 @@ test("the sweep and its dry-run listing take every generated helper script and n
     entries: [ownedPath],
     staleClaims: [],
     helpers: [desktopHelperPath(rootHome, "direct", null)],
+    metaRewrite: join(library, "_meta.json"),
     blocked: false,
   });
 

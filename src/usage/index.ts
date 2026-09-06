@@ -17,13 +17,14 @@
 //   every other failure leaves the file alone. An index that fails to open or
 //   read degrades to whole parses, never to a missing or "unreadable" session.
 import { DatabaseSync, type StatementSync } from "node:sqlite";
-import { chmodSync, closeSync, mkdirSync, openSync, readSync, rmSync } from "node:fs";
+import { closeSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import * as v from "valibot";
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import { BOUNDED_LOCK_POLICY, type LockPolicy, withFileLockSync } from "../utils/file_lock.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { chmodReported, mkdirReported, removeReported } from "../utils/report_write.ts";
 import {
   type ClaudeContribution,
   type CodexContribution,
@@ -431,38 +432,43 @@ class SqliteUsageIndex implements UsageIndex {
     if (writes.length === 0) return 0;
     return withFileLockSync(this.#lockPath, this.#lockPolicy, (outcome) => {
       if (!outcome.held) return null;
-      const upsert = this.#db.prepare(
-        `INSERT OR REPLACE INTO "files"
+      return this.#write(writes);
+    });
+  }
+
+  /** The locked write itself: one transaction over every pending row. */
+  #write(writes: readonly PendingWrite[]): number {
+    const upsert = this.#db.prepare(
+      `INSERT OR REPLACE INTO "files"
            ("path", "source", "size", "mtime_ms", "parsed_through", "tail_probe", "record")
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      );
-      const remove = this.#db.prepare(`DELETE FROM "files" WHERE "path" = ?`);
-      let removed = 0;
-      this.#db.exec("BEGIN IMMEDIATE");
-      try {
-        for (const write of writes) {
-          if (write.kind === "delete") {
-            const changes = Number(remove.run(write.path).changes);
-            if (write.unwalked) removed += changes;
-            continue;
-          }
-          upsert.run(
-            write.path,
-            write.source,
-            write.size,
-            write.mtimeMs,
-            write.parsedThrough,
-            write.tailProbeKey,
-            write.record,
-          );
+    );
+    const remove = this.#db.prepare(`DELETE FROM "files" WHERE "path" = ?`);
+    let removed = 0;
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const write of writes) {
+        if (write.kind === "delete") {
+          const changes = Number(remove.run(write.path).changes);
+          if (write.unwalked) removed += changes;
+          continue;
         }
-        this.#db.exec("COMMIT");
-      } catch (e) {
-        this.#db.exec("ROLLBACK");
-        throw e;
+        upsert.run(
+          write.path,
+          write.source,
+          write.size,
+          write.mtimeMs,
+          write.parsedThrough,
+          write.tailProbeKey,
+          write.record,
+        );
       }
-      return removed;
-    });
+      this.#db.exec("COMMIT");
+    } catch (e) {
+      this.#db.exec("ROLLBACK");
+      throw e;
+    }
+    return removed;
   }
 
   /** The contract's Reconcile (see contribution.ts for the decision order).
@@ -695,7 +701,7 @@ function relinquishDb(db: DatabaseSync): Relinquish {
 }
 
 function removeDbFiles(dbPath: string): void {
-  for (const suffix of DB_FILE_SUFFIXES) rmSync(`${dbPath}${suffix}`, { force: true });
+  for (const suffix of DB_FILE_SUFFIXES) removeReported(`${dbPath}${suffix}`);
 }
 
 /** Open the usage index, creating or rebuilding it as needed, under the lock the
@@ -706,10 +712,10 @@ export function openUsageIndex(opts: OpenUsageIndexOptions = {}): UsageIndex | n
   const fingerprint = opts.fingerprint ?? DEFAULT_PARSER_FINGERPRINT;
   const lockPolicy = opts.lockPolicy ?? BOUNDED_LOCK_POLICY;
   try {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    // mkdirSync's mode only applies on creation; a pre-existing wider dir must still end
+    mkdirReported(dir, 0o700);
+    // mkdir's mode only applies on creation; a pre-existing wider dir must still end
     // up 0700 (the index names every session file, its models and timestamps).
-    if (process.platform !== "win32") chmodSync(dir, 0o700);
+    if (process.platform !== "win32") chmodReported(dir, 0o700);
   } catch (e) {
     logger.warn(`could not create the usage index directory ${dir} (${errMessage(e)}).`);
     return null;

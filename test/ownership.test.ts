@@ -2,11 +2,19 @@
 // record (src/copilot_api/ownership.ts): per-kind exact-path round-trips, junk
 // degradation, and the 3.5.6 adoption of the pre-ledger state-store records
 // (the ledger's own readers never consult them).
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { basename } from "node:path";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, dirname } from "node:path";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger, ProxyProjectionState } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
+import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers.ts";
 
@@ -78,6 +86,34 @@ test("a release with nothing recorded never materializes the ledger file", () =>
   expect(existsSync(paths.ownershipFile)).toBe(false);
 });
 
+test("reads write nothing on a fresh home (no lock sidecar); a mutation takes the lock", () => {
+  const paths = isolate();
+  const before = readdirSync(dirname(paths.ownershipFile)).sort();
+  const ledger = new OwnershipLedger();
+  const reported = (fn: () => void): string[] => {
+    deferWriteReports();
+    try {
+      fn();
+      return flushWriteReports();
+    } catch (e) {
+      flushWriteReports();
+      throw e;
+    }
+  };
+  expect(reported(() => {
+    expect(ledger.owns("claudeDesktop", "/lib/uuid.json")).toBe(false);
+    expect(ledger.ownedPaths("codexCatalog")).toEqual([]);
+  })).toEqual([]);
+  expect(readdirSync(dirname(paths.ownershipFile)).sort()).toEqual(before);
+  // The control, on disk: a mutation takes the ops lock (its sidecar lands) and writes
+  // the ledger -- bookkeeping inside the data home, so it prints nothing either.
+  const sidecar = `${paths.ownershipFile}.ops.lock.oslock`;
+  expect(existsSync(sidecar)).toBe(false);
+  expect(reported(() => ledger.record("claudeDesktop", "/lib/uuid.json"))).toEqual([]);
+  expect(existsSync(sidecar)).toBe(true);
+  expect(existsSync(paths.ownershipFile)).toBe(true);
+});
+
 test("a junk-degraded ledger owns less, never crashes; survivors come back trimmed", () => {
   const paths = isolate();
   // Hand-mangled file: junk entries drop individually, a padded entry still
@@ -105,7 +141,7 @@ test("an unmigrated pre-ledger record in the state store owns nothing; only the 
     paths.sharedStateFile,
     `${
       JSON.stringify({
-        githubToken: "ghu_keep",
+        profiles: { default: { githubToken: "ghu_keep", authProvider: "copilot" } },
         webSearchDenyOwnedPaths: ["/a/settings.json"],
         claudeDesktopOwnedPaths: ["/lib/uuid.json"],
       })

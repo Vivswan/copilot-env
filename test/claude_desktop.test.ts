@@ -62,11 +62,12 @@ import type { Profile } from "../src/copilot_api/profile.ts";
 import { DEFAULT_COPILOT_API_BASE } from "../src/copilot_api/integration_identity.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { resolveRootHome } from "../src/copilot_api/paths.ts";
+import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { agentLauncherCommand } from "../src/utils/root.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { expect, removeDir, test } from "./helpers/testing.ts";
 import { afterEach } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes, resetExitCode } from "./helpers.ts";
+import { envSnapshot, isolateAgentHomes, linesNaming, resetExitCode } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 const WORK = parseProfileName("work");
@@ -869,7 +870,8 @@ test("quiet re-wire heals rows recorded without labels (no catalog fetch)", asyn
 
 // --- the `claude-desktop` key: reconcile, status, dry-run listing -----------------------
 
-/** Capture BOTH process write streams (consola routes by level) while awaiting `fn`. */
+/** Everything `fn` prints on BOTH streams (consola routes by level), the seam's deferred
+ *  write reports appended. */
 async function captureAllWrites(fn: () => Promise<void> | void): Promise<string> {
   const stdout = process.stdout.write.bind(process.stdout);
   const stderr = process.stderr.write.bind(process.stderr);
@@ -880,11 +882,13 @@ async function captureAllWrites(fn: () => Promise<void> | void): Promise<string>
   };
   process.stdout.write = capture;
   process.stderr.write = capture;
+  deferWriteReports();
   try {
     await fn();
   } finally {
     process.stdout.write = stdout;
     process.stderr.write = stderr;
+    out += flushWriteReports().map((line) => `${line}\n`).join("");
   }
   return out;
 }
@@ -926,17 +930,27 @@ test("sync reconciles from the key: on wires (every write announced), off remove
   const wired = await captureAllWrites(() => syncClaudeDesktopWiring(directWire()));
   const configPath = firstEntryPath(library);
   expect(existsSync(configPath)).toBe(true);
-  expect(wired).toContain(`Claude Desktop: wrote ${helper}`);
-  expect(wired).toContain(`Claude Desktop: updated ${metaPath}`);
-  expect(wired).toContain(`Claude Desktop: recorded ownership of ${configPath} in `);
-  expect(wired).toContain(`Claude Desktop: wired "copilot-env" (direct) at ${configPath}`);
+  // One line per path, exactly: the meaning rides on the write's line, never beside it.
+  // The helper script lives inside the data home: written, never named.
+  expect(existsSync(helper)).toBe(true);
+  expect(linesNaming(wired, helper)).toEqual([]);
+  expect(linesNaming(wired, metaPath)).toEqual([
+    `created -> ${metaPath} (Claude Desktop config-library index)`,
+  ]);
+  // The ledger is bookkeeping inside the data home: written, never named.
+  const ledgerFile = new CopilotApiPaths().ownershipFile;
+  expect(existsSync(ledgerFile)).toBe(true);
+  expect(linesNaming(wired, ledgerFile)).toEqual([]);
+  expect(linesNaming(wired, configPath)).toEqual([
+    `created -> ${configPath} (Claude Desktop entry "copilot-env" (direct) wired; restart Claude Desktop to pick it up)`,
+  ]);
 
   // A byte-identical re-sync states the wiring but announces no write.
   const again = await captureAllWrites(() => syncClaudeDesktopWiring(directWire()));
-  expect(again).toContain(`wired "copilot-env" (direct) at ${configPath}`);
-  expect(again).not.toContain("wrote");
-  expect(again).not.toContain("updated");
-  expect(again).not.toContain("recorded ownership");
+  expect(again).toContain(
+    `Claude Desktop entry "copilot-env" (direct) wired at ${configPath} already.`,
+  );
+  expect(again).not.toContain(" -> ");
   // ... and a QUIET re-sync (the launcher hot path) says nothing at all.
   expect(await captureAllWrites(() => syncClaudeDesktopWiring({ ...directWire(), quiet: true })))
     .toBe("");
@@ -958,10 +972,10 @@ test("sync reconciles from the key: on wires (every write announced), off remove
     "copilot-env",
   ]);
   expect(new OwnershipLedger().owns("claudeDesktop", firstWork)).toBe(false);
-  expect(removed).toContain(`Claude Desktop: updated ${metaPath}`);
-  expect(removed).toContain(`Claude Desktop: removed ${firstWork}`);
-  expect(removed).toContain(`Claude Desktop: released ownership of ${firstWork} in `);
-  expect(removed).toContain(`Claude Desktop: removed ${workHelper}`);
+  // The meta and ledger rewrites are silent here: both files were announced when this
+  // process created them (the seam names a path once).
+  expect(removed).toContain(`deleted -> ${firstWork} (Claude Desktop entry)`);
+  expect(existsSync(workHelper)).toBe(false); // in the data home: removed, never named
 
   // Off with a MALFORMED profile store: the per-write removal touches nothing (the same
   // guard as the whole-library sweep), and says why. Control: well-formed, it removes.
@@ -1032,7 +1046,9 @@ test.skipIf(NO_CHMOD_FAULTS)(
     }
     const configPath = firstEntryPath(library);
     expect(existsSync(configPath)).toBe(true);
-    expect(out).toContain(`Claude Desktop: wired "copilot-env" (proxy) at ${configPath}`);
+    expect(out).toContain(
+      `created -> ${configPath} (Claude Desktop entry "copilot-env" (proxy) wired; restart Claude Desktop to pick it up)`,
+    );
     expect(out).toContain("Could not wire Claude Desktop for default");
     expect(new OwnershipLedger().owns("claudeDesktop", configPath)).toBe(false);
   },
@@ -1245,9 +1261,8 @@ test.skipIf(process.platform === "win32")(
     rmSync(helper);
     symlinkSync(join(dir, "nowhere"), helper);
     expect(existsSync(helper)).toBe(false);
-    const out = await captureAllWrites(() => removeClaudeDesktopEntry(null));
-    expect(out).toContain(`Claude Desktop: removed ${helper}`);
-    expect(() => lstatSync(helper)).toThrow();
+    await captureAllWrites(() => removeClaudeDesktopEntry(null));
+    expect(() => lstatSync(helper)).toThrow(); // the dangling link went (in-home: unnamed)
   },
 );
 
@@ -1265,8 +1280,10 @@ test("reconcileClaudeDesktopWiring: orphans go when the key is on, the profiles'
   const workHelper = desktopHelperPath(resolveRootHome(), "direct", WORK);
   expect(resolveClaudeDesktopTargets()).toEqual({ kind: "resolved", targets: [] });
   const swept = await captureAllWrites(() => reconcileClaudeDesktopWiring());
+  // The library entries are the user's Desktop config: named. The helper scripts live in
+  // the data home: removed, never named.
+  for (const path of [configPath, workPath]) expect(swept).toContain(`deleted -> ${path}`);
   for (const path of [configPath, workPath, helper, workHelper]) {
-    expect(swept).toContain(`Claude Desktop: removed ${path}`);
     expect(existsSync(path ?? "")).toBe(false);
   }
   expect(metaOf(library).entries).toEqual([]);
@@ -1368,8 +1385,7 @@ test("an interrupted removal's unlisted claim is reported, listed for the dry ru
   const workPath = entryPathNamed(library, "copilot-env: work");
   prune();
   const swept = await captureAllWrites(() => reconcileClaudeDesktopWiring());
-  expect(swept).toContain(`Claude Desktop: removed ${workPath}`);
-  expect(swept).toContain(`Claude Desktop: released ownership of ${workPath}`);
+  expect(swept).toContain(`deleted -> ${workPath} (Claude Desktop entry)`);
   expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual([configPath]);
   // ... one whose document names no wiring of ours is left alone too, claim and all, with
   // a warning (it may be the default's: fail closed), a profile's beside it still swept ...
@@ -1384,7 +1400,7 @@ test("an interrupted removal's unlisted claim is reported, listed for the dry ru
   prune();
   const unknown = await captureAllWrites(() => reconcileClaudeDesktopWiring());
   expect(unknown).toContain(`${blankPath} names no copilot-env credential helper`);
-  expect(unknown).toContain(`Claude Desktop: removed ${besideBlank}`);
+  expect(unknown).toContain(`deleted -> ${besideBlank} (Claude Desktop entry)`);
   expect(existsSync(blankPath)).toBe(true);
   // `--check` names it as a leftover `agent claude` cannot clear with the key off, and
   // says what does.
@@ -1411,17 +1427,16 @@ test("an interrupted removal's unlisted claim is reported, listed for the dry ru
       const warned = await captureAllWrites(() => reconcileClaudeDesktopWiring());
       expect(warned).toContain(`could not read ${configPath}`);
       expect(warned).not.toContain("left in place");
-      expect(warned).toContain(`Claude Desktop: removed ${besidePath}`);
+      expect(warned).toContain(`deleted -> ${besidePath} (Claude Desktop entry)`);
     } finally {
       chmodSync(configPath, 0o600);
     }
     expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual([configPath]);
   }
   new CopilotEnvConfig().del("claudeDesktop");
-  // Key on: the reconcile deletes the file and releases the claim, announcing both.
+  // Key on: the reconcile deletes the file and releases the claim.
   const out = await captureAllWrites(() => reconcileClaudeDesktopWiring());
-  expect(out).toContain(`Claude Desktop: removed ${configPath}`);
-  expect(out).toContain(`Claude Desktop: released ownership of ${configPath}`);
+  expect(out).toContain(`deleted -> ${configPath} (Claude Desktop entry)`);
   expect(existsSync(configPath)).toBe(false);
   expect(new OwnershipLedger().ownedPaths("claudeDesktop")).toEqual([]);
   expect(inspected(inspectClaudeDesktopWiring([])).unlisted).toEqual([]);
@@ -1466,7 +1481,7 @@ test("a renamed owned entry is ours by path: rewired in place, name kept, unmana
   rmSync(desktopHelperPath(resolveRootHome(), "direct", null));
   expect(inspected(inspectClaudeDesktopWiring([target])).entries[0]?.verdict.kind).toBe("stale");
   const out = await captureAllWrites(() => wireClaudeDesktopEntry(directWire()));
-  expect(out).toContain(`Claude Desktop: wired "Mine now" (direct) at ${configPath}`);
+  expect(out).toContain(`Claude Desktop entry "Mine now" (direct) wired at ${configPath} already.`);
   expect(metaOf(library).entries).toEqual([{
     id: basename(configPath, ".json"),
     name: "Mine now",
@@ -1732,7 +1747,13 @@ test("the sweep and its dry-run listing take every generated helper script and n
   removeAllClaudeDesktopWiring();
   expect(ours.filter(existsSync)).toEqual([]);
   expect(foreign.filter(existsSync)).toEqual(foreign);
-  expect(listClaudeDesktopOwnedArtifacts()).toEqual({ entries: [], helpers: [], blocked: false });
+  expect(listClaudeDesktopOwnedArtifacts()).toEqual({
+    entries: [],
+    staleClaims: [],
+    helpers: [],
+    metaRewrite: null,
+    blocked: false,
+  });
 
   await wireClaudeDesktopEntry(directWire());
   const ownedPath = firstEntryPath(library);
@@ -1743,13 +1764,17 @@ test("the sweep and its dry-run listing take every generated helper script and n
   writeFileSync(join(library, "_meta.json"), `${JSON.stringify(meta)}\n`);
   expect(listClaudeDesktopOwnedArtifacts()).toEqual({
     entries: [ownedPath],
+    staleClaims: [],
     helpers: [desktopHelperPath(rootHome, "direct", null)],
+    metaRewrite: join(library, "_meta.json"),
     blocked: false,
   });
 
-  // A listed owned entry whose file is already gone is nothing to delete.
+  // A listed owned entry whose file is already gone is nothing to delete, but its row
+  // and claim are still ours to release: a stale claim.
   rmSync(ownedPath);
   expect(listClaudeDesktopOwnedArtifacts().entries).toEqual([]);
+  expect(listClaudeDesktopOwnedArtifacts().staleClaims).toEqual([ownedPath]);
   writeFileSync(ownedPath, "{}\n");
   // Desktop absent (injected null dir): no entries, the helper scripts still listed.
   expect(listClaudeDesktopOwnedArtifacts(null).entries).toEqual([]);

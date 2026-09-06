@@ -7,10 +7,13 @@
 // from it. The DEFAULT setup stays with `agent init`/`agent claude`/`agent
 // codex`; `agent auth --profile <name>` remains the re-auth path for an existing
 // profile's credential.
-import { rmSync } from "node:fs";
 import { consola } from "consola";
 import { reconcileClaudeDesktopWiring } from "../agents/claude_desktop.ts";
-import { configuringLine, type ManagedWrite } from "../agents/configure.ts";
+import {
+  configuringLine,
+  type ManagedWrite,
+  type RemoveProfileOptions,
+} from "../agents/configure.ts";
 import {
   bothAgents,
   resolveAndPersistDirectIdentity,
@@ -37,6 +40,7 @@ import { cyan, gray, green, yellow } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { removeTreeReported } from "../utils/report_write.ts";
 import { acquireCredential, type CredentialAcquisition, parseAcquisition } from "./auth.ts";
 
 // Narration to stderr so `--settings-for`'s stdout stays a clean machine-readable path.
@@ -199,7 +203,10 @@ async function profileCredential(
  * its isolated daemon home (config/apiKeys/run-state/sqlite/logs + the port
  * reservation). Used by `agent profile --del` and `agent uninstall`.
  */
-export async function deleteProfileEverywhere(name: ProfileName): Promise<void> {
+export async function deleteProfileEverywhere(
+  name: ProfileName,
+  options: RemoveProfileOptions = {},
+): Promise<void> {
   const { stopped } = await stopTrackedProxy(DAEMON_SIGKILL_GRACE_MS, name);
   // Anything short of CONFIRMED stopped aborts -- a survivor of the kill, or a stop
   // refused because the pid could not be corroborated as our daemon (the refusal has
@@ -211,9 +218,9 @@ export async function deleteProfileEverywhere(name: ProfileName): Promise<void> 
         `(\`agent stop --profile ${name}\`) before deleting`,
     );
   }
-  for (const agent of bothAgents()) agent.removeProfile(name);
+  for (const agent of bothAgents()) agent.removeProfile(name, options);
   new CopilotEnvState().deleteProfile(name);
-  rmSync(profileHome(name), { recursive: true, force: true });
+  removeTreeReported(profileHome(name));
 }
 
 /**

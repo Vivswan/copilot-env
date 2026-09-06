@@ -12,7 +12,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { consola } from "consola";
-import { atomicWriteFile } from "../copilot_api/config.ts";
+import { atomicWriteFile } from "../utils/report_write.ts";
 import { MCP_SERVER_NAME } from "../mcp/server.ts";
 import { readTextResult } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
@@ -188,6 +188,18 @@ export function registerClaudeMcpServer(): boolean {
  * Returns true when NO managed entry remains (removed, or none was there); false
  * when a foreign entry was left in place or the write failed.
  */
+/** The `.claude.json` removeClaudeMcpRegistration would rewrite right now (an entry of ours
+ *  is registered in it), or null (none, a foreign entry, or a file that cannot be judged).
+ *  Read-only; the uninstall plan resolves this once and renders it both ways. */
+export function plannedClaudeMcpRemoval(): string | null {
+  const loaded = loadClaudeJson();
+  if (loaded === null) return null;
+  const servers = loaded.doc.mcpServers;
+  if (!isRecord(servers)) return null;
+  const status = classifyMcpEntry(servers[MCP_SERVER_NAME]);
+  return status === "ours-current" || status === "ours-stale" ? loaded.path : null;
+}
+
 export function removeClaudeMcpRegistration(): boolean {
   const loaded = loadClaudeJson();
   if (loaded === null) return false;

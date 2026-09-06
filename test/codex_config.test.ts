@@ -25,9 +25,10 @@ import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
+import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { agentLauncherCommand, PROJECT_ROOT, proxyTokenCommand } from "../src/utils/root.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateAgentHomes } from "./helpers.ts";
+import { envSnapshot, isolateAgentHomes, linesNaming } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -548,7 +549,7 @@ test("a write to an unknown home (the probe's throwaway dir) never enters the le
   // still written (inert in a throwaway config), but a home outside the cleanup
   // sweep must never be claimed -- the ledger would accumulate dead tmp paths.
   const probeHome = join(dir, "probe-home");
-  configureCodexConfig(probeHome, { mode: "direct", codexExecVersion: "0.144.0", quiet: true });
+  configureCodexConfig(probeHome, { mode: "direct", codexExecVersion: "0.144.0" });
   const doc = asRecord(parse(readFileSync(join(probeHome, "config.toml"), "utf8")));
   expect(doc.model_catalog_json).toBe(catalogFile);
   expect(new OwnershipLedger().ownedPaths("codexCatalog")).toEqual([]);
@@ -1169,6 +1170,8 @@ test("a rejected catalog is stripped from every known config even when the activ
 
 // --- nothing hidden: every catalog artifact change is named ----------------------
 
+/** Everything `fn` says on stderr: the logger's lines, then the seam's write reports
+ *  (which bypass process.stderr, so they are held back and read at the flush). */
 async function stderrOfAsync(fn: () => Promise<void>): Promise<string> {
   let out = "";
   const realWrite = process.stderr.write;
@@ -1176,10 +1179,12 @@ async function stderrOfAsync(fn: () => Promise<void>): Promise<string> {
     out += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
     return true;
   };
+  deferWriteReports();
   try {
     await fn();
   } finally {
     process.stderr.write = realWrite;
+    out += flushWriteReports().map((line) => `${line}\n`).join("");
   }
   return out;
 }
@@ -1191,15 +1196,17 @@ function stderrOfSync(fn: () => void): string {
     out += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
     return true;
   };
+  deferWriteReports();
   try {
     fn();
   } finally {
     process.stderr.write = realWrite;
+    out += flushWriteReports().map((line) => `${line}\n`).join("");
   }
   return out;
 }
 
-test("the writer names the model_catalog_json change it makes, and stays quiet when nothing changes", () => {
+test("the config write's one line carries the model_catalog_json change it makes", () => {
   isolate();
   const codexHome = join(dir, ".codex");
   process.env.CODEX_HOME = codexHome;
@@ -1207,27 +1214,27 @@ test("the writer names the model_catalog_json change it makes, and stays quiet w
   const catalogFile = new CopilotApiPaths().codexModelCatalogFile;
   enableCatalog();
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
-  const write = () =>
-    configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0" }, {
+  const write = (home: string) =>
+    configureCodexConfig(home, { mode: "direct", codexExecVersion: "0.144.0" }, {
       acceptsCatalog: () => true,
     });
-  // Added: named. Re-written unchanged: not named again.
-  expect(stderrOfSync(write)).toContain(
-    `model_catalog_json = "${catalogFile}" set in ${configPath}`,
-  );
-  expect(stderrOfSync(write)).not.toContain("model_catalog_json");
-  // Disabled: the removal is named with the old value.
+  // Added: the write's line says so, once. Re-written unchanged: nothing said.
+  expect(linesNaming(stderrOfSync(() => write(codexHome)), configPath)).toEqual([
+    `created -> ${configPath} (Codex config; model_catalog_json = "${catalogFile}" set)`,
+  ]);
+  expect(stderrOfSync(() => write(codexHome))).toBe("");
+  // Disabled: a config carrying the reference (a second home, since the seam names a
+  // path once per process) is rewritten, its line naming the old value.
+  const otherHome = join(dir, "other-home");
+  const otherConfig = join(otherHome, "config.toml");
+  mkdirSync(otherHome, { recursive: true });
+  // Through the TOML writer, never a hand-quoted string: on Windows the path's backslashes
+  // would read as escapes in a basic string, and the reference would never match.
+  writeFileSync(otherConfig, stringify({ "model_catalog_json": catalogFile }));
   new CopilotEnvConfig().set({ codexModelCatalog: false });
-  const removed = stderrOfSync(() =>
-    configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0" })
-  );
-  expect(removed).toContain(`model_catalog_json removed from ${configPath} (was "${catalogFile}")`);
-  // Disabled and already absent: nothing to name.
-  expect(
-    stderrOfSync(() =>
-      configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.144.0" })
-    ),
-  ).not.toContain("model_catalog_json");
+  expect(linesNaming(stderrOfSync(() => write(otherHome)), otherConfig)).toEqual([
+    `rewritten -> ${otherConfig} (Codex config; model_catalog_json removed, was "${catalogFile}")`,
+  ]);
 });
 
 test("the disabled sync names the file it deletes and every reference it strips; the enabled sync names the add", () => {
@@ -1241,12 +1248,21 @@ test("the disabled sync names the file it deletes and every reference it strips;
   writeFileSync(catalogFile, '{"models":[{"slug":"gpt-5.5"}]}\n');
   writeFileSync(configPath, 'model_provider = "copilot-env"\n');
   const added = stderrOfSync(() => syncCodexCatalogReference({ acceptsCatalog: () => true }));
-  expect(added).toContain(`model_catalog_json = "${catalogFile}" set in ${configPath}`);
+  expect(added).toContain(
+    `rewritten -> ${configPath} (Codex config; model_catalog_json = "${catalogFile}" set)`,
+  );
+  // A recorded config outside the home carries the reference too: the sweep strips it,
+  // and its line says so (the active config's strip is a second write of a path this
+  // process already named, so the seam says nothing more about it).
+  const outside = join(dir, "retired-home", "config.toml");
+  mkdirSync(join(dir, "retired-home"), { recursive: true });
+  writeFileSync(outside, stringify({ "model_catalog_json": catalogFile }));
+  new OwnershipLedger().record("codexCatalog", outside);
   new CopilotEnvConfig().set({ codexModelCatalog: false });
   const cleaned = stderrOfSync(() => syncCodexCatalogReference());
-  expect(cleaned).toContain(`model_catalog_json removed from ${configPath}`);
-  expect(cleaned).toContain(`Codex model catalog removed → ${catalogFile}`);
-  expect(existsSync(catalogFile)).toBe(false);
+  expect(asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json).toBeUndefined();
+  expect(cleaned).toContain(`rewritten -> ${outside} (Codex config; model_catalog_json removed)`);
+  expect(existsSync(catalogFile)).toBe(false); // in the data home: removed, never named
   // A second disabled sync has nothing left to do, and says nothing.
   expect(stderrOfSync(() => syncCodexCatalogReference())).toBe("");
 });
@@ -1299,12 +1315,12 @@ test("the writer reports its config changes even when the ownership ledger canno
   const narratedUntilThrow = (): string => stderrOfSync(() => expect(write).toThrow());
   const set = narratedUntilThrow();
   expect(asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json).toBe(catalogFile);
-  expect(set).toContain(`Codex config written → ${configPath}`);
-  expect(set).toContain(`model_catalog_json = "${catalogFile}" set in ${configPath}`);
+  expect(set).toContain(
+    `created -> ${configPath} (Codex config; model_catalog_json = "${catalogFile}" set)`,
+  );
   new CopilotEnvConfig().set({ codexModelCatalog: false });
-  const removed = narratedUntilThrow();
+  narratedUntilThrow();
   expect(asRecord(parse(readFileSync(configPath, "utf8"))).model_catalog_json).toBeUndefined();
-  expect(removed).toContain(`model_catalog_json removed from ${configPath}`);
 });
 
 test("past the refresh deadline the sync adds no reference it could not record, and says so", async () => {

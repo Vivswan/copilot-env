@@ -36,15 +36,7 @@
 //     -> stage -> Staged -> provision -> Provisioned -> commit -> Committed
 //     -> (migrate, GC)
 import { spawnSync, type StdioOptions } from "node:child_process";
-import {
-  chmodSync,
-  copyFileSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-} from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { consola } from "consola";
 
@@ -62,6 +54,9 @@ import {
 import {
   classifyInstallRoot,
   currentLinkPath,
+  flatArtifactPaths,
+  flatBinaryResiduePaths,
+  flatScaffoldingPaths,
   INSTALL_ROOT_ENV,
   isCheckoutShapedRoot,
   pointCurrentAt,
@@ -79,6 +74,15 @@ import type { HeldUpdateLock } from "./lock.ts";
 import { errMessage } from "../utils/error.ts";
 import { PROJECT_ROOT, readInstallManifest } from "../utils/root.ts";
 import { stripV } from "../utils/semver.ts";
+import {
+  chmodReported,
+  copyFileReported,
+  mkdirReported,
+  removeScratchDir,
+  removeTreeReported,
+  renameReported,
+  scratchDir,
+} from "../utils/report_write.ts";
 
 const REPO = "Vivswan/copilot-env";
 const CHECKSUMS_NAME = "checksums.txt";
@@ -221,7 +225,7 @@ function downloadSource(tag: string): DownloadSource {
  *  binaries run to tens of megabytes. */
 async function fetchReleaseFile(source: DownloadSource, name: string, dest: string): Promise<void> {
   if (source.kind === "directory") {
-    copyFileSync(join(source.path, name), dest);
+    copyFileReported(join(source.path, name), dest);
     return;
   }
   const url = `${source.base}/${name}`;
@@ -339,12 +343,12 @@ function stage(attested: Attested, top: string, versionName: string): Staged {
     );
   }
   const versionRoot = versionRootPath(top, versionName);
-  rmSync(versionRoot, { recursive: true, force: true });
+  removeTreeReported(versionRoot);
   const binDir = join(versionRoot, "bin");
-  mkdirSync(binDir, { recursive: true });
+  mkdirReported(binDir);
   const binary = join(binDir, installedBinaryName());
-  if (process.platform !== "win32") chmodSync(attested.path, 0o755);
-  renameSync(attested.path, binary);
+  if (process.platform !== "win32") chmodReported(attested.path, 0o755);
+  renameReported(attested.path, binary);
   return { binary, versionName, versionRoot, previous } as Staged;
 }
 
@@ -472,7 +476,7 @@ export async function applyUpdate(
 
   // Stage the download inside the install root, not the system temp dir: the
   // placement into the version dir is a rename, which needs one filesystem.
-  const staging = mkdtempSync(join(top, ".update-"));
+  const staging = scratchDir(join(top, ".update-"));
   let provisioned: Provisioned;
   try {
     provisioned = provision(
@@ -493,11 +497,11 @@ export async function applyUpdate(
     // half-prepared version dir so a retry starts clean. (The guard is
     // paranoia -- `current` cannot name the new version before commit.)
     if (readCurrentVersionName(top) !== versionName) {
-      rmSync(versionRoot, { recursive: true, force: true });
+      removeTreeReported(versionRoot);
     }
     throw error;
   } finally {
-    rmSync(staging, { recursive: true, force: true });
+    removeScratchDir(staging);
   }
 
   const committed = commit(provisioned, top, logger);
@@ -532,8 +536,11 @@ export async function applyUpdate(
   // adjacent-dispatch text, the flat binary AND its runtime assets are what
   // they invoke -- neither may go out from under them.
   if (committed.shimsRefreshed) {
-    removeFlatBinaryResidue(top);
-    if (shape.kind === "flat") removeFlatArtifacts(top, new Set(["shell"]));
+    removeFlatBinaryResidue(flatBinaryResiduePaths(top));
+    if (shape.kind === "flat") {
+      const flat = flatArtifactPaths(top);
+      removeFlatArtifacts(flat, flatScaffoldingPaths(top, flat), new Set(["shell"]));
+    }
   }
 
   logger.success(

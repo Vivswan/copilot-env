@@ -4,27 +4,41 @@
 // integration, delete the copilot-api home, and finally the install root
 // itself. Destructive, so it confirms interactively (`--yes` for headless use)
 // and offers `--dry-run`. Idempotent: a second run finds nothing and exits 0.
-import { existsSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { consola } from "consola";
-import { removeClaudeDefaultWiring } from "../claude/config.ts";
 import {
+  claudeDefaultHelperArtifacts,
+  claudeProfileArtifacts,
+  removeClaudeDefaultWiring,
+} from "../claude/config.ts";
+import {
+  type ClaudeDesktopOwnedArtifacts,
   listClaudeDesktopOwnedArtifacts,
   removeAllClaudeDesktopWiring,
 } from "../claude/desktop.ts";
-import { removeClaudeMcpRegistration } from "../claude/mcp_registration.ts";
+import {
+  claudeJsonPath,
+  plannedClaudeMcpRemoval,
+  removeClaudeMcpRegistration,
+} from "../claude/mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { knownCodexHomes, removeCodexDefaultWiring, removeCodexProfile } from "../codex/config.ts";
+import {
+  codexEnvTokenFile,
+  knownCodexHomes,
+  removeCodexDefaultWiring,
+  removeCodexProfile,
+} from "../codex/config.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { allProfileNames } from "../copilot_api/env_state.ts";
-import { resolveRootHome } from "../copilot_api/paths.ts";
+import { profileHome, resolveRootHome } from "../copilot_api/paths.ts";
 import { DAEMON_SIGKILL_GRACE_MS } from "../copilot_api/process.ts";
 import { profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../copilot_api/state.ts";
-import { removeProxyFloatArtifacts } from "../proxy_float.ts";
-import { runShellIntegration } from "../shell/integration.ts";
+import { proxyFloatArtifactPaths, removeProxyFloatArtifacts } from "../proxy_float.ts";
+import { ownedShellTargets, removeShellIntegrationFrom } from "../shell/integration.ts";
 import { errMessage } from "../utils/error.ts";
 import {
   installStateRoot,
@@ -34,6 +48,7 @@ import {
   rootMode,
 } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
+import { removeTreeReported } from "../utils/report_write.ts";
 import { deleteProfileEverywhere } from "./profile.ts";
 
 export interface UninstallArgs {
@@ -70,16 +85,6 @@ export interface UninstallDeps {
   installRoot?: RootMode;
 }
 
-/** The full shell unwire: rc / PowerShell profile blocks (integration + launchers).
- *  windowsProfileTarget covers ONE profile filename per call, so Windows removes
- *  both the per-host and the CurrentUserAllHosts profiles with two calls. */
-function removeShellIntegrationEverywhere(): void {
-  runShellIntegration({ kind: "remove", allHosts: false });
-  if (process.platform === "win32") {
-    runShellIntegration({ kind: "remove", allHosts: true });
-  }
-}
-
 /** The run-state-recorded CODEX_HOME farm dir an uninstall would remove, or null
  *  (Windows, or none recorded). The narration and the removal share this ONE
  *  resolver so the dry-run can never drift from what actually gets deleted. */
@@ -89,15 +94,14 @@ function recordedCodexHostFarm(): string | null {
   return recorded ? recorded : null;
 }
 
-/** Tear down the host's CODEX_HOME symlink farm (POSIX only). Ownership AND the
- *  path come from run state -- the `codex-host` derivation persisted the farm dir
- *  it built there -- so an untracked ~/.codex/hosts/<hostname> someone else created
- *  is never swept, and a farm built under a different HOME is still the one
- *  removed. Absent state reads back as undefined (state.ts schema). */
-function removeCodexHostFarm(): void {
-  const recorded = recordedCodexHostFarm();
+/** Tear down the host's CODEX_HOME symlink farm (POSIX only) at `recorded`, the plan's
+ *  resolution of recordedCodexHostFarm. Ownership AND the path come from run state --
+ *  the `codex-host` derivation persisted the farm dir it built there -- so an untracked
+ *  ~/.codex/hosts/<hostname> someone else created is never swept, and a farm built
+ *  under a different HOME is still the one removed. */
+function removeCodexHostFarm(recorded: string | null): void {
   if (recorded === null) return;
-  rmSync(recorded, { recursive: true, force: true });
+  removeTreeReported(recorded);
   new CopilotEnvRunState().set({ codexHome: null });
 }
 
@@ -124,19 +128,47 @@ async function stopAllDaemons(profiles: ProfileName[]): Promise<void> {
   }
 }
 
+/** The removal targets resolved ONCE, before any step runs: the dry run renders these
+ *  and the live run removes exactly these, so neither can name (or take) a path the
+ *  other did not. */
+export interface UninstallTargets {
+  /** The Claude Desktop entries and helper scripts we own (or `blocked`). */
+  desktop: ClaudeDesktopOwnedArtifacts;
+  /** The proxy float's cache dirs, record dir and marked .npmrc -- the cache may sit
+   *  OUTSIDE the root home, which is why it is named on its own. */
+  floatArtifacts: string[];
+  /** The run-state-recorded CODEX_HOME farm dir, or null (Windows, none recorded, or a
+   *  test substitute injected for the removal). */
+  codexHostFarm: string | null;
+  /** The rc / PowerShell profile files carrying an owned block (empty when a test
+   *  substitute is injected for the removal). */
+  shellFiles: string[];
+  /** Per named profile: the Claude files its teardown removes (settings, legacy
+   *  helpers) and its daemon home. */
+  profiles: { name: ProfileName; claudeArtifacts: string[]; home: string }[];
+  /** The default wiring's legacy Claude helper files present now. */
+  claudeDefaultHelpers: string[];
+  /** Claude's `.claude.json` when it holds our MCP registration (the file the removal
+   *  rewrites), else null. */
+  claudeMcpRegistration: string | null;
+  /** Per known Codex home: the `.env` holding the legacy baked token, or null. */
+  codexEnvTokenFiles: Map<string, string | null>;
+}
+
 /** Everything a step needs, resolved once after the confirmation gate. */
-interface UninstallContext {
+export interface UninstallContext {
   profiles: ProfileName[];
   codexHomes: string[];
   codexSweepComplete: boolean;
   claudeHome: string;
   rootHome: string;
+  targets: UninstallTargets;
   /** The install root being torn down (injectable; see UninstallDeps.installRoot). */
   installRoot: RootMode;
   /** The root is protected (a source checkout) and `--force` was not given. */
   skipRootDelete: boolean;
   deps: UninstallDeps;
-  /** Set by the install-root step when its rmSync could not finish. */
+  /** Set by the install-root step when its removal could not finish. */
   rootRemains: boolean;
 }
 
@@ -164,13 +196,17 @@ const UNINSTALL_STEPS: UninstallStep[] = [
   },
   {
     // 2. Named profiles: wiring, store slots, isolated daemon homes.
+    //    The profile's Claude Desktop entry is NOT taken here: the Desktop step below
+    //    removes exactly the planned artifacts, which include it.
     describe: (ctx) =>
-      ctx.profiles.map(
-        (name) => `Would delete ${profileLabel(name)} (credential, wiring, daemon home).`,
+      ctx.targets.profiles.map(
+        ({ name, claudeArtifacts, home }) =>
+          `Would delete ${profileLabel(name)}: its credential, its Codex profile tables, ` +
+          `${[...claudeArtifacts, home].join(", ")}.`,
       ),
     run: async (ctx) => {
-      for (const name of ctx.profiles) {
-        await deleteProfileEverywhere(name);
+      for (const { name, claudeArtifacts } of ctx.targets.profiles) {
+        await deleteProfileEverywhere(name, { keepDesktopEntry: true, claudeArtifacts });
         consola.info(`Deleted ${profileLabel(name)}.`);
       }
     },
@@ -182,21 +218,24 @@ const UNINSTALL_STEPS: UninstallStep[] = [
     //    profile wired while a farm home was active left its tables there too --
     //    step 2 only stripped the currently-effective home. Then the farm itself.
     describe: (ctx) => {
-      const lines = ctx.codexHomes.map(
-        (home) => `Would remove the copilot-env wiring from ${codexConfigPath(home)}.`,
-      );
-      // Narrate the farm delete only when the injected seam is absent: a test
-      // substitute does its own (redirected) work, not this state-recorded rm.
-      const farm = ctx.deps.removeCodexHostFarm === undefined ? recordedCodexHostFarm() : null;
+      const lines = ctx.codexHomes.flatMap((home) => {
+        const envFile = ctx.targets.codexEnvTokenFiles.get(home) ?? null;
+        return [
+          `Would remove the copilot-env wiring from ${codexConfigPath(home)}.`,
+          ...(envFile === null ? [] : [`Would rewrite ${envFile} (COPILOT_ENV_GH_TOKEN removed).`]),
+        ];
+      });
+      const farm = ctx.targets.codexHostFarm;
       if (farm !== null) lines.push(`Would delete the CODEX_HOME host farm: ${farm}`);
       return lines;
     },
     run: (ctx) => {
       for (const home of ctx.codexHomes) {
-        removeCodexDefaultWiring(home);
+        removeCodexDefaultWiring(home, ctx.targets.codexEnvTokenFiles.get(home) ?? null);
         for (const name of ctx.profiles) removeCodexProfile(home, name);
       }
-      (ctx.deps.removeCodexHostFarm ?? removeCodexHostFarm)();
+      if (ctx.deps.removeCodexHostFarm !== undefined) ctx.deps.removeCodexHostFarm();
+      else removeCodexHostFarm(ctx.targets.codexHostFarm);
       consola.info("Removed the copilot-env Codex wiring.");
       if (!ctx.codexSweepComplete) {
         consola.warn(
@@ -215,19 +254,25 @@ const UNINSTALL_STEPS: UninstallStep[] = [
     //    replacement, so it only goes once no owned deny remains.
     describe: (ctx) => [
       `Would remove the managed Claude wiring at ${settingsPathFor(ctx.claudeHome)}.`,
-      "Would remove the copilot-env MCP registration from Claude's global ~/.claude.json " +
-      "(kept, with a warning, while an owned WebSearch deny cannot be stripped).",
+      ...ctx.targets.claudeDefaultHelpers.map((p) => `Would remove the legacy Claude helper ${p}.`),
+      ctx.targets.claudeMcpRegistration === null
+        ? `Would leave ${claudeJsonPath()} alone (no removable copilot-env MCP registration found in it).`
+        : `Would remove the copilot-env MCP registration from ${ctx.targets.claudeMcpRegistration} ` +
+          "(kept, with a warning, while an owned WebSearch deny cannot be stripped).",
     ],
     run: (ctx) => {
-      const { ownedDenyRemains } = removeClaudeDefaultWiring(ctx.claudeHome);
+      const { ownedDenyRemains } = removeClaudeDefaultWiring(
+        ctx.claudeHome,
+        ctx.targets.claudeDefaultHelpers,
+      );
       if (ownedDenyRemains) {
         consola.warn(
           `the copilot-env WebSearch deny in ${settingsPathFor(ctx.claudeHome)} could not ` +
             "be removed (the file could not be read, parsed, or rewritten); keeping the " +
             "copilot-env MCP registration as its marker (it stops working once copilot-env " +
-            "is gone). Remove the deny by hand, then the copilot-env entry in ~/.claude.json.",
+            `is gone). Remove the deny by hand, then the copilot-env entry in ${claudeJsonPath()}.`,
         );
-      } else {
+      } else if (ctx.targets.claudeMcpRegistration !== null) {
         try {
           removeClaudeMcpRegistration();
         } catch (e) {
@@ -243,29 +288,35 @@ const UNINSTALL_STEPS: UninstallStep[] = [
     //     scripts. Owned entries only -- a user's own configs stay untouched.
     //     The dry run names every path the sweep would delete.
     describe: (ctx) => {
-      const { entries, helpers, blocked } = listClaudeDesktopOwnedArtifacts(
-        ctx.deps.claudeDesktopLibraryDir,
-      );
+      const { entries, staleClaims, helpers, blocked } = ctx.targets.desktop;
       const paths = [...entries, ...helpers];
       if (blocked) {
         return [
           "Would leave Claude Desktop's config library alone (its _meta.json could not be read); " +
-          "would keep the credential-helper scripts a live entry may still reference.",
+          "its copilot-env entries will point at credential-helper scripts that go with the " +
+          "copilot-api home below.",
         ];
       }
+      const stale = staleClaims.map(
+        (p) => `Would release the stale Claude Desktop claim on ${p} (file already gone).`,
+      );
+      const meta = ctx.targets.desktop.metaRewrite;
+      if (meta !== null) stale.push(`Would rewrite ${meta} (copilot-env rows removed).`);
       if (paths.length === 0) {
         return [
           "Would remove the copilot-env entries from Claude Desktop's config library (none found).",
+          ...stale,
         ];
       }
       return [
         "Would remove the copilot-env entries from Claude Desktop's config library:",
         ...paths.map((p) => `  ${p}`),
+        ...stale,
       ];
     },
     run: (ctx) => {
       try {
-        removeAllClaudeDesktopWiring(ctx.deps.claudeDesktopLibraryDir);
+        removeAllClaudeDesktopWiring(ctx.deps.claudeDesktopLibraryDir, ctx.targets.desktop);
       } catch (e) {
         consola.warn(`could not remove the Claude Desktop entries: ${errMessage(e)}`);
       }
@@ -279,9 +330,19 @@ const UNINSTALL_STEPS: UninstallStep[] = [
     run: () => new Credential().clear(),
   },
   {
-    // 6. Shell integration + launchers.
-    describe: () => ["Would remove the shell integration (rc / PowerShell profile blocks)."],
-    run: (ctx) => (ctx.deps.removeShellIntegration ?? removeShellIntegrationEverywhere)(),
+    // 6. Shell integration + launchers: the owned block in each planned rc / profile file.
+    describe: (ctx) =>
+      ctx.targets.shellFiles.length === 0
+        ? [
+          "Would remove the shell integration block from the rc / PowerShell profile files (none found).",
+        ]
+        : ctx.targets.shellFiles.map((file) =>
+          `Would remove the shell integration block from ${file}.`
+        ),
+    run: (ctx) => {
+      if (ctx.deps.removeShellIntegration !== undefined) ctx.deps.removeShellIntegration();
+      else removeShellIntegrationFrom(ctx.targets.shellFiles);
+    },
   },
   {
     // 7. Stop again, then delete the copilot-api home (proxy config/apiKeys, run
@@ -292,16 +353,20 @@ const UNINSTALL_STEPS: UninstallStep[] = [
     //    that the wiring is gone nothing can start another.
     describe: (ctx) => [
       "Would stop any proxy daemon relaunched in the meantime (second sweep).",
-      "Would delete the floated proxy's deno cache and resolved-version record.",
+      ...(ctx.targets.floatArtifacts.length === 0
+        ? ["Would delete the floated proxy's deno cache and resolved-version record (none found)."]
+        : [
+          "Would delete the floated proxy's deno cache and resolved-version record:",
+          ...ctx.targets.floatArtifacts.map((p) => `  ${p}`),
+        ]),
       `Would delete the copilot-api home: ${ctx.rootHome} (including the usage index and the price-list cache).`,
     ],
     run: async (ctx) => {
       await stopAllDaemons(ctx.profiles);
       // Before the home goes: the float's cache is wherever its record points, which a
       // sidecar install can put OUTSIDE the home -- deleting the home alone would strand it.
-      removeProxyFloatArtifacts(ctx.rootHome);
-      rmSync(ctx.rootHome, { recursive: true, force: true });
-      consola.info(`Deleted the copilot-api home: ${ctx.rootHome}`);
+      removeProxyFloatArtifacts(ctx.rootHome, ctx.targets.floatArtifacts);
+      removeTreeReported(ctx.rootHome, "the copilot-api home");
     },
   },
   {
@@ -346,8 +411,7 @@ const UNINSTALL_STEPS: UninstallStep[] = [
         // pass -- deletion may still succeed from the current cwd.
       }
       try {
-        rmSync(installRoot, { recursive: true, force: true });
-        consola.info(`Deleted the install directory: ${installRoot}`);
+        removeTreeReported(installRoot, "the install directory");
       } catch {
         consola.warn(
           `Could not fully delete ${installRoot} (files may be in use). ` +
@@ -360,10 +424,72 @@ const UNINSTALL_STEPS: UninstallStep[] = [
   },
 ];
 
+/** Resolve everything the steps read -- homes, the install root, and the removal
+ *  targets -- once. Exported so the plan/apply parity is testable: the dry run and the
+ *  live run must both be rendered from ONE of these. */
+export function resolveUninstallContext(
+  args: UninstallArgs,
+  deps: UninstallDeps,
+): UninstallContext {
+  let codexHomes: string[];
+  let codexSweepComplete = true;
+  if (deps.codexHomes !== undefined) {
+    codexHomes = deps.codexHomes;
+  } else {
+    ({ homes: codexHomes, complete: codexSweepComplete } = knownCodexHomes());
+  }
+  const mode = deps.installRoot ?? rootMode();
+  // A versioned install's compiled root is the `<top>/current` link; the DELETE
+  // target is the TOP root (versions/, bin/, and the link itself), never just
+  // the link. Resolved once here so the narration and the removal agree.
+  const installRoot: RootMode = mode.kind === "compiled"
+    ? { kind: "compiled", root: installStateRoot(mode.root) }
+    : mode;
+  const rootHome = resolveRootHome();
+  const claudeHome = resolveClaudeHome();
+  const profiles = allProfileNames();
+  return {
+    profiles,
+    codexHomes,
+    codexSweepComplete,
+    claudeHome,
+    rootHome,
+    targets: {
+      profiles: profiles.map((name) => ({
+        name,
+        claudeArtifacts: claudeProfileArtifacts(claudeHome, name),
+        home: profileHome(name),
+      })),
+      claudeDefaultHelpers: claudeDefaultHelperArtifacts(claudeHome),
+      claudeMcpRegistration: plannedClaudeMcpRemoval(),
+      codexEnvTokenFiles: new Map(codexHomes.map((home) => [home, codexEnvTokenFile(home)])),
+      desktop: listClaudeDesktopOwnedArtifacts(deps.claudeDesktopLibraryDir),
+      floatArtifacts: proxyFloatArtifactPaths(rootHome),
+      // A test substitute does its own (redirected) work, not this state-recorded rm.
+      codexHostFarm: deps.removeCodexHostFarm === undefined ? recordedCodexHostFarm() : null,
+      shellFiles: deps.removeShellIntegration === undefined ? ownedShellTargets() : [],
+    },
+    installRoot,
+    skipRootDelete: isProtectedRoot(installRoot) && !args.force,
+    deps,
+    rootRemains: false,
+  };
+}
+
+/** The dry run: every step's "Would ..." lines, in step order. */
+export function describeUninstall(ctx: UninstallContext): string[] {
+  return UNINSTALL_STEPS.flatMap((step) => step.describe(ctx));
+}
+
+/** The live run: every step, in order. */
+export async function applyUninstall(ctx: UninstallContext): Promise<void> {
+  for (const step of UNINSTALL_STEPS) await step.run(ctx);
+}
+
 /**
  * `agent uninstall`: remove copilot-env entirely, driving BOTH `--dry-run` and
- * the real teardown from UNINSTALL_STEPS so the narration cannot drift from
- * what actually runs.
+ * the real teardown from UNINSTALL_STEPS over ONE resolved context, so the
+ * narration cannot drift from what actually runs.
  */
 export async function runUninstall(args: UninstallArgs, deps: UninstallDeps = {}): Promise<void> {
   // Confirm before touching (or even enumerating) anything.
@@ -383,41 +509,15 @@ export async function runUninstall(args: UninstallArgs, deps: UninstallDeps = {}
     }
   }
 
-  let codexHomes: string[];
-  let codexSweepComplete = true;
-  if (deps.codexHomes !== undefined) {
-    codexHomes = deps.codexHomes;
-  } else {
-    ({ homes: codexHomes, complete: codexSweepComplete } = knownCodexHomes());
-  }
-  const mode = deps.installRoot ?? rootMode();
-  // A versioned install's compiled root is the `<top>/current` link; the DELETE
-  // target is the TOP root (versions/, bin/, and the link itself), never just
-  // the link. Resolved once here so the narration and the removal agree.
-  const installRoot: RootMode = mode.kind === "compiled"
-    ? { kind: "compiled", root: installStateRoot(mode.root) }
-    : mode;
-  const ctx: UninstallContext = {
-    profiles: allProfileNames(),
-    codexHomes,
-    codexSweepComplete,
-    claudeHome: resolveClaudeHome(),
-    rootHome: resolveRootHome(),
-    installRoot,
-    skipRootDelete: isProtectedRoot(installRoot) && !args.force,
-    deps,
-    rootRemains: false,
-  };
+  const ctx = resolveUninstallContext(args, deps);
 
   if (args.dryRun) {
     consola.info("DRY RUN: nothing will be removed.");
-    for (const step of UNINSTALL_STEPS) {
-      for (const line of step.describe(ctx)) consola.info(`   ${line}`);
-    }
+    for (const line of describeUninstall(ctx)) consola.info(`   ${line}`);
     return;
   }
 
-  for (const step of UNINSTALL_STEPS) await step.run(ctx);
+  await applyUninstall(ctx);
 
   if (ctx.rootRemains) {
     consola.info("Everything else is removed; finish with the command above.");

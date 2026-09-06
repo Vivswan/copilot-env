@@ -22,8 +22,8 @@ function tmpHome(): void {
   dir = isolateProxyHome("copilot-envstate-");
 }
 
-/** Write the raw state file verbatim (layout fixtures the typed API cannot --
- *  and must not -- produce: the legacy top-level pair, stray/junk fields). */
+/** Write the raw state file verbatim (fixtures the typed API cannot -- and must
+ *  not -- produce: the legacy top-level pair, stray/junk fields). */
 function seedRawState(data: Record<string, unknown>): void {
   writeFileSync(join(dir, ".copilot-env-state.json"), `${JSON.stringify(data)}\n`);
 }
@@ -44,8 +44,8 @@ test("the provisioned GitHub token round-trips through the shared store and clea
   state.setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_provisioned" });
   expect(state.read().githubToken).toBe("ghu_provisioned");
 
-  // On disk the credential lives in the reserved `default` slot, never in the
-  // legacy top-level pair (the write-side layout lift).
+  // On disk the credential lives in the reserved `default` slot, never in a
+  // top-level pair.
   const raw = rawState();
   expect(raw.githubToken).toBeUndefined();
   expect(raw.authProvider).toBeUndefined();
@@ -97,108 +97,23 @@ test("the auth provider round-trips and clears alongside the token", () => {
   });
 });
 
-test("an unmigrated store's top-level pair reads as the default credential", () => {
+test("a store carrying only the legacy top-level pair reads as no default credential; writes preserve it", () => {
   tmpHome();
-  // A pre-slot release stored the default credential in the top-level fields;
-  // the read boundary must keep answering from them until a write/migration
-  // lifts the pair (the migration runner is best-effort).
+  // A pre-slot release's layout: the 3.5.6 migration lifts the pair into the
+  // reserved slot. Until it runs the store reads the slot shape ONLY (an
+  // `agent auth --check` finds nothing), and no store write of ours lifts or
+  // drops the pair -- the migration must still find it.
   seedRawState({ githubToken: "ghu_legacy", authProvider: "copilot" });
   const state = new CopilotEnvState();
-  expect(state.read().githubToken).toBe("ghu_legacy");
-  expect(state.read().authProvider).toBe("copilot");
-  expect(state.readCredential(null)).toEqual({
-    kind: "stored",
-    provider: "copilot",
-    token: "ghu_legacy",
-  });
-  // The legacy layout never carried mode/identity: the slot reads partial.
-  expect(state.readProfileSlot(null)).toEqual({
-    kind: "partial",
-    credential: { kind: "stored", provider: "copilot", token: "ghu_legacy" },
-    mode: null,
-    integrationIdentity: null,
-  });
-});
-
-test("the reserved default slot wins over a lingering legacy pair", () => {
-  tmpHome();
-  // Both layouts at once is reachable only by hand edit; the slot (what every
-  // new write produces) must answer deterministically -- read and write sides
-  // apply the same precedence, so a lift can never drop the pair a read still
-  // serves.
-  seedRawState({
-    githubToken: "ghu_stale",
+  expect(state.readCredential(null)).toEqual({ kind: "none", provider: null });
+  expect(state.read().githubToken).toBeNull();
+  expect(state.read().authProvider).toBeNull();
+  state.recordDefaultMode("direct");
+  expect(rawState()).toEqual({
+    githubToken: "ghu_legacy",
     authProvider: "copilot",
-    profiles: { default: { githubToken: "ghu_slot", authProvider: "gh-token" } },
+    profiles: { default: { mode: "direct" } },
   });
-  expect(new CopilotEnvState().readCredential(null)).toEqual({
-    kind: "stored",
-    provider: "gh-token",
-    token: "ghu_slot",
-  });
-});
-
-test("every default-slot write lifts the legacy pair into the reserved slot", () => {
-  tmpHome();
-  seedRawState({ githubToken: "ghu_legacy", authProvider: "copilot" });
-  const state = new CopilotEnvState();
-  // A cache write against the LEGACY-layout credential: the lift runs first, so
-  // the credential comparison sees the pair wherever the store carried it.
-  state.setProfileIntegrationIdentity(null, "copilot-developer-cli", {
-    kind: "stored",
-    provider: "copilot",
-    token: "ghu_legacy",
-  });
-  const raw = rawState();
-  expect(raw.githubToken).toBeUndefined();
-  expect(raw.authProvider).toBeUndefined();
-  const slot = (raw.profiles as Record<string, Record<string, unknown>>).default;
-  expect(slot?.githubToken).toBe("ghu_legacy");
-  expect(slot?.authProvider).toBe("copilot");
-  expect(slot?.integrationIdentity).toBe("copilot-developer-cli");
-  // The unified read answers identically after the lift.
-  expect(state.readCredential(null)).toEqual({
-    kind: "stored",
-    provider: "copilot",
-    token: "ghu_legacy",
-  });
-});
-
-test("the lift answers read-identically across every pair/slot shape (parser-drift guard)", () => {
-  tmpHome();
-  // The write-side lift judges "does the slot hold a credential?" on the raw
-  // JSON while the read side judges the parsed slot; this table pins the two
-  // judgements together across blank/junk/partial values and both layouts, so
-  // either parser drifting alone fails here instead of dropping a credential.
-  const tokens = [undefined, "   ", "tok"];
-  const providers = [undefined, "bogus", "gh-cli", "copilot", "gh-token"];
-  const slots: Array<Record<string, unknown> | undefined> = [
-    undefined,
-    { githubToken: "ghu_slot", authProvider: "gh-token" },
-    { githubToken: "   " }, // junk-only slot: carries no credential fields
-    { mode: "proxy" },
-  ];
-  for (const token of tokens) {
-    for (const provider of providers) {
-      for (const slot of slots) {
-        seedRawState({
-          githubToken: token,
-          authProvider: provider,
-          ...(slot === undefined ? {} : { profiles: { default: slot } }),
-        });
-        const before = new CopilotEnvState().readProfileSlot(null);
-        new CopilotEnvState().adoptLegacyDefaultCredential();
-        expect(new CopilotEnvState().readProfileSlot(null)).toEqual(before);
-        // Positive control: whenever legacy keys were present, the lift really
-        // ran (the equivalence above must not pass vacuously on no-op runs).
-        if (token !== undefined || provider !== undefined) {
-          const raw = rawState();
-          expect(raw.githubToken).toBeUndefined();
-          expect(raw.authProvider).toBeUndefined();
-        }
-      }
-    }
-  }
 });
 
 test("the default slot's integrationIdentity is a credential-derived cache like a named profile's", () => {
@@ -432,17 +347,14 @@ test("the read boundary parses the stored pair fail-closed into the credential u
     provider: "copilot",
     token: "ghu_ok",
   });
-  // The presence-only classifier (health facts) must agree with the parse --
-  // for BOTH on-disk layouts (the reserved slot and the legacy top-level pair).
+  // The presence-only classifier (health facts) must agree with the parse.
   for (const provider of [null, "bogus", "gh-cli", "copilot", "gh-token"]) {
     for (const token of [null, "tok"]) {
       const pair = { githubToken: token ?? undefined, authProvider: provider ?? undefined };
-      for (const layout of [pair, { profiles: { default: pair } }]) {
-        seedRawState(layout);
-        expect(new CopilotEnvState().readCredential(null).kind).toBe(
-          storedCredentialKind(provider, token !== null),
-        );
-      }
+      seedRawState({ profiles: { default: pair } });
+      expect(new CopilotEnvState().readCredential(null).kind).toBe(
+        storedCredentialKind(provider, token !== null),
+      );
     }
   }
 });
@@ -451,10 +363,7 @@ test("clearCredential clears even a parse-rejected stray token and reports what 
   tmpHome();
   const state = new CopilotEnvState();
   expect(state.clearCredential(null)).toBe(false);
-  // Parses as none, but it IS on disk -- in either layout.
-  seedRawState({ githubToken: "ghu_orphan" });
-  expect(state.clearCredential(null)).toBe(true);
-  expect(state.read().githubToken).toBeNull();
+  // Parses as none, but it IS on disk.
   seedRawState({ profiles: { default: { githubToken: "ghu_orphan" } } });
   expect(state.clearCredential(null)).toBe(true);
   expect(state.read().githubToken).toBeNull();

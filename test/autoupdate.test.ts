@@ -180,31 +180,16 @@ test("effectiveUpdateCooldownDays: the live update-cooldown config, else the 7-d
   expect(effectiveUpdateCooldownDays()).toBe(3); // read live, never snapshotted
 });
 
-test("the next write drops a legacy enabled field and says so; the throttle state survives", () => {
+test("the next write drops a legacy enabled field; the throttle state survives", () => {
   const path = tmp("state.json");
   writeFileSync(path, JSON.stringify({ enabled: true, lastCheckMs: 5, lastResult: "old" }));
-  const lines: string[] = [];
-  const original = process.stderr.write;
-  process.stderr.write = ((chunk: string | Uint8Array): boolean => {
-    lines.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk));
-    return true;
-  }) as typeof process.stderr.write;
-  try {
-    new AutoupdateState(path).set({ lastResult: "up to date" });
-    // A file without the field says nothing.
-    new AutoupdateState(path).set({ lastCheckMs: 6 });
-  } finally {
-    process.stderr.write = original;
-  }
+  new AutoupdateState(path).set({ lastResult: "up to date" });
+  new AutoupdateState(path).set({ lastCheckMs: 6 });
+  // The state file is bookkeeping inside the install root: rewritten, never narrated.
   expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({
     lastCheckMs: 6,
     lastResult: "up to date",
   });
-  const joined = lines.join("");
-  expect(joined).toContain(
-    `Dropped the legacy autoupdate flag (the preference is the auto-update config key) -> ${path}`,
-  );
-  expect(joined.split("Dropped the legacy autoupdate flag").length - 1).toBe(1);
 });
 
 test("AutoupdateState writes a 0600 file (POSIX)", () => {

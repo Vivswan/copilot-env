@@ -32,13 +32,19 @@ import {
   openaiBaseUrl,
   wiringPortFor,
 } from "../copilot_api/port.ts";
-import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
+import { type Profile, type ProfileName } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { isEnoent, isEnoentOrNotdir, readTextResult, type TextReadResult } from "../utils/fs.ts";
 import { codexFarmHostsDir } from "../utils/hostname.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import {
+  chmodReported,
+  mkdirReported,
+  removeReported,
+  writeFileReported,
+} from "../utils/report_write.ts";
 import {
   agentAuthGetArgs,
   agentLauncherCommand,
@@ -111,7 +117,7 @@ type CodexModeRequest =
 /** The mode-independent knobs of a Codex config write. */
 interface CodexWriteCommon {
   codexExecVersion?: string | null;
-  /** Suppress the "config written" info line (used by the temp-config probe). */
+  /** Suppress the catalog-verdict warning (the direct probe's throwaway write). */
   quiet?: boolean;
   /** Wire a NAMED profile's tables instead of the default selection. */
   profile?: Profile;
@@ -655,24 +661,39 @@ function readConfigForRemoval(configPath: string): Record<string, unknown> | nul
 // key isn't present, so it never creates or rewrites a file needlessly. Used to
 // scrub the baked direct token (COPILOT_ENV_GH_TOKEN) when reverting to gh-direct.
 function removeEnvKey(envFile: string, key: string): void {
+  const scrub = envKeyScrub(envFile, key);
+  if (scrub === null) return;
+  const { kept } = scrub;
+  writeFileReported(envFile, kept.length ? `${kept.join("\n")}\n` : "");
+  try {
+    chmodReported(envFile, 0o600);
+  } catch {
+    // pass
+  }
+}
+
+/** What removing `key` from `envFile` would leave, or null when there is nothing to do
+ *  (file absent, or key not present). Read-only: the uninstall plan asks this once. */
+function envKeyScrub(envFile: string, key: string): { kept: string[] } | null {
   let existing: string;
   try {
     existing = fs.readFileSync(envFile, "utf8");
   } catch (e) {
-    if (isEnoent(e)) return; // nothing to scrub
+    if (isEnoent(e)) return null; // nothing to scrub
     throw e;
   }
   const matcher = new RegExp(`^\\s*(?:export\\s+)?${key}\\s*=`);
   const lines = existing.split(/\r?\n/);
   if (lines.length && lines[lines.length - 1] === "") lines.pop(); // trailing newline
   const kept = lines.filter((line) => !matcher.test(line));
-  if (kept.length === lines.length) return; // key absent -- leave the file untouched
-  fs.writeFileSync(envFile, kept.length ? `${kept.join("\n")}\n` : "");
-  try {
-    fs.chmodSync(envFile, 0o600);
-  } catch {
-    // pass
-  }
+  return kept.length === lines.length ? null : { kept };
+}
+
+/** The `<codexHome>/.env` file removeCodexDefaultWiring would rewrite (it holds the legacy
+ *  baked `COPILOT_ENV_GH_TOKEN`), or null. Read-only; the uninstall plan names it. */
+export function codexEnvTokenFile(codexHome: string): string | null {
+  const envFile = path.join(codexHome, ".env");
+  return envKeyScrub(envFile, DIRECT_ENV_KEY) === null ? null : envFile;
 }
 
 /** Parse step for the proxy variant: reject an empty or malformed base URL before
@@ -716,7 +737,7 @@ export function configureCodexConfig(
     : request;
 
   try {
-    fs.mkdirSync(codexHome, { recursive: true });
+    mkdirReported(codexHome);
   } catch (e) {
     throw new Error(`could not create Codex config directory ${codexHome}: ${errMessage(e)}`);
   }
@@ -791,16 +812,14 @@ export function configureCodexConfig(
       doc.model_catalog_json = catalogFile;
       catalogRef = "written";
       if (previousRef !== catalogFile) {
-        catalogRefLine = `model_catalog_json = "${catalogFile}" set in ${hostConfig}` +
+        catalogRefLine = `model_catalog_json = "${catalogFile}" set` +
           (verdict === "unverifiable" ? UNVERIFIED_SUFFIX : "");
       }
     } else {
       delete doc.model_catalog_json;
       catalogRef = "cleared";
       if (previousRef !== undefined) {
-        catalogRefLine = `model_catalog_json removed from ${hostConfig} (was "${
-          String(previousRef)
-        }")`;
+        catalogRefLine = `model_catalog_json removed, was "${String(previousRef)}"`;
       }
     }
   }
@@ -830,23 +849,11 @@ export function configureCodexConfig(
   }
 
   const knownHome = knownCodexHomes().homes.includes(codexHome);
-  saveCodexToml(hostConfig, doc);
-  // The change is on disk: report it NOW, before the fallible ledger bookkeeping.
-  if (!request.quiet) {
-    logger.log(
-      `  ✓ Codex config written → ${hostConfig}` +
-        `${
-          profile === null
-            ? ""
-            : ` (${profileLabel(profile)}; launch with \`codex --profile ${profile}\`)`
-        }`,
-    );
-  }
-  // A changed reference is reported even by quiet writes (`agent profile --sync` is
-  // quiet and real); only the direct probe's quiet, throwaway home stays silent.
-  if (catalogRefLine !== null && (!request.quiet || knownHome)) {
-    logger.log(`  ✓ Codex ${catalogRefLine}`);
-  }
+  // The write's own line carries what the write means (which config, and a changed
+  // catalog reference); it lands before the fallible ledger bookkeeping. Every
+  // profile shares this one file and the seam names a path once per process, so the
+  // detail says nothing profile-specific (`agent profile` prints the launch hint).
+  saveCodexToml(hostConfig, doc, ["Codex config", catalogRefLine].filter(Boolean).join("; "));
   // Ownership lands only AFTER the successful save (the ledger's crash-direction
   // contract), and only for a KNOWN Codex home -- the set the cleanup sweep
   // visits -- so detectCodexDirect's throwaway probe home never enters the
@@ -1002,9 +1009,10 @@ export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): v
       return;
     }
     doc.model_catalog_json = catalogFile;
-    saveCodexToml(configPath, doc);
-    logger.log(
-      `  ✓ Codex model_catalog_json = "${catalogFile}" set in ${configPath}` +
+    saveCodexToml(
+      configPath,
+      doc,
+      `Codex config; model_catalog_json = "${catalogFile}" set` +
         (verdict === "unverifiable" ? UNVERIFIED_SUFFIX : ""),
     );
   } catch {
@@ -1108,8 +1116,7 @@ function cleanupCodexCatalogArtifacts(catalogFile: string): void {
   const { deletionSafe } = stripCodexCatalogReferences(catalogFile);
   if (deletionSafe && fs.existsSync(catalogFile)) {
     try {
-      fs.rmSync(catalogFile, { force: true });
-      logger.log(`  ✓ Codex model catalog removed → ${catalogFile}`);
+      removeReported(catalogFile);
     } catch (e) {
       logger.warn(`codex model catalog cleanup failed: ${errMessage(e)}`);
     }
@@ -1146,9 +1153,10 @@ function stripCodexCatalogReferences(
       const doc = parse(fs.readFileSync(configPath, "utf8")) as Record<string, unknown>;
       if (doc.model_catalog_json === catalogFile) {
         delete doc.model_catalog_json;
-        fs.writeFileSync(configPath, stringify(doc));
+        writeFileReported(configPath, stringify(doc), {
+          detail: "Codex config; model_catalog_json removed",
+        });
         stripped = true;
-        logger.log(`  ✓ Codex model_catalog_json removed from ${configPath}`);
         if (catalogBookkeepingAllowed()) ledger.release("codexCatalog", configPath);
       } else if (resolvesToCatalogFile(doc.model_catalog_json, catalogFile) !== "no") {
         // An alternate spelling of OUR path (case variant on Windows, a
@@ -1294,7 +1302,10 @@ export function removeCodexProfile(codexHome: string, name: ProfileName): void {
  * configureCodexConfig). No-op when the config is absent; a present-but-unparseable
  * file throws (never blind-write). Used by `agent uninstall`.
  */
-export function removeCodexDefaultWiring(codexHome: string): void {
+export function removeCodexDefaultWiring(
+  codexHome: string,
+  envTokenFile: string | null = codexEnvTokenFile(codexHome),
+): void {
   const configPath = codexConfigPath(codexHome);
   const doc = readConfigForRemoval(configPath);
   if (doc !== null) {
@@ -1335,7 +1346,8 @@ export function removeCodexDefaultWiring(codexHome: string): void {
     // Post-save (never claim-drop before the artifact write actually landed).
     if (catalogWasReferenced) new OwnershipLedger().release("codexCatalog", configPath);
   }
-  removeEnvKey(path.join(codexHome, ".env"), DIRECT_ENV_KEY);
+  // Exactly the file the plan named (uninstall resolves it once), else the live look.
+  if (envTokenFile !== null) removeEnvKey(envTokenFile, DIRECT_ENV_KEY);
 }
 
 /**

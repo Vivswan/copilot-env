@@ -256,6 +256,21 @@ try {
         throw "SHA256 verification failed for ${AssetName}: expected $expected, got $actual."
     }
 
+    # The install root (and any missing ancestor a nested -InstallDir needs) is created
+    # here, before the binary that names its own writes exists: say so in the same shape
+    # it will (stderr, "created -> <path>"), outermost first.
+    $missing = @()
+    $probe = $InstallDir
+    while ($probe -and -not (Test-Path -LiteralPath $probe)) {
+        $missing = , $probe + $missing
+        $parent = Split-Path -Parent $probe
+        if (-not $parent -or $parent -eq $probe) { break }
+        $probe = $parent
+    }
+    if ($missing.Count -gt 0) {
+        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+        foreach ($made in $missing) { [Console]::Error.WriteLine("created -> $made") }
+    }
     $binDir = Join-Path $InstallDir 'bin'
     New-Item -ItemType Directory -Path $binDir -Force | Out-Null
     Move-Item -LiteralPath $binTmp -Destination (Join-Path $binDir $BinaryName) -Force

@@ -30,13 +30,13 @@
 // the profile entries and leaves the default's in place, unmanaged (the user's from then
 // on; only uninstall removes it, since its helper script goes with the install). Every
 // file created, rewritten, or removed is announced.
-import { chmodSync, existsSync, readdirSync, rmSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { codexUserAgent } from "../codex/config.ts";
 import type { ManagedWrite } from "../agents/configure.ts";
 import { fetchRawModels } from "../copilot_api/catalog.ts";
-import { atomicWriteFile } from "../copilot_api/config.ts";
+import { atomicWriteFile, chmodReported, removeReported } from "../utils/report_write.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { discoverServableClaudeModels } from "../copilot_api/discovery.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
@@ -249,22 +249,21 @@ function readFileOrNull(path: string): string | null {
 }
 
 /** Pretty JSON + trailing newline, atomically, skipping byte-identical rewrites.
- *  Returns whether a write happened (callers announce every real write). */
-export function saveJsonIfChanged(path: string, doc: unknown): boolean {
+ *  Returns whether a write happened; `detail` is what the write's report says. */
+export function saveJsonIfChanged(path: string, doc: unknown, detail?: string): boolean {
   const text = `${JSON.stringify(doc, null, 2)}\n`;
   if (readFileOrNull(path) === text) return false;
-  atomicWriteFile(path, text);
+  atomicWriteFile(path, text, undefined, detail);
   return true;
 }
 
 function saveDesktopMeta(dir: string, meta: DesktopMeta): void {
   const path = join(dir, META_FILENAME);
-  const written = saveJsonIfChanged(path, {
+  saveJsonIfChanged(path, {
     ...meta.extra,
     "appliedId": meta.appliedId ?? undefined,
     "entries": meta.entries.map((e) => ({ ...e.extra, "id": e.id, "name": e.name })),
-  });
-  if (written) logger.info(`  Claude Desktop: updated ${path}`);
+  }, "Claude Desktop config-library index");
 }
 
 /** Whether a directory entry exists at `path`: fail-closed (entryAbsent), so a failed
@@ -274,18 +273,8 @@ function entryExists(path: string): boolean {
   return !entryAbsent(path);
 }
 
-/** Remove `path` when present, announcing the removal; absent means nothing to say. */
-function removeAnnounced(path: string): void {
-  if (!entryExists(path)) return;
-  rmSync(path, { force: true });
-  logger.info(`  Claude Desktop: removed ${path}`);
-}
-
-/** The ownership ledger's file, for the announcements of a recorded/released claim. */
-function ledgerPath(): string {
-  return new CopilotApiPaths().ownershipFile;
-}
-
+/** The two kinds of Claude Desktop artifact, as a removal's report names them. */
+const ENTRY = "Claude Desktop entry";
 // --- payload ---------------------------------------------------------------------
 
 /** One inferenceModels row (Desktop's documented shape). */
@@ -480,10 +469,8 @@ export function writeDesktopHelperScript(mode: ProfileMode, profile: Profile): s
   const path = desktopHelperPath(resolveRootHome(), mode, profile);
   if (readFileOrNull(path) !== body) {
     atomicWriteFile(path, body, 0o755);
-    logger.info(`  Claude Desktop: wrote ${path}`);
   } else if (!helperExecutable(path)) {
-    chmodSync(path, 0o755);
-    logger.info(`  Claude Desktop: made ${path} executable`);
+    chmodReported(path, 0o755);
   }
   return path;
 }
@@ -506,7 +493,7 @@ function helperExecutable(path: string): boolean {
 /** Remove the OTHER mode's helper script for `profile` -- called post-save on a wire. */
 export function retireDesktopHelperScript(mode: ProfileMode, profile: Profile): void {
   const other: ProfileMode = mode === "direct" ? "proxy" : "direct";
-  removeAnnounced(desktopHelperPath(resolveRootHome(), other, profile));
+  removeReported(desktopHelperPath(resolveRootHome(), other, profile));
 }
 
 // --- wiring ------------------------------------------------------------------------
@@ -697,7 +684,7 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
         // Retired only when NOTHING else references it: Claude Code's own
         // settings.json (the legacy helper-FILE wiring used this very path) and
         // every other Desktop entry are checked first; any doubt keeps the file.
-        commits.push(() => removeAnnounced(handMade));
+        commits.push(() => removeReported(handMade, "retired hand-made Claude Desktop helper"));
       }
       if (!opts.quiet) {
         logger.info(
@@ -775,22 +762,23 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   // config is a broken picker row), meta second, ownership + retirements last -- a
   // failed save must never leave a claim on an unwritten entry, a deleted hand-made
   // helper, or a retired mode twin the still-current entry references.
-  const configWritten = saveJsonIfChanged(configPath, payload);
-  // Announced the moment it lands, before the steps that may still fail. Quiet (the
-  // launcher hot path) stays silent only on a byte-identical no-op.
-  if (!opts.quiet || configWritten) {
-    logger.success(
-      `  Claude Desktop: wired "${entry.name}" (${opts.mode}) at ${configPath}; restart Claude Desktop to pick it up.`,
-    );
+  // The write's own line carries the wiring (announced the moment it lands, before the
+  // steps that may still fail); a byte-identical no-op states it instead, unless quiet
+  // (the launcher hot path).
+  const wiring = `${ENTRY} "${entry.name}" (${opts.mode}) wired`;
+  const configWritten = saveJsonIfChanged(
+    configPath,
+    payload,
+    `${wiring}; restart Claude Desktop to pick it up`,
+  );
+  if (!configWritten && !opts.quiet) {
+    logger.success(`  ${wiring} at ${configPath} already.`);
   }
   if (meta.appliedId === null) meta.appliedId = entry.id;
   saveDesktopMeta(dir, meta);
   // Recorded only for a NEW claim: the ledger write is then a real change, never a
   // byte-identical rewrite of a claim already held.
-  if (!owned) {
-    ledger.record("claudeDesktop", configPath);
-    logger.info(`  Claude Desktop: recorded ownership of ${configPath} in ${ledgerPath()}`);
-  }
+  if (!owned) ledger.record("claudeDesktop", configPath);
   retireDesktopHelperScript(opts.mode, opts.profile);
   for (const commit of commits) commit();
 }
@@ -907,8 +895,8 @@ function removeOwned(
 /** Both modes' helper scripts for `profile`, removed when present. */
 function removeHelperScripts(profile: Profile): void {
   const rootHome = resolveRootHome();
-  removeAnnounced(desktopHelperPath(rootHome, "direct", profile));
-  removeAnnounced(desktopHelperPath(rootHome, "proxy", profile));
+  removeReported(desktopHelperPath(rootHome, "direct", profile));
+  removeReported(desktopHelperPath(rootHome, "proxy", profile));
 }
 
 /** The filename grammar desktopHelperPath produces (either platform's extension). */
@@ -952,12 +940,19 @@ export function presentDesktopHelperScripts(rootHome: string): string[] {
 /** The uninstall sweep: every owned entry (the default's included) plus every generated
  *  helper script. `dirOverride` is the injected library dir (homedir() is not
  *  env-redirectable on Windows); null means "treat Desktop as absent". */
-export function removeAllClaudeDesktopWiring(dirOverride?: string | null): void {
-  if (removeOwnedEntries(() => true, dirOverride) === "blocked") return;
-  removeUnlistedClaudeDesktopClaims(dirOverride);
+export function removeAllClaudeDesktopWiring(
+  dirOverride?: string | null,
+  artifacts: ClaudeDesktopOwnedArtifacts = listClaudeDesktopOwnedArtifacts(dirOverride),
+): void {
+  // `artifacts` is the resolved plan (uninstall renders the same object as its dry
+  // run): exactly those paths go, so a claim that appeared after planning stays.
+  if (artifacts.blocked) return;
+  const planned = new Set([...artifacts.entries, ...artifacts.staleClaims]);
+  if (removeOwnedEntries((owned) => planned.has(owned.path), dirOverride) === "blocked") return;
+  removeUnlistedClaudeDesktopClaims(dirOverride, (path) => planned.has(path));
   // Helper scripts live under the root home, which uninstall deletes wholesale right
   // after this step -- still removed here so the step is complete on its own.
-  for (const path of presentDesktopHelperScripts(resolveRootHome())) removeAnnounced(path);
+  for (const path of artifacts.helpers) removeReported(path);
 }
 
 /** The `claude-desktop false` sweep: every owned claim POSITIVELY attributed to a named
@@ -985,7 +980,7 @@ export function removeUnmanagedClaudeDesktopWiring(opts: { quiet?: boolean } = {
   if (removeOwnedEntries((e) => sweepable(e.path)) === "blocked") return;
   removeUnlistedClaudeDesktopClaims(undefined, sweepable);
   for (const path of presentDesktopHelperScripts(resolveRootHome())) {
-    if (desktopHelperScriptWiring(basename(path))?.profile !== null) removeAnnounced(path);
+    if (desktopHelperScriptWiring(basename(path))?.profile !== null) removeReported(path);
   }
   if (!opts.quiet) announceUnmanagedDefault();
 }
@@ -1011,20 +1006,44 @@ function announceUnmanagedDefault(): void {
   }
 }
 
-/** What removeAllClaudeDesktopWiring WOULD delete now (the uninstall dry run): owned config
- *  files present plus generated helper scripts. Read-only; `blocked` mirrors the sweep (a
- *  not-understood _meta.json leaves the library alone). */
+/** The Desktop artifacts copilot-env owns right now, what removeAllClaudeDesktopWiring
+ *  removes (and the uninstall dry run names): `entries` are the owned config files
+ *  present (listed and unlisted claims alike), `staleClaims` the owned paths whose file
+ *  is already gone (their _meta.json row and ledger claim still go), `helpers` the
+ *  generated helper scripts. `blocked` mirrors the sweep: a not-understood _meta.json
+ *  leaves the library alone. Read-only. */
+export interface ClaudeDesktopOwnedArtifacts {
+  entries: string[];
+  staleClaims: string[];
+  helpers: string[];
+  /** The library's `_meta.json`, when removing the listed owned rows will rewrite it
+   *  (null: nothing listed is ours, the index is untouched). Outside our homes, so the
+   *  dry run names the rewrite like the live sweep does. */
+  metaRewrite: string | null;
+  blocked: boolean;
+}
+
 export function listClaudeDesktopOwnedArtifacts(
   dirOverride?: string | null,
-): { entries: string[]; helpers: string[]; blocked: boolean } {
+): ClaudeDesktopOwnedArtifacts {
   const helpers = presentDesktopHelperScripts(resolveRootHome());
   const dir = dirOverride !== undefined ? dirOverride : resolveDesktopLibraryDir();
-  if (dir === null) return { entries: [], helpers, blocked: false };
+  const none = { entries: [], staleClaims: [], helpers, metaRewrite: null };
+  if (dir === null) return { ...none, blocked: false };
   const library = readOwnedLibrary(dir);
-  if (library === null) return { entries: [], helpers, blocked: true };
+  if (library === null) return { ...none, blocked: true };
+  // One look per path: a file appearing or vanishing between two looks would land
+  // in neither list or both.
+  const entries: string[] = [];
+  const staleClaims: string[] = [];
+  for (const path of [...library.owned.map((e) => e.path), ...library.unlisted]) {
+    (entryExists(path) ? entries : staleClaims).push(path);
+  }
   return {
-    entries: [...library.owned.map((e) => e.path), ...library.unlisted].filter(entryExists),
+    entries,
+    staleClaims,
     helpers,
+    metaRewrite: library.owned.length > 0 ? join(dir, META_FILENAME) : null,
     blocked: false,
   };
 }
@@ -1113,9 +1132,8 @@ export function removeUnlistedClaudeDesktopClaims(
   const ledger = new OwnershipLedger();
   for (const path of library.unlisted) {
     if (!selects(path)) continue;
-    removeAnnounced(path);
+    removeReported(path, ENTRY);
     ledger.release("claudeDesktop", path);
-    logger.info(`  Claude Desktop: released ownership of ${path} in ${ledgerPath()}`);
   }
   return "swept";
 }
@@ -1157,9 +1175,8 @@ function removeOwnedEntries(
   meta.entries = kept;
   saveDesktopMeta(dir, meta);
   for (const path of removedPaths) {
-    removeAnnounced(path);
+    removeReported(path, ENTRY);
     ledger.release("claudeDesktop", path);
-    logger.info(`  Claude Desktop: released ownership of ${path} in ${ledgerPath()}`);
   }
   return "swept";
 }

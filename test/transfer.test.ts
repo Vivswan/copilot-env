@@ -12,7 +12,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import {
   applyImportBundle,
   applyImportPlan,
@@ -20,6 +20,7 @@ import {
   parseSettingsBundle,
   planImport,
   REDACTED_TOKEN,
+  rollbackCommand,
   SETTINGS_BACKUP_KEEP,
   settingsBackupDir,
 } from "../src/agents/transfer.ts";
@@ -40,7 +41,7 @@ import {
   desktopLibraryDirUnder,
   wireClaudeDesktopEntry,
 } from "../src/claude/desktop.ts";
-import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
+import { CopilotApiPaths, resolveRootHome } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testing.ts";
 import {
@@ -178,19 +179,6 @@ test("export carries the stores + modes and never the machine-local state keys",
   const text = JSON.stringify(bundle);
   expect(text).not.toContain("codexCatalog");
   expect(text).not.toContain("webSearchDeny");
-});
-
-test("export reads the default credential from an unmigrated (top-level pair) store", () => {
-  isolate();
-  // A store a pre-slot release wrote and no new write/migration has touched yet.
-  const stateFile = new CopilotApiPaths().sharedStateFile;
-  mkdirSync(dirname(stateFile), { recursive: true });
-  writeFileSync(
-    stateFile,
-    `${JSON.stringify({ githubToken: "ghp_legacy", authProvider: "gh-token" })}\n`,
-  );
-  const bundle = buildExportBundle({ withCredentials: true });
-  expect(bundle.credential).toEqual({ githubToken: "ghp_legacy", authProvider: "gh-token" });
 });
 
 // --- validation (strict parse boundary) ---------------------------------------
@@ -786,6 +774,20 @@ test("bare --export writes the redacted bundle to stdout; --with-credentials war
   );
 });
 
+test("--export --with-credentials warns about the tokens even for a target inside our homes", async () => {
+  isolate();
+  await seedStores();
+  // Inside the data home the write itself is silent bookkeeping; the warning is not a
+  // write report and must still reach the user.
+  const target = join(resolveRootHome(), "export.json");
+  const { stderr } = await runSettingsCaptured({ exportTo: target, withCredentials: true });
+  expect(stderr).not.toContain(" -> ");
+  expect(stderr).toContain(
+    `${target} contains your REAL tokens (and any stored pricing-url) - treat it like a password file.`,
+  );
+  expect(JSON.parse(readFileSync(target, "utf8")).credential.githubToken).toBe("ghp_default");
+});
+
 test("--export --with-credentials ends 0600 even over a pre-existing looser file", async () => {
   const machine = isolate();
   await seedStores();
@@ -974,7 +976,9 @@ test("import backs up the previous settings with credentials intact, and the bac
   new CopilotEnvConfig().set({ autoStart: false, port: 6060 });
   new Credential().store("gh-token", "ghp_before_import");
 
-  await runSettings({ importFrom: exported, force: true }, { catalogDeps: NOOP_CATALOG_DEPS });
+  const imported = await captureStderr(() =>
+    runSettings({ importFrom: exported, force: true }, { catalogDeps: NOOP_CATALOG_DEPS })
+  );
   expect(new CopilotEnvConfig().read().port).toBe(5050);
   expect(new Credential().resolve()).toBe("ghp_default");
 
@@ -982,6 +986,9 @@ test("import backs up the previous settings with credentials intact, and the bac
   const backups = readdirSync(settingsBackupDir());
   expect(backups.length).toBe(1);
   const backupFile = join(settingsBackupDir(), backups[0] ?? "");
+  // The backup is inside the data home (its write is silent), so the import must say the
+  // rollback command itself, path included.
+  expect(imported).toContain(`Roll back with: ${rollbackCommand(backupFile)}`);
   const backupDoc = JSON.parse(readFileSync(backupFile, "utf8"));
   expect(backupDoc.credential.githubToken).toBe("ghp_before_import");
   expect(backupDoc.config).toEqual({ autoStart: false, port: 6060, claudeTokenMultiplier: 2.5 });

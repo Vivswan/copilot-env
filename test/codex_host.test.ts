@@ -24,10 +24,12 @@ import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { codexFarmHostsDir, getSanitizedHostname } from "../src/utils/hostname.ts";
+import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import {
   envSnapshot,
   isolateAgentHomes,
+  linesNaming,
   resetExitCode,
   writeClaudeSettings,
   writeCodexConfigToml,
@@ -114,10 +116,8 @@ function storeFiles(): { config: string; state: string } {
   return { config: paths.envConfigFile, state: paths.stateFile };
 }
 
-// Capture everything written to stderr while `run` executes (host.ts narrates
-// every artifact and logs its conflict warnings through a consola bound to
-// process.stderr). Output is swallowed during the window; the original writer
-// is always restored.
+/** Everything `run` prints on stderr (swallowed during the window, the original writer
+ *  always restored), the seam's deferred write reports appended. */
 async function stderrDuring(run: () => Promise<void>): Promise<string> {
   const original = process.stderr.write;
   let captured = "";
@@ -125,10 +125,12 @@ async function stderrDuring(run: () => Promise<void>): Promise<string> {
     captured += typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk);
     return true;
   }) as typeof process.stderr.write;
+  deferWriteReports();
   try {
     await run();
   } finally {
     process.stderr.write = original;
+    captured += flushWriteReports().map((line) => `${line}\n`).join("");
   }
   return captured;
 }
@@ -301,11 +303,15 @@ onlyWin("Windows: the key cannot be set, reads off, and the derivation is inert"
 
 // --- farm build from scratch -------------------------------------------------
 
-/** The paths named by the check-mark "action -> path" lines in a narration. */
+/** The paths named by the seam's "<kind> -> <path> (detail)" lines in a narration. */
 function narratedPaths(narrated: string): Set<string> {
   const out = new Set<string>();
-  for (const m of narrated.matchAll(/\u2713 [^\n]*? \u2192 (.+)$/gm)) {
-    out.add((m[1] ?? "").trimEnd());
+  for (
+    const m of narrated.matchAll(
+      /^(?:created|rewritten|deleted|moved|linked) -> (.+?)(?: \(.*\))?$/gm,
+    )
+  ) {
+    out.add(m[1] ?? "");
   }
   return out;
 }
@@ -323,9 +329,19 @@ skipWin(
       .map((rel) => join(sharedRoot, rel.slice(2)));
     const named = narratedPaths(narrated);
     for (const p of created) expect(named.has(p), p).toBe(true);
-    expect(named.has(storeFiles().state)).toBe(true);
-    expect(narrated).toContain(`Per-host CODEX_HOME farm built → ${hostHome}`);
-    expect(narrated).toContain(`Codex config written → ${join(hostHome, "config.toml")}`);
+    // One line per path, exactly. A line is about `p` when its subject (the line minus a
+    // trailing parenthetical detail, where a link names its target) IS `p`: not a
+    // descendant, not a sidecar sharing the prefix. Any shape of line whose subject is `p`
+    // counts, so a narrative line brought back beside the seam's fails here.
+    const about = (p: string) =>
+      linesNaming(narrated, p).filter((l) => l.replace(/ \(.*\)$/, "").endsWith(p));
+    expect(about(hostHome)).toEqual([`created -> ${hostHome} (per-host CODEX_HOME farm)`]);
+    expect(about(join(hostHome, "config.toml"))).toEqual([
+      `created -> ${join(hostHome, "config.toml")} (Codex config)`,
+    ]);
+    // The run-state record is bookkeeping inside the data home: written, never named.
+    expect(linesNaming(narrated, storeFiles().state)).toEqual([]);
+    for (const p of named) expect(about(p).length, p).toBe(1);
 
     // Host-local scratch dirs are real directories, never symlinks.
     for (const d of LOCAL_DIRS) {
@@ -410,16 +426,14 @@ skipWin("building twice changes nothing (idempotent, byte for byte)", async () =
   const narrated = await stderrDuring(configureCodex);
   expect(snapshotTree(sharedRoot)).toEqual(before);
   expect(new CopilotEnvRunState().read().codexHome).toBe(hostHome);
-  // The re-derivation reports what it touched (the record is cleared before the rebuild
-  // and re-set after the write) and names no created path, because nothing was created.
+  // The re-derivation says the farm was verified and names no created path, because
+  // nothing was created (the record's clear-and-reset rewrites a store this process
+  // already announced, so it is silent too).
   expect(narrated).toContain(`Per-host CODEX_HOME farm verified → ${hostHome}`);
-  expect(narrated).toContain(
-    `Active CODEX_HOME record cleared (rebuilding) → ${storeFiles().state}`,
-  );
   const underRoot = [...narratedPaths(narrated)].filter(
     (p) => p.startsWith(`${sharedRoot}/`) && p !== join(hostHome, "config.toml"),
   );
-  expect(underRoot).toEqual([hostHome]);
+  expect(underRoot).toEqual([]);
 });
 
 // --- shared-home prime (primeSharedCodexHomeIfMissing) -----------------------
@@ -432,18 +446,29 @@ skipWin(
     const marker = join(dir, "codex-invocations.log");
     fs.mkdirSync(bin, { recursive: true });
     // Exit nonzero on purpose: the prime is best-effort and must not fail the build.
+    // It writes into the CODEX_HOME it is given, the way a real codex would.
     fs.writeFileSync(
       join(bin, "codex"),
-      `#!/bin/sh\nPATH=/usr/bin:/bin\nprintf '%s\\n' "$*" >> "${marker}"\ncat > /dev/null\nexit 3\n`,
+      `#!/bin/sh\nPATH=/usr/bin:/bin\nprintf '%s\\n' "$*" >> "${marker}"\ncat > /dev/null\n` +
+        `mkdir -p "$CODEX_HOME"\nprintf '{}' > "$CODEX_HOME/primed.json"\nexit 3\n`,
       { mode: 0o755 },
     );
     // The fake bin dir FIRST, but with the system dirs kept: resolveCommand
     // resolves through `sh`, which must itself stay spawnable.
     process.env.PATH = `${bin}:/usr/bin:/bin`;
+    // An inherited CODEX_HOME must not divert the prime: the spawn gets the shared root.
+    const decoy = join(dir, "decoy-codex-home");
+    process.env.CODEX_HOME = decoy;
 
+    deferWriteReports();
     await build();
+    const reported = flushWriteReports();
     expect(fs.readFileSync(marker, "utf8")).toBe("exec\n");
     expect(isRealDir(sharedRoot)).toBe(true);
+    expect(lexists(decoy)).toBe(false);
+    // The paths codex made on our request are named as ours.
+    expect(reported).toContain(`created -> ${sharedRoot}`);
+    expect(reported).toContain(`created -> ${join(sharedRoot, "primed.json")}`);
   },
 );
 
@@ -794,14 +819,13 @@ skipWin(
     expect(fs.readFileSync(join(sharedRoot, "config.toml"), "utf8")).toContain(
       'model_provider = "copilot-env"',
     );
-    expect(narrated).toContain(`Per-host CODEX_HOME farm removed → ${hostHome}`);
-    expect(narrated).toContain(`Active CODEX_HOME record cleared → ${storeFiles().state}`);
-    expect(narrated).toContain(`Codex config written → ${join(sharedRoot, "config.toml")}`);
+    expect(narrated).toContain(`deleted -> ${hostHome} (per-host CODEX_HOME farm)`);
+    expect(narrated).toContain(`-> ${join(sharedRoot, "config.toml")} (Codex config)`);
     expect(codexHostDrift()).toBeNull();
   },
 );
 
-skipWin("key off with no farm built only clears a stale record, and says so", async () => {
+skipWin("key off with no farm built only clears a stale record", async () => {
   const { hostHome } = isolate();
   writeRunState({ codexHome: hostHome });
   new CopilotEnvConfig().set({ codexHost: false });
@@ -809,8 +833,7 @@ skipWin("key off with no farm built only clears a stale record, and says so", as
   const narrated = await stderrDuring(configureCodex);
   expect(lexists(hostHome)).toBe(false);
   expect(new CopilotEnvRunState().read().codexHome).toBeUndefined();
-  expect(narrated).not.toContain("farm removed");
-  expect(narrated).toContain(`Active CODEX_HOME record cleared → ${storeFiles().state}`);
+  expect(narrated).not.toContain(hostHome);
   // A second pass has nothing left to report about the farm.
   const quiet = await stderrDuring(configureCodex);
   expect(quiet).not.toContain("CODEX_HOME");
@@ -827,8 +850,8 @@ skipWin("an unset key behaves as off: an existing farm is removed and reported",
   const narrated = await stderrDuring(configureCodex);
   expect(lexists(hostHome)).toBe(false);
   expect(new CopilotEnvRunState().read().codexHome).toBeUndefined();
-  expect(narrated).toContain(`Per-host CODEX_HOME farm removed → ${hostHome}`);
-  expect(narrated).toContain(`Codex config written → ${join(sharedRoot, "config.toml")}`);
+  expect(narrated).toContain(`deleted -> ${hostHome} (per-host CODEX_HOME farm)`);
+  expect(narrated).toContain(`-> ${join(sharedRoot, "config.toml")} (Codex config)`);
   expect(new CopilotEnvConfig().read().codexHost).toBeUndefined(); // never written for the user
   expect(codexHostDrift()).toBeNull();
 });

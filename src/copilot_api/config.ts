@@ -1,12 +1,13 @@
 // File-backed proxy config helper for config.json and persistent API keys.
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 import { consola } from "consola";
 
 import { BOUNDED_LOCK_POLICY, withFileLockSync } from "../utils/file_lock.ts";
 import { entryAbsent, isEnoentOrNotdir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
+import { atomicWriteFile, chmodReported } from "../utils/report_write.ts";
 import { sleepSync } from "../utils/time.ts";
 import { CopilotApiPaths, PROXY_CONFIG_FILENAME } from "./paths.ts";
 import type { Profile } from "./profile.ts";
@@ -180,7 +181,7 @@ export class CopilotApiConfig {
     // rename publishes an already-restricted inode.
     atomicWriteFile(this.path, `${JSON.stringify(sorted, null, 2)}\n`, 0o600);
     try {
-      chmodSync(this.path, 0o600);
+      chmodReported(this.path, 0o600);
     } catch {
       // ignore
     }
@@ -310,57 +311,6 @@ export function ensureDict(parent: Record<string, unknown>, key: string): Record
   const fresh: Record<string, unknown> = {};
   parent[key] = fresh;
   return fresh;
-}
-
-/**
- * THE atomic file-write recipe: write to a fresh same-directory temp file
- * (`<name>.tmp.<pid>.<now>`, unique per writer), then renameWithRetry over the
- * target -- a reader never sees a torn file. The temp file is removed on failure.
- * `mode` (when given) restricts the temp file from creation, so the rename
- * publishes an already-restricted inode. Shared by the JSON store's save and
- * saveClaudeJson (src/claude/mcp_registration.ts).
- */
-export function atomicWriteFile(path: string, text: string, mode?: number): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = join(dirname(path), `${basename(path)}.tmp.${process.pid}.${Date.now()}`);
-  try {
-    writeFileSync(tmp, text, mode === undefined ? undefined : { mode });
-    renameWithRetry(tmp, path);
-  } catch (err) {
-    try {
-      rmSync(tmp, { force: true });
-    } catch {
-      // ignore
-    }
-    throw err;
-  }
-}
-
-/**
- * Rename with a short retry. A POSIX rename over an open destination always
- * succeeds, but Windows can transiently throw EPERM/EBUSY/EACCES when another
- * process (the daemon, antivirus, the search indexer) holds the file open.
- * Retry briefly, then surface the original error.
- */
-export function renameWithRetry(
-  from: string,
-  to: string,
-  attempts = 5,
-  rename: (f: string, t: string) => void = renameSync,
-): void {
-  for (let i = 0; i <= attempts; i++) {
-    try {
-      rename(from, to);
-      return;
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      const transient = code === "EPERM" || code === "EBUSY" || code === "EACCES";
-      if (i >= attempts || !transient) {
-        throw err;
-      }
-      sleepSync(50);
-    }
-  }
 }
 
 /**

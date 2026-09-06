@@ -3,6 +3,7 @@ import { existsSync, readdirSync, type Stats, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
+import { hideWritesUnder } from "../utils/report_write.ts";
 import { getSanitizedHostname } from "../utils/hostname.ts";
 import { isValidProfileName, parseProfileName, type Profile, type ProfileName } from "./profile.ts";
 
@@ -149,6 +150,8 @@ export const DAEMON_KEEP_PORT_ENV = "COPILOT_ENV_DAEMON_KEEP_PORT";
 export function resolveRootHome(): string {
   return process.env[ROOT_HOME_ENV] || resolveHome();
 }
+// The data home is copilot-env's own: writes inside it are bookkeeping, never reported.
+hideWritesUnder(resolveRootHome);
 
 /** A named profile's isolated daemon home under the root. `ProfileName` is the
  *  proof the segment is safe to join (parsed at the producer boundaries). */

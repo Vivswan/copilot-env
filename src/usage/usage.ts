@@ -8,7 +8,7 @@
 // itself is owned by src/copilot_api/paths.ts; this module only sweeps it.
 
 import { DatabaseSync } from "node:sqlite";
-import { copyFileSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
+import { readdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { consola } from "consola";
@@ -20,9 +20,10 @@ import {
 } from "../copilot_api/paths.ts";
 import { isValidProfileName } from "../copilot_api/profile.ts";
 import { errMessage } from "../utils/error.ts";
-import { isDir, isEnoentOrNotdir } from "../utils/fs.ts";
+import { entryAbsent, isDir, isEnoentOrNotdir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { dayKeyIn } from "../utils/time.ts";
+import { copyFileReported, removeScratchDir, scratchDir } from "../utils/report_write.ts";
 import { canonicalModelName } from "./pricing.ts";
 
 /** The four priced token buckets every usage source reduces one event to. */
@@ -311,20 +312,23 @@ const SQLITE_SIDECAR_SUFFIXES = ["-wal", "-shm"] as const;
  *  a read-only filesystem lets SQLite consult a -wal only if it can create the -shm
  *  beside it, which it can here. */
 function withDbCopy<T>(path: string, query: (db: DatabaseSync) => T): T {
-  const dir = mkdtempSync(join(tmpdir(), "copilot-usage-"));
+  const dir = scratchDir(join(tmpdir(), "copilot-usage-"));
   try {
     const copy = join(dir, basename(path));
-    copyFileSync(path, copy);
+    copyFileReported(path, copy);
     for (const suffix of SQLITE_SIDECAR_SUFFIXES) {
       try {
-        copyFileSync(`${path}${suffix}`, `${copy}${suffix}`);
-      } catch {
-        // absent sidecar: the daemon checkpointed, so the main file is complete
+        copyFileReported(`${path}${suffix}`, `${copy}${suffix}`);
+      } catch (e) {
+        // A PROVEN-absent sidecar means the daemon checkpointed, so the main file is
+        // complete; a sidecar that is there but would not copy must not be dropped
+        // (the read would silently omit its rows).
+        if (!entryAbsent(`${path}${suffix}`)) throw e;
       }
     }
     return withReadOnlyDb(copy, query);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    removeScratchDir(dir);
   }
 }
 

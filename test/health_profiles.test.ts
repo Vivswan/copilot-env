@@ -801,7 +801,6 @@ test("--profile narrows gathering to the named target and excludes account-wide 
       mode: "proxy",
       profile: P,
       baseUrl: openaiBaseUrl("4555"),
-      quiet: true,
     });
     const claudeHome = join(home, "claude-home");
     mkdirSync(claudeHome, { recursive: true });
@@ -947,7 +946,7 @@ test("gatherFacts narrowed to a DIRECT profile inspects direct wiring with the p
     });
 
     const codexHome = join(home, "codex-home");
-    configureCodexConfig(codexHome, { mode: "direct", profile: P, quiet: true });
+    configureCodexConfig(codexHome, { mode: "direct", profile: P });
 
     const facts = await gatherFacts(
       "codex",

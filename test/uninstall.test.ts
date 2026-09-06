@@ -3,16 +3,39 @@
 // the real ~/.codex, the host farm, or the shell rc files -- and the install root
 // it deletes is a sandbox directory, never the tree this process runs from.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, sep } from "node:path";
 import { consola } from "consola";
 import { parse } from "smol-toml";
 import { configureClaudeConfig, WEBSEARCH_DENY_RULE } from "../src/claude/config.ts";
-import { desktopHelperPath } from "../src/claude/desktop.ts";
+import {
+  CLAUDE_DESKTOP_DIR_ENV,
+  desktopHelperPath,
+  desktopLibraryDirUnder,
+} from "../src/claude/desktop.ts";
 import { claudeJsonPath, registerClaudeMcpServer } from "../src/claude/mcp_registration.ts";
-import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME, settingsPathFor } from "../src/claude/paths.ts";
+import {
+  DIRECT_HELPER_NAME,
+  directHelperPath,
+  PROXY_HELPER_NAME,
+  proxyHelperPath,
+  settingsPathFor,
+} from "../src/claude/paths.ts";
 import { configureCodexConfig } from "../src/codex/config.ts";
-import { runUninstall, type UninstallDeps } from "../src/commands/uninstall.ts";
+import {
+  applyUninstall,
+  describeUninstall,
+  resolveUninstallContext,
+  runUninstall,
+  type UninstallDeps,
+} from "../src/commands/uninstall.ts";
 import { Credential } from "../src/copilot_api/credential.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
@@ -22,6 +45,15 @@ import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { isRecord } from "../src/utils/json.ts";
 import { INSTALL_MANIFEST_FILE, type RootMode } from "../src/utils/root.ts";
 import { pointCurrentAt } from "../src/install/installer.ts";
+import { writeResolvedVersionRecord } from "../src/proxy_float.ts";
+import {
+  CI_PS_DOCUMENTS_DIR_ENV,
+  CI_RC_DIR_ENV,
+  MARKER as SHELL_MARKER,
+  MARKER_END,
+  shellTargetFiles,
+} from "../src/shell/integration.ts";
+import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
 import { ROOT } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, resetExitCode, stageRefusedStop } from "./helpers.ts";
@@ -114,7 +146,7 @@ test("uninstall removes everything managed and preserves user config", async () 
   // Default wiring: Claude direct + Codex proxy, each with a user key alongside.
   mkdirSync(claudeHome, { recursive: true });
   writeFileSync(settingsPathFor(claudeHome), JSON.stringify({ model: "opus" }));
-  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true });
+  configureClaudeConfig(claudeHome, { mode: "direct" });
   // Legacy helper files from a pre-inline install (the current writer creates none):
   // uninstall must still remove them by name.
   writeFileSync(join(claudeHome, DIRECT_HELPER_NAME), "#!/bin/sh\nexec legacy\n");
@@ -128,7 +160,6 @@ test("uninstall removes everything managed and preserves user config", async () 
   );
   configureCodexConfig(codexHome, {
     mode: "proxy",
-    quiet: true,
     baseUrl: "http://127.0.0.1:4199/v1",
   });
 
@@ -138,8 +169,8 @@ test("uninstall removes everything managed and preserves user config", async () 
     credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
     mode: "direct",
   });
-  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true, profile: WORK });
-  configureCodexConfig(codexHome, { mode: "direct", quiet: true, profile: WORK });
+  configureClaudeConfig(claudeHome, { mode: "direct", profile: WORK });
+  configureCodexConfig(codexHome, { mode: "direct", profile: WORK });
   mkdirSync(profileHome(WORK), { recursive: true });
 
   // A second Codex home (e.g. a farm home from when it was the effective one)
@@ -147,10 +178,9 @@ test("uninstall removes everything managed and preserves user config", async () 
   const codexHome2 = join(dir, ".codex-farm");
   configureCodexConfig(codexHome2, {
     mode: "proxy",
-    quiet: true,
     baseUrl: "http://127.0.0.1:4199/v1",
   });
-  configureCodexConfig(codexHome2, { mode: "direct", quiet: true, profile: WORK });
+  configureCodexConfig(codexHome2, { mode: "direct", profile: WORK });
 
   const deps = tmpDeps(codexHome);
   deps.codexHomes = [codexHome, codexHome2];
@@ -284,7 +314,7 @@ test("uninstall leaves foreign Claude/Codex wiring untouched", async () => {
 
 test("uninstall on a foreign-edited config strips OUR deny, then removes the registration", async () => {
   const { claudeHome, codexHome } = tmpHomes();
-  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true }); // deny + registration + ownership
+  configureClaudeConfig(claudeHome, { mode: "direct" }); // deny + registration + ownership
   const settingsPath = settingsPathFor(claudeHome);
   const doc = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
   doc.apiKeyHelper = "/usr/local/bin/my-helper"; // foreign edit: wiring classifies "other"
@@ -323,7 +353,7 @@ test("uninstall never touches a user's own deny on a foreign config (registratio
 
 test("uninstall keeps the MCP registration while an owned deny cannot be stripped", async () => {
   const { claudeHome, codexHome } = tmpHomes();
-  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true }); // deny + registration + ownership
+  configureClaudeConfig(claudeHome, { mode: "direct" }); // deny + registration + ownership
   const settingsPath = settingsPathFor(claudeHome);
   writeFileSync(settingsPath, "{ not json"); // the owned deny is now unverifiable
 
@@ -348,7 +378,7 @@ test("uninstall is idempotent: a second run finds nothing and exits 0", async ()
 test("uninstall without --yes on a non-TTY refuses and deletes nothing", async () => {
   const { proxyHome, claudeHome, codexHome } = tmpHomes();
   mkdirSync(claudeHome, { recursive: true });
-  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true });
+  configureClaudeConfig(claudeHome, { mode: "direct" });
   new Credential().store("gh-token", "ghp_default");
 
   // the test runner's stdin is not a TTY, so the guard fires before the prompt.
@@ -360,12 +390,11 @@ test("uninstall without --yes on a non-TTY refuses and deletes nothing", async (
 test("uninstall --dry-run changes nothing and narrates every step", async () => {
   const { proxyHome, claudeHome, codexHome } = tmpHomes();
   mkdirSync(claudeHome, { recursive: true });
-  configureClaudeConfig(claudeHome, { mode: "direct", quiet: true });
+  configureClaudeConfig(claudeHome, { mode: "direct" });
   // A legacy helper file (pre-inline install): dry-run must leave even that alone.
   writeFileSync(join(claudeHome, DIRECT_HELPER_NAME), "#!/bin/sh\nexec legacy\n");
   configureCodexConfig(codexHome, {
     mode: "proxy",
-    quiet: true,
     baseUrl: "http://127.0.0.1:4199/v1",
   });
   new Credential().store("gh-token", "ghp_default");
@@ -509,6 +538,217 @@ test("uninstall removes owned Claude Desktop entries via the injected library di
   expect(meta.entries).toEqual([{ id: "theirs", name: "Mine" }]);
   expect(meta.appliedId).toBeUndefined(); // ours was applied; the reference is dropped
 });
+
+test("uninstall's dry run and live run render ONE resolved plan", async () => {
+  const { proxyHome, claudeHome, codexHome } = tmpHomes();
+  mkdirSync(claudeHome, { recursive: true });
+  configureClaudeConfig(claudeHome, { mode: "direct" });
+  expect(registerClaudeMcpServer()).toBe(true); // our MCP entry is in .claude.json
+  // A named profile with a daemon home, so the profile step has a tree to delete.
+  new CopilotEnvState().commitProfile(WORK, {
+    credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
+    mode: "direct",
+  });
+  configureClaudeConfig(claudeHome, { mode: "direct", profile: WORK });
+  mkdirSync(profileHome(WORK), { recursive: true });
+  // Legacy helpers (pre-inline install), the default's and the profile's: the teardown
+  // removes them, so the plan names them.
+  const legacyHelper = directHelperPath(claudeHome, WORK);
+  writeFileSync(legacyHelper, "#!/bin/sh\nexec legacy\n");
+  // A legacy baked token in the Codex .env: the teardown rewrites the file, so the plan
+  // names it (beside the user's own key, which survives).
+  mkdirSync(codexHome, { recursive: true });
+  const codexEnv = join(codexHome, ".env");
+  writeFileSync(codexEnv, "COPILOT_ENV_GH_TOKEN=ghp_x\nOPENAI_API_KEY=user-key\n");
+  const defaultLegacyHelper = directHelperPath(claudeHome);
+  writeFileSync(defaultLegacyHelper, "#!/bin/sh\nexec legacy\n");
+  // The AMBIENT Desktop library (the env seam) is the injected one, so a profile
+  // teardown that rescanned the library would find what is planted below.
+  const desktopData = join(dir, "desktop");
+  process.env[CLAUDE_DESKTOP_DIR_ENV] = desktopData;
+  const library = desktopLibraryDirUnder(desktopData);
+  mkdirSync(library, { recursive: true });
+  const rootHome = resolveRootHome();
+  mkdirSync(rootHome, { recursive: true });
+  const defaultHelper = desktopHelperPath(rootHome, "direct", null);
+  const workHelper = desktopHelperPath(rootHome, "direct", WORK);
+  writeFileSync(defaultHelper, "#!/bin/sh\n");
+  writeFileSync(workHelper, "#!/bin/sh\n");
+  const entryFor = (helper: string): string =>
+    `${JSON.stringify({ inferenceGatewayBaseUrl: "x", inferenceCredentialHelper: helper })}\n`;
+  const metaRows = [{ id: "ours", name: "copilot-env" }, {
+    id: "gone",
+    name: "copilot-env (work)",
+  }];
+  writeFileSync(join(library, "ours.json"), entryFor(defaultHelper));
+  writeFileSync(join(library, "_meta.json"), `${JSON.stringify({ entries: metaRows })}\n`);
+  const ledger = new OwnershipLedger();
+  ledger.record("claudeDesktop", join(library, "ours.json"));
+  // A stale claim: an owned row whose file is already gone.
+  ledger.record("claudeDesktop", join(library, "gone.json"));
+  // A float cache recorded OUTSIDE the root home: only the plan can name it.
+  const elsewhere = join(dir, "float-elsewhere");
+  mkdirSync(elsewhere, { recursive: true });
+  writeResolvedVersionRecord(proxyHome, "1.10.30", Date.now(), elsewhere, "fp");
+  // A wired rc / PowerShell profile on a scratch home, resolved by the REAL shell
+  // resolver (no injected remover): the plan must name the concrete file.
+  const rcDir = join(dir, "rc");
+  process.env[CI_RC_DIR_ENV] = rcDir;
+  process.env[CI_PS_DOCUMENTS_DIR_ENV] = rcDir;
+  const rc = process.platform === "win32"
+    ? shellTargetFiles()[0] as string
+    : join(rcDir, ".bashrc");
+  mkdirSync(dirname(rc), { recursive: true });
+  writeFileSync(rc, `echo mine\n${SHELL_MARKER}\nsource ours\n${MARKER_END}\n`);
+  const { removeShellIntegration: _real, ...deps } = {
+    ...tmpDeps(codexHome),
+    claudeDesktopLibraryDir: library,
+  };
+
+  const ctx = resolveUninstallContext({ yes: true }, deps);
+  expect(ctx.targets.desktop.helpers.sort()).toEqual([defaultHelper, workHelper].sort());
+  expect(ctx.targets.desktop.staleClaims).toEqual([join(library, "gone.json")]);
+  expect(ctx.targets.shellFiles).toEqual([rc]);
+  expect(ctx.targets.codexEnvTokenFiles.get(codexHome)).toBe(codexEnv);
+  // The MCP registration file follows CLAUDE_CONFIG_DIR (the isolated home), and holds
+  // our entry, so the plan names the rewrite.
+  expect(claudeJsonPath()).toBe(join(claudeHome, ".claude.json"));
+  expect(ctx.targets.claudeMcpRegistration).toBe(claudeJsonPath());
+  const metaPath = join(library, "_meta.json");
+  expect(ctx.targets.desktop.metaRewrite).toBe(metaPath);
+  expect(ctx.targets.claudeDefaultHelpers).toEqual([defaultLegacyHelper]);
+  expect(ctx.targets.profiles).toEqual([{
+    name: WORK,
+    claudeArtifacts: [settingsPathFor(claudeHome, WORK), legacyHelper],
+    home: profileHome(WORK),
+  }]);
+  const dryRun = describeUninstall(ctx);
+  // Planted AFTER planning: a LISTED owned Desktop entry attributed to the profile the
+  // profile step deletes. Neither that step nor the Desktop sweep may take a path the
+  // dry run never named.
+  writeFileSync(join(library, "late.json"), entryFor(workHelper));
+  metaRows.push({ id: "late", name: "copilot-env (work, late)" });
+  // And a default legacy helper that appears after planning: absent from the plan, kept.
+  const lateHelper = proxyHelperPath(claudeHome);
+  writeFileSync(lateHelper, "#!/bin/sh\nexec late\n");
+  writeFileSync(join(library, "_meta.json"), `${JSON.stringify({ entries: metaRows })}\n`);
+  ledger.record("claudeDesktop", join(library, "late.json"));
+
+  deferWriteReports();
+  await applyUninstall(ctx);
+  const reported = flushWriteReports();
+  const deleted = new Set(
+    reported
+      .filter((line) => line.startsWith("deleted -> "))
+      .map((line) => line.slice("deleted -> ".length).replace(/ \(.*\)$/, "")),
+  );
+  // The block went, the user's own line stayed, and the rewrite was named, once.
+  expect(readFileSync(rc, "utf8")).toBe("echo mine\n");
+  expect(reported.filter((line) => line.includes(rc))).toEqual([
+    `rewritten -> ${rc} (shell integration removed)`,
+  ]);
+  // The two other outside-home REWRITES the sweep performs are named live too, and the
+  // dry run named both paths (asserted with the deletions below).
+  expect(readFileSync(codexEnv, "utf8")).toBe("OPENAI_API_KEY=user-key\n");
+  const rewritten = new Set(
+    reported
+      .filter((line) => line.startsWith("rewritten -> "))
+      .map((line) => line.slice("rewritten -> ".length).replace(/ \(.*\)$/, "")),
+  );
+  expect(rewritten.has(codexEnv)).toBe(true);
+  expect(rewritten.has(metaPath)).toBe(true);
+  // .claude.json was CREATED in this process (the registration above), so the uninstall's
+  // rewrite is the same per-process fact and prints no second line: the entry being gone,
+  // and the dry run naming the file (below), are the observables.
+  expect(
+    (JSON.parse(readFileSync(claudeJsonPath(), "utf8")) as Record<string, unknown>).mcpServers,
+  ).toBeUndefined();
+
+  expect(existsSync(join(library, "late.json"))).toBe(true);
+  expect(existsSync(lateHelper)).toBe(true);
+  expect(existsSync(defaultLegacyHelper)).toBe(false);
+  expect(existsSync(join(library, "ours.json"))).toBe(false);
+  expect(existsSync(elsewhere)).toBe(false);
+  // The live row and the stale claim's row went; the late row stayed (the ledger itself
+  // lives in the root home the uninstall deleted, so the rows are the observable).
+  const meta = JSON.parse(readFileSync(join(library, "_meta.json"), "utf8")) as {
+    entries: { id: string }[];
+  };
+  expect(meta.entries.map((row) => row.id)).toEqual(["late"]);
+
+  // Exact parity, both ways. The dry run names paths as whole tokens; a token is a path
+  // only when it IS one, so an ancestor of a named path is never counted as named.
+  const named = new Set(
+    dryRun.join(" ").split(/\s+/).map((t) => t.replace(/[.,:;)]+$/, "")).filter((t) =>
+      t.startsWith(dir)
+    ),
+  );
+  expect([...deleted].filter((path) => !named.has(path))).toEqual([]);
+  expect([...rewritten].filter((path) => !named.has(path))).toEqual([]);
+  expect(named.has(rc)).toBe(true);
+  expect(named.has(claudeJsonPath())).toBe(true);
+  const planned = [
+    ...ctx.targets.desktop.entries,
+    ...ctx.targets.desktop.helpers,
+    ...ctx.targets.floatArtifacts,
+    ...ctx.targets.profiles.flatMap((p) => [...p.claudeArtifacts, p.home]),
+    ...ctx.targets.claudeDefaultHelpers,
+    ctx.rootHome,
+    ctx.installRoot.root,
+  ];
+  // Inside the data home the removals are bookkeeping (never named); every planned
+  // path outside it, and the home itself, must have been named as deleted.
+  const outside = planned.filter((path) => !path.startsWith(ctx.rootHome + sep));
+  expect(outside.filter((path) => !deleted.has(path))).toEqual([]);
+  expect(outside).toContain(ctx.rootHome);
+  // Negative control: the tmp root is a prefix of every named path and appears inside
+  // the dry-run text, yet is not itself a named path.
+  expect(dryRun.join(" ")).toContain(dir);
+  expect(named.has(dir)).toBe(false);
+});
+
+test.skipIf(process.platform === "win32")(
+  "a dangling rc symlink refuses the uninstall: an entry is there, its block cannot be read",
+  async () => {
+    const { proxyHome, codexHome } = tmpHomes();
+    new Credential().store("gh-token", "ghp_default");
+    const rcDir = join(dir, "rc");
+    process.env[CI_RC_DIR_ENV] = rcDir;
+    mkdirSync(rcDir, { recursive: true });
+    const rc = join(rcDir, ".zshrc");
+    symlinkSync(join(rcDir, "gone"), rc); // existsSync would follow it and say "absent"
+    const { removeShellIntegration: _real, ...deps } = tmpDeps(codexHome);
+    await expect(runUninstall({ yes: true }, deps)).rejects.toThrow(rc);
+    expect(new Credential().resolve()).toBe("ghp_default");
+    expect(existsSync(proxyHome)).toBe(true);
+    expect(existsSync(deps.installRoot.root)).toBe(true);
+  },
+);
+
+// mode 000 stops a user, never root (the container suite); Windows has no such mode.
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+  "an unreadable rc file refuses the uninstall before anything is removed",
+  async () => {
+    const { proxyHome, codexHome } = tmpHomes();
+    new Credential().store("gh-token", "ghp_default");
+    const rcDir = join(dir, "rc");
+    process.env[CI_RC_DIR_ENV] = rcDir;
+    mkdirSync(rcDir, { recursive: true });
+    const rc = join(rcDir, ".bashrc");
+    writeFileSync(rc, `${SHELL_MARKER}\nsource ours\n${MARKER_END}\n`);
+    chmodSync(rc, 0o000);
+    const { removeShellIntegration: _real, ...deps } = tmpDeps(codexHome);
+    try {
+      await expect(runUninstall({ yes: true }, deps)).rejects.toThrow(rc);
+      // Refused up front: the credential, the home and the install root all stand.
+      expect(new Credential().resolve()).toBe("ghp_default");
+      expect(existsSync(proxyHome)).toBe(true);
+      expect(existsSync(deps.installRoot.root)).toBe(true);
+    } finally {
+      chmodSync(rc, 0o644);
+    }
+  },
+);
 
 test("uninstall --dry-run names every Claude Desktop path the sweep would delete", async () => {
   const { codexHome } = tmpHomes();

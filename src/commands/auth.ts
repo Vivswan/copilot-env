@@ -19,7 +19,7 @@
 //                (bare) reads $COPILOT_GITHUB_TOKEN/$GH_TOKEN/$GITHUB_TOKEN (headless
 //                `--set` it prefers those env vars, else prompts for the token in a TTY.
 import { spawnSync } from "node:child_process";
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { Writable } from "node:stream";
 import { consola } from "consola";
@@ -65,6 +65,7 @@ import { errMessage } from "../utils/error.ts";
 import { withFileLockSync } from "../utils/file_lock.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { printTable } from "../utils/table.ts";
+import { removeReported } from "../utils/report_write.ts";
 
 // Narration to stderr so `--get`'s stdout stays a clean machine-readable token.
 const logger = createStderrLogger();
@@ -253,7 +254,7 @@ function loginWithCopilot(): string {
     // can land atomically with a profile's mode); a crash in between costs one
     // re-login, never a leaked token file.
     try {
-      rmSync(tokenFile, { force: true });
+      removeReported(tokenFile);
     } catch {
       // best-effort
     }

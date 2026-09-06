@@ -404,6 +404,36 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
     },
   );
 
+  // POSIX only: the Windows stand-in asset is deliberately not executable (the refusal
+  // tests never reach the handoff), and this case needs the handoff to succeed.
+  skipWin(
+    "a fresh install names the root it creates, in the seam's shape, before the handoff",
+    () => {
+      // The root does not exist yet, so the shell creates it before the binary (which
+      // names its own writes) can: the installer must say so itself, on stderr.
+      const downloadDir = makeDownloadDir();
+      const parent = tempDir("ce-guard-fresh-");
+      // Two levels deep: the missing ancestor is created too, and named before the root.
+      const root = join(parent, "nested", "copilot-env");
+      try {
+        const res = runInstaller(root, downloadDir);
+        const why = evidence(res, root);
+        expect(res.exitCode, why).toBe(0);
+        const created = res.stderr.split(/\r?\n/).filter((l) => l.startsWith("created -> "));
+        expect(created, why).toEqual([
+          `created -> ${join(parent, "nested")}`,
+          `created -> ${root}`,
+        ]);
+        // Control: a pre-existing root is not announced as created.
+        const again = runInstaller(root, downloadDir);
+        expect(again.exitCode, evidence(again, root)).toBe(0);
+        expect(again.stderr, evidence(again, root)).not.toContain(`created -> ${root}`);
+      } finally {
+        cleanup(parent, downloadDir);
+      }
+    },
+  );
+
   winOnly("install.ps1 refuses a checkout root and leaves it byte-identical", () => {
     const downloadDir = makeDownloadDir();
     try {

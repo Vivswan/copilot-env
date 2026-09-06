@@ -1,13 +1,14 @@
 // Cross-platform shell/profile integration writer for the `agent` wrapper block.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { consola } from "consola";
 
-import { isEnoent } from "../utils/fs.ts";
+import { isEnoent, readTextResult } from "../utils/fs.ts";
 import { PROJECT_ROOT } from "../utils/root.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
+import { mkdirReported, writeFileReported } from "../utils/report_write.ts";
 
 // `agent shell` owns wiring the copilot-env integration into the
 // user's shell startup -- the logic install.sh / install.ps1 used to duplicate.
@@ -308,16 +309,15 @@ function wireBlocks(files: string[], mainBlock: string): void {
     }
     // OneDrive-backed Documents folders are reparse points; Node's recursive mkdir throws
     // EEXIST on an existing reparse point instead of no-op'ing, so skip when it already exists.
-    if (!existsSync(dirname(file))) mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, upserted.content);
-    consola.success(`Wired shell integration into ${file}`);
+    if (!existsSync(dirname(file))) mkdirReported(dirname(file));
+    writeFileReported(file, upserted.content, { detail: "shell integration wired" });
   }
 }
 
 function removeBlocksFrom(
   files: string[],
   markers: readonly BlockMarker[],
-  removedMessage: (file: string) => string,
+  removedDetail: string,
   missingMessage: string,
 ): boolean {
   let removedAny = false;
@@ -326,9 +326,8 @@ function removeBlocksFrom(
     const content = readFileSync(file, "utf-8");
     const stripped = stripBlocks(content, markers);
     if (stripped.content === content) continue; // no owned block present
-    writeFileSync(file, stripped.content);
+    writeFileReported(file, stripped.content, { detail: removedDetail });
     warnLeftBehind(file, stripped.leftBehind);
-    consola.success(removedMessage(file));
     removedAny = true;
   }
   if (!removedAny) consola.info(missingMessage);
@@ -339,9 +338,39 @@ function removeFrom(files: string[]): boolean {
   return removeBlocksFrom(
     files,
     ALL_MARKERS,
-    (file) => `Removed shell integration from ${file}`,
+    "shell integration removed",
     "No copilot-env shell integration found to remove.",
   );
+}
+
+/** The rc / PowerShell profile files on this machine that carry an owned block right
+ *  now (integration or launchers): what an uninstall plans to strip. Read-only. Fail
+ *  closed: a file that exists but cannot be read may hold a block that points at the
+ *  install about to go, so the caller refuses rather than plan around it; only a proven
+ *  absence (ENOENT) is "no block here". */
+export function ownedShellTargets(): string[] {
+  // Every CANDIDATE, not shellTargetFiles(): its existsSync pre-filter follows symlinks
+  // and swallows permission errors, so a dangling rc link or an rc under an unreadable
+  // parent would vanish before readTextResult could call it unreadable.
+  const candidates = process.platform === "win32" ? shellTargetFiles() : rcCandidates();
+  return candidates.filter((file) => {
+    const read = readTextResult(file);
+    if (read.kind === "unreadable") {
+      throw new Error(
+        `cannot read ${file} (${read.error}); refusing to continue while it may still hold ` +
+          "the copilot-env shell block",
+      );
+    }
+    return read.kind === "text" && ALL_MARKERS.some((marker) => hasMarker(read.text, marker));
+  });
+}
+
+/** Strip the owned blocks from exactly `files` (an uninstall plan's ownedShellTargets),
+ *  with the restart hint when anything went. */
+export function removeShellIntegrationFrom(files: readonly string[]): void {
+  if (removeFrom([...files])) {
+    consola.info(process.platform === "win32" ? "Restart PowerShell." : "Restart your shell.");
+  }
 }
 
 // --- block builders (path-quoted; quote helpers re-exported for tests) --------
@@ -457,12 +486,16 @@ function absolutePathEnv(name: string): string | null {
 
 // --- POSIX target files -------------------------------------------------------
 
+/** Every POSIX rc file copilot-env may wire, present or not. */
+function rcCandidates(): string[] {
+  const home = absolutePathEnv(CI_RC_DIR_ENV) ?? homedir();
+  return [".bashrc", ".zshrc"].map((f) => join(home, f));
+}
+
 /** Existing ~/.bashrc + ~/.zshrc; for wiring, fall back to one named for $SHELL. */
 export function rcFiles(remove: boolean): string[] {
   const home = absolutePathEnv(CI_RC_DIR_ENV) ?? homedir();
-  const existing = [".bashrc", ".zshrc"]
-    .map((f) => join(home, f))
-    .filter((p) => existsSync(p));
+  const existing = rcCandidates().filter((p) => existsSync(p));
   if (existing.length > 0 || remove) return existing;
   const shell = basename(process.env.SHELL ?? "/bin/bash");
   return [join(home, shell === "zsh" ? ".zshrc" : ".bashrc")];

@@ -31,12 +31,13 @@
 // age-steal outcome. Callers may inject `nowMs` (the clock used both for the marker written
 // and the age judgment) so a caller with an injected clock, like the autoupdate preflight,
 // stays deterministic under test.
-import { linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { linkSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as sleepAsync } from "node:timers/promises";
 import { isEnoentOrNotdir, readTextOrNull } from "./fs.ts";
 import { isRecord } from "./json.ts";
 import { pidAlive } from "./pid.ts";
+import { mkdirReported } from "./report_write.ts";
 import { sleepSync } from "./time.ts";
 
 // --- the shared bounded-wait acquisition policy --------------------------------
@@ -225,7 +226,7 @@ export function tryAcquireFileLock(
   }
 
   try {
-    mkdirSync(dirname(lockPath), { recursive: true });
+    mkdirReported(dirname(lockPath));
   } catch {
     // if we can't even create the dir, the open below fails and the caller proceeds unlocked
   }

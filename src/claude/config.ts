@@ -53,6 +53,7 @@ import { type Profile, profileLabel, type ProfileName } from "../copilot_api/pro
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import {
+  entryAbsent,
   isEnoentOrNotdir,
   readTextOrNull,
   readTextResult,
@@ -60,6 +61,7 @@ import {
 } from "../utils/fs.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { mkdirReported, removeReported, writeFileReported } from "../utils/report_write.ts";
 import {
   agentAuthGetArgs,
   agentLauncherCommand,
@@ -532,15 +534,15 @@ function loadSettings(settingsPath: string): Record<string, unknown> {
   return doc;
 }
 
-function saveSettings(settingsPath: string, doc: Record<string, unknown>): void {
-  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-  fs.writeFileSync(settingsPath, `${JSON.stringify(doc, null, 2)}\n`);
+function saveSettings(settingsPath: string, doc: Record<string, unknown>, detail?: string): void {
+  mkdirReported(path.dirname(settingsPath));
+  writeFileReported(settingsPath, `${JSON.stringify(doc, null, 2)}\n`, { detail });
 }
 
 /** Persist a STRIPPED settings doc: a doc emptied entirely removes the file
  *  itself (never a lone `{}` left behind), anything else is saved. */
 function saveOrRemoveSettings(settingsPath: string, doc: Record<string, unknown>): void {
-  if (Object.keys(doc).length === 0) fs.rmSync(settingsPath, { force: true });
+  if (Object.keys(doc).length === 0) removeReported(settingsPath);
   else saveSettings(settingsPath, doc);
 }
 
@@ -737,14 +739,11 @@ export function syncDefaultWebSearchWiring(claudeHome = resolveClaudeHome()): vo
  *  the mode/identity pairing is enforced at the type) plus this writer's common
  *  knobs -- the Claude twin of CodexWriteRequest. */
 export type ClaudeWriteRequest = ManagedWrite & {
-  /** Suppress the "config written" info line (used by the temp-config probe). */
-  quiet?: boolean;
   /** Wire a NAMED profile's settings-<name>.json instead of the default settings.json. */
   profile?: Profile;
 };
 
 export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRequest): void {
-  const quiet = request.quiet ?? false;
   const profile = request.profile ?? null;
   // Cheap credential-presence gate (no `gh` spawn -- runClaude already did the full
   // resolve and fail-fasts on it; this backstops direct API callers like
@@ -761,7 +760,7 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
     );
   }
   try {
-    fs.mkdirSync(claudeHome, { recursive: true });
+    mkdirReported(claudeHome);
   } catch (e) {
     throw new Error(`could not create Claude config directory ${claudeHome}: ${errMessage(e)}`);
   }
@@ -793,11 +792,8 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
     const commit = profile === null && claudeHome === resolveClaudeHome()
       ? applyWebSearchPair(doc, "direct", settingsPath)
       : NO_COMMIT;
-    saveSettings(settingsPath, doc);
+    saveSettings(settingsPath, doc, "Claude config, direct: GitHub Copilot");
     commit();
-    if (!quiet) {
-      logger.log(`  ✓ Claude config written → ${settingsPath} (direct: GitHub Copilot)`);
-    }
     return;
   }
 
@@ -815,11 +811,8 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
   const commit = profile === null && claudeHome === resolveClaudeHome()
     ? applyWebSearchPair(doc, "proxy", settingsPath)
     : NO_COMMIT;
-  saveSettings(settingsPath, doc);
+  saveSettings(settingsPath, doc, `Claude config, proxy mode via port ${port}`);
   commit();
-  if (!quiet) {
-    logger.log(`  ✓ Claude config written → ${settingsPath} (proxy mode → port ${port})`);
-  }
 }
 
 // --- the `--check` provider report ------------------------------------------
@@ -871,28 +864,29 @@ function checkClaudeConfig(): void {
  * file while keeping the settings key would leave dangling wiring. Used by
  * `agent profile --del`.
  */
-/** Remove a legacy helper file by name. rmSync's `force` tolerates ENOENT but
- *  not ENOTDIR; a helper path under a non-directory home is equally "nothing
- *  there" (the same absence readTextResult reports for the settings file). */
-function removeLegacyHelperFile(path: string): void {
-  try {
-    fs.rmSync(path, { force: true });
-  } catch (e) {
-    if (!isEnoentOrNotdir(e)) throw e;
-  }
-}
 
-export function removeClaudeProfile(claudeHome: string, name: ProfileName): void {
+/** The files removeClaudeProfile would remove for `name` right now: the settings file
+ *  when its wiring is ours, and any file at the legacy helper names (ours, or orphans
+ *  nothing points at -- the inline wiring writes none). Empty when the settings file
+ *  is a foreign body: it may point AT a legacy-named file, so nothing there is ours.
+ *  Read-only; an uninstall plan resolves this once and renders it both ways. */
+export function claudeProfileArtifacts(claudeHome: string, name: ProfileName): string[] {
   const settingsPath = settingsPathFor(claudeHome, name);
   const wiring = inspectClaudeWiring(readTextResult(settingsPath), claudeHome, 0, name);
-  if (wiring.providerMode === "other") return;
-  if (wiring.wired) {
-    fs.rmSync(settingsPath, { force: true });
-  }
-  // Managed or unconfigured: any files at the legacy names are ours (or orphans
-  // nothing points at) -- remove them by name (the inline wiring writes none).
-  removeLegacyHelperFile(directHelperPath(claudeHome, name));
-  removeLegacyHelperFile(proxyHelperPath(claudeHome, name));
+  if (wiring.providerMode === "other") return [];
+  return [
+    ...(wiring.wired ? [settingsPath] : []),
+    directHelperPath(claudeHome, name),
+    proxyHelperPath(claudeHome, name),
+  ].filter((path) => !entryAbsent(path));
+}
+
+export function removeClaudeProfile(
+  claudeHome: string,
+  name: ProfileName,
+  artifacts: readonly string[] = claudeProfileArtifacts(claudeHome, name),
+): void {
+  for (const path of artifacts) removeReported(path);
 }
 
 /** What removeClaudeDefaultWiring left behind, for the caller to sequence on. */
@@ -902,6 +896,17 @@ export interface ClaudeDefaultWiringRemoval {
    *  While it stands, the MCP registration (the deny's web-search replacement)
    *  must stay too -- never a denied builtin with no replacement. */
   ownedDenyRemains: boolean;
+}
+
+/** The legacy helper files removeClaudeDefaultWiring would remove right now (present
+ *  ones only; none when the settings file is a foreign body, which may point AT one).
+ *  Read-only; an uninstall plan resolves this once and renders it both ways. */
+export function claudeDefaultHelperArtifacts(claudeHome: string): string[] {
+  const wiring = inspectClaudeWiring(readTextResult(settingsPathFor(claudeHome)), claudeHome, 0);
+  if (wiring.providerMode === "other") return [];
+  return [directHelperPath(claudeHome), proxyHelperPath(claudeHome)].filter(
+    (path) => !entryAbsent(path),
+  );
 }
 
 /**
@@ -929,7 +934,10 @@ export interface ClaudeDefaultWiringRemoval {
  * permissions entries) survives; an emptied env object is dropped, and a doc
  * emptied entirely removes settings.json itself. Used by `agent uninstall`.
  */
-export function removeClaudeDefaultWiring(claudeHome: string): ClaudeDefaultWiringRemoval {
+export function removeClaudeDefaultWiring(
+  claudeHome: string,
+  helpers: readonly string[] = claudeDefaultHelperArtifacts(claudeHome),
+): ClaudeDefaultWiringRemoval {
   const settingsPath = settingsPathFor(claudeHome);
   const wiring = inspectClaudeWiring(readTextResult(settingsPath), claudeHome, 0);
   const parseable = wiring.otherReason !== "malformed" && wiring.otherReason !== "read-error";
@@ -964,10 +972,7 @@ export function removeClaudeDefaultWiring(claudeHome: string): ClaudeDefaultWiri
     }
     if (saved) commit();
   }
-  if (wiring.providerMode !== "other") {
-    removeLegacyHelperFile(directHelperPath(claudeHome));
-    removeLegacyHelperFile(proxyHelperPath(claudeHome));
-  }
+  for (const path of helpers) removeReported(path);
   return { ownedDenyRemains: new OwnershipLedger().owns("webSearchDeny", settingsPath) };
 }
 
@@ -980,7 +985,7 @@ export function detectClaudeDirect(deps?: DirectProbeDeps): boolean {
   return probeDirectWorks(
     CLAUDE_PROBE,
     (tmpHome) => {
-      configureClaudeConfig(tmpHome, { mode: "direct", quiet: true });
+      configureClaudeConfig(tmpHome, { mode: "direct" });
     },
     deps,
   );
@@ -1007,16 +1012,12 @@ export function claudeAdapter(): AgentAdapter {
       await syncClaudeDesktopWiring({ ...write, profile: null, directToken: ghToken });
     },
     async configureProfile(name, write, options) {
-      configureClaudeConfig(resolveClaudeHome(), {
-        ...write,
-        quiet: options.quiet,
-        profile: name,
-      });
+      configureClaudeConfig(resolveClaudeHome(), { ...write, profile: name });
       await syncClaudeDesktopWiring({ ...write, profile: name, quiet: options.quiet });
     },
-    removeProfile(name) {
-      removeClaudeProfile(resolveClaudeHome(), name);
-      removeClaudeDesktopEntry(name);
+    removeProfile(name, options) {
+      removeClaudeProfile(resolveClaudeHome(), name, options?.claudeArtifacts);
+      if (!options?.keepDesktopEntry) removeClaudeDesktopEntry(name);
     },
   };
 }

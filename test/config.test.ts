@@ -11,7 +11,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { CopilotApiConfig, renameWithRetry } from "../src/copilot_api/config.ts";
+import { CopilotApiConfig } from "../src/copilot_api/config.ts";
+import { renameWithRetry } from "../src/utils/report_write.ts";
 import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 
 let dir = "";

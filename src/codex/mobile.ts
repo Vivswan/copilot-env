@@ -12,6 +12,7 @@ import { parse, stringify } from "smol-toml";
 import { runCaptured } from "../utils/command.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import { removeReported, writeFileReported } from "../utils/report_write.ts";
 import { inspectCatalogFile } from "./catalog.ts";
 import { effectiveCodexHome } from "./host.ts";
 import { CODEX_PROVIDER_ID, codexConfigPath } from "./paths.ts";
@@ -415,9 +416,8 @@ export async function runCodexMobile(): Promise<void> {
   const backupPath = `${configPath}.copilot-env-mobile.bak`;
   let backupWritten = false;
   try {
-    fs.writeFileSync(backupPath, original);
+    writeFileReported(backupPath, original, { detail: "Codex config backup for the pairing" });
     backupWritten = true;
-    logger.log(`  ✓ Codex config backup written → ${backupPath}`);
   } catch {
     logger.warn(`Could not write a backup at ${backupPath}; proceeding from memory.`);
   }
@@ -446,8 +446,8 @@ export async function runCodexMobile(): Promise<void> {
     } catch {
       next = rebuildFromOriginal();
     }
-    fs.writeFileSync(configPath, next);
-    logger.log(`  ✓ Codex config written → ${configPath} (model_provider "${provider}" restored)`);
+    // A rewrite of the path the strip below already named: the seam says nothing more.
+    writeFileReported(configPath, next);
   };
 
   // `finally` does not run on a signal, so restore synchronously on SIGINT/SIGTERM
@@ -457,10 +457,7 @@ export async function runCodexMobile(): Promise<void> {
       restore();
     } catch {
       try {
-        fs.writeFileSync(configPath, rebuildFromOriginal());
-        logger.log(
-          `  ✓ Codex config written → ${configPath} (model_provider "${provider}" restored)`,
-        );
+        writeFileReported(configPath, rebuildFromOriginal());
       } catch {
         // give up -- the backup file is the last resort
       }
@@ -471,11 +468,12 @@ export async function runCodexMobile(): Promise<void> {
   process.once("SIGTERM", onSignal);
 
   try {
-    // Drop the managed provider so the app pairs on its default OpenAI provider.
-    fs.writeFileSync(configPath, stripModelProvider(original));
-    logger.log(
-      `  ✓ Codex config written → ${configPath} (model_provider "${provider}" removed for pairing)`,
-    );
+    // Drop the managed provider so the app pairs on its default OpenAI provider. The
+    // restore below rewrites the same path, silently (the seam names a path once per
+    // process), so this line names the act and nothing about a write not yet made.
+    writeFileReported(configPath, stripModelProvider(original), {
+      detail: `Codex config, rewritten around the pairing (model_provider "${provider}")`,
+    });
 
     await app.open();
     logger.box(
@@ -504,8 +502,7 @@ export async function runCodexMobile(): Promise<void> {
     restore();
     if (backupWritten) {
       try {
-        fs.rmSync(backupPath);
-        logger.log(`  ✓ Codex config backup removed → ${backupPath}`);
+        removeReported(backupPath, "pairing finished");
       } catch {
         logger.warn(`Could not remove the backup at ${backupPath}.`);
       }

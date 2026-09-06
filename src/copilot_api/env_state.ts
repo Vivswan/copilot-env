@@ -122,14 +122,13 @@ function rawCredentialPatch(
 // A profile is ONE credential slot plus ONE wiring mode (direct or proxy, never
 // both), applied to BOTH agents. The DEFAULT is a profile too: its slot lives in
 // the `profiles` map under the reserved `default` key (parseProfileName rejects
-// the name, so a named profile can never collide with it). Older releases stored
-// the default credential in the top-level `githubToken`/`authProvider` fields;
-// the read boundary still tolerates that layout (the legacy pair answers when
-// the reserved slot holds no credential of its own) and every default-slot WRITE
-// lifts the pair into the slot -- the same transition the 3.5.6 migration runs
-// -- so a store any new write has touched carries the slot layout only. Named
-// profiles NEVER fall back to the default credential (ask, never silently fall
-// back); `Credential` enforces that by reading ONLY the addressed slot via
+// the name, so a named profile can never collide with it). The slot is the ONLY
+// layout the store reads: a pre-slot release's top-level `githubToken`/
+// `authProvider` pair is unknown to the reader (it reads as no default
+// credential) and survives every write untouched until the 3.5.6 migration
+// lifts it into the slot (`adoptLegacyDefaultCredential`, its one entry point).
+// Named profiles NEVER fall back to the default credential (ask, never silently
+// fall back); `Credential` enforces that by reading ONLY the addressed slot via
 // readCredential/setCredential, the single routing point for every slot. The
 // `mode` field makes THIS store the source of truth for a profile's wiring (the
 // agent artifacts are derived from it): for a named profile that is what lets
@@ -153,7 +152,7 @@ function slotKey(profile: Profile): string {
   return profile ?? DEFAULT_PROFILE_KEY;
 }
 
-/** One profile's credential slot (same semantics as the top-level pair). */
+/** One profile's credential slot. */
 export interface ProfileCredentialData {
   githubToken: string | null;
   authProvider: AuthProvider | null;
@@ -230,20 +229,18 @@ export function partialSlotGap(
       `\`agent auth --profile ${name}\` or \`agent profile --add ${name}\``;
 }
 
-/** The fields persisted in `.copilot-env-state.json` (absent/blank read back as null). */
+/** The store's READ view of `.copilot-env-state.json` (absent/blank fields read
+ *  back as null): the reserved default slot's credential pair projected to the
+ *  top level, and `profiles` holding the named slots only -- not the disk layout. */
 export interface CopilotEnvStateData {
-  /** The DEFAULT slot's provisioned GitHub token (Copilot-enabled), or null when
-   *  unset/blank. UNIFIED at the read boundary: the reserved `default` slot's
-   *  value when that slot carries credential fields of its own, else the legacy
-   *  top-level field a pre-slot release wrote. */
+  /** The reserved `default` slot's provisioned GitHub token (Copilot-enabled),
+   *  or null when unset/blank. */
   githubToken: string | null;
-  /** How the default slot authenticated, or null when unset/unrecognized
-   *  (unified across the two layouts exactly like `githubToken`). */
+  /** How the default slot authenticated, or null when unset/unrecognized. */
   authProvider: AuthProvider | null;
   /** Every NAMED profile's RAW slot (empty when none were ever created). The
-   *  reserved `default` slot is stripped here and surfaces through the unified
-   *  pair above plus `readProfileSlot(null)`, so no consumer ever has to know
-   *  which layout the file carries. */
+   *  reserved `default` slot is stripped here and surfaces through the pair
+   *  above plus `readProfileSlot(null)`. */
   profiles: Record<string, ProfileSlotData>;
   /** Epoch ms of the last Codex model-catalog generation ATTEMPT (0 if never). */
   codexCatalogLastAttemptMs: number;
@@ -277,16 +274,15 @@ export interface ModelVerdict {
 
 // Mirror CopilotEnvRunState/AutoupdateState's patch spelling (`Data[K] | null`).
 // The credential pair is deliberately NOT patchable here: every credential write
-// goes through the slot transitions (setCredential/clearCredential), so nothing
-// can re-create the legacy top-level layout.
+// goes through the slot transitions (setCredential/clearCredential), so a
+// top-level credential pair can never be written.
 type EnvStatePatch = {
   [K in keyof Omit<CopilotEnvStateData, "profiles" | "githubToken" | "authProvider">]?:
     | CopilotEnvStateData[K]
     | null;
 };
 
-// One profile slot: the same lenient credential contract as the top-level pair,
-// plus the profile's single wiring mode.
+// One profile slot: a lenient credential pair plus the profile's single wiring mode.
 const PROFILE_SCHEMA = v.object({
   githubToken: v.fallback(v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1))), null),
   authProvider: v.fallback(v.nullable(v.picklist(AUTH_PROVIDERS)), null),
@@ -304,8 +300,6 @@ const PROFILE_SCHEMA = v.object({
 // forgiving contract the hand-rolled reader had). A trimmed-blank string is null;
 // an unrecognized provider is null (validated against the picklist at the boundary).
 const STATE_SCHEMA = v.object({
-  githubToken: v.fallback(v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1))), null),
-  authProvider: v.fallback(v.nullable(v.picklist(AUTH_PROVIDERS)), null),
   profiles: v.fallback(v.record(v.string(), v.fallback(PROFILE_SCHEMA, emptyProfile())), {}),
   codexCatalogLastAttemptMs: v.fallback(v.pipe(v.number(), v.finite(), v.minValue(0)), 0),
   codexCatalogCodexVersion: v.fallback(
@@ -320,11 +314,11 @@ const STATE_SCHEMA = v.object({
     })),
     null,
   ),
-  // Recorded artifact ownership (the WebSearch-deny and Claude Desktop paths)
-  // lived here before the ownership ledger (ownership.ts). The legacy keys are
-  // deliberately NOT named in this schema: the lenient read ignores them and
-  // update() preserves them in the file, so the 3.5.6 ownership migration can
-  // still find and move them out.
+  // Legacy keys -- the pre-slot top-level credential pair, and the recorded
+  // artifact ownership that lived here before the ownership ledger
+  // (ownership.ts) -- are deliberately NOT named in this schema: the lenient
+  // read ignores them and update() preserves them in the file, so the 3.5.6
+  // migrations that move them out still find them.
   claudeModelVerdicts: v.fallback(
     v.record(
       v.string(),
@@ -342,13 +336,15 @@ function emptyProfile(): ProfileSlotData {
   return { githubToken: null, authProvider: null, mode: null, integrationIdentity: null };
 }
 
-// --- the raw default-slot layout ----------------------------------------------
+/** The store as parsed off disk: the reserved slot still inside `profiles`. */
+type RawStateData = v.InferOutput<typeof STATE_SCHEMA>;
+
+// --- the 3.5.6 default-slot lift -----------------------------------------------
 //
-// The helpers below run INSIDE store.update callbacks on the raw JSON document,
-// so they parse field-by-field exactly the way the read schema's fallbacks do --
-// the write-side "does the slot hold a credential?" judgement must never
-// disagree with the read-side one, or a lift could drop a pair the reader still
-// answers from.
+// The helpers below run INSIDE a store.update callback on the raw JSON document
+// and parse field-by-field exactly the way the read schema's fallbacks do, so
+// the lifted slot reads back as the same credential the pair described. They
+// serve `adoptLegacyDefaultCredential` alone (the migration's entry point).
 
 /** A raw string value the schema would accept as a stored token (trimmed). */
 function rawToken(value: unknown): string | null {
@@ -360,19 +356,16 @@ function rawProvider(value: unknown): AuthProvider | null {
   return typeof value === "string" && isAuthProvider(value) ? value : null;
 }
 
-/** Whether a raw slot record carries credential fields of its own (the same
- *  judgement the unified read applies to the PARSED slot). */
+/** Whether a raw slot record carries credential fields of its own. */
 function rawSlotHasCredential(slot: Record<string, unknown>): boolean {
   return rawToken(slot.githubToken) !== null || rawProvider(slot.authProvider) !== null;
 }
 
 /**
  * Move the legacy top-level credential pair into the reserved default slot --
- * the write half of the "default is a profile" layout change. The 3.5.6
- * migration runs exactly this, and every default-slot write runs it too, so a
- * store any new write has touched carries the slot layout only. A slot already
- * holding its own credential wins over the legacy pair (they can only disagree
- * after a hand edit); the legacy keys are removed either way. Idempotent.
+ * the "default is a profile" layout change. A slot already holding its own
+ * credential wins over the legacy pair (they can only disagree after a hand
+ * edit); the legacy keys are removed either way. Idempotent.
  */
 function liftLegacyDefaultPair(d: Record<string, unknown>): void {
   const legacyToken = rawToken(d.githubToken);
@@ -391,20 +384,6 @@ function liftLegacyDefaultPair(d: Record<string, unknown>): void {
   }
   profiles[DEFAULT_PROFILE_KEY] = slot;
   d.profiles = profiles;
-}
-
-/** The unified default credential pair from the PARSED raw store: the reserved
- *  slot's pair when that slot carries credential fields of its own, else the
- *  legacy top-level pair -- the same judgement rawSlotHasCredential applies on
- *  the write side, so a lift can never drop a pair a read still answers from. */
-function unifiedDefaultPair(
-  data: CopilotEnvStateData,
-  slot: ProfileSlotData | undefined,
-): { githubToken: string | null; authProvider: AuthProvider | null } {
-  if (slot !== undefined && (slot.githubToken !== null || slot.authProvider !== null)) {
-    return { githubToken: slot.githubToken, authProvider: slot.authProvider };
-  }
-  return { githubToken: data.githubToken, authProvider: data.authProvider };
 }
 
 /** Drop an emptied slot, and the `profiles` map itself when nothing is left --
@@ -493,22 +472,25 @@ export class CopilotEnvState {
   }
 
   /** Current state; absent/ill-typed/blank/unknown fields come back null. The
-   *  credential pair is the UNIFIED default-slot view (see CopilotEnvStateData)
-   *  and `profiles` carries the NAMED slots only -- so every reader sees the
-   *  same picture regardless of which layout the file carries. */
+   *  credential pair is the reserved default slot's (see CopilotEnvStateData)
+   *  and `profiles` carries the NAMED slots only. */
   read(): CopilotEnvStateData {
     const data = this.rawRead();
-    const { [DEFAULT_PROFILE_KEY]: slot, ...named } = data.profiles;
-    return { ...data, ...unifiedDefaultPair(data, slot), profiles: named };
+    const { [DEFAULT_PROFILE_KEY]: slot = emptyProfile(), ...named } = data.profiles;
+    return {
+      ...data,
+      githubToken: slot.githubToken,
+      authProvider: slot.authProvider,
+      profiles: named,
+    };
   }
 
-  /** The store as PERSISTED (both layouts, the reserved slot included) --
-   *  strictly for the unifying readers below; everything else reads read().
-   *  Strict store read: an unreadable credential store THROWS rather than
-   *  reading as "no credential / no such profile" -- auth resolution and the
-   *  named-profile hard-fail must diagnose the failed read, not fabricate an
-   *  empty store from it. */
-  private rawRead(): CopilotEnvStateData {
+  /** The store as PERSISTED (the reserved slot included) -- strictly for the
+   *  slot readers below; everything else reads read(). Strict store read: an
+   *  unreadable credential store THROWS rather than reading as "no credential /
+   *  no such profile" -- auth resolution and the named-profile hard-fail must
+   *  diagnose the failed read, not fabricate an empty store from it. */
+  private rawRead(): RawStateData {
     return v.parse(STATE_SCHEMA, this.store.loadStrict());
   }
 
@@ -545,20 +527,11 @@ export class CopilotEnvState {
     return this.readProfileSlot(profile).credential;
   }
 
-  /** The full parsed slot addressed by `profile` (null = the default slot,
-   *  unified across the two on-disk layouts); a never-created named profile
-   *  reads as an empty partial. */
+  /** The full parsed slot addressed by `profile` (null = the default slot); a
+   *  never-created named profile reads as an empty partial. */
   readProfileSlot(profile: Profile): ProfileSlot {
     if (profile !== null) return this.profileSlotStatus(profile).slot;
-    const data = this.rawRead();
-    const slot = data.profiles[DEFAULT_PROFILE_KEY];
-    // The credential pair is unified; mode/identity live in the reserved slot
-    // alone (the legacy layout never carried them).
-    return parseProfileSlot({
-      ...unifiedDefaultPair(data, slot),
-      mode: slot?.mode ?? null,
-      integrationIdentity: slot?.integrationIdentity ?? null,
-    });
+    return parseProfileSlot(this.rawRead().profiles[DEFAULT_PROFILE_KEY] ?? emptyProfile());
   }
 
   /** Like readProfileSlot, plus whether the store actually carries the slot --
@@ -593,8 +566,7 @@ export class CopilotEnvState {
    * and the check runs INSIDE the same atomic update as the write, so a racing
    * `deleteProfile` cannot slip between the check and the merge and resurrect a
    * credential-only half slot. The DEFAULT slot always exists conceptually, so
-   * its write creates the reserved slot when absent and removes the legacy
-   * top-level pair (the write-side layout lift). The derived
+   * its write creates the reserved slot when absent. The derived
    * `integrationIdentity` is cleared: it is a probe result keyed to the
    * credential, so any credential change (re-auth) must invalidate it -- the
    * next wiring re-derives it.
@@ -603,11 +575,6 @@ export class CopilotEnvState {
     const patch = rawCredentialPatch(credential);
     let missing = false;
     this.store.update((d) => {
-      if (profile === null) {
-        // The new pair replaces whatever either layout held.
-        delete d.githubToken;
-        delete d.authProvider;
-      }
       const profiles = isRecord(d.profiles) ? d.profiles : {};
       const key = slotKey(profile);
       const existing = Object.hasOwn(profiles, key) ? profiles[key] : undefined;
@@ -637,23 +604,17 @@ export class CopilotEnvState {
    * Clear the credential slot addressed by `profile` (the `agent auth --del`
    * transition; the slot keeps its mode -- de-auth is not deletion). Judged and
    * cleared in ONE update on the RAW fields, so even a stray token the read
-   * boundary parses as `none` (hand edit, no provider) is really removed -- the
-   * default's clear sweeps BOTH layouts for the same reason. Returns whether
-   * anything was present to clear.
+   * boundary parses as `none` (hand edit, no provider) is really removed.
+   * Returns whether anything was present to clear.
    */
   clearCredential(profile: Profile): boolean {
     let had = false;
     this.store.update((d) => {
-      if (profile === null) {
-        had = d.githubToken !== undefined || d.authProvider !== undefined;
-        delete d.githubToken;
-        delete d.authProvider;
-      }
       const profiles = isRecord(d.profiles) ? d.profiles : {};
       const key = slotKey(profile);
       const raw = Object.hasOwn(profiles, key) ? profiles[key] : undefined;
       if (!isRecord(raw)) return;
-      had = had || raw.githubToken !== undefined || raw.authProvider !== undefined;
+      had = raw.githubToken !== undefined || raw.authProvider !== undefined;
       delete raw.githubToken;
       delete raw.authProvider;
       delete raw.integrationIdentity; // credential-derived cache goes with it
@@ -717,9 +678,7 @@ export class CopilotEnvState {
    *  still holds that exact credential (compared inside the same atomic update,
    *  so a probe result can never outlive a rotation that raced the probe) and
    *  never creates or resurrects a NAMED slot -- `commitProfile` stays the only
-   *  creator, and a deletion race just loses the cache. The DEFAULT slot's
-   *  write lifts the legacy pair first, so the comparison sees the credential
-   *  wherever the store carried it. */
+   *  creator, and a deletion race just loses the cache. */
   setProfileIntegrationIdentity(
     profile: Profile,
     integrationIdentity: string | null,
@@ -727,7 +686,6 @@ export class CopilotEnvState {
   ): void {
     const expected = rawCredentialPatch(forCredential);
     this.store.update((d) => {
-      if (profile === null) liftLegacyDefaultPair(d);
       const profiles = isRecord(d.profiles) ? d.profiles : {};
       const key = slotKey(profile);
       const raw = Object.hasOwn(profiles, key) ? profiles[key] : undefined;
@@ -750,12 +708,10 @@ export class CopilotEnvState {
    * Record the default slot's desired wiring mode (null clears it) -- written by
    * the shared default-wiring pass whenever BOTH agents land on one managed
    * mode, cleared when they diverge. A RECORD of intent: the per-agent
-   * artifacts stay the live truth the wiring readers sniff. Lifts the legacy
-   * credential pair like every default-slot write.
+   * artifacts stay the live truth the wiring readers sniff.
    */
   recordDefaultMode(mode: ProfileMode | null): void {
     this.store.update((d) => {
-      liftLegacyDefaultPair(d);
       const profiles = isRecord(d.profiles) ? d.profiles : {};
       const raw = Object.hasOwn(profiles, DEFAULT_PROFILE_KEY)
         ? profiles[DEFAULT_PROFILE_KEY]
@@ -775,11 +731,10 @@ export class CopilotEnvState {
 
   /**
    * Lift the legacy top-level credential pair into the reserved default slot --
-   * the 3.5.6 migration's entry point. Idempotent, and a true no-op (no file
-   * write, no file creation) when the store carries no legacy keys; the read
-   * boundary tolerates an unmigrated store regardless (the migration runner is
-   * best-effort). The pre-check races nothing: no current writer produces the
-   * legacy keys anymore.
+   * the 3.5.6 migration's entry point, and the ONLY code that knows the pair.
+   * Idempotent, and a true no-op (no file write, no file creation) when the
+   * store carries no legacy keys. The pre-check races nothing: no current
+   * writer produces the legacy keys anymore.
    */
   adoptLegacyDefaultCredential(): void {
     // Strict like rawRead: "no legacy keys" is the decision to skip the lift, so

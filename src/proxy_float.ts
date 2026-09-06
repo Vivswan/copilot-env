@@ -49,12 +49,12 @@
 import "./utils/dotenv.ts";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, rmSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { createConsola } from "consola";
 import * as v from "valibot";
 import { proxyUnusedEverywhere } from "./agents/wiring.ts";
-import { atomicWriteFile } from "./copilot_api/config.ts";
+import { atomicWriteFile, removeTreeReported } from "./utils/report_write.ts";
 import { CopilotEnvConfig } from "./copilot_api/env_config.ts";
 import { resolveRootHome } from "./copilot_api/paths.ts";
 import { allShimPaths } from "./copilot_api/shims.ts";
@@ -67,7 +67,7 @@ import {
 import { pickAgedVersion } from "./utils/aged_version.ts";
 import { assertNever } from "./utils/assert.ts";
 import { errMessage } from "./utils/error.ts";
-import { readTextOrNull, readTextResult } from "./utils/fs.ts";
+import { entryAbsent, readTextOrNull, readTextResult } from "./utils/fs.ts";
 import { parseJsonRecord } from "./utils/json.ts";
 import { type ProjectConfig, readProjectConfig } from "./utils/project_config.ts";
 import { ASSET_ROOT } from "./utils/root.ts";
@@ -644,7 +644,7 @@ function denoCacheVersion(ctx: FloatContext, version: string, cooldownSeconds: n
 function dropSupersededCache(ctx: FloatContext, version: string): void {
   const record = readResolvedVersionRecord(ctx.rootHome);
   if (record === null || record.version === version) return;
-  rmSync(proxyDenoDir(ctx.rootHome), { "recursive": true, "force": true });
+  removeTreeReported(proxyDenoDir(ctx.rootHome));
 }
 
 /** A look at the cache: "resolves"/"missing" are PROVEN readings (deno info ran
@@ -730,14 +730,26 @@ function usableRecord(ctx: FloatContext): ResolvedVersionRecord | null {
  * marker. An .npmrc without it is the user's; the float refused to write it, so the
  * uninstall refuses to delete it.
  */
-export function removeProxyFloatArtifacts(rootHome: string = resolveRootHome()): void {
-  const record = readResolvedVersionRecord(rootHome);
-  if (record !== null) rmSync(record.denoDir, { "recursive": true, "force": true });
-  rmSync(proxyDenoDir(rootHome), { "recursive": true, "force": true });
-  rmSync(join(rootHome, "proxy"), { "recursive": true, "force": true });
+export function removeProxyFloatArtifacts(
+  rootHome: string = resolveRootHome(),
+  paths: readonly string[] = proxyFloatArtifactPaths(rootHome),
+): void {
+  for (const path of paths) removeTreeReported(path);
+}
 
+/** Every path removeProxyFloatArtifacts would remove from `rootHome` right now: the
+ *  uninstall plan resolves this once and renders it both as the dry run and the live
+ *  removal. */
+export function proxyFloatArtifactPaths(rootHome: string): string[] {
+  const record = readResolvedVersionRecord(rootHome);
   const npmrc = join(rootHome, ".npmrc");
-  if (readTextOrNull(npmrc)?.includes(NPMRC_MARKER)) rmSync(npmrc, { "force": true });
+  const candidates = [
+    ...(record === null ? [] : [record.denoDir]),
+    proxyDenoDir(rootHome),
+    join(rootHome, "proxy"),
+    ...(readTextOrNull(npmrc)?.includes(NPMRC_MARKER) ? [npmrc] : []),
+  ];
+  return [...new Set(candidates)].filter((path) => !entryAbsent(path));
 }
 
 // --- Float actions -----------------------------------------------------------------

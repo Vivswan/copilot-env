@@ -34,7 +34,6 @@ import { stringify } from "smol-toml";
 import { isDue } from "../autoupdate/due.ts";
 import { BOUNDED_LOCK_POLICY } from "../utils/file_lock.ts";
 import { type CatalogSource, fetchRawModels } from "../copilot_api/catalog.ts";
-import { atomicWriteFile } from "../copilot_api/config.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
 import { ONE_M_SUFFIX } from "../copilot_api/models.ts";
@@ -43,6 +42,13 @@ import { childEnvWithPath, cliSpawn, resolveCommand } from "../utils/command.ts"
 import { errMessage } from "../utils/error.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
+import {
+  atomicWriteFile,
+  removeScratchDir,
+  type ScratchDir,
+  scratchDir,
+  writeFileReported,
+} from "../utils/report_write.ts";
 
 const logger = createStderrLogger();
 
@@ -500,9 +506,9 @@ function runCodexDebugModels(
   const deadline = Date.now() + budgetMs;
   const cliPath = codexCliPath();
   if (cliPath === null) return null;
-  let tmpHome: string;
+  let tmpHome: ScratchDir;
   try {
-    tmpHome = fs.mkdtempSync(path.join(tmpdir(), "copilot-env-codex-catalog-"));
+    tmpHome = scratchDir(path.join(tmpdir(), "copilot-env-codex-catalog-"));
   } catch {
     return null;
   }
@@ -535,12 +541,7 @@ function runCodexDebugModels(
   } catch {
     return null;
   } finally {
-    try {
-      fs.rmSync(tmpHome, { recursive: true, force: true });
-    } catch (e) {
-      // Never fails the config write this probe serves; the leftover is named.
-      logger.warn(`codex model catalog: throwaway home kept at ${tmpHome}: ${errMessage(e)}`);
-    }
+    removeScratchDir(tmpHome);
   }
 }
 
@@ -628,8 +629,8 @@ function defaultAcceptsCatalog(catalogJson: string): boolean | null {
 function probeCatalog(catalogJson: string): boolean | null {
   const referencing = (content: string) => (home: string): void => {
     const file = path.join(home, "candidate-catalog.json");
-    fs.writeFileSync(file, content);
-    fs.writeFileSync(path.join(home, "config.toml"), stringify({ "model_catalog_json": file }));
+    writeFileReported(file, content);
+    writeFileReported(path.join(home, "config.toml"), stringify({ "model_catalog_json": file }));
   };
   // A run that never reported an exit code (spawn error, or killed -- the budget's
   // timeout kill included) proves nothing either way; only a real exit counts.
@@ -650,7 +651,7 @@ function probeCatalog(catalogJson: string): boolean | null {
     return garbageExit === 0 ? null : true;
   }
   const control = runProbeSpawn((home) => {
-    fs.writeFileSync(path.join(home, "config.toml"), "");
+    writeFileReported(path.join(home, "config.toml"), "");
   });
   if (exitOf(control) !== 0) return null;
   return parsesAsCatalog(control?.stdout ?? "") ? false : null;
@@ -706,13 +707,7 @@ export async function generateCodexModelCatalog(
       return false;
     }
     // 0600 like every file the store writes beside it (the home's own policy).
-    const file = new CopilotApiPaths().codexModelCatalogFile;
-    atomicWriteFile(file, bytes, 0o600);
-    // Every file a command writes is named in its output (stderr: `agent auth
-    // --get` runs this too, and its stdout is the token); an unverified verdict says so.
-    logger.log(
-      `  ✓ Codex model catalog written → ${file}${verdict === null ? UNVERIFIED_SUFFIX : ""}`,
-    );
+    atomicWriteFile(new CopilotApiPaths().codexModelCatalogFile, bytes, 0o600);
     return true;
   } catch (e) {
     logger.warn(`codex model catalog generation failed: ${errMessage(e)}`);

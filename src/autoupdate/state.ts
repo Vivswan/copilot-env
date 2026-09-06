@@ -1,6 +1,6 @@
 // Autoupdate THROTTLE state (`<install>/.autoupdate/state.json`): the last check and
 // its result. The preference is the `auto-update` config key, never this file; a
-// pre-key `enabled` field is never read and the next write drops it (printed).
+// pre-key `enabled` field is never read and the next write drops it.
 //
 // Thin typed wrapper over CopilotApiConfig (the project's atomic JSON store:
 // sorted keys, 0600, atomic rename, Windows retry) -- mirroring CopilotEnvRunState,
@@ -8,10 +8,7 @@
 import * as v from "valibot";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
-import { createStderrLogger } from "../utils/logger.ts";
 import { autoupdateStateFile } from "./paths.ts";
-
-const logger = createStderrLogger();
 
 /** The state-file key that carried the preference before the `auto-update` config key. */
 const LEGACY_ENABLED_KEY = "enabled";
@@ -62,14 +59,10 @@ export class AutoupdateState {
   }
 
   /** Merge `patch` into the file; a `null` (or `undefined`) value deletes its key. A
-   *  pre-key `enabled` field still in the file leaves with this write, reported. */
+   *  pre-key `enabled` field still in the file leaves with this write. */
   set(patch: AutoupdatePatch): void {
-    let droppedLegacy = false;
     this.store.update((d) => {
-      if (LEGACY_ENABLED_KEY in d) {
-        delete d[LEGACY_ENABLED_KEY];
-        droppedLegacy = true;
-      }
+      delete d[LEGACY_ENABLED_KEY];
       for (const key of Object.keys(patch) as (keyof AutoupdatePatch)[]) {
         const value = patch[key];
         if (value === null || value === undefined) {
@@ -79,10 +72,5 @@ export class AutoupdateState {
         }
       }
     });
-    if (droppedLegacy) {
-      logger.info(
-        `Dropped the legacy autoupdate flag (the preference is the auto-update config key) -> ${this.path}`,
-      );
-    }
   }
 }

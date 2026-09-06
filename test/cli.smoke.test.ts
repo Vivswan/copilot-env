@@ -125,6 +125,19 @@ test("cli.ts mcp --help exposes the server flags; --remove rejects serve-only fl
   expect(statusModel.stderr).toContain("apply to --serve");
 });
 
+test("cli.ts config --set writes only inside the data home, so it names no file", () => {
+  // The preference store is copilot-env's own bookkeeping: written, never reported.
+  const home = tempDir("copilot-report-");
+  const env = isolatedEnv({ COPILOT_API_HOME: home, HOME: home, USERPROFILE: home });
+  const store = join(home, ".copilot-env-config.json");
+
+  const set = runCli(["config", "--set", "port", "4199"], { env });
+  expect(set.exitCode).toBe(0);
+  expect(existsSync(store)).toBe(true);
+  expect(set.stderr).not.toContain(" -> ");
+  expect(set.stdout).not.toContain(" -> ");
+});
+
 test("cli.ts mcp (bare) prints the wiring status and exits 0", () => {
   // Hermetic homes: a temp CLAUDE_CONFIG_DIR (no registration) and an isolated
   // copilot-env home, so the status never reads or creates real user state.

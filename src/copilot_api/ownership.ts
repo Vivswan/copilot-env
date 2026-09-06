@@ -29,7 +29,10 @@
 //     BEFORE it writes the ledger, so a claim released afterwards has no second
 //     copy to resurrect from. Every mutation serializes on ONE ops lock, so a
 //     take-back cannot slip between the adoption's two writes either (advisory,
-//     like every lock in this codebase: bounded wait, then proceed).
+//     like every lock in this codebase: bounded wait, then proceed). Reads take
+//     no lock: a read-only command (health, --check, a dry run) must write
+//     nothing, and the lock's sidecar is a file. A read torn across a mutation
+//     is a report, never a decision: every take-back re-reads under the lock.
 //
 // The per-daemon-home proxy config.json projections (ProxyProjectionState,
 // below) stay OUTSIDE the ledger file on purpose: their record must sit beside
@@ -50,6 +53,10 @@ const LEDGER_KEYS = {
   claudeDesktop: "claudeDesktopPaths",
   codexCatalog: "codexCatalogConfigPaths",
 } as const;
+
+/** What the ledger's write line says. Stable across claims on purpose: the seam names
+ *  a path once per process, and one command records several artifacts (the artifact's
+ *  own line already says which). */
 
 /** An ownership kind the ledger records (see the module header for each). */
 export type OwnedArtifactKind = keyof typeof LEDGER_KEYS;
@@ -114,7 +121,7 @@ export class OwnershipLedger {
    *  feeds owns(), the predicate every take-back gates on -- an unreadable store
    *  must surface, never read as owns-nothing (which would strip a deny's
    *  replacement while leaving the deny). Junk CONTENT still degrades via the
-   *  lenient schema. */
+   *  lenient schema. Lock-free (the module header says why): it writes nothing. */
   ownedPaths(kind: OwnedArtifactKind): string[] {
     return v.parse(LEDGER_SCHEMA, this.store.loadStrict())[LEDGER_KEYS[kind]];
   }

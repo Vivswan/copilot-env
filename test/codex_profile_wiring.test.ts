@@ -36,7 +36,6 @@ function writeProxyProfile(codexHome: string): void {
   configureCodexConfig(codexHome, {
     mode: "proxy",
     profile: WORK,
-    quiet: true,
     baseUrl: openaiBaseUrl(String(PROFILE_PORT)),
   });
 }
@@ -186,7 +185,7 @@ test("an env_key alongside intact managed auth still un-wires a named profile", 
   expect(wiring.providerWired).toBe(false);
 
   // Same on a direct-mode profile table.
-  configureCodexConfig(codexHome, { mode: "direct", profile: WORK, quiet: true });
+  configureCodexConfig(codexHome, { mode: "direct", profile: WORK });
   const directText = mutateConfig(codexHome, (doc) => {
     profileProvider(doc).env_key = "OPENAI_API_KEY";
   });
@@ -199,7 +198,7 @@ test("an env_key alongside intact managed auth still un-wires a named profile", 
 
 test("a writer-produced direct profile inspects as wired via its own auth command", () => {
   const codexHome = isolate();
-  configureCodexConfig(codexHome, { mode: "direct", profile: WORK, quiet: true });
+  configureCodexConfig(codexHome, { mode: "direct", profile: WORK });
 
   const wiring = inspectCodexWiring(configText(codexHome), null, PROFILE_PORT, false, WORK);
   expect(wiring.modelProvider).toBe("copilot-env-work");
@@ -235,7 +234,7 @@ test("a writer-produced direct profile inspects as wired via its own auth comman
 
 test("default and profile wiring coexist; each view reads only its own selection", () => {
   const codexHome = isolate();
-  configureCodexConfig(codexHome, { mode: "direct", quiet: true });
+  configureCodexConfig(codexHome, { mode: "direct" });
   writeProxyProfile(codexHome);
 
   // The default view (existing 4-arg call shape, untouched by this refactor)
@@ -270,7 +269,7 @@ test("a profile-only config leaves the default view unconfigured", () => {
 
 test("profile tables absent entirely read as none for the named view", () => {
   const codexHome = isolate();
-  configureCodexConfig(codexHome, { mode: "direct", quiet: true });
+  configureCodexConfig(codexHome, { mode: "direct" });
 
   const wiring = inspectCodexWiring(configText(codexHome), null, PROFILE_PORT, false, WORK);
   expect(wiring.configExists).toBe(true);
@@ -296,7 +295,6 @@ test("a selector for a DIFFERENT profile never selects this one", () => {
   configureCodexConfig(codexHome, {
     mode: "proxy",
     profile: other,
-    quiet: true,
     baseUrl: openaiBaseUrl(String(PROFILE_PORT)),
   });
 

@@ -13,7 +13,6 @@
 // single live call is RETRIED so a transient blip doesn't silently flip a working
 // Direct setup to proxy.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { settingsPathFor } from "../claude/paths.ts";
@@ -23,6 +22,7 @@ import { childEnvWithPath, cliSpawn, type CommandLook, findCommand } from "../ut
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { sleepSync } from "../utils/time.ts";
+import { removeScratchDir, type ScratchDir, scratchDir } from "../utils/report_write.ts";
 
 // Probe progress goes to stderr (consola), never stdout: the `--check`/`env`
 // machine-readable paths never probe, so this narration can't pollute them.
@@ -316,9 +316,9 @@ export function probeDirectWorks(
     `    • running a read-only smoke prompt through ${descriptor.cli} (live model call, a few seconds) ...`,
   );
 
-  let tmpHome: string | null = null;
+  let tmpHome: ScratchDir | null = null;
   try {
-    tmpHome = mkdtempSync(join(tmpdir(), `copilot-env-${descriptor.cli}-`));
+    tmpHome = scratchDir(join(tmpdir(), `copilot-env-${descriptor.cli}-`));
     writeDirectConfig(tmpHome);
     // Sanitized COMPLETE child env: provider families stripped case-insensitively
     // (why: see PROVIDER_ENV_PREFIXES), temp home set, and the resolved CLI's and
@@ -364,7 +364,7 @@ export function probeDirectWorks(
   } finally {
     if (tmpHome !== null) {
       try {
-        rmSync(tmpHome, { recursive: true, force: true });
+        removeScratchDir(tmpHome);
       } catch {
         // best-effort cleanup
       }

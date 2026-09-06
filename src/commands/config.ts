@@ -1,20 +1,23 @@
 // `agent config`: get/set/delete copilot-env preferences (the typed key-value store in
 // src/copilot_api/env_config.ts). The CONFIG_REGISTRY there is the single source of truth for
-// the keys; this command just parses/validates `--set` values and formats `--get` output.
+// the keys and configTable() there is the one table both `agent config` and its `--help`
+// print; this command just parses/validates `--set` values and prints `--get` output.
 import { consola } from "consola";
 import {
   CONFIG_REGISTRY,
   configDefaultLabel,
   type ConfigKeyDef,
   configKeyDef,
+  configTable,
   CopilotEnvConfig,
+  formatConfigValue,
   isProxyProjected,
+  isStoredValueInert,
 } from "../copilot_api/env_config.ts";
 import { installedProxyVersion } from "../copilot_api/version.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { versionLessThan } from "../utils/semver.ts";
-import { formatTable } from "../utils/table.ts";
 
 export interface ConfigArgs {
   /** `--set <key> <value>` (Commander variadic -> exactly two strings). */
@@ -28,10 +31,6 @@ export interface ConfigArgs {
 function unknownKeyError(cli: string): Error {
   const keys = CONFIG_REGISTRY.map((d) => d.cli).join(", ");
   return new Error(`unknown config key '${cli}'. Valid keys: ${keys}`);
-}
-
-function formatValue(value: boolean | number | string): string {
-  return String(value);
 }
 
 /** Keys projected into the proxy's config.json -- or read by `agent start`'s launch wiring
@@ -135,7 +134,7 @@ function runSet(cli: string, raw: string, platform: NodeJS.Platform): void {
     throw new Error(`invalid value for '${def.cli}': ${errMessage(e)}`);
   }
   new CopilotEnvConfig().set({ [def.key]: value });
-  consola.success(`set ${def.cli} = ${formatValue(value)}`);
+  consola.success(`set ${def.cli} = ${formatConfigValue(value)}`);
   const warning = sinceProxyVersionWarning(def, installedProxyVersion());
   if (warning !== null) consola.warn(warning);
   // The warning supersedes only the GENERIC restart hint (a restart cannot make an old proxy
@@ -171,36 +170,24 @@ function runDel(cli: string): void {
 
 function runGet(get: string | undefined, platform: NodeJS.Platform): void {
   const data = new CopilotEnvConfig().read();
-  // A POSIX-only key's stored value (an imported bundle's) is inert on Windows: the
-  // read sites see the built-in default there, so the keyed read answers with it too.
-  const inert = (def: ConfigKeyDef): boolean =>
-    def.posixOnly === true && platform === "win32" && data[def.key] !== undefined;
 
   if (typeof get === "string") {
     // One key -> print just the value on stdout (script-friendly); blank line when unset.
+    // A stored value that is inert on this platform answers with the built-in default,
+    // which is what every read site sees.
     const def = configKeyDef(get);
     if (def === undefined) throw unknownKeyError(get);
     const value = data[def.key];
-    if (inert(def)) {
+    if (isStoredValueInert(def, data, platform)) {
       process.stdout.write(`${configDefaultLabel(def)}\n`);
       return;
     }
-    process.stdout.write(value === undefined ? "\n" : `${formatValue(value)}\n`);
+    process.stdout.write(value === undefined ? "\n" : `${formatConfigValue(value)}\n`);
     return;
   }
 
-  // All keys -> a formatted table (stored value or "(default: <built-in>)"; an inert
-  // stored value is named so nothing is hidden).
-  const rows = CONFIG_REGISTRY.map((def) => {
-    const value = data[def.key];
-    const shown = value === undefined
-      ? `(default: ${configDefaultLabel(def)})`
-      : inert(def)
-      ? `(default: ${configDefaultLabel(def)}; stored ${
-        formatValue(value)
-      } is inert on ${platform})`
-      : formatValue(value);
-    return [def.cli, shown];
-  });
-  consola.log(`copilot-env config:\n${formatTable(rows).join("\n")}`);
+  // All keys -> the same grouped table `agent config --help` prints, with current values.
+  // Straight to stdout, not consola: consola reformats the backticks in the descriptions,
+  // and the two outputs must match byte for byte.
+  process.stdout.write(`${configTable(data, platform)}\n`);
 }

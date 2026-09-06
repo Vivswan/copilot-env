@@ -108,7 +108,7 @@ export type ConfigValue = boolean | number | string;
  *  (e.g. `["contextManagement", "responses"]`). */
 export type ProxyConfigPath = readonly [string, ...string[]];
 
-/** The `--help` sections, in display order. Grouped by what a key drives: the daemon
+/** The config table's sections, in display order. Grouped by what a key drives: the daemon
  *  process itself, the features projected into its config.json, the credential's handling,
  *  one agent's wiring, the shell, or copilot-env's own updates. */
 export const CONFIG_SECTIONS = [
@@ -874,18 +874,53 @@ export function projectedProxyConfig(
   return out;
 }
 
-/** A help block listing every config key under its section (CONFIG_SECTIONS order, registry
- *  order within a section) with its built-in default, then its description. Column widths
- *  are shared across sections so the keys line up as one list. */
-export function configKeysHelp(): string {
-  const cliWidth = CONFIG_REGISTRY.reduce((m, d) => Math.max(m, d.cli.length), 0);
-  const defaultOf = (d: ConfigKeyDef) => `default: ${configDefaultLabel(d)}`;
-  const defWidth = CONFIG_REGISTRY.reduce((m, d) => Math.max(m, defaultOf(d).length), 0);
-  const row = (d: ConfigKeyDef) =>
-    `  ${d.cli.padEnd(cliWidth)}  ${defaultOf(d).padEnd(defWidth)}  ${d.describe}`;
+/** How a stored value prints (`--set`'s echo, `--get <key>`, the table). */
+export function formatConfigValue(value: ConfigValue): string {
+  return String(value);
+}
+
+/** Whether `def`'s stored value is INERT on `platform`: a POSIX-only key's stored value (an
+ *  imported bundle's) does nothing on Windows -- every read site sees the built-in default
+ *  there. The table and `--get <key>` name such a value instead of hiding it. */
+export function isStoredValueInert(
+  def: ConfigKeyDef,
+  data: CopilotEnvConfigData,
+  platform: NodeJS.Platform,
+): boolean {
+  return def.posixOnly === true && platform === "win32" && data[def.key] !== undefined;
+}
+
+/** The ONE table `agent config` and `agent config --help` both print: every key under its
+ *  section (CONFIG_SECTIONS order, registry order within a section) with its current value
+ *  (`-` when unset; an inert stored value is shown WITH its inert note), its built-in
+ *  default, then its description. Column widths are shared across sections so the keys
+ *  line up as one list. Padded by hand rather than via utils/table.ts: this module is in
+ *  the preload shims' import closure, and a CLI rendering helper does not belong there. */
+export function configTable(data: CopilotEnvConfigData, platform: NodeJS.Platform): string {
+  const valueOf = (def: ConfigKeyDef): string => {
+    const value = data[def.key];
+    if (value === undefined) return "-";
+    const shown = formatConfigValue(value);
+    return isStoredValueInert(def, data, platform) ? `${shown} (inert on ${platform})` : shown;
+  };
+  const rows = CONFIG_REGISTRY.map((def) => ({
+    def,
+    value: valueOf(def),
+    defaultLabel: `default: ${configDefaultLabel(def)}`,
+  }));
+  type Row = (typeof rows)[number];
+  const widthOf = (column: (row: Row) => string): number =>
+    Math.max(...rows.map((row) => column(row).length));
+  const cliWidth = widthOf((row) => row.def.cli);
+  const valueWidth = widthOf((row) => row.value);
+  const defaultWidth = widthOf((row) => row.defaultLabel);
+  const line = (row: Row): string =>
+    `  ${row.def.cli.padEnd(cliWidth)}  ${row.value.padEnd(valueWidth)}  ${
+      row.defaultLabel.padEnd(defaultWidth)
+    }  ${row.def.describe}`;
   const blocks = CONFIG_SECTIONS.map((section) => {
-    const rows = CONFIG_REGISTRY.filter((d) => d.section === section).map(row);
-    return `${section}:\n${rows.join("\n")}`;
+    const lines = rows.filter((row) => row.def.section === section).map(line);
+    return `${section}:\n${lines.join("\n")}`;
   });
   return blocks.join("\n\n");
 }

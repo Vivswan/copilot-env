@@ -15,7 +15,7 @@ import {
   type ConfigKey,
   type ConfigKeyDef,
   configKeyDef,
-  configKeysHelp,
+  configTable,
   CopilotEnvConfig,
   isProxyProjected,
   OPENROUTER_MODELS_URL,
@@ -438,11 +438,10 @@ test("codex-host: stored else default, POSIX-only set, and Windows always reads 
   };
   expect(stdoutOf(() => runConfig({ get: "codex-host" }, "linux"))).toBe("true\n");
   expect(stdoutOf(() => runConfig({ get: "codex-host" }, "win32"))).toBe("false\n");
-  // The table goes through consola (stdout too).
-  const table = (platform: NodeJS.Platform): string =>
-    stdoutOf(() => runConfig({ get: true }, platform));
-  expect(table("linux")).toMatch(/codex-host\s+true\n/);
-  expect(table("win32")).toMatch(/codex-host\s+\(default: false; stored true is inert on win32\)/);
+  // The table is stdout too, and the command hands the renderer the same platform.
+  expect(stdoutOf(() => runConfig({ get: true }, "win32"))).toBe(
+    `${configTable(cfg.read(), "win32")}\n`,
+  );
 });
 
 test("the registry is alphabetical by CLI name with unique storage keys", () => {
@@ -458,10 +457,11 @@ test("the registry is alphabetical by CLI name with unique storage keys", () => 
   expect(new Set(keys).size).toBe(keys.length);
 });
 
-test("`agent config --help` lists the keys under their sections, in section then registry order", () => {
+test("configTable() groups the keys under their sections, in section then registry order, with value, default, description", () => {
   // One block per section: a `<Section>:` heading line, then one two-space-indented row per
   // key. Parsing the output back into blocks pins association and order, not just presence.
-  const blocks = configKeysHelp().split("\n\n").map((block) => {
+  const rendered = configTable({ autoStart: true, codexHost: true }, "win32");
+  const blocks = rendered.split("\n\n").map((block) => {
     const [heading, ...rows] = block.split("\n");
     return {
       heading,
@@ -477,6 +477,22 @@ test("`agent config --help` lists the keys under their sections, in section then
   );
   // A section with no keys would render as a bare heading: a dead name in the union.
   for (const b of blocks) expect(b.keys.length).toBeGreaterThan(0);
+  // Column widths are shared across sections: the default column starts at one offset on
+  // every row, so the keys read as one list rather than one table per section.
+  const keyRows = rendered.split("\n").filter((l) => l.startsWith("  "));
+  expect(new Set(keyRows.map((l) => l.indexOf("  default: "))).size).toBe(1);
+  // The value column: a stored value, `-` when unset, and a stored-but-inert value named
+  // with its note (nothing hidden); the default and description follow on the same row.
+  const rowOf = (cli: string): string | undefined =>
+    rendered.split("\n").find((l) => l.startsWith(`  ${cli} `))?.replace(/\s+/g, " ").trim();
+  const expectRow = (cli: string, value: string): void => {
+    const def = configKeyDef(cli);
+    if (def === undefined) throw new Error(`no config key '${cli}'`);
+    expect(rowOf(cli)).toBe(`${cli} ${value} default: ${configDefaultLabel(def)} ${def.describe}`);
+  };
+  expectRow("auto-start", "true");
+  expectRow("port", "-");
+  expectRow("codex-host", "true (inert on win32)");
 });
 
 test("projectedProxyConfig() force-projects the opinionated keys and opt-in keys only when set", () => {

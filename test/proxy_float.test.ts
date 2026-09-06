@@ -11,6 +11,7 @@ import {
   type FetchLike,
   floatProxy,
   minimumDependencyAgeArg,
+  nextProxyVersion,
   NPMRC_MARKER,
   parseRegistryDoc,
   proxyDenoDir,
@@ -34,6 +35,7 @@ import {
 } from "../src/copilot_api/process.ts";
 import { DAEMON_SHIM_FILES } from "../src/copilot_api/shims.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
+import { installedProxyVersion } from "../src/copilot_api/version.ts";
 import type { ProjectConfig } from "../src/utils/project_config.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { afterEach, beforeEach, describe, expect, removeDir, test } from "./helpers/testing.ts";
@@ -199,6 +201,25 @@ beforeEach(() => {
   dir = isolateProxyHome("copilot-float-");
   delete process.env[MIN_RELEASE_AGE_ENV];
   delete process.env[VERSION_ENV];
+});
+
+test("nextProxyVersion: the override is unknowable, a record wins, else the checkout's copy", () => {
+  // The version a gate judges before a launch, in the entry's precedence, without writing
+  // anything (unlike the entry resolution). The checkout's node_modules copy is the control:
+  // it exists here, so a null would be a wrong "unknown", not an absent package.
+  const installed = installedProxyVersion();
+  expect(installed).not.toBeNull();
+  expect(nextProxyVersion(dir)).toBe(installed);
+  seedFloat("1.99.0", NOW_MS);
+  const recordBefore = readFileSync(resolvedVersionFile(dir), "utf8");
+  expect(nextProxyVersion(dir)).toBe("1.99.0");
+  expect(readFileSync(resolvedVersionFile(dir), "utf8")).toBe(recordBefore);
+  process.env.COPILOT_API_ENTRY = join(dir, "fake-proxy.mjs");
+  try {
+    expect(nextProxyVersion(dir)).toBeNull();
+  } finally {
+    delete process.env.COPILOT_API_ENTRY;
+  }
 });
 
 afterEach(() => {

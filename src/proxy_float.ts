@@ -60,6 +60,7 @@ import { resolveRootHome } from "./copilot_api/paths.ts";
 import { allShimPaths } from "./copilot_api/shims.ts";
 import { resolveDenoBin } from "./copilot_api/sidecar.ts";
 import {
+  installedProxyVersion,
   PROXY_PACKAGE_NAME,
   proxyVersionBoundsStatus,
   proxyVersionFloorStatus,
@@ -423,6 +424,16 @@ export function readResolvedVersionRecord(rootHome: string): ResolvedVersionReco
     "denoDir": parsed.output.deno_dir,
     ...(typeof fingerprint === "string" ? { "buildFingerprint": fingerprint } : {}),
   };
+}
+
+/** The proxy version the NEXT daemon launch runs, in the entry's own precedence (see
+ *  resolveCopilotApiEntry): the float's recorded resolution, else the checkout's node_modules
+ *  copy; null when it cannot be known (nothing resolved or installed, or a COPILOT_API_ENTRY
+ *  file override). Read-only, unlike the entry resolution, which may write the daemon config:
+ *  what a version gate on a read path (`agent config`) judges against. */
+export function nextProxyVersion(rootHome: string = resolveRootHome()): string | null {
+  if (process.env.COPILOT_API_ENTRY?.trim()) return null;
+  return readResolvedVersionRecord(rootHome)?.version ?? installedProxyVersion();
 }
 
 /** Atomically (tmp+rename) write the record for a just-verified cache entry.

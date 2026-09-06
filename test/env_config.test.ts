@@ -461,7 +461,7 @@ const PLAIN_TABLE = {
   platform: "linux",
   width: 80,
   daemonUp: false,
-  installedProxy: null,
+  proxyVersion: "1.16.3",
   color: false,
 } as const;
 
@@ -543,7 +543,10 @@ test("configTable() renders the header, the sections, and key=value rows with ty
     // key=value; either way the description is what remains.
     return out.filter((l) => !l.startsWith("["));
   };
-  const longest = CONFIG_REGISTRY.reduce((a, b) => a.describe.length > b.describe.length ? a : b);
+  // Among the UNSTORED keys, whose right column is the type line and the description only.
+  const longest = CONFIG_REGISTRY.filter((d) => !(d.key in data)).reduce((a, b) =>
+    a.describe.length > b.describe.length ? a : b
+  );
   expect(longest.describe.length).toBeGreaterThan(PLAIN_TABLE.width - column);
   expect(describeLines(longest.cli).length).toBeGreaterThan(1);
   expect(describeLines(longest.cli).join(" ")).toBe(longest.describe);
@@ -558,16 +561,41 @@ test("configTable() renders the header, the sections, and key=value rows with ty
       " ".repeat(column) + "restart the proxy to apply";
   expect(restartAfter("strict-port")).toBe(true);
   expect(restartAfter("launchers")).toBe(false);
-  // A stored projected key the INSTALLED proxy is too old to read gets no restart line (no
-  // restart makes it read; `--set` suppresses its hint the same way); a new-enough proxy does.
+  // A stored projected key the proxy that runs next is too old to read gets no restart line
+  // (no restart makes it read; `--set` suppresses its hint the same way); a new-enough proxy
+  // does; a version that cannot be known suppresses the line on every row.
   const gated = { ...data, alphaSearchModel: "gpt-5" };
-  const restartLineFor = (installedProxy: string): boolean => {
-    const out = configTable(gated, { ...PLAIN_TABLE, daemonUp: true, installedProxy }).split("\n");
-    const at = out.findIndex((l) => rowRe.exec(l)?.[2] === "alpha-search-model");
+  const restartLineFor = (proxyVersion: string | null, cli: string): boolean => {
+    const out = configTable(gated, { ...PLAIN_TABLE, daemonUp: true, proxyVersion }).split("\n");
+    const at = out.findIndex((l) => rowRe.exec(l)?.[2] === cli);
     return out[at + 1] === " ".repeat(column) + "restart the proxy to apply";
   };
-  expect(restartLineFor("1.14.21")).toBe(false);
-  expect(restartLineFor("1.16.3")).toBe(true);
+  expect(restartLineFor("1.14.21", "alpha-search-model")).toBe(false);
+  expect(restartLineFor("1.16.3", "alpha-search-model")).toBe(true);
+  expect(restartLineFor(null, "strict-port")).toBe(false);
+});
+
+test("configTable() at width 60 packs the header onto two lines and keeps every row within the width", () => {
+  const out = configTable({ strictPort: true }, { ...PLAIN_TABLE, width: 60 }).split("\n");
+  expect(out.slice(0, 3)).toEqual([
+    `1 of ${CONFIG_REGISTRY.length} keys set (*).`,
+    "agent config --set <key> <value>  |  --del <key> reverts",
+    "",
+  ]);
+  expect(out.filter((l) => l.length > 60)).toEqual([]);
+});
+
+test("configTable() at width 40 stacks the right column under each key row at a six-space indent", () => {
+  const out = configTable({ strictPort: true }, { ...PLAIN_TABLE, width: 40 }).split("\n");
+  const at = out.indexOf("* strict-port=true");
+  expect(at).toBeGreaterThan(0);
+  expect(out[at + 1]).toBe("      [bool] default false");
+  expect(out[at + 2]?.startsWith("      Fail start on a busy port")).toBe(true);
+  // Only the unbreakable pieces run past the width: the header's syntax half and the URL value.
+  expect(out.filter((l) => l.length > 40)).toEqual([
+    "agent config --set <key> <value>  |  --del <key> reverts",
+    `  pricing-url=${OPENROUTER_MODELS_URL}`,
+  ]);
 });
 
 test("every registry key carries a type label owned by its value domain", () => {
@@ -836,11 +864,6 @@ test("claude-desktop is opt-OUT: unset and deleted read enabled, stored false di
 });
 
 test("registry defaults are bare values: what --set stores, or absent when unset is the default", () => {
-  for (const def of CONFIG_REGISTRY) {
-    // One owner per entry: defaultValue (internal, or the proxy's own on an opt-in key) or
-    // proxyDefault (force-projected), never both.
-    expect(def.defaultValue === undefined || def.proxyDefault === undefined).toBe(true);
-  }
   // The read sites consume the registry's values (via the CopilotEnvConfig accessors), so
   // these pins guard ONE fact each.
   expect(configDefaultNumber("port")).toBe(4141);

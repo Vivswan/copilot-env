@@ -15,7 +15,7 @@ import {
   isProxyProjected,
   isStoredValueInert,
 } from "../copilot_api/env_config.ts";
-import { installedProxyVersion } from "../copilot_api/version.ts";
+import { nextProxyVersion } from "../proxy_float.ts";
 import { bold, COLOR_ENABLED, cyan, dim, green } from "../utils/ansi.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
@@ -137,26 +137,27 @@ function runSet(cli: string, raw: string, platform: NodeJS.Platform): void {
   }
   new CopilotEnvConfig().set({ [def.key]: value });
   consola.success(`set ${def.cli} = ${formatConfigValue(value)}`);
-  const warning = sinceProxyVersionWarning(def, installedProxyVersion());
+  const warning = sinceProxyVersionWarning(def, nextProxyVersion());
   if (warning !== null) consola.warn(warning);
   // The warning supersedes only the GENERIC restart hint (a restart cannot make an old proxy
   // read the key); a bespoke applyHint often covers a non-proxy surface and still applies.
   if (def.applyHint !== undefined || warning === null) noteHowItApplies(def);
 }
 
-/** The warnings for every STORED projected key the installed proxy is too old to read: the
- *  projection just wrote values the daemon will ignore. `agent start` prints these after
- *  projecting -- the moment the actual proxy version is known -- so a key set before the
- *  first start (when no proxy existed to compare against) still gets its warning. */
+/** The warnings for every STORED projected key the proxy that runs next (`proxyVersion`, the
+ *  float's resolution else the checkout's copy) is too old to read: the projection just wrote
+ *  values the daemon will ignore. `agent start` prints these after projecting -- the moment
+ *  the version that runs is known -- so a key set before the first start (when no proxy
+ *  existed to compare against) still gets its warning. */
 export function unreadProjectedKeyWarnings(
   envConfig: CopilotEnvConfig = new CopilotEnvConfig(),
-  installed: string | null = installedProxyVersion(),
+  proxyVersion: string | null = nextProxyVersion(),
 ): string[] {
   const stored = envConfig.read();
   const warnings: string[] = [];
   for (const def of CONFIG_REGISTRY) {
     if (stored[def.key] === undefined) continue;
-    const warning = sinceProxyVersionWarning(def, installed);
+    const warning = sinceProxyVersionWarning(def, proxyVersion);
     if (warning !== null) warnings.push(warning);
   }
   return warnings;
@@ -196,24 +197,32 @@ const TABLE_WIDTH_MAX = 80;
  *  column stops growing for it (a longer key=value overflows onto its own line) and below
  *  which wrapping stops (a narrower ribbon reads worse than the terminal's own breaking). */
 const MIN_RIGHT_COLUMNS = 30;
+/** Indent of a right column stacked under its key row when no key=value column leaves
+ *  MIN_RIGHT_COLUMNS beside it (a narrow terminal). */
+const STACKED_INDENT = 6;
 /** The value cell of a key that is unset AND has no built-in default. */
 const UNSET_VALUE = "<unset>";
 const RESTART_LINE = "restart the proxy to apply";
 
-/** Pack `items` into lines of at most `columns` characters, one space between items, never
+/** Pack `items` into lines of at most `columns` characters, `gap` spaces between items, never
  *  splitting an item: an item longer than `columns` stands on its own line. The one wrap rule
- *  for the description's words and the right column's cells alike. */
-function packToWidth<T>(items: T[], length: (item: T) => number, columns: number): T[][] {
+ *  for the header's halves, the description's words, and the right column's cells alike. */
+function packToWidth<T>(
+  items: T[],
+  length: (item: T) => number,
+  columns: number,
+  gap = 1,
+): T[][] {
   const lines: T[][] = [];
   let current: T[] = [];
   let used = 0;
   for (const item of items) {
-    if (current.length > 0 && used + 1 + length(item) > columns) {
+    if (current.length > 0 && used + gap + length(item) > columns) {
       lines.push(current);
       current = [];
       used = 0;
     }
-    used += (current.length > 0 ? 1 : 0) + length(item);
+    used += (current.length > 0 ? gap : 0) + length(item);
     current.push(item);
   }
   lines.push(current);
@@ -233,9 +242,11 @@ export interface ConfigTableOptions {
   width: number;
   /** A tracked daemon is alive, so a stored key it read at launch earns the restart line. */
   daemonUp: boolean;
-  /** The installed proxy's version (null when none): a stored projected key it is too old to
-   *  read (sinceProxyVersionWarning) earns no restart line, since no restart makes it read. */
-  installedProxy: string | null;
+  /** The proxy version the next launch runs (nextProxyVersion): a stored projected key it is
+   *  too old to read (sinceProxyVersionWarning) earns no restart line, since no restart makes
+   *  it read. Null = the version cannot be known, and then NO row earns the line: a missing
+   *  hint is cheaper than a wrong one. */
+  proxyVersion: string | null;
   /** Emit ANSI styling; off yields the same bytes minus the escapes. */
   color: boolean;
 }
@@ -266,11 +277,15 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
       : formatConfigValue(fallback);
     return { def, stored: stored !== undefined, fallback, value, keyValue: `${def.cli}=${value}` };
   });
-  const lengths = rows.map((row) => row.keyValue.length);
-  const fitting = lengths.filter((n) => 2 + n + 2 + MIN_RIGHT_COLUMNS <= opts.width);
-  const column = 2 + Math.max(...(fitting.length > 0 ? fitting : lengths)) + 2;
-  // Below the floor the right column stops wrapping: everything packs onto one line.
-  const rightWidth = Math.max(opts.width - column, MIN_RIGHT_COLUMNS) === opts.width - column
+  // The key=value column: the longest key=value that still leaves the right column
+  // MIN_RIGHT_COLUMNS (a longer one gets its own line, its right column below). When none
+  // does, every right column stacks under its key row at STACKED_INDENT; and when even that
+  // leaves fewer than the floor, the right column stops wrapping altogether.
+  const fitting = rows
+    .map((row) => row.keyValue.length)
+    .filter((n) => 2 + n + 2 + MIN_RIGHT_COLUMNS <= opts.width);
+  const column = fitting.length > 0 ? 2 + Math.max(...fitting) + 2 : STACKED_INDENT;
+  const rightWidth = opts.width - column >= MIN_RIGHT_COLUMNS
     ? opts.width - column
     : Number.POSITIVE_INFINITY;
   const indent = " ".repeat(column);
@@ -291,8 +306,8 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
       .map((line) => line.map((cell) => cell.paint(cell.text)).join(" "));
     const daemonReads = isProxyProjected(def) || def.restartToApply === true;
     if (
-      row.stored && opts.daemonUp && daemonReads &&
-      sinceProxyVersionWarning(def, opts.installedProxy) === null
+      row.stored && opts.daemonUp && daemonReads && opts.proxyVersion !== null &&
+      sinceProxyVersionWarning(def, opts.proxyVersion) === null
     ) {
       right.push(paint.dim(paint.green(RESTART_LINE)));
     }
@@ -316,9 +331,13 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
   };
 
   const storedCount = rows.filter((row) => row.stored).length;
-  const header = paint.dim(
-    `${storedCount} of ${rows.length} keys set (*).  agent config --set <key> <value>  |  --del <key> reverts`,
-  );
+  const headerHalves = [
+    `${storedCount} of ${rows.length} keys set (*).`,
+    "agent config --set <key> <value>  |  --del <key> reverts",
+  ];
+  const header = packToWidth(headerHalves, (half) => half.length, opts.width, 2)
+    .map((halves) => paint.dim(halves.join("  ")))
+    .join("\n");
   const blocks = CONFIG_SECTIONS.map((section) => {
     const lines = rows.filter((row) => row.def.section === section).flatMap(renderRow);
     return [paint.bold(`${section}:`), ...lines].join("\n");
@@ -335,7 +354,7 @@ export function configTableOutput(platform: NodeJS.Platform = process.platform):
     // `columns` is undefined off a TTY and 0 on a size-less pty: both mean the cap.
     width: Math.min(process.stdout.columns || TABLE_WIDTH_MAX, TABLE_WIDTH_MAX),
     daemonUp: anyTrackedDaemonAlive(),
-    installedProxy: installedProxyVersion(),
+    proxyVersion: nextProxyVersion(),
     color: COLOR_ENABLED,
   });
 }

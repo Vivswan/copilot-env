@@ -1,7 +1,6 @@
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { CHILD_VALUES, childValuesEnv, runSync } from "./helpers/run.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { dirname, join } from "node:path";
+import { CHILD_VALUES, childValuesEnv, runSync, spawnChild } from "./helpers/run.ts";
+import { expect, PINNED_DENO_DIR, tempDir, test, TEST_ROOT_ENV } from "./helpers/testing.ts";
 
 // The env contract of the suite's one synchronous spawn: `undefined` means the key is really
 // absent in the child, not merely unmentioned. Every isolation harness that spells an unset
@@ -85,7 +84,7 @@ test("runSync: an explicitly undefined env value is unset in the child, not merg
 
 /** A path no executable occupies, so the spawn fails rather than running something.
  *  Built from the temp dir so it is absolute-and-absent on every platform. */
-const UNSPAWNABLE = join(tmpdir(), "copilot-env-definitely-not", "not-a-binary");
+const UNSPAWNABLE = join(tempDir("copilot-env-definitely-not-"), "not-a-binary");
 
 test("runSync: an unset survives a failed spawn, and never leaks into the parent", () => {
   process.env[PROBE] = "PARENT_VALUE";
@@ -135,4 +134,37 @@ test("CHILD_VALUES: the env payload round-trips paths, markup, and terminators a
     env: { ...process.env },
   });
   expect(bare.stdout.trim()).toBe("undefined");
+});
+
+// --- the harness keys: on every child, over whatever env the caller gave ---------------
+
+const READ_HARNESS_KEYS = `console.log(JSON.stringify([Deno.env.get(${
+  JSON.stringify(TEST_ROOT_ENV)
+}), Deno.env.get("DENO_DIR")]))`;
+
+test("both spawns put the temp root and the cache pin on the child, whatever the caller's env says", async () => {
+  const root = dirname(tempDir("copilot-env-harness-"));
+  const expected = [root, PINNED_DENO_DIR];
+  // A replacement env without either key, and one that tries to unset the root and point
+  // the cache at a relative path: the harness keys win, because a child that lost them would
+  // mint its root beside ours or grow a cache under its HOME.
+  const hostile = { ...platformEssentials(), [TEST_ROOT_ENV]: undefined, DENO_DIR: "relative" };
+  for (const env of [platformEssentials(), hostile]) {
+    expect(JSON.parse(runSync(Deno.execPath(), ["eval", READ_HARNESS_KEYS], { env }).stdout))
+      .toEqual(expected);
+  }
+  const child = spawnChild(Deno.execPath(), {
+    args: ["eval", READ_HARNESS_KEYS],
+    env: { [TEST_ROOT_ENV]: "elsewhere", DENO_DIR: "" },
+    stdout: "piped",
+    stderr: "null",
+  });
+  const out = await child.output();
+  expect(JSON.parse(new TextDecoder().decode(out.stdout))).toEqual(expected);
+  // An absolute cache the caller names is theirs to keep: the proxy float pins its own.
+  const own = tempDir("copilot-env-own-cache-");
+  const kept = runSync(Deno.execPath(), ["eval", READ_HARNESS_KEYS], {
+    env: { ...process.env, DENO_DIR: own },
+  });
+  expect(JSON.parse(kept.stdout)).toEqual([root, own]);
 });

@@ -42,12 +42,11 @@ import {
 } from "../src/claude/desktop.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
-import { afterEach, beforeEach, expect, test } from "./helpers/testing.ts";
+import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testing.ts";
 import {
   type AgentHomes,
   envSnapshot,
   isolateAgentHomes,
-  removeDir,
   resetExitCode,
   writeRunState,
 } from "./helpers.ts";

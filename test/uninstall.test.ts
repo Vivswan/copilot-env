@@ -23,14 +23,8 @@ import { isRecord } from "../src/utils/json.ts";
 import { INSTALL_MANIFEST_FILE, type RootMode } from "../src/utils/root.ts";
 import { pointCurrentAt } from "../src/install/installer.ts";
 import { ROOT } from "./helpers/run.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
-import {
-  envSnapshot,
-  isolateAgentHomes,
-  removeDir,
-  resetExitCode,
-  stageRefusedStop,
-} from "./helpers.ts";
+import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateAgentHomes, resetExitCode, stageRefusedStop } from "./helpers.ts";
 
 // A branded fixture name: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");

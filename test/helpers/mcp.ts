@@ -3,22 +3,20 @@
 // The consolidation is the point -- a credential env var scrubbed here is
 // scrubbed for every suite, so no test can silently pick up an ambient
 // credential and start making real network calls.
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { denoRunArgs, ROOT, spawnChild } from "./run.ts";
-import { expect } from "./testing.ts";
+import { expect, removeDir, tempDir } from "./testing.ts";
 
 let dirs: string[] = [];
 
 /** Remove every temp dir handed out since the last call; suites call this in afterEach. */
 export function cleanupTmpDirs(): void {
-  for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  for (const d of dirs) removeDir(d);
   dirs = [];
 }
 
-export function tmpDir(tag: string): string {
-  const d = mkdtempSync(join(tmpdir(), `copilot-mcp-${tag}-`));
+function mcpTempDir(tag: string): string {
+  const d = tempDir(`copilot-mcp-${tag}-`);
   dirs.push(d);
   return d;
 }
@@ -29,8 +27,8 @@ export function mcpEnv(): Record<string, string> {
     if (v !== undefined) env[k] = v;
   }
   // Hermetic stores + no ambient credential: the no-credential tool error is the point.
-  env.COPILOT_API_HOME = tmpDir("home");
-  env.CLAUDE_CONFIG_DIR = tmpDir("claude");
+  env.COPILOT_API_HOME = mcpTempDir("home");
+  env.CLAUDE_CONFIG_DIR = mcpTempDir("claude");
   env.CONSOLA_LEVEL = "5"; // consola self-silences under test otherwise
   delete env.COPILOT_GITHUB_TOKEN;
   delete env.GH_TOKEN;

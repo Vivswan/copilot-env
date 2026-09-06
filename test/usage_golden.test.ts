@@ -4,8 +4,7 @@ import { join } from "node:path";
 import { buildSourceJson, type CostRuntime } from "../src/usage/cost.ts";
 import { estimateCost, type PricingTier } from "../src/usage/pricing.ts";
 import type { ReadonlyUsageReport } from "../src/usage/usage.ts";
-import { removeDir, tmpDir } from "./helpers.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { expect, tempDir, test } from "./helpers/testing.ts";
 import type { GeneratedTree } from "./helpers/usage_fixtures.ts";
 import {
   canonicalLedger,
@@ -47,17 +46,6 @@ function extraMb(raw: string | undefined): number {
   return n;
 }
 
-const roots: string[] = [];
-globalThis.addEventListener("unload", () => {
-  for (const root of roots) removeDir(root);
-});
-
-function freshRoot(): string {
-  const root = tmpDir("usage-golden-");
-  roots.push(root);
-  return root;
-}
-
 interface Golden {
   entry: GoldenCase;
   /** What the old cli printed. */
@@ -83,7 +71,7 @@ function loadGolden(entry: GoldenCase): Promise<Golden> {
       for (const [source, n] of Object.entries(events)) {
         expect(n, `${entry.name} ${source}`).toBeGreaterThan(0);
       }
-      const generated = await generateGoldenTree(entry, freshRoot());
+      const generated = await generateGoldenTree(entry, tempDir("usage-golden-"));
       expect(
         treeSha256(generated.tree),
         `${entry.name}: the generator no longer writes the recorded tree`,
@@ -145,7 +133,7 @@ async function checkReadPaths(tree: GeneratedTree, golden?: Record<string, unkno
   const expected = golden ?? plain.payload;
   expect(describeMismatch(plain.payload, expected)).toBeNull();
 
-  const copilotApiHome = join(freshRoot(), "copilot-env");
+  const copilotApiHome = join(tempDir("usage-golden-"), "copilot-env");
   const cold = await runCurrentCost(tree.root, { copilotApiHome });
   expect(describeMismatch(cold.payload, expected)).toBeNull();
   const warm = await runCurrentCost(tree.root, { copilotApiHome });
@@ -215,7 +203,7 @@ test.skipIf(!UTC || !(EXTRA_MB > COMMITTED_MB))(
       generator: generatorParams(EXTRA_MB, 1, true),
       split: false,
     };
-    const { tree } = await generateGoldenTree(entry, freshRoot());
+    const { tree } = await generateGoldenTree(entry, tempDir("usage-golden-"));
     await checkReadPaths(tree);
   },
   600_000,

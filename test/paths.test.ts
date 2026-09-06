@@ -1,5 +1,5 @@
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   CopilotApiPaths,
@@ -13,8 +13,8 @@ import {
 } from "../src/copilot_api/paths.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { getSanitizedHostname } from "../src/utils/hostname.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -149,7 +149,7 @@ test("account-wide files resolve to the ROOT home, never a daemon home or .run/<
 test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   "usageDbsUnderHome propagates a stat failure instead of silently dropping a DB",
   () => {
-    dir = mkdtempSync(join(tmpdir(), "copilot-paths-"));
+    dir = tempDir("copilot-paths-");
     const home = join(dir, "home");
     const open = join(home, RUN_DIR_NAME, "host-a");
     const blocked = join(home, RUN_DIR_NAME, "host-b");

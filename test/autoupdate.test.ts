@@ -12,8 +12,8 @@ import {
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { packageVersion } from "../src/utils/version.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, removeDir, tmpDir } from "./helpers.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { envSnapshot } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -22,7 +22,7 @@ afterEach(() => {
   dir = removeDir(dir);
 });
 function tmp(name: string): string {
-  dir = tmpDir("copilot-env-autoupdate-");
+  dir = tempDir("copilot-env-autoupdate-");
   return join(dir, name);
 }
 
@@ -32,7 +32,7 @@ test("autoupdate state lives at the TOP of a versioned root, never through the l
   // The state is machine state: written through `<top>/current` it would land
   // inside a version dir, and the next update's GC (or just the flip) would
   // silently drop the check record (and re-check the next day).
-  const top = tmpDir("copilot-env-autoupdate-paths-");
+  const top = tempDir("copilot-env-autoupdate-paths-");
   try {
     expect(autoupdateDir(top)).toBe(join(top, ".autoupdate")); // flat: in place
     mkdirSync(join(top, "versions", "v1.0.0"), { recursive: true });

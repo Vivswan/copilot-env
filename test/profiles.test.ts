@@ -40,14 +40,8 @@ import {
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
 import { isRecord } from "../src/utils/json.ts";
-import { afterEach, beforeEach, expect, test } from "./helpers/testing.ts";
-import {
-  envSnapshot,
-  isolateAgentHomes,
-  removeDir,
-  resetExitCode,
-  stageRefusedStop,
-} from "./helpers.ts";
+import { afterEach, beforeEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateAgentHomes, resetExitCode, stageRefusedStop } from "./helpers.ts";
 
 // Branded fixture names: parseProfileName is the only mint for ProfileName.
 const WORK = parseProfileName("work");

@@ -1,10 +1,9 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { isRecord } from "../src/utils/json.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
 import { runSync } from "./helpers/run.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { expect, tempDir, test } from "./helpers/testing.ts";
 
 // The runtime pin has ONE source of truth (.dvmrc); the Dockerfile's ARG
 // default is a convenience copy for bare `docker build` - pin the two together
@@ -123,7 +122,7 @@ test("lifecycle-smoke.sh refuses to run outside a container or CI", () => {
   ) {
     return;
   }
-  const scratch = mkdtempSync(join(tmpdir(), "copilot-smoke-guard-"));
+  const scratch = tempDir("copilot-smoke-guard-");
   try {
     const proc = runSync("/bin/bash", [smokePath], {
       env: {

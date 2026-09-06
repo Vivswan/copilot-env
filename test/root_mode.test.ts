@@ -6,8 +6,8 @@
 // PROJECT_ROOT, the paths handed to other programs, and the kind -> protection
 // policy every destructive gate reads. Verifying the compiled half means building a
 // binary and running it from an install root.
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { isAbsolute, join, parse } from "node:path";
 import {
   AGENT_AUTH_GET_ARGS,
@@ -26,7 +26,7 @@ import {
 } from "../src/utils/root.ts";
 import { PROJECT_CONFIG_FILE, readProjectConfig } from "../src/utils/project_config.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { expect, tempDir, test } from "./helpers/testing.ts";
 
 test("the suite runs in checkout mode, where both roots are the source tree", () => {
   const mode = rootMode();
@@ -80,7 +80,7 @@ test("a valid manifest alone qualifies a root; unreadable fails closed", () => {
   // qualifies the root by itself, so a user-deleted asset dir cannot make a real
   // install invisible to uninstall. Absent or invalid falls back to the marker
   // layout (checkouts and pre-manifest installs have no manifest to read).
-  const root = mkdtempSync(join(tmpdir(), "copilot-root-mode-"));
+  const root = tempDir("copilot-root-mode-");
   try {
     const manifestPath = join(root, INSTALL_MANIFEST_FILE);
     const valid = JSON.stringify({ "version": "0.0.1", "kind": "installed", "assets": ["shell"] });
@@ -165,7 +165,7 @@ test("devDenoExecPath is the runtime binary under a real deno (the compiled half
 });
 
 test("derivedCompiledRoot: a flat root derives two levels up from the binary", () => {
-  const root = mkdtempSync(join(tmpdir(), "copilot-root-derive-"));
+  const root = tempDir("copilot-root-derive-");
   try {
     expect(derivedCompiledRoot(join(root, "bin", "copilot-env"))).toBe(root);
   } finally {
@@ -177,7 +177,7 @@ test("derivedCompiledRoot: a versioned binary roots at the current link, never i
   // The GC-survival property: every path persisted outside the install is built
   // from this root, and a `versions/<name>` component in it would die with the
   // next-but-one update's garbage collection.
-  const top = mkdtempSync(join(tmpdir(), "copilot-root-derive-"));
+  const top = tempDir("copilot-root-derive-");
   try {
     const binary = join(top, "versions", "v9.9.9", "bin", "copilot-env");
     mkdirSync(join(top, "versions", "v9.9.9", "bin"), { recursive: true });
@@ -216,7 +216,7 @@ test("derivedCompiledRoot: a versioned binary roots at the current link, never i
 });
 
 test("installStateRoot: machine state lives at the versioned TOP, else at the root itself", () => {
-  const top = mkdtempSync(join(tmpdir(), "copilot-root-state-"));
+  const top = tempDir("copilot-root-state-");
   try {
     // A plain (flat or checkout) root keeps its state in place.
     expect(installStateRoot(top)).toBe(top);
@@ -234,7 +234,7 @@ test("installStateRoot: machine state lives at the versioned TOP, else at the ro
 });
 
 test("looksLikeInstallRoot recognizes a versioned top only with the link and a manifest", () => {
-  const top = mkdtempSync(join(tmpdir(), "copilot-root-vtop-"));
+  const top = tempDir("copilot-root-vtop-");
   const valid = JSON.stringify({ "version": "9.9.9", "kind": "installed", "assets": ["shell"] });
   try {
     // Layout-shaped names alone never qualify a directory for recursive

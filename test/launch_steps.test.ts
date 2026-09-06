@@ -53,14 +53,13 @@ import {
   ROOT,
   spawnChild,
 } from "./helpers/run.ts";
-import { afterEach, describe, expect, test } from "./helpers/testing.ts";
+import { afterEach, describe, expect, removeDir, test } from "./helpers/testing.ts";
 import {
   defaultHomeDir,
   envSnapshot,
   isolateProxyHome,
   killAndAwaitExit,
   launchFakeDaemon,
-  removeDir,
   until,
   withUnprovablePidProbe,
   writeRunState,

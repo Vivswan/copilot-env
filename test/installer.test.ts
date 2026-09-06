@@ -2,7 +2,6 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   readlinkSync,
   rmSync,
@@ -10,7 +9,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join, parse } from "node:path";
 import {
   adoptVersionedLayout,
@@ -49,7 +48,7 @@ import { INSTALL_MANIFEST_FILE, INSTALL_ROOT_MARKERS } from "../src/utils/root.t
 import { packageVersion } from "../src/utils/version.ts";
 import { envSnapshot } from "./helpers.ts";
 import { runSync } from "./helpers/run.ts";
-import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
+import { afterEach, beforeEach, describe, expect, tempDir, test } from "./helpers/testing.ts";
 
 const OPTIONS: InstallOptions = { noShellIntegration: false, allHosts: false, assetsOnly: false };
 /** Full-install options that plan no shell wiring (tests that APPLY plans use
@@ -130,7 +129,7 @@ function writeFakeBinary(path: string, content = "#!/bin/sh\nexit 0\n"): string 
 }
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "copilot-installer-"));
+  root = tempDir("copilot-installer-");
   source = join(root, "vfs");
   dest = join(root, "install");
   mkdirSync(source, { recursive: true });

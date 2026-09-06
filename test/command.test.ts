@@ -1,4 +1,3 @@
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   childEnvWithPath,
@@ -9,7 +8,7 @@ import {
   runCaptured,
   verbatimCliSpawn,
 } from "../src/utils/command.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
+import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 
 const SEP = process.platform === "win32" ? ";" : ":";
 
@@ -175,7 +174,7 @@ test("runCaptured: the launch-failure mark rides ONLY the synthesized exit", asy
 
   // Never ran: ENOENT coerces to the SAME exit 1, and the mark is the only thing
   // separating it from a real completed exit 1.
-  const missing = await runCaptured(join(tmpdir(), "copilot-env-no-such-tool"), []);
+  const missing = await runCaptured(join(tempDir("copilot-env-no-such-tool-"), "missing"), []);
   expect(missing.exitCode).toBe(1);
   expect(missing.launchFailed).toBe(true);
 });

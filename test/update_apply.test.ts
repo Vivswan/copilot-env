@@ -1,6 +1,5 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { crypto } from "@std/crypto";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   applyUpdate,
@@ -24,7 +23,7 @@ import {
   RELEASE_TARGETS,
   releaseAssetName,
 } from "../src/install/targets.ts";
-import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
+import { afterEach, beforeEach, describe, expect, tempDir, test } from "./helpers/testing.ts";
 
 // The compiled-era update: fetch this platform's binary, verify it against the
 // release manifest and (through an injected verifier -- the real one needs the
@@ -119,7 +118,7 @@ function invocations(): string[] {
 }
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "copilot-update-"));
+  root = tempDir("copilot-update-");
   releaseDir = join(root, "release");
   installDir = join(root, "install");
   mkdirSync(releaseDir, { recursive: true });

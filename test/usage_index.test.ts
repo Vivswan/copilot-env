@@ -7,14 +7,12 @@ import {
   appendFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -42,7 +40,7 @@ import {
 } from "../src/usage/index.ts";
 import { releaseFileLock, tryAcquireFileLock } from "../src/utils/file_lock.ts";
 import { captureAllWrites } from "./helpers/output.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
+import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 
 let root = "";
 let logs = "";
@@ -62,7 +60,7 @@ afterEach(() => {
 });
 
 function setup(): void {
-  root = mkdtempSync(join(tmpdir(), "usage-index-"));
+  root = tempDir("usage-index-");
   logs = join(root, "logs");
   indexDir = join(root, "index");
   mkdirSync(logs);

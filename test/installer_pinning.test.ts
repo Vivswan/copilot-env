@@ -15,9 +15,8 @@ import {
   RELEASE_TARGETS,
   releaseAssetName,
 } from "../src/install/targets.ts";
-import { removeDir, tmpDir } from "./helpers.ts";
 import { ROOT, runSync } from "./helpers/run.ts";
-import { describe, expect, test } from "./helpers/testing.ts";
+import { describe, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 
 // The installers hand-roll lists that TypeScript modules own, and nothing at
 // runtime ties them together: shell cannot import TS. Each guard below parses
@@ -274,7 +273,7 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
   function makeDownloadDir(): string {
     const target = currentReleaseTarget();
     if (target === null) throw new Error("no release target for this platform");
-    const dir = tmpDir("ce-guard-dl-");
+    const dir = tempDir("ce-guard-dl-");
     const asset = releaseAssetName(target);
     const body = Deno.build.os === "windows"
       ? "not a real executable\n"
@@ -288,7 +287,7 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
   /** A fresh target root: node_modules debris plus the given entries.
    *  `git` plants .git as a directory, a worktree-style file, or not at all. */
   function makeRoot(marker: string, git: "dir" | "file" | "none"): string {
-    const root = tmpDir("ce-guard-root-");
+    const root = tempDir("ce-guard-root-");
     writeFileSync(join(root, marker), "{}\n");
     mkdirSync(join(root, "node_modules"));
     writeFileSync(join(root, "node_modules", "keep.txt"), "keep\n");
@@ -473,7 +472,7 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
       `${home}/.`,
       ".",
     ];
-    const emptyDownloadDir = tmpDir("ce-lexical-dl-");
+    const emptyDownloadDir = tempDir("ce-lexical-dl-");
     try {
       for (const dir of unsafe) {
         const res = runSync("bash", [join(ROOT, "install.sh"), "--dir", dir], {
@@ -506,7 +505,7 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
       `${home}\\.`, // GetFullPath collapses the dot component back to home
       `${home}\\*`, // wildcard rejection
     ];
-    const emptyDownloadDir = tmpDir("ce-lexical-dl-");
+    const emptyDownloadDir = tempDir("ce-lexical-dl-");
     try {
       for (const dir of unsafe) {
         const env: Record<string, string | undefined> = {

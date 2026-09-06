@@ -1,5 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   installedProxyVersion,
@@ -10,7 +9,7 @@ import {
 import { isRecord } from "../src/utils/json.ts";
 import type { ProjectConfig } from "../src/utils/project_config.ts";
 import { PROJECT_ROOT } from "../src/utils/root.ts";
-import { afterEach, beforeEach, describe, expect, test } from "./helpers/testing.ts";
+import { afterEach, beforeEach, describe, expect, tempDir, test } from "./helpers/testing.ts";
 
 let dir = "";
 
@@ -26,7 +25,7 @@ function writeProxyPackage(versionJson: string): void {
 }
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-version-"));
+  dir = tempDir("copilot-version-");
 });
 
 afterEach(() => {

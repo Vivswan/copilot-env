@@ -3,9 +3,8 @@
 // runPrintProxyToken is the only write -- so each table row asserts the full effect
 // set {launched, prompted, heartbeat, key printed, exit code} and the spawn tests
 // assert stdout byte-for-byte.
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   type LaunchOutput,
@@ -14,9 +13,9 @@ import {
 } from "../src/commands/proxy_token.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { parseProfileName, type Profile } from "../src/copilot_api/profile.ts";
-import { envSnapshot, removeDir, writeRunState } from "./helpers.ts";
+import { envSnapshot, writeRunState } from "./helpers.ts";
 import { importSpecifier, ROOT, runCli, runScript, spawnChild } from "./helpers/run.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 
 const skipWin = test.skipIf(process.platform === "win32");
 const WORK = parseProfileName("work");
@@ -189,14 +188,14 @@ function isolatedEnv(home: string): Record<string, string> {
 }
 
 test("spawned refuse path (--yes, down, unmanaged): exit 1 and a byte-empty stdout", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-proxy-token-"));
+  dir = tempDir("copilot-proxy-token-");
   const res = runCli(["proxy-token", "--yes"], { env: isolatedEnv(dir) });
   expect(res.exitCode).toBe(1);
   expect(res.stdout).toBe("");
 });
 
 test("spawned decline path: prompt and refusal live on stderr, stdout stays byte-empty", () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-proxy-token-"));
+  dir = tempDir("copilot-proxy-token-");
   const res = runCli(["proxy-token"], { env: isolatedEnv(dir), input: "n\n" });
   expect(res.exitCode).toBe(1);
   expect(res.stdout).toBe("");
@@ -205,7 +204,7 @@ test("spawned decline path: prompt and refusal live on stderr, stdout stays byte
 });
 
 skipWin("spawned happy path: stdout is EXACTLY the persisted key + newline, exit 0", async () => {
-  dir = mkdtempSync(join(tmpdir(), "copilot-proxy-token-"));
+  dir = tempDir("copilot-proxy-token-");
   // A live pid whose command line matches the daemon signature -- since the sweep/status
   // match was narrowed, that means a real deno process running a copilot-api-named entry
   // file with the `start` subcommand (the COPILOT_API_ENTRY shape), not just any argv
@@ -264,7 +263,7 @@ test("readStartAnswer: the prompt goes to stderr, EOF reads as the empty (defaul
   // The real stdin reader, driven as a child so EOF and stream placement are the
   // genuine article: closed stdin must resolve "" (= START, like the shells' `read -r`),
   // and the query must land on stderr -- stdout carries only the probe's own JSON.
-  dir = mkdtempSync(join(tmpdir(), "copilot-proxy-token-"));
+  dir = tempDir("copilot-proxy-token-");
   const probe = join(dir, "read_answer_probe.ts");
   writeFileSync(
     probe,

@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, isAbsolute, join, sep } from "node:path";
 import {
   CI_PS_DOCUMENTS_DIR_ENV,
@@ -17,7 +17,7 @@ import {
   windowsProfileTarget,
 } from "../src/shell/integration.ts";
 import { runCli, runSync } from "./helpers/run.ts";
-import { afterEach, beforeEach, expect, test } from "./helpers/testing.ts";
+import { afterEach, beforeEach, expect, tempDir, test } from "./helpers/testing.ts";
 
 // `agent shell` wires/unwires the rc block. Exercise the POSIX path by
 // running the CLI with a throwaway $HOME so we never touch the real rc files.
@@ -91,7 +91,7 @@ function run(...args: string[]): { code: number | null; out: string } {
 }
 
 beforeEach(() => {
-  home = mkdtempSync(join(tmpdir(), "copilot-si-"));
+  home = tempDir("copilot-si-");
 });
 afterEach(() => {
   if (home) rmSync(home, { recursive: true, force: true });
@@ -756,7 +756,7 @@ skipWin("the rc-dir seam beats $HOME end to end, so a stray run cannot reach it"
   // The structural floor: even with $HOME pointed at a live directory, the seam decides
   // where `agent shell` writes. This is what keeps a test that forgets its own isolation
   // from landing in the real ~/.bashrc.
-  const rcDir = mkdtempSync(join(tmpdir(), "copilot-rc-"));
+  const rcDir = tempDir("copilot-rc-");
   try {
     const proc = runCli(["shell"], {
       env: {

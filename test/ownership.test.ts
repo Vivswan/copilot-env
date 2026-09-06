@@ -7,8 +7,8 @@ import { basename } from "node:path";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger, ProxyProjectionState } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
+import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";

@@ -9,9 +9,9 @@
 // spawn would land in the middle of whichever test is running by then.
 import { spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { testAbortSignal } from "./testing.ts";
+import { ISOLATE_ROOT, PINNED_DENO_DIR, TEST_ROOT_ENV, testAbortSignal } from "./testing.ts";
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -80,6 +80,24 @@ function childEnv(env: Record<string, string | undefined>): Record<string, strin
   return out;
 }
 
+/**
+ * `env` with the two harness keys every child carries, written LAST so no caller's map can
+ * drop or redirect them: TEST_ROOT_ENV, the temp root the child's own root nests under, and
+ * DENO_DIR, the module cache pin -- kept when the caller names an absolute cache of its own
+ * (the proxy float pins one), replaced when the map lacks one or spells it relative or empty,
+ * the same rule testing.ts applies to the environment it inherited.
+ */
+function harnessEnv(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  const denoDir = env.DENO_DIR;
+  return {
+    ...env,
+    [TEST_ROOT_ENV]: ISOLATE_ROOT,
+    DENO_DIR: denoDir !== undefined && isAbsolute(denoDir) ? denoDir : PINNED_DENO_DIR,
+  };
+}
+
 /** The running test's abort signal, thrown if the deadline already fired. Every spawn
  *  starts here, so a body the deadline abandoned never gets a new child at all. */
 function liveTestSignal(): AbortSignal | undefined {
@@ -112,16 +130,19 @@ function killOnTestAbort(child: Deno.ChildProcess): Deno.ChildProcess {
 
 /** THE async child spawn for the suite: constructs and registers for abort teardown in one
  *  step. Reaching a child-process API anywhere else under test/ is a lint error
- *  (test/lint/no_unmanaged_child_spawn.ts). */
+ *  (test/lint/no_unmanaged_child_spawn.ts). The child also carries the harness keys
+ *  (harnessEnv), so one killed by that teardown leaves nothing behind. */
 export function spawnChild(cmd: string, options: Deno.CommandOptions): Deno.ChildProcess {
   liveTestSignal();
-  return killOnTestAbort(new Deno.Command(cmd, options).spawn());
+  const env = childEnv(harnessEnv(options.env ?? {}));
+  return killOnTestAbort(new Deno.Command(cmd, { ...options, env }).spawn());
 }
 
 /**
  * Synchronous spawn with the RunResult shape the suite asserts on. The child gets
- * EXACTLY `opts.env` (node's documented replacement semantics), so a key the caller omits, or
- * spells `undefined`, is genuinely absent in the child.
+ * EXACTLY `opts.env` (node's documented replacement semantics) plus the harness keys
+ * (harnessEnv), so a key the caller omits, or spells `undefined`, is genuinely absent in the
+ * child.
  *
  * Deno's node:child_process MERGES `env` over the parent instead, so replacement is restored
  * here by clearing the parent's extra keys for the span of the spawn. PRECONDITION: the suite
@@ -134,7 +155,7 @@ export function runSync(cmd: string, args: string[], opts: RunOptions = {}): Run
   // spawnSync can take no part in this: it blocks the thread, so the only moment the signal
   // can be observed for a SYNC child is before the call.
   liveTestSignal();
-  const wanted = childEnv(opts.env ?? process.env);
+  const wanted = childEnv(harnessEnv(opts.env ?? process.env));
   const cleared: (readonly [string, string])[] = [];
   try {
     // Inside the try: a throw partway through must still restore what was already cleared.

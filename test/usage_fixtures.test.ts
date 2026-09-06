@@ -2,7 +2,7 @@
 // return exactly what an adversarial tree's ledger planted (per provider, canonical model,
 // UTC day); a raised snapshot, an extra count, and a moved timestamp each break that match.
 import { createHash } from "node:crypto";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { relative } from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import { discoverClaudeSessionRoots, readClaudeSessions } from "../src/usage/claude_sessions.ts";
@@ -10,24 +10,12 @@ import { discoverCodexSessionRoots, readCodexSessions } from "../src/usage/codex
 import { canonicalModelName } from "../src/usage/pricing.ts";
 import type { ModelUsage, ReadonlyUsageReport } from "../src/usage/usage.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
-import { tmpDir } from "./helpers.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { expect, tempDir, test } from "./helpers/testing.ts";
 import {
   type ExpectedReport,
   type GeneratedTree,
   generateUsageTree,
 } from "./helpers/usage_fixtures.ts";
-
-const roots: string[] = [];
-globalThis.addEventListener("unload", () => {
-  for (const root of roots) rmSync(root, { recursive: true, force: true });
-});
-
-function freshRoot(): string {
-  const root = tmpDir("usage-fixtures-");
-  roots.push(root);
-  return root;
-}
 
 const PINNED_CORPUS_DIGEST = "c690363809f606f6f680264f49d9aba0fac771ee171a38f848d613eea6694a16";
 
@@ -111,7 +99,7 @@ test(
   "generateUsageTree writes the pinned bytes, and the readers return exactly its ledger",
   async () => {
     // The cross-OS pin: one seed, one digest over every file's relative path and bytes.
-    const pinnedRoot = freshRoot();
+    const pinnedRoot = tempDir("usage-fixtures-");
     const pinned = await generateUsageTree({ root: pinnedRoot, mb: 1, seed: 7, days: 5 });
     const hash = createHash("sha256");
     for (
@@ -127,7 +115,11 @@ test(
     // The drift canary: an adversarial tree (forks, an archived duplicate, repeated counts,
     // resumes, a torn tail, pasted needles) reads back as exactly what the ledger booked,
     // with more than one day and more than one provider in play.
-    const tree = await generateUsageTree({ root: freshRoot(), mb: 5, seed: 20260904 });
+    const tree = await generateUsageTree({
+      root: tempDir("usage-fixtures-"),
+      mb: 5,
+      seed: 20260904,
+    });
     expect(discoverCodexSessionRoots([tree.codexRoot]).length).toBe(2);
     const got = await readBack(tree);
     expectLedgerMatch(tree, got);
@@ -138,7 +130,7 @@ test(
     // Codex count move the roll-ups; a message moved a day later leaves the roll-up alone
     // and moves the per-day split.
     const plain = await generateUsageTree({
-      root: freshRoot(),
+      root: tempDir("usage-fixtures-"),
       mb: 2,
       seed: 11,
       adversarial: false,
@@ -166,7 +158,7 @@ test(
     ).toBe(true);
 
     const shifted = await generateUsageTree({
-      root: freshRoot(),
+      root: tempDir("usage-fixtures-"),
       mb: 2,
       seed: 11,
       adversarial: false,

@@ -3,7 +3,7 @@
 // narrowing, and the zero-writes invariant over a home with seeded profiles.
 
 import { mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+
 import { join } from "node:path";
 import { CLAUDE_PROBE, CODEX_PROBE } from "../src/agents/live_probe.ts";
 import { proxyHelperCommand } from "../src/claude/config.ts";
@@ -37,8 +37,8 @@ import {
   type RuntimeTarget,
   type WatchdogFacts,
 } from "../src/health/probe.ts";
-import { describe, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, removeDir, writeRunState } from "./helpers.ts";
+import { describe, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateProxyHome, writeRunState } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 
@@ -691,7 +691,7 @@ test("a named Claude live probe scrubs ANTHROPIC_BASE_URL; the default scrubs no
       runLiveCli(
         Deno.execPath(),
         ["eval", "process.exit(process.env.ANTHROPIC_BASE_URL ? 1 : 0)"],
-        tmpdir(),
+        tempDir("copilot-health-profiles-"),
         "CLAUDE_CONFIG_DIR",
         omit,
       );

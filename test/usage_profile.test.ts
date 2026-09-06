@@ -4,10 +4,9 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { zstdCompressSync } from "node:zlib";
 import { join } from "node:path";
-import { removeDir, tmpDir } from "./helpers.ts";
 import { ROOT, runScript } from "./helpers/run.ts";
 import { codexUsage, sessionMeta, tokenCount, turnContext } from "./helpers/session_fixtures.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 import { parseProfile } from "./helpers/usage_fixtures.ts";
 import { usageTreeEnv } from "./helpers/usage_goldens.ts";
 
@@ -32,7 +31,7 @@ function assistant(text: string, usage: Record<string, number>): string {
 }
 
 test("usage_profile reads LF-terminated lines only: separators, a raw CR, and a fragment do not split or count", () => {
-  root = tmpDir("usage-profile-");
+  root = tempDir("usage-profile-");
   // The Codex side is an archive: the same cutting rules after decompression, so its one
   // CRLF-ended token_count line and its unterminated fragment read as one line and none.
   const archived = join(root, ".codex", "archived_sessions");

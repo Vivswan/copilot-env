@@ -1,9 +1,8 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type ScanHit, type ScanLines, TAIL_PROBE_BYTES } from "../src/usage/contribution.ts";
 import { scanBytes, scanLines, scanSource } from "../src/usage/scan.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
+import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 
 // The contract's function type and the implementation must stay assignable.
 const asContract: ScanLines = scanLines;
@@ -14,14 +13,14 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-function tempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "usage-scan-"));
+function trackedDir(): string {
+  const dir = tempDir("usage-scan-");
   dirs.push(dir);
   return dir;
 }
 
 function writeTemp(content: string | Uint8Array): string {
-  const path = join(tempDir(), "log.jsonl");
+  const path = join(trackedDir(), "log.jsonl");
   writeFileSync(path, content);
   return path;
 }
@@ -275,7 +274,7 @@ test("scanLines cuts on LF only: Unicode separators and a lone CR stay inside th
 });
 
 test("scanLines propagates filesystem errors: missing file, directory, failing source", () => {
-  const dir = tempDir();
+  const dir = trackedDir();
   expect(() => collect(join(dir, "missing.jsonl"), ["TOKEN"])).toThrow(/ENOENT/);
   expect(() => collect(dir, ["TOKEN"])).toThrow(/EISDIR|EBADF|EPERM/);
   // A read that fails mid-scan surfaces as-is.

@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { canonicalPricingUrl } from "../src/copilot_api/env_config.ts";
 import {
@@ -14,7 +13,7 @@ import {
   roundUsd,
   type UsageTokens,
 } from "../src/usage/pricing.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { expect, tempDir, test } from "./helpers/testing.ts";
 
 // The ONE serialized-USD precision: 4 decimal places, half-up, applied only at
 // cost.ts's --json boundary; in-memory estimates stay exact so sums reconcile.
@@ -262,7 +261,7 @@ function fakeFetch(
 
 /** Run `body` against a throwaway cache dir, removed afterwards. */
 async function withCacheDir(body: (cacheDir: string) => Promise<void>): Promise<void> {
-  const cacheDir = mkdtempSync(join(tmpdir(), "pricing-cache-"));
+  const cacheDir = tempDir("pricing-cache-");
   try {
     await body(cacheDir);
   } finally {

@@ -43,8 +43,8 @@ import {
   runSync,
   spawnChild,
 } from "./helpers/run.ts";
-import { afterEach, beforeEach, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, removeDir, tmpDir } from "./helpers.ts";
+import { afterEach, beforeEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers.ts";
 
 // The daemon spawn is assembled from ONE DaemonSpec: the preload set, the credential
 // environment, and the entry all derive from it, so the argv and the environment are
@@ -678,7 +678,7 @@ test("a wedged drain still exits: the deadline is what keeps `agent stop` able t
   // A SIGTERM listener REPLACES deno's terminate-on-signal, and `agent stop` sends a
   // single SIGTERM with no SIGKILL escalation -- so a server whose shutdown() never
   // settles must not be able to keep the daemon alive.
-  dir = tmpDir("copilot-shutdown-");
+  dir = tempDir("copilot-shutdown-");
   const target = join(dir, "wedged.ts");
   writeFileSync(
     target,
@@ -706,7 +706,7 @@ test.skipIf(Deno.build.os === "windows")(
     // only that a finished server can exit. So the handler parks until this process
     // releases it, and the release is written only AFTER the child reports the signal
     // arrived -- by which point shutdownDaemon has already called server.shutdown().
-    dir = tmpDir("copilot-sigterm-");
+    dir = tempDir("copilot-sigterm-");
     const target = join(dir, "serving.ts");
     const release = join(dir, "release");
     writeFileSync(

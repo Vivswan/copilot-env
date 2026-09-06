@@ -1,5 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 import {
@@ -14,7 +13,7 @@ import {
   restoreModelProvider,
   stripModelProvider,
 } from "../src/codex/mobile.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { expect, tempDir, test } from "./helpers/testing.ts";
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null) throw new Error("expected an object");
@@ -261,7 +260,7 @@ test("runningState/installedState three-state their scans per platform", async (
 
 test("the real POSIX scans three-state pgrep/open: 0 present, 1 proven absent, else unproven", async () => {
   if (process.platform === "win32") return; // pgrep/open are the POSIX primitives
-  const dir = mkdtempSync(join(tmpdir(), "codex-mobile-scan-"));
+  const dir = tempDir("codex-mobile-scan-");
   const originalPath = process.env.PATH;
   try {
     // PATH pinned to a dir holding ONLY the fake tools, so the real ones can never

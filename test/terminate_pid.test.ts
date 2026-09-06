@@ -17,9 +17,9 @@ import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { consola } from "consola";
 import { pidAlive, terminatePid, type TerminateVerdict } from "../src/copilot_api/process.ts";
-import { killAndAwaitExit, removeDir, tmpDir, until, withUnprovablePidProbe } from "./helpers.ts";
+import { killAndAwaitExit, until, withUnprovablePidProbe } from "./helpers.ts";
 import { CHILD_VALUES, childValuesEnv, denoRunArgs, spawnChild } from "./helpers/run.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 
 let dir = "";
 
@@ -30,7 +30,7 @@ afterEach(() => {
 /** Spawn a child that ignores SIGTERM (so only a SIGKILL can end it) and signals
  *  readiness through a file; returns once the child is provably up. */
 async function spawnTermIgnoringChild(): Promise<Deno.ChildProcess> {
-  dir = tmpDir("copilot-terminate-");
+  dir = tempDir("copilot-terminate-");
   const ready = join(dir, "ready");
   const script = join(dir, "survivor.ts");
   writeFileSync(
@@ -166,7 +166,7 @@ test.skipIf(process.platform === "win32")(
 test(
   "a pid that died within the grace consults no identity scan",
   async () => {
-    dir = tmpDir("copilot-terminate-");
+    dir = tempDir("copilot-terminate-");
     const ready = join(dir, "ready");
     const script = join(dir, "compliant.ts");
     // No SIGTERM listener: the child dies on the SIGTERM itself (TerminateProcess on
@@ -207,7 +207,7 @@ test(
 test(
   "graceMs 0 sends the TERM only, consults no identity, and answers 'term-only'",
   async () => {
-    dir = tmpDir("copilot-terminate-");
+    dir = tempDir("copilot-terminate-");
     const ready = join(dir, "ready");
     const script = join(dir, "compliant.ts");
     writeFileSync(
@@ -245,7 +245,7 @@ test(
 test(
   "an unprovable liveness read at the KILL boundary never mints 'died-in-grace'",
   async () => {
-    dir = tmpDir("copilot-terminate-");
+    dir = tempDir("copilot-terminate-");
     const ready = join(dir, "ready");
     const script = join(dir, "compliant.ts");
     // No SIGTERM listener needed: with the probe (and every signal send) unprovable,

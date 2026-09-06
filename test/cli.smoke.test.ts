@@ -1,5 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { legacyDirectHelperScript, legacyProxyHelperScript } from "../src/claude/config.ts";
 import { DIRECT_HELPER_NAME, PROXY_HELPER_NAME } from "../src/claude/paths.ts";
@@ -13,7 +12,7 @@ import { USAGE_INDEX_DIR_NAME } from "../src/usage/paths.ts";
 import { loadPricing } from "../src/usage/pricing.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { ROOT, runCli, runSync } from "./helpers/run.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { expect, tempDir, test } from "./helpers/testing.ts";
 import { writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
 
 // A throwaway COPILOT_API_HOME so the runtime probe sees no tracked pid/port. We pin the
@@ -22,7 +21,7 @@ import { writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
 // the home directory, so a developer machine with a built farm or a wired rc file would
 // otherwise leak into the children's health reports.
 function isolatedEnv(extra: Record<string, string> = {}): Record<string, string> {
-  const home = mkdtempSync(join(tmpdir(), "copilot-health-"));
+  const home = tempDir("copilot-health-");
   writeFileSync(join(home, ".copilot-env-config.json"), JSON.stringify({ port: 4199 }));
   return {
     ...process.env,
@@ -39,7 +38,7 @@ function isolatedEnv(extra: Record<string, string> = {}): Record<string, string>
 }
 
 function isolatedProxyEnv(extra: Record<string, string> = {}): Record<string, string> {
-  const root = mkdtempSync(join(tmpdir(), "copilot-health-proxy-"));
+  const root = tempDir("copilot-health-proxy-");
   const codexHome = join(root, ".codex");
   // Production shape: the writer emits 127.0.0.1 (not localhost) so the agent reaches the
   // IPv4 proxy on Windows. The matcher accepts both; the other fixture keeps a localhost
@@ -129,7 +128,7 @@ test("cli.ts mcp --help exposes the server flags; --remove rejects serve-only fl
 test("cli.ts mcp (bare) prints the wiring status and exits 0", () => {
   // Hermetic homes: a temp CLAUDE_CONFIG_DIR (no registration) and an isolated
   // copilot-env home, so the status never reads or creates real user state.
-  const claudeDir = mkdtempSync(join(tmpdir(), "copilot-mcp-status-"));
+  const claudeDir = tempDir("copilot-mcp-status-");
   const status = runCli(["mcp"], { env: isolatedEnv({ CLAUDE_CONFIG_DIR: claudeDir }) });
   const output = status.stderr;
   expect(status.exitCode).toBe(0);
@@ -230,7 +229,7 @@ for (const args of [["codex"], ["claude"]] as const) {
 }
 
 test("codex exposes and runs check mode", () => {
-  const root = mkdtempSync(join(tmpdir(), "copilot-codex-check-"));
+  const root = tempDir("copilot-codex-check-");
   const codexHome = join(root, ".codex");
   const directHome = join(root, "direct-codex");
   const otherHome = join(root, "other-codex");
@@ -293,7 +292,7 @@ test("codex exposes and runs check mode", () => {
 });
 
 test("claude exposes and runs check mode", () => {
-  const root = mkdtempSync(join(tmpdir(), "copilot-claude-check-"));
+  const root = tempDir("copilot-claude-check-");
   const directHome = join(root, "direct");
   const proxyHome = join(root, "proxy");
   const otherHome = join(root, "other");
@@ -416,7 +415,7 @@ test("init configures both agents and rejects --direct + --proxy", () => {
 
   // --proxy forces BOTH agents to the proxy (no probe); isolate the homes so we
   // never touch the real ~/.codex or ~/.claude.
-  const root = mkdtempSync(join(tmpdir(), "copilot-init-"));
+  const root = tempDir("copilot-init-");
   const proc = runCli(["init", "--proxy"], {
     env: isolatedEnv({
       CODEX_HOME: join(root, ".codex"),
@@ -543,7 +542,7 @@ test("install --help surfaces the wiring flags; unknown flags are rejected", () 
 // the epilogue -- exactly the option mapping under test. Both rc seams point at
 // a throwaway root, so the wiring runs for real without touching the machine.
 test("bare install defaults to shell wiring; the negated and assets-only flags map through", () => {
-  const root = mkdtempSync(join(tmpdir(), "copilot-install-smoke-"));
+  const root = tempDir("copilot-install-smoke-");
   const documents = join(root, "Documents");
   const wired = runCli(["install"], {
     env: isolatedEnv({
@@ -584,7 +583,7 @@ test("bare install defaults to shell wiring; the negated and assets-only flags m
 // COPILOT_ENV_CI_PS_DOCUMENTS_DIR is the seam that can. Both targets are throwaway, so the
 // wiring runs for real on every OS and the machine is never touched.
 test("shell --clis --no-prereqs verifies only and wires this platform's startup file", () => {
-  const root = mkdtempSync(join(tmpdir(), "copilot-shell-clis-"));
+  const root = tempDir("copilot-shell-clis-");
   const documents = join(root, "Documents");
   // Both seams point at the throwaway root, so this run is floor-proof: it cannot be
   // moved by an ambient rc-dir value, and it never reaches the machine's own files.
@@ -620,7 +619,7 @@ test("shell --clis --no-prereqs rejects --cooldown, never drops it", () => {
   // A cooldown has nothing to steer when nothing installs, so the boundary rejects the
   // pair (it used to be silently dropped). The optional-valued flag still PARSES in
   // every spelling -- the failure below is the boundary conflict, not a parse error.
-  const root = mkdtempSync(join(tmpdir(), "copilot-shell-clis-"));
+  const root = tempDir("copilot-shell-clis-");
   for (const args of [["--cooldown"], ["--cooldown=0"], ["--cooldown", "14"]] as const) {
     const proc = runCli(["shell", "--clis", "--no-prereqs", ...args], {
       env: isolatedEnv({ HOME: root, SHELL: "/bin/bash" }),
@@ -694,7 +693,7 @@ test("health --scope bogus exits 1 with a helpful message", () => {
  *  daemon home, and a reserved port in its run state -- plus throwaway agent
  *  homes so the wiring checks never read the real ~/.codex / ~/.claude. */
 function seededProfileEnv(): Record<string, string> {
-  const root = mkdtempSync(join(tmpdir(), "copilot-health-profile-"));
+  const root = tempDir("copilot-health-profile-");
   const home = join(root, "api-home");
   mkdirSync(home, { recursive: true });
   writeFileSync(join(home, ".copilot-env-config.json"), JSON.stringify({ port: 4199 }));
@@ -927,7 +926,7 @@ test("health --scope codex covers only Codex wiring", () => {
 }, 15_000);
 
 test("health --scope claude covers only Claude wiring (Code + Desktop)", () => {
-  const home = mkdtempSync(join(tmpdir(), "copilot-claude-scope-"));
+  const home = tempDir("copilot-claude-scope-");
   // Proxy wiring (the proxy is Claude's default; CI has no gh/direct) =>
   // providerMode "proxy", status ok. Legacy helper-path wiring counts only with
   // the exact pre-inline file body in place.
@@ -952,7 +951,7 @@ test("update --auto-status reports the auto-update key honestly, on and off (off
   // The key half of the line is exact per stored value; the last-check half comes from
   // the install root's own throttle state, which a child cannot be pointed away from.
   for (const [autoUpdate, word] of [[true, "enabled"], [false, "disabled"]] as const) {
-    const home = mkdtempSync(join(tmpdir(), "copilot-autostatus-"));
+    const home = tempDir("copilot-autostatus-");
     writeFileSync(
       join(home, ".copilot-env-config.json"),
       JSON.stringify({ autoUpdate, updateCooldown: 3 }),

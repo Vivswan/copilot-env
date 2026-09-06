@@ -3,8 +3,8 @@
 // is served by a routing fetch stub -- nothing here touches the network.
 import { discoverServableClaudeModels } from "../src/copilot_api/discovery.ts";
 import type { ProbeFetch } from "../src/copilot_api/integration_identity.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, isolateProxyHome, removeDir } from "./helpers.ts";
+import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
+import { envSnapshot, isolateProxyHome } from "./helpers.ts";
 
 // The unified pipeline persists verification verdicts in the shared state store
 // (the daily cache both consumers share), so every test isolates its own home.

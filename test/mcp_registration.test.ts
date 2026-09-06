@@ -17,8 +17,8 @@ import {
   removeClaudeMcpRegistration,
 } from "../src/claude/mcp_registration.ts";
 import { agentLauncherCommand } from "../src/utils/root.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
-import { envSnapshot, removeDir, tmpDir } from "./helpers.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
+import { envSnapshot } from "./helpers.ts";
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -31,7 +31,7 @@ afterEach(() => {
 // The registration lives in CLAUDE_CONFIG_DIR's .claude.json; point it at the temp
 // dir itself (no other homes involved).
 function tmpConfigDir(): string {
-  dir = tmpDir("copilot-mcpreg-");
+  dir = tempDir("copilot-mcpreg-");
   process.env.CLAUDE_CONFIG_DIR = dir;
   return dir;
 }

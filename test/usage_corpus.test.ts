@@ -1,12 +1,11 @@
 // The corpus recorder, end to end with the real CLIs (skipped where either is absent), and the
 // one property of its scrub that matters: nothing private survives into the shareable copies.
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { IdMap, isClaudeUsageLine, isCodexUsageLine, scrubJsonl } from "../scripts/usage_corpus.ts";
 import { findCommand } from "../src/utils/command.ts";
 import { ROOT, runCli, runScript } from "./helpers/run.ts";
-import { describe, expect, test } from "./helpers/testing.ts";
+import { describe, expect, tempDir, test } from "./helpers/testing.ts";
 
 type Json = Record<string, unknown>;
 
@@ -220,7 +219,7 @@ describe("usage corpus recorder", () => {
   test.skipIf(!HAVE_BOTH_CLIS)(
     "records both CLIs against the fake and agent cost over the kept home matches what was served",
     () => {
-      const parent = mkdtempSync(join(tmpdir(), "usage-corpus-out-"));
+      const parent = tempDir("usage-corpus-out-");
       const out = join(parent, "corpus");
       try {
         const result = runScript(join(ROOT, "scripts", "usage_corpus.ts"), ["--out", out], {

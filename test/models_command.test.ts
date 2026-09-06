@@ -1,10 +1,9 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { formatTokens, renderModelTable } from "../src/commands/models.ts";
 import { type ModelListEntry, parseModelList } from "../src/copilot_api/models.ts";
 import { runCli } from "./helpers/run.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { expect, tempDir, test } from "./helpers/testing.ts";
 
 // --- parseModelList (pure) ----------------------------------------------------
 
@@ -174,7 +173,7 @@ function runModelsCli(
   args: string[],
   seed?: (home: string) => void,
 ): { exitCode: number | null; out: string } {
-  const home = mkdtempSync(join(tmpdir(), "copilot-models-"));
+  const home = tempDir("copilot-models-");
   try {
     seed?.(home);
     const proc = runCli(["models", ...args], {

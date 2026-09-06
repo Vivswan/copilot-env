@@ -2,14 +2,12 @@ import {
   appendFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -64,7 +62,7 @@ import {
   writeRollout,
   writeTranscript,
 } from "./helpers/session_fixtures.ts";
-import { expect, test, TZ_PINNABLE } from "./helpers/testing.ts";
+import { expect, tempDir, test, TZ_PINNABLE } from "./helpers/testing.ts";
 
 function usage(partial: Partial<ModelUsage>): ModelUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, events: 0, ...partial };
@@ -540,7 +538,7 @@ interface CostHome {
 
 /** Run `body` with COPILOT_API_HOME pointed at a fresh temp home, restored afterwards. */
 async function withCostHome(body: (ctx: CostHome) => Promise<void>): Promise<void> {
-  const dir = mkdtempSync(join(tmpdir(), "cost-run-"));
+  const dir = tempDir("cost-run-");
   const savedHome = process.env.COPILOT_API_HOME;
   process.env.COPILOT_API_HOME = join(dir, "copilot-api");
   try {
@@ -913,7 +911,7 @@ const STORED_URL = "https://stored.example/with-secret-token/models";
 const FLAG_URL = "https://flag.example/models";
 
 test("resolvePricingUrl: the flag beats the stored key, which beats the built-in", () => {
-  const dir = mkdtempSync(join(tmpdir(), "cost-config-"));
+  const dir = tempDir("cost-config-");
   try {
     const config = new CopilotEnvConfig(join(dir, "config.json"));
     expect(resolvePricingUrl(undefined, config)).toBe(OPENROUTER_MODELS_URL);

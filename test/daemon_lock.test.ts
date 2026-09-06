@@ -21,13 +21,11 @@ import {
   ROOT,
   spawnChild,
 } from "./helpers/run.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
+import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 import {
   defaultHomeDir,
   envSnapshot,
   isolateProxyHome,
-  removeDir,
-  tmpDir,
   withUnprovablePidProbe,
   writeRunState,
 } from "./helpers.ts";
@@ -116,7 +114,7 @@ async function captureAllWrites(body: () => Promise<void>): Promise<string> {
 // --- the decision table, in-process ------------------------------------------------------
 
 test("daemonLockVerdict: absent, dead-marker, held, and foreign-pid judgments", () => {
-  dir = tmpDir("copilot-daemon-lock-");
+  dir = tempDir("copilot-daemon-lock-");
 
   // No lock file at all: a pre-lock daemon holds none, so nothing is proven either way.
   expect(daemonLockVerdict(dir, 123)).toBe("unproven");
@@ -144,7 +142,7 @@ test("daemonLockVerdict: absent, dead-marker, held, and foreign-pid judgments", 
 // --- the OS-enforced hold: cross-process contention and the SIGKILL release --------------
 
 test("a live holder blocks acquisition; SIGKILL releases the lock promptly", async () => {
-  dir = tmpDir("copilot-daemon-lock-");
+  dir = tempDir("copilot-daemon-lock-");
   const home = join(dir, "home");
   const ready = join(dir, "ready");
   const holder = join(dir, "holder.ts");

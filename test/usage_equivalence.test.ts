@@ -2,8 +2,7 @@
 // reader fixture is read three ways (no index, a cold index, a warm index) and
 // the three reports must be identical. The IndexStats of each run are the
 // oracle for what the index did (parsed whole, reused, tail-parsed, deleted).
-import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { appendFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { readClaudeSessions } from "../src/usage/claude_sessions.ts";
@@ -29,7 +28,7 @@ import {
   writeRollout,
   writeTranscript,
 } from "./helpers/session_fixtures.ts";
-import { afterEach, expect, test } from "./helpers/testing.ts";
+import { afterEach, expect, tempDir, test } from "./helpers/testing.ts";
 
 const dirs: string[] = [];
 
@@ -37,8 +36,8 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-function tempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "usage-equivalence-"));
+function trackedDir(): string {
+  const dir = tempDir("usage-equivalence-");
   dirs.push(dir);
   return dir;
 }
@@ -107,7 +106,7 @@ async function assertThreeWaysAgree<T>(
 // report is the positive control that the fixture exercised what it claims.
 for (const scenario of CODEX_SCENARIOS) {
   test(`codex fixture reads the same three ways: ${scenario.name}`, async () => {
-    const dir = tempDir();
+    const dir = trackedDir();
     const { roots, sinceMs, timeZone } = scenario.build(dir);
     scenario.check(
       await assertThreeWaysAgree(
@@ -120,7 +119,7 @@ for (const scenario of CODEX_SCENARIOS) {
 
 for (const scenario of CLAUDE_SCENARIOS) {
   test(`claude fixture reads the same three ways: ${scenario.name}`, async () => {
-    const dir = tempDir();
+    const dir = trackedDir();
     const { roots, sinceMs, timeZone } = scenario.build(dir);
     scenario.check(
       await assertThreeWaysAgree(
@@ -213,11 +212,11 @@ const APPEND_CASES = [
 
 for (const { source, check } of APPEND_CASES) {
   test(`an appended ${source} file is tail-parsed once, reading only the new bytes and the probe`, () =>
-    check(tempDir()));
+    check(trackedDir()));
 }
 
 test("a deleted transcript leaves the next report and the database", async () => {
-  const dir = tempDir();
+  const dir = trackedDir();
   const indexDir = join(dir, "index");
   const root = join(dir, "projects");
   const proj = join(root, "-Users-x-proj");
@@ -281,7 +280,7 @@ async function costJson(
 }
 
 test("agent cost --json is identical without the index, cold, and warm, except runtime", async () => {
-  const dir = tempDir();
+  const dir = trackedDir();
   const savedHome = process.env.COPILOT_API_HOME;
   process.env.COPILOT_API_HOME = join(dir, "copilot-api");
   try {

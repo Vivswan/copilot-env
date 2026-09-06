@@ -1,7 +1,6 @@
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -9,10 +8,9 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { denoRunArgs, resolvePackageDir, ROOT, runSync } from "./helpers/run.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { expect, tempDir, test } from "./helpers/testing.ts";
 
 // The preload shim swaps the daemon's `fs.createWriteStream` for a discarding sink on paths
 // under <home>/logs (the proxy's handler-log directory), touching the files' mtimes instead
@@ -58,7 +56,7 @@ console.log("DONE");
 `;
 
 test("writes under <home>/logs are discarded outright (no growth, no file creation)", () => {
-  const home = mkdtempSync(join(tmpdir(), "copilot-logmute-"));
+  const home = tempDir("copilot-logmute-");
   try {
     // Seed one handler log EMPTY with an hour-old mtime: pure discard must leave it exactly
     // as-is (the old touch behavior would have bumped the mtime).

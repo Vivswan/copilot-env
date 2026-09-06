@@ -1349,11 +1349,11 @@ function projectionFixture(): { paths: CopilotApiPaths; config: CopilotApiConfig
   return { paths, config: new CopilotApiConfig(paths.configFile) };
 }
 
-test("applyDefaultConfig: a nested projection merges into contextManagement and drops the stale flat key", () => {
+test("applyDefaultConfig: a nested projection merges into contextManagement", () => {
   const { paths, config } = projectionFixture();
   new CopilotEnvConfig().set({ useResponsesApiContextManagement: true });
-  // Seed what an existing daemon home holds: its own contextManagement.messages plus the
-  // flat key an older copilot-env projected (dead since the proxy's 1.14 rename).
+  // Seed what an existing daemon home holds: its own contextManagement.messages, plus a
+  // top-level key copilot-env never projects (the proxy's own, whatever its name).
   config.save({
     contextManagement: { messages: true },
     useResponsesApiContextManagement: false,
@@ -1363,7 +1363,7 @@ test("applyDefaultConfig: a nested projection merges into contextManagement and 
 
   const doc = config.load();
   expect(doc.contextManagement).toEqual({ messages: true, responses: true });
-  expect("useResponsesApiContextManagement" in doc).toBe(false);
+  expect(doc.useResponsesApiContextManagement).toBe(false); // not ours: untouched
   // The force-projected keys still land at the top level alongside.
   expect(doc.smallModel).toBe("gpt-5-mini");
   // The opt-in write (and ONLY it) is recorded as ours, so a later unset can clear it.
@@ -1393,18 +1393,13 @@ test("applyDefaultConfig: --del of an opt-in key clears OUR recorded write on th
 
 test("applyDefaultConfig: with the opt-in key unset, a hand-edited value we never projected survives", () => {
   const { paths, config } = projectionFixture();
-  config.save({
-    contextManagement: { messages: false, responses: true },
-    useResponsesApiContextManagement: true,
-  });
+  config.save({ contextManagement: { messages: false, responses: true } });
 
   applyDefaultConfig(paths);
 
   const doc = config.load();
-  // No ownership record exists for contextManagement.responses, so the hand edit stands;
-  // only the stale flat key is dropped.
+  // No ownership record exists for contextManagement.responses, so the hand edit stands.
   expect(doc.contextManagement).toEqual({ messages: false, responses: true });
-  expect("useResponsesApiContextManagement" in doc).toBe(false);
 });
 
 test("applyDefaultConfig: a recorded path outside the registry's opt-in set is never deleted", () => {

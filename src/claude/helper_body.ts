@@ -1,8 +1,8 @@
 // Credential-helper BODY builders shared by the Claude Code wiring (src/claude/config.ts,
-// legacy helper-file tolerance) and the Claude Desktop wiring (src/claude/desktop.ts,
-// which writes real helper files -- Desktop's inferenceCredentialHelper is a file path,
-// not an inline command). Lives apart from config.ts so desktop.ts can import the
-// builders without a config-module cycle.
+// whose inline command reuses the quoting) and the Claude Desktop wiring
+// (src/claude/desktop.ts, which writes real helper files -- Desktop's
+// inferenceCredentialHelper is a file path, not an inline command). Lives apart from
+// config.ts so desktop.ts can import the builders without a config-module cycle.
 
 /** Single-quote a string for safe embedding in a /bin/sh command line. */
 export function shQuote(s: string): string {

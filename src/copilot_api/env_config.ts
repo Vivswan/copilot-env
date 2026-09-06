@@ -835,13 +835,6 @@ export interface ProjectedProxyEntry {
   optIn: boolean;
 }
 
-/** Proxy config.json keys copilot-env USED to project but the proxy no longer reads
- *  (upstream renames with no legacy fallback). `agent start` deletes them from the daemon's
- *  config.json while applying the projection, so a stale write can't linger there.
- *  TOP-LEVEL keys only; a stale nested projection would need paths here instead.
- *  Currently: the `responses-context-management` entry's pre-1.14 flat projection. */
-export const STALE_PROXY_CONFIG_KEYS: readonly string[] = ["useResponsesApiContextManagement"];
-
 /** Every path an OPT-IN entry projects to, whether currently set or not -- the ownership
  *  ALLOWLIST: applyDefaultConfig only ever deletes recorded paths inside this set, so a
  *  recorded path the registry does not (or no longer does) project opt-in is left alone in

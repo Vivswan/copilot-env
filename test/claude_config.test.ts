@@ -16,10 +16,6 @@ import {
   DIRECT_BASE_URL,
   directHelperCommand,
   inspectClaudeWiring,
-  legacyDirectHelperBodyMatches,
-  legacyDirectHelperScript,
-  legacyProxyHelperBodyMatches,
-  legacyProxyHelperScript,
   managedHelperShape,
   proxyHelperCommand,
   removeClaudeDefaultWiring,
@@ -29,7 +25,6 @@ import {
   WEBSEARCH_DENY_RULE,
 } from "../src/claude/config.ts";
 import { claudeJsonPath } from "../src/claude/mcp_registration.ts";
-import { DIRECT_HELPER_NAME, directHelperPath, PROXY_HELPER_NAME } from "../src/claude/paths.ts";
 import { runMcp } from "../src/commands/mcp.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
@@ -98,7 +93,9 @@ test("direct mode writes the inline apiKeyHelper command + env, preserving user 
   expect(helperCommand).toContain("auth");
   expect(helperCommand).toContain("--get");
   expect(helperCommand).not.toContain("gh auth token");
-  expect(existsSync(join(home, DIRECT_HELPER_NAME))).toBe(false);
+  for (const ext of ["sh", "cmd"]) {
+    expect(existsSync(join(home, `copilot-token.${ext}`))).toBe(false);
+  }
 });
 
 test("direct bakes a probed Copilot-Integration-Id into ANTHROPIC_CUSTOM_HEADERS when passed", () => {
@@ -140,7 +137,9 @@ test("proxy mode writes proxy wiring (127.0.0.1 base URL + a token helper), pres
   expect(helperCommand).toContain(WIN ? "agent.ps1" : "bin/agent");
   expect(helperCommand).toContain("proxy-token");
   expect(helperCommand).toContain("--yes");
-  expect(existsSync(join(home, PROXY_HELPER_NAME))).toBe(false);
+  for (const ext of ["sh", "cmd"]) {
+    expect(existsSync(join(home, `copilot-proxy-token.${ext}`))).toBe(false);
+  }
 });
 
 test("cmdHelperBody: @echo off + CRLF, quotes paths with spaces, escapes % as %%", () => {
@@ -166,80 +165,21 @@ test("cmdHelperBody: @echo off + CRLF, quotes paths with spaces, escapes % as %%
 
 test("inspectClaudeWiring classifies direct / proxy / other / none / malformed (by exact value)", () => {
   const home = "/home/x/.claude";
-  const files = new Map<string, string>();
-  let reads = 0;
-  const readFile = (path: string): string | null => {
-    reads++;
-    return files.get(path) ?? null;
-  };
-  const inspect = (text: string | null) => inspectClaudeWiring(text, home, 4141, null, readFile);
+  const inspect = (text: string | null) => inspectClaudeWiring(text, 4141);
 
-  // The managed contract: the exact inline command strings -- classified without
-  // ever touching a file (the reader is for the legacy path arms alone).
+  // The managed contract: the exact inline command strings.
   expect(inspect(JSON.stringify({ apiKeyHelper: directHelperCommand() })).providerMode)
     .toBe("direct");
   expect(inspect(JSON.stringify({ apiKeyHelper: proxyHelperCommand() })).providerMode)
     .toBe("proxy");
-  expect(reads).toBe(0);
 
-  // Reader tolerance: the retired helper-script PATHS (what pre-inline releases
-  // stored) classify as managed ONLY while the file body is one a RELEASE actually
-  // wrote -- from ANY install root. Fixtures are byte literals lifted from tag
-  // history, with only the install root substituted (a DIFFERENT root than this
-  // checkout, so root-agnostic matching is what passes):
-  //   git show v3.5.6:src/claude/config.ts  -> directHelperScript / proxyHelperScript
-  //   git show v3.3.17:src/claude/config.ts -> proxyHelperScript (bare `--yes` era)
-  // NOT rebuilt from today's primitives, so a primitive drift cannot silently move
-  // fixture and classifier together (that drift is exactly how a never-released
-  // `agent proxy-token` body once passed here as the released one). Paths are built
-  // with join() + the platform basename so they match inspectClaudeWiring's own
-  // path.join()/extension on every OS.
-  const directHelper = join(home, DIRECT_HELPER_NAME);
-  const proxyHelper = join(home, PROXY_HELPER_NAME);
-  const direct356 = WIN
-    ? '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\other root\\bin\\agent.ps1" auth --get\r\n'
-    : "#!/bin/sh\nexec '/other root/bin/agent' 'auth' '--get'\n";
-  const proxy356 = WIN
-    ? '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\other root\\src\\scripts\\proxy-token.ps1" --yes\r\n'
-    : "#!/bin/sh\nexec '/other root/src/scripts/proxy-token.sh' '--yes'\n";
-  // v3.3.x POSIX spelled `--yes` bare; its WIN rendering equals the v3.5.x one.
-  const proxy3317 = WIN
-    ? proxy356
-    : "#!/bin/sh\nexec '/other root/src/scripts/proxy-token.sh' --yes\n";
-  // Unreleased mains briefly wrote the proxy body through the launcher.
-  const proxyMain = WIN
-    ? '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\other root\\bin\\agent.ps1" proxy-token --yes\r\n'
-    : "#!/bin/sh\nexec '/other root/bin/agent' 'proxy-token' '--yes'\n";
-
-  files.set(directHelper, direct356);
-  for (const proxyBody of [proxy356, proxy3317, proxyMain]) {
-    files.set(proxyHelper, proxyBody);
-    expect(inspect(JSON.stringify({ apiKeyHelper: directHelper })).providerMode).toBe("direct");
-    expect(inspect(JSON.stringify({ apiKeyHelper: proxyHelper })).providerMode).toBe("proxy");
+  // The helper-file PATHS 3.5.6 wrote are foreign now (the 4.0.0 migration rewrites
+  // them): "custom", never managed, whatever the file holds.
+  for (const name of ["copilot-token.sh", "copilot-proxy-token.sh"]) {
+    const stale = inspect(JSON.stringify({ apiKeyHelper: join(home, name) }));
+    expect(stale.providerMode).toBe("other");
+    expect(stale.otherReason).toBe("custom");
   }
-  // The exported fixture renderers (the v3.5.6 spellings at the CURRENT root)
-  // classify through the same arms.
-  files.set(directHelper, legacyDirectHelperScript());
-  files.set(proxyHelper, legacyProxyHelperScript());
-  expect(inspect(JSON.stringify({ apiKeyHelper: directHelper })).providerMode).toBe("direct");
-  expect(inspect(JSON.stringify({ apiKeyHelper: proxyHelper })).providerMode).toBe("proxy");
-
-  // A legacy path whose file is MISSING cannot produce the managed credential: not
-  // ours -- and the reason names the legacy arm, so consumers (the health warn)
-  // never re-derive the path comparison.
-  files.clear();
-  const missingDirect = inspect(JSON.stringify({ apiKeyHelper: directHelper }));
-  expect(missingDirect.providerMode).toBe("other");
-  expect(missingDirect.otherReason).toBe("legacy-unrecognized");
-  const missingProxy = inspect(JSON.stringify({ apiKeyHelper: proxyHelper }));
-  expect(missingProxy.providerMode).toBe("other");
-  expect(missingProxy.otherReason).toBe("legacy-unrecognized");
-  // ...nor is a foreign/hand-edited body at the right path (a bare gh helper, say)...
-  files.set(directHelper, "#!/bin/sh\nexec gh auth token\n");
-  expect(inspect(JSON.stringify({ apiKeyHelper: directHelper })).providerMode).toBe("other");
-  // ...and each path accepts only ITS bodies: the proxy body at the direct path is foreign.
-  files.set(directHelper, proxy356);
-  expect(inspect(JSON.stringify({ apiKeyHelper: directHelper })).providerMode).toBe("other");
 
   // A foreign helper sharing our basename but elsewhere is NOT ours: "custom".
   const foreign = inspect(JSON.stringify({ apiKeyHelper: "/opt/company/copilot-token.sh" }));
@@ -269,19 +209,17 @@ test("inspectClaudeWiring classifies direct / proxy / other / none / malformed (
 });
 
 test("inspectClaudeWiring takes a TextReadResult: unreadable is other/read-error, never none", () => {
-  const home = "/home/x/.claude";
-  const unreadable = inspectClaudeWiring({ kind: "unreadable", error: "EACCES" }, home, 0);
+  const unreadable = inspectClaudeWiring({ kind: "unreadable", error: "EACCES" }, 0);
   expect(unreadable.providerMode).toBe("other");
   expect(unreadable.otherReason).toBe("read-error");
   expect(unreadable.settingsExists).toBe(true); // it EXISTS -- it just cannot be read
 
-  const absent = inspectClaudeWiring({ kind: "absent" }, home, 0);
+  const absent = inspectClaudeWiring({ kind: "absent" }, 0);
   expect(absent.providerMode).toBe("none");
   expect(absent.settingsExists).toBe(false);
 
   const text = inspectClaudeWiring(
     { kind: "text", text: JSON.stringify({ apiKeyHelper: directHelperCommand() }) },
-    home,
     0,
   );
   expect(text.providerMode).toBe("direct");
@@ -294,8 +232,7 @@ test("inspectClaudeWiring takes a TextReadResult: unreadable is other/read-error
 
 test("runClaude direct/proxy round-trip cleans the other mode", async () => {
   const home = tmpHome();
-  const read = () =>
-    inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home, 4141);
+  const read = () => inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), 4141);
 
   await runClaude({ kind: "configure", mode: "direct" });
   expect(read().providerMode).toBe("direct");
@@ -356,7 +293,7 @@ test("direct helper invokes `agent auth --get` and never bakes a token, still cl
   const doc = readSettings(home);
   expect(doc.apiKeyHelper).toBe(directHelperCommand());
   expect(
-    inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home, 4141).providerMode,
+    inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), 4141).providerMode,
   ).toBe("direct");
 
   const helperCommand = String(doc.apiKeyHelper);
@@ -367,8 +304,7 @@ test("direct helper invokes `agent auth --get` and never bakes a token, still cl
 
 test("runClaude with a stored token selects Direct WITHOUT baking it; --proxy still wins", async () => {
   const home = tmpHome(); // also points COPILOT_API_HOME at an isolated dir
-  const read = () =>
-    inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), home, 4141);
+  const read = () => inspectClaudeWiring(readFileSync(join(home, "settings.json"), "utf8"), 4141);
 
   // A configured credential selects Direct with NO probe -- but the inline helper
   // resolves it at fetch time (`agent auth --get`), so it's never written anywhere.
@@ -524,13 +460,12 @@ test("removeClaudeDefaultWiring keeps user keys and drops an emptied permissions
   expect(doc.apiKeyHelper).toBeUndefined();
 });
 
-test("removeClaudeDefaultWiring leaves an 'other' wiring AND its legacy-named helper whole", () => {
+test("removeClaudeDefaultWiring leaves an 'other' wiring AND the helper file it names whole", () => {
   const home = tmpHome();
   mkdirSync(home, { recursive: true });
-  // A user-owned helper AT our legacy name classifies "other" (foreign body): the
-  // settings key stays, so the file it points at must stay too -- deleting only
-  // the file would leave the wiring dangling.
-  const helper = join(home, DIRECT_HELPER_NAME);
+  // A user-owned helper FILE (the shape 3.5.6 wrote, foreign now) classifies "other":
+  // the settings key stays, so the file it points at must stay too.
+  const helper = join(home, "copilot-token.sh");
   writeFileSync(helper, "#!/bin/sh\nexec my-own-resolver\n");
   writeFileSync(
     join(home, "settings.json"),
@@ -630,9 +565,8 @@ test("removeClaudeDefaultWiring releases a stale ownership marker for a vanished
 });
 
 test("removeClaudeDefaultWiring tolerates a Claude home that is a file (nothing there)", () => {
-  // A settings path under a non-directory parent reads "absent" (ENOTDIR), and
-  // the loader and the legacy-helper removal must agree -- an uninstall or
-  // profile delete over a bogus CLAUDE_CONFIG_DIR must finish, not throw.
+  // A settings path under a non-directory parent reads "absent" (ENOTDIR) -- an
+  // uninstall or profile delete over a bogus CLAUDE_CONFIG_DIR must finish, not throw.
   const home = tmpHome();
   mkdirSync(dir, { recursive: true });
   const bogusHome = join(dir, "claude-as-file");
@@ -643,45 +577,38 @@ test("removeClaudeDefaultWiring tolerates a Claude home that is a file (nothing 
   removeClaudeProfile(bogusHome, WORK); // same absence tolerance
 });
 
-test("removeClaudeProfile removes managed artifacts but leaves an 'other' profile whole", () => {
+test("removeClaudeProfile removes a managed settings file but leaves an 'other' profile whole", () => {
   const home = tmpHome();
   mkdirSync(home, { recursive: true });
-  const helper = directHelperPath(home, WORK);
   const settingsPath = join(home, "settings-work.json");
 
-  // Managed legacy wiring (a released body at WORK's path): both artifacts go.
-  writeFileSync(helper, legacyDirectHelperScript(WORK));
-  writeFileSync(settingsPath, `${JSON.stringify({ apiKeyHelper: helper }, null, 2)}\n`);
+  // Managed wiring addressed at WORK: the file goes.
+  writeFileSync(
+    settingsPath,
+    `${JSON.stringify({ apiKeyHelper: directHelperCommand(WORK) }, null, 2)}\n`,
+  );
   removeClaudeProfile(home, WORK);
   expect(existsSync(settingsPath)).toBe(false);
-  expect(existsSync(helper)).toBe(false);
 
-  // A foreign body at the same name classifies "other": both artifacts stay.
-  writeFileSync(helper, "#!/bin/sh\nexec my-own-resolver\n");
-  writeFileSync(settingsPath, `${JSON.stringify({ apiKeyHelper: helper }, null, 2)}\n`);
+  // A foreign apiKeyHelper classifies "other": the file stays.
+  writeFileSync(
+    settingsPath,
+    `${JSON.stringify({ apiKeyHelper: "/usr/local/bin/my-own-resolver" }, null, 2)}\n`,
+  );
   removeClaudeProfile(home, WORK);
   expect(existsSync(settingsPath)).toBe(true);
-  expect(existsSync(helper)).toBe(true);
-
-  // Unconfigured ("none"): no wiring points at the legacy names, so files there
-  // are removed by name (orphan cleanup, the historical contract).
-  rmSync(settingsPath);
-  removeClaudeProfile(home, WORK);
-  expect(existsSync(helper)).toBe(false);
 });
 
 test("an unreadable settings file is hands-off for removal, never read as unconfigured", () => {
   const home = tmpHome();
   mkdirSync(home, { recursive: true });
-  const helper = directHelperPath(home, WORK);
-  writeFileSync(helper, "#!/bin/sh\nexec my-own-resolver\n");
   // A directory at the settings path forces a non-ENOENT read error on every
-  // platform: the settings EXIST but cannot be read, so they may still point at
-  // the helper -- that must not classify as "none" and authorize file removal
-  // (removeClaudeDefaultWiring shares the same reader).
-  mkdirSync(join(home, "settings-work.json"));
+  // platform: the settings EXIST but cannot be read -- that must not classify as
+  // "none" (removeClaudeDefaultWiring shares the same reader), and removal finishes.
+  const settingsPath = join(home, "settings-work.json");
+  mkdirSync(settingsPath);
   removeClaudeProfile(home, WORK);
-  expect(existsSync(helper)).toBe(true);
+  expect(existsSync(settingsPath)).toBe(true);
 });
 
 test("--check: absent settings exit 2 (none), unreadable settings exit 1 (other)", async () => {
@@ -780,160 +707,50 @@ test("ownership is keyed to the settings path: a stale marker never strips anoth
   expect(denyOf(readSettings(otherHome))).toEqual([WEBSEARCH_DENY_RULE]); // user policy survives
 });
 
-// --- reader tolerance: the retired helper-file wiring ---------------------------
-
-test("a rewrite upgrades legacy helper-path wiring to the inline command, leaving the file", () => {
+test("the default write reclaims a helper-path apiKeyHelper, leaving the user's file", () => {
   const home = tmpHome();
-  // A pre-inline install: apiKeyHelper stores the helper-script PATH and the file exists.
-  const legacyHelper = join(home, PROXY_HELPER_NAME);
+  // The shape 3.5.6 wrote (foreign now): apiKeyHelper stores a helper-script PATH.
+  const helperFile = join(home, "copilot-proxy-token.sh");
   mkdirSync(home, { recursive: true });
-  writeFileSync(legacyHelper, "#!/bin/sh\nexec old-resolver --yes\n");
+  writeFileSync(helperFile, "#!/bin/sh\nexec old-resolver --yes\n");
   writeFileSync(
     join(home, "settings.json"),
-    `${JSON.stringify({ apiKeyHelper: legacyHelper }, null, 2)}\n`,
+    `${JSON.stringify({ apiKeyHelper: helperFile }, null, 2)}\n`,
   );
 
   configureClaudeConfig(home, { mode: "proxy" });
 
-  // Upgraded in place; the orphaned legacy file is left alone (uninstall removes it).
+  // The default settings.json keeps its historical contract (an explicit mode write
+  // reclaims even a custom config); the file is the user's and stays.
   expect(readSettings(home).apiKeyHelper).toBe(proxyHelperCommand());
-  expect(existsSync(legacyHelper)).toBe(true);
+  expect(existsSync(helperFile)).toBe(true);
 });
 
-test("classification is profile-addressed: inline commands, legacy bodies, and every impostor", () => {
-  const home = "/home/x/.claude";
-  const files = new Map<string, string>();
-  const readFile = (path: string): string | null => files.get(path) ?? null;
+test("classification is profile-addressed: a default-addressed command is not a profile's", () => {
   const modeFor = (apiKeyHelper: string, profile: typeof WORK | null) =>
-    inspectClaudeWiring(JSON.stringify({ apiKeyHelper }), home, 0, profile, readFile).providerMode;
+    inspectClaudeWiring(JSON.stringify({ apiKeyHelper }), 0, profile).providerMode;
 
   // A default-addressed inline command is NOT a named profile's resolver (and vice versa).
   expect(modeFor(directHelperCommand(), null)).toBe("direct");
   expect(modeFor(directHelperCommand(), WORK)).toBe("other");
   expect(modeFor(directHelperCommand(WORK), WORK)).toBe("direct");
   expect(modeFor(directHelperCommand(WORK), null)).toBe("other");
-
-  // The legacy arm derives the profile's OWN path and body: WORK's body at WORK's
-  // path classifies for WORK...
-  const defaultPath = join(home, DIRECT_HELPER_NAME);
-  const workPath = directHelperPath(home, WORK);
-  files.set(defaultPath, legacyDirectHelperScript());
-  files.set(workPath, legacyDirectHelperScript(WORK));
-  expect(modeFor(workPath, WORK)).toBe("direct");
-  expect(modeFor(defaultPath, null)).toBe("direct");
-  // ...but the default helper never satisfies the WORK inspection (nor the reverse),
-  // and a mis-addressed body at the right path is an impostor.
-  expect(modeFor(defaultPath, WORK)).toBe("other");
-  expect(modeFor(workPath, null)).toBe("other");
-  files.set(workPath, legacyDirectHelperScript());
-  expect(modeFor(workPath, WORK)).toBe("other");
 });
 
-test("legacy body matchers pin every released rendering, root-agnostic, both platforms", () => {
-  // `win` is explicit here so both platform shapes run on every CI runner (the
-  // classifier test above exercises the ambient platform through the path arms).
-  const direct = (body: string | null, win: boolean) =>
-    legacyDirectHelperBodyMatches(body, null, win);
-  const proxy = (body: string | null, win: boolean) =>
-    legacyProxyHelperBodyMatches(body, null, win);
-
-  // Direct: the one released rendering (v3.5.6 == v3.3.17), any root -- spaces stay
-  // inside the shQuote'd token / the -File double quotes.
-  expect(direct("#!/bin/sh\nexec '/some root/bin/agent' 'auth' '--get'\n", false)).toBe(true);
-  expect(direct(
-    '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\some root\\bin\\agent.ps1" auth --get\r\n',
-    true,
-  )).toBe(true);
-  // Profile addressing is part of the rendering.
-  const workDirect = "#!/bin/sh\nexec '/r/bin/agent' 'auth' '--get' '--profile' 'work'\n";
-  expect(legacyDirectHelperBodyMatches(workDirect, WORK, false)).toBe(true);
-  expect(legacyDirectHelperBodyMatches(workDirect, null, false)).toBe(false);
-
-  // Proxy: v3.5.x quoted forwarder, v3.3.x bare `--yes` (default profile only --
-  // that era predates named profiles), and unreleased mains' launcher spelling.
-  expect(proxy("#!/bin/sh\nexec '/r/src/scripts/proxy-token.sh' '--yes'\n", false)).toBe(true);
-  expect(proxy("#!/bin/sh\nexec '/r/src/scripts/proxy-token.sh' --yes\n", false)).toBe(true);
-  expect(proxy("#!/bin/sh\nexec '/r/bin/agent' 'proxy-token' '--yes'\n", false)).toBe(true);
-  expect(proxy(
-    '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\r\\src\\scripts\\proxy-token.ps1" --yes\r\n',
-    true,
-  )).toBe(true);
-  expect(
-    legacyProxyHelperBodyMatches(
-      "#!/bin/sh\nexec '/r/src/scripts/proxy-token.sh' '--yes' '--profile' 'work'\n",
-      WORK,
-      false,
-    ),
-  ).toBe(true);
-  expect(
-    legacyProxyHelperBodyMatches(
-      "#!/bin/sh\nexec '/r/src/scripts/proxy-token.sh' --yes\n",
-      WORK,
-      false,
-    ),
-  ).toBe(false);
-
-  // Impostors: trailing shell, a missing exec frame, a foreign resolver, no body.
-  expect(proxy("#!/bin/sh\nexec '/r/src/scripts/proxy-token.sh' '--yes' ; evil\n", false))
-    .toBe(false);
-  expect(proxy("exec '/r/src/scripts/proxy-token.sh' '--yes'\n", false)).toBe(false);
-  expect(direct("#!/bin/sh\nexec gh auth token\n", false)).toBe(false);
-  expect(direct(null, false)).toBe(false);
-  expect(proxy(null, true)).toBe(false);
-  // cmd.exe parses per line -- a CRLF inside the apparent quoted -File path IS a
-  // second command -- and the released .cmd writers %%-doubled every literal `%`,
-  // so raw `%` is equally foreign; the doubling the writers emitted stays accepted.
-  expect(direct(
-    '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\r\r\nevil.exe\r\nrem \\bin\\agent.ps1" auth --get\r\n',
-    true,
-  )).toBe(false);
-  expect(direct(
-    '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\%TEMP%\\bin\\agent.ps1" auth --get\r\n',
-    true,
-  )).toBe(false);
-  expect(proxy(
-    '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\r\r\nevil\\src\\scripts\\proxy-token.ps1" --yes\r\n',
-    true,
-  )).toBe(false);
-  expect(direct(
-    '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\50%%done\\bin\\agent.ps1" auth --get\r\n',
-    true,
-  )).toBe(true);
-
-  // The exported fixture renderers satisfy their matchers on the ambient platform.
-  expect(legacyDirectHelperBodyMatches(legacyDirectHelperScript())).toBe(true);
-  expect(legacyProxyHelperBodyMatches(legacyProxyHelperScript())).toBe(true);
-  expect(legacyDirectHelperBodyMatches(legacyDirectHelperScript(WORK), WORK)).toBe(true);
-  expect(legacyProxyHelperBodyMatches(legacyProxyHelperScript(WORK), WORK)).toBe(true);
-});
-
-test("--check reads the legacy helper body: missing/foreign exits 1, the exact body exits 0", async () => {
+test("--check: the helper-file path 3.5.6 wrote exits 1 (other), even with the file present", async () => {
   const home = tmpHome();
   mkdirSync(home, { recursive: true });
-  const legacyPath = join(home, DIRECT_HELPER_NAME);
+  const helperFile = join(home, "copilot-token.sh");
+  writeFileSync(helperFile, "#!/bin/sh\nexec '/r/bin/agent' 'auth' '--get'\n");
   writeFileSync(
     join(home, "settings.json"),
-    `${JSON.stringify({ apiKeyHelper: legacyPath }, null, 2)}\n`,
+    `${JSON.stringify({ apiKeyHelper: helperFile }, null, 2)}\n`,
   );
   const before = process.exitCode;
   try {
-    // The helper file is missing: the path alone must not read as ours -- the `cl`
-    // launcher gates on this exit code, and a helper that cannot produce a
-    // credential must fail it.
+    // The `cl` launcher gates on this exit code: a path is never the managed command.
     await runClaude({ kind: "check" });
     expect(process.exitCode).toBe(1);
-
-    // A foreign body at the right path is equally not ours.
-    process.exitCode = 0;
-    writeFileSync(legacyPath, "#!/bin/sh\nexec gh auth token\n");
-    await runClaude({ kind: "check" });
-    expect(process.exitCode).toBe(1);
-
-    // The exact pre-inline body: a genuine legacy install still checks green.
-    writeFileSync(legacyPath, legacyDirectHelperScript());
-    process.exitCode = 0;
-    await runClaude({ kind: "check" });
-    expect(process.exitCode).toBe(0);
   } finally {
     process.exitCode = before ?? 0;
   }
@@ -1028,10 +845,10 @@ test("inspectClaudeWiring reads a sibling root's wiring as its real mode, not ot
     apiKeyHelper: helper("auth --get"),
     env: { ANTHROPIC_BASE_URL: "https://api.githubcopilot.com" },
   });
-  expect(inspectClaudeWiring(text, "/tmp/claude-home", 4141).providerMode).toBe("direct");
+  expect(inspectClaudeWiring(text, 4141).providerMode).toBe("direct");
   const proxyText = JSON.stringify({
     apiKeyHelper: helper("proxy-token --yes"),
     env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:4141" },
   });
-  expect(inspectClaudeWiring(proxyText, "/tmp/claude-home", 4141).providerMode).toBe("proxy");
+  expect(inspectClaudeWiring(proxyText, 4141).providerMode).toBe("proxy");
 });

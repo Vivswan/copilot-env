@@ -942,10 +942,10 @@ test.skipIf(process.platform === "win32")(
         { catalogDeps: NOOP_CATALOG_DEPS },
       ).writes.join("\n");
     expect(profileOnly({ codexHost: true })).toContain(
-      `Codex config: ${farmConfig} (may also clean its .env)`,
+      `Codex config: ${farmConfig}`,
     );
     expect(profileOnly({})).toContain(
-      `Codex config: ${join(homes.codexHome, "config.toml")} (may also clean its .env)`,
+      `Codex config: ${join(homes.codexHome, "config.toml")}`,
     );
   },
 );

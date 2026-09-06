@@ -21,13 +21,7 @@ import {
   desktopLibraryDirUnder,
 } from "../src/claude/desktop.ts";
 import { claudeJsonPath, registerClaudeMcpServer } from "../src/claude/mcp_registration.ts";
-import {
-  DIRECT_HELPER_NAME,
-  directHelperPath,
-  PROXY_HELPER_NAME,
-  proxyHelperPath,
-  settingsPathFor,
-} from "../src/claude/paths.ts";
+import { settingsPathFor } from "../src/claude/paths.ts";
 import { configureCodexConfig } from "../src/codex/config.ts";
 import {
   applyUninstall,
@@ -147,10 +141,6 @@ test("uninstall removes everything managed and preserves user config", async () 
   mkdirSync(claudeHome, { recursive: true });
   writeFileSync(settingsPathFor(claudeHome), JSON.stringify({ model: "opus" }));
   configureClaudeConfig(claudeHome, { mode: "direct" });
-  // Legacy helper files from a pre-inline install (the current writer creates none):
-  // uninstall must still remove them by name.
-  writeFileSync(join(claudeHome, DIRECT_HELPER_NAME), "#!/bin/sh\nexec legacy\n");
-  writeFileSync(join(claudeHome, PROXY_HELPER_NAME), "#!/bin/sh\nexec legacy\n");
   mkdirSync(codexHome, { recursive: true });
   writeFileSync(
     join(codexHome, "config.toml"),
@@ -205,8 +195,6 @@ test("uninstall removes everything managed and preserves user config", async () 
     (JSON.parse(readFileSync(claudeJsonPath(), "utf8")) as Record<string, unknown>).mcpServers,
   ).toBeUndefined();
   expect(settings.model).toBe("opus");
-  expect(existsSync(join(claudeHome, DIRECT_HELPER_NAME))).toBe(false);
-  expect(existsSync(join(claudeHome, PROXY_HELPER_NAME))).toBe(false);
 
   // Codex: our selector + tables gone from BOTH homes, the user's key and
   // provider table survive.
@@ -391,8 +379,6 @@ test("uninstall --dry-run changes nothing and narrates every step", async () => 
   const { proxyHome, claudeHome, codexHome } = tmpHomes();
   mkdirSync(claudeHome, { recursive: true });
   configureClaudeConfig(claudeHome, { mode: "direct" });
-  // A legacy helper file (pre-inline install): dry-run must leave even that alone.
-  writeFileSync(join(claudeHome, DIRECT_HELPER_NAME), "#!/bin/sh\nexec legacy\n");
   configureCodexConfig(codexHome, {
     mode: "proxy",
     baseUrl: "http://127.0.0.1:4199/v1",
@@ -433,21 +419,10 @@ test("uninstall --dry-run changes nothing and narrates every step", async () => 
 
   expect(existsSync(deps.installRoot.root)).toBe(true);
   expect(existsSync(settingsPathFor(claudeHome))).toBe(true);
-  expect(existsSync(join(claudeHome, DIRECT_HELPER_NAME))).toBe(true);
   expect(readToml(codexHome).model_provider).toBe("copilot-env");
   expect(new Credential().resolve()).toBe("ghp_default");
   expect(existsSync(proxyHome)).toBe(true);
   expect(deps.calls).toEqual([]);
-});
-
-test("uninstall scrubs the legacy .env token but never OPENAI_API_KEY", async () => {
-  const { codexHome } = tmpHomes();
-  mkdirSync(codexHome, { recursive: true });
-  writeFileSync(join(codexHome, ".env"), "COPILOT_ENV_GH_TOKEN=ghp_x\nOPENAI_API_KEY=user-key\n");
-
-  await runUninstall({ yes: true }, tmpDeps(codexHome));
-
-  expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe("OPENAI_API_KEY=user-key\n");
 });
 
 test.skipIf(process.platform === "win32")(
@@ -551,17 +526,6 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   });
   configureClaudeConfig(claudeHome, { mode: "direct", profile: WORK });
   mkdirSync(profileHome(WORK), { recursive: true });
-  // Legacy helpers (pre-inline install), the default's and the profile's: the teardown
-  // removes them, so the plan names them.
-  const legacyHelper = directHelperPath(claudeHome, WORK);
-  writeFileSync(legacyHelper, "#!/bin/sh\nexec legacy\n");
-  // A legacy baked token in the Codex .env: the teardown rewrites the file, so the plan
-  // names it (beside the user's own key, which survives).
-  mkdirSync(codexHome, { recursive: true });
-  const codexEnv = join(codexHome, ".env");
-  writeFileSync(codexEnv, "COPILOT_ENV_GH_TOKEN=ghp_x\nOPENAI_API_KEY=user-key\n");
-  const defaultLegacyHelper = directHelperPath(claudeHome);
-  writeFileSync(defaultLegacyHelper, "#!/bin/sh\nexec legacy\n");
   // The AMBIENT Desktop library (the env seam) is the injected one, so a profile
   // teardown that rescanned the library would find what is planted below.
   const desktopData = join(dir, "desktop");
@@ -609,17 +573,15 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   expect(ctx.targets.desktop.helpers.sort()).toEqual([defaultHelper, workHelper].sort());
   expect(ctx.targets.desktop.staleClaims).toEqual([join(library, "gone.json")]);
   expect(ctx.targets.shellFiles).toEqual([rc]);
-  expect(ctx.targets.codexEnvTokenFiles.get(codexHome)).toBe(codexEnv);
   // The MCP registration file follows CLAUDE_CONFIG_DIR (the isolated home), and holds
   // our entry, so the plan names the rewrite.
   expect(claudeJsonPath()).toBe(join(claudeHome, ".claude.json"));
   expect(ctx.targets.claudeMcpRegistration).toBe(claudeJsonPath());
   const metaPath = join(library, "_meta.json");
   expect(ctx.targets.desktop.metaRewrite).toBe(metaPath);
-  expect(ctx.targets.claudeDefaultHelpers).toEqual([defaultLegacyHelper]);
   expect(ctx.targets.profiles).toEqual([{
     name: WORK,
-    claudeArtifacts: [settingsPathFor(claudeHome, WORK), legacyHelper],
+    claudeArtifacts: [settingsPathFor(claudeHome, WORK)],
     home: profileHome(WORK),
   }]);
   const dryRun = describeUninstall(ctx);
@@ -628,9 +590,6 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   // dry run never named.
   writeFileSync(join(library, "late.json"), entryFor(workHelper));
   metaRows.push({ id: "late", name: "copilot-env (work, late)" });
-  // And a default legacy helper that appears after planning: absent from the plan, kept.
-  const lateHelper = proxyHelperPath(claudeHome);
-  writeFileSync(lateHelper, "#!/bin/sh\nexec late\n");
   writeFileSync(join(library, "_meta.json"), `${JSON.stringify({ entries: metaRows })}\n`);
   ledger.record("claudeDesktop", join(library, "late.json"));
 
@@ -647,15 +606,13 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   expect(reported.filter((line) => line.includes(rc))).toEqual([
     `rewritten -> ${rc} (shell integration removed)`,
   ]);
-  // The two other outside-home REWRITES the sweep performs are named live too, and the
-  // dry run named both paths (asserted with the deletions below).
-  expect(readFileSync(codexEnv, "utf8")).toBe("OPENAI_API_KEY=user-key\n");
+  // The other outside-home REWRITE the sweep performs is named live too, and the dry
+  // run named its path (asserted with the deletions below).
   const rewritten = new Set(
     reported
       .filter((line) => line.startsWith("rewritten -> "))
       .map((line) => line.slice("rewritten -> ".length).replace(/ \(.*\)$/, "")),
   );
-  expect(rewritten.has(codexEnv)).toBe(true);
   expect(rewritten.has(metaPath)).toBe(true);
   // .claude.json was CREATED in this process (the registration above), so the uninstall's
   // rewrite is the same per-process fact and prints no second line: the entry being gone,
@@ -665,8 +622,6 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   ).toBeUndefined();
 
   expect(existsSync(join(library, "late.json"))).toBe(true);
-  expect(existsSync(lateHelper)).toBe(true);
-  expect(existsSync(defaultLegacyHelper)).toBe(false);
   expect(existsSync(join(library, "ours.json"))).toBe(false);
   expect(existsSync(elsewhere)).toBe(false);
   // The live row and the stale claim's row went; the late row stayed (the ledger itself
@@ -692,7 +647,6 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
     ...ctx.targets.desktop.helpers,
     ...ctx.targets.floatArtifacts,
     ...ctx.targets.profiles.flatMap((p) => [...p.claudeArtifacts, p.home]),
-    ...ctx.targets.claudeDefaultHelpers,
     ctx.rootHome,
     ctx.installRoot.root,
   ];

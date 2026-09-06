@@ -47,11 +47,7 @@ export function readAgentWirings(opts: AgentWiringOptions = {}): {
     false,
   );
   const claudeHome = opts.claudeHome ?? resolveClaudeHome();
-  const claude = inspectClaudeWiring(
-    readTextResult(settingsPathFor(claudeHome)),
-    claudeHome,
-    expectedPort,
-  );
+  const claude = inspectClaudeWiring(readTextResult(settingsPathFor(claudeHome)), expectedPort);
   return { codex, claude };
 }
 

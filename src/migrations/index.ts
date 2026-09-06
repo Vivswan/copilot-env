@@ -18,11 +18,15 @@ import { disableConsolaTimestamps } from "../utils/logger.ts";
 import { type SemverString, stripV, toSemverString, versionLessThan } from "../utils/semver.ts";
 import {
   v356,
+  v356ClaudeWiring,
+  v356CodexWiring,
   v356DefaultHome,
   v356DefaultSlot,
   v356Ownership,
+  v356ShellFence,
   v356VersionedLayout,
 } from "./3.5.6.ts";
+import { v400AutoupdateFlag, v400ClaudeWiring, v400CodexWiring, v400ShellFence } from "./4.0.0.ts";
 
 /**
  * One step in the version history, named for the release it migrates AWAY FROM (so a
@@ -56,7 +60,14 @@ const MIGRATIONS: Migration[] = [
   v356Ownership,
   v356DefaultSlot,
   v356DefaultHome,
+  v356ShellFence,
+  v356CodexWiring,
+  v356ClaudeWiring,
   v356VersionedLayout,
+  v400ShellFence,
+  v400CodexWiring,
+  v400ClaudeWiring,
+  v400AutoupdateFlag,
 ];
 
 // versionLessThan tolerates unparseable input by answering "not less-than", so a

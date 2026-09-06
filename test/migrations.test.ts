@@ -1,22 +1,46 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { parse, stringify } from "smol-toml";
+import { directHelperCommand, proxyHelperCommand } from "../src/claude/config.ts";
 import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { startLockPath } from "../src/copilot_api/launch.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { defaultDaemonHome } from "../src/copilot_api/paths.ts";
+import { parseProfileName } from "../src/copilot_api/profile.ts";
 import {
   moveDataHome,
   moveDefaultDaemonHome,
   v356,
+  v356ClaudeWiring,
+  v356CodexWiring,
   v356DefaultHome,
   v356DefaultSlot,
   v356Ownership,
+  v356ShellFence,
   v356VersionedLayout,
 } from "../src/migrations/3.5.6.ts";
+import {
+  dropLegacyAutoupdateFlag,
+  fenceUnfencedBlocks,
+  removeEnvKey,
+  rewriteLegacyClaudeHelper,
+  rewriteLegacyCodexTables,
+  v400AutoupdateFlag,
+  v400ClaudeWiring,
+  v400CodexWiring,
+  v400ShellFence,
+} from "../src/migrations/4.0.0.ts";
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
 import { readResolvedVersionRecord, writeResolvedVersionRecord } from "../src/proxy_float.ts";
 import { acquireDaemonLockForLife, daemonLockPath } from "../src/scripts/daemon_lock.ts";
 import { releaseFileLock, tryAcquireFileLock } from "../src/utils/file_lock.ts";
+import {
+  LAUNCHERS_MARKER,
+  LAUNCHERS_MARKER_END,
+  MARKER,
+  MARKER_END,
+} from "../src/shell/integration.ts";
+import { proxyTokenCommand } from "../src/utils/root.ts";
 import type { SemverString } from "../src/utils/semver.ts";
 import { denoRunArgs, importSpecifier, ROOT, spawnChild } from "./helpers/run.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
@@ -31,6 +55,7 @@ const mig = (version: SemverString): Migration => ({
   run: () => {},
 });
 const LIST = [mig("1.2.1"), mig("1.2.5"), mig("1.3.0")];
+const WORK = parseProfileName("work");
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -59,21 +84,241 @@ test("dueMigrations selects [from, to) in ascending order over the registry", ()
   }
 });
 
-test("the shipped registry holds exactly the FIVE named 3.5.6 fix-ups in order, home move first", () => {
+test("the shipped registry holds exactly the named fix-ups in order, home move first", () => {
   // Adding a step has to be a deliberate edit to the registry, not an accident of
   // a stale import; this pins the full set BY IDENTITY and in order -- a count
   // (or a list of version strings) could stay green while a same-version fix-up
   // was silently dropped in a merge. Order matters within the version: the
   // later fix-ups read the state store the home move relocates, the default
-  // daemon-home move relocates files inside that moved home, and the
-  // layout adoption runs LAST (it relocates the install the others fixed up).
+  // daemon-home move relocates files inside that moved home, the three wiring
+  // rewrites land before the layout adoption re-wires the shell through the
+  // fence-only writer and sweeps the flat src/scripts, and the layout adoption runs
+  // LAST among the 3.5.6 steps (it relocates the install the others fixed up). The
+  // 4.0.0 registrations of the same rewrites follow, for installs already on 4.0.0.
   expect(dueMigrations("0.0.1", "999.0.0")).toEqual([
     v356,
     v356Ownership,
     v356DefaultSlot,
     v356DefaultHome,
+    v356ShellFence,
+    v356CodexWiring,
+    v356ClaudeWiring,
     v356VersionedLayout,
+    v400ShellFence,
+    v400CodexWiring,
+    v400ClaudeWiring,
+    v400AutoupdateFlag,
   ]);
+  // An install already on 4.0.0 (whose readers tolerated the 3.5.6 shapes) still gets
+  // every wiring rewrite on its way to the next release.
+  expect(dueMigrations("4.0.0", "4.0.1")).toEqual([
+    v400ShellFence,
+    v400CodexWiring,
+    v400ClaudeWiring,
+    v400AutoupdateFlag,
+  ]);
+});
+
+// --- the 4.0.0 wiring rewrites (pure cores; no real home touched) -----------------
+
+test("fenceUnfencedBlocks fences the 3.5.6 rc blocks and leaves everything else alone", () => {
+  const main = `${MARKER}\nAGENTS_BASHRC="/x/shell/agents.bashrc"\n` +
+    `[ -f "$AGENTS_BASHRC" ] && source "$AGENTS_BASHRC"`;
+  const launchers = `${LAUNCHERS_MARKER}\nAGENTS_LAUNCHERS="/x/l.bashrc"\n` +
+    `[ -f "$AGENTS_LAUNCHERS" ] && source "$AGENTS_LAUNCHERS"`;
+  const rc = `export KEEP=1\n\n${main}\n\n${launchers}\nexport AFTER=1\n`;
+  expect(fenceUnfencedBlocks(rc)).toBe(
+    `export KEEP=1\n\n${main}\n${MARKER_END}\n\n${launchers}\n${LAUNCHERS_MARKER_END}\nexport AFTER=1\n`,
+  );
+  // Idempotent: a fenced file is byte-identical.
+  expect(fenceUnfencedBlocks(fenceUnfencedBlocks(rc))).toBe(fenceUnfencedBlocks(rc));
+  // A lookalike in the guard position (the user's own assignment) is not the pair:
+  // nothing is fenced, nothing is touched.
+  const lookalike = `${MARKER}\nAGENTS_BASHRC="/x/agents.bashrc"\nAGENTS_BASHRC=/user-owned\n`;
+  expect(fenceUnfencedBlocks(lookalike)).toBe(lookalike);
+  // The PowerShell pair, CRLF: the fence adopts the file's line ending.
+  const ps = `${MARKER}\r\n$AgentsPs1 = "C:\\x\\agents.ps1"\r\n` +
+    `if (Test-Path $AgentsPs1) { . $AgentsPs1 }\r\nWrite-Host after\r\n`;
+  expect(fenceUnfencedBlocks(ps)).toBe(
+    `${MARKER}\r\n$AgentsPs1 = "C:\\x\\agents.ps1"\r\n` +
+      `if (Test-Path $AgentsPs1) { . $AgentsPs1 }\r\n${MARKER_END}\r\nWrite-Host after\r\n`,
+  );
+});
+
+test("rewriteLegacyCodexTables moves the 3.5.6 tables to the managed auth block", () => {
+  // The 3.5.6 auth block on each platform (the src/scripts forwarder at some root).
+  const scriptAuth = { "command": "/bin/sh", "args": ["/r/src/scripts/proxy-token.sh", "--yes"] };
+  const scriptAuthWin = {
+    "command": "powershell",
+    "args": [
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "C:\\r\\src\\scripts\\proxy-token.ps1",
+      "--yes",
+      "--profile",
+      "win",
+    ],
+  };
+  const doc = parse(stringify({
+    "model_provider": "copilot-env",
+    "model_providers": {
+      // The 3.5.6 default table: the script forwarder as auth.command.
+      "copilot-env": {
+        "name": "copilot-env",
+        "base_url": "http://localhost:4141/v1",
+        "user_extra": "kept",
+        "auth": scriptAuth,
+      },
+      "copilot-env-win": { "base_url": "http://localhost:4250/v1", "auth": scriptAuthWin },
+      // Not the 3.5.6 argv: a resolver addressed at ANOTHER profile, or carrying an
+      // extra argument. Left alone.
+      "copilot-env-other": {
+        "base_url": "http://localhost:4260/v1",
+        "auth": { "command": "/bin/sh", "args": [...scriptAuth.args, "--profile", "work"] },
+      },
+      "copilot-env-extra": {
+        "base_url": "http://localhost:4270/v1",
+        "auth": { "command": "/bin/sh", "args": [...scriptAuth.args, "--verbose"] },
+      },
+      // A managed table whose auth merely mentions a same-named script elsewhere is
+      // not the 3.5.6 shape: left alone (the only change is its stray env_key).
+      "copilot-env-mine": {
+        "base_url": "http://localhost:4300/v1",
+        "auth": { "command": "/usr/local/bin/wrap", "args": ["/opt/x/proxy-token.sh", "--yes"] },
+      },
+      // A named profile still on the env_key wiring older still.
+      "copilot-env-work": { "base_url": "http://localhost:4200/v1", "env_key": "OPENAI_API_KEY" },
+      // A direct-era table: the baked env_key goes, nothing else is invented.
+      "copilot-env-old": {
+        "base_url": "https://api.githubcopilot.com",
+        "env_key": "COPILOT_ENV_GH_TOKEN",
+      },
+      // Foreign tables are never touched.
+      "other": { "base_url": "http://other/v1", "env_key": "OTHER_KEY" },
+    },
+  }));
+  expect(rewriteLegacyCodexTables(doc)).toBe(true);
+  const providers = doc.model_providers as Record<string, Record<string, unknown>>;
+  const main = providers["copilot-env"]!;
+  expect(main.base_url).toBe("http://localhost:4141/v1");
+  expect(main.user_extra).toBe("kept");
+  expect((main.auth as Record<string, unknown>).command).toBe(proxyTokenCommand().command);
+  expect((main.auth as Record<string, unknown>).args).toEqual(proxyTokenCommand().args);
+  const work = providers["copilot-env-work"]!;
+  expect(work.env_key).toBeUndefined();
+  expect((work.auth as Record<string, unknown>).args).toEqual(proxyTokenCommand(WORK).args);
+  expect((providers["copilot-env-win"]!.auth as Record<string, unknown>).args).toEqual(
+    proxyTokenCommand(parseProfileName("win")).args,
+  );
+  expect(providers["copilot-env-old"]).toEqual({ "base_url": "https://api.githubcopilot.com" });
+  expect((providers["copilot-env-mine"]!.auth as Record<string, unknown>).command).toBe(
+    "/usr/local/bin/wrap",
+  );
+  for (const id of ["copilot-env-other", "copilot-env-extra"]) {
+    expect((providers[id]!.auth as Record<string, unknown>).command, id).toBe("/bin/sh");
+  }
+  expect(providers.other).toEqual({ "base_url": "http://other/v1", "env_key": "OTHER_KEY" });
+  // Converged: a second pass changes nothing.
+  expect(rewriteLegacyCodexTables(doc)).toBe(false);
+});
+
+test("removeEnvKey drops every assignment of the key and nothing else", () => {
+  dir = tempDir("copilot-mig-env-");
+  const env = join(dir, ".env");
+  writeFileSync(
+    env,
+    "# mine\nFOO=bar\nCOPILOT_ENV_GH_TOKEN=ghp_a\nexport COPILOT_ENV_GH_TOKEN=ghp_b\nOPENAI_API_KEY=user\n",
+  );
+  expect(removeEnvKey(env, "COPILOT_ENV_GH_TOKEN")).toBe(true);
+  expect(readFileSync(env, "utf8")).toBe("# mine\nFOO=bar\nOPENAI_API_KEY=user\n");
+  expect(removeEnvKey(env, "COPILOT_ENV_GH_TOKEN")).toBe(false); // nothing left: no rewrite
+  expect(removeEnvKey(join(dir, "absent.env"), "COPILOT_ENV_GH_TOKEN")).toBe(false);
+  expect(existsSync(join(dir, "absent.env"))).toBe(false);
+});
+
+test("rewriteLegacyClaudeHelper inlines a released helper body and removes the file", () => {
+  dir = tempDir("copilot-mig-claude-");
+  const win = process.platform === "win32";
+  const ext = win ? "cmd" : "sh";
+  // The v3.5.6 renderings from tag history, at a root that is not this checkout.
+  const directBody = win
+    ? '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\other root\\bin\\agent.ps1" auth --get\r\n'
+    : "#!/bin/sh\nexec '/other root/bin/agent' 'auth' '--get'\n";
+  const workProxyBody = win
+    ? '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\other root\\src\\scripts\\proxy-token.ps1" --yes --profile work\r\n'
+    : "#!/bin/sh\nexec '/other root/src/scripts/proxy-token.sh' '--yes' '--profile' 'work'\n";
+  const direct = join(dir, `copilot-token.${ext}`);
+  writeFileSync(direct, directBody);
+  writeFileSync(
+    join(dir, "settings.json"),
+    JSON.stringify({ apiKeyHelper: direct, model: "opus" }),
+  );
+  const workProxy = join(dir, `copilot-proxy-token-work.${ext}`);
+  writeFileSync(workProxy, workProxyBody);
+  writeFileSync(join(dir, "settings-work.json"), JSON.stringify({ apiKeyHelper: workProxy }));
+
+  expect(rewriteLegacyClaudeHelper(dir, null)).toBe(true);
+  expect(rewriteLegacyClaudeHelper(dir, WORK)).toBe(true);
+  const settings = JSON.parse(readFileSync(join(dir, "settings.json"), "utf8"));
+  expect(settings).toEqual({ apiKeyHelper: directHelperCommand(), model: "opus" });
+  expect(existsSync(direct)).toBe(false);
+  const work = JSON.parse(readFileSync(join(dir, "settings-work.json"), "utf8"));
+  expect(work.apiKeyHelper).toBe(proxyHelperCommand(WORK));
+  expect(existsSync(workProxy)).toBe(false);
+  // Converged: the inline command is not a helper path.
+  expect(rewriteLegacyClaudeHelper(dir, null)).toBe(false);
+
+  // Near misses at our name are the user's: untouched, settings included. A body that
+  // only MENTIONS the resolver, a trailing shell command, a body addressed at another
+  // profile, the pre-v3.3.5 `gh auth token` helper.
+  // ...the OTHER platform's frame at this platform's path (no release paired them), and
+  // the proxy body only unreleased mains wrote (the launcher's own subcommand).
+  const nearMisses = win
+    ? [
+      '@echo off\r\npowershell -File "C:\\r\\bin\\agent.ps1" auth --get\r\n',
+      '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\r\\bin\\agent.ps1" auth --get --profile work\r\n',
+      "@echo off\r\ngh auth token\r\n",
+      "#!/bin/sh\nexec '/r/bin/agent' 'auth' '--get'\n",
+    ]
+    : [
+      "#!/bin/sh\n# runs agent auth --get\nexec my-resolver\n",
+      "#!/bin/sh\nexec '/r/bin/agent' 'auth' '--get' ; evil\n",
+      "#!/bin/sh\nexec '/r/bin/agent' 'auth' '--get' '--profile' 'work'\n",
+      "#!/bin/sh\nexec gh auth token\n",
+      '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\r\\bin\\agent.ps1" auth --get\r\n',
+    ];
+  const proxyNearMisses = win
+    ? [
+      '@echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File "C:\\r\\bin\\agent.ps1" proxy-token --yes\r\n',
+    ]
+    : ["#!/bin/sh\nexec '/r/bin/agent' 'proxy-token' '--yes'\n"];
+  const proxy = join(dir, `copilot-proxy-token.${ext}`);
+  for (
+    const [file, body] of [
+      ...nearMisses.map((b) => [direct, b] as const),
+      ...proxyNearMisses.map((b) => [proxy, b] as const),
+    ]
+  ) {
+    writeFileSync(file, body);
+    writeFileSync(join(dir, "settings.json"), JSON.stringify({ apiKeyHelper: file }));
+    expect(rewriteLegacyClaudeHelper(dir, null), body).toBe(false);
+    expect(existsSync(file), body).toBe(true);
+    expect(JSON.parse(readFileSync(join(dir, "settings.json"), "utf8")).apiKeyHelper, body)
+      .toBe(file);
+  }
+});
+
+test("dropLegacyAutoupdateFlag removes only the retired field, once; an absent file stays absent", () => {
+  dir = tempDir("copilot-mig-autoupdate-");
+  const file = join(dir, "state.json");
+  expect(dropLegacyAutoupdateFlag(file)).toBe(false);
+  expect(existsSync(file)).toBe(false);
+  writeFileSync(file, JSON.stringify({ enabled: true, lastCheckMs: 5, lastResult: "old" }));
+  expect(dropLegacyAutoupdateFlag(file)).toBe(true);
+  expect(JSON.parse(readFileSync(file, "utf8"))).toEqual({ lastCheckMs: 5, lastResult: "old" });
+  expect(dropLegacyAutoupdateFlag(file)).toBe(false); // nothing left to drop: no rewrite
 });
 
 test("equal-version fix-ups keep their registry order across the sort", () => {

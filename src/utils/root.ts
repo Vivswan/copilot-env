@@ -388,8 +388,7 @@ export function proxyTokenArgs(profile: Profile = null): string[] {
  * `agent proxy-token --yes` (src/commands/proxy_token.ts) -- as a NATIVE subprocess
  * (Codex's `auth.command`): it ensures the addressed proxy is up per the
  * managed-lifecycle rules, then prints its key on stdout. `profile` routes the
- * resolver at that profile's daemon. (src/scripts/proxy-token.{sh,ps1} remain only
- * as one-release forwarders onto this subcommand for configs older releases wrote.)
+ * resolver at that profile's daemon.
  */
 export function proxyTokenCommand(profile: Profile = null): { command: string; args: string[] } {
   return agentLauncherCommand(proxyTokenArgs(profile));

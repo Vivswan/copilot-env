@@ -71,7 +71,6 @@ import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { agentAuthGetArgs, agentLauncherCommand, proxyTokenArgs } from "../utils/root.ts";
 import { cmdHelperBody, posixExecBody } from "./helper_body.ts";
-import { resolveClaudeHome } from "./paths.ts";
 
 const logger = createStderrLogger();
 
@@ -508,41 +507,6 @@ export type DesktopWireOptions = ManagedWrite & {
   fetchImpl?: ProbeFetch;
 };
 
-/** The hand-rolled pre-copilot-env helper this feature supersedes: retired during
- *  adoption iff the adopted entry referenced it AND nothing else still does. */
-function legacyHandMadeHelperPath(): string {
-  return join(resolveClaudeHome(), "copilot-token.sh");
-}
-
-/** True when NO OTHER consumer references the hand-made helper: Claude Code's own
- *  settings.json (the legacy helper-FILE wiring used this exact path) and every other
- *  Desktop entry's config. Any read/parse doubt answers false -- keep the file. */
-function handMadeHelperUnreferenced(
-  dir: string,
-  meta: { entries: { id: string }[] },
-  adoptedId: string,
-  handMade: string,
-): boolean {
-  try {
-    const settingsRaw = readFileOrNull(join(resolveClaudeHome(), "settings.json"));
-    if (settingsRaw !== null) {
-      const settings: unknown = JSON.parse(settingsRaw);
-      if (!isRecord(settings)) return false;
-      if (settings["apiKeyHelper"] === handMade) return false;
-    }
-    for (const entry of meta.entries) {
-      if (entry.id === adoptedId) continue;
-      const raw = readFileOrNull(join(dir, `${entry.id}.json`));
-      if (raw === null) continue;
-      const doc: unknown = JSON.parse(raw);
-      if (isRecord(doc) && doc["inferenceCredentialHelper"] === handMade) return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** The upstream display names in `body`, folded onto base ids -- the same parse
  *  `agent models` renders (one pipeline for both surfaces). */
 function labelLookup(body: unknown): (id: string) => string | null {
@@ -625,8 +589,8 @@ async function wiringModels(
  * order for the target entry:
  *   ours (ownership-recorded path whose document names `profile`) -> adoptable (foreign
  *   entry whose gateway base URL already matches the target: taken over in place under
- *   its uuid and name, the hand-made helper it referenced retired) -> foreign entry
- *   carrying our name (warn, never clobber) -> a fresh uuid.
+ *   its uuid and name) -> foreign entry carrying our name (warn, never clobber) -> a
+ *   fresh uuid.
  * `appliedId` is only ever SET when the library had none -- an applied user config is
  * never displaced (an adopted applied entry stays applied naturally: its id is stable).
  * Ownership is committed AFTER both saves (record-after-save, like the WebSearch deny).
@@ -658,7 +622,6 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
       ledger.owns("claudeDesktop", configPathOf(e.id)) &&
       entryProfileAt(configPathOf(e.id)) === opts.profile,
   );
-  const commits: (() => void)[] = [];
   if (entry === undefined) {
     // Adoption scan: a foreign entry already wired at the same gateway is the user's
     // hand-made equivalent of what we are about to write -- take it over in place,
@@ -676,16 +639,6 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
       }
       if (!isRecord(doc) || !sameBaseUrl(doc["inferenceGatewayBaseUrl"], baseUrl)) continue;
       entry = candidate;
-      const handMade = legacyHandMadeHelperPath();
-      if (
-        doc["inferenceCredentialHelper"] === handMade &&
-        handMadeHelperUnreferenced(dir, meta, candidate.id, handMade)
-      ) {
-        // Retired only when NOTHING else references it: Claude Code's own
-        // settings.json (the legacy helper-FILE wiring used this very path) and
-        // every other Desktop entry are checked first; any doubt keeps the file.
-        commits.push(() => removeReported(handMade, "retired hand-made Claude Desktop helper"));
-      }
       if (!opts.quiet) {
         logger.info(
           `  Claude Desktop: adopting the existing "${candidate.id}" entry (same gateway).`,
@@ -780,7 +733,6 @@ export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<
   // byte-identical rewrite of a claim already held.
   if (!owned) ledger.record("claudeDesktop", configPath);
   retireDesktopHelperScript(opts.mode, opts.profile);
-  for (const commit of commits) commit();
 }
 
 /** The entry's recorded inferenceModels rows when they are OUR shape, else null (fetch). */

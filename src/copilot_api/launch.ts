@@ -26,7 +26,6 @@ import {
   optInProxyConfigPaths,
   projectedProxyConfig,
   type ProxyConfigPath,
-  STALE_PROXY_CONFIG_KEYS,
 } from "./env_config.ts";
 import { resolvePassthroughIntegrationId, usePatPassthrough } from "./integration_identity.ts";
 import { generateAliases } from "./models.ts";
@@ -1060,8 +1059,7 @@ export function applyDefaultConfig(
   // key falls back to its built-in proxy default when unset; an unset OPT-IN key is simply
   // not written -- and when a previous start wrote it (recorded in ProxyProjectionState),
   // the leftover value is cleared here so `agent config --del` truly reverts to the proxy's
-  // own default without ever deleting a value we didn't project. Keys the proxy renamed
-  // away from are dropped too, so an old install self-heals on its next start.
+  // own default without ever deleting a value we didn't project.
   const config = new CopilotApiConfig(paths.configFile);
   const projection = projectedProxyConfig(envConfig);
   const projectedKeys = new Set(projection.map((e) => JSON.stringify(e.path)));
@@ -1085,9 +1083,6 @@ export function applyDefaultConfig(
       .ownedPaths()
       .filter((p) => registryOptInKeys.has(JSON.stringify(p)));
     config.update((d) => {
-      for (const key of STALE_PROXY_CONFIG_KEYS) {
-        delete d[key];
-      }
       for (const path of ownedBefore) {
         if (!projectedKeys.has(JSON.stringify(path))) deleteProxyConfigValue(d, path);
       }

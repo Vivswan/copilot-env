@@ -18,9 +18,8 @@
 // `agent env` re-exports ANTHROPIC_BASE_URL only for the proxy backend (to keep
 // the shell aligned with the live proxy port); direct is driven entirely by
 // settings.json. Mode is inferred from the EXACT apiKeyHelper value (the managed
-// command string, or -- reader tolerance -- the retired helper-script path, accepted
-// only while the file's body is exactly what those releases wrote). The merge is
-// surgical: only the managed keys are touched; all other settings are preserved.
+// command string). The merge is surgical: only the managed keys are touched; all
+// other settings are preserved.
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {
@@ -52,33 +51,20 @@ import {
 import { type Profile, profileLabel, type ProfileName } from "../copilot_api/profile.ts";
 import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
-import {
-  entryAbsent,
-  isEnoentOrNotdir,
-  readTextOrNull,
-  readTextResult,
-  type TextReadResult,
-} from "../utils/fs.ts";
+import { isEnoentOrNotdir, readTextResult, type TextReadResult } from "../utils/fs.ts";
 import { isRecord, parseJsonRecord, readStringField } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { mkdirReported, removeReported, writeFileReported } from "../utils/report_write.ts";
 import {
   agentAuthGetArgs,
   agentLauncherCommand,
-  PROJECT_ROOT,
   proxyTokenArgs,
   proxyTokenCommand,
 } from "../utils/root.ts";
 import { removeClaudeDesktopEntry, syncClaudeDesktopWiring } from "./desktop.ts";
-import { cmdHelperBody, posixExecBody, shQuote, winQuote } from "./helper_body.ts";
+import { cmdHelperBody, shQuote, winQuote } from "./helper_body.ts";
 import { registerClaudeMcpServer, removeClaudeMcpRegistration } from "./mcp_registration.ts";
-import {
-  directHelperPath,
-  proxyHelperPath,
-  resolveClaudeHome,
-  settingsPathFor,
-  WIN,
-} from "./paths.ts";
+import { resolveClaudeHome, settingsPathFor, WIN } from "./paths.ts";
 
 const logger = createStderrLogger();
 
@@ -123,7 +109,7 @@ const POSIX_LAUNCHER_SHAPE = String
 // The -File path excludes line breaks (a Windows path cannot carry them, and a value
 // smuggling a second line inside the apparent quotes must never read as managed);
 // raw `%` stays legal HERE -- the inline command is not a batch file, so the writer
-// never %%-doubles it (unlike the legacy .cmd bodies below).
+// never %%-doubles it.
 const WIN_LAUNCHER_SHAPE = String
   .raw`powershell -NoProfile -ExecutionPolicy Bypass -File "[^"\r\n]*\\bin\\agent\.ps1"`;
 
@@ -166,151 +152,13 @@ export function proxyHelperCommand(profile: Profile = null): string {
   return helperCommandLine(proxyTokenCommand(profile));
 }
 
-// --- legacy helper-file tolerance ---------------------------------------------
-//
-// Reader tolerance (2026-08, the inline-apiKeyHelper move): releases before it wrote
-// apiKeyHelper as the PATH of a managed helper-script file (copilot-token[-<name>].{sh,cmd},
-// copilot-proxy-token[-<name>].{sh,cmd} -- src/claude/paths.ts still names them for
-// this tolerance and for removal). The path arms in inspectClaudeWiring classify such
-// a value as managed only while the file still carries one of the RECOGNIZED release
-// bodies below -- a missing, foreign, or hand-edited helper is NOT ours to claim
-// (we cannot vouch for it, and the classification authorizes the uninstall strip and
-// the profile overwrite guard). Bodies are matched by SHAPE (any install root), like
-// the inline arm's launcher shapes. Any wiring rewrite upgrades the config to the
-// inline command -- self-healing, per the migrate-or-reader rule in AGENTS.md.
-// Remove (with the path arms) once no supported install can still carry helper-file
-// wiring.
-//
-// The recognized renderings, from tag history (only the install root varies):
-//   direct (unchanged across releases; `git show v3.5.6:src/claude/config.ts`,
-//   directHelperScript -- same shape at v3.3.17):
-//     POSIX  #!/bin/sh\nexec '<root>/bin/agent' 'auth' '--get' ['--profile' '<n>']\n
-//     WIN    @echo off\r\npowershell -NoProfile -ExecutionPolicy Bypass -File
-//            "<root>\bin\agent.ps1" auth --get [--profile <n>]\r\n
-//   proxy, v3.5.x era (proxyHelperScript at v3.5.6): the src/scripts/proxy-token
-//   forwarder, every POSIX token shQuote'd:
-//     POSIX  #!/bin/sh\nexec '<root>/src/scripts/proxy-token.sh' '--yes' [...]\n
-//     WIN    ... -File "<root>\src\scripts\proxy-token.ps1" --yes [--profile <n>]\r\n
-//   proxy, v3.3.x era (proxyHelperScript at v3.3.17): POSIX spelled `--yes` BARE and
-//   predates named profiles: #!/bin/sh\nexec '<root>/.../proxy-token.sh' --yes\n
-//   (its WIN rendering equals the v3.5.x one). Unreleased mains briefly wrote the
-//   proxy body through the launcher ('<root>/bin/agent' 'proxy-token' '--yes' ...);
-//   accepted too -- it costs nothing and some installs are built from main.
-//   Deliberately DECLASSIFIED, though releases wrote them: the pre-v3.3.5 bodies
-//   (direct `exec gh auth token` through v3.3.3, the proxy's baked-token printf
-//   through v3.3.4) -- generic bodies a user could own must never classify as ours.
-
-/** A shQuote'd POSIX token whose content ends in `suffix` (a pre-escaped regex
- *  fragment): how every released POSIX helper rendered its command path. */
-function posixQuotedSuffix(suffix: string): string {
-  return String.raw`'(?:[^']|'\\'')*${suffix}'`;
-}
-const POSIX_BODY_LAUNCHER = posixQuotedSuffix(String.raw`/bin/agent`);
-const POSIX_BODY_PROXY_SCRIPT = posixQuotedSuffix(String.raw`/src/scripts/proxy-token\.sh`);
-// The legacy `.cmd` bodies' -File path: cmd.exe parses a batch file line by line (a
-// quoted path cannot span CRLF -- an embedded line break would BE a second command),
-// and cmdHelperBody %%-doubled every literal `%`, so raw `%` and line breaks are
-// foreign here (stricter than the inline arm's path, where raw `%` is legal).
-const WIN_CMD_PATH = String.raw`(?:[^"%\r\n]|%%)*`;
-const WIN_BODY_LAUNCHER = String
-  .raw`powershell -NoProfile -ExecutionPolicy Bypass -File "${WIN_CMD_PATH}\\bin\\agent\.ps1"`;
-const WIN_BODY_PROXY_SCRIPT = String
-  .raw`powershell -NoProfile -ExecutionPolicy Bypass -File "${WIN_CMD_PATH}\\src\\scripts\\proxy-token\.ps1"`;
-
-/** Fixed args as the eras rendered them: every POSIX token shQuote'd; winQuote on
- *  Windows (flags and profile names stay bare there). */
-function posixQuotedArgs(args: readonly string[]): string {
-  return args.map((a) => escapeRegExp(shQuote(a))).join(" ");
-}
-function winArgs(args: readonly string[]): string {
-  return escapeRegExp(args.map(winQuote).join(" "));
-}
-
-/** Whether `body` is one of the legacy exec `lines` inside the platform frame. */
-function legacyBodyMatches(body: string | null, lines: string[], win: boolean): boolean {
-  if (body === null) return false;
-  return lines.some((line) =>
-    new RegExp(win ? `^@echo off\r\n${line}\r\n$` : `^#!/bin/sh\nexec ${line}\n$`).test(body)
-  );
-}
-
-/** v3.5.6's proxyTokenScriptArgs: the script forwarder's headless argv. */
-function legacyProxyScriptArgs(profile: Profile): string[] {
-  return profile === null ? ["--yes"] : ["--yes", "--profile", profile];
-}
-
-/** Whether `body` is a released DIRECT helper-file body for `profile`, from ANY
- *  install root. `win` is a parameter (not the ambient platform) so both shapes
- *  are testable on every CI runner, like managedHelperShape. */
-export function legacyDirectHelperBodyMatches(
-  body: string | null,
-  profile: Profile = null,
-  win: boolean = WIN,
-): boolean {
-  const args = agentAuthGetArgs(profile);
-  const line = win
-    ? `${WIN_BODY_LAUNCHER} ${winArgs(args)}`
-    : `${POSIX_BODY_LAUNCHER} ${posixQuotedArgs(args)}`;
-  return legacyBodyMatches(body, [line], win);
-}
-
-/** The proxy twin: any released PROXY helper-file body for `profile` -- both quoting
- *  eras of the script forwarder, plus unreleased mains' launcher spelling. */
-export function legacyProxyHelperBodyMatches(
-  body: string | null,
-  profile: Profile = null,
-  win: boolean = WIN,
-): boolean {
-  const scriptArgs = legacyProxyScriptArgs(profile);
-  const lines = win
-    ? [
-      `${WIN_BODY_PROXY_SCRIPT} ${winArgs(scriptArgs)}`,
-      `${WIN_BODY_LAUNCHER} ${winArgs(proxyTokenArgs(profile))}`,
-    ]
-    : [
-      `${POSIX_BODY_PROXY_SCRIPT} ${posixQuotedArgs(scriptArgs)}`,
-      // v3.3.x rendered `--yes` bare (and predates named profiles).
-      ...(profile === null ? [`${POSIX_BODY_PROXY_SCRIPT} --yes`] : []),
-      `${POSIX_BODY_LAUNCHER} ${posixQuotedArgs(proxyTokenArgs(profile))}`,
-    ];
-  return legacyBodyMatches(body, lines, win);
-}
-
-/** The newest RELEASED direct body (v3.5.6's rendering, at the CURRENT root; the
- *  matcher accepts it from any root) -- what test fixtures stage. */
-export function legacyDirectHelperScript(profile: Profile = null): string {
-  const { command, args } = agentLauncherCommand(agentAuthGetArgs(profile));
-  return WIN ? cmdHelperBody(command, args) : posixExecBody(command, args);
-}
-
-/** The proxy twin: v3.5.6's rendering -- the src/scripts/proxy-token forwarder
- *  (which still ships), NOT today's `agent proxy-token` launcher spelling. */
-export function legacyProxyHelperScript(profile: Profile = null): string {
-  const scriptArgs = legacyProxyScriptArgs(profile);
-  if (WIN) {
-    const ps1 = path.join(PROJECT_ROOT, "src", "scripts", "proxy-token.ps1");
-    return cmdHelperBody("powershell", [
-      "-NoProfile",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-File",
-      ps1,
-      ...scriptArgs,
-    ]);
-  }
-  return posixExecBody(path.join(PROJECT_ROOT, "src", "scripts", "proxy-token.sh"), scriptArgs);
-}
-
 /** Why an "other" classification is not ours -- minted together with
  *  providerMode by inspectClaudeWiring, so consumers switch on it instead of
  *  re-deriving the classifier's reasoning:
  *    - "malformed":           settings present but not a JSON object
  *    - "read-error":          settings exist but could not be read
- *    - "legacy-unrecognized": apiKeyHelper is OUR retired helper-script path,
- *                             but the file body could not be verified as a
- *                             released one (missing, unreadable, or foreign)
  *    - "custom":              a foreign apiKeyHelper or a custom base URL */
-export type ClaudeOtherReason = "malformed" | "custom" | "legacy-unrecognized" | "read-error";
+export type ClaudeOtherReason = "malformed" | "custom" | "read-error";
 
 /**
  * The read-only counterpart to configureClaudeConfig, discriminated on
@@ -327,7 +175,7 @@ export type ClaudeWiringStatus =
     wired: true;
     otherReason: null;
     /** The managed `apiKeyHelper` value, for messaging (not a secret): the
-     *  managed inline command or a legacy install's verified helper-script path. */
+     *  managed inline command. */
     helperPath: string;
     /** `env.ANTHROPIC_BASE_URL`, if present. */
     baseUrl: string | null;
@@ -373,32 +221,21 @@ function claudeBaseUrlMatchesProxy(baseUrl: string, expectedPort: number): boole
  * profile = settings.json, named = settings-<name>.json). The caller passes the file
  * content as a TextReadResult (readTextResult keeps absent and unreadable apart; a
  * plain string means text, null means absent, for callers reading through a
- * string-or-null seam) plus the home, from which the two LEGACY helper paths are
- * derived; the only I/O is `readFile`, through which the legacy path arms verify the
- * helper file's body (never called for the inline arms) -- it defaults to the real
- * filesystem reader, and pure tests inject a fake. Mode is keyed off the EXACT
- * apiKeyHelper value so a user's own similar-looking helper is never mistaken for
- * ours -- the verdict authorizes `--check`, the uninstall strip, and the profile
- * overwrite guard:
- *   - direct: apiKeyHelper is the managed `agent auth --get` command (or, reader
- *             tolerance, the retired <home>/copilot-token[-<profile>] script path
- *             whose file body is a recognized released one, any install root)
- *   - proxy:  apiKeyHelper is the managed `agent proxy-token --yes` command (or the
- *             retired <home>/copilot-proxy-token[-<profile>] script path, same
- *             body condition)
+ * string-or-null seam). Pure (no I/O). Mode is keyed off the EXACT apiKeyHelper
+ * value so a user's own similar-looking helper is never mistaken for ours -- the
+ * verdict authorizes `--check`, the uninstall strip, and the profile overwrite guard:
+ *   - direct: apiKeyHelper is the managed `agent auth --get` command
+ *   - proxy:  apiKeyHelper is the managed `agent proxy-token --yes` command
  *   - other:  a config we must not clobber, with WHY in `otherReason` (see
- *             ClaudeOtherReason): a foreign apiKeyHelper or custom base URL, a
- *             legacy helper path whose file is missing or rewritten, malformed
- *             JSON, or a settings file that exists but could not be read (where
- *             a plain null would have read as "none" and authorized removal)
+ *             ClaudeOtherReason): a foreign apiKeyHelper or custom base URL,
+ *             malformed JSON, or a settings file that exists but could not be read
+ *             (where a plain null would have read as "none" and authorized removal)
  *   - none:   no relevant keys (absent/empty) -- unconfigured; proxy is default
  */
 export function inspectClaudeWiring(
   settings: TextReadResult | string | null,
-  claudeHome: string,
   expectedPort: number,
   profile: Profile = null,
-  readFile: (path: string) => string | null = readTextOrNull,
 ): ClaudeWiringStatus {
   const read: TextReadResult = typeof settings === "string"
     ? { kind: "text", text: settings }
@@ -439,7 +276,7 @@ export function inspectClaudeWiring(
     };
   }
 
-  // `apiKeyHelper` in Claude's settings.json is a PATH to a token-printing script,
+  // `apiKeyHelper` in Claude's settings.json is the COMMAND Claude runs for a token,
   // not a secret. Read it via readStringField (keyed access, no literal
   // `.apiKeyHelper` at the read site) so it isn't misclassified as a logged credential.
   const helperPath = readStringField(doc, "apiKeyHelper");
@@ -448,19 +285,8 @@ export function inspectClaudeWiring(
   const baseUrlMatches = baseUrl !== null && claudeBaseUrlMatchesProxy(baseUrl, expectedPort);
 
   // The inline command is the managed contract, recognized by SHAPE (any root's
-  // spelling); the path arms are the legacy helper-file tolerance, and classify as
-  // ours only when the file's body is a recognized released one (any install
-  // root) -- a missing/foreign body at the legacy path falls through to "other"
-  // (see the legacy helper-file tolerance block for the dating, the recognized
-  // renderings, the deliberately declassified pre-v3.3.5 ones, and the removal
-  // condition).
-  if (
-    helperPath !== null && (
-      managedHelperShape(helperPath, agentAuthGetArgs(profile)) ||
-      (helperPath === directHelperPath(claudeHome, profile) &&
-        legacyDirectHelperBodyMatches(readFile(helperPath), profile))
-    )
-  ) {
+  // spelling).
+  if (helperPath !== null && managedHelperShape(helperPath, agentAuthGetArgs(profile))) {
     return {
       providerMode: "direct",
       settingsExists: true,
@@ -471,13 +297,7 @@ export function inspectClaudeWiring(
       baseUrlMatches,
     };
   }
-  if (
-    helperPath !== null && (
-      managedHelperShape(helperPath, proxyTokenArgs(profile)) ||
-      (helperPath === proxyHelperPath(claudeHome, profile) &&
-        legacyProxyHelperBodyMatches(readFile(helperPath), profile))
-    )
-  ) {
+  if (helperPath !== null && managedHelperShape(helperPath, proxyTokenArgs(profile))) {
     return {
       providerMode: "proxy",
       settingsExists: true,
@@ -489,18 +309,12 @@ export function inspectClaudeWiring(
     };
   }
   if (helperPath !== null || baseUrl !== null) {
-    // A foreign apiKeyHelper or a custom base URL the user set -- not ours. A
-    // helper at OUR legacy path landing here means the body verification above
-    // failed: likelier a broken leftover than custom wiring.
+    // A foreign apiKeyHelper or a custom base URL the user set -- not ours.
     return {
       providerMode: "other",
       settingsExists: true,
       wired: false,
-      otherReason: helperPath !== null &&
-          (helperPath === directHelperPath(claudeHome, profile) ||
-            helperPath === proxyHelperPath(claudeHome, profile))
-        ? "legacy-unrecognized"
-        : "custom",
+      otherReason: "custom",
       helperPath,
       baseUrl,
       baseUrlMatches,
@@ -708,7 +522,7 @@ function applyWebSearchPair(
  */
 export function syncDefaultWebSearchWiring(claudeHome = resolveClaudeHome()): void {
   const settingsPath = settingsPathFor(claudeHome);
-  const status = inspectClaudeWiring(readTextResult(settingsPath), claudeHome, 0);
+  const status = inspectClaudeWiring(readTextResult(settingsPath), 0);
   if (status.providerMode === "other") return;
   const doc = loadSettings(settingsPath);
   const before = JSON.stringify(doc);
@@ -772,7 +586,7 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
   // own file that predates the profile). The DEFAULT settings.json keeps its historical
   // contract: an explicit mode write reclaims even a custom config.
   if (profile !== null) {
-    const current = inspectClaudeWiring(JSON.stringify(doc), claudeHome, 0, profile);
+    const current = inspectClaudeWiring(JSON.stringify(doc), 0, profile);
     if (current.providerMode === "other") {
       throw new Error(
         `${settingsPath} is wired to something copilot-env does not manage; refusing to ` +
@@ -783,8 +597,7 @@ export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRe
 
   if (request.mode === "direct") {
     // The inline command invokes `agent auth --get`; the token is never baked here, and
-    // no helper file is written (a legacy install's helper files are left alone --
-    // orphaned but harmless -- until uninstall/profile-del removes them by name).
+    // no helper file is written.
     doc.apiKeyHelper = directHelperCommand(profile);
     applyManagedEnv(doc, "direct", DIRECT_BASE_URL, profile, request.directIntegrationId);
     // The MCP + deny pair is machine-global (default profile, the REAL Claude home
@@ -836,11 +649,7 @@ function providerModeDetail(mode: AgentProviderMode): string {
 function checkClaudeConfig(): void {
   const claudeHome = resolveClaudeHome();
   const settingsPath = settingsPathFor(claudeHome);
-  const status = inspectClaudeWiring(
-    readTextResult(settingsPath),
-    claudeHome,
-    Number(copilotApiResolvePort()),
-  );
+  const status = inspectClaudeWiring(readTextResult(settingsPath), Number(copilotApiResolvePort()));
   console.log(
     `Claude provider mode: ${status.providerMode} (${providerModeDetail(status.providerMode)})`,
   );
@@ -853,32 +662,20 @@ function checkClaudeConfig(): void {
 }
 
 /**
- * Remove a NAMED profile's managed Claude artifacts: its settings-<name>.json and
- * its LEGACY helper scripts -- but only when the wiring is actually OURS (managed
- * direct/proxy, or never configured). An "other" classification (foreign wiring,
- * malformed JSON, or a settings file that exists but cannot be read -- the
- * classifier's read-error arm, minted precisely so ownership we cannot verify is
- * never read as "none") leaves EVERYTHING alone: the settings file is
- * the user's, and it may point AT a file under our legacy helper name (a foreign
- * body there classifies as "other" precisely so we never claim it) -- deleting the
- * file while keeping the settings key would leave dangling wiring. Used by
- * `agent profile --del`.
+ * Remove a NAMED profile's managed Claude artifact, its settings-<name>.json -- but
+ * only when the wiring is actually OURS (managed direct/proxy). An "other"
+ * classification (foreign wiring, malformed JSON, or a settings file that exists
+ * but cannot be read -- the classifier's read-error arm, minted precisely so
+ * ownership we cannot verify is never read as "none") leaves the file alone: it
+ * is the user's. Used by `agent profile --del`.
  */
 
-/** The files removeClaudeProfile would remove for `name` right now: the settings file
- *  when its wiring is ours, and any file at the legacy helper names (ours, or orphans
- *  nothing points at -- the inline wiring writes none). Empty when the settings file
- *  is a foreign body: it may point AT a legacy-named file, so nothing there is ours.
- *  Read-only; an uninstall plan resolves this once and renders it both ways. */
+/** The file removeClaudeProfile would remove for `name` right now: the settings file,
+ *  when its wiring is ours. Read-only; an uninstall plan resolves this once and renders
+ *  it both ways. */
 export function claudeProfileArtifacts(claudeHome: string, name: ProfileName): string[] {
   const settingsPath = settingsPathFor(claudeHome, name);
-  const wiring = inspectClaudeWiring(readTextResult(settingsPath), claudeHome, 0, name);
-  if (wiring.providerMode === "other") return [];
-  return [
-    ...(wiring.wired ? [settingsPath] : []),
-    directHelperPath(claudeHome, name),
-    proxyHelperPath(claudeHome, name),
-  ].filter((path) => !entryAbsent(path));
+  return inspectClaudeWiring(readTextResult(settingsPath), 0, name).wired ? [settingsPath] : [];
 }
 
 export function removeClaudeProfile(
@@ -898,17 +695,6 @@ export interface ClaudeDefaultWiringRemoval {
   ownedDenyRemains: boolean;
 }
 
-/** The legacy helper files removeClaudeDefaultWiring would remove right now (present
- *  ones only; none when the settings file is a foreign body, which may point AT one).
- *  Read-only; an uninstall plan resolves this once and renders it both ways. */
-export function claudeDefaultHelperArtifacts(claudeHome: string): string[] {
-  const wiring = inspectClaudeWiring(readTextResult(settingsPathFor(claudeHome)), claudeHome, 0);
-  if (wiring.providerMode === "other") return [];
-  return [directHelperPath(claudeHome), proxyHelperPath(claudeHome)].filter(
-    (path) => !entryAbsent(path),
-  );
-}
-
 /**
  * Remove the DEFAULT profile's managed Claude artifacts: the managed settings.json
  * keys (apiKeyHelper + the managed env vars + OUR WebSearch deny entry, when the
@@ -916,10 +702,7 @@ export function claudeDefaultHelperArtifacts(claudeHome: string): string[] {
  * points at the managed helper (inspectClaudeWiring reports direct/proxy) --
  * that helper is what makes the whole managed key set ours, exactly as an explicit
  * mode write would reclaim it; a foreign apiKeyHelper (`other`) leaves the managed
- * keys alone -- and, like removeClaudeProfile, leaves the LEGACY helper files alone
- * too (the foreign wiring may point at one; deleting it would leave a settings key
- * aimed at nothing we can vouch for). Otherwise the legacy scripts are removed by
- * name (the inline wiring writes none).
+ * keys alone.
  *
  * The exact-path-OWNED WebSearch deny is the one exception to the hands-off
  * "other" rule: ownership is the proof it is ours, independent of how the rest of
@@ -934,12 +717,9 @@ export function claudeDefaultHelperArtifacts(claudeHome: string): string[] {
  * permissions entries) survives; an emptied env object is dropped, and a doc
  * emptied entirely removes settings.json itself. Used by `agent uninstall`.
  */
-export function removeClaudeDefaultWiring(
-  claudeHome: string,
-  helpers: readonly string[] = claudeDefaultHelperArtifacts(claudeHome),
-): ClaudeDefaultWiringRemoval {
+export function removeClaudeDefaultWiring(claudeHome: string): ClaudeDefaultWiringRemoval {
   const settingsPath = settingsPathFor(claudeHome);
-  const wiring = inspectClaudeWiring(readTextResult(settingsPath), claudeHome, 0);
+  const wiring = inspectClaudeWiring(readTextResult(settingsPath), 0);
   const parseable = wiring.otherReason !== "malformed" && wiring.otherReason !== "read-error";
   if (wiring.wired) {
     const doc = loadSettings(settingsPath);
@@ -972,7 +752,6 @@ export function removeClaudeDefaultWiring(
     }
     if (saved) commit();
   }
-  for (const path of helpers) removeReported(path);
   return { ownedDenyRemains: new OwnershipLedger().owns("webSearchDeny", settingsPath) };
 }
 

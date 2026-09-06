@@ -1,12 +1,12 @@
 import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { directHelperCommand, legacyDirectHelperScript } from "../src/claude/config.ts";
-import { directHelperPath, proxyHelperPath, settingsPathFor } from "../src/claude/paths.ts";
+import { directHelperCommand } from "../src/claude/config.ts";
 import { type CodexHostDrift, codexHostDriftLine } from "../src/codex/host.ts";
 import { DEFAULT_HOME_STAGING_DIR, PROFILES_DIR_NAME } from "../src/copilot_api/paths.ts";
 import type { ClaudeDesktopStatus } from "../src/claude/desktop.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
 import type { TextReadResult } from "../src/utils/fs.ts";
+import { proxyTokenCommand } from "../src/utils/root.ts";
 import {
   buildHealthJson,
   exitCodeFor,
@@ -62,7 +62,12 @@ import {
 } from "../src/health/probe.ts";
 import type { CheckId, CheckResult, CheckStatus, HealthScope } from "../src/health/types.ts";
 import { expect, tempDir, test } from "./helpers/testing.ts";
-import { envSnapshot, writeClaudeSettings, writeCodexConfigToml } from "./helpers.ts";
+import {
+  codexConfigToml,
+  envSnapshot,
+  writeClaudeSettings,
+  writeCodexConfigToml,
+} from "./helpers.ts";
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -1033,52 +1038,6 @@ test("a mixed default Claude config (direct helper, proxy base URL) expects the 
   }
 });
 
-test("the claude scope classifies a legacy helper through deps.readFileSafe (the injected reader)", async () => {
-  // The wiring classifier verifies a legacy helper PATH by reading the file's body;
-  // the probe must feed it deps.readFileSafe, so a fake fs here fully decides the
-  // verdict (nothing on the real disk). Body present and exact => direct, and the
-  // stored-token credential needs no gh; body missing => other (a helper that cannot
-  // produce a credential is not ours), never the token-backed direct report.
-  const claudeHome = "/hc";
-  const legacyPath = directHelperPath(claudeHome);
-  const settingsText = JSON.stringify({
-    apiKeyHelper: legacyPath,
-    env: { ANTHROPIC_BASE_URL: "https://api.githubcopilot.com" },
-  });
-  const files = new Map<string, string>([
-    [settingsPathFor(claudeHome), settingsText],
-    [legacyPath, legacyDirectHelperScript()],
-  ]);
-  const deps = {
-    claudeHome: () => claudeHome,
-    readFileSafe: (path: string) => files.get(path) ?? null,
-    readFileResult: (path: string): TextReadResult => {
-      const text = files.get(path);
-      return text === undefined ? { kind: "absent" } : { kind: "text", text };
-    },
-    resolvePort: () => "4141",
-    authProvider: () => "gh-token" as const,
-    storedTokenPresent: () => true,
-    codexDirectAuth: () => Promise.resolve({ command: null, authenticated: false }),
-  };
-
-  const legacy = await gatherFacts("claude", {}, deps);
-  expect(legacy.claude?.providerMode).toBe("direct");
-  expect(legacy.claude?.directUsesToken).toBe(true);
-
-  files.delete(legacyPath);
-  const orphaned = await gatherFacts("claude", {}, deps);
-  expect(orphaned.claude?.providerMode).toBe("other");
-  expect(orphaned.claude?.otherReason).toBe("legacy-unrecognized");
-  expect(orphaned.claude?.directUsesToken).toBe(false);
-  // The final verdict, not just the classification: our helper filename with a
-  // body we cannot verify is warned about, not passed off as healthy custom wiring.
-  if (!orphaned.claude) throw new Error("expected claude facts");
-  const verdict = checkClaude(orphaned.claude);
-  expect(verdict.status).toBe("warn");
-  expect(verdict.fix).toBe("agent claude --direct");
-});
-
 test("an unreadable settings file reaches health as other/read-error, never as none", async () => {
   // The settings file is read three-way (deps.readFileResult); an unreadable
   // file must not collapse into the absent/none verdict readFileSafe's null
@@ -1784,32 +1743,6 @@ test("checkClaude: direct needs gh + managed base URL; proxy/none/other informat
   expect(other.detail).toContain("provider: other");
   expect(other.detail).toContain("not managed");
 
-  // ...but the classifier's "legacy-unrecognized" reason (apiKeyHelper at our
-  // legacy helper path with a body it could not verify) is a broken leftover,
-  // warned with the rewire fix for the mode the filename encodes. The warn keys
-  // off the REASON, never a re-derivation of the classifier's path logic.
-  const brokenLegacyDirect = checkClaude({
-    ...direct,
-    wired: false,
-    helperPath: directHelperPath("/h/.claude"),
-    baseUrl: null,
-    providerMode: "other",
-    otherReason: "legacy-unrecognized",
-  });
-  expect(brokenLegacyDirect.status).toBe("warn");
-  expect(brokenLegacyDirect.detail).toContain("cannot verify the helper body");
-  expect(brokenLegacyDirect.fix).toBe("agent claude --direct");
-  const brokenLegacyProxy = checkClaude({
-    ...direct,
-    wired: false,
-    helperPath: proxyHelperPath("/h/.claude"),
-    baseUrl: null,
-    providerMode: "other",
-    otherReason: "legacy-unrecognized",
-  });
-  expect(brokenLegacyProxy.status).toBe("warn");
-  expect(brokenLegacyProxy.fix).toBe("agent claude --proxy");
-
   // A file that could not be parsed or read warns too: Claude itself will trip
   // over it, and copilot-env can verify nothing there.
   const malformed = checkClaude({
@@ -2067,13 +2000,18 @@ test("evalCodex: no config.toml at the home reads as not-configured", () => {
   expect(f.providerMode).toBe("none");
 });
 
-test("evalCodex: provider wired only when default + env_key + host:port all match", () => {
-  const good =
-    `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "http://localhost:4141/v1"\nenv_key = "OPENAI_API_KEY"\n`;
-  const stalePort =
-    `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "http://localhost:9999/v1"\nenv_key = "OPENAI_API_KEY"\n`;
-  const wrongEnvKey =
-    `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "http://localhost:4141/v1"\nenv_key = "COPILOT_API_KEY"\n`;
+/** The managed proxy config at `baseUrl`: the `agent proxy-token` auth block. */
+function proxyToml(baseUrl: string): string {
+  return codexConfigToml({ baseUrl, auth: proxyTokenCommand() });
+}
+
+test("evalCodex: provider wired only when default + managed auth + host:port all match", () => {
+  const good = proxyToml("http://localhost:4141/v1");
+  const stalePort = proxyToml("http://localhost:9999/v1");
+  const foreignAuth = codexConfigToml({
+    baseUrl: "http://localhost:4141/v1",
+    auth: { command: "/usr/local/bin/other", args: ["--yes"] },
+  });
   const env = "OPENAI_API_KEY=sk-test\n";
   expect(evalCodex("/c", good, env, 4141, false)).toMatchObject({
     providerMode: "proxy",
@@ -2082,7 +2020,7 @@ test("evalCodex: provider wired only when default + env_key + host:port all matc
     tokenAvailable: true,
   });
   expect(evalCodex("/c", stalePort, env, 4141, false).providerWired).toBe(false);
-  expect(evalCodex("/c", wrongEnvKey, env, 4141, false).providerWired).toBe(false);
+  expect(evalCodex("/c", foreignAuth, env, 4141, false).providerWired).toBe(false);
   // No token in .env, but present in the environment => still available.
   expect(evalCodex("/c", good, "FOO=1\n", 4141, true)).toMatchObject({
     envKeyInDotenv: false,
@@ -2105,14 +2043,12 @@ test("evalCodex: direct provider reports direct mode without requiring OPENAI_AP
 
 test("evalCodex: a port that only appears as a substring does not match", () => {
   // base_url port 41410 must NOT satisfy expected port 4141 (old substring bug).
-  const decoy =
-    `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "http://localhost:41410/v1"\nenv_key = "OPENAI_API_KEY"\n`;
+  const decoy = proxyToml("http://localhost:41410/v1");
   expect(evalCodex("/c", decoy, "OPENAI_API_KEY=x\n", 4141, false).providerWired).toBe(false);
 });
 
 test("evalCodex: base_url must be the full http://localhost:<port>/v1 contract", () => {
-  const mk = (url: string) =>
-    `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "${url}"\nenv_key = "OPENAI_API_KEY"\n`;
+  const mk = proxyToml;
   const env = "OPENAI_API_KEY=x\n";
   // Right host+port but missing /v1, or https, or a different path => not wired.
   expect(evalCodex("/c", mk("http://localhost:4141"), env, 4141, false).baseUrlMatches).toBe(false);
@@ -2132,8 +2068,7 @@ test("evalCodex: base_url must be the full http://localhost:<port>/v1 contract",
 });
 
 test("evalCodex: OPENAI_API_KEY with spaces after = still counts as present in .env", () => {
-  const good =
-    `model_provider = "copilot-env"\n[model_providers.copilot-env]\nbase_url = "http://localhost:4141/v1"\nenv_key = "OPENAI_API_KEY"\n`;
+  const good = proxyToml("http://localhost:4141/v1");
   expect(evalCodex("/c", good, "OPENAI_API_KEY = sk-test\n", 4141, false).envKeyInDotenv).toBe(
     true,
   );

@@ -38,6 +38,7 @@ import { errMessage } from "../utils/error.ts";
 import { type LockPolicy, withFileLock } from "../utils/file_lock.ts";
 import { getSanitizedHostname } from "../utils/hostname.ts";
 import { isRecord } from "../utils/json.ts";
+import { fenceShellBlocks, rewriteClaudeWiring, rewriteCodexWiring } from "./4.0.0.ts";
 import type { Migration } from "./index.ts";
 
 /** The pre-rename default home (the proxy package's own spelling), frozen here. */
@@ -392,7 +393,30 @@ function moveArtifactsInto(root: string, names: readonly string[], into: string)
   }
 }
 
-/** Fifth (and LAST) fix-up of the same step: installs moved from the flat
+/** Fifth to seventh fix-ups of the same step: the wiring 3.5.6 wrote, converted to
+ *  the shapes the current readers know. The conversions live in 4.0.0.ts (whose
+ *  readers still tolerated those shapes, so a 4.0.0 install runs them too) and are
+ *  registered here as well because they must land BEFORE the layout adoption below:
+ *  it re-wires the shell through the current writer, which owns only the marker
+ *  line of an unfenced block and would leave its body behind as user lines, and it
+ *  sweeps the flat `src/scripts` the old Codex and Claude wiring still pointed at. */
+export const v356ShellFence: Migration = {
+  version: "3.5.6",
+  description: "fence the shell rc blocks written without an end marker",
+  run: fenceShellBlocks,
+};
+export const v356CodexWiring: Migration = {
+  version: "3.5.6",
+  description: "rewrite the pre-4.0.0 Codex proxy wiring to the current auth.command",
+  run: rewriteCodexWiring,
+};
+export const v356ClaudeWiring: Migration = {
+  version: "3.5.6",
+  description: "rewrite Claude's helper-file apiKeyHelper to the inline command",
+  run: rewriteClaudeWiring,
+};
+
+/** Eighth (and LAST) fix-up of the same step: installs moved from the flat
  *  layout (one binary and its runtime files at the install root) to the
  *  versioned one (`<top>/versions/vX.Y.Z/` roots behind a `current` link). The
  *  pre-versioned updater has already swapped THIS binary into `<top>/bin` when

@@ -1309,18 +1309,10 @@ export async function gatherFacts(
         // file itself is read three-way (deps.readFileResult) so an unreadable
         // file classifies other/read-error instead of collapsing into "none".
         const settingsRead = deps.readFileResult(settingsPathFor(home, profile));
-        // deps.readFileSafe backs the classifier's legacy-helper body check, so
         // "direct" here means the apiKeyHelper truly invokes `agent auth --get`
-        // addressed at THIS profile -- the inline managed command, or a legacy
-        // install's helper file whose body says so (never a stale/foreign/missing/
-        // mis-addressed helper); directAuthFor then decides the gh probe.
-        const wiring = inspectClaudeWiring(
-          settingsRead,
-          home,
-          wiringPort(),
-          profile,
-          deps.readFileSafe,
-        );
+        // addressed at THIS profile (never a stale/foreign/mis-addressed helper);
+        // directAuthFor then decides the gh probe.
+        const wiring = inspectClaudeWiring(settingsRead, wiringPort(), profile);
         const { directAuth, noGhNeeded } = await directAuthFor(wiring.providerMode === "direct");
         facts.claude = {
           ...evalClaude(home, directAuth, noGhNeeded, wiring, profile),

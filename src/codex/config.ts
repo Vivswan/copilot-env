@@ -39,18 +39,8 @@ import { isEnoent, isEnoentOrNotdir, readTextResult, type TextReadResult } from 
 import { codexFarmHostsDir } from "../utils/hostname.ts";
 import { isRecord } from "../utils/json.ts";
 import { createStderrLogger } from "../utils/logger.ts";
-import {
-  chmodReported,
-  mkdirReported,
-  removeReported,
-  writeFileReported,
-} from "../utils/report_write.ts";
-import {
-  agentAuthGetArgs,
-  agentLauncherCommand,
-  PROJECT_ROOT,
-  proxyTokenCommand,
-} from "../utils/root.ts";
+import { mkdirReported, removeReported, writeFileReported } from "../utils/report_write.ts";
+import { agentAuthGetArgs, agentLauncherCommand, proxyTokenCommand } from "../utils/root.ts";
 import {
   catalogBookkeepingAllowed,
   type CatalogFileVerdict,
@@ -75,12 +65,10 @@ import { type CodexTomlRead, readCodexToml, saveCodexToml } from "./toml_io.ts";
 const logger = createStderrLogger();
 
 // The Codex model-provider id we manage: ONE provider, `copilot-env`, for BOTH
-// direct and proxy -- the mode is read from the table's CONTENTS (base_url + an
-// `auth` block vs an `env_key`), not from the provider name. OPENAI_API_KEY is the
-// same OpenAI-wire name `env.ts` already exports, so the single proxy token has ONE
-// name across the shell exports and the Codex `.env`. (The pre-unification
-// `github-copilot-direct` provider is handled ONLY by the 3.3.3 migration, which
-// rewrites existing configs to `copilot-env`; nothing here knows that legacy name.)
+// direct and proxy -- the mode is read from the table's CONTENTS (its base_url),
+// not from the provider name. OPENAI_API_KEY is the same OpenAI-wire name `env.ts`
+// already exports; the wiring inspector reports whether the user's `.env` or
+// environment carries it, as a fact about the home (no managed wiring needs it).
 export const CODEX_ENV_KEY = "OPENAI_API_KEY";
 // Direct mode's base_url: the same individual-plan host the identity probe hits
 // (integration_identity.ts owns the literal -- the probe's verdict must be
@@ -98,14 +86,6 @@ export const DIRECT_AUTH_TIMEOUT_MS = 30000;
 export function codexProviderId(profile: Profile = null): string {
   return profile === null ? CODEX_PROVIDER_ID : `${CODEX_PROVIDER_ID}-${profile}`;
 }
-// Legacy: an older copilot-env baked the Direct bearer into this .env key. Direct
-// mode no longer bakes a token (it resolves at runtime via `agent auth --get`), so
-// this name now exists ONLY so configureCodexConfig can scrub a token left at rest
-// by an older release. Deliberately NOT a standard name like GITHUB_TOKEN/GH_TOKEN:
-// those are read by gh/git, so a leftover under a standard name could
-// re-authenticate tool subprocesses as the token's account.
-export const DIRECT_ENV_KEY = "COPILOT_ENV_GH_TOKEN";
-
 /** The mode-dependent half of a Codex config write: the SHARED ManagedWrite
  *  variants (src/agents/configure.ts), with the Codex-only fact that proxy
  *  ALWAYS carries a base URL -- a proxy write without one is unrepresentable,
@@ -134,7 +114,7 @@ export type CodexWriteRequest =
 // Load-merge-stringify so user-added keys/sections survive (smol-toml does NOT
 // preserve comments or whitespace -- TS has no battle-tested tomlkit equivalent).
 // configureCodexConfig ENFORCES every managed field on each run, so a renamed or
-// added key (e.g. the env_key) propagates even into a pre-existing config.
+// added key propagates even into a pre-existing config.
 
 /** Last-resort UA version when neither the installed codex CLI nor npm can name one
  *  (fully offline). Copilot's Anthropic surface REJECTS some models (claude-fable-5,
@@ -151,19 +131,14 @@ export function codexUserAgent(version: string | null = codexUserAgentVersion())
 /**
  * Derive the mode from our managed provider TABLE's contents (the unified `copilot-env`
  * table doesn't encode mode in its name): a Direct base_url -> direct, a localhost proxy
- * base_url or our `env_key` -> proxy, anything else -> "other" (e.g. a half-written
- * table). `expectedPort` is the running proxy port used to validate a proxy base_url.
+ * base_url -> proxy, anything else -> "other" (e.g. a half-written table).
+ * `expectedPort` is the running proxy port used to validate a proxy base_url.
  */
 function codexTableMode(table: unknown, expectedPort: number): AgentProviderMode {
   if (!isRecord(table)) return "other";
   if (table.base_url === DIRECT_BASE_URL) return "direct";
   const baseUrl = typeof table.base_url === "string" ? table.base_url : null;
-  if (
-    (baseUrl !== null && baseUrlMatchesProxy(baseUrl, expectedPort)) ||
-    table.env_key === CODEX_ENV_KEY
-  ) {
-    return "proxy";
-  }
+  if (baseUrl !== null && baseUrlMatchesProxy(baseUrl, expectedPort)) return "proxy";
   return "other";
 }
 
@@ -215,7 +190,7 @@ function managedDirectProvider(
 // lifecycle is on, the `auto-start` config key) and then prints the proxy key. `--yes` is the
 // headless path (never prompt). Codex forbids `auth` together with `env_key` on one
 // provider, so proxy (like direct) resolves its key via the command, not an env var.
-function managedProxyProvider(baseUrl: string, profile: Profile = null) {
+export function managedProxyProvider(baseUrl: string, profile: Profile = null) {
   const auth = proxyTokenCommand(profile);
   return {
     "name": codexProviderId(profile),
@@ -247,15 +222,13 @@ function managedProviderForMode(
   return managedProxyProvider(request.baseUrl, profile);
 }
 
-// Every key either managed provider table sets, plus the legacy `env_key`
-// (Codex forbids `auth` + `env_key` on one provider; older releases wrote it
-// and codexTableMode still reads it for back-compat). Derived from the
-// factories so a new mode-specific managed key can never reintroduce
-// cross-mode bleed on the shared table; a RETIRED managed key must be kept
-// here explicitly (like `env_key`) or old configs retain it as a user key.
-// (The proxy baseUrl argument is only embedded in the returned object, never
-// validated or fetched, so any placeholder string is safe; only Object.keys
-// is used.)
+// Every key either managed provider table sets, plus `env_key`: Codex rejects
+// `auth` + `env_key` on one provider, so a managed table must never carry one
+// (whoever put it there). Derived from the factories so a new mode-specific
+// managed key can never reintroduce cross-mode bleed on the shared table. (The
+// proxy baseUrl argument is only embedded in the returned object, never
+// validated or fetched, so any placeholder string is safe; only Object.keys is
+// used.)
 const MANAGED_PROVIDER_KEYS: ReadonlySet<string> = new Set([
   ...Object.keys(managedDirectProvider(null)),
   ...Object.keys(managedProxyProvider("http://managed-keys.invalid")),
@@ -282,44 +255,11 @@ function isManagedDirectAuth(auth: unknown, profile: Profile = null): boolean {
   return authMatches(auth, agentLauncherCommand(agentAuthGetArgs(profile)));
 }
 
-/**
- * Reader tolerance (2026-08, the `agent proxy-token` move): releases before it wrote
- * the resolver as a script -- `/bin/sh <root>/src/scripts/proxy-token.sh --yes
- * [--profile <name>]` (`powershell -File ...proxy-token.ps1` on Windows). Recognizing
- * that shape keeps an un-rewired install truthful (`agent codex --check` still exits
- * 2/proxy, so the launchers keep their auto-start branch), and any wiring REWRITE
- * (init/profile/codex) upgrades the config to the subcommand shape -- self-healing,
- * per the migrate-or-reader rule in AGENTS.md. Remove once no supported install can
- * still carry the script wiring; that removal IS the migration decision done right.
- */
-function legacyProxyTokenCommand(profile: Profile = null): { command: string; args: string[] } {
-  const scriptArgs = profile === null ? ["--yes"] : ["--yes", "--profile", profile];
-  if (process.platform === "win32") {
-    return {
-      command: "powershell",
-      args: [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        path.join(PROJECT_ROOT, "src", "scripts", "proxy-token.ps1"),
-        ...scriptArgs,
-      ],
-    };
-  }
-  return {
-    command: "/bin/sh",
-    args: [path.join(PROJECT_ROOT, "src", "scripts", "proxy-token.sh"), ...scriptArgs],
-  };
-}
-
 /** True iff `auth` is OUR managed proxy auth block for `profile`: the resolver
  *  subcommand (`agent proxy-token --yes`, addressed at the profile -- what
- *  managedProxyProvider writes), or the retired script shape older releases wrote
- *  (see legacyProxyTokenCommand). */
+ *  managedProxyProvider writes). */
 function isManagedProxyAuth(auth: unknown, profile: Profile = null): boolean {
-  return authMatches(auth, proxyTokenCommand(profile)) ||
-    authMatches(auth, legacyProxyTokenCommand(profile));
+  return authMatches(auth, proxyTokenCommand(profile));
 }
 
 // === wiring inspection (inverse of the write contract above) ===
@@ -330,8 +270,7 @@ function isManagedProxyAuth(auth: unknown, profile: Profile = null): boolean {
 // and `agent codex` reuse the same contract instead of shell/TOML copies.
 
 /** Why a Codex "other" classification is not ours -- minted together with
- *  providerMode by inspectCodexWiring (mirrors ClaudeOtherReason; Codex has no
- *  legacy helper files, so there is no "legacy-unrecognized" arm):
+ *  providerMode by inspectCodexWiring (mirrors ClaudeOtherReason):
  *    - "malformed":  config.toml is present but not valid TOML
  *    - "read-error": config.toml exists but could not be read
  *    - "custom":     a foreign `model_provider` is selected */
@@ -348,8 +287,8 @@ interface CodexTokenFacts {
   /** OPENAI_API_KEY is exported in the running process environment. Always false
    *  for a named profile (same reason as envKeyInDotenv). */
   envKeyInEnviron: boolean;
-  /** The token is resolvable from .env OR the environment (the default selection's
-   *  legacy proxy wiring needs one). Always false for a named profile. */
+  /** The token is resolvable from .env OR the environment. Always false for a
+   *  named profile. */
   tokenAvailable: boolean;
 }
 
@@ -363,11 +302,10 @@ interface CodexTokenFacts {
  *     (the top-level key for the default, the `[profiles.<name>]` selector's
  *     value for a named profile). Ours on the managed arms; the foreign value
  *     (or null when unknowable: malformed/read-error) on "other"; null on "none".
- *   - envKeyMatches: the key-resolution half is compatible -- managed proxy
- *     auth.command or the default selection's legacy `env_key = OPENAI_API_KEY`.
- *     Direct carries no env_key contract, so only a named table's forbidden
- *     env_key (drift the writer never emits; Codex rejects `auth` + `env_key`)
- *     can make it false there.
+ *   - envKeyMatches: the key-resolution half is compatible -- the managed proxy
+ *     auth.command. Direct carries no env_key contract, so only a named table's
+ *     forbidden env_key (drift the writer never emits; Codex rejects `auth` +
+ *     `env_key`) can make it false there.
  *   - providerWired: provider selected + base_url matches + key resolution
  *     satisfied -- and for a named profile the auth block must be the managed
  *     one addressed at THAT profile (named profiles hard-fail, never fall back).
@@ -448,8 +386,8 @@ function baseUrlMatchesProxy(baseUrl: string, expectedPort: number): boolean {
  * keeps absent and unreadable apart; a plain string means text, null means
  * absent, for callers reading through a string-or-null seam), the .env text
  * (null = absent), and whether OPENAI_API_KEY is set in the running environment
- * (the default selection's legacy proxy wiring needs a token; managed
- * auth.command wiring does not). `expectedPort` is the port the inspected
+ * (reported as facts; the managed auth.command wiring needs neither). `expectedPort`
+ * is the port the inspected
  * selection's proxy base URL must carry -- the profile's own reserved port for
  * a named profile.
  *
@@ -582,14 +520,10 @@ export function inspectCodexWiring(
   // "other"): it still counts as one of ours for messaging, reported as proxy so
   // the wiring facts below flag what's off. Proxy mode resolves its key (and
   // auto-starts the proxy) via the managed `auth.command` (the proxy-token
-  // resolver, addressed at the profile), so it needs no `env_key`. A legacy proxy
-  // config still using `env_key` is also accepted (back-compat) -- DEFAULT
-  // selection only: named profiles postdate the env_key era.
+  // resolver, addressed at the profile), so it needs no `env_key`.
   const proxyUsesManagedAuth = isRecord(table) && isManagedProxyAuth(table.auth, profile);
   const baseUrlMatches = baseUrl !== null && baseUrlMatchesProxy(baseUrl, expectedPort);
-  const envKeyMatches = !namedTableCarriesEnvKey &&
-    (proxyUsesManagedAuth ||
-      (profile === null && isRecord(table) && table.env_key === CODEX_ENV_KEY));
+  const envKeyMatches = !namedTableCarriesEnvKey && proxyUsesManagedAuth;
   return {
     ...tokenFacts,
     providerMode: "proxy",
@@ -599,8 +533,7 @@ export function inspectCodexWiring(
     baseUrl,
     baseUrlMatches,
     envKeyMatches,
-    providerWired: baseUrlMatches && envKeyMatches &&
-      (proxyUsesManagedAuth || tokenFacts.tokenAvailable),
+    providerWired: baseUrlMatches && envKeyMatches,
     directUsesToken: false,
     otherReason: null,
   };
@@ -656,46 +589,6 @@ function readConfigForRemoval(configPath: string): Record<string, unknown> | nul
   return read.doc;
 }
 
-// Remove `key` from `$CODEX_HOME/.env` (any `export`-prefixed or duplicate
-// assignment), preserving everything else. No-op when the file is absent or the
-// key isn't present, so it never creates or rewrites a file needlessly. Used to
-// scrub the baked direct token (COPILOT_ENV_GH_TOKEN) when reverting to gh-direct.
-function removeEnvKey(envFile: string, key: string): void {
-  const scrub = envKeyScrub(envFile, key);
-  if (scrub === null) return;
-  const { kept } = scrub;
-  writeFileReported(envFile, kept.length ? `${kept.join("\n")}\n` : "");
-  try {
-    chmodReported(envFile, 0o600);
-  } catch {
-    // pass
-  }
-}
-
-/** What removing `key` from `envFile` would leave, or null when there is nothing to do
- *  (file absent, or key not present). Read-only: the uninstall plan asks this once. */
-function envKeyScrub(envFile: string, key: string): { kept: string[] } | null {
-  let existing: string;
-  try {
-    existing = fs.readFileSync(envFile, "utf8");
-  } catch (e) {
-    if (isEnoent(e)) return null; // nothing to scrub
-    throw e;
-  }
-  const matcher = new RegExp(`^\\s*(?:export\\s+)?${key}\\s*=`);
-  const lines = existing.split(/\r?\n/);
-  if (lines.length && lines[lines.length - 1] === "") lines.pop(); // trailing newline
-  const kept = lines.filter((line) => !matcher.test(line));
-  return kept.length === lines.length ? null : { kept };
-}
-
-/** The `<codexHome>/.env` file removeCodexDefaultWiring would rewrite (it holds the legacy
- *  baked `COPILOT_ENV_GH_TOKEN`), or null. Read-only; the uninstall plan names it. */
-export function codexEnvTokenFile(codexHome: string): string | null {
-  const envFile = path.join(codexHome, ".env");
-  return envKeyScrub(envFile, DIRECT_ENV_KEY) === null ? null : envFile;
-}
-
 /** Parse step for the proxy variant: reject an empty or malformed base URL before
  *  anything is written, returning the validated variant the provider factory consumes. */
 function validateProxyOptions(request: { baseUrl: string }): CodexModeRequest {
@@ -710,9 +603,8 @@ function validateProxyOptions(request: { baseUrl: string }): CodexModeRequest {
 
 /**
  * Write the managed `config.toml` at `codexHome` for the given (already-resolved)
- * write request (mode + its mode-dependent fields), and scrub the legacy baked
- * `COPILOT_ENV_GH_TOKEN` from `.env`. Neither mode bakes a credential -- both resolve
- * it at fetch time via `auth.command`.
+ * write request (mode + its mode-dependent fields). Neither mode bakes a credential --
+ * both resolve it at fetch time via `auth.command`.
  *
  * DEFAULT profile: selects `copilot-env` via the top-level `model_provider` and owns the
  * top-level managed keys (web_search, catalog reference). NAMED profile
@@ -758,7 +650,7 @@ export function configureCodexConfig(
 
   // Enforce our managed contract on every run: select the requested provider
   // as the default and (re)write EVERY managed field on its table --
-  // overwriting a stale value (e.g. an old env_key) and filling any managed key
+  // overwriting a stale value and filling any managed key
   // the file lacks. Spreading `existing` first preserves user-added keys in the
   // same table; other providers, the [analytics]/[feedback] sections, and any
   // unknown top-level keys are left untouched. The top-level managed keys are the
@@ -865,14 +757,6 @@ export function configureCodexConfig(
     if (catalogRef === "written") new OwnershipLedger().record("codexCatalog", hostConfig);
     else new OwnershipLedger().release("codexCatalog", hostConfig);
   }
-
-  // Scrub only the copilot-env-OWNED legacy key: a `COPILOT_ENV_GH_TOKEN` baked by a
-  // still-older direct-token release. We deliberately do NOT scrub OPENAI_API_KEY: its name
-  // collides with the standard OpenAI key a Codex user keeps in $CODEX_HOME/.env for their
-  // own provider, and a leftover managed value is harmless anyway (the managed provider
-  // resolves via `auth.command` and carries no `env_key`). Removing it by name would destroy
-  // the user's personal key on every write.
-  removeEnvKey(path.join(codexHome, ".env"), DIRECT_ENV_KEY);
 }
 
 /**
@@ -1297,15 +1181,10 @@ export function removeCodexProfile(codexHome: string, name: ProfileName): void {
  * `model_catalog_json` reference (only when it denotes the account-wide generated
  * catalog file, which the caller is about to delete -- a dangling reference is a
  * Codex startup error), and `web_search` (only the managed `"live"` value, and only
- * when the selector was still ours). Also scrubs the legacy baked
- * `COPILOT_ENV_GH_TOKEN` from `.env` (never OPENAI_API_KEY -- see
- * configureCodexConfig). No-op when the config is absent; a present-but-unparseable
- * file throws (never blind-write). Used by `agent uninstall`.
+ * when the selector was still ours). No-op when the config is absent; a
+ * present-but-unparseable file throws (never blind-write). Used by `agent uninstall`.
  */
-export function removeCodexDefaultWiring(
-  codexHome: string,
-  envTokenFile: string | null = codexEnvTokenFile(codexHome),
-): void {
+export function removeCodexDefaultWiring(codexHome: string): void {
   const configPath = codexConfigPath(codexHome);
   const doc = readConfigForRemoval(configPath);
   if (doc !== null) {
@@ -1346,8 +1225,6 @@ export function removeCodexDefaultWiring(
     // Post-save (never claim-drop before the artifact write actually landed).
     if (catalogWasReferenced) new OwnershipLedger().release("codexCatalog", configPath);
   }
-  // Exactly the file the plan named (uninstall resolves it once), else the live look.
-  if (envTokenFile !== null) removeEnvKey(envTokenFile, DIRECT_ENV_KEY);
 }
 
 /**

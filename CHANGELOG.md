@@ -1,5 +1,31 @@
 # Changelog
 
+## [4.0.1](https://github.com/Vivswan/copilot-env/compare/v4.0.0...v4.0.1) (2026-09-06)
+
+
+### Features
+
+* agent config and its --help share one 80-column table of key=value, type, default, and description ([#154](https://github.com/Vivswan/copilot-env/issues/154)) ([72a2e12](https://github.com/Vivswan/copilot-env/commit/72a2e12e32756dbe09b96afb68953d182a990417))
+* cost-metrics comment as base | head | diff rows, triggered only by cost files ([#143](https://github.com/Vivswan/copilot-env/issues/143)) ([ac6a849](https://github.com/Vivswan/copilot-env/commit/ac6a849b8838de2cf6aad5ee83d64c4d5dfc7b4e))
+* drive the Claude Desktop wiring from the claude-desktop config key ([#133](https://github.com/Vivswan/copilot-env/issues/133)) ([4763df6](https://github.com/Vivswan/copilot-env/commit/4763df6f16f4dda491f5fefc8b3472a11aa42719))
+* drive the per-host CODEX_HOME farm, autoupdate and launchers from config keys ([#135](https://github.com/Vivswan/copilot-env/issues/135)) ([80ec378](https://github.com/Vivswan/copilot-env/commit/80ec3789f3728d2da1c978e114418fac1645771c))
+* group the agent config keys into sections in --help ([#140](https://github.com/Vivswan/copilot-env/issues/140)) ([f7391b6](https://github.com/Vivswan/copilot-env/commit/f7391b62f1ae5af7dbf259acf9cea6fe79b3a3be))
+* index session logs so agent cost answers in under a second ([#132](https://github.com/Vivswan/copilot-env/issues/132)) ([5a17e64](https://github.com/Vivswan/copilot-env/commit/5a17e64a32fcfc00d0037b2671bddb1becda25ed))
+* name every file a command writes or removes outside copilot-env's own homes ([#144](https://github.com/Vivswan/copilot-env/issues/144)) ([0aed833](https://github.com/Vivswan/copilot-env/commit/0aed833217414260a0f03109043443832079b8f5))
+* verify release provenance in agent update ([#130](https://github.com/Vivswan/copilot-env/issues/130)) ([3e3040f](https://github.com/Vivswan/copilot-env/commit/3e3040f06933f78095b0448933629f0d24a007c2))
+
+
+### Bug Fixes
+
+* drop the release-as pin left by the 4.0.0 release ([48384ea](https://github.com/Vivswan/copilot-env/commit/48384eaa9352b90c5d9f80894add828937d042e2))
+* identify Claude Desktop entries by uuid path and leave the default in place when claude-desktop is off ([#138](https://github.com/Vivswan/copilot-env/issues/138)) ([74cb360](https://github.com/Vivswan/copilot-env/commit/74cb3608e9b7474fe80235dd0e2fd635057c74bc))
+* make the Codex model catalog a probed superset that adds Copilot-only models ([#136](https://github.com/Vivswan/copilot-env/issues/136)) ([abba146](https://github.com/Vivswan/copilot-env/commit/abba146a7b990a9300dbe7485186de0b24f84324))
+* one built-in web-search model default, gpt-5-mini, for the proxy and the MCP tool ([#153](https://github.com/Vivswan/copilot-env/issues/153)) ([f84f9ab](https://github.com/Vivswan/copilot-env/commit/f84f9abd32f4bcaace26f391d69c2fcd849aabf3))
+* read only ledger records for ownership, the migration owns the legacy ones ([#141](https://github.com/Vivswan/copilot-env/issues/141)) ([f68b866](https://github.com/Vivswan/copilot-env/commit/f68b86626af65f6997e0a4c3f07acb300f55fc60))
+* readers know only the current wiring shape; retired shapes convert in src/migrations ([#150](https://github.com/Vivswan/copilot-env/issues/150)) ([f1c3358](https://github.com/Vivswan/copilot-env/commit/f1c335840a779361f6d399145f04b01c2daff2ec))
+* run the autoupdate preflight inside agent start so every install self-updates ([#142](https://github.com/Vivswan/copilot-env/issues/142)) ([f7c14bc](https://github.com/Vivswan/copilot-env/commit/f7c14bc8d9c997e9003d093c8b07853212eca64c))
+* test fixtures live under one temp root per test module that is always removed ([#147](https://github.com/Vivswan/copilot-env/issues/147)) ([2d1d542](https://github.com/Vivswan/copilot-env/commit/2d1d5420cc5da7d6a38d16e8bc810aa51fe1613e))
+
 ## [4.0.0](https://github.com/Vivswan/copilot-env/compare/v3.5.6...v4.0.0) (2026-09-04)
 
 

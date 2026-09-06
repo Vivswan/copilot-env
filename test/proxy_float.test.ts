@@ -220,10 +220,12 @@ test("nextProxyVersion: the override is unknowable, a record wins, else the chec
   expect(nextProxyVersion(dir)).toBeNull();
 });
 
-test("nextProxyVersion: a pin the record does not match is unknowable until the next start resolves it", () => {
+test("nextProxyVersion: an exact pin the record does not match IS the next version; a tag pin is unknowable", () => {
   seedFloat("1.16.3", NOW_MS);
   const config = new CopilotEnvConfig();
   config.set({ proxyVersion: "1.14.21" });
+  expect(nextProxyVersion(dir)).toBe("1.14.21");
+  config.set({ proxyVersion: "legacy" });
   expect(nextProxyVersion(dir)).toBeNull();
   config.set({ proxyVersion: "1.16.3" });
   expect(nextProxyVersion(dir)).toBe("1.16.3");

@@ -434,7 +434,7 @@ async function launchUnderLock(
 
   mkdirReported(paths.home);
   applyDefaultConfig(ctx.paths, ctx.envConfig);
-  for (const warning of unreadProjectedKeyWarnings(ctx.envConfig)) {
+  for (const warning of unreadProjectedKeyWarnings(ctx.envConfig, entryProxyVersion(entry))) {
     consola.warn(warning);
   }
   await cleanupExistingProxies(lock, profile, ctx.state);

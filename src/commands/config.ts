@@ -146,9 +146,10 @@ function runSet(cli: string, raw: string, platform: NodeJS.Platform): void {
 
 /** The warnings for every STORED projected key the proxy that runs next (`proxyVersion`, the
  *  float's resolution else the checkout's copy) is too old to read: the projection just wrote
- *  values the daemon will ignore. `agent start` prints these after projecting -- the moment
- *  the version that runs is known -- so a key set before the first start (when no proxy
- *  existed to compare against) still gets its warning. */
+ *  values the daemon will ignore. `agent start` prints these after projecting, passing the
+ *  version its resolved entry runs, so a key set before the first start (when no proxy
+ *  existed to compare against) still gets its warning; callers without a resolved entry
+ *  (`--set`, the table, `settings --import`) take the read-only default. */
 export function unreadProjectedKeyWarnings(
   envConfig: CopilotEnvConfig = new CopilotEnvConfig(),
   proxyVersion: string | null = nextProxyVersion(),

@@ -39,7 +39,11 @@ import {
  * merged totals can double count it. This note closes every run.
  */
 const SOURCES_NOTE =
-  "Note: merges three sources -- the proxy DBs (proxied traffic) plus Codex session logs and Claude transcripts (each agent's full traffic, Direct included). Traffic through the proxy appears twice, so totals can double count it; use --sources for per-source tables.\nDisclaimer: these numbers are approximate -- gathered from local logs and priced at public OpenRouter rates; actual billing may differ.";
+  "Note: merges three sources -- the proxy DBs (proxied traffic) plus Codex session logs and Claude transcripts " +
+  "(each agent's full traffic, Direct included). Traffic through the proxy appears twice, so totals can double count it; " +
+  "use --sources for per-source tables.\n" +
+  "Disclaimer: these numbers are approximate -- gathered from local logs and priced at public OpenRouter rates; " +
+  "actual billing may differ.";
 
 const EMPTY_REPORT: ReadonlyUsageReport = usageReport();
 
@@ -1171,8 +1175,10 @@ function buildCostJson(
     ...buildSourceJson(report, estimate, pricing, { perDay }),
     codexSessions,
     claudeSessions,
-    note:
-      "approximate numbers gathered from local logs and keyed by canonical model spellings (dashed/dated claude ids fold into the dotted form), priced at public OpenRouter rates (actual billing may differ); top-level keys cover proxied traffic only, while codexSessions/claudeSessions cover each agent's FULL traffic (proxy and Direct), so they overlap the proxy keys when an agent is proxy-wired -- never sum them",
+    note: "approximate numbers gathered from local logs and keyed by canonical model spellings " +
+      "(dashed/dated claude ids fold into the dotted form), priced at public OpenRouter rates (actual billing may differ); " +
+      "top-level keys cover proxied traffic only, while codexSessions/claudeSessions cover each agent's FULL traffic " +
+      "(proxy and Direct), so they overlap the proxy keys when an agent is proxy-wired -- never sum them",
     runtime: completeRuntime(measured),
   };
 }

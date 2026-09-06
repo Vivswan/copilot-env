@@ -148,11 +148,13 @@
   },
   "fmt": {
     "lineWidth": 100,
+    "proseWrap": "preserve",
     "exclude": [
-      "*.md",
-      "**/*.md",
       "test/fixtures/provenance/v4.0.0/attestation.json",
       "test/fixtures/provenance/v4.0.0/trusted_root.json",
+      "AGENTS.md",
+      "CLAUDE.md",
+      "CONTRIBUTING.md",
       ".github/agents.md",
       ".github/copilot-instructions.md",
       ".github/.copier-answers.yml"

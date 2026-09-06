@@ -557,7 +557,9 @@ export async function planCleanup(
  *  holder stop finds its corroboration lapsed at the signal boundary. */
 function warnLeaveHolder(pid: number): void {
   consola.warn(
-    `   Leaving the daemon.lock holder (pid=${pid}) alone: this host cannot identify that pid as our daemon (a shared home's daemon on another host, or an unreadable process table). If the lock stays held, the launch below fails its lock acquisition - stop that daemon from its own host.`,
+    `   Leaving the daemon.lock holder (pid=${pid}) alone: this host cannot identify that pid as our daemon ` +
+      `(a shared home's daemon on another host, or an unreadable process table). ` +
+      `If the lock stays held, the launch below fails its lock acquisition - stop that daemon from its own host.`,
   );
 }
 

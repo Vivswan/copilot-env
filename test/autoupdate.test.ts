@@ -180,18 +180,6 @@ test("effectiveUpdateCooldownDays: the live update-cooldown config, else the 7-d
   expect(effectiveUpdateCooldownDays()).toBe(3); // read live, never snapshotted
 });
 
-test("the next write drops a legacy enabled field; the throttle state survives", () => {
-  const path = tmp("state.json");
-  writeFileSync(path, JSON.stringify({ enabled: true, lastCheckMs: 5, lastResult: "old" }));
-  new AutoupdateState(path).set({ lastResult: "up to date" });
-  new AutoupdateState(path).set({ lastCheckMs: 6 });
-  // The state file is bookkeeping inside the install root: rewritten, never narrated.
-  expect(JSON.parse(readFileSync(path, "utf-8"))).toEqual({
-    lastCheckMs: 6,
-    lastResult: "up to date",
-  });
-});
-
 test("AutoupdateState writes a 0600 file (POSIX)", () => {
   const path = tmp("state.json");
   new AutoupdateState(path).set({ lastResult: "up to date" });

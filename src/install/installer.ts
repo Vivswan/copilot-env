@@ -91,9 +91,8 @@ import {
 
 /** Embedded AND materialized: something outside this process opens these by
  *  path, so they have to exist on real disk in the install root - the daemon's
- *  `--preload` shims and the one-release proxy-token forwarders, the
- *  shell-integration payload the rc block sources, and the plugin/skill surface
- *  other tools read.
+ *  `--preload` shims, the shell-integration payload the rc block sources, and the
+ *  plugin/skill surface other tools read.
  *
  *  `src/scripts` is materialized WHOLE rather than by naming the shims. The
  *  daemon loads a per-credential subset of `DAEMON_SHIM_FILES`

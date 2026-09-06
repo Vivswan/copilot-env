@@ -29,52 +29,28 @@ export const LAUNCHERS_MARKER_END = `${LAUNCHERS_MARKER} end`;
  *  blocks older releases wrote are still recognized and stripped. */
 export type BlockMarker = typeof MARKER | typeof LAUNCHERS_MARKER;
 
-// Per marker: the end-marker line that closes a fenced block, and the ordered
-// [assignment, guard] line pair every released copilot-env (or the pre-TS installers)
-// wrote under that marker -- how a LEGACY block (no end marker) is bounded without
-// eating user lines. Order matters: a lookalike line in the guard position (say a
-// user's own AGENTS_BASHRC= assignment right after ours) must not be consumed. Only
-// the assignment VALUE varied across releases (literal, "$HOME"'tail', "$HOME/tail"),
-// so the assignments match on prefix; the guards match whole, in both their
-// historical (no -LiteralPath) and current spellings.
-interface BlockShape {
-  end: string;
-  legacyBody: ReadonlyArray<readonly [RegExp, RegExp]>;
-}
-
-const BLOCK_SHAPES: Record<BlockMarker, BlockShape> = {
-  [MARKER]: {
-    end: MARKER_END,
-    legacyBody: [
-      [/^AGENTS_BASHRC=/, /^\[ -f "\$AGENTS_BASHRC" \] && source "\$AGENTS_BASHRC"$/],
-      [/^\$AgentsPs1 = /, /^if \(Test-Path (-LiteralPath )?\$AgentsPs1\) \{ \. \$AgentsPs1 \}$/],
-    ],
-  },
-  [LAUNCHERS_MARKER]: {
-    end: LAUNCHERS_MARKER_END,
-    legacyBody: [
-      [/^AGENTS_LAUNCHERS=/, /^\[ -f "\$AGENTS_LAUNCHERS" \] && source "\$AGENTS_LAUNCHERS"$/],
-      [
-        /^\$AgentsLaunchers = /,
-        /^if \(Test-Path (-LiteralPath )?\$AgentsLaunchers\) \{ \. \$AgentsLaunchers \}$/,
-      ],
-    ],
-  },
+// Per marker: the end-marker line that closes its fenced block. An unfenced block
+// (a 3.5.6-or-older write, before the end fence existed) is converted in place by the
+// 4.0.0 shell migration, never recognized here: a marker with no end fence owns only
+// its own line, and whatever follows is the user's.
+const BLOCK_ENDS: Record<BlockMarker, string> = {
+  [MARKER]: MARKER_END,
+  [LAUNCHERS_MARKER]: LAUNCHERS_MARKER_END,
 };
 
-// Derived from BLOCK_SHAPES (the Record is exhaustive over BlockMarker), so a new
+// Derived from BLOCK_ENDS (the Record is exhaustive over BlockMarker), so a new
 // marker cannot land without joining these lists.
-const ALL_MARKERS = Object.keys(BLOCK_SHAPES) as readonly BlockMarker[];
+const ALL_MARKERS = Object.keys(BLOCK_ENDS) as readonly BlockMarker[];
 const ALL_FENCE_LINES: readonly string[] = [
   ...ALL_MARKERS,
-  ...ALL_MARKERS.map((m) => BLOCK_SHAPES[m].end),
+  ...ALL_MARKERS.map((m) => BLOCK_ENDS[m]),
 ];
 
 /** The one spelling of an owned block: leading blank, open fence, body, end fence,
  *  trailing blank -- the trailing blank separates the block from whatever the user
  *  has next in the file, and the writer owns exactly that one line. */
 function fencedBlock(marker: BlockMarker, body: string[]): string {
-  return `\n${marker}\n${body.join("\n")}\n${BLOCK_SHAPES[marker].end}\n\n`;
+  return `\n${marker}\n${body.join("\n")}\n${BLOCK_ENDS[marker]}\n\n`;
 }
 
 /**
@@ -121,47 +97,34 @@ export function runShellIntegration(action: ShellIntegrationAction): void {
 /**
  * The extent of the owned block whose marker sits at `idx`: through the end-marker
  * line when one closes the block (everything fenced between the markers is ours),
- * else -- a legacy or truncated block -- through the trailing lines matching one of
- * this marker's ordered legacy [assignment, guard] pairs, stopping at the first line
- * that breaks the pair. `end` is the inclusive index of the block's last line;
- * `leftBehind` is the user line such a stop refused to consume (null when the stop
- * was blank, another fence line, or EOF), for the caller to warn about. A user's
- * line is never inside the extent.
+ * else -- an unfenced or truncated block -- the marker line alone. `end` is the
+ * inclusive index of the block's last line; `leftBehind` is the user line directly
+ * under an unclosed marker (null when that line is blank, another fence line, or
+ * EOF), for the caller to warn about. A user's line is never inside the extent.
  */
 function blockExtent(
   lines: string[],
   idx: number,
   marker: BlockMarker,
 ): { end: number; leftBehind: string | null } {
-  const shapes = BLOCK_SHAPES[marker];
   const lineAt = (i: number): string | null =>
     i < lines.length ? (lines[i] ?? "").replace(/\r$/, "") : null;
   for (let i = idx + 1; i < lines.length; i++) {
     const line = lineAt(i);
-    if (line === shapes.end) return { end: i, leftBehind: null };
-    // Any other fence line means this block was never closed: fall back to legacy.
+    if (line === BLOCK_ENDS[marker]) return { end: i, leftBehind: null };
+    // Any other fence line means this block was never closed.
     if (line !== null && ALL_FENCE_LINES.includes(line)) break;
   }
-  const stop = (end: number, at: number): { end: number; leftBehind: string | null } => {
-    const line = lineAt(at);
-    const isUsers = line !== null && line !== "" && !ALL_FENCE_LINES.includes(line);
-    return { end, leftBehind: isUsers ? line : null };
-  };
-  const assignment = lineAt(idx + 1);
-  const pairs = shapes.legacyBody.filter(
-    ([assign]) => assignment !== null && assign.test(assignment),
-  );
-  if (pairs.length === 0) return stop(idx, idx + 1);
-  const guard = lineAt(idx + 2);
-  if (guard === null || !pairs.some(([, g]) => g.test(guard))) return stop(idx + 1, idx + 2);
-  return { end: idx + 2, leftBehind: null };
+  const next = lineAt(idx + 1);
+  const isUsers = next !== null && next !== "" && !ALL_FENCE_LINES.includes(next);
+  return { end: idx, leftBehind: isUsers ? next : null };
 }
 
 /** The skip-set covering every owned block among `lines` (each block's extent plus the
  *  blank line before it and the ONE blank after its end fence -- both only when actually
- *  blank, and never the file terminator, so a legacy block with no trailing blank still
- *  strips cleanly and user spacing beyond the one owned line survives), and the user
- *  lines conservative legacy scans refused to remove, for the caller to warn about. */
+ *  blank, and never the file terminator, so user spacing beyond the one owned line
+ *  survives), and the user lines an unclosed marker refused to claim, for the caller
+ *  to warn about. */
 function ownedLineIndexes(
   lines: string[],
   markers: readonly BlockMarker[],
@@ -190,8 +153,8 @@ function ownedLineIndexes(
 /**
  * Strip owned blocks from rc/profile content, each bounded by its own extent (see
  * blockExtent) plus the blank line the block prepends and the ONE separating blank it
- * appends. Pure: `leftBehind` reports the lines conservative legacy scans refused to
- * remove. Exported for tests only.
+ * appends. Pure: `leftBehind` reports the lines an unclosed marker refused to claim.
+ * Exported for tests only.
  */
 export function stripBlocks(
   content: string,
@@ -219,7 +182,7 @@ function dominantEol(content: string): "\n" | "\r\n" {
 /**
  * Insert or refresh ONE owned block, IN PLACE: the first `marker` block is replaced
  * where it sits (extent-bounded, plus its preceding blank and the one separating blank
- * after its end fence), so a stale or legacy block migrates without reordering the file
+ * after its end fence), so a stale block migrates without reordering the file
  * and an already-current one reproduces it byte-for-byte; later duplicates of the same
  * marker (a bad hand-merge, say) are stripped, extent-bounded, so the file converges on
  * ONE owned block and user lines are never deleted. When absent, the block is appended
@@ -276,7 +239,7 @@ export function upsertBlock(
   };
 }
 
-/** The removal warning for a user line a conservative legacy/duplicate scan refused
+/** The removal warning for a user line an unclosed marker or duplicate scan refused
  *  to consume -- ONE spelling for the wire (dedupe + launcher strip) and remove paths. */
 function warnLeftBehind(file: string, lines: readonly string[]): void {
   for (const line of lines) {

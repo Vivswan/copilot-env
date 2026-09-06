@@ -293,13 +293,12 @@ test("a direct Claude profile writes settings-<name>.json + a --profile helper, 
 
   const status = inspectClaudeWiring(
     JSON.stringify(doc),
-    home,
     Number(copilotApiResolvePort(WORK)),
     WORK,
   );
   expect(status.providerMode).toBe("direct");
   // The default inspector must NOT recognize the profile file as managed.
-  expect(inspectClaudeWiring(JSON.stringify(doc), home, 0).providerMode).toBe("other");
+  expect(inspectClaudeWiring(JSON.stringify(doc), 0).providerMode).toBe("other");
 });
 
 test("a direct Claude profile without its own credential is refused", () => {

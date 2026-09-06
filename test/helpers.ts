@@ -149,17 +149,24 @@ export interface CodexConfigTomlOptions {
   baseUrl: string;
   envKey?: string;
   wireApi?: string;
+  /** The `auth` inline table (the managed proxy shape carries proxyTokenCommand()). */
+  auth?: { command: string; args: readonly string[] };
 }
 
 /**
  * The managed Codex config shape the writers emit: our provider selected, one
- * [model_providers.copilot-env] table. envKey/wireApi are included only when
- * given (the direct shape has neither).
+ * [model_providers.copilot-env] table. envKey/wireApi/auth are included only when
+ * given (the direct shape has none of them).
  */
 export function codexConfigToml(opts: CodexConfigTomlOptions): string {
   const table = [`base_url = "${opts.baseUrl}"`];
   if (opts.envKey !== undefined) table.push(`env_key = "${opts.envKey}"`);
   if (opts.wireApi !== undefined) table.push(`wire_api = "${opts.wireApi}"`);
+  if (opts.auth !== undefined) {
+    // JSON string escapes are valid TOML basic-string escapes (Windows paths carry `\`).
+    const args = opts.auth.args.map((a) => JSON.stringify(a)).join(", ");
+    table.push(`auth = { command = ${JSON.stringify(opts.auth.command)}, args = [${args}] }`);
+  }
   return ['model_provider = "copilot-env"', "", "[model_providers.copilot-env]", ...table, ""].join(
     "\n",
   );

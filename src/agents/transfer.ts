@@ -5,7 +5,7 @@
 // (`.copilot-env-config.json`, CopilotEnvConfig) and the credential store
 // (`.copilot-env-state.json`, CopilotEnvState: default credential + named
 // profile slots). Everything else is DERIVED or machine-local and is re-derived
-// on import, never copied: agent config files, helper scripts, daemon homes,
+// on import, never copied: agent config files, daemon homes,
 // port reservations, the Codex catalog cache fields (`codexCatalog*`), and the
 // artifact-ownership ledger (its own machine-local store, naming THIS machine's
 // files -- src/copilot_api/ownership.ts).
@@ -543,12 +543,10 @@ export interface ImportPlan {
  * line's unconditional "may rewrite" hedge instead, so no write is ever missed.
  */
 /** Named-profile wiring writes its provider tables into the effective home's
- *  config.toml (its writer may clean the home's .env too). It runs after the store
- *  replace, so the home is resolved under the BUNDLE's codex-host value. */
+ *  config.toml. It runs after the store replace, so the home is resolved under the
+ *  BUNDLE's codex-host value. */
 function profileCodexLine(codexHost: boolean): string {
-  return `Codex config: ${
-    codexConfigPath(effectiveCodexHomeFor(codexHost))
-  } (may also clean its .env)`;
+  return `Codex config: ${codexConfigPath(effectiveCodexHomeFor(codexHost))}`;
 }
 
 function planWrites(
@@ -599,21 +597,19 @@ function planWrites(
     const home = plan.action === "build" || plan.action === "verify"
       ? farm.hostHome
       : unmanagedCodexHome();
-    // The default write can reach beyond config.toml: direct wiring edits the
-    // home's .env, and the catalog sync may rewrite other known host configs
-    // and the generated model-catalog file. The exact set is dynamic, so one
-    // honest summary line beats an enumeration that would go stale.
+    // The default write can reach beyond config.toml: the catalog sync may rewrite
+    // other known host configs and the generated model-catalog file. The exact set
+    // is dynamic, so one honest summary line beats an enumeration that would go stale.
     lines.push(
-      `Codex config: ${codexConfigPath(home)} (wiring may also clean its ` +
-        ".env; the model-catalog sync may rewrite other known host configs and the " +
-        "generated catalog file)",
+      `Codex config: ${codexConfigPath(home)} (the model-catalog sync may rewrite ` +
+        "other known host configs and the generated catalog file)",
     );
   } else if (wired.length > 0) {
     lines.push(profileCodexLine(codexHostEnabledFor(bundle.config.codexHost)));
   }
   const claudeHome = resolveClaudeHome();
   if (modes.claude !== null) {
-    lines.push(`Claude settings (+ token helper script): ${settingsPathFor(claudeHome)}`);
+    lines.push(`Claude settings: ${settingsPathFor(claudeHome)}`);
     // POST-import resolution (the plan-input rule above): the apply replaces
     // the preference store BEFORE the Claude writer reads wire-mcp, so the
     // bundle's value (else the built-in default) decides -- the same
@@ -626,7 +622,7 @@ function planWrites(
   }
   for (const p of wired) {
     lines.push(
-      `Claude profile settings (+ token helper script): ${settingsPathFor(claudeHome, p.name)}`,
+      `Claude profile settings: ${settingsPathFor(claudeHome, p.name)}`,
     );
   }
   return lines;

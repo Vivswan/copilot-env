@@ -11,7 +11,7 @@ import { parse, stringify } from "smol-toml";
 import { configureCodexConfig, inspectCodexWiring } from "../src/codex/config.ts";
 import { openaiBaseUrl } from "../src/copilot_api/port.ts";
 import { parseProfileName } from "../src/copilot_api/profile.ts";
-import { PROJECT_ROOT, proxyTokenCommand } from "../src/utils/root.ts";
+import { proxyTokenCommand } from "../src/utils/root.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes } from "./helpers.ts";
 
@@ -150,7 +150,7 @@ test("foreign or missing managed proxy auth un-wires the profile", () => {
   expect(wiring.providerWired).toBe(false);
 });
 
-test("a legacy env_key never wires a named profile (default-only back-compat)", () => {
+test("an env_key never wires a named profile", () => {
   const codexHome = isolate();
   writeProxyProfile(codexHome);
   const text = mutateConfig(codexHome, (doc) => {
@@ -346,41 +346,18 @@ test("malformed TOML reads other/malformed for the named view too, never none", 
   expect(wiring.tokenAvailable).toBe(false);
 });
 
-test("legacy script-shaped auth addressed at THIS profile still reads wired (tolerance)", () => {
-  // A named profile wired by a pre-`agent proxy-token` release: its auth block execs
-  // the src/scripts resolver with `--profile <name>`. The tolerance is profile-aware --
-  // the same legacy shape addressed at the DEFAULT daemon must stay unwired here
-  // (a mis-addressed resolver would serve the wrong daemon's key).
+test("a script-shaped auth on a named profile's table never reads wired", () => {
+  // The 3.5.6 shape (the src/scripts resolver script); the migration rewrites it, and a
+  // table it never reached is unwired -- addressed at this profile or not.
   const codexHome = isolate();
   writeProxyProfile(codexHome);
-  const legacyScript = join(
-    PROJECT_ROOT,
-    "src",
-    "scripts",
-    process.platform === "win32" ? "proxy-token.ps1" : "proxy-token.sh",
-  );
-  const legacyAuth = (scoped: boolean) => ({
-    "command": process.platform === "win32" ? "powershell" : "/bin/sh",
-    "args": [
-      ...(process.platform === "win32"
-        ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]
-        : []),
-      legacyScript,
-      "--yes",
-      ...(scoped ? ["--profile", WORK] : []),
-    ],
+  const text = mutateConfig(codexHome, (doc) => {
+    profileProvider(doc).auth = {
+      "command": "/bin/sh",
+      "args": ["/r/src/scripts/proxy-token.sh", "--yes", "--profile", WORK],
+    };
   });
-
-  let text = mutateConfig(codexHome, (doc) => {
-    profileProvider(doc).auth = legacyAuth(true);
-  });
-  let wiring = inspectCodexWiring(text, null, PROFILE_PORT, false, WORK);
-  expect(wiring.envKeyMatches).toBe(true);
-  expect(wiring.providerWired).toBe(true);
-
-  text = mutateConfig(codexHome, (doc) => {
-    profileProvider(doc).auth = legacyAuth(false); // default-addressed: not this profile's
-  });
-  wiring = inspectCodexWiring(text, null, PROFILE_PORT, false, WORK);
+  const wiring = inspectCodexWiring(text, null, PROFILE_PORT, false, WORK);
+  expect(wiring.envKeyMatches).toBe(false);
   expect(wiring.providerWired).toBe(false);
 });

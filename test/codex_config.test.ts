@@ -14,7 +14,6 @@ import {
   codexUserAgent,
   configureCodexConfig,
   detectCodexDirect,
-  DIRECT_ENV_KEY,
   FALLBACK_CODEX_UA_VERSION,
   inspectCodexWiring,
   refreshCodexCatalogAndSync,
@@ -26,7 +25,7 @@ import { CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import { OwnershipLedger } from "../src/copilot_api/ownership.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
 import { deferWriteReports, flushWriteReports } from "../src/utils/report_write.ts";
-import { agentLauncherCommand, PROJECT_ROOT, proxyTokenCommand } from "../src/utils/root.ts";
+import { agentLauncherCommand, proxyTokenCommand } from "../src/utils/root.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateAgentHomes, linesNaming } from "./helpers.ts";
 
@@ -83,7 +82,7 @@ test("enforces every managed field while preserving unknown user keys", () => {
       "",
     ].join("\n"),
   );
-  writeFileSync(join(codexHome, ".env"), "OPENAI_API_KEY=user\nCOPILOT_ENV_GH_TOKEN=ghp_legacy\n");
+  writeFileSync(join(codexHome, ".env"), "OPENAI_API_KEY=user\n");
 
   configureCodexConfig(codexHome, { mode: "direct", codexExecVersion: "0.139.0" });
 
@@ -125,9 +124,7 @@ test("enforces every managed field while preserving unknown user keys", () => {
   expect(other.base_url).toBe("http://other/v1");
   expect(other.env_key).toBe("OTHER_KEY");
 
-  // Direct resolves via auth.command. The user's OPENAI_API_KEY is preserved (its name
-  // collides with copilot-env's legacy key, so we never scrub it); only the copilot-env-owned
-  // COPILOT_ENV_GH_TOKEN is removed.
+  // Direct resolves via auth.command; the user's .env is never touched.
   expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe("OPENAI_API_KEY=user\n");
 });
 
@@ -163,10 +160,8 @@ test("direct uses the launcher auth.command (no env_key, no token at rest), clas
   expect(auth.command).toBe(expected.command);
   expect(auth.args).toEqual(expected.args);
 
-  // No .env token at rest (the scrub may leave no .env at all).
-  if (existsSync(join(codexHome, ".env"))) {
-    expect(readFileSync(join(codexHome, ".env"), "utf8")).not.toContain(DIRECT_ENV_KEY);
-  }
+  // No .env is written at all.
+  expect(existsSync(join(codexHome, ".env"))).toBe(false);
 
   // Wiring classifies as direct and flags the managed auth.command.
   const wiring = inspectCodexWiring(
@@ -177,25 +172,6 @@ test("direct uses the launcher auth.command (no env_key, no token at rest), clas
   );
   expect(wiring.providerMode).toBe("direct");
   expect(wiring.directUsesToken).toBe(true);
-});
-
-test("gh-direct .env scrub preserves other keys and never creates a .env when absent", () => {
-  isolate();
-  const codexHome = join(dir, ".codex");
-  mkdirSync(codexHome, { recursive: true });
-  // A user-maintained .env with our baked token plus an unrelated key.
-  writeFileSync(join(codexHome, ".env"), `MY_VAR=keep\n${DIRECT_ENV_KEY}=ghu_old\n`);
-
-  configureCodexConfig(codexHome, { mode: "direct" }); // gh-direct
-
-  const env = readFileSync(join(codexHome, ".env"), "utf8");
-  expect(env).toContain("MY_VAR=keep");
-  expect(env).not.toContain(DIRECT_ENV_KEY);
-
-  // A second gh-direct home with no .env at all: the scrub must not create one.
-  const codexHome2 = join(dir, ".codex2");
-  configureCodexConfig(codexHome2, { mode: "direct" });
-  expect(existsSync(join(codexHome2, ".env"))).toBe(false);
 });
 
 test("proxy mode enforces every managed field while preserving unknown user keys", () => {
@@ -247,8 +223,8 @@ test("proxy mode enforces every managed field while preserving unknown user keys
   const provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
   expect(provider.base_url).toBe("http://localhost:4141/v1");
   expect(provider.name).toBe("copilot-env");
-  // Proxy resolves its key via auth.command (the shared proxy-token script: ensure +
-  // print); the stale env_key is scrubbed (Codex forbids auth + env_key together).
+  // Proxy resolves its key via auth.command (`agent proxy-token --yes`: ensure + print);
+  // the stale env_key is scrubbed (Codex forbids auth + env_key together).
   expect(provider.env_key).toBeUndefined();
   const proxyAuthCmd = proxyTokenCommand();
   expect(asRecord(provider.auth).command).toBe(proxyAuthCmd.command);
@@ -297,41 +273,6 @@ test("refuses to overwrite an unparseable config.toml (preserves the user's file
   ).toThrow(/not valid TOML|refusing to overwrite/);
   // The user's file is left exactly as it was.
   expect(readFileSync(configPath, "utf8")).toBe(original);
-});
-
-test("proxy mode preserves the user's OPENAI_API_KEY but scrubs the copilot-env legacy key", () => {
-  isolate();
-  const codexHome = join(dir, ".codex");
-  mkdirSync(codexHome, { recursive: true });
-
-  // OPENAI_API_KEY is the standard name a Codex user keeps for their OWN OpenAI provider;
-  // its name collides with copilot-env's old env_key wiring, so it must NOT be scrubbed
-  // (a leftover managed value is harmless -- the managed provider uses auth.command). Only
-  // the copilot-env-OWNED legacy key (COPILOT_ENV_GH_TOKEN) is scrubbed.
-  writeFileSync(
-    join(codexHome, ".env"),
-    [
-      "# my secrets",
-      "FOO=bar",
-      "OPENAI_API_KEY=sk-user-personal",
-      "export OPENAI_API_KEY=sk-user-export",
-      "COPILOT_ENV_GH_TOKEN=ghp_legacy",
-      "",
-    ].join("\n"),
-  );
-
-  configureCodexConfig(codexHome, { mode: "proxy", baseUrl: "http://localhost:4141/v1" });
-
-  // The user's OPENAI_API_KEY lines survive; the copilot-env legacy token is removed.
-  expect(readFileSync(join(codexHome, ".env"), "utf8")).toBe(
-    [
-      "# my secrets",
-      "FOO=bar",
-      "OPENAI_API_KEY=sk-user-personal",
-      "export OPENAI_API_KEY=sk-user-export",
-      "",
-    ].join("\n"),
-  );
 });
 
 test("writes the managed direct default config when no provider section exists", () => {
@@ -882,31 +823,7 @@ test("disabled: a reference that provably is NOT ours still lets the catalog go 
   expect(existsSync(catalogFile)).toBe(false); // ours went
 });
 
-// --- reader tolerance: the retired script-shaped proxy auth ---------------------
-
-// What pre-`agent proxy-token` releases wrote as the managed proxy auth block on THIS
-// platform: the src/scripts resolver script under the current root (the shape the old
-// proxyTokenCommand produced).
-function legacyScriptAuth(profileArgs: string[] = []): { command: string; args: string[] } {
-  if (process.platform === "win32") {
-    return {
-      command: "powershell",
-      args: [
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        join(PROJECT_ROOT, "src", "scripts", "proxy-token.ps1"),
-        "--yes",
-        ...profileArgs,
-      ],
-    };
-  }
-  return {
-    command: "/bin/sh",
-    args: [join(PROJECT_ROOT, "src", "scripts", "proxy-token.sh"), "--yes", ...profileArgs],
-  };
-}
+// --- the retired script-shaped proxy auth is foreign now -----------------------
 
 function proxyConfigWithAuth(auth: { command: string; args: string[] }): string {
   return stringify({
@@ -922,20 +839,20 @@ function proxyConfigWithAuth(auth: { command: string; args: string[] }): string 
   });
 }
 
-test("legacy script-shaped proxy auth still inspects as managed (reader tolerance)", () => {
-  // An install whose wiring predates the `agent proxy-token` subcommand: the auth
-  // block execs the src/scripts resolver script. It must keep reading as OUR managed
-  // proxy wiring (`agent codex --check` exit 2 keeps the launchers' auto-start branch)
-  // until a rewrite upgrades it.
-  const wiring = inspectCodexWiring(proxyConfigWithAuth(legacyScriptAuth()), null, 4141, false);
+test("the script-shaped proxy auth 3.5.6 wrote no longer reads as managed", () => {
+  // The 4.0.0 migration rewrites it; a config it never reached is proxy but unwired,
+  // so `agent health` says re-run `agent codex --proxy` instead of vouching for a
+  // resolver script no release ships.
+  const script = process.platform === "win32"
+    ? { command: "powershell", args: ["-File", "C:\\r\\src\\scripts\\proxy-token.ps1", "--yes"] }
+    : { command: "/bin/sh", args: ["/r/src/scripts/proxy-token.sh", "--yes"] };
+  const wiring = inspectCodexWiring(proxyConfigWithAuth(script), null, 4141, false);
   expect(wiring.providerMode).toBe("proxy");
-  expect(wiring.envKeyMatches).toBe(true);
-  expect(wiring.providerWired).toBe(true);
+  expect(wiring.envKeyMatches).toBe(false);
+  expect(wiring.providerWired).toBe(false);
 });
 
-test("a genuinely foreign auth block still un-wires the proxy config", () => {
-  // The tolerance must not widen into "any script named like ours": a foreign command
-  // (or a script outside the managed root) is not managed wiring.
+test("a genuinely foreign auth block un-wires the proxy config", () => {
   const foreign = inspectCodexWiring(
     proxyConfigWithAuth({ command: "/usr/local/bin/my-token", args: ["--yes"] }),
     null,
@@ -945,14 +862,6 @@ test("a genuinely foreign auth block still un-wires the proxy config", () => {
   expect(foreign.providerMode).toBe("proxy");
   expect(foreign.envKeyMatches).toBe(false);
   expect(foreign.providerWired).toBe(false);
-
-  const strayCopy = inspectCodexWiring(
-    proxyConfigWithAuth({ command: "/bin/sh", args: ["/opt/elsewhere/proxy-token.sh", "--yes"] }),
-    null,
-    4141,
-    false,
-  );
-  expect(strayCopy.providerWired).toBe(false);
 });
 
 test("inspectCodexWiring takes a TextReadResult: unreadable is other/read-error, never none", () => {
@@ -982,19 +891,6 @@ test("a foreign model_provider classifies other/custom carrying the foreign id",
   expect(wiring.modelProvider).toBe("openai");
 });
 
-test("a rewrite upgrades legacy script wiring to the subcommand shape", () => {
-  isolate();
-  const codexHome = join(dir, ".codex");
-  mkdirSync(codexHome, { recursive: true });
-  writeFileSync(join(codexHome, "config.toml"), proxyConfigWithAuth(legacyScriptAuth()));
-
-  configureCodexConfig(codexHome, { mode: "proxy", baseUrl: "http://127.0.0.1:4141/v1" });
-
-  const doc = asRecord(parse(readFileSync(join(codexHome, "config.toml"), "utf8")));
-  const provider = asRecord(asRecord(doc.model_providers)["copilot-env"]);
-  expect(asRecord(provider.auth).command).toBe(proxyTokenCommand().command);
-  expect(asRecord(provider.auth).args).toEqual(proxyTokenCommand().args);
-});
 // --- the installed codex's schema verdict ----------------------------------------
 
 test("a catalog the installed codex rejects is left out of the config and its claim released", () => {

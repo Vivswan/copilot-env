@@ -1,5 +1,5 @@
-// Claude Code path derivation: the Claude home, settings.json, and the managed
-// apiKeyHelper script paths. Dependency-light on purpose (node builtins plus the
+// Claude Code path derivation: the Claude home and the settings files.
+// Dependency-light on purpose (node builtins plus the
 // dependency-free profile vocabulary) so any layer -- config writer, health,
 // migrations, proxy-float -- can name the same files without importing the full
 // config writer in src/claude/config.ts.
@@ -8,17 +8,6 @@ import { join, resolve } from "node:path";
 import type { Profile } from "../copilot_api/profile.ts";
 
 export const WIN = process.platform === "win32";
-
-// LEGACY helper file basenames. Pre-inline-apiKeyHelper releases wrote the managed
-// resolver as a helper file at these names (a `.cmd` on Windows, where a `.sh` is not
-// runnable by bare path); the current wiring stores an inline command instead and
-// writes no files. The names live on ONLY for the reader tolerance in
-// inspectClaudeWiring and for removal (uninstall / profile --del) -- delete them
-// with that tolerance. A NAMED profile suffixes the stem (`copilot-token-work.sh`),
-// keeping the default names (external contracts) byte-identical.
-const HELPER_EXT = WIN ? "cmd" : "sh";
-export const DIRECT_HELPER_NAME = WIN ? "copilot-token.cmd" : "copilot-token.sh";
-export const PROXY_HELPER_NAME = WIN ? "copilot-proxy-token.cmd" : "copilot-proxy-token.sh";
 
 /**
  * The `$CLAUDE_CONFIG_DIR` override (Claude Code's own knob), or null when
@@ -60,16 +49,4 @@ function profileSuffix(profile: Profile): string {
  *  resolves it via `agent profile --settings-for <name>`). */
 export function settingsPathFor(claudeHome: string, profile: Profile = null): string {
   return join(claudeHome, `settings${profileSuffix(profile)}.json`);
-}
-
-/** Path of the LEGACY direct apiKeyHelper script for `profile` (tolerance/removal only). */
-export function directHelperPath(claudeHome: string, profile: Profile = null): string {
-  if (profile === null) return join(claudeHome, DIRECT_HELPER_NAME);
-  return join(claudeHome, `copilot-token-${profile}.${HELPER_EXT}`);
-}
-
-/** Path of the LEGACY proxy apiKeyHelper script for `profile` (tolerance/removal only). */
-export function proxyHelperPath(claudeHome: string, profile: Profile = null): string {
-  if (profile === null) return join(claudeHome, PROXY_HELPER_NAME);
-  return join(claudeHome, `copilot-proxy-token-${profile}.${HELPER_EXT}`);
 }

@@ -2,7 +2,6 @@
 // gathered by probe.ts, so each check is independently unit-testable.
 import { DIRECT_BASE_URL } from "../claude/config.ts";
 import { type ClaudeDesktopStatus, renderClaudeDesktopStatus } from "../claude/desktop.ts";
-import { directHelperPath } from "../claude/paths.ts";
 import { type CodexOtherReason, codexProviderId } from "../codex/config.ts";
 import { codexHostDriftFrom, codexHostDriftLine } from "../codex/host.ts";
 import { codexConfigPath } from "../codex/paths.ts";
@@ -1146,7 +1145,7 @@ export function checkCodex(f: CodexFacts, profile: Profile = null): CheckResult 
   } else if (!f.providerWired) {
     // Selected + base_url ok, but not fully wired: the managed proxy auth.command
     // (the shared proxy-token resolver, which ensures the proxy is up then prints its key)
-    // is missing/foreign, and there's no legacy env_key token either.
+    // is missing/foreign.
     detail = [
       "provider: proxy",
       withConfigPath(`copilot-env proxy is not fully wired - run \`${proxyFix}\``),
@@ -1217,8 +1216,6 @@ function claudeOtherLine(f: ClaudeFacts & { providerMode: "other" }): string {
       return "settings.json is present but not valid JSON";
     case "read-error":
       return "settings.json exists but could not be read";
-    case "legacy-unrecognized":
-      return `apiKeyHelper → ${f.helperPath} (the retired copilot-env helper path), but copilot-env cannot verify the helper body (missing, unreadable, or unrecognized)`;
     case "custom":
       return `custom apiKeyHelper/ANTHROPIC_BASE_URL set (${f.helperPath ?? f.baseUrl})`;
     default:
@@ -1330,23 +1327,9 @@ export function checkClaude(f: ClaudeFacts, profile: Profile = null): CheckResul
         }`,
       };
     }
-    // Default-profile exceptions to "the user's own business", keyed off the
-    // classifier's reason: a legacy helper path whose body could not be verified
-    // is likelier a broken leftover than custom wiring, and a settings file we
-    // could not read/parse will trip Claude itself too.
-    if (f.otherReason === "legacy-unrecognized") {
-      // The rewire to suggest follows the mode the helper filename encodes.
-      const fix = f.helperPath === directHelperPath(f.home)
-        ? "agent claude --direct"
-        : "agent claude --proxy";
-      return {
-        ...base,
-        status: "warn",
-        detail: ["provider: other", `settings.json: ${f.settingsPath}`, claudeOtherLine(f)]
-          .join("\n"),
-        fix,
-      };
-    }
+    // Default-profile exception to "the user's own business", keyed off the
+    // classifier's reason: a settings file we could not read/parse will trip
+    // Claude itself too.
     if (f.otherReason === "malformed" || f.otherReason === "read-error") {
       return {
         ...base,

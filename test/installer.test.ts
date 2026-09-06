@@ -77,7 +77,7 @@ function writeAssetSource(dir: string): void {
     writeFileSync(join(dir, assetDir, "payload.txt"), `content of ${assetDir}`);
   }
   mkdirSync(join(dir, "src", "scripts"), { recursive: true });
-  writeFileSync(join(dir, "src", "scripts", "proxy-token.sh"), "#!/bin/sh\n");
+  writeFileSync(join(dir, "src", "scripts", "example.sh"), "#!/bin/sh\n");
   for (const file of MATERIALIZED_ASSET_FILES) {
     mkdirSync(dirname(join(dir, file)), { recursive: true });
     writeFileSync(join(dir, file), `content of ${file}`);
@@ -758,9 +758,8 @@ describe("applyInstallPlan (assets-only)", () => {
     applyInstallPlan(assetsOnlyPlan());
 
     expect(statSync(join(dest, "bin", "agent")).mode & 0o111).not.toBe(0);
-    // The .sh exec-bit rule now mostly guards the one-release proxy-token FORWARDER
-    // (and this synthetic fixture): the resolver itself is `agent proxy-token`.
-    expect(statSync(join(dest, "src", "scripts", "proxy-token.sh")).mode & 0o111).not.toBe(0);
+    // The .sh exec-bit rule, on this synthetic fixture (no shipped .sh lives there today).
+    expect(statSync(join(dest, "src", "scripts", "example.sh")).mode & 0o111).not.toBe(0);
     // The PowerShell shim is never exec'd by an OS loader.
     expect(statSync(join(dest, "bin", "agent.ps1")).mode & 0o111).toBe(0);
   });

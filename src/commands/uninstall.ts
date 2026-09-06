@@ -7,11 +7,7 @@
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { consola } from "consola";
-import {
-  claudeDefaultHelperArtifacts,
-  claudeProfileArtifacts,
-  removeClaudeDefaultWiring,
-} from "../claude/config.ts";
+import { claudeProfileArtifacts, removeClaudeDefaultWiring } from "../claude/config.ts";
 import {
   type ClaudeDesktopOwnedArtifacts,
   listClaudeDesktopOwnedArtifacts,
@@ -23,12 +19,7 @@ import {
   removeClaudeMcpRegistration,
 } from "../claude/mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import {
-  codexEnvTokenFile,
-  knownCodexHomes,
-  removeCodexDefaultWiring,
-  removeCodexProfile,
-} from "../codex/config.ts";
+import { knownCodexHomes, removeCodexDefaultWiring, removeCodexProfile } from "../codex/config.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import { Credential } from "../copilot_api/credential.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
@@ -143,16 +134,12 @@ export interface UninstallTargets {
   /** The rc / PowerShell profile files carrying an owned block (empty when a test
    *  substitute is injected for the removal). */
   shellFiles: string[];
-  /** Per named profile: the Claude files its teardown removes (settings, legacy
-   *  helpers) and its daemon home. */
+  /** Per named profile: the Claude files its teardown removes (its settings file)
+   *  and its daemon home. */
   profiles: { name: ProfileName; claudeArtifacts: string[]; home: string }[];
-  /** The default wiring's legacy Claude helper files present now. */
-  claudeDefaultHelpers: string[];
   /** Claude's `.claude.json` when it holds our MCP registration (the file the removal
    *  rewrites), else null. */
   claudeMcpRegistration: string | null;
-  /** Per known Codex home: the `.env` holding the legacy baked token, or null. */
-  codexEnvTokenFiles: Map<string, string | null>;
 }
 
 /** Everything a step needs, resolved once after the confirmation gate. */
@@ -218,20 +205,16 @@ const UNINSTALL_STEPS: UninstallStep[] = [
     //    profile wired while a farm home was active left its tables there too --
     //    step 2 only stripped the currently-effective home. Then the farm itself.
     describe: (ctx) => {
-      const lines = ctx.codexHomes.flatMap((home) => {
-        const envFile = ctx.targets.codexEnvTokenFiles.get(home) ?? null;
-        return [
-          `Would remove the copilot-env wiring from ${codexConfigPath(home)}.`,
-          ...(envFile === null ? [] : [`Would rewrite ${envFile} (COPILOT_ENV_GH_TOKEN removed).`]),
-        ];
-      });
+      const lines = ctx.codexHomes.map(
+        (home) => `Would remove the copilot-env wiring from ${codexConfigPath(home)}.`,
+      );
       const farm = ctx.targets.codexHostFarm;
       if (farm !== null) lines.push(`Would delete the CODEX_HOME host farm: ${farm}`);
       return lines;
     },
     run: (ctx) => {
       for (const home of ctx.codexHomes) {
-        removeCodexDefaultWiring(home, ctx.targets.codexEnvTokenFiles.get(home) ?? null);
+        removeCodexDefaultWiring(home);
         for (const name of ctx.profiles) removeCodexProfile(home, name);
       }
       if (ctx.deps.removeCodexHostFarm !== undefined) ctx.deps.removeCodexHostFarm();
@@ -246,25 +229,21 @@ const UNINSTALL_STEPS: UninstallStep[] = [
     },
   },
   {
-    // 4. Default Claude wiring (surgical: only managed keys; helper scripts by
-    //    name; an exact-path-OWNED WebSearch deny is stripped even from a
+    // 4. Default Claude wiring (surgical: only managed keys; an exact-path-OWNED
+    //    WebSearch deny is stripped even from a
     //    foreign-edited config -- ownership is the proof), plus the copilot-env
     //    MCP registration in Claude's global ~/.claude.json (best-effort: a
     //    warn, never an abort). The registration is the deny's web-search
     //    replacement, so it only goes once no owned deny remains.
     describe: (ctx) => [
       `Would remove the managed Claude wiring at ${settingsPathFor(ctx.claudeHome)}.`,
-      ...ctx.targets.claudeDefaultHelpers.map((p) => `Would remove the legacy Claude helper ${p}.`),
       ctx.targets.claudeMcpRegistration === null
         ? `Would leave ${claudeJsonPath()} alone (no removable copilot-env MCP registration found in it).`
         : `Would remove the copilot-env MCP registration from ${ctx.targets.claudeMcpRegistration} ` +
           "(kept, with a warning, while an owned WebSearch deny cannot be stripped).",
     ],
     run: (ctx) => {
-      const { ownedDenyRemains } = removeClaudeDefaultWiring(
-        ctx.claudeHome,
-        ctx.targets.claudeDefaultHelpers,
-      );
+      const { ownedDenyRemains } = removeClaudeDefaultWiring(ctx.claudeHome);
       if (ownedDenyRemains) {
         consola.warn(
           `the copilot-env WebSearch deny in ${settingsPathFor(ctx.claudeHome)} could not ` +
@@ -460,9 +439,7 @@ export function resolveUninstallContext(
         claudeArtifacts: claudeProfileArtifacts(claudeHome, name),
         home: profileHome(name),
       })),
-      claudeDefaultHelpers: claudeDefaultHelperArtifacts(claudeHome),
       claudeMcpRegistration: plannedClaudeMcpRemoval(),
-      codexEnvTokenFiles: new Map(codexHomes.map((home) => [home, codexEnvTokenFile(home)])),
       desktop: listClaudeDesktopOwnedArtifacts(deps.claudeDesktopLibraryDir),
       floatArtifacts: proxyFloatArtifactPaths(rootHome),
       // A test substitute does its own (redirected) work, not this state-recorded rm.

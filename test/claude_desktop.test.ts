@@ -494,9 +494,8 @@ test("a blocked removal (malformed _meta.json) keeps the helper scripts", async 
 test("adopt-and-replace: same-gateway foreign entry is taken over in place, name kept", async () => {
   const { library } = isolateWithDesktop();
   mkdirSync(library, { recursive: true });
-  const handMadeHelper = join(resolveClaudeHome(), "copilot-token.sh");
-  mkdirSync(resolveClaudeHome(), { recursive: true });
-  writeFileSync(handMadeHelper, "#!/bin/sh\nexec agent auth --get\n");
+  const handMadeHelper = join(dir, "hand-made-helper.sh");
+  writeFileSync(handMadeHelper, "#!/bin/sh\nexec gh auth token\n");
   writeFileSync(
     join(library, "hand-1.json"),
     `${
@@ -526,74 +525,8 @@ test("adopt-and-replace: same-gateway foreign entry is taken over in place, name
   const doc = readJson(join(library, "hand-1.json"));
   expect(doc["userKey"]).toBe("keep"); // surgical merge
   expect(doc["inferenceCredentialHelper"]).not.toBe(handMadeHelper); // managed helper now
-  expect(existsSync(handMadeHelper)).toBe(false); // referenced hand-made helper retired
+  expect(existsSync(handMadeHelper)).toBe(true); // the user's file is never touched
   expect(new OwnershipLedger().owns("claudeDesktop", join(library, "hand-1.json"))).toBe(true);
-});
-
-test("adoption keeps the hand-made helper while ANY other consumer references it", async () => {
-  const scenarios: {
-    name: string;
-    settings?: boolean;
-    otherEntryRaw?: (handMade: string) => string;
-  }[] = [
-    // Claude Code's own settings.json still points at it (the legacy file wiring).
-    { name: "claude-code-settings", settings: true },
-    // Another Desktop entry still points at it.
-    {
-      name: "another-desktop-entry",
-      otherEntryRaw: (h) =>
-        JSON.stringify({
-          "inferenceGatewayBaseUrl": "https://elsewhere.example",
-          "inferenceCredentialHelper": h,
-        }),
-    },
-    // Parse doubt answers "keep": an unreadable sibling MIGHT reference it.
-    { name: "malformed-sibling-entry", otherEntryRaw: () => "{ mangled" },
-  ];
-  for (const scenario of scenarios) {
-    const { library } = isolateWithDesktop();
-    mkdirSync(library, { recursive: true });
-    mkdirSync(resolveClaudeHome(), { recursive: true });
-    const handMade = join(resolveClaudeHome(), "copilot-token.sh");
-    writeFileSync(handMade, "#!/bin/sh\nexec gh auth token\n");
-    writeFileSync(
-      join(library, "hand-1.json"),
-      `${
-        JSON.stringify({
-          "inferenceGatewayBaseUrl": DEFAULT_COPILOT_API_BASE,
-          "inferenceCredentialHelper": handMade,
-        })
-      }\n`,
-    );
-    const entries = [{ id: "hand-1", name: "Default" }];
-    if (scenario.otherEntryRaw !== undefined) {
-      writeFileSync(join(library, "other-2.json"), scenario.otherEntryRaw(handMade));
-      entries.push({ id: "other-2", name: "Other" });
-    }
-    writeFileSync(
-      join(library, "_meta.json"),
-      `${JSON.stringify({ appliedId: "hand-1", entries })}\n`,
-    );
-    if (scenario.settings) {
-      writeFileSync(
-        join(resolveClaudeHome(), "settings.json"),
-        JSON.stringify({ "apiKeyHelper": handMade }),
-      );
-    }
-    await wireClaudeDesktopEntry({
-      profile: null,
-      mode: "direct",
-      directIntegrationId: null,
-      directToken: "ghu_x",
-      quiet: false,
-      fetchImpl: catalogFetch(CATALOG),
-    });
-    // The adoption itself proceeds; only the retirement is gated.
-    const doc = readJson(join(library, "hand-1.json"));
-    expect(doc["inferenceCredentialHelper"], scenario.name).not.toBe(handMade);
-    expect(existsSync(handMade), scenario.name).toBe(true); // still referenced: kept
-    dir = removeDir(dir);
-  }
 });
 
 test("never-clobber: a foreign entry carrying our name, or a malformed _meta.json, stops the write", async () => {

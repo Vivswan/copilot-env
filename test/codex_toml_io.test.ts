@@ -220,38 +220,34 @@ test("policy: removeCodexProfile is a no-op when absent, throws wrapped on unpar
   ).toBe(true);
 });
 
-test("policy: removeCodexDefaultWiring skips an absent config but still scrubs .env", () => {
+test("policy: removeCodexDefaultWiring skips an absent config and never blind-writes", () => {
   dir = isolateAgentHomes("codex-toml-io-", { mkdirs: true }).dir;
   const codexHome = join(dir, ".codex");
   const configPath = join(codexHome, "config.toml");
   const envPath = join(codexHome, ".env");
-  writeFileSync(envPath, "OPENAI_API_KEY=user\nCOPILOT_ENV_GH_TOKEN=ghp_legacy\n");
+  writeFileSync(envPath, "OPENAI_API_KEY=user\n");
 
-  // Absent config: the null path proceeds straight to the .env scrub.
+  // Absent config: nothing to strip, nothing created, the user's .env untouched.
   removeCodexDefaultWiring(codexHome);
   expect(existsSync(configPath)).toBe(false);
   expect(readFileSync(envPath, "utf8")).toBe("OPENAI_API_KEY=user\n");
 
-  // Unparseable config: throws wrapped (exact prefix, path included), file
-  // preserved, .env untouched this run.
+  // Unparseable config: throws wrapped (exact prefix, path included), file preserved.
   writeFileSync(configPath, UNPARSEABLE);
-  writeFileSync(envPath, "COPILOT_ENV_GH_TOKEN=ghp_legacy\n");
   const wrapped = capture(() => removeCodexDefaultWiring(codexHome));
   expect((wrapped as Error).message.startsWith(`${configPath} is not readable/valid TOML: `)).toBe(
     true,
   );
   expect(readFileSync(configPath, "utf8")).toBe(UNPARSEABLE);
-  expect(readFileSync(envPath, "utf8")).toBe("COPILOT_ENV_GH_TOKEN=ghp_legacy\n");
 
-  // A non-ENOENT read error (config.toml is a directory) gets the same wrap,
-  // and .env is again left alone.
+  // A non-ENOENT read error (config.toml is a directory) gets the same wrap.
   rmSync(configPath);
   mkdirSync(configPath);
   const dirWrapped = capture(() => removeCodexDefaultWiring(codexHome));
   expect(
     (dirWrapped as Error).message.startsWith(`${configPath} is not readable/valid TOML: `),
   ).toBe(true);
-  expect(readFileSync(envPath, "utf8")).toBe("COPILOT_ENV_GH_TOKEN=ghp_legacy\n");
+  expect(readFileSync(envPath, "utf8")).toBe("OPENAI_API_KEY=user\n");
 });
 
 // The removal strips `model_catalog_json` only when it DENOTES our catalog file.

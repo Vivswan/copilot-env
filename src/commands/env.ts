@@ -9,7 +9,7 @@
 //     override the now-direct settings.json (shell env wins) and mask it in health.
 // It NEVER touches a value the user set themselves (a foreign CODEX_HOME, or a
 // non-local ANTHROPIC_BASE_URL). Everything else lives in each agent's own config
-// file (Codex: config.toml + .env; Claude: settings.json + apiKeyHelper).
+// file (Codex: config.toml; Claude: settings.json).
 //
 // It may ALSO emit the opt-in cl/co/cx launcher functions (one-line definitions
 // delegating to `agent launch`) when the `launchers` config key is on, so the
@@ -92,7 +92,6 @@ export function managedClaudeBaseUrl(profile: Profile): ManagedEnvValue {
   const claudeHome = resolveClaudeHome();
   const claude = inspectClaudeWiring(
     readTextResult(settingsPathFor(claudeHome, profile)),
-    claudeHome,
     Number(copilotApiResolvePort(profile)),
     profile,
   );

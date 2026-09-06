@@ -25,7 +25,7 @@ import { type Dirent, readdirSync, readFileSync, realpathSync, statSync } from "
 import path from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import { consola } from "consola";
-import { knownCodexHomes } from "../codex/config.ts";
+import { knownCodexHomes } from "../codex/host.ts";
 import { errMessage } from "../utils/error.ts";
 import { isDir } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";

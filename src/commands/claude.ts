@@ -2,7 +2,7 @@
 // check/configure body): the Claude Desktop status that tails `--check`. Stdout, like the
 // provider report it follows; the exit code stays the provider-mode contract alone.
 import { claudeDesktopStatus } from "../agents/claude_desktop.ts";
-import { renderClaudeDesktopStatus } from "../claude/desktop.ts";
+import { renderClaudeDesktopStatus } from "../claude/desktop_status.ts";
 
 /** Print the Desktop status after the `--check` provider report, drift named with its fix. */
 export function printClaudeDesktopCheck(): void {

@@ -19,7 +19,8 @@
 //
 // The whole feature is OPT-IN (`agent config --set codex-model-catalog true`):
 // when disabled, generation and refresh are no-ops here, and the config writer
-// / auth-time sync (src/codex/config.ts) remove the artifacts.
+// (src/codex/config.ts) / auth-time sync (src/codex/catalog_reference.ts) remove
+// the artifacts.
 //
 // Codex parses the file strictly (a missing required field is a startup error)
 // but ignored unknown fields in every public version checked (0.152.0 through

@@ -14,28 +14,26 @@ import {
 import path from "node:path";
 import { zstdDecompressSync } from "node:zlib";
 import { resolveClaudeHome } from "../src/claude/paths.ts";
-import { knownCodexHomes } from "../src/codex/config.ts";
+import { knownCodexHomes } from "../src/codex/host.ts";
 import { isEnoentOrNotdir } from "../src/utils/fs.ts";
 import { isRecord } from "../src/utils/json.ts";
 import { localDayKey } from "../src/utils/time.ts";
+import { mulberry32, PROFILE_PATH, type Rng } from "../test/helpers/usage_fixtures.ts";
 import {
   claudeLineType,
   codexLineType,
   filenameShape,
   modelLabel,
   type ModelProfile,
-  mulberry32,
   OTHER_LINE_TYPE,
   parseProfile,
   type Profile,
-  PROFILE_PATH,
   quantiles,
   RESUME_GAP_MS,
-  type Rng,
   type SourceProfile,
   TORN_LINE_TYPE,
   type UsageSource,
-} from "../test/helpers/usage_fixtures.ts";
+} from "../test/helpers/usage_profile_contract.ts";
 
 const RESERVOIR_SIZE = 200_000;
 /**

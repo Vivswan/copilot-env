@@ -1,6 +1,7 @@
-// Shared types for `agent health` diagnostics. Kept dependency-free (the only
-// import is the profile vocabulary, itself dependency-free) so the pure
-// aggregation/evaluation layers (aggregate.ts, checks.ts) import only from here.
+// Shared types for `agent health` diagnostics, plus the two helpers every check
+// family spells its identity and named-profile fix with. Kept dependency-free
+// (the only import is the profile vocabulary, itself dependency-free) so the pure
+// aggregation/evaluation layers (aggregate.ts, checks*.ts) import only from here.
 import type { ProfileName } from "../copilot_api/profile.ts";
 
 /** Worst-to-best diagnostic outcome for a single check. */
@@ -168,4 +169,21 @@ export interface HealthJson {
     fix?: string;
     value?: Record<string, unknown>;
   }[];
+}
+
+/** The identity fields of a registered check, from the single descriptor table
+ *  (the one source of each id's label/group/scopes). */
+export function meta(id: RegisteredCheckId): {
+  id: RegisteredCheckId;
+  label: string;
+  group: CheckGroup;
+  scopes: readonly HealthScope[];
+} {
+  const d = CHECK_DESCRIPTORS[id];
+  return { id, label: d.label, group: d.group, scopes: d.scopes };
+}
+
+/** The re-wire fix for a NAMED profile (mode is sticky from the store on a re-add). */
+export function profileAddFix(name: ProfileName): string {
+  return `agent profile --add ${name}`;
 }

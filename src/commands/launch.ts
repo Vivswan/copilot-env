@@ -24,7 +24,8 @@ import type { AgentProviderMode } from "../agents/provider_mode.ts";
 import { readAgentModes } from "../agents/wiring.ts";
 import { BASE_URL_ENV, claudeAdapter, runClaude } from "../claude/config.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
-import { refreshCodexCatalogAndSync, runCodex } from "../codex/config.ts";
+import { refreshCodexCatalogAndSync } from "../codex/catalog_reference.ts";
+import { runCodex } from "../codex/config.ts";
 import { proxyStatus, recordHeartbeat } from "../copilot_api/daemon.ts";
 import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
 import {

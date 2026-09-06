@@ -2,7 +2,7 @@
 // src/copilot_api/env_config.ts). The CONFIG_REGISTRY there is the single source of truth for
 // the keys; configTable() below is the one table both `agent config` and its `--help` print.
 import { consola } from "consola";
-import { trackedDaemonAlive } from "../copilot_api/daemon.ts";
+import { anyTrackedDaemonAlive } from "../copilot_api/daemon.ts";
 import {
   CONFIG_REGISTRY,
   CONFIG_SECTIONS,
@@ -233,6 +233,9 @@ export interface ConfigTableOptions {
   width: number;
   /** A tracked daemon is alive, so a stored key it read at launch earns the restart line. */
   daemonUp: boolean;
+  /** The installed proxy's version (null when none): a stored projected key it is too old to
+   *  read (sinceProxyVersionWarning) earns no restart line, since no restart makes it read. */
+  installedProxy: string | null;
   /** Emit ANSI styling; off yields the same bytes minus the escapes. */
   color: boolean;
 }
@@ -286,7 +289,11 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
     }
     const right = packToWidth(cells, (cell) => cell.text.length, rightWidth)
       .map((line) => line.map((cell) => cell.paint(cell.text)).join(" "));
-    if (row.stored && opts.daemonUp && (isProxyProjected(def) || def.restartToApply === true)) {
+    const daemonReads = isProxyProjected(def) || def.restartToApply === true;
+    if (
+      row.stored && opts.daemonUp && daemonReads &&
+      sinceProxyVersionWarning(def, opts.installedProxy) === null
+    ) {
       right.push(paint.dim(paint.green(RESTART_LINE)));
     }
     right.push(
@@ -327,7 +334,8 @@ export function configTableOutput(platform: NodeJS.Platform = process.platform):
     platform,
     // `columns` is undefined off a TTY and 0 on a size-less pty: both mean the cap.
     width: Math.min(process.stdout.columns || TABLE_WIDTH_MAX, TABLE_WIDTH_MAX),
-    daemonUp: trackedDaemonAlive(),
+    daemonUp: anyTrackedDaemonAlive(),
+    installedProxy: installedProxyVersion(),
     color: COLOR_ENABLED,
   });
 }

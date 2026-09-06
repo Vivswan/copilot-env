@@ -8,7 +8,7 @@ import { consola } from "consola";
 import { clearPersistedInferenceActivity } from "../scripts/inference_activity.ts";
 import { daemonLockVerdict } from "../scripts/daemon_lock.ts";
 import { assertNever } from "../utils/assert.ts";
-import { CopilotApiPaths } from "./paths.ts";
+import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import { daemonPolicy, defaultProxyPort } from "./port.ts";
 import { classifyDaemonPid, isCopilotApiPid, pidAlive, terminatePid } from "./process.ts";
 import type { Profile } from "./profile.ts";
@@ -27,6 +27,13 @@ export function trackedDaemonAlive(profile: Profile = null): boolean {
   if (pid === undefined) return false;
   const lock = daemonLockVerdict(new CopilotApiPaths(profile).home, pid);
   return lock === "alive" || (lock === "unproven" && pidAlive(pid));
+}
+
+/** Whether ANY tracked daemon on this host is alive: the default's or a named profile's.
+ *  The preferences are account-wide, so a stored daemon-read key needs every daemon
+ *  restarted, whichever profile launched it. */
+export function anyTrackedDaemonAlive(): boolean {
+  return [null, ...profileHomeNames()].some((profile) => trackedDaemonAlive(profile));
 }
 
 // Whether OUR proxy for `profile` is genuinely up (and on which recorded port): the tracked,

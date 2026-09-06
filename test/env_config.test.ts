@@ -457,7 +457,13 @@ test("the registry is alphabetical by CLI name with unique storage keys", () => 
   expect(new Set(keys).size).toBe(keys.length);
 });
 
-const PLAIN_TABLE = { platform: "linux", width: 80, daemonUp: false, color: false } as const;
+const PLAIN_TABLE = {
+  platform: "linux",
+  width: 80,
+  daemonUp: false,
+  installedProxy: null,
+  color: false,
+} as const;
 
 test("configTable() renders the header, the sections, and key=value rows with type, default, and description in one 80-column layout", () => {
   // Stored: a plain flag, a key applied without the daemon, a POSIX-only key on Windows (inert
@@ -552,6 +558,16 @@ test("configTable() renders the header, the sections, and key=value rows with ty
       " ".repeat(column) + "restart the proxy to apply";
   expect(restartAfter("strict-port")).toBe(true);
   expect(restartAfter("launchers")).toBe(false);
+  // A stored projected key the INSTALLED proxy is too old to read gets no restart line (no
+  // restart makes it read; `--set` suppresses its hint the same way); a new-enough proxy does.
+  const gated = { ...data, alphaSearchModel: "gpt-5" };
+  const restartLineFor = (installedProxy: string): boolean => {
+    const out = configTable(gated, { ...PLAIN_TABLE, daemonUp: true, installedProxy }).split("\n");
+    const at = out.findIndex((l) => rowRe.exec(l)?.[2] === "alpha-search-model");
+    return out[at + 1] === " ".repeat(column) + "restart the proxy to apply";
+  };
+  expect(restartLineFor("1.14.21")).toBe(false);
+  expect(restartLineFor("1.16.3")).toBe(true);
 });
 
 test("every registry key carries a type label owned by its value domain", () => {

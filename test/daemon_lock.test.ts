@@ -2,7 +2,9 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
 import { consola } from "consola";
-import { proxyStatus, stopTrackedProxy } from "../src/copilot_api/daemon.ts";
+import { anyTrackedDaemonAlive, proxyStatus, stopTrackedProxy } from "../src/copilot_api/daemon.ts";
+import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
+import { parseProfileName } from "../src/copilot_api/profile.ts";
 import { launchDaemon, pidAlive } from "../src/copilot_api/process.ts";
 import { parseAbsolutePath } from "../src/copilot_api/sidecar.ts";
 import { CopilotEnvRunState } from "../src/copilot_api/state.ts";
@@ -112,6 +114,22 @@ async function captureAllWrites(body: () => Promise<void>): Promise<string> {
 }
 
 // --- the decision table, in-process ------------------------------------------------------
+
+test("anyTrackedDaemonAlive: a named profile's live daemon counts, not only the default's", () => {
+  dir = isolateProxyHome("copilot-daemon-lock-");
+  expect(anyTrackedDaemonAlive()).toBe(false);
+  // The preferences are account-wide, so a `--profile work` daemon holding its lock is a
+  // daemon the restart hint must speak of even with no default daemon tracked.
+  const work = parseProfileName("work");
+  const home = new CopilotApiPaths(work).home;
+  writeRunState({ pid: process.pid }, work);
+  expect(acquireDaemonLockForLife(home, { waitMs: 0 })).toBe(true);
+  try {
+    expect(anyTrackedDaemonAlive()).toBe(true);
+  } finally {
+    releaseFileLock(daemonLockPath(home));
+  }
+});
 
 test("daemonLockVerdict: absent, dead-marker, held, and foreign-pid judgments", () => {
   dir = tempDir("copilot-daemon-lock-");

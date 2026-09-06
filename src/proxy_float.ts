@@ -55,11 +55,12 @@ import { createConsola } from "consola";
 import * as v from "valibot";
 import { proxyUnusedEverywhere } from "./agents/wiring.ts";
 import { atomicWriteFile, removeTreeReported } from "./utils/report_write.ts";
-import { CopilotEnvConfig } from "./copilot_api/env_config.ts";
+import { configDefaultNumber, CopilotEnvConfig } from "./copilot_api/env_config.ts";
 import { resolveRootHome } from "./copilot_api/paths.ts";
 import { allShimPaths } from "./copilot_api/shims.ts";
 import { resolveDenoBin } from "./copilot_api/sidecar.ts";
 import {
+  installedProxyVersion,
   PROXY_PACKAGE_NAME,
   proxyVersionBoundsStatus,
   proxyVersionFloorStatus,
@@ -79,8 +80,9 @@ const PROXY_VERSION_ENV = "COPILOT_API_VERSION";
 const MIN_RELEASE_AGE_ENV = "COPILOT_API_MIN_RELEASE_AGE";
 const SEMVER_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
 
-/** Built-in supply-chain cooldown (seconds) when neither the env nor the config sets one. */
-export const DEFAULT_RELEASE_COOLDOWN_SECONDS = 7 * SECONDS_PER_DAY;
+/** Built-in supply-chain cooldown (seconds) when neither the env nor the config sets one:
+ *  the `release-cooldown` registry default. */
+export const DEFAULT_RELEASE_COOLDOWN_SECONDS = configDefaultNumber("release-cooldown");
 
 /** The npm registry document for the proxy package (full doc: `time` carries
  *  the publish times the cooldown needs; the abbreviated install doc lacks it). */
@@ -422,6 +424,23 @@ export function readResolvedVersionRecord(rootHome: string): ResolvedVersionReco
     "denoDir": parsed.output.deno_dir,
     ...(typeof fingerprint === "string" ? { "buildFingerprint": fingerprint } : {}),
   };
+}
+
+/** The proxy version the NEXT daemon launch runs, in the entry's own precedence (see
+ *  resolveCopilotApiEntry): the float's recorded resolution, else the checkout's node_modules
+ *  copy. A version pin (env or `proxy-version`) the record does not match is what the next
+ *  start resolves instead: an exact semver pin (the float's own SEMVER_RE rule) IS that
+ *  version, so it answers; a tag pin (`latest`, `legacy`) is unknowable here, since only the
+ *  start path resolves tags. Null when it cannot be known: that tag pin, a COPILOT_API_ENTRY
+ *  file override, or nothing resolved or installed. Read-only, unlike the entry resolution,
+ *  which may write the daemon config: what a version gate on a read path (`agent config`)
+ *  judges against. */
+export function nextProxyVersion(rootHome: string = resolveRootHome()): string | null {
+  if (process.env.COPILOT_API_ENTRY?.trim()) return null;
+  const recorded = readResolvedVersionRecord(rootHome)?.version;
+  const pin = resolveProxyVersionOverride();
+  if (pin !== undefined && pin !== recorded) return SEMVER_RE.test(pin) ? pin : null;
+  return recorded ?? installedProxyVersion();
 }
 
 /** Atomically (tmp+rename) write the record for a just-verified cache entry.

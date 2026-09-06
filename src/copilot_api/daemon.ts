@@ -8,7 +8,7 @@ import { consola } from "consola";
 import { clearPersistedInferenceActivity } from "../scripts/inference_activity.ts";
 import { daemonLockVerdict } from "../scripts/daemon_lock.ts";
 import { assertNever } from "../utils/assert.ts";
-import { CopilotApiPaths } from "./paths.ts";
+import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import { daemonPolicy, defaultProxyPort } from "./port.ts";
 import { classifyDaemonPid, isCopilotApiPid, pidAlive, terminatePid } from "./process.ts";
 import type { Profile } from "./profile.ts";
@@ -17,6 +17,24 @@ import { CopilotEnvRunState } from "./state.ts";
 /** The `proxyStatus` verdict: a proxy reported up ALWAYS carries the port it was probed
  *  on, so no consumer ever has to handle a tracked-but-portless "up" daemon. */
 export type ProxyStatus = { up: false } | { up: true; port: number };
+
+/** Whether `profile`'s TRACKED daemon pid is alive, from the daemon lock verdict and the pid
+ *  table alone: proxyStatus() minus the async pid classification and the port probe, so a
+ *  synchronous renderer (the `agent config` table's "restart the proxy to apply" line) can
+ *  ask. A false positive here costs a spare hint, never an action. */
+export function trackedDaemonAlive(profile: Profile = null): boolean {
+  const { pid } = CopilotEnvRunState.forProfile(profile).read();
+  if (pid === undefined) return false;
+  const lock = daemonLockVerdict(new CopilotApiPaths(profile).home, pid);
+  return lock === "alive" || (lock === "unproven" && pidAlive(pid));
+}
+
+/** Whether ANY tracked daemon on this host is alive: the default's or a named profile's.
+ *  The preferences are account-wide, so a stored daemon-read key needs every daemon
+ *  restarted, whichever profile launched it. */
+export function anyTrackedDaemonAlive(): boolean {
+  return [null, ...profileHomeNames()].some((profile) => trackedDaemonAlive(profile));
+}
 
 // Whether OUR proxy for `profile` is genuinely up (and on which recorded port): the tracked,
 // alive copilot-api pid AND the port it actually recorded both confirm it. Reading pid AND port

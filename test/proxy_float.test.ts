@@ -11,6 +11,7 @@ import {
   type FetchLike,
   floatProxy,
   minimumDependencyAgeArg,
+  nextProxyVersion,
   NPMRC_MARKER,
   parseRegistryDoc,
   proxyDenoDir,
@@ -34,6 +35,7 @@ import {
 } from "../src/copilot_api/process.ts";
 import { DAEMON_SHIM_FILES } from "../src/copilot_api/shims.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
+import { installedProxyVersion } from "../src/copilot_api/version.ts";
 import type { ProjectConfig } from "../src/utils/project_config.ts";
 import { MILLISECONDS_PER_DAY } from "../src/utils/time.ts";
 import { afterEach, beforeEach, describe, expect, removeDir, test } from "./helpers/testing.ts";
@@ -56,9 +58,10 @@ const CONFIG: ProjectConfig = {
 
 const MIN_RELEASE_AGE_ENV = "COPILOT_API_MIN_RELEASE_AGE";
 const VERSION_ENV = "COPILOT_API_VERSION";
+const ENTRY_ENV = "COPILOT_API_ENTRY";
 
 let dir = "";
-const restoreEnv = envSnapshot([MIN_RELEASE_AGE_ENV]);
+const restoreEnv = envSnapshot([MIN_RELEASE_AGE_ENV, VERSION_ENV, ENTRY_ENV]);
 
 function isoDaysAgo(days: number): string {
   return new Date(NOW_MS - days * MILLISECONDS_PER_DAY).toISOString();
@@ -199,6 +202,33 @@ beforeEach(() => {
   dir = isolateProxyHome("copilot-float-");
   delete process.env[MIN_RELEASE_AGE_ENV];
   delete process.env[VERSION_ENV];
+  delete process.env[ENTRY_ENV];
+});
+
+test("nextProxyVersion: the override is unknowable, a record wins, else the checkout's copy", () => {
+  // The version a gate judges before a launch, in the entry's precedence, without writing
+  // anything (unlike the entry resolution). The checkout's node_modules copy is the control:
+  // it exists here, so a null would be a wrong "unknown", not an absent package.
+  const installed = installedProxyVersion();
+  expect(installed).not.toBeNull();
+  expect(nextProxyVersion(dir)).toBe(installed);
+  seedFloat("1.99.0", NOW_MS);
+  const recordBefore = readFileSync(resolvedVersionFile(dir), "utf8");
+  expect(nextProxyVersion(dir)).toBe("1.99.0");
+  expect(readFileSync(resolvedVersionFile(dir), "utf8")).toBe(recordBefore);
+  process.env[ENTRY_ENV] = join(dir, "fake-proxy.mjs");
+  expect(nextProxyVersion(dir)).toBeNull();
+});
+
+test("nextProxyVersion: an exact pin the record does not match IS the next version; a tag pin is unknowable", () => {
+  seedFloat("1.16.3", NOW_MS);
+  const config = new CopilotEnvConfig();
+  config.set({ proxyVersion: "1.14.21" });
+  expect(nextProxyVersion(dir)).toBe("1.14.21");
+  config.set({ proxyVersion: "legacy" });
+  expect(nextProxyVersion(dir)).toBeNull();
+  config.set({ proxyVersion: "1.16.3" });
+  expect(nextProxyVersion(dir)).toBe("1.16.3");
 });
 
 afterEach(() => {

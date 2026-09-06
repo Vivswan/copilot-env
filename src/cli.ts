@@ -25,7 +25,7 @@ import { printClaudeDesktopCheck } from "./commands/claude.ts";
 import { runCodex } from "./codex/config.ts";
 import { runCodexMobile } from "./codex/mobile.ts";
 import { runAuth } from "./commands/auth.ts";
-import { runConfig } from "./commands/config.ts";
+import { configTableOutput, runConfig } from "./commands/config.ts";
 import { runEnv } from "./commands/env.ts";
 import { runHealth } from "./commands/health.ts";
 import { runInit } from "./commands/init.ts";
@@ -40,7 +40,7 @@ import { parseStartAction, runStart } from "./commands/start.ts";
 import { runStop } from "./commands/stop.ts";
 import { runUninstall } from "./commands/uninstall.ts";
 import { runUpdate } from "./commands/update.ts";
-import { configKeysHelp, OPENROUTER_MODELS_URL } from "./copilot_api/env_config.ts";
+import { OPENROUTER_MODELS_URL } from "./copilot_api/env_config.ts";
 import { AUTH_PROVIDERS, type AuthProvider } from "./copilot_api/env_state.ts";
 import { ghTokenEnvVarsLabel } from "./copilot_api/gh_cli.ts";
 import { runInstall } from "./install/installer.ts";
@@ -388,7 +388,9 @@ program
   .option("--set <key...>", "Set a preference: --set <key> <value>.")
   .option("--get [key]", "Print all preferences, or just one key's value.")
   .option("--del <key>", "Delete a preference (revert to its default).")
-  .addHelpText("after", `\n${configKeysHelp()}`)
+  // The same table bare `agent config` prints, read at help-render time so the current
+  // values are the store's now (a function, not a string baked at startup).
+  .addHelpText("after", () => `\n${configTableOutput()}`)
   .action((opts: Opts) =>
     runConfig({
       set: opts.set as string[] | undefined,

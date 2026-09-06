@@ -8,6 +8,7 @@
 import * as v from "valibot";
 import { CopilotApiConfig } from "./config.ts";
 import { CopilotApiPaths } from "./paths.ts";
+import { SECONDS_PER_DAY } from "../utils/time.ts";
 
 /** Passthrough preference: `auto` (detect from token shape), or force `on`/`off`. */
 export type PassthroughPref = "auto" | "on" | "off";
@@ -108,7 +109,7 @@ export type ConfigValue = boolean | number | string;
  *  (e.g. `["contextManagement", "responses"]`). */
 export type ProxyConfigPath = readonly [string, ...string[]];
 
-/** The `--help` sections, in display order. Grouped by what a key drives: the daemon
+/** The config table's sections, in display order. Grouped by what a key drives: the daemon
  *  process itself, the features projected into its config.json, the credential's handling,
  *  one agent's wiring, the shell, or copilot-env's own updates. */
 export const CONFIG_SECTIONS = [
@@ -136,6 +137,9 @@ interface ConfigKeyDefCore<K extends ConfigKey = ConfigKey> {
   cli: string;
   key: K;
   describe: string;
+  /** Short label of the value domain for the config table's `[type]` cell (`bool`,
+   *  `1-65535`, `model id`, ...). Owned by the domain builders like `schema`/`parse`. */
+  type: string;
   /** The key's VALUE domain, the single source CONFIG_SCHEMA folds. */
   schema: v.GenericSchema<unknown, NonNullable<CopilotEnvConfigData[K]>>;
   /** Parser from the `--set <value>` string to the stored value (throws a clear message
@@ -145,25 +149,13 @@ interface ConfigKeyDefCore<K extends ConfigKey = ConfigKey> {
   posixOnly?: true;
 }
 
-/** How an internal key's rendered `--help` / `--get` default is sourced: a registry-owned
- *  value XOR a hand-written label -- exactly one, checked at compile time. */
-type DefaultSpec =
-  | {
-    /** Built-in default applied by the read site when the key is unset. THE owned copy:
-     *  the CopilotEnvConfig accessors below consume it via the configDefault* helpers,
-     *  and the rendered default label derives from it. */
-    defaultValue: ConfigValue;
-    /** Extra wording appended after the derived default value in `--help` / `--get`. */
-    defaultSuffix?: string;
-    defaultLabel?: undefined;
-  }
-  | {
-    /** Hand-written default label for keys with no single value this registry owns (an
-     *  external or composite default). */
-    defaultLabel: string;
-    defaultValue?: undefined;
-    defaultSuffix?: undefined;
-  };
+/** The built-in a read site applies when the key is unset: exactly the value `--set` would
+ *  store, so the table shows it bare. Absent when "unset" IS the default (a disabled override,
+ *  a floating pin), rendered `<unset>`. On an opt-in projected key it is the PROXY'S own
+ *  default, informational only (never projected). */
+interface DefaultSpec<K extends ConfigKey = ConfigKey> {
+  defaultValue?: NonNullable<CopilotEnvConfigData[K]>;
+}
 
 /** How a change takes effect, for `agent config` set/del's notice: the generic restart hint
  *  XOR a bespoke hint XOR neither (projected shapes already get the restart hint; anything
@@ -204,7 +196,7 @@ interface ProjectedKeyFields {
  *  config.json for it. */
 type InternalConfigKeyDef<K extends ConfigKey = ConfigKey> =
   & ConfigKeyDefCore<K>
-  & DefaultSpec
+  & DefaultSpec<K>
   & ApplySpec
   & {
     /** Which `--help` section lists the key: any but the projected keys' own. */
@@ -223,10 +215,8 @@ type ForceProjectedConfigKeyDef<K extends ConfigKey = ConfigKey> =
   & ApplySpec
   & ProjectedKeyFields
   & {
-    proxyDefault: ConfigValue;
+    proxyDefault: NonNullable<CopilotEnvConfigData[K]>;
     defaultValue?: undefined;
-    defaultSuffix?: undefined;
-    defaultLabel?: undefined;
     proxyProjected?: undefined;
   };
 
@@ -237,25 +227,21 @@ type ForceProjectedConfigKeyDef<K extends ConfigKey = ConfigKey> =
  *  without overriding. */
 type OptInProjectedConfigKeyDef<K extends ConfigKey = ConfigKey> =
   & ConfigKeyDefCore<K>
+  & DefaultSpec<K>
   & ApplySpec
   & ProjectedKeyFields
   & {
     proxyProjected: true;
-    /** The proxy owns the default, so the rendered label is hand-written. */
-    defaultLabel: string;
-    defaultValue?: undefined;
-    defaultSuffix?: undefined;
     proxyDefault?: undefined;
   };
 
 /** One config key. The registry literal's `as const satisfies` rejects exactly these shapes
  *  at compile time: `proxyDefault` combined with `proxyProjected`; `proxyPath` or
  *  `sinceProxyVersion` on a non-projected entry; a projected entry outside the "Proxy
- *  features" section or a non-projected entry inside it; an internal entry with both or neither of
- *  `defaultValue` / `defaultLabel`; a force-projected entry with either (`proxyDefault` is
- *  its source) and an opt-in entry with `defaultValue` (its `defaultLabel` is required
- *  instead); `defaultSuffix` without `defaultValue`; and `restartToApply` combined with
- *  `applyHint`. Distributed over ConfigKey so each entry's schema/parse must fit ITS key. */
+ *  features" section or a non-projected entry inside it; a force-projected entry with a
+ *  `defaultValue` (`proxyDefault` is its source); and `restartToApply` combined with
+ *  `applyHint`. Distributed over ConfigKey so each entry's schema, parse, and default must
+ *  fit ITS key's value type. */
 export type ConfigKeyDef = {
   [K in ConfigKey]:
     | InternalConfigKeyDef<K>
@@ -263,17 +249,10 @@ export type ConfigKeyDef = {
     | OptInProjectedConfigKeyDef<K>;
 }[ConfigKey];
 
-/** The "built-in default" label shown in `--help` / `--get`: the owned default value
- *  (`defaultValue`, else `proxyDefault`) plus any suffix, else the hand-written label.
- *  The union already makes a no-default entry uncompilable; the throw below is only a
- *  backstop the compiler needs (unlike configDefaultNumber's, which stays reachable). */
-export function configDefaultLabel(def: ConfigKeyDef): string {
-  const value = def.defaultValue ?? def.proxyDefault;
-  if (value !== undefined) return `${value}${def.defaultSuffix ?? ""}`;
-  if (def.defaultLabel === undefined) {
-    throw new Error(`config key '${def.cli}' has no built-in default to render`);
-  }
-  return def.defaultLabel;
+/** The built-in default a read site applies when `def` is unset (`defaultValue`, else
+ *  `proxyDefault`), or undefined when unset is itself the default. */
+export function configDefaultValue(def: ConfigKeyDef): ConfigValue | undefined {
+  return def.defaultValue ?? def.proxyDefault;
 }
 
 /** Whether a registry entry is written into the proxy config.json at `agent start` (either
@@ -292,6 +271,8 @@ export function isProxyProjected(def: ConfigKeyDef): boolean {
 interface ConfigDomain<T extends ConfigValue> {
   schema: v.GenericSchema<unknown, T>;
   parse: (raw: string) => T;
+  /** The table's `[type]` label for values of this domain. */
+  type: string;
 }
 
 /** `coerce` only turns the CLI string into the value type (with its own grammar message);
@@ -299,8 +280,9 @@ interface ConfigDomain<T extends ConfigValue> {
 function domain<T extends ConfigValue>(
   schema: v.GenericSchema<unknown, T>,
   coerce: (raw: string) => unknown,
+  type: string,
 ): ConfigDomain<T> {
-  return { schema, parse: (raw) => v.parse(schema, coerce(raw)) };
+  return { schema, parse: (raw) => v.parse(schema, coerce(raw)), type };
 }
 
 const TRUE_WORDS = new Set(["true", "1", "yes", "on", "enable", "enabled"]);
@@ -311,9 +293,10 @@ const BOOL_DOMAIN: ConfigDomain<boolean> = domain(v.boolean(), (raw) => {
   if (TRUE_WORDS.has(t)) return true;
   if (FALSE_WORDS.has(t)) return false;
   throw new Error(`expected a boolean (true/false), got '${raw}'`);
-});
+}, "bool");
 
-function wholeNumberDomain(min: number, max: number): ConfigDomain<number> {
+/** `unit` names the label (`seconds`, `days`); without one the range itself is the label. */
+function wholeNumberDomain(min: number, max: number, unit?: string): ConfigDomain<number> {
   const range = (issue: { input: unknown }) =>
     `must be between ${min} and ${max}, got ${issue.input}`;
   // The coercion grammar only lets digits through, so the sole non-integer reaching
@@ -325,6 +308,7 @@ function wholeNumberDomain(min: number, max: number): ConfigDomain<number> {
       if (!/^\d+$/.test(t)) throw new Error(`expected a whole number, got '${raw}'`);
       return Number.parseInt(t, 10);
     },
+    unit ?? `${min}-${max}`,
   );
 }
 
@@ -346,6 +330,7 @@ function positiveDecimalDomain(max: number): ConfigDomain<number> {
       }
       return Number.parseFloat(t);
     },
+    "number",
   );
 }
 
@@ -360,12 +345,19 @@ const PASSTHROUGH_DOMAIN: ConfigDomain<PassthroughPref> = domain(
     }
     return t;
   },
+  PASSTHROUGH_VALUES.join("|"),
 );
 
-const NON_EMPTY_DOMAIN: ConfigDomain<string> = domain(
-  v.pipe(v.string(), v.trim(), v.minLength(1, "expected a non-empty value")),
-  (raw) => raw,
-);
+/** Any non-empty string; `type` names what the string is (a model id, a version). */
+function nonEmptyDomain(type: string): ConfigDomain<string> {
+  return domain(
+    v.pipe(v.string(), v.trim(), v.minLength(1, "expected a non-empty value")),
+    (raw) => raw,
+    type,
+  );
+}
+const MODEL_ID_DOMAIN = nonEmptyDomain("model id");
+const PROXY_VERSION_DOMAIN = nonEmptyDomain("version|tag");
 
 /** The `integration-id` value domain (see INTEGRATION_ID_RE). The rejection message is a
  *  FIXED string that never echoes the value: it goes into HTTP headers, and junk pasted
@@ -382,6 +374,7 @@ const INTEGRATION_ID_DOMAIN: ConfigDomain<string> = domain(
     ),
   ),
   (raw) => raw,
+  "id|auto",
 );
 
 /** The public OpenRouter price list `agent cost` prices at: the `pricing-url` built-in.
@@ -430,6 +423,7 @@ const HTTPS_URL_DOMAIN: ConfigDomain<string> = domain(
     }),
   ),
   (raw) => raw,
+  "url",
 );
 
 /** The single source of truth for config keys, ordered ALPHABETICALLY by CLI name (the
@@ -440,9 +434,9 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "alpha-search-codex-priority",
     key: "alphaSearchCodexPriority",
     section: "Proxy features",
-    describe: "Prefer Codex for the proxy's /alpha/search endpoint (Codex search) (bool)",
+    describe: "Prefer Codex for the proxy's /alpha/search (Codex search)",
     ...BOOL_DOMAIN,
-    defaultLabel: "true (proxy default)",
+    defaultValue: true,
     proxyProjected: true,
     sinceProxyVersion: "1.15.0",
   },
@@ -450,10 +444,9 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "alpha-search-model",
     key: "alphaSearchModel",
     section: "Proxy features",
-    describe:
-      "Native-Responses model for /alpha/search (Codex search) when the requested model is Messages-backed and cannot run the search itself",
-    ...NON_EMPTY_DOMAIN,
-    defaultLabel: "gpt-5-mini (proxy default)",
+    describe: "Responses model for /alpha/search when the requested model cannot search",
+    ...MODEL_ID_DOMAIN,
+    defaultValue: "gpt-5-mini",
     proxyProjected: true,
     sinceProxyVersion: "1.16.3",
   },
@@ -461,7 +454,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "auto-start",
     key: "autoStart",
     section: "Proxy daemon",
-    describe: "Managed proxy lifecycle: auto-start on agent open + idle auto-stop (bool)",
+    describe: "Auto-start the proxy on agent open and auto-stop it when idle",
     ...BOOL_DOMAIN,
     defaultValue: false,
   },
@@ -469,8 +462,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "auto-update",
     key: "autoUpdate",
     section: "Updates",
-    describe:
-      "Self-update once a day on `agent start`, adopting the newest release aged >= update-cooldown (bool)",
+    describe: "Daily self-update on `agent start`, honoring update-cooldown",
     ...BOOL_DOMAIN,
     defaultValue: false,
     applyHint:
@@ -480,10 +472,8 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "claude-auto-model",
     key: "claudeAutoModel",
     section: "Proxy features",
-    describe:
-      "Model override for Claude Code's background security-monitor requests (leave unset to disable)",
-    ...NON_EMPTY_DOMAIN,
-    defaultLabel: "unset (disabled)",
+    describe: "Model for Claude Code's background security-monitor requests; unset disables",
+    ...MODEL_ID_DOMAIN,
     proxyProjected: true,
     sinceProxyVersion: "1.14.22",
   },
@@ -491,8 +481,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "claude-desktop",
     key: "claudeDesktop",
     section: "Claude",
-    describe:
-      "Wire Claude Desktop's config library (default + every profile) while the app is installed; false removes the profile entries and leaves the default's in place, unmanaged (bool)",
+    describe: "Wire Claude Desktop's config library; false unwires profiles only",
     ...BOOL_DOMAIN,
     defaultValue: true,
     applyHint:
@@ -504,15 +493,14 @@ const CONFIG_REGISTRY_LITERAL = [
     section: "Proxy features",
     describe: "Multiplier the proxy applies when estimating Claude token usage",
     ...positiveDecimalDomain(MAX_TOKEN_MULTIPLIER),
-    defaultLabel: "1.15 (proxy default)",
+    defaultValue: 1.15,
     proxyProjected: true,
   },
   {
     cli: "codex-host",
     key: "codexHost",
     section: "Codex",
-    describe:
-      "Per-host CODEX_HOME symlink farm at ~/.codex/hosts/<hostname>, exported by `agent env` (bool; Linux/macOS)",
+    describe: "Per-host CODEX_HOME at ~/.codex/hosts/<hostname> via `agent env` (Linux/macOS)",
     ...BOOL_DOMAIN,
     defaultValue: false,
     posixOnly: true,
@@ -523,7 +511,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "codex-model-catalog",
     key: "codexModelCatalog",
     section: "Codex",
-    describe: "Patched Codex model catalog with Copilot's real context windows (bool)",
+    describe: "Patched Codex model catalog with Copilot's real context windows",
     ...BOOL_DOMAIN,
     defaultValue: false,
     applyHint:
@@ -533,8 +521,8 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "idle-timeout",
     key: "idleTimeout",
     section: "Proxy daemon",
-    describe: "Idle auto-stop window in seconds (0 disables)",
-    ...wholeNumberDomain(0, MAX_SECONDS),
+    describe: "Idle auto-stop window; 0 disables",
+    ...wholeNumberDomain(0, MAX_SECONDS, "seconds"),
     defaultValue: 3600,
     restartToApply: true,
   },
@@ -542,11 +530,9 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "integration-id",
     key: "integrationId",
     section: "Credential",
-    describe:
-      "Pin the Copilot client identity (Copilot-Integration-Id), or `auto` to probe per credential",
+    describe: "Copilot-Integration-Id header to send; auto probes it per credential",
     ...INTEGRATION_ID_DOMAIN,
     defaultValue: "auto",
-    defaultSuffix: " (probe per credential)",
     applyHint:
       "Applies at the next `agent start` (proxy) and `agent init`/`agent profile --add` (direct wiring).",
   },
@@ -554,8 +540,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "launchers",
     key: "launchers",
     section: "Shell",
-    describe:
-      "Define the cl / co / cx (+ clx / cox / cxx) launcher functions via `agent env` (bool)",
+    describe: "Shell launchers cl / co / cx (+ clx / cox / cxx) in `agent env`",
     ...BOOL_DOMAIN,
     defaultValue: false,
     applyHint: "New shells pick a change up; the current one picks up an ENABLE on the next " +
@@ -565,7 +550,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "max-port",
     key: "maxPort",
     section: "Proxy daemon",
-    describe: "Upper bound of the allowed proxy port range (1-65535)",
+    describe: "Upper bound of the allowed proxy port range",
     ...wholeNumberDomain(1, 65535),
     defaultValue: 65535,
     restartToApply: true,
@@ -574,11 +559,11 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "message-websearch-model",
     key: "messageApiWebSearchModel",
     section: "Proxy features",
-    describe: "Model id for web search: the proxy's Messages-API path and the MCP web_search tool",
-    ...NON_EMPTY_DOMAIN,
+    describe: "Web-search model: proxy Messages-API path and MCP web_search tool",
+    ...MODEL_ID_DOMAIN,
     // The proxy's OWN default, which DEFAULT_WEB_SEARCH_MODEL in web_search.ts matches (that
     // module imports this one, so it cannot be referenced here); a registry test pins the two.
-    defaultLabel: "gpt-5-mini",
+    defaultValue: "gpt-5-mini",
     proxyProjected: true,
     applyHint:
       "Proxy surface applies on the next `agent start`; the MCP web_search tool reads it on every call.",
@@ -587,7 +572,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "messages-api",
     key: "useMessagesApi",
     section: "Proxy features",
-    describe: "Proxy Messages-API (Anthropic-shaped) endpoint (bool)",
+    describe: "Proxy Messages-API (Anthropic-shaped) endpoint",
     ...BOOL_DOMAIN,
     proxyDefault: true,
   },
@@ -595,7 +580,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "min-port",
     key: "minPort",
     section: "Proxy daemon",
-    describe: "Lower bound of the allowed proxy port range (1-65535)",
+    describe: "Lower bound of the allowed proxy port range",
     ...wholeNumberDomain(1, 65535),
     defaultValue: 1024,
     restartToApply: true,
@@ -604,7 +589,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "passthrough",
     key: "passthrough",
     section: "Credential",
-    describe: "PAT passthrough default: auto | on | off",
+    describe: "Use a PAT-shaped token as the bearer directly; auto detects the token",
     ...PASSTHROUGH_DOMAIN,
     defaultValue: "auto",
     restartToApply: true,
@@ -613,18 +598,16 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "port",
     key: "port",
     section: "Proxy daemon",
-    describe: "Default proxy port (1-65535)",
+    describe: "Default proxy port; the next free one is used when busy",
     ...wholeNumberDomain(1, 65535),
     defaultValue: 4141,
-    defaultSuffix: " (then next free)",
     restartToApply: true,
   },
   {
     cli: "pricing-url",
     key: "pricingUrl",
     section: "Cost",
-    describe:
-      "OpenRouter models API URL `agent cost` prices at (`--pricing-url` overrides per run)",
+    describe: "OpenRouter models API URL for `agent cost`; `--pricing-url` overrides once",
     ...HTTPS_URL_DOMAIN,
     defaultValue: OPENROUTER_MODELS_URL,
     applyHint: "Applies to the next `agent cost` run.",
@@ -633,7 +616,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "proxy-logs",
     key: "proxyLogs",
     section: "Proxy daemon",
-    describe: "Proxy request logging under <home>/logs (false discards the writes)",
+    describe: "Proxy request logging under <home>/logs; false discards the writes",
     ...BOOL_DOMAIN,
     defaultValue: true,
     restartToApply: true,
@@ -642,17 +625,16 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "proxy-version",
     key: "proxyVersion",
     section: "Proxy daemon",
-    describe: "Pin the floated proxy to a version/tag",
-    ...NON_EMPTY_DOMAIN,
-    defaultLabel: "latest (floated)",
+    describe: "Pin the floated proxy to a version or tag; unset floats to the latest",
+    ...PROXY_VERSION_DOMAIN,
   },
   {
     cli: "release-cooldown",
     key: "releaseCooldown",
     section: "Proxy daemon",
-    describe: "Proxy float supply-chain cooldown in seconds",
-    ...wholeNumberDomain(0, MAX_SECONDS),
-    defaultLabel: "7 days (built-in)",
+    describe: "Age a proxy release must reach before the float adopts it",
+    ...wholeNumberDomain(0, MAX_SECONDS, "seconds"),
+    defaultValue: 7 * SECONDS_PER_DAY,
   },
   {
     cli: "responses-context-management",
@@ -660,9 +642,9 @@ const CONFIG_REGISTRY_LITERAL = [
     // migration); the projection lands at the nested key the proxy reads today.
     key: "useResponsesApiContextManagement",
     section: "Proxy features",
-    describe: "Proxy Responses-API server-side context management (bool)",
+    describe: "Proxy Responses-API server-side context management",
     ...BOOL_DOMAIN,
-    defaultLabel: "false (proxy default)",
+    defaultValue: false,
     proxyProjected: true,
     proxyPath: ["contextManagement", "responses"],
   },
@@ -670,7 +652,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "responses-websearch",
     key: "useResponsesApiWebSearch",
     section: "Proxy features",
-    describe: "Proxy Responses-API web search (bool)",
+    describe: "Proxy Responses-API web search",
     ...BOOL_DOMAIN,
     proxyDefault: true,
   },
@@ -678,7 +660,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "responses-websocket",
     key: "useResponsesApiWebSocket",
     section: "Proxy features",
-    describe: "Proxy Responses-API transport: WebSocket (true) vs HTTP/SSE (false)",
+    describe: "Proxy Responses-API over WebSocket instead of HTTP/SSE",
     ...BOOL_DOMAIN,
     proxyDefault: true,
   },
@@ -686,15 +668,15 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "small-model",
     key: "smallModel",
     section: "Proxy features",
-    describe: "Small/fast model id the proxy uses",
-    ...NON_EMPTY_DOMAIN,
+    describe: "Small/fast model the proxy uses",
+    ...MODEL_ID_DOMAIN,
     proxyDefault: "gpt-5-mini",
   },
   {
     cli: "strict-port",
     key: "strictPort",
     section: "Proxy daemon",
-    describe: "Fail start when the default port is busy instead of auto-incrementing (bool)",
+    describe: "Fail start on a busy port instead of auto-incrementing",
     ...BOOL_DOMAIN,
     defaultValue: false,
     restartToApply: true,
@@ -703,16 +685,14 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "update-cooldown",
     key: "updateCooldown",
     section: "Updates",
-    describe: "copilot-env update cooldown in days",
-    ...wholeNumberDomain(0, MAX_DAYS),
-    defaultLabel: "none (immediate)",
+    describe: "Min release age for updates; unset means none by hand, 7 for auto",
+    ...wholeNumberDomain(0, MAX_DAYS, "days"),
   },
   {
     cli: "verify-provenance",
     key: "verifyProvenance",
     section: "Updates",
-    describe:
-      "Verify `agent update` downloads against the release's Sigstore build-provenance attestation (bool)",
+    describe: "Verify `agent update` downloads against Sigstore provenance",
     ...BOOL_DOMAIN,
     defaultValue: true,
     applyHint:
@@ -722,8 +702,7 @@ const CONFIG_REGISTRY_LITERAL = [
     cli: "wire-mcp",
     key: "wireMcp",
     section: "Claude",
-    describe:
-      "Wire the copilot-env MCP server (web_search) and the WebSearch deny into Claude on direct writes (bool)",
+    describe: "Wire the copilot-env MCP server + WebSearch deny on direct writes",
     ...BOOL_DOMAIN,
     defaultValue: true,
     applyHint: "Applies at the next `agent claude`/`agent init` direct wiring.",
@@ -791,9 +770,9 @@ export function configKeyDef(cli: string): ConfigKeyDef | undefined {
   return CONFIG_REGISTRY.find((d) => d.cli === cli.trim());
 }
 
-/** The registry's built-in numeric default for `cli` (`defaultValue`, else `proxyDefault` --
- *  the same resolution the rendered label uses), for the CopilotEnvConfig accessors that
- *  apply it. A missing or non-numeric entry is a programmer error. */
+/** The registry's built-in numeric default for `cli` (configDefaultValue's resolution), for
+ *  the CopilotEnvConfig accessors that apply it. A missing or non-numeric entry is a
+ *  programmer error. */
 export function configDefaultNumber(cli: ConfigCli): number {
   const def = configKeyDef(cli);
   const value = def?.defaultValue ?? def?.proxyDefault;
@@ -874,20 +853,20 @@ export function projectedProxyConfig(
   return out;
 }
 
-/** A help block listing every config key under its section (CONFIG_SECTIONS order, registry
- *  order within a section) with its built-in default, then its description. Column widths
- *  are shared across sections so the keys line up as one list. */
-export function configKeysHelp(): string {
-  const cliWidth = CONFIG_REGISTRY.reduce((m, d) => Math.max(m, d.cli.length), 0);
-  const defaultOf = (d: ConfigKeyDef) => `default: ${configDefaultLabel(d)}`;
-  const defWidth = CONFIG_REGISTRY.reduce((m, d) => Math.max(m, defaultOf(d).length), 0);
-  const row = (d: ConfigKeyDef) =>
-    `  ${d.cli.padEnd(cliWidth)}  ${defaultOf(d).padEnd(defWidth)}  ${d.describe}`;
-  const blocks = CONFIG_SECTIONS.map((section) => {
-    const rows = CONFIG_REGISTRY.filter((d) => d.section === section).map(row);
-    return `${section}:\n${rows.join("\n")}`;
-  });
-  return blocks.join("\n\n");
+/** How a stored value prints (`--set`'s echo, `--get <key>`, the table). */
+export function formatConfigValue(value: ConfigValue): string {
+  return String(value);
+}
+
+/** Whether `def`'s stored value is INERT on `platform`: a POSIX-only key's stored value (an
+ *  imported bundle's) does nothing on Windows -- every read site sees the built-in default
+ *  there. The table and `--get <key>` name such a value instead of hiding it. */
+export function isStoredValueInert(
+  def: ConfigKeyDef,
+  data: CopilotEnvConfigData,
+  platform: NodeJS.Platform,
+): boolean {
+  return def.posixOnly === true && platform === "win32" && data[def.key] !== undefined;
 }
 
 /**

@@ -5,4 +5,4 @@
 # An optional `mirrors` list declares byte copies of rendered files
 # (repo-platform's docs/new-repo.md has the contract).
 
-modules: ["agents", "deno", "release-please", "issue-templates", "pr-title", "auto-assign", "settings-sync", "custom-license"]
+modules: ["deno", "release-please", "issue-templates", "pr-title", "custom-license"]

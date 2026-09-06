@@ -1,14 +1,18 @@
 // The metrics job's smokes. The base-vs-head decision: payloads equal once the run-only
 // `runtime` key is dropped and keys are sorted at every level report a match; a changed
 // cost reports DIFFERS with its diff, once a base re-run confirmed the base did not move.
-// And the comment's table: a row per measure with base, head, and the head's delta.
+// The comment's table: a row per measure with base, head, and the head's delta. And the
+// verdict step: the recorded verdict is the job's exit status.
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   classifyPayloads,
   comparable,
   deltaCell,
   renderWindowTable,
 } from "../.github/scripts/cost-metrics.ts";
-import { expect, test } from "./helpers/testing.ts";
+import { ROOT, runSync } from "./helpers/run.ts";
+import { expect, tempDir, test } from "./helpers/testing.ts";
 
 const BASE = {
   dbCount: 0,
@@ -88,4 +92,17 @@ test("the window table has a row per measure with base, head, and a signed delta
   // A percent that rounds to zero keeps a plus; a zero base gets the delta without a percent.
   expect(deltaCell(9999, 10000, " ms")).toBe("-1 ms (+0.0%)");
   expect(deltaCell(0, 0, "")).toBe("+0");
+});
+
+test("the verdict step exits 1 on a recorded differs and 0 on a match", () => {
+  const script = join(ROOT, ".github", "scripts", "cost-metrics.ts");
+  const verdict = (recorded: string) => {
+    const dir = tempDir("cost-metrics-verdict-");
+    writeFileSync(join(dir, "verdict"), `${recorded}\n`);
+    return runSync(Deno.execPath(), ["run", "--allow-read", script, "verdict", "--in", dir]);
+  };
+  expect(verdict("match").exitCode).toBe(0);
+  const differs = verdict("differs");
+  expect(differs.exitCode).toBe(1);
+  expect(differs.stderr).toContain("cost JSON differs from the base commit");
 });

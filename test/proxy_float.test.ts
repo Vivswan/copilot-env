@@ -58,9 +58,10 @@ const CONFIG: ProjectConfig = {
 
 const MIN_RELEASE_AGE_ENV = "COPILOT_API_MIN_RELEASE_AGE";
 const VERSION_ENV = "COPILOT_API_VERSION";
+const ENTRY_ENV = "COPILOT_API_ENTRY";
 
 let dir = "";
-const restoreEnv = envSnapshot([MIN_RELEASE_AGE_ENV]);
+const restoreEnv = envSnapshot([MIN_RELEASE_AGE_ENV, VERSION_ENV, ENTRY_ENV]);
 
 function isoDaysAgo(days: number): string {
   return new Date(NOW_MS - days * MILLISECONDS_PER_DAY).toISOString();
@@ -201,6 +202,7 @@ beforeEach(() => {
   dir = isolateProxyHome("copilot-float-");
   delete process.env[MIN_RELEASE_AGE_ENV];
   delete process.env[VERSION_ENV];
+  delete process.env[ENTRY_ENV];
 });
 
 test("nextProxyVersion: the override is unknowable, a record wins, else the checkout's copy", () => {
@@ -214,12 +216,17 @@ test("nextProxyVersion: the override is unknowable, a record wins, else the chec
   const recordBefore = readFileSync(resolvedVersionFile(dir), "utf8");
   expect(nextProxyVersion(dir)).toBe("1.99.0");
   expect(readFileSync(resolvedVersionFile(dir), "utf8")).toBe(recordBefore);
-  process.env.COPILOT_API_ENTRY = join(dir, "fake-proxy.mjs");
-  try {
-    expect(nextProxyVersion(dir)).toBeNull();
-  } finally {
-    delete process.env.COPILOT_API_ENTRY;
-  }
+  process.env[ENTRY_ENV] = join(dir, "fake-proxy.mjs");
+  expect(nextProxyVersion(dir)).toBeNull();
+});
+
+test("nextProxyVersion: a pin the record does not match is unknowable until the next start resolves it", () => {
+  seedFloat("1.16.3", NOW_MS);
+  const config = new CopilotEnvConfig();
+  config.set({ proxyVersion: "1.14.21" });
+  expect(nextProxyVersion(dir)).toBeNull();
+  config.set({ proxyVersion: "1.16.3" });
+  expect(nextProxyVersion(dir)).toBe("1.16.3");
 });
 
 afterEach(() => {

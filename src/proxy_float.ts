@@ -428,12 +428,17 @@ export function readResolvedVersionRecord(rootHome: string): ResolvedVersionReco
 
 /** The proxy version the NEXT daemon launch runs, in the entry's own precedence (see
  *  resolveCopilotApiEntry): the float's recorded resolution, else the checkout's node_modules
- *  copy; null when it cannot be known (nothing resolved or installed, or a COPILOT_API_ENTRY
- *  file override). Read-only, unlike the entry resolution, which may write the daemon config:
- *  what a version gate on a read path (`agent config`) judges against. */
+ *  copy; null when it cannot be known: a COPILOT_API_ENTRY file override, nothing resolved or
+ *  installed, or a version pin (env or `proxy-version`) the record does not match, since the
+ *  next start resolves the pin (a tag, an uncached version) rather than run the record.
+ *  Read-only, unlike the entry resolution, which may write the daemon config: what a version
+ *  gate on a read path (`agent config`) judges against. */
 export function nextProxyVersion(rootHome: string = resolveRootHome()): string | null {
   if (process.env.COPILOT_API_ENTRY?.trim()) return null;
-  return readResolvedVersionRecord(rootHome)?.version ?? installedProxyVersion();
+  const recorded = readResolvedVersionRecord(rootHome)?.version;
+  const pin = resolveProxyVersionOverride();
+  if (pin !== undefined && pin !== recorded) return null;
+  return recorded ?? installedProxyVersion();
 }
 
 /** Atomically (tmp+rename) write the record for a just-verified cache entry.

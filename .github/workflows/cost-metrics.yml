@@ -68,11 +68,12 @@ jobs:
           deno run --allow-read --allow-write --allow-env --allow-run=git,deno
           .github/scripts/cost-metrics.ts measure --out "$RUNNER_TEMP/cost-metrics"
 
-      # A fork's or Dependabot's PR runs with a read-only token that cannot post, so the
-      # step is skipped there: the verdict below is the gate and the body is already in the
-      # log and the step summary. Any other failure to post fails the job.
+      # A fork's PR, or one Dependabot opened (whoever re-triggers it), runs with a read-only
+      # token that cannot post, so the step is skipped there: the verdict below is the gate
+      # and the body is already in the log and the step summary. Any other failure to post
+      # fails the job.
       - name: Post the sticky PR comment
-        if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
+        if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]'
         uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
           header: cost-metrics

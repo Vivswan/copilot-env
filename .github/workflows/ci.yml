@@ -45,7 +45,7 @@ jobs:
       issues: read
       vulnerability-alerts: read
     with:
-      modules: '["agents", "deno", "release-please", "issue-templates", "pr-title", "auto-assign", "settings-sync", "custom-license"]'
+      modules: '["deno", "release-please", "issue-templates", "pr-title", "custom-license"]'
       private: false
       codeql-languages: '["javascript-typescript"]'
 

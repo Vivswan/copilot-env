@@ -413,12 +413,17 @@ describe("installer checkout guard refuses before mutating, proceeds on legacy r
       // names its own writes) can: the installer must say so itself, on stderr.
       const downloadDir = makeDownloadDir();
       const parent = tempDir("ce-guard-fresh-");
-      const root = join(parent, "copilot-env");
+      // Two levels deep: the missing ancestor is created too, and named before the root.
+      const root = join(parent, "nested", "copilot-env");
       try {
         const res = runInstaller(root, downloadDir);
         const why = evidence(res, root);
         expect(res.exitCode, why).toBe(0);
-        expect(res.stderr.split(/\r?\n/), why).toContain(`created -> ${root}`);
+        const created = res.stderr.split(/\r?\n/).filter((l) => l.startsWith("created -> "));
+        expect(created, why).toEqual([
+          `created -> ${join(parent, "nested")}`,
+          `created -> ${root}`,
+        ]);
         // Control: a pre-existing root is not announced as created.
         const again = runInstaller(root, downloadDir);
         expect(again.exitCode, evidence(again, root)).toBe(0);

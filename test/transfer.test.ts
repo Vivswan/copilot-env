@@ -20,6 +20,7 @@ import {
   parseSettingsBundle,
   planImport,
   REDACTED_TOKEN,
+  rollbackCommand,
   SETTINGS_BACKUP_KEEP,
   settingsBackupDir,
 } from "../src/agents/transfer.ts";
@@ -975,7 +976,9 @@ test("import backs up the previous settings with credentials intact, and the bac
   new CopilotEnvConfig().set({ autoStart: false, port: 6060 });
   new Credential().store("gh-token", "ghp_before_import");
 
-  await runSettings({ importFrom: exported, force: true }, { catalogDeps: NOOP_CATALOG_DEPS });
+  const imported = await captureStderr(() =>
+    runSettings({ importFrom: exported, force: true }, { catalogDeps: NOOP_CATALOG_DEPS })
+  );
   expect(new CopilotEnvConfig().read().port).toBe(5050);
   expect(new Credential().resolve()).toBe("ghp_default");
 
@@ -983,6 +986,9 @@ test("import backs up the previous settings with credentials intact, and the bac
   const backups = readdirSync(settingsBackupDir());
   expect(backups.length).toBe(1);
   const backupFile = join(settingsBackupDir(), backups[0] ?? "");
+  // The backup is inside the data home (its write is silent), so the import must say the
+  // rollback command itself, path included.
+  expect(imported).toContain(`Roll back with: ${rollbackCommand(backupFile)}`);
   const backupDoc = JSON.parse(readFileSync(backupFile, "utf8"));
   expect(backupDoc.credential.githubToken).toBe("ghp_before_import");
   expect(backupDoc.config).toEqual({ autoStart: false, port: 6060, claudeTokenMultiplier: 2.5 });

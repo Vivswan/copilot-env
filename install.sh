@@ -272,11 +272,23 @@ _line="$(awk -v name="$ASSET" '$2 == name || $2 == ("*" name) { print }' "$_tmp/
 [ -n "$_line" ] || die "checksums.txt has no entry for $ASSET."
 sha256_check_line "$_tmp" "$_line" || die "SHA256 verification failed for $ASSET."
 
-# The install root is created here, before the binary that names its own writes
-# exists: say so in the same shape it will (stderr, "created -> <path>").
-if [ ! -d "$INSTALL_DIR" ]; then
+# The install root (and any missing ancestor a nested --dir needs) is created here,
+# before the binary that names its own writes exists: say so in the same shape it
+# will (stderr, "created -> <path>"), outermost first.
+_missing=""
+_probe="$INSTALL_DIR"
+while [ ! -e "$_probe" ]; do
+    _missing="$_probe${_missing:+
+$_missing}"
+    _parent=$(dirname "$_probe")
+    [ "$_parent" = "$_probe" ] && break
+    _probe="$_parent"
+done
+if [ -n "$_missing" ]; then
     mkdir -p "$INSTALL_DIR"
-    echo "created -> $INSTALL_DIR" >&2
+    printf '%s\n' "$_missing" | while IFS= read -r _made; do
+        echo "created -> $_made" >&2
+    done
 fi
 mkdir -p "$INSTALL_DIR/bin"
 # mv (rename) rather than cp: replacing a running copilot-env binary in place would

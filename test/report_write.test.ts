@@ -130,7 +130,10 @@ const CONTRACTS: ContractCase[] = [
       atomicWriteFile(join(dir, "secret"), "new", 0o600);
       expect(statSync(join(dir, "secret")).mode & 0o777).toBe(0o600);
     },
-    lines: (dir) => [`created -> ${join(dir, "secret")}`],
+    lines: (dir) => [
+      `deleted -> ${join(dir, `secret.tmp.${process.pid}`)} (stale temp file)`,
+      `created -> ${join(dir, "secret")}`,
+    ],
   },
 ];
 

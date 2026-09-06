@@ -447,9 +447,10 @@ export function atomicWriteFile(
   const was = look(path);
   const tmp = join(dirname(path), `${basename(path)}.tmp.${process.pid}`);
   // A stale temp (a crashed earlier run under this pid) goes first: `mode` applies only
-  // to a fresh inode, so writing into it would publish its old permissions. Non-recursive,
-  // so a directory at the path still refuses without being touched.
-  rmSync(tmp, { force: true });
+  // to a fresh inode, so writing into it would publish its old permissions. Through the
+  // seam, never silently: with pid reuse the path could be a file the user made. One
+  // entry only, so a directory at the path still refuses without being touched.
+  removeReported(tmp, "stale temp file");
   const tmpWas = look(tmp);
   try {
     writeFileSync(tmp, text, mode === undefined ? undefined : { mode });

@@ -229,10 +229,10 @@ async function runImport(
   const [restartHint, ...projectionWarnings] = importRestartHints(bundle.config, preImportPrefs);
   if (restartHint !== undefined) logger.info(restartHint);
   for (const warning of projectionWarnings) logger.warn(warning);
-  // The backup's own write line named the file and the rollback command; the scope of a
-  // rollback is the one thing left to say.
+  // The backup lives inside copilot-env's own home, where writes are silent bookkeeping,
+  // so the rollback command (with the backup's path) is said here in full.
   if (backupPath !== null) {
-    logger.log(`  Roll back by importing the backup named above ${ROLLBACK_SCOPE_NOTE}.`);
+    logger.log(`  Roll back with: ${rollbackCommand(backupPath)} ${ROLLBACK_SCOPE_NOTE}.`);
   }
 }
 

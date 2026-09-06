@@ -543,6 +543,7 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   const { proxyHome, claudeHome, codexHome } = tmpHomes();
   mkdirSync(claudeHome, { recursive: true });
   configureClaudeConfig(claudeHome, { mode: "direct" });
+  expect(registerClaudeMcpServer()).toBe(true); // our MCP entry is in .claude.json
   // A named profile with a daemon home, so the profile step has a tree to delete.
   new CopilotEnvState().commitProfile(WORK, {
     credential: { kind: "stored", provider: "gh-token", token: "ghp_work" },
@@ -609,6 +610,10 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   expect(ctx.targets.desktop.staleClaims).toEqual([join(library, "gone.json")]);
   expect(ctx.targets.shellFiles).toEqual([rc]);
   expect(ctx.targets.codexEnvTokenFiles.get(codexHome)).toBe(codexEnv);
+  // The MCP registration file follows CLAUDE_CONFIG_DIR (the isolated home), and holds
+  // our entry, so the plan names the rewrite.
+  expect(claudeJsonPath()).toBe(join(claudeHome, ".claude.json"));
+  expect(ctx.targets.claudeMcpRegistration).toBe(claudeJsonPath());
   const metaPath = join(library, "_meta.json");
   expect(ctx.targets.desktop.metaRewrite).toBe(metaPath);
   expect(ctx.targets.claudeDefaultHelpers).toEqual([defaultLegacyHelper]);
@@ -652,6 +657,12 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   );
   expect(rewritten.has(codexEnv)).toBe(true);
   expect(rewritten.has(metaPath)).toBe(true);
+  // .claude.json was CREATED in this process (the registration above), so the uninstall's
+  // rewrite is the same per-process fact and prints no second line: the entry being gone,
+  // and the dry run naming the file (below), are the observables.
+  expect(
+    (JSON.parse(readFileSync(claudeJsonPath(), "utf8")) as Record<string, unknown>).mcpServers,
+  ).toBeUndefined();
 
   expect(existsSync(join(library, "late.json"))).toBe(true);
   expect(existsSync(lateHelper)).toBe(true);
@@ -675,6 +686,7 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   expect([...deleted].filter((path) => !named.has(path))).toEqual([]);
   expect([...rewritten].filter((path) => !named.has(path))).toEqual([]);
   expect(named.has(rc)).toBe(true);
+  expect(named.has(claudeJsonPath())).toBe(true);
   const planned = [
     ...ctx.targets.desktop.entries,
     ...ctx.targets.desktop.helpers,

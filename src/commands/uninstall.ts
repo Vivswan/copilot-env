@@ -17,7 +17,11 @@ import {
   listClaudeDesktopOwnedArtifacts,
   removeAllClaudeDesktopWiring,
 } from "../claude/desktop.ts";
-import { removeClaudeMcpRegistration } from "../claude/mcp_registration.ts";
+import {
+  claudeJsonPath,
+  plannedClaudeMcpRemoval,
+  removeClaudeMcpRegistration,
+} from "../claude/mcp_registration.ts";
 import { resolveClaudeHome, settingsPathFor } from "../claude/paths.ts";
 import {
   codexEnvTokenFile,
@@ -144,6 +148,9 @@ export interface UninstallTargets {
   profiles: { name: ProfileName; claudeArtifacts: string[]; home: string }[];
   /** The default wiring's legacy Claude helper files present now. */
   claudeDefaultHelpers: string[];
+  /** Claude's `.claude.json` when it holds our MCP registration (the file the removal
+   *  rewrites), else null. */
+  claudeMcpRegistration: string | null;
   /** Per known Codex home: the `.env` holding the legacy baked token, or null. */
   codexEnvTokenFiles: Map<string, string | null>;
 }
@@ -248,8 +255,10 @@ const UNINSTALL_STEPS: UninstallStep[] = [
     describe: (ctx) => [
       `Would remove the managed Claude wiring at ${settingsPathFor(ctx.claudeHome)}.`,
       ...ctx.targets.claudeDefaultHelpers.map((p) => `Would remove the legacy Claude helper ${p}.`),
-      "Would remove the copilot-env MCP registration from Claude's global ~/.claude.json " +
-      "(kept, with a warning, while an owned WebSearch deny cannot be stripped).",
+      ctx.targets.claudeMcpRegistration === null
+        ? `Would leave ${claudeJsonPath()} alone (no removable copilot-env MCP registration found in it).`
+        : `Would remove the copilot-env MCP registration from ${ctx.targets.claudeMcpRegistration} ` +
+          "(kept, with a warning, while an owned WebSearch deny cannot be stripped).",
     ],
     run: (ctx) => {
       const { ownedDenyRemains } = removeClaudeDefaultWiring(
@@ -261,9 +270,9 @@ const UNINSTALL_STEPS: UninstallStep[] = [
           `the copilot-env WebSearch deny in ${settingsPathFor(ctx.claudeHome)} could not ` +
             "be removed (the file could not be read, parsed, or rewritten); keeping the " +
             "copilot-env MCP registration as its marker (it stops working once copilot-env " +
-            "is gone). Remove the deny by hand, then the copilot-env entry in ~/.claude.json.",
+            `is gone). Remove the deny by hand, then the copilot-env entry in ${claudeJsonPath()}.`,
         );
-      } else {
+      } else if (ctx.targets.claudeMcpRegistration !== null) {
         try {
           removeClaudeMcpRegistration();
         } catch (e) {
@@ -452,6 +461,7 @@ export function resolveUninstallContext(
         home: profileHome(name),
       })),
       claudeDefaultHelpers: claudeDefaultHelperArtifacts(claudeHome),
+      claudeMcpRegistration: plannedClaudeMcpRemoval(),
       codexEnvTokenFiles: new Map(codexHomes.map((home) => [home, codexEnvTokenFile(home)])),
       desktop: listClaudeDesktopOwnedArtifacts(deps.claudeDesktopLibraryDir),
       floatArtifacts: proxyFloatArtifactPaths(rootHome),

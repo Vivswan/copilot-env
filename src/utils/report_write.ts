@@ -73,16 +73,24 @@ export function hideWritesUnder(root: () => string): void {
   INTERNAL_ROOTS.push(root);
 }
 
-/** Whether `path` sits strictly inside one of the registered homes (the home itself is
- *  a path the user sees come and go, so it is not inside). Compared as resolved paths,
+/** Whether `path` sits strictly inside one of the registered homes. A home itself is a
+ *  path the user sees come and go, so it always prints -- even when it is nested inside
+ *  another home (the data home under the install root): the exact match is checked
+ *  against every root before any prefix test. Compared as resolved paths, trailing
+ *  separator dropped so a filesystem root (`/`, `C:\`) prefixes correctly,
  *  case-insensitively on Windows. */
 function insideInternalRoot(path: string): boolean {
+  // Only the platform's own separator is a separator: on POSIX a backslash is a byte
+  // of the name, and stripping it would fold a home onto a sibling's prefix.
+  const trailing = process.platform === "win32" ? /[\\/]+$/ : /\/+$/;
   const fold = (p: string): string => {
-    const r = resolve(p);
+    const r = resolve(p).replace(trailing, "");
     return process.platform === "win32" ? r.toLowerCase() : r;
   };
   const target = fold(path);
-  return INTERNAL_ROOTS.some((root) => target.startsWith(fold(root()) + sep));
+  const roots = INTERNAL_ROOTS.map((root) => fold(root()));
+  if (roots.includes(target)) return false;
+  return roots.some((root) => target.startsWith(root + sep));
 }
 
 /** Non-null while reports are deferred to process exit (deferWriteReports). */

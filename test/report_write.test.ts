@@ -1,10 +1,11 @@
 import { mkdirSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { resolveRootHome } from "../src/copilot_api/paths.ts";
 import {
   atomicWriteFile,
   deferWriteReports,
   flushWriteReports,
+  hideWritesUnder,
   mkdirReported,
   removeScratchDir,
   type ScratchDir,
@@ -209,6 +210,31 @@ test("writes inside copilot-env's own homes print nothing; the same write outsid
       `created -> ${join(home, ".codex")}`,
       `created -> ${codexConfig}`,
     ]);
+    // A home nested inside another (the data home under the install root) still prints
+    // itself: a root is never a descendant, whatever it sits under.
+    const nested = join(rootHome, "data");
+    hideWritesUnder(() => nested);
+    deferWriteReports();
+    mkdirReported(nested);
+    writeFileReported(join(nested, "store.json"), "{}");
+    expect(flushWriteReports()).toEqual([`created -> ${nested}`]);
+    // A registered home spelled with a trailing separator hides its descendants all the
+    // same (the shape a filesystem root resolves to).
+    hideWritesUnder(() => `${join(home, "hidden")}${sep}`);
+    deferWriteReports();
+    mkdirReported(join(home, "hidden", "inner"));
+    expect(flushWriteReports()).toEqual([`created -> ${join(home, "hidden")}`]);
+    // On POSIX a trailing backslash is part of the name, never a separator: a home named
+    // `keep\` hides nothing under its sibling `keep`.
+    if (process.platform !== "win32") {
+      hideWritesUnder(() => join(home, "keep\\"));
+      deferWriteReports();
+      mkdirReported(join(home, "keep", "inner"));
+      expect(flushWriteReports()).toEqual([
+        `created -> ${join(home, "keep")}`,
+        `created -> ${join(home, "keep", "inner")}`,
+      ]);
+    }
   } finally {
     restoreEnv();
     removeDir(home);

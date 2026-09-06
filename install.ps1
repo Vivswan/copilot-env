@@ -256,6 +256,12 @@ try {
         throw "SHA256 verification failed for ${AssetName}: expected $expected, got $actual."
     }
 
+    # The install root is created here, before the binary that names its own writes
+    # exists: say so in the same shape it will (stderr, "created -> <path>").
+    if (-not (Test-Path -LiteralPath $InstallDir -PathType Container)) {
+        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+        [Console]::Error.WriteLine("created -> $InstallDir")
+    }
     $binDir = Join-Path $InstallDir 'bin'
     New-Item -ItemType Directory -Path $binDir -Force | Out-Null
     Move-Item -LiteralPath $binTmp -Destination (Join-Path $binDir $BinaryName) -Force

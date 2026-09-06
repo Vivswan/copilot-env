@@ -1,8 +1,10 @@
 // Deno lint plugin: runtime code may not mutate the filesystem behind the user's back.
 //
-// Every file a command creates, rewrites, deletes, moves or links is named on stderr by
-// the one write-reporting seam (src/utils/report_write.ts). A raw node:fs (or Deno) write
-// anywhere else in src/ is a mutation the seam never sees -- so the ban is on REACHING a
+// Every file a command creates, rewrites, deletes, moves or links outside copilot-env's
+// own homes is named on stderr by the one write-reporting seam (src/utils/report_write.ts;
+// the seam is what decides that a write inside a home is silent bookkeeping). A raw
+// node:fs (or Deno) write anywhere else in src/ is a mutation the seam never sees -- so
+// the ban is on REACHING a
 // write API at all: a named import of one from node:fs / node:fs/promises, a member read
 // of one off a node:fs namespace or default import, a destructure of one, and the Deno
 // namespace's own write calls. Read APIs stay legal everywhere.
@@ -151,8 +153,8 @@ function guarded(filename: string): boolean {
 }
 
 const MESSAGE = "mutate the filesystem through src/utils/report_write.ts (writeFileReported, " +
-  "removeReported, ...) so the write is named on stderr -- a raw write here is one the " +
-  "user never sees";
+  "removeReported, ...) so a write outside copilot-env's own homes is named on stderr -- a " +
+  "raw write here is one the seam never sees";
 
 /** Whether `node` names a node:fs module object: a namespace/default/`promises` import
  *  local, or `<local>.promises` off one. */

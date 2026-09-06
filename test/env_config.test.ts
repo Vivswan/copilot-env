@@ -758,11 +758,13 @@ test("registry defaults are single-sourced: labels derive from the owned default
   );
   expect(configDefaultLabel(configKeyDef("claude-auto-model")!)).toBe("unset (disabled)");
   expect(configDefaultLabel(configKeyDef("claude-token-multiplier")!)).toBe("1.15 (proxy default)");
-  // The composite websearch label's mcp half is owned by web_search.ts (which imports
-  // env_config, so the registry cannot reference it); pin the copy instead.
+  // One default for both web-search surfaces: the hand-written label (the proxy's own
+  // default) must match the MCP tool's DEFAULT_WEB_SEARCH_MODEL, owned by web_search.ts
+  // (which imports env_config, so the registry cannot reference it).
   expect(configDefaultLabel(configKeyDef("message-websearch-model")!)).toBe(
-    `gpt-5-mini (proxy) / ${DEFAULT_WEB_SEARCH_MODEL} (mcp)`,
+    DEFAULT_WEB_SEARCH_MODEL,
   );
+  expect(DEFAULT_WEB_SEARCH_MODEL).toBe("gpt-5-mini");
 });
 
 test("the release-cooldown label tracks the built-in default it describes", () => {

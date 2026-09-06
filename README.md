@@ -147,10 +147,10 @@ agent mcp --remove                  # unregister + restore the builtin + remembe
 agent config --set wire-mcp true    # opt back in (applies on the next direct wiring)
 ```
 
-The search model follows `message-websearch-model` (default `gpt-5.6-sol` on this surface), read on every call - no restart:
+The search model follows `message-websearch-model` (default `gpt-5-mini`, the same default the proxy uses), read on every call - no restart:
 
 ```bash
-agent config --set message-websearch-model gpt-5.6-sol
+agent config --set message-websearch-model gpt-5.6-sol   # one override, both surfaces
 ```
 
 The server is client-agnostic. Register it in Codex, Cursor, or any other MCP client by pointing at the launcher (Codex itself needs no MCP for search - it speaks the Responses API natively):
@@ -211,7 +211,7 @@ agent config --del idle-timeout       # revert one to its default
 | `alpha-search-model`           | `gpt-5-mini` | Native-Responses model for `/alpha/search` (Codex search) when the requested model is Messages-backed and cannot run the search itself. |
 | `claude-auto-model`            | unset        | Model override for Claude Code's background security-monitor requests (unset disables).                                                 |
 | `claude-token-multiplier`      | `1.15`       | Multiplier the proxy applies when estimating Claude token usage.                                                                        |
-| `message-websearch-model`      | per surface  | Web-search model id: the proxy's Messages-API path (default `gpt-5-mini`) and the MCP `web_search` tool (default `gpt-5.6-sol`).        |
+| `message-websearch-model`      | `gpt-5-mini` | Web-search model id for both the proxy's Messages-API path and the MCP `web_search` tool.                                               |
 | `messages-api`                 | `true`       | Proxy Messages-API (Anthropic-shaped) endpoint.                                                                                         |
 | `responses-context-management` | `false`      | Proxy Responses-API server-side context management.                                                                                     |
 | `responses-websearch`          | `true`       | Proxy Responses-API web search.                                                                                                         |

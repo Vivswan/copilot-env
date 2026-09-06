@@ -32,5 +32,5 @@ The server resolves the copilot-env credential (`agent auth`). Without one it re
 
 ## Configuration
 
-- `agent config --set message-websearch-model <id>` picks the search model (read on every call; default `gpt-5.6-sol`).
+- `agent config --set message-websearch-model <id>` picks the search model (read on every call; default `gpt-5-mini`, the same default the proxy uses).
 - `agent mcp --remove` unregisters the server from Claude Code, restores the builtin WebSearch permission, and stores a durable opt-out (`wire-mcp false`).

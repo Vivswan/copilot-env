@@ -576,10 +576,9 @@ const CONFIG_REGISTRY_LITERAL = [
     section: "Proxy features",
     describe: "Model id for web search: the proxy's Messages-API path and the MCP web_search tool",
     ...NON_EMPTY_DOMAIN,
-    // Composite: the proxy half is the proxy's OWN default; the mcp half is
-    // DEFAULT_WEB_SEARCH_MODEL in web_search.ts (which imports this module, so it cannot be
-    // referenced here) -- a registry test pins the label to that constant.
-    defaultLabel: "gpt-5-mini (proxy) / gpt-5.6-sol (mcp)",
+    // The proxy's OWN default, which DEFAULT_WEB_SEARCH_MODEL in web_search.ts matches (that
+    // module imports this one, so it cannot be referenced here); a registry test pins the two.
+    defaultLabel: "gpt-5-mini",
     proxyProjected: true,
     applyHint:
       "Proxy surface applies on the next `agent start`; the MCP web_search tool reads it on every call.",

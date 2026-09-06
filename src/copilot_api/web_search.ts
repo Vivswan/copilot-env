@@ -27,13 +27,12 @@ import { type Profile, profileLabel } from "./profile.ts";
 const logger = createStderrLogger();
 
 /**
- * Built-in default model for THIS surface when `message-websearch-model` is unset.
- * Deliberately different from the proxy's own default for the same stored key
- * (the Messages-API path defaults to a small model inside the proxy); one stored
- * override drives both surfaces. Must remain a RAW catalog id, never an alias:
- * the default path skips alias resolution so it stays fetch-free.
+ * Built-in default model for the MCP web_search tool when `message-websearch-model` is
+ * unset: the same model the proxy itself defaults to on its Messages-API web-search path,
+ * so one stored key and one default drive both surfaces. Must remain a RAW catalog id,
+ * never an alias: the default path skips alias resolution so it stays fetch-free.
  */
-export const DEFAULT_WEB_SEARCH_MODEL = "gpt-5.6-sol";
+export const DEFAULT_WEB_SEARCH_MODEL = "gpt-5-mini";
 
 const WEB_SEARCH_TIMEOUT_MS = 120_000;
 

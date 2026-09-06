@@ -1,6 +1,8 @@
 import { chmodSync } from "node:fs";
 import * as v from "valibot";
 import {
+  configTable,
+  configTableOutput,
   runConfig,
   sinceProxyVersionWarning,
   unreadProjectedKeyWarnings,
@@ -10,12 +12,11 @@ import {
   CONFIG_REGISTRY,
   CONFIG_SECTIONS,
   type ConfigCli,
-  configDefaultLabel,
   configDefaultNumber,
+  configDefaultValue,
   type ConfigKey,
   type ConfigKeyDef,
   configKeyDef,
-  configTable,
   CopilotEnvConfig,
   isProxyProjected,
   OPENROUTER_MODELS_URL,
@@ -26,7 +27,6 @@ import {
 } from "../src/copilot_api/env_config.ts";
 import { DEFAULT_WEB_SEARCH_MODEL } from "../src/copilot_api/web_search.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
-import { DEFAULT_RELEASE_COOLDOWN_SECONDS } from "../src/proxy_float.ts";
 import { SECONDS_PER_DAY } from "../src/utils/time.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers.ts";
@@ -440,7 +440,7 @@ test("codex-host: stored else default, POSIX-only set, and Windows always reads 
   expect(stdoutOf(() => runConfig({ get: "codex-host" }, "win32"))).toBe("false\n");
   // The table is stdout too, and the command hands the renderer the same platform.
   expect(stdoutOf(() => runConfig({ get: true }, "win32"))).toBe(
-    `${configTable(cfg.read(), "win32", process.stdout.columns)}\n`,
+    `${configTableOutput("win32")}\n`,
   );
 });
 
@@ -457,79 +457,108 @@ test("the registry is alphabetical by CLI name with unique storage keys", () => 
   expect(new Set(keys).size).toBe(keys.length);
 });
 
-test("configTable() leads with a header line, then groups the keys under their sections in section then registry order, with value, default, description", () => {
-  // A header block naming the columns, then one block per section: a `<Section>:` heading
-  // line and one two-space-indented row per key. Parsing the output back into blocks pins
-  // association and order, not just presence.
-  const rendered = configTable({ autoStart: true, codexHost: true }, "win32", undefined);
-  const [header = "", ...sectionBlocks] = rendered.split("\n\n");
-  expect(header.replace(/\s+/g, " ").trim()).toBe("key value default description");
-  const blocks = sectionBlocks.map((block) => {
-    const [heading, ...rows] = block.split("\n");
-    return {
-      heading,
-      keys: rows.map((row) => row.match(/^ {2}(\S+) {2}/)?.[1]),
-    };
-  });
-  // A duplicated section name would render its block twice AND duplicate the derived
-  // expectation below, so the union's uniqueness is pinned on its own.
+const PLAIN_TABLE = { platform: "linux", width: 80, daemonUp: false, color: false } as const;
+
+test("configTable() renders the header, the sections, and key=value rows with type, default, and description in one 80-column layout", () => {
+  // Stored: a plain flag, a key applied without the daemon, a POSIX-only key on Windows (inert
+  // there), and the key whose default is a URL too long to share a line with its type.
+  const data = {
+    strictPort: true,
+    launchers: true,
+    codexHost: true,
+    pricingUrl: "https://prices.example/api/v1/models/latest",
+  };
+  const rendered = configTable(data, { ...PLAIN_TABLE, platform: "win32" });
+  const [header = "", ...blocks] = rendered.split("\n\n");
+  expect(header).toBe(
+    `4 of ${CONFIG_REGISTRY.length} keys set (*).  agent config --set <key> <value>  |  --del <key> reverts`,
+  );
+  // One block per section, heading first; a key row is `<mark> key=value...`, a right-column
+  // line is indented past the key=value column. Parsing the rows back pins the grouping and
+  // order (and that every section has keys), not just presence.
   expect(new Set(CONFIG_SECTIONS).size).toBe(CONFIG_SECTIONS.length);
-  expect(blocks.map((b) => b.heading)).toEqual(CONFIG_SECTIONS.map((s) => `${s}:`));
-  expect(blocks.map((b) => b.keys)).toEqual(
+  const rowRe = /^([* ]) (\S+)=/;
+  const parsed = blocks.map((block) => {
+    const [heading = "", ...lines] = block.split("\n");
+    return { heading, keys: lines.flatMap((l) => l.match(rowRe)?.[2] ?? []) };
+  });
+  expect(parsed.map((b) => b.heading)).toEqual(CONFIG_SECTIONS.map((s) => `${s}:`));
+  expect(parsed.map((b) => b.keys)).toEqual(
     CONFIG_SECTIONS.map((s) => CONFIG_REGISTRY.filter((d) => d.section === s).map((d) => d.cli)),
   );
-  // A section with no keys would render as a bare heading: a dead name in the union.
-  for (const b of blocks) expect(b.keys.length).toBeGreaterThan(0);
-  // Column widths are shared across sections AND with the header: every description starts
-  // at the offset the header's `description` does, so the keys read as one list rather than
-  // one table per section.
   const lines = rendered.split("\n");
-  const rowOf = (cli: string): string => {
-    const row = lines.find((l) => l.startsWith(`  ${cli} `));
-    if (row === undefined) throw new Error(`no row for '${cli}'`);
-    return row;
+  const rowAt = (cli: string): number => {
+    const at = lines.findIndex((l) => rowRe.exec(l)?.[2] === cli);
+    if (at < 0) throw new Error(`no row for '${cli}'`);
+    return at;
   };
-  const describeColumn = header.indexOf("description");
+  const row = (cli: string): string => lines[rowAt(cli)] ?? "";
+  // The right column starts where the stored row's `[type]` does, and every type cell in the
+  // table shares that column; nothing runs past the width.
+  const column = row("strict-port").indexOf("[");
+  expect(column).toBeGreaterThan(2);
   for (const def of CONFIG_REGISTRY) {
-    expect(rowOf(def.cli).indexOf(def.describe)).toBe(describeColumn);
+    const typeLine = lines.slice(rowAt(def.cli)).find((l) => l.includes(`[${def.type}]`)) ?? "";
+    expect(typeLine.indexOf("[")).toBe(column);
   }
-  // The value column: a stored value, `-` when unset, and a stored-but-inert value named
-  // with its note (nothing hidden); the bare default and description follow on the same row.
-  const expectRow = (cli: string, value: string): void => {
-    const def = configKeyDef(cli);
-    if (def === undefined) throw new Error(`no config key '${cli}'`);
-    expect(rowOf(cli).replace(/\s+/g, " ").trim()).toBe(
-      `${cli} ${value} ${configDefaultLabel(def)} ${def.describe}`,
-    );
+  // The right column's cells (type, default, inert note) pack to the width like the
+  // description's words; the one line past the cap is a single unbreakable cell wider than
+  // the right column (the URL default), which no rule may split.
+  expect(lines.filter((l) => l.length > PLAIN_TABLE.width)).toEqual([
+    " ".repeat(column) + `default ${OPENROUTER_MODELS_URL}`,
+  ]);
+  // A stored key: the star, the stored value, its type, and its bare default.
+  expect(row("strict-port")).toBe(`* strict-port=true`.padEnd(column) + "[bool] default false");
+  // An unset key shows its built-in default as the value, no star, no `default` cell.
+  expect(row("port")).toBe(`  port=4141`.padEnd(column) + "[1-65535]");
+  // No stored value and no built-in default: `<unset>`.
+  expect(row("claude-auto-model")).toBe(
+    `  claude-auto-model=<unset>`.padEnd(column) + "[model id]",
+  );
+  // A key=value too long for the column keeps its own line; its right column starts below,
+  // and a cell that will not fit beside the type moves down again.
+  const url = rowAt("pricing-url");
+  expect(lines[url]).toBe(`* pricing-url=${data.pricingUrl}`);
+  expect(lines[url + 1]).toBe(" ".repeat(column) + "[url]");
+  expect(lines[url + 2]).toBe(" ".repeat(column) + `default ${OPENROUTER_MODELS_URL}`);
+  // A stored POSIX-only value on Windows is still starred (it IS stored) and named inert, the
+  // note packed onto the next line where it does not fit beside the type and default.
+  expect(row("codex-host")).toBe(`* codex-host=true`.padEnd(column) + "[bool] default false");
+  expect(lines[rowAt("codex-host") + 1]).toBe(" ".repeat(column) + "(inert on this platform)");
+  // The description follows the type line at the column, wrapped on spaces to the width and
+  // re-joining to the registry text; a long one takes more than one line.
+  const describeLines = (cli: string): string[] => {
+    const out: string[] = [];
+    for (const l of lines.slice(rowAt(cli) + 1)) {
+      if (!l.startsWith(" ".repeat(column)) || l.startsWith(" ".repeat(column + 1))) break;
+      out.push(l.slice(column));
+    }
+    // The right column's `[type]` line sits on the row line, or below it for an overflowing
+    // key=value; either way the description is what remains.
+    return out.filter((l) => !l.startsWith("["));
   };
-  expectRow("auto-start", "true");
-  expectRow("port", "-");
-  expectRow("codex-host", "true (inert on win32)");
+  const longest = CONFIG_REGISTRY.reduce((a, b) => a.describe.length > b.describe.length ? a : b);
+  expect(longest.describe.length).toBeGreaterThan(PLAIN_TABLE.width - column);
+  expect(describeLines(longest.cli).length).toBeGreaterThan(1);
+  expect(describeLines(longest.cli).join(" ")).toBe(longest.describe);
+  // With no daemon the restart line never prints; with one, only a stored key the daemon read
+  // at launch (projected or restartToApply) gets it -- not a stored key applied another way.
+  expect(rendered).not.toContain("restart the proxy to apply");
+  const live = configTable(data, { ...PLAIN_TABLE, platform: "win32", daemonUp: true }).split(
+    "\n",
+  );
+  const restartAfter = (cli: string): boolean =>
+    live[live.findIndex((l) => rowRe.exec(l)?.[2] === cli) + 1] ===
+      " ".repeat(column) + "restart the proxy to apply";
+  expect(restartAfter("strict-port")).toBe(true);
+  expect(restartAfter("launchers")).toBe(false);
 });
 
-test("configTable() wraps a description on spaces to the width, continuing at the description column", () => {
-  const unwrapped = configTable({}, "linux", undefined).split("\n");
-  const longest = CONFIG_REGISTRY.reduce((a, b) => a.describe.length > b.describe.length ? a : b);
-  const row = unwrapped.find((l) => l.startsWith(`  ${longest.cli} `));
-  if (row === undefined) throw new Error(`no row for '${longest.cli}'`);
-  const column = row.indexOf(longest.describe);
-  // A width with room for about half the description: the row must break at least once,
-  // on a space, never mid-word, and the pieces read back as the whole description.
-  const width = column + Math.ceil(longest.describe.length / 2);
-  const wrapped = configTable({}, "linux", width).split("\n");
-  const at = wrapped.findIndex((l) => l.startsWith(`  ${longest.cli} `));
-  const first = wrapped[at] ?? "";
-  expect(row.startsWith(`${first} `)).toBe(true);
-  const continuation: string[] = [];
-  for (const l of wrapped.slice(at + 1)) {
-    if (!l.startsWith(" ".repeat(column)) || l[column] === " ") break;
-    continuation.push(l.slice(column));
-  }
-  expect(continuation.length).toBeGreaterThan(0);
-  for (const l of [first, ...continuation.map((c) => " ".repeat(column) + c)]) {
-    expect(l.length).toBeLessThanOrEqual(width);
-  }
-  expect([first.slice(column), ...continuation].join(" ")).toBe(longest.describe);
+test("every registry key carries a type label owned by its value domain", () => {
+  for (const def of CONFIG_REGISTRY) expect(def.type.length).toBeGreaterThan(0);
+  expect(configKeyDef("port")?.type).toBe("1-65535");
+  expect(configKeyDef("idle-timeout")?.type).toBe("seconds");
+  expect(configKeyDef("passthrough")?.type).toBe("auto|on|off");
 });
 
 test("projectedProxyConfig() force-projects the opinionated keys and opt-in keys only when set", () => {
@@ -566,9 +595,7 @@ test("responses-context-management projects to the proxy's NESTED contextManagem
   expect(projected.find((e) => e.path[0] === "contextManagement")?.optIn).toBe(true);
   // The pre-1.14 flat proxy key (still our storage key) is never projected.
   expect(projectedValue(projected, ["useResponsesApiContextManagement"])).toBeUndefined();
-  expect(configDefaultLabel(configKeyDef("responses-context-management")!)).toBe(
-    "false (proxy default)",
-  );
+  expect(configDefaultValue(configKeyDef("responses-context-management")!)).toBe(false);
   // The ownership allowlist is exactly the opt-in entries' paths, set or not.
   expect(optInProxyConfigPaths()).toEqual([
     ["alphaSearchCodexPriority"],
@@ -677,6 +704,7 @@ test("the union rejects sinceProxyVersion on internal (non-projected) entries", 
     key: "autoStart",
     section: "Proxy daemon",
     describe: "bogus",
+    type: "bool",
     schema: v.boolean(),
     parse: () => true,
     defaultValue: false,
@@ -695,6 +723,7 @@ test("the entry type forces a schema matching the key's own value type", () => {
     key: "autoStart",
     section: "Proxy daemon",
     describe: "bogus",
+    type: "bool",
     parse: () => true,
     defaultValue: false,
   };
@@ -708,11 +737,26 @@ test("the entry type forces a schema matching the key's own value type", () => {
     key: "autoStart",
     section: "Proxy daemon",
     describe: "bogus",
+    type: "bool",
     schema: v.number(),
     parse: () => true,
     defaultValue: false,
   };
   expect(mismatched.cli).toBe("bogus");
+  // The default is typed by the key too: the table shows it as the value when unset, so a
+  // default outside the key's domain would print something `--set` could never store.
+  // @ts-expect-error - the default must be the key's own value type
+  const wrongDefault: ConfigKeyDef = {
+    cli: "bogus",
+    key: "autoStart",
+    section: "Proxy daemon",
+    describe: "bogus",
+    type: "bool",
+    schema: v.boolean(),
+    parse: () => true,
+    defaultValue: "yes",
+  };
+  expect(wrongDefault.cli).toBe("bogus");
 });
 
 test("the registry's storage keys are pinned total over CopilotEnvConfigData", () => {
@@ -729,6 +773,7 @@ test("the registry's storage keys are pinned total over CopilotEnvConfigData", (
     key: "bogus",
     section: "Proxy daemon",
     describe: "bogus",
+    type: "bool",
     schema: v.boolean(),
     parse: () => true,
     defaultValue: false,
@@ -758,7 +803,7 @@ test("isProxyProjected marks force + opt-in keys, not copilot-env-internal ones"
   // projected into the proxy) and needs no daemon restart.
   expect(isProxyProjected(configKeyDef("codex-model-catalog")!)).toBe(false);
   expect(configKeyDef("codex-model-catalog")?.restartToApply).toBeUndefined();
-  expect(configDefaultLabel(configKeyDef("codex-model-catalog")!)).toBe("false");
+  expect(configDefaultValue(configKeyDef("codex-model-catalog")!)).toBe(false);
 });
 
 test("claude-desktop is opt-OUT: unset and deleted read enabled, stored false disables", () => {
@@ -774,58 +819,34 @@ test("claude-desktop is opt-OUT: unset and deleted read enabled, stored false di
   expect(cfg.claudeDesktopEnabled()).toBe(true);
 });
 
-test("registry defaults are single-sourced: labels derive from the owned default value", () => {
+test("registry defaults are bare values: what --set stores, or absent when unset is the default", () => {
   for (const def of CONFIG_REGISTRY) {
-    // One source per entry: an owned value (defaultValue or proxyDefault, never both) OR a
-    // hand-written label for defaults owned elsewhere (proxy-internal / composite).
-    const owned = def.defaultValue ?? def.proxyDefault;
-    if (owned !== undefined) {
-      expect(def.defaultValue === undefined || def.proxyDefault === undefined).toBe(true);
-      expect(def.defaultLabel).toBeUndefined();
-      expect(configDefaultLabel(def)).toBe(`${owned}${def.defaultSuffix ?? ""}`);
-    } else {
-      expect(def.defaultLabel).toBeTruthy();
-      expect(def.defaultSuffix).toBeUndefined();
-    }
-    // Every key still renders a non-empty default in `--help` / `--get`.
-    expect(configDefaultLabel(def).length).toBeGreaterThan(0);
+    // One owner per entry: defaultValue (internal, or the proxy's own on an opt-in key) or
+    // proxyDefault (force-projected), never both.
+    expect(def.defaultValue === undefined || def.proxyDefault === undefined).toBe(true);
   }
-
   // The read sites consume the registry's values (via the CopilotEnvConfig accessors), so
   // these pins guard ONE fact each.
   expect(configDefaultNumber("port")).toBe(4141);
   expect(configDefaultNumber("min-port")).toBe(1024);
   expect(configDefaultNumber("max-port")).toBe(65535);
   expect(configDefaultNumber("idle-timeout")).toBe(3600);
-
-  // Rendered labels keep their exact wording (external contract of `--help` / `--get`).
-  expect(configDefaultLabel(configKeyDef("port")!)).toBe("4141 (then next free)");
-  expect(configDefaultLabel(configKeyDef("pricing-url")!)).toBe(OPENROUTER_MODELS_URL);
-  expect(configDefaultLabel(configKeyDef("integration-id")!)).toBe("auto (probe per credential)");
-  expect(configDefaultLabel(configKeyDef("small-model")!)).toBe("gpt-5-mini");
-  expect(configDefaultLabel(configKeyDef("alpha-search-codex-priority")!)).toBe(
-    "true (proxy default)",
-  );
-  expect(configDefaultLabel(configKeyDef("alpha-search-model")!)).toBe(
-    "gpt-5-mini (proxy default)",
-  );
-  expect(configDefaultLabel(configKeyDef("claude-auto-model")!)).toBe("unset (disabled)");
-  expect(configDefaultLabel(configKeyDef("claude-token-multiplier")!)).toBe("1.15 (proxy default)");
-  // One default for both web-search surfaces: the hand-written label (the proxy's own
-  // default) must match the MCP tool's DEFAULT_WEB_SEARCH_MODEL, owned by web_search.ts
-  // (which imports env_config, so the registry cannot reference it).
-  expect(configDefaultLabel(configKeyDef("message-websearch-model")!)).toBe(
+  expect(configDefaultNumber("release-cooldown")).toBe(7 * SECONDS_PER_DAY);
+  expect(configDefaultValue(configKeyDef("pricing-url")!)).toBe(OPENROUTER_MODELS_URL);
+  expect(configDefaultValue(configKeyDef("integration-id")!)).toBe("auto");
+  expect(configDefaultValue(configKeyDef("small-model")!)).toBe("gpt-5-mini");
+  // One default for both web-search surfaces: the proxy's own default must match the MCP
+  // tool's DEFAULT_WEB_SEARCH_MODEL, owned by web_search.ts (which imports env_config, so
+  // the registry cannot reference it).
+  expect(configDefaultValue(configKeyDef("message-websearch-model")!)).toBe(
     DEFAULT_WEB_SEARCH_MODEL,
   );
   expect(DEFAULT_WEB_SEARCH_MODEL).toBe("gpt-5-mini");
-});
-
-test("the release-cooldown label tracks the built-in default it describes", () => {
-  // The one hand-written label with an importable in-repo source of truth: proxy_float.ts
-  // owns the constant but imports env_config, so the registry cannot reference it directly.
-  // Derive the label from the constant here, like the other cross-module literal pins.
-  const days = DEFAULT_RELEASE_COOLDOWN_SECONDS / SECONDS_PER_DAY;
-  expect(configDefaultLabel(configKeyDef("release-cooldown")!)).toBe(`${days} days (built-in)`);
+  // Unset IS the default: a disabled override, a floating pin, and the update cooldown (whose
+  // two read sites apply different defaults: none for `agent update`, 7 days for autoupdate).
+  for (const cli of ["claude-auto-model", "proxy-version", "update-cooldown"] as const) {
+    expect(configDefaultValue(configKeyDef(cli)!)).toBeUndefined();
+  }
 });
 
 // The prefs store's read() is STRICT -- wiring (wire-mcp), the float pin, and the

@@ -18,6 +18,17 @@ import { CopilotEnvRunState } from "./state.ts";
  *  on, so no consumer ever has to handle a tracked-but-portless "up" daemon. */
 export type ProxyStatus = { up: false } | { up: true; port: number };
 
+/** Whether `profile`'s TRACKED daemon pid is alive, from the daemon lock verdict and the pid
+ *  table alone: proxyStatus() minus the async pid classification and the port probe, so a
+ *  synchronous renderer (the `agent config` table's "restart the proxy to apply" line) can
+ *  ask. A false positive here costs a spare hint, never an action. */
+export function trackedDaemonAlive(profile: Profile = null): boolean {
+  const { pid } = CopilotEnvRunState.forProfile(profile).read();
+  if (pid === undefined) return false;
+  const lock = daemonLockVerdict(new CopilotApiPaths(profile).home, pid);
+  return lock === "alive" || (lock === "unproven" && pidAlive(pid));
+}
+
 // Whether OUR proxy for `profile` is genuinely up (and on which recorded port): the tracked,
 // alive copilot-api pid AND the port it actually recorded both confirm it. Reading pid AND port
 // from the SAME run-state snapshot ties the probe to the daemon's real listening port -- so

@@ -140,13 +140,13 @@ test("cli.ts config --set writes only inside the data home, so it names no file"
 test("cli.ts config --help renders the store's CURRENT values: the same table bare config prints", () => {
   // A value stored in this isolated home shows up in `config --help`, and the help's table
   // is byte for byte what bare `config` prints.
-  const env = isolatedEnv();
+  const env = isolatedEnv({ NO_COLOR: "1" });
   expect(runCli(["config", "--set", "strict-port", "true"], { env }).exitCode).toBe(0);
   const table = runCli(["config"], { env });
   const help = runCli(["config", "--help"], { env });
   expect(table.exitCode).toBe(0);
   expect(help.exitCode).toBe(0);
-  expect(table.stdout).toMatch(/^ {2}strict-port\s+true\s+false {2}/m);
+  expect(table.stdout).toMatch(/^\* strict-port=true +\[bool\] default false$/m);
   expect(help.stdout.slice(-table.stdout.length)).toBe(table.stdout);
 });
 

@@ -163,11 +163,14 @@ export interface ProbeDeps {
   proxyCooldownSeconds(): number;
   codexHome(): string;
   codexTokenInEnviron(): boolean;
-  codexDirectAuth(): Promise<CodexDirectAuthFacts>;
+  /** One `gh auth token` probe, pinned to `ghUser`'s account (null = gh's active). */
+  codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFacts>;
   /** True when a GitHub token is provisioned in the store (Direct needs no gh then). */
   storedTokenPresent(): boolean;
   /** The recorded auth provider (`copilot` | `gh-cli` | `gh-token`), or null. */
   authProvider(): AuthProvider | null;
+  /** The default slot's gh-cli account pin, or null (= follow gh's active account). */
+  defaultGhUser(): string | null;
   /** Named profiles: name -> recorded provider + mode + baked direct identity (never tokens). */
   authProfiles(): Record<ProfileName, ProfileAuthFacts>;
   /** The `integration-id` config pin, or null when unset/`auto`. */
@@ -218,17 +221,20 @@ async function proxyIdentity(url: string, timeoutMs: number): Promise<boolean | 
 /** Fold one finished `gh auth token` spawn into the direct-auth facts (exported
  *  for tests): ghAuthVerdict's completed exits prove the verdict; its "unproven"
  *  (a spawn error, the timeout kill -- status null) marks the facts instead of
- *  flattening into a confident authenticated:false. */
+ *  flattening into a confident authenticated:false. `ghUser` records which
+ *  pinned account the probe asked about (absent = gh's active account). */
 export function directAuthFromSpawn(
   command: string,
   result: { status: number | null; error?: unknown },
+  ghUser: string | null = null,
 ): CodexDirectAuthFacts {
+  const pinned = ghUser === null ? {} : { ghUser };
   const verdict = ghAuthVerdict(result);
-  if (verdict === "unproven") return { command, authenticated: false, unproven: true };
-  return { command, authenticated: verdict };
+  if (verdict === "unproven") return { command, authenticated: false, unproven: true, ...pinned };
+  return { command, authenticated: verdict, ...pinned };
 }
 
-function codexDirectAuth(): Promise<CodexDirectAuthFacts> {
+function codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFacts> {
   // findCommand with the failure arm kept: this fact renders auth VERDICTS
   // ("GitHub CLI not found", "not authenticated"), so a look that never ran must
   // arrive marked instead of reading as a proven absence.
@@ -238,18 +244,19 @@ function codexDirectAuth(): Promise<CodexDirectAuthFacts> {
       command: null,
       authenticated: false,
       ...(look.launchFailed ? { unproven: true as const } : {}),
+      ...(ghUser === null ? {} : { ghUser }),
     });
   }
   const command = look.path;
   // Async (non-blocking) so it runs concurrently with the other probes under
   // gatherFacts' Promise.all, instead of freezing the event loop for the whole
   // `gh auth token` call. ghAuthTokenSpawnSpec owns the spawn recipe (resolved path,
-  // gh's bin dir on PATH, the shared timeout). stdio:"ignore" keeps the printed
-  // token out of our process memory. A completed non-zero exit => authenticated:
-  // false; a spawn error or the timeout kill (close with a null code) never
-  // completed the probe, so directAuthFromSpawn marks it unproven instead.
+  // gh's bin dir on PATH, the shared timeout, the account pin). stdio:"ignore"
+  // keeps the printed token out of our process memory. A completed non-zero exit
+  // => authenticated: false; a spawn error or the timeout kill (close with a null
+  // code) never completed the probe, so directAuthFromSpawn marks it unproven instead.
   return new Promise((resolve) => {
-    const s = ghAuthTokenSpawnSpec(command);
+    const s = ghAuthTokenSpawnSpec(command, ghUser);
     const child = spawn(s.file, s.args, {
       stdio: "ignore",
       timeout: s.timeout,
@@ -257,8 +264,11 @@ function codexDirectAuth(): Promise<CodexDirectAuthFacts> {
       shell: s.shell,
       env: s.env,
     });
-    child.on("error", (e) => resolve(directAuthFromSpawn(command, { status: null, error: e })));
-    child.on("close", (code) => resolve(directAuthFromSpawn(command, { status: code })));
+    child.on(
+      "error",
+      (e) => resolve(directAuthFromSpawn(command, { status: null, error: e }, ghUser)),
+    );
+    child.on("close", (code) => resolve(directAuthFromSpawn(command, { status: code }, ghUser)));
   });
 }
 
@@ -405,6 +415,7 @@ export function defaultProbeDeps(): ProbeDeps {
         provider: credentialProvider(slot.credential),
         mode: slot.mode,
         storedToken: slot.credential.kind === "stored",
+        ghUser: slot.credential.kind === "gh-cli" ? slot.credential.ghUser : null,
         integrationIdentity: slot.integrationIdentity,
       };
     },
@@ -428,6 +439,7 @@ export function defaultProbeDeps(): ProbeDeps {
     codexDirectAuth,
     storedTokenPresent: () => new CopilotEnvState().read().githubToken !== null,
     authProvider: () => new CopilotEnvState().read().authProvider,
+    defaultGhUser: () => new CopilotEnvState().read().ghUser,
     authProfiles: () => {
       // Sweep via profileNames() (the store's validated, sorted view), never the raw
       // record: its keys are a trust boundary, and only profileNames() mints the brand.
@@ -730,24 +742,36 @@ export async function gatherFacts(
   const facts: HealthFacts = { profile };
 
   // gh auth backs BOTH Codex and Claude direct mode; probe it at most once per
-  // run, and asynchronously, so the single ~5s `gh auth token` call overlaps with
-  // the other probes under Promise.all instead of serializing into the health
-  // timeout. Both jobs await the same cached promise.
-  let directAuthCache: Promise<CodexDirectAuthFacts> | undefined;
-  const sharedDirectAuth = (): Promise<
-    CodexDirectAuthFacts
-  > => (directAuthCache ??= deps.codexDirectAuth());
+  // run AND per pinned account (a default sweep can cross slots pinned to
+  // different gh accounts), and asynchronously, so each ~5s `gh auth token` call
+  // overlaps with the other probes under Promise.all instead of serializing into
+  // the health timeout. Jobs addressing the same account await the same promise.
+  const directAuthCache = new Map<string | null, Promise<CodexDirectAuthFacts>>();
+  const sharedDirectAuth = (ghUser: string | null): Promise<CodexDirectAuthFacts> => {
+    let probe = directAuthCache.get(ghUser);
+    if (probe === undefined) {
+      probe = deps.codexDirectAuth(ghUser);
+      directAuthCache.set(ghUser, probe);
+    }
+    return probe;
+  };
 
   // The credential the run's Direct wiring resolves: the default store pair, or
   // the narrowed profile's own slot (named profiles never fall back). `mode` is
   // the named slot's recorded wiring mode (null for the default run, where no
   // single mode is recorded). Cached -- several jobs consult it.
   let credentialCache:
-    | { provider: AuthProvider | null; storedToken: boolean; mode: ProfileMode | null }
+    | {
+      provider: AuthProvider | null;
+      storedToken: boolean;
+      ghUser: string | null;
+      mode: ProfileMode | null;
+    }
     | undefined;
   const runCredential = (): {
     provider: AuthProvider | null;
     storedToken: boolean;
+    ghUser: string | null;
     mode: ProfileMode | null;
   } => {
     if (credentialCache === undefined) {
@@ -755,6 +779,7 @@ export async function gatherFacts(
         credentialCache = {
           provider: deps.authProvider(),
           storedToken: deps.storedTokenPresent(),
+          ghUser: deps.defaultGhUser(),
           mode: null,
         };
       } else {
@@ -762,6 +787,7 @@ export async function gatherFacts(
         credentialCache = {
           provider: slot.provider,
           storedToken: slot.storedToken,
+          ghUser: slot.ghUser,
           mode: slot.mode,
         };
       }
@@ -779,13 +805,13 @@ export async function gatherFacts(
   const directAuthFor = async (
     managed: boolean,
   ): Promise<{ directAuth: CodexDirectAuthFacts; noGhNeeded: boolean }> => {
-    const { provider, storedToken } = runCredential();
+    const { provider, storedToken, ghUser } = runCredential();
     const noProbe = { command: null, authenticated: false };
     switch (storedCredentialKind(provider, storedToken)) {
       case "stored":
         return { directAuth: noProbe, noGhNeeded: managed };
       case "gh-cli":
-        return { directAuth: await sharedDirectAuth(), noGhNeeded: false };
+        return { directAuth: await sharedDirectAuth(ghUser), noGhNeeded: false };
       case "none":
         return { directAuth: noProbe, noGhNeeded: false };
     }
@@ -953,7 +979,7 @@ export async function gatherFacts(
         (async () => {
           const slot = deps.profileSlot(profile);
           const gh = storedCredentialKind(slot.provider, slot.storedToken) === "gh-cli"
-            ? await sharedDirectAuth()
+            ? await sharedDirectAuth(slot.ghUser)
             : null;
           facts.profileAuth = {
             name: profile,
@@ -979,7 +1005,7 @@ export async function gatherFacts(
           const provider = deps.authProvider();
           const storedToken = deps.storedTokenPresent();
           const gh = storedCredentialKind(provider, storedToken) === "gh-cli"
-            ? await sharedDirectAuth()
+            ? await sharedDirectAuth(deps.defaultGhUser())
             : null;
           facts.auth = {
             storedToken,

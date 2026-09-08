@@ -74,16 +74,90 @@ export const GH_AUTH_TIMEOUT_MS = 5000;
  * (src/agents/live_probe.ts), and the health probe (health/probe.ts), so the
  * command and its GH_AUTH_TIMEOUT_MS budget never drift between them. Callers
  * pick their own stdio (capture the token vs. keep it out of process memory).
+ * `ghUser` pins the call to that logged-in gh account (`--user`); null follows
+ * gh's active account.
  */
-export function ghAuthTokenSpawnSpec(ghPath: string): {
+export function ghAuthTokenSpawnSpec(ghPath: string, ghUser: string | null = null): GhSpawnSpec {
+  const s = cliSpawn(ghPath, ["auth", "token", ...(ghUser === null ? [] : ["--user", ghUser])]);
+  return { ...s, timeout: GH_AUTH_TIMEOUT_MS, env: childEnvWithPath([dirname(ghPath)]) };
+}
+
+/** The shared spawn shape for the gh recipes above/below. */
+export interface GhSpawnSpec {
   file: string;
   args: string[];
   shell: boolean;
   timeout: number;
   env: Record<string, string>;
-} {
-  const s = cliSpawn(ghPath, ["auth", "token"]);
+}
+
+/**
+ * The recipe for listing gh's logged-in accounts: `gh auth status`, same
+ * resolved-path/PATH/timeout treatment as ghAuthTokenSpawnSpec. Callers capture
+ * BOTH stdout and stderr (older gh wrote the status to stderr).
+ */
+export function ghAuthStatusSpawnSpec(ghPath: string): GhSpawnSpec {
+  const s = cliSpawn(ghPath, ["auth", "status"]);
   return { ...s, timeout: GH_AUTH_TIMEOUT_MS, env: childEnvWithPath([dirname(ghPath)]) };
+}
+
+/** One logged-in gh account as `gh auth status` reports it. */
+export interface GhAccount {
+  host: string;
+  login: string;
+  active: boolean;
+  /** Where gh got the credential: `keyring`, a config path, or an env var name
+   *  like `GH_TOKEN` (blank when gh printed no source parens). */
+  source: string;
+}
+
+/** Whether `gh auth token --user <login>` can serve this account: `--user`
+ *  reads gh's SAVED credentials only, so an env-token login (source GH_TOKEN /
+ *  GITHUB_TOKEN / ...) cannot be pinned -- env auth stays reachable through
+ *  auto (it IS gh's active credential while the var is set). */
+export function ghAccountPinnable(account: GhAccount): boolean {
+  return !/_TOKEN$/.test(account.source);
+}
+
+/**
+ * Parse `gh auth status` text into the logged-in accounts. STRICTLY a
+ * choice-menu input (which accounts exist, which is active) -- never an auth
+ * verdict; those stay with `gh auth token` via ghAuthVerdict. Broken logins
+ * ("Failed to log in ...") deliberately don't match, and unrecognized output
+ * parses as no accounts.
+ */
+export function parseGhAuthStatusAccounts(output: string): GhAccount[] {
+  const accounts: GhAccount[] = [];
+  const seen = new Set<string>();
+  let current: GhAccount | null = null;
+  for (const line of output.split(/\r?\n/)) {
+    const login = line.match(/Logged in to (\S+) account (\S+)(?: \(([^)]*)\))?/);
+    if (login) {
+      // \S+ can't produce an empty capture; the defaults only satisfy the
+      // indexed-access strictness (the source parens are genuinely optional).
+      const [, host = "", name = "", source = ""] = login;
+      current = { host, login: name, active: false, source };
+      // Dedup EXACT repeats only (host+login+source): gh lists an env-token
+      // login before the saved accounts, and the same login can appear under
+      // both sources -- collapsing those would drop the pinnable saved entry.
+      const key = `${host}|${name}|${source}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        accounts.push(current);
+      }
+      continue;
+    }
+    // A broken login starts its own block, in either of gh's wordings (`...
+    // account <login> (keyring)` / `... using token (GH_ENTERPRISE_TOKEN)`):
+    // without this reset, ITS "Active account: true" line would mark the last
+    // healthy account.
+    if (/Failed to log in to /.test(line)) {
+      current = null;
+      continue;
+    }
+    if (current !== null && /Active account:\s*true/.test(line)) current.active = true;
+  }
+  return accounts;
 }
 
 /** Verdict over a finished `gh auth token` spawn (exported for tests): exit 0

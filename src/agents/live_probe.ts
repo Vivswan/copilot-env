@@ -16,6 +16,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { settingsPathFor } from "../claude/paths.ts";
+import { Credential } from "../copilot_api/credential.ts";
 import { ghAuthTokenSpawnSpec, ghAuthVerdict } from "../copilot_api/gh_cli.ts";
 import type { Profile } from "../copilot_api/profile.ts";
 import { childEnvWithPath, cliSpawn, type CommandLook, findCommand } from "../utils/command.ts";
@@ -146,9 +147,10 @@ export interface ProbeOutcome {
 export interface DirectProbeDeps {
   /** Look for a CLI binary on PATH / via nvm, failure arm kept (see CommandLook). */
   findCommand?: (cmd: string) => CommandLook;
-  /** Whether `gh auth token` succeeds -- given gh's RESOLVED path (nvm-safe).
+  /** Whether `gh auth token` succeeds for the DEFAULT credential's account pin
+   *  (null = gh's active account) -- given gh's RESOLVED path (nvm-safe).
    *  "unproven" = the spawn never completed, so auth was never actually checked. */
-  ghAuthOk?: (ghPath: string) => boolean | "unproven";
+  ghAuthOk?: (ghPath: string, ghUser: string | null) => boolean | "unproven";
   /** Run the agent CLI's read-only smoke prompt at its RESOLVED path (ok = exit 0). */
   runProbe?: (cliPath: string, args: string[], env: Record<string, string>) => ProbeOutcome;
   /** Extra live-call retries on failure (default DEFAULT_PROBE_RETRIES). */
@@ -157,8 +159,8 @@ export interface DirectProbeDeps {
   retryDelayMs?: number;
 }
 
-function defaultGhAuthOk(ghPath: string): boolean | "unproven" {
-  const s = ghAuthTokenSpawnSpec(ghPath);
+function defaultGhAuthOk(ghPath: string, ghUser: string | null): boolean | "unproven" {
+  const s = ghAuthTokenSpawnSpec(ghPath, ghUser);
   const result = spawnSync(s.file, s.args, {
     stdio: "ignore",
     timeout: s.timeout,
@@ -301,7 +303,14 @@ export function probeDirectWorks(
   }
   const ghPath = ghLook.path;
   logger.log("    • checking gh authentication ...");
-  const ghAuth = ghAuthOk(ghPath);
+  // The detect probe wires the DEFAULT profile, so the cheap gate checks the
+  // default credential's own account pin (null = gh's active account) -- a
+  // pinned account must not read green off whichever account happens to be
+  // active. The smoke prompt below exercises the pin end-to-end regardless
+  // (its config resolves via `agent auth --get`).
+  const defaultCredential = new Credential().read();
+  const ghUser = defaultCredential.kind === "gh-cli" ? defaultCredential.ghUser : null;
+  const ghAuth = ghAuthOk(ghPath, ghUser);
   if (ghAuth === "unproven") {
     logger.log(
       "    • could not check gh authentication (`gh auth token` did not run to completion) → using the local proxy",
@@ -309,7 +318,11 @@ export function probeDirectWorks(
     return false;
   }
   if (!ghAuth) {
-    logger.log("    • gh is not authenticated (run `gh auth login`) → using the local proxy");
+    logger.log(
+      ghUser === null
+        ? "    • gh is not authenticated (run `gh auth login`) → using the local proxy"
+        : `    • gh is not authenticated as account '${ghUser}' (run \`gh auth login\`) → using the local proxy`,
+    );
     return false;
   }
   logger.log(

@@ -17,7 +17,13 @@ import {
   type StoredCredential,
   type TokenProvider,
 } from "./env_state.ts";
-import { ghAuthTokenSpawnSpec, ghAuthVerdict } from "./gh_cli.ts";
+import {
+  type GhAccount,
+  ghAuthStatusSpawnSpec,
+  ghAuthTokenSpawnSpec,
+  ghAuthVerdict,
+  parseGhAuthStatusAccounts,
+} from "./gh_cli.ts";
 import { CopilotApiPaths } from "./paths.ts";
 import type { Profile } from "./profile.ts";
 
@@ -56,13 +62,14 @@ export function ghTokenLookFromSpawn(
   return { token: (result.stdout ?? "").trim() || null };
 }
 
-/** Run `gh auth token` (nvm-safe) with the failure arm kept (see GhTokenLook). */
-export function ghAuthTokenLook(): GhTokenLook {
+/** Run `gh auth token` (nvm-safe) with the failure arm kept (see GhTokenLook).
+ *  `ghUser` pins the call to that gh account (`--user`); null = the active one. */
+export function ghAuthTokenLook(ghUser: string | null = null): GhTokenLook {
   const gh = findCommand("gh");
   if (gh.path === null) {
     return gh.launchFailed ? { token: null, unproven: true } : { token: null };
   }
-  const s = ghAuthTokenSpawnSpec(gh.path);
+  const s = ghAuthTokenSpawnSpec(gh.path, ghUser);
   const result = spawnSync(s.file, s.args, {
     encoding: "utf8",
     timeout: s.timeout,
@@ -82,8 +89,52 @@ export function ghAuthTokenLook(): GhTokenLook {
  * authenticated", `gh auth login` advice) goes through ghAuthTokenLook and
  * treats the mark honestly.
  */
-export function ghAuthToken(): string | null {
-  return ghAuthTokenLook().token;
+export function ghAuthToken(ghUser: string | null = null): string | null {
+  return ghAuthTokenLook(ghUser).token;
+}
+
+/** One look for the machine's logged-in gh accounts, failure arm kept like
+ *  GhTokenLook: `unproven` means the look never RAN to completion. STRICTLY a
+ *  choice-menu input (does the user have accounts to pick between?) -- never an
+ *  auth verdict, so every consumer degrades an unproven/empty look to "follow
+ *  gh's active account" (today's behavior) instead of rendering advice off it. */
+export interface GhAccountsLook {
+  accounts: GhAccount[];
+  unproven?: true;
+}
+
+/** Pure fold of a finished `gh auth status` capture spawn into a GhAccountsLook
+ *  (exported for tests). ANY completed exit parses the output -- `gh auth
+ *  status` exits non-zero when one account's login is broken but still lists the
+ *  healthy ones -- and stdout+stderr are merged (older gh wrote to stderr). */
+export function ghAccountsLookFromSpawn(
+  result: {
+    status: number | null;
+    error?: unknown;
+    stdout?: string | null;
+    stderr?: string | null;
+  },
+): GhAccountsLook {
+  if (ghAuthVerdict(result) === "unproven") return { accounts: [], unproven: true };
+  return { accounts: parseGhAuthStatusAccounts(`${result.stdout ?? ""}\n${result.stderr ?? ""}`) };
+}
+
+/** Run `gh auth status` (nvm-safe) and list the logged-in accounts, failure arm
+ *  kept (see GhAccountsLook). */
+export function ghAccountsLook(): GhAccountsLook {
+  const gh = findCommand("gh");
+  if (gh.path === null) {
+    return gh.launchFailed ? { accounts: [], unproven: true } : { accounts: [] };
+  }
+  const s = ghAuthStatusSpawnSpec(gh.path);
+  const result = spawnSync(s.file, s.args, {
+    encoding: "utf8",
+    timeout: s.timeout,
+    windowsHide: true,
+    shell: s.shell,
+    env: s.env,
+  });
+  return ghAccountsLookFromSpawn(result);
 }
 
 /**
@@ -125,16 +176,18 @@ export class Credential {
    *
    * `gh` substitutes the gh-cli probe: batch callers (the settings-bundle
    * import resolves many slots in one run) pass a memoized wrapper so the
-   * subprocess spawns once, not per slot. Resolution stays provider-driven
-   * either way -- the parameter never changes WHICH source is consulted.
+   * subprocess spawns once per pinned account, not per slot. Resolution stays
+   * provider-driven either way -- the parameter never changes WHICH source is
+   * consulted, and the slot's recorded account pin (null = gh's active account)
+   * is always what the probe receives.
    */
-  resolve(gh: () => string | null = ghAuthToken): string | null {
+  resolve(gh: (ghUser: string | null) => string | null = ghAuthToken): string | null {
     const credential = this.read();
     switch (credential.kind) {
       case "stored":
         return credential.token;
       case "gh-cli":
-        return gh();
+        return gh(credential.ghUser);
       case "none":
         return null;
     }
@@ -168,9 +221,11 @@ export class Credential {
     this.record({ kind: "stored", provider, token });
   }
 
-  /** Record `gh-cli`: rely on the machine's `gh` login, hold no token of our own. */
-  useGhCli(): void {
-    this.record({ kind: "gh-cli" });
+  /** Record `gh-cli`: rely on the machine's `gh` login, hold no token of our own.
+   *  `ghUser` pins the slot to that logged-in gh account; null follows gh's
+   *  active account at every resolve. */
+  useGhCli(ghUser: string | null = null): void {
+    this.record({ kind: "gh-cli", ghUser });
   }
 
   /**

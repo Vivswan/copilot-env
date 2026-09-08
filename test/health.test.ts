@@ -148,6 +148,7 @@ function profileTarget(name: string, overrides: TargetOverrides = {}): RuntimeTa
       provider: null,
       mode: "proxy",
       storedToken: false,
+      ghUser: null,
       integrationIdentity: null,
     },
     homeExists: true,
@@ -1382,6 +1383,17 @@ test("directAuthFromSpawn: completed exits prove the verdict; error/kill stays u
     command: "/bin/gh",
     authenticated: false,
     unproven: true,
+  });
+  // The account pin travels on the fact (so the check can name it); auto adds
+  // nothing, keeping the pre-pin fact shape byte-identical.
+  expect(directAuthFromSpawn("/bin/gh", { status: 1 }, "work-bot")).toEqual({
+    command: "/bin/gh",
+    authenticated: false,
+    ghUser: "work-bot",
+  });
+  expect(directAuthFromSpawn("/bin/gh", { status: 0 }, null)).toEqual({
+    command: "/bin/gh",
+    authenticated: true,
   });
 });
 

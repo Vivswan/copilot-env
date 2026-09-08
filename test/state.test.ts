@@ -88,6 +88,7 @@ test("the auth provider round-trips and clears alongside the token", () => {
   expect(state.read()).toEqual({
     githubToken: null,
     authProvider: null,
+    ghUser: null,
     profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogCodexVersion: null,
@@ -129,7 +130,7 @@ test("the default slot's integrationIdentity is a credential-derived cache like 
   expect(state.readProfileSlot(null).integrationIdentity).toBe("copilot-developer-cli");
 
   // Re-auth invalidates the derived identity, exactly like a named slot.
-  state.setCredential(null, { kind: "gh-cli" });
+  state.setCredential(null, { kind: "gh-cli", ghUser: null });
   expect(state.readProfileSlot(null).integrationIdentity).toBeNull();
 });
 
@@ -143,10 +144,10 @@ test("recordDefaultMode records the agreed default wiring and clears on divergen
 
   // With a credential recorded too, the default slot parses complete -- the
   // same completeness rule as a named profile.
-  state.setCredential(null, { kind: "gh-cli" });
+  state.setCredential(null, { kind: "gh-cli", ghUser: null });
   expect(state.readProfileSlot(null)).toEqual({
     kind: "complete",
-    credential: { kind: "gh-cli" },
+    credential: { kind: "gh-cli", ghUser: null },
     mode: "proxy",
     integrationIdentity: null,
   });
@@ -154,7 +155,7 @@ test("recordDefaultMode records the agreed default wiring and clears on divergen
   // Divergent (or unreadable) agent wiring clears the record; the credential stays.
   state.recordDefaultMode(null);
   expect(state.readProfileSlot(null).mode).toBeNull();
-  expect(state.readCredential(null)).toEqual({ kind: "gh-cli" });
+  expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
 
   // Clearing on an empty store neither creates the slot nor the profiles map.
   state.clearCredential(null);
@@ -165,7 +166,7 @@ test("recordDefaultMode records the agreed default wiring and clears on divergen
 test("the reserved default slot never surfaces as a named profile", () => {
   tmpHome();
   const state = new CopilotEnvState();
-  state.setCredential(null, { kind: "gh-cli" });
+  state.setCredential(null, { kind: "gh-cli", ghUser: null });
   state.recordDefaultMode("direct");
   expect(state.profileNames()).toEqual([]);
 });
@@ -264,7 +265,7 @@ test("setCredential on an unknown named profile errors instead of creating a hal
     .toThrow(/no such profile 'work'/);
   expect(state.profileNames()).toEqual([]);
   // The default slot is not a profile: it always accepts a credential.
-  state.setCredential(null, { kind: "gh-cli" });
+  state.setCredential(null, { kind: "gh-cli", ghUser: null });
   expect(state.read().authProvider).toBe("gh-cli");
 });
 
@@ -281,6 +282,67 @@ test("a blank token is rejected at the write boundary, never persisted as a part
   expect(() => state.setCredential(null, { kind: "stored", provider: "copilot", token: "" }))
     .toThrow(/non-empty token/);
   expect(state.read().authProvider).toBeNull();
+});
+
+test("a gh-cli account pin round-trips; an absent/blank stored pin reads as auto (no migration)", () => {
+  tmpHome();
+  const state = new CopilotEnvState();
+  state.setCredential(null, { kind: "gh-cli", ghUser: "work-bot" });
+  expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: "work-bot" });
+  expect(state.read().ghUser).toBe("work-bot");
+
+  // Re-recording auto removes the key from the file outright: absent = auto is
+  // the semantic default, so a pre-pin store reads identically with no migration.
+  state.setCredential(null, { kind: "gh-cli", ghUser: null });
+  const slot = (rawState().profiles as Record<string, Record<string, unknown>>).default ?? {};
+  expect(slot.authProvider).toBe("gh-cli");
+  expect(slot.ghUser).toBeUndefined();
+  expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
+
+  // A pre-pin store (no ghUser key) and a hand-mangled blank pin both read auto.
+  seedRawState({ profiles: { default: { authProvider: "gh-cli" } } });
+  expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
+  seedRawState({ profiles: { default: { authProvider: "gh-cli", ghUser: "   " } } });
+  expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
+
+  // A blank pin is rejected at the same write choke point as a blank token, and
+  // the pin is trimmed on the way in.
+  expect(() => state.setCredential(null, { kind: "gh-cli", ghUser: "  " }))
+    .toThrow("a gh-cli account pin requires a non-empty gh login");
+  state.setCredential(null, { kind: "gh-cli", ghUser: " work-bot " });
+  expect(state.read().ghUser).toBe("work-bot");
+
+  // De-auth removes the pin together with its provider.
+  state.clearCredential(null);
+  expect(state.read().ghUser).toBeNull();
+  expect(state.readCredential(null)).toEqual({ kind: "none", provider: null });
+});
+
+test("commitProfile: a pin-only change IS a credential change - the derived identity clears", () => {
+  tmpHome();
+  const state = new CopilotEnvState();
+  state.commitProfile(WORK, { credential: { kind: "gh-cli", ghUser: "a" }, mode: "direct" });
+  state.setProfileIntegrationIdentity(WORK, "copilot-developer-cli", {
+    kind: "gh-cli",
+    ghUser: "a",
+  });
+  expect(state.readProfileSlot(WORK).integrationIdentity).toBe("copilot-developer-cli");
+
+  // Same provider, same (absent) token, different gh account: a re-probe is due.
+  state.commitProfile(WORK, { credential: { kind: "gh-cli", ghUser: "b" }, mode: "direct" });
+  expect(state.readProfileSlot(WORK).integrationIdentity).toBeNull();
+
+  // An identical re-add (mode switch only) keeps the cache, pin included.
+  state.setProfileIntegrationIdentity(WORK, "copilot-developer-cli", {
+    kind: "gh-cli",
+    ghUser: "b",
+  });
+  state.commitProfile(WORK, { credential: { kind: "gh-cli", ghUser: "b" }, mode: "proxy" });
+  expect(state.readProfileSlot(WORK).integrationIdentity).toBe("copilot-developer-cli");
+
+  // The keyed identity write refuses a pin mismatch (a probe racing a pin change).
+  state.setProfileIntegrationIdentity(WORK, "codex", { kind: "gh-cli", ghUser: "a" });
+  expect(state.readProfileSlot(WORK).integrationIdentity).toBe("copilot-developer-cli");
 });
 
 test("setProfileIntegrationIdentity is a credential-keyed cache write: no create, no resurrect, no stale attach", () => {
@@ -340,7 +402,7 @@ test("the read boundary parses the stored pair fail-closed into the credential u
   expect(state.readCredential(null)).toEqual({ kind: "none", provider: "gh-token" });
   // gh-cli holds no token of its own, even when a stray one is on disk.
   seedRawState({ profiles: { default: { githubToken: "ghu_stray", authProvider: "gh-cli" } } });
-  expect(state.readCredential(null)).toEqual({ kind: "gh-cli" });
+  expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
   seedRawState({ profiles: { default: { githubToken: "ghu_ok", authProvider: "copilot" } } });
   expect(state.readCredential(null)).toEqual({
     kind: "stored",

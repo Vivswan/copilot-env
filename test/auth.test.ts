@@ -2,10 +2,28 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "n
 import { join } from "node:path";
 import { parse, stringify } from "smol-toml";
 import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
-import { loginWithGhCli, runAuth } from "../src/commands/auth.ts";
-import { ghTokenLookFromSpawn } from "../src/copilot_api/credential.ts";
+import {
+  chooseGhAccount,
+  credentialSourceLabel,
+  loginWithGhCli,
+  parseAcquisition,
+  parseAuthAction,
+  runAuth,
+} from "../src/commands/auth.ts";
+import {
+  Credential,
+  ghAccountsLookFromSpawn,
+  ghTokenLookFromSpawn,
+} from "../src/copilot_api/credential.ts";
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { assertProfileSlot, CopilotEnvState } from "../src/copilot_api/env_state.ts";
+import {
+  type GhAccount,
+  ghAccountPinnable,
+  ghAuthStatusSpawnSpec,
+  ghAuthTokenSpawnSpec,
+  parseGhAuthStatusAccounts,
+} from "../src/copilot_api/gh_cli.ts";
 import {
   COPILOT_CLI_INTEGRATION_ID,
   INTEGRATION_ID_HEADER,
@@ -137,6 +155,7 @@ test("auth --del clears the stored token and provider", async () => {
   expect(state().read()).toEqual({
     githubToken: null,
     authProvider: null,
+    ghUser: null,
     profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogPatchVersion: 0,
@@ -195,6 +214,7 @@ test("auth --provider gh-token stores the env token + provider, and does NOT con
   expect(state().read()).toEqual({
     githubToken: "ghu_new_from_env",
     authProvider: "gh-token",
+    ghUser: null,
     profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogPatchVersion: 0,
@@ -214,6 +234,7 @@ test("auth --set <token> stores it verbatim (no env, no UI) and records gh-token
   expect(state().read()).toEqual({
     githubToken: "ghu_inline_value",
     authProvider: "gh-token",
+    ghUser: null,
     profiles: {},
     codexCatalogLastAttemptMs: 0,
     codexCatalogPatchVersion: 0,
@@ -572,13 +593,243 @@ test("ghTokenLookFromSpawn: completed exits prove, a dead spawn stays unproven",
 });
 
 test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss keeps the gh advice", () => {
-  expect(() => loginWithGhCli(() => ({ token: null, unproven: true }))).toThrow(
+  expect(() => loginWithGhCli(null, () => ({ token: null, unproven: true }))).toThrow(
     "could not check gh authentication (`gh auth token` did not run to completion) - retry `agent auth`",
   );
-  expect(() => loginWithGhCli(() => ({ token: null }))).toThrow(
+  expect(() => loginWithGhCli(null, () => ({ token: null }))).toThrow(
     "gh is not authenticated - run `gh auth login`, then retry `agent auth`",
   );
-  expect(() => loginWithGhCli(() => ({ token: "tok" }))).not.toThrow();
+  expect(() => loginWithGhCli(null, () => ({ token: "tok" }))).not.toThrow();
+  // A pinned account wears its own words: the miss is about THAT account (gh's
+  // active login may well be fine), and the look receives the pin to verify.
+  const asked: Array<string | null> = [];
+  expect(() =>
+    loginWithGhCli("work", (ghUser) => {
+      asked.push(ghUser);
+      return { token: null };
+    })
+  ).toThrow(
+    "gh is not authenticated as account 'work' - run `gh auth login` for that account, " +
+      "then retry `agent auth`",
+  );
+  expect(() => loginWithGhCli("work", () => ({ token: null, unproven: true }))).toThrow(
+    "could not check gh authentication (`gh auth token` did not run to completion) - retry `agent auth`",
+  );
+  expect(asked).toEqual(["work"]);
+});
+
+// --- gh multi-account selection (choice menu only, never an auth verdict) ------
+
+// Real `gh auth status` shape (gh >= 2.40): per-host blocks, one "Logged in to"
+// line per account, the active one flagged on its own line. The check mark is
+// gh's output, fine inside a fixture literal.
+const TWO_ACCOUNT_STATUS = `github.com
+  ✓ Logged in to github.com account vivswan (keyring)
+  - Active account: true
+  - Git operations protocol: https
+  - Token: gho_************************
+  ✓ Logged in to github.com account work-bot (keyring)
+  - Active account: false
+`;
+
+function acct(login: string, active: boolean, source = "keyring"): GhAccount {
+  return { host: "github.com", login, active, source };
+}
+
+test("parseGhAuthStatusAccounts: accounts with active attribution; broken logins and noise never match", () => {
+  expect(parseGhAuthStatusAccounts(TWO_ACCOUNT_STATUS)).toEqual([
+    acct("vivswan", true),
+    acct("work-bot", false),
+  ]);
+  // A broken login must never surface as pickable, and its block's own "Active
+  // account: true" line must not mark the healthy account parsed before it --
+  // in EITHER of gh's failure wordings (per-account, and per-host env token).
+  const withBrokenActive = [
+    "github.com",
+    "  ✓ Logged in to github.com account healthy (keyring)",
+    "  - Active account: false",
+    "  ✗ Failed to log in to github.com account broken (keyring)",
+    "  - Active account: true",
+    "enterprise.example",
+    "  ✗ Failed to log in to enterprise.example using token (GH_ENTERPRISE_TOKEN)",
+    "  - Active account: true",
+  ].join("\n");
+  expect(parseGhAuthStatusAccounts(withBrokenActive)).toEqual([acct("healthy", false)]);
+  expect(parseGhAuthStatusAccounts("You are not logged into any GitHub hosts.")).toEqual([]);
+  // The credential source is captured (an env-token login is not pinnable),
+  // and the SAME login saved in the keyring stays a separate, pinnable entry
+  // (gh lists the env-token account first).
+  const envOverlap = parseGhAuthStatusAccounts(
+    [
+      "  ✓ Logged in to github.com account ci-bot (GH_TOKEN)",
+      "  - Active account: true",
+      "  ✓ Logged in to github.com account ci-bot (keyring)",
+      "  - Active account: false",
+    ].join("\n"),
+  );
+  expect(envOverlap).toEqual([acct("ci-bot", true, "GH_TOKEN"), acct("ci-bot", false)]);
+  expect(envOverlap.map(ghAccountPinnable)).toEqual([false, true]);
+  expect(ghAccountPinnable(acct("saved", false))).toBe(true);
+  // A repeated host+login+source triple collapses to one menu entry.
+  expect(parseGhAuthStatusAccounts(TWO_ACCOUNT_STATUS + TWO_ACCOUNT_STATUS).length).toBe(2);
+});
+
+test("the gh spawn recipes: a pinned account adds --user; auto stays byte-identical", () => {
+  expect(ghAuthTokenSpawnSpec("/opt/gh/gh").args).toEqual(["auth", "token"]);
+  expect(ghAuthTokenSpawnSpec("/opt/gh/gh", null).args).toEqual(["auth", "token"]);
+  expect(ghAuthTokenSpawnSpec("/opt/gh/gh", "work-bot").args).toEqual([
+    "auth",
+    "token",
+    "--user",
+    "work-bot",
+  ]);
+  expect(ghAuthStatusSpawnSpec("/opt/gh/gh").args).toEqual(["auth", "status"]);
+});
+
+test("ghAccountsLookFromSpawn: ANY completed exit parses stdout+stderr; a dead spawn is unproven", () => {
+  expect(
+    ghAccountsLookFromSpawn({ status: 0, stdout: TWO_ACCOUNT_STATUS, stderr: "" }).accounts
+      .map((a) => a.login),
+  ).toEqual(["vivswan", "work-bot"]);
+  // gh exits non-zero when one account's login is broken but still lists the
+  // healthy ones, and older gh printed the status to stderr: both stay proven.
+  expect(
+    ghAccountsLookFromSpawn({ status: 1, stdout: null, stderr: TWO_ACCOUNT_STATUS }).accounts
+      .length,
+  ).toBe(2);
+  expect(ghAccountsLookFromSpawn({ status: null })).toEqual({ accounts: [], unproven: true });
+  expect(ghAccountsLookFromSpawn({ status: 0, error: new Error("ETIMEDOUT") })).toEqual({
+    accounts: [],
+    unproven: true,
+  });
+});
+
+test("chooseGhAccount: no real choice settles to auto; 2+ accounts without a TTY hint, never prompt", async () => {
+  // Pin stdin to non-TTY for the duration: the settle rules under test are the
+  // non-interactive ones, and an interactive dev run must not open a prompt.
+  const hadTty = process.stdin.isTTY;
+  process.stdin.isTTY = false;
+  try {
+    // Unproven, zero, or one account: auto silently (exactly the historical flow).
+    expect(await chooseGhAccount(() => ({ accounts: [], unproven: true }))).toEqual({
+      kind: "auto",
+    });
+    expect(await chooseGhAccount(() => ({ accounts: [] }))).toEqual({ kind: "auto" });
+    expect(await chooseGhAccount(() => ({ accounts: [acct("solo", true)] }))).toEqual({
+      kind: "auto",
+    });
+    // Another host's login, and an env-token login (`--user` reads saved
+    // credentials only), are not pinnable choices: one pinnable account left
+    // means no menu.
+    expect(
+      await chooseGhAccount(() => ({
+        accounts: [acct("solo", true), {
+          host: "ghe.example.com",
+          login: "enterprise",
+          active: false,
+          source: "keyring",
+        }],
+      })),
+    ).toEqual({ kind: "auto" });
+    expect(
+      await chooseGhAccount(() => ({
+        accounts: [acct("solo", false), acct("ci-bot", true, "GH_TOKEN")],
+      })),
+    ).toEqual({ kind: "auto" });
+    // The env-token overlap of a saved login must not shrink the menu: two
+    // pinnable saved accounts still hint (below), even with GH_TOKEN's entry
+    // duplicating one of them.
+    let overlapChoice: Awaited<ReturnType<typeof chooseGhAccount>> | undefined;
+    const overlapErr = await captureStderr(async () => {
+      overlapChoice = await chooseGhAccount(() => ({
+        accounts: [
+          acct("vivswan", true, "GH_TOKEN"),
+          acct("vivswan", false),
+          acct("work-bot", false),
+        ],
+      }));
+    });
+    expect(overlapChoice).toEqual({ kind: "auto" });
+    expect(overlapErr).toContain("--gh-user");
+    // 2+ github.com accounts, non-TTY: auto plus a stderr hint naming the
+    // escape hatch and the active account -- never a prompt, never a throw.
+    let choice: Awaited<ReturnType<typeof chooseGhAccount>> | undefined;
+    const err = await captureStderr(async () => {
+      choice = await chooseGhAccount(() => ({
+        accounts: [acct("vivswan", true), acct("work-bot", false)],
+      }));
+    });
+    expect(choice).toEqual({ kind: "auto" });
+    expect(err).toContain("--gh-user");
+    expect(err).toContain("(currently vivswan)");
+  } finally {
+    process.stdin.isTTY = hadTty;
+  }
+});
+
+test("parseAcquisition: --gh-user implies gh-cli and rejects every conflicting flag", () => {
+  expect(parseAcquisition(undefined, undefined, "work-bot")).toEqual({
+    kind: "gh-cli",
+    account: { kind: "pinned", login: "work-bot" },
+  });
+  expect(parseAcquisition("gh-cli", undefined, " work-bot ")).toEqual({
+    kind: "gh-cli",
+    account: { kind: "pinned", login: "work-bot" },
+  });
+  // A bare gh-cli provider still asks (settling to auto when there's no choice).
+  expect(parseAcquisition("gh-cli", undefined, undefined)).toEqual({
+    kind: "gh-cli",
+    account: { kind: "choose" },
+  });
+  expect(() => parseAcquisition("copilot", undefined, "x")).toThrow(
+    "--gh-user only applies to `--provider gh-cli`",
+  );
+  expect(() => parseAcquisition(undefined, "tok", "x")).toThrow("--set implies gh-token");
+  expect(() => parseAcquisition(undefined, undefined, "   ")).toThrow(
+    "--gh-user requires a non-empty gh account login",
+  );
+});
+
+test("auth: --gh-user cannot combine with a sub-action (never silently dropped)", () => {
+  const subs = [
+    { get: true },
+    { del: true },
+    { check: true },
+    { printProxyToken: true },
+    { list: true },
+  ];
+  for (const sub of subs) {
+    expect(() => parseAuthAction({ ghUser: "x", ...sub })).toThrow(
+      "--gh-user pins the gh account",
+    );
+  }
+});
+
+test("Credential.resolve threads the slot's account pin into the gh probe", () => {
+  isolate();
+  const asked: Array<string | null> = [];
+  const gh = (ghUser: string | null): string | null => {
+    asked.push(ghUser);
+    return "tok";
+  };
+  state().setCredential(null, { kind: "gh-cli", ghUser: null });
+  expect(new Credential().resolve(gh)).toBe("tok");
+  state().setCredential(null, { kind: "gh-cli", ghUser: "work-bot" });
+  expect(new Credential().resolve(gh)).toBe("tok");
+  expect(asked).toEqual([null, "work-bot"]);
+});
+
+test("credentialSourceLabel: a pinned gh account is named; auto and token providers stay bare", () => {
+  // The one label --check/--list/"Already authenticated" render: auto gh-cli
+  // must stay byte-identical to the pre-pin output.
+  expect(credentialSourceLabel({ kind: "gh-cli", ghUser: null })).toBe("gh-cli");
+  expect(credentialSourceLabel({ kind: "gh-cli", ghUser: "work-bot" })).toBe(
+    "gh-cli (user work-bot)",
+  );
+  expect(credentialSourceLabel({ kind: "stored", provider: "gh-token", token: "t" })).toBe(
+    "gh-token",
+  );
+  expect(credentialSourceLabel({ kind: "none", provider: null })).toBeNull();
 });
 
 // The credential store reads STRICTLY: an unreadable store must diagnose the

@@ -278,6 +278,17 @@ test("invalid slots are rejections that never echo the token", () => {
   expect(message).toContain("pairs a token with the gh-cli provider");
   expect(message).not.toContain("ghp_secret_leak");
 
+  // A gh account pin only means anything under gh-cli: paired with a token
+  // provider it would sit dead in the store, so it is the same class of
+  // contradiction as token+gh-cli.
+  expect(() =>
+    parseSettingsBundle(
+      rawBundle({
+        credential: { githubToken: "x", authProvider: "gh-token", ghUser: "work-bot" },
+      }),
+    )
+  ).toThrow(/pairs a ghUser account pin with a non-gh-cli provider/);
+
   expect(() => parseSettingsBundle(rawBundle({ modes: { codex: "bogus", claude: "direct" } })))
     .toThrow(/modes.codex/);
   expect(() => parseSettingsBundle(rawBundle({ profiles: { "NOT A NAME": {} } }))).toThrow(
@@ -544,9 +555,35 @@ test("gh-cli slots probe gh ONCE end to end, and gh-cli wiring re-derives the id
   expect(existsSync(settingsPathFor(machine.claudeHome, WORK))).toBe(true);
   // The bundled identity was dropped; the wire-time probe re-derived the
   // default identity ("codex" = probed, the default won).
-  expect(new CopilotEnvState().readProfileSlot(WORK).credential).toEqual({ kind: "gh-cli" });
+  expect(new CopilotEnvState().readProfileSlot(WORK).credential).toEqual({
+    kind: "gh-cli",
+    ghUser: null,
+  });
   expect(new CopilotEnvState().readProfileSlot(WORK).integrationIdentity).toBe("codex");
   expect(new CopilotEnvState().profileNames()).toEqual([WORK]); // alt never landed
+});
+
+test("a pinned gh-cli bundle slot probes ITS account and lands the pin", async () => {
+  isolate();
+  const bundle = parseSettingsBundle(
+    rawBundle({
+      credential: { githubToken: null, authProvider: "gh-cli", ghUser: "work-bot" },
+      modes: { codex: "none", claude: "none" },
+    }),
+  );
+  const asked: Array<string | null> = [];
+  await applyImportBundle(bundle, {
+    catalogDeps: NOOP_CATALOG_DEPS,
+    ghAuthToken: (ghUser) => {
+      asked.push(ghUser ?? null);
+      return "gho_live";
+    },
+  });
+  expect(asked).toEqual(["work-bot"]);
+  expect(new CopilotEnvState().readCredential(null)).toEqual({
+    kind: "gh-cli",
+    ghUser: "work-bot",
+  });
 });
 
 test("a gh-cli default over a working local token falls through to the kept slot", async () => {

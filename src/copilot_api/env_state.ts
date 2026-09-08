@@ -46,9 +46,12 @@ function isAuthProvider(provider: string): provider is AuthProvider {
  * travels with its token, and `gh-cli` can never carry one -- the two
  * contradictions the settings-bundle parser rejects (token without a provider,
  * token with gh-cli) are unrepresentable here, so no writer needs to re-check.
+ * `ghUser` pins the gh-cli slot to one logged-in gh account (`gh auth token
+ * --user`); null follows gh's active account at every resolve (the historical
+ * behavior, and what an absent stored key reads back as).
  */
 export type ProvisionedCredential =
-  | { kind: "gh-cli" }
+  | { kind: "gh-cli"; ghUser: string | null }
   | { kind: "stored"; provider: TokenProvider; token: string };
 
 /**
@@ -88,33 +91,41 @@ export function credentialProvider(credential: StoredCredential): AuthProvider |
   }
 }
 
-/** Parse a raw stored pair into the credential union (the read boundary). */
+/** Parse a raw stored triple into the credential union (the read boundary). */
 function parseStoredCredential(
   githubToken: string | null,
   authProvider: AuthProvider | null,
+  ghUser: string | null,
 ): StoredCredential {
   if (authProvider === null) return { kind: "none", provider: null };
-  if (authProvider === "gh-cli") return { kind: "gh-cli" };
+  if (authProvider === "gh-cli") return { kind: "gh-cli", ghUser };
   return githubToken === null
     ? { kind: "none", provider: authProvider }
     : { kind: "stored", provider: authProvider, token: githubToken };
 }
 
-/** The raw persisted pair for a provisioned credential (gh-cli holds no token).
- *  The token is trimmed on the way in, and a blank one is rejected here -- the
- *  single choke point every credential write funnels through, so a whitespace
- *  token can never persist as a provider-without-token partial. */
+/** The raw persisted fields for a provisioned credential (gh-cli holds no
+ *  token; token providers hold no account pin). Token and pin are trimmed on
+ *  the way in, and a blank value is rejected here -- the single choke point
+ *  every credential write funnels through, so a whitespace token (or pin) can
+ *  never persist as a meaningless partial. */
 function rawCredentialPatch(
   credential: ProvisionedCredential,
-): { githubToken: string | null; authProvider: AuthProvider } {
-  if (credential.kind === "gh-cli") return { githubToken: null, authProvider: "gh-cli" };
+): { githubToken: string | null; authProvider: AuthProvider; ghUser: string | null } {
+  if (credential.kind === "gh-cli") {
+    const ghUser = credential.ghUser?.trim() ?? null;
+    if (ghUser === "") {
+      throw new Error("a gh-cli account pin requires a non-empty gh login");
+    }
+    return { githubToken: null, authProvider: "gh-cli", ghUser };
+  }
   const token = credential.token.trim();
   if (token === "") {
     throw new Error(
       `a stored credential requires a non-empty token (provider '${credential.provider}')`,
     );
   }
-  return { githubToken: token, authProvider: credential.provider };
+  return { githubToken: token, authProvider: credential.provider, ghUser: null };
 }
 
 // --- credential profiles -------------------------------------------------------
@@ -156,6 +167,9 @@ function slotKey(profile: Profile): string {
 export interface ProfileCredentialData {
   githubToken: string | null;
   authProvider: AuthProvider | null;
+  /** gh-cli only: the pinned gh account login, or null = follow gh's active
+   *  account (also what an absent stored key reads back as). */
+  ghUser: string | null;
 }
 
 /** A profile's full RAW slot as persisted (also the export bundle's shape). */
@@ -197,7 +211,7 @@ export type ProfileSlot =
 
 /** Parse a raw slot into the completeness union (the read boundary). */
 function parseProfileSlot(data: ProfileSlotData): ProfileSlot {
-  const credential = parseStoredCredential(data.githubToken, data.authProvider);
+  const credential = parseStoredCredential(data.githubToken, data.authProvider, data.ghUser);
   if (credential.kind !== "none" && data.mode !== null) {
     return {
       kind: "complete",
@@ -238,6 +252,9 @@ export interface CopilotEnvStateData {
   githubToken: string | null;
   /** How the default slot authenticated, or null when unset/unrecognized. */
   authProvider: AuthProvider | null;
+  /** The default slot's pinned gh account (gh-cli only), or null = follow gh's
+   *  active account. */
+  ghUser: string | null;
   /** Every NAMED profile's RAW slot (empty when none were ever created). The
    *  reserved `default` slot is stripped here and surfaces through the pair
    *  above plus `readProfileSlot(null)`. */
@@ -277,7 +294,7 @@ export interface ModelVerdict {
 // goes through the slot transitions (setCredential/clearCredential), so a
 // top-level credential pair can never be written.
 type EnvStatePatch = {
-  [K in keyof Omit<CopilotEnvStateData, "profiles" | "githubToken" | "authProvider">]?:
+  [K in keyof Omit<CopilotEnvStateData, "profiles" | "githubToken" | "authProvider" | "ghUser">]?:
     | CopilotEnvStateData[K]
     | null;
 };
@@ -286,6 +303,7 @@ type EnvStatePatch = {
 const PROFILE_SCHEMA = v.object({
   githubToken: v.fallback(v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1))), null),
   authProvider: v.fallback(v.nullable(v.picklist(AUTH_PROVIDERS)), null),
+  ghUser: v.fallback(v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1))), null),
   mode: v.fallback(v.nullable(v.picklist(PROFILE_MODES)), null),
   // Header-safe shape enforced at the read boundary: the cached identity flows
   // verbatim into HTTP headers, so a hand-mangled value reads as null = re-probe.
@@ -333,7 +351,13 @@ const STATE_SCHEMA = v.object({
 });
 
 function emptyProfile(): ProfileSlotData {
-  return { githubToken: null, authProvider: null, mode: null, integrationIdentity: null };
+  return {
+    githubToken: null,
+    authProvider: null,
+    ghUser: null,
+    mode: null,
+    integrationIdentity: null,
+  };
 }
 
 /** The store as parsed off disk: the reserved slot still inside `profiles`. */
@@ -481,6 +505,7 @@ export class CopilotEnvState {
       ...data,
       githubToken: slot.githubToken,
       authProvider: slot.authProvider,
+      ghUser: slot.ghUser,
       profiles: named,
     };
   }
@@ -592,6 +617,11 @@ export class CopilotEnvState {
       } else {
         delete raw.githubToken;
       }
+      if (patch.ghUser !== null) {
+        raw.ghUser = patch.ghUser;
+      } else {
+        delete raw.ghUser;
+      }
       raw.authProvider = patch.authProvider;
       delete raw.integrationIdentity;
       profiles[key] = raw;
@@ -617,6 +647,7 @@ export class CopilotEnvState {
       had = raw.githubToken !== undefined || raw.authProvider !== undefined;
       delete raw.githubToken;
       delete raw.authProvider;
+      delete raw.ghUser; // gh-cli's account pin goes with its provider
       delete raw.integrationIdentity; // credential-derived cache goes with it
       tidyEmptySlot(d, profiles, key);
     });
@@ -644,11 +675,17 @@ export class CopilotEnvState {
       const raw = Object.hasOwn(profiles, name) ? profiles[name] : undefined;
       const committed: Record<string, unknown> = isRecord(raw) ? raw : {};
       const credentialUnchanged = (committed.githubToken ?? null) === next.githubToken &&
-        (committed.authProvider ?? null) === next.authProvider;
+        (committed.authProvider ?? null) === next.authProvider &&
+        (committed.ghUser ?? null) === next.ghUser;
       if (next.githubToken !== null) {
         committed.githubToken = next.githubToken;
       } else {
         delete committed.githubToken;
+      }
+      if (next.ghUser !== null) {
+        committed.ghUser = next.ghUser;
+      } else {
+        delete committed.ghUser;
       }
       committed.authProvider = next.authProvider;
       committed.mode = slot.mode;
@@ -692,7 +729,8 @@ export class CopilotEnvState {
       if (!isRecord(raw)) return;
       if (
         (raw.githubToken ?? null) !== expected.githubToken ||
-        raw.authProvider !== expected.authProvider
+        raw.authProvider !== expected.authProvider ||
+        (raw.ghUser ?? null) !== expected.ghUser
       ) {
         return;
       }

@@ -43,13 +43,16 @@ function describeDirectGhAuth(a: CodexDirectAuthFacts): {
       ghFix: "re-run `agent health` (the gh check did not run to completion)",
     };
   }
+  // A pinned slot's verdict is about THAT account, so name it: gh's active
+  // account being logged in is exactly what this probe did NOT check.
+  const account = (a.ghUser ?? null) === null ? "" : ` as account '${a.ghUser}'`;
   return {
     ok: a.command !== null && a.authenticated,
     detail: a.command === null
       ? "gh auth: GitHub CLI not found"
       : a.authenticated
-      ? `gh auth: authenticated via ${a.command}`
-      : `gh auth: ${a.command} is not authenticated`,
+      ? `gh auth: authenticated via ${a.command}${account}`
+      : `gh auth: ${a.command} is not authenticated${account}`,
     ghFix: a.command === null ? "install gh and run gh auth login" : "gh auth login",
   };
 }

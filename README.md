@@ -198,7 +198,7 @@ agent config --del idle-timeout       # revert one to its default
 | `idle-timeout`          | `3600`            | Idle auto-stop window in seconds (`0` disables).                         |
 | `min-port` / `max-port` | `1024` / `65535`  | Allowed proxy port range.                                                |
 | `port`                  | `4141`            | Default proxy port (then next free unless `strict-port`).                |
-| `proxy-logs`            | `true`            | Proxy request logging under `<home>/logs` (`false` discards the writes). |
+| `proxy-logs`            | `false`           | Proxy request logging under `<home>/logs` (`false` discards the writes). |
 | `proxy-version`         | latest (floated)  | Pin the floated proxy to a version/tag.                                  |
 | `release-cooldown`      | `604800` (7 days) | Proxy float supply-chain cooldown in seconds.                            |
 | `strict-port`           | `false`           | Fail `start` when the default port is busy instead of auto-incrementing. |

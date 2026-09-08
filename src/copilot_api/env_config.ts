@@ -618,7 +618,7 @@ const CONFIG_REGISTRY_LITERAL = [
     section: "Proxy daemon",
     describe: "Proxy request logging under <home>/logs; false discards the writes",
     ...BOOL_DOMAIN,
-    defaultValue: true,
+    defaultValue: false,
     restartToApply: true,
   },
   {

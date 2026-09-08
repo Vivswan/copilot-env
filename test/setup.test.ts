@@ -108,6 +108,9 @@ test("runShell reports the launchers key on a wire and never writes it", () => {
 // contained npm failure warns honestly, the remaining CLIs are still attempted,
 // and the rc wiring `runShell` does afterwards still lands.
 
+/** What the fake `npm view <pkg> version` answers: the version every run targets. */
+const FAKE_LATEST = "2.0.0";
+
 interface CliInstallFixture {
   dir: string;
   /** Where the fake `npm install -g` lays down CLI shims (`<prefix>/bin`). */
@@ -121,16 +124,22 @@ interface CliInstallFixture {
  * `sh`/`chmod` symlinks (all the probes and the fake need) -- so no real CLI on the
  * host can satisfy a look; NVM_DIR points nowhere (so findCommand's nvm fallback
  * cannot resolve real CLIs either) and the rc seam targets a fresh dir. The fake
- * npm answers `prefix -g` and `install -g <pkg>` per the options, silently (stdio
- * is inherited, so a chatty fake would bypass the capture below).
+ * npm answers `prefix -g`, `ls -g`, `view <pkg> version`, and `install -g <pkg>@<version>`
+ * per the options, silently (stdio is inherited, so a chatty fake would bypass the
+ * capture below).
  */
 function stageCliInstallFixture(opts: {
   /** `npm prefix -g` exits 1 instead of printing the prefix. */
   prefixFails?: boolean;
+  /** `npm ls -g` prints only npm's `error` object and exits 1 instead of the tree. */
+  lsFails?: boolean;
   /** Packages whose `npm install -g` exits 1 instead of laying down the shim. */
   failInstalls?: readonly string[];
   /** Commands pre-placed on PATH, so installCli reads them as already installed. */
   preinstalled?: readonly string[];
+  /** What the fake `npm ls -g` reports as installed: package name -> version, or null for a
+   *  package npm lists without a version (its package.json unreadable). */
+  npmInstalled?: Readonly<Record<string, string | null>>;
 }): CliInstallFixture {
   const dir = tempDir("copilot-setup-clis-");
   const pathBin = join(dir, "path-bin");
@@ -149,18 +158,37 @@ function stageCliInstallFixture(opts: {
     writeFileSync(path, "#!/bin/sh\nexit 0\n");
     chmodSync(path, 0o755);
   };
+  // The install arm writes the spec it was given into the shim, so a test can read back
+  // WHICH version npm was told to install.
   const installArms = AGENT_CLIS.map((cli) => {
-    if (opts.failInstalls?.includes(cli.packageName)) return `  "${cli.packageName}") exit 1 ;;`;
+    if (opts.failInstalls?.includes(cli.packageName)) return `  "${cli.packageName}"@*) exit 1 ;;`;
     const target = `"${globalBin}/${cli.command}"`;
-    return `  "${cli.packageName}") printf '#!/bin/sh\\nexit 0\\n' > ${target}` +
+    return `  "${cli.packageName}"@*) printf '#!/bin/sh\\n# %s\\nexit 0\\n' "$3" > ${target}` +
       `; chmod +x ${target}; exit 0 ;;`;
   });
+  // The real `npm ls -g --json` shapes: no `dependencies` key for an empty tree, a
+  // version-less entry for a package whose package.json it could not read, and only an
+  // `error` object when the list itself failed.
+  const installedEntries = Object.entries(opts.npmInstalled ?? {});
+  const lsTree = JSON.stringify(
+    opts.lsFails
+      ? { error: { code: "ENOTDIR", summary: "", detail: "" } }
+      : installedEntries.length === 0
+      ? {}
+      : {
+        dependencies: Object.fromEntries(
+          installedEntries.map(([name, version]) => [name, version === null ? {} : { version }]),
+        ),
+      },
+  );
   writeFileSync(
     join(pathBin, "npm"),
     [
       "#!/bin/sh",
       'case "$1" in',
       opts.prefixFails ? "  prefix) exit 1 ;;" : `  prefix) echo "${prefix}"; exit 0 ;;`,
+      `  ls) echo '${lsTree}'; exit ${opts.lsFails ? 1 : 0} ;;`,
+      `  view) echo '${JSON.stringify([FAKE_LATEST])}'; exit 0 ;;`,
       '  install) case "$3" in',
       ...installArms,
       "  *) exit 1 ;;",
@@ -219,7 +247,7 @@ test.skipIf(process.platform === "win32")(
       // The genuine npm failure warns as ITSELF (which CLI, why, and that the run
       // goes on) -- never dressed in the could-not-check look-failure wording.
       expect(output).toContain(
-        `Could not install ${broken.name} (npm install -g ${broken.packageName} failed); continuing.`,
+        `Could not install ${broken.name} (npm install -g ${broken.packageName}@${FAKE_LATEST} failed); continuing.`,
       );
       expect(output).not.toContain("probe failed to run");
       expect(existsSync(join(fixture.globalBin, broken.command))).toBe(false);
@@ -250,9 +278,13 @@ test.skipIf(process.platform === "win32")(
       expect(output).toContain(
         "Could not sync npm's global bin dir to PATH (npm prefix -g failed); continuing.",
       );
-      // The loop still ran over every CLI, and the sync failure was never dressed
-      // as a per-CLI install failure or a could-not-check look failure.
-      for (const cli of AGENT_CLIS) expect(output).toContain(`${cli.name} already installed.`);
+      // The loop still ran over every CLI (each is on PATH but absent from the fake
+      // `npm ls`, so it reads as a non-npm install and is left alone), and the sync
+      // failure was never dressed as a per-CLI install failure or a could-not-check
+      // look failure.
+      for (const cli of AGENT_CLIS) {
+        expect(output).toContain(`${cli.name} is installed outside npm; leaving it as it is.`);
+      }
       expect(output).not.toContain("Could not install");
       expect(output).not.toContain("probe failed to run");
       expect(readFileSync(fixture.bashrc, "utf-8")).toContain(MARKER);
@@ -274,12 +306,110 @@ test.skipIf(process.platform === "win32")(
       const output = captureRun(() => runShell({ clis: true }));
       expect(output).not.toContain("Could not");
       for (const cli of AGENT_CLIS) {
-        expect(output).toContain(`Installing ${cli.name} ...`);
+        expect(output).toContain(`Installing ${cli.name} (${cli.packageName}@${FAKE_LATEST}) ...`);
         expect(existsSync(join(fixture.globalBin, cli.command))).toBe(true);
       }
       // syncNpmGlobalBinToPath prepended npm's global bin, so the fresh installs
       // resolved in THIS process.
       expect(process.env.PATH?.startsWith(`${fixture.globalBin}:`)).toBe(true);
+      expect(readFileSync(fixture.bashrc, "utf-8")).toContain(MARKER);
+    } finally {
+      restore();
+      dir = removeDir(dir);
+    }
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "shell --clis: an outdated npm-installed CLI is updated; a current or newer one is kept",
+  () => {
+    const restore = envSnapshot(CLI_ENV_EXTRAS);
+    const [outdated, current, newer] = AGENT_CLIS;
+    let dir = "";
+    try {
+      const fixture = stageCliInstallFixture({
+        preinstalled: AGENT_CLIS.map((cli) => cli.command),
+        npmInstalled: {
+          [outdated.packageName]: "1.0.0",
+          [current.packageName]: FAKE_LATEST,
+          [newer.packageName]: "3.0.0",
+        },
+      });
+      dir = fixture.dir;
+      const output = captureRun(() => runShell({ clis: true }));
+      expect(output).not.toContain("Could not");
+      expect(output).toContain(`Updating ${outdated.name} 1.0.0 -> ${FAKE_LATEST} ...`);
+      expect(output).toContain(`${current.name} is current (${FAKE_LATEST}).`);
+      expect(output).toContain(
+        `${newer.name} 3.0.0 is newer than the target ${FAKE_LATEST}; keeping it.`,
+      );
+      // Only the outdated CLI went through `npm install -g`, at the target (the fake lays
+      // its shim down naming the spec); the current and the newer one were never
+      // reinstalled, let alone downgraded.
+      expect(readFileSync(join(fixture.globalBin, outdated.command), "utf-8")).toContain(
+        `${outdated.packageName}@${FAKE_LATEST}`,
+      );
+      expect(existsSync(join(fixture.globalBin, current.command))).toBe(false);
+      expect(existsSync(join(fixture.globalBin, newer.command))).toBe(false);
+    } finally {
+      restore();
+      dir = removeDir(dir);
+    }
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "shell --clis: an npm-installed CLI whose command is off PATH is never downgraded",
+  () => {
+    const restore = envSnapshot(CLI_ENV_EXTRAS);
+    const [unreadable, absent, offPath] = AGENT_CLIS;
+    let dir = "";
+    try {
+      // No command is on PATH; npm lists one CLI beyond the target and one without a version.
+      const fixture = stageCliInstallFixture({
+        npmInstalled: { [unreadable.packageName]: null, [offPath.packageName]: "3.0.0" },
+      });
+      dir = fixture.dir;
+      const output = captureRun(() => runShell({ clis: true }));
+      expect(output).not.toContain("Could not");
+      expect(output).toContain(
+        `${offPath.name} 3.0.0 is installed by npm, but '${offPath.command}' is not on PATH; leaving it as it is.`,
+      );
+      expect(output).toContain(
+        `${unreadable.name} is installed by npm, but its version could not be read; leaving it as it is.`,
+      );
+      expect(output).toContain(
+        `Installing ${absent.name} (${absent.packageName}@${FAKE_LATEST}) ...`,
+      );
+      // Only the CLI npm does not have went through `npm install -g`.
+      expect(existsSync(join(fixture.globalBin, absent.command))).toBe(true);
+      expect(existsSync(join(fixture.globalBin, offPath.command))).toBe(false);
+      expect(existsSync(join(fixture.globalBin, unreadable.command))).toBe(false);
+    } finally {
+      restore();
+      dir = removeDir(dir);
+    }
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "shell --clis: a failed npm package list installs nothing, the wiring still lands",
+  () => {
+    const restore = envSnapshot(CLI_ENV_EXTRAS);
+    let dir = "";
+    try {
+      const fixture = stageCliInstallFixture({ lsFails: true });
+      dir = fixture.dir;
+      const output = captureRun(() => runShell({ clis: true }));
+      // Nothing on PATH would once have meant "install"; with npm's list unreadable the run
+      // cannot rule out a newer install whose bin dir is off PATH, so it installs nothing.
+      expect(output).toContain(
+        "Could not read npm's global package list (npm ls -g failed); skipping the CLI installs.",
+      );
+      expect(output).not.toContain("Installing");
+      for (const cli of AGENT_CLIS) {
+        expect(existsSync(join(fixture.globalBin, cli.command))).toBe(false);
+      }
       expect(readFileSync(fixture.bashrc, "utf-8")).toContain(MARKER);
     } finally {
       restore();

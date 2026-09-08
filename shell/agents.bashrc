@@ -14,10 +14,14 @@
 # shellcheck disable=SC2296
 _COPILOT_AGENTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")/.." && pwd)"
 
-# Ensure deno is on PATH (its installer only patches ~/.zshrc by default). DENO_INSTALL is
-# the same override scripts/ensure-deno.sh honors, so every entry point looks in one place.
+# The pinned deno must WIN over any other deno (homebrew, for one), so prepend whenever
+# `deno` does not already resolve to it: PATH may list its directory behind the other one.
+# DENO_INSTALL is the same override scripts/ensure-deno.sh honors, so every entry point
+# looks in one place.
 _COPILOT_DENO_BIN="${DENO_INSTALL:-$HOME/.deno}/bin"
-[ -x "${_COPILOT_DENO_BIN}/deno" ] && case ":$PATH:" in *":${_COPILOT_DENO_BIN}:"*) ;; *) export PATH="${_COPILOT_DENO_BIN}:$PATH" ;; esac
+if [ -x "${_COPILOT_DENO_BIN}/deno" ] && [ "$(command -v deno 2>/dev/null)" != "${_COPILOT_DENO_BIN}/deno" ]; then
+    export PATH="${_COPILOT_DENO_BIN}:$PATH"
+fi
 unset _COPILOT_DENO_BIN
 
 # Uniform wrapper over bin/agent: run the requested command, then re-apply the

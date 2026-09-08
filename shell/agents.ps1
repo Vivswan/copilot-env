@@ -11,14 +11,15 @@
 $script:AgentsDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $script:AgentPs1 = Join-Path $AgentsDir 'bin\agent.ps1'
 
-# Ensure deno is on PATH (its installer patches the user PATH, but a running
-# session may predate that). DENO_INSTALL is the same override
-# scripts/ensure-deno.ps1 honors, so every entry point looks in one place. Exact
-# segment match on ';', like the POSIX twin's `:$PATH:` case -- a substring test
-# would false-positive on longer siblings.
+# The pinned deno must WIN over any other deno (scoop, for one), so prepend whenever
+# `deno` does not already resolve to it: PATH may list its directory behind the other one.
+# DENO_INSTALL is the same override scripts/ensure-deno.ps1 honors, so every entry point
+# looks in one place.
 $DenoHome = if ($env:DENO_INSTALL) { $env:DENO_INSTALL } else { Join-Path $HOME '.deno' }
 $DenoDir = Join-Path $DenoHome 'bin'
-if ((Test-Path (Join-Path $DenoDir 'deno.exe')) -and (($env:Path -split ';') -notcontains $DenoDir)) {
+$DenoExe = Join-Path $DenoDir 'deno.exe'
+$DenoResolved = Get-Command deno -ErrorAction SilentlyContinue
+if ((Test-Path $DenoExe) -and ((-not $DenoResolved) -or ($DenoResolved.Source -ne $DenoExe))) {
     $env:Path = "$DenoDir;$env:Path"
 }
 

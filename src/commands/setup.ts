@@ -1,5 +1,5 @@
 // Setup domain logic for optional agent CLIs, launchers, and shell wiring helpers.
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { dirname } from "node:path";
 import { consola } from "consola";
 import { AGENT_CLIS } from "../agents/clis.ts";
@@ -10,6 +10,7 @@ import { assertNever } from "../utils/assert.ts";
 import { childEnvWithPath, commandExists, findCommand, resolveCommand } from "../utils/command.ts";
 import { errMessage } from "../utils/error.ts";
 import { quotePosix, quotePowerShell } from "../utils/shell_quote.ts";
+import { versionLessThan } from "../utils/semver.ts";
 import { assertNonNegativeDays, MILLISECONDS_PER_DAY } from "../utils/time.ts";
 
 const NVM_VERSION = "v0.40.1";
@@ -34,7 +35,7 @@ export const DEFAULT_CLI_COOLDOWN_DAYS = 7;
 export interface ShellArgs {
   /** Unwire instead of wire. */
   remove?: boolean;
-  /** Also install the optional Codex/Claude/Copilot CLIs. */
+  /** Also install the optional Codex/Claude/Copilot CLIs, updating an outdated npm install. */
   clis?: boolean;
   /** With `clis`: install npm releases aged >= N days (null = latest). */
   cooldown?: number | null;
@@ -221,7 +222,7 @@ function resolveNpm(): string {
   return resolved;
 }
 
-function runNpm(args: string[], capture = false): string {
+function spawnNpm(args: string[], capture: boolean): SpawnSyncReturns<string> {
   const npm = resolveNpm();
   // npm is a `#!/usr/bin/env node` shim. When resolveNpm finds it via the nvm
   // fallback (the same process that just installed Node), the parent PATH does
@@ -231,14 +232,46 @@ function runNpm(args: string[], capture = false): string {
   // node. On Windows resolveNpm returns a bare command name (no separator), so
   // there is nothing to prepend and npm is already on PATH.
   const npmDir = npm.includes("/") || npm.includes("\\") ? dirname(npm) : null;
-  const result = spawnSync(npm, args, {
+  return spawnSync(npm, args, {
     encoding: "utf8",
     stdio: capture ? ["ignore", "pipe", "inherit"] : "inherit",
     env: childEnvWithPath([npmDir]),
   });
+}
+
+function runNpm(args: string[], capture = false): string {
+  const result = spawnNpm(args, capture);
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`npm ${args.join(" ")} failed`);
   return capture ? result.stdout.trim() : "";
+}
+
+/**
+ * npm's global packages by name with each one's version, or null when the look FAILED (npm
+ * did not run, printed no JSON, or printed only an `error` object). A package npm lists
+ * without a version (its package.json is unreadable) maps to null; an empty tree has no
+ * `dependencies` key at all. The exit status is deliberately not consulted: `npm ls` exits
+ * non-zero for an unrelated extraneous or invalid global while still printing the full tree.
+ */
+function npmGlobalVersions(): Record<string, string | null> | null {
+  const result = spawnNpm(["ls", "-g", "--depth=0", "--json"], true);
+  if (result.error) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(result.stdout);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object") return null;
+  const dependencies = (parsed as { dependencies?: unknown }).dependencies;
+  if (dependencies === undefined) return "error" in parsed ? null : {};
+  if (dependencies === null || typeof dependencies !== "object") return null;
+  const versions: Record<string, string | null> = {};
+  for (const [name, entry] of Object.entries(dependencies as Record<string, unknown>)) {
+    const version = (entry as { version?: unknown } | null)?.version;
+    versions[name] = typeof version === "string" ? version : null;
+  }
+  return versions;
 }
 
 /**
@@ -286,6 +319,23 @@ function syncNpmGlobalBinToPath(): void {
   addWindowsUserPath(bin);
 }
 
+/** The package's latest release. `--json` pins the output shape whatever the user's npmrc
+ *  `json` setting is: npm prints the field as a one-element array (or a bare string). */
+function resolveLatestVersion(packageName: string): string {
+  const raw = runNpm(["view", packageName, "version", "--json"], true);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(`could not parse the latest version of ${packageName}`);
+  }
+  const version = Array.isArray(parsed) && parsed.length === 1 ? parsed[0] : parsed;
+  if (typeof version !== "string") {
+    throw new Error(`the latest version of ${packageName} was not a version string`);
+  }
+  return version;
+}
+
 function resolveAgedVersion(packageName: string, days: number): string {
   const raw = runNpm(["view", packageName, "time", "--json"], true);
   let parsed: unknown;
@@ -308,12 +358,30 @@ function resolveAgedVersion(packageName: string, days: number): string {
   return version;
 }
 
-function installCli(cli: (typeof AGENT_CLIS)[number], options: CliInstall): void {
+/** What `--clis` does about one CLI given the npm-installed version (null = not installed)
+ *  and the version the run targets: install, move an older one up, or keep what is there.
+ *  A newer install is kept: a cooled-down target must never downgrade a fresher release. */
+export type CliPlan =
+  | { action: "install" }
+  | { action: "update"; from: string }
+  | { action: "keep"; from: string; reason: "current" | "newer" };
+
+export function planCliVersion(installed: string | null, target: string): CliPlan {
+  if (installed === null) return { action: "install" };
+  if (versionLessThan(installed, target)) return { action: "update", from: installed };
+  return {
+    action: "keep",
+    from: installed,
+    reason: versionLessThan(target, installed) ? "newer" : "current",
+  };
+}
+
+function installCli(
+  cli: (typeof AGENT_CLIS)[number],
+  options: CliInstall,
+  npmGlobals: Record<string, string | null>,
+): void {
   const look = findCommand(cli.command);
-  if (look.path !== null) {
-    consola.info(`${cli.name} already installed.`);
-    return;
-  }
   if (look.launchFailed) {
     // Never install off a failed look: the CLI may well be there already.
     consola.warn(
@@ -321,13 +389,50 @@ function installCli(cli: (typeof AGENT_CLIS)[number], options: CliInstall): void
     );
     return;
   }
+  if (look.path !== null && !(cli.packageName in npmGlobals)) {
+    // Only an npm-managed install is ours to move: a CLI from its own installer or a
+    // package manager stays as it is.
+    consola.info(`${cli.name} is installed outside npm; leaving it as it is.`);
+    return;
+  }
+  // npm's version of the package bounds the install whether or not the command is on PATH
+  // (its bin dir may not be): a target below what npm has never overwrites it.
+  const installed = npmGlobals[cli.packageName];
+  if (installed === null) {
+    consola.warn(
+      `${cli.name} is installed by npm, but its version could not be read; leaving it as it is.`,
+    );
+    return;
+  }
 
-  let spec: string = cli.packageName;
-  if (options.cooldown !== null) {
-    spec = `${cli.packageName}@${resolveAgedVersion(cli.packageName, options.cooldown)}`;
-    consola.info(`Installing ${cli.name} (${spec}, cooled down >=${options.cooldown}d) ...`);
-  } else {
-    consola.info(`Installing ${cli.name} ...`);
+  const target = options.cooldown !== null
+    ? resolveAgedVersion(cli.packageName, options.cooldown)
+    : resolveLatestVersion(cli.packageName);
+  const spec = `${cli.packageName}@${target}`;
+  const cooled = options.cooldown !== null ? `, cooled down >=${options.cooldown}d` : "";
+  const plan = planCliVersion(installed ?? null, target);
+  switch (plan.action) {
+    case "keep":
+      if (look.path === null) {
+        consola.warn(
+          `${cli.name} ${plan.from} is installed by npm, but '${cli.command}' is not on PATH; leaving it as it is. Open a new shell and rerun 'agent shell --clis'.`,
+        );
+        return;
+      }
+      consola.info(
+        plan.reason === "current"
+          ? `${cli.name} is current (${plan.from}).`
+          : `${cli.name} ${plan.from} is newer than the target ${target}${cooled}; keeping it.`,
+      );
+      return;
+    case "install":
+      consola.info(`Installing ${cli.name} (${spec}${cooled}) ...`);
+      break;
+    case "update":
+      consola.info(`Updating ${cli.name} ${plan.from} -> ${target}${cooled} ...`);
+      break;
+    default:
+      assertNever(plan);
   }
   runNpm(["install", "-g", spec]);
   refreshWindowsPath();
@@ -347,7 +452,7 @@ function installCli(cli: (typeof AGENT_CLIS)[number], options: CliInstall): void
 }
 
 /**
- * Install (or in verify-only mode, just verify) the optional agent CLIs -- the
+ * Install or update (or in verify-only mode, just verify) the optional agent CLIs -- the
  * `agent shell --clis` path. Best-effort: a missing/uninstallable toolchain warns
  * rather than throwing, so the surrounding `agent shell` run still wires the
  * integration. Does NOT wire the rc blocks -- `runShell` owns that ordering.
@@ -367,13 +472,22 @@ export function installAgentClis(setup: CliSetup): void {
       }
 
       syncNpmGlobalBinToPath();
+      const npmGlobals = npmGlobalVersions();
+      if (npmGlobals === null) {
+        // Fail closed: without npm's view of what is installed, an install could overwrite
+        // a newer package whose bin dir is merely off PATH.
+        consola.warn(
+          "Could not read npm's global package list (npm ls -g failed); skipping the CLI installs.",
+        );
+        return;
+      }
       // Best-effort per CLI: a single package failing (npm error, unreachable registry, a
       // rejected aged-version lookup) must NOT abort the whole run -- installCli/resolveAgedVersion
       // throw, and an uncaught throw here would skip the remaining CLIs AND the shell-integration
       // wiring runShell does after this. Warn and continue so the surrounding `agent shell` finishes.
       for (const cli of AGENT_CLIS) {
         try {
-          installCli(cli, setup);
+          installCli(cli, setup, npmGlobals);
         } catch (e) {
           consola.warn(`Could not install ${cli.name} (${errMessage(e)}); continuing.`);
         }
@@ -429,8 +543,8 @@ export function parseShellAction(args: ShellArgs): ShellAction {
 /**
  * `agent shell`: set up the shell environment for the agents. Wires the
  * copilot-env integration block and reports the launchers state it reconciles
- * from the `launchers` config key; `--clis` also installs the optional agent CLIs
- * (tuned by --cooldown/--no-sudo/--no-prereqs). `--remove` unwires the
+ * from the `launchers` config key; `--clis` also installs or updates the optional agent
+ * CLIs (tuned by --cooldown/--no-sudo/--no-prereqs). `--remove` unwires the
  * integration (the key is the user's and stays). `--all-hosts` targets the
  * Windows CurrentUserAllHosts profile.
  */

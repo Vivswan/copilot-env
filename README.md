@@ -42,7 +42,7 @@ Downloads a single self-contained `agent` binary for your platform into `~/.copi
 
 - **Replaceable:** re-run the installer any time to move to the selected release.
 - **Next:** restart your shell, then `agent start`.
-- **Optional:** run `agent shell --clis` for the Claude/Copilot/Codex CLIs and `agent config --set launchers true` for `cl` / `co` / `cx`.
+- **Optional:** run `agent shell --clis` to install or update the Claude/Copilot/Codex CLIs and `agent config --set launchers true` for `cl` / `co` / `cx`.
 - **Update later:** `agent update` downloads the newest release's binary, checks its SHA256 against `checksums.txt`, then verifies both against the release's Sigstore build-provenance attestation - it must be signed by this repository's GitHub Actions release workflow, and both files must be among the attested bytes - and only then swaps it in place. That check is on by default; `agent update --no-verify` skips it once and `agent config --set verify-provenance false` turns it off. Your config, credentials, and profiles live outside the install directory and are untouched.
 - **Uninstall:** `agent uninstall` removes everything copilot-env manages (daemons, profiles, agent wiring, shell integration, credentials, data, and the install itself). It does not remove the agent CLIs (`claude` / `copilot` / `codex`).
 - **Specific version:** replace `latest` with an exact release tag, or pass `--version`:
@@ -82,7 +82,7 @@ agent env                  # print shell directives for the calling shell (CODEX
 agent mcp                  # MCP wiring status (--serve runs the stdio server; --remove unwires)
 agent cost                 # estimated token spend across the proxy usage DBs + Codex/Claude session logs (--days N, --json, --per-day, --sources; --no-index parses every log instead of using the usage index)
 agent update               # update to the latest release (--check; --auto-status; --no-verify skips the provenance check; `agent config --set auto-update true` self-updates daily, cooldown via `update-cooldown`)
-agent shell                # wire rc / $PROFILE; --clis installs the CLIs, --remove unwires (cl/co/cx follow the `launchers` config key)
+agent shell                # wire rc / $PROFILE; --clis installs/updates the CLIs, --remove unwires (cl/co/cx follow the `launchers` config key)
 agent uninstall            # remove copilot-env entirely (--yes headless, --dry-run preview, --force to delete a source checkout)
 agent codex                # configure Codex; no flag auto-detects the backend, --check reports it
 agent codex --direct       # force GitHub Copilot Direct (no auto-detect probe)

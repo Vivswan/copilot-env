@@ -708,10 +708,13 @@ program
     "Set up the shell environment: wire the copilot-env integration (rc / PowerShell $PROFILE) " +
       "and optionally install the agent CLIs (the cl / co / cx launchers follow the `launchers` config key).",
   )
-  .option("--clis", "Also install the optional claude / copilot / codex agent CLIs.")
+  .option(
+    "--clis",
+    "Also install the optional claude / copilot / codex agent CLIs, updating an outdated npm install.",
+  )
   .option(
     "--cooldown [days]",
-    `With --clis: install the newest agent-CLI npm releases aged >= DAYS. Bare --cooldown uses ${DEFAULT_CLI_COOLDOWN_DAYS} days.`,
+    `With --clis: target the newest agent-CLI npm releases aged >= DAYS. Bare --cooldown uses ${DEFAULT_CLI_COOLDOWN_DAYS} days.`,
     coerceDays,
   )
   .option(

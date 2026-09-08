@@ -1,5 +1,20 @@
 # Changelog
 
+## [4.0.2](https://github.com/Vivswan/copilot-env/compare/v4.0.1...v4.0.2) (2026-09-08)
+
+
+### Features
+
+* agent config takes the terminal width like agent --help ([#168](https://github.com/Vivswan/copilot-env/issues/168)) ([8ac15a8](https://github.com/Vivswan/copilot-env/commit/8ac15a88fc8d7afb2a2002c18aa5c1ccdeacb5fb))
+* agent shell --clis updates an outdated npm-installed CLI ([#169](https://github.com/Vivswan/copilot-env/issues/169)) ([c18f759](https://github.com/Vivswan/copilot-env/commit/c18f759d03a10c6fd9cf6a872cc363325f2e83a7))
+* proxy-logs defaults to off ([#167](https://github.com/Vivswan/copilot-env/issues/167)) ([6f3e9e9](https://github.com/Vivswan/copilot-env/commit/6f3e9e94b16b1b256dc4d579407fdcb9094a46e2))
+
+
+### Bug Fixes
+
+* bootstrap deno from the pinned copy and keep the installer out of shell rc files ([#166](https://github.com/Vivswan/copilot-env/issues/166)) ([8bc67d0](https://github.com/Vivswan/copilot-env/commit/8bc67d009792c97bbe9ed4d9178f3b067bfc8119))
+* the shell integration puts the pinned deno first, not merely on PATH ([#170](https://github.com/Vivswan/copilot-env/issues/170)) ([e7aae09](https://github.com/Vivswan/copilot-env/commit/e7aae09d220938b283c215b01a39e759b42dbd93))
+
 ## [4.0.1](https://github.com/Vivswan/copilot-env/compare/v4.0.0...v4.0.1) (2026-09-06)
 
 

@@ -192,8 +192,9 @@ function runGet(get: string | undefined, platform: NodeJS.Platform): void {
   process.stdout.write(`${configTableOutput(platform)}\n`);
 }
 
-/** The table never spreads wider than this, however wide the terminal. */
-const TABLE_WIDTH_MAX = 80;
+/** Columns assumed off a TTY (`process.stdout.columns` is undefined there and 0 on a size-less
+ *  pty), the same fallback Commander's help uses; on a TTY the table takes the terminal's width. */
+const TABLE_WIDTH_FALLBACK = 80;
 /** Fewest columns the right column (type, default, description) keeps before the key=value
  *  column stops growing for it (a longer key=value overflows onto its own line) and below
  *  which wrapping stops (a narrower ribbon reads worse than the terminal's own breaking). */
@@ -239,7 +240,7 @@ interface Cell {
 export interface ConfigTableOptions {
   /** Decides which stored values are inert (a POSIX-only key's on Windows). */
   platform: NodeJS.Platform;
-  /** Columns the table may use (already capped at TABLE_WIDTH_MAX by the caller). */
+  /** Columns the table may use: the terminal's, or TABLE_WIDTH_FALLBACK off a TTY. */
   width: number;
   /** A tracked daemon is alive, so a stored key it read at launch earns the restart line. */
   daemonUp: boolean;
@@ -352,8 +353,7 @@ export function configTable(data: CopilotEnvConfigData, opts: ConfigTableOptions
 export function configTableOutput(platform: NodeJS.Platform = process.platform): string {
   return configTable(new CopilotEnvConfig().read(), {
     platform,
-    // `columns` is undefined off a TTY and 0 on a size-less pty: both mean the cap.
-    width: Math.min(process.stdout.columns || TABLE_WIDTH_MAX, TABLE_WIDTH_MAX),
+    width: process.stdout.columns || TABLE_WIDTH_FALLBACK,
     daemonUp: anyTrackedDaemonAlive(),
     proxyVersion: nextProxyVersion(),
     color: COLOR_ENABLED,

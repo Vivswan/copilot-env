@@ -25,8 +25,11 @@ import {
   type ProjectedProxyEntry,
   type TotalOverConfigKeys,
 } from "../src/copilot_api/env_config.ts";
+import { anyTrackedDaemonAlive } from "../src/copilot_api/daemon.ts";
 import { DEFAULT_WEB_SEARCH_MODEL } from "../src/copilot_api/web_search.ts";
 import { CopilotApiPaths } from "../src/copilot_api/paths.ts";
+import { nextProxyVersion } from "../src/proxy_float.ts";
+import { COLOR_ENABLED } from "../src/utils/ansi.ts";
 import { SECONDS_PER_DAY } from "../src/utils/time.ts";
 import { afterEach, expect, removeDir, test } from "./helpers/testing.ts";
 import { envSnapshot, isolateProxyHome } from "./helpers.ts";
@@ -442,6 +445,38 @@ test("codex-host: stored else default, POSIX-only set, and Windows always reads 
   expect(stdoutOf(() => runConfig({ get: true }, "win32"))).toBe(
     `${configTableOutput("win32")}\n`,
   );
+});
+
+test("configTableOutput() takes the terminal's width; off a TTY or on a size-less pty it uses 80", () => {
+  tmpHome();
+  // What configTableOutput() renders at `width`: the (empty) store and the live daemon/proxy state.
+  const tableAt = (width: number): string =>
+    configTable(new CopilotEnvConfig().read(), {
+      platform: "linux",
+      width,
+      daemonUp: anyTrackedDaemonAlive(),
+      proxyVersion: nextProxyVersion(),
+      color: COLOR_ENABLED,
+    });
+  const setColumns = (value: number): void => {
+    Object.defineProperty(process.stdout, "columns", { value, configurable: true, writable: true });
+  };
+  // The test runner's stdout is no TTY: `columns` is absent here, as it is off any TTY.
+  const orig = Object.getOwnPropertyDescriptor(process.stdout, "columns");
+  expect(process.stdout.columns).toBeUndefined();
+  expect(configTableOutput("linux")).toBe(tableAt(80));
+  try {
+    setColumns(140);
+    expect(tableAt(140)).not.toBe(tableAt(80));
+    expect(configTableOutput("linux")).toBe(tableAt(140));
+    // A size-less pty reports 0 columns: the fallback again, not a zero-width table.
+    setColumns(0);
+    expect(process.stdout.columns).toBe(0);
+    expect(configTableOutput("linux")).toBe(tableAt(80));
+  } finally {
+    if (orig === undefined) Reflect.deleteProperty(process.stdout, "columns");
+    else Object.defineProperty(process.stdout, "columns", orig);
+  }
 });
 
 test("the registry is alphabetical by CLI name with unique storage keys", () => {

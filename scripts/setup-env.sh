@@ -30,11 +30,11 @@ deno install --frozen
 git config core.hooksPath .githooks
 
 echo "Done. Try: deno task typecheck && deno task lint && deno task test"
-# The bootstrap never edits shell rc files, so a shell that did not already have the pinned
-# deno's directory on PATH says so here (the Windows installer persists it itself; the
-# devcontainer sets it in devcontainer.json; shell/agents.bashrc adds it when sourced).
+# The bootstrap never edits shell rc files (the Windows installer persists the directory
+# itself; the devcontainer sets it in devcontainer.json; shell/agents.bashrc adds it when
+# sourced). A fresh sh does the lookup: this shell has already run deno, and bash's
+# `command -v` then answers from its hash table, not PATH.
 deno_bin="${DENO_INSTALL:-$HOME/.deno}/bin"
-case ":${caller_path}:" in
-    *":${deno_bin}:"*) ;;
-    *) echo "Note: add ${deno_bin} to PATH for new shells; this script does not edit shell rc files." ;;
-esac
+if [ "$(PATH="${caller_path}" /bin/sh -c 'command -v deno' 2>/dev/null)" != "${deno_bin}/deno" ]; then
+    echo "Note: put ${deno_bin} first on PATH for new shells; this script does not edit shell rc files."
+fi

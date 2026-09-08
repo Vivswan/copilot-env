@@ -379,6 +379,14 @@ test("every registry key round-trips: a CLI-set value survives read() and reache
   }
 });
 
+test("proxy-logs: off by default, a stored value wins", () => {
+  tmpHome();
+  const cfg = new CopilotEnvConfig();
+  expect(cfg.proxyLogsEnabled()).toBe(false);
+  runConfig({ set: ["proxy-logs", "true"] });
+  expect(cfg.proxyLogsEnabled()).toBe(true);
+});
+
 test("auto-update: stored else default, degraded read like auto-start (the preflight is best-effort)", () => {
   tmpHome();
   const cfg = new CopilotEnvConfig();

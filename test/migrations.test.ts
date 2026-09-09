@@ -155,7 +155,9 @@ test("4.0.2 gh pin: sole-account machines pin every pin-less gh-cli slot; anythi
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
 
   // Multiple accounts (or an unproven look): auto slots stay auto - only the
-  // user can choose whose Copilot credit to spend.
+  // user can choose whose Copilot credit to spend. A BROKEN entry still counts
+  // as an account: a broken active login is never abandoned for a healthy
+  // bystander, and a login seen only broken could never verify its pin.
   state.setCredential(null, { kind: "gh-cli", ghUser: null });
   pinSoleGhAccount(() => ({
     accounts: [
@@ -163,6 +165,19 @@ test("4.0.2 gh pin: sole-account machines pin every pin-less gh-cli slot; anythi
       { host: "github.com", login: "b", active: false, source: "keyring" },
     ],
   }));
+  expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
+  pinSoleGhAccount(() => ({
+    accounts: [
+      { host: "github.com", login: "healthy", active: false, source: "keyring" },
+      { host: "github.com", login: "hurt", active: true, source: "keyring", broken: true },
+    ],
+  }), () => true);
+  expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
+  pinSoleGhAccount(() => ({
+    accounts: [
+      { host: "github.com", login: "hurt", active: true, source: "keyring", broken: true },
+    ],
+  }), () => true);
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
   pinSoleGhAccount(() => ({ accounts: [], unproven: true }));
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });

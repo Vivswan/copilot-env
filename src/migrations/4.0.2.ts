@@ -17,18 +17,19 @@ import type { Migration } from "./index.ts";
 
 /** The machine's sole pickable github.com login, or null: the same pin-or-ask
  *  rule the auth flow settles with. An unproven look pins nothing (a guess
- *  could spend the wrong account's credit), and so does any count but one. */
+ *  could spend the wrong account's credit), and so does any count but one --
+ *  where EVERY github.com entry counts, broken ones included: a broken active
+ *  login is still an account the user never chose to abandon, so a healthy
+ *  bystander is never pinned over it. A login seen only broken could never
+ *  verify its pin. */
 function soleGhLogin(look: () => GhAccountsLook): string | null {
   const { accounts, unproven } = look();
   if (unproven) return null;
-  const logins = [
-    ...new Set(
-      accounts
-        .filter((a) => a.host === GH_COPILOT_HOST && a.broken !== true)
-        .map((a) => a.login),
-    ),
-  ];
-  const only = logins.length === 1 ? logins[0] ?? "" : "";
+  const github = accounts.filter((a) => a.host === GH_COPILOT_HOST);
+  const logins = [...new Set(github.map((a) => a.login))];
+  if (logins.length !== 1) return null;
+  if (!github.some((a) => a.broken !== true)) return null;
+  const only = logins[0] ?? "";
   return GH_LOGIN_RE.test(only) ? only : null;
 }
 

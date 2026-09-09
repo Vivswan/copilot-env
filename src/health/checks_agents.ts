@@ -34,24 +34,27 @@ function describeDirectGhAuth(a: CodexDirectAuthFacts): {
   detail: string;
   ghFix: string;
 } {
+  // Always name the account (no hidden information): a pinned slot's verdict is
+  // about THAT account (gh's active login is exactly what it did NOT check), an
+  // auto slot names the account it follows -- or says it is on AUTO when the
+  // account list could not name the active login -- and even the unproven line
+  // carries it (the account list is a separate probe that may have succeeded).
+  const accountClause = (a.ghUser ?? null) !== null
+    ? `account '${a.ghUser}'`
+    : (a.ghActiveLogin ?? null) !== null
+    ? `AUTO - currently account ${a.ghActiveLogin}`
+    : "AUTO - follows gh's active account";
   if (a.unproven) {
     return {
       ok: false,
       detail: a.command === null
         ? "gh auth: could not check for the GitHub CLI (the command probe failed to run)"
-        : "gh auth: could not check gh authentication (`gh auth token` did not run to completion)",
+        : "gh auth: could not check gh authentication " +
+          `(\`gh auth token\` did not run to completion; ${accountClause})`,
       ghFix: "re-run `agent health` (the gh check did not run to completion)",
     };
   }
-  // Always name the account (no hidden information): a pinned slot's verdict is
-  // about THAT account (gh's active login is exactly what it did NOT check), and
-  // an auto slot names the account it follows -- or says it is on AUTO when the
-  // account list could not name the active login.
-  const account = (a.ghUser ?? null) !== null
-    ? ` as account '${a.ghUser}'`
-    : (a.ghActiveLogin ?? null) !== null
-    ? ` (AUTO - currently account ${a.ghActiveLogin})`
-    : " (AUTO - follows gh's active account)";
+  const account = (a.ghUser ?? null) !== null ? ` as ${accountClause}` : ` (${accountClause})`;
   return {
     ok: a.command !== null && a.authenticated,
     detail: a.command === null

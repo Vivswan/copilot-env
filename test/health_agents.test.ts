@@ -264,10 +264,26 @@ test("checkCodex/checkClaude direct: an UNPROVEN gh probe says could-not-check, 
   const codexUnproven = checkCodex(codexDirect);
   expect(codexUnproven.status).toBe("warn");
   expect(codexUnproven.detail).toContain(
-    "gh auth: could not check gh authentication (`gh auth token` did not run to completion)",
+    "gh auth: could not check gh authentication " +
+      "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
   );
   expect(codexUnproven.detail).not.toContain("is not authenticated");
   expect(codexUnproven.fix).toBe("re-run `agent health` (the gh check did not run to completion)");
+  // An unproven token probe never discards a discovered AUTO account: the
+  // account list is a separate probe that may have succeeded.
+  const codexUnprovenNamed = checkCodex({
+    ...codexDirect,
+    directAuth: {
+      command: "/bin/gh",
+      authenticated: false,
+      unproven: true,
+      ghActiveLogin: "vivswan",
+    },
+  });
+  expect(codexUnprovenNamed.detail).toContain(
+    "gh auth: could not check gh authentication " +
+      "(`gh auth token` did not run to completion; AUTO - currently account vivswan)",
+  );
   // The gh LOOKUP itself failed to run: not a proven "GitHub CLI not found".
   const lookupUnproven = checkCodex({
     ...codexDirect,
@@ -298,7 +314,8 @@ test("checkCodex/checkClaude direct: an UNPROVEN gh probe says could-not-check, 
   });
   expect(claudeUnproven.status).toBe("warn");
   expect(claudeUnproven.detail).toContain(
-    "gh auth: could not check gh authentication (`gh auth token` did not run to completion)",
+    "gh auth: could not check gh authentication " +
+      "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
   );
   expect(claudeUnproven.detail).not.toContain("is not authenticated");
   expect(claudeUnproven.fix).toBe("re-run `agent health` (the gh check did not run to completion)");

@@ -620,8 +620,9 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss keeps
       return { token: null };
     })
   ).toThrow(
-    "gh is not authenticated as account 'work' - run `gh auth login` for that account, " +
-      "then retry `agent auth`",
+    "gh has no saved credential for account 'work' (pinning needs a saved login; " +
+      "an env GH_TOKEN cannot serve `gh auth token --user`) - run `gh auth login` " +
+      "for that account, pass --gh-user <login> for another, or choose auto in `agent auth`",
   );
   expect(() => loginWithGhCli("work", () => ({ token: null, unproven: true }))).toThrow(
     "could not check gh authentication (`gh auth token` did not run to completion) - retry `agent auth`",

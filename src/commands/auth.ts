@@ -514,8 +514,10 @@ export function loginWithGhCli(
     throw new Error(
       ghUser === null
         ? "gh is not authenticated - run `gh auth login`, then retry `agent auth`"
-        : `gh is not authenticated as account '${ghUser}' - run \`gh auth login\` for that ` +
-          "account, then retry `agent auth`",
+        : `gh has no saved credential for account '${ghUser}' (pinning needs a saved ` +
+          "login; an env GH_TOKEN cannot serve `gh auth token --user`) - run " +
+          `\`gh auth login\` for that account, pass --gh-user <login> for another, ` +
+          "or choose auto in `agent auth`",
     );
   }
   logger.success(

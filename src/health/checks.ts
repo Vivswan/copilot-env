@@ -638,6 +638,17 @@ export function checkProfileConsistency(f: NamedRuntimeTarget): CheckResult {
   return { ...base, status: "ok", detail };
 }
 
+/** The account note for a gh-cli slot's verdict lines (no hidden information,
+ *  on the failing and unproven lines too): the pinned login, or the account an
+ *  auto slot follows right now (bare AUTO when the list was unreadable). */
+function ghAccountClause(pin: string | null, followed: string | null): string {
+  return pin !== null
+    ? `account '${pin}'`
+    : followed !== null
+    ? `AUTO - currently account ${followed}`
+    : "AUTO - follows gh's active account";
+}
+
 /**
  * A narrowed run's credential line: the addressed NAMED profile's slot (provider,
  * mode, probed direct identity) plus whether the credential actually RESOLVES --
@@ -690,9 +701,11 @@ export function checkProfileAuth(
   const source = storedCredentialKind(slot.provider, resolution.storedToken);
   const resolves = credentialResolves(source, resolution.ghAuthenticated);
   // Always name the account (no hidden information): a pinned slot's own login,
-  // or the account an auto slot follows right now (when the list was readable).
+  // or the account an auto slot follows right now (when the list was readable) --
+  // on the failing and unproven lines too.
   const pin = resolution.ghUser ?? null;
   const followed = resolution.ghActiveLogin ?? null;
+  const accountClause = ghAccountClause(pin, followed);
   if (!resolves) {
     // An unproven gh probe keeps this warn arm (the credential still isn't shown
     // to work) but must not claim gh IS unauthenticated -- gh was never asked.
@@ -706,9 +719,10 @@ export function checkProfileAuth(
           : `provider '${slot.provider}' is recorded for profile '${name}' but no credential resolves`,
         slot.provider === "gh-cli"
           ? unproven
-            ? "could not check gh authentication (`gh auth token` did not run to completion)"
+            ? "could not check gh authentication " +
+              `(\`gh auth token\` did not run to completion; ${accountClause})`
             : pin === null
-            ? "`gh` is unauthenticated - run `gh auth login`, or re-provision the profile"
+            ? `\`gh\` is unauthenticated (${accountClause}) - run \`gh auth login\`, or re-provision the profile`
             : `\`gh\` is not authenticated as account '${pin}' - run \`gh auth login\` for that account, or re-provision the profile`
           : `the slot's stored token is missing - run \`agent auth --profile ${name}\` to re-provision`,
       ].join("\n"),
@@ -945,9 +959,12 @@ export function checkAuth(f: AuthFacts): CheckResult {
         : `provider '${f.provider}' is selected but no credential resolves`,
       f.provider === "gh-cli"
         ? unproven
-          ? "could not check gh authentication (`gh auth token` did not run to completion)"
+          ? "could not check gh authentication " +
+            `(\`gh auth token\` did not run to completion; ${ghAccountClause(pin, followed)})`
           : pin === null
-          ? "`gh` is unauthenticated - run `gh auth login`, or `agent auth` to switch provider"
+          ? `\`gh\` is unauthenticated (${
+            ghAccountClause(pin, followed)
+          }) - run \`gh auth login\`, or \`agent auth\` to switch provider`
           : `\`gh\` is not authenticated as account '${pin}' - run \`gh auth login\` for that account, or \`agent auth\` to switch`
         : "the stored token is missing - run `agent auth` to re-provision",
       ...profilesLine,

@@ -434,6 +434,16 @@ test("checkProfileAuth: a recorded provider whose credential does not resolve wa
   const ghDown = checkProfileAuth(P, ghSlot, { storedToken: false, ghAuthenticated: false });
   expect(ghDown.status).toBe("warn");
   expect(ghDown.detail).toContain("gh auth login");
+  // A failing AUTO slot still names the account it follows (no hidden
+  // information: the failure is about vivswan's credential).
+  const ghDownNamed = checkProfileAuth(P, ghSlot, {
+    storedToken: false,
+    ghAuthenticated: false,
+    ghActiveLogin: "vivswan",
+  });
+  expect(ghDownNamed.detail).toContain(
+    "`gh` is unauthenticated (AUTO - currently account vivswan) - run `gh auth login`",
+  );
 
   // A PINNED slot's proven miss names its account; gh's active login may be fine.
   const ghPinnedDown = checkProfileAuth(P, ghSlot, {
@@ -473,7 +483,8 @@ test("checkProfileAuth: a recorded provider whose credential does not resolve wa
   expect(ghUnproven.status).toBe("warn");
   expect(ghUnproven.detail).toBe([
     "provider 'gh-cli' is recorded for profile 'p' but its credential could not be checked",
-    "could not check gh authentication (`gh auth token` did not run to completion)",
+    "could not check gh authentication " +
+    "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
   ].join("\n"));
   expect(ghUnproven.fix).toBe("agent auth --profile p");
   expect(ghUnproven.value).toMatchObject({ ghAuthUnproven: true });
@@ -1105,7 +1116,8 @@ test("an UNPROVEN gh probe travels from the codexDirectAuth seam into both auth 
   expect(authCheck?.status).toBe("warn");
   expect(authCheck?.detail).toBe([
     "provider 'gh-cli' is selected but its credential could not be checked",
-    "could not check gh authentication (`gh auth token` did not run to completion)",
+    "could not check gh authentication " +
+    "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
   ].join("\n"));
 
   const narrowed = await gatherFacts("auth", { profile: P }, {
@@ -1131,7 +1143,8 @@ test("an UNPROVEN gh probe travels from the codexDirectAuth seam into both auth 
   expect(profileCheck?.status).toBe("warn");
   expect(profileCheck?.detail).toBe([
     "provider 'gh-cli' is recorded for profile 'p' but its credential could not be checked",
-    "could not check gh authentication (`gh auth token` did not run to completion)",
+    "could not check gh authentication " +
+    "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
   ].join("\n"));
 });
 

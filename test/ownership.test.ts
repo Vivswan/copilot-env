@@ -68,7 +68,7 @@ test("the on-disk contract is pinned: filename and ledger keys", () => {
   const paths = isolate();
   // These spellings are external contracts (an existing install's records must
   // stay readable): a rename here would orphan every shipped ledger.
-  expect(basename(paths.ownershipFile)).toBe(".copilot-env-ownership.json");
+  expect(basename(paths.ownershipFile)).toBe("ownership.json");
   const ledger = new OwnershipLedger();
   ledger.record("webSearchDeny", "/a/settings.json");
   ledger.record("claudeDesktop", "/lib/uuid.json");
@@ -105,9 +105,10 @@ test("reads write nothing on a fresh home (no lock sidecar); a mutation takes th
     expect(ledger.ownedPaths("codexCatalog")).toEqual([]);
   })).toEqual([]);
   expect(readdirSync(dirname(paths.ownershipFile)).sort()).toEqual(before);
-  // The control, on disk: a mutation takes the ops lock (its sidecar lands) and writes
-  // the ledger -- bookkeeping inside the data home, so it prints nothing either.
-  const sidecar = `${paths.ownershipFile}.ops.lock.oslock`;
+  // The control, on disk: a mutation takes the ops lock (its sidecar lands under
+  // locks/) and writes the ledger -- bookkeeping inside the data home, so it
+  // prints nothing either.
+  const sidecar = `${paths.ownershipOpsLock}.oslock`;
   expect(existsSync(sidecar)).toBe(false);
   expect(reported(() => ledger.record("claudeDesktop", "/lib/uuid.json"))).toEqual([]);
   expect(existsSync(sidecar)).toBe(true);

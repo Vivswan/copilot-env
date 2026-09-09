@@ -61,12 +61,17 @@ const LOAD_RETRY_MS = 4;
  */
 export class CopilotApiConfig {
   readonly path: string;
+  /** update()'s serialization lock. Defaults beside the store; the ROOT stores
+   *  pass their `locks/` path from CopilotApiPaths (one home-clutter-free dir
+   *  for the permanent sidecars). */
+  readonly lockPath: string;
 
-  constructor(path?: string) {
+  constructor(path?: string, lockPath?: string) {
     if (path === undefined) {
       path = new CopilotApiPaths().configFile;
     }
     this.path = path;
+    this.lockPath = lockPath ?? `${path}.lock`;
   }
 
   /** The proxy config for `profile`'s daemon home (null = the effective home). */
@@ -217,11 +222,10 @@ export class CopilotApiConfig {
   }
 
   /** Load (loadForUpdate, with its refusals), apply ``mutate`` in place, save, and return
-   *  the result. Serialized across processes by a best-effort `<file>.lock` so concurrent
-   *  read-modify-writes don't lost-update. */
+   *  the result. Serialized across processes by a best-effort lock (`lockPath`) so
+   *  concurrent read-modify-writes don't lost-update. */
   update(mutate: (d: Record<string, unknown>) => void): Record<string, unknown> {
-    const lockPath = `${this.path}.lock`;
-    return withFileLockSync(lockPath, BOUNDED_LOCK_POLICY, () => {
+    return withFileLockSync(this.lockPath, BOUNDED_LOCK_POLICY, () => {
       const data = this.loadForUpdate();
       mutate(data);
       this.save(data);

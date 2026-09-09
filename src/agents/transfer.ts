@@ -2,8 +2,8 @@
 // PORTABLE copilot-env setting, for moving a setup to another machine.
 //
 // Portable state is exactly the two account-wide stores -- the preferences
-// (`.copilot-env-config.json`, CopilotEnvConfig) and the credential store
-// (`.copilot-env-state.json`, CopilotEnvState: default credential + named
+// (`preferences.json`, CopilotEnvConfig) and the credential store
+// (`credentials.json`, CopilotEnvState: default credential + named
 // profile slots). Everything else is DERIVED or machine-local and is re-derived
 // on import, never copied: agent config files, daemon homes,
 // port reservations, the Codex catalog cache fields (`codexCatalog*`), and the

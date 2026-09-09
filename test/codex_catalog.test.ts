@@ -884,7 +884,7 @@ test("a proven acceptance survives an acceptance cache that cannot be read or wr
   const file = new CopilotApiPaths().codexModelCatalogFile;
   writeFileSync(file, '{"models":[{"slug":"x"}]}');
   // The state store's path is a directory: reads and writes both throw.
-  const stateFile = join(dir, ".copilot-env-state.json");
+  const stateFile = join(dir, "credentials.json");
   rmSync(stateFile, { force: true });
   mkdirSync(stateFile);
   const deps = { acceptsCatalog: () => true, codexVersion: () => "1.0.0" };

@@ -14,6 +14,7 @@ import { saveJsonIfChanged } from "../claude/desktop.ts";
 import { knownCodexHomes } from "../codex/host.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import { readCodexToml, saveCodexToml } from "../codex/toml_io.ts";
+import { moveRootStores } from "./4.0.2.ts";
 import { stopTrackedProxy } from "../copilot_api/daemon.ts";
 import { CopilotApiConfig } from "../copilot_api/config.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
@@ -74,6 +75,13 @@ export async function moveDataHome(opts: DataHomeMoveOptions): Promise<void> {
     renameSync(legacyHome, nextHome);
     consola.info(`  moved ${legacyHome} -> ${nextHome}`);
   }
+  // The moved-in stores still wear their pre-4.0.2 names, but every read below
+  // (the ledger-fed desktopEntryPaths thunk above all) goes through the
+  // new-only readers -- and the hoisted v402RootLayout step only runs after
+  // this whole step returns. Rename them whenever the destination exists, NOT
+  // only on the move path: a re-run resuming after a crash right after the
+  // directory rename enters with legacyHome already absent.
+  if (existsSync(nextHome)) moveRootStores(nextHome);
 
   /** `value` repointed onto the new home, or null when it does not reference the
    *  legacy home (foreign paths are never ours to rewrite). */
@@ -150,6 +158,7 @@ async function stopLegacyDaemons(): Promise<void> {
 
 export const v356: Migration = {
   version: "3.5.6",
+  layout: true,
   description: `move the data home to ${DEFAULT_HOME}`,
   run: () =>
     moveDataHome({

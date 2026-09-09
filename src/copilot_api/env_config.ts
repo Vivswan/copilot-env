@@ -1,6 +1,6 @@
 // copilot-env's account/machine-wide PREFERENCES, managed by `agent config`. Separate from
 // the credential store (CopilotEnvState): this holds user-tunable knobs only. Stored in
-// `.copilot-env-config.json` under the copilot-api home, built on CopilotApiConfig (the
+// `preferences.json` under the copilot-api home, built on CopilotApiConfig (the
 // atomic JSON store) + a lenient valibot schema, mirroring CopilotEnvState/CopilotEnvRunState.
 //
 // Precedence for every knob is: explicit flag/env (per-invocation) > this stored config >
@@ -870,14 +870,19 @@ export function isStoredValueInert(
 }
 
 /**
- * Read/write helper for `.copilot-env-config.json`, mirroring CopilotEnvState/RunState on top
+ * Read/write helper for `preferences.json`, mirroring CopilotEnvState/RunState on top
  * of CopilotApiConfig (sorted keys, 0600, atomic rename, Windows EPERM/EBUSY retry).
  */
 export class CopilotEnvConfig {
   private readonly store: CopilotApiConfig;
 
   constructor(path?: string) {
-    this.store = new CopilotApiConfig(path ?? new CopilotApiPaths().envConfigFile);
+    if (path === undefined) {
+      const paths = new CopilotApiPaths();
+      this.store = new CopilotApiConfig(paths.envConfigFile, paths.envConfigLock);
+    } else {
+      this.store = new CopilotApiConfig(path);
+    }
   }
 
   /** Current preferences; absent/ill-typed/out-of-range fields come back `undefined`.

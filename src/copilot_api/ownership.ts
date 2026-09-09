@@ -1,7 +1,7 @@
 // The machine-local artifact-ownership ledger: the record of which entries
 // copilot-env ITSELF wrote into external config artifacts, so a removal path
 // can take back exactly what we added and never an entry the user (or another
-// program) put there. One store (`.copilot-env-ownership.json` under the ROOT
+// program) put there. One store (`ownership.json` under the ROOT
 // home) for every exact-path ownership kind:
 //   - webSearchDeny:  settings.json files whose `permissions.deny` WE added the
 //     `WebSearch` entry to (src/claude/config.ts).
@@ -62,7 +62,7 @@ const LEDGER_KEYS = {
 export type OwnedArtifactKind = keyof typeof LEDGER_KEYS;
 
 // Pre-ledger releases recorded the same ownership under these keys in the
-// shared state store (`.copilot-env-state.json`). ONLY adoptLegacyRecords (the
+// shared state store (`credentials.json`). ONLY adoptLegacyRecords (the
 // 3.5.6 ownership migration's primitive) reads them: the ledger's own readers
 // answer from the ledger file alone, so an unmigrated record owns nothing here
 // until `agent update` has moved it.
@@ -112,9 +112,9 @@ export class OwnershipLedger {
   private readonly opsLock: string;
 
   constructor(paths: CopilotApiPaths = new CopilotApiPaths()) {
-    this.store = new CopilotApiConfig(paths.ownershipFile);
-    this.legacyStore = new CopilotApiConfig(paths.sharedStateFile);
-    this.opsLock = `${paths.ownershipFile}.ops.lock`;
+    this.store = new CopilotApiConfig(paths.ownershipFile, paths.ownershipLock);
+    this.legacyStore = new CopilotApiConfig(paths.sharedStateFile, paths.sharedStateLock);
+    this.opsLock = paths.ownershipOpsLock;
   }
 
   /** Every artifact path the ledger records for `kind`. STRICT (loadStrict): it

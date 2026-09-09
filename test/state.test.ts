@@ -25,11 +25,11 @@ function tmpHome(): void {
 /** Write the raw state file verbatim (fixtures the typed API cannot -- and must
  *  not -- produce: the legacy top-level pair, stray/junk fields). */
 function seedRawState(data: Record<string, unknown>): void {
-  writeFileSync(join(dir, ".copilot-env-state.json"), `${JSON.stringify(data)}\n`);
+  writeFileSync(join(dir, "credentials.json"), `${JSON.stringify(data)}\n`);
 }
 
 function rawState(): Record<string, unknown> {
-  return JSON.parse(readFileSync(join(dir, ".copilot-env-state.json"), "utf8")) as Record<
+  return JSON.parse(readFileSync(join(dir, "credentials.json"), "utf8")) as Record<
     string,
     unknown
   >;
@@ -380,7 +380,7 @@ test("commitProfile mutates the raw slot in place, preserving unknown keys", () 
   // A newer release may write fields this version does not know; the commit
   // must not erase them (the store-wide preserve-unknown-keys contract).
   writeFileSync(
-    join(dir, ".copilot-env-state.json"),
+    join(dir, "credentials.json"),
     `${
       JSON.stringify({
         profiles: { work: { mode: "proxy", authProvider: "gh-token", futureField: "keep-me" } },
@@ -392,7 +392,7 @@ test("commitProfile mutates the raw slot in place, preserving unknown keys", () 
     credential: { kind: "stored", provider: "gh-token", token: "ghp_new" },
     mode: "direct",
   });
-  const raw = JSON.parse(readFileSync(join(dir, ".copilot-env-state.json"), "utf8")) as {
+  const raw = JSON.parse(readFileSync(join(dir, "credentials.json"), "utf8")) as {
     profiles: Record<string, Record<string, unknown>>;
   };
   expect(raw.profiles.work?.futureField).toBe("keep-me");
@@ -465,13 +465,13 @@ test("legacy ownership keys in the state file survive writes and stay out of rea
   // 3.5.6 migration moves them into the ledger (ownership.test.ts), so the
   // state store must neither surface them nor destroy them on its own writes.
   writeFileSync(
-    join(dir, ".copilot-env-state.json"),
+    join(dir, "credentials.json"),
     `${JSON.stringify({ webSearchDenyOwnedPaths: ["/a/settings.json"] })}\n`,
   );
   const state = new CopilotEnvState();
   expect("webSearchDenyOwnedPaths" in state.read()).toBe(false);
   state.setCredential(null, { kind: "stored", provider: "gh-token", token: "ghu_x" });
-  const raw = JSON.parse(readFileSync(join(dir, ".copilot-env-state.json"), "utf8"));
+  const raw = JSON.parse(readFileSync(join(dir, "credentials.json"), "utf8"));
   expect(raw.webSearchDenyOwnedPaths).toEqual(["/a/settings.json"]);
 });
 
@@ -483,7 +483,7 @@ test("profileNames skips a hand-edited invalid profile key so it can never reach
   // dropped at the read boundary -- the same sweep semantic as profileHomeNames'
   // stray-directory filter -- while valid siblings still come back.
   writeFileSync(
-    join(dir, ".copilot-env-state.json"),
+    join(dir, "credentials.json"),
     `${
       JSON.stringify({
         profiles: {

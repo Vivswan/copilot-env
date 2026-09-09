@@ -54,7 +54,7 @@ import {
   parseCatalogModels,
   parseModelList,
 } from "../copilot_api/models.ts";
-import { CopilotApiPaths, resolveRootHome } from "../copilot_api/paths.ts";
+import { CopilotApiPaths, HELPERS_DIR_NAME, resolveRootHome } from "../copilot_api/paths.ts";
 import { proxyLoopbackOrigin, wiringPortFor } from "../copilot_api/port.ts";
 import {
   parseProfileName,
@@ -446,13 +446,13 @@ export function desktopModelsFromPicks(
 
 // --- credential-helper scripts -----------------------------------------------------
 
-/** The generated helper-script path for a wiring. Undotted (a foreign program reads it,
- *  the codex-model-catalog.json convention) under the account-wide root home, which
- *  uninstall already sweeps. */
+/** The generated helper-script path for a wiring. Under `helpers/` in the account-wide
+ *  root home (HELPERS_DIR_NAME: a foreign program executes it), which uninstall
+ *  already sweeps. */
 export function desktopHelperPath(rootHome: string, mode: ProfileMode, profile: Profile): string {
   const base = mode === "direct" ? "claude-desktop-token" : "claude-desktop-proxy-token";
   const name = profile === null ? base : `${base}-${profile}`;
-  return join(rootHome, `${name}${WIN ? ".cmd" : ".sh"}`);
+  return join(rootHome, HELPERS_DIR_NAME, `${name}${WIN ? ".cmd" : ".sh"}`);
 }
 
 /** Write (or refresh) the helper script for a wiring: body healed when it drifted, the
@@ -874,9 +874,10 @@ export function desktopHelperScriptWiring(
  *  is an empty list; any other read failure throws (a sweep must not claim completeness
  *  over a directory it could not list). */
 export function presentDesktopHelperScripts(rootHome: string): string[] {
+  const helpersDir = join(rootHome, HELPERS_DIR_NAME);
   let names: string[];
   try {
-    names = readdirSync(rootHome);
+    names = readdirSync(helpersDir);
   } catch (e) {
     if (isEnoentOrNotdir(e)) return [];
     throw e;
@@ -884,7 +885,7 @@ export function presentDesktopHelperScripts(rootHome: string): string[] {
   return names
     .filter((n) => desktopHelperScriptWiring(n) !== undefined)
     .sort()
-    .map((n) => join(rootHome, n));
+    .map((n) => join(helpersDir, n));
 }
 
 /** The uninstall sweep: every owned entry (the default's included) plus every generated

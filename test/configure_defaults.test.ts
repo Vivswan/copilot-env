@@ -120,7 +120,7 @@ function childCliEnv(codexHome: string, claudeHome: string): Record<string, stri
 
 /** The default slot's recorded mode, read raw from the isolated state store. */
 function recordedMode(): string | undefined {
-  const statePath = join(dir, ".copilot-env-state.json");
+  const statePath = join(dir, "credentials.json");
   if (!existsSync(statePath)) return undefined;
   const state = JSON.parse(readFileSync(statePath, "utf8")) as {
     profiles?: { default?: { mode?: string } };

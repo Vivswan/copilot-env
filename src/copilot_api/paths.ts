@@ -1,7 +1,7 @@
 // Path helper for per-host copilot-api runtime files under COPILOT_API_HOME.
 import { existsSync, readdirSync, type Stats, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { isEnoentOrNotdir } from "../utils/fs.ts";
 import { hideWritesUnder } from "../utils/report_write.ts";
 import { getSanitizedHostname } from "../utils/hostname.ts";
@@ -221,6 +221,18 @@ export function profileHomeExists(name: ProfileName): boolean {
  *  start/stop/env/health/port. */
 export const RUN_STATE_FILENAME = ".state.json";
 
+/** Directory under the ROOT home holding the root stores' lock files. Lock
+ *  sidecars are PERMANENT by design (file_lock.ts never unlinks one), so parked
+ *  here they never clutter the home listing. Locks inside daemon homes stay
+ *  beside their files (a daemon home is the proxy's territory, not ours to
+ *  reorganize). */
+export const LOCKS_DIR_NAME = "locks";
+
+/** Directory under the ROOT home for generated helper scripts that FOREIGN
+ *  programs execute (the Claude Desktop credential helpers). Undotted contents,
+ *  like codex-model-catalog.json: something other than copilot-env reads them. */
+export const HELPERS_DIR_NAME = "helpers";
+
 /** Per-host runtime file paths for the copilot-api proxy. */
 export class CopilotApiPaths {
   home: string;
@@ -253,26 +265,39 @@ export class CopilotApiPaths {
   sqliteDb: string;
   /**
    * Shared (NOT per-host, NOT per-profile) copilot-env state under the ROOT
-   * copilot-api home -- holds the provisioned GitHub credentials (default +
-   * named profile slots), which are account/machine-wide regardless of host.
-   * Anchors at the root home itself, never inside `.run/<host>/` or any
-   * daemon home under `profiles/`.
+   * copilot-api home (`credentials.json`) -- holds the provisioned GitHub
+   * credentials (default + named profile slots), which are account/machine-wide
+   * regardless of host. Anchors at the root home itself, never inside
+   * `.run/<host>/` or any daemon home under `profiles/`.
    */
   sharedStateFile: string;
   /**
-   * Account/machine-wide copilot-env PREFERENCES (`.copilot-env-config.json`), managed by
+   * Account/machine-wide copilot-env PREFERENCES (`preferences.json`), managed by
    * `agent config` -- separate from the credential store above, and shared by every profile
    * (anchored at the ROOT home).
    */
   envConfigFile: string;
   /**
-   * The machine-local artifact-ownership ledger (`.copilot-env-ownership.json`,
+   * The machine-local artifact-ownership ledger (`ownership.json`,
    * OwnershipLedger in ownership.ts): which entries copilot-env itself wrote into
    * external config artifacts. Root-home anchored like the state file -- the
    * artifacts it describes are account/machine-wide -- and never exported by
    * `agent settings` (its records name THIS machine's files).
    */
   ownershipFile: string;
+  /** The root stores' lock directory (LOCKS_DIR_NAME). */
+  locksDir: string;
+  /** update() locks for the three root stores, parked under `locksDir` (their
+   *  permanent .oslock sidecars land there too). Derived from each store's
+   *  basename so a store rename cannot silently orphan its lock. */
+  sharedStateLock: string;
+  envConfigLock: string;
+  ownershipLock: string;
+  /** The ownership ledger's MUTATION lock (see OwnershipLedger.opsLock). */
+  ownershipOpsLock: string;
+  /** The profile-port reservation lock (reserveProfilePort, port.ts): one
+   *  root-wide mutex so two concurrent reservers cannot mint the same port. */
+  profilePortsLock: string;
   /**
    * copilot-api's OWN device-login token file (`github_token`), written when the
    * proxy authenticates itself via the device flow. copilot-env never writes it
@@ -282,11 +307,11 @@ export class CopilotApiPaths {
    */
   githubTokenFile: string;
   /**
-   * The mutex guarding `githubTokenFile` (`github_token.login.lock`): a device-flow
-   * login (auth.ts) holds it across its whole spawn+read+scrub, and the de-auth
-   * scrub (credential.ts) briefly takes the same lock, so `--del` cannot race a
-   * mid-login token write. Derived here, next to the file it guards, so the two
-   * sites can never drift onto different lock paths.
+   * The mutex guarding `githubTokenFile`: a device-flow login (auth.ts) holds it
+   * across its whole spawn+read+scrub, and the de-auth scrub (credential.ts)
+   * briefly takes the same lock, so `--del` cannot race a mid-login token write.
+   * Derived here, next to the file field it guards, so the two sites can never
+   * drift onto different lock paths. Parked under `locksDir` like every root lock.
    */
   githubTokenLoginLock: string;
   /**
@@ -315,11 +340,17 @@ export class CopilotApiPaths {
     // The proxy writes its inference handler logs to <home>/logs (shared, not per-host).
     this.logsDir = join(this.home, LOGS_DIR_NAME);
     this.sqliteDb = join(runDir, SQLITE_DB_FILENAME);
-    this.sharedStateFile = join(rootHome, ".copilot-env-state.json");
-    this.envConfigFile = join(rootHome, ".copilot-env-config.json");
-    this.ownershipFile = join(rootHome, ".copilot-env-ownership.json");
+    this.sharedStateFile = join(rootHome, "credentials.json");
+    this.envConfigFile = join(rootHome, "preferences.json");
+    this.ownershipFile = join(rootHome, "ownership.json");
+    this.locksDir = join(rootHome, LOCKS_DIR_NAME);
+    this.sharedStateLock = join(this.locksDir, `${basename(this.sharedStateFile)}.lock`);
+    this.envConfigLock = join(this.locksDir, `${basename(this.envConfigFile)}.lock`);
+    this.ownershipLock = join(this.locksDir, `${basename(this.ownershipFile)}.lock`);
+    this.ownershipOpsLock = join(this.locksDir, `${basename(this.ownershipFile)}.ops.lock`);
+    this.profilePortsLock = join(this.locksDir, "profile-ports.lock");
     this.githubTokenFile = join(rootHome, "github_token");
-    this.githubTokenLoginLock = `${this.githubTokenFile}.login.lock`;
+    this.githubTokenLoginLock = join(this.locksDir, `${basename(this.githubTokenFile)}.login.lock`);
     this.codexModelCatalogFile = join(rootHome, "codex-model-catalog.json");
   }
 }

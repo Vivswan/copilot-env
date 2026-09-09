@@ -1,7 +1,7 @@
 // copilot-env's shared, account/machine-wide state: the provisioned GitHub token
 // (the SINGLE source of truth for the Direct credential + the proxy's
 // `--github-token`) and the auth provider that produced it. Stored in
-// `.copilot-env-state.json` under the copilot-api home -- NOT per-host `.run/` state
+// `credentials.json` under the copilot-api home -- NOT per-host `.run/` state
 // (CopilotEnvRunState), since the credential applies regardless of which host/node
 // runs an agent. Resolution is provider-driven (see `Credential.resolve()`):
 // `gh-cli` runs `gh auth token`, `copilot`/`gh-token` return this stored token, and
@@ -247,7 +247,7 @@ export function partialSlotGap(
       `\`agent auth --profile ${name}\` or \`agent profile --add ${name}\``;
 }
 
-/** The store's READ view of `.copilot-env-state.json` (absent/blank fields read
+/** The store's READ view of `credentials.json` (absent/blank fields read
  *  back as null): the reserved default slot's credential pair projected to the
  *  top level, and `profiles` holding the named slots only -- not the disk layout. */
 export interface CopilotEnvStateData {
@@ -489,7 +489,7 @@ export function assertProfileSlot(name: ProfileName): ProfileSlot {
 }
 
 /**
- * Read/write helper for the shared `.copilot-env-state.json`. Backed by
+ * Read/write helper for the shared `credentials.json`. Backed by
  * CopilotApiConfig (the project's atomic JSON store: sorted keys, 0600, atomic
  * rename, Windows EPERM/EBUSY retry) and mirroring CopilotEnvRunState -- one I/O
  * implementation. Holds the credential + catalog-refresh state; user preferences
@@ -499,7 +499,12 @@ export class CopilotEnvState {
   private readonly store: CopilotApiConfig;
 
   constructor(path?: string) {
-    this.store = new CopilotApiConfig(path ?? new CopilotApiPaths().sharedStateFile);
+    if (path === undefined) {
+      const paths = new CopilotApiPaths();
+      this.store = new CopilotApiConfig(paths.sharedStateFile, paths.sharedStateLock);
+    } else {
+      this.store = new CopilotApiConfig(path);
+    }
   }
 
   /** Current state; absent/ill-typed/blank/unknown fields come back null. The

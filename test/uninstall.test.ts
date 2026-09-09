@@ -536,6 +536,7 @@ test("uninstall's dry run and live run render ONE resolved plan", async () => {
   mkdirSync(rootHome, { recursive: true });
   const defaultHelper = desktopHelperPath(rootHome, "direct", null);
   const workHelper = desktopHelperPath(rootHome, "direct", WORK);
+  mkdirSync(dirname(defaultHelper), { recursive: true });
   writeFileSync(defaultHelper, "#!/bin/sh\n");
   writeFileSync(workHelper, "#!/bin/sh\n");
   const entryFor = (helper: string): string =>
@@ -720,7 +721,7 @@ test("uninstall --dry-run names every Claude Desktop path the sweep would delete
   );
   new OwnershipLedger().record("claudeDesktop", join(library, "ours.json"));
   const helper = desktopHelperPath(resolveRootHome(), "direct", null);
-  mkdirSync(resolveRootHome(), { recursive: true });
+  mkdirSync(dirname(helper), { recursive: true });
   writeFileSync(helper, "#!/bin/sh\n");
 
   const deps = { ...tmpDeps(codexHome), claudeDesktopLibraryDir: library };

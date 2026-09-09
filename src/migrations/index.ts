@@ -27,7 +27,7 @@ import {
   v356VersionedLayout,
 } from "./3.5.6.ts";
 import { v400AutoupdateFlag, v400ClaudeWiring, v400CodexWiring, v400ShellFence } from "./4.0.0.ts";
-import { v402GhAccountPin } from "./4.0.2.ts";
+import { v402DesktopHelpers, v402GhAccountPin, v402RootLayout } from "./4.0.2.ts";
 
 /**
  * One step in the version history, named for the release it migrates AWAY FROM (so a
@@ -41,6 +41,13 @@ export interface Migration {
   version: SemverString;
   /** One line shown when the migration runs. */
   description: string;
+  /** This step RELOCATES the shared stores the other steps read (a rename or a
+   *  directory move at the root home). dueMigrations hoists every selected
+   *  layout step to the FRONT of the run -- ahead of older versions' steps too,
+   *  which read those stores through the NEW code and therefore at the new
+   *  paths. Among layout steps (and among the rest) version-then-registry order
+   *  still applies. */
+  layout?: true;
   run: () => void | Promise<void>;
 }
 
@@ -70,6 +77,8 @@ const MIGRATIONS: Migration[] = [
   v400ClaudeWiring,
   v400AutoupdateFlag,
   v402GhAccountPin,
+  v402RootLayout,
+  v402DesktopHelpers,
 ];
 
 // versionLessThan tolerates unparseable input by answering "not less-than", so a
@@ -84,10 +93,11 @@ function requireSemver(value: string, what: string): SemverString {
 }
 
 /**
- * The migrations whose (from-)version falls in the half-open range [from, to), sorted
- * ascending -- i.e. every version left behind by an update from `from` to `to`. Pure (no
- * side effects) and exported so the selection logic is unit-tested without running any
- * migration. `from`/`to` may carry a leading "v".
+ * The migrations whose (from-)version falls in the half-open range [from, to), i.e.
+ * every version left behind by an update from `from` to `to` -- layout steps first
+ * (see Migration.layout), then version-ascending. Pure (no side effects) and exported
+ * so the selection logic is unit-tested without running any migration. `from`/`to`
+ * may carry a leading "v".
  */
 export function dueMigrations(
   from: string,
@@ -100,12 +110,14 @@ export function dueMigrations(
   }
   const f = requireSemver(from, "from version");
   const t = requireSemver(to, "to version");
-  // Equal versions (one release's several fix-ups) compare 0: Array.sort is
-  // stable, so their registry order is their run order.
+  // Equal ranks compare 0: Array.sort is stable, so within a version the
+  // registry order is the run order.
+  const layoutRank = (m: Migration) => (m.layout === true ? 0 : 1);
   return migrations
     .filter((m) => !versionLessThan(m.version, f) && versionLessThan(m.version, t))
     .sort((a, b) =>
-      versionLessThan(a.version, b.version) ? -1 : versionLessThan(b.version, a.version) ? 1 : 0
+      layoutRank(a) - layoutRank(b) ||
+      (versionLessThan(a.version, b.version) ? -1 : versionLessThan(b.version, a.version) ? 1 : 0)
     );
 }
 

@@ -48,7 +48,7 @@ test("an unmigrated FLAT root (daemon files at the root itself) resolves to the 
   dir = isolateProxyHome("copilot-env-paths-");
   // Any one daemon-home artifact at the root marks the flat legacy layout; the
   // account-wide files alone (state/config stores) must NOT.
-  writeFileSync(join(dir, ".copilot-env-state.json"), "{}\n");
+  writeFileSync(join(dir, "credentials.json"), "{}\n");
   expect(defaultDaemonHome()).toBe(join(dir, "profiles", "default"));
   mkdirSync(join(dir, ".run"), { recursive: true });
   expect(defaultDaemonHome()).toBe(dir);
@@ -79,7 +79,7 @@ test("inside a daemon (ROOT_HOME_ENV set) the pinned COPILOT_API_HOME IS the hom
   expect(defaultDaemonHome()).toBe(join(dir, "profiles", "work"));
   expect(new CopilotApiPaths().home).toBe(join(dir, "profiles", "work"));
   // Account-wide files still anchor at the ROOT home.
-  expect(new CopilotApiPaths().sharedStateFile).toBe(join(dir, ".copilot-env-state.json"));
+  expect(new CopilotApiPaths().sharedStateFile).toBe(join(dir, "credentials.json"));
 });
 
 // --- CopilotApiPaths composition ---------------------------------------------------
@@ -120,9 +120,9 @@ test("account-wide files resolve to the ROOT home, never a daemon home or .run/<
   // all live at the ROOT home (account/machine-wide) -- never inside the
   // default daemon's profiles/default home or the per-host runDir. A
   // regression moving any of them must fail here.
-  expect(paths.sharedStateFile).toBe(join(dir, ".copilot-env-state.json"));
-  expect(paths.envConfigFile).toBe(join(dir, ".copilot-env-config.json"));
-  expect(paths.ownershipFile).toBe(join(dir, ".copilot-env-ownership.json"));
+  expect(paths.sharedStateFile).toBe(join(dir, "credentials.json"));
+  expect(paths.envConfigFile).toBe(join(dir, "preferences.json"));
+  expect(paths.ownershipFile).toBe(join(dir, "ownership.json"));
   expect(paths.githubTokenFile).toBe(join(dir, "github_token"));
   expect(paths.codexModelCatalogFile).toBe(join(dir, "codex-model-catalog.json"));
 

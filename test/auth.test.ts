@@ -672,8 +672,21 @@ test("parseGhAuthStatusAccounts: accounts with active attribution; broken logins
   ].join("\n");
   expect(parseGhAuthStatusAccounts(withBrokenActive)).toEqual([
     acct("healthy", false),
+    { host: "github.com", login: "slow", active: true, source: "keyring", broken: true },
     acct("steady", false),
+    { host: "github.com", login: "broken", active: true, source: "keyring", broken: true },
+    {
+      host: "enterprise.example",
+      login: "",
+      active: true,
+      source: "GH_ENTERPRISE_TOKEN",
+      broken: true,
+    },
   ]);
+  // The BROKEN active login still names what auto follows (never the healthy
+  // bystander -- gh's bare resolution tracks the active account even when its
+  // login is broken).
+  expect(activeGhLogin(parseGhAuthStatusAccounts(withBrokenActive))).toBe("slow");
   expect(parseGhAuthStatusAccounts("You are not logged into any GitHub hosts.")).toEqual([]);
   // The credential source is captured for DISPLAY only -- an exported GH_TOKEN
   // can shadow a saved keyring credential for the same login, so the source
@@ -692,6 +705,22 @@ test("parseGhAuthStatusAccounts: accounts with active attribution; broken logins
   expect(activeGhLogin([acct("solo", false)])).toBe("solo");
   expect(activeGhLogin([acct("a", false), acct("b", false)])).toBeNull();
   expect(activeGhLogin([])).toBeNull();
+  // No active marker + a broken sibling: ambiguous, so nothing is named (the
+  // only-login fallback needs the WHOLE list, broken included, to agree).
+  expect(activeGhLogin([
+    acct("healthy", false),
+    { host: "github.com", login: "slow", active: false, source: "keyring", broken: true },
+  ])).toBeNull();
+  // An active entry whose login is unparseable (per-host env failure) names nothing.
+  expect(activeGhLogin([
+    { host: "github.com", login: "", active: true, source: "GH_TOKEN", broken: true },
+    acct("healthy", false),
+  ])).toBeNull();
+  // No marker + an UNNAMED broken sibling: still ambiguous, still nothing named.
+  expect(activeGhLogin([
+    { host: "github.com", login: "", active: false, source: "GH_TOKEN", broken: true },
+    acct("healthy", false),
+  ])).toBeNull();
   // A repeated host+login+source triple collapses to one menu entry.
   expect(parseGhAuthStatusAccounts(TWO_ACCOUNT_STATUS + TWO_ACCOUNT_STATUS).length).toBe(2);
 });

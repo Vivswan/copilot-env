@@ -266,8 +266,10 @@ export async function chooseGhAccount(
   // ("Vivswan (GH_TOKEN)" with a perfectly pinnable login underneath). The menu
   // notes an env-token source instead, and loginWithGhCli verifies the chosen
   // account before anything is recorded, so a genuinely unservable pick fails
-  // there with its own actionable error instead of being hidden here.
-  const github = accounts.filter((a) => a.host === GH_COPILOT_HOST);
+  // there with its own actionable error instead of being hidden here. A BROKEN
+  // login (a failed/timed-out credential) is the one exclusion -- pinning it
+  // could never verify -- yet it still names auto's followed account below.
+  const github = accounts.filter((a) => a.host === GH_COPILOT_HOST && a.broken !== true);
   const logins = [...new Set(github.map((a) => a.login))];
   const active = activeGhLogin(accounts);
   if (unproven || logins.length <= 1) return { kind: "auto", activeLogin: active };

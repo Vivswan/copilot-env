@@ -809,9 +809,13 @@ export async function gatherFacts(
   // The gh facts for one slot: the auth verdict, plus the followed account's
   // name on an AUTO slot (a pinned slot already names itself via ghUser).
   const slotGhFacts = async (ghUser: string | null): Promise<CodexDirectAuthFacts> => {
-    const directAuth = await sharedDirectAuth(ghUser);
-    if (ghUser !== null) return directAuth;
-    const activeLogin = await sharedActiveLogin();
+    if (ghUser !== null) return await sharedDirectAuth(ghUser);
+    // Both spawns start before either is awaited: two timing-out gh calls cost
+    // one 5s budget, not two back to back.
+    const [directAuth, activeLogin] = await Promise.all([
+      sharedDirectAuth(null),
+      sharedActiveLogin(),
+    ]);
     return activeLogin === null ? directAuth : { ...directAuth, ghActiveLogin: activeLogin };
   };
 

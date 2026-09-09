@@ -44,7 +44,7 @@ import { removeTreeReported } from "../utils/report_write.ts";
 import {
   acquireCredential,
   type CredentialAcquisition,
-  credentialSourceLabel,
+  liveCredentialSourceLabel,
   parseAcquisition,
 } from "./auth.ts";
 
@@ -200,7 +200,7 @@ async function profileCredential(
     if (resolves) {
       logger.log(
         `  Reusing ${profileLabel(name)}'s existing credential (${
-          credentialSourceLabel(existing)
+          liveCredentialSourceLabel(existing)
         }).`,
       );
       return existing;

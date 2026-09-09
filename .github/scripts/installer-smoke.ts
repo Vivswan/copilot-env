@@ -317,9 +317,12 @@ export function compiledHealthFailures(reportJson: unknown): string[] {
   const sidecar = row("proxy.sidecar");
   if (sidecar !== undefined) {
     const kind = isRecord(sidecar.value) ? sidecar.value.kind : undefined;
-    if (kind !== "provisioned" && kind !== "absent") {
+    // CI runners have setup-deno's deno on PATH, so "path" is a legitimate
+    // compiled-install answer; "dev" is the one kind a compiled binary can
+    // never truthfully be.
+    if (kind !== "path" && kind !== "provisioned" && kind !== "absent") {
       failures.push(
-        `proxy.sidecar kind must be provisioned|absent on a compiled binary (got ${
+        `proxy.sidecar kind must be path|provisioned|absent on a compiled binary (got ${
           JSON.stringify(kind)
         })`,
       );
@@ -344,18 +347,18 @@ function verifyCompiledHealth(launcher: string): void {
 }
 
 /**
- * The compiled binary's daemon spawn must resolve the deno sidecar the install
- * provisions -- a compiled binary is not a deno CLI, so a resolve that misses the
- * sidecar can start nothing at all. Kept offline: plant this runner's own deno at
- * the pinned sidecar slot (standing in for the real provisioning download), then
- * drive one start/stop of the fake proxy. The start can only succeed through the
- * provisioned sidecar -- a compiled build has no dev deno, and no override is set.
- * Nothing is pre-written under the daemon home: generating the daemon config from
- * the binary's own embedded assets is part of what this start proves.
+ * The compiled binary's daemon spawn must resolve a usable deno -- a compiled
+ * binary is not a deno CLI, so a resolve that misses can start nothing at all.
+ * On CI runners a PATH deno (setup-deno's) serves the spawn; a provisioned copy
+ * is also planted so the step keeps passing on a runner image with no deno, and
+ * the seam-level PATH-vs-provisioned precedence is pinned by test/sidecar.test.ts.
+ * Kept offline. Nothing is pre-written under the daemon home: generating the
+ * daemon config from the binary's own embedded assets is part of what this
+ * start proves.
  */
 function verifySidecarDaemonSpawn(launcher: string): void {
-  // A live override would let the start succeed WITHOUT the provisioned-sidecar path
-  // under test, so it is scrubbed -- and a bogus one is planted first as the scrub's
+  // A live override would let the start succeed WITHOUT the resolution under
+  // test, so it is scrubbed -- and a bogus one is planted first as the scrub's
   // negative control: removing the scrub turns this step red (the spawn would use the
   // unspawnable path) instead of passing green whenever the runner leaves the var unset.
   process.env[SIDECAR_DENO_ENV] = isWindows ? "C:\\bogus\\deno.exe" : "/bogus/deno";
@@ -394,7 +397,7 @@ function verifySidecarDaemonSpawn(launcher: string): void {
     console.error(`::error::the generated daemon config at ${daemonConfig} carries no import map`);
     process.exit(1);
   }
-  console.log(`compiled daemon spawn resolved the provisioned sidecar at ${sidecar}`);
+  console.log(`compiled daemon spawn resolved a usable deno (planted sidecar at ${sidecar})`);
   console.log(`compiled start generated the daemon config at ${daemonConfig}`);
 }
 

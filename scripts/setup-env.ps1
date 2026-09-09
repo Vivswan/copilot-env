@@ -1,9 +1,10 @@
 #!/usr/bin/env pwsh
 # Windows parity of scripts/setup-env.sh: initialize a copilot-env environment (or
-# a freshly-created git worktree) by installing the pinned deno toolchain (version
-# from .dvmrc) and the locked project dependencies so deno task typecheck /
-# deno task test / deno task lint work immediately. Idempotent. deno + deps
-# only -- it does NOT install the agent CLIs or start the proxy.
+# a freshly-created git worktree) by ensuring a deno toolchain (the one already on
+# PATH wins; a machine with none installs the latest release) and the locked
+# project dependencies so deno task typecheck / deno task test / deno task lint
+# work immediately. Idempotent. deno + deps only -- it does NOT install the agent
+# CLIs or start the proxy.
 $ErrorActionPreference = 'Stop'
 
 # Run from the repo root regardless of where we're invoked (e.g. a worktree).

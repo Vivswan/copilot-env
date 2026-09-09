@@ -1,27 +1,30 @@
 // The Deno sidecar: which `deno` binary copilot-env's own subprocess work runs
-// on (the proxy cache/daemon in later chunks), and how a missing one is
-// provisioned.
+// on (the proxy cache/daemon), and how a machine with no deno at all gets one.
 //
-// Three states, modeled as a discriminated union so callers never juggle
+// Five states, modeled as a discriminated union so callers never juggle
 // nullable paths or "downloaded?" booleans:
+//   - override:     COPILOT_ENV_SIDECAR_DENO points at an explicit binary.
 //   - dev:          running from a checkout under Deno itself -> reuse our own
 //                   runtime binary (Deno.execPath()).
-//   - provisioned:  a pinned standalone binary under <rootHome>/deno/<pin>/.
-//   - absent:       nothing usable yet; `wantedVersion` says what to download.
+//   - path:         a deno already on PATH -- the user's toolchain always wins.
+//   - provisioned:  a standalone binary under <rootHome>/deno/<x.y.z>/ (the
+//                   newest one), from an earlier download on a deno-less machine.
+//   - absent:       nothing usable; ensureSidecar downloads the LATEST release.
 //
-// The pin's single source of truth is the .dvmrc file at the project root (one
-// trimmed x.y.z line). Downloads are refused without a caller-supplied sha256
-// expectation -- a missing hash is a refusal, never a skip -- and the archive is
-// hashed while it streams to disk, so an unverified byte never lands unpacked.
-//
-// COPILOT_ENV_SIDECAR_DENO (env) overrides all detection: an operator can point it
-// at a known-good deno, and tests point it anywhere. Per the repo-wide precedence it
-// beats every derived answer.
+// .dvmrc (one trimmed x.y.z line at the project root, embedded into compiled
+// builds) is only the TESTED REFERENCE version -- what CI runs on and what
+// health compares a PATH deno against. Nothing here installs it. Downloads are
+// refused without a sha256 expectation -- a missing hash is a refusal, never a
+// skip -- and the archive is hashed while it streams to disk, so an unverified
+// byte never lands unpacked; the expectation is the release's own published
+// `.sha256sum`, fetched at download time.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { open } from "node:fs/promises";
 import { basename, isAbsolute, join } from "node:path";
 import { ASSET_ROOT, devDenoExecPath, isStandaloneBinary } from "../utils/root.ts";
+import { resolveExecutablePath } from "../utils/command.ts";
+import { errMessage } from "../utils/error.ts";
 import {
   chmodReported,
   mkdirReported,
@@ -30,7 +33,6 @@ import {
   scratchDir,
 } from "../utils/report_write.ts";
 import { resolveRootHome } from "./paths.ts";
-import { sidecarSha256 } from "./sidecar_pins.ts";
 import { crypto } from "@std/crypto";
 
 /** Env var carrying an explicit deno binary path (set by the compiled launcher). */
@@ -60,10 +62,10 @@ export function parseAbsolutePath(path: string): AbsolutePath {
 
 /**
  * The two fast paths every sidecar resolution applies first, the ONE owner of their
- * order: the COPILOT_ENV_SIDECAR_DENO override, then our own runtime binary when that is
- * a real deno. Null means "look for the provisioned binary on disk". Neither touches the
- * pin: the override is the documented recovery hatch, so it must keep working when
- * .dvmrc itself is unreadable.
+ * order: the COPILOT_ENV_SIDECAR_DENO override (the documented recovery hatch), then our
+ * own runtime binary when that is a real deno -- a checkout's subprocesses must run on
+ * the SAME deno as the parent, so the dev path outranks even a PATH deno. Null means
+ * "look for a system or provisioned binary".
  */
 function sidecarFastPath(
   env: Record<string, string | undefined>,
@@ -78,8 +80,8 @@ function sidecarFastPath(
 
 /**
  * The deno binary copilot-env spawns for its own subprocess work: the fast paths above,
- * else the provisioned sidecar under `rootHome`, else a hard error. There is no PATH
- * probing, so the answer can never drift to a system deno of an unpinned version.
+ * else the deno already on PATH (the user's toolchain always wins), else the newest
+ * provisioned sidecar under `rootHome`, else a hard error.
  *
  * `rootHome` defaults to the resolved root home, so every bare call site -- the daemon
  * spawn, the proxy float, the device-flow login -- finds the sidecar a compiled install
@@ -90,35 +92,35 @@ function sidecarFastPath(
 export function resolveDenoBin(
   env: Record<string, string | undefined> = process.env,
   rootHome: string = resolveRootHome(),
-  opts: Omit<SidecarDetectOptions, "env"> & { readPin?: () => string } = {},
+  opts: Omit<SidecarDetectOptions, "env"> = {},
 ): AbsolutePath {
-  const fast = sidecarFastPath(env, opts.runtimeExecPath);
-  if (fast !== null) return fast.denoBin;
-  const { readPin = readDvmrcPin, ...detect } = opts;
-  const state = detectSidecar(rootHome, readPin(), { ...detect, "env": env });
+  const state = detectSidecar(rootHome, { ...opts, "env": env });
   if (state.kind !== "absent") return state.denoBin;
   throw new Error(
-    `no usable deno binary: this is a compiled build with no provisioned sidecar. ` +
-      `Run \`agent start\` to provision it, or set ${SIDECAR_DENO_ENV} to a deno of the pinned version.`,
+    `no usable deno binary: this is a compiled build, no deno is on PATH, and no sidecar ` +
+      `is provisioned. Install deno (https://deno.com), run \`agent start\` to provision ` +
+      `one, or set ${SIDECAR_DENO_ENV} to a deno binary.`,
   );
 }
 
-/** Where the sidecar for `pin`'s standalone binary lives under the root home. */
+/** Where the sidecar for `version`'s standalone binary lives under the root home. */
 export function sidecarBinPath(
   rootHome: string,
-  pin: string,
+  version: string,
   platform: string = process.platform,
 ): string {
-  return join(rootHome, "deno", pin, platform === "win32" ? "deno.exe" : "deno");
+  return join(rootHome, "deno", version, platform === "win32" ? "deno.exe" : "deno");
 }
 
-/** The sidecar's resolution state -- see the module comment for the three kinds. */
+/** The sidecar's resolution state -- see the module comment for the five kinds. */
 export type SidecarState =
+  | { kind: "override"; denoBin: AbsolutePath }
   | { kind: "dev"; denoBin: AbsolutePath }
+  | { kind: "path"; denoBin: AbsolutePath }
   | { kind: "provisioned"; denoBin: AbsolutePath; version: string }
-  | { kind: "absent"; wantedVersion: string };
+  | { kind: "absent" };
 
-/** Seams for `detectSidecar`; the defaults read the live process/runtime. */
+/** Seams for `detectSidecar`; the defaults read the live process/runtime/PATH. */
 export interface SidecarDetectOptions {
   env?: Record<string, string | undefined>;
   platform?: string;
@@ -126,38 +128,71 @@ export interface SidecarDetectOptions {
    *  The default applies the standalone guard (devDenoExecPath): a compiled binary
    *  must never classify itself as the `dev` deno -- it cannot act as one. */
   runtimeExecPath?: string | null;
+  /** PATH lookup for a system deno (an ABSOLUTE path, or null). */
+  findDeno?: () => string | null;
 }
 
 /**
- * Detect the sidecar state for `pin`: the shared fast paths (sidecarFastPath above --
- * an override is reported as `provisioned` at the pin, since it is only ever pointed at
- * a usable binary), then the provisioned binary on disk, else absent.
+ * Detect the sidecar state: the shared fast paths (sidecarFastPath above), then the deno
+ * already on PATH, then the newest provisioned binary on disk, else absent.
  */
 export function detectSidecar(
   rootHome: string,
-  pin: string,
   opts: SidecarDetectOptions = {},
 ): SidecarState {
   const env = opts.env ?? process.env;
   const fast = sidecarFastPath(env, opts.runtimeExecPath);
-  if (fast !== null) {
-    return fast.kind === "override"
-      ? { "kind": "provisioned", "denoBin": fast.denoBin, "version": pin }
-      : { "kind": "dev", "denoBin": fast.denoBin };
-  }
-  const bin = sidecarBinPath(rootHome, pin, opts.platform);
-  if (existsSync(bin)) {
-    return { "kind": "provisioned", "denoBin": parseAbsolutePath(bin), "version": pin };
-  }
-  return { "kind": "absent", "wantedVersion": pin };
+  if (fast !== null) return fast;
+  const findDeno = opts.findDeno ?? (() => resolveExecutablePath("deno"));
+  const onPath = findDeno();
+  if (onPath !== null) return { "kind": "path", "denoBin": parseAbsolutePath(onPath) };
+  return provisionedSidecar(rootHome, opts.platform) ?? { "kind": "absent" };
 }
 
-const DVMRC_PIN_RE = /^\d+\.\d+\.\d+$/;
+const DENO_VERSION_RE = /^\d+\.\d+\.\d+$/;
 
-/** Parse boundary for the .dvmrc content: exactly one trimmed x.y.z line. */
+/** Numeric x.y.z order: negative a < b, 0 equal, positive a > b; null when either
+ *  side is not x.y.z (an unparseable version never compares, so it never warns). */
+export function compareDenoVersions(a: string, b: string): number | null {
+  if (!DENO_VERSION_RE.test(a) || !DENO_VERSION_RE.test(b)) return null;
+  const pa = a.split(".");
+  const pb = b.split(".");
+  for (let i = 0; i < 3; i++) {
+    const diff = Number(pa[i] ?? 0) - Number(pb[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+/** The NEWEST provisioned sidecar under `<rootHome>/deno/<x.y.z>/`, or null. Highest
+ *  version wins, so a copy provisioned under an older release stays usable and a
+ *  fresh download supersedes it without any cleanup step. */
+export function provisionedSidecar(
+  rootHome: string,
+  platform: string = process.platform,
+): Extract<SidecarState, { kind: "provisioned" }> | null {
+  let entries: string[];
+  try {
+    entries = readdirSync(join(rootHome, "deno"));
+  } catch {
+    return null;
+  }
+  const best = entries
+    .filter((name) => DENO_VERSION_RE.test(name))
+    .filter((version) => existsSync(sidecarBinPath(rootHome, version, platform)))
+    .sort((a, b) => compareDenoVersions(b, a) ?? 0)[0];
+  if (best === undefined) return null;
+  return {
+    "kind": "provisioned",
+    "denoBin": parseAbsolutePath(sidecarBinPath(rootHome, best, platform)),
+    "version": best,
+  };
+}
+
+/** Parse boundary for a version pin/pointer: exactly one trimmed x.y.z line. */
 export function parseDvmrcPin(content: string, source: string = DVMRC_FILENAME): string {
   const trimmed = content.trim();
-  if (!DVMRC_PIN_RE.test(trimmed)) {
+  if (!DENO_VERSION_RE.test(trimmed)) {
     throw new Error(
       `${source}: expected a single x.y.z Deno version line, got '${trimmed.slice(0, 64)}'`,
     );
@@ -165,11 +200,11 @@ export function parseDvmrcPin(content: string, source: string = DVMRC_FILENAME):
   return trimmed;
 }
 
-/** The pinned sidecar Deno version from `<projectRoot>/.dvmrc`. */
-/** The Deno version this build is pinned to. Defaults to ASSET_ROOT, not the install
- *  root: `.dvmrc` is build-time metadata embedded in the binary and never materialized
- *  onto disk, so an installed root has no copy. `projectRoot` is for tests and the
- *  checkout-only pin generator. */
+/** The TESTED REFERENCE Deno version (what CI runs on; a PATH deno older than it
+ *  gets a warning, never a reinstall). Defaults to ASSET_ROOT, not the install
+ *  root: `.dvmrc` is build-time metadata embedded in the binary and never
+ *  materialized onto disk, so an installed root has no copy. `projectRoot` is
+ *  for tests. */
 export function readDvmrcPin(projectRoot: string = ASSET_ROOT): string {
   const path = join(projectRoot, DVMRC_FILENAME);
   let content: string;
@@ -210,10 +245,56 @@ export function denoReleaseTarget(
   return target;
 }
 
-/** The GitHub release asset URL for a pinned deno build (always a .zip; the
- *  Windows one contains deno.exe). */
-export function denoReleaseUrl(pin: string, target: DenoReleaseTarget): string {
-  return `https://github.com/denoland/deno/releases/download/v${pin}/deno-${target}.zip`;
+/** The GitHub release asset URL for a deno build (always a .zip; the Windows
+ *  one contains deno.exe). */
+export function denoReleaseUrl(version: string, target: DenoReleaseTarget): string {
+  return `https://github.com/denoland/deno/releases/download/v${version}/deno-${target}.zip`;
+}
+
+/** The official latest-release pointer: one "v2.x.y" line. */
+export const DENO_LATEST_URL = "https://dl.deno.land/release-latest.txt";
+
+/** The latest deno release version ("2.x.y"), or a clear throw naming the manual
+ *  escapes -- a deno-less machine cannot proceed without it. A malformed 200 body
+ *  fails inside the same wrapper as a dead endpoint: every arm carries the
+ *  recovery guidance. */
+export async function fetchLatestDenoVersion(fetchLike: typeof fetch = fetch): Promise<string> {
+  try {
+    const response = await fetchLike(DENO_LATEST_URL);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const body = await response.text();
+    return parseDvmrcPin(body.replace(/^\s*v/, ""), DENO_LATEST_URL);
+  } catch (e) {
+    throw new Error(
+      `could not resolve the latest deno release from ${DENO_LATEST_URL} (${errMessage(e)}): ` +
+        `install deno yourself (https://deno.com), or set ${SIDECAR_DENO_ENV} to a deno binary`,
+    );
+  }
+}
+
+/**
+ * The release's own published sha256 for the target's zip (`<asset>.sha256sum`),
+ * fetched at download time. Two formats ship side by side: the POSIX `sha256sum`
+ * line (`<hex>  <file>`) and, for the Windows targets, PowerShell Get-FileHash
+ * output (`Hash : <HEX>`); the first 64-hex-digit token serves both, normalised
+ * to lower case.
+ */
+export async function fetchReleaseSha256(
+  version: string,
+  target: DenoReleaseTarget,
+  fetchLike: typeof fetch = fetch,
+): Promise<string> {
+  const url = `${denoReleaseUrl(version, target)}.sha256sum`;
+  const response = await fetchLike(url);
+  if (!response.ok) {
+    throw new Error(`download failed for ${url}: HTTP ${response.status}`);
+  }
+  const text = await response.text();
+  const digest = /\b[0-9a-fA-F]{64}\b/.exec(text)?.[0];
+  if (digest === undefined) {
+    throw new Error(`${url} did not yield a sha256 (got '${text.trim().slice(0, 40)}')`);
+  }
+  return digest.toLowerCase();
 }
 
 /**
@@ -268,18 +349,17 @@ function hexDigest(buffer: ArrayBuffer): string {
 }
 
 /**
- * Download and provision the pinned deno sidecar for the CURRENT platform:
- * stream the release zip to disk while hashing it (a teed stream, so the bytes
- * on disk are exactly the bytes hashed), verify the sha256 against the
- * caller-supplied expectation, extract, and mark executable. Returns the
- * provisioned binary path.
+ * Download and provision a deno sidecar for the CURRENT platform: stream the
+ * release zip to disk while hashing it (a teed stream, so the bytes on disk are
+ * exactly the bytes hashed), verify the sha256 against the caller-supplied
+ * expectation, extract, and mark executable. Returns the provisioned binary path.
  *
- * `expectedSha256` comes from the checked-in pin table (sidecar_pins.ts); passing
- * `undefined` -- no expectation known for this pin/target -- is a REFUSAL, not
- * a skip: an unverifiable binary is never downloaded.
+ * `expectedSha256` is the release's own published digest (fetchReleaseSha256);
+ * passing `undefined` -- no expectation known -- is a REFUSAL, not a skip: an
+ * unverifiable binary is never downloaded.
  */
 export async function downloadSidecar(
-  pin: string,
+  version: string,
   rootHome: string,
   expectedSha256: string | undefined,
   seams: SidecarDownloadSeams = {},
@@ -288,11 +368,11 @@ export async function downloadSidecar(
   const target = denoReleaseTarget(platform, seams.arch ?? process.arch);
   if (expectedSha256 === undefined) {
     throw new Error(
-      `no pinned sha256 for deno v${pin} (${target}); refusing to download an unverifiable binary`,
+      `no sha256 for deno v${version} (${target}); refusing to download an unverifiable binary`,
     );
   }
   const fetchLike = seams.fetchLike ?? fetch;
-  const url = denoReleaseUrl(pin, target);
+  const url = denoReleaseUrl(version, target);
   const response = await fetchLike(url);
   if (!response.ok) {
     throw new Error(`download failed for ${url}: HTTP ${response.status}`);
@@ -301,7 +381,7 @@ export async function downloadSidecar(
     throw new Error(`download failed for ${url}: empty response body`);
   }
 
-  const destDir = join(rootHome, "deno", pin);
+  const destDir = join(rootHome, "deno", version);
   mkdirReported(destDir);
   // The archive and its extraction stay in scratch beside the destination (one
   // filesystem, so the final placement is a rename): only a verified, fully
@@ -332,7 +412,7 @@ export async function downloadSidecar(
       );
     }
 
-    const bin = sidecarBinPath(rootHome, pin, platform);
+    const bin = sidecarBinPath(rootHome, version, platform);
     const extracted = join(scratch, basename(bin));
     if (!existsSync(extracted)) {
       throw new Error(`extraction of ${zipPath} did not produce ${extracted}`);
@@ -348,74 +428,81 @@ export async function downloadSidecar(
 }
 
 /**
- * Make sure a usable deno exists for `rootHome`, provisioning the pinned sidecar when it
- * does not. A no-op unless we are a compiled standalone: running under a real deno, that
- * binary IS the answer and nothing needs downloading.
- *
- * The fast paths answer before the pin is read, so the COPILOT_ENV_SIDECAR_DENO recovery
- * hatch and a checkout's own deno keep working when .dvmrc itself is unreadable.
+ * Make sure a usable deno exists for `rootHome`, downloading the LATEST release only
+ * when nothing resolves at all: a checkout's own deno, a PATH deno, and an earlier
+ * provisioned copy all answer without touching the network. The download verifies the
+ * release's own published sha256 (fetchReleaseSha256) before anything lands.
  *
  * Returns the binary every proxy spawn will use. Errors propagate -- a compiled install
- * with no sidecar cannot start the proxy at all, so failing loudly here beats an opaque
+ * with no deno cannot start the proxy at all, so failing loudly here beats an opaque
  * spawn failure later.
  */
 export async function ensureSidecar(
   rootHome: string,
   seams:
     & SidecarDownloadSeams
-    & Pick<SidecarDetectOptions, "runtimeExecPath">
-    & { readPin?: () => string } = {},
+    & Pick<SidecarDetectOptions, "runtimeExecPath" | "findDeno"> = {},
 ): Promise<AbsolutePath> {
-  const { readPin = readDvmrcPin, runtimeExecPath, ...download } = seams;
-  const fast = sidecarFastPath(process.env, runtimeExecPath);
-  if (fast !== null) return fast.denoBin;
-  const pin = readPin();
-  const state = detectSidecar(rootHome, pin, {
+  const { runtimeExecPath, findDeno, ...download } = seams;
+  const state = detectSidecar(rootHome, {
     "platform": download.platform,
     "runtimeExecPath": runtimeExecPath,
+    "findDeno": findDeno,
   });
-  switch (state.kind) {
-    case "dev":
-    case "provisioned":
-      return state.denoBin;
-    case "absent": {
-      const target = denoReleaseTarget(
-        download.platform ?? process.platform,
-        download.arch ?? process.arch,
-      );
-      return await downloadSidecar(
-        state.wantedVersion,
-        rootHome,
-        sidecarSha256(pin, target),
-        download,
-      );
-    }
-    default: {
-      const never: never = state;
-      throw new Error(`unreachable sidecar state: ${JSON.stringify(never)}`);
-    }
-  }
+  if (state.kind !== "absent") return state.denoBin;
+  const fetchLike = download.fetchLike ?? fetch;
+  const version = await fetchLatestDenoVersion(fetchLike);
+  const target = denoReleaseTarget(
+    download.platform ?? process.platform,
+    download.arch ?? process.arch,
+  );
+  const sha256 = await fetchReleaseSha256(version, target, fetchLike);
+  return await downloadSidecar(version, rootHome, sha256, download);
+}
+
+/** `deno --version`'s reported version for `bin`, or null when it does not run. */
+export function denoBinaryVersion(bin: string): string | null {
+  const result = spawnSync(bin, ["--version"], {
+    "encoding": "utf8",
+    "stdio": ["ignore", "pipe", "ignore"],
+    "windowsHide": true,
+    "timeout": 5000,
+  });
+  if (result.error || result.status !== 0) return null;
+  return /^deno (\S+)/.exec(result.stdout ?? "")?.[1] ?? null;
 }
 
 /** The sidecar as `agent health` reports it: what would run, and whether it is here. */
 export interface SidecarStatus {
   kind: SidecarState["kind"];
-  /** The .dvmrc version this install wants. */
-  pin: string;
-  /** The resolved binary, or null when nothing is provisioned yet. */
+  /** The TESTED REFERENCE version (.dvmrc -- what CI runs on). */
+  referenceVersion: string;
+  /** The resolved binary, or null when nothing resolves. */
   denoBin: string | null;
-  /** True when the running process is a compiled binary, so a sidecar is REQUIRED. */
+  /** The resolved binary's version: the provisioned dir's name, or `deno
+   *  --version` for a path/override/dev binary (null when it could not be read). */
+  version: string | null;
+  /** True when the running process is a compiled binary, so SOME deno is REQUIRED. */
   standalone: boolean;
 }
 
-/** Read-only sidecar facts. Never downloads -- health reports, it does not provision. */
-export function sidecarStatus(rootHome: string): SidecarStatus {
-  const pin = readDvmrcPin();
-  const state = detectSidecar(rootHome, pin);
+/** Read-only sidecar facts. Never downloads -- health reports, it does not
+ *  provision. `denoVersionOf` is a test seam over the one live `--version` spawn. */
+export function sidecarStatus(
+  rootHome: string,
+  denoVersionOf: (bin: string) => string | null = denoBinaryVersion,
+): SidecarStatus {
+  const referenceVersion = readDvmrcPin();
+  const state = detectSidecar(rootHome);
   return {
     "kind": state.kind,
-    "pin": pin,
+    "referenceVersion": referenceVersion,
     "denoBin": state.kind === "absent" ? null : state.denoBin,
+    "version": state.kind === "absent"
+      ? null
+      : state.kind === "provisioned"
+      ? state.version
+      : denoVersionOf(state.denoBin),
     "standalone": isStandaloneBinary(),
   };
 }

@@ -7,7 +7,7 @@
 // (setup -> codex/claude config -> agents/live_probe -> setup).
 import { execFile, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { dirname, win32 } from "node:path";
+import { dirname, isAbsolute, win32 } from "node:path";
 
 // `command -v` first, then a best-effort nvm fallback so a freshly nvm-installed
 // Node/CLI resolves in the same process that installed it (PATH not yet reloaded).
@@ -205,16 +205,50 @@ export interface VerbatimCliSpawn {
   binDir: string | null;
 }
 
-/** Windows PATH resolutions of `command` in search order (where.exe walks PATH with
- *  PATHEXT, plus exact-name matches). Empty when absent or where.exe fails. */
-function windowsCliCandidates(command: string): string[] {
-  const result = spawnSync("where.exe", [command], {
+/** where.exe resolutions for `pattern`, in search order; empty when absent or
+ *  where.exe fails. The pattern is where.exe's own vocabulary: a bare name
+ *  (searches the cwd first, then PATH -- the agent-CLI launch keeps that,
+ *  matching what a user's own shell would run), or `$ENV:name` to scope the
+ *  search to that env var's directories. */
+function windowsWhereCandidates(pattern: string): string[] {
+  const result = spawnSync("where.exe", [pattern], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
     windowsHide: true,
   });
   if (result.error || result.status !== 0) return [];
   return (result.stdout ?? "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+}
+
+/** The first DIRECT executable (.exe/.com) among Windows PATH candidates (pure,
+ *  exported for tests): a shim script cannot stand in for a binary another
+ *  process spawns as its runtime. */
+export function pickWindowsExecutable(candidates: string[]): string | null {
+  return candidates.find((candidate) => {
+    const lower = candidate.toLowerCase();
+    return lower.endsWith(".exe") || lower.endsWith(".com");
+  }) ?? null;
+}
+
+/**
+ * The ABSOLUTE path of `command`'s first PATH resolution, or null. POSIX answers
+ * from findCommand (`command -v` prints the resolution -- absolute unless the
+ * matching PATH entry was itself relative, which reads as null here: a
+ * cwd-dependent resolution is not a stable binary for another process to spawn).
+ * Windows scopes where.exe to PATH's directories (`$PATH:` pattern): a bare
+ * `where.exe` searches the CURRENT DIRECTORY first, and a cwd-local binary is
+ * the same unstable resolution the POSIX arm rejects.
+ *
+ * Accepted flatten (the ghAuthToken precedent): a look that never RAN reads as
+ * null too, because every caller's miss action is a non-destructive fallback
+ * (the provisioned sidecar, or a fresh install) -- null never renders a verdict.
+ */
+export function resolveExecutablePath(command: string): string | null {
+  if (process.platform !== "win32") {
+    const path = findCommand(command).path;
+    return path !== null && isAbsolute(path) ? path : null;
+  }
+  return pickWindowsExecutable(windowsWhereCandidates(`$PATH:${command}`));
 }
 
 /**
@@ -282,5 +316,5 @@ export function verbatimCliSpawn(command: string, args: string[]): VerbatimCliSp
       binDir: resolved.includes("/") ? dirname(resolved) : null,
     };
   }
-  return pickVerbatimWindowsSpawn(command, windowsCliCandidates(command), args, existsSync);
+  return pickVerbatimWindowsSpawn(command, windowsWhereCandidates(command), args, existsSync);
 }

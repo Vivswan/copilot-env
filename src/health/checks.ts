@@ -1,6 +1,7 @@
 // Pure evaluators: HealthFacts -> CheckResult[]. No I/O -- every input is a fact
 // gathered by probe.ts, so each check is independently unit-testable.
 import { type StoredCredential, storedCredentialKind } from "../copilot_api/env_state.ts";
+import { compareDenoVersions, SIDECAR_DENO_ENV } from "../copilot_api/sidecar.ts";
 import type { Profile, ProfileName } from "../copilot_api/profile.ts";
 import { PROXY_PACKAGE_NAME, type ProxyVersionStatus } from "../copilot_api/version.ts";
 import { lastActivityMs } from "../scripts/idle_watchdog.ts";
@@ -207,36 +208,56 @@ function floatCooldownLabel(seconds: number | null): string {
  */
 export function checkProxySidecar(f: ProxyFacts): CheckResult {
   const base = { ...meta("proxy.sidecar"), profile: null };
-  const { kind, pin, denoBin, standalone } = f.sidecar;
+  const { kind, referenceVersion, denoBin, version, standalone } = f.sidecar;
   if (kind === "absent") {
     if (f.floatSkips) {
-      // Direct-only: nothing spawns the proxy, so an unprovisioned sidecar is
-      // idle capacity, not a failure. A proxy rewire re-enables the requirement.
+      // Direct-only: nothing spawns the proxy, so a missing deno is idle
+      // capacity, not a failure. A proxy rewire re-enables the requirement.
       return {
         ...base,
         status: "ok",
         detail:
-          `deno ${pin} not provisioned; not required (Codex + Claude are both direct, so the proxy is unused)`,
-        value: { kind, pin, standalone, floatSkips: true },
+          "no deno found; not required (Codex + Claude are both direct, so the proxy is unused)",
+        value: { kind, referenceVersion, standalone, floatSkips: true },
       };
     }
     return {
       ...base,
       status: standalone ? "fail" : "warn",
-      detail: `deno ${pin} is not provisioned${
-        standalone ? "; a compiled build cannot spawn the proxy without it" : ""
+      detail: `no deno found (PATH or provisioned)${
+        standalone ? "; a compiled build cannot spawn the proxy without one" : ""
       }`,
-      fix: "agent start",
-      value: { kind, pin, standalone },
+      fix: "install deno (https://deno.com), or `agent start` to provision one",
+      value: { kind, referenceVersion, standalone },
+    };
+  }
+  // A PATH/override deno older than the tested reference still works -- warn,
+  // never block (upgrading is the user's job). An unreadable version is not a
+  // verdict, so it reads as ok with the version unknown.
+  const behind = version !== null &&
+    (compareDenoVersions(version, referenceVersion) ?? 0) < 0;
+  const named = version === null ? "deno (version unknown)" : `deno ${version}`;
+  const source = kind === "dev"
+    ? "running on this checkout's own deno"
+    : kind === "override"
+    ? `${named} via ${SIDECAR_DENO_ENV}`
+    : kind === "path"
+    ? `${named} on PATH`
+    : `${named} provisioned`;
+  if (behind) {
+    return {
+      ...base,
+      status: "warn",
+      detail: `${source} is older than the tested ${referenceVersion}\n${denoBin}`,
+      fix: "upgrade deno (`deno upgrade`, or your package manager)",
+      value: { kind, referenceVersion, version, standalone },
     };
   }
   return {
     ...base,
     status: "ok",
-    detail: kind === "dev"
-      ? `running on this checkout's own deno\n${denoBin}`
-      : `deno ${pin} provisioned\n${denoBin}`,
-    value: { kind, pin, standalone },
+    detail: `${source}\n${denoBin}`,
+    value: { kind, referenceVersion, version, standalone },
   };
 }
 

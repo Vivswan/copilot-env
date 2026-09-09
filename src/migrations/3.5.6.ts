@@ -74,12 +74,14 @@ export async function moveDataHome(opts: DataHomeMoveOptions): Promise<void> {
     await opts.stopDaemons();
     renameSync(legacyHome, nextHome);
     consola.info(`  moved ${legacyHome} -> ${nextHome}`);
-    // The moved-in stores still wear their pre-4.0.2 names, but every read below
-    // (the ledger-fed desktopEntryPaths thunk above all) goes through the
-    // new-only readers -- and the hoisted v402RootLayout step only runs after
-    // this whole step returns. Rename them NOW, at their new location.
-    moveRootStores(nextHome);
   }
+  // The moved-in stores still wear their pre-4.0.2 names, but every read below
+  // (the ledger-fed desktopEntryPaths thunk above all) goes through the
+  // new-only readers -- and the hoisted v402RootLayout step only runs after
+  // this whole step returns. Rename them whenever the destination exists, NOT
+  // only on the move path: a re-run resuming after a crash right after the
+  // directory rename enters with legacyHome already absent.
+  if (existsSync(nextHome)) moveRootStores(nextHome);
 
   /** `value` repointed onto the new home, or null when it does not reference the
    *  legacy home (foreign paths are never ours to rewrite). */

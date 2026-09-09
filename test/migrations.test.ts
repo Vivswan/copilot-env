@@ -697,6 +697,19 @@ test("3.5.6 move: daemons stopped, dir renamed, both artifact kinds repointed", 
   expect(fx.stopped.count).toBe(1);
 });
 
+test("3.5.6 move: a re-run resuming after a crash mid-move still renames the stores first", async () => {
+  const fx = moveFixture();
+  // The crash point: the directory rename landed, the store rename did not.
+  renameSync(fx.legacy, fx.next);
+  await fx.run();
+  expect(fx.stopped.count).toBe(0);
+  expect(existsSync(join(fx.next, "ownership.json"))).toBe(true);
+  expect(existsSync(join(fx.next, ".copilot-env-ownership.json"))).toBe(false);
+  // The ledger-fed repoint found its entry through the renamed store.
+  const entry = JSON.parse(readFileSync(fx.desktopEntry, "utf8")) as Record<string, unknown>;
+  expect(entry["inferenceCredentialHelper"]).toBe(join(fx.next, "claude-desktop-token.sh"));
+});
+
 test("3.5.6 move: a stopDaemons refusal aborts the move -- the legacy home is untouched", async () => {
   const fx = moveFixture();
   // The production stopDaemons (stopLegacyDaemons) throws for ANY daemon not confirmed

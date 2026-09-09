@@ -145,7 +145,11 @@ test("codex: not configured is ok; each broken part warns with a precise message
   });
   expect(direct.status).toBe("ok");
   expect(direct.detail).toContain("provider: direct");
-  expect(direct.detail).toContain("gh auth: authenticated via /bin/gh");
+  // An auto slot whose account list could not name the active login still says
+  // it is on AUTO (never a bare "authenticated" that hides the mode).
+  expect(direct.detail).toContain(
+    "gh auth: authenticated via /bin/gh (AUTO - follows gh's active account)",
+  );
   expect(direct.detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
 
   const directMissingGh = checkCodex({
@@ -212,7 +216,7 @@ test("codex: not configured is ok; each broken part warns with a precise message
   });
   expect(directAutoNamed.status).toBe("ok");
   expect(directAutoNamed.detail).toContain(
-    "gh auth: authenticated via /bin/gh (active account vivswan)",
+    "gh auth: authenticated via /bin/gh (AUTO - currently account vivswan)",
   );
 
   // Non-gh-cli provider (or none) with no stored token: gh is NOT a fallback, so

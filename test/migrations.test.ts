@@ -31,6 +31,7 @@ import {
   v400CodexWiring,
   v400ShellFence,
 } from "../src/migrations/4.0.0.ts";
+import { pinSoleGhAccount, v402GhAccountPin } from "../src/migrations/4.0.2.ts";
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
 import { readResolvedVersionRecord, writeResolvedVersionRecord } from "../src/proxy_float.ts";
 import { acquireDaemonLockForLife, daemonLockPath } from "../src/scripts/daemon_lock.ts";
@@ -57,6 +58,7 @@ const mig = (version: SemverString): Migration => ({
 });
 const LIST = [mig("1.2.1"), mig("1.2.5"), mig("1.3.0")];
 const WORK = parseProfileName("work");
+const OTHER = parseProfileName("other");
 
 const restoreEnv = envSnapshot();
 let dir = "";
@@ -109,6 +111,7 @@ test("the shipped registry holds exactly the named fix-ups in order, home move f
     v400CodexWiring,
     v400ClaudeWiring,
     v400AutoupdateFlag,
+    v402GhAccountPin,
   ]);
   // An install already on 4.0.0 (whose readers tolerated the 3.5.6 shapes) still gets
   // every wiring rewrite on its way to the next release.
@@ -118,6 +121,51 @@ test("the shipped registry holds exactly the named fix-ups in order, home move f
     v400ClaudeWiring,
     v400AutoupdateFlag,
   ]);
+});
+
+test("4.0.2 gh pin: sole-account machines pin every pin-less gh-cli slot; anything else is left alone", () => {
+  dir = isolateProxyHome("copilot-migrate-pin-");
+  const state = new CopilotEnvState();
+  const solo = {
+    accounts: [{ host: "github.com", login: "vivswan", active: true, source: "keyring" }],
+  };
+  // Pin-less default + named gh-cli slots pin to the sole login; a pinned slot,
+  // a token slot, and a non-gh-cli slot are untouched. Idempotent by re-run.
+  state.setCredential(null, { kind: "gh-cli", ghUser: null });
+  state.commitProfile(WORK, { credential: { kind: "gh-cli", ghUser: null }, mode: "direct" });
+  state.commitProfile(OTHER, { credential: { kind: "gh-cli", ghUser: "kept" }, mode: "proxy" });
+  const resolvable: string[] = [];
+  pinSoleGhAccount(() => solo, (login) => {
+    resolvable.push(login);
+    return true;
+  });
+  expect(resolvable).toEqual(["vivswan"]);
+  expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: "vivswan" });
+  expect(state.readCredential(WORK)).toEqual({ kind: "gh-cli", ghUser: "vivswan" });
+  expect(state.readCredential(OTHER)).toEqual({ kind: "gh-cli", ghUser: "kept" });
+  pinSoleGhAccount(() => {
+    throw new Error("nothing left to pin - the look must not run");
+  });
+
+  // A sole login gh cannot serve pinned (`gh auth token --user` finds no saved
+  // credential - an env-only GH_TOKEN) is never pinned: the pin would break a
+  // working auto slot.
+  state.setCredential(null, { kind: "gh-cli", ghUser: null });
+  pinSoleGhAccount(() => solo, () => false);
+  expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
+
+  // Multiple accounts (or an unproven look): auto slots stay auto - only the
+  // user can choose whose Copilot credit to spend.
+  state.setCredential(null, { kind: "gh-cli", ghUser: null });
+  pinSoleGhAccount(() => ({
+    accounts: [
+      { host: "github.com", login: "a", active: true, source: "keyring" },
+      { host: "github.com", login: "b", active: false, source: "keyring" },
+    ],
+  }));
+  expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
+  pinSoleGhAccount(() => ({ accounts: [], unproven: true }));
+  expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
 });
 
 // --- the 4.0.0 wiring rewrites (pure cores; no real home touched) -----------------

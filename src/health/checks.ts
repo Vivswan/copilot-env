@@ -719,8 +719,8 @@ export function checkProfileAuth(
     ? pin !== null
       ? `gh CLI (\`gh auth token --user ${pin}\`)`
       : followed !== null
-      ? `gh CLI (\`gh auth token\`, active account ${followed})`
-      : "gh CLI (`gh auth token`)"
+      ? `gh CLI (\`gh auth token\`, AUTO - currently account ${followed})`
+      : "gh CLI (`gh auth token`, AUTO - follows gh's active account)"
     : "stored GitHub token";
   const identity = slot.integrationIdentity === null ? "" : `, ${slot.integrationIdentity}`;
   const usage = slot.mode === "proxy"
@@ -918,8 +918,8 @@ export function checkAuth(f: AuthFacts): CheckResult {
       ? pin !== null
         ? `gh CLI (\`gh auth token --user ${pin}\`)`
         : followed !== null
-        ? `gh CLI (\`gh auth token\`, active account ${followed})`
-        : "gh CLI (`gh auth token`)"
+        ? `gh CLI (\`gh auth token\`, AUTO - currently account ${followed})`
+        : "gh CLI (`gh auth token`, AUTO - follows gh's active account)"
       : "stored GitHub token";
     return {
       ...base,

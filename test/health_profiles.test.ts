@@ -459,7 +459,9 @@ test("checkProfileAuth: a recorded provider whose credential does not resolve wa
     ghActiveLogin: "vivswan",
   });
   expect(ghAutoNamed.status).toBe("ok");
-  expect(ghAutoNamed.detail).toContain("gh CLI (`gh auth token`, active account vivswan)");
+  expect(ghAutoNamed.detail).toContain(
+    "gh CLI (`gh auth token`, AUTO - currently account vivswan)",
+  );
 
   // An UNPROVEN gh probe keeps the warn + fix but says could-not-check: gh was
   // never actually asked, so the confident wording and its advice never render.

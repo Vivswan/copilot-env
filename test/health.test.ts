@@ -1647,7 +1647,7 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
     pinnedIntegrationId: null,
   });
   expect(autoNamed.status).toBe("ok");
-  expect(autoNamed.detail).toContain("gh CLI (`gh auth token`, active account vivswan)");
+  expect(autoNamed.detail).toContain("gh CLI (`gh auth token`, AUTO - currently account vivswan)");
 });
 
 // --- live (--live) checks ---------------------------------------------------

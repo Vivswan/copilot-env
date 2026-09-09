@@ -45,12 +45,13 @@ function describeDirectGhAuth(a: CodexDirectAuthFacts): {
   }
   // Always name the account (no hidden information): a pinned slot's verdict is
   // about THAT account (gh's active login is exactly what it did NOT check), and
-  // an auto slot names the account it follows when the list was readable.
+  // an auto slot names the account it follows -- or says it is on AUTO when the
+  // account list could not name the active login.
   const account = (a.ghUser ?? null) !== null
     ? ` as account '${a.ghUser}'`
     : (a.ghActiveLogin ?? null) !== null
-    ? ` (active account ${a.ghActiveLogin})`
-    : "";
+    ? ` (AUTO - currently account ${a.ghActiveLogin})`
+    : " (AUTO - follows gh's active account)";
   return {
     ok: a.command !== null && a.authenticated,
     detail: a.command === null

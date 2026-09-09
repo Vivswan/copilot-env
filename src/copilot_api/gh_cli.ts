@@ -110,13 +110,26 @@ export interface GhSpawnSpec {
 }
 
 /**
- * The recipe for listing gh's logged-in accounts: `gh auth status`, same
- * resolved-path/PATH/timeout treatment as ghAuthTokenSpawnSpec. Callers capture
- * BOTH stdout and stderr (older gh wrote the status to stderr).
+ * The recipe for listing gh's logged-in accounts: `gh auth status --hostname
+ * github.com`, same resolved-path/PATH/timeout treatment as
+ * ghAuthTokenSpawnSpec. Scoped to GH_COPILOT_HOST because only its accounts can
+ * be pinned -- a bare status probes EVERY known host, and one unreachable
+ * enterprise host could eat the whole timeout and silently cost the picker.
+ * The output is machine-parsed, so the color-forcing env vars are stripped and
+ * NO_COLOR is set: forced ANSI would corrupt the captured logins. Callers
+ * capture BOTH stdout and stderr (older gh wrote the status to stderr).
  */
 export function ghAuthStatusSpawnSpec(ghPath: string): GhSpawnSpec {
-  const s = cliSpawn(ghPath, ["auth", "status"]);
-  return { ...s, timeout: GH_AUTH_TIMEOUT_MS, env: childEnvWithPath([dirname(ghPath)]) };
+  const s = cliSpawn(ghPath, ["auth", "status", "--hostname", GH_COPILOT_HOST]);
+  const colorForcers = ["CLICOLOR", "CLICOLOR_FORCE", "FORCE_COLOR", "GH_FORCE_TTY"];
+  return {
+    ...s,
+    timeout: GH_AUTH_TIMEOUT_MS,
+    env: childEnvWithPath([dirname(ghPath)], {
+      extra: { "NO_COLOR": "1" },
+      omit: (upper) => colorForcers.includes(upper),
+    }),
+  };
 }
 
 /** One logged-in gh account as `gh auth status` reports it. */
@@ -165,11 +178,12 @@ export function parseGhAuthStatusAccounts(output: string): GhAccount[] {
       }
       continue;
     }
-    // A broken login starts its own block, in either of gh's wordings (`...
-    // account <login> (keyring)` / `... using token (GH_ENTERPRISE_TOKEN)`):
-    // without this reset, ITS "Active account: true" line would mark the last
-    // healthy account.
-    if (/Failed to log in to /.test(line)) {
+    // A broken login starts its own block, in ANY of gh's failure wordings
+    // ("Failed to log in to ... account <login>", "... using token (...)",
+    // "Timeout trying to log in to ..."): all contain "log in to", which the
+    // success line ("Logged in to") never does. Without this reset, a failed
+    // block's "Active account: true" line would mark the last healthy account.
+    if (/\blog in to /.test(line)) {
       current = null;
       continue;
     }

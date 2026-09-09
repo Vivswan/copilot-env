@@ -643,10 +643,16 @@ test("parseGhAuthStatusAccounts: accounts with active attribution; broken logins
   ]);
   // A broken login must never surface as pickable, and its block's own "Active
   // account: true" line must not mark the healthy account parsed before it --
-  // in EITHER of gh's failure wordings (per-account, and per-host env token).
+  // in ANY of gh's failure wordings. Each failure block sits DIRECTLY after a
+  // healthy account, so a reset regex that misses that wording marks the wrong
+  // account and fails here.
   const withBrokenActive = [
     "github.com",
     "  ✓ Logged in to github.com account healthy (keyring)",
+    "  - Active account: false",
+    "  ✗ Timeout trying to log in to github.com account slow (keyring)",
+    "  - Active account: true",
+    "  ✓ Logged in to github.com account steady (keyring)",
     "  - Active account: false",
     "  ✗ Failed to log in to github.com account broken (keyring)",
     "  - Active account: true",
@@ -654,7 +660,10 @@ test("parseGhAuthStatusAccounts: accounts with active attribution; broken logins
     "  ✗ Failed to log in to enterprise.example using token (GH_ENTERPRISE_TOKEN)",
     "  - Active account: true",
   ].join("\n");
-  expect(parseGhAuthStatusAccounts(withBrokenActive)).toEqual([acct("healthy", false)]);
+  expect(parseGhAuthStatusAccounts(withBrokenActive)).toEqual([
+    acct("healthy", false),
+    acct("steady", false),
+  ]);
   expect(parseGhAuthStatusAccounts("You are not logged into any GitHub hosts.")).toEqual([]);
   // The credential source is captured (an env-token login is not pinnable),
   // and the SAME login saved in the keyring stays a separate, pinnable entry
@@ -687,7 +696,20 @@ test("the gh spawn recipes: a pinned account adds --user on github.com; auto sta
     "--hostname",
     "github.com",
   ]);
-  expect(ghAuthStatusSpawnSpec("/opt/gh/gh").args).toEqual(["auth", "status"]);
+  // The status probe is scoped to the pinnable host (an unreachable enterprise
+  // host must not eat the timeout), and its machine-parsed output is stripped of
+  // forced color: NO_COLOR set, the forcing vars dropped.
+  const hadForce = process.env.CLICOLOR_FORCE;
+  process.env.CLICOLOR_FORCE = "1";
+  try {
+    const status = ghAuthStatusSpawnSpec("/opt/gh/gh");
+    expect(status.args).toEqual(["auth", "status", "--hostname", "github.com"]);
+    expect(status.env.NO_COLOR).toBe("1");
+    expect(status.env.CLICOLOR_FORCE).toBeUndefined();
+  } finally {
+    if (hadForce === undefined) delete process.env.CLICOLOR_FORCE;
+    else process.env.CLICOLOR_FORCE = hadForce;
+  }
 });
 
 test("ghAccountsLookFromSpawn: ANY completed exit parses stdout+stderr; a dead spawn is unproven", () => {

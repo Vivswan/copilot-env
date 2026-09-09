@@ -1,11 +1,10 @@
 // Port selection and discovery helpers for the local copilot-api proxy, plus the
 // resolved per-daemon policy (daemonPolicy) the launch/status/stop sites share.
 import * as net from "node:net";
-import { join } from "node:path";
 
 import { BOUNDED_LOCK_POLICY, withFileLockSync } from "../utils/file_lock.ts";
 import { CopilotEnvConfig } from "./env_config.ts";
-import { profileHomeNames, resolveRootHome } from "./paths.ts";
+import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import type { Profile, ProfileName } from "./profile.ts";
 import { CopilotEnvRunState } from "./state.ts";
 
@@ -242,7 +241,7 @@ export function reserveProfilePort(profile: ProfileName): number {
   const state = CopilotEnvRunState.forProfile(profile);
   const recorded = state.read().port;
   if (recorded !== undefined) return recorded;
-  const lockPath = join(resolveRootHome(), ".profile-ports.lock");
+  const lockPath = new CopilotApiPaths().profilePortsLock;
   // Best-effort: after the bounded wait, proceed unlocked rather than deadlock.
   return withFileLockSync(lockPath, BOUNDED_LOCK_POLICY, () => {
     // Re-check under the lock: a concurrent reserver may have just recorded one.

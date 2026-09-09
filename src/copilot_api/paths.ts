@@ -295,6 +295,9 @@ export class CopilotApiPaths {
   ownershipLock: string;
   /** The ownership ledger's MUTATION lock (see OwnershipLedger.opsLock). */
   ownershipOpsLock: string;
+  /** The profile-port reservation lock (reserveProfilePort, port.ts): one
+   *  root-wide mutex so two concurrent reservers cannot mint the same port. */
+  profilePortsLock: string;
   /**
    * copilot-api's OWN device-login token file (`github_token`), written when the
    * proxy authenticates itself via the device flow. copilot-env never writes it
@@ -345,6 +348,7 @@ export class CopilotApiPaths {
     this.envConfigLock = join(this.locksDir, `${basename(this.envConfigFile)}.lock`);
     this.ownershipLock = join(this.locksDir, `${basename(this.ownershipFile)}.lock`);
     this.ownershipOpsLock = join(this.locksDir, `${basename(this.ownershipFile)}.ops.lock`);
+    this.profilePortsLock = join(this.locksDir, "profile-ports.lock");
     this.githubTokenFile = join(rootHome, "github_token");
     this.githubTokenLoginLock = join(this.locksDir, `${basename(this.githubTokenFile)}.login.lock`);
     this.codexModelCatalogFile = join(rootHome, "codex-model-catalog.json");

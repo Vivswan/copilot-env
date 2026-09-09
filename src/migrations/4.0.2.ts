@@ -10,14 +10,21 @@
 // answer.
 import { consola } from "consola";
 import { existsSync, readdirSync, renameSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { join, normalize } from "node:path";
 import { reconcileClaudeDesktopWiring } from "../agents/claude_desktop.ts";
-import { desktopHelperScriptWiring } from "../claude/desktop.ts";
+import {
+  claudeDesktopInstalled,
+  desktopHelperScriptWiring,
+  readFileOrNull,
+} from "../claude/desktop.ts";
 import { type GhAccountsLook, ghAccountsLook, ghAuthTokenLook } from "../copilot_api/credential.ts";
 import { CopilotEnvState } from "../copilot_api/env_state.ts";
+import { CopilotEnvConfig } from "../copilot_api/env_config.ts";
+import { OwnershipLedger } from "../copilot_api/ownership.ts";
 import { GH_COPILOT_HOST, GH_LOGIN_RE } from "../copilot_api/gh_cli.ts";
 import { resolveRootHome } from "../copilot_api/paths.ts";
 import type { Profile } from "../copilot_api/profile.ts";
+import { isRecord } from "../utils/json.ts";
 import type { Migration } from "./index.ts";
 
 /** The machine's sole pickable github.com login, or null: the same pin-or-ask
@@ -120,16 +127,9 @@ const LOCK_DEBRIS: readonly string[] = [
   ".copilot-env-config.json.lock",
   ".copilot-env-ownership.json.lock",
   ".copilot-env-ownership.json.ops.lock",
+  ".profile-ports.lock",
   "github_token.login.lock",
 ].flatMap((name) => [name, `${name}.oslock`]);
-
-/** Loose Claude Desktop helper scripts at the root top level (desktopHelperPath
- *  now puts them under `helpers/`), recognized by the same filename grammar the
- *  sweeps use (desktopHelperScriptWiring) so a neighbour's lookalike -- a `.bak`
- *  copy, a reserved `default` suffix -- is never deleted. */
-function isGeneratedHelperName(name: string): boolean {
-  return desktopHelperScriptWiring(name) !== undefined;
-}
 
 /** The store renames + lock debris ONLY (the layout step, hoisted to the front
  *  of the run right after the 3.5.6 home move -- every later step reads the
@@ -159,30 +159,77 @@ export function moveRootStores(rootHome: string = resolveRootHome()): void {
   }
 }
 
-/** Delete the loose generated helper scripts and run ONE Desktop wiring pass to
- *  regenerate them under `helpers/` (and heal the Desktop entries to match).
- *  Exported for the migration test; `reconcile` substitutes the wiring pass.
- *  NOT quiet: quiet skips the per-target sync, and regenerating the deleted
- *  helpers IS the point. */
+/** Every helper path a Claude Desktop entry we own still REFERENCES (its
+ *  `inferenceCredentialHelper`), one ledger read. Fail closed: an unreadable
+ *  ledger or entry document THROWS (runMigrations warns and nothing gets
+ *  deleted), while a proven-absent entry references nothing. */
+function referencedDesktopHelpers(): Set<string> {
+  const referenced = new Set<string>();
+  for (const path of new OwnershipLedger().ownedPaths("claudeDesktop")) {
+    const raw = readFileOrNull(path);
+    if (raw === null) continue;
+    let doc: unknown;
+    try {
+      doc = JSON.parse(raw);
+    } catch {
+      continue; // an unparseable entry document names no helper
+    }
+    const helper = isRecord(doc) ? doc["inferenceCredentialHelper"] : undefined;
+    if (typeof helper === "string") referenced.add(helper);
+  }
+  return referenced;
+}
+
+/** Path equality the way the filesystem judges it: exact on POSIX, case-blind
+ *  on Windows (its filesystems are case-insensitive by default, and an entry's
+ *  recorded path can differ from today's resolved root home only in case). */
+function samePath(a: string, b: string): boolean {
+  const na = normalize(a);
+  const nb = normalize(b);
+  return process.platform === "win32" ? na.toLowerCase() === nb.toLowerCase() : na === nb;
+}
+
+/** Move the loose generated helper scripts: one Desktop wiring pass FIRST (it
+ *  regenerates the helpers under `helpers/` and rewires the Desktop entries to
+ *  them), then delete exactly the loose helpers NO entry of ours references
+ *  anymore -- the direct safety property, not a proxy for it. Whatever the pass
+ *  could not rewire (blocked metadata, a failed entry save, the wiring key OFF
+ *  where the default entry is deliberately preserved) keeps its still-referenced
+ *  helper and keeps WORKING off it; the notice says how to finish by hand, and
+ *  promises no automatic retry (a shipped migration range never re-runs).
+ *  Exported for the migration test; `reconcile`, `desktopWired`, and
+ *  `referenced` substitute the wiring pass, the enabled+installed gate, and the
+ *  entry scan. NOT quiet: quiet skips the per-target sync, and regenerating the
+ *  deleted helpers IS the point. */
 export async function moveDesktopHelpers(
   rootHome: string = resolveRootHome(),
   reconcile: () => Promise<void> = () => reconcileClaudeDesktopWiring(),
+  desktopWired: () => boolean = () =>
+    claudeDesktopInstalled() && new CopilotEnvConfig().claudeDesktopEnabled(),
+  referenced: () => Set<string> = referencedDesktopHelpers,
 ): Promise<void> {
-  let helpersRemoved = false;
   let entries: string[] = [];
   try {
     entries = readdirSync(rootHome);
   } catch {
     // No root home yet: a fresh install has nothing to move.
   }
-  for (const entry of entries) {
-    if (isGeneratedHelperName(entry)) {
-      rmSync(join(rootHome, entry), { force: true });
-      helpersRemoved = true;
-      consola.info(`  removed ${entry} (regenerated under helpers/ by the Desktop wiring)`);
+  const loose = entries.filter((name) => desktopHelperScriptWiring(name) !== undefined);
+  if (loose.length === 0) return;
+  if (desktopWired()) await reconcile();
+  const stillReferenced = [...referenced()];
+  for (const name of loose) {
+    const path = join(rootHome, name);
+    if (stillReferenced.some((ref) => samePath(ref, path))) {
+      consola.info(
+        `  kept ${name} (a Claude Desktop entry still references it) - rewire with ` +
+          "`agent claude`, then delete it by hand",
+      );
+      continue;
     }
+    rmSync(path, { force: true });
+    consola.info(`  removed ${name} (the Desktop wiring now lives under helpers/)`);
   }
-  if (helpersRemoved) await reconcile();
 }
 
 export const v402RootLayout: Migration = {

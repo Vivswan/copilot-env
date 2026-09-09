@@ -203,6 +203,7 @@ test("4.0.2 root layout: stores rename, lock debris clears, loose helpers regene
   writeFileSync(join(dir, ".copilot-env-config.json"), `${JSON.stringify({ port: 4199 })}\n`);
   writeFileSync(join(dir, ".copilot-env-state.json.lock.oslock"), "");
   writeFileSync(join(dir, ".copilot-env-ownership.json.ops.lock.oslock"), "");
+  writeFileSync(join(dir, ".profile-ports.lock.oslock"), "");
   writeFileSync(join(dir, "github_token.login.lock.oslock"), "");
   writeFileSync(join(dir, "claude-desktop-token.sh"), "#!/bin/sh\n");
   writeFileSync(join(dir, "claude-desktop-proxy-token-work.cmd"), "@echo off\n");
@@ -213,15 +214,18 @@ test("4.0.2 root layout: stores rename, lock debris clears, loose helpers regene
   writeFileSync(join(dir, "claude-desktop-token-default.sh"), "not ours\n");
   writeFileSync(join(dir, "claude-desktop-token-work.bak.sh"), "not ours\n");
   let reconciled = 0;
-  const reconcile = () => {
+  const pass = () => {
     reconciled++;
     return Promise.resolve();
   };
+  const none = () => new Set<string>();
   moveRootStores(dir);
-  await moveDesktopHelpers(dir, reconcile);
+  // A WIRED Desktop whose pass rewired every entry to helpers/: nothing
+  // references the loose helpers anymore, so they go after ONE pass.
+  await moveDesktopHelpers(dir, pass, () => true, none);
   // Stores renamed byte-identically; every old name and lock sidecar is gone;
-  // generated helpers removed (ONE wiring pass regenerates them under helpers/)
-  // while the lookalike .bak survives (never ours).
+  // unreferenced generated helpers removed while the lookalikes survive
+  // (never ours).
   expect(readFileSync(join(dir, "credentials.json"), "utf8")).toBe(
     `${JSON.stringify({ profiles: {} })}\n`,
   );
@@ -234,6 +238,7 @@ test("4.0.2 root layout: stores rename, lock debris clears, loose helpers regene
       ".copilot-env-config.json",
       ".copilot-env-state.json.lock.oslock",
       ".copilot-env-ownership.json.ops.lock.oslock",
+      ".profile-ports.lock.oslock",
       "github_token.login.lock.oslock",
       "claude-desktop-token.sh",
       "claude-desktop-proxy-token-work.cmd",
@@ -247,11 +252,58 @@ test("4.0.2 root layout: stores rename, lock debris clears, loose helpers regene
   // Idempotent: nothing left to move, the wiring pass is not re-run, and the
   // renamed stores are untouched.
   moveRootStores(dir);
-  await moveDesktopHelpers(dir, reconcile);
+  await moveDesktopHelpers(dir, pass, () => true, none);
   expect(reconciled).toBe(1);
   expect(readFileSync(join(dir, "preferences.json"), "utf8")).toBe(
     `${JSON.stringify({ port: 4199 })}\n`,
   );
+
+  // A helper a Desktop entry STILL references (the pass could not rewire it -
+  // blocked metadata, a failed entry save) is kept: the entry keeps working off
+  // it. Once nothing references it, a later run finishes the move.
+  const helper = join(dir, "claude-desktop-token.sh");
+  writeFileSync(helper, "#!/bin/sh\n");
+  await moveDesktopHelpers(dir, () => Promise.resolve(), () => true, () => new Set([helper]));
+  expect(existsSync(helper)).toBe(true);
+  await moveDesktopHelpers(dir, pass, () => true, none);
+  expect(existsSync(helper)).toBe(false);
+
+  // The wiring key OFF preserves the default entry (the removeUnmanaged
+  // contract): its still-referenced helper survives WITHOUT any wiring pass,
+  // while an unreferenced one goes.
+  writeFileSync(helper, "#!/bin/sh\n");
+  writeFileSync(join(dir, "claude-desktop-proxy-token-work.cmd"), "@echo off\n");
+  await moveDesktopHelpers(
+    dir,
+    () => {
+      throw new Error("wiring off - no pass");
+    },
+    () => false,
+    () => new Set([helper]),
+  );
+  expect(existsSync(helper)).toBe(true);
+  expect(existsSync(join(dir, "claude-desktop-proxy-token-work.cmd"))).toBe(false);
+  rmSync(helper);
+
+  // The REAL reference scanner (no `referenced` stub): the ownership ledger
+  // names the entry document, whose inferenceCredentialHelper is the reference.
+  const entryPath = join(dir, "desktop-entry.json");
+  new OwnershipLedger().record("claudeDesktop", entryPath);
+  writeFileSync(helper, "#!/bin/sh\n");
+  writeFileSync(entryPath, `${JSON.stringify({ inferenceCredentialHelper: helper })}\n`);
+  await moveDesktopHelpers(dir, () => Promise.resolve(), () => false);
+  expect(existsSync(helper)).toBe(true);
+  // Once the entry points under helpers/, the loose helper is unreferenced.
+  writeFileSync(
+    entryPath,
+    `${
+      JSON.stringify({
+        inferenceCredentialHelper: join(dir, "helpers", "claude-desktop-token.sh"),
+      })
+    }\n`,
+  );
+  await moveDesktopHelpers(dir, () => Promise.resolve(), () => false);
+  expect(existsSync(helper)).toBe(false);
 
   // A NEW-name store never gets clobbered by a lingering old one (mixed-version
   // window): the old file survives for the user to inspect, the new one wins.

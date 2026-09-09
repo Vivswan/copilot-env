@@ -615,6 +615,15 @@ function moveFixture(): MoveFixture {
   const next = join(dir, "copilot-env");
   mkdirSync(legacy, { recursive: true });
   writeFileSync(join(legacy, "config.json"), "{}\n");
+  const desktopEntry = join(dir, "entry.json");
+  // The stores ride the move under their pre-4.0.2 names, and the move itself
+  // must rename them BEFORE its ledger-fed rewrites: the entry below is only
+  // discoverable through the renamed ownership.json, so a late rename would
+  // leave the helper path unrepointed and fail the assertion.
+  writeFileSync(
+    join(legacy, ".copilot-env-ownership.json"),
+    `${JSON.stringify({ claudeDesktopPaths: [desktopEntry] })}\n`,
+  );
   // The float record pins its deno cache by absolute path into the home.
   writeResolvedVersionRecord(legacy, "2.3.3", 1_700_000_000_000, join(legacy, "proxy", "deno"));
   const codexConfig = join(dir, "codex-config.toml");
@@ -624,7 +633,6 @@ function moveFixture(): MoveFixture {
       join(legacy, "codex-model-catalog.json").replaceAll("\\", "\\\\")
     }"\n`,
   );
-  const desktopEntry = join(dir, "entry.json");
   writeFileSync(
     desktopEntry,
     `${
@@ -650,7 +658,14 @@ function moveFixture(): MoveFixture {
           return Promise.resolve();
         },
         codexConfigPaths: () => [codexConfig],
-        desktopEntryPaths: () => [desktopEntry],
+        // The production binding: entries come from the ownership ledger, whose
+        // reader knows ONLY the renamed store - readable at the moved home once
+        // the move (incl. the in-move rename) has happened. Pinning the home at
+        // INVOKE time mirrors how the real thunk resolves it post-move.
+        desktopEntryPaths: () => {
+          process.env.COPILOT_API_HOME = next;
+          return new OwnershipLedger().ownedPaths("claudeDesktop");
+        },
       }),
   };
 }
@@ -661,6 +676,9 @@ test("3.5.6 move: daemons stopped, dir renamed, both artifact kinds repointed", 
   expect(fx.stopped.count).toBe(1);
   expect(existsSync(fx.legacy)).toBe(false);
   expect(existsSync(join(fx.next, "config.json"))).toBe(true);
+  // The store rename happened INSIDE the move (before its ledger-fed rewrites).
+  expect(existsSync(join(fx.next, "ownership.json"))).toBe(true);
+  expect(existsSync(join(fx.next, ".copilot-env-ownership.json"))).toBe(false);
   expect(readFileSync(fx.codexConfig, "utf8")).toContain(
     join(fx.next, "codex-model-catalog.json").replaceAll("\\", "\\\\"),
   );

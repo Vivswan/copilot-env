@@ -30,6 +30,8 @@ import {
   AUTH_PROVIDERS,
   type AuthProvider,
   Credential,
+  type GhAccountsLook,
+  ghAccountsLook,
   ghAuthTokenLook,
   type GhTokenLook,
 } from "../copilot_api/credential.ts";
@@ -38,8 +40,12 @@ import {
   assertProfileSlot,
   CopilotEnvState,
   type ProvisionedCredential,
+  type StoredCredential,
 } from "../copilot_api/env_state.ts";
 import {
+  GH_COPILOT_HOST,
+  GH_LOGIN_RE,
+  ghAccountPinnable,
   ghTokenEnvVarsLabel,
   ghTokenEnvVarsList,
   ghTokenFromEnv,
@@ -79,6 +85,8 @@ export interface AuthArgs {
   provider?: string;
   /** `--set [token]`: provide the gh-token value non-interactively (verbatim, or env when bare). */
   set?: string | boolean;
+  /** `--gh-user <login>`: pin gh-cli to that logged-in gh account (implies `--provider gh-cli`). */
+  ghUser?: string;
   /** `--get`: print the resolved token to stdout (what the agent configs call). */
   get?: boolean;
   /** `--del`: clear the stored token (de-authenticate). */
@@ -108,31 +116,53 @@ type GhTokenSource =
   | { kind: "env" }
   | { kind: "env-or-prompt" };
 
+/** Which gh account a gh-cli acquisition uses: `auto` follows gh's active
+ *  account at every resolve (the historical behavior), `pinned` records one
+ *  login (`gh auth token --user`), and `choose` asks -- silently settling to
+ *  auto when gh has at most one account (or the account list is unavailable). */
+type GhCliAccountChoice =
+  | { kind: "auto" }
+  | { kind: "pinned"; login: string }
+  | { kind: "choose" };
+
 /** A credential acquisition with the provider already settled (interactively or by flag). */
 type ResolvedAcquisition =
-  | { kind: "provider"; provider: Exclude<AuthProvider, "gh-token"> }
+  | { kind: "copilot" }
+  | { kind: "gh-cli"; account: GhCliAccountChoice }
   | { kind: "gh-token"; source: GhTokenSource };
 
 /**
- * How to acquire a credential, parsed ONCE from the raw `--provider`/`--set` flag pair by
- * `parseAcquisition` (the shared boundary for `agent auth` and `agent profile --add`).
- * A `--set` token can only ever travel inside the gh-token variant, so `authenticate`
- * cannot receive one under a non-gh-token provider and silently drop it.
+ * How to acquire a credential, parsed ONCE from the raw `--provider`/`--set`/
+ * `--gh-user` flags by `parseAcquisition` (the shared boundary for `agent auth`
+ * and `agent profile --add`). A `--set` token can only ever travel inside the
+ * gh-token variant (and a `--gh-user` pin inside the gh-cli one), so
+ * `authenticate` cannot receive either under the wrong provider and silently
+ * drop it.
  */
 export type CredentialAcquisition = { kind: "choose" } | ResolvedAcquisition;
 
 /** Map a settled provider name onto its acquisition: gh-token logs in via the
- *  env-else-prompt token flow; copilot/gh-cli carry the provider itself. */
+ *  env-else-prompt token flow; gh-cli asks which gh account (settling to auto
+ *  when there is no real choice); copilot carries the provider itself. */
 function acquisitionForProvider(provider: AuthProvider): ResolvedAcquisition {
-  return provider === "gh-token"
-    ? { kind: "gh-token", source: { kind: "env-or-prompt" } }
-    : { kind: "provider", provider };
+  switch (provider) {
+    case "gh-token":
+      return { kind: "gh-token", source: { kind: "env-or-prompt" } };
+    case "gh-cli":
+      return { kind: "gh-cli", account: { kind: "choose" } };
+    case "copilot":
+      return { kind: "copilot" };
+    default:
+      return assertNever(provider);
+  }
 }
 
 /**
- * Parse the raw `--provider [name]` / `--set [token]` flag pair into a
- * CredentialAcquisition -- the ONE place the "--set implies gh-token (and rejects a
- * conflicting provider)" rule lives, shared by `agent auth` and `agent profile --add`.
+ * Parse the raw `--provider [name]` / `--set [token]` / `--gh-user [login]`
+ * flags into a CredentialAcquisition -- the ONE place the "--set implies
+ * gh-token" and "--gh-user implies gh-cli" rules live (each rejecting a
+ * conflicting provider, and one another), shared by `agent auth` and `agent
+ * profile --add`.
  *
  * The two commands intentionally differ on which error wins for `--set x --provider
  * bogus`: `agent auth` validates the provider name first (so an unknown name gets the
@@ -142,8 +172,26 @@ function acquisitionForProvider(provider: AuthProvider): ResolvedAcquisition {
 export function parseAcquisition(
   provider: string | undefined,
   set: string | boolean | undefined,
+  ghUser: string | undefined,
   opts: { setConflictWins?: boolean } = {},
 ): CredentialAcquisition {
+  if (ghUser !== undefined) {
+    if (set !== undefined) {
+      throw new Error(
+        "--gh-user only applies to `--provider gh-cli` (--set implies gh-token)",
+      );
+    }
+    if (provider !== undefined && asProvider(provider) !== "gh-cli") {
+      throw new Error("--gh-user only applies to `--provider gh-cli`");
+    }
+    const login = ghUser.trim();
+    if (!GH_LOGIN_RE.test(login)) {
+      throw new Error(
+        "--gh-user must be a GitHub login (1-39 letters, digits, dashes, or underscores)",
+      );
+    }
+    return { kind: "gh-cli", account: { kind: "pinned", login } };
+  }
   if (set !== undefined) {
     const isGhToken = provider === undefined ||
       (opts.setConflictWins
@@ -190,6 +238,53 @@ async function chooseProvider(): Promise<AuthProvider> {
     cancel: "reject",
   });
   return asProvider(String(value));
+}
+
+/**
+ * Settle which gh account a gh-cli acquisition uses. Only a real choice ever
+ * surfaces: an unproven account look or at most one login settles to `auto`
+ * silently (exactly the historical behavior -- loginWithGhCli still owns the
+ * honest auth verdict), and without a TTY the choice defaults to auto with a
+ * stderr hint naming `--gh-user` (never an error, so scripted
+ * `--provider gh-cli` keeps working when a second account appears). Logins are
+ * deduplicated across hosts (Copilot is github.com; multi-host pinning is out
+ * of scope). `look` is a test seam; exported for the settle-rule tests.
+ */
+export async function chooseGhAccount(
+  look: () => GhAccountsLook = ghAccountsLook,
+): Promise<Exclude<GhCliAccountChoice, { kind: "choose" }>> {
+  const { accounts, unproven } = look();
+  // Copilot authenticates against GH_COPILOT_HOST, and the pinned resolver runs
+  // `gh auth token --user --hostname github.com` against gh's SAVED
+  // credentials: another host's login, or an env-token one (ghAccountPinnable),
+  // would be a menu entry the resolver cannot serve. The auto label still names
+  // the TRUE active account (env token included) -- that is what auto follows.
+  const github = accounts.filter((a) => a.host === GH_COPILOT_HOST);
+  const logins = [...new Set(github.filter(ghAccountPinnable).map((a) => a.login))];
+  if (unproven || logins.length <= 1) return { kind: "auto" };
+  const active = github.find((a) => a.active)?.login ?? null;
+  const activeLabel = active === null ? "" : ` (currently ${active})`;
+  if (!process.stdin.isTTY) {
+    logger.info(
+      `gh has ${logins.length} logged-in accounts; using its active account${activeLabel}. ` +
+        "Pass --gh-user <login> to pin one.",
+    );
+    return { kind: "auto" };
+  }
+  const value = await consola.prompt("Which gh account should Direct auth use?", {
+    type: "select",
+    options: [
+      // A GitHub login is never empty, so "" cannot collide with a real choice.
+      { label: `auto - follow gh's active account${activeLabel}`, value: "" },
+      ...logins.map((login) => ({
+        label: `${login} - always use this account${login === active ? " (currently active)" : ""}`,
+        value: login,
+      })),
+    ],
+    cancel: "reject",
+  });
+  const login = String(value);
+  return login === "" ? { kind: "auto" } : { kind: "pinned", login };
 }
 
 // --- provider acquisition ---------------------------------------------------
@@ -339,22 +434,36 @@ async function loginWithGhToken(source: GhTokenSource): Promise<string> {
 }
 
 /** `gh-cli`: rely on the machine's gh login (store nothing, verify gh works).
- *  `look` is a test seam; exported for its wording tests. */
-export function loginWithGhCli(look: () => GhTokenLook = ghAuthTokenLook): void {
+ *  `ghUser` verifies THAT account (`gh auth token --user`); null = gh's active
+ *  account. `look` is a test seam; exported for its wording tests. */
+export function loginWithGhCli(
+  ghUser: string | null,
+  look: (ghUser: string | null) => GhTokenLook = ghAuthTokenLook,
+): void {
   // Verify gh works BEFORE recording -- otherwise a failed gh check would point
   // `--get` at a `gh` that can't produce a token. Either miss throws (the
   // provider is never recorded); an UNPROVEN look wears its own words, because
   // "not authenticated" and the `gh auth login` advice are wrong when gh was
   // never actually asked.
-  const gh = look();
+  const gh = look(ghUser);
   if (gh.token === null) {
+    if (gh.unproven) {
+      throw new Error(
+        "could not check gh authentication (`gh auth token` did not run to completion) - retry `agent auth`",
+      );
+    }
     throw new Error(
-      gh.unproven
-        ? "could not check gh authentication (`gh auth token` did not run to completion) - retry `agent auth`"
-        : "gh is not authenticated - run `gh auth login`, then retry `agent auth`",
+      ghUser === null
+        ? "gh is not authenticated - run `gh auth login`, then retry `agent auth`"
+        : `gh is not authenticated as account '${ghUser}' - run \`gh auth login\` for that ` +
+          "account, then retry `agent auth`",
     );
   }
-  logger.success("  Using the gh CLI login as the Direct credential.");
+  logger.success(
+    ghUser === null
+      ? "  Using the gh CLI login as the Direct credential."
+      : `  Using the gh CLI login (account ${ghUser}) as the Direct credential.`,
+  );
 }
 
 /**
@@ -373,11 +482,13 @@ export async function acquireCredential(
   if (resolved.kind === "gh-token") {
     return { kind: "stored", provider: "gh-token", token: await loginWithGhToken(resolved.source) };
   }
-  if (resolved.provider === "copilot") {
+  if (resolved.kind === "copilot") {
     return { kind: "stored", provider: "copilot", token: loginWithCopilot() };
   }
-  loginWithGhCli();
-  return { kind: "gh-cli" };
+  const account = resolved.account.kind === "choose" ? await chooseGhAccount() : resolved.account;
+  const ghUser = account.kind === "pinned" ? account.login : null;
+  loginWithGhCli(ghUser);
+  return { kind: "gh-cli", ghUser };
 }
 
 /**
@@ -539,12 +650,28 @@ async function runDel(profile: Profile): Promise<void> {
   }
 }
 
+/** The provider label for the read-back lines (`--check`, `--list`, "Already
+ *  authenticated"): the provider name, wearing the gh-cli account pin when one
+ *  is recorded ("gh-cli (user <login>)"). Null = never chosen. An auto gh-cli
+ *  slot renders the bare provider name, keeping the historical output
+ *  byte-identical. Exported for `agent profile`'s credential-reuse line. */
+export function credentialSourceLabel(credential: StoredCredential): string | null {
+  switch (credential.kind) {
+    case "none":
+    case "stored":
+      return credential.provider;
+    case "gh-cli":
+      return credential.ghUser === null ? "gh-cli" : `gh-cli (user ${credential.ghUser})`;
+  }
+}
+
 function runCheck(profile: Profile): void {
   // The exit code is the machine contract; the status line is a human convenience
   // printed to stdout (the one stdout exception besides `--get`, like its peers
   // `agent codex/claude --check`). Default output stays byte-identical (flag/label
   // are empty strings there).
-  const { provider, resolves } = new Credential(undefined, profile).status();
+  const credential = new Credential(undefined, profile);
+  const { provider, resolves } = credential.status();
   const flag = profile === null ? "" : ` --profile ${profile}`;
   const label = profile === null ? "" : ` (${profileLabel(profile)})`;
   if (provider === null) {
@@ -554,13 +681,16 @@ function runCheck(profile: Profile): void {
       console.log(`not authenticated${label} - run \`agent auth${flag}\``);
     }
     process.exitCode = 1;
-  } else if (resolves) {
-    console.log(`authenticated (${provider})${label}`);
+    return;
+  }
+  const source = credentialSourceLabel(credential.read()) ?? provider;
+  if (resolves) {
+    console.log(`authenticated (${source})${label}`);
     process.exitCode = 0;
   } else {
-    // e.g. gh-cli selected but `gh` is no longer authenticated.
+    // e.g. gh-cli selected but `gh` is no longer authenticated (as the pinned account).
     console.log(
-      `provider '${provider}' selected but no credential resolves${label} - run \`agent auth${flag}\``,
+      `provider '${source}' selected but no credential resolves${label} - run \`agent auth${flag}\``,
     );
     process.exitCode = 1;
   }
@@ -570,13 +700,16 @@ function runCheck(profile: Profile): void {
 function runList(): void {
   const state = new CopilotEnvState();
   const rows: Array<[string, string]> = [];
-  const describe = (provider: string | null, resolves: boolean): string =>
-    provider === null ? "not authenticated" : `${provider}${resolves ? "" : " (does not resolve)"}`;
+  const describe = (source: string | null, resolves: boolean): string =>
+    source === null ? "not authenticated" : `${source}${resolves ? "" : " (does not resolve)"}`;
   const defaultCred = new Credential(state);
-  rows.push(["default", describe(defaultCred.provider(), defaultCred.isAuthenticated())]);
+  rows.push([
+    "default",
+    describe(credentialSourceLabel(defaultCred.read()), defaultCred.isAuthenticated()),
+  ]);
   for (const name of state.profileNames()) {
     const cred = new Credential(state, name);
-    rows.push([name, describe(cred.provider(), cred.isAuthenticated())]);
+    rows.push([name, describe(credentialSourceLabel(cred.read()), cred.isAuthenticated())]);
   }
   printTable(rows, { indent: "" });
 }
@@ -622,6 +755,15 @@ function providerConflictError(): Error {
   );
 }
 
+// The rejection for `--gh-user` alongside a sub-action, mirroring
+// providerConflictError: the pin steers only a gh-cli authentication.
+function ghUserConflictError(): Error {
+  return new Error(
+    "--gh-user pins the gh account for authentication and cannot combine with " +
+      "--get/--del/--check/--list/--print-proxy-token",
+  );
+}
+
 /** Parse the raw `agent auth` flags into an AuthAction (the CLI boundary). */
 export function parseAuthAction(args: AuthArgs): AuthAction {
   const subActions = [args.get, args.del, args.check, args.printProxyToken, args.list].filter(
@@ -642,17 +784,23 @@ export function parseAuthAction(args: AuthArgs): AuthAction {
       throw new Error("--list reports every profile; it does not combine with --profile");
     }
     if (args.provider !== undefined) throw providerConflictError();
+    if (args.ghUser !== undefined) throw ghUserConflictError();
     return { kind: "list" };
   }
   // Profile-name validation stays ahead of the provider conflict, so an invalid
   // name keeps reporting itself even when a stray --provider rides along.
   const profile: Profile = parseProfileFlag(args.profile);
   if (args.provider !== undefined && subActions > 0) throw providerConflictError();
+  if (args.ghUser !== undefined && subActions > 0) throw ghUserConflictError();
   if (args.printProxyToken) return { kind: "print-proxy-token", profile };
   if (args.get) return { kind: "get", profile };
   if (args.del) return { kind: "del", profile };
   if (args.check) return { kind: "check", profile };
-  return { kind: "authenticate", profile, acquisition: parseAcquisition(args.provider, args.set) };
+  return {
+    kind: "authenticate",
+    profile,
+    acquisition: parseAcquisition(args.provider, args.set, args.ghUser),
+  };
 }
 
 /**
@@ -707,17 +855,19 @@ async function runAuthenticate(
   acquisition: CredentialAcquisition,
 ): Promise<void> {
   if (acquisition.kind === "choose") {
-    const { provider, resolves } = new Credential(undefined, profile).status();
+    const credential = new Credential(undefined, profile);
+    const { provider, resolves } = credential.status();
     if (provider !== null && resolves) {
+      const source = credentialSourceLabel(credential.read()) ?? provider;
       if (profile === null) {
         // The default wording is an output contract -- keep it byte-identical.
         logger.success(
-          `Already authenticated (${provider}). Switch with ` +
+          `Already authenticated (${source}). Switch with ` +
             `\`agent auth --provider <${PROVIDER_CHOICES}>\`, or clear it with \`agent auth --del\`.`,
         );
       } else {
         logger.success(
-          `Already authenticated (${provider}, ${profileLabel(profile)}). Switch with ` +
+          `Already authenticated (${source}, ${profileLabel(profile)}). Switch with ` +
             `\`agent auth --profile ${profile} --provider <${PROVIDER_CHOICES}>\`, or clear it ` +
             `with \`agent auth --profile ${profile} --del\`.`,
         );

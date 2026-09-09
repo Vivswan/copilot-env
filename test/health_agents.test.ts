@@ -178,6 +178,26 @@ test("codex: not configured is ok; each broken part warns with a precise message
   expect(directUnauthed.detail).toContain("not authenticated");
   expect(directUnauthed.fix).toBe("gh auth login");
 
+  // A PINNED slot's verdict names its account: the probe ran `gh auth token
+  // --user work-bot`, so "not authenticated" is about that account, not gh's
+  // active one (which may be fine).
+  const directPinnedUnauthed = checkCodex({
+    ...wired,
+    providerMode: "direct",
+    modelProvider: "copilot-env",
+    baseUrl: "https://api.githubcopilot.com",
+    envKeyMatches: false,
+    envKeyInDotenv: false,
+    envKeyInEnviron: false,
+    tokenAvailable: false,
+    directAuth: { command: "/bin/gh", authenticated: false, ghUser: "work-bot" },
+  });
+  expect(directPinnedUnauthed.status).toBe("warn");
+  expect(directPinnedUnauthed.detail).toContain(
+    "gh auth: /bin/gh is not authenticated as account 'work-bot'",
+  );
+  expect(directPinnedUnauthed.fix).toBe("gh auth login");
+
   // Non-gh-cli provider (or none) with no stored token: gh is NOT a fallback, so
   // a managed Direct config that doesn't resolve warns and points at `agent auth`
   // (NOT the gh-specific message). Guards against the provider-blind false-OK.

@@ -41,7 +41,12 @@ import { assertNever } from "../utils/assert.ts";
 import { errMessage } from "../utils/error.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 import { removeTreeReported } from "../utils/report_write.ts";
-import { acquireCredential, type CredentialAcquisition, parseAcquisition } from "./auth.ts";
+import {
+  acquireCredential,
+  type CredentialAcquisition,
+  credentialSourceLabel,
+  parseAcquisition,
+} from "./auth.ts";
 
 // Narration to stderr so `--settings-for`'s stdout stays a clean machine-readable path.
 const logger = createStderrLogger();
@@ -62,9 +67,10 @@ export interface ProfileArgs {
   /** `--direct`/`--proxy` for `--add`, parsed once at the CLI boundary
    *  (auto = neither; sticky from the store on a re-add). */
   mode: RequestedMode;
-  /** `--provider` / `--set`: non-interactive credential acquisition for `--add`. */
+  /** `--provider` / `--set` / `--gh-user`: non-interactive credential acquisition for `--add`. */
   provider?: string;
   set?: string | boolean;
+  ghUser?: string;
 }
 
 /**
@@ -97,9 +103,12 @@ export function parseProfileAction(args: ProfileArgs): ProfileAction {
   if (args.mode !== "auto" && args.add === undefined) {
     throw new Error("--direct/--proxy only apply to --add (a profile's mode is set there)");
   }
-  if ((args.provider !== undefined || args.set !== undefined) && args.add === undefined) {
+  if (
+    (args.provider !== undefined || args.set !== undefined || args.ghUser !== undefined) &&
+    args.add === undefined
+  ) {
     throw new Error(
-      "--provider/--set only apply to --add (re-auth an existing profile with `agent auth --profile <name>`)",
+      "--provider/--set/--gh-user only apply to --add (re-auth an existing profile with `agent auth --profile <name>`)",
     );
   }
   const add = parseProfileFlag(args.add);
@@ -112,7 +121,9 @@ export function parseProfileAction(args: ProfileArgs): ProfileAction {
       kind: "add",
       name: add,
       mode: args.mode,
-      acquisition: parseAcquisition(args.provider, args.set, { setConflictWins: true }),
+      acquisition: parseAcquisition(args.provider, args.set, args.ghUser, {
+        setConflictWins: true,
+      }),
     };
   }
   const del = parseProfileFlag(args.del);
@@ -184,10 +195,13 @@ async function profileCredential(
 ): Promise<ProvisionedCredential> {
   const existing = slot.credential;
   if (acquisition.kind === "choose" && existing.kind !== "none") {
-    const resolves = existing.kind === "stored" || ghAuthToken() !== null;
+    // A gh-cli slot resolves via ITS recorded account pin (null = active account).
+    const resolves = existing.kind === "stored" || ghAuthToken(existing.ghUser) !== null;
     if (resolves) {
       logger.log(
-        `  Reusing ${profileLabel(name)}'s existing credential (${credentialProvider(existing)}).`,
+        `  Reusing ${profileLabel(name)}'s existing credential (${
+          credentialSourceLabel(existing)
+        }).`,
       );
       return existing;
     }

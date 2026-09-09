@@ -65,6 +65,18 @@ export function tokenFromSetFlag(flag: string | boolean | undefined): string | n
 /** Cap on one `gh auth token` call, shared by every "is gh authenticated?" probe. */
 export const GH_AUTH_TIMEOUT_MS = 5000;
 
+/** The one host Copilot authenticates against. A pinned account is chosen from
+ *  this host's logins, so the pinned resolve names it explicitly -- otherwise a
+ *  GH_HOST override would point `--user` at another host's accounts. */
+export const GH_COPILOT_HOST = "github.com";
+
+/** A GitHub login's shape: 1-39 alphanumerics/dashes, plus underscore for EMU
+ *  accounts ("user_shortcode"). Doubles as the spawn-safety gate for the pinned
+ *  `--user` argument: no cmd.exe metacharacter (%, quotes, carets) fits it, so
+ *  the Windows cliSpawn hop can never rewrite a pin into a different account.
+ *  Every pin write and read funnels through it. */
+export const GH_LOGIN_RE = /^[A-Za-z0-9_-]{1,39}$/;
+
 /**
  * The ONE recipe for probing gh's login: spawn `gh auth token` at gh's RESOLVED
  * path (not the bare name), with gh's bin dir on PATH, so an nvm-only gh (or a
@@ -74,16 +86,110 @@ export const GH_AUTH_TIMEOUT_MS = 5000;
  * (src/agents/live_probe.ts), and the health probe (health/probe.ts), so the
  * command and its GH_AUTH_TIMEOUT_MS budget never drift between them. Callers
  * pick their own stdio (capture the token vs. keep it out of process memory).
+ * `ghUser` pins the call to that logged-in gh account (`--user`, on
+ * GH_COPILOT_HOST -- the host the account was chosen from); null follows gh's
+ * active account.
  */
-export function ghAuthTokenSpawnSpec(ghPath: string): {
+export function ghAuthTokenSpawnSpec(ghPath: string, ghUser: string | null = null): GhSpawnSpec {
+  const s = cliSpawn(
+    ghPath,
+    ghUser === null
+      ? ["auth", "token"]
+      : ["auth", "token", "--user", ghUser, "--hostname", GH_COPILOT_HOST],
+  );
+  return { ...s, timeout: GH_AUTH_TIMEOUT_MS, env: childEnvWithPath([dirname(ghPath)]) };
+}
+
+/** The shared spawn shape for the gh recipes above/below. */
+export interface GhSpawnSpec {
   file: string;
   args: string[];
   shell: boolean;
   timeout: number;
   env: Record<string, string>;
-} {
-  const s = cliSpawn(ghPath, ["auth", "token"]);
-  return { ...s, timeout: GH_AUTH_TIMEOUT_MS, env: childEnvWithPath([dirname(ghPath)]) };
+}
+
+/**
+ * The recipe for listing gh's logged-in accounts: `gh auth status --hostname
+ * github.com`, same resolved-path/PATH/timeout treatment as
+ * ghAuthTokenSpawnSpec. Scoped to GH_COPILOT_HOST because only its accounts can
+ * be pinned -- a bare status probes EVERY known host, and one unreachable
+ * enterprise host could eat the whole timeout and silently cost the picker.
+ * The output is machine-parsed, so the color-forcing env vars are stripped and
+ * NO_COLOR is set: forced ANSI would corrupt the captured logins. Callers
+ * capture BOTH stdout and stderr (older gh wrote the status to stderr).
+ */
+export function ghAuthStatusSpawnSpec(ghPath: string): GhSpawnSpec {
+  const s = cliSpawn(ghPath, ["auth", "status", "--hostname", GH_COPILOT_HOST]);
+  const colorForcers = ["CLICOLOR", "CLICOLOR_FORCE", "FORCE_COLOR", "GH_FORCE_TTY"];
+  return {
+    ...s,
+    timeout: GH_AUTH_TIMEOUT_MS,
+    env: childEnvWithPath([dirname(ghPath)], {
+      extra: { "NO_COLOR": "1" },
+      omit: (upper) => colorForcers.includes(upper),
+    }),
+  };
+}
+
+/** One logged-in gh account as `gh auth status` reports it. */
+export interface GhAccount {
+  host: string;
+  login: string;
+  active: boolean;
+  /** Where gh got the credential: `keyring`, a config path, or an env var name
+   *  like `GH_TOKEN` (blank when gh printed no source parens). */
+  source: string;
+}
+
+/** Whether `gh auth token --user <login>` can serve this account: `--user`
+ *  reads gh's SAVED credentials only, so an env-token login (source GH_TOKEN /
+ *  GITHUB_TOKEN / ...) cannot be pinned -- env auth stays reachable through
+ *  auto (it IS gh's active credential while the var is set). */
+export function ghAccountPinnable(account: GhAccount): boolean {
+  return !/_TOKEN$/.test(account.source);
+}
+
+/**
+ * Parse `gh auth status` text into the logged-in accounts. STRICTLY a
+ * choice-menu input (which accounts exist, which is active) -- never an auth
+ * verdict; those stay with `gh auth token` via ghAuthVerdict. Broken logins
+ * ("Failed to log in ...") deliberately don't match, and unrecognized output
+ * parses as no accounts.
+ */
+export function parseGhAuthStatusAccounts(output: string): GhAccount[] {
+  const accounts: GhAccount[] = [];
+  const seen = new Set<string>();
+  let current: GhAccount | null = null;
+  for (const line of output.split(/\r?\n/)) {
+    const login = line.match(/Logged in to (\S+) account (\S+)(?: \(([^)]*)\))?/);
+    if (login) {
+      // \S+ can't produce an empty capture; the defaults only satisfy the
+      // indexed-access strictness (the source parens are genuinely optional).
+      const [, host = "", name = "", source = ""] = login;
+      current = { host, login: name, active: false, source };
+      // Dedup EXACT repeats only (host+login+source): gh lists an env-token
+      // login before the saved accounts, and the same login can appear under
+      // both sources -- collapsing those would drop the pinnable saved entry.
+      const key = `${host}|${name}|${source}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        accounts.push(current);
+      }
+      continue;
+    }
+    // A broken login starts its own block, in ANY of gh's failure wordings
+    // ("Failed to log in to ... account <login>", "... using token (...)",
+    // "Timeout trying to log in to ..."): all contain "log in to", which the
+    // success line ("Logged in to") never does. Without this reset, a failed
+    // block's "Active account: true" line would mark the last healthy account.
+    if (/\blog in to /.test(line)) {
+      current = null;
+      continue;
+    }
+    if (current !== null && /Active account:\s*true/.test(line)) current.active = true;
+  }
+  return accounts;
 }
 
 /** Verdict over a finished `gh auth token` spawn (exported for tests): exit 0

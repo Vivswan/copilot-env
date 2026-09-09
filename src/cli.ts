@@ -226,6 +226,11 @@ program
       "when given no value. Implies --provider gh-token.",
   )
   .option(
+    "--gh-user <login>",
+    "Pin gh-cli to this logged-in gh account (omit = follow gh's active account). " +
+      "Implies --provider gh-cli.",
+  )
+  .option(
     "--get",
     "Print the resolved token to stdout (provider-driven: gh-cli → `gh auth token`, " +
       "copilot/gh-token → the stored token).",
@@ -246,6 +251,7 @@ program
     runAuth({
       provider: opts.provider as string | undefined,
       set: opts.set as string | boolean | undefined,
+      ghUser: opts.ghUser as string | undefined,
       get: Boolean(opts.get),
       del: Boolean(opts.del),
       check: Boolean(opts.check),
@@ -295,6 +301,10 @@ program
     "With --add: non-interactive gh-token - store this token verbatim, or read " +
       `${ghTokenEnvVarsLabel()} when given no value.`,
   )
+  .option(
+    "--gh-user <login>",
+    "With --add: pin gh-cli to this logged-in gh account (omit = follow gh's active account).",
+  )
   .action((opts: Opts) =>
     runProfile({
       add: opts.add as string | undefined,
@@ -309,6 +319,7 @@ program
       ),
       provider: opts.provider as string | undefined,
       set: opts.set as string | boolean | undefined,
+      ghUser: opts.ghUser as string | undefined,
     })
   );
 

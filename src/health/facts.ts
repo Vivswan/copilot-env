@@ -44,6 +44,8 @@ export interface ProfileSlotFacts {
   mode: ProfileMode | null;
   /** The slot holds a provisioned token (classifies the Direct credential path). */
   storedToken: boolean;
+  /** gh-cli only: the slot's pinned gh account, or null = follow gh's active account. */
+  ghUser: string | null;
   /** The probed direct-mode client identity NAME cached on the slot, or null. */
   integrationIdentity: string | null;
 }
@@ -247,6 +249,10 @@ export interface ToolFacts {
 export interface CodexDirectAuthFacts {
   command: string | null;
   authenticated: boolean;
+  /** The pinned gh account the probe asked about (`gh auth token --user`).
+   *  Absent/null = gh's active account, so renderers can name the account a
+   *  pinned verdict is actually about. Optional so hand-built fixtures stay valid. */
+  ghUser?: string | null;
   /** The gh look never RAN to completion (the command probe for gh failed, or
    *  `gh auth token` spawned but errored / was timeout-killed): the two fields
    *  above are then UNPROVEN -- renderers say "could not check", never a
@@ -364,6 +370,8 @@ export interface HealthFacts {
     slot: ProfileAuthFacts | null;
     storedToken: boolean;
     ghAuthenticated: boolean;
+    /** The pinned gh account the probe asked about (see AuthFacts.ghUser). */
+    ghUser?: string | null;
     /** The gh probe never ran to completion (see AuthFacts.ghAuthUnproven). */
     ghAuthUnproven?: true;
   };
@@ -400,6 +408,10 @@ export type ProfileAuthFacts = {
 export interface AuthFacts {
   storedToken: boolean;
   ghAuthenticated: boolean;
+  /** The pinned gh account the probe asked about (`gh auth token --user`).
+   *  Absent/null = gh's active account, so the check can name the account a
+   *  pinned verdict is actually about. Optional so fixtures stay valid. */
+  ghUser?: string | null;
   /** The gh probe never ran to completion (CodexDirectAuthFacts.unproven):
    *  ghAuthenticated false is then UNPROVEN, so the check says "could not
    *  check", never "gh is unauthenticated" + `gh auth login` advice. Optional

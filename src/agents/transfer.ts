@@ -33,6 +33,7 @@ import {
 } from "../codex/host.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import { Credential, ghAuthToken } from "../copilot_api/credential.ts";
+import { GH_LOGIN_RE } from "../copilot_api/gh_cli.ts";
 import {
   codexHostEnabledFor,
   CONFIG_REGISTRY,
@@ -160,7 +161,11 @@ export function buildExportBundle(options: { withCredentials?: boolean } = {}): 
   return {
     formatVersion: SETTINGS_BUNDLE_FORMAT_VERSION,
     config: storedPrefs(withCredentials),
-    credential: { githubToken: redact(state.githubToken), authProvider: state.authProvider },
+    credential: {
+      githubToken: redact(state.githubToken),
+      authProvider: state.authProvider,
+      ghUser: state.ghUser,
+    },
     profiles,
     // Safe read: a wiring-read failure must never abort an export (or an
     // unrelated import, via the pre-import backup). It collapses to "other",
@@ -254,14 +259,16 @@ function parseNullableIdentity(value: unknown, path: string): string | null {
   return value;
 }
 
-/** The credential pair shared by the default slot and every profile slot. Two
- *  contradictions are rejected outright: a token without a provider could
- *  never resolve (resolution keys off `authProvider`), and a token WITH the
- *  gh-cli provider would sit ignored in the store (gh-cli holds no token of
- *  its own) until a later --with-credentials export exposed it. */
+/** The credential fields shared by the default slot and every profile slot.
+ *  Three contradictions are rejected outright: a token without a provider could
+ *  never resolve (resolution keys off `authProvider`), a token WITH the gh-cli
+ *  provider would sit ignored in the store (gh-cli holds no token of its own)
+ *  until a later --with-credentials export exposed it, and a gh account pin on
+ *  a non-gh-cli provider would sit equally dead. */
 function parseCredentialFields(doc: Record<string, unknown>, path: string): ProfileCredentialData {
   const githubToken = parseNullableString(doc.githubToken, `${path}.githubToken`);
   const authProvider = parseNullableEnum(doc.authProvider, AUTH_PROVIDERS, `${path}.authProvider`);
+  const ghUser = parseNullableString(doc.ghUser, `${path}.ghUser`);
   if (githubToken !== null && authProvider === null) {
     throw bundleError(
       `${path} carries a token without an authProvider (credentials are provider-driven)`,
@@ -272,10 +279,22 @@ function parseCredentialFields(doc: Record<string, unknown>, path: string): Prof
       `${path} pairs a token with the gh-cli provider (gh-cli stores no token; the local gh login resolves it)`,
     );
   }
-  return { githubToken, authProvider };
+  if (ghUser !== null && authProvider !== "gh-cli") {
+    throw bundleError(
+      `${path} pairs a ghUser account pin with a non-gh-cli provider (only gh-cli resolves via a gh account)`,
+    );
+  }
+  // Same login-shape gate as the store's write choke point: the pin becomes a
+  // `gh auth token --user` argv token, so a shell metacharacter never travels.
+  if (ghUser !== null && !GH_LOGIN_RE.test(ghUser)) {
+    throw bundleError(
+      `${path}.ghUser must be a GitHub login (1-39 letters, digits, dashes, or underscores)`,
+    );
+  }
+  return { githubToken, authProvider, ghUser };
 }
 
-const CREDENTIAL_KEYS = ["githubToken", "authProvider"] as const;
+const CREDENTIAL_KEYS = ["githubToken", "authProvider", "ghUser"] as const;
 const PROFILE_SLOT_KEYS = [...CREDENTIAL_KEYS, "mode", "integrationIdentity"] as const;
 
 /**
@@ -436,20 +455,23 @@ type SlotPlan =
   | { action: "keep"; resolvedToken: string | null }
   | { action: "skip"; reason: string };
 
-function localSlotToken(profile: Profile, gh: () => string | null): string | null {
+function localSlotToken(
+  profile: Profile,
+  gh: (ghUser: string | null) => string | null,
+): string | null {
   return new Credential(undefined, profile).resolve(gh);
 }
 
 function planSlotCredential(
   slot: ProfileCredentialData,
   profile: Profile,
-  gh: () => string | null,
+  gh: (ghUser: string | null) => string | null,
 ): SlotPlan {
-  const { githubToken, authProvider } = slot;
+  const { githubToken, authProvider, ghUser } = slot;
   if (authProvider === "gh-cli") {
-    const ghToken = gh();
+    const ghToken = gh(ghUser);
     if (ghToken !== null) {
-      return { action: "write", credential: { kind: "gh-cli" }, resolvedToken: ghToken };
+      return { action: "write", credential: { kind: "gh-cli", ghUser }, resolvedToken: ghToken };
     }
     const local = localSlotToken(profile, gh);
     if (local !== null) return { action: "keep", resolvedToken: local };
@@ -628,13 +650,17 @@ function planWrites(
   return lines;
 }
 
-/** Compute the whole import plan against the CURRENT stores (one gh probe,
- *  memoized, shared by every gh-cli slot and reused by the apply). */
+/** Compute the whole import plan against the CURRENT stores (one gh probe per
+ *  pinned account, memoized, shared by every gh-cli slot and reused by the apply). */
 export function planImport(bundle: SettingsBundle, deps: ImportDeps = {}): ImportPlan {
-  let ghToken: string | null | undefined;
-  const gh = (): string | null => {
-    if (ghToken === undefined) ghToken = (deps.ghAuthToken ?? ghAuthToken)();
-    return ghToken;
+  const ghTokens = new Map<string | null, string | null>();
+  const gh = (ghUser: string | null): string | null => {
+    let token = ghTokens.get(ghUser);
+    if (token === undefined) {
+      token = (deps.ghAuthToken ?? ghAuthToken)(ghUser);
+      ghTokens.set(ghUser, token);
+    }
+    return token;
   };
   const skipped: string[] = [];
   const defaultSlot = planSlotCredential(bundle.credential, null, gh);

@@ -648,7 +648,10 @@ test("parseProfileAction: one verb per invocation, add-only knobs live on the ad
     "--direct/--proxy only apply to --add",
   );
   expect(() => parseProfileAction({ list: true, mode: "auto", provider: "copilot" })).toThrow(
-    "--provider/--set only apply to --add",
+    "--provider/--set/--gh-user only apply to --add",
+  );
+  expect(() => parseProfileAction({ list: true, mode: "auto", ghUser: "work-login" })).toThrow(
+    "--provider/--set/--gh-user only apply to --add",
   );
 });
 

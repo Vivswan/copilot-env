@@ -148,6 +148,7 @@ function profileTarget(name: string, overrides: TargetOverrides = {}): RuntimeTa
       provider: null,
       mode: "proxy",
       storedToken: false,
+      ghUser: null,
       integrationIdentity: null,
     },
     homeExists: true,
@@ -1526,6 +1527,17 @@ test("directAuthFromSpawn: completed exits prove the verdict; error/kill stays u
     authenticated: false,
     unproven: true,
   });
+  // The account pin travels on the fact (so the check can name it); auto adds
+  // nothing, keeping the pre-pin fact shape byte-identical.
+  expect(directAuthFromSpawn("/bin/gh", { status: 1 }, "work-bot")).toEqual({
+    command: "/bin/gh",
+    authenticated: false,
+    ghUser: "work-bot",
+  });
+  expect(directAuthFromSpawn("/bin/gh", { status: 0 }, null)).toEqual({
+    command: "/bin/gh",
+    authenticated: true,
+  });
 });
 
 // --- auth (credential) check ------------------------------------------------
@@ -1598,6 +1610,31 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
     "provider 'gh-cli' is selected but no credential resolves",
     "`gh` is unauthenticated - run `gh auth login`, or `agent auth` to switch provider",
   ].join("\n"));
+  // A PINNED slot's verdict names its account (the probe ran `gh auth token
+  // --user`); gh's active account may well be fine.
+  const pinned = checkAuth({
+    storedToken: false,
+    ghAuthenticated: false,
+    ghUser: "work-bot",
+    provider: "gh-cli",
+    profiles: {},
+    pinnedIntegrationId: null,
+  });
+  expect(pinned.detail).toBe([
+    "provider 'gh-cli' is selected but no credential resolves",
+    "`gh` is not authenticated as account 'work-bot' - run `gh auth login` for that account, " +
+    "or `agent auth` to switch",
+  ].join("\n"));
+  const pinnedOk = checkAuth({
+    storedToken: false,
+    ghAuthenticated: true,
+    ghUser: "work-bot",
+    provider: "gh-cli",
+    profiles: {},
+    pinnedIntegrationId: null,
+  });
+  expect(pinnedOk.status).toBe("ok");
+  expect(pinnedOk.detail).toContain("gh CLI (`gh auth token --user work-bot`)");
 });
 
 // --- live (--live) checks ---------------------------------------------------

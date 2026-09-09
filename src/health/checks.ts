@@ -651,7 +651,12 @@ export function checkProfileConsistency(f: NamedRuntimeTarget): CheckResult {
 export function checkProfileAuth(
   name: ProfileName,
   slot: ProfileAuthFacts | null,
-  resolution: { storedToken: boolean; ghAuthenticated: boolean; ghAuthUnproven?: true },
+  resolution: {
+    storedToken: boolean;
+    ghAuthenticated: boolean;
+    ghUser?: string | null;
+    ghAuthUnproven?: true;
+  },
 ): CheckResult {
   const base = {
     ...meta("setup.auth"),
@@ -683,6 +688,9 @@ export function checkProfileAuth(
   }
   const source = storedCredentialKind(slot.provider, resolution.storedToken);
   const resolves = credentialResolves(source, resolution.ghAuthenticated);
+  // A pinned slot's gh verdict is about THAT account (the probe ran `gh auth
+  // token --user`), so the wording names it; auto stays byte-identical.
+  const pin = resolution.ghUser ?? null;
   if (!resolves) {
     // An unproven gh probe keeps this warn arm (the credential still isn't shown
     // to work) but must not claim gh IS unauthenticated -- gh was never asked.
@@ -697,13 +705,17 @@ export function checkProfileAuth(
         slot.provider === "gh-cli"
           ? unproven
             ? "could not check gh authentication (`gh auth token` did not run to completion)"
-            : "`gh` is unauthenticated - run `gh auth login`, or re-provision the profile"
+            : pin === null
+            ? "`gh` is unauthenticated - run `gh auth login`, or re-provision the profile"
+            : `\`gh\` is not authenticated as account '${pin}' - run \`gh auth login\` for that account, or re-provision the profile`
           : `the slot's stored token is missing - run \`agent auth --profile ${name}\` to re-provision`,
       ].join("\n"),
       fix: `agent auth --profile ${name}`,
     };
   }
-  const how = slot.provider === "gh-cli" ? "gh CLI (`gh auth token`)" : "stored GitHub token";
+  const how = slot.provider === "gh-cli"
+    ? pin === null ? "gh CLI (`gh auth token`)" : `gh CLI (\`gh auth token --user ${pin}\`)`
+    : "stored GitHub token";
   const identity = slot.integrationIdentity === null ? "" : `, ${slot.integrationIdentity}`;
   const usage = slot.mode === "proxy"
     ? `resolved by \`agent auth --get --profile ${name}\`; passed to the profile's daemon on \`agent start --profile ${name}\``
@@ -891,8 +903,13 @@ export function checkAuth(f: AuthFacts): CheckResult {
   }
   const source = storedCredentialKind(f.provider, f.storedToken);
   const resolves = credentialResolves(source, f.ghAuthenticated);
+  // A pinned default slot's gh verdict is about THAT account; auto stays
+  // byte-identical (see checkProfileAuth's twin wording).
+  const pin = f.ghUser ?? null;
   if (resolves) {
-    const how = f.provider === "gh-cli" ? "gh CLI (`gh auth token`)" : "stored GitHub token";
+    const how = f.provider === "gh-cli"
+      ? pin === null ? "gh CLI (`gh auth token`)" : `gh CLI (\`gh auth token --user ${pin}\`)`
+      : "stored GitHub token";
     return {
       ...base,
       status: "ok",
@@ -918,7 +935,9 @@ export function checkAuth(f: AuthFacts): CheckResult {
       f.provider === "gh-cli"
         ? unproven
           ? "could not check gh authentication (`gh auth token` did not run to completion)"
-          : "`gh` is unauthenticated - run `gh auth login`, or `agent auth` to switch provider"
+          : pin === null
+          ? "`gh` is unauthenticated - run `gh auth login`, or `agent auth` to switch provider"
+          : `\`gh\` is not authenticated as account '${pin}' - run \`gh auth login\` for that account, or \`agent auth\` to switch`
         : "the stored token is missing - run `agent auth` to re-provision",
       ...profilesLine,
       ...identityLine,

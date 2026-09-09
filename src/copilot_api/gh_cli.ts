@@ -70,6 +70,13 @@ export const GH_AUTH_TIMEOUT_MS = 5000;
  *  GH_HOST override would point `--user` at another host's accounts. */
 export const GH_COPILOT_HOST = "github.com";
 
+/** A GitHub login's shape: 1-39 alphanumerics/dashes, plus underscore for EMU
+ *  accounts ("user_shortcode"). Doubles as the spawn-safety gate for the pinned
+ *  `--user` argument: no cmd.exe metacharacter (%, quotes, carets) fits it, so
+ *  the Windows cliSpawn hop can never rewrite a pin into a different account.
+ *  Every pin write and read funnels through it. */
+export const GH_LOGIN_RE = /^[A-Za-z0-9_-]{1,39}$/;
+
 /**
  * The ONE recipe for probing gh's login: spawn `gh auth token` at gh's RESOLVED
  * path (not the bare name), with gh's bin dir on PATH, so an nvm-only gh (or a

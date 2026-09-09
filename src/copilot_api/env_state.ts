@@ -19,6 +19,7 @@ import * as v from "valibot";
 import { isRecord } from "../utils/json.ts";
 import { CopilotApiConfig } from "./config.ts";
 import { INTEGRATION_ID_RE } from "./env_config.ts";
+import { GH_LOGIN_RE } from "./gh_cli.ts";
 import { CopilotApiPaths, profileHomeNames } from "./paths.ts";
 import {
   isValidProfileName,
@@ -106,16 +107,19 @@ function parseStoredCredential(
 
 /** The raw persisted fields for a provisioned credential (gh-cli holds no
  *  token; token providers hold no account pin). Token and pin are trimmed on
- *  the way in, and a blank value is rejected here -- the single choke point
- *  every credential write funnels through, so a whitespace token (or pin) can
- *  never persist as a meaningless partial. */
+ *  the way in, and a blank/ill-shaped value is rejected here -- the single
+ *  choke point every credential write funnels through. The pin must be a real
+ *  GitHub login (GH_LOGIN_RE): it becomes a `gh auth token --user` argv token,
+ *  and the shape gate is what keeps shell metacharacters unrepresentable. */
 function rawCredentialPatch(
   credential: ProvisionedCredential,
 ): { githubToken: string | null; authProvider: AuthProvider; ghUser: string | null } {
   if (credential.kind === "gh-cli") {
     const ghUser = credential.ghUser?.trim() ?? null;
-    if (ghUser === "") {
-      throw new Error("a gh-cli account pin requires a non-empty gh login");
+    if (ghUser !== null && !GH_LOGIN_RE.test(ghUser)) {
+      throw new Error(
+        "a gh-cli account pin must be a GitHub login (1-39 letters, digits, dashes, or underscores)",
+      );
     }
     return { githubToken: null, authProvider: "gh-cli", ghUser };
   }
@@ -303,7 +307,10 @@ type EnvStatePatch = {
 const PROFILE_SCHEMA = v.object({
   githubToken: v.fallback(v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1))), null),
   authProvider: v.fallback(v.nullable(v.picklist(AUTH_PROVIDERS)), null),
-  ghUser: v.fallback(v.nullable(v.pipe(v.string(), v.trim(), v.minLength(1))), null),
+  // Login-shape enforced at the read boundary: the pin flows into `gh auth
+  // token --user` argv (through cmd.exe on Windows), so a hand-mangled value
+  // reads as null = auto instead of reaching a shell.
+  ghUser: v.fallback(v.nullable(v.pipe(v.string(), v.trim(), v.regex(GH_LOGIN_RE))), null),
   mode: v.fallback(v.nullable(v.picklist(PROFILE_MODES)), null),
   // Header-safe shape enforced at the read boundary: the cached identity flows
   // verbatim into HTTP headers, so a hand-mangled value reads as null = re-probe.

@@ -789,9 +789,14 @@ test("parseAcquisition: --gh-user implies gh-cli and rejects every conflicting f
     "--gh-user only applies to `--provider gh-cli`",
   );
   expect(() => parseAcquisition(undefined, "tok", "x")).toThrow("--set implies gh-token");
-  expect(() => parseAcquisition(undefined, undefined, "   ")).toThrow(
-    "--gh-user requires a non-empty gh account login",
-  );
+  // The shape gate: the pin becomes a `gh auth token --user` argv token that
+  // crosses cmd.exe on Windows, so anything outside a GitHub login's alphabet
+  // (blank included) is rejected before it can reach a shell.
+  for (const bad of ["   ", "%USERNAME%", "a b", "x;rm", "why'd"]) {
+    expect(() => parseAcquisition(undefined, undefined, bad)).toThrow(
+      "--gh-user must be a GitHub login (1-39 letters, digits, dashes, or underscores)",
+    );
+  }
 });
 
 test("auth: --gh-user cannot combine with a sub-action (never silently dropped)", () => {

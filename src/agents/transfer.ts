@@ -33,6 +33,7 @@ import {
 } from "../codex/host.ts";
 import { codexConfigPath } from "../codex/paths.ts";
 import { Credential, ghAuthToken } from "../copilot_api/credential.ts";
+import { GH_LOGIN_RE } from "../copilot_api/gh_cli.ts";
 import {
   codexHostEnabledFor,
   CONFIG_REGISTRY,
@@ -281,6 +282,13 @@ function parseCredentialFields(doc: Record<string, unknown>, path: string): Prof
   if (ghUser !== null && authProvider !== "gh-cli") {
     throw bundleError(
       `${path} pairs a ghUser account pin with a non-gh-cli provider (only gh-cli resolves via a gh account)`,
+    );
+  }
+  // Same login-shape gate as the store's write choke point: the pin becomes a
+  // `gh auth token --user` argv token, so a shell metacharacter never travels.
+  if (ghUser !== null && !GH_LOGIN_RE.test(ghUser)) {
+    throw bundleError(
+      `${path}.ghUser must be a GitHub login (1-39 letters, digits, dashes, or underscores)`,
     );
   }
   return { githubToken, authProvider, ghUser };

@@ -288,6 +288,13 @@ test("invalid slots are rejections that never echo the token", () => {
       }),
     )
   ).toThrow(/pairs a ghUser account pin with a non-gh-cli provider/);
+  // Same login-shape gate as the store's write choke point (the pin becomes
+  // `gh auth token --user` argv, crossing cmd.exe on Windows).
+  expect(() =>
+    parseSettingsBundle(
+      rawBundle({ credential: { githubToken: null, authProvider: "gh-cli", ghUser: "%PATH%" } }),
+    )
+  ).toThrow(/ghUser must be a GitHub login/);
 
   expect(() => parseSettingsBundle(rawBundle({ modes: { codex: "bogus", claude: "direct" } })))
     .toThrow(/modes.codex/);

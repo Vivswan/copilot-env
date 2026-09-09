@@ -299,16 +299,25 @@ test("a gh-cli account pin round-trips; an absent/blank stored pin reads as auto
   expect(slot.ghUser).toBeUndefined();
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
 
-  // A pre-pin store (no ghUser key) and a hand-mangled blank pin both read auto.
+  // A pre-pin store (no ghUser key), a hand-mangled blank pin, and a pin outside
+  // a GitHub login's alphabet all read auto: the pin becomes `gh auth token
+  // --user` argv (through cmd.exe on Windows), so a shell metacharacter must be
+  // unrepresentable in the parsed state.
   seedRawState({ profiles: { default: { authProvider: "gh-cli" } } });
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
   seedRawState({ profiles: { default: { authProvider: "gh-cli", ghUser: "   " } } });
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
+  seedRawState({ profiles: { default: { authProvider: "gh-cli", ghUser: "%USERNAME%" } } });
+  expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
 
-  // A blank pin is rejected at the same write choke point as a blank token, and
-  // the pin is trimmed on the way in.
-  expect(() => state.setCredential(null, { kind: "gh-cli", ghUser: "  " }))
-    .toThrow("a gh-cli account pin requires a non-empty gh login");
+  // A blank or ill-shaped pin is rejected at the same write choke point as a
+  // blank token, and the pin is trimmed on the way in.
+  for (const bad of ["  ", "%USERNAME%", "a b"]) {
+    expect(() => state.setCredential(null, { kind: "gh-cli", ghUser: bad }))
+      .toThrow(
+        "a gh-cli account pin must be a GitHub login (1-39 letters, digits, dashes, or underscores)",
+      );
+  }
   state.setCredential(null, { kind: "gh-cli", ghUser: " work-bot " });
   expect(state.read().ghUser).toBe("work-bot");
 

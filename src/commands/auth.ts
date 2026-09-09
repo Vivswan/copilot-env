@@ -44,6 +44,7 @@ import {
 } from "../copilot_api/env_state.ts";
 import {
   GH_COPILOT_HOST,
+  GH_LOGIN_RE,
   ghAccountPinnable,
   ghTokenEnvVarsLabel,
   ghTokenEnvVarsList,
@@ -184,7 +185,11 @@ export function parseAcquisition(
       throw new Error("--gh-user only applies to `--provider gh-cli`");
     }
     const login = ghUser.trim();
-    if (login === "") throw new Error("--gh-user requires a non-empty gh account login");
+    if (!GH_LOGIN_RE.test(login)) {
+      throw new Error(
+        "--gh-user must be a GitHub login (1-39 letters, digits, dashes, or underscores)",
+      );
+    }
     return { kind: "gh-cli", account: { kind: "pinned", login } };
   }
   if (set !== undefined) {

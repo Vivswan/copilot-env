@@ -622,7 +622,8 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss keeps
   ).toThrow(
     "gh has no saved credential for account 'work' (pinning needs a saved login; " +
       "an env GH_TOKEN cannot serve `gh auth token --user`) - run `gh auth login` " +
-      "for that account, pass --gh-user <login> for another, or choose auto in `agent auth`",
+      "for that account, pass --gh-user <login> for another, or choose auto " +
+      "interactively via `agent auth --provider gh-cli`",
   );
   expect(() => loginWithGhCli("work", () => ({ token: null, unproven: true }))).toThrow(
     "could not check gh authentication (`gh auth token` did not run to completion) - retry `agent auth`",
@@ -832,8 +833,24 @@ test("chooseGhAccount: pinning is the only default - sole login pins, non-TTY pi
     await expect(
       chooseGhAccount(() => ({ accounts: [acct("a", false), acct("b", false)] })),
     ).rejects.toThrow(
-      "gh has 2 logged-in accounts (a, b) and no active one could be determined - pass --gh-user <login>, or run `agent auth` in a terminal",
+      "gh has 2 logged-in accounts and no pinnable active one - pass --gh-user <login> " +
+        "(pinnable: a, b), or run `agent auth --provider gh-cli` in a terminal",
     );
+    // A BROKEN entry still counts as an account: {healthy bystander, broken
+    // active} is a multi-account machine, so the bystander is never pinned
+    // silently - without a TTY that is the same honest error.
+    await expect(
+      chooseGhAccount(() => ({
+        accounts: [acct("healthy", false), { ...acct("hurt", true), broken: true as const }],
+      })),
+    ).rejects.toThrow(
+      "gh has 2 logged-in accounts and no pinnable active one - pass --gh-user <login> " +
+        "(pinnable: healthy), or run `agent auth --provider gh-cli` in a terminal",
+    );
+    // A sole ENV-ONLY login still pins without a TTY (nothing to ask): its
+    // verification failure names the recovery.
+    expect(await chooseGhAccount(() => ({ accounts: [acct("solo", true, "GH_TOKEN")] })))
+      .toEqual({ kind: "pinned", login: "solo" });
   } finally {
     process.stdin.isTTY = hadTty;
   }

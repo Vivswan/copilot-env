@@ -63,16 +63,16 @@ export function pinSoleGhAccount(
   const login = soleGhLogin(look);
   if (login === null) {
     consola.info(
-      "  gh-cli slots left on the active account (no single gh login to pin); " +
-        "run `agent auth` to choose one",
+      "  gh-cli slots left on auto (no single gh login to pin); " +
+        "run `agent auth --provider gh-cli` to choose one",
     );
     return;
   }
   if (!resolves(login)) {
     consola.info(
-      `  gh-cli slots left on the active account (a pinned \`gh auth token ` +
-        `--user ${login}\` did not resolve - e.g. an env-only token with no ` +
-        "saved credential); run `agent auth` to choose one",
+      "  gh-cli slots stay on auto (still served by gh's active account): a pinned " +
+        `\`gh auth token --user ${login}\` did not resolve - e.g. an env-only token. ` +
+        "Run `gh auth login` to save the login, then `agent auth --provider gh-cli` to pin it.",
     );
     return;
   }

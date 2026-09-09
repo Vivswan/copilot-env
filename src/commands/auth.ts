@@ -251,12 +251,14 @@ async function chooseProvider(): Promise<AuthProvider> {
 
 /**
  * Settle which gh account a gh-cli acquisition uses. PINNING IS THE ONLY
- * DEFAULT (see SettledGhAccount): the sole login pins itself, several logins
- * pin the active one when no TTY can ask, and the picker lists the accounts
- * first with auto as the explicit last option -- a later `gh auth login` must
- * never switch whose Copilot credit gets spent. When nothing can be pinned
- * HONESTLY (unreadable account list, no accounts, unknowable active account),
- * this THROWS naming the escape hatches rather than recording auto.
+ * DEFAULT (see SettledGhAccount): the sole login pins itself (unless it is
+ * env-only under a TTY - its pin may fail verification with nothing to escape
+ * to, so the user decides), several logins pin the active one when no TTY can
+ * ask, and the picker lists the accounts first with auto as the explicit LAST
+ * option -- a later `gh auth login` must never switch whose Copilot credit gets
+ * spent. When nothing can be pinned HONESTLY (unreadable account list, no
+ * accounts, unknowable active account), this THROWS naming the escape hatches
+ * rather than recording auto.
  * `look` is a test seam; exported for the settle-rule tests.
  */
 export async function chooseGhAccount(
@@ -281,30 +283,13 @@ export async function chooseGhAccount(
   // could never verify -- yet it still names the active account below.
   const github = accounts.filter((a) => a.host === GH_COPILOT_HOST && a.broken !== true);
   const logins = [...new Set(github.map((a) => a.login))];
+  // Broken entries still count as ACCOUNTS when deciding whether there is a
+  // choice to make: a broken active login is never abandoned for a healthy
+  // bystander without asking (its owner never chose to stop spending on it).
+  const allLogins = [
+    ...new Set(accounts.filter((a) => a.host === GH_COPILOT_HOST).map((a) => a.login)),
+  ];
   const active = activeGhLogin(accounts);
-  if (logins.length === 0) {
-    throw new Error(
-      "gh has no logged-in github.com account - run `gh auth login`, then retry `agent auth`",
-    );
-  }
-  if (logins.length === 1) {
-    return { kind: "pinned", login: logins[0] ?? "" };
-  }
-  if (!process.stdin.isTTY) {
-    // No TTY to ask: pin the active account when it is pickable; anything else
-    // would guess whose credit to spend, so it is an error, never a fallback.
-    if (active !== null && logins.includes(active)) {
-      logger.info(
-        `gh has ${logins.length} logged-in accounts; pinning the active one (${active}). ` +
-          "Pass --gh-user <login> to pin another, or run interactively to choose (auto included).",
-      );
-      return { kind: "pinned", login: active };
-    }
-    throw new Error(
-      `gh has ${logins.length} logged-in accounts (${logins.join(", ")}) and no active one ` +
-        "could be determined - pass --gh-user <login>, or run `agent auth` in a terminal",
-    );
-  }
   // A login whose EVERY listing is an env-token source may not have a saved
   // credential behind it; say so on the option rather than hiding it.
   const envOnly = (login: string): string | null => {
@@ -312,6 +297,37 @@ export async function chooseGhAccount(
     const envSource = sources.find((s) => /_TOKEN$/.test(s));
     return envSource !== undefined && sources.every((s) => /_TOKEN$/.test(s)) ? envSource : null;
   };
+  if (logins.length === 0) {
+    throw new Error(
+      "gh has no logged-in github.com account - run `gh auth login`, then retry `agent auth`",
+    );
+  }
+  if (logins.length === 1 && allLogins.length === 1) {
+    const only = logins[0] ?? "";
+    // A sole ENV-ONLY login may have no saved credential behind its token, so
+    // its pin can fail verification with no other account to escape to --
+    // interactively the user decides (try the pin, or explicit auto); without
+    // a TTY the pin proceeds and a failure names the recovery.
+    if (!process.stdin.isTTY || envOnly(only) === null) {
+      return { kind: "pinned", login: only };
+    }
+  }
+  if (!process.stdin.isTTY) {
+    // No TTY to ask: pin the active account when it is pickable; anything else
+    // would guess whose credit to spend, so it is an error, never a fallback.
+    if (active !== null && logins.includes(active)) {
+      logger.info(
+        `gh has ${allLogins.length} logged-in accounts; pinning the active one (${active}). ` +
+          "Pass --gh-user <login> to pin another, or run interactively to choose (auto included).",
+      );
+      return { kind: "pinned", login: active };
+    }
+    throw new Error(
+      `gh has ${allLogins.length} logged-in accounts and no pinnable active one - pass ` +
+        `--gh-user <login> (pinnable: ${logins.join(", ")}), or run ` +
+        "`agent auth --provider gh-cli` in a terminal",
+    );
+  }
   // Accounts first (the active one leading -- it is the default selection),
   // auto LAST and explicit: pinning is the default posture.
   const ordered = [...logins].sort((a, b) => Number(b === active) - Number(a === active));
@@ -517,7 +533,7 @@ export function loginWithGhCli(
         : `gh has no saved credential for account '${ghUser}' (pinning needs a saved ` +
           "login; an env GH_TOKEN cannot serve `gh auth token --user`) - run " +
           `\`gh auth login\` for that account, pass --gh-user <login> for another, ` +
-          "or choose auto in `agent auth`",
+          "or choose auto interactively via `agent auth --provider gh-cli`",
     );
   }
   logger.success(

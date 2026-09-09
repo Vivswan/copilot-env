@@ -301,7 +301,10 @@ describe("latest-release resolution", () => {
   test("a dead endpoint (or garbage) is a clear error naming the manual escapes", async () => {
     const { fetchLike } = fetchServing({ [DENO_LATEST_URL]: { "status": 500 } });
     await expect(fetchLatestDenoVersion(fetchLike)).rejects.toThrow(SIDECAR_DENO_ENV);
+    // A malformed 200 body carries the SAME recovery guidance as a dead endpoint
+    // (a deno-less machine has nothing else to act on), plus the parse detail.
     const { fetchLike: garbage } = fetchServing({ [DENO_LATEST_URL]: "<html>oops</html>" });
+    await expect(fetchLatestDenoVersion(garbage)).rejects.toThrow(SIDECAR_DENO_ENV);
     await expect(fetchLatestDenoVersion(garbage)).rejects.toThrow("x.y.z");
   });
 

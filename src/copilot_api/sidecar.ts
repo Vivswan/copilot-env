@@ -255,20 +255,21 @@ export function denoReleaseUrl(version: string, target: DenoReleaseTarget): stri
 export const DENO_LATEST_URL = "https://dl.deno.land/release-latest.txt";
 
 /** The latest deno release version ("2.x.y"), or a clear throw naming the manual
- *  escapes -- a deno-less machine cannot proceed without it. */
+ *  escapes -- a deno-less machine cannot proceed without it. A malformed 200 body
+ *  fails inside the same wrapper as a dead endpoint: every arm carries the
+ *  recovery guidance. */
 export async function fetchLatestDenoVersion(fetchLike: typeof fetch = fetch): Promise<string> {
-  let body: string;
   try {
     const response = await fetchLike(DENO_LATEST_URL);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    body = await response.text();
+    const body = await response.text();
+    return parseDvmrcPin(body.replace(/^\s*v/, ""), DENO_LATEST_URL);
   } catch (e) {
     throw new Error(
       `could not resolve the latest deno release from ${DENO_LATEST_URL} (${errMessage(e)}): ` +
         `install deno yourself (https://deno.com), or set ${SIDECAR_DENO_ENV} to a deno binary`,
     );
   }
-  return parseDvmrcPin(body.replace(/^\s*v/, ""), DENO_LATEST_URL);
 }
 
 /**

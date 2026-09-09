@@ -145,7 +145,11 @@ test("codex: not configured is ok; each broken part warns with a precise message
   });
   expect(direct.status).toBe("ok");
   expect(direct.detail).toContain("provider: direct");
-  expect(direct.detail).toContain("gh auth: authenticated via /bin/gh");
+  // An auto slot whose account list could not name the active login still says
+  // it is on AUTO (never a bare "authenticated" that hides the mode).
+  expect(direct.detail).toContain(
+    "gh auth: authenticated via /bin/gh (AUTO - follows gh's active account)",
+  );
   expect(direct.detail).toContain(`config.toml: ${join("/c", "config.toml")}`);
 
   const directMissingGh = checkCodex({
@@ -198,6 +202,23 @@ test("codex: not configured is ok; each broken part warns with a precise message
   );
   expect(directPinnedUnauthed.fix).toBe("gh auth login");
 
+  // An AUTO slot's ok line names the account it follows (no hidden information).
+  const directAutoNamed = checkCodex({
+    ...wired,
+    providerMode: "direct",
+    modelProvider: "copilot-env",
+    baseUrl: "https://api.githubcopilot.com",
+    envKeyMatches: false,
+    envKeyInDotenv: false,
+    envKeyInEnviron: false,
+    tokenAvailable: false,
+    directAuth: { command: "/bin/gh", authenticated: true, ghActiveLogin: "vivswan" },
+  });
+  expect(directAutoNamed.status).toBe("ok");
+  expect(directAutoNamed.detail).toContain(
+    "gh auth: authenticated via /bin/gh (AUTO - currently account vivswan)",
+  );
+
   // Non-gh-cli provider (or none) with no stored token: gh is NOT a fallback, so
   // a managed Direct config that doesn't resolve warns and points at `agent auth`
   // (NOT the gh-specific message). Guards against the provider-blind false-OK.
@@ -243,10 +264,26 @@ test("checkCodex/checkClaude direct: an UNPROVEN gh probe says could-not-check, 
   const codexUnproven = checkCodex(codexDirect);
   expect(codexUnproven.status).toBe("warn");
   expect(codexUnproven.detail).toContain(
-    "gh auth: could not check gh authentication (`gh auth token` did not run to completion)",
+    "gh auth: could not check gh authentication " +
+      "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
   );
   expect(codexUnproven.detail).not.toContain("is not authenticated");
   expect(codexUnproven.fix).toBe("re-run `agent health` (the gh check did not run to completion)");
+  // An unproven token probe never discards a discovered AUTO account: the
+  // account list is a separate probe that may have succeeded.
+  const codexUnprovenNamed = checkCodex({
+    ...codexDirect,
+    directAuth: {
+      command: "/bin/gh",
+      authenticated: false,
+      unproven: true,
+      ghActiveLogin: "vivswan",
+    },
+  });
+  expect(codexUnprovenNamed.detail).toContain(
+    "gh auth: could not check gh authentication " +
+      "(`gh auth token` did not run to completion; AUTO - currently account vivswan)",
+  );
   // The gh LOOKUP itself failed to run: not a proven "GitHub CLI not found".
   const lookupUnproven = checkCodex({
     ...codexDirect,
@@ -277,7 +314,8 @@ test("checkCodex/checkClaude direct: an UNPROVEN gh probe says could-not-check, 
   });
   expect(claudeUnproven.status).toBe("warn");
   expect(claudeUnproven.detail).toContain(
-    "gh auth: could not check gh authentication (`gh auth token` did not run to completion)",
+    "gh auth: could not check gh authentication " +
+      "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
   );
   expect(claudeUnproven.detail).not.toContain("is not authenticated");
   expect(claudeUnproven.fix).toBe("re-run `agent health` (the gh check did not run to completion)");

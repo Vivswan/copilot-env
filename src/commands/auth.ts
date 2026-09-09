@@ -43,9 +43,9 @@ import {
   type StoredCredential,
 } from "../copilot_api/env_state.ts";
 import {
+  activeGhLogin,
   GH_COPILOT_HOST,
   GH_LOGIN_RE,
-  ghAccountPinnable,
   ghTokenEnvVarsLabel,
   ghTokenEnvVarsList,
   ghTokenFromEnv,
@@ -116,14 +116,23 @@ type GhTokenSource =
   | { kind: "env" }
   | { kind: "env-or-prompt" };
 
-/** Which gh account a gh-cli acquisition uses: `auto` follows gh's active
- *  account at every resolve (the historical behavior), `pinned` records one
- *  login (`gh auth token --user`), and `choose` asks -- silently settling to
- *  auto when gh has at most one account (or the account list is unavailable). */
+/** Which gh account a gh-cli acquisition uses, as PARSED from the flags:
+ *  `pinned` records one login (`gh auth token --user`); `choose` asks (the
+ *  bare/interactive flow). Auto is never a flag value -- it is what `choose`
+ *  SETTLES to (SettledGhAccount below), carrying the active login so the
+ *  narration can always name the account in use. */
 type GhCliAccountChoice =
-  | { kind: "auto" }
   | { kind: "pinned"; login: string }
   | { kind: "choose" };
+
+/** A gh-cli account choice after settling. PINNING IS THE ONLY DEFAULT: the
+ *  credential must never follow an account the user did not choose (their
+ *  Copilot credit would burn on it after a `gh auth login`/switch). Auto exists
+ *  solely as the picker's explicit last option; every settle path either pins a
+ *  named login or errors with the escape hatches. */
+type SettledGhAccount =
+  | { kind: "auto"; activeLogin: string | null }
+  | { kind: "pinned"; login: string };
 
 /** A credential acquisition with the provider already settled (interactively or by flag). */
 type ResolvedAcquisition =
@@ -241,50 +250,112 @@ async function chooseProvider(): Promise<AuthProvider> {
 }
 
 /**
- * Settle which gh account a gh-cli acquisition uses. Only a real choice ever
- * surfaces: an unproven account look or at most one login settles to `auto`
- * silently (exactly the historical behavior -- loginWithGhCli still owns the
- * honest auth verdict), and without a TTY the choice defaults to auto with a
- * stderr hint naming `--gh-user` (never an error, so scripted
- * `--provider gh-cli` keeps working when a second account appears). Logins are
- * deduplicated across hosts (Copilot is github.com; multi-host pinning is out
- * of scope). `look` is a test seam; exported for the settle-rule tests.
+ * Settle which gh account a gh-cli acquisition uses. PINNING IS THE ONLY
+ * DEFAULT (see SettledGhAccount): the sole login pins itself (unless it is
+ * env-only under a TTY - its pin may fail verification with nothing to escape
+ * to, so the user decides), several logins pin the active one when no TTY can
+ * ask, and the picker lists the accounts first with auto as the explicit LAST
+ * option -- a later `gh auth login` must never switch whose Copilot credit gets
+ * spent. When nothing can be pinned HONESTLY (unreadable account list, no
+ * accounts, unknowable active account), this THROWS naming the escape hatches
+ * rather than recording auto.
+ * `look` is a test seam; exported for the settle-rule tests.
  */
 export async function chooseGhAccount(
   look: () => GhAccountsLook = ghAccountsLook,
-): Promise<Exclude<GhCliAccountChoice, { kind: "choose" }>> {
+): Promise<SettledGhAccount> {
   const { accounts, unproven } = look();
-  // Copilot authenticates against GH_COPILOT_HOST, and the pinned resolver runs
-  // `gh auth token --user --hostname github.com` against gh's SAVED
-  // credentials: another host's login, or an env-token one (ghAccountPinnable),
-  // would be a menu entry the resolver cannot serve. The auto label still names
-  // the TRUE active account (env token included) -- that is what auto follows.
-  const github = accounts.filter((a) => a.host === GH_COPILOT_HOST);
-  const logins = [...new Set(github.filter(ghAccountPinnable).map((a) => a.login))];
-  if (unproven || logins.length <= 1) return { kind: "auto" };
-  const active = github.find((a) => a.active)?.login ?? null;
-  const activeLabel = active === null ? "" : ` (currently ${active})`;
-  if (!process.stdin.isTTY) {
-    logger.info(
-      `gh has ${logins.length} logged-in accounts; using its active account${activeLabel}. ` +
-        "Pass --gh-user <login> to pin one.",
+  if (unproven) {
+    throw new Error(
+      "could not list gh accounts (`gh auth status` did not run to completion) - " +
+        "retry `agent auth`, or pass --gh-user <login>",
     );
-    return { kind: "auto" };
   }
+  // Copilot authenticates against GH_COPILOT_HOST: another host's login is a
+  // menu entry the pinned resolver cannot serve. The SOURCE never filters the
+  // menu (no hidden information) -- gh's status shows only the winning source
+  // per login, so an exported GH_TOKEN shadows a saved keyring credential
+  // ("Vivswan (GH_TOKEN)" with a perfectly pinnable login underneath). The menu
+  // notes an env-token source instead, and loginWithGhCli verifies the chosen
+  // account before anything is recorded, so a genuinely unservable pick fails
+  // there with its own actionable error instead of being hidden here. A BROKEN
+  // login (a failed/timed-out credential) is the one exclusion -- pinning it
+  // could never verify -- yet it still names the active account below.
+  const github = accounts.filter((a) => a.host === GH_COPILOT_HOST && a.broken !== true);
+  const logins = [...new Set(github.map((a) => a.login))];
+  // Broken entries still count as ACCOUNTS when deciding whether there is a
+  // choice to make: a broken active login is never abandoned for a healthy
+  // bystander without asking (its owner never chose to stop spending on it).
+  const allLogins = [
+    ...new Set(accounts.filter((a) => a.host === GH_COPILOT_HOST).map((a) => a.login)),
+  ];
+  const active = activeGhLogin(accounts);
+  // A login whose EVERY listing is an env-token source may not have a saved
+  // credential behind it; say so on the option rather than hiding it.
+  const envOnly = (login: string): string | null => {
+    const sources = github.filter((a) => a.login === login).map((a) => a.source);
+    const envSource = sources.find((s) => /_TOKEN$/.test(s));
+    return envSource !== undefined && sources.every((s) => /_TOKEN$/.test(s)) ? envSource : null;
+  };
+  if (logins.length === 0) {
+    throw new Error(
+      "gh has no logged-in github.com account - run `gh auth login`, then retry `agent auth`",
+    );
+  }
+  if (logins.length === 1 && allLogins.length === 1) {
+    const only = logins[0] ?? "";
+    // A sole ENV-ONLY login may have no saved credential behind its token, so
+    // its pin can fail verification with no other account to escape to --
+    // interactively the user decides (try the pin, or explicit auto); without
+    // a TTY the pin proceeds and a failure names the recovery.
+    if (!process.stdin.isTTY || envOnly(only) === null) {
+      return { kind: "pinned", login: only };
+    }
+  }
+  if (!process.stdin.isTTY) {
+    // No TTY to ask: pin the active account when it is pickable; anything else
+    // would guess whose credit to spend, so it is an error, never a fallback.
+    if (active !== null && logins.includes(active)) {
+      logger.info(
+        `gh has ${allLogins.length} logged-in accounts; pinning the active one (${active}). ` +
+          "Pass --gh-user <login> to pin another, or run interactively to choose (auto included).",
+      );
+      return { kind: "pinned", login: active };
+    }
+    throw new Error(
+      `gh has ${allLogins.length} logged-in accounts and no pinnable active one - pass ` +
+        `--gh-user <login> (pinnable: ${logins.join(", ")}), or run ` +
+        "`agent auth --provider gh-cli` in a terminal",
+    );
+  }
+  // Accounts first (the active one leading -- it is the default selection),
+  // auto LAST and explicit: pinning is the default posture.
+  const ordered = [...logins].sort((a, b) => Number(b === active) - Number(a === active));
+  const activeLabel = active === null ? "" : ` (currently ${active})`;
   const value = await consola.prompt("Which gh account should Direct auth use?", {
     type: "select",
     options: [
+      ...ordered.map((login) => {
+        const env = envOnly(login);
+        const notes = [
+          login === active ? "currently active" : null,
+          env === null ? null : `via $${env}; pinning needs a saved login`,
+        ].filter((n) => n !== null).join("; ");
+        return {
+          label: `${login} - always use this account${notes ? ` (${notes})` : ""}`,
+          value: login,
+        };
+      }),
       // A GitHub login is never empty, so "" cannot collide with a real choice.
-      { label: `auto - follow gh's active account${activeLabel}`, value: "" },
-      ...logins.map((login) => ({
-        label: `${login} - always use this account${login === active ? " (currently active)" : ""}`,
-        value: login,
-      })),
+      {
+        label: `auto - follow gh's active account${activeLabel}; switches when you switch gh`,
+        value: "",
+      },
     ],
     cancel: "reject",
   });
   const login = String(value);
-  return login === "" ? { kind: "auto" } : { kind: "pinned", login };
+  return login === "" ? { kind: "auto", activeLogin: active } : { kind: "pinned", login };
 }
 
 // --- provider acquisition ---------------------------------------------------
@@ -435,10 +506,14 @@ async function loginWithGhToken(source: GhTokenSource): Promise<string> {
 
 /** `gh-cli`: rely on the machine's gh login (store nothing, verify gh works).
  *  `ghUser` verifies THAT account (`gh auth token --user`); null = gh's active
- *  account. `look` is a test seam; exported for its wording tests. */
+ *  account, with `activeLogin` naming it in the narration when the account list
+ *  was readable (no hidden information: the user always sees WHICH account
+ *  their credential follows). `look` is a test seam; exported for its wording
+ *  tests. */
 export function loginWithGhCli(
   ghUser: string | null,
   look: (ghUser: string | null) => GhTokenLook = ghAuthTokenLook,
+  activeLogin: string | null = null,
 ): void {
   // Verify gh works BEFORE recording -- otherwise a failed gh check would point
   // `--get` at a `gh` that can't produce a token. Either miss throws (the
@@ -455,14 +530,19 @@ export function loginWithGhCli(
     throw new Error(
       ghUser === null
         ? "gh is not authenticated - run `gh auth login`, then retry `agent auth`"
-        : `gh is not authenticated as account '${ghUser}' - run \`gh auth login\` for that ` +
-          "account, then retry `agent auth`",
+        : `gh has no saved credential for account '${ghUser}' (pinning needs a saved ` +
+          "login; an env GH_TOKEN cannot serve `gh auth token --user`) - run " +
+          `\`gh auth login\` for that account, pass --gh-user <login> for another, ` +
+          "or choose auto interactively via `agent auth --provider gh-cli`",
     );
   }
   logger.success(
-    ghUser === null
-      ? "  Using the gh CLI login as the Direct credential."
-      : `  Using the gh CLI login (account ${ghUser}) as the Direct credential.`,
+    ghUser !== null
+      ? `  Using the gh CLI login (account ${ghUser}) as the Direct credential.`
+      : activeLogin !== null
+      ? `  Using the gh CLI login on AUTO (currently account ${activeLogin}; follows gh ` +
+        "account switches) as the Direct credential."
+      : "  Using the gh CLI login on AUTO (follows gh account switches) as the Direct credential.",
   );
 }
 
@@ -471,10 +551,15 @@ export function loginWithGhCli(
  * acquisition, or the interactive choice for `choose`) and run its flow. The
  * caller owns the single store write -- `authenticate` records it into an
  * existing slot, `agent profile --add` commits it atomically together with the
- * profile's mode. Throws on failure.
+ * profile's mode. Throws on failure. `seams` are test-only substitutes for the
+ * gh lookups.
  */
 export async function acquireCredential(
   acquisition: CredentialAcquisition,
+  seams: {
+    look?: (ghUser: string | null) => GhTokenLook;
+    chooseAccount?: () => Promise<SettledGhAccount>;
+  } = {},
 ): Promise<ProvisionedCredential> {
   const resolved = acquisition.kind === "choose"
     ? acquisitionForProvider(await chooseProvider())
@@ -485,10 +570,16 @@ export async function acquireCredential(
   if (resolved.kind === "copilot") {
     return { kind: "stored", provider: "copilot", token: loginWithCopilot() };
   }
-  const account = resolved.account.kind === "choose" ? await chooseGhAccount() : resolved.account;
-  const ghUser = account.kind === "pinned" ? account.login : null;
-  loginWithGhCli(ghUser);
-  return { kind: "gh-cli", ghUser };
+  const look = seams.look ?? ghAuthTokenLook;
+  const account: SettledGhAccount = resolved.account.kind === "choose"
+    ? await (seams.chooseAccount ?? chooseGhAccount)()
+    : resolved.account;
+  if (account.kind === "pinned") {
+    loginWithGhCli(account.login, look);
+    return { kind: "gh-cli", ghUser: account.login };
+  }
+  loginWithGhCli(null, look, account.activeLogin);
+  return { kind: "gh-cli", ghUser: null };
 }
 
 /**
@@ -652,17 +743,47 @@ async function runDel(profile: Profile): Promise<void> {
 
 /** The provider label for the read-back lines (`--check`, `--list`, "Already
  *  authenticated"): the provider name, wearing the gh-cli account pin when one
- *  is recorded ("gh-cli (user <login>)"). Null = never chosen. An auto gh-cli
- *  slot renders the bare provider name, keeping the historical output
- *  byte-identical. Exported for `agent profile`'s credential-reuse line. */
+ *  is recorded ("gh-cli as <login>"). Null = never chosen. BRACKET-FREE by
+ *  contract: every surface wraps this in its own parens, and nested brackets
+ *  are unreadable. Exported for `agent profile`'s credential-reuse line. */
 export function credentialSourceLabel(credential: StoredCredential): string | null {
   switch (credential.kind) {
     case "none":
     case "stored":
       return credential.provider;
     case "gh-cli":
-      return credential.ghUser === null ? "gh-cli" : `gh-cli (user ${credential.ghUser})`;
+      return credential.ghUser === null ? "gh-cli" : `gh-cli as ${credential.ghUser}`;
   }
+}
+
+/** credentialSourceLabel with an AUTO gh-cli slot SAYING it is auto, naming the
+ *  account it follows RIGHT NOW, and listing every account it may use (one live
+ *  `gh auth status`; an unproven or empty look keeps the bare "gh-cli on auto" --
+ *  the accounts are never guessed). No hidden information: every read-back
+ *  surface says whose credit the credential can spend. `look` is a test seam;
+ *  batch callers (--list) pass one memoized look. */
+export function liveCredentialSourceLabel(
+  credential: StoredCredential,
+  look: () => GhAccountsLook = ghAccountsLook,
+): string | null {
+  if (credential.kind === "gh-cli" && credential.ghUser === null) {
+    const accounts = look().accounts;
+    const active = activeGhLogin(accounts);
+    const logins = [
+      ...new Set(
+        accounts
+          .filter((a) => a.host === GH_COPILOT_HOST && a.login !== "")
+          .map((a) => a.login),
+      ),
+    ];
+    const parts = [
+      active === null ? null : `currently ${active}`,
+      logins.length === 0 ? null : `may use ${logins.join(", ")}`,
+    ].filter((part) => part !== null);
+    // Bracket-free like credentialSourceLabel: the callers add the one paren level.
+    return `gh-cli on auto${parts.length === 0 ? "" : `: ${parts.join("; ")}`}`;
+  }
+  return credentialSourceLabel(credential);
 }
 
 function runCheck(profile: Profile): void {
@@ -683,7 +804,7 @@ function runCheck(profile: Profile): void {
     process.exitCode = 1;
     return;
   }
-  const source = credentialSourceLabel(credential.read()) ?? provider;
+  const source = liveCredentialSourceLabel(credential.read()) ?? provider;
   if (resolves) {
     console.log(`authenticated (${source})${label}`);
     process.exitCode = 0;
@@ -702,14 +823,20 @@ function runList(): void {
   const rows: Array<[string, string]> = [];
   const describe = (source: string | null, resolves: boolean): string =>
     source === null ? "not authenticated" : `${source}${resolves ? "" : " (does not resolve)"}`;
+  // One memoized account look serves every auto gh-cli row (one spawn, not N).
+  let accounts: GhAccountsLook | undefined;
+  const look = (): GhAccountsLook => (accounts ??= ghAccountsLook());
   const defaultCred = new Credential(state);
   rows.push([
     "default",
-    describe(credentialSourceLabel(defaultCred.read()), defaultCred.isAuthenticated()),
+    describe(liveCredentialSourceLabel(defaultCred.read(), look), defaultCred.isAuthenticated()),
   ]);
   for (const name of state.profileNames()) {
     const cred = new Credential(state, name);
-    rows.push([name, describe(credentialSourceLabel(cred.read()), cred.isAuthenticated())]);
+    rows.push([
+      name,
+      describe(liveCredentialSourceLabel(cred.read(), look), cred.isAuthenticated()),
+    ]);
   }
   printTable(rows, { indent: "" });
 }
@@ -858,7 +985,7 @@ async function runAuthenticate(
     const credential = new Credential(undefined, profile);
     const { provider, resolves } = credential.status();
     if (provider !== null && resolves) {
-      const source = credentialSourceLabel(credential.read()) ?? provider;
+      const source = liveCredentialSourceLabel(credential.read()) ?? provider;
       if (profile === null) {
         // The default wording is an output contract -- keep it byte-identical.
         logger.success(

@@ -27,6 +27,7 @@ import {
   v356VersionedLayout,
 } from "./3.5.6.ts";
 import { v400AutoupdateFlag, v400ClaudeWiring, v400CodexWiring, v400ShellFence } from "./4.0.0.ts";
+import { v402GhAccountPin } from "./4.0.2.ts";
 
 /**
  * One step in the version history, named for the release it migrates AWAY FROM (so a
@@ -68,6 +69,7 @@ const MIGRATIONS: Migration[] = [
   v400CodexWiring,
   v400ClaudeWiring,
   v400AutoupdateFlag,
+  v402GhAccountPin,
 ];
 
 // versionLessThan tolerates unparseable input by answering "not less-than", so a

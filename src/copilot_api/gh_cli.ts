@@ -137,54 +137,81 @@ export interface GhAccount {
   host: string;
   login: string;
   active: boolean;
-  /** Where gh got the credential: `keyring`, a config path, or an env var name
-   *  like `GH_TOKEN` (blank when gh printed no source parens). */
+  /** Where gh got the credential -- the WINNING source only (`keyring`, a config
+   *  path, or an env var name like `GH_TOKEN`; blank when gh printed no source
+   *  parens). An env var SHADOWS a saved keyring credential for the same login
+   *  in this display, so the source never proves whether `gh auth token --user`
+   *  can serve the account -- membership is verified at selection time
+   *  (loginWithGhCli), never guessed from here. */
   source: string;
+  /** The block was a FAILED login (bad/timed-out credential): never offered in
+   *  the picker, but kept so its active marker still names the account gh's
+   *  auto resolution follows. gh's per-host env-token failure wording carries
+   *  no login (""). */
+  broken?: true;
 }
 
-/** Whether `gh auth token --user <login>` can serve this account: `--user`
- *  reads gh's SAVED credentials only, so an env-token login (source GH_TOKEN /
- *  GITHUB_TOKEN / ...) cannot be pinned -- env auth stays reachable through
- *  auto (it IS gh's active credential while the var is set). */
-export function ghAccountPinnable(account: GhAccount): boolean {
-  return !/_TOKEN$/.test(account.source);
+/** The github.com login an AUTO gh-cli slot is following right now: the ACTIVE
+ *  account (a broken active login still names itself -- it IS what auto
+ *  follows), or the only account when gh marked none active (older gh; the
+ *  only-login fallback needs the WHOLE list to agree, broken entries included,
+ *  so a dropped-marker ambiguity never names the wrong account). Null when
+ *  nothing can be named honestly. Pure over a parsed account list so every
+ *  renderer names the same account. */
+export function activeGhLogin(accounts: GhAccount[]): string | null {
+  const github = accounts.filter((a) => a.host === GH_COPILOT_HOST);
+  const active = github.find((a) => a.active) ?? null;
+  if (active !== null) return active.login === "" ? null : active.login;
+  // Agreement BEFORE dropping unnamed entries: an unnamed broken sibling makes
+  // the followed account ambiguous, so nothing is named.
+  const logins = [...new Set(github.map((a) => a.login))];
+  if (logins.length !== 1) return null;
+  const only = logins[0] ?? "";
+  return only === "" ? null : only;
 }
 
 /**
  * Parse `gh auth status` text into the logged-in accounts. STRICTLY a
- * choice-menu input (which accounts exist, which is active) -- never an auth
- * verdict; those stay with `gh auth token` via ghAuthVerdict. Broken logins
- * ("Failed to log in ...") deliberately don't match, and unrecognized output
- * parses as no accounts.
+ * choice-menu/naming input (which accounts exist, which is active) -- never an
+ * auth verdict; those stay with `gh auth token` via ghAuthVerdict. Broken
+ * logins are kept, marked `broken` (their active marker still names gh's
+ * followed account), and unrecognized output parses as no accounts.
  */
 export function parseGhAuthStatusAccounts(output: string): GhAccount[] {
   const accounts: GhAccount[] = [];
   const seen = new Set<string>();
   let current: GhAccount | null = null;
+  const push = (account: GhAccount): GhAccount => {
+    const key = `${account.host}|${account.login}|${account.source}|${account.broken ?? false}`;
+    // Dedup EXACT repeats only (host+login+source): gh lists an env-token
+    // login before the saved accounts, and the same login can appear under
+    // both sources -- collapsing those would drop the pinnable saved entry.
+    if (!seen.has(key)) {
+      seen.add(key);
+      accounts.push(account);
+    }
+    return account;
+  };
   for (const line of output.split(/\r?\n/)) {
     const login = line.match(/Logged in to (\S+) account (\S+)(?: \(([^)]*)\))?/);
     if (login) {
       // \S+ can't produce an empty capture; the defaults only satisfy the
       // indexed-access strictness (the source parens are genuinely optional).
       const [, host = "", name = "", source = ""] = login;
-      current = { host, login: name, active: false, source };
-      // Dedup EXACT repeats only (host+login+source): gh lists an env-token
-      // login before the saved accounts, and the same login can appear under
-      // both sources -- collapsing those would drop the pinnable saved entry.
-      const key = `${host}|${name}|${source}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        accounts.push(current);
-      }
+      current = push({ host, login: name, active: false, source });
       continue;
     }
     // A broken login starts its own block, in ANY of gh's failure wordings
-    // ("Failed to log in to ... account <login>", "... using token (...)",
-    // "Timeout trying to log in to ..."): all contain "log in to", which the
-    // success line ("Logged in to") never does. Without this reset, a failed
-    // block's "Active account: true" line would mark the last healthy account.
-    if (/\blog in to /.test(line)) {
-      current = null;
+    // ("Failed to log in to <host> account <login> (...)", "... using token
+    // (ENV)", "Timeout trying to log in to ..."): all contain "log in to",
+    // which the success line ("Logged in to") never does. The block is KEPT
+    // (marked broken) so its "Active account: true" line attributes to it --
+    // never to the last healthy account, and never dropped: gh's auto
+    // resolution follows the active account even while its login is broken.
+    const failed = line.match(/\blog in to (\S+)(?: account (\S+)| using \S+)?(?: \(([^)]*)\))?/);
+    if (failed) {
+      const [, host = "", name, source = ""] = failed;
+      current = push({ host, "login": name ?? "", active: false, source, "broken": true });
       continue;
     }
     if (current !== null && /Active account:\s*true/.test(line)) current.active = true;

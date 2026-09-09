@@ -1187,6 +1187,7 @@ test("an unreadable settings file reaches health as other/read-error, never as n
     authProvider: () => null,
     storedTokenPresent: () => false,
     codexDirectAuth: () => Promise.resolve({ command: null, authenticated: false }),
+    ghActiveLogin: () => Promise.resolve(null),
   };
   const facts = await gatherFacts("claude", {}, deps);
   expect(facts.claude?.providerMode).toBe("other");
@@ -1210,6 +1211,7 @@ test("an unreadable codex config reaches health as other/read-error, never as no
     authProvider: () => null,
     storedTokenPresent: () => false,
     codexDirectAuth: () => Promise.resolve({ command: null, authenticated: false }),
+    ghActiveLogin: () => Promise.resolve(null),
   };
   const facts = await gatherFacts("codex", {}, deps);
   expect(facts.codex?.providerMode).toBe("other");
@@ -1594,7 +1596,8 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
   expect(unproven.status).toBe("warn");
   expect(unproven.detail).toBe([
     "provider 'gh-cli' is selected but its credential could not be checked",
-    "could not check gh authentication (`gh auth token` did not run to completion)",
+    "could not check gh authentication " +
+    "(`gh auth token` did not run to completion; AUTO - follows gh's active account)",
   ].join("\n"));
   expect(unproven.fix).toBe("agent auth");
   expect(unproven.value).toMatchObject({ ghAuthUnproven: true });
@@ -1608,8 +1611,22 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
   });
   expect(proven.detail).toBe([
     "provider 'gh-cli' is selected but no credential resolves",
-    "`gh` is unauthenticated - run `gh auth login`, or `agent auth` to switch provider",
+    "`gh` is unauthenticated (AUTO - follows gh's active account) - run `gh auth login`, " +
+    "or `agent auth` to switch provider",
   ].join("\n"));
+  // A failing AUTO slot still names the account it follows (no hidden
+  // information: the failure is about vivswan's credential).
+  const provenNamed = checkAuth({
+    storedToken: false,
+    ghAuthenticated: false,
+    ghActiveLogin: "vivswan",
+    provider: "gh-cli",
+    profiles: {},
+    pinnedIntegrationId: null,
+  });
+  expect(provenNamed.detail).toContain(
+    "`gh` is unauthenticated (AUTO - currently account vivswan) - run `gh auth login`",
+  );
   // A PINNED slot's verdict names its account (the probe ran `gh auth token
   // --user`); gh's active account may well be fine.
   const pinned = checkAuth({
@@ -1635,6 +1652,17 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
   });
   expect(pinnedOk.status).toBe("ok");
   expect(pinnedOk.detail).toContain("gh CLI (`gh auth token --user work-bot`)");
+  // An AUTO slot names the account it follows right now (no hidden information).
+  const autoNamed = checkAuth({
+    storedToken: false,
+    ghAuthenticated: true,
+    ghActiveLogin: "vivswan",
+    provider: "gh-cli",
+    profiles: {},
+    pinnedIntegrationId: null,
+  });
+  expect(autoNamed.status).toBe("ok");
+  expect(autoNamed.detail).toContain("gh CLI (`gh auth token`, AUTO - currently account vivswan)");
 });
 
 // --- live (--live) checks ---------------------------------------------------

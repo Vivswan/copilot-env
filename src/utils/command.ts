@@ -205,10 +205,13 @@ export interface VerbatimCliSpawn {
   binDir: string | null;
 }
 
-/** Windows PATH resolutions of `command` in search order (where.exe walks PATH with
- *  PATHEXT, plus exact-name matches). Empty when absent or where.exe fails. */
-function windowsCliCandidates(command: string): string[] {
-  const result = spawnSync("where.exe", [command], {
+/** where.exe resolutions for `pattern`, in search order; empty when absent or
+ *  where.exe fails. The pattern is where.exe's own vocabulary: a bare name
+ *  (searches the cwd first, then PATH -- the agent-CLI launch keeps that,
+ *  matching what a user's own shell would run), or `$ENV:name` to scope the
+ *  search to that env var's directories. */
+function windowsWhereCandidates(pattern: string): string[] {
+  const result = spawnSync("where.exe", [pattern], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
     windowsHide: true,
@@ -232,8 +235,9 @@ export function pickWindowsExecutable(candidates: string[]): string | null {
  * from findCommand (`command -v` prints the resolution -- absolute unless the
  * matching PATH entry was itself relative, which reads as null here: a
  * cwd-dependent resolution is not a stable binary for another process to spawn).
- * Windows takes where.exe's first direct executable, because findCommand's
- * Windows arm keeps the bare name for its spawn recipe.
+ * Windows scopes where.exe to PATH's directories (`$PATH:` pattern): a bare
+ * `where.exe` searches the CURRENT DIRECTORY first, and a cwd-local binary is
+ * the same unstable resolution the POSIX arm rejects.
  *
  * Accepted flatten (the ghAuthToken precedent): a look that never RAN reads as
  * null too, because every caller's miss action is a non-destructive fallback
@@ -244,7 +248,7 @@ export function resolveExecutablePath(command: string): string | null {
     const path = findCommand(command).path;
     return path !== null && isAbsolute(path) ? path : null;
   }
-  return pickWindowsExecutable(windowsCliCandidates(command));
+  return pickWindowsExecutable(windowsWhereCandidates(`$PATH:${command}`));
 }
 
 /**
@@ -312,5 +316,5 @@ export function verbatimCliSpawn(command: string, args: string[]): VerbatimCliSp
       binDir: resolved.includes("/") ? dirname(resolved) : null,
     };
   }
-  return pickVerbatimWindowsSpawn(command, windowsCliCandidates(command), args, existsSync);
+  return pickVerbatimWindowsSpawn(command, windowsWhereCandidates(command), args, existsSync);
 }

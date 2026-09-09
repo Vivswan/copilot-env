@@ -1467,6 +1467,31 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
     "provider 'gh-cli' is selected but no credential resolves",
     "`gh` is unauthenticated - run `gh auth login`, or `agent auth` to switch provider",
   ].join("\n"));
+  // A PINNED slot's verdict names its account (the probe ran `gh auth token
+  // --user`); gh's active account may well be fine.
+  const pinned = checkAuth({
+    storedToken: false,
+    ghAuthenticated: false,
+    ghUser: "work-bot",
+    provider: "gh-cli",
+    profiles: {},
+    pinnedIntegrationId: null,
+  });
+  expect(pinned.detail).toBe([
+    "provider 'gh-cli' is selected but no credential resolves",
+    "`gh` is not authenticated as account 'work-bot' - run `gh auth login` for that account, " +
+    "or `agent auth` to switch",
+  ].join("\n"));
+  const pinnedOk = checkAuth({
+    storedToken: false,
+    ghAuthenticated: true,
+    ghUser: "work-bot",
+    provider: "gh-cli",
+    profiles: {},
+    pinnedIntegrationId: null,
+  });
+  expect(pinnedOk.status).toBe("ok");
+  expect(pinnedOk.detail).toContain("gh CLI (`gh auth token --user work-bot`)");
 });
 
 // --- live (--live) checks ---------------------------------------------------

@@ -65,6 +65,11 @@ export function tokenFromSetFlag(flag: string | boolean | undefined): string | n
 /** Cap on one `gh auth token` call, shared by every "is gh authenticated?" probe. */
 export const GH_AUTH_TIMEOUT_MS = 5000;
 
+/** The one host Copilot authenticates against. A pinned account is chosen from
+ *  this host's logins, so the pinned resolve names it explicitly -- otherwise a
+ *  GH_HOST override would point `--user` at another host's accounts. */
+export const GH_COPILOT_HOST = "github.com";
+
 /**
  * The ONE recipe for probing gh's login: spawn `gh auth token` at gh's RESOLVED
  * path (not the bare name), with gh's bin dir on PATH, so an nvm-only gh (or a
@@ -74,11 +79,17 @@ export const GH_AUTH_TIMEOUT_MS = 5000;
  * (src/agents/live_probe.ts), and the health probe (health/probe.ts), so the
  * command and its GH_AUTH_TIMEOUT_MS budget never drift between them. Callers
  * pick their own stdio (capture the token vs. keep it out of process memory).
- * `ghUser` pins the call to that logged-in gh account (`--user`); null follows
- * gh's active account.
+ * `ghUser` pins the call to that logged-in gh account (`--user`, on
+ * GH_COPILOT_HOST -- the host the account was chosen from); null follows gh's
+ * active account.
  */
 export function ghAuthTokenSpawnSpec(ghPath: string, ghUser: string | null = null): GhSpawnSpec {
-  const s = cliSpawn(ghPath, ["auth", "token", ...(ghUser === null ? [] : ["--user", ghUser])]);
+  const s = cliSpawn(
+    ghPath,
+    ghUser === null
+      ? ["auth", "token"]
+      : ["auth", "token", "--user", ghUser, "--hostname", GH_COPILOT_HOST],
+  );
   return { ...s, timeout: GH_AUTH_TIMEOUT_MS, env: childEnvWithPath([dirname(ghPath)]) };
 }
 

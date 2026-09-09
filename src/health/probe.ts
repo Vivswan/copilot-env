@@ -992,6 +992,7 @@ export async function gatherFacts(
               : null,
             storedToken: slot.storedToken,
             ghAuthenticated: gh?.authenticated ?? false,
+            ...(gh?.ghUser != null ? { ghUser: gh.ghUser } : {}),
             ...(gh?.unproven ? { ghAuthUnproven: true as const } : {}),
           };
         })(),
@@ -1010,6 +1011,7 @@ export async function gatherFacts(
           facts.auth = {
             storedToken,
             ghAuthenticated: gh?.authenticated ?? false,
+            ...(gh?.ghUser != null ? { ghUser: gh.ghUser } : {}),
             ...(gh?.unproven ? { ghAuthUnproven: true as const } : {}),
             provider,
             profiles: deps.authProfiles(),

@@ -434,6 +434,24 @@ test("checkProfileAuth: a recorded provider whose credential does not resolve wa
   expect(ghDown.status).toBe("warn");
   expect(ghDown.detail).toContain("gh auth login");
 
+  // A PINNED slot's proven miss names its account; gh's active login may be fine.
+  const ghPinnedDown = checkProfileAuth(P, ghSlot, {
+    storedToken: false,
+    ghAuthenticated: false,
+    ghUser: "work-bot",
+  });
+  expect(ghPinnedDown.status).toBe("warn");
+  expect(ghPinnedDown.detail).toContain(
+    "`gh` is not authenticated as account 'work-bot' - run `gh auth login` for that account",
+  );
+  const ghPinnedOk = checkProfileAuth(P, ghSlot, {
+    storedToken: false,
+    ghAuthenticated: true,
+    ghUser: "work-bot",
+  });
+  expect(ghPinnedOk.status).toBe("ok");
+  expect(ghPinnedOk.detail).toContain("gh CLI (`gh auth token --user work-bot`)");
+
   // An UNPROVEN gh probe keeps the warn + fix but says could-not-check: gh was
   // never actually asked, so the confident wording and its advice never render.
   const ghUnproven = checkProfileAuth(P, ghSlot, {

@@ -674,14 +674,18 @@ test("parseGhAuthStatusAccounts: accounts with active attribution; broken logins
   expect(parseGhAuthStatusAccounts(TWO_ACCOUNT_STATUS + TWO_ACCOUNT_STATUS).length).toBe(2);
 });
 
-test("the gh spawn recipes: a pinned account adds --user; auto stays byte-identical", () => {
+test("the gh spawn recipes: a pinned account adds --user on github.com; auto stays byte-identical", () => {
   expect(ghAuthTokenSpawnSpec("/opt/gh/gh").args).toEqual(["auth", "token"]);
   expect(ghAuthTokenSpawnSpec("/opt/gh/gh", null).args).toEqual(["auth", "token"]);
+  // The pin was chosen from github.com's logins, so the resolve names the host:
+  // a GH_HOST override must not point --user at another host's accounts.
   expect(ghAuthTokenSpawnSpec("/opt/gh/gh", "work-bot").args).toEqual([
     "auth",
     "token",
     "--user",
     "work-bot",
+    "--hostname",
+    "github.com",
   ]);
   expect(ghAuthStatusSpawnSpec("/opt/gh/gh").args).toEqual(["auth", "status"]);
 });

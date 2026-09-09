@@ -370,6 +370,8 @@ export interface HealthFacts {
     slot: ProfileAuthFacts | null;
     storedToken: boolean;
     ghAuthenticated: boolean;
+    /** The pinned gh account the probe asked about (see AuthFacts.ghUser). */
+    ghUser?: string | null;
     /** The gh probe never ran to completion (see AuthFacts.ghAuthUnproven). */
     ghAuthUnproven?: true;
   };
@@ -406,6 +408,10 @@ export type ProfileAuthFacts = {
 export interface AuthFacts {
   storedToken: boolean;
   ghAuthenticated: boolean;
+  /** The pinned gh account the probe asked about (`gh auth token --user`).
+   *  Absent/null = gh's active account, so the check can name the account a
+   *  pinned verdict is actually about. Optional so fixtures stay valid. */
+  ghUser?: string | null;
   /** The gh probe never ran to completion (CodexDirectAuthFacts.unproven):
    *  ghAuthenticated false is then UNPROVEN, so the check says "could not
    *  check", never "gh is unauthenticated" + `gh auth login` advice. Optional

@@ -43,6 +43,7 @@ import {
   type StoredCredential,
 } from "../copilot_api/env_state.ts";
 import {
+  GH_COPILOT_HOST,
   ghAccountPinnable,
   ghTokenEnvVarsLabel,
   ghTokenEnvVarsList,
@@ -248,12 +249,12 @@ export async function chooseGhAccount(
   look: () => GhAccountsLook = ghAccountsLook,
 ): Promise<Exclude<GhCliAccountChoice, { kind: "choose" }>> {
   const { accounts, unproven } = look();
-  // Copilot authenticates against github.com, and the resolver runs `gh auth
-  // token --user` with no --hostname (the default host) against gh's SAVED
+  // Copilot authenticates against GH_COPILOT_HOST, and the pinned resolver runs
+  // `gh auth token --user --hostname github.com` against gh's SAVED
   // credentials: another host's login, or an env-token one (ghAccountPinnable),
   // would be a menu entry the resolver cannot serve. The auto label still names
   // the TRUE active account (env token included) -- that is what auto follows.
-  const github = accounts.filter((a) => a.host === "github.com");
+  const github = accounts.filter((a) => a.host === GH_COPILOT_HOST);
   const logins = [...new Set(github.filter(ghAccountPinnable).map((a) => a.login))];
   if (unproven || logins.length <= 1) return { kind: "auto" };
   const active = github.find((a) => a.active)?.login ?? null;

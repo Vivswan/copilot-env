@@ -1,10 +1,11 @@
 #!/bin/sh
 # Single self-bootstrapping entry point (Linux + macOS) for copilot-env.
-# Installs deno if missing (the .dvmrc pin, via the shared scripts/ensure-deno.sh that
-# scripts/setup-env.sh uses too), installs dependencies in-place in the checkout only when
-# the lockfile has moved ahead of them, then runs the cli.ts dispatcher (cli.ts owns the
-# subcommand list; see `agent --help`). The `agent` shell function (agents.bashrc) is what
-# turns `agent env` output into shell state.
+# Uses the deno already on PATH (warning when it is older than the tested .dvmrc version);
+# only a machine with no deno installs the latest release, via the shared
+# scripts/ensure-deno.sh that scripts/setup-env.sh uses too. Installs dependencies in-place
+# in the checkout only when the lockfile has moved ahead of them, then runs the cli.ts
+# dispatcher (cli.ts owns the subcommand list; see `agent --help`). The `agent` shell
+# function (agents.bashrc) is what turns `agent env` output into shell state.
 #
 # No cache: node_modules lives directly in the checkout and cli.ts runs from there.
 #

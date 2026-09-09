@@ -168,10 +168,11 @@ export async function ensureProxyFloor(_lock: HeldStartLock): Promise<FloorCheck
   if (preflight.kind === "file") return floorChecked(preflight);
 
   // Before anything spawns deno: a compiled build's own executable is not a deno CLI, so
-  // the pinned sidecar has to exist before the float can warm a cache or the daemon can
-  // launch. Provisioning is a no-op from a checkout, where our runtime already is one.
+  // SOME deno (PATH, or a provisioned sidecar) has to exist before the float can warm a
+  // cache or the daemon can launch. A no-op from a checkout, where our runtime already
+  // is one.
   const sidecar = await ensureSidecar(resolveRootHome());
-  if (isStandaloneBinary()) consola.info(`Using the provisioned deno sidecar: ${sidecar}`);
+  if (isStandaloneBinary()) consola.info(`Using deno for proxy work: ${sidecar}`);
 
   const status = await proxyFloatVerifyStatus();
   if (!status.upToDate) {

@@ -7,7 +7,7 @@
 // (setup -> codex/claude config -> agents/live_probe -> setup).
 import { execFile, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { dirname, win32 } from "node:path";
+import { dirname, isAbsolute, win32 } from "node:path";
 
 // `command -v` first, then a best-effort nvm fallback so a freshly nvm-installed
 // Node/CLI resolves in the same process that installed it (PATH not yet reloaded).
@@ -215,6 +215,36 @@ function windowsCliCandidates(command: string): string[] {
   });
   if (result.error || result.status !== 0) return [];
   return (result.stdout ?? "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+}
+
+/** The first DIRECT executable (.exe/.com) among Windows PATH candidates (pure,
+ *  exported for tests): a shim script cannot stand in for a binary another
+ *  process spawns as its runtime. */
+export function pickWindowsExecutable(candidates: string[]): string | null {
+  return candidates.find((candidate) => {
+    const lower = candidate.toLowerCase();
+    return lower.endsWith(".exe") || lower.endsWith(".com");
+  }) ?? null;
+}
+
+/**
+ * The ABSOLUTE path of `command`'s first PATH resolution, or null. POSIX answers
+ * from findCommand (`command -v` prints the resolution -- absolute unless the
+ * matching PATH entry was itself relative, which reads as null here: a
+ * cwd-dependent resolution is not a stable binary for another process to spawn).
+ * Windows takes where.exe's first direct executable, because findCommand's
+ * Windows arm keeps the bare name for its spawn recipe.
+ *
+ * Accepted flatten (the ghAuthToken precedent): a look that never RAN reads as
+ * null too, because every caller's miss action is a non-destructive fallback
+ * (the provisioned sidecar, or a fresh install) -- null never renders a verdict.
+ */
+export function resolveExecutablePath(command: string): string | null {
+  if (process.platform !== "win32") {
+    const path = findCommand(command).path;
+    return path !== null && isAbsolute(path) ? path : null;
+  }
+  return pickWindowsExecutable(windowsCliCandidates(command));
 }
 
 /**

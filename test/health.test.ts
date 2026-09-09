@@ -239,7 +239,13 @@ test("proxy package: missing and below-floor fail, above-ceiling warns, in-bound
       cooldownSeconds: 604800,
       floatSkips: false,
       resolved: null,
-      sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
+      sidecar: {
+        kind: "dev",
+        referenceVersion: "2.9.5",
+        denoBin: "/deno",
+        version: "2.9.5",
+        standalone: false,
+      },
     }).status,
   ).toBe("fail");
   expect(
@@ -250,7 +256,13 @@ test("proxy package: missing and below-floor fail, above-ceiling warns, in-bound
       cooldownSeconds: 604800,
       floatSkips: false,
       resolved: null,
-      sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
+      sidecar: {
+        kind: "dev",
+        referenceVersion: "2.9.5",
+        denoBin: "/deno",
+        version: "2.9.5",
+        standalone: false,
+      },
     }).status,
   ).toBe("fail");
   const above = checkProxyPackage({
@@ -260,7 +272,13 @@ test("proxy package: missing and below-floor fail, above-ceiling warns, in-bound
     cooldownSeconds: 604800,
     floatSkips: false,
     resolved: null,
-    sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
+    sidecar: {
+      kind: "dev",
+      referenceVersion: "2.9.5",
+      denoBin: "/deno",
+      version: "2.9.5",
+      standalone: false,
+    },
   });
   expect(above.status).toBe("warn");
   expect(above.fix).toBe("agent update");
@@ -272,7 +290,13 @@ test("proxy package: missing and below-floor fail, above-ceiling warns, in-bound
       cooldownSeconds: 604800,
       floatSkips: false,
       resolved: null,
-      sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
+      sidecar: {
+        kind: "dev",
+        referenceVersion: "2.9.5",
+        denoBin: "/deno",
+        version: "2.9.5",
+        standalone: false,
+      },
     }).status,
   ).toBe("ok");
 });
@@ -288,7 +312,13 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
     cooldownSeconds: 604800,
     floatSkips: true,
     resolved: null,
-    sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
+    sidecar: {
+      kind: "dev",
+      referenceVersion: "2.9.5",
+      denoBin: "/deno",
+      version: "2.9.5",
+      standalone: false,
+    },
   });
   expect(below.status).toBe("ok");
   // The detail must surface the exemption; the exact phrasing is human copy, so
@@ -306,7 +336,13 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
     cooldownSeconds: 604800,
     floatSkips: true,
     resolved: null,
-    sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
+    sidecar: {
+      kind: "dev",
+      referenceVersion: "2.9.5",
+      denoBin: "/deno",
+      version: "2.9.5",
+      standalone: false,
+    },
   });
   expect(above.status).toBe("ok");
   expect(above.fix).toBeUndefined();
@@ -320,7 +356,13 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
     cooldownSeconds: 604800,
     floatSkips: true,
     resolved: null,
-    sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
+    sidecar: {
+      kind: "dev",
+      referenceVersion: "2.9.5",
+      denoBin: "/deno",
+      version: "2.9.5",
+      standalone: false,
+    },
   });
   expect(missing.status).toBe("fail");
   expect(missing.fix).toBe("deno install --frozen");
@@ -334,7 +376,13 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
     cooldownSeconds: 604800,
     floatSkips: true,
     resolved: null,
-    sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
+    sidecar: {
+      kind: "dev",
+      referenceVersion: "2.9.5",
+      denoBin: "/deno",
+      version: "2.9.5",
+      standalone: false,
+    },
   });
   expect(inBounds.status).toBe("ok");
   expect(inBounds.detail).not.toContain("not enforced");
@@ -349,7 +397,13 @@ test("proxy package bounds are not enforced when both agents are direct", () => 
     cooldownSeconds: 604800,
     floatSkips: true,
     resolved: null,
-    sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
+    sidecar: {
+      kind: "dev",
+      referenceVersion: "2.9.5",
+      denoBin: "/deno",
+      version: "2.9.5",
+      standalone: false,
+    },
   });
   expect(badConfig.status).toBe("fail");
 });
@@ -360,8 +414,9 @@ test("proxy package: a compiled install treats missing as pre-start, not broken"
   // of a fresh or direct-only binary install and must not fail.
   const standalone = {
     kind: "provisioned",
-    pin: "2.9.5",
+    referenceVersion: "2.9.5",
     denoBin: "/deno",
+    version: "2.9.5",
     standalone: true,
   } as const;
   const unused = checkProxyPackage({
@@ -403,7 +458,13 @@ test("proxy package detail shows the float cooldown window", () => {
       cooldownSeconds,
       floatSkips: false,
       resolved: null,
-      sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
+      sidecar: {
+        kind: "dev",
+        referenceVersion: "2.9.5",
+        denoBin: "/deno",
+        version: "2.9.5",
+        standalone: false,
+      },
     }).detail;
   expect(ok(604800)).toContain("cooldown 7d");
   expect(ok(0)).toContain("no cooldown");
@@ -420,7 +481,13 @@ test("proxy package fails (not throws) when copilot-env.config is unreadable", (
     cooldownSeconds: 604800,
     floatSkips: false,
     resolved: null,
-    sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
+    sidecar: {
+      kind: "dev",
+      referenceVersion: "2.9.5",
+      denoBin: "/deno",
+      version: "2.9.5",
+      standalone: false,
+    },
   });
   expect(r.status).toBe("fail");
   expect(r.detail).toContain("copilot-env.config");
@@ -437,36 +504,106 @@ test("proxy sidecar: absent is fatal for a compiled build, a warning for a check
     sidecar,
   });
 
-  // A compiled binary is not a deno CLI: with no sidecar it cannot spawn the proxy
-  // at all, so this is a failure rather than a note.
+  // A compiled binary is not a deno CLI: with no deno anywhere it cannot spawn
+  // the proxy at all, so this is a failure rather than a note.
   const compiled = checkProxySidecar(
-    facts({ kind: "absent", pin: "2.9.5", denoBin: null, standalone: true }),
+    facts({
+      kind: "absent",
+      referenceVersion: "2.9.5",
+      denoBin: null,
+      version: null,
+      standalone: true,
+    }),
   );
   expect(compiled.status).toBe("fail");
-  expect(compiled.fix).toBe("agent start");
+  expect(compiled.fix).toBe("install deno (https://deno.com), or `agent start` to provision one");
 
   // From a checkout the runtime itself is the answer, so a missing sidecar is not fatal.
   expect(
-    checkProxySidecar(facts({ kind: "absent", pin: "2.9.5", denoBin: null, standalone: false }))
+    checkProxySidecar(
+      facts({
+        kind: "absent",
+        referenceVersion: "2.9.5",
+        denoBin: null,
+        version: null,
+        standalone: false,
+      }),
+    )
       .status,
   ).toBe("warn");
 
   const dev = checkProxySidecar(
-    facts({ kind: "dev", pin: "2.9.5", denoBin: "/usr/bin/deno", standalone: false }),
+    facts({
+      kind: "dev",
+      referenceVersion: "2.9.5",
+      denoBin: "/usr/bin/deno",
+      version: "2.9.5",
+      standalone: false,
+    }),
   );
   expect(dev.status).toBe("ok");
   expect(dev.detail).toContain("/usr/bin/deno");
 
   const provisioned = checkProxySidecar(
-    facts({ kind: "provisioned", pin: "2.9.5", denoBin: "/home/x/deno", standalone: true }),
+    facts({
+      kind: "provisioned",
+      referenceVersion: "2.9.5",
+      denoBin: "/home/x/deno",
+      version: "2.9.5",
+      standalone: true,
+    }),
   );
   expect(provisioned.status).toBe("ok");
   expect(provisioned.detail).toContain("2.9.5");
 
+  // A PATH deno is the normal answer under the user's-toolchain-wins policy:
+  // ok at or above the tested reference, a WARN (never a block) when older,
+  // and unknown-version reads ok (an unreadable version is not a verdict).
+  const onPath = checkProxySidecar(
+    facts({
+      kind: "path",
+      referenceVersion: "2.9.5",
+      denoBin: "/opt/homebrew/bin/deno",
+      version: "2.10.0",
+      standalone: true,
+    }),
+  );
+  expect(onPath.status).toBe("ok");
+  expect(onPath.detail).toContain("deno 2.10.0 on PATH");
+  const older = checkProxySidecar(
+    facts({
+      kind: "path",
+      referenceVersion: "2.9.5",
+      denoBin: "/opt/homebrew/bin/deno",
+      version: "2.8.1",
+      standalone: true,
+    }),
+  );
+  expect(older.status).toBe("warn");
+  expect(older.detail).toContain("deno 2.8.1 on PATH is older than the tested 2.9.5");
+  expect(older.fix).toContain("upgrade deno");
+  const unknownVersion = checkProxySidecar(
+    facts({
+      kind: "path",
+      referenceVersion: "2.9.5",
+      denoBin: "/opt/homebrew/bin/deno",
+      version: null,
+      standalone: true,
+    }),
+  );
+  expect(unknownVersion.status).toBe("ok");
+  expect(unknownVersion.detail).toContain("deno (version unknown) on PATH");
+
   // Direct-only (the float skips): nothing spawns the proxy, so an absent
   // sidecar is idle capacity, not a failure -- even on a compiled build.
   const unused = checkProxySidecar({
-    ...facts({ kind: "absent", pin: "2.9.5", denoBin: null, standalone: true }),
+    ...facts({
+      kind: "absent",
+      referenceVersion: "2.9.5",
+      denoBin: null,
+      version: null,
+      standalone: true,
+    }),
     floatSkips: true,
   });
   expect(unused.status).toBe("ok");
@@ -482,7 +619,13 @@ test("proxy resolved: no record is ok, a record with a missing cache fails", () 
     cooldownSeconds: 604800,
     floatSkips,
     resolved,
-    sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
+    sidecar: {
+      kind: "dev",
+      referenceVersion: "2.9.5",
+      denoBin: "/deno",
+      version: "2.9.5",
+      standalone: false,
+    },
   });
 
   // Never floated: the deno.json baseline runs, which is a working fallback.
@@ -1686,7 +1829,13 @@ test("evaluateAll(full) includes runtime.paths and setup checks", () => {
       cooldownSeconds: 604800,
       floatSkips: false,
       resolved: null,
-      sidecar: { kind: "dev", pin: "2.9.5", denoBin: "/deno", standalone: false },
+      sidecar: {
+        kind: "dev",
+        referenceVersion: "2.9.5",
+        denoBin: "/deno",
+        version: "2.9.5",
+        standalone: false,
+      },
     },
     shell: { files: [], integrationWired: true, launchersWired: false },
     clis: [{ command: "claude", name: "Claude", look: { path: null } }],

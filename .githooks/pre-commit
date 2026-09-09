@@ -4,7 +4,8 @@
 # Same gate as the `check` job in .github/workflows/checks.yml -- staged-file
 # autofix first, then the full typecheck/test/lint sequence.
 set -e
-PATH="${DENO_INSTALL:-$HOME/.deno}/bin:$PATH"
+# The one-time deno install dir is only a FALLBACK: a deno already on PATH wins.
+PATH="$PATH:${DENO_INSTALL:-$HOME/.deno}/bin"
 export PATH
 deno task lint:staged
 deno task typecheck

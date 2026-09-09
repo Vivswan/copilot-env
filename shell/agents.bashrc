@@ -14,12 +14,11 @@
 # shellcheck disable=SC2296
 _COPILOT_AGENTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-${(%):-%x}}")/.." && pwd)"
 
-# The pinned deno must WIN over any other deno (homebrew, for one), so prepend whenever
-# `deno` does not already resolve to it: PATH may list its directory behind the other one.
-# DENO_INSTALL is the same override scripts/ensure-deno.sh honors, so every entry point
-# looks in one place.
+# A deno already on PATH wins; the one-time install under DENO_INSTALL is only a
+# fallback for shells whose PATH lost it. DENO_INSTALL is the same override
+# scripts/ensure-deno.sh honors, so every entry point looks in one place.
 _COPILOT_DENO_BIN="${DENO_INSTALL:-$HOME/.deno}/bin"
-if [ -x "${_COPILOT_DENO_BIN}/deno" ] && [ "$(command -v deno 2>/dev/null)" != "${_COPILOT_DENO_BIN}/deno" ]; then
+if [ -x "${_COPILOT_DENO_BIN}/deno" ] && ! command -v deno > /dev/null 2>&1; then
     export PATH="${_COPILOT_DENO_BIN}:$PATH"
 fi
 unset _COPILOT_DENO_BIN

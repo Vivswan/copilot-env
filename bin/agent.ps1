@@ -1,6 +1,7 @@
 # Single self-bootstrapping entry point (Windows) for copilot-env. Mirror of
-# bin/agent: installs deno if missing (the .dvmrc pin, via the shared
-# scripts/ensure-deno.ps1 that scripts/setup-env.ps1 uses too), installs dependencies
+# bin/agent: uses the deno already on PATH (warning when it is older than the tested
+# .dvmrc version); only a machine with no deno installs the latest release, via the shared
+# scripts/ensure-deno.ps1 that scripts/setup-env.ps1 uses too. Installs dependencies
 # in-place in the checkout only when the lockfile has moved ahead of them, then runs the
 # cli.ts dispatcher (cli.ts owns the subcommand list; see `agent --help`).
 # The `agent` function in agents.ps1 turns `agent env` output into session state.

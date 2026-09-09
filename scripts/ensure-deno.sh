@@ -6,11 +6,13 @@
 # Every message goes to stderr: bin/agent's stdout is the `export ...` text the `agent env`
 # shell wrapper evals, and one stray line there breaks the caller's shell.
 #
-# ensure_deno <repo-root>: a deno already on PATH always wins. When it is older than the
-# tested version in .dvmrc it gets ONE warning and is used anyway -- upgrading is the
-# user's job, and CI stays pinned via .dvmrc either way. Only a machine with no deno at
-# all installs one: the LATEST release, once, into $DENO_INSTALL (default ~/.deno).
-# Returns non-zero only when no deno resolves afterwards.
+# ensure_deno <repo-root> [quiet]: a deno already on PATH always wins. When it is older
+# than the tested version in .dvmrc it gets ONE stderr warning and is used anyway --
+# upgrading is the user's job, and CI stays pinned via .dvmrc either way. A non-empty
+# second argument suppresses that warning: the shell wrapper re-invokes bin/agent for the
+# `agent env` refresh after every command, and the refresh must not repeat it. Only a
+# machine with no deno at all installs one: the LATEST release, once, into $DENO_INSTALL
+# (default ~/.deno). Returns non-zero only when no deno resolves afterwards.
 
 # The version of the deno executable $1 ("deno 2.9.5 (stable, ...)" -> "2.9.5"), or empty
 # when it does not run.
@@ -34,6 +36,7 @@ _copilot_env_deno_older() {
 
 ensure_deno() {
     _copilot_env_root="$1"
+    _copilot_env_quiet="${2:-}"
     export DENO_NO_UPDATE_CHECK=1
     _copilot_env_deno_bin="${DENO_INSTALL:-$HOME/.deno}/bin"
 
@@ -47,10 +50,12 @@ ensure_deno() {
         _copilot_env_found="${_copilot_env_deno_bin}/deno"
     fi
     if [ -n "${_copilot_env_found}" ]; then
-        _copilot_env_have="$(_copilot_env_deno_version "${_copilot_env_found}")"
-        _copilot_env_want="$(tr -d '[:space:]' < "${_copilot_env_root}/.dvmrc")"
-        if _copilot_env_deno_older "${_copilot_env_have}" "${_copilot_env_want}"; then
-            echo "==> deno ${_copilot_env_have} is older than the tested ${_copilot_env_want} - continuing" >&2
+        if [ -z "${_copilot_env_quiet}" ]; then
+            _copilot_env_have="$(_copilot_env_deno_version "${_copilot_env_found}")"
+            _copilot_env_want="$(tr -d '[:space:]' < "${_copilot_env_root}/.dvmrc")"
+            if _copilot_env_deno_older "${_copilot_env_have}" "${_copilot_env_want}"; then
+                echo "==> deno ${_copilot_env_have} is older than the tested ${_copilot_env_want} - continuing" >&2
+            fi
         fi
         return 0
     fi

@@ -17,7 +17,9 @@ $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Snap = (Resolve-Path (Join-Path $Here '..')).Path
 
 . (Join-Path $Snap 'scripts\ensure-deno.ps1')
-Install-Deno -Root $Snap
+# `agent env` is the profile function's automatic refresh after every command: its
+# bootstrap runs quiet so an old PATH deno warns once per command, not twice.
+Install-Deno -Root $Snap -Quiet:($args.Count -ge 1 -and $args[0] -eq 'env')
 
 # Install dependencies in-place in the checkout, but only when needed: a missing
 # node_modules, or a deno.lock that has moved ahead of it (the lockfile is the source of

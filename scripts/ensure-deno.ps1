@@ -5,11 +5,13 @@
 # Every message goes to stderr: bin/agent.ps1's stdout is the `$env:... = ...` text the
 # `agent env` profile function evals, and one stray line there breaks the caller's session.
 #
-# Install-Deno -Root <repo-root>: a deno already on PATH always wins. When it is older
-# than the tested version in .dvmrc it gets ONE warning and is used anyway -- upgrading is
-# the user's job, and CI stays pinned via .dvmrc either way. Only a machine with no deno
-# at all installs one: the LATEST release, once, into $env:DENO_INSTALL (default ~\.deno).
-# Throws only when no deno resolves afterwards.
+# Install-Deno -Root <repo-root> [-Quiet]: a deno already on PATH always wins. When it is
+# older than the tested version in .dvmrc it gets ONE stderr warning and is used anyway --
+# upgrading is the user's job, and CI stays pinned via .dvmrc either way. -Quiet
+# suppresses that warning: the profile function re-invokes bin/agent.ps1 for the
+# `agent env` refresh after every command, and the refresh must not repeat it. Only a
+# machine with no deno at all installs one: the LATEST release, once, into
+# $env:DENO_INSTALL (default ~\.deno). Throws only when no deno resolves afterwards.
 
 # The version of the deno executable $Exe ("deno 2.9.5 (stable, ...)" -> "2.9.5"), or
 # $null when it does not run.
@@ -30,7 +32,10 @@ function Test-CopilotEnvDenoOlder {
 }
 
 function Install-Deno {
-    param([Parameter(Mandatory = $true)][string]$Root)
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [switch]$Quiet
+    )
 
     $env:DENO_NO_UPDATE_CHECK = '1'
     $denoHome = if ($env:DENO_INSTALL) { $env:DENO_INSTALL } else { Join-Path $HOME '.deno' }
@@ -44,10 +49,12 @@ function Install-Deno {
         $found = Get-Command deno -ErrorAction SilentlyContinue
     }
     if ($found) {
-        $have = Get-CopilotEnvDenoVersion $found.Source
-        $want = (Get-Content (Join-Path $Root '.dvmrc') -Raw).Trim()
-        if ($have -and (Test-CopilotEnvDenoOlder $have $want)) {
-            [Console]::Error.WriteLine("==> deno $have is older than the tested $want - continuing")
+        if (-not $Quiet) {
+            $have = Get-CopilotEnvDenoVersion $found.Source
+            $want = (Get-Content (Join-Path $Root '.dvmrc') -Raw).Trim()
+            if ($have -and (Test-CopilotEnvDenoOlder $have $want)) {
+                [Console]::Error.WriteLine("==> deno $have is older than the tested $want - continuing")
+            }
         }
         return
     }

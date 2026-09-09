@@ -17,7 +17,9 @@ SNAP="$(cd "${HERE}/.." && pwd)"
 
 # shellcheck source=../scripts/ensure-deno.sh
 . "${SNAP}/scripts/ensure-deno.sh"
-if ! ensure_deno "${SNAP}"; then
+# `agent env` is the wrapper's automatic refresh after every command: its
+# bootstrap runs quiet so an old PATH deno warns once per command, not twice.
+if ! ensure_deno "${SNAP}" "$([ "${1:-}" = "env" ] && echo quiet)"; then
     echo "copilot-env bootstrap failed: deno is unavailable -- check network, then re-run." >&2
     exit 1
 fi

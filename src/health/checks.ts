@@ -655,6 +655,7 @@ export function checkProfileAuth(
     storedToken: boolean;
     ghAuthenticated: boolean;
     ghUser?: string | null;
+    ghActiveLogin?: string | null;
     ghAuthUnproven?: true;
   },
 ): CheckResult {
@@ -688,9 +689,10 @@ export function checkProfileAuth(
   }
   const source = storedCredentialKind(slot.provider, resolution.storedToken);
   const resolves = credentialResolves(source, resolution.ghAuthenticated);
-  // A pinned slot's gh verdict is about THAT account (the probe ran `gh auth
-  // token --user`), so the wording names it; auto stays byte-identical.
+  // Always name the account (no hidden information): a pinned slot's own login,
+  // or the account an auto slot follows right now (when the list was readable).
   const pin = resolution.ghUser ?? null;
+  const followed = resolution.ghActiveLogin ?? null;
   if (!resolves) {
     // An unproven gh probe keeps this warn arm (the credential still isn't shown
     // to work) but must not claim gh IS unauthenticated -- gh was never asked.
@@ -714,7 +716,11 @@ export function checkProfileAuth(
     };
   }
   const how = slot.provider === "gh-cli"
-    ? pin === null ? "gh CLI (`gh auth token`)" : `gh CLI (\`gh auth token --user ${pin}\`)`
+    ? pin !== null
+      ? `gh CLI (\`gh auth token --user ${pin}\`)`
+      : followed !== null
+      ? `gh CLI (\`gh auth token\`, active account ${followed})`
+      : "gh CLI (`gh auth token`)"
     : "stored GitHub token";
   const identity = slot.integrationIdentity === null ? "" : `, ${slot.integrationIdentity}`;
   const usage = slot.mode === "proxy"
@@ -903,12 +909,17 @@ export function checkAuth(f: AuthFacts): CheckResult {
   }
   const source = storedCredentialKind(f.provider, f.storedToken);
   const resolves = credentialResolves(source, f.ghAuthenticated);
-  // A pinned default slot's gh verdict is about THAT account; auto stays
-  // byte-identical (see checkProfileAuth's twin wording).
+  // Always name the account (no hidden information): a pinned slot's own login,
+  // or the account an auto slot follows right now (see checkProfileAuth's twin).
   const pin = f.ghUser ?? null;
+  const followed = f.ghActiveLogin ?? null;
   if (resolves) {
     const how = f.provider === "gh-cli"
-      ? pin === null ? "gh CLI (`gh auth token`)" : `gh CLI (\`gh auth token --user ${pin}\`)`
+      ? pin !== null
+        ? `gh CLI (\`gh auth token --user ${pin}\`)`
+        : followed !== null
+        ? `gh CLI (\`gh auth token\`, active account ${followed})`
+        : "gh CLI (`gh auth token`)"
       : "stored GitHub token";
     return {
       ...base,

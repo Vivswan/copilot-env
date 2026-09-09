@@ -1187,6 +1187,7 @@ test("an unreadable settings file reaches health as other/read-error, never as n
     authProvider: () => null,
     storedTokenPresent: () => false,
     codexDirectAuth: () => Promise.resolve({ command: null, authenticated: false }),
+    ghActiveLogin: () => Promise.resolve(null),
   };
   const facts = await gatherFacts("claude", {}, deps);
   expect(facts.claude?.providerMode).toBe("other");
@@ -1210,6 +1211,7 @@ test("an unreadable codex config reaches health as other/read-error, never as no
     authProvider: () => null,
     storedTokenPresent: () => false,
     codexDirectAuth: () => Promise.resolve({ command: null, authenticated: false }),
+    ghActiveLogin: () => Promise.resolve(null),
   };
   const facts = await gatherFacts("codex", {}, deps);
   expect(facts.codex?.providerMode).toBe("other");
@@ -1635,6 +1637,17 @@ test("checkAuth: gh-cli with an UNPROVEN gh probe warns could-not-check, never `
   });
   expect(pinnedOk.status).toBe("ok");
   expect(pinnedOk.detail).toContain("gh CLI (`gh auth token --user work-bot`)");
+  // An AUTO slot names the account it follows right now (no hidden information).
+  const autoNamed = checkAuth({
+    storedToken: false,
+    ghAuthenticated: true,
+    ghActiveLogin: "vivswan",
+    provider: "gh-cli",
+    profiles: {},
+    pinnedIntegrationId: null,
+  });
+  expect(autoNamed.status).toBe("ok");
+  expect(autoNamed.detail).toContain("gh CLI (`gh auth token`, active account vivswan)");
 });
 
 // --- live (--live) checks ---------------------------------------------------

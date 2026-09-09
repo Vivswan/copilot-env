@@ -43,9 +43,14 @@ function describeDirectGhAuth(a: CodexDirectAuthFacts): {
       ghFix: "re-run `agent health` (the gh check did not run to completion)",
     };
   }
-  // A pinned slot's verdict is about THAT account, so name it: gh's active
-  // account being logged in is exactly what this probe did NOT check.
-  const account = (a.ghUser ?? null) === null ? "" : ` as account '${a.ghUser}'`;
+  // Always name the account (no hidden information): a pinned slot's verdict is
+  // about THAT account (gh's active login is exactly what it did NOT check), and
+  // an auto slot names the account it follows when the list was readable.
+  const account = (a.ghUser ?? null) !== null
+    ? ` as account '${a.ghUser}'`
+    : (a.ghActiveLogin ?? null) !== null
+    ? ` (active account ${a.ghActiveLogin})`
+    : "";
   return {
     ok: a.command !== null && a.authenticated,
     detail: a.command === null

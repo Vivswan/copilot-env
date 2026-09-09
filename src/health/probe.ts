@@ -32,7 +32,13 @@ import {
   type ProfileMode,
   storedCredentialKind,
 } from "../copilot_api/env_state.ts";
-import { ghAuthTokenSpawnSpec, ghAuthVerdict } from "../copilot_api/gh_cli.ts";
+import {
+  activeGhLogin,
+  ghAuthStatusSpawnSpec,
+  ghAuthTokenSpawnSpec,
+  ghAuthVerdict,
+  parseGhAuthStatusAccounts,
+} from "../copilot_api/gh_cli.ts";
 import {
   CopilotApiPaths,
   DEFAULT_HOME_STAGING_DIR,
@@ -171,6 +177,8 @@ export interface ProbeDeps {
   authProvider(): AuthProvider | null;
   /** The default slot's gh-cli account pin, or null (= follow gh's active account). */
   defaultGhUser(): string | null;
+  /** The github.com login an auto gh-cli slot follows right now, or null. */
+  ghActiveLogin(): Promise<string | null>;
   /** Named profiles: name -> recorded provider + mode + baked direct identity (never tokens). */
   authProfiles(): Record<ProfileName, ProfileAuthFacts>;
   /** The `integration-id` config pin, or null when unset/`auto`. */
@@ -232,6 +240,40 @@ export function directAuthFromSpawn(
   const verdict = ghAuthVerdict(result);
   if (verdict === "unproven") return { command, authenticated: false, unproven: true, ...pinned };
   return { command, authenticated: verdict, ...pinned };
+}
+
+/** The github.com login an AUTO gh-cli slot follows right now, or null (gh
+ *  absent, no account, or the look never completed -- naming only, never a
+ *  verdict, so the flatten is safe). Async like codexDirectAuth so the status
+ *  spawn overlaps the other probes; stdout+stderr both captured (older gh wrote
+ *  the status to stderr). */
+function ghActiveLoginProbe(): Promise<string | null> {
+  const look = findCommand("gh");
+  if (look.path === null) return Promise.resolve(null);
+  const s = ghAuthStatusSpawnSpec(look.path);
+  return new Promise((resolve) => {
+    const child = spawn(s.file, s.args, {
+      "stdio": ["ignore", "pipe", "pipe"],
+      "timeout": s.timeout,
+      "windowsHide": true,
+      "shell": s.shell,
+      "env": s.env,
+    });
+    let output = "";
+    child.stdout?.on("data", (chunk) => {
+      output += String(chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      output += String(chunk);
+    });
+    child.on("error", () => resolve(null));
+    // Only a COMPLETED exit parses (any code -- matching ghAccountsLookFromSpawn);
+    // a timeout kill closes with code null mid-output, and naming an account off
+    // a truncated list could name the wrong one.
+    child.on("close", (code) => {
+      resolve(code === null ? null : activeGhLogin(parseGhAuthStatusAccounts(output)));
+    });
+  });
 }
 
 function codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFacts> {
@@ -440,6 +482,7 @@ export function defaultProbeDeps(): ProbeDeps {
     storedTokenPresent: () => new CopilotEnvState().read().githubToken !== null,
     authProvider: () => new CopilotEnvState().read().authProvider,
     defaultGhUser: () => new CopilotEnvState().read().ghUser,
+    ghActiveLogin: ghActiveLoginProbe,
     authProfiles: () => {
       // Sweep via profileNames() (the store's validated, sorted view), never the raw
       // record: its keys are a trust boundary, and only profileNames() mints the brand.
@@ -756,6 +799,22 @@ export async function gatherFacts(
     return probe;
   };
 
+  // The account an AUTO gh-cli slot follows right now, for the report's naming
+  // (no hidden information): probed once per run, only when some auto gh-cli
+  // slot is actually being judged.
+  let activeLoginCache: Promise<string | null> | undefined;
+  const sharedActiveLogin = (): Promise<string | null> => (
+    activeLoginCache ??= deps.ghActiveLogin()
+  );
+  // The gh facts for one slot: the auth verdict, plus the followed account's
+  // name on an AUTO slot (a pinned slot already names itself via ghUser).
+  const slotGhFacts = async (ghUser: string | null): Promise<CodexDirectAuthFacts> => {
+    const directAuth = await sharedDirectAuth(ghUser);
+    if (ghUser !== null) return directAuth;
+    const activeLogin = await sharedActiveLogin();
+    return activeLogin === null ? directAuth : { ...directAuth, ghActiveLogin: activeLogin };
+  };
+
   // The credential the run's Direct wiring resolves: the default store pair, or
   // the narrowed profile's own slot (named profiles never fall back). `mode` is
   // the named slot's recorded wiring mode (null for the default run, where no
@@ -811,7 +870,7 @@ export async function gatherFacts(
       case "stored":
         return { directAuth: noProbe, noGhNeeded: managed };
       case "gh-cli":
-        return { directAuth: await sharedDirectAuth(ghUser), noGhNeeded: false };
+        return { directAuth: await slotGhFacts(ghUser), noGhNeeded: false };
       case "none":
         return { directAuth: noProbe, noGhNeeded: false };
     }
@@ -979,7 +1038,7 @@ export async function gatherFacts(
         (async () => {
           const slot = deps.profileSlot(profile);
           const gh = storedCredentialKind(slot.provider, slot.storedToken) === "gh-cli"
-            ? await sharedDirectAuth(slot.ghUser)
+            ? await slotGhFacts(slot.ghUser)
             : null;
           facts.profileAuth = {
             name: profile,
@@ -993,6 +1052,7 @@ export async function gatherFacts(
             storedToken: slot.storedToken,
             ghAuthenticated: gh?.authenticated ?? false,
             ...(gh?.ghUser != null ? { ghUser: gh.ghUser } : {}),
+            ...(gh?.ghActiveLogin != null ? { ghActiveLogin: gh.ghActiveLogin } : {}),
             ...(gh?.unproven ? { ghAuthUnproven: true as const } : {}),
           };
         })(),
@@ -1006,12 +1066,13 @@ export async function gatherFacts(
           const provider = deps.authProvider();
           const storedToken = deps.storedTokenPresent();
           const gh = storedCredentialKind(provider, storedToken) === "gh-cli"
-            ? await sharedDirectAuth(deps.defaultGhUser())
+            ? await slotGhFacts(deps.defaultGhUser())
             : null;
           facts.auth = {
             storedToken,
             ghAuthenticated: gh?.authenticated ?? false,
             ...(gh?.ghUser != null ? { ghUser: gh.ghUser } : {}),
+            ...(gh?.ghActiveLogin != null ? { ghActiveLogin: gh.ghActiveLogin } : {}),
             ...(gh?.unproven ? { ghAuthUnproven: true as const } : {}),
             provider,
             profiles: deps.authProfiles(),

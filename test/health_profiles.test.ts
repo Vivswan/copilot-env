@@ -137,6 +137,7 @@ function offlineDeps(extra: Partial<ProbeDeps> = {}): Partial<ProbeDeps> {
     proxyIdentity: async () => null,
     classifyTrackedPid: async () => "no" as const,
     codexDirectAuth: () => Promise.resolve({ command: null, authenticated: false }),
+    ghActiveLogin: () => Promise.resolve(null),
     ...extra,
   };
 }
@@ -451,6 +452,14 @@ test("checkProfileAuth: a recorded provider whose credential does not resolve wa
   });
   expect(ghPinnedOk.status).toBe("ok");
   expect(ghPinnedOk.detail).toContain("gh CLI (`gh auth token --user work-bot`)");
+  // An AUTO slot names the account it follows right now (no hidden information).
+  const ghAutoNamed = checkProfileAuth(P, ghSlot, {
+    storedToken: false,
+    ghAuthenticated: true,
+    ghActiveLogin: "vivswan",
+  });
+  expect(ghAutoNamed.status).toBe("ok");
+  expect(ghAutoNamed.detail).toContain("gh CLI (`gh auth token`, active account vivswan)");
 
   // An UNPROVEN gh probe keeps the warn + fix but says could-not-check: gh was
   // never actually asked, so the confident wording and its advice never render.
@@ -1080,6 +1089,7 @@ test("an UNPROVEN gh probe travels from the codexDirectAuth seam into both auth 
     authProfiles: () => ({}),
     pinnedIntegrationId: () => null,
     codexDirectAuth: () => Promise.resolve(unproven),
+    ghActiveLogin: () => Promise.resolve(null),
   });
   expect(facts.auth).toEqual({
     storedToken: false,
@@ -1106,6 +1116,7 @@ test("an UNPROVEN gh probe travels from the codexDirectAuth seam into both auth 
       integrationIdentity: null,
     }),
     codexDirectAuth: () => Promise.resolve(unproven),
+    ghActiveLogin: () => Promise.resolve(null),
   });
   expect(narrowed.profileAuth).toEqual({
     name: P,

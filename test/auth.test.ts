@@ -5,6 +5,7 @@ import { NOOP_CATALOG_DEPS } from "../src/codex/catalog.ts";
 import {
   chooseGhAccount,
   credentialSourceLabel,
+  liveCredentialSourceLabel,
   loginWithGhCli,
   parseAcquisition,
   parseAuthAction,
@@ -18,8 +19,8 @@ import {
 import { CopilotEnvConfig } from "../src/copilot_api/env_config.ts";
 import { assertProfileSlot, CopilotEnvState } from "../src/copilot_api/env_state.ts";
 import {
+  activeGhLogin,
   type GhAccount,
-  ghAccountPinnable,
   ghAuthStatusSpawnSpec,
   ghAuthTokenSpawnSpec,
   parseGhAuthStatusAccounts,
@@ -592,7 +593,7 @@ test("ghTokenLookFromSpawn: completed exits prove, a dead spawn stays unproven",
     .toEqual({ token: null, unproven: true });
 });
 
-test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss keeps the gh advice", () => {
+test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss keeps the gh advice", async () => {
   expect(() => loginWithGhCli(null, () => ({ token: null, unproven: true }))).toThrow(
     "could not check gh authentication (`gh auth token` did not run to completion) - retry `agent auth`",
   );
@@ -600,6 +601,15 @@ test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss keeps
     "gh is not authenticated - run `gh auth login`, then retry `agent auth`",
   );
   expect(() => loginWithGhCli(null, () => ({ token: "tok" }))).not.toThrow();
+  // The auto success line NAMES the followed account when it is known (no
+  // hidden information), and keeps the bare wording when it is not.
+  const named = await captureStderr(() => {
+    loginWithGhCli(null, () => ({ token: "tok" }), "vivswan");
+    return Promise.resolve();
+  });
+  expect(named).toContain(
+    "Using the gh CLI login (active account vivswan) as the Direct credential.",
+  );
   // A pinned account wears its own words: the miss is about THAT account (gh's
   // active login may well be fine), and the look receives the pin to verify.
   const asked: Array<string | null> = [];
@@ -665,9 +675,9 @@ test("parseGhAuthStatusAccounts: accounts with active attribution; broken logins
     acct("steady", false),
   ]);
   expect(parseGhAuthStatusAccounts("You are not logged into any GitHub hosts.")).toEqual([]);
-  // The credential source is captured (an env-token login is not pinnable),
-  // and the SAME login saved in the keyring stays a separate, pinnable entry
-  // (gh lists the env-token account first).
+  // The credential source is captured for DISPLAY only -- an exported GH_TOKEN
+  // can shadow a saved keyring credential for the same login, so the source
+  // never decides pinnability. Distinct sources stay distinct entries.
   const envOverlap = parseGhAuthStatusAccounts(
     [
       "  ✓ Logged in to github.com account ci-bot (GH_TOKEN)",
@@ -677,8 +687,11 @@ test("parseGhAuthStatusAccounts: accounts with active attribution; broken logins
     ].join("\n"),
   );
   expect(envOverlap).toEqual([acct("ci-bot", true, "GH_TOKEN"), acct("ci-bot", false)]);
-  expect(envOverlap.map(ghAccountPinnable)).toEqual([false, true]);
-  expect(ghAccountPinnable(acct("saved", false))).toBe(true);
+  // activeGhLogin: the active github.com login, else the only login, else null.
+  expect(activeGhLogin(envOverlap)).toBe("ci-bot");
+  expect(activeGhLogin([acct("solo", false)])).toBe("solo");
+  expect(activeGhLogin([acct("a", false), acct("b", false)])).toBeNull();
+  expect(activeGhLogin([])).toBeNull();
   // A repeated host+login+source triple collapses to one menu entry.
   expect(parseGhAuthStatusAccounts(TWO_ACCOUNT_STATUS + TWO_ACCOUNT_STATUS).length).toBe(2);
 });
@@ -730,23 +743,29 @@ test("ghAccountsLookFromSpawn: ANY completed exit parses stdout+stderr; a dead s
   });
 });
 
-test("chooseGhAccount: no real choice settles to auto; 2+ accounts without a TTY hint, never prompt", async () => {
+test("chooseGhAccount: settles to auto NAMING the followed account; 2+ logins without a TTY hint, never prompt", async () => {
   // Pin stdin to non-TTY for the duration: the settle rules under test are the
   // non-interactive ones, and an interactive dev run must not open a prompt.
   const hadTty = process.stdin.isTTY;
   process.stdin.isTTY = false;
   try {
-    // Unproven, zero, or one account: auto silently (exactly the historical flow).
+    // Unproven or zero accounts: auto with no account to name.
     expect(await chooseGhAccount(() => ({ accounts: [], unproven: true }))).toEqual({
       kind: "auto",
+      activeLogin: null,
     });
-    expect(await chooseGhAccount(() => ({ accounts: [] }))).toEqual({ kind: "auto" });
+    expect(await chooseGhAccount(() => ({ accounts: [] }))).toEqual({
+      kind: "auto",
+      activeLogin: null,
+    });
+    // One account: auto, and the settled result NAMES it (no hidden information
+    // -- the narration tells the user which account auto follows).
     expect(await chooseGhAccount(() => ({ accounts: [acct("solo", true)] }))).toEqual({
       kind: "auto",
+      activeLogin: "solo",
     });
-    // Another host's login, and an env-token login (`--user` reads saved
-    // credentials only), are not pinnable choices: one pinnable account left
-    // means no menu.
+    // Another host's login is not a github.com choice (Copilot's host), so it
+    // neither prompts nor names itself.
     expect(
       await chooseGhAccount(() => ({
         accounts: [acct("solo", true), {
@@ -756,15 +775,18 @@ test("chooseGhAccount: no real choice settles to auto; 2+ accounts without a TTY
           source: "keyring",
         }],
       })),
-    ).toEqual({ kind: "auto" });
-    expect(
-      await chooseGhAccount(() => ({
+    ).toEqual({ kind: "auto", activeLogin: "solo" });
+    // An env-token login IS a choice (the source may shadow a saved credential
+    // -- the verify step is the gate, never the menu): two logins hint.
+    let envChoice: Awaited<ReturnType<typeof chooseGhAccount>> | undefined;
+    const envErr = await captureStderr(async () => {
+      envChoice = await chooseGhAccount(() => ({
         accounts: [acct("solo", false), acct("ci-bot", true, "GH_TOKEN")],
-      })),
-    ).toEqual({ kind: "auto" });
-    // The env-token overlap of a saved login must not shrink the menu: two
-    // pinnable saved accounts still hint (below), even with GH_TOKEN's entry
-    // duplicating one of them.
+      }));
+    });
+    expect(envChoice).toEqual({ kind: "auto", activeLogin: "ci-bot" });
+    expect(envErr).toContain("--gh-user");
+    // The env-token overlap of a saved login must not shrink the menu either.
     let overlapChoice: Awaited<ReturnType<typeof chooseGhAccount>> | undefined;
     const overlapErr = await captureStderr(async () => {
       overlapChoice = await chooseGhAccount(() => ({
@@ -775,7 +797,7 @@ test("chooseGhAccount: no real choice settles to auto; 2+ accounts without a TTY
         ],
       }));
     });
-    expect(overlapChoice).toEqual({ kind: "auto" });
+    expect(overlapChoice).toEqual({ kind: "auto", activeLogin: "vivswan" });
     expect(overlapErr).toContain("--gh-user");
     // 2+ github.com accounts, non-TTY: auto plus a stderr hint naming the
     // escape hatch and the active account -- never a prompt, never a throw.
@@ -785,7 +807,7 @@ test("chooseGhAccount: no real choice settles to auto; 2+ accounts without a TTY
         accounts: [acct("vivswan", true), acct("work-bot", false)],
       }));
     });
-    expect(choice).toEqual({ kind: "auto" });
+    expect(choice).toEqual({ kind: "auto", activeLogin: "vivswan" });
     expect(err).toContain("--gh-user");
     expect(err).toContain("(currently vivswan)");
   } finally {
@@ -848,6 +870,20 @@ test("Credential.resolve threads the slot's account pin into the gh probe", () =
   state().setCredential(null, { kind: "gh-cli", ghUser: "work-bot" });
   expect(new Credential().resolve(gh)).toBe("tok");
   expect(asked).toEqual([null, "work-bot"]);
+});
+
+test("liveCredentialSourceLabel: an auto slot names the account it follows right now", () => {
+  const cred = { kind: "gh-cli", ghUser: null } as const;
+  expect(liveCredentialSourceLabel(cred, () => ({ accounts: [acct("vivswan", true)] })))
+    .toBe("gh-cli (active account vivswan)");
+  // Unproven/empty looks keep the bare provider name (never a guessed account),
+  // and a pinned slot never spawns the look at all.
+  expect(liveCredentialSourceLabel(cred, () => ({ accounts: [], unproven: true }))).toBe("gh-cli");
+  expect(
+    liveCredentialSourceLabel({ kind: "gh-cli", ghUser: "work-bot" }, () => {
+      throw new Error("a pinned slot must not probe gh");
+    }),
+  ).toBe("gh-cli (user work-bot)");
 });
 
 test("credentialSourceLabel: a pinned gh account is named; auto and token providers stay bare", () => {

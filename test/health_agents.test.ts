@@ -198,6 +198,23 @@ test("codex: not configured is ok; each broken part warns with a precise message
   );
   expect(directPinnedUnauthed.fix).toBe("gh auth login");
 
+  // An AUTO slot's ok line names the account it follows (no hidden information).
+  const directAutoNamed = checkCodex({
+    ...wired,
+    providerMode: "direct",
+    modelProvider: "copilot-env",
+    baseUrl: "https://api.githubcopilot.com",
+    envKeyMatches: false,
+    envKeyInDotenv: false,
+    envKeyInEnviron: false,
+    tokenAvailable: false,
+    directAuth: { command: "/bin/gh", authenticated: true, ghActiveLogin: "vivswan" },
+  });
+  expect(directAutoNamed.status).toBe("ok");
+  expect(directAutoNamed.detail).toContain(
+    "gh auth: authenticated via /bin/gh (active account vivswan)",
+  );
+
   // Non-gh-cli provider (or none) with no stored token: gh is NOT a fallback, so
   // a managed Direct config that doesn't resolve warns and points at `agent auth`
   // (NOT the gh-specific message). Guards against the provider-blind false-OK.

@@ -137,17 +137,25 @@ export interface GhAccount {
   host: string;
   login: string;
   active: boolean;
-  /** Where gh got the credential: `keyring`, a config path, or an env var name
-   *  like `GH_TOKEN` (blank when gh printed no source parens). */
+  /** Where gh got the credential -- the WINNING source only (`keyring`, a config
+   *  path, or an env var name like `GH_TOKEN`; blank when gh printed no source
+   *  parens). An env var SHADOWS a saved keyring credential for the same login
+   *  in this display, so the source never proves whether `gh auth token --user`
+   *  can serve the account -- membership is verified at selection time
+   *  (loginWithGhCli), never guessed from here. */
   source: string;
 }
 
-/** Whether `gh auth token --user <login>` can serve this account: `--user`
- *  reads gh's SAVED credentials only, so an env-token login (source GH_TOKEN /
- *  GITHUB_TOKEN / ...) cannot be pinned -- env auth stays reachable through
- *  auto (it IS gh's active credential while the var is set). */
-export function ghAccountPinnable(account: GhAccount): boolean {
-  return !/_TOKEN$/.test(account.source);
+/** The github.com login an AUTO gh-cli slot is following right now: the active
+ *  account, or the only account when gh marked none active (older gh). Null
+ *  when the list is empty -- callers keep their bare wording then. Pure over a
+ *  parsed account list so every renderer names the same account. */
+export function activeGhLogin(accounts: GhAccount[]): string | null {
+  const github = accounts.filter((a) => a.host === GH_COPILOT_HOST);
+  const active = github.find((a) => a.active)?.login ?? null;
+  if (active !== null) return active;
+  const logins = [...new Set(github.map((a) => a.login))];
+  return logins.length === 1 ? logins[0] ?? null : null;
 }
 
 /**

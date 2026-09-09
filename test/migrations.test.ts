@@ -31,7 +31,14 @@ import {
   v400CodexWiring,
   v400ShellFence,
 } from "../src/migrations/4.0.0.ts";
-import { pinSoleGhAccount, v402GhAccountPin } from "../src/migrations/4.0.2.ts";
+import {
+  moveDesktopHelpers,
+  moveRootStores,
+  pinSoleGhAccount,
+  v402DesktopHelpers,
+  v402GhAccountPin,
+  v402RootLayout,
+} from "../src/migrations/4.0.2.ts";
 import { dueMigrations, type Migration, runMigrations } from "../src/migrations/index.ts";
 import { readResolvedVersionRecord, writeResolvedVersionRecord } from "../src/proxy_float.ts";
 import { acquireDaemonLockForLife, daemonLockPath } from "../src/scripts/daemon_lock.ts";
@@ -99,7 +106,13 @@ test("the shipped registry holds exactly the named fix-ups in order, home move f
   // LAST among the 3.5.6 steps (it relocates the install the others fixed up). The
   // 4.0.0 registrations of the same rewrites follow, for installs already on 4.0.0.
   expect(dueMigrations("0.0.1", "999.0.0")).toEqual([
+    // The LAYOUT steps are hoisted ahead of everything else, in version order:
+    // the home move first (it may carry the old-name stores in), the root-store
+    // rename second, and only then the steps that READ the stores -- through
+    // the NEW code, so at the new paths. The Desktop helper move is deliberately
+    // LAST: its wiring pass needs the v356/v400 wiring rewrites done.
     v356,
+    v402RootLayout,
     v356Ownership,
     v356DefaultSlot,
     v356DefaultHome,
@@ -112,6 +125,7 @@ test("the shipped registry holds exactly the named fix-ups in order, home move f
     v400ClaudeWiring,
     v400AutoupdateFlag,
     v402GhAccountPin,
+    v402DesktopHelpers,
   ]);
   // An install already on 4.0.0 (whose readers tolerated the 3.5.6 shapes) still gets
   // every wiring rewrite on its way to the next release.
@@ -181,6 +195,72 @@ test("4.0.2 gh pin: sole-account machines pin every pin-less gh-cli slot; anythi
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
   pinSoleGhAccount(() => ({ accounts: [], unproven: true }));
   expect(state.readCredential(null)).toEqual({ kind: "gh-cli", ghUser: null });
+});
+
+test("4.0.2 root layout: stores rename, lock debris clears, loose helpers regenerate via the wiring", async () => {
+  dir = isolateProxyHome("copilot-migrate-layout-");
+  writeFileSync(join(dir, ".copilot-env-state.json"), `${JSON.stringify({ profiles: {} })}\n`);
+  writeFileSync(join(dir, ".copilot-env-config.json"), `${JSON.stringify({ port: 4199 })}\n`);
+  writeFileSync(join(dir, ".copilot-env-state.json.lock.oslock"), "");
+  writeFileSync(join(dir, ".copilot-env-ownership.json.ops.lock.oslock"), "");
+  writeFileSync(join(dir, "github_token.login.lock.oslock"), "");
+  writeFileSync(join(dir, "claude-desktop-token.sh"), "#!/bin/sh\n");
+  writeFileSync(join(dir, "claude-desktop-proxy-token-work.cmd"), "@echo off\n");
+  writeFileSync(join(dir, "claude-desktop-token.sh.bak"), "not ours\n");
+  // Lookalikes the generator can never produce (reserved `default` suffix, a
+  // dotted infix): the sweep classifies by desktopHelperScriptWiring, so they
+  // survive like any neighbour's file.
+  writeFileSync(join(dir, "claude-desktop-token-default.sh"), "not ours\n");
+  writeFileSync(join(dir, "claude-desktop-token-work.bak.sh"), "not ours\n");
+  let reconciled = 0;
+  const reconcile = () => {
+    reconciled++;
+    return Promise.resolve();
+  };
+  moveRootStores(dir);
+  await moveDesktopHelpers(dir, reconcile);
+  // Stores renamed byte-identically; every old name and lock sidecar is gone;
+  // generated helpers removed (ONE wiring pass regenerates them under helpers/)
+  // while the lookalike .bak survives (never ours).
+  expect(readFileSync(join(dir, "credentials.json"), "utf8")).toBe(
+    `${JSON.stringify({ profiles: {} })}\n`,
+  );
+  expect(readFileSync(join(dir, "preferences.json"), "utf8")).toBe(
+    `${JSON.stringify({ port: 4199 })}\n`,
+  );
+  for (
+    const gone of [
+      ".copilot-env-state.json",
+      ".copilot-env-config.json",
+      ".copilot-env-state.json.lock.oslock",
+      ".copilot-env-ownership.json.ops.lock.oslock",
+      "github_token.login.lock.oslock",
+      "claude-desktop-token.sh",
+      "claude-desktop-proxy-token-work.cmd",
+    ]
+  ) expect(existsSync(join(dir, gone))).toBe(false);
+  expect(existsSync(join(dir, "claude-desktop-token.sh.bak"))).toBe(true);
+  expect(existsSync(join(dir, "claude-desktop-token-default.sh"))).toBe(true);
+  expect(existsSync(join(dir, "claude-desktop-token-work.bak.sh"))).toBe(true);
+  expect(reconciled).toBe(1);
+
+  // Idempotent: nothing left to move, the wiring pass is not re-run, and the
+  // renamed stores are untouched.
+  moveRootStores(dir);
+  await moveDesktopHelpers(dir, reconcile);
+  expect(reconciled).toBe(1);
+  expect(readFileSync(join(dir, "preferences.json"), "utf8")).toBe(
+    `${JSON.stringify({ port: 4199 })}\n`,
+  );
+
+  // A NEW-name store never gets clobbered by a lingering old one (mixed-version
+  // window): the old file survives for the user to inspect, the new one wins.
+  writeFileSync(join(dir, ".copilot-env-config.json"), `${JSON.stringify({ port: 1 })}\n`);
+  moveRootStores(dir);
+  expect(readFileSync(join(dir, "preferences.json"), "utf8")).toBe(
+    `${JSON.stringify({ port: 4199 })}\n`,
+  );
+  expect(existsSync(join(dir, ".copilot-env-config.json"))).toBe(true);
 });
 
 // --- the 4.0.0 wiring rewrites (pure cores; no real home touched) -----------------
@@ -664,7 +744,7 @@ test("3.5.6 move: foreign helper paths are never repointed", async () => {
 test("3.5.6 ownership: legacy records move into the ledger; a re-run finds nothing", async () => {
   dir = isolateProxyHome("copilot-migrate-own-");
   writeFileSync(
-    join(dir, ".copilot-env-state.json"),
+    join(dir, "credentials.json"),
     `${
       JSON.stringify({
         githubToken: "ghu_keep",
@@ -678,7 +758,7 @@ test("3.5.6 ownership: legacy records move into the ledger; a re-run finds nothi
   const ledger = new OwnershipLedger();
   expect(ledger.ownedPaths("webSearchDeny")).toEqual(["/home/u/.claude/settings.json"]);
   expect(ledger.ownedPaths("claudeDesktop")).toEqual(["/lib/uuid.json"]);
-  const raw = JSON.parse(readFileSync(join(dir, ".copilot-env-state.json"), "utf8")) as Record<
+  const raw = JSON.parse(readFileSync(join(dir, "credentials.json"), "utf8")) as Record<
     string,
     unknown
   >;
@@ -687,16 +767,16 @@ test("3.5.6 ownership: legacy records move into the ledger; a re-run finds nothi
   expect(raw.githubToken).toBe("ghu_keep");
 
   // Idempotent: the re-run has nothing to adopt and rewrites nothing.
-  const stateBytes = readFileSync(join(dir, ".copilot-env-state.json"), "utf8");
+  const stateBytes = readFileSync(join(dir, "credentials.json"), "utf8");
   await v356Ownership.run();
-  expect(readFileSync(join(dir, ".copilot-env-state.json"), "utf8")).toBe(stateBytes);
+  expect(readFileSync(join(dir, "credentials.json"), "utf8")).toBe(stateBytes);
 });
 
 // --- the 3.5.6 default-slot lift (third fix-up of the step) -----------------------
 
 test("3.5.6 default slot: the top-level pair lifts into profiles.default; a re-run is a no-op", async () => {
   dir = isolateProxyHome("copilot-migrate-slot-");
-  const stateFile = join(dir, ".copilot-env-state.json");
+  const stateFile = join(dir, "credentials.json");
   writeFileSync(
     stateFile,
     `${
@@ -740,7 +820,7 @@ test("3.5.6 default slot: the top-level pair lifts into profiles.default; a re-r
 
 test("3.5.6 default slot: a slot already holding a credential wins over a lingering pair", async () => {
   dir = isolateProxyHome("copilot-migrate-slot-");
-  const stateFile = join(dir, ".copilot-env-state.json");
+  const stateFile = join(dir, "credentials.json");
   writeFileSync(
     stateFile,
     `${
@@ -763,7 +843,7 @@ test("3.5.6 default slot: a slot already holding a credential wins over a linger
 
 test("3.5.6 default slot: a store without legacy keys is untouched; an absent file is never created", async () => {
   dir = isolateProxyHome("copilot-migrate-slot-");
-  const stateFile = join(dir, ".copilot-env-state.json");
+  const stateFile = join(dir, "credentials.json");
   // Fresh install: no state file at all -- the migration must not materialize one.
   await v356DefaultSlot.run();
   expect(existsSync(stateFile)).toBe(false);
@@ -796,7 +876,7 @@ function flatRootFixture(): string {
   writeFileSync(join(dir, ".copilot-env-projections.json"), "{}\n");
   writeFileSync(join(dir, "copilot-api.sqlite"), "");
   writeFileSync(daemonLockPath(dir), `${DEAD_PID}\n${Date.now()}\n`); // stale: holder dead
-  writeFileSync(join(dir, ".copilot-env-state.json"), `${JSON.stringify({ profiles: {} })}\n`);
+  writeFileSync(join(dir, "credentials.json"), `${JSON.stringify({ profiles: {} })}\n`);
   writeFileSync(join(dir, "github_token"), "ghu_keep\n");
   return dir;
 }
@@ -820,7 +900,7 @@ test("3.5.6 default home: the flat daemon files move whole into profiles/default
   // No staging leftover: the flip renamed it into place whole.
   expect(existsSync(join(root, "profiles", ".default.migrating"))).toBe(false);
   // The account-wide files stay at the root -- that separation is the design.
-  expect(existsSync(join(root, ".copilot-env-state.json"))).toBe(true);
+  expect(existsSync(join(root, "credentials.json"))).toBe(true);
   expect(existsSync(join(root, "github_token"))).toBe(true);
   // The paths layer now resolves the default daemon into the moved home.
   expect(defaultDaemonHome()).toBe(target);
@@ -990,7 +1070,7 @@ test("3.5.6 default home: a FULLY staged crash still resolves flat, and the re-r
 
 test("3.5.6 default home: a fresh (or migrated) root is a strict no-op", async () => {
   dir = isolateProxyHome("copilot-migrate-home-");
-  writeFileSync(join(dir, ".copilot-env-state.json"), `${JSON.stringify({ profiles: {} })}\n`);
+  writeFileSync(join(dir, "credentials.json"), `${JSON.stringify({ profiles: {} })}\n`);
   await moveDefaultDaemonHome();
   // Nothing fabricated: no profiles dir, no daemon files, no lock marker.
   expect(existsSync(join(dir, "profiles"))).toBe(false);

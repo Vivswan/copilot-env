@@ -176,7 +176,7 @@ test("effectiveUpdateCooldownDays: the live update-cooldown config, else the 7-d
   tmp("unused"); // creates an isolated dir; point the shared prefs store at it
   process.env.COPILOT_API_HOME = dir;
   expect(effectiveUpdateCooldownDays()).toBe(DEFAULT_AUTOUPDATE_COOLDOWN_DAYS); // unset -> default
-  writeFileSync(join(dir, ".copilot-env-config.json"), JSON.stringify({ updateCooldown: 3 }));
+  writeFileSync(join(dir, "preferences.json"), JSON.stringify({ updateCooldown: 3 }));
   expect(effectiveUpdateCooldownDays()).toBe(3); // read live, never snapshotted
 });
 

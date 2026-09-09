@@ -150,6 +150,7 @@ async function stopLegacyDaemons(): Promise<void> {
 
 export const v356: Migration = {
   version: "3.5.6",
+  layout: true,
   description: `move the data home to ${DEFAULT_HOME}`,
   run: () =>
     moveDataHome({

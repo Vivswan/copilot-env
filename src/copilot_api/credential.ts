@@ -1,5 +1,5 @@
 // The Direct-mode GitHub credential as one domain object over the shared state
-// store (`CopilotEnvState` -> `.copilot-env-state.json`). It owns provider-driven
+// store (`CopilotEnvState` -> `credentials.json`). It owns provider-driven
 // resolution, status, and the state mutations (store / use-gh-cli / clear), so the
 // agent config writers and health (`codex`/`claude`/`host`/`probe`) and the daemon
 // (`start`) depend on THIS domain class rather than reaching into the `commands/`

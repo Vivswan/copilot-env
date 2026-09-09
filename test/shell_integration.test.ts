@@ -197,7 +197,7 @@ skipWin("--remove strips a CRLF-written block (Windows-style line endings)", () 
 /** The stored `launchers` config key, read from the per-test store run() points
  *  COPILOT_API_HOME at. */
 function storedLaunchersKey(): boolean | undefined {
-  const file = join(home, ".copilot-env-config.json");
+  const file = join(home, "preferences.json");
   if (!existsSync(file)) return undefined;
   return (JSON.parse(readFileSync(file, "utf-8")) as { launchers?: boolean }).launchers;
 }
@@ -222,7 +222,7 @@ skipWin(
   "--remove strips the integration and a legacy launchers block; the key is the user's",
   () => {
     run();
-    writeFileSync(join(home, ".copilot-env-config.json"), JSON.stringify({ launchers: true }));
+    writeFileSync(join(home, "preferences.json"), JSON.stringify({ launchers: true }));
     const rcPath = join(home, ".bashrc");
     writeFileSync(rcPath, readFileSync(rcPath, "utf-8") + legacyLaunchersBlock(false));
     run("--remove");

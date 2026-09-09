@@ -191,7 +191,7 @@ function runModelsCli(
  *  hard-fail assertions below genuinely pin the never-falls-back rule. */
 function seedDirectProfile(home: string, name: string): void {
   writeFileSync(
-    join(home, ".copilot-env-state.json"),
+    join(home, "credentials.json"),
     JSON.stringify({
       "githubToken": "gho_default-credential-must-never-be-used",
       "authProvider": "gh-token",

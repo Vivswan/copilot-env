@@ -211,8 +211,8 @@ test("COPILOT_ENV_ROOT_HOME re-anchors the shared files inside a profile daemon"
   process.env.COPILOT_ENV_ROOT_HOME = root;
   const p = new CopilotApiPaths();
   expect(p.home).toBe(join(root, "profiles", "work"));
-  expect(p.sharedStateFile).toBe(join(root, ".copilot-env-state.json"));
-  expect(p.envConfigFile).toBe(join(root, ".copilot-env-config.json"));
+  expect(p.sharedStateFile).toBe(join(root, "credentials.json"));
+  expect(p.envConfigFile).toBe(join(root, "preferences.json"));
 });
 
 test("reserveProfilePort records stable, distinct ports; resolve peeks read-only", () => {

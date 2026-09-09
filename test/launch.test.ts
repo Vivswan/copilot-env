@@ -414,7 +414,7 @@ const DIRECT_BASE = "https://api.githubcopilot.com";
 /** The default slot's recorded mode inside root's isolated state store (see
  *  launchEnv: COPILOT_API_HOME is <root>/api-home). */
 function recordedMode(root: string): string | undefined {
-  const statePath = join(root, "api-home", ".copilot-env-state.json");
+  const statePath = join(root, "api-home", "credentials.json");
   if (!existsSync(statePath)) return undefined;
   const state = JSON.parse(readFileSync(statePath, "utf8")) as {
     profiles?: { default?: { mode?: string } };

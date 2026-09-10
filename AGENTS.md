@@ -51,7 +51,7 @@ copilot-env wires the Codex and Claude CLIs to GitHub Copilot, either through a 
 - **Conventional Commits**: `feat:`/`fix:` release, other prefixes do not; the version always bumps the patch (`always-bump-patch`).
 - **Run `/rubber-duck-review` before any commit.**
 - **Managed files** (header says "managed by Vivswan/repo-platform") are never edited here; add each to deno.json's fmt/lint `exclude`.
-- **Shell/PowerShell lint lists are discovered, never enumerated** (`scripts/lint-*.sh`).
+- **Shell/PowerShell lint lists are discovered, never enumerated** (`scripts/lint_shell.ts`).
 
 ### Decisions a reader would otherwise reverse
 

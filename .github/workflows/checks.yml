@@ -63,15 +63,15 @@ jobs:
           COPILOT_ENV_USAGE_FIXTURE_MB: ${{ runner.os == 'Windows' && '100' || '1024' }}
         run: deno test -P=test test/usage_index_perf.test.ts test/usage_golden.test.ts
 
-      # End-to-end daemon lifecycle on every OS (script: .github/scripts/lifecycle-smoke.sh):
+      # End-to-end daemon lifecycle on every OS (script: .github/scripts/lifecycle-smoke.ts):
       # default daemon start/stop/health cross-checks, managed-lifecycle idempotency, and the
       # named-profile daemon cycle -- against a fake proxy, so no Copilot auth is needed.
-      # `shell: bash` runs on the Windows runner too (git-bash).
       - name: Start/stop + health lifecycle (fake proxy)
-        shell: bash
         env:
           COPILOT_API_ENTRY: ${{ github.workspace }}/test/copilot-api-fake.mjs
-        run: bash .github/scripts/lifecycle-smoke.sh
+        run: >-
+          deno run --allow-env --allow-read --allow-sys=homedir,hostname --allow-run
+          .github/scripts/lifecycle-smoke.ts
 
       - name: Shell lint (shellcheck)
         if: runner.os == 'Linux'
@@ -175,7 +175,7 @@ jobs:
           changed="$(git diff --name-only "$BASE"...HEAD)"
           scope='^(deno\.(json|lock)|copilot-env\.config|src/proxy_float\.ts'
           scope="$scope|src/copilot_api/(process|launch|sidecar|shims|paths)\.ts|src/scripts/"
-          scope="$scope|\.github/scripts/(floated-smoke|lifecycle-smoke)\.sh|scripts/test_docker\.ts)"
+          scope="$scope|\.github/scripts/(floated-smoke|lifecycle-smoke|smoke-support)\.ts|scripts/test_docker\.ts)"
           if printf '%s\n' "$changed" | grep -qE "$scope"; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
@@ -197,10 +197,9 @@ jobs:
       # The runner's HOME is disposable, which is what the smoke's guard wants.
       - name: Float the proxy and assert the daemon reaches auth
         if: steps.scope.outputs.run == 'true'
-        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash .github/scripts/floated-smoke.sh
+        run: deno run --allow-env --allow-read --allow-run=deno .github/scripts/floated-smoke.ts
 
   # The session-log readers parse what the REAL Claude Code and Codex CLIs write
   # today, so this is the one job that can catch a log-format drift: it installs

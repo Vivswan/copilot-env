@@ -1,5 +1,15 @@
 # Changelog
 
+## [4.0.3](https://github.com/Vivswan/copilot-env/compare/v4.0.2...v4.0.3) (2026-09-10)
+
+
+### Bug Fixes
+
+* **auth:** let gh-cli pin one of gh's logged-in accounts ([#173](https://github.com/Vivswan/copilot-env/issues/173)) ([17d0bb9](https://github.com/Vivswan/copilot-env/commit/17d0bb945916347b8027f0779f7862f99a24892f))
+* **auth:** pinning is the only default; auto only by explicit choice ([#177](https://github.com/Vivswan/copilot-env/issues/177)) ([dcc5056](https://github.com/Vivswan/copilot-env/commit/dcc50561423a23dc74a349bb80ee91bd7fa0d001))
+* **deno:** a PATH deno wins; install the latest only when none exists ([#174](https://github.com/Vivswan/copilot-env/issues/174)) ([1b961b1](https://github.com/Vivswan/copilot-env/commit/1b961b15e2770eebda259be8ee312fb89ac42d8a))
+* **home:** honest store names; locks and helpers get their own dirs ([#178](https://github.com/Vivswan/copilot-env/issues/178)) ([b094204](https://github.com/Vivswan/copilot-env/commit/b094204703a9812297ab5436e03cc16453ea7a90))
+
 ## [4.0.2](https://github.com/Vivswan/copilot-env/compare/v4.0.1...v4.0.2) (2026-09-08)
 
 

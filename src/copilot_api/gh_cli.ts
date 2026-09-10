@@ -78,17 +78,13 @@ export const GH_COPILOT_HOST = "github.com";
 export const GH_LOGIN_RE = /^[A-Za-z0-9_-]{1,39}$/;
 
 /**
- * The ONE recipe for probing gh's login: spawn `gh auth token` at gh's RESOLVED
- * path (not the bare name), with gh's bin dir on PATH, so an nvm-only gh (or a
- * node-shim gh) found via the nvm fallback is runnable; cliSpawn routes through
- * cmd.exe on Windows so a .cmd/.exe shim is launchable. Success = exit 0. Shared
- * by the token capture (copilot_api/credential.ts), the Direct detect gate
- * (src/agents/live_probe.ts), and the health probe (health/probe.ts), so the
- * command and its GH_AUTH_TIMEOUT_MS budget never drift between them. Callers
- * pick their own stdio (capture the token vs. keep it out of process memory).
- * `ghUser` pins the call to that logged-in gh account (`--user`, on
- * GH_COPILOT_HOST -- the host the account was chosen from); null follows gh's
- * active account.
+ * The ONE recipe for probing gh's login, shared by the token capture, the Direct detect
+ * gate, and the health probe so the command and its GH_AUTH_TIMEOUT_MS budget never drift.
+ * Spawns `gh auth token` at gh's RESOLVED path with gh's bin dir on PATH, so an nvm-only or
+ * node-shim gh is runnable; cliSpawn routes through cmd.exe on Windows for .cmd/.exe shims.
+ * Success = exit 0. Callers pick their own stdio (capture the token vs. keep it out of
+ * process memory). `ghUser` pins the call to that account (`--user` on GH_COPILOT_HOST,
+ * the host it was chosen from); null follows gh's active account.
  */
 export function ghAuthTokenSpawnSpec(ghPath: string, ghUser: string | null = null): GhSpawnSpec {
   const s = cliSpawn(

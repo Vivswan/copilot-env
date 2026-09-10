@@ -59,29 +59,26 @@ export interface ProbeDescriptor {
   cli: string;
   homeEnvVar: string;
   /**
-   * Build the smoke-test argv for `prompt`, given the config `home` the probe
-   * points the CLI at (the temp dir for detect, the real home for the health
-   * probe). Codex auto-loads `$CODEX_HOME/config.toml` and ignores `home`, but
-   * Claude's `--bare` disables settings.json auto-discovery, so it must pass
-   * `--settings <home>/settings.json` to load its managed apiKeyHelper.
-   * `profile` selects a NAMED profile's wiring (health `--live --profile`): the
-   * same knob each launcher uses -- Codex's native `--profile <name>` selector,
-   * Claude's per-profile settings file. Null (the default) keeps the argv
-   * byte-identical to the pre-profile shape.
+   * Build the smoke-test argv for `prompt`, given the config `home` the probe points the
+   * CLI at (the temp dir for detect, the real home for the health probe). Codex auto-loads
+   * `$CODEX_HOME/config.toml` and ignores `home`, but Claude's `--bare` disables
+   * settings.json auto-discovery, so it must pass `--settings <home>/settings.json` to load
+   * its managed apiKeyHelper. `profile` selects a NAMED profile's wiring (health `--live
+   * --profile`) via the same knob each launcher uses: Codex's native `--profile <name>`,
+   * Claude's per-profile settings file. Null keeps the default argv.
    */
   args: (prompt: string, home: string, profile?: Profile) => string[];
 }
 
 /**
- * Env-var PREFIXES whose every variable is stripped from the probe child, for
- * BOTH agent CLIs: a stray `OPENAI_*`, `ANTHROPIC_*`, `CODEX_*`, or `CLAUDE_*`
- * export (an api key, an org, a base url, an auth token, a config override) must
- * not steer the "does Direct work?" test away from the throwaway temp config. The
- * probe re-sets its own home var (`CODEX_HOME` / `CLAUDE_CONFIG_DIR`) to the temp
- * dir AFTER this clear, so stripping those families here is safe. `GH_*`/`GITHUB_*`
- * are NOT here on purpose -- Direct mints its token via `gh auth token`, so they
- * must survive. The health probe (src/health/probe.ts) deliberately does NOT clear
- * any of this: it tests the user's real, fully-resolved environment.
+ * Env-var PREFIXES whose every variable is stripped from the probe child, for BOTH agent
+ * CLIs: a stray `OPENAI_*`, `ANTHROPIC_*`, `CODEX_*`, or `CLAUDE_*` export (an api key, an
+ * org, a base url, a config override) must not steer the "does Direct work?" test away from
+ * the throwaway temp config. The probe re-sets its own home var (`CODEX_HOME` /
+ * `CLAUDE_CONFIG_DIR`) AFTER this clear, so stripping those families is safe. `GH_*` /
+ * `GITHUB_*` are NOT here on purpose: Direct mints its token via `gh auth token`, so they
+ * must survive. The health probe (src/health/probe.ts) deliberately clears none of this: it
+ * tests the user's real, fully-resolved environment.
  */
 export const PROVIDER_ENV_PREFIXES = ["OPENAI_", "ANTHROPIC_", "CODEX_", "CLAUDE_"];
 

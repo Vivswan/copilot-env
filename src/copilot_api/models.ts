@@ -107,20 +107,14 @@ function compareVersion(a: string, b: string): number {
 }
 
 /**
- * Derive the alias map from a catalog. Deterministic (no clock / randomness).
- *
- * - base id            -> dash alias (`claude-opus-4-8` -> `claude-opus-4.8`)
- * - `[1m]` requests    -> the family+version's 1m sibling, else the base id
- * - qualifier ids      -> dash alias (`claude-opus-4-7-high` -> `claude-opus-4.7-high`)
- * - `<family>`/`[1m]`  -> newest of that family, preferring that version's
- *                         1m-capable sibling (every Claude family in the
- *                         catalog, sorted order)
- * - `claude-latest`    -> newest model of the most capable frontier family
- *                         present (`fable` > `opus`; sonnet/haiku excluded)
- * - `gpt-latest`       -> newest best-of-class GPT (mini/nano/luna/terra
- *                         excluded; bare beats qualified on ties)
- *
- * Identity mappings (key === target) are skipped: pass-through is equivalent.
+ * Derive the alias map from a catalog. Deterministic; identity mappings are skipped.
+ * - base and qualifier ids -> dash alias (`claude-opus-4-7-high` -> `claude-opus-4.7-high`)
+ * - `[1m]` requests -> the family+version's 1m sibling, else the base id
+ * - `<family>` / `<family>[1m]` -> newest of that family, preferring its 1m sibling
+ * - `claude-latest` -> newest model of the most capable frontier family present
+ *   (`fable` > `opus`; sonnet/haiku excluded)
+ * - `gpt-latest` -> newest best-of-class GPT (mini/nano/luna/terra excluded; bare beats
+ *   qualified on ties)
  */
 export function generateAliases(catalog: CatalogModel[]): Record<string, string> {
   const parsed = parseClaudeModels(catalog);

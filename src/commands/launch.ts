@@ -293,14 +293,13 @@ export async function prepareLaunch(
 
 /**
  * Ensure the addressed proxy is reachable via the SHARED resolver decision matrix
- * (resolveProxyToken): managed auto-start silently, else offer to start it (no
- * `--yes` -- a down unmanaged proxy prompts, exactly like the rc launchers'
- * `agent proxy-token` call). The print step emits no key -- launch needs
- * reachability, not the credential; the agent's own wiring resolves the token
- * itself -- but it keeps runPrintProxyToken's OTHER duty: the retired launchers'
- * pre-flight also refreshed the Codex model catalog, so the freshness hook runs
- * here directly (default profile only, like every catalog write; the resolver
- * guarantees the proxy is up before this step).
+ * (resolveProxyToken): managed auto-start silently, else offer to start it (no `--yes`: a
+ * down unmanaged proxy prompts, exactly like the rc launchers' `agent proxy-token` call).
+ * The print step emits no key (launch needs reachability, not the credential; the agent's
+ * own wiring resolves the token) but keeps runPrintProxyToken's OTHER duty: the retired
+ * launchers' pre-flight also refreshed the Codex model catalog, so the freshness hook runs
+ * here directly (default profile only, like every catalog write; the resolver guarantees
+ * the proxy is up before this step).
  */
 async function ensureProxyUp(profile: Profile): Promise<boolean> {
   const deps: ProxyTokenDeps = {

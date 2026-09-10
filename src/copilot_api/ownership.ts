@@ -1,46 +1,28 @@
-// The machine-local artifact-ownership ledger: the record of which entries
-// copilot-env ITSELF wrote into external config artifacts, so a removal path
-// can take back exactly what we added and never an entry the user (or another
-// program) put there. One store (`ownership.json` under the ROOT
-// home) for every exact-path ownership kind:
+// The machine-local artifact-ownership ledger: which entries copilot-env ITSELF
+// wrote into external config artifacts, so a removal path takes back exactly what
+// we added and never an entry the user (or another program) put there. One store
+// (`ownership.json` under the ROOT home) for every exact-path ownership kind:
 //   - webSearchDeny:  settings.json files whose `permissions.deny` WE added the
 //     `WebSearch` entry to (src/claude/config.ts).
 //   - claudeDesktop:  Claude Desktop config-library entries WE created or
 //     adopted (src/claude/desktop.ts).
 //   - codexCatalog:   Codex config.toml files WE wrote the `model_catalog_json`
-//     reference into (src/codex/config.ts; pre-ledger installs recorded
-//     nothing, so the cleanup there keeps its value-match fallback).
-// The ledger names THIS machine's files, so it is machine-local by nature and
-// is never part of the `agent settings` bundle (src/agents/transfer.ts exports
-// the two account-wide stores; this file is neither).
+//     reference into (src/codex/config.ts).
+// It names THIS machine's files, so it is never part of the `agent settings` bundle.
 //
 // Doctrine, shared by every kind:
 //   - record AFTER the successful artifact write, release AFTER the successful
-//     take-back. A crash between the two leaves an UNCLAIMED entry -- the safe
-//     direction: an unclaimed entry is never deleted (a writer that later
-//     reproduces it re-claims it, e.g. the catalog reference; otherwise it is a
-//     harmless orphan the user removes by hand) -- never a claim on something
-//     we did not write.
-//   - a junk-degraded record file reads as "owns less", never as a crash. An
-//     UNREADABLE store, by contrast, THROWS (loadStrict): "owns nothing" is a
-//     verdict take-back paths act on, never assumed from a read that failed.
-//   - the ledger file is the ONLY source of a claim: the 3.5.6 adoption
-//     (adoptLegacyRecords, the migration's primitive) drops the pre-ledger record
-//     BEFORE it writes the ledger, so a claim released afterwards has no second
-//     copy to resurrect from. Every mutation serializes on ONE ops lock, so a
-//     take-back cannot slip between the adoption's two writes either (advisory,
-//     like every lock in this codebase: bounded wait, then proceed). Reads take
-//     no lock: a read-only command (health, --check, a dry run) must write
-//     nothing, and the lock's sidecar is a file. A read torn across a mutation
-//     is a report, never a decision: every take-back re-reads under the lock.
-//
-// The per-daemon-home proxy config.json projections (ProxyProjectionState,
-// below) stay OUTSIDE the ledger file on purpose: their record must sit beside
-// the config.json it describes, because applyDefaultConfig's read-modify-write
-// lock derives from the record path (per HOME, so hosts sharing a daemon home
-// exclude each other) and because a deleted profile home takes its record with
-// it -- a global ledger would keep stale claims for dead homes and widen that
-// lock to every daemon at once. Same doctrine, per-home store.
+//     take-back. A crash between the two leaves an UNCLAIMED entry, the safe
+//     direction: an unclaimed entry is never deleted (a writer that reproduces
+//     it re-claims it; otherwise it is a harmless orphan), never a claim on
+//     something we did not write.
+//   - a junk-degraded record file reads as "owns less", never as a crash; an
+//     UNREADABLE store THROWS (loadStrict): "owns nothing" is a verdict take-back
+//     paths act on, never assumed from a read that failed.
+//   - the ledger file is the ONLY source of a claim. Every mutation serializes on
+//     ONE advisory ops lock (bounded wait, then proceed); reads take no lock, so a
+//     read-only command (health, --check, a dry run) writes nothing. A read torn
+//     across a mutation is a report, never a decision: take-backs re-read under it.
 import * as v from "valibot";
 import { BOUNDED_LOCK_POLICY, withFileLockSync } from "../utils/file_lock.ts";
 import { CopilotApiConfig } from "./config.ts";
@@ -213,7 +195,7 @@ export class OwnershipLedger {
 // while a value at the same path we never projected -- a hand edit, or the daemon's own
 // write -- is never deleted. The record lives in `.copilot-env-projections.json`
 // (CopilotApiPaths.projectionsFile, beside the config.json it describes), NOT in the
-// ledger file: per-home by design (the module header says why).
+// ledger file: per-home by design (ProxyProjectionState's doc says why).
 
 /** THE parser for the recorded path list: junk entries (non-arrays, blank or non-string
  *  keys, empty paths) are dropped WHOLE, never truncated to a parent path, and never fail
@@ -237,12 +219,14 @@ const PROJECTION_STATE_SCHEMA = v.object({
 });
 
 /**
- * Read/write helper for the per-daemon-home projection-ownership record. Backed by
- * CopilotApiConfig (sorted keys, 0600, atomic rename, Windows EPERM/EBUSY retry),
- * mirroring CopilotEnvRunState. applyDefaultConfig writes the record AFTER the config.json
- * apply, so a crash between the two writes can leave a projected value the record does not
- * claim -- the safe direction: an unclaimed value is never deleted, and the next successful
- * apply rewrites both files.
+ * Read/write helper for the per-daemon-home projection-ownership record, backed by
+ * CopilotApiConfig like CopilotEnvRunState. Kept OUTSIDE the ledger file on purpose: the
+ * record sits beside the config.json it describes because applyDefaultConfig's
+ * read-modify-write lock derives from the record path (per HOME, so hosts sharing a daemon
+ * home exclude each other) and because a deleted profile home takes its record with it; a
+ * global ledger would keep stale claims for dead homes and widen that lock to every daemon.
+ * Same doctrine as the ledger: the record is written AFTER the config.json apply, so a
+ * crash between the two leaves an unclaimed value (never deleted; the next apply rewrites both).
  */
 export class ProxyProjectionState {
   private readonly store: CopilotApiConfig;

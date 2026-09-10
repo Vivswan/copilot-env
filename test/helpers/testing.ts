@@ -35,13 +35,15 @@ export { afterEach, beforeEach, describe } from "@std/testing/bdd";
 // instead of staying in the OS tmpdir forever. Nothing under test/ reaches mkdtemp,
 // makeTempDir, or os.tmpdir itself (test/lint/no_unmanaged_temp_dir.ts): tempDir below is
 // the one way to a temp directory.
-//
-// A child process that loads this module (a script under test, a nested `deno test`) mints
-// a root of its own -- INSIDE the root of the isolate that spawned it, which test/helpers/run.ts
-// names in TEST_ROOT_ENV on every child. A child killed before its own unload (the abort
-// teardown of a timed-out test) therefore leaves nothing the parent's removal misses. The
-// variable travels to children only, never into this process's environment: the isolates
-// share that, and the next one would nest under a root already gone.
+
+/**
+ * A child process that loads this module (a script under test, a nested `deno test`) mints
+ * a root of its own -- INSIDE the root of the isolate that spawned it, which
+ * test/helpers/run.ts names here on every child. A child killed before its own unload (the
+ * abort teardown of a timed-out test) therefore leaves nothing the parent's removal misses.
+ * The variable travels to children only, never into this process's environment: the
+ * isolates share that, and the next one would nest under a root already gone.
+ */
 export const TEST_ROOT_ENV = "COPILOT_ENV_TEST_ROOT";
 /** This isolate's root; the spawn helpers hand it to children under TEST_ROOT_ENV. */
 export const ISOLATE_ROOT = mkdtempSync(
@@ -242,14 +244,11 @@ export const test: TestApi = Object.assign(register(it), {
 /**
  * Whether pinning a timezone with `process.env.TZ` works in this runtime. Deno's TZ
  * support is unix-only: on Windows the zone comes from the OS and a runtime assignment
- * is ignored.
- *
- * Two tests need this, and they are the only reason the flag survives: test/time.test.ts's
- * "the DEFAULT zone honors the process TZ", which pins the property that justifies deriving
- * the day key in JS rather than with SQLite's `localtime`, and test/cost.test.ts's calendar
- * `--days` cutoff test, whose subject (`startOfLocalDay`) is system-zone only by design.
- * Day SLICING itself is no longer gated -- `localDayKey(ms, timeZone)` takes an explicit
- * IANA zone, so every usage source's local-day bucketing is asserted on all three
- * platforms. Reach for that parameter when the code under test offers one.
+ * is ignored. Two tests need this, and they are the only reason the flag survives:
+ * test/time.test.ts's "the DEFAULT zone honors the process TZ", which pins the property
+ * that justifies deriving the day key in JS rather than with SQLite's `localtime`, and
+ * test/cost.test.ts's calendar `--days` cutoff test, whose subject (`startOfLocalDay`) is
+ * system-zone only by design. Day SLICING is not gated: `localDayKey(ms, timeZone)` takes
+ * an explicit IANA zone, so reach for that parameter when the code under test offers one.
  */
 export const TZ_PINNABLE = Deno.build.os !== "windows";

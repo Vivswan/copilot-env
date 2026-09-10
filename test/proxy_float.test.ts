@@ -1361,16 +1361,6 @@ describe("proxyFloatSkips", () => {
 });
 
 // --- the floated spawn, actually executed -------------------------------------
-//
-// Every other test here asserts the SHAPE of what we hand deno. That is not enough:
-// the first version of this landing produced a well-shaped argv that no deno would
-// run (the checkout's frozen lock rejected the floated specifier, and `--config` with
-// `--cached-only` demanded the whole import map in a cache holding only the proxy).
-// Both gates were green. So this test runs the real thing.
-//
-// It stays offline and deterministic by pointing the record at the DEFAULT deno cache,
-// which `deno install` already warmed with the locked proxy and every import-map dep --
-// exactly the state the float's own DENO_DIR is in after a warm, without the network.
 describe("the floated spawn executes", () => {
   test("a real floated install actually launches the proxy, with no node_modules", () => {
     // Every other test here asserts the SHAPE of what we hand deno. That is not enough:

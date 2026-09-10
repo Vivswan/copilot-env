@@ -1,14 +1,11 @@
-// Shared cross-process advisory file lock (consumers range from the JSON-store update()
-// serialization to the `agent start` critical section, the device-flow login mutex, and the
-// autoupdate preflight). Mutual exclusion is carried by an OS advisory lock
-// (flock/LockFileEx via Deno.FsFile.tryLockSync), which a crashed holder releases
-// automatically. The pid+ts MARKER the lock file carries is retained as the lock's
-// observable, cross-version on-disk contract: releases that predate the OS lock judge
-// liveness/staleness by the marker alone (the JSON `{pid,ts}` form is the autoupdate lock's
-// contract with already-shipped readers), and the marker is still how a lock left behind by a
-// marker-only writer -- or leaked by a crashed pre-OS-lock holder -- is judged stale and taken
-// over. During a mixed-version window an old release can still rename-steal a live lock it
-// judges stale by age; among current-version processes exclusion is exact.
+// Shared cross-process advisory file lock (the JSON-store update() serialization, the
+// `agent start` critical section, the device-flow login mutex, the autoupdate preflight).
+// Mutual exclusion is carried by an OS advisory lock (flock/LockFileEx via
+// Deno.FsFile.tryLockSync), which a crashed holder releases automatically. The pid+ts MARKER
+// the lock file carries is the lock's observable on-disk contract: a release that predates
+// the OS lock judges liveness by the marker alone (and can still rename-steal a live lock it
+// judges stale by age), and the marker is how a lock such a marker-only writer left behind is
+// judged stale and taken over. Among current-version processes exclusion is exact.
 //
 // The OS lock is held on a SIDECAR file (`<lock>.oslock`), never on the marker file itself:
 // on Windows an exclusive LockFileEx blocks reads and writes from every OTHER handle, so
@@ -18,19 +15,8 @@
 // the path, and a permanent sidecar makes that race unrepresentable.
 //
 // `tryAcquireFileLock` makes ONE attempt; the scoped `withFileLock`/`withFileLockSync` own
-// the wait loop, parameterized per caller by a LockPolicy (the shared bounded SYNC spin for
-// the millisecond-scale read-modify-writes, an async unbounded wait for start, a single
-// non-waiting attempt for the autoupdate lock), and pair every acquisition with exactly one
-// release in their own finally. A marker-judged lock is stale when its holder pid is DEAD, or
-// -- only when `staleMs` is finite -- older than staleMs. Pass `Infinity` to reclaim ONLY a
-// dead holder and never age-steal a live one (right for a lock a live process may
-// legitimately hold for a long time, e.g. `agent start` blocking on interactive auth). A
-// lock HELD by a live current-version process is protected by the OS lock outright, so the
-// age horizon cannot steal it; the exception is this process's OWN held lock, whose aged
-// marker is refreshed in place and reported as a (re-)acquire, preserving the historical
-// age-steal outcome. Callers may inject `nowMs` (the clock used both for the marker written
-// and the age judgment) so a caller with an injected clock, like the autoupdate preflight,
-// stays deterministic under test.
+// the wait loop (parameterized per caller by a LockPolicy) and pair every acquisition with
+// exactly one release in their own finally.
 import { linkSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as sleepAsync } from "node:timers/promises";
@@ -53,8 +39,9 @@ const LOCK_STALE_MS = 10_000;
 const LOCK_WAIT_MS = 4_000;
 const LOCK_RETRY_MS = 15;
 
-/** Read the lock file's raw marker by path, or null if absent/unreadable. Only for a lock
- *  we do NOT hold (see the held-handle I/O rule in the header). */
+/** Read a lock file's raw marker by path, or null if absent/unreadable. Only for a lock we
+ *  do NOT hold: our own held lock's marker is the `#raw` HeldFileLock remembers, never a
+ *  fresh disk read, because a rename-steal can put a successor's marker at the path. */
 function readLockRaw(lockPath: string): string | null {
   return readTextOrNull(lockPath);
 }
@@ -273,19 +260,6 @@ const PROBE_UNKNOWN: FileLockProbe = Object.freeze({ kind: "unknown" });
  * keeps it for its whole process lifetime (the daemon liveness lock), held-ness IS
  * liveness -- enforced by the OS, immune to pid reuse, and released at process death with
  * no unlock code running (SIGKILL included).
- *
- * The shared mode is what keeps probes honest about each other: any number of concurrent
- * probes coexist without ever reading one another as a holder, and only a real holder's
- * EXCLUSIVE lock reports `held`. A prober's momentary shared hold can still make an
- * exclusive acquirer's single attempt fail, which is why acquirers contending with
- * probes retry rather than judging one failed attempt final.
- *
- * The marker is read BEFORE and AFTER the lock observation and must agree, or the probe
- * reports `unknown`: a holder change mid-probe (the old holder died and a successor
- * acquired) would otherwise pair the previous holder's pid with the successor's lock
- * state -- a verdict about the wrong process. The one residual window is a successor
- * between its lock and its marker write while both reads still see the old marker;
- * that is a sub-millisecond misread that the next probe corrects.
  */
 export function probeFileLock(lockPath: string): FileLockProbe {
   const observed = readMarker(lockPath);
@@ -296,6 +270,12 @@ export function probeFileLock(lockPath: string): FileLockProbe {
   if (HELD_LOCKS.has(lockPath)) return Object.freeze({ kind: "held", markerPid: pid });
   const lockState = observeOsLock(lockPath);
   if (lockState === "unknown") return PROBE_UNKNOWN;
+  // The marker is read BEFORE and AFTER the lock observation and must agree, or the probe
+  // reports `unknown`: a holder change mid-probe (the old holder died and a successor
+  // acquired) would otherwise pair the previous holder's pid with the successor's lock
+  // state -- a verdict about the wrong process. The one residual window is a successor
+  // between its lock and its marker write while both reads still see the old marker; a
+  // sub-millisecond misread that the next probe corrects.
   const reread = readMarker(lockPath);
   if (reread.kind !== observed.kind) return PROBE_UNKNOWN;
   if (observed.kind === "present" && reread.kind === "present" && reread.raw !== observed.raw) {
@@ -308,7 +288,12 @@ export function probeFileLock(lockPath: string): FileLockProbe {
 }
 
 /** Whether `lockPath`'s sidecar OS lock is exclusively held right now. `free` includes a
- *  missing sidecar (no sidecar -> no OS lock can be held). */
+ *  missing sidecar (no sidecar -> no OS lock can be held). The SHARED try-lock is what
+ *  keeps probes honest about each other: any number of concurrent probes coexist without
+ *  ever reading one another as a holder, and only a real holder's EXCLUSIVE lock reports
+ *  `held`. A prober's momentary shared hold can still make an exclusive acquirer's single
+ *  attempt fail, which is why acquirers contending with probes retry rather than judging
+ *  one failed attempt final. */
 function observeOsLock(lockPath: string): "held" | "free" | "unknown" {
   let file: Deno.FsFile;
   try {
@@ -447,7 +432,9 @@ const NOT_HELD_OUTCOME: LockOutcome = Object.freeze({ held: false });
  *  `onWait` fires ONCE: on the first failed attempt by default, or -- with `noticeAfterMs`
  *  -- on the first failed attempt after MORE than that much waiting. */
 export interface LockPolicy extends FileLockOptions {
-  /** The stale horizon passed to tryAcquireFileLock (Infinity = dead-holder-only reclaim). */
+  /** The stale horizon passed to tryAcquireFileLock. Infinity reclaims ONLY a dead holder
+   *  and never age-steals a live one: right for a lock a live process may legitimately
+   *  hold for a long time, e.g. `agent start` blocking on interactive auth. */
   readonly staleMs: number;
   /** Total wait budget before reporting `held: false`. */
   readonly waitMs: number;

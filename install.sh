@@ -222,7 +222,8 @@ resolve_safe_install_dir "$INSTALL_DIR"
 if [ -e "$INSTALL_DIR/.git" ]; then
     for _marker in package.json deno.json; do
         if [ -e "$INSTALL_DIR/$_marker" ]; then
-            die "refusing to install into $INSTALL_DIR: it holds $_marker and .git, so it is a source checkout; choose another target with --dir or COPILOT_ENV_DIR."
+            _reason="it holds $_marker and .git, so it is a source checkout"
+            die "refusing to install into $INSTALL_DIR: $_reason; choose another target with --dir or COPILOT_ENV_DIR."
         fi
     done
 fi

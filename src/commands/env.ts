@@ -123,16 +123,14 @@ const LAUNCHER_FUNCTIONS = [
 ] as const;
 
 /**
- * The one-line launcher function definitions `agent env` emits when the
- * `launchers` config key is on. They call the `agent` WRAPPER function (defined by
- * shell/agents.bashrc / agents.ps1 before this output is ever evaled), so the env
- * refresh after each launch keeps working. Everything the user typed rides behind
- * `--` as verbatim pass-through args -- `agent launch` hoists a leading
- * `--profile <name>` pair itself, so `cl --profile work` keeps working. The
- * PowerShell `--` is quoted: unquoted it is PowerShell's own end-of-parameters
- * token and would be swallowed instead of passed. `global:` scope because
- * agents.ps1 evals these inside a function (Import-CopilotEnv), where an
- * unscoped definition would die with that call. Exported for tests.
+ * The one-line launcher function definitions `agent env` emits when the `launchers` config
+ * key is on. They call the `agent` WRAPPER function (defined by shell/agents.bashrc /
+ * agents.ps1 before this output is ever evaled), so the env refresh after each launch keeps
+ * working. Everything the user typed rides behind `--` as verbatim pass-through args;
+ * `agent launch` hoists a leading `--profile <name>` pair itself. The PowerShell `--` is
+ * quoted: unquoted it is PowerShell's own end-of-parameters token and would be swallowed.
+ * `global:` scope because agents.ps1 evals these inside a function (Import-CopilotEnv),
+ * where an unscoped definition would die with that call. Exported for tests.
  */
 export function launcherFunctionLines(powershell: boolean): string[] {
   return LAUNCHER_FUNCTIONS.map(([name, cli, relaxed]) => {

@@ -1,50 +1,28 @@
-// The proxy float -- how the runtime version of @jeffreycao/copilot-api is
-// chosen and provisioned. The proxy is not installed into node_modules: it lives
-// in a dedicated Deno npm cache under the copilot-api root home
-// (<rootHome>/deno/cache), and the successful resolution is recorded in
-// <rootHome>/proxy/resolved-version.json -- the freshness oracle every check
-// below reads, and the record src/copilot_api/process.ts turns into the daemon's
-// entry.
+// The proxy float: how the runtime version of @jeffreycao/copilot-api is chosen
+// and provisioned. The proxy is never installed into node_modules or patched: it
+// lives in a dedicated Deno npm cache under the root home (<rootHome>/deno/cache),
+// and the successful resolution is recorded in <rootHome>/proxy/resolved-version.json,
+// the freshness oracle every status below reads and the record
+// src/copilot_api/process.ts turns into the daemon's entry. Import-only: no CLI entry.
 //
-// Consumers (this module is import-only; it has no CLI entry):
-//   - ensureProxyFloor (src/copilot_api/launch.ts, behind `agent start`): checks
-//     proxyFloatVerifyStatus -- offline while the record is younger than the
-//     cooldown -- and runs floatProxy once it goes stale.
-//   - src/copilot_api/process.ts turns the recorded resolution into the daemon's
-//     entry; src/commands/uninstall.ts removes the float's artifacts.
-//   - The health engine reads the statuses and the skip predicate
-//     (src/health/probe.ts).
-//   - scripts/warm-proxy-cache.ts runs floatProxy while building the test container.
-//   - proxyInstallAssertStatus, the hard end-state check, is exercised by tests
-//     only today: wiring it into CI would float first and hit the npm registry
-//     on every runner (see .github/workflows/checks.yml).
-//
-// Runtime knobs are environment variables, not CLI flags: COPILOT_API_VERSION
-// pins an exact proxy version/tag, and COPILOT_API_MIN_RELEASE_AGE overrides
-// the cooldown window (in seconds; default 7 days, config `releaseCooldown`
-// in between -- env > stored config > built-in default).
+// Runtime knobs are environment variables, not CLI flags: COPILOT_API_VERSION pins
+// an exact version/tag; COPILOT_API_MIN_RELEASE_AGE (seconds) overrides the cooldown
+// window (default 7 days; env > config `releaseCooldown` > built-in default).
 //
 // Resolution:
-// 1. Both Codex and Claude wired Direct (no local proxy) -> the skip predicate
-//    (proxyFloatSkips) reports the float unnecessary. An explicit
-//    COPILOT_API_VERSION env pin overrides this and forces the normal path.
+// 1. Both agents wired Direct (no local proxy) -> proxyFloatSkips reports the float
+//    unnecessary. An explicit COPILOT_API_VERSION env pin overrides this.
 // 2. COPILOT_API_VERSION (or config `proxy-version`) set -> cache exactly that
-//    version/tag, bypassing copilot-env.config bounds, the cooldown, and the
+//    version/tag, bypassing the copilot-env.config bounds, the cooldown, and the
 //    lifecycle-script preflight (with a warning for the latter).
-// 3. Default float -> fetch the package's full npm registry document, parse it
-//    at the boundary (versions + publish times + dist-tags), pick the newest
-//    stable release at least the cooldown window old, clamp it to
-//    [PROXY_MIN_VERSION, PROXY_MAX_VERSION] from copilot-env.config, and REFUSE
-//    a target that declares npm lifecycle scripts: scripts never run for
-//    global-cache npm: execution, so such a release would misbehave silently at
-//    runtime (an existing in-bounds recorded version is kept instead; a fresh
-//    install fails loud).
+// 3. Default float -> the newest stable release in the npm registry document at
+//    least the cooldown old, clamped to [PROXY_MIN_VERSION, PROXY_MAX_VERSION] from
+//    copilot-env.config. A target declaring npm lifecycle scripts is REFUSED: scripts
+//    never run for global-cache npm: execution, so it would misbehave silently at
+//    runtime (a recorded in-bounds version is kept instead; a fresh install fails loud).
 //
-// The cache write delegates to the deno sidecar (`deno cache npm:...@<v>` with
-// DENO_DIR pinned under the root home) and passes the same cooldown as
-// --minimum-dependency-age, so TRANSITIVE dependencies get the supply-chain
-// window too, not just the proxy itself. An exact target older than the window
-// always clears its own gate.
+// The cache warm runs the deno sidecar (`deno cache npm:...@<v>`, DENO_DIR under the root
+// home) with the cooldown as --minimum-dependency-age, so TRANSITIVE deps get the window too.
 
 import "./utils/dotenv.ts";
 import { spawnSync } from "node:child_process";
@@ -340,41 +318,27 @@ export function daemonConfigFile(rootHome: string): string {
 }
 
 /**
- * Path of the proxy's OWN lockfile, written and re-read by the float's cache warms.
- *
- * Two jobs, and it is a float-time artifact for both -- the daemon run never takes it,
- * so a read-only install or two concurrent daemons can never trip over it:
- *   - it pins TRANSITIVE resolution between floats. The proxy's own dependency ranges
- *     would otherwise re-resolve on every warm, so the same proxy version could sit on
- *     different transitive trees, and each entry carries an integrity hash.
- *   - it is the baseline `trust-policy=no-downgrade` compares against. Deno records the
- *     publishing-trust level in the lockfile, so with no lockfile there is definitionally
- *     nothing to compare and the policy can never fire.
+ * Path of the proxy's OWN lockfile, written and re-read by the float's cache warms. A
+ * float-time artifact only: the daemon run never takes it, so a read-only install or two
+ * concurrent daemons can never trip over it. Two jobs: it pins TRANSITIVE resolution
+ * between floats (the proxy's own dependency ranges would otherwise re-resolve on every
+ * warm, so one proxy version could sit on different transitive trees; each entry carries
+ * an integrity hash), and it is the baseline `trust-policy=no-downgrade` compares against
+ * (Deno records the publishing-trust level in the lockfile; with none, the policy cannot fire).
  */
 export function proxyLockFile(rootHome: string): string {
   return join(rootHome, "proxy", "deno.lock");
 }
 
 /**
- * Write the config the floated daemon runs under: this build's import map and
- * compiler options, with `lock` and `nodeModulesDir` DELIBERATELY dropped.
- *
- * The source is the build's OWN deno.json, read through ASSET_ROOT: the embedded
- * VFS in a compiled binary, the checkout root in dev. A compiled install root
- * deliberately carries no deno.json on disk (there it is a checkout marker the
- * install refusal reads), so a disk read under the install root can never work.
- *
- * The daemon cannot use that deno.json as-is, for two independent reasons:
- *   - `lock: {frozen: true}` rejects `npm:<proxy>@<floated version>` outright, because
- *     that exact specifier is not in deno.lock. Any version the float actually floats
- *     to would fail -- the frozen lock is a DEV contract, and the whole point of the
- *     float is that the runtime version moves independently of it.
- *   - `nodeModulesDir` would send resolution through a node_modules tree that a
- *     compiled install does not have; the daemon resolves purely from the float's
- *     DENO_DIR (`--node-modules-dir=none`).
- *
- * The import map itself is still needed: the preload shims resolve their own imports
- * through it, which is why the daemon spawn passes a `--config` at all.
+ * Write the config the floated daemon runs under: this build's import map and compiler
+ * options, with `lock` and `nodeModulesDir` DELIBERATELY dropped. The source is the
+ * build's OWN deno.json read through ASSET_ROOT (the embedded VFS in a compiled binary,
+ * the checkout root in dev); a compiled install root carries no deno.json on disk, where
+ * it is a checkout marker. `lock: {frozen: true}` would reject `npm:<proxy>@<floated>`
+ * outright (the frozen lock is a DEV contract; the float moves the runtime version
+ * independently of it), and `nodeModulesDir` would resolve through a node_modules tree a
+ * compiled install lacks. The import map stays: the preload shims resolve through it.
  */
 export function writeDaemonConfig(rootHome: string, sourceRoot: string = ASSET_ROOT): void {
   atomicWriteFile(daemonConfigFile(rootHome), renderDaemonConfig(sourceRoot));
@@ -675,16 +639,13 @@ type CacheLook = "resolves" | "missing" | "unproven";
 
 /**
  * Whether `denoDir` holds EVERYTHING a floated launch resolves offline: the proxy
- * package AND the preload shims' own graph.
- *
- * Checking only the proxy is what makes a half-warmed cache read as up to date -- the
- * float then skips its warm, and the daemon dies at launch on a missing import-map
- * package instead. Both graphs are warmed together, so both are checked together.
- *
- * Without the daemon config there is no floated launch to verify at all, so that reads
- * "missing" rather than falling back to a laxer check. A `deno info` that never ran
- * (launchFailed) is "unproven", never "missing": the missing arm feeds recoveries
- * that drop or re-warm the cache, and a failed look must not trigger those.
+ * package AND the preload shims' own graph. Checking only the proxy would make a
+ * half-warmed cache read as up to date: the float skips its warm and the daemon dies at
+ * launch on a missing import-map package instead. Without the daemon config there is no
+ * floated launch to verify, so that reads "missing" rather than falling back to a laxer
+ * check. A `deno info` that never ran (launchFailed) is "unproven", never "missing": the
+ * missing arm feeds recoveries that drop or re-warm the cache, and a failed look must
+ * not trigger those.
  */
 function cacheResolves(ctx: FloatContext, version: string, denoDir: string): CacheLook {
   const config = daemonConfigFile(ctx.rootHome);
@@ -1175,19 +1136,14 @@ export async function proxyFloatVerifyStatus(
 }
 
 /**
- * A hard check of the float's end state (the float inside `agent start` is
- * best-effort, so this is what makes silent failure visible). Exercised by
- * tests only today: wiring it into CI would float first and hit the npm
- * registry on every runner (see .github/workflows/checks.yml). It answers a
- * different question than the verify status: not "can the float be skipped?",
- * but "did the float leave the record + cache in the state it intended?". The
- * recorded version must equal the float's own resolved target, not merely
- * clear the bounds -- otherwise a silently failed cache write hides behind a
- * window that happens to be satisfied. A pin must be the recorded version
- * (exact semver pins only; tag pins are not equality-checked, and bounds do
- * not apply because a pin bypasses them in the float too). When target
- * resolution fails (npm unreachable) the assert falls back to the bounds-only
- * check so a consumer does not flake on npm outages.
+ * A hard check of the float's end state: the float inside `agent start` is best-effort,
+ * so this is what makes silent failure visible. Exercised by tests only today (wiring it
+ * into CI would float first and hit the npm registry on every runner). Unlike the verify
+ * status ("can the float be skipped?") it asks "did the float leave the record + cache
+ * as intended?": the recorded version must equal the float's own resolved target, not
+ * merely clear the bounds, or a silently failed cache write hides behind a satisfied
+ * window. A pin must be the recorded version (exact semver pins only; tag pins are not
+ * equality-checked; a pin bypasses the bounds). If npm is unreachable, bounds-only check.
  */
 export async function proxyInstallAssertStatus(
   deps: ProxyFloatDeps = {},

@@ -8,28 +8,20 @@
 // (the same names as the ADMX registry values; the app's nested "$schemaVersion: 2" file
 // is an EXPORT format, not what it stores).
 //
-// Posture mirrors mcp_registration.ts: best-effort, and a foreign or surprising document
-// is warned about and left alone, never clobbered. Ownership of every entry we create or
-// adopt is recorded by exact path in the ownership ledger (src/copilot_api/ownership.ts),
-// with the record-after-save ordering of the WebSearch deny: a failed save must never
-// leave a claim on an entry we did not actually write.
-//
-// Identity is by uuid path, never by display name: an owned path is ours whatever the app
-// shows it as (the name is the user's; a wire only ever seeds a fresh entry's), and the
-// wiring an owned entry serves is read from its own document -- the credential helper it
-// points at names the profile (entryProfileAt).
+// Posture mirrors mcp_registration.ts: best-effort, a foreign or surprising document is
+// warned about and left alone. Ownership of every entry we create or adopt is recorded by
+// exact uuid path in the ownership ledger, record-after-save (a failed save must never leave
+// a claim on an entry we did not write). Identity is by path, never display name: the name
+// is the user's, and an owned entry's wiring is read from its own document (entryProfileAt).
 //
 // Model discovery: Desktop fetches `<inferenceGatewayBaseUrl>/v1/models`, hardcoded.
 // Copilot Direct serves /models and 404s the v1 path, so direct entries carry an explicit
-// inferenceModels list derived from live discovery (offline wires keep prior rows); the local
-// proxy daemon mounts its model routes at BOTH /models and /v1/models, so proxy entries
-// use discovery and always track the catalog.
+// inferenceModels list from live discovery (offline wires keep prior rows); the proxy
+// daemon mounts its model routes at BOTH paths, so proxy entries use discovery.
 //
-// Whether Desktop is wired at all is STATE (the `claude-desktop` key, default on), not an
-// action: every managed Claude write reconciles its entry from the key. `false` removes
-// the profile entries and leaves the default's in place, unmanaged (the user's from then
-// on; only uninstall removes it, since its helper script goes with the install). Every
-// file created, rewritten, or removed is announced.
+// Whether Desktop is wired is STATE (the `claude-desktop` key, default on), not an action:
+// every managed Claude write reconciles its entry from the key. `false` removes the profile
+// entries and leaves the default's in place, unmanaged (only uninstall removes it).
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
@@ -525,16 +517,11 @@ function labelLookup(body: unknown): (id: string) => string | null {
 /**
  * The model rows for a wiring, or undefined when no live data exists (the caller then
  * leaves an existing entry's rows untouched and refuses to create a fresh direct one).
- *
- * Direct runs the full DISCOVERY pipeline (src/copilot_api/discovery.ts): the catalog
- * under the wiring's own identity, plus the allowlist-oracle extras verified one by
- * one on /v1/messages -- so unadvertised-but-servable models (claude-fable-5) make the
- * picker with a PROBED 1m verdict, and nothing hand-kept decides membership.
- *
- * Proxy annotates what the daemon's /v1/models will discover: the daemon's own
- * aggregated catalog first, the direct Copilot catalog when the daemon is down -- the
- * rows are the 1m-capability annotations discovery alone cannot provide
- * (claude-code#88345).
+ * Direct runs the full DISCOVERY pipeline (src/copilot_api/discovery.ts) under the wiring's
+ * own identity, so unadvertised-but-servable models make the picker with a PROBED 1m
+ * verdict and nothing hand-kept decides membership. Proxy annotates what the daemon's
+ * /v1/models will discover (the daemon's catalog first, direct Copilot when it is down):
+ * the 1m-capability annotations discovery alone cannot provide (claude-code#88345).
  */
 async function wiringModels(
   opts: DesktopWireOptions,
@@ -583,15 +570,12 @@ async function wiringModels(
 
 /**
  * Upsert the copilot-env entry for `profile` into the Desktop config library. Throws on
- * real write failures (syncClaudeDesktopWiring is the best-effort face). Resolution
- * order for the target entry:
- *   ours (ownership-recorded path whose document names `profile`) -> adoptable (foreign
- *   entry whose gateway base URL already matches the target: taken over in place under
- *   its uuid and name) -> foreign entry carrying our name (warn, never clobber) -> a
- *   fresh uuid.
- * `appliedId` is only ever SET when the library had none -- an applied user config is
- * never displaced (an adopted applied entry stays applied naturally: its id is stable).
- * Ownership is committed AFTER both saves (record-after-save, like the WebSearch deny).
+ * real write failures (syncClaudeDesktopWiring is the best-effort face). Target entry, in
+ * order: ours (ownership-recorded path whose document names `profile`) -> adoptable (a
+ * foreign entry whose gateway base URL already matches: taken over in place under its uuid
+ * and name) -> a foreign entry carrying our name (warn, never clobber) -> a fresh uuid.
+ * `appliedId` is only ever SET when the library had none: an applied user config is never
+ * displaced. Ownership is committed AFTER both saves (record-after-save).
  */
 export async function wireClaudeDesktopEntry(opts: DesktopWireOptions): Promise<void> {
   const dir = resolveDesktopLibraryDir();

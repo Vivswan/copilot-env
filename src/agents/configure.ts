@@ -120,19 +120,6 @@ export interface AgentProfileWriteOptions {
  *  adding an agent is a compile error everywhere one could be silently missed. */
 export type ManagedAgentId = "codex" | "claude";
 
-/**
- * One CLI agent's wiring surface, as runAgentConfig and `agent profile` consume
- * it. Adapters WRAP the existing per-agent writers (config.toml / settings.json
- * mechanics stay in src/codex/ and src/claude/); this interface only carries the
- * shared command shape.
- *
- * Default-selection and named-profile writes are separate methods on purpose:
- * the default flow hands the adapter the already-resolved credential (Codex
- * seeds its catalog with it), while a profile write must never resolve one.
- * Both receive the SAME ManagedWrite -- the direct client identity is resolved
- * once by the caller (runAgentConfig via resolveDirectIdentity for the default,
- * wireBothAgents via the persisted-slot cache for a profile) and passed down.
- */
 export interface RemoveProfileOptions {
   keepDesktopEntry?: boolean;
   /** The Claude files to remove, resolved up front by the caller's plan
@@ -140,6 +127,16 @@ export interface RemoveProfileOptions {
   claudeArtifacts?: readonly string[];
 }
 
+/**
+ * One CLI agent's wiring surface, as runAgentConfig and `agent profile` consume it.
+ * Adapters WRAP the existing per-agent writers (config.toml / settings.json mechanics stay
+ * in src/codex/ and src/claude/); this interface only carries the shared command shape.
+ * Default-selection and named-profile writes are separate methods on purpose: the default
+ * flow hands the adapter the already-resolved credential (Codex seeds its catalog with it),
+ * while a profile write must never resolve one. Both receive the SAME ManagedWrite: the
+ * caller resolves the direct client identity once (runAgentConfig via resolveDirectIdentity
+ * for the default, wireBothAgents via the persisted-slot cache for a profile).
+ */
 export interface AgentAdapter {
   /** The stable agent key (request maps and adapter lists are keyed on it). */
   readonly id: ManagedAgentId;

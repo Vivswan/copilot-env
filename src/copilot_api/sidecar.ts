@@ -79,15 +79,13 @@ function sidecarFastPath(
 }
 
 /**
- * The deno binary copilot-env spawns for its own subprocess work: the fast paths above,
- * else the deno already on PATH (the user's toolchain always wins), else the newest
- * provisioned sidecar under `rootHome`, else a hard error.
- *
- * `rootHome` defaults to the resolved root home, so every bare call site -- the daemon
- * spawn, the proxy float, the device-flow login -- finds the sidecar a compiled install
- * provisioned there. The standalone case is why the sidecar exists: a compiled binary IS
- * a deno runtime, but not a deno CLI, so it can neither warm the float's cache nor spawn
- * the proxy.
+ * The deno binary copilot-env spawns for its own subprocess work: the fast paths above, else
+ * the deno already on PATH (the user's toolchain always wins), else the newest provisioned
+ * sidecar under `rootHome`, else a hard error. `rootHome` defaults to the resolved root
+ * home, so every bare call site -- the daemon spawn, the proxy float, the device-flow login
+ * -- finds the sidecar a compiled install provisioned there. The standalone case is why the
+ * sidecar exists: a compiled binary IS a deno runtime, but not a deno CLI, so it can neither
+ * warm the float's cache nor spawn the proxy.
  */
 export function resolveDenoBin(
   env: Record<string, string | undefined> = process.env,

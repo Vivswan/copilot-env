@@ -206,17 +206,15 @@ test("renameWithRetry surfaces a non-transient error immediately", () => {
   expect(calls).toBe(1);
 });
 
-// An UNREADABLE store is not an empty one. update() is a read-modify-WRITE, so
-// treating a failed read as `{}` would persist the emptiness and wipe every key the
-// file holds -- the daemon's api key, admin key and providers. The file's retry loop
-// exists for exactly that wipe (the proxy writes config.json non-atomically), and the
-// read-error arm used to return BEFORE the retry could run.
+// An UNREADABLE store is not an empty one. update() is a read-modify-WRITE, so treating
+// a failed read as `{}` would persist the emptiness and wipe every key the file holds --
+// the daemon's api key, admin key and providers. The retry loop exists for exactly that
+// wipe: the proxy writes config.json non-atomically.
 //
-// This is the row that REPRODUCES the wipe: an unreadable file (0000) inside a
-// writable directory, so the read fails while the atomic rename would still succeed.
-// A directory at the config path would NOT prove anything -- the rename fails there
-// on its own, so the content survives with or without the fix.
-// POSIX, non-root only: root bypasses file modes.
+// The row that REPRODUCES the wipe: an unreadable file (0000) inside a writable directory,
+// so the read fails while the atomic rename would still succeed. A directory at the config
+// path would prove nothing -- the rename fails there on its own, so the content survives
+// with or without the refusal. POSIX, non-root only: root bypasses file modes.
 test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
   "update REFUSES an unreadable store instead of WIPING it",
   () => {

@@ -61,13 +61,11 @@ const REGEX_POSITION_KEYWORDS: ReadonlySet<string> = new Set([
  * `source` with comments and regex-literal bodies blanked out and, when `stripStrings`,
  * string-literal contents too (the quotes stay). Blanking is offset-preserving -- every
  * blanked character becomes a space (newlines stay) -- so positions are comparable across
- * passes. A character scanner rather than regexes, so a `//` inside a string or a quote
- * inside a comment cannot derail it; regex literals are recognized by the token before
- * the `/` (expression position => regex). The heuristic is not a full parser: it can
- * misread a `/` (say, after a control-condition `)`), which mangles or hides the
- * declaration -- and extractStringConst's exactly-one/same-offset cross-checks turn that
- * into a LOUD failure. That loud-by-construction property is why this scanner backs only
- * extraction; the sweep, where a miss would be silent, is parser-backed instead.
+ * passes. A character scanner, not regexes, so a `//` inside a string or a quote inside a
+ * comment cannot derail it; a `/` in expression position opens a regex literal. Not a full
+ * parser: a misread `/` (say, after a control-condition `)`) mangles or hides the declaration,
+ * and extractStringConst's exactly-one/same-offset cross-checks turn that into a LOUD failure.
+ * So this scanner backs only extraction; the sweep, where a miss would be silent, is parser-backed.
  */
 function blankSource(source: string, stripStrings: boolean): string {
   let out = "";
@@ -265,15 +263,12 @@ test("every env key spelled in a script is a pinned CLI pair (sweep)", () => {
   // keys today and could never import a TS constant anyway.) Requiring the script-side
   // key set to EQUAL the pinned set (not merely intersect the CLI side) also catches a
   // pair that is born drifted, where the two spellings never match anywhere. A script
-  // that imports the CLI constant never spells the literal and never trips this. The `*`
-  // quantifier surfaces key FRAGMENTS too: a key assembled by concatenation or
-  // interpolation would dodge the set comparison, and its leading fragment ends with "_"
-  // (as does the bare prefix), while no whole key ever does -- so any
-  // underscore-terminated match is rejected outright on either side. Files are scanned
-  // through deno's own parser (the collector below visits string literals, template
-  // chunks, and identifiers -- comments are never AST nodes), so no text heuristic
-  // can silently HIDE a key here.
+  // that imports the CLI constant never spells the literal and never trips this.
+  // The `*` quantifier surfaces key FRAGMENTS too; keysIn below rejects them.
   const ENV_KEY_RE = /\bCOPILOT_ENV_[A-Z0-9_]*/g;
+  // Files are scanned through deno's own parser (the collector visits string literals,
+  // template chunks, and identifiers -- comments are never AST nodes), so no text heuristic
+  // can silently HIDE a key here.
   const envKeyCollector: Deno.lint.Plugin = {
     name: "env-key-collector",
     rules: {
@@ -305,6 +300,9 @@ test("every env key spelled in a script is a pinned CLI pair (sweep)", () => {
       const diagnostics = Deno.lint.runPlugin(envKeyCollector, file, readFileSync(file, "utf8"));
       for (const diagnostic of diagnostics) {
         const match = diagnostic.message.slice("key:".length);
+        // A key assembled by concatenation or interpolation would dodge the set comparison;
+        // its leading fragment ends with "_" (as does the bare prefix), while no whole key
+        // ever does, so an underscore-terminated match is rejected outright on either side.
         if (match.endsWith("_")) {
           throw new Error(
             `env-key fragment "${match}" in ${relative(SRC_DIR, file)} -- spell env ` +

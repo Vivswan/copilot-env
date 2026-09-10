@@ -5,12 +5,6 @@
 // launchers run before a proxy-backed launch (interactive, no `--yes`), and equally
 // usable by hand or from a script that needs the key.
 //
-// The resolver is built from honest primitives rather than one magic flag, each
-// independently testable: is-it-up (proxyStatus), the gate (the account-wide
-// `auto-start` preference), launch (a child `agent start`), heartbeat
-// (recordHeartbeat, so an open agent keeps its proxy alive), and print-key
-// (runPrintProxyToken, which also carries the Codex catalog freshness hook).
-//
 // Stdout is sacred: the ONLY stdout write in any branch is the key line inside
 // runPrintProxyToken -- callers eval/cache the output as a credential, and Claude
 // Code hard-fails an apiKeyHelper whose stdout is anything but the single
@@ -95,21 +89,14 @@ export function launchProxy(profile: Profile, output: LaunchOutput): void {
 }
 
 /**
- * Show `query` on stderr and read one raw answer line from stdin. Raw stdin data
- * events, NOT node:readline's question(): with stdin already CLOSED and no line
- * ever arriving (the redirected/headless shape), rl.question never settles -- in
- * its callback or promise form -- and EOF-resolves-to-"" is load-bearing here (EOF
- * means START, the apiKeyHelper case), so readline would hang forever in exactly
- * the case this module must not. Do not "simplify" back to readline after testing
- * only the piped-line case: piped lines DO deliver; the closed-stdin hang is the
- * disqualifier. (Secondary and fixable: readline's default prompt target -- and
- * consola.prompt outright -- write to stdout, which must stay key-only.)
- *
- * The raw reader also mirrors the shells' `read -r`: a TTY in canonical mode
- * delivers a full echoed line, EOF with no line resolves "" -- which the caller
- * reads as the default answer (start) -- and Ctrl-C stays the terminal's SIGINT
- * (the process dies unanswered, exactly like the script resolvers did).
- * Exported for the spawn-level EOF/answer test.
+ * Show `query` on stderr and read one raw answer line from stdin. Raw stdin data events,
+ * NOT node:readline's question(): with stdin already CLOSED and no line ever arriving (the
+ * redirected/headless shape) rl.question never settles, and EOF-resolves-to-"" is
+ * load-bearing (EOF means START, the apiKeyHelper case). Piped lines DO deliver, so testing
+ * only that case would not show the hang. Readline's prompt (and consola.prompt) also
+ * write to stdout, which must stay key-only. Like the shells' `read -r`: a canonical-mode
+ * TTY delivers a full echoed line, EOF with no line resolves "", and Ctrl-C stays the
+ * terminal's SIGINT. Exported for the spawn-level EOF/answer test.
  */
 export function readStartAnswer(query: string): Promise<string> {
   process.stderr.write(query);
@@ -145,18 +132,13 @@ function answerMeansStart(answer: string): boolean {
 
 /**
  * The resolver decision matrix (pure orchestration over `deps`):
- *
- *   1. Proxy down + managed lifecycle on  -> auto-start silently (no prompt, even
- *      interactive -- the opt-in is honored on every path).
- *   2. Proxy down + unmanaged + interactive -> offer to start; declining continues
- *      without (the heartbeat/probe below still run and report the down proxy).
- *   3. Proxy down + unmanaged + --yes -> never auto-start (headless callers opted
- *      out of the managed lifecycle; starting here would un-opt them).
- *
- * Then always: heartbeat (keeps an open agent's proxy alive), re-probe, and print
- * the key ONLY if the proxy is actually up. Returns the exit code (0 key printed,
- * 1 proxy down -- with a stderr pointer when a silent auto-start hid the failure,
- * or cl/cx would exit with no clue why).
+ * 1. Proxy down + managed lifecycle on -> auto-start silently (no prompt, even
+ *    interactive: the opt-in is honored on every path).
+ * 2. Proxy down + unmanaged + interactive -> offer to start; declining continues without.
+ * 3. Proxy down + unmanaged + --yes -> never auto-start (headless callers opted out of the
+ *    managed lifecycle; starting here would un-opt them).
+ * Then always: heartbeat, re-probe, print the key ONLY if the proxy is actually up. Returns
+ * 0 (key printed) or 1 (proxy down, with a stderr pointer when a silent auto-start hid it).
  */
 export async function resolveProxyToken(
   action: ProxyTokenAction,

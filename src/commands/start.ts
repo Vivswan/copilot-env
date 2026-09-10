@@ -113,18 +113,13 @@ export function parseStartAction(flags: StartFlags): StartAction {
 
 /**
  * The cheap (sync) part of the managed-lifecycle "leave a running proxy up" gate, shared by
- * the dry-run and live paths: only a no-op candidate when the lifecycle is managed AND this is
- * not a forced or explicitly-ported (re)launch. The caller still confirms the proxy is actually
- * up via `proxyStatus()` before short-circuiting.
- *
- * Idempotent ONLY in the managed lifecycle (auto-start on): there the proxy is auto-started by
- * the resolver and auto-stopped by the watchdog, so a redundant manual `start` should leave the
- * running daemon (and any connected Codex/Claude) untouched rather than tearing it down and
- * relaunching. In the unmanaged/default mode the user drives start/stop by hand, so `start`
- * stays an explicit (re)start. Bump the heartbeat (a manual start is a keep-alive vs the idle
- * watchdog). `--force` launches a fresh daemon either way (e.g. after a credential/config
- * change), and an explicit `--port` is a reconfiguration request, so it always (re)launches
- * rather than no-op'ing.
+ * the dry-run and live paths; the caller still confirms the proxy is up via `proxyStatus()`
+ * before short-circuiting. Idempotent ONLY in the managed lifecycle (auto-start on): there
+ * the resolver auto-starts and the watchdog auto-stops, so a redundant manual `start` must
+ * leave the running daemon (and any connected Codex/Claude) untouched. Unmanaged, the user
+ * drives start/stop by hand, so `start` stays an explicit (re)start. `--force` launches a
+ * fresh daemon either way (e.g. after a credential change), and an explicit `--port` is a
+ * reconfiguration request, so it always (re)launches.
  */
 function isIdempotentNoOp(
   action: { force: boolean; port?: number },
@@ -331,23 +326,24 @@ async function reportCheckProbe(profile: Profile): Promise<void> {
  *  parameter exists so a test can hand runPreflight hermetic state and lock paths. */
 export type PreflightRunner = (opts: PreflightOptions) => Promise<void>;
 
+// Ordering of the self-update against the launch: PROJECT_ROOT names the `current` link
+// (src/utils/root.ts), so a daemon spawned after a flip loads the new release's preloads
+// under the spawning binary's launch logic. Spawning first keeps this turn's daemon on one
+// consistent release; holding the start lock through the flip means no other start spawns
+// while `current` is mid-flip (withStartLock waits unbounded, with a notice, so once a day
+// a second start may wait out one release download). A waiter that had already loaded the
+// OLD binary then spawns through the NEW `current`: that one-launch skew is accepted with
+// the link-named root.
+
 /**
  * The opt-in self-update, the LAST step of every live `start`: after the launch outcome
  * (spawned, left running, or failed) and still INSIDE the start lock. The preflight alone
  * decides (the auto-update key, the daily cadence, its own update lock, the release
- * cooldown, the source-checkout skip) and may flip the install's live version -- which
- * a later start runs. Both orderings are the point: PROJECT_ROOT names the `current` link
- * (src/utils/root.ts), so a daemon spawned after a flip loads the new release's preloads
- * under the spawning binary's launch logic. Spawning first keeps this turn's daemon on one
- * consistent release; holding the start lock through the flip means no other start spawns
- * while `current` is mid-flip (it waits -- withStartLock waits unbounded, with a notice --
- * so once a day a second start may wait out one release download). A waiter that had
- * already loaded the OLD binary then spawns through the NEW `current`: that one-launch skew
- * is accepted with the link-named root. Best-effort by contract: a failed check or update
- * is a stderr warning, never a failed `start`, and
- * nothing it prints lands on stdout or touches the exit code -- the shared consola is
- * routed to stderr for exactly this scope, so library narration reached from the update
- * (the installer's shim writes) cannot leak.
+ * cooldown, the source-checkout skip) and may flip the install's live version, which a
+ * later start runs. Best-effort by contract: a failed check or update is a stderr warning,
+ * never a failed `start`, and nothing it prints lands on stdout or touches the exit code;
+ * the shared consola is routed to stderr for exactly this scope, so library narration
+ * reached from the update (the installer's shim writes) cannot leak.
  */
 async function selfUpdatePreflight(preflight: PreflightRunner): Promise<void> {
   await withConsolaOnStderr(async () => {

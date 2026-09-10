@@ -8,28 +8,21 @@
 // Every raw filesystem mutation in src/ goes through the wrappers below (the lint rule
 // in test/lint/no_unreported_fs_writes.ts refuses a raw node:fs write anywhere else,
 // bar the lock protocol's internals in file_lock.ts); the seam then decides what prints.
-// Three things are NOT reported:
-//   - copilot-env's own homes: everything INSIDE the install root (~/.copilot-env:
-//     versions, the current link, shims, caches) and the data home
-//     (~/.local/share/copilot-env: stores, lock sidecars, profile and daemon homes, the
-//     usage index) is internal bookkeeping. Each home's owner registers its root through
-//     hideWritesUnder; the roots THEMSELVES still report when created or removed.
-//   - scratch: a temp dir this process creates AND removes before it exits
-//     (scratchDir/removeScratchDir) -- nothing under it is a file the user keeps;
-//   - the transient side of a recipe: the temp file an atomic write publishes by
-//     rename, the marker file the lock protocol creates and deletes per acquisition.
+// NOT reported: copilot-env's own homes (each home's owner registers its root through
+// hideWritesUnder; the roots THEMSELVES still report when created or removed), scratch (a
+// temp dir this process creates AND removes before it exits), and the transient side of a
+// recipe (an atomic write's temp file, the lock protocol's per-acquisition marker file).
 //
 // A line is printed only for a mutation that PROVABLY landed: on success, the kind the
 // operation performed; after a failure, only what a before/after look at the path proves
 // changed (absent then present, present then absent, or a different identity, mtime or
 // size) -- never from "the path still exists", which a refused write leaves true.
 //
-// One line per path: a writer that has something to say about a write (which config it
-// is, why the entry went) says it in the line's `detail` instead of a second line naming
-// the same path. Dedup is per path, with a delete as the epoch boundary: a store saved five times in
-// one run prints once, a create followed by a rewrite of the same path is one fact, and
-// a delete clears the slate so a later re-creation (or re-link, or a second delete after
-// it) is announced again.
+// One line per path: a writer with something to say about a write (which config it is,
+// why the entry went) says it in the line's `detail`, never in a second line naming the
+// same path. Dedup is per path, with a delete as the epoch boundary: a store saved five
+// times in one run prints once, a create then a rewrite is one fact, and a delete clears
+// the slate so a later re-creation (or re-link, or a second delete) is announced again.
 import {
   chmodSync,
   copyFileSync,

@@ -64,19 +64,13 @@ export async function wireBothAgents(
 }
 
 /**
- * The direct client identity header to bake for `profile` (null = the default
- * slot): the config pin, else the persisted slot value, else a fresh probe --
- * persisted only when it can be keyed to the credential it ran under, so the
- * launcher hot path (`--settings-for` / `--sync` on every `cl --profile`) and
- * the default's re-wires replay the stored verdict and re-probe only while no
- * verdict could be keyed (a rotation raced the probe, or it ran
- * credential-free).
- *
- * The slot stores the identity NAME, not the header value, so "probed, the default won"
- * (CODEX_IDENTITY_NAME) is distinguishable from "never probed" (null). Only a named
- * integration is a real header; the default sends none. A credential change clears the
- * slot (CopilotEnvState.setCredential), which is what re-arms the probe.
- * `credentialToken` is forwarded to the probe (see wireBothAgents).
+ * The direct client identity header to bake for `profile` (null = the default slot): the
+ * config pin, else the persisted slot value, else a fresh probe, persisted only when it can
+ * be keyed to the credential it ran under. So the launcher hot path (`--settings-for` /
+ * `--sync` on every `cl --profile`) and the default's re-wires replay the stored verdict and
+ * re-probe only while no verdict could be keyed (a rotation raced the probe, or it ran
+ * credential-free). A credential change clears the slot (CopilotEnvState.setCredential),
+ * which re-arms the probe. `credentialToken` is forwarded to the probe (see wireBothAgents).
  * Throws if the credential is rejected under every identity.
  */
 export async function resolveAndPersistDirectIdentity(
@@ -86,6 +80,9 @@ export async function resolveAndPersistDirectIdentity(
   const pin = new CopilotEnvConfig().pinnedIntegrationId();
   if (pin !== null) return pin;
   const slot = new CopilotEnvState().readProfileSlot(profile);
+  // The slot stores the identity NAME, not the header value, so "probed, the default won"
+  // (CODEX_IDENTITY_NAME) is distinguishable from "never probed" (null). Only a named
+  // integration is a real header; the default sends none.
   if (slot.integrationIdentity !== null) {
     return slot.integrationIdentity === CODEX_IDENTITY_NAME ? null : slot.integrationIdentity;
   }

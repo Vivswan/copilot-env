@@ -1,40 +1,25 @@
-// Apply a resolved release with a prepare-then-commit pipeline over the
-// versioned install layout (src/install/installer.ts owns the layout):
+// Apply a resolved release with a prepare-then-commit pipeline over the versioned install
+// layout (src/install/installer.ts owns the layout):
 //
-//   1. download + verify into a staging dir inside the install root: the
-//      SHA256 against checksums.txt first (integrity, cheap, and its failure
-//      message is the actionable one), then the release's Sigstore
-//      build-provenance attestation (origin; src/install/attestation.ts says
-//      why both), unless the caller decided to skip it,
-//   2. STAGE the verified binary into `<top>/versions/vNEW/bin/`,
-//   3. PROVISION: run the NEW binary's `install --assets-only` INSIDE that
-//      version root (aimed with COPILOT_ENV_INSTALL_ROOT), so the release that
-//      owns the assets writes them -- while the OLD version is still live,
-//   4. COMMIT: flip the `current` link (and refresh the top-level shims).
+// 1. download + verify into a staging dir inside the install root: the SHA256 against
+//    checksums.txt first (integrity, cheap, and its failure message is the actionable one),
+//    then the release's Sigstore build-provenance attestation (origin;
+//    src/install/attestation.ts says why both), unless the caller decided to skip it,
+// 2. STAGE the verified binary into `<top>/versions/vNEW/bin/`,
+// 3. PROVISION: run the NEW binary's `install --assets-only` INSIDE that version root (aimed
+//    with COPILOT_ENV_INSTALL_ROOT), so the release that owns the assets writes them, while
+//    the OLD version is still live,
+// 4. COMMIT: flip the `current` link (and refresh the top-level shims).
 //
 // Any failure BEFORE the flip leaves the old version fully live and removes the
-// half-prepared version dir; nothing pre-commit is best-effort. A failure OF
-// the flip itself also leaves the old version live (the link is replaced
-// atomically on POSIX; Windows restores the old junction on a failed create,
-// except a double fault -- restore failing too -- which leaves the link absent
-// and says so in the error), with the fully-provisioned new version dir left
-// inert on disk -- a retry's staging removes it. Only the post-flip steps are
-// best-effort: `agent migrate` on the new binary, then the GC that keeps
-// exactly ONE previous version for rollback -- the flip has already moved the
-// install forward, so failing there would strand it instead of retrying.
-//
-// The one update implementation, shared by `agent update` (src/commands/update.ts)
-// and the autoupdate preflight (./preflight.ts). Callers own the up-to-date /
-// `--check` / dev-checkout gates.
-//
-// The pipeline stages hand branded tokens forward (the brand is module-private,
-// so a token can only come from the real stage function). That is what makes
-// "committed a version nobody provisioned" unrepresentable rather than merely
-// untrue today:
-//
-//   download -> Downloaded -> verify -> Verified -> attest -> Attested
-//     -> stage -> Staged -> provision -> Provisioned -> commit -> Committed
-//     -> (migrate, GC)
+// half-prepared version dir; nothing pre-commit is best-effort. A failure OF the flip also
+// leaves the old version live (the link is replaced atomically on POSIX; Windows restores
+// the old junction on a failed create, except a double fault, restore failing too, which
+// leaves the link absent and says so in the error), with the fully-provisioned new version
+// dir left inert on disk; a retry's staging removes it. Only the post-flip steps are
+// best-effort: `agent migrate` on the new binary, then the GC that keeps exactly ONE
+// previous version for rollback. The flip has already moved the install forward, so failing
+// there would strand it instead of retrying.
 import { spawnSync, type StdioOptions } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -136,8 +121,12 @@ const defaultVerifier: ProvenanceVerifier = async (tag, bundleJson, required) =>
   await verifyReleaseProvenance(tag, bundleJson, required);
 };
 
-// Stage tokens. The brand is a module-private symbol, so no caller outside this
-// file can fabricate one and skip a stage.
+// Stage tokens: each stage hands a branded token forward. The brand is a module-private
+// symbol, so no caller outside this file can fabricate one and skip a stage; that is what
+// makes "committed a version nobody provisioned" unrepresentable rather than merely untrue
+// today:
+//   download -> Downloaded -> verify -> Verified -> attest -> Attested
+//   -> stage -> Staged -> provision -> Provisioned -> commit -> Committed -> (migrate, GC)
 declare const stageBrand: unique symbol;
 
 interface Downloaded {
@@ -456,8 +445,10 @@ export interface ApplyUpdateOptions {
   provenance: ProvenanceDecision;
 }
 
-/** `_lock` is the caller's evidence that the update lock is held (only withUpdateLock's
- *  held branch mints one), so every apply happens inside that lock's scope. */
+/** The one update implementation, shared by `agent update` (src/commands/update.ts) and the
+ *  autoupdate preflight (./preflight.ts); callers own the up-to-date / `--check` /
+ *  dev-checkout gates. `_lock` is the caller's evidence that the update lock is held (only
+ *  withUpdateLock's held branch mints one), so every apply happens inside that lock's scope. */
 export async function applyUpdate(
   current: string,
   target: Release,

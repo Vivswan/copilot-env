@@ -436,23 +436,21 @@ export interface ImportOutcome {
 }
 
 /**
- * One slot's planned landing, judged on the RESULTING store slot:
- *   - write: the bundle's credential lands (a real token, or gh-cli once the
- *     local `gh` proved it resolves) -- already in the store's provisioned
- *     union, so the apply can never write half a credential. `resolvedToken`
- *     is what that slot resolves to, handed to the wiring so nothing re-runs
- *     a resolver.
- *   - keep:  nothing usable travels -- the local slot survives untouched and
- *     ITS resolution decides wireability, so a redacted bundle over a working
- *     local credential still wires normally. A gh-cli slot whose `gh` does not
- *     resolve falls through to here for the same reason: gh failing only rules
- *     out the BUNDLE's credential, not the machine's.
- *   - skip:  nothing resolves at all; `reason` says why (with the gh hint when
- *     gh-cli was involved) and the apply writes nothing to the slot.
+ * One slot's planned landing, judged on the RESULTING store slot. A gh-cli slot whose `gh`
+ * does not resolve lands as `keep`: gh failing only rules out the BUNDLE's credential, not
+ * the machine's.
  */
 type SlotPlan =
+  // The bundle's credential lands (a real token, or gh-cli once the local `gh` proved it
+  // resolves); already in the store's provisioned union, so the apply can never write half
+  // a credential. `resolvedToken` is what the slot resolves to, handed to the wiring so
+  // nothing re-runs a resolver.
   | { action: "write"; credential: ProvisionedCredential; resolvedToken: string | null }
+  // Nothing usable travels: the local slot survives untouched and ITS resolution decides
+  // wireability, so a redacted bundle over a working local credential still wires normally.
   | { action: "keep"; resolvedToken: string | null }
+  // Nothing resolves at all; `reason` says why (with the gh hint when gh-cli was involved)
+  // and the apply writes nothing to the slot.
   | { action: "skip"; reason: string };
 
 function localSlotToken(
@@ -546,24 +544,6 @@ export interface ImportPlan {
   writes: string[];
 }
 
-/**
- * The confirmation lines: every store section and config file the apply will
- * write, and nothing else -- a skipped slot produces no line, and preserved
- * local content appears only where it is actually overwritten. The file list
- * mirrors what the wiring writers touch (configureClaudeConfig /
- * applyCodexConfig / wireBothAgents); the writers expose no dry-run surface to
- * derive it from, so the mapping lives here, next to the plan it describes,
- * and dynamic sets (the catalog sync's host-config sweep) are summarized in
- * one honest line rather than enumerated stale.
- *
- * PLAN-INPUT RULE: everything read here must be either apply-immutable (env,
- * homes, the pre-import store content being described as overwritten) or
- * resolved as its POST-import value when the apply mutates it before the
- * writers read it. Two preferences gate the written file set: wire-mcp is
- * resolved post-import (the preference store is replaced before the Claude
- * writer consults it); codex-model-catalog is covered by the default-Codex
- * line's unconditional "may rewrite" hedge instead, so no write is ever missed.
- */
 /** Named-profile wiring writes its provider tables into the effective home's
  *  config.toml. It runs after the store replace, so the home is resolved under the
  *  BUNDLE's codex-host value. */
@@ -571,6 +551,21 @@ function profileCodexLine(codexHost: boolean): string {
   return `Codex config: ${codexConfigPath(effectiveCodexHomeFor(codexHost))}`;
 }
 
+// PLAN-INPUT RULE for planWrites: everything read there must be either apply-immutable
+// (env, homes, the pre-import store content being described as overwritten) or resolved as
+// its POST-import value when the apply mutates it before the writers read it. Two
+// preferences gate the written file set: wire-mcp is resolved post-import (the preference
+// store is replaced before the Claude writer consults it); codex-model-catalog is covered
+// by the default-Codex line's unconditional "may rewrite" hedge instead.
+
+/**
+ * The confirmation lines: every store section and config file the apply will write, and
+ * nothing else; a skipped slot produces no line, and preserved local content appears only
+ * where it is actually overwritten. The file list mirrors what the wiring writers touch
+ * (configureClaudeConfig / applyCodexConfig / wireBothAgents); they expose no dry-run
+ * surface to derive it from, so the mapping lives here, next to the plan it describes, and
+ * dynamic sets (the catalog sync's host-config sweep) are summarized in one honest line.
+ */
 function planWrites(
   bundle: SettingsBundle,
   defaultSlot: SlotPlan,
@@ -739,20 +734,14 @@ function importPreferences(config: CopilotEnvConfigData): void {
 }
 
 /**
- * Execute the profile half of the plan through the same atomic machinery
- * `agent profile --add` uses: credential + mode land as ONE commitProfile
- * write, so a crash or wiring failure can never leave a half profile -- at
- * worst a complete-but-unwired slot that `agent profile --sync` (or a re-add)
- * re-derives. A skipped slot was already reported at plan time and writes
- * nothing. Per-profile resilient, the commit itself included: a slot whose
- * commit throws is reported and skipped whole -- the same "ask, never break"
- * posture as a credential that fails to resolve -- and never blocks the rest
- * (mirrors `profile --sync`).
- *
- * Unlike the DEFAULT slot, a proxy-mode profile still requires a resolvable
- * credential: `agent profile --add` always ensures the profile's OWN
- * credential before committing either mode (runAdd in src/commands/profile.ts),
- * so the import restores nothing weaker than what `--add` would create.
+ * Execute the profile half of the plan through the same atomic machinery `agent profile
+ * --add` uses: credential + mode land as ONE commitProfile write, so a crash or wiring
+ * failure can never leave a half profile (at worst a complete-but-unwired slot that
+ * `profile --sync` or a re-add re-derives). Per-profile resilient, the commit included: a
+ * slot whose commit throws is reported and skipped whole, never blocking the rest. Unlike
+ * the DEFAULT slot, a proxy-mode profile still requires a resolvable credential: `agent
+ * profile --add` always ensures the profile's OWN credential before committing either mode
+ * (runAdd in src/commands/profile.ts), so the import restores nothing weaker than `--add`.
  */
 async function importProfiles(plan: ImportPlan, outcome: ImportOutcome): Promise<void> {
   const state = new CopilotEnvState();

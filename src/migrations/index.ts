@@ -53,15 +53,13 @@ export interface Migration {
 
 /**
  * One file per version step (named for the from-version), registered in ascending order.
- * A release that needs several INDEPENDENT fix-ups registers them all under its version
- * (still in that one file); registry order is their run order -- dueMigrations sorts
- * across versions but keeps registry order within one.
- *
+ * A release with several INDEPENDENT fix-ups registers them all under its version (in that
+ * one file); registry order is their run order (dueMigrations keeps it within a version).
  * Every step shipped before the deno rewrite was deleted: a pre-rewrite install runs the
  * OLD bun-based updater, which cannot even load this file (its first import reaches
  * `@std/dotenv`, a jsr specifier only deno's import map resolves), so no historical step
- * could still be reached. Each deleted step's persisted-state fix was re-derivable by
- * `agent init` / `auth` / `claude` / `shell`, or self-healing on the catalog sync timer.
+ * could still be reached; each one's fix was re-derivable by `agent init` / `auth` /
+ * `claude` / `shell`, or self-healing on the catalog sync timer.
  */
 const MIGRATIONS: Migration[] = [
   v356,

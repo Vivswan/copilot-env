@@ -429,10 +429,9 @@ test("the lock primitives and the update-lock test seam stay out of src/", () =>
 // lock, however the pid table would have read. The age-horizon arm beside it is the
 // capability control (the refusal above is the judgment, not a probe-broken harness
 // that cannot acquire at all) AND the no-brick direction: the daemon lock's own
-// staleMs-0 acquire is age-governed, so an unprovable token still boots. Under the
-// historical dead-on-unproven read -- or a wrapper flattened the unsafe way
-// (`=== "alive"`) -- the first arm goes red: the unprovable probe steals the live
-// holder's lock and rewrites its marker.
+// staleMs-0 acquire is age-governed, so an unprovable token still boots. A wrapper
+// flattened the unsafe way (`=== "alive"`) turns the first arm red: the unprovable probe
+// steals the live holder's lock and rewrites its marker.
 test("an unprovable liveness probe never licenses a steal; the age horizon still reclaims", async () => {
   const path = tmp("unprovable.lock");
   const agedPath = join(dir, "aged.lock");

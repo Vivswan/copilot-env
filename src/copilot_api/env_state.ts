@@ -134,22 +134,14 @@ function rawCredentialPatch(
 
 // --- credential profiles -------------------------------------------------------
 //
-// A profile is ONE credential slot plus ONE wiring mode (direct or proxy, never
-// both), applied to BOTH agents. The DEFAULT is a profile too: its slot lives in
-// the `profiles` map under the reserved `default` key (parseProfileName rejects
-// the name, so a named profile can never collide with it). The slot is the ONLY
-// layout the store reads: a pre-slot release's top-level `githubToken`/
-// `authProvider` pair is unknown to the reader (it reads as no default
-// credential) and survives every write untouched until the 3.5.6 migration
-// lifts it into the slot (`adoptLegacyDefaultCredential`, its one entry point).
-// Named profiles NEVER fall back to the default credential (ask, never silently
-// fall back); `Credential` enforces that by reading ONLY the addressed slot via
-// readCredential/setCredential, the single routing point for every slot. The
-// `mode` field makes THIS store the source of truth for a profile's wiring (the
-// agent artifacts are derived from it): for a named profile that is what lets
-// one command create/check/delete it atomically, and for the default it records
-// the desired mode `agent init` wrote (the artifacts stay the live truth the
-// wiring readers sniff).
+// A profile is ONE credential slot plus ONE wiring mode, applied to BOTH agents.
+// The DEFAULT is a profile too: its slot sits in `profiles` under the reserved
+// `default` key (parseProfileName rejects the name). Named profiles NEVER fall
+// back to the default credential (ask, never silently fall back): `Credential`
+// reads ONLY the addressed slot via readCredential/setCredential, the single
+// routing point for every slot. The `mode` field makes THIS store the source of
+// truth for a profile's wiring (the agent artifacts are derived from it); for the
+// default it records what `agent init` wrote, the artifacts staying the live truth.
 
 /** A profile's wiring mode (mirrors ManagedAgentMode; declared here so the store
  *  layer stays dependency-light). */
@@ -598,15 +590,12 @@ export class CopilotEnvState {
   /**
    * Record the credential slot addressed by `profile`. Takes the provisioned
    * union whole (never a patch), so a token without its provider or a token
-   * paired with gh-cli cannot be written at all. A NAMED profile's STORE slot
-   * must already exist -- profiles are CREATED only through `commitProfile` --
-   * and the check runs INSIDE the same atomic update as the write, so a racing
-   * `deleteProfile` cannot slip between the check and the merge and resurrect a
-   * credential-only half slot. The DEFAULT slot always exists conceptually, so
-   * its write creates the reserved slot when absent. The derived
-   * `integrationIdentity` is cleared: it is a probe result keyed to the
-   * credential, so any credential change (re-auth) must invalidate it -- the
-   * next wiring re-derives it.
+   * paired with gh-cli cannot be written at all. A NAMED profile's slot must
+   * already exist (profiles are CREATED only through `commitProfile`), checked
+   * INSIDE the same atomic update as the write so a racing `deleteProfile`
+   * cannot resurrect a credential-only half slot; the DEFAULT slot is created
+   * when absent. The derived `integrationIdentity` is cleared: it is a probe
+   * result keyed to the credential, so a credential change must invalidate it.
    */
   setCredential(profile: Profile, credential: ProvisionedCredential): void {
     const patch = rawCredentialPatch(credential);
@@ -667,15 +656,13 @@ export class CopilotEnvState {
   }
 
   /**
-   * THE owning transition that makes a named profile exist: both halves of the
-   * slot -- ONE credential + ONE mode -- written in a single atomic update, so
-   * the store can never hold a freshly created half profile (no interleaving
-   * write or crash window between the halves). The existing raw slot is
-   * mutated, not replaced, so unknown keys a newer release wrote survive (the
-   * store-wide preserve-unknown-keys contract). The cached
-   * `integrationIdentity` survives only when the committed credential is
-   * identical to the stored one (it is derived from the credential; a re-add
-   * that keeps the credential must not force a re-probe).
+   * THE owning transition that makes a named profile exist: ONE credential + ONE
+   * mode written in a single atomic update, so the store can never hold a half
+   * profile. The existing raw slot is mutated, not replaced, so unknown keys a
+   * newer release wrote survive (the store-wide preserve-unknown-keys contract).
+   * The cached `integrationIdentity` survives only when the committed credential
+   * equals the stored one (a re-add that keeps the credential must not force a
+   * re-probe).
    */
   commitProfile(
     name: ProfileName,

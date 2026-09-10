@@ -82,19 +82,16 @@ function statIfPresent(path: string): Stats | null {
 }
 
 // --- profile homes ------------------------------------------------------------
-//
-// EVERY profile's daemon -- the default included -- runs against its own
-// isolated home, `<root>/profiles/<name>` (own config.json + auth.apiKeys,
-// .run/, sqlite, logs), because two daemons over one home would contend on
-// sqlite/config.json. The ACCOUNT-WIDE copilot-env files (credential store,
-// preferences, ownership ledger, the Codex catalog, copilot-api's device-login
-// file, the proxy float record and its caches) always anchor at the ROOT home,
-// so every profile shares one credential store and one preference set.
-//
-// A daemon is spawned with COPILOT_API_HOME pointing at its profile home (so
-// the daemon and its in-process preloads read/write there) plus
-// COPILOT_ENV_ROOT_HOME pointing back at the root -- the explicit signal that
-// lets the preloads' zero-arg constructors still find the shared files.
+
+// EVERY profile's daemon -- the default included -- runs against its own isolated home,
+// `<root>/profiles/<name>` (own config.json + auth.apiKeys, .run/, sqlite, logs), because two
+// daemons over one home would contend on sqlite/config.json. The ACCOUNT-WIDE copilot-env
+// files (credential store, preferences, ownership ledger, the Codex catalog, copilot-api's
+// device-login file, the proxy float record and its caches) always anchor at the ROOT home,
+// so every profile shares one credential store and one preference set. A daemon is spawned
+// with COPILOT_API_HOME pointing at its profile home (the daemon and its in-process preloads
+// read/write there) plus COPILOT_ENV_ROOT_HOME pointing back at the root, the explicit signal
+// that lets the preloads' zero-arg constructors still find the shared files.
 
 /** Directory under the root home that holds the per-profile daemon homes. */
 export const PROFILES_DIR_NAME = "profiles";
@@ -160,17 +157,14 @@ export function profileHome(name: ProfileName): string {
 }
 
 /**
- * THE default daemon's home -- the one place its precedence is decided:
- *   1. Inside a daemon (COPILOT_ENV_ROOT_HOME set at spawn), COPILOT_API_HOME
- *      IS the daemon's own pinned home; nothing is derived.
- *   2. Otherwise the default daemon lives at `<root>/profiles/default` -- the
- *      same shape as every named profile -- whenever that directory exists,
- *      and on a fresh root carrying no daemon files at all.
- *   3. Only a root still holding an unmigrated FLAT daemon home resolves to the
- *      root itself, until the 3.5.6 default-home fix-up moves those files:
- *      any of DAEMON_HOME_ARTIFACTS directly at the root, or an unfinished
- *      staging move (DEFAULT_HOME_STAGING_DIR -- its artifacts are still the
- *      flat home's until the flip), with no profiles/default beside them.
+ * THE default daemon's home -- the one place its precedence is decided. Inside a daemon
+ * (COPILOT_ENV_ROOT_HOME set at spawn), COPILOT_API_HOME IS the daemon's own pinned home;
+ * nothing is derived. Otherwise the default daemon lives at `<root>/profiles/default` (the
+ * same shape as every named profile) whenever that directory exists or the root carries no
+ * daemon files at all. Only a root still holding an unmigrated FLAT daemon home resolves to
+ * the root itself, until the 3.5.6 default-home fix-up moves those files: any of the
+ * DAEMON_HOME_ARTIFACTS directly at the root, or an unfinished staging move (the artifacts in
+ * DEFAULT_HOME_STAGING_DIR are the flat home's until the flip), with no profiles/default beside.
  */
 export function defaultDaemonHome(): string {
   if (process.env[ROOT_HOME_ENV]) return resolveHome();

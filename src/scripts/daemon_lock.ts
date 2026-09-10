@@ -41,11 +41,8 @@ const ACQUIRE_WAIT_MS = 5_000;
  * That is also why this uses the tryAcquireFileLock PRIMITIVE rather than the scoped
  * withFileLock API -- a scope pairs its acquisition with a release on exit, and a lock
  * whose lifetime is the process has no exit to release on (test/file_lock.test.ts pins
- * this module as the one production consumer of the primitive).
- *
- * Bounded retries absorb a CLI probe's transient hold (probeFileLock acquires for a
- * moment to observe); a holder still there after the budget is a genuinely live process
- * in this home, reported as `false`. The knobs are injectable for tests only.
+ * this module as the one production consumer of the primitive). The knobs are
+ * injectable for tests only.
  */
 export function acquireDaemonLockForLife(
   home: string,
@@ -53,6 +50,9 @@ export function acquireDaemonLockForLife(
 ): boolean {
   const lockPath = daemonLockPath(home);
   const deadline = Date.now() + (opts.waitMs ?? ACQUIRE_WAIT_MS);
+  // Bounded retries absorb a CLI probe's transient hold (probeFileLock acquires for a
+  // moment to observe); a holder still there after the budget is a genuinely live
+  // process in this home, reported as `false`.
   for (;;) {
     if (tryAcquireFileLock(lockPath, ACQUIRE_STALE_MS)) return true;
     if (Date.now() >= deadline) return false;

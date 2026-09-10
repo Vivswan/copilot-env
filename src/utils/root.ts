@@ -8,24 +8,22 @@ import { hideWritesUnder } from "./report_write.ts";
 
 /**
  * How this copy of copilot-env is running, and the ON-DISK install root that follows.
- *
- * - `checkout`: running from source (`deno run src/cli.ts`) -- a dev clone or a
- *   worktree. The root is the source tree itself, so the code we execute and the
- *   files we manage are the same directory.
- * - `compiled`: running as a `deno compile` binary installed at
- *   `<root>/bin/copilot-env`. The root is derived from `Deno.execPath()`, NEVER from
- *   `import.meta.url`: inside a compiled binary that URL points into the embedded
- *   virtual filesystem (a temp-dir-shaped path that exists only in-process). Paths
- *   we hand to OTHER programs -- Codex's `auth.command`, Claude's `apiKeyHelper`,
- *   the daemon's preload shims -- must be real on-disk paths, and a VFS path would
- *   also invert the checkout/installed distinction every destructive gate reads.
- *
  * The `kind` is the single source of that distinction: nothing downstream re-derives
  * it from an ambient file probe, so a test can inject a sandbox root and get the
  * matching policy with it.
  */
 export type RootMode =
+  /** Running from source (`deno run src/cli.ts`): a dev clone or a worktree. The root
+   *  is the source tree itself, so the code we execute and the files we manage are
+   *  the same directory. */
   | { readonly kind: "checkout"; readonly root: string }
+  /** Running as a `deno compile` binary installed at `<root>/bin/copilot-env`. The
+   *  root is derived from `Deno.execPath()`, NEVER from `import.meta.url`: inside a
+   *  compiled binary that URL points into the embedded virtual filesystem (a
+   *  temp-dir-shaped path that exists only in-process). Paths we hand to OTHER
+   *  programs -- Codex's `auth.command`, Claude's `apiKeyHelper`, the daemon's
+   *  preload shims -- must be real on-disk paths, and a VFS path would also invert
+   *  the checkout/installed distinction every destructive gate reads. */
   | { readonly kind: "compiled"; readonly root: string };
 
 /** Overrides the compiled binary's install root (relocatable/staged installs). */
@@ -124,8 +122,7 @@ export function denoRuntime(): DenoRuntimeGlobal | null {
  * deno. It matters everywhere the runtime's own executable is treated as a deno: under a
  * standalone, `Deno.execPath()` is OUR binary, which cannot run `deno cache` or launch
  * the proxy. Deno reports this itself, so it is observed rather than inferred from paths.
- *
- * It is also what discriminates RootMode. Preferred over sniffing the shape of
+ * It is also what discriminates RootMode, preferred over sniffing the shape of
  * `import.meta.url`: the compiled VFS path is a plain `file:` URL under the temp dir, so
  * it is indistinguishable from a legitimate source path by scheme, and its directory name
  * follows the output file name (not `--app-name`), which no contract pins.
@@ -148,19 +145,14 @@ export function devDenoExecPath(): string | null {
 }
 
 /**
- * The compiled install root for a binary on disk at `binaryPath`. Exported for
- * tests (the live answer is locked into ROOT_MODE at startup): the versioned
- * mapping is a GC-survival property worth pinning -- a root naming
- * `versions/<name>` would put version-dir paths into every persisted artifact.
- *
- * <root>/bin/copilot-env -> <root>. The installers put the binary there and the
+ * The compiled install root for a binary on disk at `binaryPath`:
+ * `<root>/bin/copilot-env` -> `<root>`. The installers put the binary there and the
  * bin/agent shim next to it; nothing else may define the layout. In a VERSIONED
- * layout that derivation lands on the version dir (execPath resolves the
- * `current` link on most platforms) and the root must be the LINK instead:
- * every path persisted outside the install (agent configs, rc blocks, daemon
- * preload paths) is built from this root and has to survive version GC, which
- * `<top>/versions/<name>/...` never would. A derivation that already reads
- * `<top>/current` (an unresolved execPath) needs no mapping.
+ * layout that derivation lands on the version dir (execPath resolves the `current`
+ * link on most platforms) and the root must be the LINK instead: every path
+ * persisted outside the install (agent configs, rc blocks, daemon preload paths) is
+ * built from this root and has to survive version GC, which `<top>/versions/<name>/...`
+ * never would. Exported for tests (the live answer is locked into ROOT_MODE at startup).
  */
 export function derivedCompiledRoot(binaryPath: string): string {
   const derived = dirname(dirname(binaryPath));
@@ -191,17 +183,14 @@ export function rootMode(): RootMode {
 export const PROJECT_ROOT: string = ROOT_MODE.root;
 
 /**
- * Where an install keeps its MACHINE state (`.env`, `.autoupdate`): the top
- * root of a versioned layout -- state must survive updates and version GC, so
- * it can never live inside (or resolve through the `current` link into) a
- * version dir -- and the root itself everywhere else (a flat install, a
- * checkout). Pure path logic over the layout names, so callers can pass any
- * root spelling they hold.
- *
- * Constraint: an update's provision stage aims the child binary (via
- * COPILOT_ENV_INSTALL_ROOT) at `<top>/versions/vNEW` before `current` points at
- * it, so for that child this resolves machine state inside the version dir --
- * safe only while `install --assets-only` reads none of it.
+ * Where an install keeps its MACHINE state (`.env`, `.autoupdate`): the top root of
+ * a versioned layout (state must survive updates and version GC, so it never lives
+ * inside, or resolves through the `current` link into, a version dir), else the root
+ * itself (a flat install, a checkout). Pure path logic over the layout names, so
+ * callers can pass any root spelling they hold. Constraint: an update's provision
+ * stage aims the child binary (via COPILOT_ENV_INSTALL_ROOT) at `<top>/versions/vNEW`
+ * before `current` points at it, so for that child this resolves machine state inside
+ * the version dir -- safe only while `install --assets-only` reads none of it.
  */
 export function installStateRoot(root: string = PROJECT_ROOT): string {
   const resolved = resolve(root);

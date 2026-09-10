@@ -143,19 +143,18 @@ export function spawnChild(cmd: string, options: Deno.CommandOptions): Deno.Chil
  * EXACTLY `opts.env` (node's documented replacement semantics) plus the harness keys
  * (harnessEnv), so a key the caller omits, or spells `undefined`, is genuinely absent in the
  * child.
- *
- * Deno's node:child_process MERGES `env` over the parent instead, so replacement is restored
- * here by clearing the parent's extra keys for the span of the spawn. PRECONDITION: the suite
- * runs no Web Worker. spawnSync blocks this thread, so nothing on it can observe the window,
- * but a Worker shares the process environment and would. (Deno.Command's `clearEnv` needs no
- * such window, but its outputSync has no `timeout` -- and a blocked thread is precisely what
- * stops the per-test deadline from killing a wedged child.)
  */
 export function runSync(cmd: string, args: string[], opts: RunOptions = {}): RunResult {
   // spawnSync can take no part in this: it blocks the thread, so the only moment the signal
   // can be observed for a SYNC child is before the call.
   liveTestSignal();
   const wanted = childEnv(harnessEnv(opts.env ?? process.env));
+  // Deno's node:child_process MERGES `env` over the parent instead, so replacement is
+  // restored by clearing the parent's extra keys for the span of the spawn. PRECONDITION:
+  // the suite runs no Web Worker. spawnSync blocks this thread, so nothing on it can observe
+  // the window, but a Worker shares the process environment and would. (Deno.Command's
+  // `clearEnv` needs no such window, but its outputSync has no `timeout` -- and a blocked
+  // thread is precisely what stops the per-test deadline from killing a wedged child.)
   const cleared: (readonly [string, string])[] = [];
   try {
     // Inside the try: a throw partway through must still restore what was already cleared.

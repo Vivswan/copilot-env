@@ -100,18 +100,14 @@ export const v402GhAccountPin: Migration = {
 
 // --- root-home layout ------------------------------------------------------------
 //
-// Away from 4.0.2: the root home predates its own directory -- its stores wore
-// dot-prefixed `.copilot-env-*` names from the era when the root doubled as the
-// proxy's flat daemon home, lock sidecars (permanent by design, file_lock.ts)
-// piled up beside them, and the Claude Desktop helper scripts sat loose at the
-// top level. The new layout is plain names (credentials.json / preferences.json
-// / ownership.json), every root lock under `locks/`, and the helper scripts
-// under `helpers/`. Readers know ONLY the new paths; these two fix-ups are the
-// single place the old names exist. TWO steps because they need opposite ends
-// of the run: the store renames are a `layout` step (hoisted, right after the
-// 3.5.6 home move that may carry the old-name stores in), while the helper move
-// runs LAST -- its wiring pass reads the agents' configs, which the v356/v400
-// wiring rewrites must normalize first.
+// Away from 4.0.2: the root home's stores wore dot-prefixed `.copilot-env-*` names from
+// the era when the root doubled as the proxy's flat daemon home, lock sidecars piled up
+// beside them, and the Claude Desktop helper scripts sat loose at the top level. Readers
+// know ONLY the new paths (plain store names, `locks/`, `helpers/`); these two fix-ups are
+// the single place the old names exist. TWO steps because they need opposite ends of the
+// run: the store renames are a `layout` step (hoisted, right after the 3.5.6 home move that
+// may carry old-name stores in), while the helper move runs LAST: its wiring pass reads the
+// agents' configs, which the v356/v400 wiring rewrites must normalize first.
 
 /** The three store renames, old basename -> new basename. */
 const STORE_RENAMES: ReadonlyArray<readonly [string, string]> = [
@@ -189,18 +185,14 @@ function samePath(a: string, b: string): boolean {
   return process.platform === "win32" ? na.toLowerCase() === nb.toLowerCase() : na === nb;
 }
 
-/** Move the loose generated helper scripts: one Desktop wiring pass FIRST (it
- *  regenerates the helpers under `helpers/` and rewires the Desktop entries to
- *  them), then delete exactly the loose helpers NO entry of ours references
- *  anymore -- the direct safety property, not a proxy for it. Whatever the pass
- *  could not rewire (blocked metadata, a failed entry save, the wiring key OFF
- *  where the default entry is deliberately preserved) keeps its still-referenced
- *  helper and keeps WORKING off it; the notice says how to finish by hand, and
- *  promises no automatic retry (a shipped migration range never re-runs).
- *  Exported for the migration test; `reconcile`, `desktopWired`, and
- *  `referenced` substitute the wiring pass, the enabled+installed gate, and the
- *  entry scan. NOT quiet: quiet skips the per-target sync, and regenerating the
- *  deleted helpers IS the point. */
+/** Move the loose generated helper scripts: one Desktop wiring pass FIRST (it regenerates
+ *  the helpers under `helpers/` and rewires the Desktop entries to them), then delete
+ *  exactly the loose helpers NO entry of ours references anymore, the direct safety
+ *  property rather than a proxy for it. Whatever the pass could not rewire keeps its
+ *  still-referenced helper and keeps WORKING off it; the notice says how to finish by hand
+ *  and promises no automatic retry (a shipped migration range never re-runs). The three
+ *  function parameters are the migration test's seams. NOT quiet: quiet skips the
+ *  per-target sync, and regenerating the deleted helpers IS the point. */
 export async function moveDesktopHelpers(
   rootHome: string = resolveRootHome(),
   reconcile: () => Promise<void> = () => reconcileClaudeDesktopWiring(),

@@ -274,16 +274,14 @@ function verifyInstalledLauncher(): string {
 }
 
 /**
- * Compiled-install health invariants, FAIL-CLOSED: the report is parsed from
- * unknown and every expectation is POSITIVE, so a missing row, a renamed id, a
- * reshaped value, or an unexpected status/kind is a failure -- never a silent
- * pass. The whole-report exit code is environment-dependent (a fresh install
- * legitimately fails the proxy runtime probes), so this asserts only the checks
- * a compiled binary must get right about ITSELF: dependencies read as embedded,
- * the proxy package reads ok (never "not installed"), and the sidecar is
- * provisioned or absent -- never the "dev" deno a compiled binary cannot be.
- * Exported for the unit tests' negative controls; the CI entry point below
- * feeds it the real binary's report.
+ * Compiled-install health invariants, FAIL-CLOSED: the report is parsed from unknown and
+ * every expectation is POSITIVE, so a missing row, a renamed id, a reshaped value, or an
+ * unexpected status/kind is a failure, never a silent pass. The whole-report exit code is
+ * environment-dependent (a fresh install legitimately fails the proxy runtime probes), so
+ * this asserts only what a compiled binary must get right about ITSELF: dependencies read
+ * as embedded, the proxy package reads ok (never "not installed"), and the sidecar is
+ * provisioned or absent, never the "dev" deno a compiled binary cannot be. Exported for the
+ * unit tests' negative controls; the CI entry point below feeds it the real binary's report.
  */
 export function compiledHealthFailures(reportJson: unknown): string[] {
   const checks = isRecord(reportJson) && Array.isArray(reportJson.checks)

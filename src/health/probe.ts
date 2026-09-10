@@ -342,17 +342,14 @@ function formatLiveFailure(
 }
 
 /**
- * Run an agent CLI's read-only smoke prompt against a CONFIGURED home (`--live`).
- * Async (overlaps the other probes) with a hard timeout; a timeout or any
- * non-zero exit => ok:false, with `detail` carrying the captured reason + output.
- * Skipped (ran:false) when the CLI isn't installed. Spawns the RESOLVED path so
- * the nvm fallback isn't defeated. Unlike the init probe, the environment is NOT
- * sanitized -- `--live` tests the user's real, fully-resolved setup -- except
- * `omitEnvVars` (upper-case names), the narrow scrub a NAMED profile needs so a
- * shell export of the DEFAULT wiring cannot override the profile's own and
- * misattribute the answer. Exported for the scrub's own test. `find` is a test
- * seam; the real look keeps its failure arm (see CommandLook) because the skip
- * renders a "CLI not installed" verdict.
+ * Run an agent CLI's read-only smoke prompt against a CONFIGURED home (`--live`): async
+ * (overlaps the other probes) with a hard timeout; a timeout or any non-zero exit =>
+ * ok:false, with `detail` carrying the captured reason + output; skipped (ran:false)
+ * when the CLI isn't installed. Spawns the RESOLVED path so the nvm fallback isn't
+ * defeated. Unlike the init probe, the environment is NOT sanitized (`--live` tests the
+ * user's real, fully-resolved setup) except `omitEnvVars` (upper-case names), the
+ * narrow scrub a NAMED profile needs so a shell export of the DEFAULT wiring cannot
+ * override the profile's own and misattribute the answer. Exported for the scrub's test.
  */
 export function runLiveCli(
   cli: string,
@@ -362,6 +359,8 @@ export function runLiveCli(
   omitEnvVars: readonly string[] = [],
   find: (command: string) => CommandLook = findCommand,
 ): Promise<LiveProbeFacts> {
+  // `find` is a test seam; the real look keeps its failure arm (see CommandLook) because
+  // the skip renders a "CLI not installed" verdict.
   const look = find(cli);
   if (look.path === null) {
     return Promise.resolve(

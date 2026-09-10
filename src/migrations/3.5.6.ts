@@ -232,35 +232,14 @@ const DEFAULT_HOME_MOVE_LOCK_POLICY: LockPolicy = {
 };
 
 /**
- * The v356DefaultHome core: move the flat root's daemon files (the
- * DAEMON_HOME_ARTIFACTS set) into `<root>/profiles/default/`.
- *
- * Safety against a still-running daemon or launch:
- *  - A busy GLOBAL start lock refuses the move first: a launch in flight has
- *    already resolved the paths it will spawn into.
- *  - The move itself runs HOLDING the root's daemon.lock (dead-holder-only
- *    reclaim): a live daemon keeps the lock, so acquisition fails and the move
- *    is refused with a warning -- never yank files (or the lock) from under a
- *    live daemon; the re-run after `agent stop` picks it up. The per-file path
- *    into an EXISTING profiles/default additionally holds THAT home's lock,
- *    since a daemon may already be running out of it.
- *  - A pre-lock daemon (started by an older release) holds no lock, so the
- *    FLAT root's per-host tracked pid is read directly (never through the
- *    paths layer, whose resolution may already prefer profiles/default) and
- *    any live pid not CONFIDENTLY another process refuses the move the same
- *    way (classification "yes" or "unknown" -- fail closed).
- * The stale lock marker a dead holder left is deleted (not moved) under the
- * held lock: the daemon that wrote it is dead, and its replacement takes a
- * fresh lock in the new home.
- *
- * The flip is atomic: artifacts are staged into `profiles/.default.migrating`
- * and ONE final rename creates `profiles/default`. A mid-move failure leaves
- * the flat root still resolving -- defaultDaemonHome counts the staging dir as
- * the flat layout precisely so a fully staged crash cannot read as a fresh
- * root -- and a re-run resumes the staging and finalizes. Only when
- * profiles/default ALREADY exists (a hand-made dir) do the artifacts move
- * per-file into it -- an artifact present on BOTH sides is refused, never
- * merged (the v356 posture).
+ * The v356DefaultHome core: move the flat root's daemon files (DAEMON_HOME_ARTIFACTS) into
+ * `<root>/profiles/default/`. Never yank files from under a live daemon or launch: a busy
+ * global start lock, a held root daemon.lock, or a live pre-lock pid not CONFIDENTLY another
+ * process each refuse the move with a warning (the re-run after `agent stop` picks it up).
+ * The flip is atomic: artifacts stage into `profiles/.default.migrating` and ONE rename
+ * creates `profiles/default`; defaultDaemonHome counts the staging dir as the flat layout,
+ * so a crash mid-move still resolves flat and a re-run resumes. A pre-existing hand-made
+ * profiles/default gets per-file moves under ITS lock; a name on BOTH sides is refused.
  */
 export async function moveDefaultDaemonHome(
   classifyPid: typeof classifyDaemonPid = classifyDaemonPid,
@@ -425,18 +404,15 @@ export const v356ClaudeWiring: Migration = {
   run: rewriteClaudeWiring,
 };
 
-/** Eighth (and LAST) fix-up of the same step: installs moved from the flat
- *  layout (one binary and its runtime files at the install root) to the
- *  versioned one (`<top>/versions/vX.Y.Z/` roots behind a `current` link). The
- *  pre-versioned updater has already swapped THIS binary into `<top>/bin` when
- *  it spawns the migrate step, so the adoption builds the layout around the
- *  live binary: copy it (its own running image -- readable everywhere,
- *  deletable nowhere on Windows) into its version root, materialize the
- *  release's runtime files there, flip `current`, rewrite the top shims to
- *  dispatch through it, and only then sweep the flat leftovers. Idempotent,
- *  and a no-op for versioned roots and dev checkouts (adoptVersionedLayout
- *  owns those guards). Registered last: it relocates the install the earlier
- *  fix-ups operated on. */
+/** Eighth (and LAST) fix-up of the same step: installs moved from the flat layout (one
+ *  binary and its runtime files at the install root) to the versioned one
+ *  (`<top>/versions/vX.Y.Z/` roots behind a `current` link). The pre-versioned updater has
+ *  already swapped THIS binary into `<top>/bin` when it spawns the migrate step, so the
+ *  adoption builds the layout around the live binary: copy its own running image (readable
+ *  everywhere, deletable nowhere on Windows) into its version root, materialize the runtime
+ *  files, flip `current`, rewrite the top shims, then sweep the flat leftovers. Idempotent;
+ *  a no-op for versioned roots and dev checkouts (adoptVersionedLayout owns those guards).
+ *  Registered last: it relocates the install the earlier fix-ups operated on. */
 export const v356VersionedLayout: Migration = {
   version: "3.5.6",
   description: "adopt the versioned install layout (versions/ + a current link)",

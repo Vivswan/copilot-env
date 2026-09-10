@@ -16,25 +16,23 @@
 // question it already knows the answer to would hand a third-party npm tree FFI and
 // subprocess spawning for nothing.
 //
-// Narrowed to `NotCapable` on purpose: a permission gap anywhere else in the daemon stays
-// loud instead of silently reading as "absent".
-//
 // Deliberately NOT applied to `readFileSync`/`statSync`. Node throws there too, so a
 // NotCapable is the honest analogue of an EACCES and well-behaved dependencies already
 // handle it -- is-wsl wraps its own `/proc/version` read in try/catch for that reason.
-//
-// Scope: this patches the `node:fs` module object, so it covers callers that reach the
-// function through it (`import fs from "node:fs"; fs.existsSync(...)` -- is-wsl's form).
-// A caller holding a direct binding from `import { existsSync }` keeps the original;
-// deno offers no way to replace a builtin module wholesale.
 import fs from "node:fs";
 
 const realExistsSync = fs.existsSync;
 
+// This patches the `node:fs` module object, so it covers callers that reach the function
+// through it (`import fs from "node:fs"; fs.existsSync(...)` -- is-wsl's form). A caller
+// holding a direct binding from `import { existsSync }` keeps the original; deno offers
+// no way to replace a builtin module wholesale.
 fs.existsSync = (path: Parameters<typeof fs.existsSync>[0]): boolean => {
   try {
     return realExistsSync(path);
   } catch (error) {
+    // Narrowed to `NotCapable` on purpose: a permission gap anywhere else in the daemon
+    // stays loud instead of silently reading as "absent".
     if (error instanceof Deno.errors.NotCapable) return false;
     throw error;
   }

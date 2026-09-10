@@ -100,18 +100,17 @@ declare class UsageReportMint {
 }
 
 /**
- * Aggregated usage plus a per-day breakdown.
- *
- * `perDay` maps each distinct LOCAL calendar day (YYYY-MM-DD, the user's
- * timezone) to that day's per-model token totals, unioned across every DB.
- * `byModel` is the all-days roll-up -- derived from the same rows, kept as a
- * field so callers don't recompute it. The active-day count is `perDay.size`,
- * always read from the map itself. The mutable shape is for producers, which
- * mint one via usageReport() and fold into it through record(); readers take
- * ReadonlyUsageReport.
+ * Aggregated usage plus a per-day breakdown. The mutable shape is for producers,
+ * which mint one via usageReport() and fold into it through record(); readers take
+ * ReadonlyUsageReport. The active-day count is `perDay.size`, always read from the
+ * map itself.
  */
 export interface UsageReport extends UsageReportMint {
+  /** The all-days roll-up -- derived from the same rows as `perDay`, kept as a field
+   *  so callers don't recompute it. */
   byModel: Map<string, ModelUsage>;
+  /** Each distinct LOCAL calendar day (YYYY-MM-DD, the user's timezone) to that
+   *  day's per-model token totals, unioned across every DB. */
   perDay: Map<string, Map<string, ModelUsage>>;
 }
 
@@ -124,15 +123,14 @@ export interface ReadonlyUsageReport {
 }
 
 /**
- * Mint a UsageReport: empty by default (the state every producer folds into
- * through record()), or from hand-built maps, PARSED at the boundary: every
- * count must be a non-negative integer, every perDay model must appear in
- * byModel, and per model the days' sum never exceeds the roll-up in any
- * bucket (the invariant record() maintains). An inconsistent pair fails HERE,
- * at construction, so no consumer downstream has to clamp a negative undated
- * remainder away. The maps are deep-copied: the report never aliases caller
- * state, so a later record() fold cannot double-mutate a shared entry and a
- * caller edit cannot invalidate a report already validated.
+ * Mint a UsageReport: empty by default (what every producer folds into through
+ * record()), or from hand-built maps PARSED at the boundary: every count a
+ * non-negative integer, every perDay model present in byModel, and per model the
+ * days' sum never above the roll-up in any bucket (the invariant record() keeps).
+ * An inconsistent pair fails HERE, at construction, so no consumer has to clamp a
+ * negative undated remainder away. The maps are deep-copied so the report never
+ * aliases caller state: a later record() fold cannot double-mutate a shared entry
+ * and a caller edit cannot invalidate a report already validated.
  */
 export function usageReport(
   byModel: ReadonlyMap<string, Readonly<ModelUsage>> = new Map(),
@@ -369,19 +367,18 @@ export function readUsage(dbPaths: string[], sinceMs?: number, timeZone?: string
   // inside the per-path catch below, which would report it as an unreadable database.
   const dayKey = dayKeyIn(timeZone);
 
-  // One grouped query by (UTC minute, model); byModel and perDay both derive from
-  // it, so we never read the same rows twice. The bucket is a UTC minute so the
-  // LOCAL day key can be derived in JS (localDayKey): every IANA transition and
+  // A minute bucket never straddles a local midnight: every IANA transition and
   // offset in the standard-time era is minute-aligned (sub-minute offsets exist
   // only for pre-standard-time LMT dates, which a daemon-written Date.now()
-  // timestamp can never carry), so a bucket never straddles a local midnight.
-  // Minutes, not quarter-hours, deliberately: historical zones flipped DST at
-  // odd minutes (America/Goose_Bay fell back at 00:01 local), which would split
-  // a coarser bucket across two local days. Keeping the timezone math out of
-  // SQL avoids SQLite's cached-libc `localtime` (see localDayKey). At most
-  // ~1440 rows per model-day (a long fall-back day holds a few more -- up to
-  // 1560 for Antarctica/Troll's two-hour shift) -- still tiny.
+  // timestamp can never carry). Minutes, not quarter-hours, deliberately:
+  // historical zones flipped DST at odd minutes (America/Goose_Bay fell back at
+  // 00:01 local), which would split a coarser bucket across two local days.
   const MINUTE_MS = 60_000;
+  // One grouped query by (UTC minute, model); byModel and perDay both derive from
+  // it, so we never read the same rows twice. The bucket is a UTC minute so the
+  // LOCAL day key can be derived in JS (localDayKey), keeping the timezone math
+  // out of SQL and away from SQLite's cached-libc `localtime`. At most ~1440 rows
+  // per model-day (up to 1560 on Antarctica/Troll's two-hour fall-back day): tiny.
   const QUERY = `SELECT (created_at_ms / ${MINUTE_MS}) AS bucket,
                   model,
                   SUM(input_tokens)                 AS input,

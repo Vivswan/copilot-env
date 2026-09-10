@@ -127,18 +127,13 @@ export function recordHeartbeat(profile: Profile = null): void {
 
 /**
  * Terminate `profile`'s tracked proxy daemon if it is ours, clearing our run-state tracking
- * and the persisted activity mark. Quiet on success (no logging, no exit code) -- the shared
- * core of `agent stop` and the de-authenticate teardown. `graceMs > 0` waits that long and
- * escalates to SIGKILL if the daemon is still alive (use it when the caller must be sure it
- * stopped, e.g. de-auth); `0` sends a single SIGTERM without waiting. A lock-"alive" pid the
- * owner-filtered scan cannot confirm as our daemon is REFUSED with a warning and tracking
- * left intact ({ signalled: false, stopped: false }) -- see the alive arm below. A kill
- * REFUSED at terminatePid's SIGKILL boundary ("refused-reused-pid": our daemon died inside
- * the grace and the OS recycled the pid onto a foreign process) counts as STOPPED with the
- * tracking cleared -- the opposite disposition, because there the daemon is provably gone.
- * `classify` is the identity seam (classifyDaemonPid) shared by the TERM gate below and
- * terminatePid's KILL boundary, injectable for tests. Returns the tracked pid, whether we
- * signalled it, and whether it is confirmed stopped afterwards.
+ * and the persisted activity mark. Quiet on success: the shared core of `agent stop` and
+ * the de-authenticate teardown. `graceMs > 0` waits that long and escalates to SIGKILL
+ * (for callers that must be sure, e.g. de-auth); `0` sends one SIGTERM without waiting.
+ * A lock-"alive" pid the owner-filtered scan cannot confirm as ours is REFUSED with a
+ * warning, tracking left intact. A kill REFUSED at terminatePid's SIGKILL boundary (our
+ * daemon died inside the grace and the OS recycled the pid) counts as STOPPED, tracking
+ * cleared: there the daemon is provably gone. `classify` is the injectable identity seam.
  */
 export async function stopTrackedProxy(
   graceMs = 0,

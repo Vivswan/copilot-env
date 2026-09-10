@@ -52,12 +52,10 @@ const LOAD_RETRY_MS = 4;
  * Atomic JSON store for `~/.local/share/copilot-env/` files: the proxy's
  * `config.json` and the small state files (`CopilotEnvState`, `CopilotEnvRunState`,
  * `AutoupdateState` all wrap one of these). Sorted keys, 0600, atomic rename with a
- * Windows EPERM/EBUSY retry.
- *
- * The class is intentionally schema-agnostic: it manipulates a JSON document and
- * exposes a small set of domain helpers for the keys this tooling cares about.
- * Unknown keys present in the file are preserved across writes so hand edits and
- * new upstream fields are not clobbered.
+ * Windows EPERM/EBUSY retry. Schema-agnostic on purpose: it manipulates a JSON
+ * document plus a few domain helpers for the keys this tooling cares about, and
+ * unknown keys in the file survive every write so hand edits and new upstream
+ * fields are not clobbered.
  */
 export class CopilotApiConfig {
   readonly path: string;

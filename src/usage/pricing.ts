@@ -309,15 +309,14 @@ function writePricingCache(
 const ANTHROPIC_FAMILY_SLUGS = new Set(["fable", "opus", "sonnet", "haiku"]);
 
 /**
- * Canonical spelling of a model id, shared by every usage reader so the same
- * model keys the same row no matter which source recorded it: the proxy logs
- * Copilot's dotted ids (`claude-opus-4.8`) while agent transcripts log
- * Anthropic's dashed, sometimes date-snapshotted ids (`claude-opus-4-8`,
- * `claude-haiku-4-5-20251001`). Lowercases, drops whitespace and trailing
- * asterisks, normalizes any 1M-context marker (`[1m]`/`.1m`/`-1m`) to a
- * trailing `-1m` (kept distinct: 1M usage is a different offering), and, for
- * claude ids only, strips a `-YYYYMMDD` snapshot date and converts
- * digit-dash-digit to dots.
+ * Canonical spelling of a model id, shared by every usage reader so the same model
+ * keys the same row no matter which source recorded it: the proxy logs Copilot's
+ * dotted ids (`claude-opus-4.8`) while agent transcripts log Anthropic's dashed,
+ * sometimes date-snapshotted ids (`claude-opus-4-8`, `claude-haiku-4-5-20251001`).
+ * Lowercases, drops whitespace and trailing asterisks, normalizes any 1M-context
+ * marker (`[1m]`/`.1m`/`-1m`) to a trailing `-1m` (kept distinct: 1M usage is a
+ * different offering), and, for claude ids only, strips a `-YYYYMMDD` snapshot
+ * date and converts digit-dash-digit to dots.
  */
 export function canonicalModelName(model: string): string {
   let n = (model || "").trim().toLowerCase().replace(/\*+$/, "").replace(/\s+/g, "-");

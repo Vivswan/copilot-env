@@ -185,11 +185,9 @@ function dominantEol(content: string): "\n" | "\r\n" {
  * after its end fence), so a stale block migrates without reordering the file
  * and an already-current one reproduces it byte-for-byte; later duplicates of the same
  * marker (a bad hand-merge, say) are stripped, extent-bounded, so the file converges on
- * ONE owned block and user lines are never deleted. When absent, the block is appended
- * at EOF (it leads with a blank and ends in its separating blank) in the file's dominant
- * line ending. `leftBehind` reports the user lines the duplicate strips refused to
- * consume -- the same warning contract stripBlocks gives removal. Exported for tests
- * only.
+ * ONE owned block and user lines are never deleted. `leftBehind` reports the user lines
+ * the duplicate strips refused to consume -- the same warning contract stripBlocks
+ * gives removal. Exported for tests only.
  */
 export function upsertBlock(
   content: string,
@@ -198,6 +196,8 @@ export function upsertBlock(
 ): { content: string; leftBehind: string[] } {
   const lines = content.split("\n");
   const idx = lines.findIndex((l) => lineIs(l, marker));
+  // Absent: append at EOF (the block leads with a blank and ends in its separating
+  // blank) in the file's dominant line ending.
   if (idx === -1) {
     return {
       content: content +

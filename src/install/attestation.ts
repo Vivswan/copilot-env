@@ -20,18 +20,14 @@
 export const ATTESTATION_NAME = "attestation.json";
 
 /**
- * The ONLY identity allowed to sign a release: the release workflow, on the
- * default branch, as GitHub Actions names it in the signing certificate's SAN.
- * `.github/workflows/release.yml` is a repo-platform MANAGED file, so a rename
- * or a default-branch move there changes this identity and fails every update
- * as a mismatch until a release carrying the new constant ships FIRST. That
- * coupling is deliberate: a policy that accepted "any workflow in the repo"
- * would also accept a workflow a pull request added.
- *
- * The SAN alone is NOT enough: release.yml is a reusable (`workflow_call`)
- * workflow, and a reusable workflow's SAN names the CALLED workflow, so any
- * other repository invoking ours would be issued the same SAN for its own
- * assets. The source-repository pins below close that: they name the caller.
+ * The ONLY identity allowed to sign a release: the release workflow on the default
+ * branch, as GitHub Actions names it in the signing certificate's SAN. release.yml is a
+ * repo-platform MANAGED file: a rename or default-branch move there fails every update
+ * as a mismatch until a release carrying the new constant ships FIRST. Deliberate, since
+ * accepting "any workflow in the repo" would also accept one a pull request added. The
+ * SAN alone is NOT enough: release.yml is reusable (`workflow_call`) and a reusable
+ * workflow's SAN names the CALLED workflow, so another repository invoking ours gets the
+ * same SAN for its own assets; the source-repository pins below name the caller.
  */
 export const RELEASE_SIGNER_SAN =
   "https://github.com/Vivswan/copilot-env/.github/workflows/release.yml@refs/heads/main";

@@ -283,14 +283,10 @@ test(
 // cadence). The launch itself resolves as the managed-lifecycle no-op: a fake daemon holds
 // the home's lock AND listens on the tracked port (both awaited: the lock is taken at boot,
 // before the server listens, and a lock without a listener reads as a stale holder to
-// stop), so `start` leaves it up and spawns nothing. The release listing is a stubbed
-// fetch whose newest release is the running
-// version, so the due check records "up to date" and applies nothing. The preflight's
-// on-disk state and lock come through runStart's seam, so the checkout's own are untouched.
-// The injected preflight also narrates one line through the SHARED consola, the way the
-// installer's shim writer does from inside an applied update: it must reach stderr, while
-// start's own narration (which precedes it) is on stdout. And it runs INSIDE the start
-// lock: the lock marker names this process while the preflight runs, and is gone after.
+// stop), so `start` leaves it up and spawns nothing. The release listing is a stubbed fetch
+// whose newest release is the running version, so the due check records "up to date" and
+// applies nothing. The preflight's on-disk state and lock come through runStart's seam, so
+// the checkout's own are untouched.
 test(
   "start runs the self-update preflight after a live launch's outcome, gated on the auto-update key",
   async () => {
@@ -306,8 +302,12 @@ test(
     };
     const preflight = (opts: PreflightOptions) => {
       events.push("preflight");
+      // Runs INSIDE the start lock: the marker names this process now, and is gone after.
       const lock = probeFileLock(startLockPath());
       lockHolders.push(lock.kind === "held" ? lock.markerPid : null);
+      // One line through the SHARED consola, the way the installer's shim writer does from
+      // inside an applied update: it must reach stderr, while start's own narration (which
+      // precedes it) is on stdout.
       consola.info("shared-consola narration from inside the preflight");
       return runPreflight({
         ...opts,

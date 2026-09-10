@@ -577,14 +577,13 @@ export type PerDayRow =
 
 /**
  * Collapse the per-day, per-model breakdown into one DayMetrics per active day.
- * Dated days only: usage recorded without a day is undatedTotals' row, kept
- * out of here so the per-day medians stay per-DAY statistics. (Avg/day is
- * different by design: it spreads the aggregate, undated included, over the
- * active days.)
+ * Dated days only: usage recorded without a day is undatedTotals' row, kept out
+ * of here so the per-day medians stay per-DAY statistics (avg/day differs by
+ * design: it spreads the aggregate, undated included, over the active days).
  * Cost is priced per day (estimateCost is linear in tokens), but only for models
- * the aggregate `estimate` actually priced: a model the aggregate excluded as
- * unpriced (some non-zero bucket lacks a rate) must contribute $0 every day too,
- * or summing the days would not reconcile with the aggregate totalUsd.
+ * the aggregate `estimate` actually priced: a model it excluded as unpriced (some
+ * non-zero bucket lacks a rate) must contribute $0 every day too, or summing the
+ * days would not reconcile with the aggregate totalUsd.
  */
 export function computeDayMetrics(
   report: ReadonlyUsageReport,

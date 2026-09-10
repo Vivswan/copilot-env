@@ -631,7 +631,8 @@ export function checkProfileConsistency(f: NamedRuntimeTarget): CheckResult {
   const detail = slot.mode === "proxy"
     ? f.portPersisted
       ? "store slot (proxy) and daemon home agree"
-      : `store slot (proxy) and daemon home agree; no port recorded on this host yet, so the daemon was not probed (agent start --profile ${name} records one)`
+      : "store slot (proxy) and daemon home agree; no port recorded on this host yet, " +
+        `so the daemon was not probed (agent start --profile ${name} records one)`
     : homeExists
     ? "store slot (direct); the leftover daemon home is unused"
     : "store slot (direct); no daemon home needed";

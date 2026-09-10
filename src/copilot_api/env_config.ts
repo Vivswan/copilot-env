@@ -740,15 +740,13 @@ function lenientField(
 }
 
 /**
- * The lenient READ schema, folded from the registry's per-key domains -- so it covers
- * exactly the registry's keys by construction, and a key can never be write-only again.
- * Exported for the settings-bundle parser (src/agents/transfer.ts): it reuses this schema's
- * per-key VALUE validation and hardens the leniency into strict rejections at its own trust
- * boundary.
- *
- * The fromEntries fold erases the key-to-value-type correlation that ConfigKeyDefCore
- * already enforces per entry (each schema's output IS its key's declared field type), so
- * the assertion below only restates what the registry's `satisfies` checked.
+ * The lenient READ schema, folded from the registry's per-key domains, so it covers
+ * exactly the registry's keys by construction and a key can never be write-only again.
+ * Exported for the settings-bundle parser (src/agents/transfer.ts), which reuses the
+ * per-key VALUE validation and hardens the leniency into strict rejections at its own
+ * trust boundary. The fromEntries fold erases the key-to-value-type correlation that
+ * ConfigKeyDefCore already enforces per entry, so the assertion below only restates
+ * what the registry's `satisfies` checked.
  */
 export const CONFIG_SCHEMA = v.object(
   Object.fromEntries(CONFIG_REGISTRY.map((def) => [def.key, lenientField(def.schema)])),

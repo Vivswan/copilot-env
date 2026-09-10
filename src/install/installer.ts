@@ -1,35 +1,28 @@
-// The in-binary `agent install` implementation: finalize an install root
-// around the compiled agent binary that install.sh / install.ps1 just
-// downloaded to <root>/bin/copilot-env(.exe).
-//
-// The work is a plan/apply split (build one typed plan up front, then execute
-// it -- the same shape as planImport/applyImportPlan in src/agents/transfer.ts):
+// The in-binary `agent install` implementation: finalize an install root around
+// the compiled agent binary that install.sh / install.ps1 just downloaded to
+// <root>/bin/copilot-env(.exe). A plan/apply split: one typed plan up front, then
+// execute it (the shape of planImport/applyImportPlan in src/agents/transfer.ts).
 //
 // - in-place mode (dev checkout, where the asset source IS the install root):
-//   only shell integration applies -- the checkout's own bin/agent launchers
-//   and working files are never overwritten.
+//   only shell integration applies; the checkout's own bin/agent launchers and
+//   working files are never overwritten.
 // - assets-only mode (compiled binary): materialize the embedded runtime assets
 //   into the root this process is aimed at. `agent update` runs the NEW binary
 //   this way, aimed (via COPILOT_ENV_INSTALL_ROOT) INSIDE the not-yet-live
 //   version root it just staged.
-// - full installed mode (compiled binary): build the VERSIONED layout at the
-//   top root --
-//
-//     <top>/versions/vX.Y.Z/   one complete root per release (binary, assets,
-//                              launcher shims, install manifest)
+// - full installed mode (compiled binary): build the VERSIONED layout at the top:
+//     <top>/versions/vX.Y.Z/   one complete root per release
 //     <top>/current            a link naming the live version (POSIX symlink;
 //                              Windows directory junction)
 //     <top>/bin/agent(.ps1)    stable shims dispatching THROUGH `current`
-//
 //   Every path that outlives a release (agent configs, rc blocks, daemon
-//   preloads) goes through `<top>/current/...`, so flipping the link is the
-//   whole commit of an update and old version dirs can be garbage-collected
-//   without breaking anything persisted.
+//   preloads) goes through `<top>/current/...`, so flipping the link is the whole
+//   commit of an update and old version dirs can be garbage-collected safely.
 //
-// Assets are read via URLs relative to import.meta.url, which resolves inside
-// the compiled VFS (a virtual path readable in-process only) and inside a dev
-// checkout alike; comparing that source root to the install root is what
-// discriminates in-place from the compiled modes.
+// Assets are read via URLs relative to import.meta.url, which resolves inside the
+// compiled VFS (readable in-process only) and inside a dev checkout alike;
+// comparing that source root to the install root is what discriminates in-place
+// from the compiled modes.
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -90,16 +83,13 @@ import {
 } from "./targets.ts";
 
 /** Embedded AND materialized: something outside this process opens these by
- *  path, so they have to exist on real disk in the install root - the daemon's
+ *  path, so they have to exist on real disk in the install root: the daemon's
  *  `--preload` shims, the shell-integration payload the rc block sources, and the
- *  plugin/skill surface other tools read.
- *
- *  `src/scripts` is materialized WHOLE rather than by naming the shims. The
- *  daemon loads a per-credential subset of `DAEMON_SHIM_FILES`
- *  (src/copilot_api/shims.ts) by absolute path, and those entrypoints import
- *  further siblings; copying the directory covers the in-dir ones by
- *  construction. Imports reaching OUTSIDE the directory are
- *  `MATERIALIZED_ASSET_FILES` below. */
+ *  plugin/skill surface other tools read. `src/scripts` is materialized WHOLE
+ *  rather than by naming the shims: the daemon loads a per-credential subset of
+ *  `DAEMON_SHIM_FILES` (src/copilot_api/shims.ts) whose entrypoints import further
+ *  siblings, so copying the directory covers the in-dir ones by construction;
+ *  imports reaching OUTSIDE the directory are `MATERIALIZED_ASSET_FILES` below. */
 export const MATERIALIZED_ASSET_DIRS = [
   "src/scripts",
   "shell",
@@ -130,22 +120,15 @@ export const MATERIALIZED_ASSET_FILES = [
 ] as const;
 
 /** Embedded and NEVER materialized: read in-process through `ASSET_ROOT`, which
- *  resolves inside the compiled VFS. The rule these follow is general - if a
- *  file ships with the build and is read in-process, it is an ASSET_ROOT read,
- *  and writing a second copy into the install root would only create something
- *  nothing reads and that can drift from the binary that shipped it.
- *
+ *  resolves inside the compiled VFS. A second copy in the install root would be
+ *  something nothing reads that can drift from the binary that shipped it.
  *  `copilot-env.config` is the proxy-float floor/ceiling (`readProjectConfig`),
- *  `.dvmrc` is the deno version the sidecar provisions against
- *  (`readDvmrcPin`), and `deno.json` is the import map the daemon config is
- *  generated from (`writeDaemonConfig`); all default to ASSET_ROOT.
- *
- *  `deno.json` MUST stay bundled-only for a second reason: on disk it is a
- *  CHECKOUT_MARKERS entry, so materializing it would make every install root
- *  read as checkout debris.
- *
- *  They are still verified present at plan time: absent from the VFS means the
- *  build is broken, and failing here beats failing at first proxy start. */
+ *  `.dvmrc` the deno version the sidecar provisions against (`readDvmrcPin`), and
+ *  `deno.json` the import map the daemon config is generated from
+ *  (`writeDaemonConfig`). `deno.json` MUST stay bundled-only for a second reason:
+ *  on disk it is a CHECKOUT_MARKERS entry, so materializing it would make every
+ *  install root read as checkout debris. Still verified present at plan time:
+ *  absent from the VFS means a broken build, and failing here beats first proxy start. */
 export const BUNDLED_ONLY_ASSETS = ["copilot-env.config", ".dvmrc", "deno.json"] as const;
 
 /** Superseded files a pre-binary source install leaves in the root. The binary
@@ -206,21 +189,6 @@ export function classifyInstallRoot(root: string): InstallRootShape {
   return isVersionedInstallTop(top) ? { kind: "versioned", top } : { kind: "flat", top };
 }
 
-/**
- * Point `<top>/current` at `<top>/versions/<versionName>` -- THE commit step of
- * an install or update.
- *
- * POSIX: build the replacement link aside and rename it over -- atomic, so a
- * concurrent reader never observes a missing link -- with a RELATIVE target so
- * the install stays relocatable.
- *
- * Windows: a directory junction (`New-Item -ItemType Junction` semantics):
- * resolvable by every Win32 path API, stock PowerShell 5.1 included, and
- * creatable without the symlink privilege. Windows cannot rename an entry over
- * an existing directory entry, so replace = remove the old junction (an entry
- * delete; the target's contents are never touched), then create the new one.
- * Junction targets are stored absolute (relative junctions do not exist).
- */
 /** The target `<top>/current` is linked to for `versionName`, in the spelling the platform
  *  stores: a RELATIVE path on POSIX (the install stays relocatable), an ABSOLUTE one on
  *  Windows (a junction has no relative form). The plan and the flip both take it from
@@ -231,6 +199,16 @@ export function currentLinkTarget(top: string, versionName: string): string {
     : join(VERSIONS_DIR, versionName);
 }
 
+/**
+ * Point `<top>/current` at `<top>/versions/<versionName>`: THE commit step of an
+ * install or update. POSIX: build the replacement link aside and rename it over,
+ * atomic, so a concurrent reader never observes a missing link. Windows: a directory
+ * junction (`New-Item -ItemType Junction` semantics), resolvable by every Win32 path
+ * API, stock PowerShell 5.1 included, and creatable without the symlink privilege;
+ * Windows cannot rename over an existing directory entry, so replace = remove the
+ * old junction (an entry delete; the target's contents are never touched), then
+ * create the new one.
+ */
 export function pointCurrentAt(top: string, versionName: string): void {
   const link = currentLinkPath(top);
   const target = currentLinkTarget(top, versionName);
@@ -976,15 +954,14 @@ export interface AdoptVersionedLayoutDeps {
 }
 
 /**
- * The 3.5.6 migration core: build the versioned layout around a live flat
- * install. Runs as the NEW binary (spawned from `<top>/bin/copilot-env` by the
- * pre-versioned updater), so the binary it relocates is its own running image --
- * which is why the placement is a COPY, never a rename: a copy is crash-safe
- * (any pre-flip failure leaves the flat install fully live) and reading a
- * running image is legal on every platform, while the flat original is removed
- * only after the flip (POSIX unlinks it; Windows leaves it for a later update's
- * sweep). Idempotent: an already-versioned root only re-sweeps flat debris (a
- * crashed earlier run may have flipped but not swept).
+ * The 3.5.6 migration core: build the versioned layout around a live flat install.
+ * Runs as the NEW binary (spawned from `<top>/bin/copilot-env` by the pre-versioned
+ * updater), so the binary it relocates is its own running image, which is why the
+ * placement is a COPY, never a rename: crash-safe (any pre-flip failure leaves the
+ * flat install fully live) and legal on every platform, while the flat original is
+ * removed only after the flip (POSIX unlinks it; Windows leaves it for a later
+ * update's sweep). Idempotent: an already-versioned root only re-sweeps flat debris
+ * (a crashed earlier run may have flipped but not swept).
  */
 export function adoptVersionedLayout(deps: AdoptVersionedLayoutDeps = {}): void {
   const mode = deps.mode ?? rootMode();

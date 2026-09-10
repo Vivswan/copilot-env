@@ -205,9 +205,8 @@ jobs:
   # The session-log readers parse what the REAL Claude Code and Codex CLIs write
   # today, so this is the one job that can catch a log-format drift: it installs
   # the current CLI releases, drives them against a fake inference backend under
-  # a throwaway HOME (scripts/usage_corpus.ts), then asserts `agent cost` still
-  # sees usage from both. Every step after the checkout is guarded on the corpus
-  # script existing, so until that lands the job checks out and does nothing else.
+  # a throwaway HOME (scripts/usage_corpus.ts over scripts/usage_corpus/), then
+  # asserts `agent cost` still sees usage from both.
   session-log-drift:
     name: session-log format drift smoke (real CLIs, fake backend)
     runs-on: ubuntu-latest
@@ -216,17 +215,14 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: denoland/setup-deno@v2
-        if: hashFiles('scripts/usage_corpus.ts') != ''
         with:
           deno-version-file: .dvmrc
           cache: true
 
       - name: Install dependencies
-        if: hashFiles('scripts/usage_corpus.ts') != ''
         run: deno ci
 
       - name: Install the current Claude Code and Codex CLI releases
-        if: hashFiles('scripts/usage_corpus.ts') != ''
         run: npm install -g @anthropic-ai/claude-code @openai/codex
 
       # The corpus task prints one JSON summary line last and leaves a runnable
@@ -234,7 +230,6 @@ jobs:
       # runner leaks in; DENO_DIR is pinned first so the moved HOME does not also
       # move the dependency cache `deno ci` just filled.
       - name: Session-log format drift smoke (real CLIs, fake backend)
-        if: hashFiles('scripts/usage_corpus.ts') != ''
         shell: bash
         env:
           OUT: ${{ runner.temp }}/usage-corpus

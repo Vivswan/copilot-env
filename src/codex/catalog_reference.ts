@@ -29,47 +29,14 @@ import { readCodexToml, saveCodexToml } from "./toml_io.ts";
 const logger = createStderrLogger();
 
 /**
- * Auth-time sync: keep the managed config's `model_catalog_json` in step with the
- * opt-in `codex-model-catalog` preference. Called on every auth resolution (one
- * cheap TOML read; writes only fire when something is actually out of step).
- * Best-effort: never throws, stderr-only.
- *
- * ENABLED -- self-heal: when a usable catalog exists but the managed config
- * predates it (e.g. the wiring-time seed failed because the proxy was down or no
- * credential existed yet, or the file was generated while mobile pairing had the
- * provider stripped), add the reference in place -- WITHOUT re-running the full
- * managed write, and only when the config currently selects OUR provider. The
- * provider check keeps the key out during `agent codex --mobile` pairing, which
- * strips `model_provider` to run the app on its default OpenAI provider (whose
- * limits the patched catalog would misstate). ADD-only: a present key -- ours or
- * a user-pinned custom catalog path -- is never rewritten here; enforcing OUR
- * path over a custom one is the full managed write's job (configureCodexConfig).
- * The one subtraction, judged BEFORE the active config is even read: when the
- * file is unusable (gone, malformed, empty) or the installed codex REJECTS its
- * schema (a codex upgrade that now requires a field the file predates), our
- * reference is stripped from every known config, whatever the active config's
- * state, because that reference is exactly what fails Codex's startup; a
- * rejected file stays for the next regeneration, and nothing is added meanwhile.
- *
- * DISABLED -- cleanup: strip the reference from every known Codex config, then
- * delete the generated file, then clear the refresh-throttle state. "Every
- * known config" sweeps the active home, the default ~/.codex, and the per-host
- * symlink-farm homes (~/.codex/hosts/*): all of them reference the ONE
- * account-wide file, so stripping only the active home could leave a dangling
- * reference elsewhere. The reference is stripped only when its value IS our
- * generated path (the value match alone proves ownership -- no provider check,
- * because leaving our reference behind while the file goes would break Codex
- * startup; a user-pinned custom path survives). Strip-BEFORE-delete keeps the
- * dangling-reference window to the one unavoidable TOCTOU sliver (a Codex that
- * read the old config but has not opened the file yet); anything wider --
- * every config on disk -- always sees (reference + file) or (no reference).
- * Deletion FAILS CLOSED: when any config is unreadable for a reason other
- * than "no config.toml", when the farm directory cannot be enumerated, or
- * when a NON-matching reference still resolves to the same file (a case
- * variant / symlinked spelling of our path), the file is kept this round; a
- * possibly-live reference to a deleted file is a Codex startup error, and
- * Codex re-runs auth every 300s, so the retry is near. Steady state is
- * write-free.
+ * Auth-time sync: keep the managed config's `model_catalog_json` in step with the opt-in
+ * `codex-model-catalog` preference, on every auth resolution. Best-effort: never throws.
+ * ENABLED is an ADD-only self-heal: when a usable catalog exists but the config predates it
+ * (the wiring-time seed failed, or the file appeared while mobile pairing had the provider
+ * stripped), add the reference in place, and only while the config selects OUR provider:
+ * `agent codex --mobile` strips `model_provider` to run on OpenAI's default, whose limits
+ * the patched catalog would misstate. A present key, ours or a user-pinned custom path, is
+ * never rewritten here; enforcing OUR path is configureCodexConfig's job.
  */
 export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): void {
   try {
@@ -78,8 +45,10 @@ export function syncCodexCatalogReference(catalogDeps: CodexCatalogDeps = {}): v
       cleanupCodexCatalogArtifacts(catalogFile);
       return;
     }
-    // Absent, malformed, or empty, or rejected by the installed codex: any
-    // reference to it is a Codex startup failure, so strip ours everywhere.
+    // Absent, malformed, or empty, or rejected by the installed codex (an upgrade that now
+    // requires a field the file predates): any reference to it is a Codex startup failure,
+    // so strip ours everywhere, whatever the active config's state; a rejected file stays
+    // for the next regeneration, and nothing is added meanwhile.
     const verdict = inspectCatalogFile(catalogFile, catalogDeps);
     if (verdict === "unusable" || verdict === "rejected") {
       if (stripCodexCatalogReferences(catalogFile).stripped) {
@@ -179,14 +148,15 @@ export function resolvesToCatalogFile(
   }
 }
 
-/** The disabled branch of syncCodexCatalogReference: strip our reference from
- *  every candidate config, delete the generated file, clear the throttle state
- *  -- in that order, each step skipped when already clean so the 300s auth
- *  cadence stays write-free. The ownership ledger EXTENDS the sweep (a recorded
- *  config outside the enumerated homes still gets its reference stripped), but
- *  the exact value match below stays the per-config proof for every candidate:
- *  pre-ledger installs recorded nothing, and a user-repointed key is no longer
- *  ours even at a recorded path. */
+/** The disabled branch of syncCodexCatalogReference: strip our reference from every
+ *  candidate config, THEN delete the generated file, then clear the throttle state, each
+ *  step skipped when already clean so the 300s auth cadence stays write-free. Strip before
+ *  delete keeps the dangling-reference window to the one unavoidable TOCTOU sliver (a Codex
+ *  that read the old config but has not opened the file yet). Deletion fails closed: while
+ *  any config may still reference the file, it is kept this round and the next auth retries.
+ *  The ownership ledger EXTENDS the sweep (a recorded config outside the enumerated homes
+ *  still gets its reference stripped), but the exact value match stays the per-config
+ *  proof: pre-ledger installs recorded nothing, and a user-repointed key is no longer ours. */
 function cleanupCodexCatalogArtifacts(catalogFile: string): void {
   const { deletionSafe } = stripCodexCatalogReferences(catalogFile);
   if (deletionSafe && fs.existsSync(catalogFile)) {
@@ -211,10 +181,12 @@ function cleanupCodexCatalogArtifacts(catalogFile: string): void {
   }
 }
 
-/** Strip our `model_catalog_json` reference from every candidate config (the
- *  sweep cleanupCodexCatalogArtifacts describes), releasing each claim as it
- *  goes. `stripped` reports whether any config changed; `deletionSafe` is the
- *  sweep's proof that no readable config still references the file. */
+/** Strip our `model_catalog_json` reference from every candidate config (the sweep
+ *  cleanupCodexCatalogArtifacts describes), releasing each claim as it goes. The exact
+ *  value match alone proves ownership, with no provider check: a reference left behind
+ *  while the file goes breaks Codex startup, and a user-pinned custom path survives.
+ *  `stripped` reports whether any config changed; `deletionSafe` is the sweep's proof
+ *  that no readable config still references the file. */
 function stripCodexCatalogReferences(
   catalogFile: string,
 ): { stripped: boolean; deletionSafe: boolean } {

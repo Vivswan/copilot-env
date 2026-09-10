@@ -150,18 +150,14 @@ function floorChecked(entry: CopilotApiEntry): FloorCheckedEntry {
 }
 
 /**
- * The `agent start` proxy gate: float the proxy if its recorded resolution has gone
- * stale, then refuse to launch below the PROXY_MIN_VERSION floor. Returns the entry it
- * validated -- the one the launch must spawn from.
- *
- * The float runs at start, INSIDE the start lock (`_lock` is the evidence), because
- * `start` is the one command that needs a runnable proxy -- and serializing it there
- * means two concurrent starts can never re-warm the float's cache over each other.
- * `proxyFloatVerifyStatus` is offline while the record is younger than the cooldown, so
- * the common start pays no network cost. The float itself is best-effort (an offline
- * machine keeps whatever is already cached), but the floor is a hard runtime contract:
- * fail-closed, and before disturbing any running daemon. A `COPILOT_API_ENTRY` override
- * skips both -- it runs a file we did not resolve and do not version.
+ * The `agent start` proxy gate: float the proxy if its recorded resolution has gone stale,
+ * then refuse to launch below the PROXY_MIN_VERSION floor. The float runs here, INSIDE the
+ * start lock (`_lock` is the evidence): `start` is the one command that needs a runnable
+ * proxy, and serializing it there means two concurrent starts never re-warm the float's
+ * cache over each other. The float is best-effort (an offline machine keeps what is cached;
+ * the verify is offline while the record is younger than the cooldown), but the floor is a
+ * hard runtime contract: fail-closed, and before disturbing any running daemon. A
+ * `COPILOT_API_ENTRY` override skips both: it runs a file we did not resolve or version.
  */
 export async function ensureProxyFloor(_lock: HeldStartLock): Promise<FloorCheckedEntry> {
   const preflight = resolveCopilotApiEntry();
@@ -385,30 +381,25 @@ const HOLDER_STOP_POLL_MS = 100;
 
 /**
  * Whether THIS host can vouch that `holder` -- the marker-named pid of `home`'s held
- * daemon.lock -- is OUR daemon in the LOCAL pid table. The lock alone cannot: a daemon
- * home can be shared across hosts (in-design; see the cross-host note on the config
- * apply lock below), where the lock is held by another HOST's daemon and its marker pid
- * may name any innocent local process. Nor can run state: the per-host record proves the
- * pid was ours on this host ONCE, never that today's process is still it -- so every
- * lock-held signal, tracked or not, earns its provenance here, requiring all of:
- *   - no run-state record in `trackedSpares` tracks the pid. The default is EVERY slot's
- *     record; the planner passes the POST-clear set (its own slot's record is cleared
- *     before any holder stop executes) -- exempting that one RECORD, never the pid, so a
- *     second slot's claim on the same pid (a stale-state pid-reuse collision) still
- *     refuses,
- *   - no OTHER home's lock can claim it -- judged fail-closed: a hold this host cannot
- *     read or attribute might be exactly this pid, so it also refuses, and
- *   - the OWNER-FILTERED process scan confirms a daemon invocation of the CURRENT user
- *     (isCopilotApiPid -- the same scan the sweep trusts before SIGKILLs; a failed or
- *     unreadable scan reads false), trading auto-recovery where the process table is
- *     unreadable for never signalling a pid this host cannot prove.
+ * daemon.lock -- is OUR daemon in the LOCAL pid table. The lock alone cannot: a daemon home
+ * can be shared across hosts (in-design; see the cross-host note on the config apply lock
+ * below), where the lock is held by another HOST's daemon and its marker pid may name any
+ * innocent local process. Nor can run state: the per-host record proves the pid was ours on
+ * this host ONCE, never that today's process is still it. So every lock-held signal, tracked
+ * or not, earns its provenance here, and each of the three checks refuses fail-closed.
  */
 async function corroborateLockHolder(
   home: string,
   holder: number,
   trackedSpares: Set<number> = trackedDaemonPids(),
 ): Promise<boolean> {
+  // No run-state record in `trackedSpares` may track the pid. The default is EVERY slot's
+  // record; the planner passes the POST-clear set (its own slot's record is cleared before
+  // any holder stop executes), exempting that one RECORD, never the pid, so a second slot's
+  // claim on the same pid (a stale-state pid-reuse collision) still refuses.
   if (trackedSpares.has(holder)) return false;
+  // No OTHER home's lock may claim it: a hold this host cannot read or attribute might be
+  // exactly this pid, so it refuses too.
   for (const other of allDaemonHomes()) {
     if (other === home) continue;
     const hold = daemonLockHold(other);
@@ -426,6 +417,10 @@ async function corroborateLockHolder(
         return assertNever(hold);
     }
   }
+  // The OWNER-FILTERED process scan must confirm a daemon invocation of the CURRENT user (the
+  // same scan the sweep trusts before SIGKILLs; a failed or unreadable scan reads false),
+  // trading auto-recovery where the process table is unreadable for never signalling a pid
+  // this host cannot prove.
   return await isCopilotApiPid(holder);
 }
 
@@ -478,23 +473,12 @@ export type CleanupAction =
 /**
  * Decide -- READ-ONLY: no signals, no writes -- what stands in the way of a fresh launch
  * over `home` (passed in, not derived: the callers own the path derivation), in execution
- * order:
- *   - the tracked pid: signalled only when the lock rules it "unproven" (the shared
- *     daemonLockVerdict table: "dead" is never signalled however alive the pid table says
- *     it is -- pid reuse -- and "alive" DEFERS to the corroborated holder stop below) AND
- *     the three-state argv scan (classifyOwnedDaemonPid) CONFIRMS a pre-lock daemon -- a
- *     failed scan ("unknown") also skips the signal, fail-closed, but warns instead of
- *     silently reading as "not ours"; its tracking is cleared regardless (a
- *     durable state write, so it is an enumerated action the dry run must report),
- *   - THIS home's live daemon.lock holder -- tracked or not: stopped only under host-local
- *     corroboration, left alone (with the shared-home warning) otherwise; the self/parent
- *     case is no action at all,
- *   - the machine-wide orphans (`listPids` is the scan seam, injectable for tests),
- *     sparing every tracked pid and every live lock holder.
- * Every tracked-pid judgment past the clear uses the POST-clear set (`profile`'s own
- * record is exempted as a RECORD, never as a pid -- another slot's claim on the same pid
- * still spares/refuses), matching the pre-split order where the clear preceded both the
- * corroboration and the sweep's keep-set snapshot.
+ * order: the tracked pre-lock daemon, THIS home's live daemon.lock holder (tracked or not:
+ * stopped only under host-local corroboration, left alone with the shared-home warning
+ * otherwise; the self/parent case is no action at all), then the machine-wide orphans
+ * (`listPids` is the scan seam, injectable for tests), sparing every tracked pid and every
+ * live lock holder. Every judgment past the clear uses the POST-clear set: `profile`'s own
+ * record is exempted as a RECORD, never as a pid, so another slot's claim still spares/refuses.
  */
 export async function planCleanup(
   home: string,
@@ -506,6 +490,9 @@ export async function planCleanup(
   const actions: CleanupAction[] = [];
   const tracked = state.read().pid;
   if (tracked !== undefined) {
+    // The shared daemonLockVerdict table gates the signal: "dead" is never signalled however
+    // alive the pid table says it is (pid reuse), and "alive" DEFERS to the corroborated
+    // holder stop below.
     if (daemonLockVerdict(home, tracked) === "unproven") {
       // Three-state identity (classifyOwnedDaemonPid): only a CONFIRMED daemon of the
       // current user earns the courtesy stop. "unknown" -- the scan FAILED -- skips the
@@ -526,6 +513,8 @@ export async function planCleanup(
           assertNever(cls);
       }
     }
+    // Cleared regardless of the verdict: a durable state write, so an enumerated action the
+    // dry run must report.
     actions.push({ kind: "clear-tracking", pid: tracked });
   }
   const postClearTracked = trackedDaemonPids(profile);
@@ -578,18 +567,14 @@ function warnUnprovenTrackedPid(pid: number): void {
 }
 
 /**
- * Execute the cleanup plan for `profile` (planCleanup above -- the same decision source
- * `start --dry-run` narrates): stop the tracked pre-lock daemon, clear its tracking (up
- * front, so a throw below never leaves a stale port pointing at a dead daemon), stop or
- * spare this home's daemon.lock holder, then run the orphan sweep as one batch (SIGTERM
- * the enumerated pids, one grace wait, SIGKILL whatever a fresh scan still lists). The
- * plan authorizes; every SIGNAL still re-derives its proof at the signal boundary (the
- * argv re-scan, the still-holds + re-corroborate check, the fresh orphan scan the batch
- * is intersected with), so a pid that exited or lapsed since planning is never signalled
- * on the stale snapshot. Ends with a settle pause before the caller probes ports.
- * Demands the held start lock (`_lock`, like ensureProxyFloor): the plan's snapshots and
- * the sweep are only race-free serialized against every other start, so an un-locked
- * cleanup must not compile.
+ * Execute the cleanup plan for `profile` (planCleanup, which `start --dry-run` narrates): stop
+ * the tracked pre-lock daemon, clear its tracking up front (so a throw below never leaves a
+ * stale port pointing at a dead daemon), stop or spare this home's daemon.lock holder, then
+ * run the orphan sweep as one batch (SIGTERM the enumerated pids, one grace wait, SIGKILL
+ * whatever a fresh scan still lists). The plan authorizes; every SIGNAL re-derives its proof
+ * at the signal boundary, so a pid that exited or lapsed since planning is never signalled on
+ * the stale snapshot. Ends with a settle pause before the caller probes ports. Demands the
+ * held start lock (`_lock`): snapshots and sweep are race-free only serialized against starts.
  */
 export async function cleanupExistingProxies(
   _lock: HeldStartLock,
@@ -791,15 +776,14 @@ export interface SpawnedDaemon {
 }
 
 /**
- * The copilot-env lifecycle environment every daemon spawn gets. Every daemon -- the
- * default included -- runs against its OWN home under `<root>/profiles/` (config.json
- * incl. auth.apiKeys, .run/, sqlite, logs) so concurrent daemons never contend on one
- * home; the root home is passed alongside so the in-daemon preloads still find the
- * ACCOUNT-WIDE files (credential store, preferences) there. The home itself rides in
- * DaemonSpec.home (pinned for every daemon). The keep-port value transports the
- * daemon's releasesPortOnStop policy to the idle watchdog's auto-stop clear -- always
- * set (never inherited), so a stale environment can't steer it. Pure, so the contract
- * is testable without spawning anything.
+ * The copilot-env lifecycle environment every daemon spawn gets. Every daemon -- the default
+ * included -- runs against its OWN home under `<root>/profiles/` (config.json incl.
+ * auth.apiKeys, .run/, sqlite, logs) so concurrent daemons never contend on one home; the
+ * root home is passed alongside so the in-daemon preloads still find the ACCOUNT-WIDE files
+ * (credential store, preferences) there. The home itself rides in DaemonSpec.home (pinned
+ * for every daemon). The keep-port value transports the daemon's releasesPortOnStop policy
+ * to the idle watchdog's auto-stop clear -- always set (never inherited), so a stale
+ * environment can't steer it. Pure, so the contract is testable without spawning anything.
  */
 export function daemonLifecycleEnv(
   profile: Profile,
@@ -1101,18 +1085,14 @@ export function applyDefaultConfig(
 }
 
 /**
- * Disable every built-in extraPrompt the proxy injects.
- *
- * The floated `@jeffreycao/copilot-api` re-adds any *missing* default extraPrompt
- * key on every config reload (`mergeDefaultConfig`), so an empty or absent map
- * is futile -- the defaults always come back. Instead we blank every key the
- * daemon has already written to config.json. Discovering the key set at runtime
- * (rather than hardcoding it) keeps this correct when a future package version
- * adds new default prompts.
- *
- * Must run after the daemon is up (so config.json holds the package's full
- * default set) and before the model-mappings POST, whose reloadConfig() makes
- * the blanked values take effect.
+ * Disable every built-in extraPrompt the proxy injects. The floated
+ * `@jeffreycao/copilot-api` re-adds any *missing* default extraPrompt key on every config
+ * reload (`mergeDefaultConfig`), so an empty or absent map is futile: the defaults always
+ * come back. Instead every key the daemon has already written to config.json is blanked;
+ * discovering the key set at runtime (rather than hardcoding it) keeps this correct when a
+ * future package version adds new default prompts. Must run after the daemon is up (so
+ * config.json holds the package's full default set) and before the model-mappings POST,
+ * whose reloadConfig() makes the blanked values take effect.
  */
 function disableExtraPrompts(config: CopilotApiConfig): void {
   config.update((d) => {

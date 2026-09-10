@@ -45,15 +45,14 @@ export type UpdateAction =
   | { kind: "apply"; force: boolean; verify: boolean | undefined };
 
 /**
- * The under-lock re-validate judgment, pure for testing. `targetNow` is
- * resolveTarget's SECOND look, taken after the update lock is held, and its null
- * unions two different facts: "no eligible release" and "the look failed" (an API
- * error or an offline read, swallowed into null by resolve-release.ts). By the time
- * this runs, the pre-lock resolve has ALREADY proved an eligible release exists, so
- * a null here can only be the failed look -- `unproven`, never the confident
- * `up-to-date`. Keeping the two apart is what stops a transient 5xx from rendering a
- * green "already up to date" over a skipped update; falling back to the pre-lock
- * target instead would defeat the downgrade guard the re-validate exists to be.
+ * The under-lock re-validate judgment, pure for testing. `targetNow` is resolveTarget's
+ * SECOND look, taken after the update lock is held, and its null unions two facts: "no
+ * eligible release" and "the look failed" (an API error or an offline read, swallowed into
+ * null by resolve-release.ts). The pre-lock resolve has ALREADY proved an eligible release
+ * exists, so a null here can only be the failed look: `unproven`, never the confident
+ * `up-to-date`. Keeping the two apart is what stops a transient 5xx from rendering a green
+ * "already up to date" over a skipped update; falling back to the pre-lock target instead
+ * would defeat the downgrade guard the re-validate exists to be.
  */
 export type RecheckVerdict =
   | { kind: "apply"; target: Release }

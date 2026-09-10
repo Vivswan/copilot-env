@@ -142,11 +142,7 @@ export function childEnvWithPath(
  * for a REAL "ran, found nothing" -- so the synthesized case additionally carries
  * `launchFailed: true`: the child never reported an exit code of its own, and a
  * consumer that must not read a failed look as a proven absence keys on the mark
- * (a completed run, zero or nonzero, never carries it). `windowsHide` keeps a
- * no-console Windows parent from flashing a console window. `maxBuffer` defaults
- * to 16 MiB (well past node's 1 MiB); callers that collect large listings raise
- * it -- an overflow kills the child and reads as a marked launch failure,
- * silently degrading unmarked-only scans.
+ * (a completed run, zero or nonzero, never carries it).
  */
 export function runCaptured(
   file: string,
@@ -154,6 +150,10 @@ export function runCaptured(
   opts: { maxBuffer?: number } = {},
 ): Promise<{ exitCode: number; stdout: string; launchFailed?: true }> {
   return new Promise((resolve) => {
+    // `windowsHide` keeps a no-console Windows parent from flashing a console window.
+    // `maxBuffer` defaults to 16 MiB (well past node's 1 MiB); callers that collect
+    // large listings raise it -- an overflow kills the child and reads as a marked
+    // launch failure, silently degrading unmarked-only scans.
     execFile(
       file,
       args,
@@ -180,12 +180,9 @@ function quoteCmdArg(arg: string): string {
  * installed CLIs (codex/claude) are `.cmd`/`.ps1` shims that Node cannot spawn
  * directly -- it blocks `.cmd`/`.bat` without a shell -- so run them through cmd.exe
  * (`shell: true`) with args quoted so whitespace survives the shell join. On POSIX,
- * spawn the (resolved) file directly with no shell. Pass the result to
- * spawn/spawnSync: `const s = cliSpawn(file, args); spawnSync(s.file, s.args, { shell: s.shell, ... })`.
- *
- * ONLY for program-controlled args: cmd.exe expands `%VAR%` even inside double
- * quotes, so an arbitrary string cannot be passed through it verbatim. User-typed
- * args go through verbatimCliSpawn below instead.
+ * spawn the (resolved) file directly with no shell. ONLY for program-controlled
+ * args: cmd.exe expands `%VAR%` even inside double quotes, so an arbitrary string
+ * cannot be passed through it verbatim. User-typed args go through verbatimCliSpawn.
  */
 export function cliSpawn(
   file: string,
@@ -235,10 +232,6 @@ export function pickWindowsExecutable(candidates: string[]): string | null {
  * from findCommand (`command -v` prints the resolution -- absolute unless the
  * matching PATH entry was itself relative, which reads as null here: a
  * cwd-dependent resolution is not a stable binary for another process to spawn).
- * Windows scopes where.exe to PATH's directories (`$PATH:` pattern): a bare
- * `where.exe` searches the CURRENT DIRECTORY first, and a cwd-local binary is
- * the same unstable resolution the POSIX arm rejects.
- *
  * Accepted flatten (the ghAuthToken precedent): a look that never RAN reads as
  * null too, because every caller's miss action is a non-destructive fallback
  * (the provisioned sidecar, or a fresh install) -- null never renders a verdict.
@@ -248,22 +241,20 @@ export function resolveExecutablePath(command: string): string | null {
     const path = findCommand(command).path;
     return path !== null && isAbsolute(path) ? path : null;
   }
+  // The `$PATH:` pattern scopes where.exe to PATH's directories: a bare `where.exe`
+  // searches the CURRENT DIRECTORY first, and a cwd-local binary is the same
+  // unstable resolution the POSIX arm rejects.
   return pickWindowsExecutable(windowsWhereCandidates(`$PATH:${command}`));
 }
 
 /**
  * Pick the VERBATIM Windows invocation from `candidates` (PATH-ordered): the first
  * actionable resolution wins, dispatched on its extension so user-typed args never
- * pass through cmd.exe's parser (which expands `%VAR%` even inside quotes):
- *   - `.exe`/`.com`: spawn directly (plain argv).
- *   - `.ps1` (the npm shim): `powershell -File`, which passes argv literally.
- *   - `.cmd`/`.bat`: prefer the sibling `.ps1` npm always ships beside its `.cmd`;
- *     a batch-ONLY shim falls back to cliSpawn -- cmd.exe parsing (and its `%`
- *     expansion) is that shim's own semantics, unavoidable for a bare batch file.
- *   - extensionless (npm's sh script): not spawnable on Windows; skipped, its
- *     `.cmd`/`.ps1` siblings are their own candidates.
- * Pure (the sibling probe is injected) and exported for tests; verbatimCliSpawn
- * feeds it the real where.exe candidates.
+ * pass through cmd.exe's parser (which expands `%VAR%` even inside quotes). An
+ * extensionless candidate (npm's sh script) is not spawnable on Windows and is
+ * skipped; its `.cmd`/`.ps1` siblings are their own candidates. Pure (the sibling
+ * probe is injected) and exported for tests; verbatimCliSpawn feeds it the real
+ * where.exe candidates.
  */
 export function pickVerbatimWindowsSpawn(
   command: string,
@@ -271,6 +262,7 @@ export function pickVerbatimWindowsSpawn(
   args: string[],
   siblingExists: (path: string) => boolean,
 ): VerbatimCliSpawn {
+  // `.ps1` (the npm shim) runs through `powershell -File`, which passes argv literally.
   // win32.dirname explicitly: this picker reasons about Windows paths even when
   // its pure tests run on POSIX (where plain dirname would not split backslashes).
   const psFile = (ps1: string): VerbatimCliSpawn => ({
@@ -281,10 +273,14 @@ export function pickVerbatimWindowsSpawn(
   });
   for (const candidate of candidates) {
     const lower = candidate.toLowerCase();
+    // `.exe`/`.com`: spawn directly (plain argv).
     if (lower.endsWith(".exe") || lower.endsWith(".com")) {
       return { file: candidate, args, shell: false, binDir: win32.dirname(candidate) };
     }
     if (lower.endsWith(".ps1")) return psFile(candidate);
+    // `.cmd`/`.bat`: prefer the sibling `.ps1` npm always ships beside its `.cmd`; a
+    // batch-ONLY shim falls back to cliSpawn's cmd.exe hop -- its parsing (and `%`
+    // expansion) is that shim's own semantics, unavoidable for a bare batch file.
     if (lower.endsWith(".cmd") || lower.endsWith(".bat")) {
       const sibling = `${candidate.slice(0, -4)}.ps1`;
       if (siblingExists(sibling)) return psFile(sibling);

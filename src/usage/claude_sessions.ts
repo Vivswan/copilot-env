@@ -12,15 +12,13 @@
 // Deduplication is mandatory and value-aware: streaming writes one line per
 // content block, all sharing the same `message.id`, and the usage SNAPSHOT
 // GROWS across those lines -- `output_tokens` rises until the final line
-// carries the true count (the input-side buckets never change; verified over
-// every local transcript). Resume/fork additionally copies finished lines
-// into new files. So each message is counted once, at the running per-bucket
-// MAX across every occurrence: the first line books its snapshot and later
-// lines add only the positive delta. This covers Direct-wired Claude, which
-// bypasses the proxy and therefore never reaches the proxy's SQLite usage
-// tables. The raw transcripts are the source of truth here on purpose:
-// Claude Code's own `stats-cache.json` is a pre-aggregated cache, not raw
-// data.
+// carries the true count (the input-side buckets never change). Resume/fork
+// additionally copies finished lines into new files. So each message is counted
+// once, at the running per-bucket MAX across every occurrence: the first line
+// books its snapshot and later lines add only the positive delta. This covers
+// Direct-wired Claude, which bypasses the proxy and never reaches its SQLite
+// usage tables. The raw transcripts are the source of truth on purpose: Claude
+// Code's own `stats-cache.json` is a pre-aggregated cache, not raw data.
 //
 // Split as walk -> pure per-file parse (a ClaudeContribution, window and dedup
 // NOT applied) -> fold, so a per-file index can cache the parse.

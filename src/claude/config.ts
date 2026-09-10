@@ -217,20 +217,13 @@ function claudeBaseUrlMatchesProxy(baseUrl: string, expectedPort: number): boole
 // --- wiring inspection (pure) -----------------------------------------------
 
 /**
- * Inspect raw settings content against the managed contract for `profile` (default
- * profile = settings.json, named = settings-<name>.json). The caller passes the file
- * content as a TextReadResult (readTextResult keeps absent and unreadable apart; a
- * plain string means text, null means absent, for callers reading through a
- * string-or-null seam). Pure (no I/O). Mode is keyed off the EXACT apiKeyHelper
- * value so a user's own similar-looking helper is never mistaken for ours -- the
- * verdict authorizes `--check`, the uninstall strip, and the profile overwrite guard:
- *   - direct: apiKeyHelper is the managed `agent auth --get` command
- *   - proxy:  apiKeyHelper is the managed `agent proxy-token --yes` command
- *   - other:  a config we must not clobber, with WHY in `otherReason` (see
- *             ClaudeOtherReason): a foreign apiKeyHelper or custom base URL,
- *             malformed JSON, or a settings file that exists but could not be read
- *             (where a plain null would have read as "none" and authorized removal)
- *   - none:   no relevant keys (absent/empty) -- unconfigured; proxy is default
+ * Classify raw settings content for `profile` (default = settings.json, named =
+ * settings-<name>.json). Pure: the caller passes a TextReadResult (a plain string means
+ * text, null means absent). Mode is keyed off the EXACT apiKeyHelper value so a user's own
+ * similar-looking helper is never mistaken for ours; the verdict authorizes `--check`, the
+ * uninstall strip, and the profile overwrite guard. "other" carries WHY in `otherReason`
+ * (see ClaudeOtherReason); a settings file that exists but cannot be read is "other", never
+ * "none", since "none" would authorize removal. "none" = unconfigured (proxy is default).
  */
 export function inspectClaudeWiring(
   settings: TextReadResult | string | null,
@@ -471,21 +464,14 @@ function stripManagedWebSearchDeny(
 }
 
 /**
- * The web-search pair for the DEFAULT profile: the `copilot-env` MCP server
- * registration (in Claude's global `~/.claude.json`) and the builtin-WebSearch
- * deny (in the settings doc). They move together as one unit -- registration
- * FIRST, and the deny only stands while the registration is confirmed, so a
- * machine is never left with the builtin denied and no replacement (a failed
- * registration takes an existing managed deny back OUT). Direct with `wire-mcp`
- * on wires the pair; proxy, or `wire-mcp` off, takes both back (the floated
- * proxy serves web search itself, so the builtin works there).
- *
- * Default profile only by nature: `~/.claude.json` is global and deny rules
- * UNION across settings layers (a named proxy profile over a direct default
- * could never un-deny), so named profiles never carry the pair -- when the
- * default is direct, their sessions inherit it from the default layer.
- *
- * Returns the post-save commit (see WebSearchPairCommit).
+ * The DEFAULT profile's web-search pair: the `copilot-env` MCP registration (Claude's
+ * global `~/.claude.json`) and the builtin-WebSearch deny (the settings doc). Registration
+ * FIRST, and the deny stands only while the registration is confirmed, so a machine is
+ * never left with the builtin denied and no replacement. Direct with `wire-mcp` on wires
+ * the pair; proxy, or `wire-mcp` off, takes both back (the proxy serves web search itself).
+ * Default profile only: `~/.claude.json` is global and deny rules UNION across settings
+ * layers (a named proxy profile over a direct default could never un-deny). Returns the
+ * post-save commit (see WebSearchPairCommit).
  */
 function applyWebSearchPair(
   doc: Record<string, unknown>,
@@ -537,18 +523,6 @@ export function syncDefaultWebSearchWiring(claudeHome = resolveClaudeHome()): vo
   commit();
 }
 
-/**
- * Apply the managed Claude wiring at `claudeHome` for `profile` (default =
- * settings.json; named = settings-<name>.json, launched via `claude --settings`).
- * Direct writes the inline apiKeyHelper command that invokes `agent auth --get
- * [--profile <name>]` (the credential resolver for the addressed slot) + the Copilot
- * base URL; proxy resolves the profile's proxy port, writes the inline command that
- * runs `agent proxy-token --yes`, and points the base URL at 127.0.0.1. Either way the
- * merge is surgical (only managed keys change) and the OTHER mode's settings are
- * overwritten so switching modes is clean. A named DIRECT profile requires its own
- * credential (named profiles never fall back to the default one). Throws on an
- * unwritable home / malformed settings / unresolvable proxy port.
- */
 /** One managed Claude settings write: the SHARED mode variant (ManagedWrite, so
  *  the mode/identity pairing is enforced at the type) plus this writer's common
  *  knobs -- the Claude twin of CodexWriteRequest. */
@@ -557,6 +531,15 @@ export type ClaudeWriteRequest = ManagedWrite & {
   profile?: Profile;
 };
 
+/**
+ * Apply the managed Claude wiring at `claudeHome` for `profile` (default = settings.json;
+ * named = settings-<name>.json, launched via `claude --settings`). Direct writes the inline
+ * `agent auth --get [--profile <name>]` apiKeyHelper + the Copilot base URL; proxy writes
+ * the `agent proxy-token --yes` helper and points the base URL at the profile's proxy port.
+ * The merge is surgical (only managed keys change) and the OTHER mode's keys are overwritten
+ * so switching modes is clean. Throws on an unwritable home, malformed settings, or an
+ * unresolvable proxy port.
+ */
 export function configureClaudeConfig(claudeHome: string, request: ClaudeWriteRequest): void {
   const profile = request.profile ?? null;
   // Cheap credential-presence gate (no `gh` spawn -- runClaude already did the full
@@ -661,15 +644,6 @@ function checkClaudeConfig(): void {
   process.exitCode = providerModeExitCode(status.providerMode);
 }
 
-/**
- * Remove a NAMED profile's managed Claude artifact, its settings-<name>.json -- but
- * only when the wiring is actually OURS (managed direct/proxy). An "other"
- * classification (foreign wiring, malformed JSON, or a settings file that exists
- * but cannot be read -- the classifier's read-error arm, minted precisely so
- * ownership we cannot verify is never read as "none") leaves the file alone: it
- * is the user's. Used by `agent profile --del`.
- */
-
 /** The file removeClaudeProfile would remove for `name` right now: the settings file,
  *  when its wiring is ours. Read-only; an uninstall plan resolves this once and renders
  *  it both ways. */
@@ -678,6 +652,14 @@ export function claudeProfileArtifacts(claudeHome: string, name: ProfileName): s
   return inspectClaudeWiring(readTextResult(settingsPath), 0, name).wired ? [settingsPath] : [];
 }
 
+/**
+ * Remove a NAMED profile's managed Claude artifact, its settings-<name>.json -- but
+ * only when the wiring is actually OURS (managed direct/proxy). An "other"
+ * classification (foreign wiring, malformed JSON, or a settings file that exists
+ * but cannot be read -- the classifier's read-error arm, minted precisely so
+ * ownership we cannot verify is never read as "none") leaves the file alone: it
+ * is the user's. Used by `agent profile --del`.
+ */
 export function removeClaudeProfile(
   claudeHome: string,
   name: ProfileName,
@@ -696,26 +678,14 @@ export interface ClaudeDefaultWiringRemoval {
 }
 
 /**
- * Remove the DEFAULT profile's managed Claude artifacts: the managed settings.json
- * keys (apiKeyHelper + the managed env vars + OUR WebSearch deny entry, when the
- * ownership record says we added it), stripped only while apiKeyHelper still
- * points at the managed helper (inspectClaudeWiring reports direct/proxy) --
- * that helper is what makes the whole managed key set ours, exactly as an explicit
- * mode write would reclaim it; a foreign apiKeyHelper (`other`) leaves the managed
- * keys alone.
- *
- * The exact-path-OWNED WebSearch deny is the one exception to the hands-off
- * "other" rule: ownership is the proof it is ours, independent of how the rest of
- * the file classifies, so any PARSEABLE settings doc gets the ownership-gated
- * strip (a user's own deny is never touched -- stripManagedWebSearchDeny owns
- * that gate). Only a file the strip cannot land on (unreadable, malformed, or
- * unwritable) leaves an owned deny standing, reported via the returned
- * `ownedDenyRemains` so the caller keeps the MCP registration as the deny's
- * replacement.
- *
- * The strip is surgical so every other user setting (model, hooks, the user's own
- * permissions entries) survives; an emptied env object is dropped, and a doc
- * emptied entirely removes settings.json itself. Used by `agent uninstall`.
+ * Remove the DEFAULT profile's managed settings.json keys (apiKeyHelper, the managed env
+ * vars, OUR WebSearch deny), but only while apiKeyHelper is still the managed helper: that
+ * helper is what makes the key set ours, so a foreign apiKeyHelper ("other") leaves them.
+ * The exact-path-OWNED deny is the one exception: ownership proves it is ours whatever the
+ * rest of the file is, so any PARSEABLE doc gets the ownership-gated strip. Only a file the
+ * strip cannot land on (unreadable, malformed, unwritable) leaves an owned deny standing,
+ * reported as `ownedDenyRemains` so the caller keeps the MCP registration in its place.
+ * Every other user setting survives; a doc emptied entirely removes settings.json itself.
  */
 export function removeClaudeDefaultWiring(claudeHome: string): ClaudeDefaultWiringRemoval {
   const settingsPath = settingsPathFor(claudeHome);
@@ -803,13 +773,11 @@ export function claudeAdapter(): AgentAdapter {
 
 /**
  * `agent claude`: configure Claude Code's wiring at the effective Claude home
- * ($CLAUDE_CONFIG_DIR, else ~/.claude). The parsed action union carries the
- * intent whole: a `check` action reports the configured mode (exit 0 direct /
- * 2 proxy|none / 1 other) without a probe, and a `configure` action carries the
- * requested mode (`--direct`/`--proxy` forced, "auto" = live `claude -p` probe,
- * else the proxy). A GitHub token provisioned via `agent auth` (in the shared
- * store) selects Direct without probing on "auto". (Named profiles are managed
- * by `agent profile`, not here.) The body is the shared skeleton
+ * ($CLAUDE_CONFIG_DIR, else ~/.claude). A `check` action reports the configured mode
+ * (exit 0 direct / 2 proxy|none / 1 other) without a probe; a `configure` action carries
+ * the requested mode (`--direct`/`--proxy` forced, "auto" = live `claude -p` probe, else
+ * the proxy). A GitHub token provisioned via `agent auth` selects Direct on "auto" without
+ * probing. Named profiles belong to `agent profile`. The body is the shared skeleton
  * (runAgentConfig) over claudeAdapter.
  */
 export async function runClaude(action: AgentRunAction): Promise<void> {

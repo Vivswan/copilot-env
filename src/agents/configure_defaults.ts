@@ -30,15 +30,13 @@ export interface DefaultAgentRequest {
 }
 
 /**
- * Configure the requested agents' default selections and report BOTH resulting
- * modes (a skipped agent still reports its current wiring) plus every per-agent
- * failure -- the warn here keeps init's narration, and the returned `failures`
- * let callers with a stricter contract (the settings-bundle import) fail the
- * run instead of printing success over a broken wiring. Runs through the ONE
- * cross-agent adapter list (bothAgents) and the shared skeleton (runAgentConfig),
- * in the list's order. Each agent's narration is grouped under a header with
- * blank-line spacing. `catalogDeps` is the Codex adapter's catalog test seam,
- * threaded through untouched.
+ * Configure the requested agents' default selections and report BOTH resulting modes (a
+ * skipped agent still reports its current wiring) plus every per-agent failure: the warn
+ * here keeps init's narration, and the returned `failures` let callers with a stricter
+ * contract (the settings-bundle import) fail the run instead of printing success over a
+ * broken wiring. Runs through the ONE cross-agent adapter list (bothAgents) and the shared
+ * skeleton (runAgentConfig), in the list's order, each agent's narration grouped under a
+ * header. `catalogDeps` is the Codex adapter's catalog test seam, threaded through untouched.
  */
 export async function configureDefaultAgents(
   request: DefaultAgentRequest,

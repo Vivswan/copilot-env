@@ -76,19 +76,17 @@ export function lastActivityMs(signals: {
 /**
  * One idle check, run on the interval inside the daemon. If the managed lifecycle was
  * turned off (the `auto-start` config key set to false) we disengage and leave the daemon
- * running.
- * Otherwise, when idle past the timeout, clear our run-state tracking (best-effort) and
- * stop the server through the shared shutdown path. `startedAtMs` floors activity so a
- * freshly launched, quiet daemon is not considered idle before its first
- * request/heartbeat.
- * Activity: the in-process observer's mark (same process, always current -- the persisted
- * `.activity.json` copy exists for out-of-process readers, not for us) and the run-state
- * `lastEnsureAt` resolver heartbeat.
+ * running. Otherwise, when idle past the timeout, clear our run-state tracking
+ * (best-effort) and stop the server through the shared shutdown path.
  */
 export function idleCheck(startedAtMs: number, timeoutMs: number): void {
   if (!new CopilotEnvConfig().autoStartEnabled()) return; // lifecycle disabled -> stay up
   const state = new CopilotEnvRunState();
   const snapshot = state.read();
+  // Activity: the in-process observer's mark (same process, always current -- the
+  // persisted `.activity.json` copy exists for out-of-process readers, not for us) and
+  // the run-state `lastEnsureAt` resolver heartbeat. `startedAtMs` floors it so a freshly
+  // launched, quiet daemon is not considered idle before its first request/heartbeat.
   const lastActivity = lastActivityMs({
     startedAtMs,
     inferenceMs: lastObservedInferenceMs(),

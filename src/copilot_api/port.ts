@@ -18,40 +18,33 @@ export type DaemonPortSource =
   | { readonly source: "reservation"; readonly name: ProfileName };
 
 /**
- * The resolved lifecycle policy for one daemon -- THE single place the default
- * profile's genuinely-default-only behavior is decided. The launch pipeline,
- * the status probe, and the stop path read these fields instead of each
- * re-deriving the answer from `profile === null`, so a policy can only be
- * changed here, in one resolver. A union of the two literal shapes (not one
- * wide interface), so a contradictory combination is unrepresentable.
- *
- * Fields:
- * - `port`: origin when run state records none (see DaemonPortSource).
- * - `strictPortEligible`: whether the `strict-port` preference may gate this
- *   daemon -- the default only; a named profile's reservation is soft and
- *   always auto-increments.
- * - `releasesPortOnStop`: whether stop/cleanup releases the port tracking --
- *   the default's recorded port reverts to the configured default; a named
- *   profile's port is its stable reservation (the baked agent wiring points
- *   at it), so it stays.
- * - `flagSuffix`: the ` --profile <name>` suffix follow-up-command hints must
- *   carry ("" for the default daemon).
- *
- * There is deliberately NO home field here: every daemon -- the default
- * included -- runs in its own home under `<root>/profiles/`, resolved by the
- * paths layer (defaultDaemonHome/profileHome), and every spawn passes the
- * root-home pointer alongside for the account-wide files.
+ * The resolved lifecycle policy for one daemon -- THE single place the default profile's
+ * genuinely-default-only behavior is decided. The launch pipeline, the status probe, and the
+ * stop path read these fields instead of each re-deriving the answer from `profile === null`,
+ * so a policy can only be changed here, in one resolver. A union of the two literal shapes
+ * (not one wide interface), so a contradictory combination is unrepresentable. There is
+ * deliberately NO home field: every daemon -- the default included -- runs in its own home
+ * under `<root>/profiles/`, resolved by the paths layer (defaultDaemonHome/profileHome), and
+ * every spawn passes the root-home pointer alongside for the account-wide files.
  */
 export type DaemonPolicy =
   | {
+    /** Where the port comes from when run state records none (see DaemonPortSource). */
     readonly port: { readonly source: "config" };
+    /** Whether the `strict-port` preference may gate this daemon: the default only. */
     readonly strictPortEligible: true;
+    /** Whether stop/cleanup releases the port tracking: the default's recorded port reverts
+     *  to the configured default. */
     readonly releasesPortOnStop: true;
+    /** The ` --profile <name>` suffix follow-up-command hints must carry ("" for the default). */
     readonly flagSuffix: "";
   }
   | {
     readonly port: { readonly source: "reservation"; readonly name: ProfileName };
+    /** A named profile's reservation is soft and always auto-increments. */
     readonly strictPortEligible: false;
+    /** A named profile's port is its stable reservation (the baked agent wiring points at
+     *  it), so it stays. */
     readonly releasesPortOnStop: false;
     readonly flagSuffix: ` --profile ${string}`;
   };
@@ -228,14 +221,12 @@ function candidateProfilePort(excluding: Profile = null): number {
 /**
  * Reserve (and persist) a stable port for the named profile: the recorded one when it
  * exists, else the smallest in-range port not spoken for by the default daemon or another
- * profile -- so the profile's baked agent wiring (base URLs) and its daemon agree on a
- * deterministic port across restarts. The scan+write runs under a root-home lock so two
- * concurrent reservers can't pick the same port. An EXISTING reservation is honored even
- * if the min/max range has since narrowed (the same round-trip contract the default's
- * recorded port has; the range governs NEW allocations). `start` may later re-record a
- * different LIVE-BOUND port outside this lock when the reservation was busy at bind time
- * -- a reserver that raced it simply finds ITS port busy at its own start and moves too,
- * so collisions self-heal at bind time.
+ * profile, so the profile's baked agent wiring (base URLs) and its daemon agree on a
+ * deterministic port across restarts. An EXISTING reservation is honored even if the min/max
+ * range has since narrowed (the same round-trip contract the default's recorded port has; the
+ * range governs NEW allocations). `start` may later re-record a different LIVE-BOUND port
+ * outside this lock when the reservation was busy at bind time; a reserver that raced it
+ * simply finds ITS port busy at its own start and moves too, so collisions self-heal there.
  */
 export function reserveProfilePort(profile: ProfileName): number {
   const state = CopilotEnvRunState.forProfile(profile);

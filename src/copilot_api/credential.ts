@@ -167,19 +167,14 @@ export class Credential {
   }
 
   /**
-   * The resolved Direct credential, driven STRICTLY by the parsed credential -- NO
-   * implicit `gh` fallback and no token-without-provider (unrepresentable in the
-   * union):
-   *   - gh-cli -> `gh auth token` (live)
-   *   - stored -> the stored token (copilot/gh-token)
-   *   - none   -> null (the caller prompts / errors; never silently gh)
-   *
-   * `gh` substitutes the gh-cli probe: batch callers (the settings-bundle
-   * import resolves many slots in one run) pass a memoized wrapper so the
-   * subprocess spawns once per pinned account, not per slot. Resolution stays
-   * provider-driven either way -- the parameter never changes WHICH source is
-   * consulted, and the slot's recorded account pin (null = gh's active account)
-   * is always what the probe receives.
+   * The resolved Direct credential, driven STRICTLY by the parsed credential: NO
+   * implicit `gh` fallback (none -> null; the caller prompts or errors) and no
+   * token-without-provider (unrepresentable in the union). gh-cli -> `gh auth
+   * token` (live); stored -> the stored token (copilot/gh-token). `gh` substitutes
+   * the gh-cli probe: batch callers (the settings-bundle import resolves many slots
+   * in one run) pass a memoized wrapper so the subprocess spawns once per pinned
+   * account, not per slot. It never changes WHICH source is consulted, and the
+   * slot's recorded account pin (null = gh's active account) is what it receives.
    */
   resolve(gh: (ghUser: string | null) => string | null = ghAuthToken): string | null {
     const credential = this.read();

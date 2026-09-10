@@ -370,15 +370,13 @@ export interface ResolveIdentityOptions extends IdentityProbeDeps {
 
 /**
  * Whether a GitHub token is a Personal Access Token by its prefix: `ghp_` (classic) or
- * `github_pat_` (fine-grained). THE single PAT-shape predicate -- two separate decisions
- * key off it for the same underlying reason (a PAT is the credential class the Copilot
- * endpoints treat specially): the passthrough shim (`usePatPassthrough` below, because
- * a PAT 403s the editor token exchange) and the identity probe gates in the resolvers
- * below (because a PAT is the only credential the DEFAULT client identity refuses --
+ * `github_pat_` (fine-grained). THE single PAT-shape predicate: the passthrough shim
+ * (`usePatPassthrough`, because a PAT 403s the editor token exchange) and the identity
+ * probe gates (because a PAT is the only credential the DEFAULT client identity refuses;
  * verified July 2026: every gho_/ghu_ OAuth, device-flow, and gh-cli credential is
- * accepted, so nothing else is worth a probe's network round). Legacy unprefixed 40-hex
- * classic PATs are NOT detectable by shape -- use `config passthrough on` /
- * `config integration-id`.
+ * accepted, so nothing else is worth a probe's network round) both key off it.
+ * Unprefixed 40-hex classic PATs are NOT detectable by shape: use
+ * `config passthrough on` / `config integration-id`.
  */
 export function isPatShapedToken(token: string): boolean {
   const t = token.trim();
@@ -386,21 +384,14 @@ export function isPatShapedToken(token: string): boolean {
 }
 
 /**
- * Whether to load the PAT-passthrough preload shim into the daemon
- * (`src/scripts/pat_passthrough_preload.ts`). The shim intercepts copilot-api's
- * editor token exchange and hands the token back as the Copilot token, so the daemon
- * runs its normal path with the token as the bearer -- the only way a
- * credential that can't perform the exchange works through the proxy. Two such credentials:
- * a PAT (`ghp_`/`github_pat_`, 403s the exchange) and a `gh-cli` OAuth token (404s the
- * exchange) -- both are nonetheless accepted DIRECTLY as the Copilot bearer (a PAT under
- * `copilot-developer-cli`, resolved by the identity probe; other credentials under the
- * default `vscode-chat`). It's a no-op for tokens the exchange accepts (the `copilot`
- * device-flow token), so the `passthrough` config key (`on`) can force it for an
- * undetected credential and `off` forces it off.
- *
- * Precedence: an explicit `force` (resolved by the caller from the `passthrough` config:
- * on -> true, off -> false) wins; otherwise (`auto`/unset) auto-enable for the `gh-cli` provider
- * or a PAT-shaped token.
+ * Whether to load the PAT-passthrough preload shim (`src/scripts/pat_passthrough_preload.ts`)
+ * into the daemon. The shim intercepts copilot-api's editor token exchange and hands the
+ * token back as the Copilot bearer: the only way a credential that cannot perform the
+ * exchange works through the proxy. A PAT 403s the exchange and a `gh-cli` OAuth token
+ * 404s it, yet both are accepted DIRECTLY as the bearer (a PAT under `copilot-developer-cli`,
+ * resolved by the identity probe; others under `vscode-chat`). A no-op for tokens the
+ * exchange accepts, so the `passthrough` config key can force it `on` or `off`. Precedence:
+ * `force` (on -> true, off -> false) wins; else (`auto`/unset) `gh-cli` or a PAT shape.
  */
 export function usePatPassthrough(opts: {
   force: boolean | undefined;

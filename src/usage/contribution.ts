@@ -154,17 +154,14 @@ export interface ScanResult {
 export const TAIL_PROBE_BYTES = 32;
 
 /**
- * Read `path` from `fromByte`, in large chunks, and call `onLine` for every
- * complete line containing at least one of `needles`. Lines without a needle
- * are never decoded into their own string. Replaces node:readline in both
- * readers; the SAME rule (complete lines only) applies to a whole parse and to
- * a tail parse, so the two never disagree about a file's last line.
- *
- * Uncompressed files only. A `.jsonl.zst` rollout is decompressed whole and
- * its text split on LF with the same complete-lines rule; it is never
- * resumable (`WalkedFile.resumable` is false), so its ParsedFile reports
- * `parsedThrough` = the compressed file's size and an empty `tailProbeHex`,
- * and reuse relies on size + mtime alone.
+ * Read `path` from `fromByte` and call `onLine` for every complete line containing
+ * at least one of `needles`; lines without a needle are never decoded into their
+ * own string. The SAME rule (complete lines only) applies to a whole parse and to a
+ * tail parse, so the two never disagree about a file's last line. Uncompressed
+ * files only: a `.jsonl.zst` rollout is decompressed whole and split on LF with the
+ * same rule; it is never resumable (`WalkedFile.resumable` is false), so its
+ * ParsedFile reports `parsedThrough` = the compressed file's size and an empty
+ * `tailProbeHex`, and reuse relies on size + mtime alone.
  */
 export type ScanLines = (
   path: string,
@@ -176,22 +173,23 @@ export type ScanLines = (
 // ---------- walking and reconciling ----------
 
 /**
- * One file the directory walk saw. `candidate` is the reader's FINAL selection
- * verdict: inside the window per the existing skip heuristic (filename date /
- * mtime) AND, for Codex, the survivor of the same-basename live-vs-`.zst`
- * dedup (the plain `.jsonl` preferred), so two copies of one session are never
- * both candidates. Only candidates are parsed or folded, but EVERY walked path
- * is reported so the index can drop rows for files that no longer exist. The
- * reader hands candidates over in FOLD order: Codex ascending by basename (the
- * filename embeds the start time, so a fork's parent precedes the fork),
- * Claude ascending by path. `resumable` is false for files that cannot be read
- * from a byte offset (`.jsonl.zst`): any change re-parses them whole.
+ * One file the directory walk saw. Only candidates are parsed or folded, but EVERY
+ * walked path is reported so the index can drop rows for files that no longer
+ * exist. The reader hands candidates over in FOLD order: Codex ascending by
+ * basename (the filename embeds the start time, so a fork's parent precedes the
+ * fork), Claude ascending by path.
  */
 export interface WalkedFile {
   path: string;
   size: number;
   mtimeMs: number;
+  /** The reader's FINAL selection verdict: inside the window per the skip heuristic
+   *  (filename date / mtime) AND, for Codex, the survivor of the same-basename
+   *  live-vs-`.zst` dedup (the plain `.jsonl` preferred), so two copies of one
+   *  session are never both candidates. */
   candidate: boolean;
+  /** False for a file that cannot be read from a byte offset (`.jsonl.zst`): any
+   *  change re-parses it whole. */
   resumable: boolean;
 }
 
@@ -277,22 +275,14 @@ export interface ReconcileResult<C extends Contribution> {
 }
 
 /**
- * Bring the index in line with what the walk saw and return the candidates'
- * contributions. Per candidate, in this order:
- *
- *  1. no row, or a row whose contribution `v` is not CONTRIBUTION_VERSION
- *     -> parseWhole
+ * Reconcile the index with the walk and return the candidates' contributions. Per candidate:
+ *  1. no row, or a row whose contribution `v` is not CONTRIBUTION_VERSION -> parseWhole
  *  2. same size AND same mtimeMs -> reuse the row
- *  3. size grew AND `resumable` AND the bytes before the row's parsedThrough
- *     equal its tailProbeHex -> parseTail from parsedThrough
- *  4. anything else (shrank, same size with another mtime, probe mismatch,
- *     not resumable) -> parseWhole
- *
- * A parse that throws is one `filesFailed`: the reader's existing warning is
- * emitted (`could not read <path> (<reason>)`), the file contributes nothing
- * this run, and its row (if any) is deleted. Rows whose path was not walked are
- * deleted before the fold. Without an index, every candidate is parseWhole and
- * nothing is stored (stats still count).
+ *  3. size grew AND `resumable` AND the bytes before parsedThrough match tailProbeHex -> parseTail
+ *  4. anything else (shrank, other mtime, probe mismatch, not resumable) -> parseWhole
+ * A parse that throws is one `filesFailed`: the reader warns `could not read <path>
+ * (<reason>)`, the file contributes nothing this run, and its row (if any) is deleted.
+ * Rows whose path was not walked are deleted before the fold.
  */
 export type Reconcile = <S extends UsageSource>(
   source: S,

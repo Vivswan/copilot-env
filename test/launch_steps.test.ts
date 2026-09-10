@@ -452,17 +452,14 @@ test("the exclusion set end-to-end: another profile's tracked daemon is not an o
 
 // --- cleanupExistingProxies: the this-home lock-holder recovery --------------------------
 //
-// The recovery hole these pin: the sweep spares every live daemon.lock holder, so a live
-// holder whose run state was LOST (hostname change, deleted state file, an outlived
-// SIGTERM after the optimistic pid clear) used to be unstoppable -- every `agent start`
-// failed in the preload's lock acquisition and `agent stop` no-opped. The start cleanup
-// now stops THIS home's lock holder itself -- tracked or not, but ONLY under host-local
-// corroboration (the owner-filtered process scan confirms our daemon; never a pid some
-// run state tracks or another home's lock can claim): on a SHARED home the lock belongs
-// to another host's daemon and its marker pid means nothing in this host's pid table,
-// and per-host run state only proves a pid was ours ONCE. Every other home's holder
-// stays spared, and every uncorroborated case falls back to the preload's legible
-// failure.
+// The sweep spares every live daemon.lock holder, so a live holder whose run state was LOST
+// (hostname change, deleted state file, an outlived SIGTERM after the optimistic pid clear)
+// was unstoppable: `agent start` failed in the preload's lock acquisition, `agent stop`
+// no-opped. The start cleanup therefore stops THIS home's lock holder, tracked or not, but
+// ONLY when the owner-filtered process scan corroborates it as our daemon: on a SHARED home
+// the lock belongs to another host's daemon, its marker pid means nothing in this host's pid
+// table, and per-host run state only proves a pid was ours ONCE. Every other home's holder
+// stays spared; every uncorroborated case falls back to the preload's legible failure.
 
 /** An inert machine-wide scan: no orphans, so only the tracked/holder stops can act. */
 const NO_ORPHANS = (): Promise<number[]> => Promise.resolve([]);

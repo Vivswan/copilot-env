@@ -95,14 +95,13 @@ describe("compile.include matches what the binary actually needs", () => {
   // nothing else should be: an entry with no fate is dead weight in all five
   // binaries, and a fate with no entry is a file that is missing exactly when it
   // is first needed.
-  //
+  const needed = [...MATERIALIZED_ASSET_DIRS, ...MATERIALIZED_ASSET_FILES, ...BUNDLED_ONLY_ASSETS];
   // The list lives in deno.json rather than in scripts/compile.ts on purpose:
   // a CLI --include MERGES with the config's list instead of replacing it, so
   // a second copy in the script would silently union rather than fail.
   const compileInclude: string[] = JSON.parse(
     readFileSync(join(ROOT, "deno.json"), "utf8"),
   ).compile?.include ?? [];
-  const needed = [...MATERIALIZED_ASSET_DIRS, ...MATERIALIZED_ASSET_FILES, ...BUNDLED_ONLY_ASSETS];
 
   test("compile.include is exactly the union of the fates", () => {
     expect([...compileInclude].sort()).toEqual([...needed].sort());

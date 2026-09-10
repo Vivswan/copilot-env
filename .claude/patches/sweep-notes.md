@@ -78,4 +78,4 @@ Final grep proof (word-ish, case-insensitive, CHANGELOG/.claude excluded):
 
 ## Gate
 
-See the SendMessage report; run from this worktree: deno task typecheck, deno task lint, deno task test (380 = 377 + 2 harvested tests + 1 label drift guard), bash scripts/lint-sh.sh, deno task test:docker.
+See the SendMessage report; run from this worktree: deno task typecheck, deno task lint, deno task test (380 = 377 + 2 harvested tests + 1 label drift guard), deno task lint:sh, deno task test:docker.

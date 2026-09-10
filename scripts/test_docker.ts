@@ -95,7 +95,16 @@ const [first, ...rest] = Deno.args;
 let command: string[];
 if (first === "--lifecycle") {
   runArgs.push("--network=none", "-e", "COPILOT_API_ENTRY=/work/test/copilot-api-fake.mjs");
-  command = ["bash", ".github/scripts/lifecycle-smoke.sh", ...rest];
+  command = [
+    "deno",
+    "run",
+    "--allow-env",
+    "--allow-read",
+    "--allow-sys=homedir,hostname",
+    "--allow-run",
+    ".github/scripts/lifecycle-smoke.ts",
+    ...rest,
+  ];
 } else if (first === "--floated-lifecycle") {
   // No COPILOT_API_ENTRY: `agent start` resolves and runs the REAL proxy, so
   // this is the only run that covers the float and the daemon's production
@@ -105,7 +114,15 @@ if (first === "--lifecycle") {
     const value = Deno.env.get(name);
     if (value) runArgs.push("-e", `${name}=${value}`);
   }
-  command = ["bash", ".github/scripts/floated-smoke.sh", ...rest];
+  command = [
+    "deno",
+    "run",
+    "--allow-env",
+    "--allow-read",
+    "--allow-run=deno",
+    ".github/scripts/floated-smoke.ts",
+    ...rest,
+  ];
 } else {
   runArgs.push("--network=none");
   if (first !== undefined) {

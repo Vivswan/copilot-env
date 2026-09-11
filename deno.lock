@@ -14,9 +14,9 @@
     "jsr:@std/path@^1.1.6": "1.1.6",
     "jsr:@std/semver@^1.0.8": "1.0.8",
     "jsr:@std/testing@^1.0.20": "1.0.20",
-    "npm:@jeffreycao/copilot-api@^2.3.3": "2.3.3",
+    "npm:@jeffreycao/copilot-api@^2.3.14": "2.3.14",
     "npm:@modelcontextprotocol/client@2": "2.0.0",
-    "npm:@modelcontextprotocol/sdk@^1.30.0": "1.30.0_zod@4.4.3",
+    "npm:@modelcontextprotocol/sdk@^1.30.0": "1.30.0_zod@4.5.4",
     "npm:@modelcontextprotocol/server@2": "2.0.0",
     "npm:@sigstore/bundle@5": "5.0.0",
     "npm:@sigstore/protobuf-specs@0.5": "0.5.2",
@@ -88,14 +88,14 @@
     "@gar/promise-retry@1.0.3": {
       "integrity": "sha512-GmzA9ckNokPypTg10pgpeHNQe7ph+iIKKmhKu3Ob9ANkswreCx7R3cKmY781K8QK3AqVL3xVh9A42JvIAbkkSA=="
     },
-    "@hono/node-server@2.1.0_hono@4.13.4": {
+    "@hono/node-server@2.1.0_hono@4.13.5": {
       "integrity": "sha512-XovyyCCnBzW+zKu+z/zq8hwNs4KOR5rEMAOxo2f40Q5xoOI37IMm6MIg2COOUtUApo0i6850MTBKH2u4QLGIqg==",
       "dependencies": [
         "hono"
       ]
     },
-    "@jeffreycao/copilot-api@2.3.3": {
-      "integrity": "sha512-PP2zO+/y+hZJM+LaEZ1sXeIX13UgndYZZgemehOJGP86YLM3VMBuxXpL6+LNqujlcSA29MZHAzVd12+QAfLJyw==",
+    "@jeffreycao/copilot-api@2.3.14": {
+      "integrity": "sha512-UdxbJoxuO/3VSeIyLdY/N3Ms/2X3rCSYL4KW20+tv6NzCoRlrGAFPkSyOxX9QaQ62B73cbsatEhtNku2RTn8og==",
       "dependencies": [
         "@modelcontextprotocol/sdk",
         "citty",
@@ -132,7 +132,7 @@
         "zod"
       ]
     },
-    "@modelcontextprotocol/sdk@1.30.0_zod@4.4.3": {
+    "@modelcontextprotocol/sdk@1.30.0_zod@4.5.4": {
       "integrity": "sha512-xKd8OIzlqNzcqcNumGAa6g+PW2kjD5vrpcKOnfldAUPP3j7lnqMPwlTXQm8gF+UwH72z0lqaRbjr9hqGz0eITA==",
       "dependencies": [
         "@hono/node-server",
@@ -545,8 +545,8 @@
         "function-bind"
       ]
     },
-    "hono@4.13.4": {
-      "integrity": "sha512-AGEwKIyRMHRv1t8Wjwa3LHxQ61X5CqrdFT+4BRNTpqS5aJNnpl5WLjADb7vFlJzI/8uK7T5QLVApCMQKNa3LgQ=="
+    "hono@4.13.5": {
+      "integrity": "sha512-O6+/eCYRkzzzy0rPWwKLiGBR1nFuUPZynnwjxN1MBA62NNqbT0wQEzQyK2gSO5yDIDB336sXQleAhOHrzlYyKw=="
     },
     "http-errors@2.0.1": {
       "integrity": "sha512-4FbRdAX+bSdmo4AUFuS0WNiPz8NgFt+r8ThgNWmlrjQjt1Q7ZR9+zTlce2859x4KSXrwIsaeTqDoKQmtP8pLmQ==",
@@ -729,11 +729,11 @@
     "pkce-challenge@5.0.1": {
       "integrity": "sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ=="
     },
-    "powershell-utils@0.2.0": {
-      "integrity": "sha512-ZlsFlG7MtSFCoc5xreOvBAozCJ6Pf06opgJjh9ONEv418xpZSAzNjstD36C6+JwOnfSqOW/9uDkqKjezTdxZhw=="
+    "powershell-utils@0.2.1": {
+      "integrity": "sha512-C+y9x90UElAddDZmV4qOx9W53B61PO7cIqWz2dQsWlwswuq4mr8NEwytdGKboYbQlGZ3awrkTeNvcZiZNHnQ8A=="
     },
-    "pretty-ms@9.3.0": {
-      "integrity": "sha512-gjVS5hOP+M3wMm5nmNOucbIrqudzs9v/57bWRHQWLYklXqoXKrVfYW2W9+glfGsqtPgpiz5WwyEEB+ksXIx3gQ==",
+    "pretty-ms@9.3.1": {
+      "integrity": "sha512-HzMy3Geq23nVALD/M2LliU+F+M+gVNsvkQWWqeBZ8HDiCgzo6YPJ/Omrmtq24EFrIsk0a3EkQGEd7bDOo+IhGA==",
       "dependencies": [
         "parse-ms"
       ]
@@ -929,8 +929,8 @@
         "mime-types"
       ]
     },
-    "undici@7.29.0": {
-      "integrity": "sha512-IDxfleLmmbSskfWSUATiN1nfn2rDuvnMOqb5CWR92iIfojA0Ud+ulOAAEQ57LPr9rWmsreUyf5lwyao+7GNNVw=="
+    "undici@7.29.1": {
+      "integrity": "sha512-RYONW2MeafgYlkVOKYKkA/Ag7BmXqgIWCa8t1m0JcxrQg9pI9lEqRhAOruOBCbAohOa/gkCF+iPi9hrgvTzu6Q=="
     },
     "unicorn-magic@0.3.0": {
       "integrity": "sha512-+QBBXBCvifc56fsbuxZQ6Sic3wqqc3WWaqxs58gvJrcOuN83HGTCwz3oS5phzU9LthRNE9VrJCFCLUgHeeFnfA=="
@@ -966,14 +966,14 @@
     "yoctocolors@2.2.0": {
       "integrity": "sha512-xYqdZFUK/VYazNl/oCDYN+3WloWQwMfZxBoiNt6qNyk+xfOdi598muWE42rNZFp1kNOiqW936q5RhUdnpqElSg=="
     },
-    "zod-to-json-schema@3.25.2_zod@4.4.3": {
+    "zod-to-json-schema@3.25.2_zod@4.5.4": {
       "integrity": "sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA==",
       "dependencies": [
         "zod"
       ]
     },
-    "zod@4.4.3": {
-      "integrity": "sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ=="
+    "zod@4.5.4": {
+      "integrity": "sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA=="
     }
   },
   "workspace": {
@@ -983,7 +983,7 @@
       "jsr:@std/expect@^1.0.20",
       "jsr:@std/semver@^1.0.8",
       "jsr:@std/testing@^1.0.20",
-      "npm:@jeffreycao/copilot-api@^2.3.3",
+      "npm:@jeffreycao/copilot-api@^2.3.14",
       "npm:@modelcontextprotocol/client@2",
       "npm:@modelcontextprotocol/sdk@^1.30.0",
       "npm:@modelcontextprotocol/server@2",

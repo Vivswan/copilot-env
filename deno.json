@@ -20,7 +20,7 @@
     ".github/workflows/pr-title.yml"
   ],
   "imports": {
-    "@jeffreycao/copilot-api": "npm:@jeffreycao/copilot-api@^2.3.3",
+    "@jeffreycao/copilot-api": "npm:@jeffreycao/copilot-api@^2.3.14",
     "@modelcontextprotocol/client": "npm:@modelcontextprotocol/client@^2.0.0",
     "@modelcontextprotocol/client/": "npm:/@modelcontextprotocol/client@^2.0.0/",
     "@modelcontextprotocol/sdk": "npm:@modelcontextprotocol/sdk@^1.30.0",

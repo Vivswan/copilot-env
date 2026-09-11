@@ -8,14 +8,16 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import {
   classifyMcpEntry,
   claudeJsonPath,
   inspectMcpRegistration,
   registerClaudeMcpServer,
   removeClaudeMcpRegistration,
+  serverPathEnv,
 } from "../src/claude/mcp_registration.ts";
+import { resolveExecutablePath } from "../src/utils/command.ts";
 import { agentLauncherCommand } from "../src/utils/root.ts";
 import { afterEach, expect, removeDir, tempDir, test } from "./helpers/testing.ts";
 import { envSnapshot } from "./helpers.ts";
@@ -42,8 +44,36 @@ function readDoc(): Record<string, unknown> {
 
 function managedEntry(): Record<string, unknown> {
   const { command, args } = agentLauncherCommand(["mcp", "--serve"]);
-  return { "type": "stdio", "command": command, "args": args };
+  const env = serverPathEnv(resolveExecutablePath("gh"));
+  return { "type": "stdio", "command": command, "args": args, ...(env ? { env } : {}) };
 }
+
+test("serverPathEnv puts gh's directory in front of the client's PATH by expansion, or nothing", () => {
+  const gh = join(delimiter === ";" ? "C:\\tools\\gh" : "/opt/homebrew/bin", "gh");
+  expect(serverPathEnv(gh)).toEqual({ PATH: `${dirname(gh)}${delimiter}\${PATH}` });
+  expect(serverPathEnv(null)).toBeUndefined();
+});
+
+test.skipIf(resolveExecutablePath("gh") === null)(
+  "an entry of ours without the PATH env is ours-stale and register rewrites it with the env",
+  () => {
+    const home = tmpConfigDir();
+    const { command, args } = agentLauncherCommand(["mcp", "--serve"]);
+    const before = { "type": "stdio", "command": command, "args": args };
+    expect(classifyMcpEntry(before)).toBe("ours-stale");
+    writeFileSync(
+      join(home, ".claude.json"),
+      `${JSON.stringify({ "mcpServers": { "copilot-env": before } })}\n`,
+    );
+    expect(registerClaudeMcpServer()).toBe(true);
+    const written = (readDoc().mcpServers as Record<string, unknown>)["copilot-env"] as Record<
+      string,
+      unknown
+    >;
+    expect(written).toEqual(managedEntry());
+    expect((written.env as { PATH: string }).PATH.endsWith(`${delimiter}\${PATH}`)).toBe(true);
+  },
+);
 
 test("register creates .claude.json with the managed entry when missing", () => {
   tmpConfigDir();

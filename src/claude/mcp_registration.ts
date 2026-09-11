@@ -10,10 +10,11 @@
 // Claude Code rewrites this file constantly and owns its schema, so a malformed
 // or surprising document is warned about and left alone, never clobbered.
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { consola } from "consola";
 import { atomicWriteFile } from "../utils/report_write.ts";
 import { MCP_SERVER_NAME } from "../mcp/server.ts";
+import { resolveExecutablePath } from "../utils/command.ts";
 import { readTextResult } from "../utils/fs.ts";
 import { isRecord } from "../utils/json.ts";
 import { agentLauncherCommand } from "../utils/root.ts";
@@ -45,9 +46,18 @@ export function claudeJsonPath(): string {
 /** The subcommand argv the managed registration runs (the current shape). */
 const CURRENT_MCP_SUBARGS: readonly string[] = ["mcp", "--serve"];
 
+/** The server's own PATH: gh's directory in front of the client's, written as
+ *  Claude Code's `${PATH}` expansion so nothing the client had is lost. MCP
+ *  clients start servers with a minimal environment, and the gh-cli credential
+ *  needs `gh` there; undefined when gh is not on PATH at wiring time. */
+export function serverPathEnv(ghPath: string | null): { PATH: string } | undefined {
+  return ghPath === null ? undefined : { PATH: `${dirname(ghPath)}${delimiter}\${PATH}` };
+}
+
 function managedEntry(): Record<string, unknown> {
   const { command, args } = agentLauncherCommand(CURRENT_MCP_SUBARGS);
-  return { "type": "stdio", "command": command, "args": args };
+  const env = serverPathEnv(resolveExecutablePath("gh"));
+  return { "type": "stdio", "command": command, "args": args, ...(env ? { env } : {}) };
 }
 
 function sameStrings(a: readonly unknown[], b: readonly string[]): boolean {
@@ -63,7 +73,11 @@ export function classifyMcpEntry(entry: unknown): McpRegistrationStatus {
   const { command, args } = entry;
   if (typeof command !== "string" || !Array.isArray(args)) return "foreign";
   const managed = agentLauncherCommand(CURRENT_MCP_SUBARGS);
-  if (command === managed.command && sameStrings(args, managed.args)) return "ours-current";
+  const sameEnv = JSON.stringify(entry.env ?? null) ===
+    JSON.stringify(serverPathEnv(resolveExecutablePath("gh")) ?? null);
+  if (command === managed.command && sameStrings(args, managed.args) && sameEnv) {
+    return "ours-current";
+  }
   if (process.platform === "win32") {
     // Split the managed argv at -File: the flag prefix must match verbatim, the
     // path element must still end in bin/agent.ps1 (a moved checkout, not a

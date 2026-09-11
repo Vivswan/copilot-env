@@ -71,6 +71,8 @@ copilot-env wires the Codex and Claude CLIs to GitHub Copilot, either through a 
 
 release-please, patch-only. Releases only move forward: never re-release or pin back, and leave `release-as` absent. A build broken at release time fails after the tag exists: re-run the failed jobs, never re-cut.
 
+A release PR's merge commit is tagged by its own run. Hold every other merge while a release PR is open or its run is pending. The reason: a later run cannot tag or release an older commit once `.github/workflows/` differ from main. GitHub demands `workflows: write` for that, the workflow token never has it, and this repository holds no PAT. A release stalled that way is abandoned: relabel its PR `autorelease: tagged` and let the next release come from a fresh commit.
+
 ### Commands
 
 ```bash

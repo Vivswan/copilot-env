@@ -1,6 +1,6 @@
-# The release-PR hook of the release pipeline: repo-owned, generated once
-# by Vivswan/repo-platform and never overwritten by template
-# sync. The managed release.yml calls this workflow whenever release-please
+# The release-PR hook of the release pipeline: repo-owned, written once by
+# the fleet sync and never overwritten. The managed release.yml calls this
+# workflow whenever release-please
 # creates or refreshes the release PR (independently of any release cut),
 # so everything this repository wants on that PR happens here: regenerating
 # files that must ride in the release commit, updating version references

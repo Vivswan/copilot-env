@@ -1,5 +1,5 @@
-# The update stage of the release pipeline: repo-owned, generated once by
-# Vivswan/repo-platform and never overwritten by template sync. The managed
+# The update stage of the release pipeline: repo-owned, written once by the
+# fleet sync and never overwritten. The managed
 # release.yml calls this workflow between cutting the draft release and the
 # attested publish: publishing waits for every job here, and every asset
 # uploaded here is attested at publish time into the release's single

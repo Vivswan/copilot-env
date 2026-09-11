@@ -1,5 +1,5 @@
-# Repo-owned typos allowlist, layered under the fleet's (repo-platform's
-# actions/typos passes its own file as --config; this one extends it).
+# Repo-owned typos allowlist, layered under the fleet's (the central CI's
+# typos action passes its own file as --config; this one extends it).
 
 [default]
 extend-ignore-re = [

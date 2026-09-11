@@ -28,7 +28,7 @@ Additional keepers, with reasons:
 - .gitignore bun section: in the MANAGED region (only the marked LOCAL section is repo-owned); the next sync's deno module replaces it.
 - .gitleaks.toml bun.lock/bun.lockb allowlist: LOAD-BEARING - gitleaks git scans history where those lockfiles exist. Do not remove.
 - .copier-answers.yml (modules: bun, topics bun): managed template record of the last applied sync; .repo-platform.yml already selects "deno", the next sync rewrites the answers file.
-- .github/dependabot.yml "bun" ecosystem entry: managed by repo-platform.
+- .github/dependabot.yml "bun" ecosystem entry: managed by the fleet sync.
 - AGENTS.md migrations section + src/migrations/index.ts bun mentions: deliberate historical rationale for the empty registry.
 - test/helpers/testing.ts "bun:test surface / bun-parity" headers: deliberate - they name the emulated contract. (run.ts's "Bun.spawnSync result shape" clause was scrubbed in round 1: the shape is now just RunResult.)
 - test/web_search.test.ts "Bun 1.3 shipped" fixtures: content ABOUT the Bun product inside simulated search results, not toolchain references.

@@ -1,5 +1,5 @@
 # This file is managed by Vivswan/repo-platform.
-# Local edits may be replaced during template updates.
+# Local edits are replaced on the next sync.
 #
 # Dependabot's deno ecosystem does version updates only, so this run is
 # the advisory coverage (GitHub Advisory Database via `deno audit`).
@@ -31,8 +31,8 @@ jobs:
     env:
       DENO_NO_UPDATE_CHECK: "1"
     steps:
-      - uses: actions/checkout@v7
-      - uses: denoland/setup-deno@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version-file: .dvmrc
       # Every tracked lockfile ('*/deno.lock' is a git pathspec; '*'

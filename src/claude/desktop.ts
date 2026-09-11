@@ -528,10 +528,11 @@ async function wiringModels(
 ): Promise<readonly DesktopModelSpec[] | undefined> {
   if (opts.mode === "direct") {
     try {
-      const token = opts.directToken ?? new Credential(undefined, opts.profile).resolve();
-      if (token === null) {
-        throw new Error("no GitHub credential configured (run `agent auth`)");
-      }
+      const resolved = typeof opts.directToken === "string"
+        ? { token: opts.directToken, reason: null }
+        : new Credential(undefined, opts.profile).resolveWithReason();
+      if (resolved.token === null) throw new Error(resolved.reason);
+      const token = resolved.token;
       const discovered = await discoverServableClaudeModels(
         token,
         codexUserAgent(),

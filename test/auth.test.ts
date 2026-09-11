@@ -581,16 +581,65 @@ test("disabled: auth --print-proxy-token runs the same cleanup", async () => {
 
 // --- gh-cli verify gate (failed-probe honesty) --------------------------------
 
+test("resolveWithReason: one probe answers with the token or names the provider and gh's detail", () => {
+  isolate();
+  const credential = new Credential(state());
+  expect(credential.resolveWithReason(() => ({ token: null }))).toEqual({
+    token: null,
+    reason: "no GitHub credential configured - run `agent auth` to log in",
+  });
+  credential.useGhCli("Vivswan");
+  expect(credential.resolveWithReason(() => ({ token: "tok" }))).toEqual({
+    token: "tok",
+    reason: null,
+  });
+  // gh-cli recorded but gh missing from this process's PATH (the MCP-server case): the
+  // provider is named and nothing sends the user to `agent auth`, which from a shell
+  // where gh IS on PATH would say "already authenticated".
+  const missing = credential.resolveWithReason(() => ({
+    token: null,
+    detail: "`gh` is not on this process's PATH",
+  })).reason;
+  expect(missing).toContain("provider 'gh-cli as Vivswan' is selected but no credential resolves");
+  expect(missing).toContain("`gh` is not on this process's PATH");
+  expect(missing).toContain("minimal PATH");
+  expect(missing).not.toContain("agent auth");
+  const refused = credential.resolveWithReason(() => ({
+    token: null,
+    detail: "`gh auth token` exited 1: no oauth token",
+  })).reason;
+  expect(refused).toContain("no oauth token");
+  expect(refused).not.toContain("minimal PATH");
+  const named = new Credential(state(), parseProfileName("p1"));
+  expect(named.resolveWithReason(() => ({ token: null })).reason).toContain(
+    "for profile 'p1' - run `agent auth --profile p1` to log in (a named profile never falls back",
+  );
+});
+
 test("ghTokenLookFromSpawn: completed exits prove, a dead spawn stays unproven", () => {
   // Exit 0 with a token: the one proven-token arm.
   expect(ghTokenLookFromSpawn({ status: 0, stdout: " tok \n" })).toEqual({ token: "tok" });
-  // gh RAN: empty output on exit 0 and a nonzero exit are both proven misses.
-  expect(ghTokenLookFromSpawn({ status: 0, stdout: "" })).toEqual({ token: null });
-  expect(ghTokenLookFromSpawn({ status: 1, stdout: "" })).toEqual({ token: null });
+  // gh RAN: proven misses, the detail carrying gh's own first stderr line when there is one.
+  expect(ghTokenLookFromSpawn({ status: 0, stdout: "" })).toEqual({
+    token: null,
+    detail: "`gh auth token` printed no token",
+  });
+  expect(ghTokenLookFromSpawn({ status: 1, stdout: "", stderr: "no oauth token\r\nmore\r\n" }))
+    .toEqual({
+      token: null,
+      detail: "`gh auth token` exited 1: no oauth token",
+    });
   // The spawn never completed (timeout kill / spawn error): proven NOTHING.
-  expect(ghTokenLookFromSpawn({ status: null })).toEqual({ token: null, unproven: true });
-  expect(ghTokenLookFromSpawn({ status: 1, error: new Error("ETIMEDOUT"), stdout: "" }))
-    .toEqual({ token: null, unproven: true });
+  expect(ghTokenLookFromSpawn({ status: null })).toEqual({
+    token: null,
+    unproven: true,
+    detail: "`gh auth token` did not complete (the spawn was killed)",
+  });
+  expect(ghTokenLookFromSpawn({ status: 1, error: new Error("ETIMEDOUT"), stdout: "" })).toEqual({
+    token: null,
+    unproven: true,
+    detail: "`gh auth token` did not complete (ETIMEDOUT)",
+  });
 });
 
 test("loginWithGhCli: an UNPROVEN look says could-not-check; a proven miss keeps the gh advice", async () => {

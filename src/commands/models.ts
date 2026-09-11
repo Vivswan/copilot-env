@@ -13,7 +13,7 @@ import { discoverServableClaudeModels } from "../copilot_api/discovery.ts";
 import { codexUserAgent, probeDirectIntegrationId } from "../codex/config.ts";
 import { proxyStatus } from "../copilot_api/daemon.ts";
 import { assertKnownProfile } from "../copilot_api/env_state.ts";
-import { parseProfileFlag, type Profile, profileLabel } from "../copilot_api/profile.ts";
+import { parseProfileFlag, type Profile } from "../copilot_api/profile.ts";
 import { bold, cyan, gray } from "../utils/ansi.ts";
 import { errMessage } from "../utils/error.ts";
 import { mergeUnlistedModels, type ModelListEntry, parseModelList } from "../copilot_api/models.ts";
@@ -148,19 +148,9 @@ export async function runModels(args: ModelsArgs): Promise<void> {
       // The SAME unified pipeline the Claude Desktop wiring runs (catalog +
       // allowlist oracle + cached verification), so both surfaces list identical
       // models and every discovery fix propagates to both.
-      const token = new Credential(undefined, profile).resolve();
-      if (token === null) {
-        // Same wording as fetchRawModels' direct branch: a named profile never
-        // falls back to the default credential.
-        throw new Error(
-          profile === null
-            ? "no GitHub credential configured (run `agent auth`)"
-            : `no GitHub credential for ${
-              profileLabel(profile)
-            } - run \`agent auth --profile ${profile}\` ` +
-              "to log in (a named profile never falls back to the default credential)",
-        );
-      }
+      const resolved = new Credential(undefined, profile).resolveWithReason();
+      if (resolved.token === null) throw new Error(resolved.reason);
+      const token = resolved.token;
       const discovered = await discoverServableClaudeModels(
         token,
         codexUserAgent(),

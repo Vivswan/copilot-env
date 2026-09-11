@@ -22,7 +22,7 @@ import {
   resolveDirectIntegrationId,
 } from "./integration_identity.ts";
 import { generateAliases, parseCatalogModels } from "./models.ts";
-import { type Profile, profileLabel } from "./profile.ts";
+import type { Profile } from "./profile.ts";
 
 const logger = createStderrLogger();
 
@@ -150,23 +150,14 @@ async function resolveWebSearchModel(
  */
 export function resolveWebSearchCredential(profile: Profile = null): string {
   const credential = new Credential(undefined, profile);
-  const token = credential.resolve();
+  const { token, reason } = credential.resolveWithReason();
   if (token !== null) return token;
-  if (profile !== null) {
-    throw new Error(
-      `no GitHub credential for ${
-        profileLabel(profile)
-      } - run \`agent auth --profile ${profile}\` ` +
-        "to log in (a named profile never falls back to the default credential)",
-    );
-  }
-  if (credential.provider() === null) {
+  if (profile === null && credential.provider() === null) {
     const fromEnv = ghTokenFromEnv();
     if (fromEnv !== null) return fromEnv;
+    throw new Error(`${reason} or set one of ${ghTokenEnvVarsList()}`);
   }
-  throw new Error(
-    `no GitHub credential - run \`agent auth\` to log in or set one of ${ghTokenEnvVarsList()}`,
-  );
+  throw new Error(reason);
 }
 
 /** Search the web through Copilot's /responses endpoint; returns cited answer text. */

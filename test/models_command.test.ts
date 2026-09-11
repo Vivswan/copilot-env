@@ -250,7 +250,7 @@ test("models --profile never falls back: a credential-less direct profile hard-f
     (home) => seedDirectProfile(home, "p1"),
   );
   expect(exitCode).toBe(1);
-  expect(out).toContain("no GitHub credential for profile 'p1'");
+  expect(out).toContain("no GitHub credential configured for profile 'p1'");
   expect(out).toContain("agent auth --profile p1");
   expect(out).toContain("never falls back");
 });

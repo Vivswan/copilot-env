@@ -25,7 +25,7 @@ import {
   parseGhAuthStatusAccounts,
 } from "./gh_cli.ts";
 import { CopilotApiPaths } from "./paths.ts";
-import type { Profile } from "./profile.ts";
+import { type Profile, profileLabel } from "./profile.ts";
 
 // The provider vocabulary is defined with the store that persists it (env_state);
 // re-export it here so the auth command layer keeps importing it from `Credential`.
@@ -48,18 +48,39 @@ export interface CredentialStatus {
 export interface GhTokenLook {
   token: string | null;
   unproven?: true;
+  /** Why there is no token: what the spawn or the `gh` probe reported (null token only). */
+  detail?: string;
+}
+
+function firstStderrLine(stderr: string | null | undefined): string {
+  return (stderr ?? "").trim().split(/\r?\n/)[0]?.trim() ?? "";
 }
 
 /** Pure fold of a finished `gh auth token` capture spawn into a GhTokenLook
  *  (exported for tests): ghAuthVerdict's three states, with exit 0 reading the
  *  trimmed token -- empty output on exit 0 is a proven miss (gh RAN). */
 export function ghTokenLookFromSpawn(
-  result: { status: number | null; error?: unknown; stdout?: string | null },
+  result: {
+    status: number | null;
+    error?: unknown;
+    stdout?: string | null;
+    stderr?: string | null;
+  },
 ): GhTokenLook {
   const verdict = ghAuthVerdict(result);
-  if (verdict === "unproven") return { token: null, unproven: true };
-  if (!verdict) return { token: null };
-  return { token: (result.stdout ?? "").trim() || null };
+  if (verdict === "unproven") {
+    const cause = result.error instanceof Error ? result.error.message : "the spawn was killed";
+    return { token: null, unproven: true, detail: `\`gh auth token\` did not complete (${cause})` };
+  }
+  const stderr = firstStderrLine(result.stderr);
+  if (!verdict) {
+    return {
+      token: null,
+      detail: `\`gh auth token\` exited ${result.status}${stderr ? `: ${stderr}` : ""}`,
+    };
+  }
+  const token = (result.stdout ?? "").trim();
+  return token ? { token } : { token: null, detail: "`gh auth token` printed no token" };
 }
 
 /** Run `gh auth token` (nvm-safe) with the failure arm kept (see GhTokenLook).
@@ -67,7 +88,9 @@ export function ghTokenLookFromSpawn(
 export function ghAuthTokenLook(ghUser: string | null = null): GhTokenLook {
   const gh = findCommand("gh");
   if (gh.path === null) {
-    return gh.launchFailed ? { token: null, unproven: true } : { token: null };
+    return gh.launchFailed
+      ? { token: null, unproven: true, detail: "looking for `gh` on PATH failed" }
+      : { token: null, detail: "`gh` is not on this process's PATH" };
   }
   const s = ghAuthTokenSpawnSpec(gh.path, ghUser);
   // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
@@ -187,6 +210,45 @@ export class Credential {
         return gh(credential.ghUser);
       case "none":
         return null;
+    }
+  }
+
+  /**
+   * One probe, both answers: the token, or why there is none (the caller's error
+   * text). The gh-cli reason comes from THE look that failed, never a second one,
+   * so it names the recorded provider and quotes what gh or its lookup reported;
+   * a recorded-but-broken provider must never read as "not logged in" (`agent auth`
+   * would then say the opposite). `look` substitutes the probe (tests).
+   */
+  resolveWithReason(
+    look: (ghUser: string | null) => GhTokenLook = ghAuthTokenLook,
+  ): { token: string; reason: null } | { token: null; reason: string } {
+    const credential = this.read();
+    const slot = this.profile === null ? "" : ` for ${profileLabel(this.profile)}`;
+    switch (credential.kind) {
+      case "stored":
+        return { token: credential.token, reason: null };
+      case "none": {
+        const login = this.profile === null
+          ? "run `agent auth` to log in"
+          : `run \`agent auth --profile ${this.profile}\` to log in ` +
+            "(a named profile never falls back to the default credential)";
+        return { token: null, reason: `no GitHub credential configured${slot} - ${login}` };
+      }
+      case "gh-cli": {
+        const probe = look(credential.ghUser);
+        if (probe.token !== null) return { token: probe.token, reason: null };
+        const who = credential.ghUser === null ? "gh-cli" : `gh-cli as ${credential.ghUser}`;
+        const detail = probe.detail ?? "gh gave no token";
+        const path = detail.includes("PATH")
+          ? " (an MCP client or IDE may start this process with a minimal PATH)"
+          : "";
+        return {
+          token: null,
+          reason:
+            `provider '${who}' is selected${slot} but no credential resolves: ${detail}${path}`,
+        };
+      }
     }
   }
 

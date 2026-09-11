@@ -621,20 +621,11 @@ function noSuchProfileHint(profile: ProfileName): string {
 }
 
 async function runGet(profile: Profile, catalogDeps?: CodexCatalogDeps): Promise<void> {
-  const token = new Credential(undefined, profile).resolve();
+  const { token, reason } = new Credential(undefined, profile).resolveWithReason();
   if (token === null) {
-    if (profile === null) {
-      logger.error("no GitHub credential - run `agent auth` to log in");
-    } else if (profileSlotMissing(profile)) {
-      logger.error(noSuchProfileHint(profile));
-    } else {
-      logger.error(
-        `no GitHub credential for ${
-          profileLabel(profile)
-        } - run \`agent auth --profile ${profile}\` ` +
-          "to log in (a named profile never falls back to the default credential)",
-      );
-    }
+    logger.error(
+      profile !== null && profileSlotMissing(profile) ? noSuchProfileHint(profile) : reason,
+    );
     process.exitCode = 1;
     return;
   }

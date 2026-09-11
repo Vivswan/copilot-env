@@ -18,7 +18,7 @@ import {
   resolvePassthroughIntegrationId,
 } from "./integration_identity.ts";
 import { copilotApiResolvePort } from "./port.ts";
-import { type Profile, profileLabel } from "./profile.ts";
+import type { Profile } from "./profile.ts";
 import { createStderrLogger } from "../utils/logger.ts";
 
 /** Where the catalog comes from: upstream Copilot (direct) or the running local proxy. */
@@ -69,17 +69,11 @@ export async function fetchRawModels(
     });
     return admin.getRawModels();
   }
-  const token = opts.directToken ?? new Credential(undefined, profile).resolve();
-  if (token === null) {
-    throw new Error(
-      profile === null
-        ? "no GitHub credential configured (run `agent auth`)"
-        : `no GitHub credential for ${
-          profileLabel(profile)
-        } - run \`agent auth --profile ${profile}\` ` +
-          "to log in (a named profile never falls back to the default credential)",
-    );
-  }
+  const resolved = typeof opts.directToken === "string"
+    ? { token: opts.directToken, reason: null }
+    : new Credential(undefined, profile).resolveWithReason();
+  if (resolved.token === null) throw new Error(resolved.reason);
+  const token = resolved.token;
   // The catalog endpoint gates on the same client identity as inference: a fine-grained
   // PAT is rejected under the default vscode-chat and needs copilot-developer-cli. Resolve
   // it (pin > probe; network-free for non-PAT credentials) so `agent models` works for a

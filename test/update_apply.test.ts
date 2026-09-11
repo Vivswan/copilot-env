@@ -220,7 +220,7 @@ describe("applyUpdate", () => {
   const quiet = { info: () => {}, warn: () => {}, success: () => {} };
   /** A verifier that accepts everything: the default here, so the existing cases
    *  run the full stage order (download -> verify -> attest -> ...) unchanged. */
-  const acceptAll: ProvenanceVerifier = () => Promise.resolve();
+  const acceptAll: ProvenanceVerifier = () => Promise.resolve({ signerIdentity: "test" });
 
   /** Run applyUpdate the only way it can be run: under the update lock, whose held
    *  branch mints the HeldLock evidence the signature demands (via the hermetic-path
@@ -261,6 +261,7 @@ describe("applyUpdate", () => {
     pointCurrentAt(installDir, "v9.9.8");
     const calls: Parameters<ProvenanceVerifier>[] = [];
     const { logger, successes } = recordingLogger();
+    const signerIdentity = "https://github.com/example/publish.yml@refs/heads/main";
 
     await applyLocked("v9.9.8", {
       root: installDir,
@@ -270,7 +271,7 @@ describe("applyUpdate", () => {
         kind: "verify",
         verifier: (...args) => {
           calls.push(args);
-          return Promise.resolve();
+          return Promise.resolve({ signerIdentity });
         },
       },
     });
@@ -284,7 +285,9 @@ describe("applyUpdate", () => {
       ],
     ]]);
     expect(readCurrentVersionName(installDir)).toBe("v9.9.9");
-    expect(successes.some((m) => m.startsWith("Build provenance verified"))).toBe(true);
+    expect(successes).toContain(
+      `Build provenance verified: attested by GitHub Actions for Vivswan/copilot-env (${signerIdentity}).`,
+    );
   });
 
   test("a verifier verdict aborts BEFORE staging: nothing runs, nothing moves", async () => {
@@ -341,7 +344,7 @@ describe("applyUpdate", () => {
         kind: "verify",
         verifier: () => {
           verifierCalls++;
-          return Promise.resolve();
+          return Promise.resolve({ signerIdentity: "test" });
         },
       },
     }).catch((e: unknown) => e as Error);

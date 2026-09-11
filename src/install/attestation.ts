@@ -15,22 +15,25 @@
 // FAILED" (the bytes are not attested, the signer is not our release workflow,
 // the bundle is not a bundle) does not -- that download must not be installed.
 
-/** The release asset carrying the Sigstore bundle (uploaded by the managed
- *  release.yml's publish stage). */
+/** The release asset carrying the Sigstore bundle (uploaded by the release
+ *  workflow's publish stage). */
 export const ATTESTATION_NAME = "attestation.json";
 
 /**
- * The ONLY identity allowed to sign a release: the release workflow on the default
- * branch, as GitHub Actions names it in the signing certificate's SAN. release.yml is a
- * repo-platform MANAGED file: a rename or default-branch move there fails every update
- * as a mismatch until a release carrying the new constant ships FIRST. Deliberate, since
- * accepting "any workflow in the repo" would also accept one a pull request added. The
- * SAN alone is NOT enough: release.yml is reusable (`workflow_call`) and a reusable
- * workflow's SAN names the CALLED workflow, so another repository invoking ours gets the
- * same SAN for its own assets; the source-repository pins below name the caller.
+ * The ONLY identities allowed to sign a release, as GitHub Actions names the workflow that
+ * ran the attest step in the certificate's SAN: this repository's release.yml on main, and
+ * repo-platform's fleet publish leg the attest step is moving to (called at its build branch
+ * today, at the stable tag next). An installed binary must accept the release on either side
+ * of that move, so the set carries all three; a narrower set fails every update until a
+ * release carrying the new identity ships FIRST. Each is matched exactly, never as a pattern
+ * ("any workflow in the repo" would also accept one a pull request added), and the SAN alone
+ * is NOT enough: a reusable workflow's SAN names the CALLED workflow, so the pins below name the caller.
  */
-export const RELEASE_SIGNER_SAN =
-  "https://github.com/Vivswan/copilot-env/.github/workflows/release.yml@refs/heads/main";
+export const RELEASE_SIGNER_SANS: readonly string[] = [
+  "https://github.com/Vivswan/copilot-env/.github/workflows/release.yml@refs/heads/main",
+  "https://github.com/Vivswan/repo-platform/.github/workflows/fleet-release-publish.yml@refs/heads/build",
+  "https://github.com/Vivswan/repo-platform/.github/workflows/fleet-release-publish.yml@refs/tags/stable",
+];
 
 /** GitHub Actions' OIDC issuer, as recorded in the signing certificate. */
 export const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
@@ -70,8 +73,8 @@ export const SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1";
 
 /** Who may have signed the bundle. */
 export interface SignerPolicy {
-  /** The exact certificate SAN (matched anchored, never as a pattern). */
-  subjectAlternativeName: string;
+  /** The accepted certificate SANs (each matched anchored, never as a pattern). */
+  subjectAlternativeNames: readonly string[];
   /** The exact OIDC issuer extension. */
   issuer: string;
   /** The exact source repository id (Fulcio extension 15). */
@@ -81,7 +84,7 @@ export interface SignerPolicy {
 }
 
 export const RELEASE_SIGNER_POLICY: SignerPolicy = {
-  subjectAlternativeName: RELEASE_SIGNER_SAN,
+  subjectAlternativeNames: RELEASE_SIGNER_SANS,
   issuer: GITHUB_OIDC_ISSUER,
   sourceRepositoryId: SOURCE_REPOSITORY_ID,
   sourceRepositoryRef: SOURCE_REPOSITORY_REF,

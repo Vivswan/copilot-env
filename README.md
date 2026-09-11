@@ -31,19 +31,19 @@ powershell -c "irm https://github.com/Vivswan/copilot-env/releases/latest/downlo
 Downloads a single self-contained `agent` binary for your platform into `~/.copilot-env`, then wires your shell. There is no runtime or package manager to install first.
 
 - **Recommended:** install from the latest GitHub release asset, not from the `main` branch. `main` is for development and can be temporarily ahead of the latest released installer flow.
-- **Verified:** the installer checks the binary's SHA256 against the release's `checksums.txt` before it puts it anywhere. That proves the download is intact, not who built it (the installer is fetched from the same release, so a first install trusts it on first use). Every release also carries a build-provenance attestation, `attestation.json`, that you can check by hand with the GitHub CLI's closest equivalent of the policy `agent update` enforces: built in this repository (`-R`, by name where `agent update` pins the immutable repository id), on `main` (`--source-ref`), by its release workflow (`--cert-identity`), for the binary AND `checksums.txt`:
+- **Verified:** the installer checks the binary's SHA256 against the release's `checksums.txt` before it puts it anywhere. That proves the download is intact, not who built it (the installer is fetched from the same release, so a first install trusts it on first use). Every release also carries a build-provenance attestation, `attestation.json`, that you can check by hand with the GitHub CLI's closest equivalent of the policy `agent update` enforces: built in this repository (`-R`, by name where `agent update` pins the immutable repository id), on `main` (`--source-ref`), by one of its release workflows (`--cert-identity-regex`: this repository's own `release.yml`, or repo-platform's `fleet-release-publish.yml` that the attest step is moving to), for the binary AND `checksums.txt`:
 
   ```bash
   for f in copilot-env-<target> checksums.txt; do
     gh attestation verify "$f" -R Vivswan/copilot-env --source-ref refs/heads/main --bundle attestation.json \
-      --cert-identity https://github.com/Vivswan/copilot-env/.github/workflows/release.yml@refs/heads/main
+      --cert-identity-regex '^https://github\.com/Vivswan/(copilot-env/\.github/workflows/release\.yml@refs/heads/main|repo-platform/\.github/workflows/fleet-release-publish\.yml@refs/(heads/build|tags/stable))$'
   done
   ```
 
 - **Replaceable:** re-run the installer any time to move to the selected release.
 - **Next:** restart your shell, then `agent start`.
 - **Optional:** run `agent shell --clis` to install or update the Claude/Copilot/Codex CLIs and `agent config --set launchers true` for `cl` / `co` / `cx`.
-- **Update later:** `agent update` downloads the newest release's binary, checks its SHA256 against `checksums.txt`, then verifies both against the release's Sigstore build-provenance attestation - it must be signed by this repository's GitHub Actions release workflow, and both files must be among the attested bytes - and only then swaps it in place. That check is on by default; `agent update --no-verify` skips it once and `agent config --set verify-provenance false` turns it off. Your config, credentials, and profiles live outside the install directory and are untouched.
+- **Update later:** `agent update` downloads the newest release's binary, checks its SHA256 against `checksums.txt`, then verifies both against the release's Sigstore build-provenance attestation - it must be signed by a release workflow this build trusts (this repository's own, or the repo-platform fleet publish leg it is moving to), running in this repository on `main`, and both files must be among the attested bytes - and only then swaps it in place. That check is on by default; `agent update --no-verify` skips it once and `agent config --set verify-provenance false` turns it off. Your config, credentials, and profiles live outside the install directory and are untouched.
 - **Uninstall:** `agent uninstall` removes everything copilot-env manages (daemons, profiles, agent wiring, shell integration, credentials, data, and the install itself). It does not remove the agent CLIs (`claude` / `copilot` / `codex`).
 - **Specific version:** replace `latest` with an exact release tag, or pass `--version`:
 

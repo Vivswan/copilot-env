@@ -115,8 +115,10 @@ export async function verifyReleaseProvenance(
   try {
     const signer = new Verifier(toTrustMaterial(trustedRoot)).verify(toSignedEntity(bundle), {
       // sigstore-js matches the SAN as a regular expression even when given a
-      // string, so an exact identity has to be escaped and anchored.
-      subjectAlternativeName: new RegExp(`^${escapeRegExp(policy.subjectAlternativeName)}$`),
+      // string, so the exact identities are escaped and the alternation anchored.
+      subjectAlternativeName: new RegExp(
+        `^(?:${policy.subjectAlternativeNames.map(escapeRegExp).join("|")})$`,
+      ),
       extensions: { issuer: policy.issuer },
       // Byte-for-byte against the certificate's extension values (DER UTF8Strings).
       oids: [
@@ -130,7 +132,11 @@ export async function verifyReleaseProvenance(
         },
       ],
     });
-    signerIdentity = signer.identity?.subjectAlternativeName ?? policy.subjectAlternativeName;
+    const identity = signer.identity?.subjectAlternativeName;
+    if (identity === undefined) {
+      throw new Error("the signing certificate carries no workflow identity");
+    }
+    signerIdentity = identity;
   } catch (e) {
     throw new Error(
       verificationFailedMessage(tag, `not signed by the release workflow (${errMessage(e)})`),

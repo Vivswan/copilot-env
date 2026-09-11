@@ -16,7 +16,7 @@ import {
   IN_TOTO_STATEMENT_V1,
   parseStatement,
   RELEASE_SIGNER_POLICY,
-  RELEASE_SIGNER_SAN,
+  RELEASE_SIGNER_SANS,
   SLSA_PROVENANCE_V1,
   verificationFailedMessage,
 } from "../src/install/attestation.ts";
@@ -29,6 +29,9 @@ const TRUSTED_ROOT = TrustedRoot.fromJSON(
   JSON.parse(readFileSync(join(FIXTURES, "trusted_root.json"), "utf8")),
 );
 const TAG = "v4.0.0";
+/** The identity that signed the fixture: the repository's own release workflow. */
+const FIXTURE_SIGNER =
+  "https://github.com/Vivswan/copilot-env/.github/workflows/release.yml@refs/heads/main";
 
 async function checksumsSubject() {
   return { name: "checksums.txt", sha256: await fileSha256(join(FIXTURES, "checksums.txt")) };
@@ -50,7 +53,18 @@ describe("verifyReleaseProvenance", () => {
     const result = await verifyReleaseProvenance(TAG, BUNDLE, [await checksumsSubject()], {
       trustedRoot: TRUSTED_ROOT,
     });
-    expect(result.signerIdentity).toBe(RELEASE_SIGNER_SAN);
+    expect(result.signerIdentity).toBe(FIXTURE_SIGNER);
+  });
+
+  test("the accepted identities are a set: the signer may be any member, not only the first", async () => {
+    const result = await verifyReleaseProvenance(TAG, BUNDLE, [await checksumsSubject()], {
+      trustedRoot: TRUSTED_ROOT,
+      policy: {
+        ...RELEASE_SIGNER_POLICY,
+        subjectAlternativeNames: [...RELEASE_SIGNER_SANS.slice(1), FIXTURE_SIGNER],
+      },
+    });
+    expect(result.signerIdentity).toBe(FIXTURE_SIGNER);
   });
 
   test("a digest the bundle does not attest is a FAILED verdict that withholds the opt-outs", async () => {
@@ -72,21 +86,38 @@ describe("verifyReleaseProvenance", () => {
       trustedRoot: TRUSTED_ROOT,
       policy: {
         ...RELEASE_SIGNER_POLICY,
-        subjectAlternativeName:
+        subjectAlternativeNames: [
           "https://github.com/someone-else/copilot-env/.github/workflows/release.yml@refs/heads/main",
+        ],
       },
     }).catch((e: unknown) => e as Error);
     expect((err as Error).message).toContain("not signed by the release workflow");
     expect((err as Error).message).not.toContain("--no-verify");
   });
 
-  test("the SAN is matched exactly, not as a pattern", async () => {
-    // A regex-meaningful superset of the real SAN must NOT be accepted.
-    const err = await verifyReleaseProvenance(TAG, BUNDLE, [await checksumsSubject()], {
-      trustedRoot: TRUSTED_ROOT,
-      policy: { ...RELEASE_SIGNER_POLICY, subjectAlternativeName: RELEASE_SIGNER_SAN + ".*" },
-    }).catch((e: unknown) => e as Error);
-    expect((err as Error).message).toContain("not signed by the release workflow");
+  test("each SAN is matched exactly and anchored, not as a pattern or a prefix", async () => {
+    // A regex-meaningful superset of the real SAN, and its prefix (minus the ref) or
+    // suffix (minus the host), must all be rejected, alone and at either end of a set:
+    // an alternation anchored only at its ends (^A|B|C$) would take the last two.
+    const prefix = FIXTURE_SIGNER.slice(0, FIXTURE_SIGNER.indexOf("@"));
+    const suffix = FIXTURE_SIGNER.slice(FIXTURE_SIGNER.indexOf("/.github"));
+    for (
+      const names of [
+        [FIXTURE_SIGNER + ".*"],
+        [prefix],
+        [...RELEASE_SIGNER_SANS.slice(1), FIXTURE_SIGNER + ".*"],
+        [prefix, ...RELEASE_SIGNER_SANS.slice(1)],
+        [...RELEASE_SIGNER_SANS.slice(1), suffix],
+      ]
+    ) {
+      const err = await verifyReleaseProvenance(TAG, BUNDLE, [await checksumsSubject()], {
+        trustedRoot: TRUSTED_ROOT,
+        policy: { ...RELEASE_SIGNER_POLICY, subjectAlternativeNames: names },
+      }).catch((e: unknown) => e as Error);
+      expect((err as Error).message, JSON.stringify(names)).toContain(
+        "not signed by the release workflow",
+      );
+    }
   });
 
   test("a different OIDC issuer is rejected", async () => {
@@ -98,7 +129,7 @@ describe("verifyReleaseProvenance", () => {
   });
 
   test("the same signer SAN from another repository or ref is rejected (reusable-workflow caller pin)", async () => {
-    // release.yml is a reusable workflow: a caller elsewhere gets the same SAN.
+    // The signing workflow is reusable: a caller elsewhere gets the same SAN.
     // The source-repository id and ref name the caller, so each alone must fail.
     for (
       const override of [

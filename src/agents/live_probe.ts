@@ -158,6 +158,7 @@ export interface DirectProbeDeps {
 
 function defaultGhAuthOk(ghPath: string, ghUser: string | null): boolean | "unproven" {
   const s = ghAuthTokenSpawnSpec(ghPath, ghUser);
+  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
   const result = spawnSync(s.file, s.args, {
     stdio: "ignore",
     timeout: s.timeout,
@@ -232,6 +233,7 @@ function defaultRunProbe(
   // a working Direct from being misread as failed: codex prints a large (~tens of
   // KB) model catalog, and the default 1 MB cap would set result.error (ENOBUFS) --
   // failing the probe even on exit 0. 16 MB is far above any real probe output.
+  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
   const result = spawnSync(s.file, s.args, {
     stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf8",

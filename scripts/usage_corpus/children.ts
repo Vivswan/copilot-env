@@ -95,6 +95,7 @@ class ChildRegistry {
     env: Record<string, string>;
     cwd: string;
   }): ChildProcess {
+    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
     const child = spawn(file, args, {
       shell: opts.shell,
       env: opts.env,
@@ -196,6 +197,7 @@ export async function runTurn(
   let stuck = false;
   let result: TurnResult = { ok: false, stdout: "", stuck: false };
   try {
+    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
     child = registry.spawn(spec.file, spec.args, { shell: spec.shell, env, cwd });
     const spawned = child;
     spawned.stdout?.on("data", (chunk: Buffer) => chunks.stdout.push(chunk));

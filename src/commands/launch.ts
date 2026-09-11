@@ -378,6 +378,7 @@ function spawnAgentCli(plan: LaunchPlan): number {
     }
   }
   try {
+    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
     const result = spawnSync(spawn.file, spawn.args, {
       stdio: "inherit",
       shell: spawn.shell,

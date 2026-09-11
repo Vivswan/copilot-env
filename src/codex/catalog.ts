@@ -134,6 +134,7 @@ export function installedCodexVersion(): string | null {
   if (cachedCodexVersion !== undefined) return cachedCodexVersion;
   // cliSpawn routes through cmd.exe on Windows so a codex.cmd shim is launchable.
   const s = cliSpawn("codex", ["--version"]);
+  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
   const result = spawnSync(s.file, s.args, {
     encoding: "utf8",
     timeout: CODEX_VERSION_TIMEOUT_MS,
@@ -155,6 +156,7 @@ function latestNpmCodexVersion(): string | null {
   if (liveLookupsDisabled()) return null;
   if (cachedNpmCodexVersion !== undefined) return cachedNpmCodexVersion;
   const s = cliSpawn("npm", ["view", "@openai/codex", "version"]);
+  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
   const result = spawnSync(s.file, s.args, {
     encoding: "utf8",
     timeout: 5000,
@@ -525,6 +527,7 @@ function runCodexDebugModels(
     const cliDir = path.dirname(cliPath);
     // cwd is the throwaway home too: codex reads project-level config from the
     // working directory, and a caller's project must not colour the verdict.
+    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
     return spawnSync(s.file, s.args, {
       cwd: tmpHome,
       stdio: ["ignore", "pipe", "pipe"],

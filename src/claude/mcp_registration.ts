@@ -54,9 +54,13 @@ export function serverPathEnv(ghPath: string | null): { PATH: string } | undefin
   return ghPath === null ? undefined : { PATH: `${dirname(ghPath)}${delimiter}\${PATH}` };
 }
 
-function managedEntry(): Record<string, unknown> {
+/** The entry to write. When gh does not resolve from THIS process (a wiring pass
+ *  started with a minimal PATH), the env already recorded in `previous` is kept:
+ *  a rewrite never downgrades a working registration. */
+function managedEntry(ghPath: string | null, previous?: unknown): Record<string, unknown> {
   const { command, args } = agentLauncherCommand(CURRENT_MCP_SUBARGS);
-  const env = serverPathEnv(resolveExecutablePath("gh"));
+  const recorded = isRecord(previous) && isRecord(previous.env) ? previous.env : undefined;
+  const env = serverPathEnv(ghPath) ?? recorded;
   return { "type": "stdio", "command": command, "args": args, ...(env ? { env } : {}) };
 }
 
@@ -64,8 +68,13 @@ function sameStrings(a: readonly unknown[], b: readonly string[]): boolean {
   return a.length === b.length && b.every((v, i) => a[i] === v);
 }
 
-/** Classify the entry under our name (see McpRegistrationStatus). */
-export function classifyMcpEntry(entry: unknown): McpRegistrationStatus {
+/** Classify the entry under our name (see McpRegistrationStatus). `ghPath` is
+ *  where gh resolves from this process (null: unknown here, so a recorded env
+ *  is taken as current rather than stale). */
+export function classifyMcpEntry(
+  entry: unknown,
+  ghPath: string | null = resolveExecutablePath("gh"),
+): McpRegistrationStatus {
   if (entry === undefined) return "absent";
   if (!isRecord(entry)) return "foreign";
   // Claude treats a missing type as stdio; anything else is not our shape.
@@ -73,8 +82,9 @@ export function classifyMcpEntry(entry: unknown): McpRegistrationStatus {
   const { command, args } = entry;
   if (typeof command !== "string" || !Array.isArray(args)) return "foreign";
   const managed = agentLauncherCommand(CURRENT_MCP_SUBARGS);
-  const sameEnv = JSON.stringify(entry.env ?? null) ===
-    JSON.stringify(serverPathEnv(resolveExecutablePath("gh")) ?? null);
+  const wanted = serverPathEnv(ghPath);
+  const sameEnv = wanted === undefined ||
+    JSON.stringify(entry.env ?? null) === JSON.stringify(wanted);
   if (command === managed.command && sameStrings(args, managed.args) && sameEnv) {
     return "ours-current";
   }
@@ -166,7 +176,9 @@ export function inspectMcpRegistration(): McpRegistrationInspection {
  * entry is in place (freshly written or already current) -- the caller gates the
  * WebSearch deny on that, so a machine is never left denied without a server.
  */
-export function registerClaudeMcpServer(): boolean {
+export function registerClaudeMcpServer(
+  ghPath: string | null = resolveExecutablePath("gh"),
+): boolean {
   const loaded = loadClaudeJson();
   if (loaded === null) return false;
   const servers = loaded.doc.mcpServers ?? {};
@@ -174,7 +186,7 @@ export function registerClaudeMcpServer(): boolean {
     logger.warn(`${loaded.path} has a non-object mcpServers; leaving it alone`);
     return false;
   }
-  switch (classifyMcpEntry(servers[MCP_SERVER_NAME])) {
+  switch (classifyMcpEntry(servers[MCP_SERVER_NAME], ghPath)) {
     case "ours-current":
       return true;
     case "foreign":
@@ -186,7 +198,7 @@ export function registerClaudeMcpServer(): boolean {
     case "ours-stale":
       break;
   }
-  servers[MCP_SERVER_NAME] = managedEntry();
+  servers[MCP_SERVER_NAME] = managedEntry(ghPath, servers[MCP_SERVER_NAME]);
   loaded.doc.mcpServers = servers;
   try {
     saveClaudeJson(loaded);

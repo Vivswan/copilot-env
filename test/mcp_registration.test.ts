@@ -42,6 +42,19 @@ function readDoc(): Record<string, unknown> {
   return JSON.parse(readFileSync(claudeJsonPath(), "utf8")) as Record<string, unknown>;
 }
 
+/** The same entry after the checkout moved: on POSIX the command is the launcher
+ *  path; on Windows it is the -File argument inside the argv. */
+function movedCheckout(entry: Record<string, unknown>): Record<string, unknown> {
+  return process.platform === "win32"
+    ? {
+      ...entry,
+      "args": (entry.args as string[]).map((a) =>
+        /[\\/]bin[\\/]agent\.ps1$/i.test(a) ? "C:\\somewhere\\else\\bin\\agent.ps1" : a
+      ),
+    }
+    : { ...entry, "command": "/somewhere/else/bin/agent" };
+}
+
 function managedEntry(): Record<string, unknown> {
   const { command, args } = agentLauncherCommand(["mcp", "--serve"]);
   const env = serverPathEnv(resolveExecutablePath("gh"));
@@ -52,6 +65,23 @@ test("serverPathEnv puts gh's directory in front of the client's PATH by expansi
   const gh = join(delimiter === ";" ? "C:\\tools\\gh" : "/opt/homebrew/bin", "gh");
   expect(serverPathEnv(gh)).toEqual({ PATH: `${dirname(gh)}${delimiter}\${PATH}` });
   expect(serverPathEnv(null)).toBeUndefined();
+});
+
+test("a wiring pass that cannot see gh keeps a recorded PATH env instead of dropping it", () => {
+  const home = tmpConfigDir();
+  const { command, args } = agentLauncherCommand(["mcp", "--serve"]);
+  const env = { PATH: `/somewhere/bin${delimiter}\${PATH}` };
+  const recorded = { "type": "stdio", "command": command, "args": args, env };
+  expect(classifyMcpEntry(recorded, null)).toBe("ours-current");
+  // A moved checkout is still stale, and its rewrite carries the env over.
+  const moved = movedCheckout(recorded);
+  expect(classifyMcpEntry(moved, null)).toBe("ours-stale");
+  writeFileSync(
+    join(home, ".claude.json"),
+    `${JSON.stringify({ "mcpServers": { "copilot-env": moved } })}\n`,
+  );
+  expect(registerClaudeMcpServer(null)).toBe(true);
+  expect((readDoc().mcpServers as Record<string, unknown>)["copilot-env"]).toEqual(recorded);
 });
 
 test.skipIf(resolveExecutablePath("gh") === null)(
@@ -134,17 +164,7 @@ test("malformed .claude.json is never touched; register reports failure", () => 
 
 test("an ours-stale entry (moved checkout) is reclaimed by register and by remove", () => {
   const home = tmpConfigDir();
-  const managed = managedEntry();
-  // A moved checkout: same argv shape, different launcher path. On POSIX the path
-  // is the command; on Windows it is the -File argument inside the argv.
-  const stale = process.platform === "win32"
-    ? {
-      ...managed,
-      "args": (managed.args as string[]).map((a) =>
-        /[\\/]bin[\\/]agent\.ps1$/i.test(a) ? "C:\\somewhere\\else\\bin\\agent.ps1" : a
-      ),
-    }
-    : { ...managed, "command": "/somewhere/else/bin/agent" };
+  const stale = movedCheckout(managedEntry());
   expect(classifyMcpEntry(stale)).toBe("ours-stale");
   writeFileSync(
     join(home, ".claude.json"),

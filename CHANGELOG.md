@@ -1,5 +1,14 @@
 # Changelog
 
+## [4.0.5](https://github.com/Vivswan/copilot-env/compare/v4.0.4...v4.0.5) (2026-09-11)
+
+
+### Bug Fixes
+
+* **update:** accept the fleet publish workflow as a release signer ([#182](https://github.com/Vivswan/copilot-env/issues/182)) ([198ea0f](https://github.com/Vivswan/copilot-env/commit/198ea0fea6bc83a71d413e25afa03168381e5373))
+* **update:** pin the release signer by workflow, at any ref ([#184](https://github.com/Vivswan/copilot-env/issues/184)) ([1851278](https://github.com/Vivswan/copilot-env/commit/185127800bb5fba7d3d8e869473f04dfe07ea1f6))
+* **windows:** quote the program on the cmd.exe hop so a path with spaces launches ([#186](https://github.com/Vivswan/copilot-env/issues/186)) ([5389b84](https://github.com/Vivswan/copilot-env/commit/5389b84e715e51c5ead76b71d68c7f60fc260e08))
+
 ## [4.0.3](https://github.com/Vivswan/copilot-env/compare/v4.0.2...v4.0.3) (2026-09-10)
 
 

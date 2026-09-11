@@ -2,6 +2,7 @@ import { join } from "node:path";
 import {
   childEnvWithPath,
   childPathPrepending,
+  cmdSpawn,
   commandLookFromSpawn,
   findCommand,
   pickVerbatimWindowsSpawn,
@@ -105,17 +106,32 @@ test("pickVerbatimWindowsSpawn: the npm .ps1 shim runs via powershell -File (lit
   // The extensionless npm sh script was skipped, not spawned.
 });
 
+test("cmdSpawn quotes the program like every arg, and only when needed", () => {
+  // The program is part of the one command line cmd.exe re-parses: unquoted, a path
+  // with a space launches `C:\Users\Jane` and fails, with or without args.
+  expect(cmdSpawn("C:\\Users\\Jane Doe\\bin\\codex.cmd", [])).toEqual({
+    file: '"C:\\Users\\Jane Doe\\bin\\codex.cmd"',
+    args: [],
+    shell: true,
+  });
+  expect(cmdSpawn("codex", ["--version", "a b"])).toEqual({
+    file: "codex",
+    args: ["--version", '"a b"'],
+    shell: true,
+  });
+});
+
 test("pickVerbatimWindowsSpawn: batch-only shims and no-candidate fall back to cmd.exe quoting", () => {
   const batchOnly = pickVerbatimWindowsSpawn(
     "claude",
-    ["C:\\hand\\claude.cmd"],
+    ["C:\\hand tools\\claude.cmd"],
     ["a b"],
     () => false,
   );
-  expect(batchOnly.file).toBe("C:\\hand\\claude.cmd");
+  expect(batchOnly.file).toBe('"C:\\hand tools\\claude.cmd"'); // quoted for the cmd.exe line
   expect(batchOnly.shell).toBe(true); // cmd.exe: batch parsing is that shim's own semantics
   expect(batchOnly.args).toEqual(['"a b"']);
-  expect(batchOnly.binDir).toBe("C:\\hand");
+  expect(batchOnly.binDir).toBe("C:\\hand tools"); // the real directory, never the quoted form
 
   const none = pickVerbatimWindowsSpawn("claude", [], ["a"], () => false);
   expect(none.file).toBe("claude");

@@ -175,21 +175,31 @@ function quoteCmdArg(arg: string): string {
   return `"${arg.replace(/"/g, '""')}"`;
 }
 
+/** The cmd.exe hop: Node joins program and args into ONE command line that cmd.exe
+ *  re-parses (`/s /c "<line>"`), so the program is quoted like every arg; unquoted,
+ *  a path with a space (`C:\Program Files\...`) splits at it and nothing launches. */
+export function cmdSpawn(
+  file: string,
+  args: string[],
+): { file: string; args: string[]; shell: true } {
+  return { file: quoteCmdArg(file), args: args.map(quoteCmdArg), shell: true };
+}
+
 /**
  * Spawn parameters for invoking an agent CLI cross-platform. On Windows, npm-
  * installed CLIs (codex/claude) are `.cmd`/`.ps1` shims that Node cannot spawn
- * directly -- it blocks `.cmd`/`.bat` without a shell -- so run them through cmd.exe
- * (`shell: true`) with args quoted so whitespace survives the shell join. On POSIX,
- * spawn the (resolved) file directly with no shell. ONLY for program-controlled
- * args: cmd.exe expands `%VAR%` even inside double quotes, so an arbitrary string
- * cannot be passed through it verbatim. User-typed args go through verbatimCliSpawn.
+ * directly -- it blocks `.cmd`/`.bat` without a shell -- so run them through the
+ * cmd.exe hop. On POSIX, spawn the (resolved) file directly with no shell. ONLY for
+ * program-controlled args: cmd.exe expands `%VAR%` even inside double quotes, so an
+ * arbitrary string cannot be passed through it verbatim. User-typed args go through
+ * verbatimCliSpawn.
  */
 export function cliSpawn(
   file: string,
   args: string[],
 ): { file: string; args: string[]; shell: boolean } {
   if (process.platform !== "win32") return { file, args, shell: false };
-  return { file, args: args.map(quoteCmdArg), shell: true };
+  return cmdSpawn(file, args);
 }
 
 /** A resolved agent-CLI invocation: what to spawn (`shell` only for the cmd.exe
@@ -284,15 +294,10 @@ export function pickVerbatimWindowsSpawn(
     if (lower.endsWith(".cmd") || lower.endsWith(".bat")) {
       const sibling = `${candidate.slice(0, -4)}.ps1`;
       if (siblingExists(sibling)) return psFile(sibling);
-      return {
-        file: candidate,
-        args: args.map(quoteCmdArg),
-        shell: true,
-        binDir: win32.dirname(candidate),
-      };
+      return { ...cmdSpawn(candidate, args), binDir: win32.dirname(candidate) };
     }
   }
-  return { file: command, args: args.map(quoteCmdArg), shell: true, binDir: null };
+  return { ...cmdSpawn(command, args), binDir: null };
 }
 
 /**

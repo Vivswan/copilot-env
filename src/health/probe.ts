@@ -252,6 +252,7 @@ function ghActiveLoginProbe(): Promise<string | null> {
   if (look.path === null) return Promise.resolve(null);
   const s = ghAuthStatusSpawnSpec(look.path);
   return new Promise((resolve) => {
+    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
     const child = spawn(s.file, s.args, {
       "stdio": ["ignore", "pipe", "pipe"],
       "timeout": s.timeout,
@@ -299,6 +300,7 @@ function codexDirectAuth(ghUser: string | null): Promise<CodexDirectAuthFacts> {
   // code) never completed the probe, so directAuthFromSpawn marks it unproven instead.
   return new Promise((resolve) => {
     const s = ghAuthTokenSpawnSpec(command, ghUser);
+    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
     const child = spawn(s.file, s.args, {
       stdio: "ignore",
       timeout: s.timeout,
@@ -375,6 +377,7 @@ export function runLiveCli(
     // reason the backend didn't answer. The cap is effectively unbounded (64 MB) --
     // a smoke prompt's real output is tiny, and the catalog noise is filtered out
     // when formatting -- but it guards against a pathologically chatty CLI.
+    // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
     const child = spawn(s.file, s.args, {
       stdio: ["ignore", "pipe", "pipe"],
       timeout: PROBE_TIMEOUT_MS,

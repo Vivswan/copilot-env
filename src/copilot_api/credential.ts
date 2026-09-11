@@ -70,6 +70,7 @@ export function ghAuthTokenLook(ghUser: string | null = null): GhTokenLook {
     return gh.launchFailed ? { token: null, unproven: true } : { token: null };
   }
   const s = ghAuthTokenSpawnSpec(gh.path, ghUser);
+  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
   const result = spawnSync(s.file, s.args, {
     encoding: "utf8",
     timeout: s.timeout,
@@ -127,6 +128,7 @@ export function ghAccountsLook(): GhAccountsLook {
     return gh.launchFailed ? { accounts: [], unproven: true } : { accounts: [] };
   }
   const s = ghAuthStatusSpawnSpec(gh.path);
+  // nosemgrep: javascript.lang.security.audit.spawn-shell-true.spawn-shell-true -- Windows-only, for .cmd shims; the spec quotes args
   const result = spawnSync(s.file, s.args, {
     encoding: "utf8",
     timeout: s.timeout,

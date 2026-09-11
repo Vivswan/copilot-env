@@ -29,4 +29,5 @@ COPY . .
 # so that tree has to be in the image's cache while there is still a network.
 RUN deno run -P=cli scripts/warm-proxy-cache.ts
 
+# nosemgrep: dockerfile.security.missing-user.missing-user -- throwaway test-runner image, never deployed; the suite writes the root-owned deno cache
 CMD ["deno", "task", "test"]

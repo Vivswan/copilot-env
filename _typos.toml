@@ -1,0 +1,12 @@
+# Repo-owned typos allowlist, layered under the fleet's (repo-platform's
+# actions/typos passes its own file as --config; this one extends it).
+
+[default]
+extend-ignore-re = [
+  # Tests spell cafe with an escaped e-acute to exercise multibyte scanning.
+  'caf\\u00e9',
+]
+
+[default.extend-words]
+# "look-alikes" (typographic look-alike characters), used in AGENTS.md and a test.
+alikes = "alikes"

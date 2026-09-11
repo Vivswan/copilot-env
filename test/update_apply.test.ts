@@ -220,7 +220,7 @@ describe("applyUpdate", () => {
   const quiet = { info: () => {}, warn: () => {}, success: () => {} };
   /** A verifier that accepts everything: the default here, so the existing cases
    *  run the full stage order (download -> verify -> attest -> ...) unchanged. */
-  const acceptAll: ProvenanceVerifier = () => Promise.resolve();
+  const acceptAll: ProvenanceVerifier = () => Promise.resolve({ signerIdentity: "test" });
 
   /** Run applyUpdate the only way it can be run: under the update lock, whose held
    *  branch mints the HeldLock evidence the signature demands (via the hermetic-path
@@ -270,7 +270,7 @@ describe("applyUpdate", () => {
         kind: "verify",
         verifier: (...args) => {
           calls.push(args);
-          return Promise.resolve();
+          return Promise.resolve({ signerIdentity: "test" });
         },
       },
     });
@@ -341,7 +341,7 @@ describe("applyUpdate", () => {
         kind: "verify",
         verifier: () => {
           verifierCalls++;
-          return Promise.resolve();
+          return Promise.resolve({ signerIdentity: "test" });
         },
       },
     }).catch((e: unknown) => e as Error);

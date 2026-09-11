@@ -85,12 +85,13 @@ interface UpdateLogger {
 }
 
 /** Verifies a release's attestation.json text against the digests about to be
- *  installed; rejects with the attestation.ts wording. Injectable for tests. */
+ *  installed; resolves with the workflow identity that signed it, rejects with
+ *  the attestation.ts wording. Injectable for tests. */
 export type ProvenanceVerifier = (
   tag: string,
   bundleJson: string,
   required: readonly AttestedSubject[],
-) => Promise<void>;
+) => Promise<{ signerIdentity: string }>;
 
 /**
  * The caller's ONE decision about build-provenance verification, resolved at
@@ -118,7 +119,7 @@ export function resolveProvenanceDecision(
  *  megabyte of CommonJS and `agent env` runs at every shell start. */
 const defaultVerifier: ProvenanceVerifier = async (tag, bundleJson, required) => {
   const { verifyReleaseProvenance } = await import("../install/provenance.ts");
-  await verifyReleaseProvenance(tag, bundleJson, required);
+  return await verifyReleaseProvenance(tag, bundleJson, required);
 };
 
 // Stage tokens: each stage hands a branded token forward. The brand is a module-private
@@ -304,13 +305,12 @@ async function attest(
     );
   }
   const verifier = decision.verifier ?? defaultVerifier;
-  await verifier(tag, readFileSync(bundlePath, "utf8"), [
+  const { signerIdentity } = await verifier(tag, readFileSync(bundlePath, "utf8"), [
     { name: verified.asset, sha256: verified.sha256 },
     { name: CHECKSUMS_NAME, sha256: verified.checksumsSha256 },
   ]);
   logger.success(
-    "Build provenance verified: attested by GitHub Actions for Vivswan/copilot-env " +
-      "(release.yml@refs/heads/main).",
+    `Build provenance verified: attested by GitHub Actions for Vivswan/copilot-env (${signerIdentity}).`,
   );
   return { path: verified.path, sha256: verified.sha256 } as Attested;
 }

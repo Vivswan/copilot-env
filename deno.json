@@ -28,7 +28,7 @@
     "@modelcontextprotocol/server": "npm:@modelcontextprotocol/server@^2.0.0",
     "@modelcontextprotocol/server/": "npm:/@modelcontextprotocol/server@^2.0.0/",
     "@sigstore/bundle": "npm:@sigstore/bundle@^5.0.0",
-    "@sigstore/protobuf-specs": "npm:@sigstore/protobuf-specs@^0.5.0",
+    "@sigstore/protobuf-specs": "npm:@sigstore/protobuf-specs@^0.5.2",
     "@sigstore/tuf": "npm:@sigstore/tuf@^5.0.0",
     "@sigstore/verify": "npm:@sigstore/verify@^4.1.2",
     "@std/crypto": "jsr:@std/crypto@^1.1.0",

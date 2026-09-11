@@ -20,19 +20,16 @@
 export const ATTESTATION_NAME = "attestation.json";
 
 /**
- * The ONLY identities allowed to sign a release, as GitHub Actions names the workflow that
- * ran the attest step in the certificate's SAN: this repository's release.yml on main, and
- * repo-platform's fleet publish leg the attest step is moving to (called at its build branch
- * today, at the stable tag next). An installed binary must accept the release on either side
- * of that move, so the set carries all three; a narrower set fails every update until a
- * release carrying the new identity ships FIRST. Each is matched exactly, never as a pattern
- * ("any workflow in the repo" would also accept one a pull request added), and the SAN alone
- * is NOT enough: a reusable workflow's SAN names the CALLED workflow, so the pins below name the caller.
+ * The workflows allowed to sign a release, as the certificate SAN names the one that ran
+ * the attest step (`<workflow url>@<ref>`). The ref is free so the fleet publish leg can
+ * move between branches and tags without a release here first; the trust rides on the
+ * source-repository pins below, which require the signing run to have happened IN this
+ * repository on main (a reusable workflow's SAN names the CALLED workflow, the pins name
+ * the caller).
  */
-export const RELEASE_SIGNER_SANS: readonly string[] = [
-  "https://github.com/Vivswan/copilot-env/.github/workflows/release.yml@refs/heads/main",
-  "https://github.com/Vivswan/repo-platform/.github/workflows/fleet-release-publish.yml@refs/heads/build",
-  "https://github.com/Vivswan/repo-platform/.github/workflows/fleet-release-publish.yml@refs/tags/stable",
+export const RELEASE_SIGNER_WORKFLOWS: readonly string[] = [
+  "https://github.com/Vivswan/copilot-env/.github/workflows/release.yml",
+  "https://github.com/Vivswan/repo-platform/.github/workflows/fleet-release-publish.yml",
 ];
 
 /** GitHub Actions' OIDC issuer, as recorded in the signing certificate. */
@@ -73,8 +70,8 @@ export const SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1";
 
 /** Who may have signed the bundle. */
 export interface SignerPolicy {
-  /** The accepted certificate SANs (each matched anchored, never as a pattern). */
-  subjectAlternativeNames: readonly string[];
+  /** The workflow URLs accepted in the certificate SAN, at any `@refs/...` ref. */
+  signerWorkflows: readonly string[];
   /** The exact OIDC issuer extension. */
   issuer: string;
   /** The exact source repository id (Fulcio extension 15). */
@@ -84,11 +81,21 @@ export interface SignerPolicy {
 }
 
 export const RELEASE_SIGNER_POLICY: SignerPolicy = {
-  subjectAlternativeNames: RELEASE_SIGNER_SANS,
+  signerWorkflows: RELEASE_SIGNER_WORKFLOWS,
   issuer: GITHUB_OIDC_ISSUER,
   sourceRepositoryId: SOURCE_REPOSITORY_ID,
   sourceRepositoryRef: SOURCE_REPOSITORY_REF,
 };
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** sigstore-js matches the SAN as a regular expression even when given a string, so the
+ *  workflow URLs are escaped and the whole pattern anchored. */
+export function signerSanPattern(policy: SignerPolicy): RegExp {
+  return new RegExp(`^(?:${policy.signerWorkflows.map(escapeRegExp).join("|")})@refs/.+$`);
+}
 
 /** One attested artifact: the name is informational, the digest is what matches. */
 export interface AttestedSubject {

@@ -16,7 +16,9 @@ import {
   IN_TOTO_STATEMENT_V1,
   parseStatement,
   RELEASE_SIGNER_POLICY,
-  RELEASE_SIGNER_SANS,
+  RELEASE_SIGNER_WORKFLOWS,
+  type SignerPolicy,
+  signerSanPattern,
   SLSA_PROVENANCE_V1,
   verificationFailedMessage,
 } from "../src/install/attestation.ts";
@@ -29,9 +31,16 @@ const TRUSTED_ROOT = TrustedRoot.fromJSON(
   JSON.parse(readFileSync(join(FIXTURES, "trusted_root.json"), "utf8")),
 );
 const TAG = "v4.0.0";
-/** The identity that signed the fixture: the repository's own release workflow. */
-const FIXTURE_SIGNER =
-  "https://github.com/Vivswan/copilot-env/.github/workflows/release.yml@refs/heads/main";
+/** The identity that signed the fixture: the repository's own release workflow on main. */
+const FIXTURE_WORKFLOW = "https://github.com/Vivswan/copilot-env/.github/workflows/release.yml";
+const FIXTURE_SIGNER = `${FIXTURE_WORKFLOW}@refs/heads/main`;
+/** The fleet publish leg: the other accepted workflow, which did not sign the fixture. */
+const FLEET_WORKFLOW =
+  "https://github.com/Vivswan/repo-platform/.github/workflows/fleet-release-publish.yml";
+const withWorkflows = (signerWorkflows: readonly string[]): SignerPolicy => ({
+  ...RELEASE_SIGNER_POLICY,
+  signerWorkflows,
+});
 
 async function checksumsSubject() {
   return { name: "checksums.txt", sha256: await fileSha256(join(FIXTURES, "checksums.txt")) };
@@ -56,13 +65,10 @@ describe("verifyReleaseProvenance", () => {
     expect(result.signerIdentity).toBe(FIXTURE_SIGNER);
   });
 
-  test("the accepted identities are a set: the signer may be any member, not only the first", async () => {
+  test("the accepted workflows are a set: the signer may be any member, not only the first", async () => {
     const result = await verifyReleaseProvenance(TAG, BUNDLE, [await checksumsSubject()], {
       trustedRoot: TRUSTED_ROOT,
-      policy: {
-        ...RELEASE_SIGNER_POLICY,
-        subjectAlternativeNames: [...RELEASE_SIGNER_SANS.slice(1), FIXTURE_SIGNER],
-      },
+      policy: withWorkflows([FLEET_WORKFLOW, FIXTURE_WORKFLOW]),
     });
     expect(result.signerIdentity).toBe(FIXTURE_SIGNER);
   });
@@ -84,40 +90,65 @@ describe("verifyReleaseProvenance", () => {
   test("another repository's workflow identity is rejected", async () => {
     const err = await verifyReleaseProvenance(TAG, BUNDLE, [await checksumsSubject()], {
       trustedRoot: TRUSTED_ROOT,
-      policy: {
-        ...RELEASE_SIGNER_POLICY,
-        subjectAlternativeNames: [
-          "https://github.com/someone-else/copilot-env/.github/workflows/release.yml@refs/heads/main",
-        ],
-      },
+      policy: withWorkflows([
+        "https://github.com/someone-else/copilot-env/.github/workflows/release.yml",
+      ]),
     }).catch((e: unknown) => e as Error);
     expect((err as Error).message).toContain("not signed by the release workflow");
     expect((err as Error).message).not.toContain("--no-verify");
   });
 
-  test("each SAN is matched exactly and anchored, not as a pattern or a prefix", async () => {
-    // A regex-meaningful superset of the real SAN, and its prefix (minus the ref) or
+  test("the workflow part is matched exactly and anchored, not as a pattern or a prefix", async () => {
+    // A regex-meaningful superset of the real workflow, and its prefix (minus `.yml`) or
     // suffix (minus the host), must all be rejected, alone and at either end of a set:
-    // an alternation anchored only at its ends (^A|B|C$) would take the last two.
-    const prefix = FIXTURE_SIGNER.slice(0, FIXTURE_SIGNER.indexOf("@"));
-    const suffix = FIXTURE_SIGNER.slice(FIXTURE_SIGNER.indexOf("/.github"));
+    // an alternation anchored only at its ends (^A|B$) would take the last two.
+    const prefix = FIXTURE_WORKFLOW.slice(0, -".yml".length);
+    const suffix = FIXTURE_WORKFLOW.slice(FIXTURE_WORKFLOW.indexOf("/.github"));
     for (
-      const names of [
-        [FIXTURE_SIGNER + ".*"],
+      const workflows of [
+        [FIXTURE_WORKFLOW + ".*"],
         [prefix],
-        [...RELEASE_SIGNER_SANS.slice(1), FIXTURE_SIGNER + ".*"],
-        [prefix, ...RELEASE_SIGNER_SANS.slice(1)],
-        [...RELEASE_SIGNER_SANS.slice(1), suffix],
+        [FLEET_WORKFLOW, FIXTURE_WORKFLOW + ".*"],
+        [prefix, FLEET_WORKFLOW],
+        [FLEET_WORKFLOW, suffix],
       ]
     ) {
       const err = await verifyReleaseProvenance(TAG, BUNDLE, [await checksumsSubject()], {
         trustedRoot: TRUSTED_ROOT,
-        policy: { ...RELEASE_SIGNER_POLICY, subjectAlternativeNames: names },
+        policy: withWorkflows(workflows),
       }).catch((e: unknown) => e as Error);
-      expect((err as Error).message, JSON.stringify(names)).toContain(
+      expect((err as Error).message, JSON.stringify(workflows)).toContain(
         "not signed by the release workflow",
       );
     }
+  });
+
+  test("the SAN pattern frees the ref and nothing else", () => {
+    // The two workflow URLs are the external contract; the fixture pins one ref, so the
+    // ref freedom is judged on the pattern itself.
+    expect(RELEASE_SIGNER_WORKFLOWS).toEqual([FIXTURE_WORKFLOW, FLEET_WORKFLOW]);
+    const pattern = signerSanPattern(RELEASE_SIGNER_POLICY);
+    for (
+      const accepted of [
+        FIXTURE_SIGNER,
+        `${FLEET_WORKFLOW}@refs/heads/build`,
+        `${FLEET_WORKFLOW}@refs/tags/stable`,
+        `${FIXTURE_WORKFLOW}@refs/heads/feature`,
+      ]
+    ) expect(pattern.test(accepted), accepted).toBe(true);
+    for (
+      const rejected of [
+        FIXTURE_WORKFLOW, // no ref at all
+        `${FIXTURE_WORKFLOW}@`, // empty ref
+        `${FIXTURE_WORKFLOW}@refs/`, // empty ref after refs/
+        `${FIXTURE_SIGNER}\ninvalid`, // trailing text past the end anchor
+        `${FIXTURE_WORKFLOW}@main`, // a ref outside refs/
+        `${FIXTURE_WORKFLOW}.evil@refs/heads/main`, // the workflow as a prefix
+        `x${FIXTURE_WORKFLOW}@refs/heads/main`, // the workflow as a suffix
+        `${FIXTURE_WORKFLOW.replace(".yml", "Xyml")}@refs/heads/main`, // `.` as a metacharacter
+        `https://github.com/Vivswan/other/.github/workflows/release.yml@refs/heads/main`,
+      ]
+    ) expect(pattern.test(rejected), rejected).toBe(false);
   });
 
   test("a different OIDC issuer is rejected", async () => {

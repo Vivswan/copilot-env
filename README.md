@@ -31,12 +31,12 @@ powershell -c "irm https://github.com/Vivswan/copilot-env/releases/latest/downlo
 Downloads a single self-contained `agent` binary for your platform into `~/.copilot-env`, then wires your shell. There is no runtime or package manager to install first.
 
 - **Recommended:** install from the latest GitHub release asset, not from the `main` branch. `main` is for development and can be temporarily ahead of the latest released installer flow.
-- **Verified:** the installer checks the binary's SHA256 against the release's `checksums.txt` before it puts it anywhere. That proves the download is intact, not who built it (the installer is fetched from the same release, so a first install trusts it on first use). Every release also carries a build-provenance attestation, `attestation.json`, that you can check by hand with the GitHub CLI's closest equivalent of the policy `agent update` enforces: built in this repository (`-R`, by name where `agent update` pins the immutable repository id), on `main` (`--source-ref`), by one of its release workflows (`--cert-identity-regex`: this repository's own `release.yml`, or repo-platform's `fleet-release-publish.yml` that the attest step is moving to), for the binary AND `checksums.txt`:
+- **Verified:** the installer checks the binary's SHA256 against the release's `checksums.txt` before it puts it anywhere. That proves the download is intact, not who built it (the installer is fetched from the same release, so a first install trusts it on first use). Every release also carries a build-provenance attestation, `attestation.json`, that you can check by hand with the GitHub CLI's closest equivalent of the policy `agent update` enforces: built in this repository (`-R`, by name where `agent update` pins the immutable repository id), on `main` (`--source-ref`), by one of its release workflows at any ref (`--cert-identity-regex`: this repository's own `release.yml`, or repo-platform's `fleet-release-publish.yml` that the attest step is moving to), for the binary AND `checksums.txt`:
 
   ```bash
   for f in copilot-env-<target> checksums.txt; do
     gh attestation verify "$f" -R Vivswan/copilot-env --source-ref refs/heads/main --bundle attestation.json \
-      --cert-identity-regex '^https://github\.com/Vivswan/(copilot-env/\.github/workflows/release\.yml@refs/heads/main|repo-platform/\.github/workflows/fleet-release-publish\.yml@refs/(heads/build|tags/stable))$'
+      --cert-identity-regex '^https://github\.com/Vivswan/(copilot-env/\.github/workflows/release\.yml|repo-platform/\.github/workflows/fleet-release-publish\.yml)@refs/.+$'
   done
   ```
 

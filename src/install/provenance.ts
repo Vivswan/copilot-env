@@ -26,6 +26,7 @@ import {
   parseStatement,
   RELEASE_SIGNER_POLICY,
   type SignerPolicy,
+  signerSanPattern,
   verificationFailedMessage,
 } from "./attestation.ts";
 
@@ -48,10 +49,6 @@ export interface VerifyProvenanceOptions {
   policy?: SignerPolicy;
   /** Where the TUF client keeps its metadata cache. */
   cachePath?: string;
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
@@ -114,11 +111,7 @@ export async function verifyReleaseProvenance(
   let signerIdentity: string;
   try {
     const signer = new Verifier(toTrustMaterial(trustedRoot)).verify(toSignedEntity(bundle), {
-      // sigstore-js matches the SAN as a regular expression even when given a
-      // string, so the exact identities are escaped and the alternation anchored.
-      subjectAlternativeName: new RegExp(
-        `^(?:${policy.subjectAlternativeNames.map(escapeRegExp).join("|")})$`,
-      ),
+      subjectAlternativeName: signerSanPattern(policy),
       extensions: { issuer: policy.issuer },
       // Byte-for-byte against the certificate's extension values (DER UTF8Strings).
       oids: [

@@ -8,11 +8,8 @@
     ".claude/",
     "node_modules/",
     "CHANGELOG.md",
-    ".copier-answers.yml",
     ".repo-platform.yml",
     ".typography-allow",
-    ".github/CODE_OF_CONDUCT.md",
-    ".github/SECURITY.md",
     ".github/dependabot.yml",
     ".github/instructions/review.instructions.md",
     ".github/repo-platform-manifest.json",
@@ -20,9 +17,7 @@
     ".github/workflows/auto-assign.yml",
     ".github/workflows/ci.yml",
     ".github/workflows/deno-audit.yml",
-    ".github/workflows/pr-title.yml",
-    ".github/workflows/release.yml",
-    ".github/workflows/settings-sync.yml"
+    ".github/workflows/pr-title.yml"
   ],
   "imports": {
     "@jeffreycao/copilot-api": "npm:@jeffreycao/copilot-api@^2.3.3",
@@ -157,10 +152,8 @@
       "test/fixtures/provenance/v4.0.0/trusted_root.json",
       "AGENTS.md",
       "CLAUDE.md",
-      "CONTRIBUTING.md",
       ".github/agents.md",
-      ".github/copilot-instructions.md",
-      ".github/.copier-answers.yml"
+      ".github/copilot-instructions.md"
     ]
   }
 }

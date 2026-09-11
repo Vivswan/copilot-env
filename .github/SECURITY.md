@@ -1,3 +1,24 @@
+# Security policy
+
+## Supported versions
+
+Only the latest release is supported.
+
+## Reporting a vulnerability
+
+**Do not open a public issue for security problems.**
+
+Report privately through [GitHub Security Advisories](https://github.com/Vivswan/copilot-env/security/advisories/new) ("Report a vulnerability"). If that page is unavailable, contact [@Vivswan](https://github.com/Vivswan) directly.
+
+A useful report includes:
+
+- what an attacker can do, and where trust breaks
+- reproduction steps or a proof of concept
+- the affected version or commit
+
+Expect an acknowledgement within a few days, and a fix in the next release once the report is confirmed. Please allow time for that fix before any public disclosure.
+
+Never include real credentials in a report; redact anything that looks like a key.
 
 ## Security model / scope
 

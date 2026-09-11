@@ -1,3 +1,13 @@
+# Contributing to copilot-env
+
+Thanks for contributing. This page has the local setup and the checks; the conventions are in [AGENTS.md](AGENTS.md).
+
+## Pull requests
+
+- Changes land through pull requests and are squash-merged, so the PR title becomes the commit subject.
+- Titles and commit subjects are [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) (`feat: add X`, `fix(parser): handle Y`); `feat:` and `fix:` release, other prefixes do not.
+- CI gates on the `all-green` check: every job in `.github/workflows/checks.yml` and the fleet's checks must pass. Run the commands below before pushing.
+- Security problems are never reported in issues or PRs: see [SECURITY.md](.github/SECURITY.md). Participation follows the account-wide [code of conduct](https://github.com/Vivswan/.github/blob/main/CODE_OF_CONDUCT.md).
 
 ## Prerequisites
 
@@ -8,7 +18,7 @@
 ```bash
 git clone https://github.com/<your-fork>/copilot-env.git
 cd copilot-env
-bash scripts/setup-env.sh   # scripts/setup-env.ps1 on Windows; installs the pinned deno and the locked deps
+bash scripts/setup-env.sh   # scripts/setup-env.ps1 on Windows: deno if none is installed, the locked deps, the git hooks
 ```
 
 ## Running checks

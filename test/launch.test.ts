@@ -397,8 +397,11 @@ function fakeCliBin(root: string, command: string, exitCode = 0): string {
 
 /** Isolated homes + a leading fake-CLI bin dir for a spawned `agent launch`. */
 function launchEnv(root: string, bin: string): Record<string, string> {
+  // IS_SANDBOX is what the direct launch under test decides; a harness that set it
+  // for THIS process (Claude Code's sandbox does) must not leak into the assertions.
+  const { IS_SANDBOX: _sandbox, ...inherited } = process.env;
   return {
-    ...process.env,
+    ...inherited,
     CONSOLA_LEVEL: "5",
     PATH: `${bin}:${process.env.PATH ?? ""}`,
     HOME: root,

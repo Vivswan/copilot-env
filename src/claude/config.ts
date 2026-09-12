@@ -127,6 +127,7 @@ export function managedHelperShape(
 ): boolean {
   const argsLine = escapeRegExp(subArgs.map(win ? winQuote : shToken).join(" "));
   const launcher = win ? WIN_LAUNCHER_SHAPE : POSIX_LAUNCHER_SHAPE;
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- our shapes, escaped args, our config value
   return new RegExp(`^${launcher} ${argsLine}$`).test(helperValue);
 }
 

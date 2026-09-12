@@ -7,7 +7,7 @@
 
 * **auth:** name the recorded provider and gh's own reason when no credential resolves ([c081f44](https://github.com/Vivswan/copilot-env/commit/c081f44be8605b00937d0f6060b26488035a9610))
 
-## [4.0.5](https://github.com/Vivswan/copilot-env/compare/v4.0.4...v4.0.5) (2026-09-11)
+## [4.0.5](https://github.com/Vivswan/copilot-env/compare/v4.0.3...v4.0.5) (2026-09-11)
 
 
 ### Bug Fixes

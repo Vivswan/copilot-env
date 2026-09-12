@@ -1,0 +1,31 @@
+---
+# This repository's OWN settings, applied by the fleet's settings apply
+# (and by settings-sync on pushes to this file when the repo carries its
+# own REPO_PLATFORM_TOKEN). Written once, repo-owned: the sync never
+# rewrites it. Fleet defaults merge UNDER this file - keys here win, null
+# opts out, labels replace by name, rulesets MERGE by name; both must stay
+# lists. The fleet invariants (squash-only merging, the protection
+# rulesets) sit ABOVE and cannot be overridden. Undeclared labels are
+# deleted by the apply; undeclared rulesets are left alone.
+
+repository:
+  description: "Local copilot-api proxy lifecycle + config helper (TypeScript)."
+  # Declared even when empty: the apply manages only declared keys, so
+  # this keeps it healing out-of-band edits.
+  homepage: "https://github.com/Vivswan/copilot-env"
+  topics: "claude-code,cli,codex,copilot,copilot-api,deno,proxy,typescript"
+  private: false
+
+# This repository's own labels (the fleet layers already carry the
+# dependabot, release, and tracking labels its modules need):
+# labels:
+#   - name: my-label
+#     color: "0e8a16"
+#     description: What it marks
+
+# This repository's own rulesets, or additions to a fleet one (an entry
+# named like a fleet ruleset merges into it and adds its rules):
+# rulesets:
+#   - name: my-ruleset
+#     target: branch
+#     enforcement: active

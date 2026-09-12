@@ -35,10 +35,10 @@ jobs:
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version-file: .dvmrc
-      # Every tracked lockfile ('*/deno.lock' is a git pathspec; '*'
-      # crosses '/'). The no-lockfile guard keeps the weekly run from
-      # going green having audited nothing; --frozen fails loudly when a
-      # lockfile disagrees with its manifest.
+      # Every tracked lockfile ('*/deno.lock' is a git pathspec; '*' crosses '/').
+      # No lockfile: a notice, not a silent green.
+      # --frozen: a lockfile out of date with its manifest fails loudly.
+      # --level high: a low or moderate advisory is a Dependabot bump, not a red run.
       - name: Audit dependencies (deno)
         shell: bash
         run: |
@@ -51,5 +51,5 @@ jobs:
           fi
           while IFS= read -r -d '' lock; do
             echo "auditing $lock"
-            (cd "$(dirname -- "$lock")" && deno audit --frozen)
+            (cd "$(dirname -- "$lock")" && deno audit --frozen --level high)
           done < "$RUNNER_TEMP/deno-locks"
